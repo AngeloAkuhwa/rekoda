@@ -3,8 +3,10 @@ import { InvalidPhoneError, normalisePhone } from '@rekoda/core/identity';
 import { redactForLog } from '@rekoda/core/privacy';
 import type { InboundEvent } from '@rekoda/contracts';
 import { events, identity, type Db } from '@rekoda/db';
+import { CONFIG, type ApiConfig } from '../config.js';
 import { DB } from '../db/db.module.js';
 import { JobKind, JobQueue } from '../jobs/queue.service.js';
+import { sealPayload } from '../privacy/payload-vault.js';
 
 /**
  * Turns an inbound Meta event into a durable, de-duplicated row.
@@ -21,6 +23,7 @@ export class MetaIngressService {
   constructor(
     @Inject(DB) private readonly db: Db,
     @Inject(JobQueue) private readonly queue: JobQueue,
+    @Inject(CONFIG) private readonly config: ApiConfig,
   ) {}
 
   async accept(event: InboundEvent, payload: unknown): Promise<{ isNew: boolean }> {
@@ -31,7 +34,17 @@ export class MetaIngressService {
       eventType:
         event.kind === 'status' ? `status.${event.status}` : `message.${event.messageType}`,
       externalId: event.externalId,
-      payload,
+      /**
+       * Sealed, not stored raw.
+       *
+       * `external_events` is the one table with row-level security
+       * deliberately off — an event arrives before its tenant is known. A Meta
+       * webhook body carries the merchant's message text and the sender's
+       * number, so storing it verbatim would put both in plaintext in the
+       * least protected table we have. One AES-256-GCM encrypt costs
+       * microseconds on a path that owes Meta an answer in seconds.
+       */
+      payload: sealPayload(payload, this.config.vaultKey),
       businessId,
     });
 

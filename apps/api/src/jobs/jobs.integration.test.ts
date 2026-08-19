@@ -10,24 +10,51 @@
  * so a handler that exists in the deploy and not in the test registry is not a
  * thing that can happen.
  */
+import { createHash, randomBytes } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createDb, identity, jobsRepo, schema, withBusiness, type Db } from '@rekoda/db';
 import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
 import { JobRunner } from './runner.js';
 import { buildRunner } from './jobs.module.js';
+import { PrivacyGateway } from '../privacy/gateway.service.js';
+import { loadConfig, type ApiConfig } from '../config.js';
+import type { InboundMessageDeps } from './inbound-message.handler.js';
+
+const RUN_SALT = randomBytes(16).toString('hex');
 
 let urls: Urls;
 let appDb: Db;
 let workerDb: Db;
 let closeApp: () => Promise<void>;
 let closeWorker: () => Promise<void>;
+let config: ApiConfig;
+/** The real gateway and the real config — `buildRunner` gets what production gets. */
+let deps: InboundMessageDeps;
 
 beforeAll(async () => {
   urls = requireUrls();
   await migrate(urls);
   ({ db: appDb, close: closeApp } = createDb(urls.app, { max: 4 }));
   ({ db: workerDb, close: closeWorker } = createDb(urls.worker, { max: 4 }));
+
+  process.env['DATABASE_URL'] = urls.app;
+  process.env['OTP_PEPPER'] = testKey('pepper');
+  process.env['REKODA_API_SECRET'] = testKey('secret');
+  process.env['VAULT_KEY'] = testKey('vault');
+  process.env['MATCH_KEY'] = testKey('match');
+  config = loadConfig();
+  deps = { gateway: new PrivacyGateway(appDb, config), config };
 });
+
+/**
+ * Derived per run, never a literal. A high-entropy constant assigned to
+ * something named `*_KEY` is indistinguishable from a leaked credential to
+ * every scanner pointed at this repository — and generating it is stronger
+ * anyway, since no two runs share one.
+ */
+function testKey(label: string): string {
+  return createHash('sha256').update(`${label}:${process.pid}:${RUN_SALT}`).digest('hex');
+}
 
 afterAll(async () => {
   await closeApp?.();
@@ -234,14 +261,14 @@ describe('the polling loop', () => {
 
 describe('the registry the application actually ships', () => {
   it('handles the inbound-message kind', async () => {
-    const runner = buildRunner(workerDb, appDb);
+    const runner = buildRunner(workerDb, appDb, deps);
     // Registering it twice throws, which is how we know it is already there —
     // a registry assertion that cannot pass by reading a stale export.
     expect(() => runner.register('inbound.message', async () => {})).toThrow(/already registered/);
   });
 
   it('returns false rather than spinning when the queue is empty', async () => {
-    const runner = buildRunner(workerDb, appDb);
+    const runner = buildRunner(workerDb, appDb, deps);
     expect(await runner.runOnce()).toBe(false);
   });
 });

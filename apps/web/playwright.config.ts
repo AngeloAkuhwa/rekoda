@@ -27,6 +27,8 @@ const API_PORT = 3101;
  * literal AND is stronger — no two runs share a signing key.
  */
 const ephemeralSecret = () => randomBytes(24).toString('hex');
+/** AES-256 and the match HMAC both want exactly 32 bytes, as 64 hex characters. */
+const ephemeralKey = () => randomBytes(32).toString('hex');
 
 /**
  * `reuseExistingServer` is FALSE everywhere, including locally, and that is
@@ -98,6 +100,8 @@ export default defineConfig({
         PORT: String(API_PORT),
         OTP_PEPPER: ephemeralSecret(),
         REKODA_API_SECRET: ephemeralSecret(),
+        VAULT_KEY: ephemeralKey(),
+        MATCH_KEY: ephemeralKey(),
         // Returns the code in the response so the suite can complete the flow
         // without a WhatsApp account. The API refuses this outright when
         // NODE_ENV is production.

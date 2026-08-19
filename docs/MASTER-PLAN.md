@@ -1122,11 +1122,26 @@ raw text
   → AI-safe context
 ```
 
-* Vault: AES-256-GCM per identity facet under `VAULT_KEY`; `matchKey` is a **keyed HMAC**
-  (never a bare hash of a guessable value like a phone number).
-* Tokens are `CUSTOMER_` + short base32, unique per business.
+* ~~Vault: AES-256-GCM per identity facet under `VAULT_KEY`; `matchKey` is a **keyed HMAC**~~
+  **Done**, and wired (`apps/api/src/privacy/gateway.service.ts`). The HMAC mixes in
+  `businessId`, so a dump cannot show that two merchants share a customer.
+* ~~Tokens are `CUSTOMER_` + short base32, unique per business.~~ **Done.** One
+  person is one customer across messages *and* across a race — `identities_match_ux`
+  (migration 0005) replaced a plain index that let eight simultaneous messages from
+  one new number create eight customers.
 * **Rehydration only in the authorised output layer**, never in the core, never in logs.
 * Log redaction: no message body, no name, no token→identity mapping in any log line.
+
+**Also closed while wiring this:** `external_events` stored provider payloads
+verbatim — the merchant's message text and the sender's WhatsApp number, in
+plaintext, in the one table with row-level security deliberately switched off.
+The table's own comment had always claimed PII was redacted at write time. It is
+now sealed (AES-256-GCM under `VAULT_KEY`) on the ack path and opened by the
+worker.
+
+**Still open in this section:** known-customer *fuzzy* matching (only exact
+phone/email match keys today) and the residual-novel-name minimisation pass. A
+bare name in a message currently reaches the model.
 
 ### 5.3.3 AI router (ADR 0007)
 

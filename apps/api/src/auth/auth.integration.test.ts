@@ -6,6 +6,7 @@
  * concurrency is a claim about row locking, and a mocked database would only
  * confirm that the mock counts.
  */
+import { randomBytes } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createDb, identity, type Db } from '@rekoda/db';
 import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
@@ -36,6 +37,10 @@ beforeAll(async () => {
   // tenancy assertion underneath these tests passes for the wrong reason.
   process.env['DATABASE_URL'] = urls.app;
   process.env['OTP_PEPPER'] = 'test-pepper-at-least-32-characters-long';
+  // 64 hex characters each — 32 bytes, what AES-256 needs. Derived per run
+  // rather than written down, so no scanner has a literal to object to.
+  process.env['VAULT_KEY'] = randomBytes(32).toString('hex');
+  process.env['MATCH_KEY'] = randomBytes(32).toString('hex');
   process.env['REKODA_API_SECRET'] = SECRET;
   process.env['REKODA_REVEAL_OTP'] = '1';
   // This suite makes a few hundred requests from one address in seconds, which
