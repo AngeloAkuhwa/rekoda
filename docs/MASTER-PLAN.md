@@ -1130,8 +1130,19 @@ raw text
 
 ### 5.3.3 AI router (ADR 0007)
 
-* **Deterministic first**: greetings, menu numbers, `yes/no`, `STOP/START`, `records`,
-  `who owes me`, `delete my data`, and known command forms never reach a model.
+* ~~**Deterministic first**~~ **Done.** `packages/core/src/router.ts` —
+  greetings, bare numbers, `yes/no`, `STOP/START`, `records`, `who owes me`,
+  `delete my data` and the other known forms are classified without a model.
+  Two rules carry it: a match fires only when the WHOLE message is that command
+  (so "no, 3 not 4" stays a CG5 correction rather than becoming a refusal), and
+  the cost of being wrong is treated as asymmetric — a missed match costs one
+  model call, an invented one can unsubscribe a merchant or start deleting
+  their books, so erasure and the regulatory keywords are the tightest matchers
+  in the file.
+
+  It is also a privacy boundary: routing runs on the raw message BEFORE the
+  gateway, so a message that never needs a model never needs tokenising either.
+  The call site lands with the model client.
 * Sonnet with a **strict JSON schema**; response → `parseBusinessCommand()` → reject and
   ask one clarifying question on failure.
 * **Prompt caching** on the static system prompt.
