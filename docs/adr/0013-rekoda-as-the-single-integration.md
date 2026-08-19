@@ -99,21 +99,69 @@ So the two flows serve genuinely different merchants:
 **Adopt Paystack Connect, and offer both flows — standard first, platform-managed
 as the upgrade** — subject to the confirmations below.
 
-Revised from this ADR's first draft, which assumed platform-managed throughout.
-Now that the flows and their liability are documented, the safer sequence is:
+### Revision 2 (19 Aug 2026) — platform-managed is the destination, not the upgrade
 
-1. **Launch on the standard flow.** The merchant opens a Paystack Starter
-   Business themselves — ID + BVN + bank account, **no CAC** — and Rekoda
-   reconciles their checkout payments. Risk and KYC stay with Paystack and the
-   merchant. Rekoda proves the product carrying **no transaction liability at
-   all**, which is the right posture for a company with no payments track record.
-2. **Add the platform-managed flow once the ₦2M ceiling or DVA demand forces
-   it** — and once Q3, counsel, and the risk controls below are all in place.
-   That is the rung that unlocks bank-transfer reconciliation for merchants who
-   will never register.
+An earlier draft of this section recommended launching on the **standard flow**
+(merchant opens their own Paystack Starter Business) to keep Rekoda's
+transaction liability at zero. Two findings since make that a dead end rather
+than a safe on-ramp, so the recommendation is reversed. Stating the reversal
+plainly because it matters:
 
-This sequencing matters: it means **nothing in M5 is blocked** on the open
-question. Q3 gates the *upgrade*, not the launch.
+**1. The ₦2M lifetime cap kills the standard flow for exactly the merchants who
+succeed.** A Starter Business — the only Paystack account a non-CAC merchant can
+open — is capped at **₦2,000,000 in *lifetime* collections** (₦3M with Truecaller
+verification), after which **collections are disabled** until the business
+upgrades to Registered, which requires CAC. A fashion vendor turning over
+₦500k/month exhausts it in **four months**. So the standard flow does not remove
+the CAC barrier; it **defers it by a quarter** and then reimposes it on the
+merchants who grew. That is worse than not offering it, because it fails at the
+moment of success.
+
+**2. The chargeback risk that makes platform-managed frightening is largely a
+card phenomenon, and Rekoda's rail is transfers.** The classic payment-facilitator
+nightmare is chargeback losses on card payments. Rekoda's primary collection
+method is **bank transfer** (ADR 0016), and Nigerian NIP transfers are
+effectively irreversible — there is no cardholder-initiated reversal mechanism.
+The residual risk is therefore **merchant fraud** (collecting for goods never
+delivered), not chargeback leakage — a different problem, and a tractable one.
+
+**The recommendation:**
+
+* **Platform-managed flow is the destination**, and the model to build toward:
+  merchant supplies a bank account, Rekoda holds the Paystack relationship,
+  per-transaction accounts collect, proceeds split to the merchant's bank.
+  No cap, no CAC, no customer KYC.
+* **Standard flow stays available** for merchants who *want* their own Paystack
+  relationship — and it remains the zero-liability option — but it is a
+  preference, not the default, and its ceiling must be disclosed at signup.
+* **Phase it by trust, not by flow.** The M5 concierge alpha is 5–10 merchants
+  you have personally met; platform-managed risk there is negligible. Self-serve
+  comes after the controls below exist and have been exercised.
+
+### The controls — and the one Rekoda may not build
+
+Because Rekoda **may not hold funds** (safety-review R1/R2), the usual
+payment-facilitator lever — withhold settlement until a merchant is trusted — is
+**not available**. Rekoda cannot escrow, delay payout, or park money pending
+review without crossing into licensed territory. Say this out loud now, because
+under fraud pressure someone will propose exactly that.
+
+The controls must therefore act on **limits and visibility**, never on custody:
+
+1. **Sub-merchant KYC before activation** — BVN or NIN, plus Resolve Account
+   name match against the claimed owner. Cheap (₦10 BVN / ₦60 NIN) and it makes
+   the settlement destination traceable to a real identity.
+2. **Velocity and ticket limits by trust tier**, raised on history rather than
+   on documents. A new merchant collecting ₦900,000 on day one is the signal.
+3. **Anomaly alerts in admin** — sudden volume, many failed or reversed orders,
+   a spike in customer complaints, a settlement account changing.
+4. **Settlement-account change is a re-verification event**, never a silent edit.
+5. **A kill switch per sub-merchant** — deactivate collection instantly, which
+   is legitimate because it stops *future* payments rather than holding existing
+   ones.
+
+Nothing in M5 is blocked on the open ceiling question, since ADR 0016's
+per-transaction accounts are not assigned accounts and should not consume it.
 
 ```
 Rekoda Ltd (one CAC, one Paystack account, one integration)
@@ -150,6 +198,48 @@ cannot hold merchants' WhatsApp numbers on their behalf. The answer stays ADR
 0012 ladder A: make a WABA **unnecessary** — the Rekoda storefront carries
 orders, and the merchant keeps using the free WhatsApp Business App they already
 have. Ladder A2 remains a genuine upgrade for merchants who qualify.
+
+## How the incumbents solved this — and what it validates
+
+The owner asked how QuickBooks and others handled the same problem. The answer
+splits cleanly into two archetypes, and Rekoda's position is a third that is
+better than either for its stage.
+
+**Intuit / QuickBooks — own the rails, own the licence, own the risk.**
+Money movement is provided by **Intuit Payments Inc., licensed as a Money
+Transmitter** by the New York State Department of Financial Services and as a
+money services business across US jurisdictions. Intuit operates as a **payment
+facilitator**, and merchants signing up for QuickBooks Payments are **underwritten** —
+the service is explicitly "subject to eligibility criteria, credit, and
+application approval". This is the maximal path: highest margin, highest control,
+and a licensing and compliance burden that took a company of Intuit's size to
+carry.
+
+**Xero — integrate the rails, own none of them.** Xero deliberately did *not*
+become a processor. It partners with **Stripe, GoCardless and TransferWise** and
+lets those providers hold the licence, the underwriting and the risk. Lower
+margin and more merchant setup friction, but near-zero regulatory surface.
+
+**Rekoda's position is a third path, and it is genuinely the best available
+here:** Paystack Connect's platform-managed flow gives **Intuit's onboarding
+experience** — the merchant supplies a bank account and nothing else — with
+**Xero's licensing posture**, because Paystack holds the licence and funds split
+directly to the merchant without ever resting with Rekoda. That combination did
+not exist when Intuit and Xero made their choices; Connect-style platform
+products are what made it possible.
+
+**The validation that matters most for ADR 0016:** Intuit underwrites
+**merchants**, and never the merchant's **customers**. Its own payor terms
+describe Intuit as "solely a third party payment facilitator and processor to
+the merchant who has sent you an invoice" — the payor is not onboarded, not
+underwritten, not KYC'd. **The boundary ADR 0016 drew is the same boundary the
+largest small-business accounting platform in the world drew.** That is strong
+evidence it is correct rather than merely convenient.
+
+Worth naming why Rekoda hit this trap at all when Intuit did not: **card and ACH
+payments never require issuing an account to the payer.** Nigerian bank-transfer
+culture plus virtual accounts is what created the customer-identity problem, and
+per-transaction accounts are what route around it.
 
 ## Precedent — this model is well-trodden
 

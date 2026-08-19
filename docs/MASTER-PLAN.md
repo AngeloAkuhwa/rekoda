@@ -402,6 +402,25 @@ in which a provider owned clients' WABAs; the surviving path has the client own
 the WABA and pass verification. So the answer stays ADR 0012 ladder A: make a
 WABA *unnecessary* via the Rekoda storefront.
 
+**Account model (rev 2, 19 Aug 2026):** the **platform-managed flow is the
+destination**, not an upgrade. The earlier "standard flow first" recommendation
+is withdrawn: a Starter Business — the only Paystack account a non-CAC merchant
+can open — is capped at **₦2M *lifetime* collections**, so it does not remove the
+CAC barrier, it defers it by about four months and reimposes it on the merchants
+who grew. Meanwhile the risk that made platform-managed frightening is mostly a
+**card** phenomenon, and Rekoda's rail is **transfers**, which in Nigeria are
+effectively irreversible — the residual risk is merchant fraud, not chargeback
+leakage.
+
+**How the incumbents solved it.** *Intuit/QuickBooks* became a **licensed money
+transmitter** and underwrites every merchant — maximal control, maximal
+compliance burden. *Xero* deliberately never processed payments, integrating
+Stripe/GoCardless instead — minimal burden, minimal control. **Rekoda's path is a
+third: Intuit's onboarding experience with Xero's licensing posture**, because
+Paystack holds the licence and funds split directly. Critically, **Intuit
+underwrites merchants and never the merchant's customers** — the same boundary
+ADR 0016 draws, which is good evidence it is correct rather than convenient.
+
 **Proposed, not Accepted — the risks are real.** All merchants under one Paystack
 account means a single compliance action can take **everyone** down at once;
 chargeback, fraud and AML liability move to Rekoda; and a **PSSP licence

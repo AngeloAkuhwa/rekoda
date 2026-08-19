@@ -66,7 +66,7 @@ What is genuinely missing, and should land in M1:
 | G16 | **Rekoda storefront `/s/{handle}`** as the default order-capture path. No Meta involvement, no verification queue, no approval gate, no CAC. Works day one — and you own the schema instead of parsing Meta's. |
 | G17 | **Order forwarding** for merchants already running a WhatsApp Business App catalogue. **Collect real forwarded-order specimens from live vendors before writing the parser** — do not build against a guessed format. |
 | G18 | **Chat ships publicly first; Integrate follows.** Chat depends on one WhatsApp number — yours. |
-| G25 | **Launch payments on Paystack Connect's *standard* flow.** The merchant opens a **Paystack Starter Business** themselves — government ID + BVN + personal bank account, **no CAC** — and Paystack does the KYC while the merchant bears their own transaction risk. Rekoda carries **zero payment liability** while proving the product. Ceiling: **₦2M lifetime collections** (₦3M with Truecaller verification), and **no DVAs** on Starter, so bank-transfer reconciliation waits for the upgrade rung. |
+| G25 | **Build toward Paystack Connect's *platform-managed* flow** (ADR 0013 rev 2). Merchant supplies a bank account only — no CAC, no Paystack signup, no lifetime cap. The *standard* flow (merchant opens their own Starter Business) stays available as a zero-liability preference, but is **not the default**: Starter is capped at **₦2M lifetime collections**, so it fails exactly the merchants who succeed, roughly four months in. Phase by trust — concierge alpha first, self-serve once the R28 controls exist. |
 
 ## 1.6 Honest claims — cheap to keep, expensive to lose
 
@@ -129,6 +129,7 @@ These are the ones that end the company rather than cost a sprint.
 | R25 | **Never take on KYC of a merchant's customers.** Rekoda's KYC boundary is the **sub-merchant**, full stop. Per-customer Dedicated Virtual Accounts require **BVN validation of the end customer** for our business category — so they are out of the retail path. Use **per-transaction** transfer accounts (ADR 0016). Any design that asks a shopper for identity documents is the wrong design. |
 | R26 | **Never store a customer's BVN.** There is no Rekoda feature that needs it. If one is ever proposed, it is a licensing and NDPA question before it is a product question. |
 | R27 | **Never misdeclare Rekoda's Paystack business category** to escape a stricter compliance rule. Declare honestly and design within whatever applies. |
+| R28 | **Never mitigate sub-merchant fraud by withholding settlement.** Escrow, delayed payout, or parking money "pending review" all mean holding customer funds — the licensing line in R1/R2. Under fraud pressure someone **will** propose it. The permitted controls act on limits and visibility only: KYC before activation (BVN/NIN + Resolve Account name match), velocity and ticket limits by trust tier, anomaly alerts, settlement-account change as a re-verification event, and a per-sub-merchant kill switch that stops *future* collections rather than holding existing ones. |
 
 ## 3.3 Data
 
