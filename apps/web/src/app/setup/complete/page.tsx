@@ -1,9 +1,7 @@
 import type { Metadata } from 'next';
-import { redirect } from 'next/navigation';
 import { Button } from '@/components/ui/Button';
 import { Stepper } from '@/components/ui/Stepper';
-import { firstParam } from '@/lib/search-params';
-import { readAnyStagePhone } from '@/server/verified-phone';
+import { requireSession } from '@/server/guards';
 
 export const metadata: Metadata = {
   // Plain apostrophe: metadata is escaped, so an HTML entity here renders
@@ -12,17 +10,14 @@ export const metadata: Metadata = {
   robots: { index: false, follow: false },
 };
 
-/** Placeholder until the number is provisioned — ADR 0002, Rekoda's own WABA. */
+/** Placeholder until the number is provisioned — ADR 0011, Rekoda's own WABA. */
 const REKODA_WA = process.env.NEXT_PUBLIC_REKODA_WHATSAPP ?? '';
 
-export default async function CompletePage({
-  searchParams,
-}: {
-  searchParams: Promise<{ name?: string | string[] }>;
-}) {
-  const verified = await readAnyStagePhone();
-  const name = firstParam((await searchParams).name);
-  if (!verified || !name) redirect('/start');
+export default async function CompletePage() {
+  // The business name now comes from the session, not a query param. It was
+  // never a security hole — the guard was elsewhere — but a name in the URL is
+  // a name anyone can change, and this page congratulates you by it.
+  const identity = await requireSession();
 
   const waHref = REKODA_WA
     ? `https://wa.me/${REKODA_WA}?text=${encodeURIComponent('Hi Rekoda')}`
@@ -31,7 +26,7 @@ export default async function CompletePage({
   return (
     <section className="rk-container rk-onboard">
       <Stepper current={4} />
-      <h1>{name} is ready</h1>
+      <h1>{identity.businessName} is ready</h1>
       <p className="rk-lede">
         Now talk to Rekoda on WhatsApp. Tell it what happens in your business and the records build
         themselves.
@@ -54,6 +49,9 @@ export default async function CompletePage({
             as it&rsquo;s live.
           </p>
         )}
+        <Button href="/app" variant="secondary">
+          Go to your dashboard
+        </Button>
       </div>
     </section>
   );

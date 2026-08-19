@@ -16,9 +16,17 @@ import * as schema from './schema/index.js';
 export type Db = PostgresJsDatabase<typeof schema>;
 export type TenantDb = Parameters<Parameters<Db['transaction']>[0]>[0];
 
-export function createDb(databaseUrl: string): { db: Db; close: () => Promise<void> } {
+export interface DbOptions {
+  /** Pool size. Tests pin this to 1 to force every tenant onto one connection. */
+  max?: number;
+}
+
+export function createDb(
+  databaseUrl: string,
+  options: DbOptions = {},
+): { db: Db; close: () => Promise<void> } {
   const client = postgres(databaseUrl, {
-    max: 10,
+    max: options.max ?? 10,
     // Financial writes must never be silently retried by the driver.
     prepare: true,
     onnotice: () => {},
@@ -40,6 +48,31 @@ export async function withBusiness<T>(
   }
   return db.transaction(async (tx) => {
     await tx.execute(sql`SELECT set_config('app.business_id', ${businessId}, true)`);
+    return fn(tx);
+  });
+}
+
+/**
+ * Pin `app.user_id` for one transaction — the bootstrap counterpart to
+ * `withBusiness`.
+ *
+ * Answering "which businesses may this user enter?" necessarily happens before
+ * a tenant is known, so it cannot be done under a tenant pin. The policy this
+ * unlocks (migrations/0002_identity.sql) is SELECT-only and covers exactly one
+ * table, `memberships`. Writes remain reachable only through
+ * `tenant_isolation`, so a pinned user can discover memberships and never mint
+ * one.
+ */
+export async function withUser<T>(
+  db: Db,
+  userId: string,
+  fn: (tx: TenantDb) => Promise<T>,
+): Promise<T> {
+  if (!/^[0-9a-f-]{36}$/i.test(userId)) {
+    throw new Error('withUser: userId must be a UUID');
+  }
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT set_config('app.user_id', ${userId}, true)`);
     return fn(tx);
   });
 }

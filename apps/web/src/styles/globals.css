@@ -468,3 +468,70 @@ button,
   color: var(--rk-text) !important;
   font-size: var(--rk-text-base) !important;
 }
+
+/* ── dashboard shell ──────────────────────────────────────────────────────
+   Mobile-first, like everything else: the median merchant will only ever see
+   this on a phone, so the stat grid starts as one column and only becomes
+   three where there is genuinely room. */
+.rk-dash {
+  padding-block: var(--rk-space-6) var(--rk-space-8);
+  display: grid;
+  gap: var(--rk-space-6);
+}
+
+.rk-dash-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--rk-space-4);
+}
+.rk-dash-head h1 {
+  font-size: var(--rk-text-2xl);
+  line-height: 1.2;
+  /* Merchant-chosen names run long ("Mama Nkechi Provisions & Cold Store").
+     Wrapping is correct here; truncating someone's business name is not. */
+  overflow-wrap: anywhere;
+}
+.rk-dash-head .rk-fineprint {
+  margin-top: var(--rk-space-2);
+}
+
+.rk-eyebrow {
+  font-size: var(--rk-text-sm);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--rk-accent);
+}
+
+.rk-stat-grid {
+  display: grid;
+  gap: var(--rk-space-4);
+  grid-template-columns: 1fr;
+}
+@media (min-width: 40rem) {
+  .rk-stat-grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+.rk-stat {
+  padding: var(--rk-space-4);
+  background: var(--rk-surface);
+  border: 1px solid var(--rk-border);
+  border-radius: var(--rk-radius-md);
+}
+.rk-stat-label {
+  font-size: var(--rk-text-sm);
+  color: var(--rk-text-muted);
+}
+
+/* The "unknown" money state (spec §7). Deliberately NOT styled like a figure:
+   a muted dash must never be mistaken for a total Rekoda actually computed. */
+.rk-stat-empty {
+  margin-top: var(--rk-space-2);
+  font-size: var(--rk-text-2xl);
+  color: var(--rk-text-muted);
+  font-variant-numeric: tabular-nums;
+}

@@ -1,11 +1,12 @@
 'use server';
 
 import { redirect } from 'next/navigation';
-import { markSetupComplete, readVerifiedPhone } from '@/server/verified-phone';
+import { ApiUnauthorised, ApiUnavailable, createBusiness } from '@/server/api';
+import { clearSetupToken, readSetupToken, setSessionToken } from '@/server/session-cookies';
 
 export interface FormState {
   /** Per field — one shared slot put the type error under the name input. */
-  errors?: { name?: string; type?: string };
+  errors?: { name?: string; type?: string; form?: string };
 }
 
 const TYPES = new Set([
@@ -21,13 +22,19 @@ const TYPES = new Set([
 ]);
 
 /**
- * CAC/TIN is deliberately absent. Capture it later if the merchant offers it;
- * it must never block an informal merchant (spec §20, ADR 0012).
+ * CAC and TIN are deliberately absent, and must stay absent.
+ *
+ * Most WhatsApp vendors have neither. Requiring either would exclude exactly
+ * the merchants Rekoda exists for (spec §20, ADR 0012) — capture them later
+ * from settings, if the merchant offers them.
  */
-export async function createBusiness(_prev: FormState, formData: FormData): Promise<FormState> {
-  // Re-checked server-side: a form post must not bypass the guard either.
-  const phone = await readVerifiedPhone();
-  if (!phone) redirect('/start');
+export async function createBusinessAction(
+  _prev: FormState,
+  formData: FormData,
+): Promise<FormState> {
+  // Re-checked server-side: a form post must not bypass the page guard either.
+  const setupToken = await readSetupToken();
+  if (!setupToken) redirect('/start');
 
   const name = String(formData.get('name') ?? '').trim();
   const type = String(formData.get('type') ?? '').trim();
@@ -38,12 +45,20 @@ export async function createBusiness(_prev: FormState, formData: FormData): Prom
   if (!TYPES.has(type)) errors.type = 'Pick the closest match. You can change it later.';
   if (Object.keys(errors).length > 0) return { errors };
 
-  // TODO(M1): create Business, BusinessOwner, VerifiedPhone, BusinessMembership,
-  // BusinessSettings in one transaction (spec §12 step 5), then exchange the
-  // verification cookie for a real session. Blocked on apps/api + Postgres.
-  //
-  // Downgrade the marker: the completion page still renders, but full
-  // proof-of-identity does not linger for the rest of the 30-minute window.
-  await markSetupComplete(phone);
-  redirect(`/setup/complete?name=${encodeURIComponent(name)}`);
+  let session;
+  try {
+    session = await createBusiness(setupToken, { name, businessType: type });
+  } catch (error) {
+    if (error instanceof ApiUnauthorised) redirect('/start');
+    if (error instanceof ApiUnavailable) {
+      return { errors: { form: 'We could not reach Rekoda just now. Try again in a moment.' } };
+    }
+    throw error;
+  }
+
+  // The grant has done its one job; a session now carries identity. Leaving it
+  // live would keep a second, weaker credential valid for the next half hour.
+  await clearSetupToken();
+  await setSessionToken(session.sessionToken);
+  redirect('/setup/complete');
 }

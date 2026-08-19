@@ -24,6 +24,7 @@ jobs:
   secret-scan:
     name: Secret scan (gitleaks)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:
@@ -44,6 +45,7 @@ jobs:
   build-test:
     name: Typecheck · lint · test · build
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - name: Detect workspace
@@ -64,17 +66,48 @@ jobs:
       - name: Typecheck, lint, test, build
         if: steps.ws.outputs.present == 'true'
         run: pnpm turbo typecheck lint test build
+      # withBusiness() is only a tenancy guarantee if it is the only path to the
+      # database. This is what stops that decaying into a convention.
+      - name: Architectural boundaries
+        if: steps.ws.outputs.present == 'true'
+        run: node scripts/check-boundaries.mjs
       - name: Docs-only repository — nothing to build yet
         if: steps.ws.outputs.present == 'false'
         run: echo "No pnpm workspace yet (pre-M0). Skipping build steps."
 
-  # The web app's behaviour lives in routing, guards and server actions, which
-  # only a real browser exercises. Runs against a PRODUCTION build so the
-  # assertions cover what ships — dev-only OTP logging off, cookies set as they
-  # will be, NODE_ENV branches on their production path.
-  e2e:
-    name: End-to-end (Playwright)
+
+  # Integration tests need a REAL PostgreSQL: row-level security, advisory locks
+  # and ON CONFLICT races have no meaningful in-memory imitation, and a mock of
+  # the thing under test would prove nothing. These suites FAIL rather than skip
+  # when the database is absent, so a green tick here cannot mean "ran nothing".
+  integration:
+    name: Integration (PostgreSQL)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: rekoda
+          POSTGRES_DB: rekoda
+          # No password, deliberately. The container is job-scoped, reachable
+          # only on loopback, and destroyed with the runner — so a hardcoded
+          # password would protect nothing while looking exactly like a leaked
+          # credential to every secret scanner pointed at this repository.
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U rekoda"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      # Migrations run as the owner; the application runs as `rekoda_app`, which
+      # is NOT the table owner and has no BYPASSRLS. Testing through a superuser
+      # would make every tenancy assertion pass for the wrong reason.
+      DATABASE_URL: postgres://rekoda@127.0.0.1:5432/rekoda
+      APP_DATABASE_URL: postgres://rekoda_app@127.0.0.1:5432/rekoda
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -82,10 +115,70 @@ jobs:
           node-version-file: .nvmrc
       - run: corepack enable
       - run: pnpm install --frozen-lockfile
+      - run: pnpm turbo build
+      # The migration creates rekoda_app with no password on purpose —
+      # credentials belong to ops, never to a file in the repository. Under
+      # trust auth it needs none here.
+      - name: Apply migrations
+        run: pnpm --filter @rekoda/db migrate:apply
+      - name: Tenancy and identity integration tests
+        run: pnpm --filter @rekoda/db test:integration
+      - name: API integration tests
+        run: pnpm --filter @rekoda/api test:integration
+
+  # The web app's behaviour lives in routing, guards and server actions, which
+  # only a real browser exercises. Runs the FULL stack against a PRODUCTION
+  # build — Next.js, the Nest API and PostgreSQL — so the assertions cover what
+  # ships: dev-only branches off, cookies set as they will be, and identity
+  # decided by rows rather than by a process that dies with the test.
+  e2e:
+    name: End-to-end (Playwright)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: rekoda
+          POSTGRES_DB: rekoda
+          # No password, deliberately. The container is job-scoped, reachable
+          # only on loopback, and destroyed with the runner — so a hardcoded
+          # password would protect nothing while looking exactly like a leaked
+          # credential to every secret scanner pointed at this repository.
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U rekoda"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://rekoda@127.0.0.1:5432/rekoda
+      APP_DATABASE_URL: postgres://rekoda_app@127.0.0.1:5432/rekoda
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+      # Split deliberately. `--with-deps` shells out to apt-get, which has
+      # wedged this job for 25 minutes with no output and no failure — a hang
+      # burns runner minutes up to the six-hour default before anyone finds
+      # out. The apt half is best-effort because the ubuntu-latest image
+      # already ships the libraries Chromium needs; the download half is not.
+      - name: Install Chromium system dependencies (best effort)
+        continue-on-error: true
+        timeout-minutes: 5
+        run: pnpm --filter @rekoda/web exec playwright install-deps chromium
       - name: Install Chromium
-        run: pnpm --filter @rekoda/web exec playwright install --with-deps chromium
+        timeout-minutes: 5
+        run: pnpm --filter @rekoda/web exec playwright install chromium
       - name: Build
         run: pnpm turbo build
+      - name: Apply migrations
+        run: pnpm --filter @rekoda/db migrate:apply
       - name: Run end-to-end tests
         run: pnpm --filter @rekoda/web exec playwright test
         env:

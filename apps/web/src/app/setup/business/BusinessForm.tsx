@@ -4,7 +4,7 @@ import { useActionState } from 'react';
 import { Button } from '@/components/ui/Button';
 import { Field } from '@/components/ui/Field';
 import { Stepper } from '@/components/ui/Stepper';
-import { createBusiness, type FormState } from './actions';
+import { createBusinessAction, type FormState } from './actions';
 
 /** Broad on purpose — a vendor should find themselves in under two seconds. */
 const TYPES = [
@@ -20,7 +20,7 @@ const TYPES = [
 ];
 
 export function BusinessForm({ phone }: { phone: string }) {
-  const [state, action, pending] = useActionState<FormState, FormData>(createBusiness, {});
+  const [state, action, pending] = useActionState<FormState, FormData>(createBusinessAction, {});
 
   return (
     <section className="rk-container rk-onboard">

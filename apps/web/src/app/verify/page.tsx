@@ -2,7 +2,7 @@ import type { Metadata } from 'next';
 import { redirect } from 'next/navigation';
 import { InvalidPhoneError, normalisePhone } from '@rekoda/core/identity';
 import { firstParam } from '@/lib/search-params';
-import { e2eCodeFor } from '@/server/onboarding-store';
+import { readDevCode } from '@/server/dev-otp';
 import { VerifyForm } from './VerifyForm';
 
 export const metadata: Metadata = {
@@ -18,8 +18,9 @@ export default async function VerifyPage({
   const phone = firstParam((await searchParams).phone);
   if (!phone) redirect('/start');
 
-  // Normalise before display AND before it round-trips through the form, so the
-  // lookup key can never diverge from the one startOtp wrote.
+  // Normalised for DISPLAY only. This page guards nothing — the code is checked
+  // by the API against a row in Postgres, so a hand-typed number here buys an
+  // attacker exactly one thing: a form they cannot complete.
   let normalised: string;
   try {
     normalised = normalisePhone(phone);
@@ -29,6 +30,7 @@ export default async function VerifyPage({
     if (e instanceof InvalidPhoneError) redirect('/start');
     throw e;
   }
-  // undefined unless REKODA_E2E_REVEAL_OTP=1 — see the note in onboarding-store.
-  return <VerifyForm phone={normalised} e2eCode={e2eCodeFor(normalised)} />;
+
+  // undefined unless REKODA_E2E_REVEAL_OTP=1 — see the note in dev-otp.
+  return <VerifyForm phone={normalised} e2eCode={await readDevCode()} />;
 }
