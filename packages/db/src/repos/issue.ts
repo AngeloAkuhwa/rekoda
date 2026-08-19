@@ -380,6 +380,34 @@ export async function documentsFor(tx: TenantDb, businessId: string): Promise<St
     .orderBy(documents.createdAt);
 }
 
+/** One invoice, for minting a payment intent against it. */
+export async function invoiceForPayment(
+  tx: TenantDb,
+  businessId: string,
+  invoiceId: string,
+): Promise<{
+  id: string;
+  invoiceNumber: string;
+  status: string;
+  balanceDueK: number;
+  currency: string;
+  customerId: string | null;
+} | null> {
+  const rows = await tx
+    .select({
+      id: invoices.id,
+      invoiceNumber: invoices.invoiceNumber,
+      status: invoices.status,
+      balanceDueK: invoices.balanceDueK,
+      currency: invoices.currency,
+      customerId: invoices.customerId,
+    })
+    .from(invoices)
+    .where(and(eq(invoices.businessId, businessId), eq(invoices.id, invoiceId)))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
 /** One invoice, for the renderer. Everything it needs and nothing it does not. */
 export async function invoiceForRender(
   tx: TenantDb,

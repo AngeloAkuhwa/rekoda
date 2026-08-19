@@ -142,6 +142,26 @@ export async function addIdentityFacet(
   });
 }
 
+/**
+ * Facet rows inside a transaction the caller already holds — for callers that
+ * are mid-pin and must not acquire a second pooled connection.
+ */
+export async function identityFacetsFor(
+  tx: TenantDb,
+  businessId: string,
+  customerId: string,
+): Promise<Array<{ facet: string; ciphertext: string }>> {
+  return tx
+    .select({ facet: customerIdentities.facet, ciphertext: customerIdentities.ciphertext })
+    .from(customerIdentities)
+    .where(
+      and(
+        eq(customerIdentities.businessId, businessId),
+        eq(customerIdentities.customerId, customerId),
+      ),
+    );
+}
+
 /** Every stored facet for one customer, for the authorised output layer only. */
 export async function identitiesForCustomer(
   db: Db,

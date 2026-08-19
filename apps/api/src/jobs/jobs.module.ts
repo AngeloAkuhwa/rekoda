@@ -14,17 +14,20 @@ import { RepliesModule } from '../replies/replies.module.js';
 import { ReplySender } from '../replies/reply.service.js';
 import { Interpreter } from '../ai/interpreter.service.js';
 import { PrivacyGateway } from '../privacy/gateway.service.js';
+import { redactForLog } from '@rekoda/core/privacy';
 import { JobQueue, JobKind } from './queue.service.js';
-import { JobRunner } from './runner.js';
+import { JobRunner, describeFailure } from './runner.js';
 import { inboundMessageHandler, type InboundMessageDeps } from './inbound-message.handler.js';
 import { renderDocumentHandler } from './render-document.handler.js';
 import { deliverDocumentHandler } from './deliver-document.handler.js';
+import { processPaymentEventHandler } from './process-payment-event.handler.js';
+import { PaymentsModule } from '../payments/payments.module.js';
+import { PAYMENT_PROVIDER, type PaymentProviderPort } from '../payments/provider.port.js';
+import { pumpPaystackEvents } from '../payments/paystack-pump.js';
 import { MESSAGE_SENDER } from '../channels/sender.tokens.js';
 import type { MessageSender } from '../channels/sender.js';
 import { DocumentsModule, DOCUMENT_STORAGE } from '../documents/documents.module.js';
 import type { DocumentStorage } from '../documents/storage.js';
-
-export const JOB_RUNNER = Symbol('JobRunner');
 
 /**
  * Builds the runner and its handler registry.
@@ -43,6 +46,7 @@ export const JOB_RUNNER = Symbol('JobRunner');
 export interface RunnerDeps extends InboundMessageDeps {
   storage: DocumentStorage;
   sender: MessageSender;
+  paymentProvider: PaymentProviderPort;
 }
 
 export function buildRunner(
@@ -61,6 +65,10 @@ export function buildRunner(
     JobKind.DeliverDocument,
     deliverDocumentHandler({ storage: deps.storage, sender: deps.sender, db: appDb }),
   );
+  runner.register(
+    JobKind.ProcessPaymentEvent,
+    processPaymentEventHandler({ provider: deps.paymentProvider, config: deps.config }),
+  );
   return runner;
 }
 
@@ -77,6 +85,8 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
   private readonly log = new Logger(JobRunnerLifecycle.name);
   private runner: JobRunner | null = null;
   private closeWorkerDb: (() => Promise<void>) | null = null;
+  private pumpTimer: NodeJS.Timeout | null = null;
+  private pumping = false;
 
   constructor(
     @Inject(CONFIG) private readonly config: ApiConfig,
@@ -86,6 +96,7 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
     @Inject(ReplySender) private readonly replySender: ReplySender,
     @Inject(DOCUMENT_STORAGE) private readonly storage: DocumentStorage,
     @Inject(MESSAGE_SENDER) private readonly sender: MessageSender,
+    @Inject(PAYMENT_PROVIDER) private readonly paymentProvider: PaymentProviderPort,
   ) {}
 
   onModuleInit(): void {
@@ -104,18 +115,42 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
       storage: this.storage,
       sender: this.sender,
       config: this.config,
+      paymentProvider: this.paymentProvider,
     });
     this.runner.start();
+
+    /**
+     * The attribution pump rides the same worker credential on its own small
+     * interval. `pumping` makes passes non-overlapping — a slow database must
+     * never stack pump runs — and the timer is unref'd so a shutting-down
+     * process is not held open by attribution nobody will act on.
+     */
+    const workerDb = handle.db;
+    this.pumpTimer = setInterval(() => {
+      if (this.pumping) return;
+      this.pumping = true;
+      pumpPaystackEvents({ workerDb, appDb: this.appDb, vaultKey: this.config.vaultKey })
+        .catch((error: unknown) => {
+          // Same discipline as the runner: the reason, never the statement
+          // or its bound values, and redacted like everything else logged.
+          this.log.warn(`paystack pump pass failed: ${redactForLog(describeFailure(error))}`);
+        })
+        .finally(() => {
+          this.pumping = false;
+        });
+    }, 2_000);
+    this.pumpTimer.unref();
   }
 
   async onApplicationShutdown(): Promise<void> {
+    if (this.pumpTimer) clearInterval(this.pumpTimer);
     await this.runner?.stop();
     await this.closeWorkerDb?.();
   }
 }
 
 @Module({
-  imports: [AiModule, RepliesModule, DocumentsModule],
+  imports: [AiModule, RepliesModule, DocumentsModule, PaymentsModule],
   providers: [JobQueue, JobRunnerLifecycle, PrivacyGateway],
   exports: [JobQueue, PrivacyGateway],
 })

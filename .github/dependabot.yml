@@ -14,3 +14,12 @@ updates:
     groups:
       minor-and-patch:
         update-types: [minor, patch]
+    ignore:
+      # Node majors move ONLY when the runtime moves, and the runtime moves
+      # only to Active LTS releases (see scripts/check-node-version.mjs).
+      # @types/node ahead of the runtime lets code call APIs that typecheck
+      # and then throw in production. When the next even major reaches LTS
+      # (Node 26, October 2026), .nvmrc + engines + @types/node move together
+      # in one deliberate PR — never via a lone types bump.
+      - dependency-name: '@types/node'
+        update-types: ['version-update:semver-major']

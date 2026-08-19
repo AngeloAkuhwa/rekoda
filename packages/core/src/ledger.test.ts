@@ -4,6 +4,7 @@ import {
   assertBalanced,
   postExpense,
   postPurchase,
+  postProviderPayment,
   postReceivablePayment,
   postSale,
   reversal,
@@ -82,6 +83,67 @@ describe('posting builders balance by construction', () => {
       debitK: 0,
       creditK: 20_000_000,
     });
+  });
+});
+
+describe('a provider-confirmed payment (payments-v1 §15, §23)', () => {
+  it('merchant-borne: fee comes out of settlement, receivable clears in full', () => {
+    // ₦100,000 allocated, ₦1,500 Paystack fee → ₦98,500 to the bank,
+    // ₦1,500 collection expense, ₦100,000 off the receivable.
+    const p = postProviderPayment({
+      memo: 'RKD-PAY-20260819-A83F92',
+      allocatedK: 10_000_000,
+      providerFeeK: 150_000,
+      feePolicy: 'merchant_bearing',
+    });
+    expect(p.lines).toEqual([
+      { account: 'BANK_PAYSTACK', debitK: 9_850_000, creditK: 0 },
+      { account: 'EXPENSES', debitK: 150_000, creditK: 0 },
+      { account: 'ACCOUNTS_RECEIVABLE', debitK: 0, creditK: 10_000_000 },
+    ]);
+  });
+
+  it('customer-borne: the fee never enters the merchant`s books', () => {
+    const p = postProviderPayment({
+      memo: 'ref',
+      allocatedK: 10_000_000,
+      providerFeeK: 150_000,
+      feePolicy: 'customer_bearing',
+    });
+    // The customer paid ₦100,300; the merchant's books see exactly ₦100,000.
+    expect(p.lines).toEqual([
+      { account: 'BANK_PAYSTACK', debitK: 10_000_000, creditK: 0 },
+      { account: 'ACCOUNTS_RECEIVABLE', debitK: 0, creditK: 10_000_000 },
+    ]);
+  });
+
+  it('never touches SALES_REVENUE — revenue was recognised at issue', () => {
+    for (const feePolicy of ['customer_bearing', 'merchant_bearing', 'platform_bearing'] as const) {
+      const p = postProviderPayment({
+        memo: 'ref',
+        allocatedK: 5_000_000,
+        providerFeeK: 75_000,
+        feePolicy,
+      });
+      expect(p.lines.some((l) => l.account === 'SALES_REVENUE')).toBe(false);
+    }
+  });
+
+  it('throws on a fee larger than the payment it collected', () => {
+    expect(() =>
+      postProviderPayment({
+        memo: 'ref',
+        allocatedK: 100,
+        providerFeeK: 200,
+        feePolicy: 'merchant_bearing',
+      }),
+    ).toThrow(UnbalancedPostingError);
+  });
+
+  it('throws on a zero or negative allocation', () => {
+    expect(() => postProviderPayment({ memo: 'ref', allocatedK: 0 })).toThrow(
+      UnbalancedPostingError,
+    );
   });
 });
 

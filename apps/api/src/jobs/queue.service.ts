@@ -10,6 +10,8 @@ export const JobKind = {
   RenderDocument: 'document.render',
   /** A stored PDF needs to reach the merchant. */
   DeliverDocument: 'document.deliver',
+  /** An attributed provider event needs verifying and (maybe) booking. */
+  ProcessPaymentEvent: 'payment.process',
 } as const;
 
 export type JobKindName = (typeof JobKind)[keyof typeof JobKind];

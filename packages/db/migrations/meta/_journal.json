@@ -78,6 +78,13 @@
       "when": 1787099761061,
       "tag": "0010_payment_hub",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1787176655088,
+      "tag": "0011_verified_payments",
+      "breakpoints": true
     }
   ]
 }

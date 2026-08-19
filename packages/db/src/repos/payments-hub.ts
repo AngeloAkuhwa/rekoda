@@ -35,6 +35,8 @@ export interface ConnectionRow {
   kycStatus: string;
   externalSubaccountId: string | null;
   settlementAccountLast4: string | null;
+  /** Who bears the provider's fee (§14). The booking honours this. */
+  feePolicy: string;
 }
 
 /**
@@ -77,6 +79,7 @@ export async function upsertConnection(
       kycStatus: paymentConnections.kycStatus,
       externalSubaccountId: paymentConnections.externalSubaccountId,
       settlementAccountLast4: paymentConnections.settlementAccountLast4,
+      feePolicy: paymentConnections.feePolicy,
     });
 
   const row = rows[0];
@@ -97,6 +100,7 @@ export async function connectionFor(
       kycStatus: paymentConnections.kycStatus,
       externalSubaccountId: paymentConnections.externalSubaccountId,
       settlementAccountLast4: paymentConnections.settlementAccountLast4,
+      feePolicy: paymentConnections.feePolicy,
     })
     .from(paymentConnections)
     .where(
@@ -140,6 +144,10 @@ export async function setConnectionState(
 
 export class ReferenceCollision extends Error {}
 
+/** Another live intent already covers this invoice — the mint race's loser.
+ * The right response is to look up the winner, never to retry the insert. */
+export class LiveIntentExists extends Error {}
+
 export interface IntentInput {
   businessId: string;
   reference: string;
@@ -161,6 +169,9 @@ export interface IntentRow {
   currency: string;
   businessId: string;
   invoiceId: string | null;
+  customerId: string | null;
+  /** Opaque checkout handle from the provider, when initialised. */
+  providerCheckoutRef: string | null;
 }
 
 /**
@@ -193,12 +204,20 @@ export async function createIntent(tx: TenantDb, input: IntentInput): Promise<In
         currency: paymentIntents.currency,
         businessId: paymentIntents.businessId,
         invoiceId: paymentIntents.invoiceId,
+        customerId: paymentIntents.customerId,
+        providerCheckoutRef: paymentIntents.providerCheckoutRef,
       });
     const row = rows[0];
     if (!row) throw new Error('createIntent: insert returned no row');
     return row;
   } catch (error) {
     if (isUniqueViolation(error)) {
+      // Two unique indexes can reject this insert, and they mean different
+      // things: a reference collision wants a fresh reference; a live-intent
+      // collision wants the EXISTING intent. The constraint name says which.
+      if (violatedConstraint(error) === 'payment_intents_live_invoice_ux') {
+        throw new LiveIntentExists(`a live intent already covers invoice ${input.invoiceId}`);
+      }
       throw new ReferenceCollision(`reference ${input.reference} already exists`);
     }
     throw error;
@@ -220,9 +239,48 @@ export async function intentByReference(
       currency: paymentIntents.currency,
       businessId: paymentIntents.businessId,
       invoiceId: paymentIntents.invoiceId,
+      customerId: paymentIntents.customerId,
+      providerCheckoutRef: paymentIntents.providerCheckoutRef,
     })
     .from(paymentIntents)
     .where(and(eq(paymentIntents.businessId, businessId), eq(paymentIntents.reference, reference)))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+/**
+ * The live intent already covering this invoice, if one exists.
+ *
+ * "Send her payment details" twice must reuse one reference, not mint a
+ * second — two live references for one obligation means the unmatched-payment
+ * queue the day the customer pays the older one.
+ */
+export async function liveIntentForInvoice(
+  tx: TenantDb,
+  businessId: string,
+  invoiceId: string,
+): Promise<IntentRow | null> {
+  const rows = await tx
+    .select({
+      id: paymentIntents.id,
+      reference: paymentIntents.reference,
+      status: paymentIntents.status,
+      expectedAmountK: paymentIntents.expectedAmountK,
+      currency: paymentIntents.currency,
+      businessId: paymentIntents.businessId,
+      invoiceId: paymentIntents.invoiceId,
+      customerId: paymentIntents.customerId,
+      providerCheckoutRef: paymentIntents.providerCheckoutRef,
+    })
+    .from(paymentIntents)
+    .where(
+      and(
+        eq(paymentIntents.businessId, businessId),
+        eq(paymentIntents.invoiceId, invoiceId),
+        not(inArray(paymentIntents.status, [...TERMINAL])),
+      ),
+    )
+    .orderBy(paymentIntents.createdAt)
     .limit(1);
   return rows[0] ?? null;
 }
@@ -249,6 +307,8 @@ export async function resolveIntentByReference(
       currency: paymentIntents.currency,
       businessId: paymentIntents.businessId,
       invoiceId: paymentIntents.invoiceId,
+      customerId: paymentIntents.customerId,
+      providerCheckoutRef: paymentIntents.providerCheckoutRef,
     })
     .from(paymentIntents)
     .where(eq(paymentIntents.reference, reference))
@@ -303,6 +363,16 @@ export async function expireOverdueIntents(tx: TenantDb, businessId: string): Pr
 
 /** PostgreSQL unique-violation, wrapped by drizzle under `.cause`. */
 function isUniqueViolation(error: unknown): boolean {
+  return pgError(error) !== null;
+}
+
+/** Which unique constraint rejected the write, when PostgreSQL says. */
+function violatedConstraint(error: unknown): string | null {
+  const pg = pgError(error);
+  return pg?.constraint_name ?? null;
+}
+
+function pgError(error: unknown): { code: string; constraint_name?: string } | null {
   for (let e: unknown = error, depth = 0; e && depth < 5; depth++) {
     if (
       typeof e === 'object' &&
@@ -310,9 +380,9 @@ function isUniqueViolation(error: unknown): boolean {
       'code' in e &&
       (e as { code?: string }).code === '23505'
     ) {
-      return true;
+      return e as { code: string; constraint_name?: string };
     }
     e = (e as { cause?: unknown }).cause;
   }
-  return false;
+  return null;
 }

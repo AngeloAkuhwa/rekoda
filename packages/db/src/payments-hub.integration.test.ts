@@ -10,7 +10,7 @@ import { randomBytes } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { paymentReference } from '@rekoda/core';
 import { createDb, withBusiness, type Db } from './client.js';
-import { identity, paymentsHub } from './index.js';
+import { identity, issueRepo, paymentsHub } from './index.js';
 import { migrate, requireUrls, truncateAll, type Urls } from './testing.js';
 
 let urls: Urls;
@@ -161,6 +161,71 @@ describe('the reference is globally unique', () => {
     for (const r of results) {
       if (r.status === 'rejected') expect(r.reason).toBeInstanceOf(paymentsHub.ReferenceCollision);
     }
+  });
+});
+
+describe('one LIVE intent per invoice (payment_intents_live_invoice_ux)', () => {
+  async function seedInvoice(businessId: string): Promise<string> {
+    const sale = await withBusiness(appDb, businessId, (tx) =>
+      issueRepo.issueSale(tx, {
+        businessId,
+        customerId: null,
+        customerToken: 'CUSTOMER_7K2',
+        items: [{ name: 'wig', quantity: 1, unitPriceK: 15_000_000 }],
+        subtotalK: 15_000_000,
+        discountK: 0,
+        deliveryFeeK: 0,
+        vatK: 0,
+        totalK: 15_000_000,
+        paidK: 0,
+        balanceDueK: 15_000_000,
+        method: 'transfer',
+        sourceType: 'chat',
+        sourceId: 'draft-1',
+        actor: 'system',
+      }),
+    );
+    return sale.invoiceId;
+  }
+
+  it('lets exactly ONE of six concurrent mints cover one invoice — losers learn who won', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348110000001');
+    const invoiceId = await seedInvoice(businessId);
+
+    // Six "send her payment details" arriving together: read-then-write
+    // would mint six references for one obligation, and five of them would
+    // become the unmatched-payment queue. The index decides instead.
+    const results = await Promise.allSettled(
+      Array.from({ length: 6 }, () =>
+        withBusiness(appDb, businessId, (tx) =>
+          paymentsHub.createIntent(tx, intentInput(businessId, { invoiceId })),
+        ),
+      ),
+    );
+
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    for (const r of results) {
+      if (r.status === 'rejected') expect(r.reason).toBeInstanceOf(paymentsHub.LiveIntentExists);
+    }
+  });
+
+  it('frees the invoice for a fresh intent once the old one goes terminal', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348110000001');
+    const invoiceId = await seedInvoice(businessId);
+
+    const first = await withBusiness(appDb, businessId, (tx) =>
+      paymentsHub.createIntent(tx, intentInput(businessId, { invoiceId })),
+    );
+    await withBusiness(appDb, businessId, (tx) =>
+      paymentsHub.advanceIntent(tx, first.id, 'expired'),
+    );
+
+    // Terminal intents leave the partial index — a settled or expired
+    // reference must never block the merchant from offering payment again.
+    const second = await withBusiness(appDb, businessId, (tx) =>
+      paymentsHub.createIntent(tx, intentInput(businessId, { invoiceId })),
+    );
+    expect(second.reference).not.toBe(first.reference);
   });
 });
 

@@ -57,6 +57,8 @@ export const paymentConnections = pgTable(
     /** The §5 state machine. The CHECK constraint lives in the migration. */
     status: text('status').notNull().default('pending_details'),
     kycStatus: text('kyc_status').notNull().default('pending'),
+    /** Who bears the provider's fee (§14) — commercial choice, never code. */
+    feePolicy: text('fee_policy').notNull().default('merchant_bearing'),
     /** Provider capabilities as data, so adapters can differ (§7). */
     capabilities: jsonb('capabilities')
       .notNull()
@@ -104,6 +106,13 @@ export const paymentIntents = pgTable(
      * to know the business is circular (§9).
      */
     uniqueIndex('payment_intents_reference_ux').on(t.reference),
+    /** One LIVE intent per invoice — the mint race has a database-decided
+     * winner (migration 0011). Terminal intents leave the index. */
+    uniqueIndex('payment_intents_live_invoice_ux')
+      .on(t.businessId, t.invoiceId)
+      .where(
+        sql`invoice_id IS NOT NULL AND status NOT IN ('succeeded', 'failed', 'expired', 'cancelled')`,
+      ),
     index('payment_intents_business_status_ix').on(t.businessId, t.status),
     index('payment_intents_invoice_ix').on(t.invoiceId),
   ],
