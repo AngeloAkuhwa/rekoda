@@ -6,6 +6,7 @@
 import { sql } from 'drizzle-orm';
 import {
   bigint,
+  date,
   index,
   integer,
   jsonb,
@@ -212,3 +213,29 @@ export const jobs = pgTable(
   },
   (t) => [index('jobs_business_state_ix').on(t.businessId, t.state)],
 );
+
+/**
+ * Per-business daily AI-call reservations (MASTER-PLAN §5.3.3).
+ *
+ * A counter rather than a count over `usage_events`, because a ceiling decided
+ * by reading and then acting is not a ceiling — see repos/quota.ts.
+ */
+export const aiQuotaCounters = pgTable(
+  'ai_quota_counters',
+  {
+    businessId: businessId(),
+    day: date('day').notNull(),
+    calls: integer('calls').notNull().default(0),
+  },
+  (t) => [primaryKey({ columns: [t.businessId, t.day] })],
+);
+
+/**
+ * The platform-wide daily ceiling. One integer per day, no tenant data, and
+ * therefore no row-level security: it answers "what is the most this product
+ * can cost tomorrow if something goes wrong", which no single tenant's row can.
+ */
+export const aiGlobalCounters = pgTable('ai_global_counters', {
+  day: date('day').primaryKey(),
+  calls: integer('calls').notNull().default(0),
+});

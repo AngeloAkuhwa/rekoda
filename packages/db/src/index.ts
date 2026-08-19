@@ -5,4 +5,5 @@ export * as customersRepo from './repos/customers.js';
 export * as events from './repos/events.js';
 export * as jobsRepo from './repos/jobs.js';
 export * as conversationsRepo from './repos/conversations.js';
+export * as quotaRepo from './repos/quota.js';
 export { applyMigrations } from './migrate.js';
