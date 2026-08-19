@@ -14,17 +14,23 @@ import { createHash, randomBytes } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createDb, identity, jobsRepo, schema, withBusiness, type Db } from '@rekoda/db';
 import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { JobRunner } from './runner.js';
-import { buildRunner } from './jobs.module.js';
+import { buildRunner, type RunnerDeps } from './jobs.module.js';
 import { PrivacyGateway } from '../privacy/gateway.service.js';
 import { Interpreter } from '../ai/interpreter.service.js';
 import { StubTransport } from '../ai/transport.stub.js';
 import { StubSender } from '../channels/sender.stub.js';
+import { LocalStorage } from '../documents/r2.storage.js';
 import { ReplySender } from '../replies/reply.service.js';
 import { loadConfig, type ApiConfig } from '../config.js';
-import type { InboundMessageDeps } from './inbound-message.handler.js';
 
 const RUN_SALT = randomBytes(16).toString('hex');
+
+/** A fresh directory per run, so one suite cannot read another's documents. */
+const storageRoot = mkdtempSync(join(tmpdir(), 'rekoda-docs-'));
 
 let urls: Urls;
 let appDb: Db;
@@ -33,7 +39,7 @@ let closeApp: () => Promise<void>;
 let closeWorker: () => Promise<void>;
 let config: ApiConfig;
 /** The real gateway and the real config — `buildRunner` gets what production gets. */
-let deps: InboundMessageDeps;
+let deps: RunnerDeps;
 let stubTransport: StubTransport;
 let stubSender: StubSender;
 
@@ -58,6 +64,9 @@ beforeAll(async () => {
     gateway: new PrivacyGateway(appDb, config),
     interpreter: new Interpreter(appDb, config, stubTransport),
     replySender: new ReplySender(config, stubSender),
+    // A real filesystem storage, not a mock: the render job's assertions are
+    // about bytes actually landing somewhere and being readable back.
+    storage: new LocalStorage(storageRoot),
     config,
   };
 });

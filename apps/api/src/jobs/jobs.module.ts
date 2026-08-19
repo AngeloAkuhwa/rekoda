@@ -17,6 +17,9 @@ import { PrivacyGateway } from '../privacy/gateway.service.js';
 import { JobQueue, JobKind } from './queue.service.js';
 import { JobRunner } from './runner.js';
 import { inboundMessageHandler, type InboundMessageDeps } from './inbound-message.handler.js';
+import { renderDocumentHandler } from './render-document.handler.js';
+import { DocumentsModule, DOCUMENT_STORAGE } from '../documents/documents.module.js';
+import type { DocumentStorage } from '../documents/storage.js';
 
 export const JOB_RUNNER = Symbol('JobRunner');
 
@@ -27,14 +30,29 @@ export const JOB_RUNNER = Symbol('JobRunner');
  * rather than a parallel arrangement that drifts from it — a test registry
  * missing a handler is a test that proves nothing about the deploy.
  */
+/**
+ * Everything the registry's handlers need, in one type.
+ *
+ * Named rather than inlined so tests declare the same thing production does —
+ * a test whose deps type drifts from `buildRunner`'s is a test that stops
+ * covering a handler the moment one is added.
+ */
+export interface RunnerDeps extends InboundMessageDeps {
+  storage: DocumentStorage;
+}
+
 export function buildRunner(
   workerDb: Db,
   appDb: Db,
-  deps: InboundMessageDeps,
+  deps: RunnerDeps,
   options?: { idleMs?: number },
 ): JobRunner {
   const runner = new JobRunner(workerDb, appDb, options);
   runner.register(JobKind.InboundMessage, inboundMessageHandler(deps));
+  runner.register(
+    JobKind.RenderDocument,
+    renderDocumentHandler({ storage: deps.storage, db: appDb }),
+  );
   return runner;
 }
 
@@ -58,6 +76,7 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
     @Inject(PrivacyGateway) private readonly gateway: PrivacyGateway,
     @Inject(Interpreter) private readonly interpreter: Interpreter,
     @Inject(ReplySender) private readonly replySender: ReplySender,
+    @Inject(DOCUMENT_STORAGE) private readonly storage: DocumentStorage,
   ) {}
 
   onModuleInit(): void {
@@ -73,6 +92,7 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
       gateway: this.gateway,
       interpreter: this.interpreter,
       replySender: this.replySender,
+      storage: this.storage,
       config: this.config,
     });
     this.runner.start();
@@ -85,7 +105,7 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
 }
 
 @Module({
-  imports: [AiModule, RepliesModule],
+  imports: [AiModule, RepliesModule, DocumentsModule],
   providers: [JobQueue, JobRunnerLifecycle, PrivacyGateway],
   exports: [JobQueue, PrivacyGateway],
 })

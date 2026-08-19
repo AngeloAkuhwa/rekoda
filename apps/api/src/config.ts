@@ -56,6 +56,17 @@ export interface ApiConfig {
    * the one number that needs changing.
    */
   metaServiceReplyCostMicros: number;
+  /** R2. All four empty means documents are rendered but not stored. */
+  r2AccountId: string;
+  r2AccessKeyId: string;
+  r2SecretAccessKey: string;
+  r2Bucket: string;
+  /**
+   * Filesystem fallback for development. Never used when R2 is configured —
+   * a deployment that quietly wrote a merchant's invoices to a container's
+   * local disk would lose them on the next restart.
+   */
+  localStorageRoot: string;
 }
 
 class ConfigError extends Error {}
@@ -150,6 +161,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     metaPhoneNumberId: env['META_PHONE_NUMBER_ID'] ?? '',
     metaGraphVersion: env['META_GRAPH_VERSION'] ?? 'v21.0',
     metaServiceReplyCostMicros: Number(env['META_SERVICE_REPLY_COST_MICROS'] ?? 0),
+    r2AccountId: env['R2_ACCOUNT_ID'] ?? '',
+    r2AccessKeyId: env['R2_ACCESS_KEY_ID'] ?? '',
+    r2SecretAccessKey: env['R2_SECRET_ACCESS_KEY'] ?? '',
+    r2Bucket: env['R2_BUCKET'] ?? '',
+    localStorageRoot: env['REKODA_LOCAL_STORAGE'] ?? '',
   };
 }
 
