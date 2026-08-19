@@ -31,10 +31,18 @@ happened when money moved.
 
 ## Status
 
-**Pre-M0.** Repository standards and architecture documentation are in place; the
-application scaffold lands with milestone M0. See
-[docs/engineering-plan.md](docs/engineering-plan.md) for the milestone plan
-(M0 foundation → M5 Integrate alpha).
+**M0 complete.** The deterministic financial core is built and tested: money
+engine (integer kobo), double-entry ledger with balancing invariant,
+reconciliation engine, document numbering, the AI border-checkpoint schemas,
+and the full 30-table Postgres schema with row-level-security policies.
+Milestones M1 (identity + public surface) → M5 (Integrate alpha) follow —
+see [docs/engineering-plan.md](docs/engineering-plan.md).
+
+```bash
+# see the core prove itself: a balanced sale, trial balance, reconciliation
+pnpm install && pnpm demo:m0
+pnpm test        # 45 tests across core + contracts
+```
 
 ## Documentation
 
