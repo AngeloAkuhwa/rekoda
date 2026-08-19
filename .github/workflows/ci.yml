@@ -13,7 +13,14 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Secrets never enter this repository. Scans the full history on every push.
+  # Secrets never enter this repository. Scans the FULL history every run.
+  #
+  # gitleaks is invoked directly rather than through gitleaks-action, because
+  # the action scans a `<oldest-commit>^..<head>` range on pull_request events.
+  # This repository has two root commits (the initial README, and the M0
+  # foundation delivered as a bundle), and a root commit has no parent — so the
+  # range fails to resolve and the action exits non-zero having scanned nothing.
+  # Scanning the whole history is also what the job claims to do.
   secret-scan:
     name: Secret scan (gitleaks)
     runs-on: ubuntu-latest
@@ -21,9 +28,16 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: gitleaks/gitleaks-action@v2
+      - name: Install gitleaks
+        run: |
+          curl -sSfL \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            | tar -xz -C /usr/local/bin gitleaks
+          gitleaks version
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_VERSION: 8.24.3
+      - name: Scan full history
+        run: gitleaks detect --source . --redact --verbose
 
   # Becomes typecheck + lint + test + build once the M0 scaffold lands.
   # Guarded so the workflow is green (not red) while the repo is docs-only.
