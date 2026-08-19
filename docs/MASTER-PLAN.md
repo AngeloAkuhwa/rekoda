@@ -1196,6 +1196,21 @@ bare name in a message currently reaches the model.
   issued document.
 * Interim acks ("Listening…", "Generating…") gated behind `quiet_mode`.
 
+**The reply channel is built** (`apps/api/src/replies/`, `packages/core/src/replies.ts`).
+Copy lives in core as pure functions, so it is reviewable in one place and
+testable — a message promising something the system cannot do is a bug, and a
+bug in a string is still a bug. Rehydration happens in `ReplySender.send` and
+nowhere else: the reply is stored TOKENISED and becomes a real name only in the
+argument to `send`, for the length of one HTTP request. §5.3.3's "degrading
+gracefully with an honest message" is closed by it — a ceiling refusal, a busy
+platform and unreadable output now say three different things, because they ask
+three different things of the merchant.
+
+`records`, `who owes me` and `resend` answer honestly that they are not built
+rather than inventing a summary. A bookkeeping assistant that makes up a debtor
+list has destroyed the only thing it sells. A bare "yes" is answered with
+silence until the gates give it something to mean.
+
 ### 5.3.5 Transaction engine
 
 Inside **one** database transaction:

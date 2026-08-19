@@ -46,6 +46,16 @@ export interface ApiConfig {
   aiCallsGlobalPerDay: number;
   /** Recorded on every usage row, so a past cost is never re-derived. */
   planningFxNairaPerUsd: number;
+  /** Sends replies. Empty means replies are recorded but not delivered. */
+  metaAccessToken: string;
+  metaPhoneNumberId: string;
+  metaGraphVersion: string;
+  /**
+   * USD micros per in-window service reply. Zero today — Meta does not charge
+   * for them yet — and chargeable from 1 October 2026, at which point this is
+   * the one number that needs changing.
+   */
+  metaServiceReplyCostMicros: number;
 }
 
 class ConfigError extends Error {}
@@ -136,6 +146,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     aiCallsPerBusinessPerDay: Number(env['AI_DAILY_CALLS_PER_BUSINESS'] ?? 60),
     aiCallsGlobalPerDay: Number(env['AI_DAILY_CALLS_GLOBAL'] ?? 5_000),
     planningFxNairaPerUsd: Number(env['PLANNING_FX_NGN_PER_USD'] ?? 1_450),
+    metaAccessToken: env['META_ACCESS_TOKEN'] ?? '',
+    metaPhoneNumberId: env['META_PHONE_NUMBER_ID'] ?? '',
+    metaGraphVersion: env['META_GRAPH_VERSION'] ?? 'v21.0',
+    metaServiceReplyCostMicros: Number(env['META_SERVICE_REPLY_COST_MICROS'] ?? 0),
   };
 }
 

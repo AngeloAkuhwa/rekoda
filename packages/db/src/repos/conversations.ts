@@ -200,3 +200,56 @@ export async function draftsFor(tx: TenantDb, businessId: string): Promise<Draft
     .where(eq(commandDrafts.businessId, businessId))
     .orderBy(commandDrafts.createdAt);
 }
+
+export interface OutboundMessageInput {
+  businessId: string;
+  channel: Channel;
+  kind: MessageKind;
+  /**
+   * TOKENISED. The conversation history must not hold a customer's real name:
+   * rehydration happens at the send boundary and nowhere else (ADR 0005), so
+   * what is stored here is what the gateway produced.
+   */
+  body: string;
+}
+
+/** Record a reply. Written BEFORE the send, so an undelivered reply is still known. */
+export async function recordOutbound(
+  tx: TenantDb,
+  message: OutboundMessageInput,
+): Promise<{ id: string }> {
+  const conversationId = await threadFor(tx, message.businessId, message.channel);
+  const rows = await tx
+    .insert(conversationMessages)
+    .values({
+      businessId: message.businessId,
+      conversationId,
+      direction: 'outbound',
+      kind: message.kind,
+      body: message.body,
+    })
+    .returning({ id: conversationMessages.id });
+
+  const row = rows[0];
+  if (!row) throw new Error('recordOutbound: insert returned no row');
+  return { id: row.id };
+}
+
+/**
+ * Attach the provider's id once the send succeeded.
+ *
+ * A row with no `provider_message_id` is therefore a reply we owed and did not
+ * deliver — a state worth being able to find, rather than one indistinguishable
+ * from success.
+ */
+export async function markOutboundSent(
+  tx: TenantDb,
+  id: string,
+  providerMessageId: string | null,
+): Promise<void> {
+  if (!providerMessageId) return;
+  await tx
+    .update(conversationMessages)
+    .set({ providerMessageId })
+    .where(eq(conversationMessages.id, id));
+}

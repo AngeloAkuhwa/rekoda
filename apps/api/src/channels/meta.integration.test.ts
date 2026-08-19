@@ -24,6 +24,8 @@ import { buildRunner } from '../jobs/jobs.module.js';
 import { PrivacyGateway } from '../privacy/gateway.service.js';
 import { Interpreter } from '../ai/interpreter.service.js';
 import { StubTransport } from '../ai/transport.stub.js';
+import { StubSender } from '../channels/sender.stub.js';
+import { ReplySender } from '../replies/reply.service.js';
 import { loadConfig, type ApiConfig } from '../config.js';
 import type { InboundMessageDeps } from '../jobs/inbound-message.handler.js';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
@@ -39,6 +41,7 @@ let closeDb: () => Promise<void>;
 let closeWorkerDb: () => Promise<void>;
 let deps: InboundMessageDeps;
 let stubTransport: StubTransport;
+let stubSender: StubSender;
 
 beforeAll(async () => {
   urls = requireUrls();
@@ -67,9 +70,11 @@ beforeAll(async () => {
     intent: 'Unclear',
     clarification: 'How many wigs?',
   });
+  stubSender = new StubSender();
   deps = {
     gateway: new PrivacyGateway(db, config),
     interpreter: new Interpreter(db, config, stubTransport),
+    replySender: new ReplySender(config, stubSender),
     config,
   };
 });
@@ -88,6 +93,7 @@ beforeEach(async () => {
   // to be cleared too — otherwise "the model was never called" quietly means
   // "not called since the file started".
   stubTransport.reset();
+  stubSender.reset();
 });
 
 function messagePayload(waId: string, wamid: string, text = 'Ada bought 3 wigs for 150k') {
@@ -462,7 +468,11 @@ describe('what the model understood', () => {
       conversationsRepo.draftsFor(tx, business.id),
     );
     expect(drafts).toHaveLength(0);
-    const spend = await withBusiness(db, business.id, (tx) => quotaRepo.usageTotals(tx));
+    // Scoped to anthropic: the outbound reply writes its own usage row, and
+    // "no AI spend" is a different claim from "no cost at all".
+    const spend = await withBusiness(db, business.id, (tx) =>
+      quotaRepo.usageTotals(tx, 'anthropic'),
+    );
     expect(spend.calls).toBe(0);
   });
 
@@ -495,6 +505,99 @@ describe('what the model understood', () => {
       conversationsRepo.draftsFor(tx, business.id),
     );
     expect(drafts).toHaveLength(1);
+  });
+});
+
+describe('answering the merchant', () => {
+  async function seedMerchant(phone: string, name: string) {
+    const user = await identity.upsertUserByPhone(db, phone);
+    return identity.createBusinessWithOwner(db, { name, businessType: null, ownerUserId: user.id });
+  }
+
+  it('answers a greeting without a model, a vault write, or a naira', async () => {
+    const business = await seedMerchant('+2348031234567', 'Ada Fashion');
+    await post(messagePayload('2348031234567', 'wamid.HI', 'good morning'));
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+
+    expect(stubSender.sent).toHaveLength(1);
+    expect(stubSender.lastText).toMatch(/I keep your books/i);
+    expect(stubTransport.requests).toHaveLength(0);
+
+    // The reply is on record too, so an undelivered one is findable.
+    const messages = await withBusiness(db, business.id, (tx) =>
+      conversationsRepo.messagesFor(tx, business.id),
+    );
+    expect(messages.map((m) => m.direction)).toEqual(['inbound', 'outbound']);
+  });
+
+  it('says nothing to a bare "yes" — there is no question outstanding', async () => {
+    await seedMerchant('+2348031234567', 'Ada Fashion');
+    await post(messagePayload('2348031234567', 'wamid.YES', 'yes'));
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+
+    // Replying "I did not understand" would invite the merchant to say it
+    // again. Silence until the confirmation gates give "yes" something to mean.
+    expect(stubSender.sent).toHaveLength(0);
+  });
+
+  it('does NOT invent a debtor list it cannot compute', async () => {
+    await seedMerchant('+2348031234567', 'Ada Fashion');
+    await post(messagePayload('2348031234567', 'wamid.OWES', 'who owes me'));
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+
+    // A bookkeeping assistant that makes up a debtor list has destroyed the
+    // only thing it sells.
+    expect(stubSender.lastText).toMatch(/not ready yet/i);
+    expect(stubSender.lastText).not.toMatch(/₦|owes you/i);
+  });
+
+  it('passes the model`s clarifying question through as written', async () => {
+    await seedMerchant('+2348031234567', 'Ada Fashion');
+    await post(messagePayload('2348031234567', 'wamid.ASK', 'Ada bought wigs'));
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+
+    expect(stubSender.lastText).toBe('How many wigs?');
+  });
+
+  it('answers once when the same message is delivered twice', async () => {
+    const business = await seedMerchant('+2348031234567', 'Ada Fashion');
+    await post(messagePayload('2348031234567', 'wamid.TWICE', 'good morning'));
+
+    const [event] = await events.unprocessedEvents(db, 'meta');
+    const runner = buildRunner(workerDb, db, deps);
+    expect(await runner.runOnce()).toBe(true);
+
+    await withBusiness(db, business.id, (tx) =>
+      jobsRepo.enqueue(tx, {
+        businessId: business.id,
+        kind: 'inbound.message',
+        payload: { eventId: event!.id },
+      }),
+    );
+    expect(await runner.runOnce()).toBe(true);
+
+    // One reply per retry is how a bug becomes a nuisance the merchant feels.
+    expect(stubSender.sent).toHaveLength(1);
+  });
+
+  it('keeps the record when the reply cannot be delivered', async () => {
+    const business = await seedMerchant('+2348031234567', 'Ada Fashion');
+    await post(messagePayload('2348031234567', 'wamid.DOWN', 'good morning'));
+    stubSender.failWith();
+
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+
+    /**
+     * Failing the job over an undelivered reply would roll the merchant's
+     * message back and re-read it from scratch on the retry — paying for the
+     * model twice to fix a delivery problem.
+     */
+    const messages = await withBusiness(db, business.id, (tx) =>
+      conversationsRepo.messagesFor(tx, business.id),
+    );
+    expect(messages).toHaveLength(2);
+    // No provider id: a reply we owed and did not deliver, and findable as one.
+    expect(messages[1]).toMatchObject({ direction: 'outbound', providerMessageId: null });
   });
 });
 
