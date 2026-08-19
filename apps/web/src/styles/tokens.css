@@ -27,6 +27,10 @@
   --rk-surface: #ffffff;
   --rk-surface-sunk: var(--rk-sand-100);
   --rk-border: var(--rk-sand-300);
+  /* "not configured yet" — amber, because it is unfinished, not broken. */
+  --rk-warn-surface: #fef3c7;
+  --rk-warn-border: #b45309;
+  --rk-warn-text: #92400e;
   --rk-text: var(--rk-sand-900);
   --rk-text-muted: var(--rk-sand-600);
   --rk-accent: var(--rk-teal-700);
@@ -65,6 +69,11 @@
   --rk-dur-base: 200ms;
   --rk-dur-slow: 320ms;
   --rk-ease: cubic-bezier(0.2, 0, 0.2, 1);
+  /* Motion tiers. Anything a finger triggers wants the fast one — above about
+     200ms a tap starts to feel like the phone is thinking rather than
+     responding. */
+  --rk-motion-fast: 150ms;
+  --rk-motion-base: 220ms;
 
   --rk-font-display: 'Calistoga', Georgia, serif;
   /* The ₦ (U+20A6) is missing from many system faces, and a fallback glyph at a
@@ -85,6 +94,9 @@
     --rk-surface: #1c1b18;
     --rk-surface-sunk: #232220;
     --rk-border: #35332e;
+    --rk-warn-surface: #3a2f14;
+    --rk-warn-border: #d99a2b;
+    --rk-warn-text: #f5c563;
     --rk-text: #f2f1ec;
     --rk-text-muted: #a8a49b;
     --rk-accent: var(--rk-teal-500);
@@ -107,6 +119,9 @@
   --rk-surface: #1c1b18;
   --rk-surface-sunk: #232220;
   --rk-border: #35332e;
+  --rk-warn-surface: #3a2f14;
+  --rk-warn-border: #d99a2b;
+  --rk-warn-text: #f5c563;
   --rk-text: #f2f1ec;
   --rk-text-muted: #a8a49b;
   --rk-accent: var(--rk-teal-500);

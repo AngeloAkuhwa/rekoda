@@ -57,6 +57,89 @@ async function onboard(page: Page, phone: string, name = 'Ada Fashion') {
   await expect(page).toHaveURL(/\/setup\/complete$/);
 }
 
+test.describe('the page actually runs in the browser', () => {
+  /**
+   * This exists because a Content-Security-Policy broke the whole site
+   * without breaking a single server-rendered page.
+   *
+   * Hashing the inline theme script made browsers ignore `unsafe-inline`,
+   * which blocked Next's own bootstrap scripts. Hydration died, so every form
+   * stopped working — while the HTML still rendered perfectly, every
+   * screenshot looked right, and every server-side assertion passed. Only
+   * something that clicks in a real browser can see it.
+   */
+  test('loads with no CSP violations and hydrates', async ({ page }) => {
+    const problems: string[] = [];
+    page.on('console', (m) => {
+      if (/Content Security Policy|Refused to/i.test(m.text())) problems.push(m.text());
+    });
+    page.on('pageerror', (e) => problems.push(`pageerror: ${e.message}`));
+
+    await page.goto('/');
+    expect(problems).toEqual([]);
+
+    // Interactivity is the proof. A <details> that opens is React hydrated.
+    const faq = page.locator('.rk-faq-item').first();
+    await faq.locator('summary').click();
+    await expect(faq).toHaveAttribute('open', '');
+  });
+
+  test('the no-flash theme script survives the policy', async ({ page }) => {
+    // Blocked, this leaves a dark-mode merchant with a white flash on every
+    // navigation — cosmetic, invisible to server-side tests, and permanent.
+    await page.addInitScript(() => {
+      try {
+        localStorage.setItem('rk-theme', 'dark');
+      } catch {
+        /* private mode */
+      }
+    });
+    await page.goto('/');
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+  });
+});
+
+test.describe('public pages a merchant is promised', () => {
+  // Every one of these was a 404 linked from the header or footer of every
+  // page. For a product asking merchants to trust it with money, a dead
+  // Privacy link is not a broken link — it is a reason not to sign up.
+  for (const path of ['/security', '/privacy', '/terms', '/ai-privacy', '/data-deletion']) {
+    test(`${path} is reachable`, async ({ page }) => {
+      const res = await page.goto(path);
+      expect(res?.status()).toBe(200);
+      await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
+    });
+  }
+
+  test('every header and footer link resolves', async ({ page, request }) => {
+    await page.goto('/');
+    const hrefs = await page
+      .locator('header a[href^="/"], footer a[href^="/"]')
+      .evaluateAll((els) => [...new Set(els.map((e) => e.getAttribute('href')!))]);
+    expect(hrefs.length).toBeGreaterThan(3);
+    for (const href of hrefs) {
+      expect((await request.get(href)).status(), `${href} should not be dead`).toBeLessThan(400);
+    }
+  });
+
+  test('robots.txt keeps crawlers out of merchant surfaces', async ({ request }) => {
+    const body = await (await request.get('/robots.txt')).text();
+    for (const priv of ['/app', '/setup/', '/verify']) {
+      expect(body).toContain(`Disallow: ${priv}`);
+    }
+    expect(body).toContain('Sitemap:');
+  });
+
+  test('the sitemap lists only public pages', async ({ request }) => {
+    const xml = await (await request.get('/sitemap.xml')).text();
+    expect(xml).toContain('/pricing');
+    // The inverse is the one that matters: an indexed dashboard URL.
+    for (const priv of ['/app', '/setup', '/verify', '/start']) {
+      expect(xml).not.toContain(`<loc>https://rekoda.app${priv}`);
+    }
+  });
+});
+
 test.describe('step guards', () => {
   for (const path of ['/setup/business', '/setup/complete', '/app']) {
     test(`${path} redirects to /start with no credential`, async ({ page }) => {

@@ -38,6 +38,10 @@ beforeAll(async () => {
   process.env['OTP_PEPPER'] = 'test-pepper-at-least-32-characters-long';
   process.env['REKODA_API_SECRET'] = SECRET;
   process.env['REKODA_REVEAL_OTP'] = '1';
+  // This suite makes a few hundred requests from one address in seconds, which
+  // is exactly what the limiter exists to stop. The limiter gets its own test
+  // below, on its own app instance, rather than throttling everything else.
+  process.env['REKODA_RATE_LIMIT_MAX'] = '100000';
   delete process.env['NODE_ENV'];
 
   const { createApp } = await import('../main.js');
@@ -103,6 +107,42 @@ async function onboard(phone: string, name = 'Ada Fashion') {
  * never depends on which compiler ran. This test is what keeps that true when
  * the next provider is added.
  */
+describe('per-IP rate limiting', () => {
+  it('returns 429 once an address exceeds its budget', async () => {
+    // A second app with a tiny ceiling. The property under test is that the
+    // limiter is actually wired to every route — the per-phone limits cannot
+    // see a caller walking through thousands of DIFFERENT numbers, and once
+    // delivery costs money per message that is a way to bill Rekoda by the
+    // request.
+    process.env['REKODA_RATE_LIMIT_MAX'] = '3';
+    const { createApp } = await import('../main.js');
+    const limited = await createApp();
+    await limited.init();
+    await limited.getHttpAdapter().getInstance().ready();
+
+    try {
+      const statuses: number[] = [];
+      for (let i = 0; i < 6; i++) {
+        const res = await limited.inject({
+          method: 'POST',
+          url: '/v1/auth/otp/request',
+          payload: { phone: '08031234590' },
+        });
+        statuses.push(res.statusCode);
+      }
+      expect(statuses.filter((s) => s === 429).length).toBeGreaterThan(0);
+
+      // Health is on the allow list: the platform polls it, and a throttled
+      // health check reads as an outage.
+      const health = await limited.inject({ method: 'GET', url: '/health' });
+      expect(health.statusCode).toBe(200);
+    } finally {
+      await limited.close();
+      process.env['REKODA_RATE_LIMIT_MAX'] = '100000';
+    }
+  });
+});
+
 describe('dependency wiring', () => {
   it('injects every constructor dependency without relying on decorator metadata', () => {
     const cases: Array<[string, object, string]> = [

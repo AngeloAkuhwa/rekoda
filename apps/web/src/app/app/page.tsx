@@ -38,7 +38,7 @@ export default async function DashboardPage() {
         <StatTile label="Owed to you" hint="Invoices still unpaid" />
       </div>
 
-      <div className="rk-card">
+      <div className="rk-card rk-dash-empty">
         <h2>Nothing recorded yet</h2>
         <p>
           Rekoda builds your records from what you tell it on WhatsApp. Send it your first sale and
