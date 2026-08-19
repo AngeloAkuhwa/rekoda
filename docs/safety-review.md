@@ -66,6 +66,7 @@ What is genuinely missing, and should land in M1:
 | G16 | **Rekoda storefront `/s/{handle}`** as the default order-capture path. No Meta involvement, no verification queue, no approval gate, no CAC. Works day one — and you own the schema instead of parsing Meta's. |
 | G17 | **Order forwarding** for merchants already running a WhatsApp Business App catalogue. **Collect real forwarded-order specimens from live vendors before writing the parser** — do not build against a guessed format. |
 | G18 | **Chat ships publicly first; Integrate follows.** Chat depends on one WhatsApp number — yours. |
+| G25 | **Launch payments on Paystack Connect's *standard* flow.** The merchant opens a **Paystack Starter Business** themselves — government ID + BVN + personal bank account, **no CAC** — and Paystack does the KYC while the merchant bears their own transaction risk. Rekoda carries **zero payment liability** while proving the product. Ceiling: **₦2M lifetime collections** (₦3M with Truecaller verification), and **no DVAs** on Starter, so bank-transfer reconciliation waits for the upgrade rung. |
 
 ## 1.6 Honest claims — cheap to keep, expensive to lose
 
@@ -87,7 +88,8 @@ infer permission from the fact that an API accepts the call.
 
 | # | Ask whom | Exactly what to ask | What it gates |
 |---|---|---|---|
-| A1 | **Paystack** | Is sub-merchant aggregation under Rekoda's account permitted? Does DVA-with-split work for sub-merchants? **Is the ~1,000 dedicated-account ceiling per platform or per subaccount?** Who bears chargeback liability? | ADR 0013 — whether onboarding is *"give us your account number"* or a provider signup. **Highest-value question in the project.** The ceiling question alone could sink the design. |
+| A1 | **Paystack** | **Is the ~1,000 dedicated-account ceiling per platform or per subaccount, and is it negotiable?** And does DVA-with-split behave identically for a sub-merchant subaccount as for the platform's own account? | ADR 0013's **upgrade** rung (platform-managed flow with DVAs). **No longer blocks launch** — the standard flow ships without it. |
+| ~~A1b~~ | ~~Paystack~~ | ~~Is aggregation permitted? Who bears chargebacks?~~ | ✅ **ANSWERED from documentation.** Paystack **Connect** is the supported product for sub-merchant aggregation. Liability follows the flow: **standard** = sub-merchant onboards to Paystack, Paystack does KYC, **sub-merchant bears risk**; **platform-managed** = Rekoda onboards, **Rekoda bears risk**. |
 | A2 | **Nigerian fintech counsel** | Does split-settled aggregation *without fund custody* sit outside licensable activity — and exactly where is the line? | Whether ADR 0013 can be Accepted at all |
 | A3 | **Mono** | Is merchant self-account linking for reconciliation supported under your CBN Open Banking participation? | ADR 0012 rung B0 — the complement that catches money arriving at accounts Rekoda did not issue |
 | A4 | **Flutterwave / Monnify** | Confirm the unregistered / sole-proprietor onboarding tier (BVN + NIN, no CAC). | ADR 0012 rung B1 — the escape hatch if A1/A2 fail |
@@ -155,7 +157,7 @@ These are the ones that end the company rather than cost a sprint.
 If only five things survive this review:
 
 1. **Never hold funds** (R1/R2) — the only item here that is criminal rather than merely expensive.
-2. **Get A1 + A2 in writing** before ADR 0013 shapes the roadmap — the DVA ceiling question alone can sink it.
+2. **Launch on Connect's standard flow (G25), not the platform-managed flow.** It carries zero transaction liability for Rekoda and needs no CAC from the merchant. Take on the platform-managed flow — and its risk — only when the ₦2M ceiling or DVA demand forces it, and only after A1 and A2 are answered.
 3. **Restore drill passes before the first paying merchant** (G13) — a ledger that cannot be restored is not a ledger.
 4. **Pooled-connection leakage test** (G7) — one test that proves tenant isolation end to end.
 5. **Don't price at ₦2–3k** (R14) — the failure mode that killed the best-funded predecessor.

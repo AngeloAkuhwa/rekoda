@@ -1,7 +1,8 @@
 # 0013 — Rekoda as the single integration: platform-owned Paystack, merchant subaccounts
 
-**Status:** Proposed — needs written confirmation from Paystack and Nigerian
-counsel before any roadmap depends on it (see Risks)
+**Status:** Proposed — **three of four questions now answered from Paystack's
+own documentation** (see §"What the documentation settles"). One blocking
+unknown remains, plus counsel.
 **Date:** 2026-08-19
 **Extends / likely reorders:** [0012](0012-integrate-without-cac.md) ladder B
 
@@ -32,10 +33,82 @@ to the merchant's bank account.
 
 That collapses the entire onboarding to: *give us your account number.*
 
+## What the documentation settles (researched 19 Aug 2026)
+
+The product for this already exists and is named: **Paystack Connect** — "allows
+platform businesses to onboard their sub-merchants and manage flow of funds
+using its APIs." Aggregation is not a grey area we have to ask permission for;
+it is a supported product with two documented flows.
+
+### ✅ Q1 — Is sub-merchant aggregation permitted? **Yes, documented.**
+
+### ✅ Q2 — Does DVA-with-split work? **Yes, documented.**
+
+`assign_dedicated_virtual_account` accepts an optional `subaccount` or
+`split_code`, and a split can be attached to an existing dedicated account.
+Multi-split has **no maximum number of subaccounts**. Fee bearer is
+configurable (`bearer_type`: `account` | `all` | `subaccount`), so Paystack fees
+can be borne by the sub-merchant — which is exactly what MASTER-PLAN Part 8's
+"processing fees are never absorbed" requires.
+
+### ✅ Q4 — Who bears chargebacks? **Documented, and it is a choice of flow.**
+
+| Flow | Who onboards the merchant | Who does KYC | **Who bears transaction risk** | Merchant gets |
+|---|---|---|---|---|
+| **Standard** | Sub-merchant onboards directly on Paystack | **Paystack** | **Sub-merchant** | Own dashboard + API; manages own chargebacks, fraud, reconciliation |
+| **Platform-managed** | Rekoda onboards them | **Rekoda** | **Rekoda** | Nothing to set up — Rekoda collects bank details only |
+
+This is the central trade-off of the whole design, and it is ours to pick.
+
+### ❌ Q3 — Is the ~1,000 dedicated-account ceiling per platform or per subaccount? **Not answerable from documentation.**
+
+Support states "all businesses have a limit of 1,000 virtual accounts to be
+assigned to customers" — which reads **per Paystack account**, i.e. per
+*platform*. Under the platform-managed flow that is 1,000 NUBANs shared across
+**every merchant's customers combined**, which would bind almost immediately.
+**This single number decides whether the platform model scales.** Only Paystack
+can answer it.
+
+### The Starter Business finding — it changes the trade-off
+
+**Unregistered individuals can already open a Paystack account.** A *Starter
+Business* needs only a government ID, a BVN and a personal bank account — **no
+CAC**. But it is capped at a **₦2M lifetime collections limit** (₦3M with
+Truecaller phone verification), after which collections are **disabled** until
+the business upgrades to Registered — and Starter accounts have **no access to
+Transfers or Identity verification**, so **Dedicated Virtual Accounts are out**.
+
+So the two flows serve genuinely different merchants:
+
+* **Standard flow** — merchant opens their own Starter account (ID + BVN + bank
+  account). They bear their own risk, Paystack does KYC, and Rekoda's exposure
+  is nil. **But: ₦2M lifetime cap, and no DVAs — so no bank-transfer
+  reconciliation.** An active fashion vendor can exhaust ₦2M in months.
+* **Platform-managed flow** — merchant gives a bank account and nothing else.
+  No cap of their own (the ceiling is Rekoda's, and Rekoda is Registered), and
+  **DVAs work, because they are issued under Rekoda's registration**. Rekoda
+  bears the risk.
+
 ## Decision
 
-**Adopt the platform model for payment verification, and make it ladder B's
-default rung**, subject to the confirmations below.
+**Adopt Paystack Connect, and offer both flows — standard first, platform-managed
+as the upgrade** — subject to the confirmations below.
+
+Revised from this ADR's first draft, which assumed platform-managed throughout.
+Now that the flows and their liability are documented, the safer sequence is:
+
+1. **Launch on the standard flow.** The merchant opens a Paystack Starter
+   Business themselves — ID + BVN + bank account, **no CAC** — and Rekoda
+   reconciles their checkout payments. Risk and KYC stay with Paystack and the
+   merchant. Rekoda proves the product carrying **no transaction liability at
+   all**, which is the right posture for a company with no payments track record.
+2. **Add the platform-managed flow once the ₦2M ceiling or DVA demand forces
+   it** — and once Q3, counsel, and the risk controls below are all in place.
+   That is the rung that unlocks bank-transfer reconciliation for merchants who
+   will never register.
+
+This sequencing matters: it means **nothing in M5 is blocked** on the open
+question. Q3 gates the *upgrade*, not the launch.
 
 ```
 Rekoda Ltd (one CAC, one Paystack account, one integration)
@@ -112,10 +185,12 @@ have. Ladder A2 remains a genuine upgrade for merchants who qualify.
 
 ## Before this becomes Accepted
 
-* Written confirmation from **Paystack**: sub-merchant aggregation under
-  Rekoda's account is permitted; DVA-with-split works as documented for
-  sub-merchants; the dedicated-account ceiling and whether it is per platform
-  or per subaccount; who bears chargeback liability.
+* **The only blocking question left for Paystack: is the ~1,000
+  dedicated-account ceiling per platform or per subaccount, and is it
+  negotiable?** Aggregation (Q1), DVA-with-split (Q2) and chargeback liability
+  (Q4) are all settled by the Connect documentation. Worth confirming in the
+  same message: does DVA-with-split behave identically for a sub-merchant
+  subaccount as for the platform's own account?
 * An opinion from **Nigerian fintech counsel** that split-settled aggregation
   without fund custody sits outside licensable activity — and exactly where the
   line is.

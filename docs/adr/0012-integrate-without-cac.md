@@ -33,6 +33,26 @@ entirely:
 > design — per-merchant WABA via Embedded Signup — already excluded the same
 > merchants, before Paystack was ever considered.
 
+**Precision added 19 Aug 2026 — Meta does not require CAC to *have* a WABA.**
+An **unverified** business can operate one and message **250 unique customers
+per rolling 24 hours** with **two registered phone numbers**. For a market
+vendor, 250 customers a day is far above real volume, so the messaging cap is
+not what excludes them. Two other things are:
+
+1. **The display name is not visible until the business is verified** — the
+   merchant's customers see a phone number instead of "Ada Fashion", which
+   destroys exactly the trust the WABA was meant to provide.
+2. **Meta may deactivate unverified WhatsApp Business accounts after ~30 days.**
+   *(Sourced from BSP/partner documentation; Meta's own developer site is
+   blocked by this environment's egress policy and could not be read directly.
+   Treat the exact window as unconfirmed — but treat the existence of a
+   deactivation risk as real, and do not design a permanent path on top of an
+   unverified WABA.)*
+
+So the conclusion below is unchanged, for a sharper reason: the WABA path is a
+**time-limited, unbranded** window for an unregistered vendor, not a permanent
+home. Ladder A stands.
+
 Integrate as specified was a product for registered businesses in both halves.
 That is the actual defect, and it is architectural rather than commercial.
 
