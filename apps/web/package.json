@@ -1,0 +1,26 @@
+{
+  "name": "@rekoda/web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "next dev -p 3000",
+    "build": "next build",
+    "start": "next start -p 3000",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "prettier --check \"src/**/*.{ts,tsx,css}\"",
+    "test": "echo \"no unit tests in web yet\" && exit 0"
+  },
+  "dependencies": {
+    "@rekoda/core": "workspace:*",
+    "next": "15.1.3",
+    "react": "19.0.0",
+    "react-dom": "19.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "22.10.2",
+    "@types/react": "19.0.2",
+    "@types/react-dom": "19.0.2",
+    "typescript": "5.9.3"
+  }
+}

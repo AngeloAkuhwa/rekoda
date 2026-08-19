@@ -1,6 +1,14 @@
 # REKODA — MASTER BUILD PLAN
 
-**Version:** 3.0 · 19 August 2026
+**Version:** 4.0 · 19 August 2026
+**Changes in v4:** ADRs 0013–0019 land. Integrate is redesigned end to end:
+the **Rekoda storefront is the order-capture path** (the WABA catalogue is
+retired — ADR 0018), collection is **Pay with Transfer** with **no customer KYC**
+(0016), and the **merchant owns their Paystack account** so Rekoda never enters
+the money flow (0019). Payment verification becomes a product — the **fake-alert
+defence** (0014) — and the ledger gains **four statements plus period close**
+(0015). M5 rewritten accordingly; M1 gains the honest design-system fallback.
+
 **Changes in v3:** M0 independently verified from the delivered bundle (tests,
 typecheck, lint, demo — all green). Messaging economics corrected for Meta's
 1 Oct 2026 change and the allowance redefined (ADR 0011, supersedes 0002).
@@ -25,6 +33,9 @@ a memory, a chat, or an assumption — this document wins. If this document conf
 3. `docs/adr/` — the eleven decision records (the "why"). Never re-litigate an
    Accepted ADR without writing a superseding one. Note 0002 is **superseded
    by 0011**; read 0011 for anything about messaging cost.
+3b. `design-system/reference/ui-ux-pro-max.SKILL.md` — the vendored UI/UX rule
+   set (P1 accessibility → P10 charts), then `design-system/rekoda/MASTER.md`
+   for Rekoda's tokens. **Read both before touching any UI.**
 4. `docs/safety-review.md` — GREEN (safe to build now) / AMBER (needs written
    confirmation first) / RED (never build, never claim). **Read this before
    starting anything in Integrate or billing.**
@@ -953,8 +964,13 @@ dashboard shell on their phone; the site is indexing.
 
 ### 5.2.1 Design system (do this first — everything else builds on it)
 
-1. Invoke the **`ui-ux-pro-max`** skill with `--design-system` for a Nigerian fintech/SaaS
-   product, and **persist** it to `design-system/rekoda/MASTER.md`.
+1. Invoke the **`ui-ux-pro-max`** skill with `--design-system` for a Nigerian
+   fintech/SaaS product and **persist** it to `design-system/rekoda/MASTER.md`.
+   **Verified caveat:** remote Claude Code sessions sync only the skill's
+   `SKILL.md` — `scripts/search.py` and the style/palette datasets are absent, so
+   the command cannot run there. Either generate locally and commit, or build the
+   system by hand against the skill's priority table and pro-rules and **label it
+   as built-in defaults, not a database match** (see `docs/design-plan.md` §2.1).
 2. Establish tokens: palette (the predecessor's teal `#0F766E` on warm off-white `#fcfcfb`
    tested well — evolve, don't discard), type pairing (Calistoga display + Inter body worked),
    spacing scale, motion tiers, elevation, radii.
@@ -1263,83 +1279,88 @@ shows true per-business COGS from `usage_events`.
 
 ---
 
-## 5.6 M5 — INTEGRATE ALPHA (CONCIERGE)
+## 5.6 M5 — INTEGRATE (STOREFRONT + AUTOMATED COLLECTION)
 
-**Goal:** one real catalogue sale reconciles automatically against a real Paystack payment,
-untouched by human hands.
+**Goal:** a real merchant **with no CAC** takes an order through the Rekoda
+storefront, receives a bank transfer, and Rekoda reconciles it to `VERIFIED`
+with zero manual steps.
 
-**Sequencing decision, revised by ADR 0012.** The original plan put Integrate
-behind **four external approval gates** per merchant (Meta business
-verification, display-name review, catalogue, Paystack) — every one of which
-requires CAC registration that most WhatsApp vendors do not have. That made
-Integrate a product for registered businesses and forced a concierge alpha.
+> **Rewritten in v4.** The original M5 was a *concierge alpha* forced by four
+> external approval gates (Meta verification, display-name review, catalogue
+> approval, Paystack). **Every one of those gates is now gone** — ADR 0018
+> retired the WABA catalogue, and ADR 0019 puts the merchant on their own
+> Paystack account. What remains is ordinary product engineering. The concierge
+> treatment stays for the **first 5–10 merchants** because it teaches us where
+> the funnel breaks, not because a queue forces it.
 
-**Build the no-CAC rungs first (A1 + B0). They are self-serve from day one.**
+### 5.6.1 Merchant onboarding — no CAC, no approvals
 
-* **A1 — Rekoda storefront**: merchant's catalogue hosted at
-  `rekoda.app/s/<handle>`, shared as a link in WhatsApp, bio or status. Orders
-  arrive fully structured. No Meta involvement, no approval queue.
-* **A0 — order forwarding**: for merchants already running a WhatsApp Business
-  App catalogue, forwarding the order message to Rekoda is enough. **Collect
-  real forwarded-order specimens from live vendors before writing the parser —
-  do not build against a guessed format.**
-* **B0 — open banking link (Mono)**: merchant links the bank account they
-  already use; Rekoda ingests **incoming credits only**, above a threshold, and
-  matches them. Credit-only, revocable with one tap, Zone 1 vault data, never
-  into the AI zone.
+`/setup/payments` collects one thing: **the merchant's Paystack secret key**,
+vaulted AES-256-GCM (ADR 0003/0019), verified against Paystack before storing,
+never displayed back. If they have no Paystack account, the flow links them
+straight to Starter Business signup — **ID + BVN + bank account, no CAC**.
 
-**Then** the registered-merchant rungs, which keep their approval gates and
-therefore keep the concierge treatment: **A2** (per-merchant WABA) and **B2**
-(Paystack DVA) — hand-onboard 5–10 merchants, instrument where the funnel
-breaks, productise afterwards. These are no longer on the critical path.
+**Webhook URL**: determine whether it can be set via API with the merchant's key
+or must be configured by hand in their dashboard. If manual, it is a scripted
+concierge step **and a likely drop-off point** — instrument it.
 
-* **Onboarding**: Embedded Signup / Twilio Tech Provider → WABA → catalogue mapping
-  (`RekodaProductId ↔ ExternalCatalogueProductId`) → Paystack connection (ADR 0003:
-  merchant's own key, AES-256-GCM, verified before storing, never displayed back).
-* **Order capture**: WhatsApp commerce webhook → `OrderPlaced` → order + invoice + receivable
-  + inventory reservation, idempotent on the external order reference.
-* **Payment verification**: Paystack webhook → signature → idempotency → `PaymentConfirmed`.
-* **Reconciliation state machine**, now fed by two independent sources:
+### 5.6.2 Storefront `/s/{handle}` — the order-capture path (ADR 0018)
+
+Public, mobile-first, **merchant-branded**. Catalogue → cart → checkout
+collecting only name, phone and delivery note. **Every field is Zone 1 vault data
+the moment it is submitted.** Performance budget is the marketing budget, not the
+dashboard one — the visitor arrived from a WhatsApp link on mobile data.
+
+Also ship **A0 order forwarding**: a merchant already running a WhatsApp Business
+App catalogue forwards the order message to Rekoda. **Collect real forwarded-order
+specimens from live vendors before writing the parser.**
+
+### 5.6.3 Collection — Pay with Transfer (ADR 0016)
+
+Per order: create the charge on **the merchant's own integration** with a
+`bank_transfer` object → temporary account number → shown at checkout and echoed
+into WhatsApp.
+
+* **No customer KYC. No BVN. Nothing stored about the buyer beyond what they typed.**
+* `account_expires_at` set **generously** (hours, not the 15-minute minimum).
+* On lapse the **invoice stays open** with one-tap *"get a fresh number"* —
+  an expired number must never read as a cancelled order.
+* Fee is **1.5% + ₦100, capped ₦2,000**, borne by the merchant and stated on
+  `/pricing` — *not* the DVA rate.
+
+### 5.6.4 Reconciliation state machine
 
 | Case | Verdict | Behaviour |
 |---|---|---|
 | Expected == received | MATCHED | invoice paid, receipt, stock, ledger, reconciled |
 | Received < expected | PARTIAL | invoice **stays** partially paid; outstanding stated exactly |
-| Received > expected | EXCEPTION (overpayment) | never silently kept |
-| No matching invoice | UNMATCHED | surfaced in Needs Attention; `findUniqueAmountMatch` refuses ambiguous guesses |
+| Received > expected | EXCEPTION | overpayment never silently kept |
+| No matching invoice | UNMATCHED | Needs Attention; `findUniqueAmountMatch` refuses ambiguity |
 | Currency differs | EXCEPTION | never converted silently |
 
-* **Dedicated Virtual Accounts (ADR 0009) — first-class M5 scope.** This is the
-  step that extends reconciliation beyond checkout to **bank transfer**, the way
-  Nigerian small businesses are actually paid.
-  * A DVA is issued **per customer**, lazily — on a customer's first order or
-    invoice, never in bulk (~1,000 per business ceiling; build the dormant-
-    customer reclamation policy before a merchant nears it).
-  * Attribution comes free: *the account the money arrived into is the identity
-    of who paid*, so `findUniqueAmountMatch()`'s ambiguity refusal becomes the
-    exception rather than the common path.
-  * The customer→NUBAN map is **Zone 1 vault data** — never sent to the AI zone.
-  * Deposits arrive as `charge.success` with `channel: "dedicated_nuban"`;
-    same signature → idempotency → `PaymentConfirmed` path as checkout.
-  * **Never trust webhooks alone:** a pg-boss cron reconciles against Paystack's
-    transaction API to catch missed or dropped deliveries.
-  * **Blocker:** DVAs require a **CAC-registered business with approved KYC**.
-    Unregistered merchants cannot have them. Confirm current provisioning with
-    Paystack **before** this milestone depends on it, and keep the marketing
-    claim scoped to registered merchants.
+**Never trust webhooks alone.** A pg-boss cron reconciles against Paystack's
+Transactions API — Paystack's own guidance, and here it also catches a merchant
+who mis-configured their webhook URL.
 
-* **Exception surfacing** in chat *and* the dashboard's Reconciliation queue — the screen that
-  sells Complete. **The queue contains only genuine mismatches.** Cash and
-  unverified transfers are normal states shown in the ordinary transaction flow
-  with a neutral mark — a Needs Attention badge that counts every cash sale
-  teaches merchants to ignore it within a week, which would destroy the one
-  screen the moat is sold on.
+### 5.6.5 The ₦2M graduation gate (ADR 0019)
 
-**Exit (revised):** a real merchant **with no CAC registration** takes a genuine
-order through the Rekoda storefront, receives a bank transfer into their
-existing account, and Rekoda reconciles it to `VERIFIED` with zero manual
-steps. The registered-merchant path (A2 + B2) demonstrates the same loop
-through a WABA catalogue order and a Paystack DVA deposit.
+`collected_to_date` is **first-class telemetry** from the first transaction.
+Admin alerts at **₦1.5M**; the merchant gets a proactive nudge and registration
+help. **A merchant who discovers the cap by having collections stop mid-sale is a
+merchant Rekoda failed.**
+
+### 5.6.6 M5 exit criteria
+
+- [ ] A merchant **with no CAC** completes setup and takes a real order
+- [ ] Bank transfer → `charge.success` → **`VERIFIED` in seconds**, zero manual steps
+- [ ] Partial, over- and unmatched payments each land in the right state (tests)
+- [ ] Replayed webhook creates nothing new (test)
+- [ ] Forged signature rejected (test)
+- [ ] Expired account number leaves the invoice open and re-issues on one tap
+- [ ] Reconciliation cron catches a payment whose webhook was never delivered (test)
+- [ ] `collected_to_date` alerts at ₦1.5M
+- [ ] Storefront: 360px clean, light+dark, <120 KB JS, no PII in logs
+- [ ] **Screenshots posted to the owner**
 
 ---
 

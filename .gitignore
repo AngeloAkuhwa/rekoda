@@ -52,3 +52,8 @@ Thumbs.db
 # misc
 tmp/
 .cache/
+.screenshots/
+
+# Python caches from the vendored ui-ux-pro-max skill
+__pycache__/
+*.pyc

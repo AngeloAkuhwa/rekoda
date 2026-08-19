@@ -31,6 +31,16 @@ Four constraints fall out of the market and none of them are negotiable:
 Two installed capabilities, used at different altitudes. They are not
 interchangeable.
 
+> **The full skill is vendored at
+> [`design-system/reference/ui-ux-pro-max/`](../design-system/reference/ui-ux-pro-max/)
+> — scripts *and* data — and runs from this repo.** No session depends on the
+> skill being synced, and the earlier caveat about remote sessions no longer
+> applies. Run it from the repo root:
+>
+> ```bash
+> python3 design-system/reference/ui-ux-pro-max/scripts/search.py "<query>" --domain ux
+> ```
+
 ### 2.1 `ui-ux-pro-max` — the system layer
 
 Owns tokens, palette, type pairing, spacing, motion tiers, and the
@@ -55,14 +65,10 @@ Output lands at `design-system/rekoda/MASTER.md` with page overrides under
 `design-system/rekoda/pages/`. Read MASTER before every UI PR; `--force` only
 with explicit owner authorisation.
 
-> **Environment caveat, verified 19 Aug 2026.** In the remote Claude Code
-> session only the skill's `SKILL.md` is synced — `scripts/search.py` and the
-> style/palette/font datasets are **not present**, so the command above cannot
-> run there and returns nothing. Generate the design system in a session where
-> the full skill payload is installed (local Claude Code), commit
-> `design-system/rekoda/`, and every later session reads the committed files.
-> Until that exists, UI work follows the fallback rules in §3 and §5 and must
-> be labelled as built-in defaults, not database-matched recommendations.
+> **Superseded 19 Aug 2026.** The skill is now vendored in-repo (above), so
+> `--design-system` runs anywhere. Its output for Rekoda is persisted at
+> `design-system/rekoda-generated/MASTER.md`; `design-system/rekoda/MASTER.md`
+> is the binding artefact and records the one deliberate divergence (colour).
 
 ### 2.2 `21st.dev` — the component layer
 

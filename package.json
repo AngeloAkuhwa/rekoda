@@ -2,7 +2,7 @@
   "name": "rekoda",
   "private": true,
   "version": "0.1.0",
-  "description": "WhatsApp-first financial operating assistant — you run the business, Rekoda builds the records.",
+  "description": "WhatsApp-first financial operating assistant \u2014 you run the business, Rekoda builds the records.",
   "license": "SEE LICENSE IN LICENSE",
   "packageManager": "pnpm@9.15.9",
   "engines": {
@@ -14,9 +14,11 @@
     "lint": "turbo lint",
     "test": "turbo test",
     "demo:m0": "pnpm --filter @rekoda/core demo",
-    "format": "prettier --write \"**/*.{ts,tsx,md,json,yml}\""
+    "format": "prettier --write \"**/*.{ts,tsx,md,json,yml}\"",
+    "screenshots": "node scripts/screenshots.mjs"
   },
   "devDependencies": {
+    "playwright": "1.49.1",
     "prettier": "^3.4.2",
     "turbo": "^2.3.3",
     "typescript": "^5.7.2"

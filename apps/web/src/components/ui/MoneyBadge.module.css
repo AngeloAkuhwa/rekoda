@@ -1,0 +1,31 @@
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--rk-space-2);
+  padding: var(--rk-space-1) var(--rk-space-3);
+  border-radius: var(--rk-radius-full);
+  font-size: var(--rk-text-sm);
+  font-weight: 500;
+  line-height: 1.4;
+  border: 1px solid currentColor;
+  white-space: nowrap;
+}
+.glyph {
+  font-weight: 700;
+}
+
+.verified {
+  color: var(--rk-verified);
+}
+/* Neutral by design — a recorded payment is a normal state, not a warning. */
+.recorded {
+  color: var(--rk-recorded);
+}
+/* Never a failure. */
+.notSeen {
+  color: var(--rk-notseen);
+  border-style: dashed;
+}
+.attention {
+  color: var(--rk-attention);
+}
