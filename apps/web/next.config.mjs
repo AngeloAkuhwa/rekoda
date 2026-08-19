@@ -34,9 +34,10 @@ const csp = [
   // Next injects inline bootstrap scripts; 'unsafe-inline' is ignored by
   // browsers that honour hashes, so it is only a fallback for older ones.
   `script-src 'self' 'unsafe-inline'${isProduction ? '' : " 'unsafe-eval'"}`,
-  // Google Fonts serves the stylesheet; Next emits inline <style> for CSS modules.
-  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
-  'font-src https://fonts.gstatic.com',
+  // Next emits inline <style> for CSS modules; no third-party stylesheet now.
+  "style-src 'self' 'unsafe-inline'",
+  // Fonts are self-hosted, so this closes to our own origin entirely.
+  "font-src 'self'",
   "img-src 'self' data:",
   // The browser only ever talks to this origin — every API call is made
   // server-side, so there is no third-party host to allow here.

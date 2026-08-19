@@ -46,13 +46,13 @@ describe('computeMoney — the document equation', () => {
   it('subtotal − discount + fees + vat = total, to the kobo', () => {
     const b = computeMoney({
       items: [
-        { name: 'Silk dress', quantity: 2, price: 20_000 },
-        { name: 'Handbag', quantity: 1, price: 25_000 },
+        { name: 'Silk dress', quantity: 2, unitPriceNaira: 20_000 },
+        { name: 'Handbag', quantity: 1, unitPriceNaira: 25_000 },
       ],
-      discount: 5_000,
-      deliveryFee: 2_000,
-      vatAmount: 0,
-      amountPaid: 40_000,
+      discountNaira: 5_000,
+      deliveryFeeNaira: 2_000,
+      vatAmountNaira: 0,
+      amountPaidNaira: 40_000,
     });
     expect(b.subtotalK).toBe(6_500_000);
     expect(b.totalK).toBe(6_200_000);
@@ -62,8 +62,8 @@ describe('computeMoney — the document equation', () => {
 
   it('flags a stated total that disagrees by >1% and >₦50 — never silently fixes', () => {
     const b = computeMoney({
-      items: [{ name: 'Wig', quantity: 3, price: 50_000 }],
-      totalAmount: 100_000, // items say 150k
+      items: [{ name: 'Wig', quantity: 3, unitPriceNaira: 50_000 }],
+      statedTotalNaira: 100_000, // items say 150k
     });
     expect(b.mismatch).toBe(true);
     expect(b.impliedDiscountK).toBe(5_000_000);
@@ -72,21 +72,57 @@ describe('computeMoney — the document equation', () => {
 
   it('accepts a stated total within tolerance as authoritative', () => {
     const b = computeMoney({
-      items: [{ name: 'Service', quantity: 1, price: 100_000 }],
-      totalAmount: 99_960, // ₦40 off — inside the ₦50 tolerance
+      items: [{ name: 'Service', quantity: 1, unitPriceNaira: 100_000 }],
+      statedTotalNaira: 99_960, // ₦40 off — inside the ₦50 tolerance
     });
     expect(b.mismatch).toBe(false);
     expect(b.totalK).toBe(9_996_000);
     expect(isBalanced(b)).toBe(true);
   });
 
-  it('caps amountPaid at total — prepayment cannot fabricate negative balances', () => {
+  /**
+   * This replaces a test called "caps amountPaid at total", which asserted —
+   * and therefore protected — the bug. Its stated reason was that a prepayment
+   * must not fabricate a negative balance, which is true and is still true
+   * here: the balance floors at zero. What it got wrong was throwing the
+   * excess away to achieve that.
+   */
+  it('records an overpayment instead of quietly swallowing it', () => {
     const b = computeMoney({
-      items: [{ name: 'Bag', quantity: 1, price: 10_000 }],
-      amountPaid: 999_999,
+      items: [{ name: 'Bag', quantity: 1, unitPriceNaira: 100_000 }],
+      amountPaidNaira: 150_000,
     });
-    expect(b.amountPaidK).toBe(b.totalK);
+    // Sold for ₦100k, she paid ₦150k. All three facts survive.
+    expect(b.totalK).toBe(10_000_000);
+    expect(b.amountPaidK).toBe(15_000_000);
+    expect(b.overpaymentK).toBe(5_000_000);
+    // Still not a negative debt — the original concern, handled properly.
     expect(b.balanceDueK).toBe(0);
+    // The invariant that ties the three together.
+    expect(b.totalK - b.amountPaidK).toBe(b.balanceDueK - b.overpaymentK);
+  });
+
+  it('reports no overpayment on an ordinary part-payment', () => {
+    const b = computeMoney({
+      items: [{ name: 'Bag', quantity: 1, unitPriceNaira: 100_000 }],
+      amountPaidNaira: 40_000,
+    });
+    expect(b.overpaymentK).toBe(0);
+    expect(b.balanceDueK).toBe(6_000_000);
+    expect(b.totalK - b.amountPaidK).toBe(b.balanceDueK - b.overpaymentK);
+  });
+
+  it('agrees with applyPayment about what counts as an overpayment', () => {
+    // The two used to disagree about the same event: one clamped, the other
+    // refused. They still differ in what they DO — a draft records, a ledger
+    // mutation refuses — but they must never differ on whether it happened.
+    const b = computeMoney({
+      items: [{ name: 'Bag', quantity: 1, unitPriceNaira: 100_000 }],
+      amountPaidNaira: 150_000,
+    });
+    const applied = applyPayment(0, b.totalK, 15_000_000);
+    expect(applied.ok).toBe(false);
+    if (!applied.ok) expect(applied.excessK).toBe(b.overpaymentK);
   });
 });
 

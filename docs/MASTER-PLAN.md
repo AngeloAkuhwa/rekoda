@@ -859,10 +859,16 @@ expensive the later they are closed.
    distinguishes proving the policies from proving nothing.
 3. **pg-boss jobs must run inside `withBusiness`.** Background workers are
    where tenant context is forgotten first; the job wrapper enforces it.
-4. **Composite indexes on hot paths.** Present indexes are business-leading but
-   several are single-column. The debtors query (`who owes me`) and the
-   reconciliation queue need `(business_id, status)` on `invoices` and
-   `payments`, and `(business_id, customer_id)` on `invoices`.
+   *Still open — lands with M2, when there are jobs to wrap.*
+4. ~~**Composite indexes on hot paths.**~~ **Done.** Migration
+   `0003_hot_path_indexes`: `(business_id, status)` and
+   `(business_id, customer_id)` on `invoices`, `(business_id, verified)` on
+   `payments` — `verified` rather than `status`, because that is the column the
+   anti-fake-alert feature actually filters on. The single-column indexes they
+   supersede were **dropped**: PostgreSQL serves any leading subset of a
+   composite, and an index on `customer_id` alone could only answer a
+   cross-tenant query that RLS forbids. Every surviving index is paid for on
+   each insert, and this ledger is append-heavy.
 5. ~~**`businesses` INSERT under `tenant_self`.**~~ **Done (M1).**
    `identity.createBusinessWithOwner()` pre-generates the UUID and pins it, with
    a test. See ADR 0020 for the two adjacent traps found while doing it: a
@@ -872,19 +878,26 @@ expensive the later they are closed.
 
 **Money-engine consistency**
 
-6. **`computeMoney` silently clamps overpayment.** It does
-   `paidK = Math.min(paid, totalK)`, while `applyPayment` *refuses* overpayment
-   with the exact excess. Same concept, two behaviours — and the clamp
-   silently discards the discrepancy, which contradicts the rule that
-   mismatches are flagged, never fixed. "Sold for ₦100k, she paid ₦150k" must
-   surface as an overpayment exception, not become ₦100k. Align on refuse +
-   flag, and add the regression test.
-7. **Unit-carrying names at the parse boundary.** `computeMoney` takes *naira*
-   (`price`, `amountPaid`) and returns *kobo* (`totalK`, `balanceDueK`). That
-   is a legitimate boundary, but the field names do not say so. Rename inputs
-   to `priceNaira` / `amountPaidNaira`, or move naira→kobo conversion into
-   `packages/contracts` so `core` is kobo-only and Prime Directive #1 reads
-   literally true.
+6. ~~**`computeMoney` silently clamps overpayment.**~~ **Done.**
+   `MoneyBlock` now carries `overpaymentK`, `amountPaidK` records what was
+   actually handed over, and `balanceDueK` floors at zero — so "sold for ₦100k,
+   she paid ₦150k" keeps all three facts instead of quietly becoming ₦100k.
+   The invariant is `totalK - amountPaidK === balanceDueK - overpaymentK`.
+
+   Worth recording: the behaviour was protected by a passing test called
+   *"caps amountPaid at total — prepayment cannot fabricate negative
+   balances"*. Its stated reason was sound and is still honoured (the balance
+   never goes negative); what it got wrong was discarding the excess to achieve
+   it. A test can enshrine a bug while looking like a safeguard.
+
+7. ~~**Unit-carrying names at the parse boundary.**~~ **Done.** `MoneyDraft`
+   inputs are now `unitPriceNaira`, `discountNaira`, `statedTotalNaira`,
+   `amountPaidNaira` and so on. They previously sat beside outputs named
+   `totalK` and `amountPaidK`, so the only thing telling a reader which unit a
+   field held was knowing which side of the function they were on.
+   `packages/contracts` was left alone deliberately: its fields are typed with
+   the `naira` zod helper, which names the unit at every use, and renaming them
+   would change the schema the AI is asked to fill.
 
 ---
 

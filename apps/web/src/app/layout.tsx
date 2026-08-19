@@ -36,12 +36,33 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en-NG">
       <head>
         <script dangerouslySetInnerHTML={{ __html: THEME_SCRIPT }} />
-        <link rel="preconnect" href="https://fonts.googleapis.com" />
-        <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="" />
+        {/*
+          Self-hosted (scripts/fetch-fonts.mjs). This used to be a stylesheet
+          link to fonts.googleapis.com, which blocks the first paint behind a
+          DNS lookup, a TLS handshake and two round trips to a third party —
+          on exactly the slow mobile networks Rekoda's merchants are on.
+
+          Only the two faces above the fold are preloaded. Preloading all
+          twelve would compete with the HTML for the same scarce bandwidth and
+          make the problem worse; the rest arrive through the stylesheet, and
+          `unicode-range` means a browser never fetches a subset it has no
+          glyphs for.
+        */}
         <link
-          href="https://fonts.googleapis.com/css2?family=Calistoga&family=Inter:wght@400;500;600&family=Noto+Sans:wght@400;500;600&display=swap"
-          rel="stylesheet"
+          rel="preload"
+          href="/fonts/inter-400-latin.woff2"
+          as="font"
+          type="font/woff2"
+          crossOrigin=""
         />
+        <link
+          rel="preload"
+          href="/fonts/calistoga-400-latin.woff2"
+          as="font"
+          type="font/woff2"
+          crossOrigin=""
+        />
+        <link rel="stylesheet" href="/fonts/fonts.css" />
       </head>
       <body>
         <a href="#main" className="rk-sr-only">
