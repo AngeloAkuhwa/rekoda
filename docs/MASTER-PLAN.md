@@ -196,7 +196,14 @@ because Twilio passes Meta's fees through *and* adds its own.
 tooling genuinely reduces operational surface. The channel layer is provider-agnostic, so this
 is configuration, not architecture.
 
-## ADR 0003 — Integrate uses the merchant's own Paystack account · **PROPOSED — needs owner confirmation**
+## ADR 0003 — Integrate uses the merchant's own Paystack account · **SUPERSEDED in direction by docs/payments-v1.md (19 Aug 2026)**
+
+**The owner's Payments V1 directive chooses the platform-subaccount model**
+(one Rekoda↔Paystack relationship, a subaccount per merchant settling to their
+own bank — the ADR 0013/0019 shape), gated by the §47 written confirmation
+from Paystack. The vaulted-merchant-key path below remains the fallback if
+Paystack declines the platform model. The provider-neutral Payment Hub is the
+implementation either way; only the connection-onboarding adapter differs.
 
 Rekoda stores the merchant's secret key encrypted (AES-256-GCM), registers a webhook, creates
 payment requests on their behalf. Money settles directly to the merchant.

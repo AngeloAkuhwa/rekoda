@@ -55,6 +55,16 @@ export interface ApiConfig {
   aiCallsGlobalPerDay: number;
   /** Recorded on every usage row, so a past cost is never re-derived. */
   planningFxNairaPerUsd: number;
+  /**
+   * Signs Paystack webhooks AND authenticates Paystack API calls — Paystack
+   * uses the secret key for both. Empty means every webhook is rejected (the
+   * safe direction) and no provider call can be made. Deliberately NOT
+   * required in production yet: payments do not go live until the §47
+   * platform-model confirmation from Paystack is in writing
+   * (docs/payments-v1.md), and requiring the key now would block every
+   * non-payment deploy on a credential nobody has.
+   */
+  paystackSecretKey: string;
   /** Sends replies. Empty means replies are recorded but not delivered. */
   metaAccessToken: string;
   metaPhoneNumberId: string;
@@ -205,6 +215,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     aiCallsPerBusinessPerDay: Number(env['AI_DAILY_CALLS_PER_BUSINESS'] ?? 60),
     aiCallsGlobalPerDay: Number(env['AI_DAILY_CALLS_GLOBAL'] ?? 5_000),
     planningFxNairaPerUsd: Number(env['PLANNING_FX_NGN_PER_USD'] ?? 1_450),
+    paystackSecretKey: env['PAYSTACK_SECRET_KEY'] ?? '',
     metaAccessToken: env['META_ACCESS_TOKEN'] ?? '',
     metaPhoneNumberId: env['META_PHONE_NUMBER_ID'] ?? '',
     metaGraphVersion: env['META_GRAPH_VERSION'] ?? 'v21.0',

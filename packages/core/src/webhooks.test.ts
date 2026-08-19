@@ -1,6 +1,10 @@
 import { createHmac } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import { answerVerificationChallenge, verifyMetaSignature } from './webhooks.js';
+import {
+  answerVerificationChallenge,
+  verifyMetaSignature,
+  verifyPaystackSignature,
+} from './webhooks.js';
 
 const SECRET = 'meta-app-secret';
 const sign = (body: string, secret = SECRET) =>
@@ -82,5 +86,41 @@ describe('the subscription handshake', () => {
     expect(
       answerVerificationChallenge({ mode: 'subscribe', token: '', challenge: 'x' }, ''),
     ).toBeNull();
+  });
+});
+
+describe('Paystack signatures (payments-v1 §18)', () => {
+  const SECRET = 'sk_test_paystack_secret_for_tests';
+  const body = JSON.stringify({ event: 'charge.success', data: { id: 1, amount: 15000000 } });
+  const sign = (raw: string, secret = SECRET) =>
+    createHmac('sha512', secret).update(raw, 'utf8').digest('hex');
+
+  it('accepts the genuine signature over the raw bytes', () => {
+    expect(verifyPaystackSignature(body, sign(body), SECRET)).toBe(true);
+  });
+
+  it('rejects a signature made with a different secret', () => {
+    expect(verifyPaystackSignature(body, sign(body, 'sk_test_wrong'), SECRET)).toBe(false);
+  });
+
+  it('rejects a signature over DIFFERENT bytes — the re-serialisation trap', () => {
+    // Same trap as Meta: signing a re-serialisation of the parsed JSON moves
+    // whitespace and key order, and every legitimate webhook then fails.
+    const spaced = JSON.stringify(JSON.parse(body), null, 2);
+    expect(verifyPaystackSignature(body, sign(spaced), SECRET)).toBe(false);
+  });
+
+  it('rejects everything when the secret is not configured', () => {
+    // The safe direction of failure: an unconfigured deployment refuses
+    // webhooks rather than accepting unsigned ones.
+    expect(verifyPaystackSignature(body, sign(body), '')).toBe(false);
+  });
+
+  it('rejects a Meta-style prefixed header — Paystack sends bare hex', () => {
+    expect(verifyPaystackSignature(body, `sha512=${sign(body)}`, SECRET)).toBe(false);
+  });
+
+  it('rejects an absent header', () => {
+    expect(verifyPaystackSignature(body, undefined, SECRET)).toBe(false);
   });
 });

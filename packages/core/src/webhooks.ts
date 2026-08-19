@@ -58,3 +58,29 @@ export function answerVerificationChallenge(
   if (a.length !== b.length) return null;
   return timingSafeEqual(a, b) ? query.challenge : null;
 }
+
+/**
+ * Paystack signs with HMAC-SHA512 of the raw body under the SECRET KEY,
+ * delivered bare-hex in `x-paystack-signature` — no `sha512=` prefix, unlike
+ * Meta's header format. The raw-bytes rule is identical.
+ *
+ * An empty secret returns false for everything, so a deployment without
+ * Paystack configured rejects webhooks rather than accepting unsigned ones —
+ * the same safe direction of failure as the Meta endpoint.
+ */
+export function verifyPaystackSignature(
+  rawBody: Buffer | string,
+  header: string | undefined,
+  secretKey: string,
+): boolean {
+  if (!header || !secretKey) return false;
+
+  const expected = createHmac('sha512', secretKey)
+    .update(typeof rawBody === 'string' ? Buffer.from(rawBody, 'utf8') : rawBody)
+    .digest('hex');
+
+  const a = Buffer.from(expected, 'utf8');
+  const b = Buffer.from(header, 'utf8');
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
+}
