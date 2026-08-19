@@ -38,8 +38,17 @@ export interface ApiConfig {
   workerDatabaseUrl: string | null;
   /** Whether this process polls the queue as well as serving requests. */
   workerEnabled: boolean;
+  /**
+   * Which provider interprets a merchant's message.
+   *
+   * Not a failover pair: extraction quality IS the product experience
+   * (ADR 0007), so which model reads a sentence about money is a decision
+   * someone makes, not one a network blip makes for them.
+   */
+  aiProvider: 'anthropic' | 'openai';
   /** Empty means "behave as if the provider is down" — see ai.module.ts. */
   anthropicApiKey: string;
+  openaiApiKey: string;
   aiModelDefault: string;
   /** Daily ceilings. The thing on the other side of these is a bill. */
   aiCallsPerBusinessPerDay: number;
@@ -71,6 +80,12 @@ export interface ApiConfig {
 
 class ConfigError extends Error {}
 
+/** A model id is not portable between providers, so the default follows one. */
+const DEFAULT_MODEL: Record<'anthropic' | 'openai', string> = {
+  anthropic: 'claude-sonnet-latest',
+  openai: 'gpt-4.1',
+};
+
 function required(env: NodeJS.ProcessEnv, key: string, minLength = 0): string {
   const value = env[key];
   if (!value) throw new ConfigError(`${key} is required`);
@@ -88,6 +103,31 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     throw new ConfigError(
       'REKODA_REVEAL_OTP must never be set in production — it returns live OTP codes to any caller',
     );
+  }
+
+  /**
+   * Explicit choice wins. With no choice made, whichever key is present is
+   * used — and if BOTH are present, Anthropic, because ADR 0007 names Sonnet
+   * the default brain and a coin toss is not a routing policy.
+   */
+  const requested = env['AI_PROVIDER'];
+  if (requested && requested !== 'anthropic' && requested !== 'openai') {
+    throw new ConfigError(`AI_PROVIDER must be "anthropic" or "openai", not "${requested}"`);
+  }
+  const aiProvider: 'anthropic' | 'openai' =
+    requested === 'openai' || requested === 'anthropic'
+      ? requested
+      : env['ANTHROPIC_API_KEY']
+        ? 'anthropic'
+        : env['OPENAI_API_KEY']
+          ? 'openai'
+          : 'anthropic';
+
+  if (requested === 'anthropic' && !env['ANTHROPIC_API_KEY']) {
+    throw new ConfigError('AI_PROVIDER=anthropic but ANTHROPIC_API_KEY is not set');
+  }
+  if (requested === 'openai' && !env['OPENAI_API_KEY']) {
+    throw new ConfigError('AI_PROVIDER=openai but OPENAI_API_KEY is not set');
   }
 
   const workerEnabled = env['REKODA_WORKER'] === '1';
@@ -146,7 +186,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
      * should not need an Anthropic account.
      */
     anthropicApiKey: env['ANTHROPIC_API_KEY'] ?? '',
-    aiModelDefault: env['AI_MODEL_DEFAULT'] ?? 'claude-sonnet-latest',
+    openaiApiKey: env['OPENAI_API_KEY'] ?? '',
+    aiProvider,
+    /**
+     * The default model follows the provider, because a model id is not
+     * portable between them — `claude-sonnet-latest` means nothing to OpenAI.
+     * Set `AI_MODEL_DEFAULT` to override; leave it unset and each provider
+     * gets a sensible default of its own.
+     */
+    aiModelDefault: env['AI_MODEL_DEFAULT'] ?? DEFAULT_MODEL[aiProvider],
     /**
      * Defaults are a ceiling, not a target. At ~₦8 a call (pricing-model.md),
      * 60 per merchant is about ₦480 a day against a subscription, and 5,000

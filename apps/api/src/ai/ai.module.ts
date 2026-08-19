@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { CONFIG, type ApiConfig } from '../config.js';
 import { AnthropicTransport } from './anthropic.transport.js';
+import { OpenAiTransport } from './openai.transport.js';
 import { Interpreter } from './interpreter.service.js';
 import { MODEL_TRANSPORT, ProviderUnreachable, type ModelTransport } from './transport.js';
 
@@ -33,10 +34,23 @@ class NoTransportConfigured implements ModelTransport {
     {
       provide: MODEL_TRANSPORT,
       inject: [CONFIG],
-      useFactory: (config: ApiConfig): ModelTransport =>
-        config.anthropicApiKey
+      useFactory: (config: ApiConfig): ModelTransport => {
+        /**
+         * One port, two providers, chosen by configuration.
+         *
+         * Everything that decides what Rekoda does — the ₦10bn ceiling, the
+         * schema border, the spend ceiling, the conversation gates — sits
+         * above this line and does not know which provider answered.
+         */
+        if (config.aiProvider === 'openai') {
+          return config.openaiApiKey
+            ? new OpenAiTransport(config.openaiApiKey)
+            : new NoTransportConfigured();
+        }
+        return config.anthropicApiKey
           ? new AnthropicTransport(config.anthropicApiKey)
-          : new NoTransportConfigured(),
+          : new NoTransportConfigured();
+      },
     },
     Interpreter,
   ],

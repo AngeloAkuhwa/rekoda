@@ -61,10 +61,31 @@ export const MODEL_PRICES: Readonly<Record<string, ModelPrice>> = {
   },
 };
 
+/**
+ * Extra prices supplied at runtime, keyed by family.
+ *
+ * Exists because this file must not invent a price it is not sure of. A wrong
+ * price is worse than a missing one: `priced: false` shows up in the margin
+ * view as a gap somebody investigates, while a wrong number shows up as a
+ * margin somebody acts on.
+ *
+ * OpenAI families are deliberately absent from `MODEL_PRICES` for that reason
+ * — supply them here from the current price list when you switch providers.
+ */
+const runtimePrices = new Map<string, ModelPrice>();
+
+export function registerModelPrice(family: string, price: ModelPrice): void {
+  runtimePrices.set(family.toLowerCase(), price);
+}
+
+function priceFor(family: string): ModelPrice | undefined {
+  return MODEL_PRICES[family] ?? runtimePrices.get(family);
+}
+
 /** The family a model id belongs to, or null if we do not price it. */
 export function modelFamily(modelId: string): string | null {
   const id = modelId.toLowerCase();
-  for (const family of Object.keys(MODEL_PRICES)) {
+  for (const family of [...Object.keys(MODEL_PRICES), ...runtimePrices.keys()]) {
     if (id.includes(family)) return family;
   }
   return null;
@@ -98,7 +119,7 @@ function microsFor(tokens: number, microsPerMTok: number): number {
  */
 export function costOfCall(modelId: string, usage: TokenUsage, fxNairaPerUsd: number): CallCost {
   const family = modelFamily(modelId);
-  const price = family ? MODEL_PRICES[family] : undefined;
+  const price = family ? priceFor(family) : undefined;
   if (!price) return { usdMicros: 0, nairaKobo: 0, priced: false };
 
   const usdMicros =
@@ -126,7 +147,7 @@ export function billingPeriod(at: Date): string {
  */
 export function cacheSaving(modelId: string, tokens: number): number {
   const family = modelFamily(modelId);
-  const price = family ? MODEL_PRICES[family] : undefined;
+  const price = family ? priceFor(family) : undefined;
   if (!price || tokens <= 0) return 0;
   const full = microsFor(tokens, price.inputMicrosPerMTok);
   const cached = microsFor(tokens, price.cacheReadMicrosPerMTok);
