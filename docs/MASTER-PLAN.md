@@ -1251,11 +1251,22 @@ next slice.
 
 ### 5.3.6 Documents
 
-Port the PDF engine. Non-negotiables carried over: `₦` glyph support via embedded font,
-`imagePrep` alpha-flattening (the black-logo bug), template families (compact A5 / invoice A4 /
-pharmacy), header styles, signature + stamp, amount-in-words, "Includes VAT @ x%" memo,
-AMOUNT DUE box (A4 only — do not duplicate the balance), `E&OE` footnote, page numbers.
-Store in **R2** under an unguessable key; DB holds the key, never the blob.
+**Engine done** (`apps/api/src/documents/pdf.ts` over `packages/core/src/invoice-layout.ts`).
+The split is the point: the layout decides WHAT the document says and is unit-tested;
+the renderer turns blocks into ink. Asserting "the VAT memo appears" against a
+compressed PDF with a subsetted font needs a PDF parser, and a test that needs a
+PDF parser is a test nobody writes — so the document would go unchecked.
+
+Carried over and verified: `₦` renders from an embedded Noto Sans (it is NOT in
+WinAnsi, so pdfkit's built-in Helvetica would print a blank box before every
+price), Yoruba ẹ/ọ render, amount-in-words in Nigerian convention, "Includes VAT
+@ x%" as a MEMO not a line, the AMOUNT DUE box on A4, E&OE, page numbers only
+when there is more than one page.
+
+Still to do: `imagePrep` alpha-flattening, template families beyond compact
+A5/A4, header styles, signature + stamp — all four wait on a logo/signature
+upload that does not exist yet. Plus **R2** storage under an unguessable key
+(the DB holds the key, never the blob) and the render/deliver job.
 
 ### 5.3.6b Payment verification & document verification (ADR 0014)
 
