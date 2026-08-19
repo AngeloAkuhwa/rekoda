@@ -190,7 +190,7 @@ jobs:
           # CI has no pre-installed browser at a fixed path, so let Playwright
           # resolve the one it just installed.
           REKODA_CHROME: ''
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: playwright-traces
