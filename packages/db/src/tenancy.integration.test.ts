@@ -39,6 +39,41 @@ beforeEach(async () => {
   await truncateAll(urls);
 });
 
+/**
+ * Assert on the reason PostgreSQL refused, not on the wrapper around it.
+ *
+ * Drivers wrap errors, and the wrapping changes: drizzle 0.45 began raising a
+ * `DrizzleQueryError` whose message is "Failed query: …" with the real
+ * PostgreSQL error demoted to `.cause`. A test matching `error.message` then
+ * silently stops checking the policy and starts checking the ORM's phrasing —
+ * it still passes when the database rejects for the WRONG reason, and fails
+ * when nothing is wrong at all.
+ *
+ * Walking the cause chain keeps the assertion pointed at the database.
+ */
+async function expectRejectionBecause(
+  operation: Promise<unknown> | (() => Promise<unknown>),
+  pattern: RegExp,
+): Promise<void> {
+  try {
+    await (typeof operation === 'function' ? operation() : operation);
+  } catch (error) {
+    const reasons: string[] = [];
+    for (let e: unknown = error, depth = 0; e && depth < 10; depth++) {
+      if (e instanceof Error) {
+        reasons.push(e.message);
+        e = (e as Error & { cause?: unknown }).cause;
+      } else {
+        reasons.push(String(e));
+        break;
+      }
+    }
+    expect(reasons.join(' | ')).toMatch(pattern);
+    return;
+  }
+  throw new Error(`expected a rejection matching ${pattern}, but it resolved`);
+}
+
 async function seedTenant(name: string, phone: string) {
   const user = await identity.upsertUserByPhone(db, phone);
   const business = await identity.createBusinessWithOwner(db, {
@@ -105,7 +140,7 @@ describe('tenant isolation over a pooled connection', () => {
     // Pinned to Ada, deliberately writing Bola's business_id: the policy's
     // WITH CHECK has to reject it. Without WITH CHECK, USING alone would let a
     // tenant insert rows it then cannot see — a silent cross-tenant write.
-    await expect(
+    await expectRejectionBecause(
       withBusiness(db, ada.business.id, (tx) =>
         tx.insert(products).values({
           businessId: bola.business.id,
@@ -113,7 +148,8 @@ describe('tenant isolation over a pooled connection', () => {
           unitPriceK: 1,
         }),
       ),
-    ).rejects.toThrow(/row-level security/i);
+      /row-level security/i,
+    );
   });
 });
 
@@ -169,15 +205,17 @@ describe('business creation under the tenant_self policy', () => {
 describe('the app role is constrained, not trusted', () => {
   it('cannot rewrite history on append-only tables', async () => {
     const ada = await seedTenant('Ada Fashion', '+2348030000001');
-    await expect(
+    await expectRejectionBecause(
       withBusiness(db, ada.business.id, (tx) =>
         tx.execute(sql`DELETE FROM ledger_entries WHERE business_id = ${ada.business.id}::uuid`),
       ),
-    ).rejects.toThrow(/permission denied/i);
+      /permission denied/i,
+    );
   });
 
   it('cannot turn row-level security off', async () => {
-    await expect(db.execute(sql`ALTER TABLE products DISABLE ROW LEVEL SECURITY`)).rejects.toThrow(
+    await expectRejectionBecause(
+      db.execute(sql`ALTER TABLE products DISABLE ROW LEVEL SECURITY`),
       /must be owner|permission denied/i,
     );
   });
