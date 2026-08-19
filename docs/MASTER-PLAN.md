@@ -660,7 +660,7 @@ and a period lock. Nothing else.***
 
 | Layer | Choice | Notes |
 |---|---|---|
-| Language | TypeScript, Node 22 | `.nvmrc` pins it |
+| Language | TypeScript, Node 24 LTS | `.nvmrc` pins it; `@types/node` tracks the same major so the compiler cannot green-light an API the runtime lacks |
 | Package manager | pnpm 9 via corepack | `pnpm-workspace.yaml` |
 | Build orchestration | Turborepo | `turbo.json` — build/typecheck/lint/test |
 | API | NestJS + Fastify adapter | modules mirror spec §38 |

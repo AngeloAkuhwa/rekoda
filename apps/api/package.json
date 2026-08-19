@@ -24,7 +24,7 @@
     "rxjs": "^7.8.1"
   },
   "devDependencies": {
-    "@types/node": "^22",
+    "@types/node": "^24",
     "prettier": "^3.4.2",
     "typescript": "^5.7.2",
     "vite": "^7",

@@ -145,7 +145,7 @@ To be completely clear about what "self-hosted faster-whisper in a sidecar conta
 
 | Layer | Choice | Why |
 |---|---|---|
-| Language | **TypeScript (Node 22)** | Direct reuse of proven money/PDF/webhook/conversation code; one language everywhere; strongest AI-SDK ecosystem; deep local hiring pool |
+| Language | **TypeScript (Node 24 LTS)** | Direct reuse of proven money/PDF/webhook/conversation code; one language everywhere; strongest AI-SDK ecosystem; deep local hiring pool |
 | API framework | **NestJS (Fastify adapter)** | Spec §38's module tree maps one-to-one onto Nest modules; DI + guards enforce tenant scoping at framework level |
 | Database | **PostgreSQL 16 + Drizzle ORM** | Real multi-tenant Postgres; SQL-first so every ledger query is readable; money as `BIGINT` kobo, never floats |
 | Tenant isolation | **Postgres Row-Level Security** keyed by per-request `app.business_id`, *plus* query-level scoping | A forgotten `WHERE businessId` becomes a zero-rows bug, not a breach |
