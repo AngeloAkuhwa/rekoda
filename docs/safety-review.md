@@ -67,7 +67,7 @@ What is genuinely missing, and should land in M1:
 | G17 | **Order forwarding** for merchants already running a WhatsApp Business App catalogue. **Collect real forwarded-order specimens from live vendors before writing the parser** — do not build against a guessed format. |
 | G18 | **Chat ships publicly first; Integrate follows.** Chat depends on one WhatsApp number — yours. |
 | G24b | **Vendor CAC is a benefit, never a gate.** Rekoda's own CAC carries the platform relationship; the vendor needs **BVN or NIN + a Resolve Account name match**, which is what CBN actually requires and is *better* safety than a registration number — CAC says a business exists on paper, BVN says which human receives the money. Merchants who *do* have CAC unlock Meta verification, a native WABA catalogue, DVAs, and optionally a "Registered business" badge. **The customer is verified by nobody** (R25). |
-| G25 | **Build toward Paystack Connect's *platform-managed* flow** (ADR 0013 rev 2). Merchant supplies a bank account only — no CAC, no Paystack signup, no lifetime cap. The *standard* flow (merchant opens their own Starter Business) stays available as a zero-liability preference, but is **not the default**: Starter is capped at **₦2M lifetime collections**, so it fails exactly the merchants who succeed, roughly four months in. Phase by trust — concierge alpha first, self-serve once the R28 controls exist. |
+| G25 | **Default to merchant-owned Paystack accounts** ([ADR 0019](adr/0019-paystack-account-model-final.md)). The merchant opens a **Starter Business** — ID + BVN + bank account, **no CAC** — Rekoda vaults the key and **never enters the money flow**. No custody question, no aggregation question, no legal opinion needed to start; chargebacks, fraud and AML stay with Paystack and the merchant; no concentration risk. The **₦2M lifetime cap is a graduation gate, not a wall** — instrument collected-to-date, alert at ₦1.5M, and help them register. **Platform-managed is Phase 2**, gated on counsel + the empirical split check + the R28 controls. |
 
 ## 1.6 Honest claims — cheap to keep, expensive to lose
 
@@ -168,7 +168,7 @@ These are the ones that end the company rather than cost a sprint.
 If only five things survive this review:
 
 1. **Never hold funds** (R1/R2) — the only item here that is criminal rather than merely expensive.
-2. **Launch on Connect's standard flow (G25), not the platform-managed flow.** It carries zero transaction liability for Rekoda and needs no CAC from the merchant. Take on the platform-managed flow — and its risk — only when the ₦2M ceiling or DVA demand forces it, and only after A1 and A2 are answered.
+2. **Default to merchant-owned Paystack accounts (G25).** Rekoda stays out of the money flow entirely, so there is no custody question *and* no aggregation question — and **aggregation, not just custody, is what a PSSP licence covers.** It is the only model that needs no legal opinion to start.
 3. **Restore drill passes before the first paying merchant** (G13) — a ledger that cannot be restored is not a ledger.
 4. **Pooled-connection leakage test** (G7) — one test that proves tenant isolation end to end.
 5. **Don't price at ₦2–3k** (R14) — the failure mode that killed the best-funded predecessor.

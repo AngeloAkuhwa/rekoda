@@ -1,6 +1,9 @@
 # 0003 — Integrate connects the merchant's own Paystack account (vaulted key)
 
-**Status:** Proposed (awaiting owner confirmation)
+**Status:** Accepted — **reinstated as the default by
+[0019](0019-paystack-account-model-final.md)** (19 Aug 2026). The merchant owns
+their Paystack account, Rekoda vaults the key and never enters the money flow.
+Collection is **Pay with Transfer** per [0016](0016-per-transaction-accounts-not-per-customer.md).
 **Date:** 2026-08-19
 
 ## Context

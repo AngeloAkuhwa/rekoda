@@ -437,6 +437,47 @@ Gumroad. In WhatsApp commerce, Flowcart and Wapikit (IN/BR) run the aggregator
 onboarding model — but they are commerce tools; none keeps a ledger or
 reconciles, so borrow the onboarding, not the product.*
 
+## ADR 0019 — The Paystack model: merchant-owned accounts · **Accepted**
+
+**This decision moved twice; three facts settled it.** The friction gap was
+smaller than assumed — platform-managed still needs BVN/NIN + a name match per
+sub-merchant, and a Starter Business needs ID + BVN + bank, so **both ask the
+merchant for the same things**. The **₦2M cap is a graduation gate, not a wall** —
+it applies to *Starter* only, and a merchant reaching it is succeeding. And
+decisively: **PSSP licenses "merchant service aggregation and collections"** —
+so *aggregation itself*, not only custody, is the licensed activity. The plan had
+been careful about custody while treating aggregation as free. It is not
+obviously free.
+
+**Default: the merchant owns their Paystack account.**
+
+```
+Merchant's own Paystack (Starter — ID + BVN + bank, no CAC)
+   │  secret key vaulted AES-256-GCM (ADR 0003)
+   ▼  Rekoda creates the charge → Pay with Transfer, per-invoice account
+   ▼  customer transfers → settles to THE MERCHANT'S own balance
+   ▼  charge.success → Rekoda webhook → reconcile → receipt → ledger
+```
+
+**Rekoda is software.** It never collects for a third party, never aggregates,
+never holds or routes funds — **no custody question, no aggregation question,
+nothing to license, and no legal opinion needed to start.** Chargebacks, fraud
+and AML stay with Paystack and the merchant; there is **no concentration risk**;
+and the merchant sees their own Paystack dashboard, which for a product selling
+*"know what actually happened"* is on-message.
+
+**The ₦2M cap becomes a product moment.** Instrument collected-to-date per
+merchant, alert in admin at ₦1.5M, and help them register — Paystack sells
+registration. A merchant who discovers the cap by having collections stop
+mid-sale is a merchant Rekoda failed.
+
+**Platform-managed (ADR 0013) is Phase 2, not discarded** — for merchants who
+genuinely will open no account. It ships when all three hold: counsel confirms
+aggregation without custody is outside licensable activity (including Paystack's
+Jan 2026 **Ladder Microfinance Bank** acquisition); a live PwT charge with
+`split_code` returns a **populated `split` object** (asserted on a field *inside*
+it — the `plan: {}` trap); and the R28 controls exist and have been exercised.
+
 ## ADR 0018 — Retire the WABA catalogue as an order-capture path · **Accepted**
 
 ADR 0017 flagged one unknown: do catalogue `order` webhooks reach the API app

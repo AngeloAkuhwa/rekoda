@@ -1,6 +1,11 @@
 # 0013 — Rekoda as the single integration: platform-owned Paystack, merchant subaccounts
 
-**Status:** Proposed — collection mechanism **corrected by
+**Status:** Proposed — **deferred to Phase 2 by
+[0019](0019-paystack-account-model-final.md)**, which makes merchant-owned
+Paystack accounts the default so Rekoda never enters the money flow. Everything
+below stays designed and valid for the day Phase 2 is taken; it ships only once
+counsel confirms aggregation, the empirical split check passes, and the controls
+below exist. Collection mechanism **corrected by
 [0016](0016-per-transaction-accounts-not-per-customer.md)**: per-*transaction*
 transfer accounts, not per-*customer* DVAs, because a dedicated account requires
 **BVN validation of the end customer** for our business category. The platform

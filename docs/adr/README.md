@@ -24,5 +24,6 @@ a new ADR that supersedes the old one.
 | [0016](0016-per-transaction-accounts-not-per-customer.md) | Per-transaction transfer accounts, not per-customer DVAs | Accepted |
 | [0017](0017-meta-direct-for-integrate-too.md) | Meta-direct for Integrate too; Twilio becomes optional | Accepted (scope narrowed by 0018) |
 | [0018](0018-retire-waba-catalogue-capture.md) | Retire the WABA catalogue as an order-capture path | Accepted |
+| [0019](0019-paystack-account-model-final.md) | The Paystack model: merchant-owned accounts, Rekoda stays out of the money | Accepted |
 
 Template: [0000-template.md](0000-template.md)
