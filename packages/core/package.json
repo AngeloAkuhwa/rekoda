@@ -42,7 +42,7 @@
     "@rekoda/shared": "workspace:*"
   },
   "devDependencies": {
-    "@types/node": "^24",
+    "@types/node": "^26",
     "prettier": "^3.4.2",
     "tsx": "^4.19.2",
     "typescript": "^7.0.2",
