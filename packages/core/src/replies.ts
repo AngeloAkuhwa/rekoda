@@ -186,6 +186,18 @@ function formatNaira(kobo: number): string {
   return `₦${whole}${minor === '00' ? '' : `.${minor}`}`;
 }
 
+/**
+ * The caption above a delivered document.
+ *
+ * Names the document, because that is what a merchant needs when they forward
+ * it to a customer and when they look for it again in three weeks. It does not
+ * repeat the total — the total is on the document, and a caption that restates
+ * a figure is a second place for that figure to be wrong.
+ */
+export function documentSent(reference: string): Reply {
+  return reply(`${reference} — here is your copy. Forward it to your customer.`);
+}
+
 /** A capability the plan names but the product does not have yet. */
 export function notYet(what: string): Reply {
   return reply(

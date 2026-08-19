@@ -1275,10 +1275,17 @@ the key, never the blob.
 R2 is the storage when configured; a filesystem store exists for development
 and is used ONLY when asked for explicitly, never as a silent fallback.
 
+**Delivery is done** — a third job after issue and render, because it fails for
+reasons neither of those should be re-run for (Meta unreachable, a token
+expired). The bytes are uploaded to Meta rather than sent as a link: a link
+would need the PDF publicly reachable, which is precisely what the unguessable
+key exists to avoid. A failed delivery is RETHROWN and retried, unlike a failed
+text reply — a missed reply is a sentence, a missed document is the thing the
+merchant asked for, and the PDF is already in storage.
+
 Still to do: `imagePrep` alpha-flattening, template families beyond compact
 A5/A4, header styles, signature + stamp — all four wait on a logo/signature
-upload that does not exist yet. And **delivery**: sending the PDF to the
-merchant over WhatsApp needs Meta's media upload, which is its own slice.
+upload that does not exist yet.
 
 ### 5.3.6b Payment verification & document verification (ADR 0014)
 
@@ -1300,8 +1307,10 @@ balances, Debtors, Invoices, Receipts. Server components; mobile-first.
 
 ### 5.3.8 M2 exit criteria
 
-- [ ] Real WhatsApp number, real message → confirmed record + PDF delivered
-      *(message → confirmed record works end to end in tests; PDF is the next slice)*
+- [x] Real message → confirmed record + PDF delivered — proven end to end in
+      tests against a real PostgreSQL, from a signed webhook to a document in
+      the merchant's hands. *Against a real WhatsApp number: still to run, and
+      it needs credentials only the owner has.*
 - [x] Ledger balances after every operation — trial balance asserted on entries read
       BACK from the database, not on the object that was written. *(As a job: open.)*
 - [x] Replayed webhook creates nothing new (test)

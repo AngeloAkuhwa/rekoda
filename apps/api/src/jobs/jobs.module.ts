@@ -18,6 +18,9 @@ import { JobQueue, JobKind } from './queue.service.js';
 import { JobRunner } from './runner.js';
 import { inboundMessageHandler, type InboundMessageDeps } from './inbound-message.handler.js';
 import { renderDocumentHandler } from './render-document.handler.js';
+import { deliverDocumentHandler } from './deliver-document.handler.js';
+import { MESSAGE_SENDER } from '../channels/sender.tokens.js';
+import type { MessageSender } from '../channels/sender.js';
 import { DocumentsModule, DOCUMENT_STORAGE } from '../documents/documents.module.js';
 import type { DocumentStorage } from '../documents/storage.js';
 
@@ -39,6 +42,7 @@ export const JOB_RUNNER = Symbol('JobRunner');
  */
 export interface RunnerDeps extends InboundMessageDeps {
   storage: DocumentStorage;
+  sender: MessageSender;
 }
 
 export function buildRunner(
@@ -52,6 +56,10 @@ export function buildRunner(
   runner.register(
     JobKind.RenderDocument,
     renderDocumentHandler({ storage: deps.storage, db: appDb }),
+  );
+  runner.register(
+    JobKind.DeliverDocument,
+    deliverDocumentHandler({ storage: deps.storage, sender: deps.sender, db: appDb }),
   );
   return runner;
 }
@@ -77,6 +85,7 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
     @Inject(Interpreter) private readonly interpreter: Interpreter,
     @Inject(ReplySender) private readonly replySender: ReplySender,
     @Inject(DOCUMENT_STORAGE) private readonly storage: DocumentStorage,
+    @Inject(MESSAGE_SENDER) private readonly sender: MessageSender,
   ) {}
 
   onModuleInit(): void {
@@ -93,6 +102,7 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
       interpreter: this.interpreter,
       replySender: this.replySender,
       storage: this.storage,
+      sender: this.sender,
       config: this.config,
     });
     this.runner.start();

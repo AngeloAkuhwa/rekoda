@@ -70,6 +70,7 @@ let closeWorkerDb: () => Promise<void>;
 let logger: CapturingLogger;
 let deps: RunnerDeps;
 let stubTransport: StubTransport;
+let stubSender: StubSender;
 
 beforeAll(async () => {
   urls = requireUrls();
@@ -107,13 +108,15 @@ beforeAll(async () => {
     intent: 'Unclear',
     clarification: 'How many wrappers?',
   });
+  stubSender = new StubSender();
   deps = {
     gateway: new PrivacyGateway(db, config),
     interpreter: new Interpreter(db, config, stubTransport),
-    replySender: new ReplySender(config, new StubSender()),
+    replySender: new ReplySender(config, stubSender),
     // A real filesystem storage, not a mock: the render job's assertions are
     // about bytes actually landing somewhere and being readable back.
     storage: new LocalStorage(storageRoot),
+    sender: stubSender,
     config,
   };
 });
