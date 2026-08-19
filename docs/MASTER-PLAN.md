@@ -28,6 +28,9 @@ a memory, a chat, or an assumption — this document wins. If this document conf
 4. `docs/safety-review.md` — GREEN (safe to build now) / AMBER (needs written
    confirmation first) / RED (never build, never claim). **Read this before
    starting anything in Integrate or billing.**
+   Alongside it, `docs/integrate-explained.md` walks Integrate end to end from
+   the vendor's side — onboarding, a real sale, documents, dashboard, and how
+   Rekoda earns. Read it before building M5 or onboarding a concierge merchant.
 5. `docs/design-plan.md` — how every surface is designed, and the UI review gate.
 6. `docs/HANDOFF.md` — current status and open items, updated each session.
 7. Then start work at the current milestone (Part 5).
@@ -517,6 +520,7 @@ rekoda/
 │   ├── architecture.md       product & system specification
 │   ├── engineering-plan.md   review findings, stack rationale
 │   ├── safety-review.md      GREEN / AMBER / RED recommendations
+│   ├── integrate-explained.md  Integrate end to end from the vendor's side
 │   ├── design-plan.md        design system, UI rules, review gate
 │   ├── pricing-model.md      commercial model + COGS + review triggers
 │   ├── content-plan.md       SEO keyword map + guide calendar
