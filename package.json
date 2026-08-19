@@ -6,7 +6,7 @@
   "license": "SEE LICENSE IN LICENSE",
   "packageManager": "pnpm@9.15.9",
   "engines": {
-    "node": ">=22"
+    "node": ">=24"
   },
   "scripts": {
     "build": "turbo build",
