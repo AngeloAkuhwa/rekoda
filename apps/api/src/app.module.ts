@@ -8,10 +8,17 @@ import { HealthController } from './health/health.controller.js';
 import { MetaWebhookController } from './channels/meta.controller.js';
 import { MetaIngressService } from './channels/meta.service.js';
 import { JobsModule } from './jobs/jobs.module.js';
+import { PaystackWebhookController } from './payments/paystack.controller.js';
 
 @Module({
   imports: [DbModule, JobsModule],
-  controllers: [AuthController, BusinessController, HealthController, MetaWebhookController],
+  controllers: [
+    AuthController,
+    BusinessController,
+    HealthController,
+    MetaWebhookController,
+    PaystackWebhookController,
+  ],
   providers: [AuthService, SessionGuard, RolesGuard, MetaIngressService],
 })
 export class AppModule {}

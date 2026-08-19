@@ -7,4 +7,5 @@ export * as jobsRepo from './repos/jobs.js';
 export * as conversationsRepo from './repos/conversations.js';
 export * as quotaRepo from './repos/quota.js';
 export * as issueRepo from './repos/issue.js';
+export * as paymentsHub from './repos/payments-hub.js';
 export { applyMigrations } from './migrate.js';
