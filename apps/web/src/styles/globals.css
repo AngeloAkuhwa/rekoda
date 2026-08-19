@@ -387,3 +387,84 @@ button,
   content: '–';
   color: var(--rk-text-muted);
 }
+
+/* ── onboarding ─────────────────────────────────────────────────────── */
+
+.rk-onboard {
+  padding-block: var(--rk-space-6) var(--rk-space-10);
+  max-width: 34rem;
+}
+.rk-onboard h1 {
+  font-size: var(--rk-text-2xl);
+}
+@media (min-width: 768px) {
+  .rk-onboard h1 {
+    font-size: var(--rk-text-3xl);
+  }
+}
+.rk-onboard .rk-lede {
+  font-size: var(--rk-text-base);
+}
+
+.rk-form {
+  display: grid;
+  gap: var(--rk-space-5);
+  margin-top: var(--rk-space-6);
+}
+
+.rk-input {
+  /* 44px minimum, and 16px font so iOS does not zoom the viewport on focus. */
+  min-height: 48px;
+  width: 100%;
+  padding: var(--rk-space-3) var(--rk-space-4);
+  font-size: var(--rk-text-base);
+  background: var(--rk-surface);
+  color: var(--rk-text);
+  border: 1px solid var(--rk-border);
+  border-radius: var(--rk-radius-md);
+}
+.rk-input:hover {
+  border-color: var(--rk-text-muted);
+}
+.rk-input[aria-invalid='true'] {
+  border-color: var(--rk-danger);
+}
+.rk-input-code {
+  font-family: var(--rk-font-mono);
+  font-size: var(--rk-text-2xl);
+  letter-spacing: 0.4em;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.rk-fineprint {
+  margin-top: var(--rk-space-5);
+  font-size: var(--rk-text-sm);
+  color: var(--rk-text-muted);
+  line-height: 1.6;
+}
+.rk-fineprint a {
+  color: var(--rk-accent);
+  text-decoration: underline;
+}
+
+.rk-next {
+  margin-top: var(--rk-space-6);
+  display: grid;
+  gap: var(--rk-space-3);
+}
+.rk-next h2 {
+  font-size: var(--rk-text-lg);
+}
+.rk-next p {
+  color: var(--rk-text-muted);
+  font-size: var(--rk-text-sm);
+}
+.rk-example {
+  padding: var(--rk-space-3) var(--rk-space-4);
+  background: var(--rk-surface-sunk);
+  border-left: 3px solid var(--rk-accent);
+  border-radius: var(--rk-radius-sm);
+  color: var(--rk-text) !important;
+  font-size: var(--rk-text-base) !important;
+}
