@@ -6,7 +6,7 @@ import { Field } from '@/components/ui/Field';
 import { Stepper } from '@/components/ui/Stepper';
 import { confirmCode, type FormState } from '../start/actions';
 
-export function VerifyForm({ phone }: { phone: string }) {
+export function VerifyForm({ phone, e2eCode }: { phone: string; e2eCode?: string | undefined }) {
   const [state, action, pending] = useActionState<FormState, FormData>(confirmCode, {});
 
   return (
@@ -16,6 +16,9 @@ export function VerifyForm({ phone }: { phone: string }) {
       <p className="rk-lede">
         We sent a 6-digit code to <strong>{phone}</strong> on WhatsApp.
       </p>
+
+      {/* Present only under REKODA_E2E_REVEAL_OTP=1. Never in a deployment. */}
+      {e2eCode ? <span hidden data-e2e-otp={e2eCode} /> : null}
 
       <form action={action} className="rk-form" noValidate>
         <input type="hidden" name="phone" value={phone} />

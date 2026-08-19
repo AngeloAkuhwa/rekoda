@@ -9,7 +9,7 @@
  * What is deliberately NOT here: sending anything. Delivery is IO and belongs
  * to the channel layer.
  */
-import { createHash, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 
 /** Injected so tests are deterministic. In production: `crypto.randomBytes`. */
 export type RandomSource = (bytes: number) => Uint8Array;
@@ -62,11 +62,38 @@ export function normalisePhone(input: string): string {
 /* ────────────────────────────── hashing ──────────────────────────── */
 
 /**
- * Codes and tokens are stored ONLY as hashes. A database dump must never hand
- * anyone a working credential.
+ * For HIGH-ENTROPY secrets only — the 32-byte magic-link and session tokens.
+ * A plain digest is sound there because the keyspace makes reversal hopeless.
+ *
+ * NOT for OTP codes: see `hashOtpCode`.
  */
 export function hashSecret(secret: string): string {
   return createHash('sha256').update(secret, 'utf8').digest('hex');
+}
+
+/**
+ * OTP codes need a **peppered HMAC**, not a plain digest.
+ *
+ * A 6-digit code is a 10^6 keyspace. An unsalted SHA-256 of it is reversible by
+ * exhaustive search in well under a second, so a leaked `otp_challenges` table
+ * would hand an attacker every live code — exactly the outcome the storage rule
+ * exists to prevent. The pepper is a server-side secret that never lives in the
+ * database, so a dump alone is not enough to invert the hash.
+ *
+ * The pepper is a parameter rather than module state to keep this file pure and
+ * the tests deterministic. In production it comes from `OTP_PEPPER`.
+ */
+export function hashOtpCode(code: string, pepper: string): string {
+  if (pepper.length < 32) throw new Error('OTP pepper must be at least 32 characters');
+  return createHmac('sha256', pepper).update(code, 'utf8').digest('hex');
+}
+
+/** Constant-time compare of a code against its peppered hash. */
+export function otpMatches(code: string, storedHash: string, pepper: string): boolean {
+  const a = Buffer.from(hashOtpCode(code, pepper), 'hex');
+  const b = Buffer.from(storedHash, 'hex');
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
 }
 
 /** Constant-time compare — a fast `!==` leaks the code one character at a time. */
@@ -113,14 +140,19 @@ export function generateOtpCode(random: RandomSource, length = OTP_LENGTH): stri
   return out;
 }
 
-export function issueOtp(phone: string, random: RandomSource, now: Date): IssuedOtp {
+export function issueOtp(
+  phone: string,
+  random: RandomSource,
+  now: Date,
+  pepper: string,
+): IssuedOtp {
   const normalised = normalisePhone(phone);
   const code = generateOtpCode(random);
   return {
     code,
     challenge: {
       phone: normalised,
-      codeHash: hashSecret(code),
+      codeHash: hashOtpCode(code, pepper),
       attempts: 0,
       expiresAt: new Date(now.getTime() + OTP_TTL_MS),
       consumedAt: null,
@@ -142,12 +174,17 @@ export type OtpResult =
  * Order matters: already-used before expiry before attempts, so a consumed
  * challenge can never be replayed by waiting for a different branch.
  */
-export function verifyOtp(challenge: OtpChallenge, code: string, now: Date): OtpResult {
+export function verifyOtp(
+  challenge: OtpChallenge,
+  code: string,
+  now: Date,
+  pepper: string,
+): OtpResult {
   if (challenge.consumedAt) return { status: 'already_used' };
   if (now >= challenge.expiresAt) return { status: 'expired' };
   if (challenge.attempts >= OTP_MAX_ATTEMPTS) return { status: 'too_many_attempts' };
 
-  if (secretMatches(code, challenge.codeHash)) {
+  if (otpMatches(code, challenge.codeHash, pepper)) {
     return { status: 'verified', challenge: { ...challenge, consumedAt: now } };
   }
 

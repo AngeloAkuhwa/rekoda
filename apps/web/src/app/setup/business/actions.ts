@@ -1,7 +1,7 @@
 'use server';
 
 import { redirect } from 'next/navigation';
-import { readVerifiedPhone } from '@/server/verified-phone';
+import { markSetupComplete, readVerifiedPhone } from '@/server/verified-phone';
 
 export interface FormState {
   /** Per field — one shared slot put the type error under the name input. */
@@ -26,7 +26,8 @@ const TYPES = new Set([
  */
 export async function createBusiness(_prev: FormState, formData: FormData): Promise<FormState> {
   // Re-checked server-side: a form post must not bypass the guard either.
-  if (!(await readVerifiedPhone())) redirect('/start');
+  const phone = await readVerifiedPhone();
+  if (!phone) redirect('/start');
 
   const name = String(formData.get('name') ?? '').trim();
   const type = String(formData.get('type') ?? '').trim();
@@ -40,5 +41,9 @@ export async function createBusiness(_prev: FormState, formData: FormData): Prom
   // TODO(M1): create Business, BusinessOwner, VerifiedPhone, BusinessMembership,
   // BusinessSettings in one transaction (spec §12 step 5), then exchange the
   // verification cookie for a real session. Blocked on apps/api + Postgres.
+  //
+  // Downgrade the marker: the completion page still renders, but full
+  // proof-of-identity does not linger for the rest of the 30-minute window.
+  await markSetupComplete(phone);
   redirect(`/setup/complete?name=${encodeURIComponent(name)}`);
 }

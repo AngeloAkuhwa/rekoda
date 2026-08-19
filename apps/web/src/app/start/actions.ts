@@ -24,10 +24,13 @@ export async function requestCode(_prev: FormState, formData: FormData): Promise
   }
 
   const result = startOtp(phone);
+  if (result.status === 'locked_out') {
+    return { error: 'Too many failed attempts for this number. Try again in an hour.' };
+  }
   if (result.status === 'resend_too_soon') {
-    return {
-      error: `We already sent a code. Try again in ${result.retryInSeconds} seconds, or check WhatsApp.`,
-    };
+    // Do NOT strand them on /start holding a live code with no way forward —
+    // this is reached by the "Start again" link the verify page advertises.
+    redirect(`/verify?phone=${encodeURIComponent(result.phone)}`);
   }
 
   // TODO(M1): send via Meta Cloud API (ADR 0002). Until the channel layer
@@ -55,6 +58,8 @@ export async function confirmCode(_prev: FormState, formData: FormData): Promise
 
   const result = checkOtp(phone, code);
   switch (result.status) {
+    case 'locked_out':
+      return { error: 'Too many failed attempts for this number. Try again in an hour.' };
     case 'verified':
       // The ONLY place this cookie is issued. Every later step reads it, so the
       // OTP cannot be skipped by typing a URL.

@@ -57,3 +57,7 @@ tmp/
 # Python caches from the vendored ui-ux-pro-max skill
 __pycache__/
 *.pyc
+
+# Playwright
+apps/web/test-results/
+apps/web/playwright-report/

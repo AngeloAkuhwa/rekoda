@@ -67,3 +67,34 @@ jobs:
       - name: Docs-only repository — nothing to build yet
         if: steps.ws.outputs.present == 'false'
         run: echo "No pnpm workspace yet (pre-M0). Skipping build steps."
+
+  # The web app's behaviour lives in routing, guards and server actions, which
+  # only a real browser exercises. Runs against a PRODUCTION build so the
+  # assertions cover what ships — dev-only OTP logging off, cookies set as they
+  # will be, NODE_ENV branches on their production path.
+  e2e:
+    name: End-to-end (Playwright)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+      - name: Install Chromium
+        run: pnpm --filter @rekoda/web exec playwright install --with-deps chromium
+      - name: Build
+        run: pnpm turbo build
+      - name: Run end-to-end tests
+        run: pnpm --filter @rekoda/web exec playwright test
+        env:
+          # CI has no pre-installed browser at a fixed path, so let Playwright
+          # resolve the one it just installed.
+          REKODA_CHROME: ''
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-traces
+          path: apps/web/test-results/
+          retention-days: 7

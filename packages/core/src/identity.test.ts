@@ -6,6 +6,7 @@ import {
   OTP_TTL_MS,
   SESSION_TTL_MS,
   generateOtpCode,
+  hashOtpCode,
   hashSecret,
   issueMagicLink,
   issueOtp,
@@ -19,6 +20,8 @@ import {
 } from './identity.js';
 
 const T0 = new Date('2026-08-19T10:00:00Z');
+/** Test pepper — production supplies OTP_PEPPER. */
+const PEPPER = 'test-pepper-at-least-thirty-two-chars-long';
 const at = (ms: number) => new Date(T0.getTime() + ms);
 
 /** Deterministic, and deliberately includes 250-255 so the rejection path runs. */
@@ -79,6 +82,27 @@ describe('phone normalisation', () => {
   });
 });
 
+describe('OTP code hashing', () => {
+  it('is a PEPPERED hmac, not a plain digest — a 10^6 keyspace is trivially reversible', () => {
+    // A leaked otp_challenges table must not yield working codes. Without a
+    // server-side pepper, exhausting 000000-999999 takes under a second.
+    const plain = hashSecret('123456');
+    const peppered = hashOtpCode('123456', PEPPER);
+    expect(peppered).not.toBe(plain);
+    expect(peppered).toHaveLength(64);
+  });
+
+  it('produces a different hash under a different pepper', () => {
+    expect(hashOtpCode('123456', PEPPER)).not.toBe(
+      hashOtpCode('123456', 'another-pepper-at-least-thirty-two-chars'),
+    );
+  });
+
+  it('refuses a pepper too short to be worth anything', () => {
+    expect(() => hashOtpCode('123456', 'short')).toThrow(/at least 32/);
+  });
+});
+
 describe('secret hashing', () => {
   it('never lets the plaintext be recoverable from what is stored', () => {
     const h = hashSecret('123456');
@@ -123,7 +147,7 @@ describe('OTP codes', () => {
 });
 
 describe('OTP verification', () => {
-  const issue = () => issueOtp('08031234567', seeded([1, 2, 3, 4, 5, 6]), T0);
+  const issue = () => issueOtp('08031234567', seeded([1, 2, 3, 4, 5, 6]), T0, PEPPER);
 
   it('stores only the hash and normalises the phone', () => {
     const { code, challenge } = issue();
@@ -134,7 +158,7 @@ describe('OTP verification', () => {
 
   it('verifies the right code and consumes the challenge', () => {
     const { code, challenge } = issue();
-    const r = verifyOtp(challenge, code, at(1_000));
+    const r = verifyOtp(challenge, code, at(1_000), PEPPER);
     expect(r.status).toBe('verified');
     if (r.status !== 'verified') throw new Error('unreachable');
     expect(r.challenge.consumedAt).toEqual(at(1_000));
@@ -142,22 +166,22 @@ describe('OTP verification', () => {
 
   it('cannot be replayed once consumed', () => {
     const { code, challenge } = issue();
-    const first = verifyOtp(challenge, code, at(1_000));
+    const first = verifyOtp(challenge, code, at(1_000), PEPPER);
     if (first.status !== 'verified') throw new Error('unreachable');
-    expect(verifyOtp(first.challenge, code, at(2_000)).status).toBe('already_used');
+    expect(verifyOtp(first.challenge, code, at(2_000), PEPPER).status).toBe('already_used');
   });
 
   it('counts wrong attempts and locks out at the limit', () => {
     const { challenge } = issue();
     let current = challenge;
     for (let i = 1; i <= OTP_MAX_ATTEMPTS; i++) {
-      const r = verifyOtp(current, '000000', at(1_000));
+      const r = verifyOtp(current, '000000', at(1_000), PEPPER);
       expect(r.status).toBe('wrong_code');
       if (r.status !== 'wrong_code') throw new Error('unreachable');
       expect(r.attemptsLeft).toBe(OTP_MAX_ATTEMPTS - i);
       current = r.challenge;
     }
-    expect(verifyOtp(current, '000000', at(1_000)).status).toBe('too_many_attempts');
+    expect(verifyOtp(current, '000000', at(1_000), PEPPER).status).toBe('too_many_attempts');
   });
 
   it('refuses the CORRECT code once the attempt limit is spent', () => {
@@ -165,30 +189,30 @@ describe('OTP verification', () => {
     const { code, challenge } = issue();
     let current = challenge;
     for (let i = 0; i < OTP_MAX_ATTEMPTS; i++) {
-      const r = verifyOtp(current, '000000', at(1_000));
+      const r = verifyOtp(current, '000000', at(1_000), PEPPER);
       if (r.status !== 'wrong_code') throw new Error('unreachable');
       current = r.challenge;
     }
-    expect(verifyOtp(current, code, at(1_000)).status).toBe('too_many_attempts');
+    expect(verifyOtp(current, code, at(1_000), PEPPER).status).toBe('too_many_attempts');
   });
 
   it('expires exactly on the boundary, not a millisecond later', () => {
     const { code, challenge } = issue();
-    expect(verifyOtp(challenge, code, at(OTP_TTL_MS - 1)).status).toBe('verified');
-    expect(verifyOtp(challenge, code, at(OTP_TTL_MS)).status).toBe('expired');
+    expect(verifyOtp(challenge, code, at(OTP_TTL_MS - 1), PEPPER).status).toBe('verified');
+    expect(verifyOtp(challenge, code, at(OTP_TTL_MS), PEPPER).status).toBe('expired');
   });
 
   it('treats a consumed-and-expired challenge as used, never as retryable', () => {
     const { code, challenge } = issue();
-    const used = verifyOtp(challenge, code, at(1_000));
+    const used = verifyOtp(challenge, code, at(1_000), PEPPER);
     if (used.status !== 'verified') throw new Error('unreachable');
-    expect(verifyOtp(used.challenge, code, at(OTP_TTL_MS + 1)).status).toBe('already_used');
+    expect(verifyOtp(used.challenge, code, at(OTP_TTL_MS + 1), PEPPER).status).toBe('already_used');
   });
 
   it('never mutates the challenge it was given', () => {
     const { challenge } = issue();
     const snapshot = { ...challenge };
-    verifyOtp(challenge, '000000', at(1_000));
+    verifyOtp(challenge, '000000', at(1_000), PEPPER);
     expect(challenge).toEqual(snapshot);
   });
 });

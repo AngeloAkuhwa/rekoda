@@ -2,7 +2,8 @@ import type { Metadata } from 'next';
 import { redirect } from 'next/navigation';
 import { Button } from '@/components/ui/Button';
 import { Stepper } from '@/components/ui/Stepper';
-import { readVerifiedPhone } from '@/server/verified-phone';
+import { firstParam } from '@/lib/search-params';
+import { readAnyStagePhone } from '@/server/verified-phone';
 
 export const metadata: Metadata = {
   // Plain apostrophe: metadata is escaped, so an HTML entity here renders
@@ -17,10 +18,10 @@ const REKODA_WA = process.env.NEXT_PUBLIC_REKODA_WHATSAPP ?? '';
 export default async function CompletePage({
   searchParams,
 }: {
-  searchParams: Promise<{ name?: string }>;
+  searchParams: Promise<{ name?: string | string[] }>;
 }) {
-  const verified = await readVerifiedPhone();
-  const { name } = await searchParams;
+  const verified = await readAnyStagePhone();
+  const name = firstParam((await searchParams).name);
   if (!verified || !name) redirect('/start');
 
   const waHref = REKODA_WA

@@ -17,6 +17,15 @@ import { normalisePhone } from '@rekoda/core/identity';
  */
 const COOKIE = 'rk_verified';
 const TTL_MS = 30 * 60 * 1_000; // 30 minutes to finish signup
+/** Once the business exists, the marker only needs to outlive the last page. */
+const DONE_TTL_MS = 5 * 60 * 1_000;
+
+/**
+ * Where the merchant is in signup. `/setup/business` demands `verified`;
+ * `/setup/complete` accepts either, so finishing setup can downgrade the marker
+ * rather than leaving full proof-of-identity live for the remaining half hour.
+ */
+export type Stage = 'verified' | 'complete';
 
 /**
  * Dev generates an ephemeral secret so the flow runs locally; production must
@@ -53,20 +62,44 @@ function safeEqual(a: string, b: string): boolean {
   return timingSafeEqual(ab, bb);
 }
 
-export async function markPhoneVerified(phone: string, now = new Date()): Promise<void> {
-  const payload = `${normalisePhone(phone)}.${now.getTime() + TTL_MS}`;
+async function setMarker(phone: string, stage: Stage, ttlMs: number, now: Date): Promise<void> {
+  const payload = `${normalisePhone(phone)}.${stage}.${now.getTime() + ttlMs}`;
   const jar = await cookies();
   jar.set(COOKIE, `${payload}.${sign(payload)}`, {
     httpOnly: true,
     sameSite: 'lax',
     secure: process.env.NODE_ENV === 'production',
     path: '/',
-    maxAge: TTL_MS / 1_000,
+    maxAge: ttlMs / 1_000,
   });
 }
 
-/** Returns the verified phone, or null. Never throws — callers redirect. */
-export async function readVerifiedPhone(now = new Date()): Promise<string | null> {
+/** Issued in exactly one place: successful OTP verification. */
+export async function markPhoneVerified(phone: string, now = new Date()): Promise<void> {
+  await setMarker(phone, 'verified', TTL_MS, now);
+}
+
+/**
+ * Downgrade after the business is created. Clearing outright would bounce the
+ * merchant off the completion page they just earned; this keeps them there
+ * without leaving proof-of-identity live for the rest of the window.
+ */
+export async function markSetupComplete(phone: string, now = new Date()): Promise<void> {
+  await setMarker(phone, 'complete', DONE_TTL_MS, now);
+}
+
+/**
+ * Returns the verified phone, or null, for every malformed or forged cookie.
+ *
+ * It CAN still throw one way: in production with `REKODA_SESSION_SECRET`
+ * unset, `sign()` raises. That is deliberate — a misconfigured deployment must
+ * fail loudly — but note it fails only for merchants mid-signup, since
+ * cookie-less visitors return early and never reach the signature check. The
+ * boot doctor (MASTER-PLAN §3.4) is where absence should surface first.
+ */
+export async function readMarker(
+  now = new Date(),
+): Promise<{ phone: string; stage: Stage } | null> {
   const raw = (await cookies()).get(COOKIE)?.value;
   if (!raw) return null;
 
@@ -75,12 +108,27 @@ export async function readVerifiedPhone(now = new Date()): Promise<string | null
   const payload = raw.slice(0, cut);
   if (!safeEqual(raw.slice(cut + 1), sign(payload))) return null;
 
-  const sep = payload.lastIndexOf('.');
-  if (sep < 0) return null;
-  const phone = payload.slice(0, sep);
-  const expiresAt = Number(payload.slice(sep + 1));
+  // phone.stage.expiry — a normalised phone and a base64url signature both
+  // contain no '.', so this split is unambiguous.
+  const parts = payload.split('.');
+  if (parts.length !== 3) return null;
+  const [phone, stage, expiry] = parts as [string, string, string];
+  if (stage !== 'verified' && stage !== 'complete') return null;
+
+  const expiresAt = Number(expiry);
   if (!Number.isFinite(expiresAt) || now.getTime() >= expiresAt) return null;
-  return phone;
+  return { phone, stage };
+}
+
+/** Proof the OTP was passed. Null for anything else — callers redirect. */
+export async function readVerifiedPhone(now = new Date()): Promise<string | null> {
+  const m = await readMarker(now);
+  return m?.stage === 'verified' ? m.phone : null;
+}
+
+/** Either stage — used only by the terminal completion page. */
+export async function readAnyStagePhone(now = new Date()): Promise<string | null> {
+  return (await readMarker(now))?.phone ?? null;
 }
 
 export async function clearVerifiedPhone(): Promise<void> {
