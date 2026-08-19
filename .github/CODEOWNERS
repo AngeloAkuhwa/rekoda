@@ -1,0 +1,8 @@
+# Default owner for everything in the repository.
+* @AngeloAkuhwa
+
+# Financial core and security-sensitive paths — always reviewed by the owner.
+/packages/core/ @AngeloAkuhwa
+/packages/db/ @AngeloAkuhwa
+/docs/adr/ @AngeloAkuhwa
+/SECURITY.md @AngeloAkuhwa

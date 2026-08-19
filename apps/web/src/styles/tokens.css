@@ -1,0 +1,123 @@
+/* Rekoda design tokens — generated from design-system/rekoda/MASTER.md.
+   A raw hex in a component is a bug. Edit MASTER.md first, then this file. */
+
+:root {
+  --rk-teal-100: #ccfbf1;
+  --rk-teal-200: #99f6e4;
+  --rk-teal-500: #14b8a6;
+  --rk-teal-600: #0d9488;
+  --rk-teal-700: #0f766e;
+  --rk-teal-800: #115e59;
+
+  --rk-sand-50: #fcfcfb;
+  --rk-sand-100: #f7f6f3;
+  --rk-sand-200: #eceae4;
+  --rk-sand-300: #ddd9d0;
+  --rk-sand-600: #6b6862;
+  --rk-sand-900: #1c1b19;
+
+  /* money states — ADR 0014: three states, never two */
+  --rk-verified: #0d9488;
+  --rk-recorded: #6b6862; /* neutral. NEVER a warning. */
+  --rk-notseen: #8a877f; /* NEVER a failure.          */
+  --rk-attention: #b45309; /* genuine mismatch only     */
+  --rk-danger: #b91c1c;
+
+  --rk-bg: var(--rk-sand-50);
+  --rk-surface: #ffffff;
+  --rk-surface-sunk: var(--rk-sand-100);
+  --rk-border: var(--rk-sand-300);
+  --rk-text: var(--rk-sand-900);
+  --rk-text-muted: var(--rk-sand-600);
+  --rk-accent: var(--rk-teal-700);
+  --rk-accent-hover: var(--rk-teal-800);
+  --rk-on-accent: #ffffff;
+  --rk-focus: var(--rk-teal-600);
+
+  --rk-space-1: 4px;
+  --rk-space-2: 8px;
+  --rk-space-3: 12px;
+  --rk-space-4: 16px;
+  --rk-space-5: 24px;
+  --rk-space-6: 32px;
+  --rk-space-8: 48px;
+  --rk-space-10: 64px;
+
+  --rk-radius-sm: 6px;
+  --rk-radius-md: 10px;
+  --rk-radius-lg: 14px;
+  --rk-radius-full: 999px;
+
+  --rk-shadow-sm: 0 1px 2px rgb(28 27 25 / 0.06);
+  --rk-shadow-md: 0 2px 8px rgb(28 27 25 / 0.08);
+  --rk-shadow-lg: 0 8px 24px rgb(28 27 25 / 0.1);
+
+  --rk-text-xs: 0.75rem;
+  --rk-text-sm: 0.875rem;
+  --rk-text-base: 1rem;
+  --rk-text-lg: 1.125rem;
+  --rk-text-xl: 1.375rem;
+  --rk-text-2xl: 1.75rem;
+  --rk-text-3xl: 2.25rem;
+  --rk-text-4xl: 3rem;
+
+  --rk-dur-fast: 120ms;
+  --rk-dur-base: 200ms;
+  --rk-dur-slow: 320ms;
+  --rk-ease: cubic-bezier(0.2, 0, 0.2, 1);
+
+  --rk-font-display: 'Calistoga', Georgia, serif;
+  /* The ₦ (U+20A6) is missing from many system faces, and a fallback glyph at a
+     different weight/size makes every price look broken. Noto Sans carries it;
+     keep it ahead of the generic fallbacks. The predecessor hit the same problem
+     in the PDF engine — see MASTER-PLAN Part 4.3. */
+  --rk-font-body:
+    'Inter', 'Noto Sans', system-ui, -apple-system, 'Segoe UI', 'Helvetica Neue', sans-serif;
+  --rk-font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --rk-maxw: 1120px;
+}
+
+/* Dark via system preference, unless the user explicitly chose light. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --rk-bg: #14140f;
+    --rk-surface: #1c1b18;
+    --rk-surface-sunk: #232220;
+    --rk-border: #35332e;
+    --rk-text: #f2f1ec;
+    --rk-text-muted: #a8a49b;
+    --rk-accent: var(--rk-teal-500);
+    --rk-accent-hover: var(--rk-teal-200);
+    --rk-on-accent: #0b1f1c;
+    --rk-verified: #2dd4bf;
+    --rk-recorded: #a8a49b;
+    --rk-notseen: #8a877f;
+    --rk-attention: #f59e0b;
+    --rk-danger: #f87171;
+    --rk-shadow-sm: 0 1px 2px rgb(0 0 0 / 0.4);
+    --rk-shadow-md: 0 2px 8px rgb(0 0 0 / 0.45);
+    --rk-shadow-lg: 0 8px 24px rgb(0 0 0 / 0.5);
+  }
+}
+
+/* Explicit dark — the toggle must win in both directions. */
+:root[data-theme='dark'] {
+  --rk-bg: #14140f;
+  --rk-surface: #1c1b18;
+  --rk-surface-sunk: #232220;
+  --rk-border: #35332e;
+  --rk-text: #f2f1ec;
+  --rk-text-muted: #a8a49b;
+  --rk-accent: var(--rk-teal-500);
+  --rk-accent-hover: var(--rk-teal-200);
+  --rk-on-accent: #0b1f1c;
+  --rk-verified: #2dd4bf;
+  --rk-recorded: #a8a49b;
+  --rk-notseen: #8a877f;
+  --rk-attention: #f59e0b;
+  --rk-danger: #f87171;
+  --rk-shadow-sm: 0 1px 2px rgb(0 0 0 / 0.4);
+  --rk-shadow-md: 0 2px 8px rgb(0 0 0 / 0.45);
+  --rk-shadow-lg: 0 8px 24px rgb(0 0 0 / 0.5);
+}

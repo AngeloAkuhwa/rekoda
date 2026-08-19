@@ -1,0 +1,59 @@
+# dependencies
+node_modules/
+.pnp.*
+.yarn/
+
+# builds
+dist/
+build/
+.next/
+out/
+.turbo/
+*.tsbuildinfo
+
+# environment & secrets — never committed, no exceptions
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# data & runtime artifacts
+data/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+uploads/
+storage/
+generated/
+*.log
+logs/
+
+# test & coverage
+coverage/
+.nyc_output/
+test-results/
+playwright-report/
+
+# STT models (downloaded at build/deploy, never committed)
+services/stt/models/
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp
+
+# misc
+tmp/
+.cache/
+.screenshots/
+
+# Python caches from the vendored ui-ux-pro-max skill
+__pycache__/
+*.pyc

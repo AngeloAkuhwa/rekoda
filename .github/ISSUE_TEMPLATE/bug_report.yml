@@ -1,0 +1,30 @@
+name: Bug report
+description: Something behaves incorrectly
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: Include the exact input (message text, webhook payload shape, screen) and what Rekoda did.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What should have happened
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options: [Chat conversation, Voice/STT, Privacy gateway, Financial core/ledger, Reconciliation, Documents (PDF/Excel), Dashboard, Admin, Webhooks/Integrations, Billing, Other]
+    validations:
+      required: true
+  - type: checkboxes
+    id: money
+    attributes:
+      label: Financial impact
+      options:
+        - label: This bug produced a wrong financial figure, document, or ledger entry (treat as highest severity)

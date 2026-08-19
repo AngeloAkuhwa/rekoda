@@ -1,0 +1,25 @@
+name: Task
+description: A scoped piece of milestone work
+labels: [task]
+body:
+  - type: input
+    id: milestone
+    attributes:
+      label: Milestone
+      placeholder: M0 / M1 / M2 / M3 / M4 / M5
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope
+      description: What is included, and explicitly what is not.
+    validations:
+      required: true
+  - type: textarea
+    id: exit
+    attributes:
+      label: Exit criteria
+      description: How we know this is done (tests, demo, measurable behaviour).
+    validations:
+      required: true

@@ -1,0 +1,39 @@
+.base {
+  /* 44×44 minimum touch target (P2) — the primary device has no pointer. */
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--rk-space-2);
+  padding: var(--rk-space-3) var(--rk-space-5);
+  border-radius: var(--rk-radius-md);
+  border: 1px solid transparent;
+  font-size: var(--rk-text-base);
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    background-color var(--rk-dur-fast) var(--rk-ease),
+    border-color var(--rk-dur-fast) var(--rk-ease);
+}
+.primary {
+  background: var(--rk-accent);
+  color: var(--rk-on-accent);
+}
+.primary:hover {
+  background: var(--rk-accent-hover);
+}
+.secondary {
+  background: var(--rk-surface);
+  color: var(--rk-text);
+  border-color: var(--rk-border);
+}
+.secondary:hover {
+  border-color: var(--rk-accent);
+}
+.ghost {
+  background: transparent;
+  color: var(--rk-accent);
+}
+.ghost:hover {
+  background: var(--rk-surface-sunk);
+}

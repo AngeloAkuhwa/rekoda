@@ -1,0 +1,389 @@
+@import './tokens.css';
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+* {
+  margin: 0;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  background: var(--rk-bg);
+  color: var(--rk-text);
+  font-family: var(--rk-font-body);
+  font-size: var(--rk-text-base);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  min-height: 100dvh;
+}
+
+h1,
+h2,
+h3 {
+  font-family: var(--rk-font-display);
+  font-weight: 400;
+  line-height: 1.2;
+}
+h1 {
+  font-size: var(--rk-text-3xl);
+  letter-spacing: -0.01em;
+}
+h2 {
+  font-size: var(--rk-text-2xl);
+}
+h3 {
+  font-size: var(--rk-text-xl);
+}
+@media (min-width: 768px) {
+  h1 {
+    font-size: var(--rk-text-4xl);
+  }
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+img,
+svg,
+video {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+/* Every clickable element gets a pointer cursor (ui-ux-pro-max pre-delivery). */
+a[href],
+button,
+[role='button'] {
+  cursor: pointer;
+}
+
+/* Focus is never removed (P1). */
+:focus-visible {
+  outline: 2px solid var(--rk-focus);
+  outline-offset: 2px;
+  border-radius: var(--rk-radius-sm);
+}
+
+/* Every money figure: tabular numerals so digits never jitter. */
+.rk-money {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum';
+}
+
+.rk-container {
+  width: 100%;
+  max-width: var(--rk-maxw);
+  margin-inline: auto;
+  padding-inline: var(--rk-space-4);
+}
+@media (min-width: 768px) {
+  .rk-container {
+    padding-inline: var(--rk-space-6);
+  }
+}
+
+.rk-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Wide content scrolls inside its own container — the page never does. */
+.rk-scroll-x {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ── chrome ─────────────────────────────────────────────────────────── */
+
+.rk-header {
+  border-bottom: 1px solid var(--rk-border);
+  background: var(--rk-surface);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+.rk-header-inner {
+  display: flex;
+  align-items: center;
+  gap: var(--rk-space-4);
+  min-height: 60px;
+}
+.rk-wordmark {
+  font-family: var(--rk-font-display);
+  font-size: var(--rk-text-xl);
+  color: var(--rk-accent);
+  margin-right: auto;
+}
+.rk-header nav {
+  display: flex;
+  gap: var(--rk-space-4);
+}
+.rk-header nav a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  color: var(--rk-text-muted);
+  font-size: var(--rk-text-sm);
+}
+.rk-header nav a:hover {
+  color: var(--rk-text);
+}
+
+.rk-theme-toggle {
+  min-width: 44px;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid var(--rk-border);
+  border-radius: var(--rk-radius-md);
+  cursor: pointer;
+}
+.rk-theme-toggle:hover {
+  border-color: var(--rk-accent);
+}
+
+.rk-footer {
+  border-top: 1px solid var(--rk-border);
+  margin-top: var(--rk-space-10);
+  padding-block: var(--rk-space-6);
+  color: var(--rk-text-muted);
+  font-size: var(--rk-text-sm);
+}
+.rk-footer nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--rk-space-4);
+  margin-top: var(--rk-space-3);
+}
+.rk-footer nav a {
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+}
+.rk-footer nav a:hover {
+  color: var(--rk-text);
+}
+
+/* ── sections ───────────────────────────────────────────────────────── */
+
+.rk-hero {
+  padding-block: var(--rk-space-8) var(--rk-space-10);
+}
+.rk-hero h1 {
+  max-width: 18ch;
+}
+.rk-lede {
+  margin-top: var(--rk-space-4);
+  max-width: 56ch;
+  font-size: var(--rk-text-lg);
+  color: var(--rk-text-muted);
+  line-height: 1.65;
+}
+.rk-cta-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--rk-space-3);
+  margin-top: var(--rk-space-6);
+}
+
+.rk-section {
+  padding-block: var(--rk-space-8);
+}
+.rk-section > h2 {
+  margin-bottom: var(--rk-space-2);
+}
+.rk-section > p {
+  color: var(--rk-text-muted);
+  max-width: 60ch;
+}
+
+.rk-grid {
+  display: grid;
+  gap: var(--rk-space-4);
+  margin-top: var(--rk-space-6);
+}
+@media (min-width: 768px) {
+  .rk-grid-3 {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+.rk-card {
+  background: var(--rk-surface);
+  border: 1px solid var(--rk-border);
+  border-radius: var(--rk-radius-lg);
+  padding: var(--rk-space-5);
+  box-shadow: var(--rk-shadow-sm);
+}
+.rk-card h3 {
+  margin-bottom: var(--rk-space-2);
+}
+.rk-card p {
+  color: var(--rk-text-muted);
+  font-size: var(--rk-text-sm);
+  line-height: 1.6;
+}
+
+/* Phone mock — the product IS a conversation, so show the conversation. */
+.rk-phone {
+  background: var(--rk-surface-sunk);
+  border: 1px solid var(--rk-border);
+  border-radius: var(--rk-radius-lg);
+  padding: var(--rk-space-4);
+  display: grid;
+  gap: var(--rk-space-3);
+  /* Reserve the space so nothing shifts on load (P3). */
+  min-height: 320px;
+  align-content: start;
+}
+.rk-bubble {
+  border-radius: var(--rk-radius-md);
+  padding: var(--rk-space-3) var(--rk-space-4);
+  font-size: var(--rk-text-sm);
+  line-height: 1.55;
+  max-width: 92%;
+}
+.rk-bubble-in {
+  background: var(--rk-surface);
+  border: 1px solid var(--rk-border);
+  justify-self: start;
+}
+.rk-bubble-out {
+  background: var(--rk-accent);
+  color: var(--rk-on-accent);
+  justify-self: end;
+}
+.rk-bubble dl {
+  display: grid;
+  grid-template-columns: auto auto;
+  gap: var(--rk-space-1) var(--rk-space-4);
+  margin-top: var(--rk-space-2);
+}
+.rk-bubble dt {
+  color: var(--rk-text-muted);
+}
+.rk-bubble dd {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── pricing ────────────────────────────────────────────────────────── */
+
+.rk-trial {
+  display: grid;
+  gap: var(--rk-space-4);
+  border-color: var(--rk-accent);
+  background: var(--rk-surface-sunk);
+}
+.rk-trial-tag {
+  color: var(--rk-text-muted);
+  margin-top: var(--rk-space-1);
+}
+@media (min-width: 768px) {
+  .rk-trial {
+    grid-template-columns: 1fr 1.4fr auto;
+    align-items: center;
+  }
+}
+
+.rk-plan {
+  display: flex;
+  flex-direction: column;
+  gap: var(--rk-space-3);
+}
+.rk-plan-featured {
+  border-color: var(--rk-accent);
+  box-shadow: var(--rk-shadow-md);
+}
+.rk-card .rk-plan-flag {
+  align-self: flex-start;
+  /* Scoped under .rk-card so it outranks `.rk-card p` (0,2,0). Unscoped, the
+     flag inherited --rk-text-muted and failed contrast on the accent fill. */
+  background: var(--rk-accent);
+  color: var(--rk-on-accent);
+  padding: var(--rk-space-1) var(--rk-space-3);
+  border-radius: var(--rk-radius-full);
+  font-size: var(--rk-text-xs);
+  font-weight: 600;
+}
+.rk-plan-tagline {
+  color: var(--rk-text-muted);
+  font-size: var(--rk-text-sm);
+}
+.rk-plan-price {
+  font-family: var(--rk-font-display);
+  font-size: var(--rk-text-3xl);
+  /* Reserve the line so the price never reflows after hydration (§7.2). */
+  line-height: 1.15;
+}
+.rk-plan-per {
+  font-family: var(--rk-font-body);
+  font-size: var(--rk-text-base);
+  color: var(--rk-text-muted);
+}
+.rk-plan-annual {
+  font-size: var(--rk-text-sm);
+  color: var(--rk-text-muted);
+}
+
+.rk-features {
+  list-style: none;
+  padding: 0;
+  display: grid;
+  gap: var(--rk-space-2);
+  font-size: var(--rk-text-sm);
+}
+.rk-features li {
+  display: flex;
+  gap: var(--rk-space-2);
+  line-height: 1.5;
+}
+.rk-features li::before {
+  content: '✓';
+  color: var(--rk-verified);
+  font-weight: 700;
+  flex-shrink: 0;
+}
+.rk-features-out {
+  margin-top: var(--rk-space-2);
+  color: var(--rk-text-muted);
+}
+.rk-features-out li::before {
+  content: '–';
+  color: var(--rk-text-muted);
+}

@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Secrets never enter this repository. Scans the FULL history every run.
+  #
+  # gitleaks is invoked directly rather than through gitleaks-action, because
+  # the action scans a `<oldest-commit>^..<head>` range on pull_request events.
+  # This repository has two root commits (the initial README, and the M0
+  # foundation delivered as a bundle), and a root commit has no parent — so the
+  # range fails to resolve and the action exits non-zero having scanned nothing.
+  # Scanning the whole history is also what the job claims to do.
+  secret-scan:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install gitleaks
+        run: |
+          curl -sSfL \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            | tar -xz -C /usr/local/bin gitleaks
+          gitleaks version
+        env:
+          GITLEAKS_VERSION: 8.24.3
+      - name: Scan full history
+        run: gitleaks detect --source . --redact --verbose
+
+  # Becomes typecheck + lint + test + build once the M0 scaffold lands.
+  # Guarded so the workflow is green (not red) while the repo is docs-only.
+  build-test:
+    name: Typecheck · lint · test · build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Detect workspace
+        id: ws
+        run: |
+          if [ -f pnpm-lock.yaml ]; then echo "present=true" >> "$GITHUB_OUTPUT"; else echo "present=false" >> "$GITHUB_OUTPUT"; fi
+      - name: Set up Node
+        if: steps.ws.outputs.present == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - name: Enable pnpm
+        if: steps.ws.outputs.present == 'true'
+        run: corepack enable
+      - name: Install
+        if: steps.ws.outputs.present == 'true'
+        run: pnpm install --frozen-lockfile
+      - name: Typecheck, lint, test, build
+        if: steps.ws.outputs.present == 'true'
+        run: pnpm turbo typecheck lint test build
+      - name: Docs-only repository — nothing to build yet
+        if: steps.ws.outputs.present == 'false'
+        run: echo "No pnpm workspace yet (pre-M0). Skipping build steps."

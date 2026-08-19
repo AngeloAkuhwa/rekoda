@@ -1,0 +1,21 @@
+# Local development: `docker compose -f docker-compose.dev.yml up -d`
+# Postgres only — apps run on the host via pnpm for fast iteration.
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: rekoda
+      POSTGRES_PASSWORD: rekoda # dev only — production credentials come from the environment, never a file
+      POSTGRES_DB: rekoda
+    ports:
+      - '127.0.0.1:5432:5432'
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U rekoda']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  pgdata:
