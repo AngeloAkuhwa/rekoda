@@ -127,6 +127,65 @@ export function couldNotRead(): Reply {
   );
 }
 
+/**
+ * CG2 — the preview, verbatim from the gate.
+ *
+ * Passed through rather than reformatted here, because the gate already
+ * decided which figures a merchant must see and reformatting is how a line
+ * quietly goes missing.
+ */
+export function preview(text: string): Reply {
+  return reply(text.trim());
+}
+
+/** CG1 — the one arithmetic question, verbatim from the gate. */
+export function arithmeticQuestion(text: string): Reply {
+  return reply(text.trim());
+}
+
+/**
+ * The confirmation lost its race (CG3).
+ *
+ * Silence would be wrong — the merchant tapped twice and deserves to know it
+ * worked — but so would apologising for a success.
+ */
+export function alreadyConfirmed(): Reply {
+  return reply('Already saving that one 👍');
+}
+
+/** A "yes" with nothing outstanding to say yes to. */
+export function nothingToConfirm(): Reply {
+  return reply(
+    'There is nothing waiting for a yes. Tell me a sale and I will show it to ' +
+      'you before saving.',
+  );
+}
+
+/** CG5 — the correction landed and replaced what came before. */
+export function correctionTaken(): Reply {
+  return reply('Got it — I have replaced the earlier version.');
+}
+
+/**
+ * The document exists. The FIRST message in this file allowed to say so.
+ *
+ * The number is in it because that is what a merchant quotes down the phone
+ * when a customer asks, and the balance is in it because "what is still owed"
+ * is the question they will be asked next.
+ */
+export function issued(documentNumber: string, totalK: number, balanceDueK: number): Reply {
+  const lines = [`Saved ✅ ${documentNumber} — ${formatNaira(totalK)}.`];
+  if (balanceDueK > 0) lines.push(`${formatNaira(balanceDueK)} still owed.`);
+  return reply(lines.join('\n'));
+}
+
+/** Kobo → ₦, no decimals when there are none. Mirrors the money engine. */
+function formatNaira(kobo: number): string {
+  const whole = Math.floor(Math.abs(kobo) / 100).toLocaleString('en-NG');
+  const minor = String(Math.abs(kobo) % 100).padStart(2, '0');
+  return `₦${whole}${minor === '00' ? '' : `.${minor}`}`;
+}
+
 /** A capability the plan names but the product does not have yet. */
 export function notYet(what: string): Reply {
   return reply(

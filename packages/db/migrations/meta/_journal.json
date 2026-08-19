@@ -64,6 +64,13 @@
       "when": 1787099761059,
       "tag": "0008_command_drafts",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1787099761060,
+      "tag": "0009_draft_claim",
+      "breakpoints": true
     }
   ]
 }

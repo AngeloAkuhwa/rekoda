@@ -25,6 +25,10 @@
     "./webhooks": {
       "types": "./dist/webhooks.d.ts",
       "default": "./dist/webhooks.js"
+    },
+    "./documents": {
+      "types": "./dist/documents.d.ts",
+      "default": "./dist/documents.js"
     }
   },
   "scripts": {
