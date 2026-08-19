@@ -24,6 +24,7 @@ jobs:
   secret-scan:
     name: Secret scan (gitleaks)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:
@@ -44,6 +45,7 @@ jobs:
   build-test:
     name: Typecheck · lint · test · build
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - name: Detect workspace
@@ -81,6 +83,7 @@ jobs:
   integration:
     name: Integration (PostgreSQL)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     services:
       postgres:
         image: postgres:16-alpine
@@ -131,6 +134,7 @@ jobs:
   e2e:
     name: End-to-end (Playwright)
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     services:
       postgres:
         image: postgres:16-alpine
@@ -159,8 +163,18 @@ jobs:
           node-version-file: .nvmrc
       - run: corepack enable
       - run: pnpm install --frozen-lockfile
+      # Split deliberately. `--with-deps` shells out to apt-get, which has
+      # wedged this job for 25 minutes with no output and no failure — a hang
+      # burns runner minutes up to the six-hour default before anyone finds
+      # out. The apt half is best-effort because the ubuntu-latest image
+      # already ships the libraries Chromium needs; the download half is not.
+      - name: Install Chromium system dependencies (best effort)
+        continue-on-error: true
+        timeout-minutes: 5
+        run: pnpm --filter @rekoda/web exec playwright install-deps chromium
       - name: Install Chromium
-        run: pnpm --filter @rekoda/web exec playwright install --with-deps chromium
+        timeout-minutes: 5
+        run: pnpm --filter @rekoda/web exec playwright install chromium
       - name: Build
         run: pnpm turbo build
       - name: Apply migrations

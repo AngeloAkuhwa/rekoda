@@ -41,6 +41,12 @@ export default defineConfig({
    * confusing timeout with no failure to read.
    */
   timeout: 60_000,
+  /**
+   * A ceiling for the whole suite. Without one, a wedged server or a hung
+   * navigation stalls CI until the runner's own six-hour limit — a failure
+   * nobody sees for hours, reported as "still running".
+   */
+  globalTimeout: 15 * 60_000,
   reporter: process.env.CI ? 'list' : 'line',
   use: {
     baseURL: process.env.REKODA_WEB_URL ?? 'http://127.0.0.1:3100',
