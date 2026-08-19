@@ -40,14 +40,26 @@ export async function pumpPaystackEvents(deps: PumpDeps, limit = 50): Promise<nu
   let enqueued = 0;
 
   for (const event of pending) {
-    const reference = referenceOf(event.payload, deps.vaultKey);
+    const opened = referenceOf(event.payload, deps.vaultKey);
 
-    if (!reference) {
+    if (opened.kind === 'unreadable') {
+      /**
+       * A seal that will not open is a KEY problem, not an event problem —
+       * a rotated or mis-set VAULT_KEY would make every event unreadable.
+       * Marking these processed would silently drain the queue during a
+       * configuration error; leaving them pending means they heal the
+       * moment the key is fixed, and the log says why nothing is moving.
+       */
+      log.error('a sealed Paystack payload would not open — check VAULT_KEY');
+      continue;
+    }
+    if (opened.kind === 'no_reference') {
       // Signed, stored, and carrying no payment reference — a transfer
       // notification, a subscription event. Not this pipeline's work.
       await events.markProcessed(deps.workerDb, event.id, 'no_payment_reference');
       continue;
     }
+    const reference = opened.reference;
     if (!PAYMENT_REFERENCE_PATTERN.test(reference)) {
       // A reference, but not OURS — somebody else's traffic on a shared
       // Paystack account, or a manual dashboard charge. Recorded, not ours.
@@ -81,13 +93,18 @@ export async function pumpPaystackEvents(deps: PumpDeps, limit = 50): Promise<nu
   return enqueued;
 }
 
-function referenceOf(payload: unknown, vaultKey: string): string | null {
+type OpenedReference =
+  { kind: 'reference'; reference: string } | { kind: 'no_reference' } | { kind: 'unreadable' };
+
+function referenceOf(payload: unknown, vaultKey: string): OpenedReference {
+  let opened: unknown;
   try {
-    const parsed = paystackWebhookBody.safeParse(openPayload(payload, vaultKey));
-    if (!parsed.success) return null;
-    return summarisePaystackEvent(parsed.data).reference;
+    opened = openPayload(payload, vaultKey);
   } catch {
-    // A seal that will not open is a configuration problem, not this event's.
-    return null;
+    return { kind: 'unreadable' };
   }
+  const parsed = paystackWebhookBody.safeParse(opened);
+  if (!parsed.success) return { kind: 'no_reference' };
+  const reference = summarisePaystackEvent(parsed.data).reference;
+  return reference ? { kind: 'reference', reference } : { kind: 'no_reference' };
 }

@@ -250,13 +250,21 @@ already excludes non-product amounts (§15); tenant scoping via RLS (§42.7);
   the webhook-processing slice lands (it is unused surface before then).
 
 **Build order (each slice a reviewed PR, tests first where they have teeth):**
-1. Domain rules in `@rekoda/core` (references, verification decision, fee
-   split, reconciliation states) + `payment_connections` and `payment_intents`
-   + authenticated `/webhooks/paystack` ingress (signature → fingerprint →
-   idempotency → sealed persist → 200).
-2. The Paystack adapter behind the provider port: intent initialisation
-   (transfer-first), server-side verification, normalised events; webhook
-   processing job → Payment → allocation → receipt → ledger → reconciliation.
+1. ✅ **Shipped (PR #32).** Domain rules in `@rekoda/core` (references,
+   verification decision, fee split, reconciliation states) +
+   `payment_connections` and `payment_intents` + authenticated
+   `/webhooks/paystack` ingress (signature → fingerprint → idempotency →
+   sealed persist → 200).
+2. ✅ **Shipped (PR #33).** The Paystack adapter behind the provider port:
+   intent initialisation (transfer-first), server-side verification,
+   normalised events; webhook processing job → Payment → allocation →
+   receipt → ledger → reconciliation. Sandbox-fake covered §37 cases: full,
+   partial, overpaid, failure, pending, duplicate webhook, replay, unknown
+   reference, foreign reference, expired intent (lazy sweep), inactive
+   connection, missing customer email, provider outage mid-verify.
+   Deferred to slice 3: receipt PDF rendering, owner WhatsApp notification
+   on confirmed payment, chat/"send payment details" wiring, settlement
+   tracking from provider settlement events.
 3. Connection onboarding flow + dashboard Payments/Providers pages + admin
-   exception views.
+   exception views (+ the slice-2 deferrals above).
 4. (M4) `Rekoda.Billing` per §B.

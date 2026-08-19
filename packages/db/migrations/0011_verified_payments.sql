@@ -40,6 +40,16 @@ CREATE INDEX IF NOT EXISTS payments_intent_ix
   ON payments (payment_intent_id)
   WHERE payment_intent_id IS NOT NULL;
 
+-- ONE live intent per invoice. Two live references for one obligation is the
+-- unmatched-payment queue the day the customer pays the older one; the
+-- database decides the race (two concurrent "send payment details"), the
+-- loser looks up the winner. Terminal intents leave the index, so settling
+-- or expiring an intent frees the invoice for a fresh one.
+CREATE UNIQUE INDEX IF NOT EXISTS payment_intents_live_invoice_ux
+  ON payment_intents (business_id, invoice_id)
+  WHERE invoice_id IS NOT NULL
+    AND status NOT IN ('succeeded', 'failed', 'expired', 'cancelled');
+
 -- Who bears the provider's fee is a per-connection commercial choice
 -- (§14: configurable, never hard-coded). Merchant-bearing is the default
 -- because it is what a plain Paystack subaccount does when nobody arranges

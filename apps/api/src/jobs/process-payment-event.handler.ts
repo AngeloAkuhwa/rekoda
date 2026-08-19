@@ -58,6 +58,14 @@ export function processPaymentEventHandler(deps: ProcessPaymentEventDeps): JobHa
       return;
     }
 
+    /**
+     * Lazy expiry BEFORE judging: nothing sweeps intents on a schedule yet,
+     * so an overdue intent still reads as live here. Sweeping first makes
+     * "money after expiry is an exception" true by construction rather than
+     * true only when a sweep happened to run.
+     */
+    await paymentsHub.expireOverdueIntents(tx, businessId);
+
     const intent = await paymentsHub.intentByReference(tx, businessId, reference);
     if (!intent) {
       // Attribution said this business; the tenant-scoped read disagrees.
@@ -99,8 +107,9 @@ export function processPaymentEventHandler(deps: ProcessPaymentEventDeps): JobHa
         return;
       }
       // Wrong currency or a non-positive amount, CONFIRMED by verify — not
-      // this obligation's money, and loudly a human's problem.
-      await exception(tx, businessId, intent, judgement.reason);
+      // this obligation's money, and loudly a human's problem. The exception
+      // records the amount the provider reported, since that is the puzzle.
+      await exception(tx, businessId, intent, judgement.reason, t.amountK);
       await events.markProcessed(tx, eventId, judgement.reason, businessId);
       return;
     }
@@ -110,13 +119,22 @@ export function processPaymentEventHandler(deps: ProcessPaymentEventDeps): JobHa
       providerReference: t.providerTransactionId,
     });
     if (!won) {
-      if (intent.status === 'succeeded') {
+      /**
+       * Losing means SOME terminal state, but `intent.status` was read before
+       * the race — a worker that just lost to a parallel booking would still
+       * see the pre-race value and mislabel a replay as a late payment. The
+       * conditional UPDATE only returns after the winner commits, so a fresh
+       * read here sees the truth.
+       */
+      const current = await paymentsHub.intentByReference(tx, businessId, reference);
+      if (current?.status === 'succeeded') {
         // Layer 2 caught a replay: already booked, nothing downstream fires.
         await events.markProcessed(tx, eventId, 'already_booked', businessId);
       } else {
         // Real money confirmed against an expired/cancelled intent — late
         // by definition, and never booked silently (§37 "expired intent").
-        await exception(tx, businessId, intent, 'late_confirmation');
+        // The exception records what actually ARRIVED, not what was expected.
+        await exception(tx, businessId, intent, 'late_confirmation', judgement.amountK);
         await events.markProcessed(tx, eventId, 'late_confirmation', businessId);
       }
       return;
@@ -151,19 +169,24 @@ export function processPaymentEventHandler(deps: ProcessPaymentEventDeps): JobHa
   };
 }
 
-/** A reconciliation exception with no payment row — money that did NOT book. */
+/**
+ * A reconciliation exception with no payment row — money that did NOT book.
+ * `amountK` is the amount the provider actually reported when one is known;
+ * the intent's expectation is the fallback (a verify miss reports nothing).
+ */
 async function exception(
   tx: TenantDb,
   businessId: string,
   intent: { id: string; invoiceId: string | null; expectedAmountK: number },
   reason: string,
+  amountK?: number,
 ): Promise<void> {
   await settleRepo.recordException(tx, {
     businessId,
     reason,
     expectationKind: intent.invoiceId ? 'invoice' : 'intent',
     expectationId: intent.invoiceId ?? intent.id,
-    amountK: intent.expectedAmountK,
+    amountK: amountK ?? intent.expectedAmountK,
   });
 }
 

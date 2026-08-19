@@ -144,6 +144,10 @@ export async function setConnectionState(
 
 export class ReferenceCollision extends Error {}
 
+/** Another live intent already covers this invoice — the mint race's loser.
+ * The right response is to look up the winner, never to retry the insert. */
+export class LiveIntentExists extends Error {}
+
 export interface IntentInput {
   businessId: string;
   reference: string;
@@ -208,6 +212,12 @@ export async function createIntent(tx: TenantDb, input: IntentInput): Promise<In
     return row;
   } catch (error) {
     if (isUniqueViolation(error)) {
+      // Two unique indexes can reject this insert, and they mean different
+      // things: a reference collision wants a fresh reference; a live-intent
+      // collision wants the EXISTING intent. The constraint name says which.
+      if (violatedConstraint(error) === 'payment_intents_live_invoice_ux') {
+        throw new LiveIntentExists(`a live intent already covers invoice ${input.invoiceId}`);
+      }
       throw new ReferenceCollision(`reference ${input.reference} already exists`);
     }
     throw error;
@@ -353,6 +363,16 @@ export async function expireOverdueIntents(tx: TenantDb, businessId: string): Pr
 
 /** PostgreSQL unique-violation, wrapped by drizzle under `.cause`. */
 function isUniqueViolation(error: unknown): boolean {
+  return pgError(error) !== null;
+}
+
+/** Which unique constraint rejected the write, when PostgreSQL says. */
+function violatedConstraint(error: unknown): string | null {
+  const pg = pgError(error);
+  return pg?.constraint_name ?? null;
+}
+
+function pgError(error: unknown): { code: string; constraint_name?: string } | null {
   for (let e: unknown = error, depth = 0; e && depth < 5; depth++) {
     if (
       typeof e === 'object' &&
@@ -360,9 +380,9 @@ function isUniqueViolation(error: unknown): boolean {
       'code' in e &&
       (e as { code?: string }).code === '23505'
     ) {
-      return true;
+      return e as { code: string; constraint_name?: string };
     }
     e = (e as { cause?: unknown }).cause;
   }
-  return false;
+  return null;
 }

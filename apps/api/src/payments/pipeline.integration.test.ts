@@ -109,7 +109,7 @@ async function seedBusiness(): Promise<string> {
 }
 
 /** An unpaid ₦150,000 invoice with a live intent, the normal way in. */
-async function seedObligation(businessId: string) {
+async function seedObligation(businessId: string, opts: { expiresAt?: Date } = {}) {
   return withBusiness(appDb, businessId, async (tx) => {
     const sale = await issueRepo.issueSale(tx, {
       businessId,
@@ -134,6 +134,7 @@ async function seedObligation(businessId: string) {
       expectedAmountK: 15_000_000,
       providerType: 'paystack',
       invoiceId: sale.invoiceId,
+      expiresAt: opts.expiresAt ?? null,
     });
     return { sale, intent };
   });
@@ -360,6 +361,25 @@ describe('unmatched and late (§37: "unknown reference", "expired intent")', () 
     expect((await events.eventStatus(workerDb, eventId))?.error).toBe('foreign_reference');
   });
 
+  it('expires an OVERDUE intent lazily at processing time — no sweep job required', async () => {
+    const businessId = await seedBusiness();
+    // Past its TTL but never swept: the row still says `created`.
+    const { intent } = await seedObligation(businessId, {
+      expiresAt: new Date(Date.now() - 60_000),
+    });
+    provider.willVerify(intent.reference, { amountK: 15_000_000 });
+    const eventId = await storeChargeSuccess(intent.reference);
+
+    await pump();
+    await drainJobs();
+
+    // The handler swept before judging, so the money landed as late — the
+    // documented rule holds by construction, not by scheduler luck.
+    expect((await intentAfter(businessId, intent.reference))?.status).toBe('expired');
+    expect(await paymentCount(businessId)).toBe(0);
+    expect((await events.eventStatus(workerDb, eventId))?.error).toBe('late_confirmation');
+  });
+
   it('money confirmed AFTER expiry is an exception, never a resurrection', async () => {
     const businessId = await seedBusiness();
     const { intent } = await seedObligation(businessId);
@@ -492,5 +512,30 @@ describe('minting intents (§8–13, §37: "inactive connection")', () => {
     if (first.state !== 'ready' || second.state !== 'ready') throw new Error('expected ready');
     expect(second.reference).toBe(first.reference);
     expect(provider.initialized).toHaveLength(1); // no second provider call
+  });
+
+  it('never reuses a STALE intent — an expired reference gets a fresh mint', async () => {
+    const businessId = await seedBusiness();
+    await activeConnection(businessId);
+    const invoiceId = await invoiceWithCustomer(businessId, 'with_email');
+    // An old intent, past its TTL, never swept — exactly what a customer who
+    // went quiet for a day leaves behind.
+    const stale = await withBusiness(appDb, businessId, (tx) =>
+      paymentsHub.createIntent(tx, {
+        businessId,
+        reference: paymentReference(new Date(), (n) => randomBytes(n)),
+        expectedAmountK: 8_000_000,
+        providerType: 'paystack',
+        invoiceId,
+        expiresAt: new Date(Date.now() - 60_000),
+      }),
+    );
+
+    const result = await service().createForInvoice(businessId, invoiceId);
+
+    if (result.state !== 'ready') throw new Error(`expected ready, got ${result.state}`);
+    // The stale reference was expired, not handed back to the customer.
+    expect(result.reference).not.toBe(stale.reference);
+    expect((await intentAfter(businessId, stale.reference))?.status).toBe('expired');
   });
 });

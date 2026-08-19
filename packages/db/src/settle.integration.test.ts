@@ -208,7 +208,11 @@ describe('booking outcomes (§21–25)', () => {
     const { intent } = await seedObligation(businessId);
 
     await withBusiness(db, businessId, (tx) => book(tx, businessId, intent, 15_000_000));
-    // A second, distinct intent against the SAME invoice confirms later.
+    // The first intent settles (as the processing job would record it) …
+    await withBusiness(db, businessId, (tx) =>
+      paymentsHub.advanceIntent(tx, intent.id, 'succeeded'),
+    );
+    // … and a second, distinct intent against the SAME invoice confirms later.
     const second = await withBusiness(db, businessId, async (tx) =>
       paymentsHub.createIntent(tx, {
         businessId,

@@ -14,8 +14,9 @@ import { RepliesModule } from '../replies/replies.module.js';
 import { ReplySender } from '../replies/reply.service.js';
 import { Interpreter } from '../ai/interpreter.service.js';
 import { PrivacyGateway } from '../privacy/gateway.service.js';
+import { redactForLog } from '@rekoda/core/privacy';
 import { JobQueue, JobKind } from './queue.service.js';
-import { JobRunner } from './runner.js';
+import { JobRunner, describeFailure } from './runner.js';
 import { inboundMessageHandler, type InboundMessageDeps } from './inbound-message.handler.js';
 import { renderDocumentHandler } from './render-document.handler.js';
 import { deliverDocumentHandler } from './deliver-document.handler.js';
@@ -27,8 +28,6 @@ import { MESSAGE_SENDER } from '../channels/sender.tokens.js';
 import type { MessageSender } from '../channels/sender.js';
 import { DocumentsModule, DOCUMENT_STORAGE } from '../documents/documents.module.js';
 import type { DocumentStorage } from '../documents/storage.js';
-
-export const JOB_RUNNER = Symbol('JobRunner');
 
 /**
  * Builds the runner and its handler registry.
@@ -132,9 +131,9 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
       this.pumping = true;
       pumpPaystackEvents({ workerDb, appDb: this.appDb, vaultKey: this.config.vaultKey })
         .catch((error: unknown) => {
-          this.log.warn(
-            `paystack pump pass failed: ${error instanceof Error ? error.message : 'unknown'}`,
-          );
+          // Same discipline as the runner: the reason, never the statement
+          // or its bound values, and redacted like everything else logged.
+          this.log.warn(`paystack pump pass failed: ${redactForLog(describeFailure(error))}`);
         })
         .finally(() => {
           this.pumping = false;
