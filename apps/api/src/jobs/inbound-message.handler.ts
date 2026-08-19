@@ -1,8 +1,15 @@
 import { Logger } from '@nestjs/common';
-import { replies, routeMessage, type DeterministicIntent, type Reply } from '@rekoda/core';
+import {
+  gateSale,
+  looksLikeCorrection,
+  replies,
+  routeMessage,
+  type DeterministicIntent,
+  type Reply,
+} from '@rekoda/core';
 import { extractInboundEvents, metaWebhookBody } from '@rekoda/contracts';
 import type { StructuredBusinessCommand } from '@rekoda/contracts';
-import { conversationsRepo, events, type TenantDb } from '@rekoda/db';
+import { conversationsRepo, events, issueRepo, type TenantDb } from '@rekoda/db';
 import type { ApiConfig } from '../config.js';
 import type { Interpreter } from '../ai/interpreter.service.js';
 import type { PrivacyGateway } from '../privacy/gateway.service.js';
@@ -95,8 +102,8 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
 
     const answer =
       route.route === 'deterministic'
-        ? deterministicReply(route.intent)
-        : await interpretedReply(deps, tx, businessId, tokenised!.text, message.id);
+        ? await deterministicReply(tx, businessId, route.intent)
+        : await interpretedReply(deps, tx, businessId, text, tokenised!.text, message.id);
 
     if (answer) {
       await deps.replySender.send(tx, {
@@ -121,7 +128,23 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
  * is no ledger to read yet, and a bookkeeping assistant that invents a debtor
  * list has destroyed the only thing it sells.
  */
-function deterministicReply(intent: DeterministicIntent): Reply | null {
+async function deterministicReply(
+  tx: TenantDb,
+  businessId: string,
+  intent: DeterministicIntent,
+): Promise<Reply | null> {
+  if (intent.kind === 'affirm') return confirmPendingDraft(tx, businessId);
+  if (intent.kind === 'deny' || intent.kind === 'cancel') {
+    // A refusal after a preview discards the draft rather than leaving it to
+    // be confirmed by an accidental "yes" ten minutes later.
+    const dropped = await conversationsRepo.supersedePendingDrafts(tx, businessId);
+    return dropped > 0
+      ? replies.cancelled()
+      : intent.kind === 'cancel'
+        ? replies.cancelled()
+        : null;
+  }
+
   switch (intent.kind) {
     case 'greeting':
       return replies.greeting();
@@ -131,8 +154,6 @@ function deterministicReply(intent: DeterministicIntent): Reply | null {
       return replies.optedOut();
     case 'start':
       return replies.optedIn();
-    case 'cancel':
-      return replies.cancelled();
     case 'delete_my_data':
       return replies.confirmErasure();
     case 'number':
@@ -143,18 +164,69 @@ function deterministicReply(intent: DeterministicIntent): Reply | null {
       return replies.notYet('Sending your records');
     case 'resend':
       return replies.notYet('Resending a document');
-    case 'affirm':
-    case 'deny':
-      /**
-       * Silence, and the only silence in this function.
-       *
-       * "Yes" and "no" answer a question, and until the confirmation gates
-       * land there is no question outstanding. Replying "I did not understand"
-       * to a merchant who said yes is worse than saying nothing — it invites
-       * them to say it again.
-       */
+    default:
       return null;
   }
+}
+
+/**
+ * CG3 — a "yes" claims the pending draft, and only one "yes" can.
+ *
+ * `claimDraft` is a conditional UPDATE whose WHERE clause carries the
+ * precondition, so two rapid confirmations become one winner and one loser.
+ * The loser is told the truth — the document IS being issued — rather than
+ * apologised to for a success.
+ */
+async function confirmPendingDraft(tx: TenantDb, businessId: string): Promise<Reply | null> {
+  const draft = await conversationsRepo.pendingDraft(tx, businessId);
+  if (!draft) return replies.nothingToConfirm();
+  if (!(await conversationsRepo.claimDraft(tx, draft.id))) return replies.alreadyConfirmed();
+
+  const command = draft.command as { intent?: string } & Record<string, unknown>;
+  if (command.intent !== 'RecordSale') {
+    // Only sales are issuable today. The draft is claimed either way, so an
+    // unconfirmable one cannot sit pending forever inviting another yes.
+    return replies.notYet('Recording that kind of entry');
+  }
+
+  const gate = gateSale(command as never);
+  if (gate.gate !== 'CG2') {
+    // Should be unreachable: a CG1 draft is never previewed, so nothing ever
+    // invited a yes for it. Handled rather than asserted.
+    return replies.arithmeticQuestion(gate.question);
+  }
+
+  const money = gate.money;
+  const issued = await issueRepo.issueSale(tx, {
+    businessId,
+    customerId: null,
+    customerToken: customerTokenOf(command),
+    items: (command['items'] as Array<{ name: string; quantity: number; unitPrice: number }>).map(
+      (item) => ({
+        name: item.name,
+        quantity: item.quantity,
+        unitPriceK: Math.round(item.unitPrice * 100),
+      }),
+    ),
+    subtotalK: money.subtotalK,
+    discountK: money.discountK,
+    deliveryFeeK: money.deliveryFeeK,
+    vatK: money.vatK,
+    totalK: money.totalK,
+    paidK: money.amountPaidK,
+    balanceDueK: money.balanceDueK,
+    method: command['paymentMethod'] === 'cash' ? 'cash' : 'transfer',
+    sourceType: 'chat',
+    sourceId: draft.id,
+    actor: 'system',
+  });
+
+  return replies.issued(issued.invoiceNumber, money.totalK, money.balanceDueK);
+}
+
+function customerTokenOf(command: Record<string, unknown>): string | null {
+  const customer = command['customer'] as { kind?: string; token?: string } | undefined;
+  return customer?.kind === 'token' ? (customer.token ?? null) : null;
 }
 
 /** The model path: a draft when it worked, an honest sentence when it did not. */
@@ -162,6 +234,7 @@ async function interpretedReply(
   deps: InboundMessageDeps,
   tx: TenantDb,
   businessId: string,
+  rawText: string,
   safeText: string,
   conversationMessageId: string,
 ): Promise<Reply> {
@@ -181,6 +254,17 @@ async function interpretedReply(
   if (interpreted.outcome === 'unavailable') return replies.busyRightNow();
   if (interpreted.outcome === 'unusable') return replies.couldNotRead();
 
+  /**
+   * CG5 — a correction REPLACES the pending draft rather than sitting beside
+   * it. Superseded, not deleted: what the merchant first said is part of the
+   * record, and it is the only way to answer "why does this say 3 when I said
+   * 4". Getting the direction wrong makes a merchant fixing a quantity lose
+   * the sale they were fixing.
+   */
+  const existing = await conversationsRepo.pendingDraft(tx, businessId);
+  const correcting = looksLikeCorrection(rawText, existing !== null);
+  if (correcting) await conversationsRepo.supersedePendingDrafts(tx, businessId);
+
   await conversationsRepo.recordDraft(tx, {
     businessId,
     conversationMessageId,
@@ -189,7 +273,7 @@ async function interpretedReply(
     model: deps.config.aiModelDefault,
   });
 
-  return acknowledge(interpreted.command);
+  return acknowledge(interpreted.command, correcting);
 }
 
 /**
@@ -199,9 +283,19 @@ async function interpretedReply(
  * prevent: claiming something happened before it has. The preview belongs to
  * CG2 and the document to the transaction engine.
  */
-function acknowledge(command: StructuredBusinessCommand): Reply {
+function acknowledge(command: StructuredBusinessCommand, correcting: boolean): Reply {
   if (command.intent === 'Unclear') return replies.clarification(command.clarification);
-  return replies.notYet('Confirming and issuing documents');
+  if (command.intent !== 'RecordSale') return replies.notYet('Recording that kind of entry');
+
+  /**
+   * CG1 before CG2, always. A preview of numbers we already know are wrong is
+   * a request to approve a mistake.
+   */
+  const gate = gateSale(command);
+  if (gate.gate === 'CG1') return replies.arithmeticQuestion(gate.question);
+  return replies.preview(
+    correcting ? `${replies.correctionTaken().text}\n\n${gate.preview}` : gate.preview,
+  );
 }
 
 /** The classification, in a form the reply layer can read back. */

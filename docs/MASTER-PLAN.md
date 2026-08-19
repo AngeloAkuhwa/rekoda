@@ -1187,13 +1187,22 @@ bare name in a message currently reaches the model.
 
 ### 5.3.4 Conversation gates (port CG1–CG5)
 
-* **CG1** — arithmetic mismatch → ask one numbered, specific question. Never guess.
-* **CG2** — always preview before issuing: items, discounts, total, paid, balance.
-* **CG3** — confirmation is an **atomic claim**: two rapid "yes" produce exactly one document.
+* ~~**CG1**~~ **Done** — the question carries the actual figures, because "the
+  totals do not match" sends a merchant back to re-read their own message.
+  Runs BEFORE CG2, always: a preview of numbers we know are wrong is a request
+  to approve a mistake.
+* ~~**CG2**~~ **Done** — items, discount, delivery, total, paid, balance, and an
+  overpayment surfaced rather than rounded away.
+* ~~**CG3**~~ **Done** — `claimDraft` is a conditional UPDATE whose WHERE clause
+  carries the precondition, so eight simultaneous confirmations produce one
+  document. Tested with eight.
 * **CG4** — verify delivery; on failure, refund the credit and keep the document retrievable
   via `resend`.
-* **CG5** — corrections by natural text ("no, 3 not 4") re-run the draft, never mutate an
-  issued document.
+* ~~**CG5**~~ **Done** — a correction supersedes the pending draft (superseded,
+  not deleted: what the merchant first said is part of the record). Deliberately
+  conservative — a message naming goods and an amount is a NEW sale even if it
+  opens with "no", because treating a new sale as a correction destroys a record
+  that was never previewed.
 * Interim acks ("Listening…", "Generating…") gated behind `quiet_mode`.
 
 **The reply channel is built** (`apps/api/src/replies/`, `packages/core/src/replies.ts`).
@@ -1227,8 +1236,18 @@ Inside **one** database transaction:
 9. enqueue PDF render + delivery job
 
 If any step throws: nothing is written; the draft survives; the user is told plainly and can
-retry. If a number was reserved and then abandoned, write a `voided` audit event so the gap in
-the sequence is **explained**, not mysterious.
+retry.
+
+**Done** (`packages/db/src/repos/issue.ts`), with one correction to the plan
+above: the counter bump is inside the same transaction as everything else, so a
+failure un-bumps it and **numbering stays dense**. There is no gap to explain on
+this path — a test asserts the sale after a failed one takes 000002, not 000003.
+The `voided` audit event survives for what it is actually needed for: a document
+that WAS issued and is being withdrawn.
+
+Steps 6 (inventory movements) and 9 (enqueue PDF render + delivery) are still
+open — products are not matched to catalogue rows yet, and the PDF engine is the
+next slice.
 
 ### 5.3.6 Documents
 
@@ -1259,13 +1278,17 @@ balances, Debtors, Invoices, Receipts. Server components; mobile-first.
 ### 5.3.8 M2 exit criteria
 
 - [ ] Real WhatsApp number, real message → confirmed record + PDF delivered
-- [ ] Ledger balances after every operation (trial-balance check in tests **and** as a job)
-- [ ] Replayed webhook creates nothing new (test)
-- [ ] Forged signature rejected (test)
-- [ ] Two concurrent "yes" → exactly one document (test)
-- [ ] Hostile transcript cannot inflate a document (test)
+      *(message → confirmed record works end to end in tests; PDF is the next slice)*
+- [x] Ledger balances after every operation — trial balance asserted on entries read
+      BACK from the database, not on the object that was written. *(As a job: open.)*
+- [x] Replayed webhook creates nothing new (test)
+- [x] Forged signature rejected (test)
+- [x] Two concurrent "yes" → exactly one document — tested with eight
+- [x] Hostile transcript cannot inflate a document — the ₦10bn `maximum` travels
+      into the tool schema, so constrained decoding cannot emit ₦900bn and the
+      parser rejects it if it somehow does
 - [ ] No PII in logs (test asserts redaction)
-- [ ] `usage_events` populated for every AI call
+- [x] `usage_events` populated for every AI call — and for every outbound message
 - [ ] **Screenshots of the dashboard posted to the owner**
 
 ---

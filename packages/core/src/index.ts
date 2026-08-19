@@ -3,6 +3,7 @@ export * from './ledger.js';
 export * from './reconciliation.js';
 export * from './numbering.js';
 export * from './router.js';
+export * from './gates.js';
 export * from './ai-cost.js';
 export * as replies from './replies.js';
 export type { Reply } from './replies.js';
@@ -14,6 +15,8 @@ export type { Reply } from './replies.js';
  * pull node:crypto into the browser bundle and break the build.
  *
  * Import it explicitly instead:  import { … } from '@rekoda/core/identity'
+ *
+ * `documents` is held back for the node:crypto reason too.
  *
  * `privacy` and `vault` are held back for the same reason, and for a second
  * one that matters more: `rehydrate` and `decryptFacet` are the two functions

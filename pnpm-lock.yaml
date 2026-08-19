@@ -156,6 +156,9 @@ importers:
 
   packages/db:
     dependencies:
+      '@rekoda/core':
+        specifier: workspace:*
+        version: link:../core
       drizzle-orm:
         specifier: ^0.45.2
         version: 0.45.2(gel@2.2.0)(postgres@3.4.9)
@@ -163,9 +166,6 @@ importers:
         specifier: ^3.4.5
         version: 3.4.9
     devDependencies:
-      '@rekoda/core':
-        specifier: workspace:^
-        version: link:../core
       '@types/node':
         specifier: ^24
         version: 24.13.3

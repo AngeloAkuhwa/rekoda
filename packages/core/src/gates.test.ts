@@ -1,0 +1,190 @@
+/**
+ * The conversation gates (MASTER-PLAN §5.3.4, CG1–CG5).
+ *
+ * Every assertion here is a claim about a merchant's money, which is why the
+ * gates are pure: this file needs no database, no network and no model to
+ * prove that a mismatch is questioned rather than guessed at, and that nothing
+ * reaches a document unread.
+ */
+import { describe, expect, it } from 'vitest';
+import { gateSale, looksLikeCorrection, saleToDraft, type SaleLike } from './gates.js';
+import { computeMoney } from './money.js';
+
+const WIGS: SaleLike = {
+  items: [{ name: 'wig', quantity: 3, unitPrice: 50_000 }],
+  statedTotal: 150_000,
+  reportedPayment: 100_000,
+  customer: { kind: 'token', token: 'CUSTOMER_7K2' },
+};
+
+describe('CG1 — an arithmetic mismatch is questioned, never guessed at', () => {
+  it('asks when the stated total is below the items', () => {
+    const gate = gateSale({ ...WIGS, statedTotal: 120_000, reportedPayment: null });
+    expect(gate.gate).toBe('CG1');
+    if (gate.gate !== 'CG1') throw new Error('unreachable');
+
+    /**
+     * Both silent options are wrong. Trusting the stated total buries a
+     * discrepancy in a document the merchant signs; trusting the arithmetic
+     * overrides a merchant who haggled and knows something we do not.
+     */
+    expect(gate.question).toContain('₦150,000'); // what the items come to
+    expect(gate.question).toContain('₦120,000'); // what they said
+    expect(gate.question).toContain('₦30,000'); // the gap, named
+    expect(gate.question).toMatch(/discount/i);
+  });
+
+  it('puts the real figures in the question, not "the totals do not match"', () => {
+    const gate = gateSale({ ...WIGS, statedTotal: 120_000 });
+    if (gate.gate !== 'CG1') throw new Error('unreachable');
+    // A vague question sends a merchant back to re-read their own message.
+    expect(gate.question).not.toMatch(/^the totals do not match\.?$/i);
+    expect(gate.question).toContain('3 × wig');
+  });
+
+  it('asks a DIFFERENT question when the stated total is above the items', () => {
+    const gate = gateSale({ ...WIGS, statedTotal: 200_000, reportedPayment: null });
+    if (gate.gate !== 'CG1') throw new Error('unreachable');
+    // Not a discount — more likely a price we recorded wrong.
+    expect(gate.question).not.toMatch(/discount/i);
+    expect(gate.question).toMatch(/price/i);
+    expect(gate.question).toContain('₦50,000');
+  });
+
+  it('does not fire on a stated total that agrees', () => {
+    expect(gateSale(WIGS).gate).toBe('CG2');
+  });
+
+  it('tolerates rounding rather than interrogating a ₦20 difference', () => {
+    // A gate that questions every kobo is a gate merchants learn to ignore.
+    const gate = gateSale({ ...WIGS, statedTotal: 149_980, reportedPayment: null });
+    expect(gate.gate).toBe('CG2');
+  });
+});
+
+describe('CG2 — nothing is issued unread', () => {
+  it('shows every figure that will appear on the document', () => {
+    const gate = gateSale(WIGS);
+    if (gate.gate !== 'CG2') throw new Error('unreachable');
+
+    // A preview that omits a line teaches the merchant that skimming is safe.
+    expect(gate.preview).toContain('CUSTOMER_7K2');
+    expect(gate.preview).toContain('3 × wig @ ₦50,000 = ₦150,000');
+    expect(gate.preview).toContain('Total: ₦150,000');
+    expect(gate.preview).toContain('Paid: ₦100,000');
+    expect(gate.preview).toContain('Balance: ₦50,000');
+  });
+
+  it('asks for a yes and offers the alternative', () => {
+    const gate = gateSale(WIGS);
+    if (gate.gate !== 'CG2') throw new Error('unreachable');
+    expect(gate.preview).toMatch(/reply \*yes\*/i);
+    expect(gate.preview).toMatch(/tell me what to change/i);
+  });
+
+  it('says "nothing yet" rather than ₦0 when nobody has paid', () => {
+    const gate = gateSale({ ...WIGS, reportedPayment: null });
+    if (gate.gate !== 'CG2') throw new Error('unreachable');
+    expect(gate.preview).toContain('Paid: nothing yet');
+    expect(gate.preview).not.toContain('Balance:');
+  });
+
+  it('surfaces an overpayment instead of rounding it away', () => {
+    const gate = gateSale({ ...WIGS, reportedPayment: 200_000 });
+    if (gate.gate !== 'CG2') throw new Error('unreachable');
+
+    // A real event with a real meaning — change owed, or a credit — and the
+    // merchant is the one who decides which.
+    expect(gate.preview).toMatch(/paid over by ₦50,000/i);
+    expect(gate.money.overpaymentK).toBe(5_000_000);
+    expect(gate.money.balanceDueK).toBe(0);
+  });
+
+  it('shows a discount and a delivery fee as their own lines', () => {
+    const gate = gateSale({
+      items: [{ name: 'bag', quantity: 2, unitPrice: 20_000 }],
+      discount: 5_000,
+      deliveryFee: 2_000,
+      reportedPayment: null,
+      customer: { kind: 'none' },
+    });
+    if (gate.gate !== 'CG2') throw new Error('unreachable');
+    expect(gate.preview).toContain('Discount: −₦5,000');
+    expect(gate.preview).toContain('Delivery: ₦2,000');
+    expect(gate.preview).toContain('Total: ₦37,000');
+  });
+
+  it('omits the customer line when there is no customer', () => {
+    const gate = gateSale({ ...WIGS, customer: { kind: 'none' } });
+    if (gate.gate !== 'CG2') throw new Error('unreachable');
+    expect(gate.preview).not.toContain('CUSTOMER_');
+  });
+
+  it('names an unresolved customer by what the merchant called them', () => {
+    const gate = gateSale({
+      ...WIGS,
+      customer: { kind: 'mention', mention: 'the lady from Surulere' },
+    });
+    if (gate.gate !== 'CG2') throw new Error('unreachable');
+    expect(gate.preview).toContain('the lady from Surulere');
+  });
+});
+
+describe('CG1 runs before CG2', () => {
+  it('never previews numbers it already knows are wrong', () => {
+    // A preview of a known-wrong total is a request to approve a mistake.
+    const gate = gateSale({ ...WIGS, statedTotal: 120_000 });
+    expect(gate.gate).toBe('CG1');
+    expect(gate).not.toHaveProperty('preview');
+  });
+});
+
+describe('the draft handed to the money engine', () => {
+  it('carries the stated total through as testimony, not as truth', () => {
+    const draft = saleToDraft({ ...WIGS, statedTotal: 120_000 });
+    expect(draft.statedTotalNaira).toBe(120_000);
+    // The engine keeps both, which is what makes the mismatch visible at all.
+    const money = computeMoney(draft);
+    expect(money.computedTotalK).toBe(15_000_000);
+    expect(money.totalK).toBe(12_000_000);
+  });
+
+  it('omits absent optional figures rather than sending zeros', () => {
+    // Under exactOptionalPropertyTypes a null discount and an absent one are
+    // different things, and a zero discount would print a "Discount: ₦0" line.
+    const draft = saleToDraft({ items: WIGS.items, discount: null, statedTotal: null });
+    expect(draft).not.toHaveProperty('discountNaira');
+    expect(draft).not.toHaveProperty('statedTotalNaira');
+  });
+});
+
+describe('CG5 — telling a correction from a new sale', () => {
+  it.each([
+    'no, 3 not 4',
+    'No it was 150k',
+    'actually make it 5',
+    'sorry, change it to 2 bags',
+    'wait — the price should be 60k',
+  ])('%j corrects the draft', (text) => {
+    expect(looksLikeCorrection(text, true)).toBe(true);
+  });
+
+  it('is never a correction when nothing is pending', () => {
+    // Otherwise "no" to a question we did not ask would silently discard
+    // something the merchant is still typing.
+    expect(looksLikeCorrection('no, 3 not 4', false)).toBe(false);
+  });
+
+  it.each(['Ada bought 3 wigs for 150k', 'fuel 12k', 'sold 2 bags to Bola'])(
+    '%j is a NEW sale, not a correction',
+    (text) => {
+      // Getting this backwards makes a merchant fixing a quantity lose the
+      // sale they were fixing.
+      expect(looksLikeCorrection(text, true)).toBe(false);
+    },
+  );
+
+  it('treats an empty message as neither', () => {
+    expect(looksLikeCorrection('   ', true)).toBe(false);
+  });
+});

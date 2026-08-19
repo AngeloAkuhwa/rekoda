@@ -9,7 +9,7 @@
  * to obtain one; storing a raw message through it is not an oversight that
  * could happen, it is a value the caller would have to construct on purpose.
  */
-import { and, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, sql } from 'drizzle-orm';
 import type { TenantDb } from '../client.js';
 import { commandDrafts, conversationMessages, conversations } from '../schema/ops.js';
 
@@ -252,4 +252,57 @@ export async function markOutboundSent(
     .update(conversationMessages)
     .set({ providerMessageId })
     .where(eq(conversationMessages.id, id));
+}
+
+/** The draft this business is waiting to confirm, if there is one. */
+export async function pendingDraft(tx: TenantDb, businessId: string): Promise<DraftRow | null> {
+  const rows = await tx
+    .select({
+      id: commandDrafts.id,
+      intent: commandDrafts.intent,
+      state: commandDrafts.state,
+      command: commandDrafts.command,
+    })
+    .from(commandDrafts)
+    .where(and(eq(commandDrafts.businessId, businessId), eq(commandDrafts.state, 'pending')))
+    .orderBy(desc(commandDrafts.createdAt))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+/**
+ * CG3 — claim a draft for issuing, exactly once.
+ *
+ * `WHERE state = 'pending'` IS the mutual exclusion. Two rapid "yes" messages
+ * become two jobs on two connections; both read the draft, both decide to
+ * issue, and the merchant's customer receives two invoices with two numbers
+ * for one sale. On WhatsApp a double-tap is not an edge case, it is Tuesday.
+ *
+ * Returns false for the loser, which is not an error — it means the document
+ * is being issued by somebody else, and the right response is to say nothing
+ * further rather than to apologise for a success.
+ */
+export async function claimDraft(tx: TenantDb, draftId: string): Promise<boolean> {
+  const claimed = await tx
+    .update(commandDrafts)
+    .set({ state: 'confirmed', updatedAt: new Date() })
+    .where(and(eq(commandDrafts.id, draftId), eq(commandDrafts.state, 'pending')))
+    .returning({ id: commandDrafts.id });
+  return claimed.length === 1;
+}
+
+/**
+ * CG5 — a correction replaces the draft it corrects.
+ *
+ * Superseded rather than deleted: the merchant said something, and what they
+ * said is part of the record even after they changed their mind. It is also
+ * the only way to answer "why does this invoice say 3 when I first said 4".
+ */
+export async function supersedePendingDrafts(tx: TenantDb, businessId: string): Promise<number> {
+  const updated = await tx
+    .update(commandDrafts)
+    .set({ state: 'superseded', updatedAt: new Date() })
+    .where(and(eq(commandDrafts.businessId, businessId), eq(commandDrafts.state, 'pending')))
+    .returning({ id: commandDrafts.id });
+  return updated.length;
 }

@@ -32,6 +32,23 @@ export class StubTransport implements ModelTransport {
     return new StubTransport([error]);
   }
 
+  /**
+   * Change what the next call returns.
+   *
+   * A conversation is a sequence of different answers — a sale, then a
+   * correction — and a stub that could only be scripted at construction could
+   * not express one.
+   */
+  replyWith(command: unknown, usage?: Partial<ModelReply['usage']>): void {
+    this.replies.length = 0;
+    this.replies.push({
+      toolInput: { command },
+      usage: { inputTokens: 1_800, outputTokens: 120, ...usage },
+      stopReason: 'tool_use',
+    });
+    this.requests.length = 0;
+  }
+
   /** Forget what has been asked. A suite sharing one stub needs this per test. */
   reset(): void {
     this.requests.length = 0;

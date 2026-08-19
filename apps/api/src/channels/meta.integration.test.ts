@@ -21,6 +21,7 @@ import {
 } from '@rekoda/db';
 import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
 import { buildRunner } from '../jobs/jobs.module.js';
+import { issueRepo } from '@rekoda/db';
 import { PrivacyGateway } from '../privacy/gateway.service.js';
 import { Interpreter } from '../ai/interpreter.service.js';
 import { StubTransport } from '../ai/transport.stub.js';
@@ -126,6 +127,10 @@ function messagePayload(waId: string, wamid: string, text = 'Ada bought 3 wigs f
 }
 
 /** A delivery receipt: same envelope, `statuses` instead of `messages`. */
+function invoiceCount(businessId: string): Promise<number> {
+  return withBusiness(db, businessId, (tx) => issueRepo.invoiceCount(tx));
+}
+
 function statusPayload(recipientId: string, wamid: string, status: string) {
   return {
     object: 'whatsapp_business_account',
@@ -389,7 +394,7 @@ describe('nothing raw is stored', () => {
     const messages = await withBusiness(db, business.id, (tx) =>
       conversationsRepo.messagesFor(tx, business.id),
     );
-    expect(messages).toHaveLength(1);
+    // Inbound plus the reply it earned. The inbound one is what this asserts.
     expect(messages[0]).toMatchObject({ direction: 'inbound', body: '[affirm]' });
 
     // And the gateway never ran: no customer, no vault write, nothing left.
@@ -430,10 +435,10 @@ describe('nothing raw is stored', () => {
       }),
     );
 
-    const messages = await withBusiness(db, business.id, (tx) =>
-      conversationsRepo.messagesFor(tx, business.id),
-    );
-    expect(messages).toHaveLength(1);
+    const inbound = (
+      await withBusiness(db, business.id, (tx) => conversationsRepo.messagesFor(tx, business.id))
+    ).filter((m) => m.direction === 'inbound');
+    expect(inbound).toHaveLength(1);
   });
 });
 
@@ -530,14 +535,19 @@ describe('answering the merchant', () => {
     expect(messages.map((m) => m.direction)).toEqual(['inbound', 'outbound']);
   });
 
-  it('says nothing to a bare "yes" — there is no question outstanding', async () => {
+  it('tells a merchant plainly when there is nothing to say yes to', async () => {
     await seedMerchant('+2348031234567', 'Ada Fashion');
     await post(messagePayload('2348031234567', 'wamid.YES', 'yes'));
     expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
 
-    // Replying "I did not understand" would invite the merchant to say it
-    // again. Silence until the confirmation gates give "yes" something to mean.
-    expect(stubSender.sent).toHaveLength(0);
+    /**
+     * Before the gates landed this was silence, because "yes" answers a
+     * question and there was none to answer. Now that a draft can exist, a
+     * "yes" with none pending is a real state worth naming — and the reply
+     * says what WOULD produce something to confirm.
+     */
+    expect(stubSender.lastText).toMatch(/nothing waiting for a yes/i);
+    expect(stubSender.lastText).toMatch(/tell me a sale/i);
   });
 
   it('does NOT invent a debtor list it cannot compute', async () => {
@@ -598,6 +608,127 @@ describe('answering the merchant', () => {
     expect(messages).toHaveLength(2);
     // No provider id: a reply we owed and did not deliver, and findable as one.
     expect(messages[1]).toMatchObject({ direction: 'outbound', providerMessageId: null });
+  });
+});
+
+describe("the plan's own example, end to end", () => {
+  async function seedMerchant(phone: string, name: string) {
+    const user = await identity.upsertUserByPhone(db, phone);
+    return identity.createBusinessWithOwner(db, { name, businessType: null, ownerUserId: user.id });
+  }
+
+  const THE_SALE = {
+    intent: 'RecordSale',
+    customer: { kind: 'token', token: 'CUSTOMER_7K2' },
+    items: [{ name: 'wig', quantity: 3, unitPrice: 50_000 }],
+    statedTotal: 150_000,
+    reportedPayment: 100_000,
+    paymentMethod: 'transfer',
+    discount: null,
+    deliveryFee: null,
+    dueDescription: null,
+  };
+
+  async function send(text: string, wamid: string) {
+    await post(messagePayload('2348031234567', wamid, text));
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+  }
+
+  it('turns a WhatsApp message into a confirmed, balanced, numbered record', async () => {
+    const business = await seedMerchant('+2348031234567', 'Ada Fashion');
+    stubTransport.replyWith(THE_SALE);
+
+    // 1. The sale. CG2: previewed, not saved.
+    await send('Ada bought 3 wigs for 150k, paid 100k', 'wamid.SALE');
+    expect(stubSender.lastText).toContain('Please check this before I save it');
+    expect(stubSender.lastText).toContain('Total: ₦150,000');
+    expect(stubSender.lastText).toContain('Balance: ₦50,000');
+
+    // Nothing issued yet — that is the entire point of the gate.
+    expect(await invoiceCount(business.id)).toBe(0);
+
+    // 2. The yes. CG3 claims the draft and the engine issues.
+    await send('yes', 'wamid.YES');
+    expect(stubSender.lastText).toMatch(/Saved ✅ INV-\d{4}-000001 — ₦150,000/);
+    expect(stubSender.lastText).toContain('₦50,000 still owed');
+
+    expect(await invoiceCount(business.id)).toBe(1);
+
+    // 3. The books balance, read back out of the database.
+    const entries = await withBusiness(db, business.id, (tx) =>
+      issueRepo.ledgerEntriesFor(tx, business.id),
+    );
+    const debits = entries.reduce((n, e) => n + e.debitK, 0);
+    const credits = entries.reduce((n, e) => n + e.creditK, 0);
+    expect(debits).toBe(credits);
+    expect(debits).toBe(15_000_000);
+  });
+
+  it('does not issue TWICE when the merchant taps yes twice', async () => {
+    const business = await seedMerchant('+2348031234567', 'Ada Fashion');
+    stubTransport.replyWith(THE_SALE);
+    await send('Ada bought 3 wigs for 150k, paid 100k', 'wamid.SALE');
+
+    await send('yes', 'wamid.YES1');
+    await send('yes', 'wamid.YES2');
+
+    // CG3. On WhatsApp a double-tap is not an edge case, it is Tuesday.
+    expect(await invoiceCount(business.id)).toBe(1);
+    // And the second yes is told the truth rather than apologised to.
+    expect(stubSender.lastText).toMatch(/nothing waiting for a yes|already saving/i);
+  });
+
+  it('questions an arithmetic mismatch instead of previewing it', async () => {
+    const business = await seedMerchant('+2348031234567', 'Ada Fashion');
+    stubTransport.replyWith({ ...THE_SALE, statedTotal: 120_000, reportedPayment: null });
+
+    await send('Ada bought 3 wigs, total 120k', 'wamid.ODD');
+
+    // CG1 before CG2: a preview of numbers we know are wrong is a request to
+    // approve a mistake.
+    expect(stubSender.lastText).toContain('do not add up');
+    expect(stubSender.lastText).toContain('₦30,000');
+    expect(stubSender.lastText).not.toContain('Please check this before I save it');
+    expect(await invoiceCount(business.id)).toBe(0);
+  });
+
+  it('lets a correction replace the draft before anything is issued', async () => {
+    const business = await seedMerchant('+2348031234567', 'Ada Fashion');
+    stubTransport.replyWith(THE_SALE);
+    await send('Ada bought 3 wigs for 150k, paid 100k', 'wamid.SALE');
+
+    // CG5 — "no, 4 not 3" re-runs the draft rather than mutating anything.
+    stubTransport.replyWith({
+      ...THE_SALE,
+      items: [{ name: 'wig', quantity: 4, unitPrice: 50_000 }],
+      statedTotal: 200_000,
+    });
+    await send('no, 4 not 3', 'wamid.FIX');
+    expect(stubSender.lastText).toContain('replaced the earlier version');
+    expect(stubSender.lastText).toContain('Total: ₦200,000');
+
+    await send('yes', 'wamid.YES');
+
+    // One invoice, for the CORRECTED figure. Confirming the superseded draft
+    // would be the failure CG5 exists to prevent.
+    expect(await invoiceCount(business.id)).toBe(1);
+    const rows = await withBusiness(db, business.id, (tx) =>
+      conversationsRepo.draftsFor(tx, business.id),
+    );
+    expect(rows.map((r) => r.state).sort()).toEqual(['confirmed', 'superseded']);
+  });
+
+  it('discards the draft when the merchant says no', async () => {
+    const business = await seedMerchant('+2348031234567', 'Ada Fashion');
+    stubTransport.replyWith(THE_SALE);
+    await send('Ada bought 3 wigs for 150k, paid 100k', 'wamid.SALE');
+
+    await send('no', 'wamid.NO');
+    expect(stubSender.lastText).toMatch(/cancelled/i);
+
+    // A discarded draft must not be confirmable by an accidental yes later.
+    await send('yes', 'wamid.LATE');
+    expect(await invoiceCount(business.id)).toBe(0);
   });
 });
 
