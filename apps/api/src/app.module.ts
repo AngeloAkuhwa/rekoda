@@ -5,10 +5,12 @@ import { SessionGuard } from './auth/session.guard.js';
 import { RolesGuard } from './auth/roles.guard.js';
 import { DbModule } from './db/db.module.js';
 import { HealthController } from './health/health.controller.js';
+import { MetaWebhookController } from './channels/meta.controller.js';
+import { MetaIngressService } from './channels/meta.service.js';
 
 @Module({
   imports: [DbModule],
-  controllers: [AuthController, BusinessController, HealthController],
-  providers: [AuthService, SessionGuard, RolesGuard],
+  controllers: [AuthController, BusinessController, HealthController, MetaWebhookController],
+  providers: [AuthService, SessionGuard, RolesGuard, MetaIngressService],
 })
 export class AppModule {}

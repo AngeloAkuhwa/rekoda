@@ -10,7 +10,19 @@ export async function createApp(): Promise<NestFastifyApplication> {
   const app = await NestFactory.create<NestFastifyApplication>(
     AppModule,
     new FastifyAdapter({ trustProxy: true }),
-    { bufferLogs: true },
+    /**
+     * `rawBody` keeps the exact bytes of each request alongside the parsed
+     * body, which the Meta webhook needs: `X-Hub-Signature-256` is an HMAC
+     * over what was actually sent, and `JSON.parse` then `JSON.stringify` is
+     * not the identity function — key order, whitespace and unicode escaping
+     * all move, so hashing a re-serialisation fails for every legitimate
+     * request.
+     *
+     * Nest's own option rather than a hand-registered content-type parser:
+     * registering one before `init()` collides with the JSON parser Nest
+     * installs itself, and Fastify refuses the duplicate.
+     */
+    { bufferLogs: true, rawBody: true },
   );
 
   /**
