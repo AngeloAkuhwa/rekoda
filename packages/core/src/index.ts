@@ -4,6 +4,8 @@ export * from './reconciliation.js';
 export * from './numbering.js';
 export * from './router.js';
 export * from './ai-cost.js';
+export * as replies from './replies.js';
+export type { Reply } from './replies.js';
 
 /**
  * `identity` is deliberately NOT re-exported here. It imports `node:crypto`,

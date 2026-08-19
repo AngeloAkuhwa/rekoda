@@ -178,13 +178,19 @@ export interface UsageTotals {
 /**
  * What this tenant has spent. Row-level security scopes it, so there is no
  * `WHERE business_id` here and no way for a caller to widen it.
+ *
+ * `provider` narrows it, and needs to: one message now produces rows for two
+ * providers — the model that read it and the WhatsApp message that answered —
+ * so an unfiltered total answers "what did this cost", not "what did the AI
+ * cost". Those are different questions and the margin view asks both.
  */
-export async function usageTotals(tx: TenantDb): Promise<UsageTotals> {
+export async function usageTotals(tx: TenantDb, provider?: string): Promise<UsageTotals> {
   const rows = await tx.execute<{ n: number; micros: number; kobo: number }>(sql`
     SELECT count(*)::int AS n,
            coalesce(sum(provider_cost_micros), 0)::bigint AS micros,
            coalesce(sum(naira_equivalent_k), 0)::bigint AS kobo
     FROM usage_events
+    ${provider ? sql`WHERE provider = ${provider}` : sql``}
   `);
   const row = [...rows][0];
   return {

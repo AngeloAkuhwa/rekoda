@@ -19,6 +19,8 @@ import { buildRunner } from './jobs.module.js';
 import { PrivacyGateway } from '../privacy/gateway.service.js';
 import { Interpreter } from '../ai/interpreter.service.js';
 import { StubTransport } from '../ai/transport.stub.js';
+import { StubSender } from '../channels/sender.stub.js';
+import { ReplySender } from '../replies/reply.service.js';
 import { loadConfig, type ApiConfig } from '../config.js';
 import type { InboundMessageDeps } from './inbound-message.handler.js';
 
@@ -33,6 +35,7 @@ let config: ApiConfig;
 /** The real gateway and the real config — `buildRunner` gets what production gets. */
 let deps: InboundMessageDeps;
 let stubTransport: StubTransport;
+let stubSender: StubSender;
 
 beforeAll(async () => {
   urls = requireUrls();
@@ -50,9 +53,11 @@ beforeAll(async () => {
     intent: 'Unclear',
     clarification: 'How many wigs?',
   });
+  stubSender = new StubSender();
   deps = {
     gateway: new PrivacyGateway(appDb, config),
     interpreter: new Interpreter(appDb, config, stubTransport),
+    replySender: new ReplySender(config, stubSender),
     config,
   };
 });
