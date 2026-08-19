@@ -857,9 +857,20 @@ expensive the later they are closed.
    `WITH CHECK` half — a tenant supplying another tenant's id explicitly — and
    was confirmed to fail under a superuser connection, which is what
    distinguishes proving the policies from proving nothing.
-3. **pg-boss jobs must run inside `withBusiness`.** Background workers are
-   where tenant context is forgotten first; the job wrapper enforces it.
-   *Still open — lands with M2, when there are jobs to wrap.*
+3. ~~**pg-boss jobs must run inside `withBusiness`.**~~ **Done (M2).** Not with
+   pg-boss, and not with a wrapper — see ADR 0022. The queue is a `jobs` table
+   under the same row-level security as everything else, and the ability to
+   claim from it across tenants is a separate login role (`rekoda_worker`)
+   rather than a code path. `rekoda_app` matches only `tenant_isolation` there,
+   so the API cannot read another tenant's queue at all; the integration suite
+   asserts exactly that, and it goes red when the policy is widened.
+
+   The enforcement that closes this item is the handler signature: a handler
+   receives a `TenantDb` that is *already pinned* and no other database handle,
+   so there is no version of one that reads across tenants by forgetting
+   something. The runner also marks a job `done` inside the handler's own
+   transaction, which is what stops a worker dying mid-job from re-issuing a
+   document on the retry.
 4. ~~**Composite indexes on hot paths.**~~ **Done.** Migration
    `0003_hot_path_indexes`: `(business_id, status)` and
    `(business_id, customer_id)` on `invoices`, `(business_id, verified)` on

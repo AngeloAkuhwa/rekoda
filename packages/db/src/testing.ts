@@ -6,11 +6,12 @@
  * not depend on `postgres`, so the fixture reset has to be offered from here or
  * the boundary would have to be broken to test it.
  *
- * Two connection strings, because production has two: migrations run as the
- * schema OWNER, the application runs as `rekoda_app`, which is not the owner
- * and has no BYPASSRLS. Testing through a superuser would make every RLS
- * assertion below vacuously pass — which is the specific failure mode this
- * harness exists to avoid.
+ * Three connection strings, because production has three: migrations run as
+ * the schema OWNER, the application runs as `rekoda_app`, and background work
+ * runs as `rekoda_worker`. Neither of the latter two is the owner and neither
+ * has BYPASSRLS. Testing through a superuser would make every RLS assertion
+ * vacuously pass — which is the specific failure mode this harness exists to
+ * avoid.
  */
 import postgres from 'postgres';
 import { applyMigrations } from './migrate.js';
@@ -20,6 +21,14 @@ export interface Urls {
   owner: string;
   /** `rekoda_app` — everything the application itself does. */
   app: string;
+  /**
+   * `rekoda_worker` — the only role allowed to claim a job it has not yet
+   * pinned a tenant for (migration 0004). Kept separate from `app` here for
+   * the same reason it is separate in production: a test that claimed work
+   * through the application's credentials would prove the opposite of what it
+   * claims to.
+   */
+  worker: string;
 }
 
 /**
@@ -32,13 +41,15 @@ export interface Urls {
 export function requireUrls(): Urls {
   const owner = process.env['DATABASE_URL'];
   const app = process.env['APP_DATABASE_URL'];
-  if (!owner || !app) {
+  const worker = process.env['WORKER_DATABASE_URL'];
+  if (!owner || !app || !worker) {
     throw new Error(
-      'Integration tests need DATABASE_URL (owner) and APP_DATABASE_URL (rekoda_app). ' +
+      'Integration tests need DATABASE_URL (owner), APP_DATABASE_URL (rekoda_app) ' +
+        'and WORKER_DATABASE_URL (rekoda_worker). ' +
         'Start one with: docker compose -f docker-compose.dev.yml up -d',
     );
   }
-  return { owner, app };
+  return { owner, app, worker };
 }
 
 export async function migrate(urls: Urls): Promise<void> {
@@ -51,6 +62,7 @@ export async function truncateAll(urls: Urls): Promise<void> {
   try {
     await sql.unsafe(`
       TRUNCATE
+        jobs,
         memberships, business_connections, products,
         customer_identities, customers,
         external_events,

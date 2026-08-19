@@ -25,5 +25,8 @@ a new ADR that supersedes the old one.
 | [0017](0017-meta-direct-for-integrate-too.md) | Meta-direct for Integrate too; Twilio becomes optional | Accepted (scope narrowed by 0018) |
 | [0018](0018-retire-waba-catalogue-capture.md) | Retire the WABA catalogue as an order-capture path | Accepted |
 | [0019](0019-paystack-account-model-final.md) | The Paystack model: merchant-owned accounts, Rekoda stays out of the money | Accepted |
+| [0020](0020-identity-persistence-and-the-setup-grant.md) | Identity persistence: the setup grant, and a second pin for the bootstrap read | Accepted |
+| [0021](0021-privacy-gateway-implementation.md) | The privacy gateway: what leaves, what stays, and where the seams are | Accepted |
+| [0022](0022-job-queue-in-our-own-schema.md) | The job queue lives in our schema, and claiming it is a role | Accepted |
 
 Template: [0000-template.md](0000-template.md)

@@ -108,6 +108,11 @@ jobs:
       # would make every tenancy assertion pass for the wrong reason.
       DATABASE_URL: postgres://rekoda@127.0.0.1:5432/rekoda
       APP_DATABASE_URL: postgres://rekoda_app@127.0.0.1:5432/rekoda
+      # The worker role. Separate from APP_DATABASE_URL on purpose — the queue
+      # tests assert that the application's credentials CANNOT claim a job, and
+      # running both roles through one connection string would make that
+      # assertion pass for the wrong reason (ADR 0022).
+      WORKER_DATABASE_URL: postgres://rekoda_worker@127.0.0.1:5432/rekoda
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
