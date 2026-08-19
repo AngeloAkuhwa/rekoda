@@ -52,6 +52,8 @@ export async function truncateAll(urls: Urls): Promise<void> {
     await sql.unsafe(`
       TRUNCATE
         memberships, business_connections, products,
+        customer_identities, customers,
+        external_events,
         magic_links, sessions, otp_challenges,
         businesses, users
       RESTART IDENTITY CASCADE

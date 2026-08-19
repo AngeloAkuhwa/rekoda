@@ -1,0 +1,118 @@
+/**
+ * Ingress event storage (MASTER-PLAN §5.3.1).
+ *
+ * `external_events` is deliberately outside row-level security: an event
+ * arrives before anyone knows which tenant it belongs to, and a policy keyed
+ * on `app.business_id` would reject the very insert that determines it. The
+ * table holds no financial data, and `business_id` is filled in when — and
+ * only when — resolution succeeds.
+ */
+import { and, eq, isNull, sql } from 'drizzle-orm';
+import type { Db, TenantDb } from '../client.js';
+import { externalEvents } from '../schema/ops.js';
+
+export type Queryable = Db | TenantDb;
+
+export interface IncomingEvent {
+  provider: 'meta' | 'twilio' | 'paystack';
+  eventType: string;
+  externalId: string;
+  payload: unknown;
+  businessId: string | null;
+}
+
+export interface RecordedEvent {
+  id: string;
+  /** False when this exact event was already stored — i.e. a provider retry. */
+  isNew: boolean;
+}
+
+/**
+ * Store an event, exactly once.
+ *
+ * `ON CONFLICT DO NOTHING` against `UNIQUE(provider, external_id)` is what
+ * makes a retry a no-op *by construction*. The obvious alternative — SELECT,
+ * then INSERT if absent — loses the race that matters most: Meta retries
+ * aggressively and in parallel, so two deliveries of the same message can both
+ * find nothing and both insert. Here the database decides, and the loser
+ * simply learns it was second.
+ *
+ * A duplicate is not an error. The caller still answers 200, because a
+ * provider that gets anything else will keep retrying until it gives up and
+ * disables the webhook.
+ */
+export async function recordEvent(q: Queryable, event: IncomingEvent): Promise<RecordedEvent> {
+  const inserted = await q
+    .insert(externalEvents)
+    .values({
+      provider: event.provider,
+      eventType: event.eventType,
+      externalId: event.externalId,
+      payload: event.payload as never,
+      businessId: event.businessId,
+      // Only signed events are ever persisted; see the note in the controller.
+      signatureValid: 1,
+    })
+    .onConflictDoNothing({
+      target: [externalEvents.provider, externalEvents.externalId],
+    })
+    .returning({ id: externalEvents.id });
+
+  const row = inserted[0];
+  if (row) return { id: row.id, isNew: true };
+
+  const existing = await q
+    .select({ id: externalEvents.id })
+    .from(externalEvents)
+    .where(
+      and(
+        eq(externalEvents.provider, event.provider),
+        eq(externalEvents.externalId, event.externalId),
+      ),
+    )
+    .limit(1);
+
+  const found = existing[0];
+  if (!found) throw new Error('recordEvent: conflict reported but no existing row found');
+  return { id: found.id, isNew: false };
+}
+
+/** Mark an event handled. Errors are recorded, not thrown away. */
+export async function markProcessed(
+  q: Queryable,
+  id: string,
+  error: string | null = null,
+): Promise<void> {
+  await q
+    .update(externalEvents)
+    .set({ processedAt: new Date(), error })
+    .where(eq(externalEvents.id, id));
+}
+
+/**
+ * Events that arrived but were never handled — the queue that exists before
+ * there is a job runner, and the audit trail after there is one.
+ */
+export async function unprocessedEvents(
+  q: Queryable,
+  provider: IncomingEvent['provider'],
+  limit = 50,
+): Promise<Array<{ id: string; externalId: string; payload: unknown; businessId: string | null }>> {
+  return q
+    .select({
+      id: externalEvents.id,
+      externalId: externalEvents.externalId,
+      payload: externalEvents.payload,
+      businessId: externalEvents.businessId,
+    })
+    .from(externalEvents)
+    .where(and(eq(externalEvents.provider, provider), isNull(externalEvents.processedAt)))
+    .orderBy(externalEvents.createdAt)
+    .limit(limit);
+}
+
+/** Count of stored events, for the health surface. */
+export async function eventCount(q: Queryable): Promise<number> {
+  const rows = await q.execute<{ n: number }>(sql`SELECT count(*)::int AS n FROM external_events`);
+  return [...rows][0]?.n ?? 0;
+}

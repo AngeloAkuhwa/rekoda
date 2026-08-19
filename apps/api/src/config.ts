@@ -22,6 +22,10 @@ export interface ApiConfig {
   corsOrigins: string[];
   /** Requests per IP per minute. See the note in main.ts. */
   rateLimitMax: number;
+  /** Verifies X-Hub-Signature-256 on the Meta webhook. */
+  metaAppSecret: string;
+  /** Echoed back during Meta's GET subscription handshake. */
+  metaVerifyToken: string;
 }
 
 class ConfigError extends Error {}
@@ -58,6 +62,18 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     // Raised by the integration suite, which legitimately makes a few hundred
     // requests from one address in well under a minute.
     rateLimitMax: Number(env['REKODA_RATE_LIMIT_MAX'] ?? 60),
+    /**
+     * Required in production, optional elsewhere. An empty secret makes
+     * `verifyMetaSignature` return false for everything, so a misconfigured
+     * deployment rejects webhooks rather than accepting unsigned ones — the
+     * safe direction to fail.
+     */
+    metaAppSecret: isProduction
+      ? required(env, 'META_APP_SECRET', 16)
+      : (env['META_APP_SECRET'] ?? ''),
+    metaVerifyToken: isProduction
+      ? required(env, 'META_VERIFY_TOKEN', 16)
+      : (env['META_VERIFY_TOKEN'] ?? ''),
   };
 }
 
