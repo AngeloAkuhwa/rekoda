@@ -415,6 +415,61 @@ Gumroad. In WhatsApp commerce, Flowcart and Wapikit (IN/BR) run the aggregator
 onboarding model — but they are commerce tools; none keeps a ledger or
 reconciles, so borrow the onboarding, not the product.*
 
+## ADR 0014 — Payment verification as a product: the fake-alert defence · **Accepted**
+
+**Fake alerts** — a customer showing a forged or unrelated transfer alert at the
+counter, the vendor releasing goods, the money never arriving — are the most
+common way a Nigerian market vendor loses real money. Rekoda's
+`RECORDED` vs `VERIFIED` distinction already answers it; what was missing was
+making it a product the merchant uses **at the moment of risk**.
+
+**The negative answer is the product.** Anyone can show a green tick; the value
+is a trustworthy *"no, that money has not arrived."*
+
+* **Push-first**: the moment a verified event lands, Rekoda says so unprompted.
+  The absence of that message is itself the signal.
+* **Latency is a correctness property, and it reorders ladder B.** The customer
+  is standing there. DVA/checkout webhooks confirm in **seconds**; open banking
+  is rate-limited to one refresh per 5 minutes. So **DVAs (via ADR 0013) become
+  the priority path** for face-to-face transfers, and **open banking becomes the
+  completeness layer** rather than the primary. Neither replaces the other.
+* **Never accept a screenshot or forwarded alert as evidence.** A forged alert
+  is exactly what an LLM can be talked into believing — it may open a lookup,
+  never a confirmation. The refusal is a template, never an AI sentence.
+* **Three states, never two**: `VERIFIED` · `RECORDED (not verified)` ·
+  `NOT SEEN` — and "not seen" is never styled as failure.
+* **Fake receipts**: a public `/verify/{documentNumber}` page showing issuer,
+  number, date, total and validity — **no PII**, not enumerable (number + check
+  token), rate-limited, and disableable by the merchant.
+
+*Marketing constraint: "Rekoda confirms when money has actually arrived" —
+**never** "Rekoda stops fraud." Rekoda cannot see a transfer to an account it
+does not observe.*
+
+## ADR 0015 — End-to-end books · **Accepted**
+
+The plan's only reporting artefact was a Financial Snapshot — a pulse, not books
+an accountant can file from or a lender will read. The ledger already holds
+everything needed; only the reporting layer was missing.
+
+Ship **four statements plus period close**, all derived deterministically from
+`ledger_entries`: **trial balance · profit & loss · balance sheet · cash flow**.
+The V1 chart of accounts already supports all four — no schema change.
+
+**One ledger, two lenses.** The ledger stays **accrual** (that is what makes
+receivables, payables and reconciliation coherent). The merchant's **default view
+is cash basis**, because a vendor who sold ₦500,000 on credit has not "made
+₦500,000" in any sense they recognise. Labels are plain — *"money actually
+received"* vs *"including money owed to you"* — never "cash/accrual".
+
+**Period close** locks a period; corrections post dated reversals in the open
+period; the owner can reopen with an audit event; each close writes a hashed
+snapshot.
+
+*Not a tax filing product, and not a replacement for an accountant — it is what
+makes an accountant cheap, which is the growth wedge. **V1 ships four statements
+and a period lock. Nothing else.***
+
 ---
 
 # PART 3 — STACK, REPO, STANDARDS
@@ -895,6 +950,19 @@ pharmacy), header styles, signature + stamp, amount-in-words, "Includes VAT @ x%
 AMOUNT DUE box (A4 only — do not duplicate the balance), `E&OE` footnote, page numbers.
 Store in **R2** under an unguessable key; DB holds the key, never the blob.
 
+### 5.3.6b Payment verification & document verification (ADR 0014)
+
+* **Push-first verified-payment notification** the moment a provider event
+  lands — the merchant should not have to ask.
+* **Three states in every surface**: `VERIFIED` · `RECORDED (not verified)` ·
+  `NOT SEEN`, with "not seen" styled neutrally.
+* **Screenshot refusal** as a deterministic template — an image of a payment
+  alert must never reach `VERIFIED`, and must never be routed to the model for
+  a judgement call.
+* **`/verify/{documentNumber}`** public page: issuer, number, date, total,
+  validity. No PII, number + check token (never bare-sequential lookup),
+  rate-limited, merchant-disableable.
+
 ### 5.3.7 Dashboard (read-only this milestone)
 
 Overview (sales, received, expenses, outstanding, unreconciled), Transactions, Customers +
@@ -968,6 +1036,9 @@ phrase the sentence around the numbers; it may never produce a number.**
   owner's link)
 * Excel exports (transactions, sales, invoices, payments, expenses, customers, products,
   inventory movements, reconciliation)
+* **The four statements + period close (ADR 0015)** — trial balance, P&L,
+  balance sheet, cash flow, all from `ledger_entries`; cash-basis default view
+  with an accrual lens for the accountant; period lock with hashed snapshot
 * Remaining SEO guides published
 * **Erasure engine** ported: `delete my data` → specific preview naming real counts and the
   6-year rule → exact-capitals `DELETE` → PII overwritten, phone replaced by a **random**

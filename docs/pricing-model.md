@@ -30,11 +30,28 @@ accountant's afternoon, not against an invoice template.
 ## What each plan includes
 
 ### Free Trial — ₦0, 30 days from activation
-1 business · 1 owner · **5 document credits** (invoice = receipt = financial
-PDF = Excel report = 1 credit each) · 50 WhatsApp messages · 10 voice
-minutes · 25 recorded transactions · dashboard, customers, products, basic
-summary · Integrate connection allowed if the merchant wants to wire it
+
+> **Corrected 19 Aug 2026 — the original 5-document trial was self-defeating.**
+> The trial allowed **25 recorded transactions but only 5 documents**. Since a
+> sale typically produces an invoice *and* a receipt, the document credit was
+> exhausted at roughly the **third transaction**, leaving 22 transactions that
+> generate no invoice and no receipt — i.e. the merchant hits the wall before
+> ever seeing the thing they would be paying for.
+>
+> It also gates the wrong resource. §"External cost stack" establishes that
+> **documents cost essentially nothing** (compute + storage) while **messages
+> and voice are the real COGS**. Capping the free thing and giving away the
+> expensive thing is backwards on both counts.
+
+1 business · 1 owner · **25 document credits** (matched to the transaction
+allowance, so every trial transaction can produce its invoice and receipt) ·
+**50 WhatsApp messages** · **10 voice minutes** · 25 recorded transactions ·
+dashboard, customers, products, basic summary · Integrate connection allowed
 during trial · Paystack processing fees always separate.
+
+**Messages and voice remain the binding constraints** — they are what actually
+cost money, and they cap trial COGS at roughly the same ₦800–₦1,200 the original
+model assumed. Documents are an abuse-control ceiling, not a value gate.
 
 ### Rekoda Chat — ₦9,900/month
 *Talk to Rekoda. Your records build themselves.*
@@ -78,6 +95,24 @@ online reality in one consolidated financial position.
 
 No unlimited usage at launch — real merchant behaviour is unknown; packs
 protect against the ₦9,900-payer who scripts 30,000 messages.
+
+> **Reconciliation note, 19 Aug 2026.** The cost stack below was researched on
+> 16 Aug 2026 and several lines are now superseded by decisions taken since.
+> Where they conflict, **the ADR wins**:
+>
+> | Original assumption | Superseded by |
+> |---|---|
+> | Twilio ₦7.25/msg both directions for Chat | **ADR 0002/0011** — Chat is Meta-direct; Twilio applies to the Integrate WABA path only |
+> | Free-form replies and utility templates free inside the 24h window | **ADR 0011** — Meta charges for **every service message from 1 Oct 2026**, flat, no volume discount (~₦10/outbound in Nigeria) |
+> | Twilio Verify ~₦80+/OTP | **ADR 0002** — OTP over Rekoda's own WhatsApp number (~₦10), SMS fallback only |
+> | OpenAI transcription ~₦6.53/min | **ADR 0008** — self-hosted AfriSpeech-tuned model on the existing server; no per-minute fee |
+> | Azure hosting ₦75–150k/month | **ADR 0006** — Hetzner + Cloudflare + R2, **~₦30–40k/month** at launch |
+> | Nightly `pg_dump` backups | **ADR 0010** — continuous WAL archiving (PITR) |
+>
+> Net effect: hosting and STT are **much** cheaper than modelled, messaging is
+> **more** expensive from October, and the ₦9,900 tier lands at **39–60% margin**
+> rather than the "45–60%" originally estimated. The 1 September rate
+> publication is a release gate — see §"Standing review triggers".
 
 ## External cost stack (research of 16 Aug 2026, at ₦1,450/$)
 

@@ -19,5 +19,7 @@ a new ADR that supersedes the old one.
 | [0011](0011-messaging-economics-revised.md) | Messaging economics after Meta's 1 October 2026 change | Accepted |
 | [0012](0012-integrate-without-cac.md) | Integrate without CAC: tiered capture and tiered verification | Accepted |
 | [0013](0013-rekoda-as-the-single-integration.md) | Rekoda as the single integration: platform-owned Paystack, merchant subaccounts | Proposed |
+| [0014](0014-payment-verification-anti-fake-alert.md) | Payment verification as a product: the fake-alert defence | Accepted |
+| [0015](0015-full-books.md) | End-to-end books: trial balance, P&L, balance sheet, period close | Accepted |
 
 Template: [0000-template.md](0000-template.md)

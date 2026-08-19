@@ -122,6 +122,10 @@ These are the ones that end the company rather than cost a sprint.
 | R6 | **Never mutate a money column on an issued document.** Reversals and credit notes only. |
 | R7 | **Never silently absorb a discrepancy** — the overpayment clamp in G10 is exactly this bug. |
 | R8 | **Never skip, disable or quarantine a failing test to get green.** |
+| R21 | **Never accept a screenshot, image, or forwarded alert as payment evidence.** A forged transfer alert is exactly the input an LLM can be talked into believing. It may open a lookup; it may never move a payment to `VERIFIED`. The refusal is a deterministic template, not an AI sentence. |
+| R22 | **Never show `VERIFIED` without a provider-confirmed event**, and never let silence read as verification. Three states always: `VERIFIED` · `RECORDED (not verified)` · `NOT SEEN`. One false green tick destroys the only thing the feature sells. |
+| R23 | **Never claim "Rekoda stops fraud."** Say "Rekoda confirms when money has actually arrived in your account." Rekoda cannot see a transfer to an account it does not observe, and the `NOT SEEN` state must be explained on the pricing page, not discovered mid-sale. |
+| R24 | **Never expose PII or a bare-sequential lookup on `/verify/{documentNumber}`.** Issuer, number, date, total, validity only — number **plus check token**, rate-limited, merchant-disableable. |
 
 ## 3.3 Data
 
