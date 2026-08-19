@@ -138,6 +138,49 @@ delivered), not chargeback leakage — a different problem, and a tractable one.
   you have personally met; platform-managed risk there is negligible. Self-serve
   comes after the controls below exist and have been exercised.
 
+### Who verifies whom — the question that keeps coming back
+
+Stating this explicitly because it is easy to slide back into "everyone needs
+CAC", which would undo the whole design:
+
+| Party | Verified by | With what | Needs CAC? |
+|---|---|---|---|
+| **Rekoda Ltd** | Paystack | Full registered-business KYC | **Yes** — Rekoda's own registration is what carries the platform relationship |
+| **The vendor (Ada)** | **Rekoda** | **BVN or NIN + Resolve Account name match** | **No** |
+| **The customer (Jennifer)** | **Nobody** | Nothing | **No** (ADR 0016) |
+| Meta / Facebook | — | — | **Not in the default path at all** — the storefront (ADR 0012 rung A1) needs no WABA, so Meta verification only appears if a merchant *chooses* the A2 upgrade |
+
+**Rekoda's CAC is the one that does the work.** That is precisely what allows the
+vendor to have none.
+
+**"Can we just let Paystack verify the vendors instead?"** Only by choosing the
+**standard flow** — which is exactly the trade documented above: Paystack does the
+KYC and carries the risk, and in exchange the vendor is on a Starter Business
+capped at **₦2M lifetime collections**. You cannot have Paystack's KYC *and*
+uncapped collections through their own account. That is the trade, and the cap is
+why platform-managed wins.
+
+*(One thing worth asking Paystack: some Connect material suggests a platform may
+**delegate sub-merchant KYC to Paystack** while still running the
+platform-managed flow. If that is real and does not re-impose the Starter cap, it
+is the best of both — Paystack's KYC rigour with uncapped collections. Add it to
+the question list; it is not load-bearing, but it would be a meaningful
+simplification.)*
+
+### CAC is not what makes this safe — BVN is
+
+A reflex says "verify their CAC for safety." For this purpose it is the weaker
+check. **CAC tells you a business exists on paper. BVN tells you which real
+human receives the money**, and money that settles into a BVN-linked account is
+traceable to a person in a way a registration number is not. CBN agrees: its
+requirement for virtual accounts is **BVN or NIN**, not CAC.
+
+So CAC stays **a benefit, never a gate**. A merchant who has one can unlock the
+things that genuinely require it — Meta verification and a native WABA catalogue,
+Paystack DVAs, and optionally a *"Registered business"* badge on their storefront
+that is a real trust signal to their own customers. None of it is required to
+trade on Rekoda.
+
 ### The controls — and the one Rekoda may not build
 
 Because Rekoda **may not hold funds** (safety-review R1/R2), the usual
