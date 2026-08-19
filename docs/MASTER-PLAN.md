@@ -367,6 +367,51 @@ explicit, specific and revocable with one-tap unlink; statement data is Zone 1
 vault data and never enters the AI zone. Mono was acquired by Flutterwave in
 Jan 2026 — keep a second aggregator behind the `BusinessConnection` interface.
 
+## ADR 0013 — Rekoda as the single integration · **Proposed**
+
+ADR 0012 removed the CAC barrier but still asked each merchant to onboard
+*themselves* to a financial provider. Every such step loses market vendors.
+The platform model removes it entirely:
+
+```
+Rekoda Ltd (one CAC, one Paystack account, one integration)
+   └── merchant = subaccount  (bank account + BVN/NIN — no CAC, no signup)
+         └── customer = Dedicated NUBAN under Rekoda, split → merchant's bank
+```
+
+Two facts make it work. **A Paystack sub-merchant does not need their own
+Paystack account** — the platform transacts on its account and splits, and
+onboarding needs only a bank account validated via Resolve Account. And
+**Dedicated NUBANs accept a `subaccount` or `split_code` at assignment**, so
+per-customer bank accounts can be issued under Rekoda's registration with
+proceeds settling directly to the merchant.
+
+Merchant onboarding collapses to *"give us your account number"*, and every
+payment — checkout **and** direct bank transfer — produces a verified webhook on
+Rekoda's own integration. Funds never rest with Rekoda, so the merchant stays
+the seller and the documents stay their records.
+
+**WhatsApp cannot be made implicit this way.** Meta is deprecating the OBO model
+in which a provider owned clients' WABAs; the surviving path has the client own
+the WABA and pass verification. So the answer stays ADR 0012 ladder A: make a
+WABA *unnecessary* via the Rekoda storefront.
+
+**Proposed, not Accepted — the risks are real.** All merchants under one Paystack
+account means a single compliance action can take **everyone** down at once;
+chargeback, fraud and AML liability move to Rekoda; and a **PSSP licence
+(₦100M CBN deposit) does not even permit holding customer funds** — only an MMO
+(₦2B) may. The model is therefore legal only while funds split at Paystack and
+never rest in a Rekoda balance. **Any escrow, wallet, hold-until-delivery or
+payout-scheduling feature crosses into licensed territory.** Needs written
+confirmation from Paystack and an opinion from Nigerian fintech counsel; keep
+ADR 0012 B0/B1 live as an escape hatch.
+
+*Precedent: **Selar** — 241,000 creators, **₦9.8bn paid out in 2024**, individuals
+selling with no company registration. Also Shopify Payments, Stripe Connect,
+Gumroad. In WhatsApp commerce, Flowcart and Wapikit (IN/BR) run the aggregator
+onboarding model — but they are commerce tools; none keeps a ledger or
+reconciles, so borrow the onboarding, not the product.*
+
 ---
 
 # PART 3 — STACK, REPO, STANDARDS
@@ -1239,6 +1284,14 @@ character-for-character identical.
 ## 11.1 Owner decisions outstanding
 
 1. **Confirm ADR 0003** (Paystack: merchant-owned account with vaulted key).
+1a. **Confirm ADR 0013 with Paystack in writing** — is sub-merchant aggregation
+   under Rekoda's account permitted; does DVA-with-split work for sub-merchants;
+   is the ~1,000 dedicated-account ceiling per platform or per subaccount; who
+   bears chargeback liability? Plus a Nigerian fintech counsel opinion that
+   split-settled aggregation without fund custody is outside licensable
+   activity. **This is now the highest-value question in the project** — it
+   decides whether merchant onboarding is "give us your account number" or a
+   provider signup.
 1b. **Confirm ADR 0012's primary path** — ask **Mono** whether merchant
    self-account linking for reconciliation is a supported use case, and ask
    **Flutterwave/Monnify** to confirm the unregistered/sole-proprietor
@@ -1278,6 +1331,8 @@ character-for-character identical.
 | AI extracts a wrong figure | Deterministic recomputation + mandatory preview + audit trail + reversal-only corrections |
 | Vault key loss | Documented custody; fatal boot check on key fingerprint |
 | **CAC excludes most vendors from Integrate — via Meta *and* Paystack** | ADR 0012: order capture via Rekoda storefront / order forwarding (no Meta), verification via open banking on the merchant's existing account (BVN + consent, no CAC). Registered-only rungs become upgrades, not gates |
+| **Platform-model concentration — every merchant under one Paystack account** | Sub-merchant KYC before activation; per-merchant velocity limits and anomaly alerts; ADR 0012 B0/B1 kept live so the platform rung is never the only path (ADR 0013) |
+| **Drifting into fund custody (escrow, wallets, holds)** | PSSP does not permit holding customer funds; only MMO does. Funds must split at Paystack and settle directly to merchant banks. No custody feature without counsel (ADR 0013) |
 | **Open banking provider concentration (Mono acquired by Flutterwave)** | Keep a second aggregator behind the `BusinessConnection` interface; no provider shapes leak into the reconciliation engine (ADR 0012) |
 | **Bank-link consent overreach — personal accounts expose personal spending** | Credit transactions only, above a threshold, debits never stored; explicit revocable consent, one-tap unlink; Zone 1 data, never to AI (ADR 0012) |
 | **Service-message pricing lands above the utility anchor** | 1 Sep gate re-runs COGS before pricing goes public; cut allowance, never re-price a grandfathered cohort (ADR 0011) |

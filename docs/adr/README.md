@@ -18,5 +18,6 @@ a new ADR that supersedes the old one.
 | [0010](0010-pitr-backups.md) | Continuous WAL archiving (PITR), not nightly dumps | Accepted |
 | [0011](0011-messaging-economics-revised.md) | Messaging economics after Meta's 1 October 2026 change | Accepted |
 | [0012](0012-integrate-without-cac.md) | Integrate without CAC: tiered capture and tiered verification | Accepted |
+| [0013](0013-rekoda-as-the-single-integration.md) | Rekoda as the single integration: platform-owned Paystack, merchant subaccounts | Proposed |
 
 Template: [0000-template.md](0000-template.md)

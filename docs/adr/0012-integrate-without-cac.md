@@ -1,6 +1,15 @@
 # 0012 — Integrate without CAC: tiered capture and tiered verification
 
-**Status:** Accepted
+**Status:** Accepted — ladder B reordered by [0013](0013-rekoda-as-the-single-integration.md)
+
+> **Ladder B update, 2026-08-19.** Everything below stands. But B0/B1 both still
+> ask the merchant to onboard themselves to a financial provider, and ADR 0013
+> found a rung that asks for nothing but an account number: Rekoda's own
+> Paystack account with merchants as **subaccounts**, and per-customer NUBANs
+> issued under Rekoda that split straight to the merchant's bank. If Paystack
+> and counsel confirm it, that becomes ladder B's default and **B0 (open
+> banking) becomes its complement** — the way to see money arriving at accounts
+> Rekoda did not issue — rather than the primary.
 **Date:** 2026-08-19
 **Supersedes:** [0009](0009-dva-bank-transfer-reconciliation.md) — which positioned
 Paystack DVAs as *the* bank-transfer answer. They are one rung of a ladder, and
