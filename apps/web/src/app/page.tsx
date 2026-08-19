@@ -88,8 +88,28 @@ export default function HomePage() {
               </dd>
             </dl>
           </div>
-          <div className="rk-bubble rk-bubble-in">
-            Done. Invoice and receipt created.
+          {/* The demo ends on the artefact itself: a real, numbered receipt
+              with the bookkeeper's double rule under the figure that matters.
+              "You get real documents" lands harder shown than said. */}
+          <div className="rk-receipt" aria-label="Example of the receipt Rekoda creates">
+            <p className="rk-receipt-head">
+              <span>Receipt</span>
+              <span>RCT-2026-000114</span>
+            </p>
+            <dl className="rk-receipt-rows">
+              <dt>3 × Wig</dt>
+              <dd>
+                <Money kobo={demo.totalK} />
+              </dd>
+              <dt>Paid</dt>
+              <dd>
+                <Money kobo={demo.amountPaidK} />
+              </dd>
+              <dt>Balance owed</dt>
+              <dd>
+                <Money kobo={demo.balanceDueK} />
+              </dd>
+            </dl>
             <p className="rk-bubble-badge">
               <MoneyBadge state="recorded" />
             </p>
