@@ -17,6 +17,8 @@ import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing
 import { JobRunner } from './runner.js';
 import { buildRunner } from './jobs.module.js';
 import { PrivacyGateway } from '../privacy/gateway.service.js';
+import { Interpreter } from '../ai/interpreter.service.js';
+import { StubTransport } from '../ai/transport.stub.js';
 import { loadConfig, type ApiConfig } from '../config.js';
 import type { InboundMessageDeps } from './inbound-message.handler.js';
 
@@ -30,6 +32,7 @@ let closeWorker: () => Promise<void>;
 let config: ApiConfig;
 /** The real gateway and the real config — `buildRunner` gets what production gets. */
 let deps: InboundMessageDeps;
+let stubTransport: StubTransport;
 
 beforeAll(async () => {
   urls = requireUrls();
@@ -43,7 +46,15 @@ beforeAll(async () => {
   process.env['VAULT_KEY'] = testKey('vault');
   process.env['MATCH_KEY'] = testKey('match');
   config = loadConfig();
-  deps = { gateway: new PrivacyGateway(appDb, config), config };
+  stubTransport = StubTransport.answering({
+    intent: 'Unclear',
+    clarification: 'How many wigs?',
+  });
+  deps = {
+    gateway: new PrivacyGateway(appDb, config),
+    interpreter: new Interpreter(appDb, config, stubTransport),
+    config,
+  };
 });
 
 /**

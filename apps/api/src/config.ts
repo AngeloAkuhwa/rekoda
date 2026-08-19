@@ -38,6 +38,14 @@ export interface ApiConfig {
   workerDatabaseUrl: string | null;
   /** Whether this process polls the queue as well as serving requests. */
   workerEnabled: boolean;
+  /** Empty means "behave as if the provider is down" — see ai.module.ts. */
+  anthropicApiKey: string;
+  aiModelDefault: string;
+  /** Daily ceilings. The thing on the other side of these is a bill. */
+  aiCallsPerBusinessPerDay: number;
+  aiCallsGlobalPerDay: number;
+  /** Recorded on every usage row, so a past cost is never re-derived. */
+  planningFxNairaPerUsd: number;
 }
 
 class ConfigError extends Error {}
@@ -110,6 +118,24 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
      */
     workerDatabaseUrl: env['WORKER_DATABASE_URL'] ?? null,
     workerEnabled,
+    /**
+     * Optional, deliberately. The deterministic router answers most messages
+     * without a model, so a missing key degrades the product rather than
+     * breaking it — and a developer running the web app to look at a page
+     * should not need an Anthropic account.
+     */
+    anthropicApiKey: env['ANTHROPIC_API_KEY'] ?? '',
+    aiModelDefault: env['AI_MODEL_DEFAULT'] ?? 'claude-sonnet-latest',
+    /**
+     * Defaults are a ceiling, not a target. At ~₦8 a call (pricing-model.md),
+     * 60 per merchant is about ₦480 a day against a subscription, and 5,000
+     * platform-wide bounds the worst day this product can have to roughly
+     * ₦40,000 — a number that can be absorbed while someone investigates,
+     * rather than discovered on an invoice.
+     */
+    aiCallsPerBusinessPerDay: Number(env['AI_DAILY_CALLS_PER_BUSINESS'] ?? 60),
+    aiCallsGlobalPerDay: Number(env['AI_DAILY_CALLS_GLOBAL'] ?? 5_000),
+    planningFxNairaPerUsd: Number(env['PLANNING_FX_NGN_PER_USD'] ?? 1_450),
   };
 }
 

@@ -14,6 +14,7 @@ import {
   events,
   identity,
   jobsRepo,
+  quotaRepo,
   schema,
   withBusiness,
   type Db,
@@ -21,6 +22,8 @@ import {
 import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
 import { buildRunner } from '../jobs/jobs.module.js';
 import { PrivacyGateway } from '../privacy/gateway.service.js';
+import { Interpreter } from '../ai/interpreter.service.js';
+import { StubTransport } from '../ai/transport.stub.js';
 import { loadConfig, type ApiConfig } from '../config.js';
 import type { InboundMessageDeps } from '../jobs/inbound-message.handler.js';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
@@ -35,6 +38,7 @@ let workerDb: Db;
 let closeDb: () => Promise<void>;
 let closeWorkerDb: () => Promise<void>;
 let deps: InboundMessageDeps;
+let stubTransport: StubTransport;
 
 beforeAll(async () => {
   urls = requireUrls();
@@ -59,7 +63,15 @@ beforeAll(async () => {
   ({ db, close: closeDb } = createDb(urls.app, { max: 4 }));
   ({ db: workerDb, close: closeWorkerDb } = createDb(urls.worker, { max: 2 }));
   const config: ApiConfig = loadConfig();
-  deps = { gateway: new PrivacyGateway(db, config), config };
+  stubTransport = StubTransport.answering({
+    intent: 'Unclear',
+    clarification: 'How many wigs?',
+  });
+  deps = {
+    gateway: new PrivacyGateway(db, config),
+    interpreter: new Interpreter(db, config, stubTransport),
+    config,
+  };
 });
 
 afterAll(async () => {
@@ -72,6 +84,10 @@ beforeEach(async () => {
   // `truncateAll` covers external_events — apps/api deliberately has no
   // `postgres` dependency, so the fixture reset is offered by @rekoda/db.
   await truncateAll(urls);
+  // One stub is shared across this file, so its record of what was asked has
+  // to be cleared too — otherwise "the model was never called" quietly means
+  // "not called since the file started".
+  stubTransport.reset();
 });
 
 function messagePayload(waId: string, wamid: string, text = 'Ada bought 3 wigs for 150k') {
@@ -412,6 +428,73 @@ describe('nothing raw is stored', () => {
       conversationsRepo.messagesFor(tx, business.id),
     );
     expect(messages).toHaveLength(1);
+  });
+});
+
+describe('what the model understood', () => {
+  async function seedMerchant(phone: string, name: string) {
+    const user = await identity.upsertUserByPhone(db, phone);
+    return identity.createBusinessWithOwner(db, { name, businessType: null, ownerUserId: user.id });
+  }
+
+  it('stores a draft for a message only the model could read', async () => {
+    const business = await seedMerchant('+2348031234567', 'Ada Fashion');
+    await post(messagePayload('2348031234567', 'wamid.DRAFT', 'Ada 08039998888 bought 3 wigs'));
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+
+    const drafts = await withBusiness(db, business.id, (tx) =>
+      conversationsRepo.draftsFor(tx, business.id),
+    );
+    expect(drafts).toHaveLength(1);
+    expect(drafts[0]).toMatchObject({ intent: 'Unclear', state: 'pending' });
+    // The command holds tokens, because tokens are all the model ever saw.
+    expect(JSON.stringify(drafts[0]!.command)).not.toContain('08039998888');
+  });
+
+  it('does NOT call a model for a message the router already answered', async () => {
+    const business = await seedMerchant('+2348031234567', 'Ada Fashion');
+    await post(messagePayload('2348031234567', 'wamid.CHEAP', 'good morning'));
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+
+    // No request, no draft, no usage row, no naira spent.
+    expect(stubTransport.requests).toHaveLength(0);
+    const drafts = await withBusiness(db, business.id, (tx) =>
+      conversationsRepo.draftsFor(tx, business.id),
+    );
+    expect(drafts).toHaveLength(0);
+    const spend = await withBusiness(db, business.id, (tx) => quotaRepo.usageTotals(tx));
+    expect(spend.calls).toBe(0);
+  });
+
+  it('does not pay twice for one sentence when the job runs again', async () => {
+    const business = await seedMerchant('+2348031234567', 'Ada Fashion');
+    await post(messagePayload('2348031234567', 'wamid.ONCE', 'Ada bought 3 wigs'));
+
+    // Captured before the run, because running it marks the event handled.
+    const [event] = await events.unprocessedEvents(db, 'meta');
+    const runner = buildRunner(workerDb, db, deps);
+    expect(await runner.runOnce()).toBe(true);
+    expect(stubTransport.requests).toHaveLength(1);
+
+    /**
+     * Exactly what a reclaimed lock produces: the same event, queued again.
+     * `recordInbound` reports `isNew: false` the second time, which is what
+     * stops the model being paid for a sentence it has already read.
+     */
+    await withBusiness(db, business.id, (tx) =>
+      jobsRepo.enqueue(tx, {
+        businessId: business.id,
+        kind: 'inbound.message',
+        payload: { eventId: event!.id },
+      }),
+    );
+    expect(await runner.runOnce()).toBe(true);
+
+    expect(stubTransport.requests).toHaveLength(1);
+    const drafts = await withBusiness(db, business.id, (tx) =>
+      conversationsRepo.draftsFor(tx, business.id),
+    );
+    expect(drafts).toHaveLength(1);
   });
 });
 

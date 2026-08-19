@@ -14,6 +14,7 @@
     "dev": "node --watch dist/main.js"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.119.0",
     "@fastify/rate-limit": "^11.2.0",
     "@nestjs/common": "^11.0.1",
     "@nestjs/core": "^11.0.1",

@@ -168,3 +168,28 @@ export async function recordUsage(tx: TenantDb, usage: UsageRecord): Promise<voi
     meta: (usage.meta ?? null) as never,
   });
 }
+
+export interface UsageTotals {
+  calls: number;
+  providerCostMicros: number;
+  nairaEquivalentK: number;
+}
+
+/**
+ * What this tenant has spent. Row-level security scopes it, so there is no
+ * `WHERE business_id` here and no way for a caller to widen it.
+ */
+export async function usageTotals(tx: TenantDb): Promise<UsageTotals> {
+  const rows = await tx.execute<{ n: number; micros: number; kobo: number }>(sql`
+    SELECT count(*)::int AS n,
+           coalesce(sum(provider_cost_micros), 0)::bigint AS micros,
+           coalesce(sum(naira_equivalent_k), 0)::bigint AS kobo
+    FROM usage_events
+  `);
+  const row = [...rows][0];
+  return {
+    calls: Number(row?.n ?? 0),
+    providerCostMicros: Number(row?.micros ?? 0),
+    nairaEquivalentK: Number(row?.kobo ?? 0),
+  };
+}
