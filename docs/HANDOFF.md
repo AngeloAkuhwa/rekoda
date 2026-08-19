@@ -42,9 +42,31 @@ for M2/M3 (PDF templates, Meta/Twilio channel code, conversation gates).
 
 ## 3. Status at handoff
 
-**M0 complete, 45 tests green.** `pnpm install && pnpm test` proves it;
-`pnpm demo:m0` runs the exit criterion (balanced sale → trial balance →
-reconciliation MATCHED). Ten commits total on `main`.
+**M0 complete, 45 tests green — independently re-verified 19 Aug 2026** from
+the delivered bundle: `pnpm test` 45 passed (39 core + 6 contracts),
+`pnpm typecheck` and `pnpm lint` clean, `pnpm demo:m0` balances
+(₦160,000 = ₦160,000, MATCHED, exit ✔). The bundle has been merged with the
+repository's README commit; history is now on `main` plus this branch.
+
+**Plan revised to v3 (19 Aug 2026).** Four new ADRs and one supersession:
+
+| ADR | Effect |
+|---|---|
+| **0011** (supersedes 0002) | Meta charges service messages from 1 Oct 2026. ₦9,900 Chat margin is **39–60%**, not 75%+. Allowance redefined as messages **processed** (inbound + outbound). |
+| **0008** | STT baseline becomes `intronhealth/afrispeech-whisper-medium-all` — stock `large-v3` is 30–45% WER on African-accented English. Gate metric is entity accuracy, not WER. No training flywheel without NDPA consent. |
+| **0009** (Proposed) | Paystack DVAs make **bank transfers** verifiable — per *customer*, so the account identifies the payer. Requires CAC registration, so it serves registered merchants only. **Verify with Paystack before M5 depends on it.** |
+| **0010** | Continuous WAL archiving (PITR), RPO minutes not 24 hours, with a scripted restore drill that sweeps the ledger-balance invariant. |
+
+**M0 follow-ups are listed in MASTER-PLAN Part 4.4** — RLS mechanism is already
+correct and must not be rewritten; what is missing is the lint ban on raw `db`,
+the pooled-connection leakage test, pg-boss tenant scoping, composite indexes,
+and two money-engine consistency fixes.
+
+**Design/UX method now lives in `docs/design-plan.md`** — the `ui-ux-pro-max`
+and 21st.dev pipelines, ten non-negotiable UI rules, per-surface UX intent, and
+the review gate. Note the verified caveat: in remote sessions only the skill's
+`SKILL.md` is synced, so the design-system generation must run in a local
+session with the full skill payload and be committed.
 
 **Next: M1** (engineering-plan §11): WhatsApp OTP onboarding → business
 creation; magic links → sessions; roles; marketing site + pricing + the six

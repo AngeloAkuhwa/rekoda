@@ -1,6 +1,14 @@
 # REKODA — MASTER BUILD PLAN
 
-**Version:** 1.0 · 19 August 2026
+**Version:** 3.0 · 19 August 2026
+**Changes in v3:** M0 independently verified from the delivered bundle (tests,
+typecheck, lint, demo — all green). Messaging economics corrected for Meta's
+1 Oct 2026 change and the allowance redefined (ADR 0011, supersedes 0002).
+STT baseline changed to an AfriSpeech-tuned model (ADR 0008). Dedicated Virtual
+Accounts adopted as first-class M5 scope (ADR 0009). Backups moved to
+continuous WAL archiving (ADR 0010). Milestone durations and a slip order
+added. RLS hardening follow-ups added (Part 4.4). Design/UX work split out to
+`docs/design-plan.md`.
 **Audience:** the engineer or agent building Rekoda (Claude Code with repo access).
 **Status of this document:** the single source of truth. If anything here conflicts with
 a memory, a chat, or an assumption — this document wins. If this document conflicts with
@@ -14,10 +22,12 @@ a memory, a chat, or an assumption — this document wins. If this document conf
 
 1. This file, Parts 0–4 (30 minutes, gives you everything).
 2. `docs/architecture.md` — the product/system specification (the "what").
-3. `docs/adr/` — the seven decision records (the "why"). Never re-litigate an
-   Accepted ADR without writing a superseding one.
-4. `docs/HANDOFF.md` — current status and open items, updated each session.
-5. Then start work at the current milestone (Part 5).
+3. `docs/adr/` — the eleven decision records (the "why"). Never re-litigate an
+   Accepted ADR without writing a superseding one. Note 0002 is **superseded
+   by 0011**; read 0011 for anything about messaging cost.
+4. `docs/design-plan.md` — how every surface is designed, and the UI review gate.
+5. `docs/HANDOFF.md` — current status and open items, updated each session.
+6. Then start work at the current milestone (Part 5).
 
 ## 0.2 Prime directives — these are not negotiable
 
@@ -149,7 +159,12 @@ monorepo with a pure, framework-free `packages/core`.
 direct reuse of proven predecessor code; one deployable unit keeps ops cheap and deploys
 atomic. Not microservices (premature), not BaaS (never rent a ledger you must own).
 
-## ADR 0002 — Meta Cloud API direct for Chat; Twilio for Integrate · **Accepted**
+## ADR 0002 — Meta Cloud API direct for Chat; Twilio for Integrate · **SUPERSEDED by 0011**
+
+> The channel decision below stands unchanged. Its **economics do not** — it
+> assumed free-form service replies stay free. Meta starts charging for them on
+> 1 October 2026. Read ADR 0011 for corrected figures; the ~₦2,900 saving and
+> the 75%+ margin claim are withdrawn.
 
 *Why:* Chat runs on **Rekoda's own** WhatsApp number. Twilio charges ~$0.005/message
 **each way** (~₦7.25); Meta-direct removes that entirely and in-window service replies
@@ -231,6 +246,75 @@ Top-tier models (Fable/Opus-class, ~5× Sonnet) are for **build-time and evals**
 at structured extraction with a strict schema Sonnet performs at ceiling; 5× buys latency, not
 accuracy. The escalation flag makes upgrading one env var when telemetry justifies it.
 
+## ADR 0008 — STT baseline is an AfriSpeech-tuned Whisper · **Accepted**
+
+Stock `whisper-large-v3` measures **30–45% WER on African-accented English**
+(AfriSpeech-MultiBench) and worse on name-dense utterances — which is exactly
+what Rekoda receives. Baseline weights become
+`intronhealth/afrispeech-whisper-medium-all`, still self-hosted, so ADR 0005's
+privacy claim is untouched. The M3 gate metric changes from WER to
+**entity-level accuracy** (amounts, quantities, name match-rate), benchmarked
+three-way against stock `large-v3` and `NCAIR1/NigerianAccentedEnglish`.
+Fallback ladder: self-hosted → Intron Sahara → OpenAI, each rung requiring a
+privacy-copy change in the same release.
+
+**No training flywheel without consent.** Corrected transcripts would be a
+superb Nigerian-market training set, but NDPA 2023 requires explicit, specific,
+separately-obtained and revocable consent — not a ToS clause, not a pre-ticked
+box, not a condition of use. Until that flow ships, nothing is retained.
+
+## ADR 0009 — Dedicated Virtual Accounts for bank-transfer reconciliation · **Proposed**
+
+Bank transfer is how Nigerian small businesses actually get paid, and it
+produces no webhook — so those payments could only ever be `RECORDED`, never
+`VERIFIED`. Paystack DVAs fix that: a real NUBAN at Wema/Titan Trust, and any
+transfer into it fires `charge.success` with `channel: "dedicated_nuban"`.
+
+**A DVA belongs to a customer, not to the business.** Each customer gets their
+own NUBAN, so *the account the money arrived into is the identity of who paid* —
+attribution before any amount-matching heuristic. This means a `Customer` must
+exist before a DVA is issued, accounts are issued lazily (~1,000 per business
+ceiling), and the customer→NUBAN map is Zone 1 vault data.
+
+**Eligibility is the catch and it is material:** DVAs require a **CAC-registered
+business with approved KYC** — Starter/Individual Paystack accounts cannot have
+them, by CBN regulation. Unregistered market vendors and Instagram sellers are
+excluded. Honest framing: DVAs extend the moat to **registered merchants**, not
+to everyone. **Confirm current provisioning with Paystack before any roadmap
+commitment depends on it.**
+
+## ADR 0010 — Continuous WAL archiving (PITR), not nightly dumps · **Accepted**
+
+Nightly `pg_dump` gives a ledger product a **24-hour RPO** — a disk failure at
+23:00 destroys a day of invoices merchants already sent to customers. pgBackRest
+with continuous WAL archiving to R2/B2 takes RPO to **minutes** for a few dollars
+a month; the nightly logical dump stays as an independent second format.
+`scripts/restore-drill.sh` restores to a throwaway container, runs the
+**per-business ledger-balance invariant**, and reports the real RTO. Monthly and
+on every release tag. **First drill passes before the first paying merchant.**
+
+## ADR 0011 — Messaging economics after 1 October 2026 · **Accepted** (supersedes 0002)
+
+Meta begins charging for **every service message** on 1 Oct 2026, at the
+country's utility/authentication rate, **flat, no volume discount**; utility
+templates also lose their free-in-window status. Nigeria anchor: utility
+≈ $0.0067 ≈ **₦10/outbound message**.
+
+Meta-direct still beats Twilio under any rate, so the channel is unchanged —
+but the prize shrinks. Meta bills **outbound**; inbound is not billed the same
+way, so the plan allowance is redefined as **messages processed (inbound +
+outbound)**, which bounds COGS by design rather than by merchant chattiness.
+
+| Scenario | Outbound | Messaging | AI | COGS | Margin on ₦9,900 |
+|---|---|---|---|---|---|
+| All 400 billable | 400 | ₦4,000 | ₦2,000 | ₦6,000 | **39%** |
+| ~50/50 split (expected) | 200 | ₦2,000 | ₦2,000 | ₦4,000 | **60%** |
+
+Message-count engineering becomes mandatory from M2: batch confirmation and
+result into one message, one interactive-button message instead of three texts,
+`quiet_mode` on by default. `outbound_messages` is a first-class `usage_events`
+column with an alert threshold.
+
 ---
 
 # PART 3 — STACK, REPO, STANDARDS
@@ -310,9 +394,29 @@ would silently orphan the vault).
 
 # PART 4 — CURRENT STATE
 
-## 4.1 What exists (M0 — COMPLETE, 45 tests green)
+## 4.1 What exists (M0 — COMPLETE, 45 tests green — INDEPENDENTLY VERIFIED)
 
-Built and verified in a previous session. **If the repo is empty, see 4.2.**
+Built in a previous session. **Verified from the delivered bundle on
+19 Aug 2026**, not taken on trust:
+
+```
+pnpm test       39 core (money 19 · ledger 10 · reconciliation 10) + 6 contracts = 45 passed
+pnpm typecheck  5 tasks successful
+pnpm lint       all files match Prettier style
+pnpm demo:m0    trial balance ₦160,000 debits = ₦160,000 credits · balanced: true
+                Reconciliation: MATCHED · Label: Payment Verified · exit ✔
+```
+
+The RLS implementation is **already correct** and should not be rewritten:
+`withBusiness()` uses `set_config('app.business_id', $1, true)` (transaction-
+scoped) inside a transaction; policies use
+`nullif(current_setting(..., true), '')::uuid` so an unpinned transaction reads
+**zero rows**; `FORCE ROW LEVEL SECURITY` is set on all 25 tenant tables; the
+app role is a non-owner without BYPASSRLS; `UPDATE/DELETE` are revoked on
+`audit_events`, `ledger_entries`, `inventory_movements`. Remaining gaps are
+listed in **4.4** — they are additions, not corrections.
+
+**If the repo is empty, see 4.2.**
 
 **`packages/shared`** — branded identifier types (`BusinessId`, `CustomerToken`,
 `MagicLinkToken`, `SessionId`, `ApiKeyRef`, …) that are mutually non-assignable, plus
@@ -384,10 +488,90 @@ everything Integrate (new).
 
 ---
 
+## 4.4 M0 follow-ups — carry into M1 (verified findings, 19 Aug 2026)
+
+None of these are defects in shipped behaviour; all are gaps that get more
+expensive the later they are closed.
+
+**Tenancy hardening (the RLS mechanism itself is already right)**
+
+1. **Lint-ban raw `db` outside `packages/db`.** `withBusiness()` is only a
+   guarantee if it is the *only* path. Add an ESLint `no-restricted-imports`
+   rule so a direct client import in `apps/api` fails CI.
+2. **Pooled-connection leakage test — make it an exit criterion.** Two seeded
+   tenants, one pooled connection reused across both, asserting (a) no
+   cross-tenant rows and (b) a query with **no** `withBusiness` returns zero
+   rows rather than everything. This is the single test that proves the whole
+   tenancy design.
+3. **pg-boss jobs must run inside `withBusiness`.** Background workers are
+   where tenant context is forgotten first; the job wrapper enforces it.
+4. **Composite indexes on hot paths.** Present indexes are business-leading but
+   several are single-column. The debtors query (`who owes me`) and the
+   reconciliation queue need `(business_id, status)` on `invoices` and
+   `payments`, and `(business_id, customer_id)` on `invoices`.
+5. **`businesses` INSERT under `tenant_self`.** The policy requires
+   `app.business_id` to equal the row's own `id`, so business creation must
+   pre-generate the UUID and pin it before inserting. Legal, but sharp — give
+   it a dedicated helper and a test, or onboarding will trip on it in M1.
+
+**Money-engine consistency**
+
+6. **`computeMoney` silently clamps overpayment.** It does
+   `paidK = Math.min(paid, totalK)`, while `applyPayment` *refuses* overpayment
+   with the exact excess. Same concept, two behaviours — and the clamp
+   silently discards the discrepancy, which contradicts the rule that
+   mismatches are flagged, never fixed. "Sold for ₦100k, she paid ₦150k" must
+   surface as an overpayment exception, not become ₦100k. Align on refuse +
+   flag, and add the regression test.
+7. **Unit-carrying names at the parse boundary.** `computeMoney` takes *naira*
+   (`price`, `amountPaid`) and returns *kobo* (`totalK`, `balanceDueK`). That
+   is a legitimate boundary, but the field names do not say so. Rename inputs
+   to `priceNaira` / `amountPaidNaira`, or move naira→kobo conversion into
+   `packages/contracts` so `core` is kobo-only and Prime Directive #1 reads
+   literally true.
+
+---
+
 # PART 5 — MILESTONES
 
-Six milestones. Each ends in something runnable and demonstrable. No dates are promised —
-scope is fixed, pace is measured.
+Six milestones. Each ends in something runnable and demonstrable.
+
+## 5.0 Duration estimates and the slip order
+
+Estimates assume a solo builder working with AI assistance, and are *estimates*,
+not commitments. They exist so that overrun is visible early, not to create a
+deadline.
+
+| Milestone | Estimate | Risk |
+|---|---|---|
+| M0 Foundation | ✅ complete | — |
+| M1 Identity, public surface, design system | **3–4 weeks** | Design-system generation needs the full `ui-ux-pro-max` payload (see `docs/design-plan.md` §2.1) |
+| M2 Chat MVP (text), Meta-direct | **4–6 weeks** | **Highest.** Carries privacy gateway + AI router + gates + transaction engine + PDF port + dashboard. Expect the overrun here. |
+| M3 Voice + reports | **3–4 weeks** | STT benchmark may force the fallback ladder (ADR 0008) |
+| M4 Billing & metering | **2–3 weeks** | Paystack webhook traps are known and ported |
+| M5 Integrate alpha + DVA | **4–6 weeks** | Four external approval gates per merchant; DVA eligibility unconfirmed (ADR 0009) |
+
+Rough shape: **first paying Chat merchant ~month 4**, Integrate alpha ~month 6.
+
+**M2 is the milestone to watch.** It is the only one carrying six substantial
+subsystems, and it is where the plan should be expected to slip.
+
+### The slip order — decided now, not under pressure
+
+When a milestone overruns, cut in **this order**, top first:
+
+1. Remaining SEO guides (publish 6, not 16 — the rest follow post-launch)
+2. Admin polish (the operator is you; a rough screen is survivable)
+3. Excel exports (PDF first; Excel is an accountant convenience)
+4. Dark mode (ship light-only, add parity later — but **never** ship a broken dark mode)
+5. Programmatic vertical pages
+6. Reports beyond the core four
+
+**Never slipped, at any cost:** ledger invariants and their tests, RLS and the
+pooled-connection test, confirmation gates (CG1–CG5), webhook signature
+verification and idempotency, PII redaction in logs, the restore drill.
+
+---
 
 ---
 
@@ -500,6 +684,13 @@ dashboards, webhooks), robots discipline, Plausible with UTM on every `wa.me` li
 - [ ] Phone → WhatsApp OTP → business created → dashboard shell, on a real phone
 - [ ] Magic link issues, validates once, and is dead on reuse (test proves it)
 - [ ] Accountant role can read but cannot reach settings (test proves it)
+- [ ] **Pooled-connection leakage test green** — two tenants over one reused
+      connection, no cross-tenant rows, and an unpinned query returns zero rows
+      (Part 4.4 #2)
+- [ ] **Raw `db` import outside `packages/db` fails CI** (Part 4.4 #1)
+- [ ] **PITR configured and `scripts/restore-drill.sh` passes once** (ADR 0010)
+- [ ] `computeMoney` overpayment behaviour aligned with `applyPayment`, with a
+      regression test (Part 4.4 #6)
 - [ ] All marketing + 6 legal pages live, mobile-clean, schema-marked
 - [ ] 6–8 SEO guides published
 - [ ] Plausible recording the funnel
@@ -617,8 +808,11 @@ balances, Debtors, Invoices, Receipts. Server components; mobile-first.
 
 ### 5.4.1 STT sidecar (no hardware — a container on the same rented server)
 
-* `services/stt`: FastAPI + `faster-whisper` (large-v3-turbo), CPU int8, model baked into the
+* `services/stt`: FastAPI + `faster-whisper`, CPU int8, model baked into the
   image or fetched at build (never committed).
+* **Weights: `intronhealth/afrispeech-whisper-medium-all` (ADR 0008)** — an
+  AfriSpeech-200 fine-tune, *not* stock `large-v3`, which measures 30–45% WER on
+  African-accented English. Still self-hosted, so the privacy claim is intact.
 * API: `POST /transcribe` (audio bytes) → `{ text, language, duration_s, avg_logprob,
   no_speech_prob }`.
 * API downloads WhatsApp media → **memory only** → sidecar → transcript → gateway → router.
@@ -627,9 +821,19 @@ balances, Debtors, Invoices, Receipts. Server components; mobile-first.
 
 ### 5.4.2 Accent benchmark — a gate, not a formality
 
-Assemble ≥50 real Nigerian voice notes (accents, pidgin, market noise, code-switching).
-Measure WER and — more importantly — **money-field accuracy** (did "forty-five k" become
-45000?) for self-hosted vs a provider baseline.
+Assemble **≥200** real Nigerian voice notes (accents, pidgin, market noise,
+code-switching), held out and versioned in the repo.
+
+**Benchmark three candidates, not one against a provider** (ADR 0008): the
+AfriSpeech-tuned medium, stock `large-v3`, and `NCAIR1/NigerianAccentedEnglish`.
+A fine-tune on a smaller base is not automatically better on our utterance
+shape — it has to be shown.
+
+**The gate metric is entity-level accuracy, not WER**: money-field exact match
+(did "forty-five k" become `4_500_000` kobo?), quantity exact match, and name
+match-rate against a known customer list. WER is recorded, not decisive —
+Rekoda needs the amount and a name close enough to fuzzy-match, and CG2 shows a
+preview before anything is issued.
 
 * Self-hosted acceptable → ship it and the *"audio never leaves Rekoda"* claim goes live.
 * Not acceptable → enable `STT_FALLBACK=openai` **and update the privacy copy honestly**
@@ -730,8 +934,31 @@ productise afterwards.
 | No matching invoice | UNMATCHED | surfaced in Needs Attention; `findUniqueAmountMatch` refuses ambiguous guesses |
 | Currency differs | EXCEPTION | never converted silently |
 
+* **Dedicated Virtual Accounts (ADR 0009) — first-class M5 scope.** This is the
+  step that extends reconciliation beyond checkout to **bank transfer**, the way
+  Nigerian small businesses are actually paid.
+  * A DVA is issued **per customer**, lazily — on a customer's first order or
+    invoice, never in bulk (~1,000 per business ceiling; build the dormant-
+    customer reclamation policy before a merchant nears it).
+  * Attribution comes free: *the account the money arrived into is the identity
+    of who paid*, so `findUniqueAmountMatch()`'s ambiguity refusal becomes the
+    exception rather than the common path.
+  * The customer→NUBAN map is **Zone 1 vault data** — never sent to the AI zone.
+  * Deposits arrive as `charge.success` with `channel: "dedicated_nuban"`;
+    same signature → idempotency → `PaymentConfirmed` path as checkout.
+  * **Never trust webhooks alone:** a pg-boss cron reconciles against Paystack's
+    transaction API to catch missed or dropped deliveries.
+  * **Blocker:** DVAs require a **CAC-registered business with approved KYC**.
+    Unregistered merchants cannot have them. Confirm current provisioning with
+    Paystack **before** this milestone depends on it, and keep the marketing
+    claim scoped to registered merchants.
+
 * **Exception surfacing** in chat *and* the dashboard's Reconciliation queue — the screen that
-  sells Complete.
+  sells Complete. **The queue contains only genuine mismatches.** Cash and
+  unverified transfers are normal states shown in the ordinary transaction flow
+  with a neutral mark — a Needs Attention badge that counts every cash sale
+  teaches merchants to ignore it within a week, which would destroy the one
+  screen the moat is sold on.
 
 **Exit:** a genuine catalogue order → payment → reconciled ledger, with zero manual steps, for
 a real merchant.
@@ -739,6 +966,12 @@ a real merchant.
 ---
 
 # PART 6 — THE UI SURFACES
+
+> **How these are designed and reviewed lives in `docs/design-plan.md`** —
+> tooling pipeline (`ui-ux-pro-max` for the system layer, 21st.dev for the
+> component layer), the ten non-negotiable UI rules, per-surface UX intent, and
+> the review gate every UI PR must pass. This part is the inventory; that
+> document is the method.
 
 ## 6.0 Surface 0 — the WhatsApp conversation (the primary UI)
 
@@ -812,6 +1045,13 @@ message → first document. Reviewed weekly against source page.
 
 Annual = 10× monthly. Allowances, add-on packs, and the full COGS tables live in
 `docs/pricing-model.md`.
+
+**Margins, corrected (ADR 0011).** Meta charges for service messages from
+1 Oct 2026. On ₦9,900 Chat, COGS lands between **₦4,000 (60% margin)** and
+**₦6,000 (39% margin)** depending on the inbound/outbound split. The tier still
+clears in both cases, but the earlier "75%+" figure is withdrawn. **The 400
+allowance is defined as messages *processed* (inbound + outbound)**, so the
+worst case is bounded by design rather than by how chatty a merchant is.
 
 **Rules that are product behaviour, not marketing:**
 1. Paystack processing fees are **never** absorbed — stated transparently on `/pricing`.
@@ -893,6 +1133,10 @@ character-for-character identical.
 ## 11.1 Owner decisions outstanding
 
 1. **Confirm ADR 0003** (Paystack: merchant-owned account with vaulted key).
+1b. **Confirm ADR 0009 is viable** — ask Paystack directly whether DVA
+   provisioning is currently open for a typical registered Nigerian small
+   business, and whether the 1,000-account ceiling is per business or
+   negotiable. M5 scope depends on the answer.
 2. **Revoke the two burned PATs** pasted into chat during setup.
 3. **Secure `rekoda.app`** (and `rekoda.ng`) — needed before M1 ships canonical URLs.
 4. **VoiceReceipt's fate** — recommendation: keep it running for current testers, migrate at M3.
@@ -903,7 +1147,10 @@ character-for-character identical.
 
 | When | Do what |
 |---|---|
-| **1 September 2026** | Meta publishes post-October service-message rates → re-run every COGS table (ADR 0002) |
+| **1 September 2026** | **RELEASE-GATING.** Meta publishes post-October service-message rates → re-run both COGS scenarios and re-confirm the ₦9,900 tier *before* any public pricing page goes live (ADR 0011). If the Nigerian service rate lands materially above the utility anchor, cut the allowance rather than raise the price on a grandfathered cohort. |
+| **Before M5 commits to DVA** | Confirm with Paystack that DVA provisioning is currently open for a typical registered Nigerian small business (ADR 0009). Do not let the roadmap lean on it until confirmed. |
+| **Before the first paying merchant** | `scripts/restore-drill.sh` must pass — PITR restore + per-business ledger-balance sweep (ADR 0010) |
+| **Before any transcript is retained** | NDPA-compliant explicit, revocable, separately-obtained consent flow designed and shipped (ADR 0008) |
 | **M3 benchmark** | Self-hosted STT vs provider → go/no-go on the "audio never leaves" claim (ADR 0005) |
 | **First 50 paying merchants** | Replace pricing assumptions with `usage_events` telemetry; re-examine allowances against real P50/P95 |
 | **1 July 2027** | Nigerian e-invoicing reaches small businesses — plan the compliance release |
@@ -919,6 +1166,10 @@ character-for-character identical.
 | Single-box outage | Tested restore runbook; scale-out path is a compose change |
 | AI extracts a wrong figure | Deterministic recomputation + mandatory preview + audit trail + reversal-only corrections |
 | Vault key loss | Documented custody; fatal boot check on key fingerprint |
+| **DVA eligibility excludes unregistered merchants** | Scope the claim to registered merchants; cash/transfer stays a normal `RECORDED` state for everyone else (ADR 0009) |
+| **Service-message pricing lands above the utility anchor** | 1 Sep gate re-runs COGS before pricing goes public; cut allowance, never re-price a grandfathered cohort (ADR 0011) |
+| **Data loss between nightly backups** | Continuous WAL archiving, RPO in minutes, drill-verified monthly (ADR 0010) |
+| **STT fails the accent gate and the privacy claim with it** | AfriSpeech-tuned baseline + three-way benchmark + honest fallback ladder (ADR 0008) |
 
 ---
 

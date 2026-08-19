@@ -1,7 +1,16 @@
 # 0002 — Meta Cloud API direct for Rekoda Chat; Twilio for Integrate WABAs
 
-**Status:** Accepted
+**Status:** Superseded by [0011](0011-messaging-economics-revised.md)
 **Date:** 2026-08-19
+
+> **Superseded 2026-08-19.** The channel decision (Meta-direct for Chat,
+> Twilio for Integrate WABAs) still stands and is unchanged. What this ADR
+> got wrong is the *economics*: it assumed free-form service replies stay
+> free, and built a ~₦2,900/merchant/month saving and a 75%+ margin on that
+> assumption. Meta begins charging for service messages on 1 October 2026.
+> Read [ADR 0011](0011-messaging-economics-revised.md) for the corrected
+> figures and the allowance definition; treat every COGS number below as
+> historical.
 
 ## Context
 
