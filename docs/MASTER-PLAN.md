@@ -1287,7 +1287,13 @@ balances, Debtors, Invoices, Receipts. Server components; mobile-first.
 - [x] Hostile transcript cannot inflate a document — the ₦10bn `maximum` travels
       into the tool schema, so constrained decoding cannot emit ₦900bn and the
       parser rejects it if it somehow does
-- [ ] No PII in logs (test asserts redaction)
+- [x] No PII in logs — a REAL message driven through the real path (signed
+      webhook → job → gateway → model → reply) with every log line captured.
+      Asserts the customer's number, email, name, the message body, the
+      MERCHANT's own number, and any token↔identity pairing are all absent, and
+      that something was logged at all so the assertions are not vacuous.
+      Confirmed to catch the two most plausible leaks: logging the text you are
+      about to route, and dumping a payload you could not parse.
 - [x] `usage_events` populated for every AI call — and for every outbound message
 - [ ] **Screenshots of the dashboard posted to the owner**
 
