@@ -60,14 +60,20 @@ This is not a compromise. On every axis that matters it is better:
 | Customer KYC / BVN | **Required** (our category) | **None** — no account is assigned to a person |
 | BVN storage risk | Rekoda holds BVNs | **Nothing to hold** |
 | Attribution | By customer — **cannot separate two orders from the same customer** | **By transaction — exact, always** |
-| 1,000-account ceiling | Binds across all merchants | **Does not apply** — accounts are transient, not reserved |
+| 1,000-account ceiling | **Confirmed per *platform*** — 1,000 total across every merchant's customers, raisable only by emailing Paystack support for review | **Does not apply** — accounts are transient, not assigned |
 | Verification latency | Seconds | **Seconds** (unchanged) |
 | Fake-alert defence (ADR 0014) | Works | **Works** |
 
-**The open question that was blocking ADR 0013 largely dissolves.** The ~1,000
-ceiling applies to *dedicated accounts assigned to customers*. Transient
-per-transaction accounts are not assigned, so the ceiling should not bind —
-**confirm this with Paystack, but it is no longer a design-threatening unknown.**
+**The ceiling question is settled, and it settles against DVAs.** The limit is
+**per platform** — *"All businesses have a limit of 1,000 virtual accounts to be
+assigned to customers"*, raisable only on review by emailing support. Note the
+noun: accounts are assigned to **customers**, not subaccounts. **Subaccounts are
+settlement destinations and do not each carry their own pool**, so a
+"DVA per vendor" design does not escape it either — and it would put the account
+under Rekoda's integration, which is the custody posture we are avoiding. DVAs
+are also gated to **registered businesses in Nigeria and Ghana that have
+completed go-live**. Transient per-transaction accounts are not assigned, so the
+ceiling does not reach them.
 
 ### What changes in the flow
 
@@ -107,17 +113,42 @@ customer monitoring obligation, no identity friction in the buying flow.
 Attribution actually improves — a per-transaction account distinguishes two
 orders from the same customer, which a per-customer account never could.
 
-Two things to confirm with Paystack, neither blocking:
+## Both open questions resolved (19 Aug 2026)
 
-1. **Fees** — is Pay with Transfer charged at the DVA rate (1%, capped ₦300) or
-   the standard local rate (1.5% + ₦100, capped ₦2,000)? This changes what the
-   merchant pays, not whether the design works, but `/pricing` must state it
-   accurately before launch.
-2. **Splits** — does a per-transaction transfer account carry `subaccount` /
-   `split_code` the way a dedicated account does? The whole platform model
-   (ADR 0013) depends on proceeds splitting to the merchant. Documentation shows
-   splits on transaction initialisation, which is where this charge originates,
-   so this is expected to work — **but confirm before building.**
+**✅ Splits work — the design holds.** Pay with Transfer is a **channel on the
+standard charge, not a separate money-movement product**. It is initiated via
+**Create Charge** with `email`, `amount` and a `bank_transfer` object — and on
+that same endpoint `split_code`, `subaccount`, `transaction_charge` and `bearer`
+are **top-level optional body parameters, siblings of `bank_transfer`**. The
+checkout route behaves identically: `bank_transfer` is one value in the
+`channels` array on **Initialize Transaction**, which also accepts
+`subaccount`/`split_code`.
+
+**The split engine sits above the channel.** Funds settle directly to each
+subaccount's bank on the normal cycle; Rekoda never holds them. That is exactly
+what the licensing position (safety-review R1) requires.
+
+> **One empirical check before treating this as closed.** Run a live PwT
+> transaction with a `split_code` and confirm the `charge.success` payload comes
+> back with a **populated `split` object, not `{}`**. A parameter being accepted
+> and settlement actually splitting are two different facts, and only the webhook
+> proves the second. **This is the same class of bug as the `plan: {}` trap
+> already in the VoiceReceipt port map** — Paystack returns empty objects that
+> are truthy in JavaScript. Assert on a *field inside* `split`, never on the
+> object's truthiness.
+
+**❌ The fee is the local rate, not the DVA rate.** Paystack's pricing table
+(last edited 20 May 2026) lists Nigeria at **1.5% + ₦100 for all local
+channels**, capped at **₦2,000**, with the ₦100 waived under ₦2,500. The
+**1% capped ₦300** sits in a *separate column headed Dedicated Virtual
+Accounts*. **A PwT temporary account is not a DVA and does not get DVA pricing.**
+
+The merchant bears this, so it must be stated accurately on `/pricing`. On a
+₦105,000 order that is **₦1,675 (PwT)** against **₦300 (DVA)** — a real
+difference, and it is the price of not asking her customer for a BVN. Getting
+the cheaper rate means using actual DVAs, which drags back customer KYC, the
+per-platform ceiling, and the registered-business gate. **The trade is worth it;
+it should be made with open eyes and disclosed plainly.**
 
 **Do not misdeclare Rekoda's business category to escape the stricter rule.**
 Declare honestly and design within whatever applies — which is precisely what

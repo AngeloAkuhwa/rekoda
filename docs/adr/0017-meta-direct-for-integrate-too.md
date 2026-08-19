@@ -1,6 +1,12 @@
 # 0017 — Meta-direct for Integrate too; Twilio becomes optional
 
-**Status:** Accepted
+**Status:** Accepted — **scope narrowed by
+[0018](0018-retire-waba-catalogue-capture.md)**. Coexistence does not deliver
+catalog/order events to the Cloud API app, and Nigeria may be ineligible for
+Coexistence at all, so the WABA catalogue is retired as an order-capture path.
+**The channel decision below still stands for Rekoda's own number**; what
+disappears is multi-tenant WABA management, and with it the per-WABA credential
+storage and webhook-routing work costed below.
 **Date:** 2026-08-19
 **Supersedes the channel split in:** [0002](0002-meta-direct-for-chat.md) (already
 superseded on economics by [0011](0011-messaging-economics-revised.md); this

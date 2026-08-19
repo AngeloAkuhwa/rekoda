@@ -42,16 +42,35 @@ not what excludes them. Two other things are:
 1. **The display name is not visible until the business is verified** — the
    merchant's customers see a phone number instead of "Ada Fashion", which
    destroys exactly the trust the WABA was meant to provide.
-2. **Meta may deactivate unverified WhatsApp Business accounts after ~30 days.**
-   *(Sourced from BSP/partner documentation; Meta's own developer site is
-   blocked by this environment's egress policy and could not be read directly.
-   Treat the exact window as unconfirmed — but treat the existence of a
-   deactivation risk as real, and do not design a permanent path on top of an
-   unverified WABA.)*
+2. ~~Meta may deactivate unverified WhatsApp Business accounts after ~30 days.~~
+   **RETIRED 19 Aug 2026 — unsupported.** Meta's own messaging-limits
+   documentation (updated 8 May 2026) does not gate scaling on business
+   verification at all: new business portfolios start at 250, rise to 2,000 by
+   completing a scaling path, and increase automatically thereafter on message
+   quality plus having used at least half the current limit in the last 7 days.
+   Verification appears only as *one option* inside a denial alert —
+   `INCREASED_CAPABILITIES_ELIGIBILITY_NEED_MORE_INFO` offers **either** verifying
+   identity **or** sending 2,000 delivered messages to unique users over a 30-day
+   moving period with high-quality templates. Vonage states it plainly: **there is
+   no time limit to the unverified stage.** The "30 days" traces to BSP help
+   centres (Brevo), with no Meta citation behind it.
 
-So the conclusion below is unchanged, for a sharper reason: the WABA path is a
-**time-limited, unbranded** window for an unregistered vendor, not a permanent
-home. Ladder A stands.
+   *Probable origin of the garbled claim:* WABAs **can** be restricted immediately
+   after creation for Meta policy or integrity reasons, and WhatsApp Manager's
+   remediation prompt reads *"Business Verification Needed"* **even for businesses
+   already verified**. A restriction with a misleading remedy label, not a
+   verification clock.
+
+**What is actually true of unverified accounts:** 250 unique customers per
+rolling 24 hours, at most **2 registered phone numbers**, no Official Business
+Account status, and display-name review triggering only once the messaging limit
+reaches 2,000 — regardless of verification status.
+
+So the conclusion stands on **point 1 alone**: the display name is invisible
+until verification, so her customers see a phone number instead of her business.
+That is enough. And rung A2 has since been **retired outright** by
+**[ADR 0018](0018-retire-waba-catalogue-capture.md)** for unrelated, more
+decisive reasons.
 
 Integrate as specified was a product for registered businesses in both halves.
 That is the actual defect, and it is architectural rather than commercial.
@@ -76,7 +95,7 @@ engine, which are identical for everyone.
 |---|---|---|---|
 | **A0 — Order forwarding** | Merchant keeps the free WhatsApp Business App catalogue. When a customer sends a cart/order, the merchant **forwards that message to Rekoda**. WhatsApp order messages are structured and parseable → `OrderPlaced`. | Nothing | **Everyone** |
 | **A1 — Rekoda storefront** | Rekoda hosts the merchant's catalogue at `rekoda.app/s/<handle>`. The merchant shares that link in WhatsApp, bio or status. Orders land in Rekoda directly, fully structured, with customer details. | Nothing | **Everyone** |
-| **A2 — Native WABA** | Per-merchant WABA via Embedded Signup; catalogue order webhooks, as originally specified. | CAC + Meta verification | Registered |
+| ~~**A2 — Native WABA**~~ | ~~Per-merchant WABA via Embedded Signup; catalogue order webhooks.~~ **RETIRED — [ADR 0018](0018-retire-waba-catalogue-capture.md).** Coexistence does not deliver catalog/order events to the Cloud API app, and Nigeria may be ineligible for Coexistence entirely. | — | — |
 
 A0 is one extra gesture — and it is a gesture merchants already make. A1 is
 strictly better *for Rekoda* than A2, because Rekoda owns the schema instead of

@@ -437,7 +437,42 @@ Gumroad. In WhatsApp commerce, Flowcart and Wapikit (IN/BR) run the aggregator
 onboarding model — but they are commerce tools; none keeps a ledger or
 reconciles, so borrow the onboarding, not the product.*
 
-## ADR 0017 — Meta-direct for Integrate too; Twilio optional · **Accepted**
+## ADR 0018 — Retire the WABA catalogue as an order-capture path · **Accepted**
+
+ADR 0017 flagged one unknown: do catalogue `order` webhooks reach the API app
+under **Coexistence**? **They do not — and there is a prior blocker underneath.**
+
+* Meta's own feature-comparison table for Business App → Cloud API onboarding
+  covers **catalog, orders and status**: post-onboarding the app side shows *no
+  change* and the "supported on Cloud API" column reads **Not supported**. The
+  catalogue keeps working in her app and **stays invisible to Rekoda**.
+* **Nigeria may be ineligible for Coexistence entirely.** Sources conflict —
+  Meta's `#unsupported-countries` anchor and GoHighLevel (Jun 2026) list Nigeria
+  and South Africa as unsupported; Wati says eligibility is confirmed **per phone
+  number during Embedded Signup**; ChakraHQ (Jul 2026) claims both were added in
+  April. Meta publishes no dated list.
+
+**Ladder A is now A0 and A1.** The only remaining route to catalogue orders is a
+**full migration**, which works — at the cost of the merchant's **WhatsApp
+Business App**, her chat history and her groups. Not impossible; **unacceptable**.
+
+**A WABA may still earn a place for *messaging*** — invoices and receipts from
+her own branded number — but that is a different question from order capture,
+needs CAC, and is **out of V1 scope**.
+
+*If A2 is ever revisited, the first test is empirical and takes an hour: push a
+**+234 number through Embedded Signup** and see whether it throws a country
+error. **Eligibility first, webhooks second** — if eligibility fails, the webhook
+question never needs asking.*
+
+**Strategic reading:** the storefront was adopted to route around CAC. It turns
+out to route around **Meta entirely** — approval queues, country eligibility,
+feature gaps and app migration alike. That is a stronger position than the plan
+originally claimed, reached for a reason nobody anticipated. It also removes
+ADR 0017's highest-risk engineering: per-WABA credential storage and
+**webhook routing by phone-number ID**, where a mis-route is a cross-tenant leak.
+
+## ADR 0017 — Meta-direct for Integrate too; Twilio optional · **Accepted (scope narrowed by 0018)**
 
 ADR 0002 kept **Twilio's Tech Provider programme for Integrate**; ADR 0011
 superseded 0002's economics but left that channel decision standing. It no longer

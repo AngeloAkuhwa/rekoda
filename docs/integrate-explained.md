@@ -529,18 +529,53 @@ with how transfers work, but **I did not verify it against a CBN or bank source.
 It is load-bearing for the risk argument in ADR 0013 rev 2. **Verify it before
 relying on it.**
 
-## 10.4 Unconfirmed — and one of these could unravel the design
+## 10.4 RESOLVED 19 Aug 2026 — owner ran these down against primary sources
+
+The owner checked each open question against Meta's and Paystack's own
+documentation. **Three came back clean, one flipped an architecture decision, and
+one claim of mine was unsupported.** Recorded here because the reasoning matters
+more than the verdicts.
+
+| # | Question | Verdict |
+|---|---|---|
+| **1** | Do per-transaction transfer accounts carry `subaccount`/`split_code`? | **✅ YES.** PwT is a **channel on the standard charge**, not a separate product. `split_code`, `subaccount`, `transaction_charge`, `bearer` are top-level params on **Create Charge**, siblings of `bank_transfer`; `bank_transfer` is likewise a value in `channels[]` on Initialize Transaction. **The split engine sits above the channel** — funds settle straight to each subaccount. **The platform model holds.** *Still owed one empirical check — see below.* |
+| **2** | PwT fee rate | **❌ Local rate: 1.5% + ₦100**, capped ₦2,000, ₦100 waived under ₦2,500. The **1%/₦300** column is **DVA-specific**; a PwT temporary account is not a DVA. On a ₦105,000 order: **₦1,675 vs ₦300**. That gap is the price of not asking her customer for a BVN. |
+| **3** | Rekoda's Paystack business category / BVN rule | Already designed for the strict case; a softer answer only relaxes things. |
+| **4** | Delegate sub-merchant KYC to Paystack on the platform flow? | Still open — a simplification if yes, no harm if no. |
+| **5** | Does the ~1,000 ceiling touch transient accounts? | **Settled, and against DVAs.** The limit is **per platform** — 1,000 across *all* merchants' customers, raisable only by emailing support. Accounts attach to **customers**, not subaccounts, so **subaccounts do not each carry a pool** and "DVA per vendor" does not escape it. DVAs also require a registered business in NG/GH that has completed go-live. Transient accounts are not assigned, so the ceiling does not reach them. |
+| **6** | Counsel on split-settled aggregation | Still open — gates ADR 0013 → Accepted. |
+| **7** | Meta unverified-WABA deactivation | **❌ MY CLAIM WAS UNSUPPORTED — retired.** See ADR 0012. Meta's messaging-limits doc does not gate scaling on verification; Vonage states there is **no time limit to the unverified stage**. The "30 days" traces to BSP help centres with no Meta citation. |
+| **8** | Do catalogue `order` webhooks reach the API app under Coexistence? | **❌ NO — and Nigeria may be ineligible for Coexistence at all.** Meta's own feature table marks business tools (catalog, orders, status) **Not supported** on the Cloud API side post-onboarding. **A2 is retired — [ADR 0018](adr/0018-retire-waba-catalogue-capture.md).** |
+
+### The one check still owed on question 1
+
+Run a **live PwT transaction with a `split_code`** and confirm `charge.success`
+returns a **populated `split` object, not `{}`**. A parameter being *accepted*
+and settlement actually *splitting* are two different facts, and only the webhook
+proves the second.
+
+**This is the same class of bug as the `plan: {}` trap already in the VoiceReceipt
+port map** — Paystack returns empty objects that are **truthy in JavaScript**.
+Assert on a *field inside* `split`, never on the object's truthiness. That trap
+has bitten this codebase's predecessor once already; it should not bite twice.
+
+### One external change worth carrying
+
+**Paystack acquired Ladder Microfinance Bank in January 2026** and operates it as
+**Paystack Microfinance Bank**. Any licensing analysis that turns on what
+Paystack itself is permitted to hold has moved since this plan was drafted — flag
+it for counsel (open question 6), because it may change what a
+platform-managed arrangement can look like.
+
+## 10.4b Still unconfirmed
 
 | # | Question | If the answer is bad |
 |---|---|---|
-| **1** | **Do per-transaction transfer accounts carry `subaccount` / `split_code`?** | **This is the load-bearing one.** Splits are documented at transaction initialisation, and Pay with Transfer originates there, so it *should* work — but if it does not, funds land in **Rekoda's** account with no automatic split, which is **fund custody**, which is the licensing line (safety-review R1). The platform model would need redesigning. **Confirm before writing collection code.** |
-| 2 | Pay with Transfer fee rate — DVA (1%/₦300) or local (1.5%+₦100)? | Changes what the merchant pays and what `/pricing` must say. Not architectural. |
-| 3 | Which Paystack business category is Rekoda, and does it trigger the BVN rule? | Already designed around the strict case, so a softer answer only relaxes things. |
+| # | Question | Why it still matters |
+|---|---|---|
 | 4 | Can sub-merchant KYC be delegated to Paystack on the platform-managed flow? | A simplification if yes; no harm if no. |
-| 5 | Does the ~1,000 ceiling touch transient accounts? | Expected no. If yes, per-transaction accounts inherit the ceiling problem. |
-| 6 | Counsel: is split-settled aggregation without custody outside licensable activity? | Gates ADR 0013 moving to Accepted. |
-| 7 | Meta's real unverified-WABA deactivation policy | Affects only the A2 upgrade path, not the mainline. |
-| **8** | **Do catalogue `order` webhooks reach the API app while a number is in Coexistence mode?** | Message mirroring is documented; *order* messages specifically are not. If orders do **not** flow under Coexistence, A2 collapses to "migrate and lose the app" vs "stay on the storefront" — and the storefront wins. **Verify before building A2.** |
+| 6 | **Counsel:** is split-settled aggregation without custody outside licensable activity — and does Paystack's own MFB licence change the answer? | Gates ADR 0013 → Accepted. **The only remaining question that could still move the architecture.** |
+| 1b | Does `charge.success` return a populated `split` object on a live PwT charge? | Empirical, one transaction, and it closes the last doubt on the platform model. |
 
 ## 10.5 The honest summary
 

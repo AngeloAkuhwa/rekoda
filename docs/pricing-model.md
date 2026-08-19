@@ -96,6 +96,16 @@ online reality in one consolidated financial position.
 No unlimited usage at launch — real merchant behaviour is unknown; packs
 protect against the ₦9,900-payer who scripts 30,000 messages.
 
+> **Payment-processing fee, confirmed 19 Aug 2026.** Collection runs on
+> **Pay with Transfer**, charged at Nigeria's **local rate: 1.5% + ₦100, capped
+> ₦2,000**, with the ₦100 waived below ₦2,500. The **1% capped ₦300** rate is
+> **Dedicated-Virtual-Account-specific** and does *not* apply — a PwT temporary
+> account is not a DVA (ADR 0016). On a ₦105,000 order that is **₦1,675**, not
+> ₦300. The merchant bears it, so `/pricing` must say so plainly. The cheaper
+> DVA rate would require customer BVN validation, a per-platform 1,000-account
+> ceiling and a registered business — **the trade is worth it, and it is
+> disclosed, not buried.**
+>
 > **Reconciliation note, 19 Aug 2026.** The cost stack below was researched on
 > 16 Aug 2026 and several lines are now superseded by decisions taken since.
 > Where they conflict, **the ADR wins**:

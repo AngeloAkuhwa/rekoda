@@ -22,6 +22,7 @@ a new ADR that supersedes the old one.
 | [0014](0014-payment-verification-anti-fake-alert.md) | Payment verification as a product: the fake-alert defence | Accepted |
 | [0015](0015-full-books.md) | End-to-end books: trial balance, P&L, balance sheet, period close | Accepted |
 | [0016](0016-per-transaction-accounts-not-per-customer.md) | Per-transaction transfer accounts, not per-customer DVAs | Accepted |
-| [0017](0017-meta-direct-for-integrate-too.md) | Meta-direct for Integrate too; Twilio becomes optional | Accepted |
+| [0017](0017-meta-direct-for-integrate-too.md) | Meta-direct for Integrate too; Twilio becomes optional | Accepted (scope narrowed by 0018) |
+| [0018](0018-retire-waba-catalogue-capture.md) | Retire the WABA catalogue as an order-capture path | Accepted |
 
 Template: [0000-template.md](0000-template.md)
