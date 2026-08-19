@@ -673,7 +673,7 @@ describe("the plan's own example, end to end", () => {
 
     // 2. The yes. CG3 claims the draft and the engine issues.
     await send('yes', 'wamid.YES');
-    expect(stubSender.lastText).toMatch(/Saved ✅ INV-\d{4}-000001 — ₦150,000/);
+    expect(stubSender.lastText).toMatch(/Saved ✅ INV-\d{4}-000001 for ₦150,000/);
     expect(stubSender.lastText).toContain('₦50,000 still owed');
 
     expect(await invoiceCount(business.id)).toBe(1);

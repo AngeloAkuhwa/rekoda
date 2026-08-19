@@ -33,8 +33,8 @@ export default function DataDeletionPage() {
                 </li>
               </ul>
               <p>
-                We confirm it is really you before deleting anything — a deletion request nobody
-                verified is just a way to erase someone else&rsquo;s books.
+                We confirm it is really you before deleting anything, because a deletion request
+                nobody verified is just a way to erase someone else&rsquo;s books.
               </p>
             </>
           ),
@@ -71,8 +71,8 @@ export default function DataDeletionPage() {
               <p>
                 Nigerian tax and company law requires financial records to be retained for{' '}
                 {FINANCIAL_RETENTION_YEARS} years. So invoices, receipts and ledger entries survive
-                a deletion request until that period ends — we are not permitted to destroy them,
-                and neither is any other bookkeeping service that tells you otherwise.
+                a deletion request until that period ends. We are not permitted to destroy them, and
+                neither is any other bookkeeping service that tells you otherwise.
               </p>
               <p>
                 What we can do, and do: strip them of the customer identities attached to them, and

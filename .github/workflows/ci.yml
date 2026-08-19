@@ -78,6 +78,11 @@ jobs:
       - name: Node version is single and LTS
         if: steps.ws.outputs.present == 'true'
         run: node scripts/check-node-version.mjs
+      # Owner's rule: no em/en dashes in anything a user reads. Copy must read
+      # like a person wrote it; comments can punctuate however they like.
+      - name: UI copy reads human
+        if: steps.ws.outputs.present == 'true'
+        run: node scripts/check-ui-copy.mjs
       - name: Docs-only repository — nothing to build yet
         if: steps.ws.outputs.present == 'false'
         run: echo "No pnpm workspace yet (pre-M0). Skipping build steps."

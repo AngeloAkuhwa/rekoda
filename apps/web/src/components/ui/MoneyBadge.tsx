@@ -20,11 +20,13 @@ const LABEL: Record<PaymentState, string> = {
   attention: 'Needs attention',
 };
 
-/** Shape as well as colour — never colour alone to convey meaning (P10). */
+/** Shape as well as colour — never colour alone to convey meaning (P10).
+ * `notSeen` is an ellipsis, not a dash: it reads "still in flight", where a
+ * bare dash reads "zero" or "broken". */
 const GLYPH: Record<PaymentState, string> = {
   verified: '✓',
   recorded: '•',
-  notSeen: '–',
+  notSeen: '…',
   attention: '!',
 };
 

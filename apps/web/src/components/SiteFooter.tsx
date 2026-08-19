@@ -17,7 +17,7 @@ export function SiteFooter() {
       <div className="rk-container">
         {inProduct ? null : (
           <p>
-            Rekoda keeps your records. Payments are processed by your own Paystack account — Rekoda
+            Rekoda keeps your records. Payments run through your own Paystack account, and Rekoda
             never holds your money.
           </p>
         )}

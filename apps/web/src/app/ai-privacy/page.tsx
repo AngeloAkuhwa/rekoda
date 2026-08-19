@@ -21,7 +21,7 @@ export default function AiPrivacyPage() {
           body: (
             <>
               <p>
-                A language model reads your message and proposes what it thinks happened — three
+                A language model reads your message and proposes what it thinks happened: three
                 wigs, fifty thousand each, part paid. Every figure after that is computed by
                 ordinary, tested code, in whole kobo.
               </p>
@@ -59,7 +59,7 @@ export default function AiPrivacyPage() {
             <p>
               Speech becomes text on infrastructure we run, not by shipping your audio to a
               third-party provider. If that ever has to change for accuracy reasons, this page
-              changes first — and it will say which provider and what they receive.
+              changes first, and it will say which provider and what they receive.
             </p>
           ),
         },

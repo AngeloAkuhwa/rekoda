@@ -36,7 +36,7 @@ export const PLANS: Plan[] = [
       'Invoices, receipts and customer balances',
       'Sales, expenses, purchases and suppliers',
       'Products and inventory',
-      'Full books — P&L, balance sheet, cash flow',
+      'Full books: profit and loss, balance sheet, cash flow',
       'Dashboard, plus 1 accountant',
     ],
     excludes: ['No online shop', 'Payments are recorded, not automatically verified'],
@@ -51,7 +51,7 @@ export const PLANS: Plan[] = [
     cta: 'Connect my shop',
     includes: [
       'Your own shop link, shared on WhatsApp',
-      'Orders captured automatically — no re-typing',
+      'Orders captured automatically, nothing retyped',
       'A payment account created for every order',
       'Payments verified the moment they land',
       'Automatic invoices and receipts',
@@ -84,7 +84,7 @@ export const TRIAL = {
   name: 'Free trial',
   tagline: '30 days. No card needed.',
   includes: [
-    '25 documents — enough to see it working',
+    '25 documents, enough to see it working',
     '50 messages, 10 voice minutes',
     '25 recorded transactions',
     'Dashboard, customers and products',

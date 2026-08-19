@@ -125,7 +125,7 @@ export function layoutInvoice(doc: InvoiceDocument): LayoutBlock[] {
       text:
         rate === undefined
           ? `Includes VAT of ${formatKobo(doc.vatK)}`
-          : `Includes VAT @ ${rate}% — ${formatKobo(doc.vatK)}`,
+          : `Includes VAT @ ${rate}%: ${formatKobo(doc.vatK)}`,
     });
   }
 

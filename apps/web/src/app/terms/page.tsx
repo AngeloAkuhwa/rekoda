@@ -22,7 +22,7 @@ export default function TermsPage() {
           heading: 'Who this is between',
           body: (
             <p>
-              These terms are between you — the business using Rekoda — and{' '}
+              These terms are between you, the business using Rekoda, and{' '}
               <Fact fact={LEGAL.entity} />. Using Rekoda means accepting them. Questions go to{' '}
               <Fact fact={LEGAL.supportEmail} />.
             </p>
@@ -66,7 +66,7 @@ export default function TermsPage() {
           body: (
             <p>
               Everything Rekoda builds from your business is yours. You can export it at any time,
-              and you keep that right after you stop paying — we will not hold your books hostage to
+              and you keep that right after you stop paying. We will not hold your books hostage to
               a subscription.
             </p>
           ),
@@ -77,7 +77,7 @@ export default function TermsPage() {
           body: (
             <p>
               Rekoda shows you what it understood and asks before recording. Once you confirm an
-              entry, it is your record. Please check the figures — particularly when a message was
+              entry, it is your record. Please check the figures, particularly when a message was
               ambiguous and Rekoda said so.
             </p>
           ),
@@ -122,7 +122,7 @@ export default function TermsPage() {
           body: (
             <p>
               If these terms change in a way that materially affects you, we will tell you on
-              WhatsApp before it takes effect — not by quietly editing this page.
+              WhatsApp before it takes effect, not by quietly editing this page.
             </p>
           ),
         },

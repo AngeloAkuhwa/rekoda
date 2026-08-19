@@ -41,8 +41,8 @@ export default async function DashboardPage() {
       <div className="rk-card rk-dash-empty">
         <h2>Nothing recorded yet</h2>
         <p>
-          Rekoda builds your records from what you tell it on WhatsApp. Send it your first sale and
-          it will appear here — with the working shown, so you can check it.
+          Rekoda builds your records from what you tell it on WhatsApp. Send your first sale and it
+          appears here, with the working shown so you can check every figure.
         </p>
       </div>
     </section>
@@ -56,13 +56,14 @@ export default async function DashboardPage() {
  * transaction exists the honest thing to show is that there is nothing to total
  * yet. The three money states (spec §7) are confirmed, pending and unknown, and
  * this is unknown, so it must not borrow the typography of a confirmed figure.
+ * Words, not a dash glyph: a bare dash reads as either "zero" or "broken".
  */
 function StatTile({ label, hint }: { label: string; hint: string }) {
   return (
     <div className="rk-stat">
       <p className="rk-stat-label">{label}</p>
       <p className="rk-stat-empty" aria-label={`${label}: nothing recorded yet`}>
-        &mdash;
+        none yet
       </p>
       <p className="rk-fineprint">{hint}</p>
     </div>

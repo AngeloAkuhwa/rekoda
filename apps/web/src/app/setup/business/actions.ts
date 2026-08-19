@@ -40,7 +40,7 @@ export async function createBusinessAction(
   const type = String(formData.get('type') ?? '').trim();
 
   const errors: { name?: string; type?: string } = {};
-  if (name.length < 2) errors.name = 'Give your business a name — whatever you call it is fine.';
+  if (name.length < 2) errors.name = 'Give your business a name. Whatever you call it is fine.';
   else if (name.length > 80) errors.name = 'That name is too long. 80 characters or fewer.';
   if (!TYPES.has(type)) errors.type = 'Pick the closest match. You can change it later.';
   if (Object.keys(errors).length > 0) return { errors };
