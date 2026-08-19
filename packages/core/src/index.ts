@@ -10,4 +10,11 @@ export * from './numbering.js';
  * pull node:crypto into the browser bundle and break the build.
  *
  * Import it explicitly instead:  import { … } from '@rekoda/core/identity'
+ *
+ * `privacy` and `vault` are held back for the same reason, and for a second
+ * one that matters more: `rehydrate` and `decryptFacet` are the two functions
+ * that can undo the privacy gateway. Making them reachable from the barrel
+ * that every component already imports would mean the safest path and the most
+ * dangerous one share a spelling. An explicit `@rekoda/core/vault` import is a
+ * thing a reviewer notices.
  */
