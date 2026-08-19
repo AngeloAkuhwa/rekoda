@@ -380,3 +380,97 @@ ADA (once, ~15 min)                   JENNIFER (every order)
 
   Money settles to ADA'S OWN BANK. Rekoda earns ₦19,900/month.
 ```
+
+---
+
+# 10. What we know, and how we know it — the confidence register
+
+This section exists so a future session (or a future you) never mistakes an
+inference for a fact. Everything above is one of four things. **Read the fourth
+category before committing engineering time.**
+
+## 10.1 Verified — I ran it or read the primary artefact
+
+| Claim | How |
+|---|---|
+| M0 is real: 45 tests pass (39 core + 6 contracts) | Cloned the bundle, `pnpm install && pnpm test` |
+| Typecheck, lint, and `pnpm demo:m0` are green; trial balance ₦160,000 = ₦160,000 | Ran them |
+| RLS is already correct — transaction-scoped `set_config(…, true)`, fail-closed `nullif(…)`, `FORCE RLS` on 25 tables, non-owner role | Read `packages/db/migrations/0001_rls.sql` and `src/client.ts` line by line |
+| `computeMoney` silently clamps overpayment while `applyPayment` refuses it | Read `packages/core/src/money.ts:118` |
+| VoiceReceipt is real: **118 tests pass**, ~10,500 LOC, 15 service modules | Extracted the zip, `npm install`, ran the suite |
+| The gitleaks CI failure was a root-commit range bug, not a secret | Read the job log; reproduced locally with gitleaks 8.24.3 and the exact CI command |
+| 21st.dev connector works and returns installable shadcn components | Called it |
+| `ui-ux-pro-max` ships only `SKILL.md` to remote sessions — no search data | Listed the skill directory |
+| paystack.com, support.paystack.com, developers.facebook.com are egress-blocked | `curl` → `CONNECT tunnel failed, response 403`; github hosts return 200 |
+
+## 10.2 Documented — from vendor documentation, read via search, not the primary page
+
+**This is the important caveat: the two domains that matter most — `paystack.com`
+and `developers.facebook.com` — are blocked by this environment's egress policy.**
+Everything below comes from search results quoting those docs, from Paystack's
+public GitHub docs repo, or from BSP/partner documentation. It is good evidence,
+but it is **second-hand**, and the exact wording should be re-checked against the
+primary pages when browsing is available.
+
+| Claim | Confidence |
+|---|---|
+| Paystack **Connect** exists for platforms onboarding sub-merchants | High — consistent across sources |
+| Two flows: **standard** (sub-merchant onboards to Paystack, Paystack does KYC, sub-merchant bears risk) vs **platform-managed** (platform onboards, platform bears risk, needs only bank details) | High |
+| A sub-merchant needs **no Paystack account**; onboarding needs a bank account validated via **Resolve Account** | High |
+| **Multi-split has no maximum subaccount count**; `bearer_type` sets who pays Paystack's fee | High |
+| **Starter Business**: ID + BVN + personal bank account, **no CAC**; **₦2M lifetime cap** (₦3M with Truecaller); **no Transfers**, so no DVAs | High |
+| **DVA requires a customer record**, and **BVN validation** for Betting / Financial services / General services categories; validated name is used to name the account | High — this is what killed per-customer DVAs |
+| **Pay with Transfer** generates **randomised, temporary** accounts tied to the transaction, `account_expires_at` 15 min–8 hrs, enabled by default in Nigeria | High |
+| DVA fee 1% capped ₦300; ~1,000 accounts per business; registered businesses only | High |
+| **Meta**: Embedded Signup is the default path since April 2026; Tech Providers onboard and **directly manage client WABAs**; enrolment mandatory for ISVs | High |
+| **Meta**: unverified business = **250 unique customers/24h**, 2 numbers, **display name not visible** | High |
+| **Meta**: service messages become chargeable **1 Oct 2026** at the utility rate, flat, no volume discount; Nigeria utility ≈ $0.0067 | High |
+| Order webhook shape: `order { catalog_id, product_items[{ product_retailer_id, quantity, item_price }] }` | Medium-high — consistent across three BSP docs |
+| **Meta may deactivate unverified WABAs after ~30 days** | **Low-medium — weakest claim in the plan.** Sourced from BSP help pages, never from Meta directly. Flagged as unconfirmed in ADR 0012. |
+| CBN requires **BVN or NIN** for virtual accounts (not CAC) | High |
+| **PSSP** = ₦100M CBN deposit and **does not permit holding customer funds**; only **MMO** (₦2B) may | High — multiple legal sources |
+| Intuit Payments Inc. is a **licensed money transmitter** and underwrites merchants, never payors; Xero integrates Stripe/GoCardless rather than processing | High |
+
+## 10.3 Designed — my architecture and reasoning, not anyone's documentation
+
+These are **judgements**, and they are the parts most worth arguing with:
+
+* The **two-ladder structure** (capture / collection) and the storefront as default.
+* **Platform-managed as the destination** rather than the standard flow — reasoned from the ₦2M cap plus the transfer-vs-card risk argument.
+* **Per-transaction accounts over per-customer DVAs** — follows from the documented BVN requirement, but the *conclusion* is mine.
+* The **fake-alert product design**: push-first, three states, screenshot refusal, `/verify/{doc}` with a check token.
+* **Cash-basis default over an accrual ledger.**
+* All **cost arithmetic** — the ₦5,800/merchant Twilio figure, the 29% share, the 39–60% margin band. The *rates* are documented; the *multiplications and the allowance assumptions* are mine.
+* The **KYC-boundary rule** ("Rekoda's boundary is the sub-merchant"). Intuit's practice corroborates it; the rule is my formulation.
+
+**One designed claim deserves singling out as under-evidenced:** I asserted that
+**Nigerian NIP transfers are effectively irreversible**, and used it to argue that
+platform-managed chargeback risk is small. That is widely believed and consistent
+with how transfers work, but **I did not verify it against a CBN or bank source.**
+It is load-bearing for the risk argument in ADR 0013 rev 2. **Verify it before
+relying on it.**
+
+## 10.4 Unconfirmed — and one of these could unravel the design
+
+| # | Question | If the answer is bad |
+|---|---|---|
+| **1** | **Do per-transaction transfer accounts carry `subaccount` / `split_code`?** | **This is the load-bearing one.** Splits are documented at transaction initialisation, and Pay with Transfer originates there, so it *should* work — but if it does not, funds land in **Rekoda's** account with no automatic split, which is **fund custody**, which is the licensing line (safety-review R1). The platform model would need redesigning. **Confirm before writing collection code.** |
+| 2 | Pay with Transfer fee rate — DVA (1%/₦300) or local (1.5%+₦100)? | Changes what the merchant pays and what `/pricing` must say. Not architectural. |
+| 3 | Which Paystack business category is Rekoda, and does it trigger the BVN rule? | Already designed around the strict case, so a softer answer only relaxes things. |
+| 4 | Can sub-merchant KYC be delegated to Paystack on the platform-managed flow? | A simplification if yes; no harm if no. |
+| 5 | Does the ~1,000 ceiling touch transient accounts? | Expected no. If yes, per-transaction accounts inherit the ceiling problem. |
+| 6 | Counsel: is split-settled aggregation without custody outside licensable activity? | Gates ADR 0013 moving to Accepted. |
+| 7 | Meta's real unverified-WABA deactivation policy | Affects only the A2 upgrade path, not the mainline. |
+
+## 10.5 The honest summary
+
+**The mainline flow — storefront → order → invoice → per-transaction transfer
+account → verified payment → receipt → ledger → dashboard — is coherent, and
+every component of it is documented as existing.** What has *not* been done is
+confirming that those components compose the way I have assumed, with one
+specific join (question 1) carrying real weight.
+
+Nothing here needs a merchant, a licence or a lawyer to start building: `packages/core`,
+the storefront, the ledger, the documents and the dashboard are all unaffected by
+every open question above. **Send Paystack the four questions and start building
+the parts that do not depend on the answers.**
