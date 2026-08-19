@@ -15,8 +15,8 @@ console.log('REKODA M0 — deterministic core demo\n');
 // ── The merchant speaks (this is what AI will extract; here it is typed) ──
 // "Amaka bought 4 bags at ₦28,000 each. She paid ₦80,000."
 const draft = computeMoney({
-  items: [{ name: 'Bag', quantity: 4, price: 28_000 }],
-  amountPaid: 80_000,
+  items: [{ name: 'Bag', quantity: 4, unitPriceNaira: 28_000 }],
+  amountPaidNaira: 80_000,
 });
 
 const invoiceNo = formatDocumentNumber('invoice', lagosYear(new Date()), 1);

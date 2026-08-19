@@ -60,10 +60,24 @@ export const invoices = pgTable(
     sourceId: text('source_id'),
     issuedAt: createdAt(),
   },
+  /**
+   * Business-leading composites, because every query is tenant-scoped by
+   * construction — an index that does not start with `business_id` cannot
+   * serve a query RLS will allow.
+   *
+   * The single-column `(business_id)` and `(customer_id)` indexes these
+   * replace were doing no work a composite could not: PostgreSQL uses any
+   * leading subset of a composite key, so `(business_id, status)` already
+   * answers everything `(business_id)` did. And `(customer_id)` alone could
+   * only ever serve a cross-tenant lookup, which the policies forbid. Each
+   * index removed is write amplification removed from an append-heavy ledger.
+   */
   (t) => [
     uniqueIndex('invoices_number_ux').on(t.businessId, t.invoiceNumber),
-    index('invoices_business_ix').on(t.businessId),
-    index('invoices_customer_ix').on(t.customerId),
+    // "Who owes me?" — the debtors question, asked constantly.
+    index('invoices_business_status_ix').on(t.businessId, t.status),
+    // One customer's statement.
+    index('invoices_business_customer_ix').on(t.businessId, t.customerId),
   ],
 );
 
@@ -100,8 +114,15 @@ export const payments = pgTable(
     createdAt: createdAt(),
   },
   (t) => [
-    index('payments_business_ix').on(t.businessId),
     uniqueIndex('payments_provider_ref_ux').on(t.businessId, t.providerRef),
+    /**
+     * The reconciliation queue: unverified payments for one business.
+     *
+     * `verified` rather than `status` — this table records whether the money
+     * was CONFIRMED with the provider, which is the distinction the whole
+     * anti-fake-alert feature rests on (spec §10, ADR 0014).
+     */
+    index('payments_business_verified_ix').on(t.businessId, t.verified),
   ],
 );
 

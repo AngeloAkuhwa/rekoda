@@ -54,22 +54,31 @@ export function parseAmountText(text: string): number | null {
   return m[2] === 'm' ? n * 1_000_000 : m[2] === 'k' ? n * 1000 : n;
 }
 
+/**
+ * Every field below is NAIRA, and says so in its name.
+ *
+ * This is the one boundary in Rekoda where naira are legal: a human speaks
+ * naira, so the value arrives as naira and is converted here. The `Naira`
+ * suffix is not decoration — the previous names (`price`, `amountPaid`) sat
+ * beside outputs called `totalK` and `amountPaidK`, so the only thing telling a
+ * reader which unit they held was knowing which side of the function they were
+ * on. That is exactly the confusion that ends with a bill 100× too large.
+ */
 export interface DraftItem {
   readonly name: string;
   readonly quantity: number;
-  /** Unit price in NAIRA as reported (boundary value). */
-  readonly price: number;
+  readonly unitPriceNaira: number;
 }
 
 export interface MoneyDraft {
   readonly items: readonly DraftItem[];
-  readonly discount?: number;
-  readonly deliveryFee?: number;
-  readonly serviceCharge?: number;
-  readonly vatAmount?: number;
-  /** Total as STATED by the human, in naira. May disagree with arithmetic. */
-  readonly totalAmount?: number;
-  readonly amountPaid?: number;
+  readonly discountNaira?: number;
+  readonly deliveryFeeNaira?: number;
+  readonly serviceChargeNaira?: number;
+  readonly vatAmountNaira?: number;
+  /** Total as STATED by the human. May disagree with the arithmetic. */
+  readonly statedTotalNaira?: number;
+  readonly amountPaidNaira?: number;
 }
 
 export interface MoneyBlock {
@@ -80,8 +89,28 @@ export interface MoneyBlock {
   readonly vatK: Kobo;
   readonly totalK: Kobo;
   readonly computedTotalK: Kobo;
+  /**
+   * What the customer actually handed over — NOT capped at the total.
+   *
+   * This used to be `Math.min(paid, total)`. "Sold for ₦100k, she paid ₦150k"
+   * became ₦100k paid and a zero balance, and the ₦50k simply ceased to exist:
+   * a discrepancy silently fixed, which is the one thing this engine must
+   * never do. `applyPayment` had always refused the same overpayment outright,
+   * so the two disagreed about the same event.
+   */
   readonly amountPaidK: Kobo;
+  /** Still owed. Never negative — an overpayment is not a negative debt. */
   readonly balanceDueK: Kobo;
+  /**
+   * Paid beyond the total. Zero unless it happened.
+   *
+   * A real event with a real business meaning — change owed, a credit against
+   * the next order, or a customer who paid the wrong invoice — so it is
+   * surfaced for a human to settle rather than rounded away.
+   *
+   * The invariant: `totalK - amountPaidK === balanceDueK - overpaymentK`.
+   */
+  readonly overpaymentK: Kobo;
   /** Stated total disagrees with the equation by >1% AND >₦50 — that is a
    * clarification question for the human, never a silent fix. */
   readonly mismatch: boolean;
@@ -90,17 +119,17 @@ export interface MoneyBlock {
 
 export function computeMoney(draft: MoneyDraft): MoneyBlock {
   const subtotalK = draft.items.reduce(
-    (sum, it) => sum + Math.round((Number(it.quantity) || 0) * toKobo(it.price)),
+    (sum, it) => sum + Math.round((Number(it.quantity) || 0) * toKobo(it.unitPriceNaira)),
     0,
   );
   assertKobo(subtotalK, 'subtotal');
-  const discountK = Math.max(0, toKobo(draft.discount ?? 0));
-  const deliveryK = Math.max(0, toKobo(draft.deliveryFee ?? 0));
-  const serviceK = Math.max(0, toKobo(draft.serviceCharge ?? 0));
-  const vatK = Math.max(0, toKobo(draft.vatAmount ?? 0));
+  const discountK = Math.max(0, toKobo(draft.discountNaira ?? 0));
+  const deliveryK = Math.max(0, toKobo(draft.deliveryFeeNaira ?? 0));
+  const serviceK = Math.max(0, toKobo(draft.serviceChargeNaira ?? 0));
+  const vatK = Math.max(0, toKobo(draft.vatAmountNaira ?? 0));
 
   const computedK = subtotalK - discountK + deliveryK + serviceK + vatK;
-  const statedK = toKobo(draft.totalAmount ?? 0);
+  const statedK = toKobo(draft.statedTotalNaira ?? 0);
 
   const totalK = statedK > 0 ? statedK : computedK;
   let mismatch = false;
@@ -115,7 +144,12 @@ export function computeMoney(draft: MoneyDraft): MoneyBlock {
     }
   }
 
-  const paidK = Math.min(Math.max(0, toKobo(draft.amountPaid ?? 0)), totalK);
+  // Recorded as stated, then split into what is still owed and what was paid
+  // over. Nothing is discarded to make the arithmetic tidy.
+  const paidK = Math.max(0, toKobo(draft.amountPaidNaira ?? 0));
+  const balanceDueK = Math.max(0, totalK - paidK);
+  const overpaymentK = Math.max(0, paidK - totalK);
+
   return {
     subtotalK,
     discountK,
@@ -125,7 +159,8 @@ export function computeMoney(draft: MoneyDraft): MoneyBlock {
     totalK,
     computedTotalK: computedK,
     amountPaidK: paidK,
-    balanceDueK: totalK - paidK,
+    balanceDueK,
+    overpaymentK,
     mismatch,
     impliedDiscountK,
   };
@@ -168,7 +203,17 @@ export function computeVat(
   return { vatK, totalK: baseK + vatK, taxableK: baseK };
 }
 
-/** Apply a payment; overpayment is a business question, never silently kept. */
+/**
+ * Apply a payment to an existing document. Overpayment is refused, with the
+ * exact excess, for the caller to resolve.
+ *
+ * This REFUSES where `computeMoney` RECORDS, and the difference is the stage,
+ * not a disagreement. `computeMoney` builds a draft from what a human said —
+ * "she paid 150k" on a 100k sale is a fact to write down and flag. This one
+ * mutates a document that already exists, where quietly accepting an extra
+ * ₦50k would leave the ledger unbalanced against nothing. Both obey the same
+ * rule: the discrepancy reaches a human, and neither invents a fix.
+ */
 export function applyPayment(
   currentPaidK: Kobo,
   totalK: Kobo,

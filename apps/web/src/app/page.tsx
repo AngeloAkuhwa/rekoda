@@ -10,8 +10,8 @@ import { StructuredData, faqSchema, softwareApplicationSchema } from '@/componen
  * page cannot drift from the engine, and no number here was typed by hand.
  */
 const demo = computeMoney({
-  items: [{ name: 'Wig', quantity: 3, price: 50_000 }],
-  amountPaid: 100_000,
+  items: [{ name: 'Wig', quantity: 3, unitPriceNaira: 50_000 }],
+  amountPaidNaira: 100_000,
 });
 
 /**

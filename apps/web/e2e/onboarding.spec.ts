@@ -84,6 +84,35 @@ test.describe('the page actually runs in the browser', () => {
     await expect(faq).toHaveAttribute('open', '');
   });
 
+  test('loads nothing from a third-party origin', async ({ page, baseURL }) => {
+    // Fonts used to come from fonts.googleapis.com, which blocks the first
+    // paint behind a DNS lookup, a TLS handshake and two round trips to
+    // someone else's server — on exactly the slow mobile networks Rekoda's
+    // merchants are on. They are self-hosted now, and this keeps them that
+    // way: a stray <link> to a CDN is easy to add and invisible on a fast
+    // laptop.
+    const foreign: string[] = [];
+    page.on('request', (r) => {
+      const url = r.url();
+      if (!url.startsWith(baseURL ?? 'http://127.0.0.1:3100') && !url.startsWith('data:')) {
+        foreign.push(url);
+      }
+    });
+    await page.goto('/');
+    expect(foreign).toEqual([]);
+  });
+
+  test('the display font actually resolves', async ({ page }) => {
+    // Guards the self-hosted files being present and served: a 404 on the
+    // woff2 is invisible except as text quietly falling back to Georgia.
+    await page.goto('/');
+    const loaded = await page.evaluate(async () => {
+      await document.fonts.ready;
+      return document.fonts.check('1rem Calistoga');
+    });
+    expect(loaded).toBe(true);
+  });
+
   test('the no-flash theme script survives the policy', async ({ page }) => {
     // Blocked, this leaves a dark-mode merchant with a white flash on every
     // navigation — cosmetic, invisible to server-side tests, and permanent.
