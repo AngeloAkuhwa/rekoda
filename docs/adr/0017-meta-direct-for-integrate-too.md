@@ -59,6 +59,28 @@ the first merchants live faster, use it. **The switch matters by roughly 30–50
 Integrate merchants**, and the channel layer must be built so that switch is an
 env var, not a project.
 
+## Coexistence is a precondition, not a detail
+
+Porting a number to the API historically **disconnects the WhatsApp Business
+App**. For a merchant who runs her business inside that app, that trade is
+unacceptable, and any A2 implementation that makes it silently has taken her
+business away to gain a webhook.
+
+**Meta's Coexistence feature (May 2025) is the precondition**: one number live on
+the Business App *and* Cloud API simultaneously, chats and contacts preserved,
+messages mirroring both ways, activated through Embedded Signup. **A2 uses
+Coexistence or A2 does not ship.**
+
+One consequence for ADR 0011's economics: under Coexistence the merchant's own
+app messages are **not** API-billed, while Rekoda's API sends are. So Rekoda
+should leave conversation to her in the app and spend API messages only on what
+only Rekoda can do — confirmations, documents, verified-payment alerts.
+
+**Unconfirmed and worth checking before A2 work starts:** whether catalogue
+**order** webhooks reach the API app under Coexistence. Message mirroring is
+documented; order messages specifically are not, and Meta's developer site is
+egress-blocked from this environment.
+
 ## What Rekoda has to build that Twilio would have provided
 
 Being clear-eyed about the trade — this is real work, not free:

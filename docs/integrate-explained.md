@@ -250,12 +250,88 @@ Until verification passes she is capped at **250 unique customers / 24 hrs** on
 number. Unverified accounts also face deactivation after roughly 30 days. That
 is why this is an upgrade for the registered, not a path for everyone.
 
-### How Rekoda connects it
-**Embedded Signup** — one Meta-hosted popup. She logs in with Facebook, picks or
-creates her WhatsApp Business Account, and Rekoda becomes her **Tech Provider**:
-she owns the WABA, Rekoda manages it. **Rekoda connects to Meta Cloud API
-directly — Twilio is optional** (ADR 0017; Twilio's ~₦7.25/message surcharge is
-~29% of the Integrate plan).
+### How the catalogue actually connects — the wiring
+
+**First, the thing that makes this survivable: Coexistence.**
+
+Historically, porting a number to the WhatsApp Business API **disconnected it
+from the WhatsApp Business App** — the vendor lost the app interface, and in
+many cases chat history and groups with it. For a market vendor who runs her
+entire business inside that app, that is not a migration, it is a demolition.
+
+**Meta's Coexistence feature (rolled out May 2025) removes that cost.** One
+number runs on the **Business App and the Cloud API simultaneously**: existing
+chats stay in the app, contacts are preserved, and new messages **mirror both
+ways in real time** over webhooks. Activation runs through Embedded Signup and
+needs nothing technical from the vendor.
+
+> **Rekoda's A2 path must use Coexistence, never a straight migration.** Ada
+> keeps chatting to her customers in the app she already knows; Rekoda gets API
+> visibility alongside her. If a future implementation quietly migrates a number
+> instead, it has taken her business away to gain a webhook.
+
+**Her catalogue already lives in Meta.** The WhatsApp Business App catalogue is
+backed by a **Commerce Manager** product catalog under her Meta Business
+Portfolio. She is not creating anything new — Rekoda is being granted access to
+what exists.
+
+### The connection, step by step
+
+| # | Where | What happens |
+|---|---|---|
+| 1 | Rekoda | She taps **"Connect WhatsApp"** → launches **Embedded Signup**, a Meta-hosted popup |
+| 2 | Meta popup | She logs in with the Facebook account that owns her WhatsApp Business |
+| 3 | Meta popup | For an existing Business App number, Meta offers **Coexistence** — she confirms in the app |
+| 4 | Meta popup | She grants scopes: `whatsapp_business_management`, `whatsapp_business_messaging`, and catalogue access |
+| 5 | Popup → Rekoda | Returns **WABA ID**, **business phone number ID**, and an **exchangeable token code** |
+| 6 | Rekoda server | Exchanges the code for a **customer-scoped business token**; stores it **encrypted, per-WABA** |
+| 7 | Rekoda server | Calls **`debug_token`** to confirm the granted scopes and exactly which WABA `target_ids` the token covers — never assume the popup granted what was asked |
+| 8 | Rekoda server | **Registers her phone number** for Cloud API use |
+| 9 | Rekoda server | **Subscribes Rekoda's app to webhooks on her WABA** — ⭐ *this is the step that makes Rekoda able to see anything* |
+| 10 | Rekoda server | Reads her **Commerce Manager catalog** via the Graph API and maps every product |
+
+### Product mapping — the join that makes orders legible
+
+```
+RekodaProductId  ↔  product_retailer_id      (her SKU inside Meta's catalog)
+                    catalog_id               (which catalogue it came from)
+```
+
+Without this mapping an incoming order is a list of opaque IDs. With it, an
+order resolves to real products with Rekoda's own prices and stock.
+
+### Then tracking is automatic
+
+```
+Customer browses her catalogue inside WhatsApp
+        ↓  adds to cart, sends the order
+Meta posts an `order` webhook to Rekoda's subscribed endpoint
+        ↓
+order { catalog_id, product_items[{ product_retailer_id, quantity, item_price }] }
+        ↓
+Rekoda resolves each product_retailer_id → its own product
+Rekoda RECOMPUTES the totals itself (never trusts item_price off the wire)
+        ↓
+OrderPlaced → identical to §4 from here
+```
+
+**Rekoda connects to Meta Cloud API directly — Twilio is optional** (ADR 0017;
+Twilio's ~₦7.25/message surcharge is ~29% of the Integrate plan).
+
+### Two consequences worth planning for
+
+**Cost:** from 1 Oct 2026 every message **sent through the API** is charged.
+Messages Ada sends **from the app herself are not**. So under Coexistence, Rekoda
+should let her converse in the app and reserve API sends for what only Rekoda can
+do — confirmations, documents, verified-payment alerts (ADR 0011).
+
+**Unconfirmed:** whether catalogue **order** webhooks reach the API app while a
+number is in Coexistence mode. Message mirroring is documented; *order* messages
+specifically are not confirmed in what could be read from here, and
+`developers.facebook.com` is egress-blocked in this environment. **Verify before
+building A2** — if orders do not flow under Coexistence, the choice becomes
+"migrate and lose the app" versus "stay on the storefront", and the storefront
+wins that argument every time.
 
 ### Catalogue mapping
 Her products live in **Meta Commerce Manager**. Rekoda maps them both ways:
@@ -426,6 +502,9 @@ primary pages when browsing is available.
 | **Meta**: unverified business = **250 unique customers/24h**, 2 numbers, **display name not visible** | High |
 | **Meta**: service messages become chargeable **1 Oct 2026** at the utility rate, flat, no volume discount; Nigeria utility ≈ $0.0067 | High |
 | Order webhook shape: `order { catalog_id, product_items[{ product_retailer_id, quantity, item_price }] }` | Medium-high — consistent across three BSP docs |
+| **Embedded Signup returns WABA ID + phone number ID + exchangeable code**; server then exchanges for a customer-scoped token, registers the number, and **subscribes the app to that WABA's webhooks** | High |
+| **Coexistence** (Meta, since May 2025) runs the Business App and Cloud API on **one number**, preserving chats and contacts, mirroring messages both ways, activated via Embedded Signup | High |
+| Without Coexistence, porting a number to the API **disconnects the WhatsApp Business App** | High |
 | **Meta may deactivate unverified WABAs after ~30 days** | **Low-medium — weakest claim in the plan.** Sourced from BSP help pages, never from Meta directly. Flagged as unconfirmed in ADR 0012. |
 | CBN requires **BVN or NIN** for virtual accounts (not CAC) | High |
 | **PSSP** = ₦100M CBN deposit and **does not permit holding customer funds**; only **MMO** (₦2B) may | High — multiple legal sources |
@@ -461,6 +540,7 @@ relying on it.**
 | 5 | Does the ~1,000 ceiling touch transient accounts? | Expected no. If yes, per-transaction accounts inherit the ceiling problem. |
 | 6 | Counsel: is split-settled aggregation without custody outside licensable activity? | Gates ADR 0013 moving to Accepted. |
 | 7 | Meta's real unverified-WABA deactivation policy | Affects only the A2 upgrade path, not the mainline. |
+| **8** | **Do catalogue `order` webhooks reach the API app while a number is in Coexistence mode?** | Message mirroring is documented; *order* messages specifically are not. If orders do **not** flow under Coexistence, A2 collapses to "migrate and lose the app" vs "stay on the storefront" — and the storefront wins. **Verify before building A2.** |
 
 ## 10.5 The honest summary
 
