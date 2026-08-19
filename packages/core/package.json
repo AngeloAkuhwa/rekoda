@@ -13,6 +13,14 @@
     "./identity": {
       "types": "./dist/identity.d.ts",
       "default": "./dist/identity.js"
+    },
+    "./privacy": {
+      "types": "./dist/privacy.d.ts",
+      "default": "./dist/privacy.js"
+    },
+    "./vault": {
+      "types": "./dist/vault.d.ts",
+      "default": "./dist/vault.js"
     }
   },
   "scripts": {

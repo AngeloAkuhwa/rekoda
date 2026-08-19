@@ -30,6 +30,7 @@
     "postgres": "^3.4.5"
   },
   "devDependencies": {
+    "@rekoda/core": "workspace:^",
     "@types/node": "^24",
     "drizzle-kit": "^0.31.10",
     "prettier": "^3.4.2",
