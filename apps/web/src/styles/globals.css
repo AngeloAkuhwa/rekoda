@@ -187,8 +187,12 @@ button,
 .rk-footer nav {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--rk-space-4);
-  margin-top: var(--rk-space-3);
+  /* Column gap only. A 44px-tall link plus a 16px row gap left a wrapped
+     "Delete my data" floating a line and a half below its neighbours, which
+     reads as a mistake rather than as a wrap. */
+  column-gap: var(--rk-space-5);
+  row-gap: 0;
+  margin-top: var(--rk-space-2);
 }
 .rk-footer nav a {
   min-height: 44px;
@@ -479,12 +483,43 @@ button,
   gap: var(--rk-space-6);
 }
 
+/* Two columns even on the narrowest phone. Wrapping put "Sign out" alone on
+   its own line, right-aligned, with dead space above and below — a rare
+   action given the most visual weight on the page by accident of layout. */
 .rk-dash-head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: var(--rk-space-4);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: var(--rk-space-3);
+}
+/* Sign out is a rare, deliberate action. As a full-width secondary button
+   directly under the business name it read as the primary thing to do on the
+   page — the opposite of true. It stays a real 44px target, just a quiet one. */
+.rk-dash-head form {
+  justify-self: end;
+}
+.rk-signout {
+  min-height: 44px;
+  padding-inline: var(--rk-space-3);
+  background: none;
+  border: 1px solid transparent;
+  border-radius: var(--rk-radius-sm);
+  color: var(--rk-text-muted);
+  font: inherit;
+  font-size: var(--rk-text-sm);
+  cursor: pointer;
+}
+.rk-signout:hover:not(:disabled) {
+  color: var(--rk-text);
+  border-color: var(--rk-border);
+}
+.rk-signout:focus-visible {
+  outline: 2px solid var(--rk-accent);
+  outline-offset: 2px;
+}
+.rk-signout:disabled {
+  opacity: 0.6;
+  cursor: progress;
 }
 .rk-dash-head h1 {
   font-size: var(--rk-text-2xl);
@@ -495,6 +530,18 @@ button,
 }
 .rk-dash-head .rk-fineprint {
   margin-top: var(--rk-space-2);
+}
+.rk-dash-empty {
+  display: grid;
+  gap: var(--rk-space-2);
+}
+.rk-dash-empty h2 {
+  font-size: var(--rk-text-lg);
+}
+.rk-dash-empty p {
+  color: var(--rk-text-muted);
+  line-height: 1.65;
+  max-width: 52ch;
 }
 
 .rk-eyebrow {
@@ -521,17 +568,265 @@ button,
   background: var(--rk-surface);
   border: 1px solid var(--rk-border);
   border-radius: var(--rk-radius-md);
+  display: grid;
+  gap: var(--rk-space-1);
 }
 .rk-stat-label {
   font-size: var(--rk-text-sm);
   color: var(--rk-text-muted);
 }
+/* `.rk-fineprint` carries a 24px top margin for use after a form. Inside a
+   stat card that margin was stretching each tile to roughly 230px to hold
+   three characters — three of them filled a phone screen with almost nothing.
+   The card owns its own rhythm here. */
+.rk-stat .rk-fineprint {
+  margin-top: 0;
+  font-size: var(--rk-text-xs);
+  line-height: 1.45;
+}
 
 /* The "unknown" money state (spec §7). Deliberately NOT styled like a figure:
    a muted dash must never be mistaken for a total Rekoda actually computed. */
 .rk-stat-empty {
-  margin-top: var(--rk-space-2);
-  font-size: var(--rk-text-2xl);
+  font-size: var(--rk-text-xl);
+  line-height: 1.2;
   color: var(--rk-text-muted);
   font-variant-numeric: tabular-nums;
+}
+
+/* ── legal & trust pages ──────────────────────────────────────────────────
+   Long-form reading, which is a different problem from the marketing pages:
+   the constraint is line length and vertical rhythm, not visual interest. */
+.rk-legal {
+  padding-block: var(--rk-space-6) var(--rk-space-10);
+}
+.rk-legal-head h1 {
+  font-size: var(--rk-text-2xl);
+}
+@media (min-width: 768px) {
+  .rk-legal-head h1 {
+    font-size: var(--rk-text-3xl);
+  }
+}
+.rk-legal-updated {
+  margin-top: var(--rk-space-4);
+  font-size: var(--rk-text-sm);
+  color: var(--rk-text-muted);
+}
+
+.rk-legal-body {
+  margin-top: var(--rk-space-8);
+  display: grid;
+  gap: var(--rk-space-8);
+}
+/* The contents column only appears where there is a genuinely spare one. A
+   sticky sidebar on a 390px screen eats the reading area it means to help. */
+@media (min-width: 1024px) {
+  .rk-legal-body {
+    grid-template-columns: 16rem 1fr;
+    gap: var(--rk-space-10);
+    align-items: start;
+  }
+  .rk-legal-toc {
+    position: sticky;
+    top: var(--rk-space-6);
+  }
+}
+
+.rk-legal-toc h2 {
+  font-family: var(--rk-font-body);
+  font-size: var(--rk-text-xs);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--rk-text-muted);
+}
+.rk-legal-toc ol {
+  margin-top: var(--rk-space-3);
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: var(--rk-space-2);
+}
+.rk-legal-toc a {
+  color: var(--rk-text-muted);
+  text-decoration: none;
+  font-size: var(--rk-text-sm);
+  line-height: 1.5;
+}
+.rk-legal-toc a:hover {
+  color: var(--rk-accent);
+  text-decoration: underline;
+}
+
+/* 68ch keeps lines in the range people actually read without losing their
+   place — the single biggest lever on whether a policy page gets read. */
+.rk-prose {
+  max-width: 68ch;
+  display: grid;
+  gap: var(--rk-space-8);
+}
+.rk-prose section {
+  scroll-margin-top: var(--rk-space-6);
+}
+.rk-prose h2 {
+  font-size: var(--rk-text-xl);
+  margin-bottom: var(--rk-space-3);
+}
+.rk-prose p,
+.rk-prose li {
+  color: var(--rk-text-muted);
+  line-height: 1.7;
+}
+.rk-prose p + p,
+.rk-prose ul + p,
+.rk-prose p + ul {
+  margin-top: var(--rk-space-4);
+}
+.rk-prose ul {
+  padding-left: var(--rk-space-5);
+  display: grid;
+  gap: var(--rk-space-3);
+}
+.rk-prose strong {
+  color: var(--rk-text);
+}
+.rk-prose a {
+  color: var(--rk-accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.rk-prose code {
+  font-family: var(--rk-font-mono);
+  font-size: 0.9em;
+  padding: 0.1em 0.35em;
+  background: var(--rk-surface-sunk);
+  border-radius: var(--rk-radius-sm);
+}
+
+/* An unconfigured legal value must LOOK unconfigured. Amber rather than red:
+   this is "someone still has to fill this in", not "something is broken". */
+.rk-unset {
+  display: inline-block;
+  padding: 0.1em 0.5em;
+  border: 1px dashed var(--rk-warn-border, #b45309);
+  border-radius: var(--rk-radius-sm);
+  background: var(--rk-warn-surface, #fef3c7);
+  color: var(--rk-warn-text, #92400e);
+  font-size: var(--rk-text-sm);
+  font-weight: 600;
+}
+
+/* ── homepage additions ───────────────────────────────────────────────────*/
+.rk-phone {
+  margin-top: var(--rk-space-8);
+}
+/* Spacing that used to be five inline `style` attributes. Inline styles in a
+   token-driven system are how a spacing scale quietly stops being one. */
+.rk-card-badged {
+  display: grid;
+  gap: var(--rk-space-3);
+  align-content: start;
+  justify-items: start;
+}
+.rk-bubble-badge {
+  margin-top: var(--rk-space-3);
+}
+
+.rk-check-list {
+  margin-top: var(--rk-space-5);
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: var(--rk-space-3);
+  max-width: 60ch;
+}
+.rk-check-list li {
+  position: relative;
+  padding-left: var(--rk-space-6);
+  color: var(--rk-text-muted);
+  line-height: 1.6;
+}
+/* A drawn tick, not an emoji — emoji render differently on every platform and
+   are announced by screen readers as their unicode name (MASTER.md §4). */
+.rk-check-list li::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0.45em;
+  width: 0.7em;
+  height: 0.38em;
+  border-left: 2px solid var(--rk-accent);
+  border-bottom: 2px solid var(--rk-accent);
+  transform: rotate(-45deg);
+}
+
+.rk-faq {
+  margin-top: var(--rk-space-5);
+  max-width: 68ch;
+  display: grid;
+  gap: var(--rk-space-2);
+}
+.rk-faq-item {
+  border: 1px solid var(--rk-border);
+  border-radius: var(--rk-radius-md);
+  background: var(--rk-surface);
+}
+.rk-faq-item summary {
+  /* 44px minimum touch target, and a pointer that says it is pressable. */
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  gap: var(--rk-space-3);
+  padding: var(--rk-space-4);
+  cursor: pointer;
+  font-weight: 600;
+  line-height: 1.4;
+  list-style: none;
+}
+.rk-faq-item summary::-webkit-details-marker {
+  display: none;
+}
+.rk-faq-item summary::after {
+  content: '';
+  margin-left: auto;
+  flex: none;
+  width: 0.5em;
+  height: 0.5em;
+  border-right: 2px solid var(--rk-text-muted);
+  border-bottom: 2px solid var(--rk-text-muted);
+  transform: rotate(45deg) translate(-0.15em, -0.15em);
+  transition: transform var(--rk-motion-fast) var(--rk-ease);
+}
+.rk-faq-item[open] summary::after {
+  transform: rotate(-135deg) translate(-0.25em, -0.25em);
+}
+.rk-faq-item summary:focus-visible {
+  outline: 2px solid var(--rk-accent);
+  outline-offset: -2px;
+  border-radius: var(--rk-radius-md);
+}
+.rk-faq-item p {
+  padding: 0 var(--rk-space-4) var(--rk-space-4);
+  margin: 0;
+  color: var(--rk-text-muted);
+  line-height: 1.65;
+}
+@media (prefers-reduced-motion: reduce) {
+  .rk-faq-item summary::after {
+    transition: none;
+  }
+}
+
+.rk-closer {
+  border-top: 1px solid var(--rk-border);
+}
+.rk-closer .rk-cta-row {
+  margin-top: var(--rk-space-5);
+}
+
+/* The header keeps its three-part grid even when the middle is empty, so the
+   wordmark and the theme toggle do not shift between pages. */
+.rk-header-spacer {
+  flex: 1;
 }

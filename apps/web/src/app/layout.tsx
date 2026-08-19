@@ -1,9 +1,15 @@
 import type { Metadata } from 'next';
 import '../styles/globals.css';
-import { ThemeToggle } from '@/components/ThemeToggle';
+import { SITE_URL } from '@/lib/site';
+import { SiteFooter } from '@/components/SiteFooter';
+import { SiteHeader } from '@/components/SiteHeader';
 
 export const metadata: Metadata = {
-  metadataBase: new URL('https://rekoda.app'),
+  metadataBase: new URL(SITE_URL),
+  // Every page inherits a canonical; pages that live at a different path
+  // override it. Without this a crawler treats ?utm_source=… as a separate
+  // page and splits the ranking of the one it should have.
+  alternates: { canonical: '/' },
   title: {
     default: 'Rekoda — You run the business. Rekoda builds the records.',
     template: '%s · Rekoda',
@@ -46,41 +52,5 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <SiteFooter />
       </body>
     </html>
-  );
-}
-
-function SiteHeader() {
-  return (
-    <header className="rk-header">
-      <div className="rk-container rk-header-inner">
-        <a href="/" className="rk-wordmark">
-          Rekoda
-        </a>
-        <nav aria-label="Main">
-          <a href="/pricing">Pricing</a>
-          <a href="/security">Security</a>
-        </nav>
-        <ThemeToggle />
-      </div>
-    </header>
-  );
-}
-
-function SiteFooter() {
-  return (
-    <footer className="rk-footer">
-      <div className="rk-container">
-        <p>
-          Rekoda keeps your records. Payments are processed by your own Paystack account — Rekoda
-          never holds your money.
-        </p>
-        <nav aria-label="Legal">
-          <a href="/privacy">Privacy</a>
-          <a href="/terms">Terms</a>
-          <a href="/ai-privacy">AI &amp; privacy</a>
-          <a href="/data-deletion">Delete my data</a>
-        </nav>
-      </div>
-    </footer>
   );
 }

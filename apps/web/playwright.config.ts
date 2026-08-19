@@ -112,6 +112,9 @@ export default defineConfig({
       env: {
         REKODA_API_URL: `http://127.0.0.1:${API_PORT}`,
         REKODA_E2E_REVEAL_OTP: '1',
+        // Pinned so the robots/sitemap assertions test the real canonical
+        // host rather than whatever the local default happens to be.
+        NEXT_PUBLIC_SITE_URL: 'https://rekoda.app',
       },
     },
   ],

@@ -20,6 +20,8 @@ export interface ApiConfig {
    */
   revealOtp: boolean;
   corsOrigins: string[];
+  /** Requests per IP per minute. See the note in main.ts. */
+  rateLimitMax: number;
 }
 
 class ConfigError extends Error {}
@@ -53,6 +55,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
       .split(',')
       .map((s) => s.trim())
       .filter(Boolean),
+    // Raised by the integration suite, which legitimately makes a few hundred
+    // requests from one address in well under a minute.
+    rateLimitMax: Number(env['REKODA_RATE_LIMIT_MAX'] ?? 60),
   };
 }
 

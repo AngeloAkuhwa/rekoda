@@ -1,4 +1,5 @@
 import type { Metadata } from 'next';
+import { canonical } from '@/lib/site';
 import { Button } from '@/components/ui/Button';
 import { Money } from '@/components/ui/Money';
 import { PLANS, TRIAL } from '@/lib/plans';
@@ -7,6 +8,7 @@ export const metadata: Metadata = {
   title: 'Pricing',
   description:
     'Rekoda plans from ₦9,900/month. 30-day free trial, no card needed. Paystack processing fees are shown separately and always yours.',
+  alternates: { canonical: canonical('/pricing') },
 };
 
 export default function PricingPage() {

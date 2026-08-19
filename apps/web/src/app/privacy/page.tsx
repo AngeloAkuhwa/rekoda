@@ -1,0 +1,146 @@
+import type { Metadata } from 'next';
+import { LegalPage } from '@/components/legal/LegalPage';
+import { Fact } from '@/components/legal/Fact';
+import { FINANCIAL_RETENTION_YEARS, LEGAL } from '@/lib/legal';
+import { canonical } from '@/lib/site';
+
+export const metadata: Metadata = {
+  title: 'Privacy',
+  description:
+    'What Rekoda collects, why, how long it is kept, and how to get it deleted. Written to be read rather than to be defensible.',
+  alternates: { canonical: canonical('/privacy') },
+};
+
+export default function PrivacyPage() {
+  return (
+    <LegalPage
+      title="Privacy"
+      intro="What we collect, why we collect it, and how to get rid of it. Nigerian data protection law (the NDPA) gives you rights over all of it."
+      sections={[
+        {
+          id: 'who',
+          heading: 'Who is responsible',
+          body: (
+            <p>
+              Rekoda is operated by <Fact fact={LEGAL.entity} />
+              {LEGAL.rcNumber.value ? <> (RC {LEGAL.rcNumber.value})</> : null}, at{' '}
+              <Fact fact={LEGAL.address} />. For anything on this page, write to{' '}
+              <Fact fact={LEGAL.privacyEmail} />.
+            </p>
+          ),
+        },
+        {
+          id: 'collect',
+          heading: 'What we collect',
+          body: (
+            <>
+              <ul>
+                <li>
+                  <strong>Your WhatsApp number.</strong> It is how you sign in, and how Rekoda
+                  reaches you. There is no password.
+                </li>
+                <li>
+                  <strong>Your business name and type</strong>, as you type them. We do not require
+                  CAC registration or a TIN.
+                </li>
+                <li>
+                  <strong>What you tell Rekoda</strong> — messages and voice notes about sales,
+                  expenses, stock and customers — and the records built from them.
+                </li>
+                <li>
+                  <strong>Your customers&rsquo; details</strong>, when you give them to us so an
+                  invoice or receipt can be addressed. These are encrypted at rest.
+                </li>
+                <li>
+                  <strong>Payment events</strong> from your own payment provider: that a payment
+                  arrived, how much, and when. Not your card details, which we never see.
+                </li>
+              </ul>
+              <p>
+                We do not collect your location, your contacts, or anything from your phone beyond
+                the messages you deliberately send.
+              </p>
+            </>
+          ),
+        },
+        {
+          id: 'why',
+          heading: 'Why we are allowed to hold it',
+          body: (
+            <p>
+              Mostly because you asked us to keep your books — we cannot provide the service without
+              the records it is made of. Some of it we must keep by law: Nigerian tax and company
+              law requires financial records to survive for {FINANCIAL_RETENTION_YEARS} years, and
+              that obligation outlives your account.
+            </p>
+          ),
+        },
+        {
+          id: 'sharing',
+          heading: 'Who else sees it',
+          body: (
+            <>
+              <ul>
+                <li>
+                  <strong>Meta (WhatsApp)</strong> carries the messages, as it does for every
+                  WhatsApp conversation you have.
+                </li>
+                <li>
+                  <strong>Your payment provider</strong> — your own account, which you control.
+                </li>
+                <li>
+                  <strong>An AI provider</strong> sees your message text with customer identities
+                  already replaced by tokens. See <a href="/ai-privacy">AI &amp; privacy</a>.
+                </li>
+              </ul>
+              <p>
+                We do not sell your data, and we do not share it for advertising. Nobody buys a list
+                from us because we do not have one to sell.
+              </p>
+            </>
+          ),
+        },
+        {
+          id: 'retention',
+          heading: 'How long we keep it',
+          body: (
+            <>
+              <p>
+                Conversations and drafts are kept while your account is open. Financial records —
+                invoices, receipts, ledger entries — are kept for {FINANCIAL_RETENTION_YEARS} years
+                after the transaction, because the law requires it.
+              </p>
+              <p>
+                This is the honest carve-out: if you ask us to delete everything, we delete
+                everything we are permitted to, and keep the financial records we are obliged to
+                keep, in a form that is no longer linked to marketing or analytics. We will tell you
+                exactly what was kept and why.
+              </p>
+            </>
+          ),
+        },
+        {
+          id: 'rights',
+          heading: 'Your rights',
+          body: (
+            <p>
+              You can ask for a copy of your data, ask us to correct it, or ask us to delete it —
+              see <a href="/data-deletion">Delete my data</a>. You can withdraw consent at any time
+              by replying <strong>STOP</strong> on WhatsApp, which ends the messages without
+              destroying the books you may still need.
+            </p>
+          ),
+        },
+        {
+          id: 'ndpr',
+          heading: 'Compliance filings',
+          body: (
+            <p>
+              NDPA audit filing: <Fact fact={LEGAL.ndprAuditor} />.
+            </p>
+          ),
+        },
+      ]}
+    />
+  );
+}
