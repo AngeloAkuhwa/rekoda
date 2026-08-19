@@ -53,6 +53,9 @@ importers:
       '@rekoda/db':
         specifier: workspace:*
         version: link:../../packages/db
+      openai:
+        specifier: ^7.5.0
+        version: 7.5.0(@aws-sdk/credential-provider-node@3.972.80)(@smithy/signature-v4@5.7.2)(zod@4.4.3)
       pdfkit:
         specifier: ^0.19.1
         version: 0.19.1
@@ -1700,6 +1703,27 @@ packages:
     resolution: {integrity: sha512-0eJJY6hXLGf1udHwfNftBqH+g73EU4B504nZeKpz1sYRKafAghwxEJunB2O7rDZkL4PGfsMVnTXZ2EjibbqcsA==}
     engines: {node: '>=14.0.0'}
 
+  openai@7.5.0:
+    resolution: {integrity: sha512-ZbDBz8FSB8Mv8fFYIUvzTFMdV5vl93/octp1MdtK2lfYepSpfv/ewmeugpKz/cwGtFSx+YuUM4NwpZ2P55YiPA==}
+    engines: {node: '>=22.0.0'}
+    peerDependencies:
+      '@aws-sdk/credential-provider-node': '>=3.972.0 <4'
+      '@smithy/hash-node': '>=4.3.0 <5'
+      '@smithy/signature-v4': '>=5.4.0 <6'
+      ws: ^8.18.0
+      zod: ^3.25 || ^4.0
+    peerDependenciesMeta:
+      '@aws-sdk/credential-provider-node':
+        optional: true
+      '@smithy/hash-node':
+        optional: true
+      '@smithy/signature-v4':
+        optional: true
+      ws:
+        optional: true
+      zod:
+        optional: true
+
   pako@0.2.9:
     resolution: {integrity: sha512-NUcwaKxUxWrZLpDG+z/xZaCgQITkA/Dv4V/T6bw7VON6l1Xz/VnrBqrYjZQ12TamKHzITTfOEIYUj48y2KXImA==}
 
@@ -3264,6 +3288,12 @@ snapshots:
   obug@2.1.4: {}
 
   on-exit-leak-free@2.1.2: {}
+
+  openai@7.5.0(@aws-sdk/credential-provider-node@3.972.80)(@smithy/signature-v4@5.7.2)(zod@4.4.3):
+    optionalDependencies:
+      '@aws-sdk/credential-provider-node': 3.972.80
+      '@smithy/signature-v4': 5.7.2
+      zod: 4.4.3
 
   pako@0.2.9: {}
 

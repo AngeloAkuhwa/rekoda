@@ -263,6 +263,23 @@ Top-tier models (Fable/Opus-class, ~5× Sonnet) are for **build-time and evals**
 at structured extraction with a strict schema Sonnet performs at ceiling; 5× buys latency, not
 accuracy. The escalation flag makes upgrading one env var when telemetry justifies it.
 
+**Amendment (19 Aug 2026, owner directive): the provider is configurable.**
+`AI_PROVIDER=anthropic|openai` selects between two transports behind one port.
+Sonnet remains the default — with both keys present, Anthropic wins, because a
+coin toss is not a routing policy.
+
+It is a SWITCH, not a failover pair. Extraction quality *is* the product
+experience, so which model reads a sentence about money is a decision someone
+makes, not one a network blip makes for them. An explicit `AI_PROVIDER` whose
+key is missing FAILS AT BOOT rather than falling back — silently billing the
+other account would be the worse outcome.
+
+OpenAI families are deliberately absent from `MODEL_PRICES`: a wrong price is
+worse than a missing one, because `priced: false` shows up in the margin view
+as a gap somebody investigates while a wrong number shows up as a margin
+somebody acts on. Call `registerModelPrice()` with the current list when you
+switch.
+
 ## ADR 0008 — STT baseline is an AfriSpeech-tuned Whisper · **Accepted**
 
 Stock `whisper-large-v3` measures **30–45% WER on African-accented English**
@@ -711,6 +728,24 @@ rekoda/
 ├── .github/workflows/ci.yml
 └── .env.example
 ```
+
+## 3.2b Runtime standard — one Node, and an LTS
+
+**`.nvmrc` is the single source of truth** (owner standard, 19 Aug 2026).
+`engines.node`, every `@types/node`, and the version actually running are all
+checked against it by `scripts/check-node-version.mjs`, which runs in CI.
+
+Rekoda runs **LTS only**. The check enforces this structurally rather than by a
+list that would need editing every October: Node promotes only EVEN majors to
+LTS, so an odd major is rejected outright.
+
+The `@types/node` major must equal the runtime major. Types describing a NEWER
+Node let code call an API that does not exist yet — it typechecks, CI passes,
+and it throws in production, and no test catches it because it is a claim about
+the description rather than the behaviour. This is why `@types/node` 26 was held
+back while the runtime is Node 24 (the current Active LTS).
+
+Current: **Node 24**.
 
 ## 3.3 Engineering standards
 

@@ -71,6 +71,13 @@ jobs:
       - name: Architectural boundaries
         if: steps.ws.outputs.present == 'true'
         run: node scripts/check-boundaries.mjs
+      # One Node version, and an LTS. `.nvmrc` is the source of truth; this
+      # checks engines, every @types/node, AND the version actually running,
+      # because a project can be consistent in four files and still be tested
+      # on a fifth version nobody declared.
+      - name: Node version is single and LTS
+        if: steps.ws.outputs.present == 'true'
+        run: node scripts/check-node-version.mjs
       - name: Docs-only repository — nothing to build yet
         if: steps.ws.outputs.present == 'false'
         run: echo "No pnpm workspace yet (pre-M0). Skipping build steps."

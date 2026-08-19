@@ -23,6 +23,7 @@
     "@rekoda/contracts": "workspace:*",
     "@rekoda/core": "workspace:*",
     "@rekoda/db": "workspace:*",
+    "openai": "^7.5.0",
     "pdfkit": "^0.19.1",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1"
