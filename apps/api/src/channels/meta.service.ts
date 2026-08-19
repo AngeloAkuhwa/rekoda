@@ -4,6 +4,7 @@ import { redactForLog } from '@rekoda/core/privacy';
 import type { InboundEvent } from '@rekoda/contracts';
 import { events, identity, type Db } from '@rekoda/db';
 import { DB } from '../db/db.module.js';
+import { JobKind, JobQueue } from '../jobs/queue.service.js';
 
 /**
  * Turns an inbound Meta event into a durable, de-duplicated row.
@@ -17,7 +18,10 @@ import { DB } from '../db/db.module.js';
 export class MetaIngressService {
   private readonly log = new Logger(MetaIngressService.name);
 
-  constructor(@Inject(DB) private readonly db: Db) {}
+  constructor(
+    @Inject(DB) private readonly db: Db,
+    @Inject(JobQueue) private readonly queue: JobQueue,
+  ) {}
 
   async accept(event: InboundEvent, payload: unknown): Promise<{ isNew: boolean }> {
     const businessId = await this.resolveBusiness(event.from);
@@ -34,8 +38,31 @@ export class MetaIngressService {
     if (!recorded.isNew) {
       // Meta retries; this is the normal path, not an anomaly worth alarming on.
       this.log.debug(`ignored a duplicate Meta event ${redactForLog(event.externalId)}`);
+      return { isNew: false };
     }
-    return { isNew: recorded.isNew };
+
+    /**
+     * Queue the work, and only for a message we can attribute.
+     *
+     * Two silences here are deliberate. A delivery receipt has nothing to
+     * understand, and a message from a stranger has no tenant to run under —
+     * `jobs.business_id` is NOT NULL precisely so that "run this for nobody"
+     * cannot be expressed. Both are already durably stored; the reply layer
+     * picks up the second when it exists.
+     *
+     * The singleton key is the event id, so a retry that races past the
+     * `external_events` unique index still cannot produce two jobs.
+     */
+    if (businessId && event.kind !== 'status') {
+      await this.queue.enqueue({
+        businessId,
+        kind: JobKind.InboundMessage,
+        payload: { eventId: recorded.id },
+        singletonKey: recorded.id,
+      });
+    }
+
+    return { isNew: true };
   }
 
   /**

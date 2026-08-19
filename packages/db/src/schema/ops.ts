@@ -164,3 +164,44 @@ export const usageEvents = pgTable(
     index('usage_provider_ix').on(t.provider, t.billingPeriod),
   ],
 );
+
+/**
+ * Background work, queued in the same database as the work it describes
+ * (ADR 0022).
+ *
+ * `business_id` is `NOT NULL` on purpose: there is no such thing as a job with
+ * no tenant, and the column is what the row-level security policy keys on. A
+ * worker that forgets to pin sees an empty queue rather than everybody's.
+ *
+ * `payload` holds **references, never content** — an event id, a document id.
+ * The queue is the one table a worker reads across tenants, so anything put in
+ * here is readable by every worker; message text belongs in the vault.
+ */
+export const jobs = pgTable(
+  'jobs',
+  {
+    id: id(),
+    businessId: businessId(),
+    kind: text('kind').notNull(),
+    payload: jsonb('payload')
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+    /**
+     * At most one un-finished job per (business, kind, key). Used to make
+     * "render the PDF for this document" idempotent at enqueue time rather
+     * than hoping the handler is.
+     */
+    singletonKey: text('singleton_key'),
+    /** pending | running | done | dead */
+    state: text('state').notNull().default('pending'),
+    attempts: integer('attempts').notNull().default(0),
+    maxAttempts: integer('max_attempts').notNull().default(5),
+    runAt: timestamp('run_at', { withTimezone: true }).notNull().defaultNow(),
+    lockedAt: timestamp('locked_at', { withTimezone: true }),
+    lockedBy: text('locked_by'),
+    lastError: text('last_error'),
+    createdAt: createdAt(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('jobs_business_state_ix').on(t.businessId, t.state)],
+);

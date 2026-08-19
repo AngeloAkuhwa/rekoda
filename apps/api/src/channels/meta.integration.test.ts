@@ -8,8 +8,9 @@
  */
 import { createHmac } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { createDb, events, identity, type Db } from '@rekoda/db';
+import { createDb, events, identity, jobsRepo, withBusiness, type Db } from '@rekoda/db';
 import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
+import { buildRunner } from '../jobs/jobs.module.js';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 
 const APP_SECRET = 'meta-app-secret-for-tests';
@@ -18,7 +19,9 @@ const VERIFY_TOKEN = 'meta-verify-token-for-tests';
 let urls: Urls;
 let app: NestFastifyApplication;
 let db: Db;
+let workerDb: Db;
 let closeDb: () => Promise<void>;
+let closeWorkerDb: () => Promise<void>;
 
 beforeAll(async () => {
   urls = requireUrls();
@@ -38,11 +41,13 @@ beforeAll(async () => {
   await app.getHttpAdapter().getInstance().ready();
 
   ({ db, close: closeDb } = createDb(urls.app, { max: 4 }));
+  ({ db: workerDb, close: closeWorkerDb } = createDb(urls.worker, { max: 2 }));
 });
 
 afterAll(async () => {
   await app?.close();
   await closeDb?.();
+  await closeWorkerDb?.();
 });
 
 beforeEach(async () => {
@@ -72,6 +77,28 @@ function messagePayload(waId: string, wamid: string, text = 'Ada bought 3 wigs f
                   text: { body: text },
                 },
               ],
+            },
+          },
+        ],
+      },
+    ],
+  };
+}
+
+/** A delivery receipt: same envelope, `statuses` instead of `messages`. */
+function statusPayload(recipientId: string, wamid: string, status: string) {
+  return {
+    object: 'whatsapp_business_account',
+    entry: [
+      {
+        id: 'WABA',
+        changes: [
+          {
+            field: 'messages',
+            value: {
+              messaging_product: 'whatsapp',
+              metadata: { phone_number_id: 'PNID' },
+              statuses: [{ id: wamid, status, recipient_id: recipientId }],
             },
           },
         ],
@@ -228,6 +255,61 @@ describe('tenant resolution', () => {
     // the wrong set of books. Unattributed, for a human to resolve.
     const [row] = await events.unprocessedEvents(db, 'meta');
     expect(row?.businessId).toBeNull();
+  });
+});
+
+describe('what happens after the 200', () => {
+  async function seedMerchant(phone: string, name: string) {
+    const user = await identity.upsertUserByPhone(db, phone);
+    return identity.createBusinessWithOwner(db, { name, businessType: null, ownerUserId: user.id });
+  }
+
+  it('queues the message for a worker rather than processing it inline', async () => {
+    const business = await seedMerchant('+2348031234567', 'Ada Fashion');
+    await post(messagePayload('2348031234567', 'wamid.QUEUED'));
+
+    const queued = await withBusiness(db, business.id, (tx) => jobsRepo.jobsForBusiness(tx));
+    expect(queued).toHaveLength(1);
+    expect(queued[0]).toMatchObject({ kind: 'inbound.message', state: 'pending' });
+  });
+
+  it('runs that job and closes the event out', async () => {
+    const business = await seedMerchant('+2348031234567', 'Ada Fashion');
+    await post(messagePayload('2348031234567', 'wamid.QUEUED'));
+
+    // The registry the deploy uses, not a test-local one.
+    expect(await buildRunner(workerDb, db).runOnce()).toBe(true);
+
+    // `unprocessedEvents` is the backlog. Empty means the loop closed.
+    expect(await events.unprocessedEvents(db, 'meta')).toHaveLength(0);
+    const [job] = await withBusiness(db, business.id, (tx) => jobsRepo.jobsForBusiness(tx));
+    expect(job).toMatchObject({ state: 'done' });
+  });
+
+  it('queues nothing for a stranger — there is no tenant to run as', async () => {
+    await post(messagePayload('2349099999999', 'wamid.STRANGER'));
+    // `jobs.business_id` is NOT NULL, so "run this for nobody" is not
+    // expressible. The event is still stored for the reply layer.
+    expect(await buildRunner(workerDb, db).runOnce()).toBe(false);
+  });
+
+  it('queues nothing for a delivery receipt — there is nothing to understand', async () => {
+    await seedMerchant('+2348031234567', 'Ada Fashion');
+    await post(statusPayload('2348031234567', 'wamid.SENT', 'delivered'));
+    expect(await buildRunner(workerDb, db).runOnce()).toBe(false);
+  });
+
+  it('queues ONE job when Meta delivers the same message eight times', async () => {
+    const business = await seedMerchant('+2348031234567', 'Ada Fashion');
+    await Promise.all(
+      Array.from({ length: 8 }, () => post(messagePayload('2348031234567', 'wamid.RETRIED'))),
+    );
+
+    // Two independent guards have to hold at once here: the unique index on
+    // (provider, external_id), and the singleton key on the job. Recording a
+    // sale twice is the failure this whole path exists to prevent.
+    const queued = await withBusiness(db, business.id, (tx) => jobsRepo.jobsForBusiness(tx));
+    expect(queued).toHaveLength(1);
   });
 });
 

@@ -77,16 +77,25 @@ export async function recordEvent(q: Queryable, event: IncomingEvent): Promise<R
   return { id: found.id, isNew: false };
 }
 
-/** Mark an event handled. Errors are recorded, not thrown away. */
+/**
+ * Mark an event handled. Errors are recorded, not thrown away.
+ *
+ * `businessId` is optional but callers holding a tenant pin should pass it.
+ * This table is outside row-level security by necessity — see the note at the
+ * top of the file — so it is the only place in the codebase where a stray id
+ * from a job payload could reach another tenant's row. The extra predicate
+ * costs nothing and puts the check back.
+ */
 export async function markProcessed(
   q: Queryable,
   id: string,
   error: string | null = null,
+  businessId?: string,
 ): Promise<void> {
-  await q
-    .update(externalEvents)
-    .set({ processedAt: new Date(), error })
-    .where(eq(externalEvents.id, id));
+  const scope = businessId
+    ? and(eq(externalEvents.id, id), eq(externalEvents.businessId, businessId))
+    : eq(externalEvents.id, id);
+  await q.update(externalEvents).set({ processedAt: new Date(), error }).where(scope);
 }
 
 /**

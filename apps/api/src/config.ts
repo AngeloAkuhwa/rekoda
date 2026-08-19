@@ -26,6 +26,14 @@ export interface ApiConfig {
   metaAppSecret: string;
   /** Echoed back during Meta's GET subscription handshake. */
   metaVerifyToken: string;
+  /**
+   * `rekoda_worker` credentials — the only role allowed to claim a job before
+   * its tenant is known (migration 0004). Null when this process is not a
+   * worker.
+   */
+  workerDatabaseUrl: string | null;
+  /** Whether this process polls the queue as well as serving requests. */
+  workerEnabled: boolean;
 }
 
 class ConfigError extends Error {}
@@ -47,6 +55,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     throw new ConfigError(
       'REKODA_REVEAL_OTP must never be set in production — it returns live OTP codes to any caller',
     );
+  }
+
+  const workerEnabled = env['REKODA_WORKER'] === '1';
+  if (workerEnabled && !env['WORKER_DATABASE_URL']) {
+    throw new ConfigError('REKODA_WORKER=1 requires WORKER_DATABASE_URL (the rekoda_worker role)');
   }
 
   return {
@@ -74,6 +87,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     metaVerifyToken: isProduction
       ? required(env, 'META_VERIFY_TOKEN', 16)
       : (env['META_VERIFY_TOKEN'] ?? ''),
+    /**
+     * No fallback to DATABASE_URL, deliberately. The obvious convenience —
+     * "use the app connection if no worker one is set" — would hand the runner
+     * a role with no cross-tenant claim policy, so the queue would appear
+     * permanently empty and jobs would pile up silently. Worse, in an
+     * environment where DATABASE_URL happens to be the owner, it would hand
+     * the runner BYPASSRLS. Absent means absent.
+     */
+    workerDatabaseUrl: env['WORKER_DATABASE_URL'] ?? null,
+    workerEnabled,
   };
 }
 
