@@ -47,7 +47,7 @@ correctness property, not a nicety, and it changes ladder B's priority:
 
 | Rung | Verification latency | Fit for counter defence |
 |---|---|---|
-| **B2 / 0013 — DVA + checkout webhooks** | **seconds** | ✅ **The only rung that works at the counter** |
+| **B2 / 0013 — per-transaction transfer accounts + checkout** (ADR 0016) | **seconds** | ✅ **The only rung that works at the counter** |
 | B0 — open banking (Mono) | minutes (real-time refresh is rate-limited to one per 5 min) | ❌ for the counter · ✅ for bookkeeping |
 | B1 — unregistered-tier virtual accounts | seconds | ✅ |
 

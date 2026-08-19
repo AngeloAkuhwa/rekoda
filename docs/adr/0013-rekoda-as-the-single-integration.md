@@ -1,7 +1,12 @@
 # 0013 — Rekoda as the single integration: platform-owned Paystack, merchant subaccounts
 
-**Status:** Proposed — **three of four questions now answered from Paystack's
-own documentation** (see §"What the documentation settles"). One blocking
+**Status:** Proposed — collection mechanism **corrected by
+[0016](0016-per-transaction-accounts-not-per-customer.md)**: per-*transaction*
+transfer accounts, not per-*customer* DVAs, because a dedicated account requires
+**BVN validation of the end customer** for our business category. The platform
+model (Rekoda's Paystack account, merchants as subaccounts) is unchanged; only
+the instrument is. **Three of four questions answered from Paystack's own
+documentation** (see §"What the documentation settles"). One blocking
 unknown remains, plus counsel.
 **Date:** 2026-08-19
 **Extends / likely reorders:** [0012](0012-integrate-without-cac.md) ladder B

@@ -16,9 +16,10 @@ money moves, and how Rekoda earns.
 Ada sells clothes on WhatsApp. She gives Rekoda **her phone number and her bank
 account number** — nothing else, no CAC, no Paystack signup, no paperwork. Rekoda
 puts her catalogue on a link she shares in WhatsApp. When Jennifer orders, Rekoda
-raises the invoice automatically, gives Jennifer **her own dedicated account
-number** to transfer into, and the second the money lands Rekoda tells Ada
-**"verified"** and issues the receipt. The money settles into Ada's own bank
+raises the invoice automatically and gives her **a temporary account number for
+that order**, and the second the money lands Rekoda tells Ada **"verified"** and
+issues the receipt. **Jennifer supplies nothing but a name, a phone number and a
+delivery note — no BVN, no ID, no signup** (ADR 0016). The money settles into Ada's own bank
 account. Ada never touched a pen. Rekoda earns from her **monthly
 subscription** — not from her sales.
 
@@ -80,8 +81,16 @@ Ada is a sub-merchant underneath it** (ADR 0013).
 queue, no display-name review, no waiting. It works the same afternoon.
 
 ### Step 6 · Payment details — automatic
-Nothing for Ada to do. Rekoda will issue a **dedicated bank account number per
-customer** under its own Paystack registration, splitting to Ada's subaccount.
+Nothing for Ada to do. For each order, Rekoda generates a **temporary bank
+account number for that transaction** under its own Paystack registration,
+splitting proceeds to Ada's subaccount.
+
+> **Why per-transaction and not per-customer** (ADR 0016): a *dedicated* account
+> is tied to a person, and for our business category Paystack requires **BVN
+> validation of that person** before issuing one. Jennifer is not going to
+> validate a BVN to buy a gown, and Rekoda has no business holding her BVN.
+> A per-transaction account needs none of that — **and attributes better**,
+> because it can tell two orders from the same customer apart.
 
 ### Step 7 · Activate
 ```
@@ -127,7 +136,7 @@ Enters name, phone, delivery note
    ↓
 Sees: "Transfer ₦105,000 to
        Wema Bank 7042318856
-       (Ada Fashion — Jennifer)"
+       — for this order, expires in 2 hours"
    ↓
 Transfers from her own bank app
 ```
@@ -138,10 +147,10 @@ Rekoda exists. **The shop is Ada's — Ada's name, Ada's logo.**
 | # | Event | Rekoda's action |
 |---|---|---|
 | 1 | Order submitted | `OrderPlaced` → creates Order, **Invoice INV-2026-000318**, receivable, inventory reservation, audit event |
-| 2 | Customer needs to pay | Assigns Jennifer a **dedicated NUBAN** (hers alone, reused on every future order), split → Ada's subaccount |
+| 2 | Customer needs to pay | Generates a **temporary account number for this invoice**, split → Ada's subaccount. No customer KYC, no BVN, nothing stored about Jennifer beyond what she typed |
 | 3 | Jennifer transfers | Paystack fires `charge.success`, `channel: "dedicated_nuban"` |
 | 4 | Webhook arrives | Signature → idempotency → tenant → `PaymentConfirmed` |
-| 5 | Matching | **Attribution is free** — the account the money arrived into *is* Jennifer. No guessing between two customers who owe ₦105,000 |
+| 5 | Matching | **Attribution is free** — the account the money arrived into *is* this invoice. No guessing between two customers who owe ₦105,000, and no confusion between two orders from Jennifer herself |
 | 6 | Reconciliation | Expected ₦105,000 = received ₦105,000 → **MATCHED** |
 | 7 | Posting | Invoice → PAID · **Receipt issued** · receivable → ₦0 · stock −3 · balanced ledger entries · audit |
 | 8 | Ada is told | *"✅ ₦105,000 received — verified. Jennifer, 12:41. Receipt RCP-2026-000201 sent."* |
@@ -269,6 +278,10 @@ Being straight about this is what stops churn in month two:
   straight to her GTBank number instead of the Rekoda-issued one, Rekoda cannot
   see it until she links that account (open banking), and even then it is minutes,
   not seconds — fine for books, **not** for the counter.
+* **The order's account number expires.** It is issued for that order and lapses
+  after a few hours. If the customer pays late, the invoice stays open and Ada
+  taps once for a fresh number — an expired number never means a cancelled
+  order.
 * **Products must be loaded once.** The team does it in the alpha; after that it
   is her job.
 * **Rekoda does not file her taxes.** These are management accounts. Nigeria's
@@ -285,11 +298,11 @@ Being straight about this is what stops churn in month two:
 ADA (once, ~15 min)                   JENNIFER (every order)
   phone → OTP                           opens rekoda.app/s/adafashion
   business name                         picks items → ₦105,000
-  bank account ──┐                      gets HER own account number
+  bank account ──┐                      gets an account number FOR THIS ORDER
   products       │                      transfers from her bank app
                  │                              │
                  ▼                              ▼
-        Paystack subaccount            Dedicated NUBAN (split → Ada)
+        Paystack subaccount        Temporary txn account (split → Ada)
                  └──────────────┬───────────────┘
                                 ▼
                      charge.success webhook

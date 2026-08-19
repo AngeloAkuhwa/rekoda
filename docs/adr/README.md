@@ -21,5 +21,6 @@ a new ADR that supersedes the old one.
 | [0013](0013-rekoda-as-the-single-integration.md) | Rekoda as the single integration: platform-owned Paystack, merchant subaccounts | Proposed |
 | [0014](0014-payment-verification-anti-fake-alert.md) | Payment verification as a product: the fake-alert defence | Accepted |
 | [0015](0015-full-books.md) | End-to-end books: trial balance, P&L, balance sheet, period close | Accepted |
+| [0016](0016-per-transaction-accounts-not-per-customer.md) | Per-transaction transfer accounts, not per-customer DVAs | Accepted |
 
 Template: [0000-template.md](0000-template.md)

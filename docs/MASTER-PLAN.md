@@ -418,6 +418,45 @@ Gumroad. In WhatsApp commerce, Flowcart and Wapikit (IN/BR) run the aggregator
 onboarding model — but they are commerce tools; none keeps a ledger or
 reconciles, so borrow the onboarding, not the product.*
 
+## ADR 0016 — Per-transaction transfer accounts, not per-customer DVAs · **Accepted**
+
+The question that caught this: *if Rekoda issues a bank account to Ada's
+customer, must Rekoda now inspect that customer?* **Yes — and it would have bitten
+badly.** A Paystack **Dedicated** Virtual Account is tied to a *person*: you
+create a customer record first, and for businesses in the **Betting, Financial
+services or General services** categories — which Rekoda plausibly falls in —
+**BVN validation of that customer is required**, with the validated name used to
+name the account.
+
+**Jennifer would have had to hand over her BVN to buy a gown.** Fatal three
+times: conversion dies, Rekoda ends up storing BVNs for people who are not its
+users, and Rekoda inherits a KYC/monitoring obligation over its merchants'
+customers — a payment institution's job, not a bookkeeping platform's.
+
+The rule this generalises to, and it is now a standing one:
+
+> **Rekoda's KYC boundary is the sub-merchant. Never the sub-merchant's
+> customers.**
+
+**Use Paystack "Pay with Transfer" instead** — a randomised, **temporary account
+generated per transaction**, invalid once paid or once `account_expires_at`
+lapses (15 min–8 hrs), enabled by default for Nigerian businesses. Better on
+every axis: **no customer KYC, no BVN to store, exact per-*transaction*
+attribution** (a per-customer account cannot separate two orders from the same
+buyer), same seconds-level verification — **and the ~1,000-account ceiling
+should not apply at all**, since transient accounts are not assigned. The
+question that was blocking ADR 0013 largely dissolves.
+
+New UX obligation: numbers expire. Set generous expiry, and when one lapses the
+invoice stays open with a one-tap **"get a fresh number"** — an expired number
+must never read as a cancelled order.
+
+*Confirm with Paystack, neither blocking: the fee rate for Pay with Transfer
+(DVA 1%/₦300 vs local 1.5%+₦100), and that per-transaction accounts carry
+`subaccount`/`split_code`. **Do not misdeclare Rekoda's business category to
+escape the stricter rule** — declare honestly and design within it, which is what
+this ADR does.*
+
 ## ADR 0014 — Payment verification as a product: the fake-alert defence · **Accepted**
 
 **Fake alerts** — a customer showing a forged or unrelated transfer alert at the

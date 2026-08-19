@@ -126,6 +126,9 @@ These are the ones that end the company rather than cost a sprint.
 | R22 | **Never show `VERIFIED` without a provider-confirmed event**, and never let silence read as verification. Three states always: `VERIFIED` · `RECORDED (not verified)` · `NOT SEEN`. One false green tick destroys the only thing the feature sells. |
 | R23 | **Never claim "Rekoda stops fraud."** Say "Rekoda confirms when money has actually arrived in your account." Rekoda cannot see a transfer to an account it does not observe, and the `NOT SEEN` state must be explained on the pricing page, not discovered mid-sale. |
 | R24 | **Never expose PII or a bare-sequential lookup on `/verify/{documentNumber}`.** Issuer, number, date, total, validity only — number **plus check token**, rate-limited, merchant-disableable. |
+| R25 | **Never take on KYC of a merchant's customers.** Rekoda's KYC boundary is the **sub-merchant**, full stop. Per-customer Dedicated Virtual Accounts require **BVN validation of the end customer** for our business category — so they are out of the retail path. Use **per-transaction** transfer accounts (ADR 0016). Any design that asks a shopper for identity documents is the wrong design. |
+| R26 | **Never store a customer's BVN.** There is no Rekoda feature that needs it. If one is ever proposed, it is a licensing and NDPA question before it is a product question. |
+| R27 | **Never misdeclare Rekoda's Paystack business category** to escape a stricter compliance rule. Declare honestly and design within whatever applies. |
 
 ## 3.3 Data
 
