@@ -35,6 +35,8 @@ export interface ConnectionRow {
   kycStatus: string;
   externalSubaccountId: string | null;
   settlementAccountLast4: string | null;
+  /** Who bears the provider's fee (§14). The booking honours this. */
+  feePolicy: string;
 }
 
 /**
@@ -77,6 +79,7 @@ export async function upsertConnection(
       kycStatus: paymentConnections.kycStatus,
       externalSubaccountId: paymentConnections.externalSubaccountId,
       settlementAccountLast4: paymentConnections.settlementAccountLast4,
+      feePolicy: paymentConnections.feePolicy,
     });
 
   const row = rows[0];
@@ -97,6 +100,7 @@ export async function connectionFor(
       kycStatus: paymentConnections.kycStatus,
       externalSubaccountId: paymentConnections.externalSubaccountId,
       settlementAccountLast4: paymentConnections.settlementAccountLast4,
+      feePolicy: paymentConnections.feePolicy,
     })
     .from(paymentConnections)
     .where(
@@ -161,6 +165,9 @@ export interface IntentRow {
   currency: string;
   businessId: string;
   invoiceId: string | null;
+  customerId: string | null;
+  /** Opaque checkout handle from the provider, when initialised. */
+  providerCheckoutRef: string | null;
 }
 
 /**
@@ -193,6 +200,8 @@ export async function createIntent(tx: TenantDb, input: IntentInput): Promise<In
         currency: paymentIntents.currency,
         businessId: paymentIntents.businessId,
         invoiceId: paymentIntents.invoiceId,
+        customerId: paymentIntents.customerId,
+        providerCheckoutRef: paymentIntents.providerCheckoutRef,
       });
     const row = rows[0];
     if (!row) throw new Error('createIntent: insert returned no row');
@@ -220,9 +229,48 @@ export async function intentByReference(
       currency: paymentIntents.currency,
       businessId: paymentIntents.businessId,
       invoiceId: paymentIntents.invoiceId,
+      customerId: paymentIntents.customerId,
+      providerCheckoutRef: paymentIntents.providerCheckoutRef,
     })
     .from(paymentIntents)
     .where(and(eq(paymentIntents.businessId, businessId), eq(paymentIntents.reference, reference)))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+/**
+ * The live intent already covering this invoice, if one exists.
+ *
+ * "Send her payment details" twice must reuse one reference, not mint a
+ * second — two live references for one obligation means the unmatched-payment
+ * queue the day the customer pays the older one.
+ */
+export async function liveIntentForInvoice(
+  tx: TenantDb,
+  businessId: string,
+  invoiceId: string,
+): Promise<IntentRow | null> {
+  const rows = await tx
+    .select({
+      id: paymentIntents.id,
+      reference: paymentIntents.reference,
+      status: paymentIntents.status,
+      expectedAmountK: paymentIntents.expectedAmountK,
+      currency: paymentIntents.currency,
+      businessId: paymentIntents.businessId,
+      invoiceId: paymentIntents.invoiceId,
+      customerId: paymentIntents.customerId,
+      providerCheckoutRef: paymentIntents.providerCheckoutRef,
+    })
+    .from(paymentIntents)
+    .where(
+      and(
+        eq(paymentIntents.businessId, businessId),
+        eq(paymentIntents.invoiceId, invoiceId),
+        not(inArray(paymentIntents.status, [...TERMINAL])),
+      ),
+    )
+    .orderBy(paymentIntents.createdAt)
     .limit(1);
   return rows[0] ?? null;
 }
@@ -249,6 +297,8 @@ export async function resolveIntentByReference(
       currency: paymentIntents.currency,
       businessId: paymentIntents.businessId,
       invoiceId: paymentIntents.invoiceId,
+      customerId: paymentIntents.customerId,
+      providerCheckoutRef: paymentIntents.providerCheckoutRef,
     })
     .from(paymentIntents)
     .where(eq(paymentIntents.reference, reference))

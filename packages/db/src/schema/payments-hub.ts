@@ -57,6 +57,8 @@ export const paymentConnections = pgTable(
     /** The §5 state machine. The CHECK constraint lives in the migration. */
     status: text('status').notNull().default('pending_details'),
     kycStatus: text('kyc_status').notNull().default('pending'),
+    /** Who bears the provider's fee (§14) — commercial choice, never code. */
+    feePolicy: text('fee_policy').notNull().default('merchant_bearing'),
     /** Provider capabilities as data, so adapters can differ (§7). */
     capabilities: jsonb('capabilities')
       .notNull()

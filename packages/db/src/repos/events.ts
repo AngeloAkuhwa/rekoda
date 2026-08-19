@@ -146,6 +146,75 @@ export async function unprocessedEvents(
     .limit(limit);
 }
 
+/**
+ * Events awaiting ATTRIBUTION — stored, unprocessed, and not yet resolved to a
+ * business. This is the payments pump's work list: resolving a payment
+ * reference to its intent is a cross-tenant read only the worker role can
+ * perform (`worker_resolve`, migration 0010), so these rows sit unattributed
+ * until that role looks at them.
+ */
+export async function unattributedEvents(
+  q: Queryable,
+  provider: IncomingEvent['provider'],
+  limit = 50,
+): Promise<Array<{ id: string; eventType: string; payload: unknown }>> {
+  return q
+    .select({
+      id: externalEvents.id,
+      eventType: externalEvents.eventType,
+      payload: externalEvents.payload,
+    })
+    .from(externalEvents)
+    .where(
+      and(
+        eq(externalEvents.provider, provider),
+        isNull(externalEvents.processedAt),
+        isNull(externalEvents.businessId),
+      ),
+    )
+    .orderBy(externalEvents.createdAt)
+    .limit(limit);
+}
+
+/**
+ * Attribute an event to the business its reference resolved to.
+ *
+ * The `business_id IS NULL` predicate makes attribution WRITE-ONCE: two pumps
+ * racing over the same event cannot re-point it, and nothing can ever move an
+ * event from one tenant to another. Returns false for the loser.
+ */
+export async function attributeEvent(
+  q: Queryable,
+  id: string,
+  businessId: string,
+): Promise<boolean> {
+  const rows = await q
+    .update(externalEvents)
+    .set({ businessId })
+    .where(and(eq(externalEvents.id, id), isNull(externalEvents.businessId)))
+    .returning({ id: externalEvents.id });
+  return rows.length === 1;
+}
+
+/** One event's processing outcome — the admin event log's core question. */
+export async function eventStatus(
+  q: Queryable,
+  id: string,
+): Promise<{ processed: boolean; error: string | null; businessId: string | null } | null> {
+  const rows = await q
+    .select({
+      processedAt: externalEvents.processedAt,
+      error: externalEvents.error,
+      businessId: externalEvents.businessId,
+    })
+    .from(externalEvents)
+    .where(eq(externalEvents.id, id))
+    .limit(1);
+  const row = rows[0];
+  if (!row) return null;
+  return { processed: row.processedAt != null, error: row.error, businessId: row.businessId };
+}
+
 /** Count of stored events, for the health surface. */
 export async function eventCount(q: Queryable): Promise<number> {
   const rows = await q.execute<{ n: number }>(sql`SELECT count(*)::int AS n FROM external_events`);

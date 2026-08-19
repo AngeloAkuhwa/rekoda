@@ -65,6 +65,8 @@ export interface ApiConfig {
    * non-payment deploy on a credential nobody has.
    */
   paystackSecretKey: string;
+  /** Overridden only by tests and sandboxes; production uses the default. */
+  paystackBaseUrl: string;
   /** Sends replies. Empty means replies are recorded but not delivered. */
   metaAccessToken: string;
   metaPhoneNumberId: string;
@@ -216,6 +218,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     aiCallsGlobalPerDay: Number(env['AI_DAILY_CALLS_GLOBAL'] ?? 5_000),
     planningFxNairaPerUsd: Number(env['PLANNING_FX_NGN_PER_USD'] ?? 1_450),
     paystackSecretKey: env['PAYSTACK_SECRET_KEY'] ?? '',
+    paystackBaseUrl: env['PAYSTACK_BASE_URL'] ?? 'https://api.paystack.co',
     metaAccessToken: env['META_ACCESS_TOKEN'] ?? '',
     metaPhoneNumberId: env['META_PHONE_NUMBER_ID'] ?? '',
     metaGraphVersion: env['META_GRAPH_VERSION'] ?? 'v21.0',

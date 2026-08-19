@@ -29,6 +29,7 @@ import { PrivacyGateway } from '../privacy/gateway.service.js';
 import { Interpreter } from '../ai/interpreter.service.js';
 import { StubTransport } from '../ai/transport.stub.js';
 import { StubSender } from '../channels/sender.stub.js';
+import { StubPaymentProvider } from '../payments/provider.stub.js';
 import { LocalStorage } from '../documents/r2.storage.js';
 import { ReplySender } from '../replies/reply.service.js';
 import { loadConfig, type ApiConfig } from '../config.js';
@@ -87,6 +88,7 @@ beforeAll(async () => {
     storage: new LocalStorage(storageRoot),
     sender: stubSender,
     config,
+    paymentProvider: new StubPaymentProvider(),
   };
 });
 

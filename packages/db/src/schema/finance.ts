@@ -111,10 +111,28 @@ export const payments = pgTable(
     providerRef: text('provider_ref'),
     sourceType: text('source_type').notNull(),
     sourceId: text('source_id'),
+    /* ── the verified-payment breakdown (payments-v1 §14–17, migration 0011).
+     * All nullable: merchant-RECORDED payments have no provider, no fee and
+     * no settlement, and zeros would blur RECORDED vs VERIFIED (ADR 0014). */
+    grossAmountK: kobo('gross_amount_k'),
+    providerFeeK: kobo('provider_fee_k'),
+    platformFeeK: kobo('platform_fee_k'),
+    settlementAmountK: kobo('settlement_amount_k'),
+    rekodaReference: text('rekoda_reference'),
+    providerType: text('provider_type'),
+    paymentIntentId: uuid('payment_intent_id'),
+    /** The provider's native status verbatim, for audit — never trusted. */
+    providerStatus: text('provider_status'),
+    status: text('status'), // pending|processing|confirmed|failed|reversed|refunded|partially_refunded
+    settlementStatus: text('settlement_status'),
     createdAt: createdAt(),
   },
   (t) => [
     uniqueIndex('payments_provider_ref_ux').on(t.businessId, t.providerRef),
+    // One verified payment per Rekoda reference (see migration 0011).
+    uniqueIndex('payments_rekoda_reference_ux')
+      .on(t.businessId, t.rekodaReference)
+      .where(sql`rekoda_reference IS NOT NULL`),
     /**
      * The reconciliation queue: unverified payments for one business.
      *

@@ -170,6 +170,52 @@ export function postPurchase(args: {
   return posting;
 }
 
+/**
+ * A provider-confirmed payment settling an outstanding receivable
+ * (payments-v1 §15, §23).
+ *
+ * The amount posted is the ALLOCATED amount — the portion that settles the
+ * invoice — never the gross. Fees never touch SALES_REVENUE, which was already
+ * recognised in full when the sale was issued; the only question here is what
+ * reaches the bank and what the collection cost.
+ *
+ *   merchant_bearing:  bank gets allocated − fee, the fee is an operating
+ *                      expense, and the receivable clears in full;
+ *   customer_bearing:  the customer paid the fee on top, so it never enters
+ *                      the merchant's books at all;
+ *   platform_bearing:  Rekoda absorbed it — same shape as customer_bearing
+ *                      from the merchant's side.
+ *
+ * A fee larger than the payment it collected is a data error, not a posting.
+ */
+export function postProviderPayment(args: {
+  memo: string;
+  allocatedK: Kobo;
+  providerFeeK?: Kobo;
+  feePolicy?: 'customer_bearing' | 'merchant_bearing' | 'platform_bearing';
+}): Posting {
+  const feeK = args.providerFeeK ?? 0;
+  const policy = args.feePolicy ?? 'merchant_bearing';
+  if (args.allocatedK <= 0 || feeK < 0) {
+    throw new UnbalancedPostingError(args.memo, args.allocatedK, feeK);
+  }
+
+  const lines: LedgerLine[] = [];
+  if (policy === 'merchant_bearing' && feeK > 0) {
+    const settlementK = args.allocatedK - feeK;
+    if (settlementK < 0) throw new UnbalancedPostingError(args.memo, args.allocatedK, feeK);
+    if (settlementK > 0) lines.push(line('BANK_PAYSTACK', settlementK, 0));
+    lines.push(line('EXPENSES', feeK, 0));
+  } else {
+    lines.push(line('BANK_PAYSTACK', args.allocatedK, 0));
+  }
+  lines.push(line('ACCOUNTS_RECEIVABLE', 0, args.allocatedK));
+
+  const posting = { memo: args.memo, lines };
+  assertBalanced(posting);
+  return posting;
+}
+
 /** Reversing posting — the ONLY way to correct: never edit, always reverse. */
 export function reversal(original: Posting, memo: string): Posting {
   const posting: Posting = {

@@ -1,0 +1,75 @@
+import type {
+  InitializeTransactionInput,
+  InitializeTransactionResult,
+  PaymentProviderPort,
+  VerifiedTransaction,
+  VerifyTransactionResult,
+} from './provider.port.js';
+
+/**
+ * A provider that answers from a script instead of an API.
+ *
+ * The processing job's whole safety story is "the webhook is a hint; verify
+ * is the truth" — so the tests need to control what the truth SAYS,
+ * independently of what the webhook claimed. A stub keyed by reference is
+ * exactly that control.
+ */
+export class StubPaymentProvider implements PaymentProviderPort {
+  readonly providerType = 'paystack';
+  readonly initialized: InitializeTransactionInput[] = [];
+  private readonly verifications = new Map<string, VerifiedTransaction>();
+  private failVerify: Error | null = null;
+
+  /** Script the authoritative answer for one reference. */
+  willVerify(reference: string, overrides: Partial<VerifiedTransaction> = {}): void {
+    this.verifications.set(reference, {
+      succeeded: true,
+      reference,
+      amountK: 0,
+      currency: 'NGN',
+      providerStatus: 'success',
+      providerTransactionId: `stub-${this.verifications.size + 1}`,
+      providerFeeK: 0,
+      method: 'transfer',
+      paidAtIso: null,
+      ...overrides,
+    });
+  }
+
+  /** Make the next verify call fail, as a provider outage would. */
+  failNextVerifyWith(error: Error): void {
+    this.failVerify = error;
+  }
+
+  reset(): void {
+    this.initialized.length = 0;
+    this.verifications.clear();
+    this.failVerify = null;
+  }
+
+  initializeTransaction(input: InitializeTransactionInput): Promise<InitializeTransactionResult> {
+    if (!input.customerEmail) {
+      return Promise.resolve({
+        state: 'requires_customer_information',
+        missing: ['email'],
+      });
+    }
+    this.initialized.push(input);
+    return Promise.resolve({
+      state: 'initialized',
+      checkoutUrl: `https://checkout.stub/${input.reference}`,
+      accessCode: `AC_${input.reference}`,
+    });
+  }
+
+  verifyTransaction(reference: string): Promise<VerifyTransactionResult> {
+    if (this.failVerify) {
+      const error = this.failVerify;
+      this.failVerify = null;
+      return Promise.reject(error);
+    }
+    const transaction = this.verifications.get(reference);
+    if (!transaction) return Promise.resolve({ found: false });
+    return Promise.resolve({ found: true, transaction });
+  }
+}
