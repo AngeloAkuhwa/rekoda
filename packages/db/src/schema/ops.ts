@@ -239,3 +239,32 @@ export const aiGlobalCounters = pgTable('ai_global_counters', {
   day: date('day').primaryKey(),
   calls: integer('calls').notNull().default(0),
 });
+
+/**
+ * The model's interpretation of one message, before anybody agrees to it
+ * (CG2, CG5). A draft is not a document: no number, no ledger entry, nothing
+ * a customer can be shown. `command` holds tokenised content only.
+ */
+export const commandDrafts = pgTable(
+  'command_drafts',
+  {
+    id: id(),
+    businessId: businessId(),
+    conversationMessageId: uuid('conversation_message_id')
+      .notNull()
+      .references(() => conversationMessages.id),
+    intent: text('intent').notNull(),
+    command: jsonb('command').notNull(),
+    model: text('model'),
+    /** pending | superseded | confirmed | abandoned */
+    state: text('state').notNull().default('pending'),
+    createdAt: createdAt(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // One draft per message — a job that runs twice must not give the merchant
+    // two previews of one sale.
+    uniqueIndex('command_drafts_message_ux').on(t.conversationMessageId),
+    index('command_drafts_business_state_ix').on(t.businessId, t.state),
+  ],
+);

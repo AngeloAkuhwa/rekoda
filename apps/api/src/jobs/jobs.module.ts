@@ -9,6 +9,8 @@ import {
 import { createDb, type Db } from '@rekoda/db';
 import { CONFIG, type ApiConfig } from '../config.js';
 import { DB } from '../db/db.module.js';
+import { AiModule } from '../ai/ai.module.js';
+import { Interpreter } from '../ai/interpreter.service.js';
 import { PrivacyGateway } from '../privacy/gateway.service.js';
 import { JobQueue, JobKind } from './queue.service.js';
 import { JobRunner } from './runner.js';
@@ -52,6 +54,7 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
     @Inject(CONFIG) private readonly config: ApiConfig,
     @Inject(DB) private readonly appDb: Db,
     @Inject(PrivacyGateway) private readonly gateway: PrivacyGateway,
+    @Inject(Interpreter) private readonly interpreter: Interpreter,
   ) {}
 
   onModuleInit(): void {
@@ -65,6 +68,7 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
     this.closeWorkerDb = handle.close;
     this.runner = buildRunner(handle.db, this.appDb, {
       gateway: this.gateway,
+      interpreter: this.interpreter,
       config: this.config,
     });
     this.runner.start();
@@ -77,6 +81,7 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
 }
 
 @Module({
+  imports: [AiModule],
   providers: [JobQueue, JobRunnerLifecycle, PrivacyGateway],
   exports: [JobQueue, PrivacyGateway],
 })

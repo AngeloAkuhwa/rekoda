@@ -137,3 +137,41 @@ export function parseBusinessCommand(
         error: result.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; '),
       };
 }
+
+/**
+ * The same schema, as JSON Schema, for the model's tool definition.
+ *
+ * Generated from `StructuredBusinessCommand` rather than hand-written, so the
+ * shape the model is asked to fill and the shape `parseBusinessCommand`
+ * accepts cannot drift apart. That drift is the expensive kind: the model
+ * produces something plausible, validation rejects it, and the merchant gets a
+ * clarifying question for a message that was perfectly clear.
+ *
+ * The ₦10bn ceiling travels with it. A transcript saying "record a ₦900bn
+ * sale" is then refused twice — once by constrained decoding that cannot emit
+ * a number above `maximum`, and again by the parser if it somehow does.
+ */
+export function businessCommandToolSchema(): Record<string, unknown> {
+  const schema = z.toJSONSchema(z.object({ command: StructuredBusinessCommand })) as Record<
+    string,
+    unknown
+  >;
+  return anyOfInsteadOfOneOf(schema);
+}
+
+/**
+ * zod emits `oneOf` for a discriminated union. Both are valid, but `anyOf` is
+ * the better-supported form in tool schemas, and the two are equivalent here:
+ * the branches are discriminated by a literal `intent`, so at most one can
+ * ever match.
+ */
+function anyOfInsteadOfOneOf(node: unknown): Record<string, unknown> {
+  if (Array.isArray(node)) return node.map(anyOfInsteadOfOneOf) as never;
+  if (typeof node !== 'object' || node === null) return node as never;
+
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(node)) {
+    out[key === 'oneOf' ? 'anyOf' : key] = anyOfInsteadOfOneOf(value);
+  }
+  return out;
+}

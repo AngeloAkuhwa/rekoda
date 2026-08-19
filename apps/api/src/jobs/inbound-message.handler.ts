@@ -3,12 +3,14 @@ import { routeMessage, type DeterministicIntent } from '@rekoda/core';
 import { extractInboundEvents, metaWebhookBody } from '@rekoda/contracts';
 import { conversationsRepo, events } from '@rekoda/db';
 import type { ApiConfig } from '../config.js';
+import type { Interpreter } from '../ai/interpreter.service.js';
 import type { PrivacyGateway } from '../privacy/gateway.service.js';
 import { openPayload } from '../privacy/payload-vault.js';
 import type { JobContext, JobHandler } from './runner.js';
 
 export interface InboundMessageDeps {
   gateway: PrivacyGateway;
+  interpreter: Interpreter;
   config: ApiConfig;
 }
 
@@ -69,18 +71,45 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
      * person to touch this file would reasonably follow it. The classification
      * is also what the reply layer actually reads.
      */
-    const stored =
-      route.route === 'deterministic'
-        ? describeIntent(route.intent)
-        : (await deps.gateway.tokenise(businessId, text)).text;
+    const safeText =
+      route.route === 'deterministic' ? null : (await deps.gateway.tokenise(businessId, text)).text;
 
-    await conversationsRepo.recordInbound(tx, {
+    const message = await conversationsRepo.recordInbound(tx, {
       businessId,
       channel: 'meta',
       kind: 'text',
-      body: stored,
+      body: route.route === 'deterministic' ? describeIntent(route.intent) : safeText,
       providerMessageId: inbound.externalId,
     });
+
+    /**
+     * Only messages the deterministic layer could not answer reach a model,
+     * and only ones we have not already interpreted. `isNew` is what stops a
+     * re-run — a reclaimed job, a redelivered webhook — from paying for the
+     * same sentence twice.
+     */
+    if (safeText !== null && message.isNew) {
+      const interpreted = await deps.interpreter.interpret(businessId, safeText);
+      if (interpreted.outcome === 'command') {
+        await conversationsRepo.recordDraft(tx, {
+          businessId,
+          conversationMessageId: message.id,
+          intent: interpreted.command.intent,
+          command: interpreted.command,
+          model: deps.config.aiModelDefault,
+        });
+      } else {
+        /**
+         * Refused by a ceiling, unusable output, or a provider we could not
+         * reach. All three end the same way for now: the message is on record
+         * and no draft exists, so nothing half-understood can be confirmed.
+         * Turning each into the right sentence for the merchant is the reply
+         * layer's job — §5.3.3's "degrading gracefully with an honest
+         * message", which needs somewhere to say it.
+         */
+        log.warn(`no draft for this message: ${interpreted.outcome}`);
+      }
+    }
 
     await events.markProcessed(tx, eventId, null, businessId);
     log.debug(`recorded an inbound message routed as ${route.route}`);

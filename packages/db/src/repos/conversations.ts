@@ -11,7 +11,7 @@
  */
 import { and, eq, sql } from 'drizzle-orm';
 import type { TenantDb } from '../client.js';
-import { conversationMessages, conversations } from '../schema/ops.js';
+import { commandDrafts, conversationMessages, conversations } from '../schema/ops.js';
 
 export type Channel = 'meta' | 'twilio' | 'simulator';
 export type Direction = 'inbound' | 'outbound';
@@ -131,4 +131,72 @@ export async function messagesFor(
 export async function threadCount(tx: TenantDb): Promise<number> {
   const rows = await tx.execute<{ n: number }>(sql`SELECT count(*)::int AS n FROM conversations`);
   return [...rows][0]?.n ?? 0;
+}
+
+export interface DraftInput {
+  businessId: string;
+  conversationMessageId: string;
+  intent: string;
+  /** Tokenised content only — this is verbatim what the model produced. */
+  command: unknown;
+  model: string | null;
+}
+
+export interface DraftRow {
+  id: string;
+  intent: string;
+  state: string;
+  command: unknown;
+}
+
+/**
+ * Store what the model understood, once per message.
+ *
+ * `ON CONFLICT DO NOTHING` against `command_drafts_message_ux`: a job that
+ * runs twice — a reclaimed lock, a re-enqueued delivery — must not produce two
+ * drafts, or the merchant gets two previews of one sale and CG3's "exactly one
+ * document" has two things to choose between.
+ */
+export async function recordDraft(
+  tx: TenantDb,
+  draft: DraftInput,
+): Promise<{ id: string; isNew: boolean }> {
+  const inserted = await tx
+    .insert(commandDrafts)
+    .values({
+      businessId: draft.businessId,
+      conversationMessageId: draft.conversationMessageId,
+      intent: draft.intent,
+      command: draft.command as never,
+      model: draft.model,
+    })
+    .onConflictDoNothing({ target: [commandDrafts.conversationMessageId] })
+    .returning({ id: commandDrafts.id });
+
+  const created = inserted[0];
+  if (created) return { id: created.id, isNew: true };
+
+  const existing = await tx
+    .select({ id: commandDrafts.id })
+    .from(commandDrafts)
+    .where(eq(commandDrafts.conversationMessageId, draft.conversationMessageId))
+    .limit(1);
+
+  const row = existing[0];
+  if (!row) throw new Error('recordDraft: conflict reported but no existing draft found');
+  return { id: row.id, isNew: false };
+}
+
+/** A business's own drafts, newest last. */
+export async function draftsFor(tx: TenantDb, businessId: string): Promise<DraftRow[]> {
+  return tx
+    .select({
+      id: commandDrafts.id,
+      intent: commandDrafts.intent,
+      state: commandDrafts.state,
+      command: commandDrafts.command,
+    })
+    .from(commandDrafts)
+    .where(eq(commandDrafts.businessId, businessId))
+    .orderBy(commandDrafts.createdAt);
 }
