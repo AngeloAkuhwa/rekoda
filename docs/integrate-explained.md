@@ -75,7 +75,7 @@ Ada is a sub-merchant underneath it** (ADR 0013).
 |---|---|---|
 | **No catalogue yet** *(most vendors)* | Rekoda hosts her shop at **`rekoda.app/s/adafashion`** | Sends photos + prices. **In the alpha, the Rekoda team loads them for her.** |
 | **Already has a WhatsApp Business catalogue** | She keeps it, and **forwards order messages** to Rekoda | One forward per order |
-| **Has CAC + Meta verification** | Native WABA catalogue — orders arrive automatically | Nothing, after setup |
+| **Has CAC + Meta verification** | Native WABA catalogue — orders arrive automatically (**§6b**) | Nothing, after setup |
 
 **Door 1 is the default**, and it is better for Rekoda too: no Meta approval
 queue, no display-name review, no waiting. It works the same afternoon.
@@ -229,6 +229,63 @@ settings, never deletions — and Excel exports of everything. That accountant i
 also a growth channel: one accountant typically brings 10–30 merchants.
 
 ---
+
+## 6b. The WABA upgrade — for merchants who have CAC (ADR 0012 rung A2)
+
+**This is the upgrade, not the mainline.** Everything above works with no Meta
+involvement at all. This section is what a *registered* merchant gets if she
+wants orders to originate inside WhatsApp's own catalogue UI rather than a
+Rekoda link.
+
+### What she must clear first — four external gates
+| Gate | Who decides | Needs CAC? |
+|---|---|---|
+| Meta business verification | Meta | **Yes** — a utility bill alone is not accepted |
+| Display-name review | Meta | Follows verification |
+| Catalogue approval | Meta Commerce Manager | — |
+| Payment setup | Paystack | Already done in Step 4 |
+
+Until verification passes she is capped at **250 unique customers / 24 hrs** on
+**two numbers**, and her **business name is not visible** — customers see a phone
+number. Unverified accounts also face deactivation after roughly 30 days. That
+is why this is an upgrade for the registered, not a path for everyone.
+
+### How Rekoda connects it
+**Embedded Signup** — one Meta-hosted popup. She logs in with Facebook, picks or
+creates her WhatsApp Business Account, and Rekoda becomes her **Tech Provider**:
+she owns the WABA, Rekoda manages it. **Rekoda connects to Meta Cloud API
+directly — Twilio is optional** (ADR 0017; Twilio's ~₦7.25/message surcharge is
+~29% of the Integrate plan).
+
+### Catalogue mapping
+Her products live in **Meta Commerce Manager**. Rekoda maps them both ways:
+
+```
+RekodaProductId  ↔  product_retailer_id   (her SKU in Meta's catalogue)
+```
+
+Price and stock changes flow from Rekoda outward, so the ledger and the shopfront
+never disagree.
+
+### The order arrives
+A customer browses her catalogue in WhatsApp, adds to cart, and sends the order.
+Meta delivers a webhook containing an `order` object:
+
+```
+order
+├── catalog_id
+└── product_items[]
+    ├── product_retailer_id   → mapped to RekodaProductId
+    ├── quantity
+    └── item_price
+```
+
+Rekoda resolves each `product_retailer_id` to its own product, **recomputes the
+totals itself** (never trusting `item_price` from the wire), and from there the
+path is **identical to §4** — `OrderPlaced` → invoice → per-transaction transfer
+account → verified payment → receipt → stock → ledger.
+
+**One pipeline, two doors.** The catalogue is just another way an order enters.
 
 ## 7. How Rekoda makes money
 

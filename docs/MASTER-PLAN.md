@@ -437,6 +437,40 @@ Gumroad. In WhatsApp commerce, Flowcart and Wapikit (IN/BR) run the aggregator
 onboarding model — but they are commerce tools; none keeps a ledger or
 reconciles, so borrow the onboarding, not the product.*
 
+## ADR 0017 — Meta-direct for Integrate too; Twilio optional · **Accepted**
+
+ADR 0002 kept **Twilio's Tech Provider programme for Integrate**; ADR 0011
+superseded 0002's economics but left that channel decision standing. It no longer
+survives the numbers.
+
+**Meta's own Tech Provider programme does the multi-tenant job directly** —
+tech providers use **Embedded Signup** to onboard customers and **manage their
+WABAs** with no BSP in between, and since **April 2026 Embedded Signup is the
+default path** for all new onboardings. Tech Provider enrolment is **mandatory
+for ISVs regardless**, so Rekoda enrols either way.
+
+And Twilio's **~₦7.25/message each way sits on top of Meta's own fees**:
+
+```
+800 messages × ₦7.25       ≈ ₦5,800 / merchant / month
+share of the ₦19,900 plan  ≈ 29% of revenue
+at 100 Integrate merchants ≈ ₦580,000 / month — an engineer
+```
+
+**Decision:** Rekoda enrols as a Meta Tech Provider and runs Integrate on the
+**same Meta-direct channel layer Chat already uses**. Twilio stays behind a flag.
+During the 5–10 merchant alpha the surcharge is ~₦58,000/month — trivial, so use
+whichever is faster; **the switch matters by ~30–50 Integrate merchants**, and the
+channel layer must make it an env var, not a project.
+
+**What Rekoda must build that Twilio would have supplied:** per-WABA encrypted
+credential storage and rotation; **webhook routing by WABA/phone-number ID**,
+which resolves *before* the privacy gateway and gets RLS-grade fail-closed
+treatment because a mis-routed webhook is a cross-tenant leak; per-merchant
+template state; number registration and health in admin. And **Meta support is
+materially worse than Twilio's** — budget for slower resolution when a merchant's
+number breaks.
+
 ## ADR 0016 — Per-transaction transfer accounts, not per-customer DVAs · **Accepted**
 
 The question that caught this: *if Rekoda issues a bank account to Ada's
