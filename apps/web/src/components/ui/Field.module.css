@@ -1,0 +1,17 @@
+.field {
+  display: grid;
+  gap: var(--rk-space-2);
+}
+.label {
+  font-weight: 600;
+  font-size: var(--rk-text-sm);
+}
+.hint {
+  font-size: var(--rk-text-sm);
+  color: var(--rk-text-muted);
+}
+.error {
+  font-size: var(--rk-text-sm);
+  color: var(--rk-danger);
+  font-weight: 500;
+}

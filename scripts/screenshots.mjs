@@ -19,9 +19,17 @@ const VIEWPORTS = [
   { label: 'mobile', width: 390, height: 900 },
   { label: 'desktop', width: 1280, height: 1150 },
 ];
+/** Every page ships a screenshot — onboarding included, since that is the
+ *  flow most likely to break at 390px. Steps carry the query param their
+ *  guard requires, otherwise they redirect to /start. */
+const DEMO_PHONE = encodeURIComponent('+2348031234567');
 const ROUTES = [
   { name: 'home', path: '/' },
   { name: 'pricing', path: '/pricing' },
+  { name: 'onboard-1-start', path: '/start' },
+  { name: 'onboard-2-verify', path: `/verify?phone=${DEMO_PHONE}` },
+  { name: 'onboard-3-business', path: `/setup/business?phone=${DEMO_PHONE}` },
+  { name: 'onboard-4-complete', path: '/setup/complete?name=Ada%20Fashion' },
 ];
 
 await mkdir(OUT, { recursive: true });

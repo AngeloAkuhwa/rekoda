@@ -1,0 +1,70 @@
+.wrap {
+  margin-bottom: var(--rk-space-6);
+}
+.list {
+  display: flex;
+  gap: var(--rk-space-2);
+  list-style: none;
+  padding: 0;
+  /* Four steps must survive 360px — the labels hide, the dots never do. */
+  flex-wrap: nowrap;
+}
+.step {
+  display: flex;
+  align-items: center;
+  gap: var(--rk-space-2);
+  font-size: var(--rk-text-sm);
+  color: var(--rk-text-muted);
+  min-width: 0;
+}
+.step + .step::before {
+  content: '';
+  width: var(--rk-space-4);
+  height: 1px;
+  background: var(--rk-border);
+  flex-shrink: 0;
+}
+.dot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--rk-radius-full);
+  border: 1px solid var(--rk-border);
+  font-size: var(--rk-text-xs);
+  font-weight: 600;
+  flex-shrink: 0;
+}
+.label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* Upcoming steps. Without this rule `styles['todo']` was undefined and every
+   future step rendered class="… undefined". */
+.todo {
+  color: var(--rk-text-muted);
+}
+.todo .dot {
+  opacity: 0.75;
+}
+
+.done .dot {
+  background: var(--rk-verified);
+  border-color: var(--rk-verified);
+  color: var(--rk-on-accent);
+}
+.current .dot {
+  border-color: var(--rk-accent);
+  color: var(--rk-accent);
+}
+.current .label {
+  color: var(--rk-text);
+  font-weight: 600;
+}
+@media (max-width: 560px) {
+  .step:not(.current) .label {
+    display: none;
+  }
+}
