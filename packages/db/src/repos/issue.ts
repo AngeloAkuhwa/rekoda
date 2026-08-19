@@ -18,11 +18,11 @@
  * of its own, so "all of it or none of it" is the caller's transaction, not a
  * property this file has to remember to preserve.
  */
-import { eq, sql } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { formatDocumentNumber, postSale, type Posting } from '@rekoda/core';
 import { snapshotHash, type DocumentSnapshot } from '@rekoda/core/documents';
 import type { TenantDb } from '../client.js';
-import { auditEvents } from '../schema/ops.js';
+import { auditEvents, documents } from '../schema/ops.js';
 import {
   invoiceItems,
   invoices,
@@ -319,4 +319,85 @@ export async function ledgerEntriesFor(
 export async function invoiceCount(tx: TenantDb): Promise<number> {
   const rows = await tx.execute<{ n: number }>(sql`SELECT count(*)::int AS n FROM invoices`);
   return [...rows][0]?.n ?? 0;
+}
+
+export interface DocumentRecord {
+  businessId: string;
+  kind: string;
+  storageKey: string;
+  refNumber: string | null;
+  bytes: number;
+}
+
+/**
+ * Record a rendered artefact. The KEY, never the blob (ADR 0006).
+ *
+ * `documents_storage_ux` makes the key unique, so a job that runs twice cannot
+ * leave two rows pointing at one object — and because each render generates a
+ * fresh unguessable key, a genuine re-render is a new row rather than a
+ * silent overwrite of the document a customer may already be holding.
+ */
+export async function recordDocument(
+  tx: TenantDb,
+  record: DocumentRecord,
+): Promise<{ id: string }> {
+  const rows = await tx
+    .insert(documents)
+    .values({
+      businessId: record.businessId,
+      kind: record.kind,
+      storageKey: record.storageKey,
+      refNumber: record.refNumber,
+      bytes: record.bytes,
+    })
+    .returning({ id: documents.id });
+
+  const row = rows[0];
+  if (!row) throw new Error('recordDocument: insert returned no row');
+  return { id: row.id };
+}
+
+export interface StoredDocument {
+  id: string;
+  kind: string;
+  storageKey: string;
+  refNumber: string | null;
+  bytes: number | null;
+}
+
+/** A business's own documents. Row-level security does the scoping. */
+export async function documentsFor(tx: TenantDb, businessId: string): Promise<StoredDocument[]> {
+  return tx
+    .select({
+      id: documents.id,
+      kind: documents.kind,
+      storageKey: documents.storageKey,
+      refNumber: documents.refNumber,
+      bytes: documents.bytes,
+    })
+    .from(documents)
+    .where(eq(documents.businessId, businessId))
+    .orderBy(documents.createdAt);
+}
+
+/** One invoice, for the renderer. Everything it needs and nothing it does not. */
+export async function invoiceForRender(
+  tx: TenantDb,
+  businessId: string,
+  invoiceId: string,
+): Promise<{
+  invoiceNumber: string;
+  issuedAt: Date;
+  snapshot: unknown;
+} | null> {
+  const rows = await tx
+    .select({
+      invoiceNumber: invoices.invoiceNumber,
+      issuedAt: invoices.issuedAt,
+      snapshot: invoices.snapshotJson,
+    })
+    .from(invoices)
+    .where(and(eq(invoices.businessId, businessId), eq(invoices.id, invoiceId)))
+    .limit(1);
+  return rows[0] ?? null;
 }

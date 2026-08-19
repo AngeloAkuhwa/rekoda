@@ -17,15 +17,18 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { LogLevel, LoggerService } from '@nestjs/common';
 import { createDb, identity, type Db } from '@rekoda/db';
 import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { PrivacyGateway } from '../privacy/gateway.service.js';
 import { Interpreter } from '../ai/interpreter.service.js';
 import { StubTransport } from '../ai/transport.stub.js';
 import { StubSender } from '../channels/sender.stub.js';
+import { LocalStorage } from '../documents/r2.storage.js';
 import { ReplySender } from '../replies/reply.service.js';
-import { buildRunner } from '../jobs/jobs.module.js';
+import { buildRunner, type RunnerDeps } from '../jobs/jobs.module.js';
 import { loadConfig, type ApiConfig } from '../config.js';
-import type { InboundMessageDeps } from '../jobs/inbound-message.handler.js';
 
 /** Everything the application tried to write, whatever the level. */
 class CapturingLogger implements LoggerService {
@@ -55,6 +58,9 @@ const CUSTOMER_PHONE = '08039998888';
 const CUSTOMER_EMAIL = 'adaeze.okonkwo@example.com';
 const MESSAGE_TEXT = `Adaeze Okonkwo ${CUSTOMER_PHONE} ${CUSTOMER_EMAIL} bought 3 chiffon wrappers for 150k`;
 
+/** A fresh directory per run, so one suite cannot read another's documents. */
+const storageRoot = mkdtempSync(join(tmpdir(), 'rekoda-docs-'));
+
 let urls: Urls;
 let app: NestFastifyApplication;
 let db: Db;
@@ -62,7 +68,7 @@ let workerDb: Db;
 let closeDb: () => Promise<void>;
 let closeWorkerDb: () => Promise<void>;
 let logger: CapturingLogger;
-let deps: InboundMessageDeps;
+let deps: RunnerDeps;
 let stubTransport: StubTransport;
 
 beforeAll(async () => {
@@ -105,6 +111,9 @@ beforeAll(async () => {
     gateway: new PrivacyGateway(db, config),
     interpreter: new Interpreter(db, config, stubTransport),
     replySender: new ReplySender(config, new StubSender()),
+    // A real filesystem storage, not a mock: the render job's assertions are
+    // about bytes actually landing somewhere and being readable back.
+    storage: new LocalStorage(storageRoot),
     config,
   };
 });

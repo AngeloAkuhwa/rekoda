@@ -9,7 +9,7 @@ import {
 } from '@rekoda/core';
 import { extractInboundEvents, metaWebhookBody } from '@rekoda/contracts';
 import type { StructuredBusinessCommand } from '@rekoda/contracts';
-import { conversationsRepo, events, issueRepo, type TenantDb } from '@rekoda/db';
+import { conversationsRepo, events, issueRepo, jobsRepo, type TenantDb } from '@rekoda/db';
 import type { ApiConfig } from '../config.js';
 import type { Interpreter } from '../ai/interpreter.service.js';
 import type { PrivacyGateway } from '../privacy/gateway.service.js';
@@ -219,6 +219,23 @@ async function confirmPendingDraft(tx: TenantDb, businessId: string): Promise<Re
     sourceType: 'chat',
     sourceId: draft.id,
     actor: 'system',
+  });
+
+  /**
+   * Enqueued INSIDE the same transaction as the sale (MASTER-PLAN §5.3.5 step
+   * 9). The invoice and "render its PDF" commit together, so there is no
+   * window where a document exists that nothing will ever produce paper for —
+   * and a rollback takes the job with it rather than leaving one pointing at
+   * an invoice that was never issued.
+   *
+   * The singleton key is the invoice id: a re-enqueue cannot produce two PDFs
+   * with two storage keys for one sale.
+   */
+  await jobsRepo.enqueue(tx, {
+    businessId,
+    kind: 'document.render',
+    payload: { invoiceId: issued.invoiceId },
+    singletonKey: issued.invoiceId,
   });
 
   return replies.issued(issued.invoiceNumber, money.totalK, money.balanceDueK);

@@ -20,19 +20,25 @@ import {
   type Db,
 } from '@rekoda/db';
 import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
-import { buildRunner } from '../jobs/jobs.module.js';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { buildRunner, type RunnerDeps } from '../jobs/jobs.module.js';
 import { issueRepo } from '@rekoda/db';
 import { PrivacyGateway } from '../privacy/gateway.service.js';
 import { Interpreter } from '../ai/interpreter.service.js';
 import { StubTransport } from '../ai/transport.stub.js';
 import { StubSender } from '../channels/sender.stub.js';
+import { LocalStorage } from '../documents/r2.storage.js';
 import { ReplySender } from '../replies/reply.service.js';
 import { loadConfig, type ApiConfig } from '../config.js';
-import type { InboundMessageDeps } from '../jobs/inbound-message.handler.js';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 
 const APP_SECRET = 'meta-app-secret-for-tests';
 const VERIFY_TOKEN = 'meta-verify-token-for-tests';
+
+/** A fresh directory per run, so one suite cannot read another's documents. */
+const storageRoot = mkdtempSync(join(tmpdir(), 'rekoda-docs-'));
 
 let urls: Urls;
 let app: NestFastifyApplication;
@@ -40,7 +46,7 @@ let db: Db;
 let workerDb: Db;
 let closeDb: () => Promise<void>;
 let closeWorkerDb: () => Promise<void>;
-let deps: InboundMessageDeps;
+let deps: RunnerDeps;
 let stubTransport: StubTransport;
 let stubSender: StubSender;
 
@@ -76,6 +82,9 @@ beforeAll(async () => {
     gateway: new PrivacyGateway(db, config),
     interpreter: new Interpreter(db, config, stubTransport),
     replySender: new ReplySender(config, stubSender),
+    // A real filesystem storage, not a mock: the render job's assertions are
+    // about bytes actually landing somewhere and being readable back.
+    storage: new LocalStorage(storageRoot),
     config,
   };
 });
@@ -629,9 +638,21 @@ describe("the plan's own example, end to end", () => {
     dueDescription: null,
   };
 
+  /**
+   * Post a message and DRAIN the queue, which is what a real worker does.
+   *
+   * A single `runOnce()` was enough until issuing began enqueuing a render
+   * job: the runner takes the oldest due job, so the render would be claimed
+   * ahead of the next inbound message and the conversation would silently stop
+   * advancing. The test failed in exactly that way, which is the right way for
+   * it to fail.
+   */
   async function send(text: string, wamid: string) {
     await post(messagePayload('2348031234567', wamid, text));
-    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+    const runner = buildRunner(workerDb, db, deps);
+    let worked = await runner.runOnce();
+    expect(worked).toBe(true);
+    while (worked) worked = await runner.runOnce();
   }
 
   it('turns a WhatsApp message into a confirmed, balanced, numbered record', async () => {
@@ -662,6 +683,50 @@ describe("the plan's own example, end to end", () => {
     const credits = entries.reduce((n, e) => n + e.creditK, 0);
     expect(debits).toBe(credits);
     expect(debits).toBe(15_000_000);
+  });
+
+  it('renders and stores the PDF, and it opens', async () => {
+    const business = await seedMerchant('+2348031234567', 'Ada Fashion');
+    stubTransport.replyWith(THE_SALE);
+    await send('Ada bought 3 wigs for 150k, paid 100k', 'wamid.SALE');
+    await send('yes', 'wamid.YES');
+
+    // Issuing enqueues the render inside the same transaction, so draining the
+    // queue after the confirmation is all it takes.
+    const stored = await withBusiness(db, business.id, (tx) =>
+      issueRepo.documentsFor(tx, business.id),
+    );
+    expect(stored).toHaveLength(1);
+    expect(stored[0]).toMatchObject({ kind: 'invoice_pdf', refNumber: 'INV-2026-000001' });
+
+    // The key is unguessable — a sequential one would let anyone holding one
+    // document's URL walk the merchant's whole sales history by counting.
+    expect(stored[0]!.storageKey).toMatch(
+      new RegExp(`^documents/${business.id}/invoice_pdf/[0-9a-f]{32}\\.pdf$`),
+    );
+
+    // And the bytes are really there, and really a PDF.
+    const bytes = await deps.storage.get(stored[0]!.storageKey);
+    expect(bytes).not.toBeNull();
+    expect(bytes!.subarray(0, 5).toString('latin1')).toBe('%PDF-');
+    expect(bytes!.length).toBe(stored[0]!.bytes);
+  });
+
+  it('does not render two PDFs for one sale', async () => {
+    const business = await seedMerchant('+2348031234567', 'Ada Fashion');
+    stubTransport.replyWith(THE_SALE);
+    await send('Ada bought 3 wigs for 150k, paid 100k', 'wamid.SALE');
+    await send('yes', 'wamid.YES');
+
+    // A second yes finds nothing pending (CG3), so nothing is issued and no
+    // second render is enqueued. Two PDFs with two storage keys for one sale
+    // is a document a customer could be shown twice at different URLs.
+    await send('yes', 'wamid.YES2');
+
+    const stored = await withBusiness(db, business.id, (tx) =>
+      issueRepo.documentsFor(tx, business.id),
+    );
+    expect(stored).toHaveLength(1);
   });
 
   it('does not issue TWICE when the merchant taps yes twice', async () => {

@@ -1263,10 +1263,22 @@ price), Yoruba ẹ/ọ render, amount-in-words in Nigerian convention, "Includes
 @ x%" as a MEMO not a line, the AMOUNT DUE box on A4, E&OE, page numbers only
 when there is more than one page.
 
+**Storage and the render job are done too.** `document.render` is enqueued
+INSIDE the transaction that issues the invoice, so the sale and "produce its
+paper" commit together — there is no window where a document exists that
+nothing will ever render. The key is `documents/{businessId}/{kind}/{128 random
+bits}.pdf`: the prefix is for operations (expiry, erasure), the randomness is
+what makes it unguessable, and a sequential key would let anyone holding one
+document's URL walk a merchant's whole sales history by counting. The DB holds
+the key, never the blob.
+
+R2 is the storage when configured; a filesystem store exists for development
+and is used ONLY when asked for explicitly, never as a silent fallback.
+
 Still to do: `imagePrep` alpha-flattening, template families beyond compact
 A5/A4, header styles, signature + stamp — all four wait on a logo/signature
-upload that does not exist yet. Plus **R2** storage under an unguessable key
-(the DB holds the key, never the blob) and the render/deliver job.
+upload that does not exist yet. And **delivery**: sending the PDF to the
+merchant over WhatsApp needs Meta's media upload, which is its own slice.
 
 ### 5.3.6b Payment verification & document verification (ADR 0014)
 
