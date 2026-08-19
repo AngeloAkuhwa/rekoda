@@ -23,8 +23,27 @@ export interface SendResult {
   providerMessageId: string | null;
 }
 
+export interface OutboundDocument {
+  to: string;
+  bytes: Buffer;
+  /** What the merchant sees in their chat. `INV-2026-000001.pdf`, not a uuid. */
+  filename: string;
+  contentType: string;
+  /** One line above the attachment. Rehydrated, like any other message text. */
+  caption?: string;
+}
+
 export interface MessageSender {
   send(message: OutboundMessage): Promise<SendResult>;
+  /**
+   * Send a file.
+   *
+   * Separate from `send` because it is genuinely a different operation on
+   * Meta's API — an upload that yields a media id, then a message referencing
+   * it — and collapsing the two behind one method would hide that a document
+   * costs two round trips and can fail halfway.
+   */
+  sendDocument(document: OutboundDocument): Promise<SendResult>;
 }
 
 /** The send failed. The reply is lost; the merchant's record is not. */

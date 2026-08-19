@@ -85,6 +85,7 @@ beforeAll(async () => {
     // A real filesystem storage, not a mock: the render job's assertions are
     // about bytes actually landing somewhere and being readable back.
     storage: new LocalStorage(storageRoot),
+    sender: stubSender,
     config,
   };
 });
@@ -710,6 +711,71 @@ describe("the plan's own example, end to end", () => {
     expect(bytes).not.toBeNull();
     expect(bytes!.subarray(0, 5).toString('latin1')).toBe('%PDF-');
     expect(bytes!.length).toBe(stored[0]!.bytes);
+  });
+
+  it('DELIVERS the document to the merchant', async () => {
+    const business = await seedMerchant('+2348031234567', 'Ada Fashion');
+    stubTransport.replyWith(THE_SALE);
+    await send('Ada bought 3 wigs for 150k, paid 100k', 'wamid.SALE');
+    await send('yes', 'wamid.YES');
+
+    /**
+     * The M2 exit criterion, end to end: a message became a confirmed record
+     * and the merchant received the paper for it.
+     */
+    expect(stubSender.documents).toHaveLength(1);
+    const sent = stubSender.lastDocument!;
+
+    // Named so a merchant can find it again in three weeks, not by a uuid.
+    expect(sent.filename).toBe('INV-2026-000001.pdf');
+    expect(sent.contentType).toBe('application/pdf');
+    expect(sent.to).toBe('+2348031234567');
+    expect(sent.caption).toContain('INV-2026-000001');
+
+    // The real bytes, not a link — a link would need the PDF to be publicly
+    // reachable, which is what the unguessable key exists to avoid.
+    expect(sent.bytes.subarray(0, 5).toString('latin1')).toBe('%PDF-');
+
+    // And the merchant's history shows what they actually received.
+    const messages = await withBusiness(db, business.id, (tx) =>
+      conversationsRepo.messagesFor(tx, business.id),
+    );
+    expect(messages.some((m) => m.kind === 'media' && m.direction === 'outbound')).toBe(true);
+  });
+
+  it('retries delivery rather than losing the document', async () => {
+    const business = await seedMerchant('+2348031234567', 'Ada Fashion');
+    stubTransport.replyWith(THE_SALE);
+    await send('Ada bought 3 wigs for 150k, paid 100k', 'wamid.SALE');
+
+    // Meta is down at the moment the document is ready. Targeted at documents
+    // specifically: a one-shot failure would be consumed by the text reply
+    // that precedes it, and the delivery would then succeed.
+    stubSender.failDocumentsWith();
+    await post(messagePayload('2348031234567', 'wamid.YES', 'yes'));
+    const runner = buildRunner(workerDb, db, deps);
+    let worked = await runner.runOnce();
+    while (worked) worked = await runner.runOnce();
+
+    expect(stubSender.documents).toHaveLength(0);
+
+    /**
+     * A failed reply is swallowed; a failed DELIVERY is not. The reply is a
+     * sentence the merchant misses — the document is the thing they asked for,
+     * and the PDF already exists in storage, so a retry is cheap and is the
+     * only way they ever get it.
+     */
+    const queued = await withBusiness(db, business.id, (tx) =>
+      jobsRepo.jobsForBusiness(tx, 'document.deliver'),
+    );
+    expect(queued[0]).toMatchObject({ state: 'pending', attempts: 1 });
+
+    // The invoice and its PDF survived the delivery failure untouched.
+    expect(await invoiceCount(business.id)).toBe(1);
+    const stored = await withBusiness(db, business.id, (tx) =>
+      issueRepo.documentsFor(tx, business.id),
+    );
+    expect(stored).toHaveLength(1);
   });
 
   it('does not render two PDFs for one sale', async () => {

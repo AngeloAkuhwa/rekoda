@@ -425,3 +425,30 @@ export async function ping(q: Queryable): Promise<boolean> {
     return false;
   }
 }
+
+/**
+ * The WhatsApp number to send a business's documents to — its OWNER's.
+ *
+ * Deliberately the owner and not "any member": a document is a financial
+ * record, and sending one to whoever happened to be added to the business last
+ * week is a decision nobody made. When staff roles need documents, that will
+ * be a per-role setting rather than a widened query.
+ *
+ * Runs under a tenant pin, and must. `memberships` is under row-level
+ * security, so an unpinned read returns ZERO rows however well-scoped the
+ * WHERE clause looks — the first version of this had no pin and a plausible
+ * comment explaining why it did not need one, and the delivery job failed with
+ * "business has no owner". The `users` join is unaffected: that table is
+ * outside RLS, and the pin has already decided which user id we may reach.
+ */
+export async function ownerPhoneFor(db: Db, businessId: string): Promise<string | null> {
+  return withBusiness(db, businessId, async (tx) => {
+    const rows = await tx
+      .select({ phone: users.phone })
+      .from(memberships)
+      .innerJoin(users, eq(users.id, memberships.userId))
+      .where(and(eq(memberships.businessId, businessId), eq(memberships.role, 'owner')))
+      .limit(1);
+    return rows[0]?.phone ?? null;
+  });
+}

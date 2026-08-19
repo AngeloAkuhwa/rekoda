@@ -1,6 +1,6 @@
 import { Logger } from '@nestjs/common';
 import type { InvoiceDocument } from '@rekoda/core';
-import { identity, issueRepo, type Db } from '@rekoda/db';
+import { identity, issueRepo, jobsRepo, type Db } from '@rekoda/db';
 import { renderInvoicePdf } from '../documents/pdf.js';
 import { documentKey, type DocumentStorage } from '../documents/storage.js';
 import type { JobContext, JobHandler } from './runner.js';
@@ -70,12 +70,26 @@ export function renderDocumentHandler(deps: RenderDocumentDeps): JobHandler {
     const key = documentKey(businessId, 'invoice_pdf');
     const stored = await deps.storage.put(key, bytes, 'application/pdf');
 
-    await issueRepo.recordDocument(tx, {
+    const record = await issueRepo.recordDocument(tx, {
       businessId,
       kind: 'invoice_pdf',
       storageKey: stored.key,
       refNumber: invoice.invoiceNumber,
       bytes: stored.bytes,
+    });
+
+    /**
+     * Delivery is a THIRD job, enqueued in this transaction. It fails for
+     * reasons that have nothing to do with rendering — Meta unreachable, a
+     * token expired — and none of those should re-render a PDF that is already
+     * sitting in storage. Keyed on the document id, so a retry of this job
+     * cannot queue two deliveries of one file.
+     */
+    await jobsRepo.enqueue(tx, {
+      businessId,
+      kind: 'document.deliver',
+      payload: { documentId: record.id },
+      singletonKey: `deliver:${record.id}`,
     });
 
     log.debug(`rendered ${invoice.invoiceNumber} (${stored.bytes} bytes)`);

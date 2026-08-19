@@ -67,6 +67,7 @@ beforeAll(async () => {
     // A real filesystem storage, not a mock: the render job's assertions are
     // about bytes actually landing somewhere and being readable back.
     storage: new LocalStorage(storageRoot),
+    sender: stubSender,
     config,
   };
 });

@@ -1,4 +1,10 @@
-import { SendFailed, type MessageSender, type OutboundMessage, type SendResult } from './sender.js';
+import {
+  SendFailed,
+  type MessageSender,
+  type OutboundDocument,
+  type OutboundMessage,
+  type SendResult,
+} from './sender.js';
 
 /**
  * A sender that records instead of sending.
@@ -10,21 +16,42 @@ import { SendFailed, type MessageSender, type OutboundMessage, type SendResult }
  */
 export class StubSender implements MessageSender {
   readonly sent: OutboundMessage[] = [];
+  /** Documents, kept apart from text so a test can assert on either. */
+  readonly documents: OutboundDocument[] = [];
   private failNext: Error | null = null;
+  private failDocuments: Error | null = null;
 
-  /** Make the next send fail, as an outage or a revoked token would. */
+  /** Make the next TEXT send fail, as an outage or a revoked token would. */
   failWith(error: Error = new SendFailed('stub outage')): void {
     this.failNext = error;
   }
 
+  /**
+   * Fail every document send until reset.
+   *
+   * Separate from `failWith`, and persistent, because a one-shot failure is
+   * consumed by whichever send happens first — in practice the text reply that
+   * precedes the document, which is not the failure the test meant to arrange.
+   */
+  failDocumentsWith(error: Error = new SendFailed('stub outage')): void {
+    this.failDocuments = error;
+  }
+
   reset(): void {
     this.sent.length = 0;
+    this.documents.length = 0;
     this.failNext = null;
+    this.failDocuments = null;
   }
 
   /** The text as the merchant would have seen it. */
   get lastText(): string | null {
     return this.sent[this.sent.length - 1]?.text ?? null;
+  }
+
+  /** The last document sent, as the merchant would have received it. */
+  get lastDocument(): OutboundDocument | null {
+    return this.documents[this.documents.length - 1] ?? null;
   }
 
   send(message: OutboundMessage): Promise<SendResult> {
@@ -35,5 +62,16 @@ export class StubSender implements MessageSender {
     }
     this.sent.push(message);
     return Promise.resolve({ providerMessageId: `wamid.STUB${this.sent.length}` });
+  }
+
+  sendDocument(document: OutboundDocument): Promise<SendResult> {
+    if (this.failDocuments) return Promise.reject(this.failDocuments);
+    if (this.failNext) {
+      const error = this.failNext;
+      this.failNext = null;
+      return Promise.reject(error);
+    }
+    this.documents.push(document);
+    return Promise.resolve({ providerMessageId: `wamid.DOC${this.documents.length}` });
   }
 }

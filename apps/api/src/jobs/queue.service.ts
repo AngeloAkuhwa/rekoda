@@ -8,6 +8,8 @@ export const JobKind = {
   InboundMessage: 'inbound.message',
   /** An issued invoice needs its PDF rendered and stored. */
   RenderDocument: 'document.render',
+  /** A stored PDF needs to reach the merchant. */
+  DeliverDocument: 'document.deliver',
 } as const;
 
 export type JobKindName = (typeof JobKind)[keyof typeof JobKind];
