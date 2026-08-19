@@ -27,6 +27,7 @@
     "@types/node": "^22",
     "prettier": "^3.4.2",
     "typescript": "^5.7.2",
-    "vitest": "^2.1.8"
+    "vite": "^7",
+    "vitest": "^4.1.11"
   }
 }
