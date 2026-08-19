@@ -62,6 +62,8 @@ export async function truncateAll(urls: Urls): Promise<void> {
   try {
     await sql.unsafe(`
       TRUNCATE
+        ai_quota_counters, ai_global_counters,
+        usage_events,
         jobs,
         conversation_messages, conversations,
         memberships, business_connections, products,

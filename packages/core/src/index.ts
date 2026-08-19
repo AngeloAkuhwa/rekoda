@@ -3,6 +3,7 @@ export * from './ledger.js';
 export * from './reconciliation.js';
 export * from './numbering.js';
 export * from './router.js';
+export * from './ai-cost.js';
 
 /**
  * `identity` is deliberately NOT re-exported here. It imports `node:crypto`,
