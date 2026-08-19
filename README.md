@@ -31,18 +31,56 @@ happened when money moved.
 
 ## Status
 
-**M0 complete.** The deterministic financial core is built and tested: money
-engine (integer kobo), double-entry ledger with balancing invariant,
-reconciliation engine, document numbering, the AI border-checkpoint schemas,
-and the full 30-table Postgres schema with row-level-security policies.
-Milestones M1 (identity + public surface) → M5 (Integrate alpha) follow —
-see [docs/engineering-plan.md](docs/engineering-plan.md).
+**M0 complete.** The deterministic financial core: money engine (integer kobo),
+double-entry ledger with its balancing invariant, reconciliation engine,
+document numbering, the AI border-checkpoint schemas, and the 30-table Postgres
+schema with row-level-security policies.
+
+**M1 identity complete.** A merchant goes from a phone number to an
+authenticated dashboard: OTP over `apps/api`, business creation under RLS, and
+a revocable session — all against PostgreSQL, all covered end to end. Delivery
+of the code over WhatsApp lands with the channel layer in M2; today it is
+issued and verified for real but not yet sent.
+
+Milestones M2 (Chat MVP) → M5 (Integrate alpha) follow — see
+[docs/engineering-plan.md](docs/engineering-plan.md).
 
 ```bash
 # see the core prove itself: a balanced sale, trial balance, reconciliation
 pnpm install && pnpm demo:m0
-pnpm test        # 45 tests across core + contracts
+pnpm test        # unit tests across core + contracts
 ```
+
+### Running the stack locally
+
+```bash
+docker compose -f docker-compose.dev.yml up -d      # PostgreSQL 16
+
+# Migrations run as the OWNER. The application never does — `rekoda_app` is
+# not the table owner and has no BYPASSRLS, which is what keeps the tenant
+# policies live for every query it makes.
+DATABASE_URL=postgres://rekoda@localhost:5432/rekoda \
+  pnpm --filter @rekoda/db migrate:apply
+
+pnpm turbo build
+pnpm --filter @rekoda/api start   # :3001 — needs DATABASE_URL (rekoda_app),
+                                  # OTP_PEPPER, REKODA_API_SECRET
+pnpm --filter @rekoda/web dev     # :3000 — needs REKODA_API_URL
+```
+
+`.env.example` documents every variable and says which are test-only.
+
+```bash
+# integration + end-to-end, against a real database
+DATABASE_URL=... APP_DATABASE_URL=... pnpm --filter @rekoda/db test:integration
+DATABASE_URL=... APP_DATABASE_URL=... pnpm --filter @rekoda/api test:integration
+DATABASE_URL=... APP_DATABASE_URL=... pnpm --filter @rekoda/web e2e
+node scripts/check-boundaries.mjs   # architectural boundaries
+```
+
+These suites **fail rather than skip** when the database is missing: an
+integration run that quietly passes with nothing behind it reports the same
+green tick as one that proved something.
 
 ## Documentation
 

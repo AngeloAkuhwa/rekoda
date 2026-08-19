@@ -1,69 +1,69 @@
 'use server';
 
 import { redirect } from 'next/navigation';
-import { InvalidPhoneError, normalisePhone } from '@rekoda/core/identity';
-import { checkOtp, startOtp } from '@/server/onboarding-store';
-import { markPhoneVerified } from '@/server/verified-phone';
+import { ApiUnavailable, requestOtp, verifyOtp } from '@/server/api';
+import { setSessionToken, setSetupToken } from '@/server/session-cookies';
+import { stashDevCode } from '@/server/dev-otp';
 
 export interface FormState {
   error?: string;
 }
 
 const NOT_A_NUMBER = 'That does not look like a Nigerian mobile number. Try 0803 123 4567.';
+const UNAVAILABLE = 'We could not reach Rekoda just now. Try again in a moment.';
+const LOCKED_OUT = 'Too many failed attempts for this number. Try again in an hour.';
 
+/**
+ * Phone normalisation now happens in ONE place — the API, which calls the same
+ * `@rekoda/core` rule the identity tests cover. The web tier deliberately does
+ * not normalise a second time: two implementations of "which number is this"
+ * is how one merchant becomes two businesses with two ledgers.
+ */
 export async function requestCode(_prev: FormState, formData: FormData): Promise<FormState> {
   const raw = String(formData.get('phone') ?? '').trim();
   if (!raw) return { error: 'Enter your WhatsApp number.' };
 
-  let phone: string;
+  let result;
   try {
-    phone = normalisePhone(raw);
-  } catch (e) {
-    if (e instanceof InvalidPhoneError) return { error: NOT_A_NUMBER };
-    throw e;
+    result = await requestOtp(raw);
+  } catch (error) {
+    if (error instanceof ApiUnavailable) return { error: UNAVAILABLE };
+    throw error;
   }
 
-  const result = startOtp(phone);
-  if (result.status === 'locked_out') {
-    return { error: 'Too many failed attempts for this number. Try again in an hour.' };
-  }
-  if (result.status === 'resend_too_soon') {
-    // Do NOT strand them on /start holding a live code with no way forward —
-    // this is reached by the "Start again" link the verify page advertises.
-    redirect(`/verify?phone=${encodeURIComponent(result.phone)}`);
-  }
+  if (result === 'invalid_phone') return { error: NOT_A_NUMBER };
+  if (result.status === 'locked_out') return { error: LOCKED_OUT };
 
-  // TODO(M1): send via Meta Cloud API (ADR 0002). Until the channel layer
-  // lands the code is surfaced in the dev console only — never in a deployed
-  // environment, where it would put a live credential in the log store next to
-  // the phone number it unlocks.
-  if (process.env.NODE_ENV !== 'production') {
-    console.info(`[dev] OTP for ${result.phone}: ${result.code}`);
-  }
+  if (result.status === 'sent') await stashDevCode(result.devCode);
 
+  // `resend_too_soon` still goes forward: the merchant has a live code, and
+  // stranding them on /start holding it is the worst of both outcomes.
   redirect(`/verify?phone=${encodeURIComponent(result.phone)}`);
 }
 
 export async function confirmCode(_prev: FormState, formData: FormData): Promise<FormState> {
-  const rawPhone = String(formData.get('phone') ?? '');
+  const phone = String(formData.get('phone') ?? '');
   const code = String(formData.get('code') ?? '').trim();
   if (!/^\d{6}$/.test(code)) return { error: 'Enter the 6-digit code.' };
 
-  let phone: string;
+  let result;
   try {
-    phone = normalisePhone(rawPhone);
-  } catch {
-    return { error: NOT_A_NUMBER };
+    result = await verifyOtp(phone, code);
+  } catch (error) {
+    if (error instanceof ApiUnavailable) return { error: UNAVAILABLE };
+    throw error;
   }
 
-  const result = checkOtp(phone, code);
+  if (result === 'invalid_phone') return { error: NOT_A_NUMBER };
+
   switch (result.status) {
-    case 'locked_out':
-      return { error: 'Too many failed attempts for this number. Try again in an hour.' };
-    case 'verified':
-      // The ONLY place this cookie is issued. Every later step reads it, so the
-      // OTP cannot be skipped by typing a URL.
-      await markPhoneVerified(phone);
+    case 'signed_in':
+      // A returning merchant skips setup entirely and lands in the dashboard.
+      await setSessionToken(result.sessionToken);
+      redirect('/app');
+    // eslint-disable-next-line no-fallthrough
+    case 'setup_required':
+      await setSetupToken(result.setupToken);
       redirect('/setup/business');
     // eslint-disable-next-line no-fallthrough
     case 'wrong_code':
@@ -76,8 +76,16 @@ export async function confirmCode(_prev: FormState, formData: FormData): Promise
     case 'too_many_attempts':
       return { error: 'Too many tries. Start again to get a new code.' };
     case 'expired':
-      return { error: 'That code has expired. Start again to get a new one.' };
+      // Covers spent codes too, deliberately. The API reports one status for
+      // "no live challenge" whatever the reason, so that probing a number
+      // cannot reveal whether a sign-in there recently succeeded. The copy has
+      // to be true of both cases, and actionable in both.
+      return {
+        error: 'That code has expired or has already been used. Start again for a new one.',
+      };
     case 'already_used':
       return { error: 'That code has already been used. Start again.' };
+    case 'locked_out':
+      return { error: LOCKED_OUT };
   }
 }

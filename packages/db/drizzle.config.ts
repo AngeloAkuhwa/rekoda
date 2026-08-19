@@ -5,7 +5,7 @@ export default defineConfig({
   out: './migrations',
   dialect: 'postgresql',
   dbCredentials: {
-    url: process.env['DATABASE_URL'] ?? 'postgres://rekoda:rekoda@localhost:5432/rekoda',
+    url: process.env['DATABASE_URL'] ?? 'postgres://rekoda@localhost:5432/rekoda',
   },
   strict: true,
   verbose: true,

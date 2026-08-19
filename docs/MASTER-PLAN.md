@@ -845,24 +845,30 @@ expensive the later they are closed.
 
 **Tenancy hardening (the RLS mechanism itself is already right)**
 
-1. **Lint-ban raw `db` outside `packages/db`.** `withBusiness()` is only a
-   guarantee if it is the *only* path. Add an ESLint `no-restricted-imports`
-   rule so a direct client import in `apps/api` fails CI.
-2. **Pooled-connection leakage test — make it an exit criterion.** Two seeded
-   tenants, one pooled connection reused across both, asserting (a) no
-   cross-tenant rows and (b) a query with **no** `withBusiness` returns zero
-   rows rather than everything. This is the single test that proves the whole
-   tenancy design.
+1. ~~**Lint-ban raw `db` outside `packages/db`.**~~ **Done (M1).**
+   `scripts/check-boundaries.mjs` fails CI on a raw driver import outside
+   `packages/db`, and on any `@rekoda/db` import from `apps/web`. It is a
+   standalone script rather than an ESLint rule because the repository has no
+   ESLint toolchain yet (`lint` is Prettier); fold it into
+   `no-restricted-imports` when one lands.
+2. ~~**Pooled-connection leakage test — make it an exit criterion.**~~
+   **Done (M1).** `packages/db/src/tenancy.integration.test.ts`, `max: 1` so
+   every statement is forced onto one physical connection. It also covers the
+   `WITH CHECK` half — a tenant supplying another tenant's id explicitly — and
+   was confirmed to fail under a superuser connection, which is what
+   distinguishes proving the policies from proving nothing.
 3. **pg-boss jobs must run inside `withBusiness`.** Background workers are
    where tenant context is forgotten first; the job wrapper enforces it.
 4. **Composite indexes on hot paths.** Present indexes are business-leading but
    several are single-column. The debtors query (`who owes me`) and the
    reconciliation queue need `(business_id, status)` on `invoices` and
    `payments`, and `(business_id, customer_id)` on `invoices`.
-5. **`businesses` INSERT under `tenant_self`.** The policy requires
-   `app.business_id` to equal the row's own `id`, so business creation must
-   pre-generate the UUID and pin it before inserting. Legal, but sharp — give
-   it a dedicated helper and a test, or onboarding will trip on it in M1.
+5. ~~**`businesses` INSERT under `tenant_self`.**~~ **Done (M1).**
+   `identity.createBusinessWithOwner()` pre-generates the UUID and pins it, with
+   a test. See ADR 0020 for the two adjacent traps found while doing it: a
+   `SECURITY DEFINER` bootstrap read does **not** work under `FORCE ROW LEVEL
+   SECURITY`, and the OTP attempt limit did not survive concurrency until the
+   decision moved inside an advisory lock.
 
 **Money-engine consistency**
 
@@ -1035,14 +1041,26 @@ dashboards, webhooks), robots discipline, Plausible with UTM on every `wa.me` li
 
 ### 5.2.6 M1 exit criteria
 
-- [ ] Design system persisted; every page built from tokens; light+dark; a11y checklist passed
-- [ ] Phone → WhatsApp OTP → business created → dashboard shell, on a real phone
-- [ ] Magic link issues, validates once, and is dead on reuse (test proves it)
-- [ ] Accountant role can read but cannot reach settings (test proves it)
-- [ ] **Pooled-connection leakage test green** — two tenants over one reused
+- [x] Design system persisted; every page built from tokens; light+dark; a11y checklist passed
+- [x] Phone → OTP → business created → dashboard shell — end to end over
+      Next.js, `apps/api` and PostgreSQL, proven by the Playwright suite.
+      **Delivery is still pending the Meta channel layer (M2):** the code is
+      issued and verified for real, but it is not yet sent over WhatsApp
+- [ ] Magic link issues, validates once, and is dead on reuse (test proves it) —
+      the rules and the `magic_links` repository exist and are unit-tested; the
+      HTTP surface that issues one lands with the channel layer that delivers it
+- [x] Accountant role can read but cannot reach settings (test proves it) —
+      `auth.integration.test.ts`, against a real membership row
+- [x] **Pooled-connection leakage test green** — two tenants over one reused
       connection, no cross-tenant rows, and an unpinned query returns zero rows
-      (Part 4.4 #2)
-- [ ] **Raw `db` import outside `packages/db` fails CI** (Part 4.4 #1)
+      (Part 4.4 #2). Verified to go RED when run as a superuser, so it is
+      proving the policies rather than the absence of them
+- [x] **Raw `db` import outside `packages/db` fails CI** (Part 4.4 #1) —
+      `scripts/check-boundaries.mjs`; also bans `@rekoda/db` from `apps/web`
+
+**Carried into M2:** magic-link HTTP surface (needs the channel layer), and the
+`ui-ux-pro-max` re-run against the marketing pages once the full payload is
+available locally.
 - [ ] **PITR configured and `scripts/restore-drill.sh` passes once** (ADR 0010)
 - [ ] `computeMoney` overpayment behaviour aligned with `applyPayment`, with a
       regression test (Part 4.4 #6)

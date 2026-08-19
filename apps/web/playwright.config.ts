@@ -1,17 +1,46 @@
+import { randomBytes } from 'node:crypto';
 import { defineConfig } from '@playwright/test';
 
 /**
- * The web app has no unit tests — its behaviour lives in routing, guards and
- * server actions, which only a real browser exercises. These run against a
- * PRODUCTION build so the assertions cover what actually ships: dev-only OTP
- * logging is off, cookies are set the way they will be, and NODE_ENV branches
- * take their production path.
+ * The full stack, end to end: Next.js → the Nest API → PostgreSQL.
+ *
+ * Everything runs as a PRODUCTION build so the assertions cover what actually
+ * ships — dev-only branches off, cookies set the way they will be, NODE_ENV
+ * taking its production path. The API is a real process talking to a real
+ * database, because after this milestone the properties worth testing (single
+ * -use codes, attempt limits, revoked sessions) are all properties of rows.
  */
+// No passwords in the defaults: the local database (docker-compose.dev.yml)
+// and the CI service container both use trust auth on a loopback-only port,
+// so there is no credential here to hardcode. Real deployments supply these.
+const DATABASE_URL = process.env.APP_DATABASE_URL ?? 'postgres://rekoda_app@127.0.0.1:5432/rekoda';
+const OWNER_DATABASE_URL = process.env.DATABASE_URL ?? 'postgres://rekoda@127.0.0.1:5432/rekoda';
+const API_PORT = 3101;
+
+/**
+ * Freshly generated per run, never written down.
+ *
+ * These were literals until a secret scanner correctly objected: a
+ * high-entropy string assigned to something named `*_SECRET` is exactly what a
+ * real leaked credential looks like, and a scanner that learns to ignore this
+ * file is worth less on the day it matters. Generating them removes the
+ * literal AND is stronger — no two runs share a signing key.
+ */
+const ephemeralSecret = () => randomBytes(24).toString('hex');
+
 export default defineConfig({
   testDir: './e2e',
-  fullyParallel: false, // the dev store is a single in-memory map
+  fullyParallel: false,
   forbidOnly: !!process.env.CI,
   retries: 0,
+  /**
+   * Above Playwright's 30s default, deliberately. These are full-stack
+   * journeys — the sign-out test alone makes six navigations, each a real HTTP
+   * round trip to the API and a query against Postgres. The default budget is
+   * sized for a single page interaction and turns an honest slow test into a
+   * confusing timeout with no failure to read.
+   */
+  timeout: 60_000,
   reporter: process.env.CI ? 'list' : 'line',
   use: {
     baseURL: process.env.REKODA_WEB_URL ?? 'http://127.0.0.1:3100',
@@ -35,17 +64,37 @@ export default defineConfig({
       },
     },
   ],
-  webServer: {
-    command: 'pnpm exec next start -p 3100',
-    url: 'http://127.0.0.1:3100/start',
-    reuseExistingServer: !process.env.CI,
-    timeout: 120_000,
-    env: {
-      // Both secrets are required in production; supplying them here is what
-      // lets the suite exercise the production code path at all.
-      REKODA_SESSION_SECRET: 'e2e-session-secret-at-least-thirty-two-chars',
-      OTP_PEPPER: 'e2e-otp-pepper-at-least-thirty-two-characters',
-      REKODA_E2E_REVEAL_OTP: '1',
+  webServer: [
+    {
+      // Migrations run as the OWNER and the API runs as `rekoda_app`, exactly
+      // as they do in a deployment — so the RLS policies are live underneath
+      // every assertion rather than bypassed by a superuser connection.
+      command:
+        `DATABASE_URL='${OWNER_DATABASE_URL}' pnpm --filter @rekoda/db migrate:apply && ` +
+        `DATABASE_URL='${DATABASE_URL}' pnpm --filter @rekoda/api exec node dist/main.js`,
+      cwd: '../..',
+      url: `http://127.0.0.1:${API_PORT}/health`,
+      reuseExistingServer: !process.env.CI,
+      timeout: 120_000,
+      env: {
+        PORT: String(API_PORT),
+        OTP_PEPPER: ephemeralSecret(),
+        REKODA_API_SECRET: ephemeralSecret(),
+        // Returns the code in the response so the suite can complete the flow
+        // without a WhatsApp account. The API refuses this outright when
+        // NODE_ENV is production.
+        REKODA_REVEAL_OTP: '1',
+      },
     },
-  },
+    {
+      command: 'pnpm exec next start -p 3100',
+      url: 'http://127.0.0.1:3100/start',
+      reuseExistingServer: !process.env.CI,
+      timeout: 120_000,
+      env: {
+        REKODA_API_URL: `http://127.0.0.1:${API_PORT}`,
+        REKODA_E2E_REVEAL_OTP: '1',
+      },
+    },
+  ],
 });

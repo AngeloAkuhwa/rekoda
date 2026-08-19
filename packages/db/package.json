@@ -9,6 +9,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./testing": {
+      "types": "./dist/testing.d.ts",
+      "default": "./dist/testing.js"
     }
   },
   "scripts": {
@@ -17,7 +21,9 @@
     "test": "vitest run --passWithNoTests",
     "lint": "prettier --check src",
     "generate": "drizzle-kit generate",
-    "migrate": "drizzle-kit migrate"
+    "migrate": "drizzle-kit migrate",
+    "migrate:apply": "node dist/migrate.js",
+    "test:integration": "vitest run --config vitest.integration.config.ts"
   },
   "dependencies": {
     "drizzle-orm": "^0.38.3",

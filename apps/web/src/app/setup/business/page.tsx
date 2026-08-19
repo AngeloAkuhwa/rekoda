@@ -1,6 +1,5 @@
 import type { Metadata } from 'next';
-import { redirect } from 'next/navigation';
-import { readVerifiedPhone } from '@/server/verified-phone';
+import { requireSetupGrant } from '@/server/guards';
 import { BusinessForm } from './BusinessForm';
 
 export const metadata: Metadata = {
@@ -9,8 +8,8 @@ export const metadata: Metadata = {
 };
 
 export default async function BusinessPage() {
-  // Proof of OTP, not a query param. A URL alone must never reach this page.
-  const phone = await readVerifiedPhone();
-  if (!phone) redirect('/start');
-  return <BusinessForm phone={phone} />;
+  // Not "is a cookie present" — the API is asked whether the grant is real.
+  // A forged or expired value redirects instead of rendering the form.
+  const { state } = await requireSetupGrant();
+  return <BusinessForm phone={state.phone} />;
 }

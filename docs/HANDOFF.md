@@ -6,7 +6,8 @@ points to. Keep it updated at the end of every working session — it is the
 project's memory, and it lives in the repo so it can never be lost with a
 chat.
 
-**Last updated:** 19 August 2026 · end of M0.
+**Last updated:** 19 August 2026 · M1 identity complete (PR #9 merged, identity
+persistence follow-on in review).
 
 ---
 
@@ -62,10 +63,14 @@ repository's README commit; history is now on `main` plus this branch.
 delivered; **118 tests pass, 0 failed**; ~10,500 LOC / 15 service modules. The
 Part 4.3 port map is now against verified-working code.
 
-**M0 follow-ups are listed in MASTER-PLAN Part 4.4** — RLS mechanism is already
-correct and must not be rewritten; what is missing is the lint ban on raw `db`,
-the pooled-connection leakage test, pg-boss tenant scoping, composite indexes,
-and two money-engine consistency fixes.
+**M0 follow-ups are listed in MASTER-PLAN Part 4.4.** Three are now **done**
+(#1 boundary ban, #2 pooled-connection leakage test, #5 `businesses` INSERT
+helper). Still open: **#3** pg-boss jobs must run inside `withBusiness`,
+**#4** composite indexes on the debtors and reconciliation queues, and the two
+money-engine consistency fixes — **#6 is a real defect**: `computeMoney`
+silently clamps overpayment while `applyPayment` refuses it, so "sold for
+₦100k, she paid ₦150k" becomes ₦100k instead of surfacing as an exception.
+That contradicts the rule that mismatches are flagged, never fixed.
 
 **`docs/safety-review.md` is the one-page risk view** — GREEN (safe to build
 now), AMBER (needs written confirmation from Paystack / counsel / Mono /
@@ -78,12 +83,40 @@ the review gate. Note the verified caveat: in remote sessions only the skill's
 `SKILL.md` is synced, so the design-system generation must run in a local
 session with the full skill payload and be committed.
 
-**Next: M1** (engineering-plan §11): WhatsApp OTP onboarding → business
-creation; magic links → sessions; roles; marketing site + pricing + the six
-legal pages (port from VoiceReceipt's `services/legal.js`, re-skin for
-Rekoda); first 6–8 SEO guides; Plausible. Design system generated with the
-UI/UX Pro Max skill and persisted to `design-system/rekoda/MASTER.md`
-before any page is built.
+**M1 identity is complete.** The design system, marketing surface and the
+four-step onboarding flow shipped in PR #9. The follow-on replaced the dev-only
+in-memory store with real persistence:
+
+* **`apps/api`** — NestJS on Fastify. Auth module (OTP request/verify, business
+  creation, sessions, role guard), health endpoint reporting the applied
+  migration count rather than just a live socket.
+* **`packages/db/src/repos/identity.ts`** — the only place identity SQL lives.
+  Rules stay in `@rekoda/core` (no database, no clock); this holds locking and
+  transaction boundaries and no rules of its own.
+* **ADR 0020** records the three decisions worth not rediscovering: the setup
+  grant (a session is bound to a business, so onboarding needs its own
+  artefact), `app.user_id` as a second narrow pin for the bootstrap read, and
+  the fact that the OTP attempt limit did not survive concurrency until the
+  decision moved inside an advisory lock.
+* **`apps/web` can no longer assert identity** — no pool, no signing secret, no
+  tenant pin. The interim signed-cookie marker is deleted.
+
+**Known gap, deliberate:** OTP delivery. The code is issued and verified
+against a real row, but nothing sends it over WhatsApp until the M2 channel
+layer. `REKODA_REVEAL_OTP` exists for the test suite and the API refuses to
+boot with it set when `NODE_ENV=production`.
+
+**Recommended next**, in order:
+1. **Self-host the fonts** (`next/font/google`). `layout.tsx` currently loads
+   Calistoga + Inter via a render-blocking `fonts.googleapis.com` stylesheet —
+   a third-party round trip on the critical path for merchants on exactly the
+   slow mobile networks Rekoda targets. Small change, measurable win.
+2. **MASTER-PLAN 4.4 #6** — the overpayment clamp. It is a correctness bug in
+   the money engine, and money bugs get more expensive the longer they sit.
+3. **M2 channel layer** — which unblocks real OTP delivery and the magic-link
+   HTTP surface in one go.
+4. Remaining marketing and the six legal pages (port from VoiceReceipt's
+   `services/legal.js`).
 
 ## 4. Operational facts a new session must know
 

@@ -15,7 +15,11 @@
     "test": "turbo test",
     "demo:m0": "pnpm --filter @rekoda/core demo",
     "format": "prettier --write \"**/*.{ts,tsx,md,json,yml}\"",
-    "screenshots": "node scripts/screenshots.mjs"
+    "screenshots": "node scripts/screenshots.mjs",
+    "boundaries": "node scripts/check-boundaries.mjs",
+    "test:integration": "pnpm --filter @rekoda/db test:integration && pnpm --filter @rekoda/api test:integration",
+    "e2e": "pnpm --filter @rekoda/web e2e",
+    "migrate": "pnpm --filter @rekoda/db migrate:apply"
   },
   "devDependencies": {
     "playwright": "1.49.1",
