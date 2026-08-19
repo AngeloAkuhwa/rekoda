@@ -22,11 +22,13 @@
     "@rekoda/contracts": "workspace:*",
     "@rekoda/core": "workspace:*",
     "@rekoda/db": "workspace:*",
+    "pdfkit": "^0.19.1",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1"
   },
   "devDependencies": {
     "@types/node": "^24",
+    "@types/pdfkit": "^0.17.6",
     "prettier": "^3.4.2",
     "typescript": "^5.7.2",
     "vite": "^7",
