@@ -9,9 +9,10 @@ import {
 import { createDb, type Db } from '@rekoda/db';
 import { CONFIG, type ApiConfig } from '../config.js';
 import { DB } from '../db/db.module.js';
+import { PrivacyGateway } from '../privacy/gateway.service.js';
 import { JobQueue, JobKind } from './queue.service.js';
 import { JobRunner } from './runner.js';
-import { inboundMessageHandler } from './inbound-message.handler.js';
+import { inboundMessageHandler, type InboundMessageDeps } from './inbound-message.handler.js';
 
 export const JOB_RUNNER = Symbol('JobRunner');
 
@@ -22,9 +23,14 @@ export const JOB_RUNNER = Symbol('JobRunner');
  * rather than a parallel arrangement that drifts from it — a test registry
  * missing a handler is a test that proves nothing about the deploy.
  */
-export function buildRunner(workerDb: Db, appDb: Db, options?: { idleMs?: number }): JobRunner {
+export function buildRunner(
+  workerDb: Db,
+  appDb: Db,
+  deps: InboundMessageDeps,
+  options?: { idleMs?: number },
+): JobRunner {
   const runner = new JobRunner(workerDb, appDb, options);
-  runner.register(JobKind.InboundMessage, inboundMessageHandler());
+  runner.register(JobKind.InboundMessage, inboundMessageHandler(deps));
   return runner;
 }
 
@@ -45,6 +51,7 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
   constructor(
     @Inject(CONFIG) private readonly config: ApiConfig,
     @Inject(DB) private readonly appDb: Db,
+    @Inject(PrivacyGateway) private readonly gateway: PrivacyGateway,
   ) {}
 
   onModuleInit(): void {
@@ -56,7 +63,10 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
     // the application connection.
     const handle = createDb(this.config.workerDatabaseUrl, { max: 2 });
     this.closeWorkerDb = handle.close;
-    this.runner = buildRunner(handle.db, this.appDb);
+    this.runner = buildRunner(handle.db, this.appDb, {
+      gateway: this.gateway,
+      config: this.config,
+    });
     this.runner.start();
   }
 
@@ -67,7 +77,7 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
 }
 
 @Module({
-  providers: [JobQueue, JobRunnerLifecycle],
-  exports: [JobQueue],
+  providers: [JobQueue, JobRunnerLifecycle, PrivacyGateway],
+  exports: [JobQueue, PrivacyGateway],
 })
 export class JobsModule {}

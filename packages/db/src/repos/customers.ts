@@ -56,6 +56,16 @@ export async function findCustomerByMatchKey(
 export class TokenCollision extends Error {}
 
 /**
+ * Another transaction created this identity first.
+ *
+ * Not an error the caller should surface — it means the customer now exists
+ * and the right response is to look them up. Distinct from `TokenCollision`,
+ * which means "try a different token for the SAME new customer"; here the
+ * customer is not new any more.
+ */
+export class IdentityConflict extends Error {}
+
+/**
  * Create a customer and its first identity facets in one transaction.
  *
  * The token is supplied rather than generated here, because generating it
@@ -87,15 +97,28 @@ export async function createCustomerWithIdentities(
     }
 
     if (identities.length > 0) {
-      await tx.insert(customerIdentities).values(
-        identities.map((identity) => ({
-          businessId,
-          customerId: customer.id,
-          facet: identity.facet,
-          ciphertext: identity.ciphertext,
-          matchKey: identity.matchKey,
-        })),
-      );
+      try {
+        await tx.insert(customerIdentities).values(
+          identities.map((identity) => ({
+            businessId,
+            customerId: customer.id,
+            facet: identity.facet,
+            ciphertext: identity.ciphertext,
+            matchKey: identity.matchKey,
+          })),
+        );
+      } catch (error) {
+        /**
+         * `identities_match_ux` (migration 0005) rejected it: someone else got
+         * there first. Throwing rolls back the customer row inserted above
+         * too — which is exactly right, because it would otherwise be a
+         * customer with no way to recognise them.
+         */
+        if (isUniqueViolation(error)) {
+          throw new IdentityConflict('this identity already belongs to a customer');
+        }
+        throw error;
+      }
     }
     return customer;
   });

@@ -22,6 +22,10 @@ export interface ApiConfig {
   corsOrigins: string[];
   /** Requests per IP per minute. See the note in main.ts. */
   rateLimitMax: number;
+  /** AES-256-GCM key for the identity vault and for sealed event payloads. */
+  vaultKey: string;
+  /** Keyed HMAC for deterministic identity matching. NOT the vault key. */
+  matchKey: string;
   /** Verifies X-Hub-Signature-256 on the Meta webhook. */
   metaAppSecret: string;
   /** Echoed back during Meta's GET subscription handshake. */
@@ -68,6 +72,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     otpPepper: required(env, 'OTP_PEPPER', 32),
     secret: required(env, 'REKODA_API_SECRET', 32),
     revealOtp,
+    /**
+     * Both required everywhere, not just in production. A deployment without
+     * them cannot store a customer identity or read an inbound message, so
+     * "optional in development" would only mean discovering that at the first
+     * real message instead of at boot. 64 hex characters = 32 bytes, which is
+     * what `openssl rand -hex 32` produces and what AES-256 needs.
+     */
+    vaultKey: required(env, 'VAULT_KEY', 64),
+    matchKey: required(env, 'MATCH_KEY', 64),
     corsOrigins: (env['REKODA_CORS_ORIGINS'] ?? 'http://localhost:3000')
       .split(',')
       .map((s) => s.trim())

@@ -6,11 +6,23 @@
  * database. Idempotency in particular cannot be tested any other way: it is a
  * claim about a unique constraint under concurrency.
  */
-import { createHmac } from 'node:crypto';
+import { createHmac, randomBytes } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { createDb, events, identity, jobsRepo, withBusiness, type Db } from '@rekoda/db';
+import {
+  conversationsRepo,
+  createDb,
+  events,
+  identity,
+  jobsRepo,
+  schema,
+  withBusiness,
+  type Db,
+} from '@rekoda/db';
 import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
 import { buildRunner } from '../jobs/jobs.module.js';
+import { PrivacyGateway } from '../privacy/gateway.service.js';
+import { loadConfig, type ApiConfig } from '../config.js';
+import type { InboundMessageDeps } from '../jobs/inbound-message.handler.js';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 
 const APP_SECRET = 'meta-app-secret-for-tests';
@@ -22,6 +34,7 @@ let db: Db;
 let workerDb: Db;
 let closeDb: () => Promise<void>;
 let closeWorkerDb: () => Promise<void>;
+let deps: InboundMessageDeps;
 
 beforeAll(async () => {
   urls = requireUrls();
@@ -33,6 +46,9 @@ beforeAll(async () => {
   process.env['REKODA_RATE_LIMIT_MAX'] = '100000';
   process.env['META_APP_SECRET'] = APP_SECRET;
   process.env['META_VERIFY_TOKEN'] = VERIFY_TOKEN;
+  // 64 hex characters each, derived per run rather than written down.
+  process.env['VAULT_KEY'] = randomBytes(32).toString('hex');
+  process.env['MATCH_KEY'] = randomBytes(32).toString('hex');
   delete process.env['NODE_ENV'];
 
   const { createApp } = await import('../main.js');
@@ -42,6 +58,8 @@ beforeAll(async () => {
 
   ({ db, close: closeDb } = createDb(urls.app, { max: 4 }));
   ({ db: workerDb, close: closeWorkerDb } = createDb(urls.worker, { max: 2 }));
+  const config: ApiConfig = loadConfig();
+  deps = { gateway: new PrivacyGateway(db, config), config };
 });
 
 afterAll(async () => {
@@ -278,7 +296,7 @@ describe('what happens after the 200', () => {
     await post(messagePayload('2348031234567', 'wamid.QUEUED'));
 
     // The registry the deploy uses, not a test-local one.
-    expect(await buildRunner(workerDb, db).runOnce()).toBe(true);
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
 
     // `unprocessedEvents` is the backlog. Empty means the loop closed.
     expect(await events.unprocessedEvents(db, 'meta')).toHaveLength(0);
@@ -290,13 +308,13 @@ describe('what happens after the 200', () => {
     await post(messagePayload('2349099999999', 'wamid.STRANGER'));
     // `jobs.business_id` is NOT NULL, so "run this for nobody" is not
     // expressible. The event is still stored for the reply layer.
-    expect(await buildRunner(workerDb, db).runOnce()).toBe(false);
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(false);
   });
 
   it('queues nothing for a delivery receipt — there is nothing to understand', async () => {
     await seedMerchant('+2348031234567', 'Ada Fashion');
     await post(statusPayload('2348031234567', 'wamid.SENT', 'delivered'));
-    expect(await buildRunner(workerDb, db).runOnce()).toBe(false);
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(false);
   });
 
   it('queues ONE job when Meta delivers the same message eight times', async () => {
@@ -310,6 +328,90 @@ describe('what happens after the 200', () => {
     // sale twice is the failure this whole path exists to prevent.
     const queued = await withBusiness(db, business.id, (tx) => jobsRepo.jobsForBusiness(tx));
     expect(queued).toHaveLength(1);
+  });
+});
+
+describe('nothing raw is stored', () => {
+  async function seedMerchant(phone: string, name: string) {
+    const user = await identity.upsertUserByPhone(db, phone);
+    return identity.createBusinessWithOwner(db, { name, businessType: null, ownerUserId: user.id });
+  }
+
+  it('seals the webhook payload — the message text never lands in plaintext', async () => {
+    await seedMerchant('+2348031234567', 'Ada Fashion');
+    await post(
+      messagePayload('2348031234567', 'wamid.SEALED', 'Ada 08039998888 bought 3 wigs for 150k'),
+    );
+
+    const [row] = await events.unprocessedEvents(db, 'meta');
+    const stored = JSON.stringify(row?.payload);
+
+    /**
+     * `external_events` is the one table with row-level security deliberately
+     * off, because an event arrives before its tenant is known. Storing a Meta
+     * body verbatim therefore put the merchant's message AND the sender's
+     * number in plaintext in the least protected table in the schema — while
+     * the table's own comment claimed PII was redacted at write time.
+     */
+    expect(stored).not.toContain('bought 3 wigs');
+    expect(stored).not.toContain('08039998888');
+    expect(stored).not.toContain('2348031234567');
+    expect(stored).toContain('sealed');
+  });
+
+  it('records a DETERMINISTIC message as its classification, not its words', async () => {
+    const business = await seedMerchant('+2348031234567', 'Ada Fashion');
+    await post(messagePayload('2348031234567', 'wamid.YES', 'yes please'));
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+
+    const messages = await withBusiness(db, business.id, (tx) =>
+      conversationsRepo.messagesFor(tx, business.id),
+    );
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({ direction: 'inbound', body: '[affirm]' });
+
+    // And the gateway never ran: no customer, no vault write, nothing left.
+    const customers = await withBusiness(db, business.id, (tx) =>
+      tx.select().from(schema.customers),
+    );
+    expect(customers).toHaveLength(0);
+  });
+
+  it('records everything else TOKENISED', async () => {
+    const business = await seedMerchant('+2348031234567', 'Ada Fashion');
+    await post(messagePayload('2348031234567', 'wamid.SALE', 'Ada 08039998888 bought 3 wigs'));
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+
+    const [message] = await withBusiness(db, business.id, (tx) =>
+      conversationsRepo.messagesFor(tx, business.id),
+    );
+    expect(message!.body).not.toContain('08039998888');
+    expect(message!.body).toMatch(/CUSTOMER_[0-9A-Z]{3}/);
+    // The goods and the count survive — they are the whole point of the message.
+    expect(message!.body).toContain('3 wigs');
+  });
+
+  it('writes one conversation row when the same message is delivered twice', async () => {
+    const business = await seedMerchant('+2348031234567', 'Ada Fashion');
+    await post(messagePayload('2348031234567', 'wamid.ONCE', 'yes'));
+
+    const runner = buildRunner(workerDb, db, deps);
+    expect(await runner.runOnce()).toBe(true);
+    // A reclaimed lock or a re-enqueued job must not double the history.
+    await withBusiness(db, business.id, (tx) =>
+      conversationsRepo.recordInbound(tx, {
+        businessId: business.id,
+        channel: 'meta',
+        kind: 'text',
+        body: '[affirm]',
+        providerMessageId: 'wamid.ONCE',
+      }),
+    );
+
+    const messages = await withBusiness(db, business.id, (tx) =>
+      conversationsRepo.messagesFor(tx, business.id),
+    );
+    expect(messages).toHaveLength(1);
   });
 });
 

@@ -36,6 +36,20 @@
       "when": 1787099761055,
       "tag": "0004_jobs",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1787099761056,
+      "tag": "0005_identity_match_unique",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1787099761057,
+      "tag": "0006_conversation_thread",
+      "breakpoints": true
     }
   ]
 }

@@ -36,7 +36,8 @@ export const conversations = pgTable(
     channel: text('channel').notNull(), // meta | twilio | simulator
     createdAt: createdAt(),
   },
-  (t) => [index('conversations_business_ix').on(t.businessId)],
+  // One thread per business per channel — see migration 0006.
+  (t) => [uniqueIndex('conversations_business_channel_ux').on(t.businessId, t.channel)],
 );
 
 export const conversationMessages = pgTable(
@@ -62,8 +63,14 @@ export const conversationMessages = pgTable(
 );
 
 /**
- * Raw external event store (spec §41 traceability). Payloads are retained
- * for replay/debugging with PII-bearing fields redacted at write time.
+ * External event store (spec §41 traceability).
+ *
+ * Payloads are SEALED at write time — AES-256-GCM under `VAULT_KEY`, see
+ * `apps/api/src/privacy/payload-vault.ts`. This is the one table with
+ * row-level security deliberately switched off, because an event arrives
+ * before anyone knows which tenant it belongs to, so a provider body stored
+ * verbatim would put the merchant's message and the sender's number in
+ * plaintext in the least protected table in the schema.
  * Idempotency: (provider, external id) is unique — a webhook retry is a
  * no-op by construction.
  */

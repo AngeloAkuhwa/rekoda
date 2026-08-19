@@ -99,6 +99,32 @@ export async function markProcessed(
 }
 
 /**
+ * One event, scoped to the tenant it was attributed to.
+ *
+ * The `businessId` predicate is not decoration. This table is outside
+ * row-level security by necessity, so a job payload carrying a stray id is the
+ * one way a worker could read another tenant's event — and a worker is exactly
+ * where nobody would notice.
+ */
+export async function eventForBusiness(
+  q: Queryable,
+  id: string,
+  businessId: string,
+): Promise<{ id: string; eventType: string; externalId: string; payload: unknown } | null> {
+  const rows = await q
+    .select({
+      id: externalEvents.id,
+      eventType: externalEvents.eventType,
+      externalId: externalEvents.externalId,
+      payload: externalEvents.payload,
+    })
+    .from(externalEvents)
+    .where(and(eq(externalEvents.id, id), eq(externalEvents.businessId, businessId)))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+/**
  * Events that arrived but were never handled — the queue that exists before
  * there is a job runner, and the audit trail after there is one.
  */

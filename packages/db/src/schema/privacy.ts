@@ -57,6 +57,10 @@ export const customerIdentities = pgTable(
   },
   (t) => [
     index('identities_customer_ix').on(t.customerId),
-    index('identities_match_ix').on(t.businessId, t.facet, t.matchKey),
+    // UNIQUE, and partial (match_key IS NOT NULL) — see migration 0005. One
+    // person is one customer even when two messages arrive together.
+    uniqueIndex('identities_match_ux')
+      .on(t.businessId, t.facet, t.matchKey)
+      .where(sql`${t.matchKey} IS NOT NULL`),
   ],
 );

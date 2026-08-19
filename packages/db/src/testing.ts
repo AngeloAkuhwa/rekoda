@@ -63,6 +63,7 @@ export async function truncateAll(urls: Urls): Promise<void> {
     await sql.unsafe(`
       TRUNCATE
         jobs,
+        conversation_messages, conversations,
         memberships, business_connections, products,
         customer_identities, customers,
         external_events,
