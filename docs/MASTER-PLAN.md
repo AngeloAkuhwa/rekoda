@@ -25,9 +25,12 @@ a memory, a chat, or an assumption — this document wins. If this document conf
 3. `docs/adr/` — the eleven decision records (the "why"). Never re-litigate an
    Accepted ADR without writing a superseding one. Note 0002 is **superseded
    by 0011**; read 0011 for anything about messaging cost.
-4. `docs/design-plan.md` — how every surface is designed, and the UI review gate.
-5. `docs/HANDOFF.md` — current status and open items, updated each session.
-6. Then start work at the current milestone (Part 5).
+4. `docs/safety-review.md` — GREEN (safe to build now) / AMBER (needs written
+   confirmation first) / RED (never build, never claim). **Read this before
+   starting anything in Integrate or billing.**
+5. `docs/design-plan.md` — how every surface is designed, and the UI review gate.
+6. `docs/HANDOFF.md` — current status and open items, updated each session.
+7. Then start work at the current milestone (Part 5).
 
 ## 0.2 Prime directives — these are not negotiable
 
@@ -458,6 +461,8 @@ rekoda/
 │   ├── MASTER-PLAN.md        ← this file
 │   ├── architecture.md       product & system specification
 │   ├── engineering-plan.md   review findings, stack rationale
+│   ├── safety-review.md      GREEN / AMBER / RED recommendations
+│   ├── design-plan.md        design system, UI rules, review gate
 │   ├── pricing-model.md      commercial model + COGS + review triggers
 │   ├── content-plan.md       SEO keyword map + guide calendar
 │   ├── HANDOFF.md            living status / session memory

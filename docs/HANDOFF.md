@@ -67,6 +67,11 @@ correct and must not be rewritten; what is missing is the lint ban on raw `db`,
 the pooled-connection leakage test, pg-boss tenant scoping, composite indexes,
 and two money-engine consistency fixes.
 
+**`docs/safety-review.md` is the one-page risk view** — GREEN (safe to build
+now), AMBER (needs written confirmation from Paystack / counsel / Mono /
+Flutterwave first), RED (never build, never claim). Its §4 lists the five that
+matter most; its §5 carries the diarised review triggers.
+
 **Design/UX method now lives in `docs/design-plan.md`** — the `ui-ux-pro-max`
 and 21st.dev pipelines, ten non-negotiable UI rules, per-surface UX intent, and
 the review gate. Note the verified caveat: in remote sessions only the skill's
