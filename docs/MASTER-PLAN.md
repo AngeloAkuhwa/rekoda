@@ -263,7 +263,11 @@ superb Nigerian-market training set, but NDPA 2023 requires explicit, specific,
 separately-obtained and revocable consent — not a ToS clause, not a pre-ticked
 box, not a condition of use. Until that flow ships, nothing is retained.
 
-## ADR 0009 — Dedicated Virtual Accounts for bank-transfer reconciliation · **Proposed**
+## ADR 0009 — Dedicated Virtual Accounts · **SUPERSEDED by 0012**
+
+> The DVA *mechanism* below stands. Its *position* does not: DVAs serve only
+> CAC-registered merchants, a minority of Rekoda's market. ADR 0012 makes them
+> rung B2 of a ladder whose first rung needs no registration.
 
 Bank transfer is how Nigerian small businesses actually get paid, and it
 produces no webhook — so those payments could only ever be `RECORDED`, never
@@ -314,6 +318,54 @@ Message-count engineering becomes mandatory from M2: batch confirmation and
 result into one message, one interactive-button message instead of three texts,
 `quiet_mode` on by default. `outbound_messages` is a first-class `usage_events`
 column with an alert threshold.
+
+## ADR 0012 — Integrate without CAC: tiered capture, tiered verification · **Accepted**
+
+**The defect this fixes is architectural, not commercial.** Integrate as
+originally specified excluded unregistered merchants *twice*: Paystack DVAs
+need CAC (ADR 0009), and **Meta business verification for a per-merchant WABA
+effectively needs CAC in Nigeria too** — a utility bill is not accepted as proof
+of legal business identity on its own. Both halves of Integrate were built for
+registered businesses. Most WhatsApp vendors are not registered, and they are
+the market.
+
+CBN's actual rule for a virtual account is a **BVN or NIN** — an *individual*
+identifier. CAC is a provider onboarding-tier policy, and providers differ.
+
+Integrate becomes **two independent ladders**, each with a rung that needs
+nothing but a phone number and a bank account. The ledger, documents and
+reconciliation engine are identical at every rung.
+
+**Ladder A — order capture**
+
+| Rung | Mechanism | Requires |
+|---|---|---|
+| **A0** | Merchant **forwards** the WhatsApp catalogue order message to Rekoda; it is structured and parseable → `OrderPlaced` | nothing |
+| **A1** | **Rekoda-hosted storefront** at `rekoda.app/s/<handle>`, shared as a link — orders land fully structured | nothing |
+| **A2** | Native per-merchant WABA catalogue webhooks (as originally specced) | CAC + Meta verification |
+
+**A1 is the default Integrate experience.** It is strictly better *for Rekoda*
+than A2 — Rekoda owns the schema instead of parsing Meta's, and there is no
+verification queue, no display-name review, no external approval gate.
+
+**Ladder B — payment verification**
+
+| Rung | Mechanism | Requires |
+|---|---|---|
+| **B0** | **Open banking account link (Mono)** — merchant links the account they already use; Rekoda reads *incoming credits* and matches them | BVN + consent |
+| **B1** | Virtual accounts on the unregistered/sole-proprietor tier (Flutterwave/Monnify) | BVN + NIN |
+| **B2** | Paystack DVA / checkout (ADR 0009's mechanism) | CAC + KYC |
+
+**B0 is the V1 primary, not B2.** It is the only rung requiring no behaviour
+change from the merchant *or their customers* — money keeps arriving where it
+always did, and Rekoda simply gains the ability to see it. Latency is minutes
+(Mono `account-updated` webhooks, real-time refresh on a 5-minute limit), which
+is invisible in a bookkeeping workflow.
+
+Obligations: credit transactions only, above a threshold, never debits; consent
+explicit, specific and revocable with one-tap unlink; statement data is Zone 1
+vault data and never enters the AI zone. Mono was acquired by Flutterwave in
+Jan 2026 — keep a second aggregator behind the `BusinessConnection` interface.
 
 ---
 
@@ -466,7 +518,17 @@ https://github.com/AngeloAkuhwa/rekoda.git && git push -u origin main`).
 If the bundle is unavailable, **rebuild M0 from Part 5.1** — the specification there is
 complete enough to reconstruct it, and the tests define the behaviour precisely.
 
-## 4.3 Port map from VoiceReceipt (ask the owner for `voicereceipt-ai-v5.1.zip`)
+## 4.3 Port map from VoiceReceipt — **source supplied and verified 19 Aug 2026**
+
+`voicereceipt-ai-v5.1.zip` has been delivered and independently run:
+**118 tests pass, 0 failed.** ~10,500 LOC across 19 JS files; 15 service
+modules. The port map below is against verified-working code, not a memory of
+it. Notable module sizes: `conversation.js` (41 KB — the gates), `legal.js`
+(52 KB — the six pages + erasure engine), `pdfGenerator.js` (29 KB),
+`parser.js` (19 KB), `paystack.js` (13 KB), `imagePrep.js` (7 KB).
+Dependencies confirm the port assumptions: `pdfkit`, `fontkit`, `better-sqlite3`
+(→ Postgres), `twilio` (→ Meta-direct per ADR 0002/0011), `openai`
+(→ Anthropic per ADR 0007, and self-hosted STT per ADR 0008).
 
 | Port directly (convert to TS, carry tests) | Where it goes |
 |---|---|
@@ -913,10 +975,30 @@ shows true per-business COGS from `usage_events`.
 **Goal:** one real catalogue sale reconciles automatically against a real Paystack payment,
 untouched by human hands.
 
-**Sequencing decision:** Integrate onboarding has **four external approval gates** per
-merchant (Meta business verification, display-name review, catalogue, Paystack). Do **not**
-open self-serve. Hand-onboard 5–10 merchants personally; instrument where the funnel breaks;
-productise afterwards.
+**Sequencing decision, revised by ADR 0012.** The original plan put Integrate
+behind **four external approval gates** per merchant (Meta business
+verification, display-name review, catalogue, Paystack) — every one of which
+requires CAC registration that most WhatsApp vendors do not have. That made
+Integrate a product for registered businesses and forced a concierge alpha.
+
+**Build the no-CAC rungs first (A1 + B0). They are self-serve from day one.**
+
+* **A1 — Rekoda storefront**: merchant's catalogue hosted at
+  `rekoda.app/s/<handle>`, shared as a link in WhatsApp, bio or status. Orders
+  arrive fully structured. No Meta involvement, no approval queue.
+* **A0 — order forwarding**: for merchants already running a WhatsApp Business
+  App catalogue, forwarding the order message to Rekoda is enough. **Collect
+  real forwarded-order specimens from live vendors before writing the parser —
+  do not build against a guessed format.**
+* **B0 — open banking link (Mono)**: merchant links the bank account they
+  already use; Rekoda ingests **incoming credits only**, above a threshold, and
+  matches them. Credit-only, revocable with one tap, Zone 1 vault data, never
+  into the AI zone.
+
+**Then** the registered-merchant rungs, which keep their approval gates and
+therefore keep the concierge treatment: **A2** (per-merchant WABA) and **B2**
+(Paystack DVA) — hand-onboard 5–10 merchants, instrument where the funnel
+breaks, productise afterwards. These are no longer on the critical path.
 
 * **Onboarding**: Embedded Signup / Twilio Tech Provider → WABA → catalogue mapping
   (`RekodaProductId ↔ ExternalCatalogueProductId`) → Paystack connection (ADR 0003:
@@ -960,8 +1042,11 @@ productise afterwards.
   teaches merchants to ignore it within a week, which would destroy the one
   screen the moat is sold on.
 
-**Exit:** a genuine catalogue order → payment → reconciled ledger, with zero manual steps, for
-a real merchant.
+**Exit (revised):** a real merchant **with no CAC registration** takes a genuine
+order through the Rekoda storefront, receives a bank transfer into their
+existing account, and Rekoda reconciles it to `VERIFIED` with zero manual
+steps. The registered-merchant path (A2 + B2) demonstrates the same loop
+through a WABA catalogue order and a Paystack DVA deposit.
 
 ---
 
@@ -987,6 +1072,27 @@ discipline (sparse, never as icons). **Copy gets reviewed the way pixels do.**
 ## 6.2 Onboarding
 `/start` → `/verify` → `/setup/business` → *(Integrate: `/setup/whatsapp` → `/setup/catalogue`
 → `/setup/payments`)* → `/setup/complete`. Stepper, mobile-first, ≤90 seconds for Chat.
+
+## 6.2b Rekoda storefront `/s/<handle>` — public, customer-facing (ADR 0012 rung A1)
+
+**A new surface, and the only one a merchant's *customer* ever sees.** The
+merchant's catalogue, hosted by Rekoda and shared as a link in WhatsApp, bio or
+status. Browse → cart → submit order → structured `OrderPlaced`, with no Meta
+approval queue anywhere in the path.
+
+Design constraints are the harshest in the product: the visitor is on a budget
+phone, on mobile data, arriving from a WhatsApp link, with **no idea who Rekoda
+is** and no reason to trust it. So:
+
+* it is **the merchant's shop, not Rekoda's** — merchant name, logo and colours
+  lead; Rekoda's mark is a discreet credit, never a banner;
+* **fastest page in the product** — the marketing budget (< 120 KB JS) is a
+  ceiling, not a target; server-rendered, images lazy and sized;
+* **no account, no login, no app install** to place an order;
+* checkout collects the minimum: name, phone, delivery note. Every field is
+  Zone 1 vault data from the moment it is submitted;
+* order confirmation states clearly **who** the customer is paying and how, and
+  what happens next.
 
 ## 6.3 Merchant dashboard `/business/*`
 Overview (financial pulse) · Transactions · Sales/Orders · Invoices · Receipts · Payments ·
@@ -1133,10 +1239,14 @@ character-for-character identical.
 ## 11.1 Owner decisions outstanding
 
 1. **Confirm ADR 0003** (Paystack: merchant-owned account with vaulted key).
-1b. **Confirm ADR 0009 is viable** — ask Paystack directly whether DVA
-   provisioning is currently open for a typical registered Nigerian small
-   business, and whether the 1,000-account ceiling is per business or
-   negotiable. M5 scope depends on the answer.
+1b. **Confirm ADR 0012's primary path** — ask **Mono** whether merchant
+   self-account linking for reconciliation is a supported use case, and ask
+   **Flutterwave/Monnify** to confirm the unregistered/sole-proprietor
+   onboarding tier. These gate the inclusive path and matter more than the
+   Paystack question.
+1c. **Confirm ADR 0009/B2** — Paystack DVA provisioning for a registered small
+   business, and whether the 1,000-account ceiling is negotiable. Upgrade path
+   only; no longer blocking.
 2. **Revoke the two burned PATs** pasted into chat during setup.
 3. **Secure `rekoda.app`** (and `rekoda.ng`) — needed before M1 ships canonical URLs.
 4. **VoiceReceipt's fate** — recommendation: keep it running for current testers, migrate at M3.
@@ -1148,7 +1258,8 @@ character-for-character identical.
 | When | Do what |
 |---|---|
 | **1 September 2026** | **RELEASE-GATING.** Meta publishes post-October service-message rates → re-run both COGS scenarios and re-confirm the ₦9,900 tier *before* any public pricing page goes live (ADR 0011). If the Nigerian service rate lands materially above the utility anchor, cut the allowance rather than raise the price on a grandfathered cohort. |
-| **Before M5 commits to DVA** | Confirm with Paystack that DVA provisioning is currently open for a typical registered Nigerian small business (ADR 0009). Do not let the roadmap lean on it until confirmed. |
+| **Before M5 starts** | Confirm with **Mono** that reading a merchant's own account for reconciliation is supported under their CBN Open Banking participation, and confirm the **unregistered-merchant onboarding tier** with Flutterwave/Monnify (ADR 0012). These gate the *primary* path. |
+| **Before M5 commits to DVA (upgrade path only)** | Confirm with Paystack that DVA provisioning is open for a typical registered Nigerian small business (ADR 0009/0012 B2). |
 | **Before the first paying merchant** | `scripts/restore-drill.sh` must pass — PITR restore + per-business ledger-balance sweep (ADR 0010) |
 | **Before any transcript is retained** | NDPA-compliant explicit, revocable, separately-obtained consent flow designed and shipped (ADR 0008) |
 | **M3 benchmark** | Self-hosted STT vs provider → go/no-go on the "audio never leaves" claim (ADR 0005) |
@@ -1166,7 +1277,9 @@ character-for-character identical.
 | Single-box outage | Tested restore runbook; scale-out path is a compose change |
 | AI extracts a wrong figure | Deterministic recomputation + mandatory preview + audit trail + reversal-only corrections |
 | Vault key loss | Documented custody; fatal boot check on key fingerprint |
-| **DVA eligibility excludes unregistered merchants** | Scope the claim to registered merchants; cash/transfer stays a normal `RECORDED` state for everyone else (ADR 0009) |
+| **CAC excludes most vendors from Integrate — via Meta *and* Paystack** | ADR 0012: order capture via Rekoda storefront / order forwarding (no Meta), verification via open banking on the merchant's existing account (BVN + consent, no CAC). Registered-only rungs become upgrades, not gates |
+| **Open banking provider concentration (Mono acquired by Flutterwave)** | Keep a second aggregator behind the `BusinessConnection` interface; no provider shapes leak into the reconciliation engine (ADR 0012) |
+| **Bank-link consent overreach — personal accounts expose personal spending** | Credit transactions only, above a threshold, debits never stored; explicit revocable consent, one-tap unlink; Zone 1 data, never to AI (ADR 0012) |
 | **Service-message pricing lands above the utility anchor** | 1 Sep gate re-runs COGS before pricing goes public; cut allowance, never re-price a grandfathered cohort (ADR 0011) |
 | **Data loss between nightly backups** | Continuous WAL archiving, RPO in minutes, drill-verified monthly (ADR 0010) |
 | **STT fails the accent gate and the privacy claim with it** | AfriSpeech-tuned baseline + three-way benchmark + honest fallback ladder (ADR 0008) |

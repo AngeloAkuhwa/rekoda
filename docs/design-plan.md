@@ -180,6 +180,24 @@ estimated. No email, no password, no CAC/TIN gate. A stepper showing real
 progress; every step recoverable; the WhatsApp hand-off is a deep link, not an
 instruction to go and find the number.
 
+### 4.2b Storefront `/s/<handle>` — the merchant's shop, not ours
+
+The only surface a merchant's **customer** sees (ADR 0012 rung A1), and the
+hardest brief in the product: a stranger on a budget phone, on mobile data,
+arriving from a WhatsApp link, who has never heard of Rekoda.
+
+* **Merchant branding leads.** Their name, logo, colours. Rekoda appears as a
+  discreet credit — the same restraint as the PDF footer, never a banner.
+* **Fastest page we ship.** The < 120 KB JS budget is a ceiling here, not a
+  target. Server-rendered, images sized and lazy, zero layout shift.
+* **No account, no login, no install** to place an order. Any friction here is
+  paid for by the merchant, in lost sales.
+* **Checkout asks the minimum** — name, phone, delivery note — and every field
+  is Zone 1 vault data the instant it is submitted.
+* **Say who is being paid.** The confirmation names the *merchant*, the amount,
+  and what happens next. A customer who cannot tell who they just paid will not
+  pay again.
+
 ### 4.3 Merchant dashboard — visibility, not work
 
 The dashboard is where a merchant *looks*, and the design must not imply

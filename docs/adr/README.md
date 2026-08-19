@@ -14,8 +14,9 @@ a new ADR that supersedes the old one.
 | [0006](0006-hosting-hetzner-cloudflare.md) | Hosting: Hetzner + Cloudflare + R2 (no Azure) | Accepted |
 | [0007](0007-ai-router-sonnet-default.md) | AI router: deterministic-first, Sonnet as default brain | Accepted |
 | [0008](0008-stt-afrispeech-fine-tune.md) | STT baseline is an AfriSpeech-tuned Whisper, not stock Whisper | Accepted |
-| [0009](0009-dva-bank-transfer-reconciliation.md) | Dedicated Virtual Accounts turn bank transfers into verified payments | Proposed |
+| [0009](0009-dva-bank-transfer-reconciliation.md) | Dedicated Virtual Accounts turn bank transfers into verified payments | Superseded by 0012 |
 | [0010](0010-pitr-backups.md) | Continuous WAL archiving (PITR), not nightly dumps | Accepted |
 | [0011](0011-messaging-economics-revised.md) | Messaging economics after Meta's 1 October 2026 change | Accepted |
+| [0012](0012-integrate-without-cac.md) | Integrate without CAC: tiered capture and tiered verification | Accepted |
 
 Template: [0000-template.md](0000-template.md)

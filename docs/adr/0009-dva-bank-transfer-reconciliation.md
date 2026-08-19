@@ -1,6 +1,14 @@
 # 0009 — Dedicated Virtual Accounts turn bank transfers into verified payments
 
-**Status:** Proposed — blocked on eligibility verification (see Consequences)
+**Status:** Superseded by [0012](0012-integrate-without-cac.md)
+
+> **Superseded 2026-08-19.** The *mechanism* below is correct and still used:
+> per-customer NUBANs, attribution by arrival account, lazy issuance, vault-held
+> customer→NUBAN map. What this ADR got wrong is its **position** — it treated
+> DVAs as the answer to bank-transfer reconciliation, when they only serve
+> CAC-registered merchants, who are a minority of Rekoda's market. ADR 0012
+> makes DVAs rung **B2** of a ladder whose first rung requires no registration
+> at all. Read 0012 first.
 **Date:** 2026-08-19
 **Extends:** [0003](0003-paystack-merchant-owned-account.md)
 

@@ -54,8 +54,13 @@ repository's README commit; history is now on `main` plus this branch.
 |---|---|
 | **0011** (supersedes 0002) | Meta charges service messages from 1 Oct 2026. ₦9,900 Chat margin is **39–60%**, not 75%+. Allowance redefined as messages **processed** (inbound + outbound). |
 | **0008** | STT baseline becomes `intronhealth/afrispeech-whisper-medium-all` — stock `large-v3` is 30–45% WER on African-accented English. Gate metric is entity accuracy, not WER. No training flywheel without NDPA consent. |
-| **0009** (Proposed) | Paystack DVAs make **bank transfers** verifiable — per *customer*, so the account identifies the payer. Requires CAC registration, so it serves registered merchants only. **Verify with Paystack before M5 depends on it.** |
+| **0009** (superseded by 0012) | Paystack DVAs make bank transfers verifiable per *customer*. Mechanism kept; position wrong — CAC-only, so it serves a minority. |
+| **0012** | **Integrate no longer requires CAC.** Meta verification needed CAC *too*, so both halves excluded most vendors. Two ladders: capture via Rekoda storefront `/s/<handle>` or order-forwarding (no Meta); verification via open banking on the merchant's existing account (BVN + consent, no CAC). Registered-only rungs become upgrades, not gates. |
 | **0010** | Continuous WAL archiving (PITR), RPO minutes not 24 hours, with a scripted restore drill that sweeps the ledger-balance invariant. |
+
+**VoiceReceipt source supplied and verified** — `voicereceipt-ai-v5.1.zip`
+delivered; **118 tests pass, 0 failed**; ~10,500 LOC / 15 service modules. The
+Part 4.3 port map is now against verified-working code.
 
 **M0 follow-ups are listed in MASTER-PLAN Part 4.4** — RLS mechanism is already
 correct and must not be rewritten; what is missing is the lint ban on raw `db`,
