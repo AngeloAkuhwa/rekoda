@@ -29,10 +29,13 @@ export function BusinessForm({ phone }: { phone: string }) {
       <p className="rk-lede">This is the name on your invoices and receipts. You can change it.</p>
 
       <form action={action} className="rk-form" noValidate>
-        <input type="hidden" name="phone" value={phone} />
-        <Field id="name" label="Business name" hint="For example: Ada Fashion" error={state.error}>
+        <Field
+          id="name"
+          label="Business name"
+          hint="For example: Ada Fashion"
+          error={state.errors?.name}
+        >
           <input
-            id="name"
             name="name"
             type="text"
             autoComplete="organization"
@@ -40,12 +43,11 @@ export function BusinessForm({ phone }: { phone: string }) {
             autoFocus
             required
             className="rk-input"
-            aria-invalid={state.error ? true : undefined}
           />
         </Field>
 
-        <Field id="type" label="What kind of business is it?">
-          <select id="type" name="type" required defaultValue={TYPES[0]} className="rk-input">
+        <Field id="type" label="What kind of business is it?" error={state.errors?.type}>
+          <select name="type" required defaultValue={TYPES[0]} className="rk-input">
             {TYPES.map((t) => (
               <option key={t} value={t}>
                 {t}
@@ -60,7 +62,8 @@ export function BusinessForm({ phone }: { phone: string }) {
       </form>
 
       <p className="rk-fineprint">
-        No CAC or TIN needed. If you have them, you can add them later to unlock extra features.
+        Signing up as <strong>{phone}</strong>. No CAC or TIN needed — add them later to unlock
+        extra features.
       </p>
     </section>
   );

@@ -47,6 +47,19 @@ describe('phone normalisation', () => {
     }
   });
 
+  it('handles country code AND trunk prefix together', () => {
+    // Regression: stripping only `234` left a leading 0 and threw, so a
+    // merchant typing +234 0803 … — extremely common from saved contacts —
+    // could not sign up at all.
+    expect(normalisePhone('+2340803123 4567')).toBe('+2348031234567');
+    expect(normalisePhone('234 0803 123 4567')).toBe('+2348031234567');
+  });
+
+  it('handles the 00 international access prefix', () => {
+    expect(normalisePhone('002348031234567')).toBe('+2348031234567');
+    expect(normalisePhone('00234 0803 123 4567')).toBe('+2348031234567');
+  });
+
   it('accepts the 7/8/9 mobile prefixes', () => {
     expect(normalisePhone('07011111111')).toBe('+2347011111111');
     expect(normalisePhone('09011111111')).toBe('+2349011111111');
@@ -101,6 +114,11 @@ describe('OTP codes', () => {
 
   it('terminates even when every byte must be rejected before a usable one', () => {
     expect(generateOtpCode(seeded([255, 9]))).toBe('999999');
+  });
+
+  it('gives up loudly instead of spinning forever on a useless source', () => {
+    // A source yielding only >=250 previously hung the request thread.
+    expect(() => generateOtpCode(fixed(255))).toThrow(/no usable bytes/);
   });
 });
 

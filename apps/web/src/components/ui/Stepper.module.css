@@ -41,6 +41,15 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* Upcoming steps. Without this rule `styles['todo']` was undefined and every
+   future step rendered class="… undefined". */
+.todo {
+  color: var(--rk-text-muted);
+}
+.todo .dot {
+  opacity: 0.75;
+}
+
 .done .dot {
   background: var(--rk-verified);
   border-color: var(--rk-verified);

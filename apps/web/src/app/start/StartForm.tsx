@@ -25,7 +25,6 @@ export function StartForm() {
           error={state.error}
         >
           <input
-            id="phone"
             name="phone"
             type="tel"
             inputMode="tel"
@@ -33,8 +32,6 @@ export function StartForm() {
             autoFocus
             required
             className="rk-input"
-            aria-describedby={state.error ? 'phone-error' : 'phone-hint'}
-            aria-invalid={state.error ? true : undefined}
           />
         </Field>
         <Button type="submit" disabled={pending}>

@@ -21,7 +21,6 @@ export function VerifyForm({ phone }: { phone: string }) {
         <input type="hidden" name="phone" value={phone} />
         <Field id="code" label="6-digit code" error={state.error}>
           <input
-            id="code"
             name="code"
             type="text"
             inputMode="numeric"
@@ -31,8 +30,6 @@ export function VerifyForm({ phone }: { phone: string }) {
             autoFocus
             required
             className="rk-input rk-input-code"
-            aria-describedby={state.error ? 'code-error' : undefined}
-            aria-invalid={state.error ? true : undefined}
           />
         </Field>
         <Button type="submit" disabled={pending}>

@@ -33,13 +33,24 @@ export class InvalidPhoneError extends Error {}
  * ends up with two businesses and a split ledger.
  */
 export function normalisePhone(input: string): string {
-  const digits = input.replace(/[\s()\-.]/g, '').replace(/^\+/, '');
+  let digits = input.replace(/[\s()\-.]/g, '').replace(/^\+/, '');
   if (!/^\d+$/.test(digits)) throw new InvalidPhoneError(`not a phone number: ${input}`);
 
+  // `00` is the international access prefix — 002348031234567 is a real thing
+  // people type, especially from saved contacts.
+  if (digits.startsWith('00')) digits = digits.slice(2);
+
   let national: string;
-  if (digits.startsWith('234')) national = digits.slice(3);
-  else if (digits.startsWith('0')) national = digits.slice(1);
-  else national = digits;
+  if (digits.startsWith('234')) {
+    national = digits.slice(3);
+    // Country code AND trunk prefix: +234 0803 123 4567. Merchants write this
+    // constantly — dropping only the 234 leaves a leading 0 and rejects them.
+    if (national.startsWith('0')) national = national.slice(1);
+  } else if (digits.startsWith('0')) {
+    national = digits.slice(1);
+  } else {
+    national = digits;
+  }
 
   // Nigerian mobile national significant numbers are 10 digits, leading 7/8/9.
   if (!/^[789]\d{9}$/.test(national)) {
@@ -88,7 +99,11 @@ export interface IssuedOtp {
  */
 export function generateOtpCode(random: RandomSource, length = OTP_LENGTH): string {
   let out = '';
-  while (out.length < length) {
+  // Bounded: a source that only ever yields >=250 must fail loudly rather than
+  // spin forever inside a request. 64 rounds is astronomically more than a sane
+  // source needs (P(reject) = 6/256 per byte).
+  for (let round = 0; out.length < length; round++) {
+    if (round >= 64) throw new Error('RandomSource yielded no usable bytes');
     for (const byte of random(length)) {
       if (byte >= 250) continue; // reject the non-uniform tail
       out += String(byte % 10);

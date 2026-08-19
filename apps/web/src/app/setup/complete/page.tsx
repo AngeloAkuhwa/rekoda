@@ -2,9 +2,12 @@ import type { Metadata } from 'next';
 import { redirect } from 'next/navigation';
 import { Button } from '@/components/ui/Button';
 import { Stepper } from '@/components/ui/Stepper';
+import { readVerifiedPhone } from '@/server/verified-phone';
 
 export const metadata: Metadata = {
-  title: 'You&rsquo;re ready',
+  // Plain apostrophe: metadata is escaped, so an HTML entity here renders
+  // literally as `You&rsquo;re ready` in the browser tab.
+  title: 'You’re ready',
   robots: { index: false, follow: false },
 };
 
@@ -16,8 +19,9 @@ export default async function CompletePage({
 }: {
   searchParams: Promise<{ name?: string }>;
 }) {
+  const verified = await readVerifiedPhone();
   const { name } = await searchParams;
-  if (!name) redirect('/start');
+  if (!verified || !name) redirect('/start');
 
   const waHref = REKODA_WA
     ? `https://wa.me/${REKODA_WA}?text=${encodeURIComponent('Hi Rekoda')}`
