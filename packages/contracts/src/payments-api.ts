@@ -46,10 +46,13 @@ export type PaymentsListResponse = z.infer<typeof paymentsListResponse>;
 export const paymentExceptionsResponse = z.object({
   exceptions: z.array(
     z.object({
+      id: z.string(),
       status: z.string(),
       reason: z.string().nullable(),
       amountK: z.number().nullable(),
       outstandingK: z.number().nullable(),
+      createdAt: z.string(),
+      resolvedAt: z.string().nullable(),
     }),
   ),
 });

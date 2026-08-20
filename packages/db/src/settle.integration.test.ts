@@ -12,7 +12,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { paymentReference } from '@rekoda/core';
 import { createDb, withBusiness, type Db, type TenantDb } from './client.js';
-import { identity, issueRepo, paymentsHub, settleRepo } from './index.js';
+import { identity, issueRepo, paymentsHub, reportsRepo, settleRepo } from './index.js';
 import { migrate, requireUrls, truncateAll, type Urls } from './testing.js';
 
 let urls: Urls;
@@ -273,5 +273,110 @@ describe('booking outcomes (§21–25)', () => {
     // The payment row exists — the money is real — but the books wait.
     const n = await one<{ n: number }>(businessId, sql`SELECT count(*)::int AS n FROM payments`);
     expect(n?.n).toBe(1);
+  });
+});
+
+describe('the exception queue (§35): resolving', () => {
+  /** Book an overpayment, returning the id of the EXCEPTION row it left behind. */
+  async function seedException(businessId: string): Promise<string> {
+    const { intent } = await seedObligation(businessId);
+    await withBusiness(db, businessId, (tx) => book(tx, businessId, intent, 20_000_000));
+    const recon = await one<{ id: string }>(
+      businessId,
+      sql`SELECT id FROM reconciliations WHERE status = 'EXCEPTION'`,
+    );
+    if (!recon) throw new Error('seed did not produce an exception');
+    return recon.id;
+  }
+
+  it('resolves exactly once: first call wins, the second finds nothing left to resolve', async () => {
+    const businessId = await seedBusiness();
+    const exceptionId = await seedException(businessId);
+
+    const first = await withBusiness(db, businessId, (tx) =>
+      settleRepo.resolveException(tx, businessId, exceptionId, 'user:owner-1'),
+    );
+    expect(first).toBe(true);
+
+    const row = await one<{ resolved_by: string | null; resolved_at: Date | null }>(
+      businessId,
+      sql`SELECT resolved_by, resolved_at FROM reconciliations WHERE id = ${exceptionId}::uuid`,
+    );
+    expect(row?.resolved_by).toBe('user:owner-1');
+    expect(row?.resolved_at).not.toBeNull();
+
+    // A double-tap (or a second reviewer) changes nothing and says so.
+    const second = await withBusiness(db, businessId, (tx) =>
+      settleRepo.resolveException(tx, businessId, exceptionId, 'user:owner-2'),
+    );
+    expect(second).toBe(false);
+    const after = await one<{ resolved_by: string | null }>(
+      businessId,
+      sql`SELECT resolved_by FROM reconciliations WHERE id = ${exceptionId}::uuid`,
+    );
+    expect(after?.resolved_by).toBe('user:owner-1');
+  });
+
+  it('NEVER resolves across tenants: another business holding the id changes nothing', async () => {
+    const businessId = await seedBusiness();
+    const exceptionId = await seedException(businessId);
+
+    const otherUser = await identity.upsertUserByPhone(db, '+2348120000002');
+    const other = await identity.createBusinessWithOwner(db, {
+      name: 'Bode Spares',
+      businessType: null,
+      ownerUserId: otherUser.id,
+    });
+
+    const resolved = await withBusiness(db, other.id, (tx) =>
+      settleRepo.resolveException(tx, other.id, exceptionId, 'user:intruder'),
+    );
+    expect(resolved).toBe(false);
+
+    const row = await one<{ resolved_at: Date | null }>(
+      businessId,
+      sql`SELECT resolved_at FROM reconciliations WHERE id = ${exceptionId}::uuid`,
+    );
+    expect(row?.resolved_at).toBeNull();
+  });
+
+  it('refuses a MATCHED reconciliation — only exceptions are reviewable', async () => {
+    const businessId = await seedBusiness();
+    const { intent } = await seedObligation(businessId);
+    await withBusiness(db, businessId, (tx) => book(tx, businessId, intent, 15_000_000));
+    const matched = await one<{ id: string }>(
+      businessId,
+      sql`SELECT id FROM reconciliations WHERE status = 'MATCHED'`,
+    );
+
+    const resolved = await withBusiness(db, businessId, (tx) =>
+      settleRepo.resolveException(tx, businessId, matched!.id, 'user:owner-1'),
+    );
+    expect(resolved).toBe(false);
+  });
+
+  it('drops out of the overview count and gains a resolvedAt in the readback once reviewed', async () => {
+    const businessId = await seedBusiness();
+    const exceptionId = await seedException(businessId);
+
+    const before = await withBusiness(db, businessId, (tx) =>
+      reportsRepo.overviewFor(tx, businessId),
+    );
+    expect(before.exceptionsOpen).toBe(1);
+
+    await withBusiness(db, businessId, (tx) =>
+      settleRepo.resolveException(tx, businessId, exceptionId, 'user:owner-1'),
+    );
+
+    const after = await withBusiness(db, businessId, (tx) =>
+      reportsRepo.overviewFor(tx, businessId),
+    );
+    expect(after.exceptionsOpen).toBe(0);
+
+    // The readback keeps the row — reviewed, not erased.
+    const readback = await withBusiness(db, businessId, (tx) => settleRepo.reconciliationsFor(tx));
+    const row = readback.find((r) => r.id === exceptionId);
+    expect(row?.status).toBe('EXCEPTION');
+    expect(row?.resolvedAt).not.toBeNull();
   });
 });

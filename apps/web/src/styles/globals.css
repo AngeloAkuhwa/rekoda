@@ -997,6 +997,20 @@ button,
   text-align: right;
 }
 
+.rk-review-btn {
+  font: inherit;
+  font-size: var(--rk-text-xs);
+  font-weight: 600;
+  color: var(--rk-accent);
+  background: none;
+  border: 1px solid var(--rk-border);
+  border-radius: var(--rk-radius-full);
+  padding: 2px var(--rk-space-3);
+}
+.rk-review-btn:hover {
+  border-color: var(--rk-accent);
+}
+
 .rk-exception-list {
   list-style: none;
   display: grid;

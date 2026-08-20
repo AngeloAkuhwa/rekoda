@@ -37,7 +37,7 @@ export interface Overview {
   owedToYouK: number;
   /** What the business owes suppliers (ACCOUNTS_PAYABLE balance), all time. */
   youOweK: number;
-  /** Reconciliation exceptions on record. */
+  /** Reconciliation exceptions still awaiting a human. */
   exceptionsOpen: number;
 }
 
@@ -76,7 +76,7 @@ export async function overviewFor(tx: TenantDb, businessId: string): Promise<Ove
   const exceptionRows = await tx.execute<{ n: number }>(sql`
     SELECT count(*)::int AS n
     FROM reconciliations
-    WHERE business_id = ${businessId}::uuid AND status = 'EXCEPTION'
+    WHERE business_id = ${businessId}::uuid AND status = 'EXCEPTION' AND resolved_at IS NULL
   `);
 
   return {

@@ -6,6 +6,7 @@ import { paymentConnection, paymentExceptions, paymentsList } from '@/server/api
 import { requireSessionWithToken } from '@/server/guards';
 import { AppNav } from '../AppNav';
 import { ConnectForm } from './ConnectForm';
+import { markExceptionReviewed } from './actions';
 
 export const metadata: Metadata = {
   title: 'Payments',
@@ -31,6 +32,8 @@ export default async function PaymentsPage() {
   ]);
 
   const bank = bankName(connection.bankCode);
+  const open = exceptions.exceptions.filter((e) => e.resolvedAt === null);
+  const reviewed = exceptions.exceptions.filter((e) => e.resolvedAt !== null);
 
   return (
     <section className="rk-container rk-dash">
@@ -135,12 +138,12 @@ export default async function PaymentsPage() {
       {/* ── the exception queue (§35): the money that needs a human ── */}
       <div className="rk-card">
         <h2>Needs your attention</h2>
-        {exceptions.exceptions.length === 0 ? (
+        {open.length === 0 ? (
           <p className="rk-fineprint">Nothing. Every verified payment matched what was expected.</p>
         ) : (
           <ul className="rk-exception-list">
-            {exceptions.exceptions.map((e, i) => (
-              <li key={i}>
+            {open.map((e) => (
+              <li key={e.id}>
                 <MoneyBadge state="attention">{describeException(e.reason)}</MoneyBadge>
                 <span className="rk-fineprint">
                   {e.amountK == null ? null : <Money kobo={e.amountK} />}
@@ -150,14 +153,38 @@ export default async function PaymentsPage() {
                       (overpaid by <Money kobo={-e.outstandingK} />)
                     </>
                   ) : null}
+                  {' · '}
+                  {exceptionDate(e.createdAt)}
                 </span>
+                <form action={markExceptionReviewed}>
+                  <input type="hidden" name="exceptionId" value={e.id} />
+                  <button type="submit" className="rk-review-btn">
+                    Mark reviewed
+                  </button>
+                </form>
               </li>
             ))}
           </ul>
         )}
+        {reviewed.length > 0 ? (
+          <p className="rk-fineprint">
+            {reviewed.length === 1
+              ? 'One item already reviewed.'
+              : `${reviewed.length} items already reviewed.`}
+          </p>
+        ) : null}
       </div>
     </section>
   );
+}
+
+/** `12 Aug` beside each item, so age is visible at a glance. */
+function exceptionDate(iso: string): string {
+  return new Date(iso).toLocaleDateString('en-NG', {
+    day: 'numeric',
+    month: 'short',
+    timeZone: 'Africa/Lagos',
+  });
 }
 
 /** Exception reasons, said the way a merchant would say them. */
