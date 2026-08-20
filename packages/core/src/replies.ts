@@ -18,6 +18,8 @@
  *    one message the merchant will actually read.
  */
 
+import { formatKobo } from './money.js';
+
 /** Every message carries the tokens it was built with, un-rehydrated. */
 export interface Reply {
   /** May contain CUSTOMER_x tokens. Rehydrated at the very last moment. */
@@ -38,10 +40,12 @@ export function help(): Reply {
   return reply(
     'Here is what I can do:\n\n' +
       '• *Record a sale*: "sold 2 bags to Ada for 40k"\n' +
-      '• *Record a payment*: "Ada paid 20k"\n' +
       '• *Record an expense*: "fuel 12k"\n' +
+      '• *Record stock*: "bought 10 crates of ankara for 50k"\n' +
       '• *who owes me* shows your debtors\n' +
-      '• *records* shows your transactions\n\n' +
+      "• *records* shows this month's totals\n" +
+      '• *payment details* sends a payment link\n' +
+      '• *resend* sends your last document again\n\n' +
       'Reply *STOP* at any time to stop messages.',
   );
 }
@@ -73,6 +77,35 @@ export function confirmErasure(): Reply {
     'You are asking me to delete your data. This removes your customers and ' +
       'their details permanently and cannot be undone.\n\n' +
       'Reply *DELETE MY DATA* again to confirm, or anything else to keep it.',
+  );
+}
+
+/**
+ * Erasure, performed. The count makes the claim checkable: a merchant who
+ * knows they had customers and reads "0 records" knows to ask questions.
+ */
+export function erasureDone(erasedFacets: number): Reply {
+  return reply(
+    `Done. Your customers' saved details are deleted (${erasedFacets} ` +
+      `record${erasedFacets === 1 ? '' : 's'}). Your invoices and books keep only their ` +
+      'reference numbers.\n\nFor anything more, including your conversations and account, ' +
+      'see rekoda.app/data-deletion.',
+  );
+}
+
+/** The merchant asked to delete, then said anything but the confirm phrase. */
+export function erasureKept(): Reply {
+  return reply('Kept. Nothing was deleted.');
+}
+
+/**
+ * The sign-in code, on its way to WhatsApp. The one message that carries a
+ * live credential: the code and the warning travel together, always.
+ */
+export function otpMessage(code: string): Reply {
+  return reply(
+    `Your Rekoda sign-in code is ${code}. It expires in 10 minutes.\n\n` +
+      'Never share this code. Rekoda will never ask you for it.',
   );
 }
 
@@ -190,17 +223,12 @@ export function correctionTaken(): Reply {
  * is the question they will be asked next.
  */
 export function issued(documentNumber: string, totalK: number, balanceDueK: number): Reply {
-  const lines = [`Saved ✅ ${documentNumber} for ${formatNaira(totalK)}.`];
-  if (balanceDueK > 0) lines.push(`${formatNaira(balanceDueK)} still owed.`);
+  const lines = [`Saved ✅ ${documentNumber} for ${formatKobo(totalK)}.`];
+  if (balanceDueK > 0) lines.push(`${formatKobo(balanceDueK)} still owed.`);
   return reply(lines.join('\n'));
 }
 
 /** Kobo → ₦, no decimals when there are none. Mirrors the money engine. */
-function formatNaira(kobo: number): string {
-  const whole = Math.floor(Math.abs(kobo) / 100).toLocaleString('en-NG');
-  const minor = String(Math.abs(kobo) % 100).padStart(2, '0');
-  return `₦${whole}${minor === '00' ? '' : `.${minor}`}`;
-}
 
 /**
  * The caption above a delivered document.
@@ -230,7 +258,7 @@ export function paymentConfirmed(
   receiptNumber: string,
 ): Reply {
   return reply(
-    `Money in ✅ ${formatNaira(amountK)} confirmed for ${invoiceNumber}.\n` +
+    `Money in ✅ ${formatKobo(amountK)} confirmed for ${invoiceNumber}.\n` +
       `Receipt ${receiptNumber} is attached. Forward it to your customer.`,
   );
 }
@@ -247,7 +275,7 @@ export function paymentLinkReady(
   checkoutUrl: string,
 ): Reply {
   return reply(
-    `Payment link for ${invoiceNumber}: ${formatNaira(amountK)} outstanding.\n${checkoutUrl}\n\n` +
+    `Payment link for ${invoiceNumber}: ${formatKobo(amountK)} outstanding.\n${checkoutUrl}\n\n` +
       'Forward it to your customer. I will tell you the moment the money lands, ' +
       'and the receipt follows by itself.',
   );
@@ -311,11 +339,11 @@ export function debtorList(rows: DebtorLine[], totalK: number, count: number): R
   if (count === 0) {
     return reply('Nobody owes you right now. Every invoice you have issued is fully paid.');
   }
-  const lines = rows.map((r) => `${r.invoiceNumber}: ${formatNaira(r.balanceDueK)}`);
+  const lines = rows.map((r) => `${r.invoiceNumber}: ${formatKobo(r.balanceDueK)}`);
   const heading =
     count === 1
-      ? `One invoice is unpaid: ${formatNaira(totalK)} owed to you.`
-      : `${count} invoices are unpaid: ${formatNaira(totalK)} owed to you in total.`;
+      ? `One invoice is unpaid: ${formatKobo(totalK)} owed to you.`
+      : `${count} invoices are unpaid: ${formatKobo(totalK)} owed to you in total.`;
   const overflow =
     count > rows.length ? `\n...and ${count - rows.length} more on your dashboard.` : '';
   return reply(`${heading}\n\n${lines.join('\n')}${overflow}`);
@@ -347,10 +375,10 @@ export function recordsSummary(input: {
   }
   return reply(
     'Your books this month:\n' +
-      `Sales ${formatNaira(input.salesK)}\n` +
-      `Money in ${formatNaira(input.moneyInK)}\n` +
-      `Money out ${formatNaira(input.moneyOutK)}\n` +
-      `Owed to you ${formatNaira(input.owedToYouK)}\n\n` +
+      `Sales ${formatKobo(input.salesK)}\n` +
+      `Money in ${formatKobo(input.moneyInK)}\n` +
+      `Money out ${formatKobo(input.moneyOutK)}\n` +
+      `Owed to you ${formatKobo(input.owedToYouK)}\n\n` +
       'The full statements are on your dashboard.',
   );
 }
@@ -390,7 +418,7 @@ export function onlyText(): Reply {
 export function notYet(what: string): Reply {
   return reply(
     `${what} is not ready yet, but it is coming. Right now I can record sales, ` +
-      'expenses and stock purchases.',
+      'expenses and stock purchases, and answer *who owes me*, *records* and *payment details*.',
   );
 }
 
@@ -400,7 +428,7 @@ export function notYet(what: string): Reply {
  * "receipt" or "invoice".
  */
 export function expenseSaved(amountK: number, description: string): Reply {
-  return reply(`Saved ✅ ${formatNaira(amountK)} expense: ${description}. It is in your books.`);
+  return reply(`Saved ✅ ${formatKobo(amountK)} expense: ${description}. It is in your books.`);
 }
 
 /**
@@ -409,8 +437,8 @@ export function expenseSaved(amountK: number, description: string): Reply {
  * reasoning as the balance line in `issued`.
  */
 export function purchaseSaved(amountK: number, owedK: number): Reply {
-  const lines = [`Saved ✅ ${formatNaira(amountK)} stock purchase.`];
-  if (owedK > 0) lines.push(`${formatNaira(owedK)} still owed to your supplier.`);
+  const lines = [`Saved ✅ ${formatKobo(amountK)} stock purchase.`];
+  if (owedK > 0) lines.push(`${formatKobo(owedK)} still owed to your supplier.`);
   return reply(lines.join('\n'));
 }
 

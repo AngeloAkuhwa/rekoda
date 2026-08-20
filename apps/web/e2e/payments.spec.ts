@@ -25,6 +25,15 @@ async function submit(page: Page) {
   await page.click('button[type=submit]');
 }
 
+/**
+ * The connect form's own button, by name: the dashboard header's Sign out is
+ * also a submit button and comes first in the DOM, so the generic selector
+ * would sign the merchant out instead of saving the form.
+ */
+async function saveConnection(page: Page) {
+  await page.getByRole('button', { name: /Save my account|Saving/ }).click();
+}
+
 /** Phone → code → business, leaving the browser signed in. */
 async function onboard(page: Page, phone: string) {
   await page.goto('/start');
@@ -51,7 +60,7 @@ test('settlement details go in once and only the mask ever comes back', async ({
   await page.selectOption('#bankCode', '058'); // GTBank
   await page.fill('#accountNumber', ACCOUNT_NUMBER);
   await page.fill('#accountName', 'Ada Fashion Ventures');
-  await submit(page);
+  await saveConnection(page);
 
   // No provider key in this environment, so the honest state is "saved,
   // activation pending" — shown with the mask, never the number.
@@ -72,7 +81,7 @@ test('a 9-digit account number is corrected in plain words', async ({ page }) =>
   await page.selectOption('#bankCode', '058');
   await page.fill('#accountNumber', '123456789');
   await page.fill('#accountName', 'Ada Fashion Ventures');
-  await submit(page);
+  await saveConnection(page);
 
   await expect(page.getByText('Account numbers have 10 digits')).toBeVisible();
 });

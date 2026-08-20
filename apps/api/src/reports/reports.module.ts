@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { AuthService } from '../auth/auth.service.js';
 import { SessionGuard } from '../auth/session.guard.js';
 import { DbModule } from '../db/db.module.js';
+import { RepliesModule } from '../replies/replies.module.js';
 import { ReportsController } from './reports.controller.js';
 
 /**
@@ -10,7 +11,7 @@ import { ReportsController } from './reports.controller.js';
  * declares the controller using them.
  */
 @Module({
-  imports: [DbModule],
+  imports: [DbModule, RepliesModule],
   controllers: [ReportsController],
   providers: [AuthService, SessionGuard],
 })

@@ -31,6 +31,8 @@ export const users = pgTable(
     /** E.164. Unique — the phone IS the identity anchor. */
     phone: text('phone').notNull(),
     displayName: text('display_name'),
+    /** STOP as a fact: set by STOP, cleared by START, checked before every proactive send. */
+    optedOutAt: timestamp('opted_out_at', { withTimezone: true }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },

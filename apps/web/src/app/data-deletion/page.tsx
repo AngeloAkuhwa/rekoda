@@ -55,8 +55,11 @@ export default function DataDeletionPage() {
           heading: 'What is deleted',
           body: (
             <ul>
-              <li>Your conversations with Rekoda, including voice notes and transcripts.</li>
-              <li>Your customers&rsquo; names, numbers and addresses.</li>
+              <li>
+                Your customers&rsquo; names, numbers and addresses are deleted immediately when you
+                send <strong>DELETE MY DATA</strong> on WhatsApp and confirm.
+              </li>
+              <li>Your conversations with Rekoda.</li>
               <li>Your business profile and settings.</li>
               <li>Your sign-in history and sessions.</li>
               <li>Connections to your payment provider and WhatsApp catalogue.</li>

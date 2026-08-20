@@ -222,3 +222,17 @@ function isUniqueViolation(error: unknown): boolean {
   }
   return false;
 }
+
+/**
+ * The chat erasure command: every identity facet of every customer, gone in
+ * one statement. The customers rows stay — they hold only the CUSTOMER_x
+ * token, which after this deletion resolves to nobody. Financial records
+ * keep their reference numbers and nothing else.
+ */
+export async function eraseAllIdentities(tx: TenantDb, businessId: string): Promise<number> {
+  const deleted = await tx
+    .delete(customerIdentities)
+    .where(eq(customerIdentities.businessId, businessId))
+    .returning({ id: customerIdentities.id });
+  return deleted.length;
+}

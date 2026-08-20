@@ -35,6 +35,7 @@ export const paymentsListResponse = z.object({
       status: z.string().nullable(),
       verified: z.number(),
       method: z.string(),
+      amountK: z.number(),
       grossAmountK: z.number().nullable(),
       providerFeeK: z.number().nullable(),
       settlementAmountK: z.number().nullable(),

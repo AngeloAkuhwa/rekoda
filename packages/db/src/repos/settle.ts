@@ -430,6 +430,8 @@ export interface PaymentReadback {
   verified: number;
   status: string | null;
   method: string;
+  /** Always present — what was recorded, even when no provider breakdown exists. */
+  amountK: number;
   grossAmountK: number | null;
   providerFeeK: number | null;
   settlementAmountK: number | null;
@@ -445,6 +447,7 @@ export async function paymentsFor(tx: TenantDb): Promise<PaymentReadback[]> {
       verified: payments.verified,
       status: payments.status,
       method: payments.method,
+      amountK: payments.amountK,
       grossAmountK: payments.grossAmountK,
       providerFeeK: payments.providerFeeK,
       settlementAmountK: payments.settlementAmountK,
