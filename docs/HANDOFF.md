@@ -31,15 +31,15 @@ for M2/M3 (PDF templates, Meta/Twilio channel code, conversation gates).
 
 ## 2. Where everything lives
 
-| Thing | Location |
-|---|---|
-| Decisions and why | [adr/](adr/) — 7 ADRs, all Accepted except 0003 (Paystack model, awaiting Angelo) |
-| Product & system spec | [architecture.md](architecture.md) |
-| Commercial model | [pricing-model.md](pricing-model.md) — incl. standing review triggers |
-| Milestones M0–M5 | [engineering-plan.md](engineering-plan.md) §11 |
-| SEO/content plan | [content-plan.md](content-plan.md) |
-| Ops procedures | [runbooks/](runbooks/) |
-| Code | `packages/core` (money/ledger/reconciliation — most-tested), `packages/contracts` (AI border schemas), `packages/db` (30-table schema + RLS), `packages/shared` (branded types) |
+| Thing                 | Location                                                                                                                                                                        |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Decisions and why     | [adr/](adr/) — 7 ADRs, all Accepted except 0003 (Paystack model, awaiting Angelo)                                                                                               |
+| Product & system spec | [architecture.md](architecture.md)                                                                                                                                              |
+| Commercial model      | [pricing-model.md](pricing-model.md) — incl. standing review triggers                                                                                                           |
+| Milestones M0–M5      | [engineering-plan.md](engineering-plan.md) §11                                                                                                                                  |
+| SEO/content plan      | [content-plan.md](content-plan.md)                                                                                                                                              |
+| Ops procedures        | [runbooks/](runbooks/)                                                                                                                                                          |
+| Code                  | `packages/core` (money/ledger/reconciliation — most-tested), `packages/contracts` (AI border schemas), `packages/db` (30-table schema + RLS), `packages/shared` (branded types) |
 
 ## 3. Status at handoff
 
@@ -51,13 +51,13 @@ repository's README commit; history is now on `main` plus this branch.
 
 **Plan revised to v3 (19 Aug 2026).** Four new ADRs and one supersession:
 
-| ADR | Effect |
-|---|---|
-| **0011** (supersedes 0002) | Meta charges service messages from 1 Oct 2026. ₦9,900 Chat margin is **39–60%**, not 75%+. Allowance redefined as messages **processed** (inbound + outbound). |
-| **0008** | STT baseline becomes `intronhealth/afrispeech-whisper-medium-all` — stock `large-v3` is 30–45% WER on African-accented English. Gate metric is entity accuracy, not WER. No training flywheel without NDPA consent. |
-| **0009** (superseded by 0012) | Paystack DVAs make bank transfers verifiable per *customer*. Mechanism kept; position wrong — CAC-only, so it serves a minority. |
-| **0012** | **Integrate no longer requires CAC.** Meta verification needed CAC *too*, so both halves excluded most vendors. Two ladders: capture via Rekoda storefront `/s/<handle>` or order-forwarding (no Meta); verification via open banking on the merchant's existing account (BVN + consent, no CAC). Registered-only rungs become upgrades, not gates. |
-| **0010** | Continuous WAL archiving (PITR), RPO minutes not 24 hours, with a scripted restore drill that sweeps the ledger-balance invariant. |
+| ADR                           | Effect                                                                                                                                                                                                                                                                                                                                              |
+| ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **0011** (supersedes 0002)    | Meta charges service messages from 1 Oct 2026. ₦9,900 Chat margin is **39–60%**, not 75%+. Allowance redefined as messages **processed** (inbound + outbound).                                                                                                                                                                                      |
+| **0008**                      | STT baseline becomes `intronhealth/afrispeech-whisper-medium-all` — stock `large-v3` is 30–45% WER on African-accented English. Gate metric is entity accuracy, not WER. No training flywheel without NDPA consent.                                                                                                                                 |
+| **0009** (superseded by 0012) | Paystack DVAs make bank transfers verifiable per _customer_. Mechanism kept; position wrong — CAC-only, so it serves a minority.                                                                                                                                                                                                                    |
+| **0012**                      | **Integrate no longer requires CAC.** Meta verification needed CAC _too_, so both halves excluded most vendors. Two ladders: capture via Rekoda storefront `/s/<handle>` or order-forwarding (no Meta); verification via open banking on the merchant's existing account (BVN + consent, no CAC). Registered-only rungs become upgrades, not gates. |
+| **0010**                      | Continuous WAL archiving (PITR), RPO minutes not 24 hours, with a scripted restore drill that sweeps the ledger-balance invariant.                                                                                                                                                                                                                  |
 
 **VoiceReceipt source supplied and verified** — `voicereceipt-ai-v5.1.zip`
 delivered; **118 tests pass, 0 failed**; ~10,500 LOC / 15 service modules. The
@@ -87,18 +87,18 @@ session with the full skill payload and be committed.
 four-step onboarding flow shipped in PR #9. The follow-on replaced the dev-only
 in-memory store with real persistence:
 
-* **`apps/api`** — NestJS on Fastify. Auth module (OTP request/verify, business
+- **`apps/api`** — NestJS on Fastify. Auth module (OTP request/verify, business
   creation, sessions, role guard), health endpoint reporting the applied
   migration count rather than just a live socket.
-* **`packages/db/src/repos/identity.ts`** — the only place identity SQL lives.
+- **`packages/db/src/repos/identity.ts`** — the only place identity SQL lives.
   Rules stay in `@rekoda/core` (no database, no clock); this holds locking and
   transaction boundaries and no rules of its own.
-* **ADR 0020** records the three decisions worth not rediscovering: the setup
+- **ADR 0020** records the three decisions worth not rediscovering: the setup
   grant (a session is bound to a business, so onboarding needs its own
   artefact), `app.user_id` as a second narrow pin for the bootstrap read, and
   the fact that the OTP attempt limit did not survive concurrency until the
   decision moved inside an advisory lock.
-* **`apps/web` can no longer assert identity** — no pool, no signing secret, no
+- **`apps/web` can no longer assert identity** — no pool, no signing secret, no
   tenant pin. The interim signed-cookie marker is deleted.
 
 **Known gap, deliberate:** OTP delivery. The code is issued and verified
@@ -107,6 +107,7 @@ layer. `REKODA_REVEAL_OTP` exists for the test suite and the API refuses to
 boot with it set when `NODE_ENV=production`.
 
 **Recommended next**, in order:
+
 1. **Self-host the fonts** (`next/font/google`). `layout.tsx` currently loads
    Calistoga + Inter via a render-blocking `fonts.googleapis.com` stylesheet —
    a third-party round trip on the critical path for merchants on exactly the
@@ -139,49 +140,49 @@ boot with it set when `NODE_ENV=production`.
 
 ## 5. Working agreements with Angelo (standing preferences)
 
-* **Security and scalability are default requirements**, not features to
+- **Security and scalability are default requirements**, not features to
   ask about. Two-layer tenant isolation, hashed tokens, encrypted vaults,
   audit trails — always.
-* **No Azure** (cost). Hosting is Hetzner + Cloudflare + R2 (ADR 0006).
-* **AI:** strongest affordable model — Sonnet is the runtime default
+- **No Azure** (cost). Hosting is Hetzner + Cloudflare + R2 (ADR 0006).
+- **AI:** strongest affordable model — Sonnet is the runtime default
   (ADR 0007); top-tier models for build/evals; escalation is a config flag.
   No hardware purchases ever — STT is self-hosted on the rented server.
-* **No zip-file deliveries** — everything through the repo as reviewable
+- **No zip-file deliveries** — everything through the repo as reviewable
   conventional commits. (Bundles were a one-time workaround for the proxy.)
-* **UI work uses the UI/UX Pro Max skill + 21st.dev inspiration**, and
+- **UI work uses the UI/UX Pro Max skill + 21st.dev inspiration**, and
   Angelo wants to **see screenshots of UIs in chat** (light + dark, mobile
   included) when pages are built.
-* Angelo welcomes **honest pushback with reasoning** — he has accepted
+- Angelo welcomes **honest pushback with reasoning** — he has accepted
   several reversals of his own suggestions when argued properly (e.g. no
   WhatsApp caption branding, STOP semantics, tiered honesty copy). State
   disagreement plainly, then do what he decides.
-* Plans before builds: for substantial new work, write the plan, let him
+- Plans before builds: for substantial new work, write the plan, let him
   review, then execute on "go".
-* Money rules are absolute: integer kobo, deterministic computation, AI
+- Money rules are absolute: integer kobo, deterministic computation, AI
   proposes / code disposes, no figure in any reply that didn't come from
   the deterministic layer.
 
 ## 6. Open items owned by Angelo
 
-* Confirm ADR 0003 (Paystack: merchant-owned account with vaulted key).
-* Revoke the two burned PATs.
-* Secure `rekoda.app` (and ideally `rekoda.ng`) — needed before M1 ships
+- Confirm ADR 0003 (Paystack: merchant-owned account with vaulted key).
+- Revoke the two burned PATs.
+- Secure `rekoda.app` (and ideally `rekoda.ng`) — needed before M1 ships
   pages with canonical URLs.
-* Decide VoiceReceipt's fate for current testers (recommendation: keep it
+- Decide VoiceReceipt's fate for current testers (recommendation: keep it
   running, migrate testers at M3).
-* CAC name alignment for the eventual Meta business verification (legal
+- CAC name alignment for the eventual Meta business verification (legal
   name must match everywhere, character for character).
 
 ## 7. Standing review triggers (do not lose these)
 
-* **1 Sep 2026** — Meta publishes post-October service-message rates →
+- **1 Sep 2026** — Meta publishes post-October service-message rates →
   re-run every COGS table in pricing-model.md (ADR 0002 assumption).
-* **First 50 paying merchants** — replace pricing assumptions with
+- **First 50 paying merchants** — replace pricing assumptions with
   `usage_events` telemetry.
-* **M3 accent benchmark** — self-hosted STT vs provider baseline gates the
+- **M3 accent benchmark** — self-hosted STT vs provider baseline gates the
   "audio never leaves Rekoda" marketing claim (ADR 0005).
 
 ---
 
-*Update discipline: at the end of each session, amend §3 (status), §4
-(new operational facts), and §6 (open items) in the same PR as the work.*
+_Update discipline: at the end of each session, amend §3 (status), §4
+(new operational facts), and §6 (open items) in the same PR as the work._

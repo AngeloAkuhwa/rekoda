@@ -40,22 +40,22 @@ Both feed the **exact same financial core**.
 
 ### The final rule (§32)
 
-Never describe Rekoda Chat as *"accounting for WhatsApp sellers"*. Describe it
+Never describe Rekoda Chat as _"accounting for WhatsApp sellers"_. Describe it
 as **accounting and business operations through WhatsApp for merchants selling
 anywhere**. WhatsApp is the interface. It is not the sales-channel
 restriction.
 
 ### The product language (§31)
 
-- **Rekoda Chat** — *"Sell anywhere. Tell Rekoda what happened."* /
-  *"However you sell, tell Rekoda. We'll keep the records."*
+- **Rekoda Chat** — _"Sell anywhere. Tell Rekoda what happened."_ /
+  _"However you sell, tell Rekoda. We'll keep the records."_
   Description: Rekoda Chat is your WhatsApp-native business assistant. Send a
   message, voice note, receipt, invoice, bill, bank statement or other
   business document and tell Rekoda what you want done. Rekoda turns everyday
   business activity into organised financial records, documents, balances and
   reports.
-- **Rekoda Integrate** — *"Connect your WhatsApp shop. Rekoda handles the
-  money trail."*
+- **Rekoda Integrate** — _"Connect your WhatsApp shop. Rekoda handles the
+  money trail."_
   Description: Rekoda Integrate connects to your WhatsApp Business commerce
   flow, captures catalogue orders automatically, tracks Paystack payments,
   generates invoices and receipts, updates inventory and reconciles the
@@ -190,7 +190,7 @@ the database); R2 private storage abstraction with unguessable keys; the
 one-transaction engine every capture path shares.
 
 **Corrected by this document**: all product copy that framed Rekoda Chat as
-being for WhatsApp *sellers* (landing hero, metadata, FAQ, structured data).
+being for WhatsApp _sellers_ (landing hero, metadata, FAQ, structured data).
 WhatsApp is the interface; the merchant sells anywhere.
 
 **Decided by this document, landing now**: `sale_source` as a first-class

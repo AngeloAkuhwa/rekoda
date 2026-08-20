@@ -6,7 +6,7 @@ Rekoda is a WhatsApp-first financial operating assistant for small businesses in
 A merchant talks to Rekoda — text or voice note — or connects their WhatsApp Business
 catalogue, and Rekoda turns business activity into structured financial records:
 invoices, receipts, customer balances, inventory, a double-entry ledger, and
-**reconciliation** — matching what *should* have happened against what *actually*
+**reconciliation** — matching what _should_ have happened against what _actually_
 happened when money moved.
 
 ```
@@ -84,14 +84,14 @@ green tick as one that proved something.
 
 ## Documentation
 
-| Document | Purpose |
-|---|---|
-| [docs/architecture.md](docs/architecture.md) | The V1 product & system architecture specification |
-| [docs/engineering-plan.md](docs/engineering-plan.md) | Review findings, stack decisions, milestones |
-| [docs/pricing-model.md](docs/pricing-model.md) | Commercial model: plans, COGS, unit economics |
-| [docs/content-plan.md](docs/content-plan.md) | SEO keyword map and content calendar |
-| [docs/adr/](docs/adr/) | Architecture Decision Records — why things are the way they are |
-| [docs/runbooks/](docs/runbooks/) | Operational runbooks (deploy, backup, incident) |
+| Document                                             | Purpose                                                         |
+| ---------------------------------------------------- | --------------------------------------------------------------- |
+| [docs/architecture.md](docs/architecture.md)         | The V1 product & system architecture specification              |
+| [docs/engineering-plan.md](docs/engineering-plan.md) | Review findings, stack decisions, milestones                    |
+| [docs/pricing-model.md](docs/pricing-model.md)       | Commercial model: plans, COGS, unit economics                   |
+| [docs/content-plan.md](docs/content-plan.md)         | SEO keyword map and content calendar                            |
+| [docs/adr/](docs/adr/)                               | Architecture Decision Records — why things are the way they are |
+| [docs/runbooks/](docs/runbooks/)                     | Operational runbooks (deploy, backup, incident)                 |
 
 ## Stack (decided — see ADRs)
 
@@ -115,14 +115,14 @@ services/stt      faster-whisper sidecar (containerised)
 
 ## Engineering standards
 
-* **Conventional Commits** (`feat:`, `fix:`, `docs:`, `chore:`, …) — enforced by review.
-* All work lands on `main` through PRs with green CI (typecheck, lint, tests, secret scan).
-* Every significant decision gets an **ADR** before or with the code that implements it.
-* **Money is integer kobo, always.** Floats never touch a financial value.
-* **AI proposes, deterministic code disposes.** No AI-computed figure is ever authoritative.
-* Every business-owned row is tenant-scoped by `businessId` — and enforced again by
+- **Conventional Commits** (`feat:`, `fix:`, `docs:`, `chore:`, …) — enforced by review.
+- All work lands on `main` through PRs with green CI (typecheck, lint, tests, secret scan).
+- Every significant decision gets an **ADR** before or with the code that implements it.
+- **Money is integer kobo, always.** Floats never touch a financial value.
+- **AI proposes, deterministic code disposes.** No AI-computed figure is ever authoritative.
+- Every business-owned row is tenant-scoped by `businessId` — and enforced again by
   Postgres RLS.
-* Secrets never enter the repository. `.env.example` documents every variable; a boot-time
+- Secrets never enter the repository. `.env.example` documents every variable; a boot-time
   doctor validates them.
 
 ## Security

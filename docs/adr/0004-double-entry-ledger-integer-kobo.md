@@ -17,15 +17,15 @@ with an invariant test suite.
 
 ## Decision
 
-* **Double-entry bookkeeping** from the first posting. Every financial
+- **Double-entry bookkeeping** from the first posting. Every financial
   mutation writes balanced debit/credit pairs inside one database
   transaction; an unbalanced posting is a thrown error, not a warning.
-* Fixed V1 chart of accounts: Cash · Bank(Paystack) · Accounts Receivable ·
+- Fixed V1 chart of accounts: Cash · Bank(Paystack) · Accounts Receivable ·
   Accounts Payable · Sales Revenue · Inventory · COGS · Expense categories ·
   VAT Payable · Owner's Equity.
-* **All money is `BIGINT` kobo** in the database and integer kobo in code.
+- **All money is `BIGINT` kobo** in the database and integer kobo in code.
   Formatting to naira happens only at the presentation edge.
-* The ledger is append-only: corrections are reversing entries, never
+- The ledger is append-only: corrections are reversing entries, never
   UPDATEs — matching the spec's audit rules (§42).
 
 ## Consequences

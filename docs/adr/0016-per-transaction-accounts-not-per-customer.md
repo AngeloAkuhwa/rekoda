@@ -9,20 +9,20 @@
 
 ## Context
 
-The owner asked the question the whole design had been walking past: *if Rekoda
+The owner asked the question the whole design had been walking past: _if Rekoda
 issues a bank account to Ada's customer Jennifer, does Rekoda now have to
-inspect Jennifer — and does that bite us?*
+inspect Jennifer — and does that bite us?_
 
 It does. Checking Paystack's documentation settles it, and against us:
 
-* **A Dedicated Virtual Account is tied to a customer.** You must first create a
+- **A Dedicated Virtual Account is tied to a customer.** You must first create a
   customer record with `email`, `first_name`, `last_name` and `phone`.
-* **BVN validation is required for businesses in the Betting, Financial services
+- **BVN validation is required for businesses in the Betting, Financial services
   and General services categories** before they may assign dedicated accounts.
   **Rekoda plausibly falls in one of those categories** — it is a financial
   operating platform, and we should assume the stricter rule applies until
   Paystack says otherwise.
-* Where it applies, the customer's **BVN and a bank account connected to that
+- Where it applies, the customer's **BVN and a bank account connected to that
   BVN** must be supplied, and the validated name is then **used in naming the
   bank account number**.
 
@@ -49,24 +49,24 @@ generated per transaction — as the default collection method. Retire
 per-customer DVAs from the mainline design.**
 
 Documented behaviour: virtual accounts generated on Paystack Checkout are
-**randomised and temporary**, tied to the *current transaction*, and become
+**randomised and temporary**, tied to the _current transaction_, and become
 invalid once paid or once `account_expires_at` passes (default minimum 15
 minutes, maximum 8 hours). It is **enabled by default for Nigerian businesses**.
 
 This is not a compromise. On every axis that matters it is better:
 
-| | Per-customer DVA | **Per-transaction account** |
-|---|---|---|
-| Customer KYC / BVN | **Required** (our category) | **None** — no account is assigned to a person |
-| BVN storage risk | Rekoda holds BVNs | **Nothing to hold** |
-| Attribution | By customer — **cannot separate two orders from the same customer** | **By transaction — exact, always** |
-| 1,000-account ceiling | **Confirmed per *platform*** — 1,000 total across every merchant's customers, raisable only by emailing Paystack support for review | **Does not apply** — accounts are transient, not assigned |
-| Verification latency | Seconds | **Seconds** (unchanged) |
-| Fake-alert defence (ADR 0014) | Works | **Works** |
+|                               | Per-customer DVA                                                                                                                    | **Per-transaction account**                               |
+| ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------- |
+| Customer KYC / BVN            | **Required** (our category)                                                                                                         | **None** — no account is assigned to a person             |
+| BVN storage risk              | Rekoda holds BVNs                                                                                                                   | **Nothing to hold**                                       |
+| Attribution                   | By customer — **cannot separate two orders from the same customer**                                                                 | **By transaction — exact, always**                        |
+| 1,000-account ceiling         | **Confirmed per _platform_** — 1,000 total across every merchant's customers, raisable only by emailing Paystack support for review | **Does not apply** — accounts are transient, not assigned |
+| Verification latency          | Seconds                                                                                                                             | **Seconds** (unchanged)                                   |
+| Fake-alert defence (ADR 0014) | Works                                                                                                                               | **Works**                                                 |
 
 **The ceiling question is settled, and it settles against DVAs.** The limit is
-**per platform** — *"All businesses have a limit of 1,000 virtual accounts to be
-assigned to customers"*, raisable only on review by emailing support. Note the
+**per platform** — _"All businesses have a limit of 1,000 virtual accounts to be
+assigned to customers"_, raisable only on review by emailing support. Note the
 noun: accounts are assigned to **customers**, not subaccounts. **Subaccounts are
 settlement destinations and do not each carry their own pool**, so a
 "DVA per vendor" design does not escape it either — and it would put the account
@@ -77,7 +77,7 @@ ceiling does not reach them.
 
 ### What changes in the flow
 
-Instead of *"Jennifer has an account number forever"*, it becomes:
+Instead of _"Jennifer has an account number forever"_, it becomes:
 
 ```
 Jennifer submits order  →  Rekoda creates Invoice INV-2026-000318
@@ -91,11 +91,11 @@ Jennifer submits order  →  Rekoda creates Invoice INV-2026-000318
 **Expiry is the one new piece of UX.** WhatsApp commerce is not instant — a
 customer may intend to pay tomorrow. So:
 
-* Set a generous `account_expires_at` (hours, not the 15-minute minimum).
-* When it lapses without payment, the invoice stays open and Rekoda offers
+- Set a generous `account_expires_at` (hours, not the 15-minute minimum).
+- When it lapses without payment, the invoice stays open and Rekoda offers
   **"get a fresh account number"** — one tap for the merchant, one message to
   the customer. An expired number must never read as a cancelled order.
-* Never reuse an expired number's reference for a different invoice.
+- Never reuse an expired number's reference for a different invoice.
 
 ### Where per-customer DVAs may still earn their place
 
@@ -134,14 +134,14 @@ what the licensing position (safety-review R1) requires.
 > and settlement actually splitting are two different facts, and only the webhook
 > proves the second. **This is the same class of bug as the `plan: {}` trap
 > already in the VoiceReceipt port map** — Paystack returns empty objects that
-> are truthy in JavaScript. Assert on a *field inside* `split`, never on the
+> are truthy in JavaScript. Assert on a _field inside_ `split`, never on the
 > object's truthiness.
 
 **❌ The fee is the local rate, not the DVA rate.** Paystack's pricing table
 (last edited 20 May 2026) lists Nigeria at **1.5% + ₦100 for all local
 channels**, capped at **₦2,000**, with the ₦100 waived under ₦2,500. The
-**1% capped ₦300** sits in a *separate column headed Dedicated Virtual
-Accounts*. **A PwT temporary account is not a DVA and does not get DVA pricing.**
+**1% capped ₦300** sits in a _separate column headed Dedicated Virtual
+Accounts_. **A PwT temporary account is not a DVA and does not get DVA pricing.**
 
 The merchant bears this, so it must be stated accurately on `/pricing`. On a
 ₦105,000 order that is **₦1,675 (PwT)** against **₦300 (DVA)** — a real
@@ -156,7 +156,7 @@ this ADR does.
 
 ## Sources
 
-* Dedicated Virtual Accounts — customer requirement and BVN validation by business category — https://paystack.com/docs/payments/dedicated-virtual-accounts/
-* Validate Customer — https://paystack.com/docs/identity-verification/validate-customer/
-* Pay with Transfer — randomised temporary accounts, `account_expires_at` — https://support.paystack.com/en/articles/2128642
-* Payment Channels — https://paystack.com/docs/payments/payment-channels/
+- Dedicated Virtual Accounts — customer requirement and BVN validation by business category — https://paystack.com/docs/payments/dedicated-virtual-accounts/
+- Validate Customer — https://paystack.com/docs/identity-verification/validate-customer/
+- Pay with Transfer — randomised temporary accounts, `account_expires_at` — https://support.paystack.com/en/articles/2128642
+- Payment Channels — https://paystack.com/docs/payments/payment-channels/

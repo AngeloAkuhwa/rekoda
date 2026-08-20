@@ -50,15 +50,15 @@ template + genuinely specific content per business type.
 
 ## Distribution (owned + earned, no paid at launch)
 
-* Vendor communities: WhatsApp groups/status, Nairaland, X (NaijaTech),
+- Vendor communities: WhatsApp groups/status, Nairaland, X (NaijaTech),
   Instagram vendor niches.
-* **Accountant channel — the wedge:** one accountant brings 10–30
+- **Accountant channel — the wedge:** one accountant brings 10–30
   merchants; the accountant portal + Excel exports are the pitch. Build a
   simple partner page and referral tracking in M4.
-* Built-in loop: free-tier documents carry a discreet "Created with Rekoda"
+- Built-in loop: free-tier documents carry a discreet "Created with Rekoda"
   credit (paid tiers clean) — the recipient of an invoice is exactly the
   next merchant.
-* Launch sequencing: content warms during build → Chat launches publicly →
+- Launch sequencing: content warms during build → Chat launches publicly →
   Integrate alpha recruits from Chat's best users.
 
 ## Measurement

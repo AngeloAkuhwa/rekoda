@@ -11,15 +11,15 @@ ADR 0012 kept the native WABA catalogue as rung **A2** — the upgrade for
 CAC-registered merchants whose customers order inside WhatsApp's own catalogue
 UI. ADR 0017 made **Coexistence** a precondition, so a merchant would keep the
 WhatsApp Business App rather than lose it to a migration, and flagged one
-unknown: *do catalogue `order` webhooks reach the API app under Coexistence?*
+unknown: _do catalogue `order` webhooks reach the API app under Coexistence?_
 
 The owner ran that question down against Meta's own sources. **The answer is no,
 and there is a prior blocker underneath it.**
 
 **1. Coexistence does not carry business tools to the API side.** Meta's own
 feature-comparison table for Business App → Cloud API onboarding has a row
-covering **catalog, orders and status**: post-onboarding the app side shows *no
-change*, and the "supported on Cloud API" column reads **Not supported**. Group
+covering **catalog, orders and status**: post-onboarding the app side shows _no
+change_, and the "supported on Cloud API" column reads **Not supported**. Group
 chats, voice and video calls, messaging tools and business profile carry the
 same verdict. **The catalogue keeps working in her app and stays invisible to
 Rekoda.**
@@ -48,13 +48,13 @@ give up her app to gain a webhook (ADR 0017).
 
 So:
 
-* **A1, the Rekoda storefront, is not the default — it is the path.** It was
+- **A1, the Rekoda storefront, is not the default — it is the path.** It was
   already better on approval gates and schema ownership; it is now the only
   order-capture route that does not cost the merchant something she cannot
   afford to lose.
-* **A0, order forwarding, remains the bridge** for merchants who already run a
+- **A0, order forwarding, remains the bridge** for merchants who already run a
   Business App catalogue and would rather forward than move.
-* **A WABA may still earn its place for *messaging*** — sending invoices,
+- **A WABA may still earn its place for _messaging_** — sending invoices,
   receipts and payment confirmations from the merchant's own branded number
   rather than Rekoda's. That is a separate question from order capture, it
   requires CAC and verification, and it is **out of V1 scope**. Do not let it
@@ -90,8 +90,8 @@ originally claimed, arrived at for a reason nobody anticipated.
 
 ## Sources
 
-* Meta feature comparison for Business App → Cloud API onboarding: business tools (catalog, orders, status) — **Not supported** on Cloud API post-onboarding
-* Meta Coexistence unsupported-countries anchor (via GitHub thread) — Nigeria, South Africa
-* GoHighLevel, June 2026 — Coexistence unavailable for NG/ZA numbers
-* Wati — eligibility confirmed per phone number during Embedded Signup
-* ChakraHQ, July 2026 — contrary claim that NG/ZA were added April 2026
+- Meta feature comparison for Business App → Cloud API onboarding: business tools (catalog, orders, status) — **Not supported** on Cloud API post-onboarding
+- Meta Coexistence unsupported-countries anchor (via GitHub thread) — Nigeria, South Africa
+- GoHighLevel, June 2026 — Coexistence unavailable for NG/ZA numbers
+- Wati — eligibility confirmed per phone number during Embedded Signup
+- ChakraHQ, July 2026 — contrary claim that NG/ZA were added April 2026

@@ -32,7 +32,7 @@ programme; it is not the programme.
 enrol either way, which removes most of the "Twilio saves us the setup" argument.
 
 **3. The economics changed underneath the original decision.** Twilio charges
-**~$0.005 per message each way (~₦7.25)** *on top of* Meta's own fees. Against
+**~~$0.005 per message each way (~~₦7.25)** _on top of_ Meta's own fees. Against
 the Integrate plan's 800-message allowance:
 
 ```
@@ -51,11 +51,11 @@ onboarding tooling no longer survives that.
 direct, the same channel layer Chat already uses. Twilio becomes an optional
 fallback, not the default path.**
 
-* **The channel layer stays provider-agnostic** — that part of ADR 0002 was
+- **The channel layer stays provider-agnostic** — that part of ADR 0002 was
   right, and it is what makes this a configuration change rather than a rewrite.
-* **Onboarding is Embedded Signup**: one Meta-hosted popup, merchant owns their
+- **Onboarding is Embedded Signup**: one Meta-hosted popup, merchant owns their
   WABA, Rekoda manages it as their Tech Provider.
-* **Twilio stays behind a flag** for the case where Meta-direct multi-tenant
+- **Twilio stays behind a flag** for the case where Meta-direct multi-tenant
   operations prove genuinely painful in the alpha. Keeping the adapter costs
   little; paying ₦5,800/merchant/month by default costs a lot.
 
@@ -73,7 +73,7 @@ unacceptable, and any A2 implementation that makes it silently has taken her
 business away to gain a webhook.
 
 **Meta's Coexistence feature (May 2025) is the precondition**: one number live on
-the Business App *and* Cloud API simultaneously, chats and contacts preserved,
+the Business App _and_ Cloud API simultaneously, chats and contacts preserved,
 messages mirroring both ways, activated through Embedded Signup. **A2 uses
 Coexistence or A2 does not ship.**
 
@@ -91,14 +91,14 @@ egress-blocked from this environment.
 
 Being clear-eyed about the trade — this is real work, not free:
 
-* **Per-WABA credential storage** (encrypted, per-merchant tokens) and rotation.
-* **Webhook routing by WABA/phone-number ID** to the right tenant — this must
-  resolve *before* the privacy gateway, and it is the highest-risk piece:
+- **Per-WABA credential storage** (encrypted, per-merchant tokens) and rotation.
+- **Webhook routing by WABA/phone-number ID** to the right tenant — this must
+  resolve _before_ the privacy gateway, and it is the highest-risk piece:
   a mis-routed webhook is a cross-tenant data leak, so it gets the same
   fail-closed treatment as RLS.
-* **Per-merchant template management** and submission state.
-* **Phone-number registration and health** surfaced in admin.
-* **Meta support is materially worse than Twilio's.** Budget for slower
+- **Per-merchant template management** and submission state.
+- **Phone-number registration and health** surfaced in admin.
+- **Meta support is materially worse than Twilio's.** Budget for slower
   resolution when a merchant's number breaks, and make provider health a
   first-class admin screen (already in MASTER-PLAN Part 6.4).
 
@@ -116,6 +116,6 @@ it.
 
 ## Sources
 
-* Embedded Signup — default path since April 2026; tech providers onboard and directly manage client WABAs — https://developers.facebook.com/documentation/business-messaging/whatsapp/embedded-signup/overview/
-* Meta Tech Provider registration — https://www.alibabacloud.com/help/en/chatapp/use-cases/how-to-register-as-a-meta-tech-provider
-* Twilio Tech Provider programme (the retired default) — https://www.twilio.com/docs/whatsapp/isv/tech-provider-program/integration-guide
+- Embedded Signup — default path since April 2026; tech providers onboard and directly manage client WABAs — https://developers.facebook.com/documentation/business-messaging/whatsapp/embedded-signup/overview/
+- Meta Tech Provider registration — https://www.alibabacloud.com/help/en/chatapp/use-cases/how-to-register-as-a-meta-tech-provider
+- Twilio Tech Provider programme (the retired default) — https://www.twilio.com/docs/whatsapp/isv/tech-provider-program/integration-guide

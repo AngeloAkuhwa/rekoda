@@ -59,15 +59,15 @@ CREATE POLICY worker_claim ON jobs FOR ALL TO rekoda_worker USING (true) WITH CH
 
 Three consequences follow, and they are the whole point:
 
-* **The API cannot read another tenant's queue.** `rekoda_app` matches only
+- **The API cannot read another tenant's queue.** `rekoda_app` matches only
   `tenant_isolation`, so an unpinned `SELECT` over `jobs` returns nothing.
   Enqueueing happens under an ordinary tenant pin, exactly like writing an
   invoice.
-* **The worker's extra reach is one table wide.** `worker_claim` names `jobs`
+- **The worker's extra reach is one table wide.** `worker_claim` names `jobs`
   and nothing else. For `invoices`, `ledger_entries`, `customers` — everything
   that matters — `rekoda_worker` is as constrained as the API, and the runner
   must pin a tenant to touch any of it.
-* **Forgetting to pin fails closed.** A runner that skipped `withBusiness` would
+- **Forgetting to pin fails closed.** A runner that skipped `withBusiness` would
   not read the wrong tenant's rows; it would read none.
 
 ### Why claiming needs a role rather than a function
@@ -87,7 +87,7 @@ in a code path.
 export type JobHandler = (ctx: { tx: TenantDb; businessId: string; … }) => Promise<void>;
 ```
 
-A handler receives a transaction that is *already pinned* and no other database
+A handler receives a transaction that is _already pinned_ and no other database
 handle. There is no version of a handler that reads across tenants by
 forgetting something, because there is nothing to forget — the runner pins once,
 in one place, and the type carries the guarantee the rest of the way. That is
@@ -135,8 +135,8 @@ scale apart.
 
 ## Revisit when
 
-* Throughput outgrows one polling loop per worker process — the fix is
+- Throughput outgrows one polling loop per worker process — the fix is
   `LISTEN`/`NOTIFY` before it is another dependency.
-* We want scheduled/cron jobs, at which point pg-boss's feature set starts to
+- We want scheduled/cron jobs, at which point pg-boss's feature set starts to
   earn its cost again — but the tenancy argument above does not change, so
   anything we adopt has to answer it.

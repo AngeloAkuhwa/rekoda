@@ -17,18 +17,18 @@ logically separated modules.
 
 ## Decision
 
-* **TypeScript end-to-end**, Node 22.
-* **NestJS (Fastify adapter)** for the API: the spec's module tree maps
+- **TypeScript end-to-end**, Node 22.
+- **NestJS (Fastify adapter)** for the API: the spec's module tree maps
   one-to-one onto Nest modules; DI + guards enforce tenant scoping at the
   framework level.
-* **Next.js 15 (App Router)** for marketing, guides, merchant dashboard and
+- **Next.js 15 (App Router)** for marketing, guides, merchant dashboard and
   admin — SSR for SEO and fast first paint on mobile connections.
-* **PostgreSQL 16** as the only database; **Drizzle ORM** (SQL-first, typed).
-* **pg-boss** for background jobs (transactional enqueue with the business
+- **PostgreSQL 16** as the only database; **Drizzle ORM** (SQL-first, typed).
+- **pg-boss** for background jobs (transactional enqueue with the business
   event; no Redis to operate at V1).
-* **pnpm + Turborepo monorepo** with a pure, framework-free `packages/core`
+- **pnpm + Turborepo monorepo** with a pure, framework-free `packages/core`
   holding money, ledger, reconciliation and validation logic.
-* Explicitly **not** microservices, and not a BaaS — a ledger is owned, not
+- Explicitly **not** microservices, and not a BaaS — a ledger is owned, not
   rented.
 
 ## Consequences

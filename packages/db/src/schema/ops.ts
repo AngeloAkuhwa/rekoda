@@ -268,3 +268,16 @@ export const commandDrafts = pgTable(
     index('command_drafts_business_state_ix').on(t.businessId, t.state),
   ],
 );
+
+/**
+ * Who we have already told "you do not have an account yet".
+ *
+ * Keyed by the HMAC of the phone under MATCH_KEY, never the number: this
+ * table needs to know that a person was answered, not who they are. Outside
+ * row-level security, like `external_events`, because someone with no
+ * business has no tenant to scope them to.
+ */
+export const strangerContacts = pgTable('stranger_contacts', {
+  matchKey: text('match_key').primaryKey(),
+  lastRepliedAt: timestamp('last_replied_at', { withTimezone: true }).notNull().defaultNow(),
+});

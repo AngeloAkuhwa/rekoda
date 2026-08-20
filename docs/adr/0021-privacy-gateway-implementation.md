@@ -42,8 +42,8 @@ information an attacker wants and an operator does not need.
 
 Two failure modes, and they are not symmetric:
 
-* A phone number that survives into a prompt is a **privacy failure**.
-* An amount wrongly tokenised is a **broken invoice** — the model loses the one
+- A phone number that survives into a prompt is a **privacy failure**.
+- An amount wrongly tokenised is a **broken invoice** — the model loses the one
   thing it was sent to read.
 
 So phones and emails are matched on distinctive shapes and always tokenised.
@@ -76,13 +76,13 @@ can be deleted on its own.
 
 ## Consequences
 
-* `packages/db` stores ciphertext it cannot read, and holds no key. The crypto
+- `packages/db` stores ciphertext it cannot read, and holds no key. The crypto
   is pure functions in `@rekoda/core`, tested against tampering and key
   substitution; the API layer is the only place they meet.
-* Recognition survives the five ways a Nigerian number gets typed, proven
+- Recognition survives the five ways a Nigerian number gets typed, proven
   against a real database rather than asserted.
-* A leaked `customer_identities` table yields no names, no numbers, and no
+- A leaked `customer_identities` table yields no names, no numbers, and no
   cross-business linkage — tested by reading the raw table as the owner and
   asserting the plaintext is absent.
-* `redactForLog` exists as a last line of defence for stack traces and error
+- `redactForLog` exists as a last line of defence for stack traces and error
   messages, which never pass through the gateway at all.

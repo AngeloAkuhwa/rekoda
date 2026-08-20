@@ -5,11 +5,11 @@ Drill cadence: monthly, and before any migration touching financial tables.
 
 ## What is backed up
 
-| Data | Method | Frequency | Destination |
-|---|---|---|---|
-| Postgres (everything: ledger, vault ciphertexts, audit) | `pg_dump -Fc` | nightly 02:00 WAT | Backblaze B2, encrypted |
-| Generated documents | R2 is primary storage; lifecycle-copied | continuous | R2 + B2 mirror |
-| Whole box | Hetzner snapshot | weekly | Hetzner |
+| Data                                                    | Method                                  | Frequency         | Destination             |
+| ------------------------------------------------------- | --------------------------------------- | ----------------- | ----------------------- |
+| Postgres (everything: ledger, vault ciphertexts, audit) | `pg_dump -Fc`                           | nightly 02:00 WAT | Backblaze B2, encrypted |
+| Generated documents                                     | R2 is primary storage; lifecycle-copied | continuous        | R2 + B2 mirror          |
+| Whole box                                               | Hetzner snapshot                        | weekly            | Hetzner                 |
 
 Vault ciphertexts are useless without `VAULT_KEY`, which lives ONLY in the
 environment — so an exfiltrated backup alone exposes no customer identity.
@@ -56,6 +56,6 @@ keys make replays safe.
 
 ## Drill log
 
-| Date | Dump | Duration | Result | Operator |
-|---|---|---|---|---|
-| _(first drill due before first paying merchant)_ | | | | |
+| Date                                             | Dump | Duration | Result | Operator |
+| ------------------------------------------------ | ---- | -------- | ------ | -------- |
+| _(first drill due before first paying merchant)_ |      |          |        |          |

@@ -76,7 +76,7 @@ export async function truncateAll(urls: Urls): Promise<void> {
         conversation_messages, conversations,
         memberships, business_connections, products,
         customer_identities, customers,
-        external_events,
+        external_events, stranger_contacts,
         magic_links, sessions, otp_challenges,
         businesses, users
       RESTART IDENTITY CASCADE

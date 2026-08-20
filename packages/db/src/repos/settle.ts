@@ -445,8 +445,13 @@ export interface PaymentReadback {
   settledAt: Date | null;
 }
 
-/** Every payment for the pinned business, oldest first. */
-export async function paymentsFor(tx: TenantDb): Promise<PaymentReadback[]> {
+/**
+ * Payments for the pinned business, oldest first, CAPPED.
+ *
+ * It used to return every payment ever, which grows without bound for an
+ * active merchant and eventually times out the page that needs it most.
+ */
+export async function paymentsFor(tx: TenantDb, limit = 100): Promise<PaymentReadback[]> {
   const rows = await tx
     .select({
       verified: payments.verified,
@@ -461,7 +466,8 @@ export async function paymentsFor(tx: TenantDb): Promise<PaymentReadback[]> {
       settledAt: payments.settledAt,
     })
     .from(payments)
-    .orderBy(payments.createdAt);
+    .orderBy(payments.createdAt)
+    .limit(limit);
   return rows;
 }
 

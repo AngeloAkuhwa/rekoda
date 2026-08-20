@@ -7,12 +7,12 @@
 ## Context
 
 ADR 0005 committed to self-hosted `faster-whisper` so merchant audio never
-leaves Rekoda. It did not say *which weights*, and the implicit assumption was
+leaves Rekoda. It did not say _which weights_, and the implicit assumption was
 stock `whisper-large-v3`. Published benchmarks make that assumption dangerous.
 
 AfriSpeech-MultiBench measures `whisper-large-v3` — sub-4% WER on LibriSpeech —
 at **30–45% WER on African-accented English**, rising above 70% on
-named-entity-rich utterances. Rekoda's utterances are *exactly* the bad case:
+named-entity-rich utterances. Rekoda's utterances are _exactly_ the bad case:
 they are dense with names and amounts, in Nigerian English and pidgin, often
 recorded in a market. Shipping stock Whisper would have failed the M3 benchmark
 and forced the provider fallback — which is the one outcome that costs us the
@@ -31,19 +31,19 @@ fine-tuned on it exist and are self-hostable.
 2. **Benchmark three candidates head-to-head at M3**, not one against a
    provider: the AfriSpeech-tuned medium, stock `large-v3`, and
    `NCAIR1/NigerianAccentedEnglish`. A fine-tune on a smaller base is not
-   automatically better than a larger stock base on *our* utterance shape —
+   automatically better than a larger stock base on _our_ utterance shape —
    medium is weaker at baseline, and the fine-tune advantage has to be shown,
    not assumed.
 3. **The gate metric is entity-level accuracy, not WER.** Rekoda does not need
    a correct transcript. It needs the amount, the quantity, and a name string
    close enough for the layer-1 fuzzy match against the merchant's own customer
    list — and CG2 shows a preview before anything is issued. Measure:
-   * money-field exact accuracy ("forty-five k" → `4_500_000` kobo),
-   * quantity exact accuracy,
-   * name match-rate against a known customer list,
-   * WER, recorded but not decisive.
-   Corpus: ≥200 real Nigerian merchant voice notes (accents, pidgin,
-   code-switching, market noise), held out and versioned.
+   - money-field exact accuracy ("forty-five k" → `4_500_000` kobo),
+   - quantity exact accuracy,
+   - name match-rate against a known customer list,
+   - WER, recorded but not decisive.
+     Corpus: ≥200 real Nigerian merchant voice notes (accents, pidgin,
+     code-switching, market noise), held out and versioned.
 4. **Fallback ladder, in order:** self-hosted tuned model → **Intron Sahara**
    (the AfriSpeech authors' hosted ASR, best published performer on African
    English, an African provider under DPA terms) → OpenAI. Each rung down
@@ -67,7 +67,7 @@ Designing that flow is a task in M3, gated behind ADR 0005's honesty rule.
 
 ## Sources
 
-* AfriSpeech-MultiBench — https://arxiv.org/html/2511.14255
-* AfriSpeech-200 (TACL) — https://direct.mit.edu/tacl/article/doi/10.1162/tacl_a_00627/118796/AfriSpeech-200-Pan-African-Accented-Speech-Dataset
-* https://huggingface.co/intronhealth/afrispeech-whisper-medium-all
-* https://huggingface.co/NCAIR1/NigerianAccentedEnglish
+- AfriSpeech-MultiBench — https://arxiv.org/html/2511.14255
+- AfriSpeech-200 (TACL) — https://direct.mit.edu/tacl/article/doi/10.1162/tacl_a_00627/118796/AfriSpeech-200-Pan-African-Accented-Speech-Dataset
+- https://huggingface.co/intronhealth/afrispeech-whisper-medium-all
+- https://huggingface.co/NCAIR1/NigerianAccentedEnglish

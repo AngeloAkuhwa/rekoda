@@ -25,16 +25,16 @@ Types: `feat` `fix` `docs` `chore` `refactor` `test` `perf` `ci` `build`.
 
 These mirror `docs/architecture.md` §53 and are enforced in review:
 
-* **Money is integer kobo.** No floats in any financial path.
-* **AI proposes, deterministic code disposes.** AI output is a
+- **Money is integer kobo.** No floats in any financial path.
+- **AI proposes, deterministic code disposes.** AI output is a
   `StructuredBusinessCommand` validated by zod; only the transaction engine
   writes financial records; ledger postings must balance.
-* **Every tenant-owned query is scoped by `businessId`** — RLS is the net,
+- **Every tenant-owned query is scoped by `businessId`** — RLS is the net,
   not the primary mechanism.
-* **PII stays in the vault.** New code paths that move customer identity
+- **PII stays in the vault.** New code paths that move customer identity
   must go through the Privacy Gateway and be called out explicitly in the PR.
-* **Webhooks: verify signature, then idempotency, then process.** In that order.
-* **No new dependency without justification in the PR description.**
+- **Webhooks: verify signature, then idempotency, then process.** In that order.
+- **No new dependency without justification in the PR description.**
 
 ## Architecture Decision Records
 

@@ -53,9 +53,7 @@ test('settlement details go in once and only the mask ever comes back', async ({
   await onboard(page, freshPhone());
 
   await page.goto('/app/payments');
-  await expect(
-    page.getByRole('heading', { name: 'Get paid straight to your bank' }),
-  ).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Get paid straight to your bank' })).toBeVisible();
 
   await page.selectOption('#bankCode', '058'); // GTBank
   await page.fill('#accountNumber', ACCOUNT_NUMBER);
