@@ -242,3 +242,60 @@ describe('per-account sums (the statements query)', () => {
     expect(rows).toEqual([]);
   });
 });
+
+describe('the registers (§5.3.7)', () => {
+  it('lists the invoice with its running figures and totals the outstanding', async () => {
+    const businessId = await seedBusiness();
+    const { invoiceNumber } = await seedTradingMonth(businessId);
+
+    const list = await withBusiness(db, businessId, (tx) =>
+      reportsRepo.invoicesFor(tx, businessId, 50),
+    );
+    expect(list.count).toBe(1);
+    const row = list.rows[0];
+    expect(row?.invoiceNumber).toBe(invoiceNumber);
+    expect(row?.status).toBe('partially_paid');
+    expect(row?.totalK).toBe(15_000_000);
+    // ₦40,000 cash at the counter + ₦50,000 verified transfer.
+    expect(row?.paidK).toBe(9_000_000);
+    expect(row?.balanceDueK).toBe(6_000_000);
+    // The outstanding total is the same ₦60,000 the row shows.
+    expect(list.outstandingK).toBe(6_000_000);
+  });
+
+  it('lists the receipt beside the invoice it settled', async () => {
+    const businessId = await seedBusiness();
+    const { invoiceNumber } = await seedTradingMonth(businessId);
+
+    const list = await withBusiness(db, businessId, (tx) =>
+      reportsRepo.receiptsFor(tx, businessId, 50),
+    );
+    expect(list.count).toBe(1);
+    const row = list.rows[0];
+    expect(row?.receiptNumber).toMatch(/^RCT-/);
+    expect(row?.amountK).toBe(5_000_000);
+    expect(row?.invoiceNumber).toBe(invoiceNumber);
+  });
+
+  it("NEVER shows one tenant another tenant's registers", async () => {
+    const businessId = await seedBusiness();
+    await seedTradingMonth(businessId);
+
+    const otherUser = await identity.upsertUserByPhone(db, '+2348120000010');
+    const other = await identity.createBusinessWithOwner(db, {
+      name: 'Bode Spares',
+      businessType: null,
+      ownerUserId: otherUser.id,
+    });
+
+    const invoices = await withBusiness(db, other.id, (tx) =>
+      reportsRepo.invoicesFor(tx, other.id, 50),
+    );
+    const receipts = await withBusiness(db, other.id, (tx) =>
+      reportsRepo.receiptsFor(tx, other.id, 50),
+    );
+    expect(invoices.count).toBe(0);
+    expect(invoices.outstandingK).toBe(0);
+    expect(receipts.count).toBe(0);
+  });
+});

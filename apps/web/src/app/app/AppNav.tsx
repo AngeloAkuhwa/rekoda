@@ -4,6 +4,8 @@
  */
 const TABS = [
   { key: 'overview', href: '/app', label: 'Overview' },
+  { key: 'invoices', href: '/app/invoices', label: 'Invoices' },
+  { key: 'receipts', href: '/app/receipts', label: 'Receipts' },
   { key: 'reports', href: '/app/reports', label: 'Reports' },
   { key: 'payments', href: '/app/payments', label: 'Payments' },
 ] as const;
