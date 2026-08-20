@@ -1115,3 +1115,109 @@ describe('acknowledging things we cannot use', () => {
     expect((await post({ entry: [] })).statusCode).toBe(200);
   });
 });
+
+describe('records, resend and messages Rekoda cannot read', () => {
+  async function seedMerchant(phone: string, name: string) {
+    const user = await identity.upsertUserByPhone(db, phone);
+    return identity.createBusinessWithOwner(db, { name, businessType: null, ownerUserId: user.id });
+  }
+
+  function audioPayload(waId: string, wamid: string) {
+    return {
+      object: 'whatsapp_business_account',
+      entry: [
+        {
+          id: 'WABA',
+          changes: [
+            {
+              field: 'messages',
+              value: {
+                messaging_product: 'whatsapp',
+                metadata: { phone_number_id: 'PNID' },
+                messages: [{ id: wamid, from: waId, timestamp: '1700000000', type: 'audio' }],
+              },
+            },
+          ],
+        },
+      ],
+    };
+  }
+
+  it('answers "records" with real month figures and no model call', async () => {
+    const business = await seedMerchant('+2348031234567', 'Ada Fashion');
+    await withBusiness(db, business.id, (tx) =>
+      spendRepo.recordExpense(tx, {
+        businessId: business.id,
+        description: 'fuel',
+        category: null,
+        amountK: 1_200_000,
+        method: 'cash',
+        sourceType: 'chat',
+        sourceId: 'd-rec',
+      }),
+    );
+    await post(messagePayload('2348031234567', 'wamid.REC', 'records'));
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+
+    expect(stubSender.lastText).toContain('Your books this month');
+    expect(stubSender.lastText).toContain('Money out ₦12,000');
+    expect(stubTransport.requests).toHaveLength(0);
+  });
+
+  it('says the books are empty rather than reciting four zeros', async () => {
+    await seedMerchant('+2348031234567', 'Ada Fashion');
+    await post(messagePayload('2348031234567', 'wamid.REC0', 'records'));
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+
+    expect(stubSender.lastText).toContain('Nothing in your books yet this month');
+    expect(stubSender.lastText).not.toMatch(/₦/);
+  });
+
+  it('"resend" queues the newest document back through delivery, exactly once', async () => {
+    const business = await seedMerchant('+2348031234567', 'Ada Fashion');
+    const doc = await withBusiness(db, business.id, (tx) =>
+      issueRepo.recordDocument(tx, {
+        businessId: business.id,
+        kind: 'invoice_pdf',
+        storageKey: 'test/unguessable-1',
+        refNumber: 'INV-2026-000007',
+        bytes: 1234,
+      }),
+    );
+
+    await post(messagePayload('2348031234567', 'wamid.RESEND', 'resend'));
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+
+    expect(stubSender.lastText).toContain('Sending INV-2026-000007 again');
+
+    const queued = await withBusiness(db, business.id, (tx) =>
+      jobsRepo.jobsForBusiness(tx, 'document.deliver'),
+    );
+    expect(queued).toHaveLength(1);
+    expect(doc.id).toBeTruthy();
+  });
+
+  it('"resend" with nothing ever issued is an honest miss', async () => {
+    await seedMerchant('+2348031234567', 'Ada Fashion');
+    await post(messagePayload('2348031234567', 'wamid.RESEND0', 'resend'));
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+
+    expect(stubSender.lastText).toContain('no document to resend yet');
+  });
+
+  it('a voice note gets an honest sentence, never a model call on silence', async () => {
+    const business = await seedMerchant('+2348031234567', 'Ada Fashion');
+    await post(audioPayload('2348031234567', 'wamid.VOICE'));
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+
+    expect(stubSender.lastText).toContain('only read typed messages');
+    // The whole point: silence never becomes a paid interpretation call.
+    expect(stubTransport.requests).toHaveLength(0);
+
+    const messages = await withBusiness(db, business.id, (tx) =>
+      conversationsRepo.messagesFor(tx, business.id),
+    );
+    // Recorded as what it was, not as empty text.
+    expect(messages[0]?.body).toBe('[audio message]');
+  });
+});

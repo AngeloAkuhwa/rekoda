@@ -88,6 +88,28 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
       return;
     }
 
+    /* A voice note or a photo. Answered deterministically and honestly, and
+     * NEVER routed to a model: an empty transcript is not a sentence to
+     * interpret, and a paid call on silence is a bug with a bill. */
+    if (inbound.messageType !== 'text') {
+      const recorded = await conversationsRepo.recordInbound(tx, {
+        businessId,
+        channel: 'meta',
+        kind: 'media',
+        body: `[${inbound.messageType} message]`,
+        providerMessageId: inbound.externalId,
+      });
+      if (recorded.isNew) {
+        await deps.replySender.send(tx, {
+          businessId,
+          to: inbound.from,
+          reply: replies.onlyText(),
+        });
+      }
+      await events.markProcessed(tx, eventId, null, businessId);
+      return;
+    }
+
     const text = inbound.text ?? '';
     const route = routeMessage(text);
     const tokenised =
@@ -121,7 +143,7 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
 
     const answer =
       route.route === 'deterministic'
-        ? await deterministicReply(deps, tx, businessId, route.intent)
+        ? await deterministicReply(deps, tx, businessId, route.intent, eventId)
         : await interpretedReply(deps, tx, businessId, text, tokenised!.text, message.id);
 
     if (answer) {
@@ -148,6 +170,7 @@ async function deterministicReply(
   tx: TenantDb,
   businessId: string,
   intent: DeterministicIntent,
+  eventId: string,
 ): Promise<Reply | null> {
   if (intent.kind === 'affirm') return confirmPendingDraft(tx, businessId);
   if (intent.kind === 'deny' || intent.kind === 'cancel') {
@@ -182,13 +205,36 @@ async function deterministicReply(
     }
     case 'payment_details':
       return paymentDetailsReply(deps, tx, businessId);
-    case 'records':
-      return replies.notYet('Sending your records');
+    case 'records': {
+      // The same SQL the dashboard overview runs — totals only, no customer.
+      const overview = await reportsRepo.overviewFor(tx, businessId);
+      return replies.recordsSummary(overview);
+    }
     case 'resend':
-      return replies.notYet('Resending a document');
+      return resendReply(tx, businessId, eventId);
     default:
       return null;
   }
+}
+
+/**
+ * "resend": the newest stored document goes back through the same delivery
+ * job that sent it the first time — same bytes, same caption rules, same
+ * retries. The singleton key carries the event id, so a redelivered webhook
+ * cannot queue the same resend twice while a fresh ask always can.
+ */
+async function resendReply(tx: TenantDb, businessId: string, eventId: string): Promise<Reply> {
+  const stored = await issueRepo.documentsFor(tx, businessId);
+  const newest = stored.at(-1);
+  if (!newest) return replies.nothingToResend();
+
+  await jobsRepo.enqueue(tx, {
+    businessId,
+    kind: 'document.deliver',
+    payload: { documentId: newest.id },
+    singletonKey: `redeliver:${newest.id}:${eventId}`,
+  });
+  return replies.resending(newest.refNumber ?? 'your latest document');
 }
 
 /**
