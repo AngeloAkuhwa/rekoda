@@ -155,7 +155,7 @@ export const usageEvents = pgTable(
   {
     id: id(),
     businessId: businessId(),
-    provider: text('provider').notNull(), // meta | twilio | anthropic | stt | storage | paystack
+    provider: text('provider').notNull(), // meta | twilio | anthropic | openai | stt | storage | paystack
     usageType: text('usage_type').notNull(), // message_in | message_out | template | llm_call | stt_seconds | pdf | excel …
     quantity: bigint('quantity', { mode: 'number' }).notNull(),
     /** Provider cost in micro-units of `costCurrency` (USD micros for AI). */

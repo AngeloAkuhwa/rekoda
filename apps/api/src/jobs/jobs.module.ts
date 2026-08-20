@@ -65,7 +65,12 @@ export function buildRunner(
   );
   runner.register(
     JobKind.DeliverDocument,
-    deliverDocumentHandler({ storage: deps.storage, sender: deps.sender, db: appDb }),
+    deliverDocumentHandler({
+      storage: deps.storage,
+      sender: deps.sender,
+      db: appDb,
+      config: deps.config,
+    }),
   );
   runner.register(
     JobKind.ProcessPaymentEvent,

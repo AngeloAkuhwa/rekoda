@@ -18,6 +18,7 @@
  *    one message the merchant will actually read.
  */
 
+import type { UsageUnit } from './allowances.js';
 import { formatKobo } from './money.js';
 
 /** Every message carries the tokens it was built with, un-rehydrated. */
@@ -137,14 +138,30 @@ export function clarification(question: string): Reply {
  * named rather than implied. The merchant who hits this is the product
  * working, and the message must feel that way.
  */
-export function allowanceExhausted(monthlyMessages: number): Reply {
+export function allowanceExhausted(allowance: number, unit: UsageUnit = 'messages'): Reply {
   return reply(
-    `You have used all ${monthlyMessages} messages in your plan this month. ` +
+    `You have used all ${allowance} ${UNIT_WORDS[unit]} in your plan this month. ` +
       'Nothing is lost. Your records are safe, and *who owes me*, *payment details* and ' +
       'your dashboard still work.\n\n' +
       'Reply *upgrade* and we will move you to a bigger plan.',
   );
 }
+
+/**
+ * Each unit said the way a merchant would say it.
+ *
+ * The doorway reply names what ran out, and "you have used all 25 documents"
+ * has to read as a sentence about invoices and receipts rather than about a
+ * column name — a merchant who cannot tell which limit they hit cannot tell
+ * which plan would fix it.
+ */
+const UNIT_WORDS: Record<UsageUnit, string> = {
+  messages: 'messages',
+  voice_seconds: 'seconds of voice notes',
+  documents: 'invoices and receipts',
+  documents_understood: 'document scans',
+  orders: 'orders',
+};
 
 /**
  * The 30-day trial is over.

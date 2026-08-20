@@ -237,11 +237,23 @@ describe('the spend ceiling in front of it', () => {
     const result = await interpreter.interpret(businessId, 'CUSTOMER_7K2 bought wigs');
     expect(result.outcome).toBe('unavailable');
 
-    // No tokens were billed, so the slot goes back — being unable to reach a
-    // provider must not spend a merchant's daily allowance.
+    // The slot goes back — being unable to reach a provider must not spend a
+    // merchant's daily allowance.
     const spent = await withBusiness(db, businessId, (tx) => quotaRepo.callsToday(tx, businessId));
     expect(spent).toBe(0);
-    expect((await usageRows(businessId)).calls).toBe(0);
+
+    /**
+     * But the ATTEMPT is still recorded, at zero cost.
+     *
+     * "The merchant was not billed" and "nothing happened" are different
+     * claims, and only the first is true: a request that timed out after the
+     * provider started generating is charged to us. A row we cannot price is
+     * something to reconcile against the invoice; no row at all is a cost
+     * that never appears anywhere.
+     */
+    const usage = await usageRows(businessId);
+    expect(usage.calls).toBe(1);
+    expect(usage.providerCostMicros).toBe(0);
   });
 });
 

@@ -1324,3 +1324,9 @@ button,
   font-size: 0.7rem;
   font-weight: 600;
 }
+
+/* One row per metered unit. The gap does the spacing so a plan with four
+   units and a plan with one both look deliberate. */
+.rk-meter-row + .rk-meter-row {
+  margin-top: var(--rk-space-3);
+}

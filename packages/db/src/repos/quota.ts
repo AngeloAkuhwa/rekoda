@@ -20,9 +20,9 @@ import { aiQuotaCounters, usageEvents } from '../schema/ops.js';
 export type Queryable = Db | TenantDb;
 
 export interface QuotaLimits {
-  /** Calls one business may make in a UTC day. */
+  /** Calls one business may make in a Lagos day. */
   perBusinessPerDay: number;
-  /** Calls the whole platform may make in a UTC day. The backstop. */
+  /** Calls the whole platform may make in a Lagos day. The backstop. */
   globalPerDay: number;
 }
 
@@ -30,9 +30,14 @@ export type Reservation =
   | { ok: true; businessCalls: number; globalCalls: number }
   | { ok: false; refusedBy: 'business' | 'platform' };
 
-/** UTC, so a ceiling does not reset twice a year or drift by timezone. */
-export function utcDay(at: Date): string {
-  return at.toISOString().slice(0, 10);
+/**
+ * The LAGOS day, so "it resets at midnight" is true for the merchant reading
+ * it. Nigeria is fixed UTC+1 with no daylight saving, so this is arithmetic
+ * rather than a timezone database — the same shift `usagePeriod` applies to
+ * the monthly meter, which keeps the two ceilings on one calendar.
+ */
+export function lagosDay(at: Date): string {
+  return new Date(at.getTime() + 3_600_000).toISOString().slice(0, 10);
 }
 
 /**
@@ -55,7 +60,7 @@ export async function reserveAiCall(
   if (limits.perBusinessPerDay < 1) return { ok: false, refusedBy: 'business' };
   if (limits.globalPerDay < 1) return { ok: false, refusedBy: 'platform' };
 
-  const day = utcDay(at);
+  const day = lagosDay(at);
 
   return withBusiness<Reservation>(db, businessId, async (tx) => {
     const mine = await tx.execute<{ calls: number }>(sql`
@@ -113,7 +118,7 @@ export async function releaseAiCall(
   businessId: string,
   at: Date = new Date(),
 ): Promise<void> {
-  const day = utcDay(at);
+  const day = lagosDay(at);
   await withBusiness(db, businessId, async (tx) => {
     await tx.execute(sql`
       UPDATE ai_quota_counters SET calls = GREATEST(0, calls - 1)
@@ -134,14 +139,19 @@ export async function callsToday(
   const rows = await tx
     .select({ calls: aiQuotaCounters.calls })
     .from(aiQuotaCounters)
-    .where(and(eq(aiQuotaCounters.businessId, businessId), eq(aiQuotaCounters.day, utcDay(at))))
+    .where(and(eq(aiQuotaCounters.businessId, businessId), eq(aiQuotaCounters.day, lagosDay(at))))
     .limit(1);
   return rows[0]?.calls ?? 0;
 }
 
 export interface UsageRecord {
   businessId: string;
-  provider: 'meta' | 'twilio' | 'anthropic' | 'stt' | 'storage' | 'paystack';
+  /**
+   * Who charged us. `openai` belongs here for the same reason `anthropic`
+   * does: the margin view groups by provider, and a call attributed to the
+   * wrong one is a cost the wrong budget carries.
+   */
+  provider: 'meta' | 'twilio' | 'anthropic' | 'openai' | 'stt' | 'storage' | 'paystack';
   usageType: string;
   quantity: number;
   providerCostMicros: number;

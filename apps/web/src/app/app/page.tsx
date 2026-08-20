@@ -1,5 +1,5 @@
 import type { Metadata } from 'next';
-import { allowanceFor } from '@rekoda/core';
+import { allowanceFor, USAGE_UNITS, type UsageUnit } from '@rekoda/core';
 import { Money } from '@/components/ui/Money';
 import { MoneyBadge } from '@/components/ui/MoneyBadge';
 import { requireSessionWithToken } from '@/server/guards';
@@ -51,8 +51,21 @@ export default async function DashboardPage() {
     timeZone: 'UTC',
   });
 
-  const messagesUsed = usage.units.find((u) => u.unit === 'messages');
-  const messagesAllowance = allowanceFor(usage.plan, 'messages') + (messagesUsed?.bonus ?? 0);
+  /**
+   * Every unit this plan actually sells, not just messages.
+   *
+   * A unit with a zero allowance is not part of this plan (voice on
+   * Integrate, orders on Chat) and showing an empty bar for it would read as
+   * something broken rather than something not bought.
+   */
+  const meters = USAGE_UNITS.map((unit) => {
+    const row = usage.units.find((u) => u.unit === unit);
+    return {
+      unit,
+      used: row?.used ?? 0,
+      allowance: allowanceFor(usage.plan, unit) + (row?.bonus ?? 0),
+    };
+  }).filter((m) => m.allowance > 0);
 
   return (
     <section className="rk-container rk-dash">
@@ -178,25 +191,28 @@ export default async function DashboardPage() {
 
         <div className="rk-card rk-dash-card">
           <h2>Your plan this month</h2>
-          <p className="rk-dash-total">
-            {messagesUsed?.used ?? 0}
-            <span className="rk-fineprint"> of {messagesAllowance} messages used</span>
-          </p>
-          <div
-            className="rk-meter"
-            role="meter"
-            aria-valuemin={0}
-            aria-valuemax={messagesAllowance}
-            aria-valuenow={messagesUsed?.used ?? 0}
-            aria-label="Messages used this month"
-          >
-            <span
-              className="rk-meter-fill"
-              style={{
-                width: `${Math.min(100, Math.round(((messagesUsed?.used ?? 0) / Math.max(1, messagesAllowance)) * 100))}%`,
-              }}
-            />
-          </div>
+          {meters.map((meter) => (
+            <div key={meter.unit} className="rk-meter-row">
+              <p className="rk-fineprint">
+                {meter.used} of {meter.allowance} {UNIT_LABELS[meter.unit]} used
+              </p>
+              <div
+                className="rk-meter"
+                role="meter"
+                aria-valuemin={0}
+                aria-valuemax={meter.allowance}
+                aria-valuenow={meter.used}
+                aria-label={`${UNIT_LABELS[meter.unit]} used this month`}
+              >
+                <span
+                  className="rk-meter-fill"
+                  style={{
+                    width: `${Math.min(100, Math.round((meter.used / Math.max(1, meter.allowance)) * 100))}%`,
+                  }}
+                />
+              </div>
+            </div>
+          ))}
           <p className="rk-fineprint">
             Free commands like *who owes me* and *payment details* never count. Need more? Reply{' '}
             *upgrade* on WhatsApp and we will set you up, or <a href="/pricing">see plans</a>.
@@ -250,3 +266,12 @@ function StatTile({
     </div>
   );
 }
+
+/** The units, in merchant words. Same vocabulary as the WhatsApp reply. */
+const UNIT_LABELS: Record<UsageUnit, string> = {
+  messages: 'messages',
+  voice_seconds: 'seconds of voice notes',
+  documents: 'invoices and receipts',
+  documents_understood: 'document scans',
+  orders: 'orders',
+};

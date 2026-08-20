@@ -18,6 +18,7 @@ import type { StructuredBusinessCommand } from '@rekoda/contracts';
 import {
   billingRepo,
   conversationsRepo,
+  withBusiness,
   customersRepo,
   events,
   identity,
@@ -191,7 +192,7 @@ async function deterministicReply(
   intent: DeterministicIntent,
   ctx: CommandContext,
 ): Promise<Reply | null> {
-  if (intent.kind === 'affirm') return confirmPendingDraft(tx, businessId);
+  if (intent.kind === 'affirm') return confirmPendingDraft(deps, tx, businessId);
   if (intent.kind === 'deny' || intent.kind === 'cancel') {
     // A refusal after a preview discards the draft rather than leaving it to
     // be confirmed by an accidental "yes" ten minutes later.
@@ -359,12 +360,35 @@ async function paymentDetailsReply(
  * The loser is told the truth — the document IS being issued — rather than
  * apologised to for a success.
  */
-async function confirmPendingDraft(tx: TenantDb, businessId: string): Promise<Reply | null> {
+async function confirmPendingDraft(
+  deps: InboundMessageDeps,
+  tx: TenantDb,
+  businessId: string,
+): Promise<Reply | null> {
   const draft = await conversationsRepo.pendingDraft(tx, businessId);
   if (!draft) return replies.nothingToConfirm();
-  if (!(await conversationsRepo.claimDraft(tx, draft.id))) return replies.alreadyConfirmed();
 
   const command = draft.command as { intent?: string } & Record<string, unknown>;
+
+  /**
+   * A sale becomes an invoice, and invoices are a metered unit
+   * (docs/metering-v1.md §1). Checked BEFORE the draft is claimed and before
+   * anything is booked: the soft-limit rule is that nobody is cut off
+   * mid-transaction, and this is the last moment that is still between
+   * transactions. Refusing here leaves the draft pending, so the same "yes"
+   * works the moment they upgrade.
+   */
+  if (command.intent === 'RecordSale') {
+    const plan = await usageRepo.planFor(tx, businessId);
+    const allowance = allowanceFor(plan, 'documents');
+    const period = usagePeriod(new Date());
+    const granted = await withBusiness(deps.db, businessId, (own) =>
+      usageRepo.consumeUnit(own, businessId, period, 'documents', allowance),
+    );
+    if (!granted) return replies.allowanceExhausted(allowance, 'documents');
+  }
+
+  if (!(await conversationsRepo.claimDraft(tx, draft.id))) return replies.alreadyConfirmed();
   if (command.intent === 'RecordExpense') return confirmExpense(tx, businessId, draft.id, command);
   if (command.intent === 'RecordPurchase')
     return confirmPurchase(tx, businessId, draft.id, command);
@@ -518,19 +542,30 @@ async function interpretedReply(
 
   const monthlyMessages = allowanceFor(plan, 'messages');
   const period = usagePeriod(new Date());
-  const granted = await usageRepo.consumeUnit(tx, businessId, period, 'messages', monthlyMessages);
+
+  /**
+   * The consume runs in its OWN short transaction, not this job's.
+   *
+   * This one spans the model call, which can take twenty seconds, and the
+   * counter row is locked for the whole of an enclosing transaction. Every
+   * other message from the same business would queue behind it — one slow
+   * model call throttling a whole shop. The compensating refund below is
+   * what makes a separate transaction safe: the meter is corrected by a
+   * second statement rather than by a rollback.
+   */
+  const granted = await consumeMessage(deps, businessId, period, monthlyMessages);
   if (!granted) return replies.allowanceExhausted(monthlyMessages);
 
   const interpreted = await deps.interpreter.interpret(businessId, safeText);
 
   /**
    * The meter only moves when the product worked. If the model never ran
-   * (daily ceiling, provider down) or its answer was unusable, the unit
-   * goes back in the same transaction — a merchant must never watch their
-   * allowance shrink on Rekoda's failures.
+   * (daily ceiling, provider down) or its answer was unusable, the unit goes
+   * back — a merchant must never watch their allowance shrink on Rekoda's
+   * failures.
    */
   if (interpreted.outcome !== 'command') {
-    await usageRepo.refundUnit(tx, businessId, period, 'messages');
+    await refundMessage(deps, businessId, period);
   }
 
   /**
@@ -601,6 +636,34 @@ function acknowledge(command: StructuredBusinessCommand, correcting: boolean): R
 }
 
 /** The classification, in a form the reply layer can read back. */
+/**
+ * Take one message unit on the app pool, outside the job's transaction.
+ *
+ * Mirrors `reserveAiCall`, which reserves the daily slot the same way and for
+ * the same reason: a counter that every message of a business contends on
+ * must never be held across a network call to a model.
+ */
+function consumeMessage(
+  deps: InboundMessageDeps,
+  businessId: string,
+  period: string,
+  allowance: number,
+): Promise<boolean> {
+  return withBusiness(deps.db, businessId, (tx) =>
+    usageRepo.consumeUnit(tx, businessId, period, 'messages', allowance),
+  );
+}
+
+function refundMessage(
+  deps: InboundMessageDeps,
+  businessId: string,
+  period: string,
+): Promise<void> {
+  return withBusiness(deps.db, businessId, (tx) =>
+    usageRepo.refundUnit(tx, businessId, period, 'messages'),
+  );
+}
+
 function describeIntent(intent: DeterministicIntent): string {
   return intent.kind === 'number' ? `[number:${intent.value}]` : `[${intent.kind}]`;
 }
