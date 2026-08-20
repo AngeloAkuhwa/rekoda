@@ -1,0 +1,120 @@
+/**
+ * The Payment Hub's authenticated surface (docs/payments-v1.md §3–5, §35).
+ *
+ * Every route runs behind the session guard, and `businessId` comes from the
+ * SESSION, never from a body or query — a caller-supplied tenant id is a
+ * cross-tenant read waiting for a forgotten check. Submitting settlement
+ * details is owner-only: an accountant can read the books they were invited
+ * to; they cannot redirect where the money settles.
+ */
+import {
+  BadRequestException,
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  Inject,
+  Post,
+  Req,
+  ServiceUnavailableException,
+  UseGuards,
+} from '@nestjs/common';
+import { usagePeriod } from '@rekoda/core';
+import { submitConnectionRequest } from '@rekoda/contracts';
+import type {
+  PaymentConnectionResponse,
+  PaymentExceptionsResponse,
+  PaymentsListResponse,
+} from '@rekoda/contracts';
+import { settleRepo, usageRepo, withBusiness, type Db } from '@rekoda/db';
+import { Roles, RolesGuard } from '../auth/roles.guard.js';
+import { SessionGuard, type AuthedRequest } from '../auth/session.guard.js';
+import { DB } from '../db/db.module.js';
+import { PaymentConnectionsService } from './connections.service.js';
+
+@Controller('v1/payments')
+@UseGuards(SessionGuard)
+export class PaymentsController {
+  constructor(
+    @Inject(PaymentConnectionsService) private readonly connections: PaymentConnectionsService,
+    @Inject(DB) private readonly db: Db,
+  ) {}
+
+  @Get('connection')
+  async connection(@Req() request: AuthedRequest): Promise<PaymentConnectionResponse> {
+    return this.connections.view(request.auth!.businessId);
+  }
+
+  @Post('connection')
+  @HttpCode(200)
+  @UseGuards(RolesGuard)
+  @Roles('owner')
+  async submitConnection(
+    @Req() request: AuthedRequest,
+    @Body() body: unknown,
+  ): Promise<PaymentConnectionResponse & { held?: string }> {
+    const parsed = submitConnectionRequest.safeParse(body);
+    if (!parsed.success) {
+      throw new BadRequestException(
+        'bank code, a 10-digit account number and the account name are required',
+      );
+    }
+
+    const outcome = await this.connections.submit(request.auth!.businessId, parsed.data);
+    if (outcome.state === 'unavailable') {
+      // 503, not 500: the deployment is missing its CONNECTION_KEY and the
+      // owner's account number was deliberately NOT stored.
+      throw new ServiceUnavailableException('payment onboarding is not configured yet');
+    }
+    return outcome.held ? { ...outcome.connection, held: outcome.held } : outcome.connection;
+  }
+
+  @Get('list')
+  async list(@Req() request: AuthedRequest): Promise<PaymentsListResponse> {
+    const businessId = request.auth!.businessId;
+    const payments = await withBusiness(this.db, businessId, (tx) => settleRepo.paymentsFor(tx));
+    return {
+      payments: payments.map((p) => ({
+        rekodaReference: p.rekodaReference,
+        status: p.status,
+        verified: p.verified,
+        method: p.method,
+        grossAmountK: p.grossAmountK,
+        providerFeeK: p.providerFeeK,
+        settlementAmountK: p.settlementAmountK,
+      })),
+    };
+  }
+
+  @Get('exceptions')
+  async exceptions(@Req() request: AuthedRequest): Promise<PaymentExceptionsResponse> {
+    const businessId = request.auth!.businessId;
+    const rows = await withBusiness(this.db, businessId, (tx) => settleRepo.reconciliationsFor(tx));
+    return {
+      exceptions: rows
+        .filter((r) => r.status === 'EXCEPTION')
+        .map((r) => ({
+          status: r.status,
+          reason: r.reason,
+          amountK: r.amountK,
+          outstandingK: r.outstandingK,
+        })),
+    };
+  }
+
+  /** This month's meter, so the dashboard can show usage without guessing. */
+  @Get('usage')
+  async usage(@Req() request: AuthedRequest): Promise<{
+    period: string;
+    plan: string;
+    units: Array<{ unit: string; used: number; bonus: number }>;
+  }> {
+    const businessId = request.auth!.businessId;
+    const period = usagePeriod(new Date());
+    return withBusiness(this.db, businessId, async (tx) => ({
+      period,
+      plan: await usageRepo.planFor(tx, businessId),
+      units: await usageRepo.usageFor(tx, businessId, period),
+    }));
+  }
+}

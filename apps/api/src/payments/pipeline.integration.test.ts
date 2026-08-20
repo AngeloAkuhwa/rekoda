@@ -54,6 +54,7 @@ let closeApp: () => Promise<void>;
 let closeWorker: () => Promise<void>;
 let config: ApiConfig;
 let provider: StubPaymentProvider;
+let stubSender: StubSender;
 let deps: RunnerDeps;
 
 beforeAll(async () => {
@@ -70,7 +71,7 @@ beforeAll(async () => {
   config = loadConfig();
 
   provider = new StubPaymentProvider();
-  const stubSender = new StubSender();
+  stubSender = new StubSender();
   deps = {
     gateway: new PrivacyGateway(appDb, config),
     interpreter: new Interpreter(appDb, config, StubTransport.answering({ intent: 'Unclear' })),
@@ -94,6 +95,7 @@ afterAll(async () => {
 beforeEach(async () => {
   await truncateAll(urls);
   provider.reset();
+  stubSender.reset();
 });
 
 /* ── seeding ─────────────────────────────────────────────────────────────── */
@@ -216,13 +218,28 @@ describe('the full payment (§37: "full payment")', () => {
     const eventId = await storeChargeSuccess(intent.reference);
 
     expect(await pump()).toBe(1);
-    expect(await drainJobs()).toBe(1);
+    // Three jobs, one chain: process books the money, render makes the
+    // receipt's paper, deliver puts it on the owner's WhatsApp.
+    expect(await drainJobs()).toBe(3);
 
     const invoice = await invoiceState(businessId, sale.invoiceId);
     expect(invoice?.status).toBe('paid');
     expect(invoice?.balanceDueK).toBe(0);
 
     expect(await receiptCount(businessId)).toBe(1);
+
+    /* The owner's "money in" moment: ONE message carrying the confirmed
+     * figure, the invoice it answers, and the receipt PDF itself. */
+    const delivered = stubSender.lastDocument;
+    expect(delivered?.to).toBe('+2348130000001');
+    expect(delivered?.filename).toMatch(/^RCT-\d{4}-000001\.pdf$/);
+    expect(delivered?.bytes.subarray(0, 5).toString()).toBe('%PDF-');
+    expect(delivered?.caption).toContain('Money in ✅ ₦150,000 confirmed for');
+    expect(delivered?.caption).toContain(invoice?.invoiceNumber);
+    const docs = await withBusiness(appDb, businessId, (tx) =>
+      issueRepo.documentsFor(tx, businessId),
+    );
+    expect(docs.map((d) => d.kind)).toContain('receipt_pdf');
 
     const [payment] = await withBusiness(appDb, businessId, (tx) => settleRepo.paymentsFor(tx));
     expect(payment?.verified).toBe(1);

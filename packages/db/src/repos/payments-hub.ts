@@ -34,7 +34,9 @@ export interface ConnectionRow {
   status: string;
   kycStatus: string;
   externalSubaccountId: string | null;
+  settlementBankCode: string | null;
   settlementAccountLast4: string | null;
+  settlementAccountName: string | null;
   /** Who bears the provider's fee (§14). The booking honours this. */
   feePolicy: string;
 }
@@ -78,7 +80,9 @@ export async function upsertConnection(
       status: paymentConnections.status,
       kycStatus: paymentConnections.kycStatus,
       externalSubaccountId: paymentConnections.externalSubaccountId,
+      settlementBankCode: paymentConnections.settlementBankCode,
       settlementAccountLast4: paymentConnections.settlementAccountLast4,
+      settlementAccountName: paymentConnections.settlementAccountName,
       feePolicy: paymentConnections.feePolicy,
     });
 
@@ -99,7 +103,9 @@ export async function connectionFor(
       status: paymentConnections.status,
       kycStatus: paymentConnections.kycStatus,
       externalSubaccountId: paymentConnections.externalSubaccountId,
+      settlementBankCode: paymentConnections.settlementBankCode,
       settlementAccountLast4: paymentConnections.settlementAccountLast4,
+      settlementAccountName: paymentConnections.settlementAccountName,
       feePolicy: paymentConnections.feePolicy,
     })
     .from(paymentConnections)
@@ -111,6 +117,29 @@ export async function connectionFor(
     )
     .limit(1);
   return rows[0] ?? null;
+}
+
+/**
+ * The stored settlement cipher, for key-rotation runbooks and the tests that
+ * prove the account number is a vault blob at rest. Returns the CIPHERTEXT —
+ * nothing in this package can open it, which is the point.
+ */
+export async function settlementCipherFor(
+  tx: TenantDb,
+  businessId: string,
+  providerType: string,
+): Promise<string | null> {
+  const rows = await tx
+    .select({ cipher: paymentConnections.settlementAccountCipher })
+    .from(paymentConnections)
+    .where(
+      and(
+        eq(paymentConnections.businessId, businessId),
+        eq(paymentConnections.providerType, providerType),
+      ),
+    )
+    .limit(1);
+  return rows[0]?.cipher ?? null;
 }
 
 /** Advance the §5 state machine, optionally attaching provider identifiers. */

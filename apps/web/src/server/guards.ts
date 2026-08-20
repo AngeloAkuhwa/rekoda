@@ -49,3 +49,19 @@ export async function optionalSession(): Promise<MeResponse | null> {
   if (!token) return null;
   return me(token);
 }
+
+/**
+ * Same guarantee as `requireSession`, and hands back the TOKEN too — for
+ * pages that make further API calls on the merchant's behalf. The token
+ * never reaches a client component; it lives for one server render.
+ */
+export async function requireSessionWithToken(): Promise<{
+  identity: MeResponse;
+  token: string;
+}> {
+  const token = await readSessionToken();
+  if (!token) redirect('/start');
+  const identity = await me(token);
+  if (!identity) redirect('/start');
+  return { identity, token };
+}

@@ -1,3 +1,4 @@
+import Image from 'next/image';
 import { computeMoney } from '@rekoda/core';
 import { Button } from '@/components/ui/Button';
 import { Money } from '@/components/ui/Money';
@@ -160,12 +161,30 @@ export default function HomePage() {
           Not just a list of sales. Every message becomes a double-entry record, so what comes out
           is what an accountant already knows how to read.
         </p>
-        <ul className="rk-check-list">
-          <li>Profit &amp; loss, balance sheet and cash flow</li>
-          <li>A trial balance that has to balance, and does</li>
-          <li>Invoices and receipts numbered in an unbroken sequence</li>
-          <li>Every figure traceable back to the message that created it</li>
-        </ul>
+        <div className="rk-proof-grid">
+          <ul className="rk-check-list">
+            <li>Profit &amp; loss, balance sheet and cash flow</li>
+            <li>A trial balance that has to balance, and does</li>
+            <li>Invoices and receipts numbered in an unbroken sequence</li>
+            <li>Every figure traceable back to the message that created it</li>
+          </ul>
+          {/* Not a mockup: scripts/render-demo-receipt.mjs runs this image
+              through the SAME layout and PDF engine that renders a merchant's
+              real receipts, so the promise on this page cannot drift from the
+              paper the product actually sends. */}
+          <figure className="rk-doc-proof">
+            <Image
+              src="/demo/receipt.png"
+              alt="A receipt rendered by Rekoda: RCT-2026-000114 from Ada Fashion for 150,000 naira, confirmed with the payment provider before it was issued"
+              width={641}
+              height={390}
+            />
+            <figcaption>
+              An actual receipt from Rekoda&apos;s document engine, confirmed money only. The same
+              code renders yours.
+            </figcaption>
+          </figure>
+        </div>
       </section>
 
       <section className="rk-section rk-container">

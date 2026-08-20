@@ -267,6 +267,15 @@ already excludes non-product amounts (§15); tenant scoping via RLS (§42.7);
    tracking from provider settlement events. When receipt rendering ships,
    also render ONE demo receipt as an image for the landing page — the
    "real documents" claim lands harder shown than said.
-3. Connection onboarding flow + dashboard Payments/Providers pages + admin
-   exception views (+ the slice-2 deferrals above).
+3. SHIPPED (partially). Connection onboarding (provider `createSubaccount`
+   port + Paystack + stub, vaulted account number under CONNECTION_KEY, the
+   §47 live-key hold), the dashboard `/app/payments` page (masked connection
+   card, verified payments table, merchant-language exceptions), receipt PDF
+   through the same render → deliver chain invoices use (enqueued in the
+   booking transaction; the deliver caption IS the owner's "money in ✅"
+   notification, figure included), and the landing demo receipt
+   (`scripts/render-demo-receipt.mjs` — the marketing image goes through the
+   real engine so it cannot drift). Still open from this slice: admin
+   exception views, chat/"send payment details" wiring, settlement tracking
+   from provider settlement events.
 4. (M4) `Rekoda.Billing` per §B.

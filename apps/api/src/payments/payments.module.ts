@@ -1,9 +1,14 @@
 import { Module } from '@nestjs/common';
 import { CONFIG, type ApiConfig } from '../config.js';
 import { DbModule } from '../db/db.module.js';
+import { AuthService } from '../auth/auth.service.js';
+import { SessionGuard } from '../auth/session.guard.js';
+import { RolesGuard } from '../auth/roles.guard.js';
 import { PaystackWebhookController } from './paystack.controller.js';
 import { PaystackProvider } from './paystack.provider.js';
 import { PaymentIntentsService } from './payment-intents.service.js';
+import { PaymentConnectionsService } from './connections.service.js';
+import { PaymentsController } from './payments.controller.js';
 import { PAYMENT_PROVIDER } from './provider.port.js';
 
 /**
@@ -16,7 +21,7 @@ import { PAYMENT_PROVIDER } from './provider.port.js';
  */
 @Module({
   imports: [DbModule],
-  controllers: [PaystackWebhookController],
+  controllers: [PaystackWebhookController, PaymentsController],
   providers: [
     {
       provide: PAYMENT_PROVIDER,
@@ -25,7 +30,12 @@ import { PAYMENT_PROVIDER } from './provider.port.js';
         new PaystackProvider(config.paystackSecretKey, config.paystackBaseUrl),
     },
     PaymentIntentsService,
+    PaymentConnectionsService,
+    // The guards resolve within the module that declares the controller.
+    AuthService,
+    SessionGuard,
+    RolesGuard,
   ],
-  exports: [PAYMENT_PROVIDER, PaymentIntentsService],
+  exports: [PAYMENT_PROVIDER, PaymentIntentsService, PaymentConnectionsService],
 })
 export class PaymentsModule {}

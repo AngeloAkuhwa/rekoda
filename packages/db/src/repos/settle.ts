@@ -74,6 +74,8 @@ export interface BookedPayment {
   paymentId: string;
   allocatedK: number;
   receiptNumber: string | null;
+  /** For enqueueing the render job — null exactly when receiptNumber is. */
+  receiptId: string | null;
   invoiceStatus: string | null;
   ledgerTransactionId: string | null;
   reconciliation: 'matched' | 'partial_match' | 'overpaid' | 'duplicate' | 'requires_review';
@@ -138,6 +140,7 @@ export async function bookVerifiedPayment(
       paymentId,
       allocatedK: 0,
       receiptNumber: null,
+      receiptId: null,
       invoiceStatus: null,
       ledgerTransactionId: null,
       reconciliation: 'requires_review',
@@ -175,6 +178,7 @@ export async function bookVerifiedPayment(
       paymentId,
       allocatedK: 0,
       receiptNumber: null,
+      receiptId: null,
       invoiceStatus: null,
       ledgerTransactionId: null,
       reconciliation: 'duplicate',
@@ -217,17 +221,22 @@ export async function bookVerifiedPayment(
     allocatedK,
     currency: input.currency,
   };
-  await tx.insert(receipts).values({
-    businessId: input.businessId,
-    customerId: invoice.customer_id,
-    receiptNumber,
-    paymentId,
-    invoiceId: invoice.id,
-    amountK: input.confirmedAmountK,
-    currency: input.currency,
-    snapshotJson: receiptSnapshot as never,
-    docHash: documentHash(receiptSnapshot),
-  });
+  const receiptRows = await tx
+    .insert(receipts)
+    .values({
+      businessId: input.businessId,
+      customerId: invoice.customer_id,
+      receiptNumber,
+      paymentId,
+      invoiceId: invoice.id,
+      amountK: input.confirmedAmountK,
+      currency: input.currency,
+      snapshotJson: receiptSnapshot as never,
+      docHash: documentHash(receiptSnapshot),
+    })
+    .returning({ id: receipts.id });
+  const receipt = receiptRows[0];
+  if (!receipt) throw new Error('bookVerifiedPayment: receipt insert returned no row');
 
   /* 5 ── the books. Only the allocated portion posts; see the file comment. */
   const posting = postProviderPayment({
@@ -281,6 +290,7 @@ export async function bookVerifiedPayment(
     paymentId,
     allocatedK,
     receiptNumber,
+    receiptId: receipt.id,
     invoiceStatus,
     ledgerTransactionId: ledgerTx.id,
     reconciliation,
@@ -363,6 +373,52 @@ async function audit(
 export async function paymentCount(tx: TenantDb): Promise<number> {
   const rows = await tx.execute<{ n: number }>(sql`SELECT count(*)::int AS n FROM payments`);
   return [...rows][0]?.n ?? 0;
+}
+
+export interface ReceiptForRender {
+  receiptNumber: string;
+  issuedAt: Date;
+  /** The immutable snapshot — the ONLY thing a render may read (spec §42). */
+  snapshot: unknown;
+}
+
+/** One receipt, by id, for the render job. */
+export async function receiptForRender(
+  tx: TenantDb,
+  businessId: string,
+  receiptId: string,
+): Promise<ReceiptForRender | null> {
+  const rows = await tx
+    .select({
+      receiptNumber: receipts.receiptNumber,
+      issuedAt: receipts.issuedAt,
+      snapshot: receipts.snapshotJson,
+    })
+    .from(receipts)
+    .where(and(eq(receipts.businessId, businessId), eq(receipts.id, receiptId)))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+/**
+ * One receipt by its NUMBER — what the deliver job holds, since the stored
+ * document row carries `refNumber` and nothing else about its origin.
+ */
+export async function receiptByNumber(
+  tx: TenantDb,
+  businessId: string,
+  receiptNumber: string,
+): Promise<ReceiptForRender | null> {
+  const rows = await tx
+    .select({
+      receiptNumber: receipts.receiptNumber,
+      issuedAt: receipts.issuedAt,
+      snapshot: receipts.snapshotJson,
+    })
+    .from(receipts)
+    .where(and(eq(receipts.businessId, businessId), eq(receipts.receiptNumber, receiptNumber)))
+    .limit(1);
+  return rows[0] ?? null;
 }
 
 export async function receiptCount(tx: TenantDb): Promise<number> {

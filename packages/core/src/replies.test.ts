@@ -88,6 +88,24 @@ describe('erasure', () => {
   });
 });
 
+describe('the money-in moment', () => {
+  it('leads with the confirmed figure and names both documents', () => {
+    const text = replies.paymentConfirmed(15_000_000, 'INV-2026-000041', 'RCT-2026-000007').text;
+    expect(text).toMatch(/^Money in ✅ ₦150,000 confirmed for INV-2026-000041\./);
+    expect(text).toContain('RCT-2026-000007');
+    // The receipt travels WITH this message, and the merchant's next move is
+    // in it — not implied.
+    expect(text).toMatch(/attached/i);
+    expect(text).toMatch(/forward it to your customer/i);
+  });
+
+  it('stays sendable and free of em or en dashes', () => {
+    const candidate = replies.paymentConfirmed(123_456_789, 'INV-2026-000001', 'RCT-2026-000001');
+    expect(replies.isSendable(candidate)).toBe(true);
+    expect(candidate.text).not.toMatch(/[–—]/);
+  });
+});
+
 describe('a capability that is not built', () => {
   it('says so, and says what does work', () => {
     const text = replies.notYet('Your debtor list').text;

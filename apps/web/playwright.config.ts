@@ -102,6 +102,15 @@ export default defineConfig({
         REKODA_API_SECRET: ephemeralSecret(),
         VAULT_KEY: ephemeralKey(),
         MATCH_KEY: ephemeralKey(),
+        // Lets the payments e2e store settlement details. No Paystack key is
+        // set, so activation correctly holds at pending_provider_creation.
+        CONNECTION_KEY: ephemeralKey(),
+        // Every request in this suite arrives from 127.0.0.1 through the Next
+        // server, so the whole run shares ONE per-IP budget — and the default
+        // 60/minute is sized for a person, not for 33 full-stack journeys.
+        // The limiter itself is pinned by auth.integration.test.ts; raising it
+        // here tests the product instead of the throttle.
+        REKODA_RATE_LIMIT_MAX: '2000',
         // Returns the code in the response so the suite can complete the flow
         // without a WhatsApp account. The API refuses this outright when
         // NODE_ENV is production.
