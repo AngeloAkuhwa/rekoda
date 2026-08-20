@@ -2,6 +2,7 @@ import { Logger } from '@nestjs/common';
 import {
   allowanceFor,
   gateExpense,
+  gatePayment,
   gatePurchase,
   gateSale,
   isSaleSource,
@@ -25,6 +26,7 @@ import {
   issueRepo,
   jobsRepo,
   reportsRepo,
+  settleRepo,
   spendRepo,
   usageRepo,
   type Db,
@@ -397,6 +399,7 @@ async function confirmPendingDraft(
     // else" in the confirmation copy's terms, and anything else keeps the data.
     return replies.erasureKept();
   }
+  if (command.intent === 'RecordPayment') return confirmPayment(tx, businessId, draft.id, command);
   if (command.intent !== 'RecordSale') {
     // Anything else is not actionable yet. The draft is claimed either way,
     // so an unconfirmable one cannot sit pending forever inviting another yes.
@@ -512,6 +515,57 @@ async function confirmPurchase(
   return replies.purchaseSaved(gate.amountK, recorded.owedK);
 }
 
+/**
+ * A confirmed payment the merchant reported.
+ *
+ * The invoice is resolved AGAIN here rather than carried on the draft: a
+ * provider payment or another reported one may have landed since the
+ * preview, and applying a stale balance is how an invoice goes negative. The
+ * gate runs again on the fresh figure for the same reason.
+ */
+async function confirmPayment(
+  tx: TenantDb,
+  businessId: string,
+  draftId: string,
+  command: Record<string, unknown>,
+): Promise<Reply> {
+  const invoice = await issueRepo.openInvoiceForPayment(tx, businessId, {
+    invoiceNumber: (command['documentRef'] as string | null) ?? null,
+    customerToken: customerTokenOf(command),
+  });
+  if (!invoice) return replies.paymentNoOpenInvoice();
+
+  const gate = gatePayment(command as never, invoice.invoiceNumber, invoice.balanceDueK);
+  if (gate.gate !== 'CG2') return replies.arithmeticQuestion(gate.question);
+
+  const recorded = await settleRepo.recordMerchantPayment(tx, {
+    businessId,
+    invoiceId: invoice.id,
+    amountK: gate.amountK,
+    method: command['paymentMethod'] === 'cash' ? 'cash' : 'transfer',
+    sourceType: 'chat',
+    sourceId: draftId,
+    actor: 'system',
+  });
+
+  /* The receipt gets the same render-then-deliver treatment a verified
+   * payment's does, enqueued in this transaction so paper and record commit
+   * together. */
+  await jobsRepo.enqueue(tx, {
+    businessId,
+    kind: 'document.render',
+    payload: { receiptId: recorded.receiptId },
+    singletonKey: `receipt:${recorded.receiptId}`,
+  });
+
+  return replies.paymentRecorded(
+    recorded.receiptNumber,
+    gate.amountK,
+    recorded.invoiceNumber,
+    recorded.balanceDueK,
+  );
+}
+
 function customerTokenOf(command: Record<string, unknown>): string | null {
   const customer = command['customer'] as { kind?: string; token?: string } | undefined;
   return customer?.kind === 'token' ? (customer.token ?? null) : null;
@@ -601,7 +655,7 @@ async function interpretedReply(
     model: deps.config.aiModelDefault,
   });
 
-  return acknowledge(interpreted.command, correcting);
+  return acknowledge(tx, businessId, interpreted.command, correcting);
 }
 
 /**
@@ -611,8 +665,36 @@ async function interpretedReply(
  * prevent: claiming something happened before it has. The preview belongs to
  * CG2 and the document to the transaction engine.
  */
-function acknowledge(command: StructuredBusinessCommand, correcting: boolean): Reply {
+async function acknowledge(
+  tx: TenantDb,
+  businessId: string,
+  command: StructuredBusinessCommand,
+  correcting: boolean,
+): Promise<Reply> {
   if (command.intent === 'Unclear') return replies.clarification(command.clarification);
+
+  /**
+   * A reported payment is gated against a REAL balance, read here.
+   *
+   * "Half" and "the rest" mean nothing without the invoice, and the contract
+   * is explicit that resolving them is core's job over a figure from SQL —
+   * never the model's arithmetic about what a customer owes.
+   */
+  if (command.intent === 'RecordPayment') {
+    const invoice = await issueRepo.openInvoiceForPayment(tx, businessId, {
+      invoiceNumber: command.documentRef,
+      customerToken: customerTokenOf(command as never),
+    });
+    if (!invoice) return replies.paymentNoOpenInvoice();
+
+    const paymentGate = gatePayment(command, invoice.invoiceNumber, invoice.balanceDueK);
+    if (paymentGate.gate === 'CG1') return replies.arithmeticQuestion(paymentGate.question);
+    return replies.preview(
+      correcting
+        ? `${replies.correctionTaken().text}\n\n${paymentGate.preview}`
+        : paymentGate.preview,
+    );
+  }
 
   /**
    * CG1 before CG2, always. A preview of numbers we already know are wrong is

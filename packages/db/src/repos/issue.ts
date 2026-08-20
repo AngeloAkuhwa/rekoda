@@ -460,3 +460,68 @@ export async function invoiceForRender(
     .limit(1);
   return rows[0] ?? null;
 }
+
+/**
+ * The invoice a reported payment belongs to.
+ *
+ * Three ways of naming one, in the order a merchant's certainty runs:
+ * an invoice number they typed, then the newest open invoice of the customer
+ * they named, then the newest open invoice at all. Never a guess wider than
+ * that — money applied to the wrong customer's books is worse than money not
+ * applied yet, because only one of those is visible.
+ */
+export async function openInvoiceForPayment(
+  tx: TenantDb,
+  businessId: string,
+  hint: { invoiceNumber?: string | null; customerToken?: string | null },
+): Promise<{ id: string; invoiceNumber: string; balanceDueK: number } | null> {
+  if (hint.invoiceNumber) {
+    const rows = await tx.execute<{
+      id: string;
+      invoice_number: string;
+      balance_due_k: string;
+    }>(sql`
+      SELECT id, invoice_number, balance_due_k::bigint AS balance_due_k
+      FROM invoices
+      WHERE business_id = ${businessId}::uuid
+        AND upper(invoice_number) = upper(${hint.invoiceNumber})
+        AND status IN ('issued', 'partially_paid')
+      LIMIT 1
+    `);
+    const row = [...rows][0];
+    return row
+      ? {
+          id: row.id,
+          invoiceNumber: row.invoice_number,
+          balanceDueK: Number(row.balance_due_k),
+        }
+      : null;
+  }
+
+  if (hint.customerToken) {
+    const rows = await tx.execute<{
+      id: string;
+      invoice_number: string;
+      balance_due_k: string;
+    }>(sql`
+      SELECT i.id, i.invoice_number, i.balance_due_k::bigint AS balance_due_k
+      FROM invoices i
+      JOIN customers c ON c.id = i.customer_id AND c.business_id = i.business_id
+      WHERE i.business_id = ${businessId}::uuid
+        AND c.token = ${hint.customerToken}
+        AND i.status IN ('issued', 'partially_paid')
+      ORDER BY i.created_at DESC
+      LIMIT 1
+    `);
+    const row = [...rows][0];
+    if (row) {
+      return {
+        id: row.id,
+        invoiceNumber: row.invoice_number,
+        balanceDueK: Number(row.balance_due_k),
+      };
+    }
+  }
+
+  return latestOpenInvoice(tx, businessId);
+}

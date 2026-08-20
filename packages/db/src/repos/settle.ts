@@ -24,7 +24,12 @@
  * are books that overstate what the merchant may keep.
  */
 import { and, eq, inArray, sql } from 'drizzle-orm';
-import { postProviderPayment, splitFees, type FeePolicy } from '@rekoda/core';
+import {
+  postProviderPayment,
+  postReceivablePayment,
+  splitFees,
+  type FeePolicy,
+} from '@rekoda/core';
 import { documentHash } from '@rekoda/core/documents';
 import type { TenantDb } from '../client.js';
 import { auditEvents } from '../schema/ops.js';
@@ -37,7 +42,7 @@ import {
   receipts,
   reconciliations,
 } from '../schema/finance.js';
-import { nextDocumentNumber } from './issue.js';
+import { nextDocumentNumber, writePosting } from './issue.js';
 
 /** The same rekoda_reference booked twice — the terminal-intent gate's job,
  * and this error firing means that gate was bypassed. Callers treat it as
@@ -559,3 +564,187 @@ function isUniqueViolation(error: unknown): boolean {
   }
   return false;
 }
+
+export interface RecordMerchantPaymentInput {
+  businessId: string;
+  invoiceId: string;
+  /** Already resolved and gated in core — never a model's figure. */
+  amountK: number;
+  /** cash | transfer | pos */
+  method: string;
+  sourceType: string;
+  sourceId: string;
+  actor: string;
+  recordedAt?: Date;
+}
+
+export interface RecordedPayment {
+  paymentId: string;
+  receiptId: string;
+  receiptNumber: string;
+  invoiceNumber: string;
+  /** What the invoice still owes AFTER this payment. */
+  balanceDueK: number;
+  invoiceStatus: string;
+}
+
+/**
+ * A payment the MERCHANT reported: cash at the counter, a transfer they saw.
+ *
+ * The same six steps as `bookVerifiedPayment` and one deliberate difference:
+ * `verified = 0`. Nobody confirmed this with a provider, so it is RECORDED
+ * (ADR 0014) and the dashboard shows it as such. Letting merchant testimony
+ * wear the verified badge would destroy the one distinction this product
+ * sells.
+ *
+ * The invoice is locked FOR UPDATE, so a reported payment and a webhook
+ * landing at the same moment cannot both read the same balance and each
+ * allocate against it.
+ */
+export async function recordMerchantPayment(
+  tx: TenantDb,
+  input: RecordMerchantPaymentInput,
+): Promise<RecordedPayment> {
+  const at = input.recordedAt ?? new Date();
+
+  const invoiceRows = await tx.execute<{
+    id: string;
+    invoice_number: string;
+    balance_due_k: number;
+    paid_k: number;
+    total_k: number;
+    customer_id: string | null;
+  }>(sql`
+    SELECT id, invoice_number, balance_due_k::bigint AS balance_due_k,
+           paid_k::bigint AS paid_k, total_k::bigint AS total_k, customer_id
+    FROM invoices
+    WHERE id = ${input.invoiceId}::uuid AND business_id = ${input.businessId}::uuid
+    FOR UPDATE
+  `);
+  const invoice = [...invoiceRows][0];
+  if (!invoice) throw new Error('recordMerchantPayment: no invoice for this tenant');
+
+  const balanceK = Number(invoice.balance_due_k);
+  /**
+   * Clamped, not trusted. The gate already refused an overpayment, but this
+   * function is the last thing between a number and the ledger, and the
+   * balance may have moved since the preview — a provider payment could have
+   * landed while the merchant was typing.
+   */
+  const applied = Math.min(input.amountK, balanceK);
+  if (applied <= 0) throw new AlreadySettled(`${invoice.invoice_number} has nothing owing`);
+
+  const paymentRows = await tx
+    .insert(payments)
+    .values({
+      businessId: input.businessId,
+      customerId: invoice.customer_id,
+      amountK: applied,
+      currency: 'NGN',
+      method: input.method,
+      /** RECORDED: the merchant told us, and no provider confirmed it. */
+      verified: 0,
+      grossAmountK: applied,
+      status: 'confirmed',
+      /* No provider, so no settlement to track — `not_applicable` in the
+       * §26-28 vocabulary, which this column spells as NULL. */
+      settlementStatus: null,
+      sourceType: input.sourceType,
+      sourceId: input.sourceId,
+    })
+    .returning({ id: payments.id });
+  const paymentId = paymentRows[0]?.id;
+  if (!paymentId) throw new Error('recordMerchantPayment: payment insert returned no row');
+
+  await tx.insert(paymentAllocations).values({
+    businessId: input.businessId,
+    paymentId,
+    invoiceId: invoice.id,
+    amountK: applied,
+  });
+
+  const newBalanceK = balanceK - applied;
+  const invoiceStatus = newBalanceK === 0 ? 'paid' : 'partially_paid';
+  await tx
+    .update(invoices)
+    .set({
+      paidK: Number(invoice.paid_k) + applied,
+      balanceDueK: newBalanceK,
+      status: invoiceStatus,
+    })
+    .where(and(eq(invoices.id, invoice.id), eq(invoices.businessId, input.businessId)));
+
+  const receiptNumber = await nextDocumentNumber(
+    tx,
+    input.businessId,
+    'receipt',
+    at.getUTCFullYear(),
+  );
+  const snapshot = {
+    documentNumber: receiptNumber,
+    issuedAtIso: at.toISOString(),
+    invoiceNumber: invoice.invoice_number,
+    amountK: applied,
+    allocatedK: applied,
+    currency: 'NGN',
+    verified: false,
+  };
+  const receiptRows = await tx
+    .insert(receipts)
+    .values({
+      businessId: input.businessId,
+      customerId: invoice.customer_id,
+      receiptNumber,
+      paymentId,
+      invoiceId: invoice.id,
+      amountK: applied,
+      currency: 'NGN',
+      snapshotJson: snapshot as never,
+      docHash: documentHash(snapshot),
+    })
+    .returning({ id: receipts.id });
+  const receiptId = receiptRows[0]?.id;
+  if (!receiptId) throw new Error('recordMerchantPayment: receipt insert returned no row');
+
+  /* Cash or bank debited, receivable cleared. Built in core, asserted
+   * balanced there, written here. */
+  await writePosting(
+    tx,
+    input.businessId,
+    postReceivablePayment({
+      memo: `Payment on ${invoice.invoice_number}`,
+      amountK: applied,
+      method: input.method === 'cash' ? 'cash' : 'transfer',
+    }),
+    input.sourceType,
+    input.sourceId,
+  );
+
+  await tx.insert(auditEvents).values({
+    businessId: input.businessId,
+    actor: input.actor,
+    entity: 'payment',
+    entityId: paymentId,
+    action: 'recorded',
+    newValue: {
+      invoiceNumber: invoice.invoice_number,
+      amountK: applied,
+      receiptNumber,
+      verified: false,
+      at: at.toISOString(),
+    } as never,
+    sourceType: input.sourceType,
+  });
+
+  return {
+    paymentId,
+    receiptId,
+    receiptNumber,
+    invoiceNumber: invoice.invoice_number,
+    balanceDueK: newBalanceK,
+    invoiceStatus,
+  };
+}
+
+/** The invoice was settled between the preview and the confirmation. */
+export class AlreadySettled extends Error {}

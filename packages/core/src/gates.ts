@@ -259,3 +259,77 @@ export function looksLikeCorrection(text: string, hasPendingDraft: boolean): boo
   if (!trimmed) return false;
   return CORRECTION_OPENERS.test(trimmed) || CORRECTION_PHRASES.test(trimmed);
 }
+
+/* ── money coming IN against an invoice already issued ───────────────────── */
+
+export interface PaymentLike {
+  /** Naira, as the human said it. Null when they said "half" or "the rest". */
+  readonly amount?: number | null;
+  /** Resolved HERE against the real balance, never by the model. */
+  readonly relativeAmount?: 'half' | 'remainder' | null;
+  readonly paymentMethod?: string | null;
+}
+
+export type PaymentGate =
+  | { gate: 'CG1'; question: string }
+  | { gate: 'CG2'; preview: string; amountK: number; balanceAfterK: number };
+
+/**
+ * A merchant reporting money received against an invoice they already issued.
+ *
+ * The balance is passed in from SQL rather than read here, so the resolution
+ * of "half" and "the rest" is arithmetic over a real figure and stays a pure
+ * function. The contract is explicit that this is core's job and not the
+ * model's: a model that guesses what "the rest" means is a model deciding how
+ * much a customer owes.
+ *
+ * Two things become CG1 questions rather than previews, both for the same
+ * reason — the books must never absorb a number nobody confirmed:
+ *   - no amount at all, absolute or relative;
+ *   - more than the invoice still owes, which is a real event (change due, a
+ *     credit for next time) that a merchant decides, not a rounding.
+ */
+export function gatePayment(
+  payment: PaymentLike,
+  invoiceNumber: string,
+  balanceDueK: number,
+): PaymentGate {
+  const amountK =
+    typeof payment.amount === 'number'
+      ? toKobo(payment.amount)
+      : payment.relativeAmount === 'remainder'
+        ? balanceDueK
+        : payment.relativeAmount === 'half'
+          ? Math.round(balanceDueK / 2)
+          : null;
+
+  if (amountK === null || amountK <= 0) {
+    return {
+      gate: 'CG1',
+      question: `How much did they pay on ${invoiceNumber}? It still has ${formatKobo(balanceDueK)} owing.`,
+    };
+  }
+
+  if (amountK > balanceDueK) {
+    return {
+      gate: 'CG1',
+      question:
+        `${invoiceNumber} only has ${formatKobo(balanceDueK)} owing, and you said ` +
+        `${formatKobo(amountK)}. Tell me the amount to record, or say *${formatKobo(balanceDueK)}* ` +
+        'to settle it.',
+    };
+  }
+
+  const balanceAfterK = balanceDueK - amountK;
+  const lines: string[] = ['Please check this before I save it:', ''];
+  lines.push(`Payment on ${invoiceNumber}`);
+  lines.push(`*Amount: ${formatKobo(amountK)}*`);
+  lines.push(`Received by ${payment.paymentMethod === 'cash' ? 'cash' : 'transfer'}`);
+  lines.push(
+    balanceAfterK === 0
+      ? 'This settles the invoice.'
+      : `Still owing after this: ${formatKobo(balanceAfterK)}`,
+  );
+  lines.push('', 'Reply *yes* to save it, or tell me what to change.');
+  return { gate: 'CG2', preview: lines.join('\n'), amountK, balanceAfterK };
+}

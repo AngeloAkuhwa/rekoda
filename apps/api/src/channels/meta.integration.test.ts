@@ -26,7 +26,15 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildRunner, type RunnerDeps } from '../jobs/jobs.module.js';
-import { billingRepo, customersRepo, issueRepo, paymentsHub, spendRepo } from '@rekoda/db';
+import {
+  billingRepo,
+  customersRepo,
+  issueRepo,
+  paymentsHub,
+  reportsRepo,
+  settleRepo,
+  spendRepo,
+} from '@rekoda/db';
 import { encryptFacet, matchKeyFor } from '@rekoda/core/vault';
 import { PrivacyGateway } from '../privacy/gateway.service.js';
 import { Interpreter } from '../ai/interpreter.service.js';
@@ -1494,5 +1502,135 @@ describe('metering the things that cost money', () => {
      * the repricing arrives with no baseline for the expensive class. */
     const totals = await withBusiness(db, business.id, (tx) => quotaRepo.usageTotals(tx, 'meta'));
     expect(totals.calls).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe('a payment the merchant reports (RecordPayment)', () => {
+  const A_SALE_FOR_PAYMENT = {
+    intent: 'RecordSale',
+    customer: { kind: 'token', token: 'CUSTOMER_7K2' },
+    items: [{ name: 'wig', quantity: 3, unitPrice: 50_000 }],
+    statedTotal: 150_000,
+    reportedPayment: 0,
+    paymentMethod: 'transfer',
+    discount: null,
+    deliveryFee: null,
+    dueDescription: null,
+  };
+
+  const paymentOf = (over: Record<string, unknown>) => ({
+    intent: 'RecordPayment',
+    customer: { kind: 'token', token: 'CUSTOMER_7K2' },
+    amount: null,
+    relativeAmount: null,
+    documentRef: null,
+    paymentMethod: 'cash',
+    ...over,
+  });
+
+  async function seedMerchant(phone: string) {
+    const user = await identity.upsertUserByPhone(db, phone);
+    return identity.createBusinessWithOwner(db, {
+      name: 'Ada Fashion',
+      businessType: null,
+      ownerUserId: user.id,
+    });
+  }
+
+  /** Work the queue to empty, as a real worker does: issuing enqueues renders. */
+  async function drain() {
+    const runner = buildRunner(workerDb, db, deps);
+    let worked = await runner.runOnce();
+    while (worked) worked = await runner.runOnce();
+  }
+
+  /** Issue a ₦150,000 invoice with nothing paid, through the chat path. */
+  async function issueUnpaidInvoice(wamid: string) {
+    stubTransport.replyWith(A_SALE_FOR_PAYMENT);
+    await post(messagePayload('2348031234567', `${wamid}-sale`, 'Ada bought 3 wigs for 150k'));
+    await drain();
+    await post(messagePayload('2348031234567', `${wamid}-yes`, 'yes'));
+    await drain();
+  }
+
+  it('records a part payment, moves the ledger, and issues a receipt', async () => {
+    const business = await seedMerchant('+2348031234567');
+    await issueUnpaidInvoice('wamid.P1');
+
+    stubTransport.replyWith(paymentOf({ amount: 60_000 }));
+    await post(messagePayload('2348031234567', 'wamid.P1-pay', 'Ada paid 60k'));
+    await drain();
+    // CG2 first: money never moves on a preview.
+    expect(stubSender.lastText).toContain('Payment on INV-');
+    expect(stubSender.lastText).toContain('Still owing after this: ₦90,000');
+
+    await post(messagePayload('2348031234567', 'wamid.P1-confirm', 'yes'));
+    await drain();
+
+    expect(stubSender.lastText).toContain('₦60,000 recorded against INV-');
+    expect(stubSender.lastText).toContain('₦90,000 still owed');
+    expect(stubSender.lastText).toContain('Receipt RCT-');
+
+    const payments = await withBusiness(db, business.id, (tx) => settleRepo.paymentsFor(tx));
+    expect(payments).toHaveLength(1);
+    // RECORDED, never verified: no provider confirmed this (ADR 0014).
+    expect(payments[0]?.verified).toBe(0);
+    expect(payments[0]?.amountK).toBe(6_000_000);
+
+    // The books balance, and the receivable came down by exactly the payment.
+    const entries = await withBusiness(db, business.id, (tx) =>
+      issueRepo.ledgerEntriesFor(tx, business.id),
+    );
+    const debits = entries.reduce((n, e) => n + e.debitK, 0);
+    const credits = entries.reduce((n, e) => n + e.creditK, 0);
+    expect(debits).toBe(credits);
+    const arCredit = entries
+      .filter((e) => e.account === 'ACCOUNTS_RECEIVABLE')
+      .reduce((n, e) => n + e.creditK, 0);
+    expect(arCredit).toBe(6_000_000);
+  });
+
+  it('resolves "the rest" against the real balance and settles the invoice', async () => {
+    const business = await seedMerchant('+2348031234567');
+    await issueUnpaidInvoice('wamid.P2');
+
+    stubTransport.replyWith(paymentOf({ relativeAmount: 'remainder' }));
+    await post(messagePayload('2348031234567', 'wamid.P2-pay', 'Ada paid the rest'));
+    await drain();
+    expect(stubSender.lastText).toContain('settles the invoice');
+
+    await post(messagePayload('2348031234567', 'wamid.P2-confirm', 'yes'));
+    await drain();
+    expect(stubSender.lastText).toContain('That settles it');
+
+    const invoices = await withBusiness(db, business.id, (tx) =>
+      reportsRepo.invoicesFor(tx, business.id, 10),
+    );
+    expect(invoices.rows[0]?.status).toBe('paid');
+    expect(invoices.outstandingK).toBe(0);
+  });
+
+  it('refuses to absorb more than the invoice owes, and asks instead', async () => {
+    await seedMerchant('+2348031234567');
+    await issueUnpaidInvoice('wamid.P3');
+
+    stubTransport.replyWith(paymentOf({ amount: 400_000 }));
+    await post(messagePayload('2348031234567', 'wamid.P3-pay', 'Ada paid 400k'));
+    await drain();
+
+    // A question, not a preview: an overpayment is a real event a merchant
+    // decides, never something the books quietly round away.
+    expect(stubSender.lastText).toContain('only has ₦150,000 owing');
+    expect(stubSender.lastText).not.toContain('Reply *yes*');
+  });
+
+  it('never invents an allocation when nothing is open', async () => {
+    await seedMerchant('+2348031234567');
+
+    stubTransport.replyWith(paymentOf({ amount: 20_000 }));
+    await post(messagePayload('2348031234567', 'wamid.P4-pay', 'Ada paid 20k'));
+    await drain();
+
+    expect(stubSender.lastText).toContain('could not find an unpaid invoice');
   });
 });
