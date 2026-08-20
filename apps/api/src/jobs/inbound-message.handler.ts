@@ -1,6 +1,8 @@
 import { Logger } from '@nestjs/common';
 import {
   allowanceFor,
+  gateExpense,
+  gatePurchase,
   gateSale,
   isSaleSource,
   looksLikeCorrection,
@@ -17,6 +19,7 @@ import {
   events,
   issueRepo,
   jobsRepo,
+  spendRepo,
   usageRepo,
   type TenantDb,
 } from '@rekoda/db';
@@ -193,9 +196,12 @@ async function confirmPendingDraft(tx: TenantDb, businessId: string): Promise<Re
   if (!(await conversationsRepo.claimDraft(tx, draft.id))) return replies.alreadyConfirmed();
 
   const command = draft.command as { intent?: string } & Record<string, unknown>;
+  if (command.intent === 'RecordExpense') return confirmExpense(tx, businessId, draft.id, command);
+  if (command.intent === 'RecordPurchase')
+    return confirmPurchase(tx, businessId, draft.id, command);
   if (command.intent !== 'RecordSale') {
-    // Only sales are issuable today. The draft is claimed either way, so an
-    // unconfirmable one cannot sit pending forever inviting another yes.
+    // Anything else is not actionable yet. The draft is claimed either way,
+    // so an unconfirmable one cannot sit pending forever inviting another yes.
     return replies.notYet('Recording that kind of entry');
   }
 
@@ -253,6 +259,59 @@ async function confirmPendingDraft(tx: TenantDb, businessId: string): Promise<Re
   });
 
   return replies.issued(issued.invoiceNumber, money.totalK, money.balanceDueK);
+}
+
+/**
+ * A confirmed expense: the row and its balanced posting, one transaction, and
+ * a reply that says "in your books" rather than pretending a document exists.
+ * No render job follows — there is no paper to make.
+ */
+async function confirmExpense(
+  tx: TenantDb,
+  businessId: string,
+  draftId: string,
+  command: Record<string, unknown>,
+): Promise<Reply> {
+  const gate = gateExpense(command as never);
+  if (gate.gate !== 'CG2') return replies.arithmeticQuestion(gate.question);
+
+  const description = String(command['description'] ?? '');
+  await spendRepo.recordExpense(tx, {
+    businessId,
+    description,
+    category: typeof command['category'] === 'string' ? command['category'] : null,
+    amountK: gate.amountK,
+    method: command['paymentMethod'] === 'transfer' ? 'transfer' : 'cash',
+    sourceType: 'chat',
+    sourceId: draftId,
+  });
+  return replies.expenseSaved(gate.amountK, description);
+}
+
+/**
+ * A confirmed stock purchase. The supplier MENTION is deliberately dropped at
+ * this boundary — names live in the identity vault or nowhere (see spend.ts).
+ * What survives is what the books need: the stock, the cost, and what is
+ * still owed.
+ */
+async function confirmPurchase(
+  tx: TenantDb,
+  businessId: string,
+  draftId: string,
+  command: Record<string, unknown>,
+): Promise<Reply> {
+  const gate = gatePurchase(command as never);
+  if (gate.gate !== 'CG2') return replies.arithmeticQuestion(gate.question);
+
+  const recorded = await spendRepo.recordPurchase(tx, {
+    businessId,
+    description: String(command['description'] ?? ''),
+    amountK: gate.amountK,
+    paidK: gate.paidK,
+    sourceType: 'chat',
+    sourceId: draftId,
+  });
+  return replies.purchaseSaved(gate.amountK, recorded.owedK);
 }
 
 function customerTokenOf(command: Record<string, unknown>): string | null {
@@ -340,13 +399,22 @@ async function interpretedReply(
  */
 function acknowledge(command: StructuredBusinessCommand, correcting: boolean): Reply {
   if (command.intent === 'Unclear') return replies.clarification(command.clarification);
-  if (command.intent !== 'RecordSale') return replies.notYet('Recording that kind of entry');
 
   /**
    * CG1 before CG2, always. A preview of numbers we already know are wrong is
-   * a request to approve a mistake.
+   * a request to approve a mistake. The same order holds for money out: a
+   * purchase claiming more paid than it cost gets a question, not a preview.
    */
-  const gate = gateSale(command);
+  const gate =
+    command.intent === 'RecordSale'
+      ? gateSale(command)
+      : command.intent === 'RecordExpense'
+        ? gateExpense(command)
+        : command.intent === 'RecordPurchase'
+          ? gatePurchase(command)
+          : null;
+  if (!gate) return replies.notYet('Recording that kind of entry');
+
   if (gate.gate === 'CG1') return replies.arithmeticQuestion(gate.question);
   return replies.preview(
     correcting ? `${replies.correctionTaken().text}\n\n${gate.preview}` : gate.preview,

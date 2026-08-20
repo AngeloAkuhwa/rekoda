@@ -7,7 +7,14 @@
  * reaches a document unread.
  */
 import { describe, expect, it } from 'vitest';
-import { gateSale, looksLikeCorrection, saleToDraft, type SaleLike } from './gates.js';
+import {
+  gateExpense,
+  gatePurchase,
+  gateSale,
+  looksLikeCorrection,
+  saleToDraft,
+  type SaleLike,
+} from './gates.js';
 import { computeMoney } from './money.js';
 
 const WIGS: SaleLike = {
@@ -155,6 +162,78 @@ describe('the draft handed to the money engine', () => {
     const draft = saleToDraft({ items: WIGS.items, discount: null, statedTotal: null });
     expect(draft).not.toHaveProperty('discountNaira');
     expect(draft).not.toHaveProperty('statedTotalNaira');
+  });
+});
+
+describe('money out — an expense is previewed, never slipped into the books', () => {
+  it('always gates behind CG2, with the figure and the method in the preview', () => {
+    const gate = gateExpense({
+      description: 'fuel for generator',
+      amount: 12_000,
+      category: 'utilities',
+      paymentMethod: 'cash',
+    });
+    if (gate.gate !== 'CG2') throw new Error('an expense has no arithmetic to question');
+    expect(gate.preview).toContain('Expense: fuel for generator');
+    expect(gate.preview).toContain('Category: utilities');
+    expect(gate.preview).toContain('*Amount: ₦12,000*');
+    expect(gate.preview).toContain('Paid by cash');
+    expect(gate.preview).toMatch(/reply \*yes\*/i);
+    expect(gate.amountK).toBe(1_200_000);
+    expect(gate.paidK).toBe(1_200_000);
+  });
+
+  it('skips the category line when none was given, rather than printing "null"', () => {
+    const gate = gateExpense({ description: 'okada delivery', amount: 1_500 });
+    if (gate.gate !== 'CG2') throw new Error('unexpected gate');
+    expect(gate.preview).not.toContain('Category');
+  });
+});
+
+describe('money out — a stock purchase states what is owed', () => {
+  it('shows paid and owing when the purchase is partly on credit', () => {
+    const gate = gatePurchase({
+      description: 'ankara fabric',
+      amount: 50_000,
+      supplierMention: 'Mama Nkechi',
+      reportedPayment: 20_000,
+    });
+    if (gate.gate !== 'CG2') throw new Error('unexpected gate');
+    expect(gate.preview).toContain('Stock: ankara fabric');
+    expect(gate.preview).toContain('From: Mama Nkechi');
+    expect(gate.preview).toContain('Paid: ₦20,000');
+    expect(gate.preview).toContain('Owing to supplier: ₦30,000');
+    expect(gate.paidK).toBe(2_000_000);
+  });
+
+  it('says "Paid in full" when nothing is owed, not "Owing: ₦0"', () => {
+    const gate = gatePurchase({ description: 'ankara fabric', amount: 50_000 });
+    if (gate.gate !== 'CG2') throw new Error('unexpected gate');
+    expect(gate.preview).toContain('Paid in full');
+    expect(gate.preview).not.toContain('Owing');
+  });
+
+  it('CG1: paying MORE than the stock cost is a question with the figures in it', () => {
+    const gate = gatePurchase({
+      description: 'ankara fabric',
+      amount: 50_000,
+      reportedPayment: 60_000,
+    });
+    if (gate.gate !== 'CG1') throw new Error('an overpaid purchase must be questioned');
+    expect(gate.question).toContain('₦50,000');
+    expect(gate.question).toContain('₦60,000');
+    expect(gate.question).toContain('₦10,000');
+  });
+
+  it('previews read human: no em or en dashes anywhere', () => {
+    for (const gate of [
+      gateExpense({ description: 'fuel', amount: 5_000 }),
+      gatePurchase({ description: 'fabric', amount: 10_000, reportedPayment: 4_000 }),
+      gatePurchase({ description: 'fabric', amount: 10_000, reportedPayment: 14_000 }),
+    ]) {
+      const text = gate.gate === 'CG2' ? gate.preview : gate.question;
+      expect(text).not.toMatch(/[–—]/);
+    }
   });
 });
 

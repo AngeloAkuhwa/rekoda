@@ -26,7 +26,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildRunner, type RunnerDeps } from '../jobs/jobs.module.js';
-import { issueRepo } from '@rekoda/db';
+import { issueRepo, spendRepo } from '@rekoda/db';
 import { PrivacyGateway } from '../privacy/gateway.service.js';
 import { Interpreter } from '../ai/interpreter.service.js';
 import { StubTransport } from '../ai/transport.stub.js';
@@ -908,6 +908,78 @@ describe("the plan's own example, end to end", () => {
       usageRepo.usageFor(tx, business.id, usagePeriod(new Date())),
     );
     expect(rows[0]?.used ?? 0).toBe(0);
+  });
+
+  it('records an EXPENSE the same way: previewed, confirmed, balanced', async () => {
+    const business = await seedMerchant('+2348031234567', 'Ada Fashion');
+    stubTransport.replyWith({
+      intent: 'RecordExpense',
+      description: 'fuel for generator',
+      amount: 12_000,
+      category: 'utilities',
+      paymentMethod: 'cash',
+    });
+
+    // CG2: previewed, nothing in the books yet.
+    await send('bought fuel for the gen, 12k', 'wamid.EXP');
+    expect(stubSender.lastText).toContain('Expense: fuel for generator');
+    expect(stubSender.lastText).toContain('*Amount: ₦12,000*');
+    expect(
+      await withBusiness(db, business.id, (tx) => spendRepo.expensesFor(tx, business.id)),
+    ).toHaveLength(0);
+
+    // The yes. Row + posting land together; the reply claims books, not paper.
+    await send('yes', 'wamid.EXPYES');
+    expect(stubSender.lastText).toContain('Saved ✅ ₦12,000 expense: fuel for generator');
+
+    const rows = await withBusiness(db, business.id, (tx) =>
+      spendRepo.expensesFor(tx, business.id),
+    );
+    expect(rows).toHaveLength(1);
+    const entries = await withBusiness(db, business.id, (tx) =>
+      issueRepo.ledgerEntriesFor(tx, business.id),
+    );
+    expect(entries).toContainEqual(
+      expect.objectContaining({ account: 'EXPENSES', debitK: 1_200_000 }),
+    );
+    const debits = entries.reduce((n, e) => n + e.debitK, 0);
+    expect(debits).toBe(entries.reduce((n, e) => n + e.creditK, 0));
+  });
+
+  it('records a stock purchase on credit and says what is still owed', async () => {
+    const business = await seedMerchant('+2348031234567', 'Ada Fashion');
+    stubTransport.replyWith({
+      intent: 'RecordPurchase',
+      supplierMention: 'Mama Nkechi',
+      description: 'ankara fabric',
+      amount: 50_000,
+      reportedPayment: 20_000,
+    });
+
+    await send('bought ankara from Mama Nkechi 50k, paid 20k', 'wamid.PUR');
+    expect(stubSender.lastText).toContain('Owing to supplier: ₦30,000');
+
+    await send('yes', 'wamid.PURYES');
+    expect(stubSender.lastText).toContain('Saved ✅ ₦50,000 stock purchase');
+    expect(stubSender.lastText).toContain('₦30,000 still owed to your supplier');
+
+    const entries = await withBusiness(db, business.id, (tx) =>
+      issueRepo.ledgerEntriesFor(tx, business.id),
+    );
+    expect(entries).toContainEqual(
+      expect.objectContaining({ account: 'INVENTORY', debitK: 5_000_000 }),
+    );
+    expect(entries).toContainEqual(
+      expect.objectContaining({ account: 'ACCOUNTS_PAYABLE', creditK: 3_000_000 }),
+    );
+
+    /* The supplier's NAME stops at the preview: the merchant confirmed it on
+     * WhatsApp, and the books keep the stock, not the person (spend.ts). */
+    const rows = await withBusiness(db, business.id, (tx) =>
+      spendRepo.expensesFor(tx, business.id),
+    );
+    expect(rows[0]?.description).toBe('ankara fabric');
+    expect(JSON.stringify(rows)).not.toContain('Nkechi');
   });
 });
 

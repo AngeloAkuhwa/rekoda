@@ -155,6 +155,85 @@ export function gateSale(sale: SaleLike): Gate {
   return { gate: 'CG2', preview: previewOf(sale, money), money };
 }
 
+/* ── money going OUT: expenses and stock purchases ───────────────────────── */
+
+export interface ExpenseLike {
+  readonly description: string;
+  /** Naira, as the human said it. */
+  readonly amount: number;
+  readonly category?: string | null;
+  readonly paymentMethod?: string | null;
+}
+
+export interface PurchaseLike {
+  readonly description: string;
+  readonly amount: number;
+  readonly supplierMention?: string | null;
+  readonly reportedPayment?: number | null;
+}
+
+/**
+ * The outbound-money gates carry kobo, not a MoneyBlock — an expense has one
+ * figure, not a sale's arithmetic, so reusing the sale's shape would mean
+ * inventing a subtotal nobody stated.
+ */
+export type SpendGate =
+  | { gate: 'CG1'; question: string }
+  | { gate: 'CG2'; preview: string; amountK: number; paidK: number };
+
+const toKobo = (naira: number): number => Math.round(naira * 100);
+
+/**
+ * CG2 for an expense — always a preview, never a question. One figure, no
+ * arithmetic to disagree with; the merchant's testimony IS the number.
+ * Confirm-first still applies in full: money leaving the books unread is the
+ * same mistake as a document issued unread.
+ */
+export function gateExpense(expense: ExpenseLike): SpendGate {
+  const amountK = toKobo(expense.amount);
+  const lines: string[] = ['Please check this before I save it:', ''];
+  lines.push(`Expense: ${expense.description}`);
+  if (expense.category) lines.push(`Category: ${expense.category}`);
+  lines.push(`*Amount: ${formatKobo(amountK)}*`);
+  lines.push(`Paid by ${expense.paymentMethod === 'transfer' ? 'transfer' : 'cash'}`);
+  lines.push('', 'Reply *yes* to save it, or tell me what to change.');
+  return { gate: 'CG2', preview: lines.join('\n'), amountK, paidK: amountK };
+}
+
+/**
+ * A stock purchase, possibly partly on credit. The one arithmetic claim it can
+ * make — "I paid more than it cost" — gets a CG1 question with the figures in
+ * it, exactly like a sale that does not add up.
+ */
+export function gatePurchase(purchase: PurchaseLike): SpendGate {
+  const amountK = toKobo(purchase.amount);
+  const paidK = purchase.reportedPayment == null ? amountK : toKobo(purchase.reportedPayment);
+
+  if (paidK > amountK) {
+    return {
+      gate: 'CG1',
+      question:
+        `You said the stock cost ${formatKobo(amountK)} but that you paid ` +
+        `${formatKobo(paidK)}, which is ${formatKobo(paidK - amountK)} more.\n\n` +
+        'Did I get a figure wrong? Tell me the right one.',
+    };
+  }
+
+  const owedK = amountK - paidK;
+  const lines: string[] = ['Please check this before I save it:', ''];
+  lines.push(`Stock: ${purchase.description}`);
+  if (purchase.supplierMention) lines.push(`From: ${purchase.supplierMention}`);
+  lines.push(`*Amount: ${formatKobo(amountK)}*`);
+  if (owedK > 0) {
+    lines.push(`Paid: ${paidK > 0 ? formatKobo(paidK) : 'nothing yet'}`);
+    lines.push(`Owing to supplier: ${formatKobo(owedK)}`);
+  } else {
+    lines.push('Paid in full');
+  }
+  lines.push('', 'Reply *yes* to save it, or tell me what to change.');
+  return { gate: 'CG2', preview: lines.join('\n'), amountK, paidK };
+}
+
 /**
  * CG5 — is this message correcting the draft, or starting a new one?
  *

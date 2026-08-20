@@ -98,8 +98,10 @@ export async function nextDocumentNumber(
   return formatDocumentNumber(docType, year, seq);
 }
 
-/** Write a balanced posting. `assertBalanced` already ran in `@rekoda/core`. */
-async function writePosting(
+/** Write a balanced posting. `assertBalanced` already ran in `@rekoda/core`.
+ * Exported for the other repos that persist postings (spend.ts) — one write
+ * path for ledger rows, so the shape cannot fork. */
+export async function writePosting(
   tx: TenantDb,
   businessId: string,
   posting: Posting,
