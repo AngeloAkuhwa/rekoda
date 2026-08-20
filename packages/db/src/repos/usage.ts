@@ -98,10 +98,23 @@ export async function usageFor(
   return [...rows];
 }
 
-/** The plan this business is on, read under the tenant pin. */
-export async function planFor(tx: TenantDb, businessId: string): Promise<string> {
-  const rows = await tx.execute<{ plan: string }>(sql`
-    SELECT plan FROM businesses WHERE id = ${businessId}::uuid
+/**
+ * The plan this business is on, read under the tenant pin — with the trial
+ * clock applied.
+ *
+ * A lapsed trial answers `expired`, whose allowances are all zero, so the
+ * gate refuses without needing a second concept. ONLY a trial expires here:
+ * a paid plan whose date has slipped past keeps its allowances, because
+ * cutting off a merchant who is paying us over a late billing job is the
+ * one failure this file must never cause.
+ */
+export async function planFor(tx: TenantDb, businessId: string, now = new Date()): Promise<string> {
+  const rows = await tx.execute<{ plan: string; plan_expires_at: string | null }>(sql`
+    SELECT plan, plan_expires_at FROM businesses WHERE id = ${businessId}::uuid
   `);
-  return [...rows][0]?.plan ?? 'trial';
+  const row = [...rows][0];
+  if (!row) return 'trial';
+  if (row.plan !== 'trial') return row.plan;
+  if (!row.plan_expires_at) return 'trial';
+  return new Date(row.plan_expires_at) <= now ? 'expired' : 'trial';
 }

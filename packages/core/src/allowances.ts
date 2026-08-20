@@ -16,10 +16,31 @@ export const USAGE_UNITS = [
 ] as const;
 export type UsageUnit = (typeof USAGE_UNITS)[number];
 
-export type PlanId = 'trial' | 'chat' | 'integrate' | 'complete';
+/**
+ * `expired` is not sold — it is where a trial lands when its 30 days are up.
+ * Modelling it as a plan rather than a flag means the gate needs no new
+ * branch: every allowance is zero, so the atomic consume refuses the first
+ * unit exactly as it refuses the 51st.
+ */
+export type PlanId = 'trial' | 'expired' | 'chat' | 'integrate' | 'complete';
+
+/** A trial is 30 days from the day the business was created. */
+export const TRIAL_DAYS = 30;
+
+/** When a trial started at this moment runs out. */
+export function trialExpiry(startedAt: Date): Date {
+  return new Date(startedAt.getTime() + TRIAL_DAYS * 86_400_000);
+}
 
 export const PLAN_ALLOWANCES: Record<PlanId, Record<UsageUnit, number>> = {
   trial: { messages: 50, voice_seconds: 600, documents: 25, documents_understood: 10, orders: 0 },
+  expired: {
+    messages: 0,
+    voice_seconds: 0,
+    documents: 0,
+    documents_understood: 0,
+    orders: 0,
+  },
   chat: {
     messages: 400,
     voice_seconds: 3_600,

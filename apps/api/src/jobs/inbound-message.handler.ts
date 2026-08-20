@@ -16,6 +16,7 @@ import { normalisePhone } from '@rekoda/core/identity';
 import { extractInboundEvents, metaWebhookBody } from '@rekoda/contracts';
 import type { StructuredBusinessCommand } from '@rekoda/contracts';
 import {
+  billingRepo,
   conversationsRepo,
   customersRepo,
   events,
@@ -255,6 +256,13 @@ async function deterministicReply(
     }
     case 'resend':
       return resendReply(tx, businessId, ctx.eventId);
+    case 'upgrade': {
+      // Free, and always answered: this is the one message from a merchant
+      // who wants to pay us, and it must never hit a wall or a dead link.
+      const plan = await usageRepo.planFor(tx, businessId);
+      await billingRepo.recordUpgradeRequest(tx, businessId, plan);
+      return replies.upgradeRequested();
+    }
     default:
       return null;
   }
@@ -503,6 +511,11 @@ async function interpretedReply(
    * nothing.
    */
   const plan = await usageRepo.planFor(tx, businessId);
+  /* A lapsed trial is its own sentence, not "you used all 0 messages". The
+   * plan carries the fact (allowances are all zero), so the gate below still
+   * refuses; what changes is what the merchant is told. */
+  if (plan === 'expired') return replies.trialEnded();
+
   const monthlyMessages = allowanceFor(plan, 'messages');
   const period = usagePeriod(new Date());
   const granted = await usageRepo.consumeUnit(tx, businessId, period, 'messages', monthlyMessages);

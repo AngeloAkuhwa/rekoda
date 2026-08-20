@@ -142,7 +142,35 @@ export function allowanceExhausted(monthlyMessages: number): Reply {
     `You have used all ${monthlyMessages} messages in your plan this month. ` +
       'Nothing is lost. Your records are safe, and *who owes me*, *payment details* and ' +
       'your dashboard still work.\n\n' +
-      'To keep recording this month, upgrade your plan or top up at rekoda.app/pricing.',
+      'Reply *upgrade* and we will move you to a bigger plan.',
+  );
+}
+
+/**
+ * The 30-day trial is over.
+ *
+ * Not the same message as a used-up allowance, because it is not the same
+ * event: the books are still theirs, still readable, still exportable, and
+ * what ended is the free recording. Reading is never gated, so the free
+ * commands are named rather than implied.
+ */
+export function trialEnded(): Reply {
+  return reply(
+    'Your 30-day free trial has ended. Everything you recorded is still yours: ' +
+      '*who owes me*, *records*, *payment details* and your dashboard all still work.\n\n' +
+      'Reply *upgrade* to keep recording and we will set you up.',
+  );
+}
+
+/**
+ * A merchant asked to pay us. The one message that must never bounce off a
+ * dead end: it is logged as a request a human answers, and it says so
+ * plainly rather than pointing at a self-service page that does not exist.
+ */
+export function upgradeRequested(): Reply {
+  return reply(
+    'Noted 👍 We have your upgrade request and will reach you on this number to ' +
+      'set it up.\n\nYour records are safe in the meantime.',
   );
 }
 

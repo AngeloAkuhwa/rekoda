@@ -26,7 +26,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildRunner, type RunnerDeps } from '../jobs/jobs.module.js';
-import { customersRepo, issueRepo, paymentsHub, spendRepo } from '@rekoda/db';
+import { billingRepo, customersRepo, issueRepo, paymentsHub, spendRepo } from '@rekoda/db';
 import { encryptFacet, matchKeyFor } from '@rekoda/core/vault';
 import { PrivacyGateway } from '../privacy/gateway.service.js';
 import { Interpreter } from '../ai/interpreter.service.js';
@@ -1338,5 +1338,81 @@ describe('consent (STOP/START) and erasure, as facts not sentences', () => {
     await post(messagePayload('2348031234567', 'wamid.DEL4', 'delete my data'));
     expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
     expect(stubSender.lastText).toContain('Reply *DELETE MY DATA* again');
+  });
+});
+
+describe('the trial clock and the upgrade door', () => {
+  async function seedMerchant(phone: string, name: string) {
+    const user = await identity.upsertUserByPhone(db, phone);
+    return identity.createBusinessWithOwner(db, { name, businessType: null, ownerUserId: user.id });
+  }
+
+  /** Age the trial past its date, as thirty days would. */
+  async function expireTrial(businessId: string) {
+    await billingRepo.setPlan(db, {
+      businessId,
+      plan: 'trial',
+      expiresAt: new Date(Date.now() - 1_000),
+      actor: 'operator:test-clock',
+    });
+  }
+
+  it('tells an expired trial the truth, and spends no model call doing it', async () => {
+    const business = await seedMerchant('+2348031234567', 'Ada Fashion');
+    await expireTrial(business.id);
+
+    await post(messagePayload('2348031234567', 'wamid.EXP1', 'Ada bought 3 wigs for 150k'));
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+
+    expect(stubSender.lastText).toContain('30-day free trial has ended');
+    expect(stubSender.lastText).toContain('Reply *upgrade*');
+    // The gate runs before the model: an expired trial costs nothing.
+    expect(stubTransport.requests).toHaveLength(0);
+  });
+
+  it('still answers the free read commands after the trial ends', async () => {
+    const business = await seedMerchant('+2348031234567', 'Ada Fashion');
+    await expireTrial(business.id);
+
+    await post(messagePayload('2348031234567', 'wamid.EXP2', 'who owes me'));
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+    // Reading is never gated — the books stay theirs.
+    expect(stubSender.lastText).toContain('Nobody owes you right now');
+  });
+
+  it('records an upgrade request from chat and answers a human, not a dead link', async () => {
+    const business = await seedMerchant('+2348031234567', 'Ada Fashion');
+    await expireTrial(business.id);
+
+    await post(messagePayload('2348031234567', 'wamid.UPG1', 'upgrade'));
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+
+    expect(stubSender.lastText).toContain('upgrade request');
+    expect(stubSender.lastText).not.toContain('rekoda.app/pricing');
+
+    const requests = await withBusiness(db, business.id, (tx) =>
+      billingRepo.upgradeRequestsFor(tx, business.id),
+    );
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.fromPlan).toBe('expired');
+  });
+
+  it('recording works again the moment an operator moves them onto a plan', async () => {
+    const business = await seedMerchant('+2348031234567', 'Ada Fashion');
+    await expireTrial(business.id);
+
+    await billingRepo.setPlan(db, {
+      businessId: business.id,
+      plan: 'chat',
+      expiresAt: new Date(Date.now() + 31 * 86_400_000),
+      actor: 'operator:test',
+    });
+
+    await post(messagePayload('2348031234567', 'wamid.AFTER', 'Ada bought 3 wigs for 150k'));
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+
+    // Back to the ordinary path: the model ran and a preview came back.
+    expect(stubTransport.requests).toHaveLength(1);
+    expect(stubSender.lastText).not.toContain('trial has ended');
   });
 });

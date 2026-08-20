@@ -198,8 +198,8 @@ export default async function DashboardPage() {
             />
           </div>
           <p className="rk-fineprint">
-            Free commands like *who owes me* and *payment details* never count. Need more?{' '}
-            <a href="/pricing">See plans</a>.
+            Free commands like *who owes me* and *payment details* never count. Need more? Reply{' '}
+            *upgrade* on WhatsApp and we will set you up, or <a href="/pricing">see plans</a>.
           </p>
         </div>
       </div>
