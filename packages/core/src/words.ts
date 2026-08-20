@@ -1,5 +1,5 @@
 /**
- * Amounts in words (MASTER-PLAN §5.3.6, carried from the predecessor).
+ * Amounts in words (MASTER-PLAN §5.3.6).
  *
  * Not decoration. A figure written twice — once in digits, once in words — is
  * how a document survives a smudged fax, a bad photocopy and a dispute, and it

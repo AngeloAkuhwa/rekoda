@@ -177,7 +177,7 @@ export const usageEvents = pgTable(
  * Background work, queued in the same database as the work it describes
  * (ADR 0022).
  *
- * `business_id` is `NOT NULL` on purpose: there is no such thing as a job with
+ * `business_id` is `NOT NULL`: there is no such thing as a job with
  * no tenant, and the column is what the row-level security policy keys on. A
  * worker that forgets to pin sees an empty queue rather than everybody's.
  *

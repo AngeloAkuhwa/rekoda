@@ -2,9 +2,9 @@
  * The conversation gates (MASTER-PLAN §5.3.4, CG1–CG5).
  *
  * These are the rules that stand between "the model understood something" and
- * "a document exists". They are pure, and they are pure on purpose: every one
- * of them is a claim about a merchant's money, and a claim about money should
- * be checkable without a database, a network or a model.
+ * "a document exists". They are pure because every one of them is a claim
+ * about a merchant's money, and a claim about money should be checkable
+ * without a database, a network or a model.
  *
  * Inputs are structural rather than imported from `@rekoda/contracts` — a
  * `RecordSale` satisfies `SaleLike` without this package depending on the wire

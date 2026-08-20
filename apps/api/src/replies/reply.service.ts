@@ -40,7 +40,7 @@ export class ReplySender {
   private readonly log = new Logger(ReplySender.name);
 
   /**
-   * No `Db` here on purpose. Everything this class writes goes through the
+   * No `Db` here. Everything this class writes goes through the
    * caller's `tx`, so it cannot open a transaction of its own and cannot write
    * outside the tenant pin the caller established.
    */

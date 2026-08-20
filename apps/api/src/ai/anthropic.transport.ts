@@ -60,7 +60,7 @@ export class AnthropicTransport implements ModelTransport {
       });
     } catch (error) {
       /**
-       * Distinguished from a bad response on purpose. Nothing was billed here,
+       * Distinguished from a bad response: nothing was billed here,
        * so the caller hands the merchant's quota slot back — being unable to
        * reach a provider must not cost a merchant one of their daily calls.
        */

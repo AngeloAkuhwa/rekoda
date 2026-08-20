@@ -154,7 +154,7 @@ export interface Debtors {
 /**
  * Who owes the merchant — per invoice, newest first.
  *
- * Per INVOICE and not per customer, deliberately: the web tier holds no vault
+ * Per INVOICE and not per customer: the web tier holds no vault
  * key, so a customer here could only be a token like CUSTOMER_7K2, and a
  * dashboard that shows tokens teaches merchants to ignore the list. The
  * invoice number is real, quotable, and what they read down the phone.

@@ -38,9 +38,8 @@ describe('every reply', () => {
      * nothing in this file may imply one.
      */
     for (const reply of ALL) {
-      // Affirmative claims only. "Cancelled. Nothing was saved." is the
-      // opposite of the failure this guards, and an earlier version of this
-      // test flagged it — a regex looking for the word rather than the claim.
+      // Affirmative claims only: "Cancelled. Nothing was saved." must not
+      // match, so the regex targets the claim rather than the word.
       expect(reply.text).not.toMatch(
         /\b(?:saved!|i(?:'ve| have)? saved|has been saved|recorded it|invoice sent|receipt sent)\b/i,
       );

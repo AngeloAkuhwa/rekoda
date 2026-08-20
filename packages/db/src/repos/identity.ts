@@ -436,10 +436,8 @@ export async function ping(q: Queryable): Promise<boolean> {
  *
  * Runs under a tenant pin, and must. `memberships` is under row-level
  * security, so an unpinned read returns ZERO rows however well-scoped the
- * WHERE clause looks — the first version of this had no pin and a plausible
- * comment explaining why it did not need one, and the delivery job failed with
- * "business has no owner". The `users` join is unaffected: that table is
- * outside RLS, and the pin has already decided which user id we may reach.
+ * WHERE clause looks. The `users` join is unaffected: that table is outside
+ * RLS, and the pin has already decided which user id we may reach.
  */
 export async function ownerPhoneFor(db: Db, businessId: string): Promise<string | null> {
   return withBusiness(db, businessId, async (tx) => {

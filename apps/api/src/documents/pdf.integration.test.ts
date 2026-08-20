@@ -32,7 +32,7 @@ const INVOICE: InvoiceDocument = {
 describe('the fonts', () => {
   it('are present — the engine cannot work without them', () => {
     /**
-     * A loud failure, deliberately. ₦ (U+20A6) is not in WinAnsi, so falling
+     * A loud failure. ₦ (U+20A6) is not in WinAnsi, so falling
      * back to pdfkit's built-in Helvetica would not error — it would produce
      * an invoice where every price starts with a blank box, on a document a
      * merchant hands to a customer.

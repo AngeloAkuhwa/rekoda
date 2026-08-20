@@ -1,7 +1,6 @@
 /**
  * Sequential document numbering — per business, per document type, per year.
- * Nigerian practice (and the predecessor's compliance layer) expects
- * gap-explained sequential numbers: INV-2026-000041.
+ * Nigerian practice expects gap-explained sequential numbers: INV-2026-000041.
  *
  * Pure function: the caller owns the counter row (incremented inside the
  * same DB transaction that issues the document).

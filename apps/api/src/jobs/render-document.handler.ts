@@ -14,7 +14,7 @@ export interface RenderDocumentDeps {
 /**
  * Render an issued document and put it somewhere (MASTER-PLAN §5.3.6).
  *
- * A separate job from issuing, on purpose. Rendering a PDF and talking to
+ * A separate job from issuing. Rendering a PDF and talking to
  * object storage are both slow and both fail for reasons that have nothing to
  * do with the sale — a bucket outage, an expired key — and neither is a reason
  * to refuse a merchant's sale. The invoice is already in the books; this
@@ -107,8 +107,7 @@ export function renderDocumentHandler(deps: RenderDocumentDeps): JobHandler {
 
 /**
  * The receipt path: snapshot → blocks → A5 PDF → storage → document row →
- * deliver job. Field for field the invoice path, and deliberately so — see
- * the handler comment.
+ * deliver job. Field for field the invoice path — see the handler comment.
  */
 async function renderReceipt(
   deps: RenderDocumentDeps,

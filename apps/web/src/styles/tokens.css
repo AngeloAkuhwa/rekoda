@@ -86,8 +86,7 @@
   --rk-font-display: 'Calistoga', Georgia, serif;
   /* The ₦ (U+20A6) is missing from many system faces, and a fallback glyph at a
      different weight/size makes every price look broken. Noto Sans carries it;
-     keep it ahead of the generic fallbacks. The predecessor hit the same problem
-     in the PDF engine — see MASTER-PLAN Part 4.3. */
+     keep it ahead of the generic fallbacks (MASTER-PLAN Part 4.3). */
   --rk-font-body:
     'Inter', 'Noto Sans', system-ui, -apple-system, 'Segoe UI', 'Helvetica Neue', sans-serif;
   --rk-font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;

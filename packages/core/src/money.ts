@@ -91,12 +91,8 @@ export interface MoneyBlock {
   readonly computedTotalK: Kobo;
   /**
    * What the customer actually handed over — NOT capped at the total.
-   *
-   * This used to be `Math.min(paid, total)`. "Sold for ₦100k, she paid ₦150k"
-   * became ₦100k paid and a zero balance, and the ₦50k simply ceased to exist:
-   * a discrepancy silently fixed, which is the one thing this engine must
-   * never do. `applyPayment` had always refused the same overpayment outright,
-   * so the two disagreed about the same event.
+   * Capping would make an overpayment silently cease to exist, and a
+   * discrepancy silently fixed is the one thing this engine must never do.
    */
   readonly amountPaidK: Kobo;
   /** Still owed. Never negative — an overpayment is not a negative debt. */

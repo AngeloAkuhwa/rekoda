@@ -250,7 +250,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
       ? required(env, 'META_VERIFY_TOKEN', 16)
       : (env['META_VERIFY_TOKEN'] ?? ''),
     /**
-     * No fallback to DATABASE_URL, deliberately. The obvious convenience —
+     * No fallback to DATABASE_URL. The obvious convenience —
      * "use the app connection if no worker one is set" — would hand the runner
      * a role with no cross-tenant claim policy, so the queue would appear
      * permanently empty and jobs would pile up silently. Worse, in an
@@ -260,7 +260,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     workerDatabaseUrl: env['WORKER_DATABASE_URL'] ?? null,
     workerEnabled,
     /**
-     * Optional, deliberately. The deterministic router answers most messages
+     * Optional. The deterministic router answers most messages
      * without a model, so a missing key degrades the product rather than
      * breaking it — and a developer running the web app to look at a page
      * should not need an Anthropic account.

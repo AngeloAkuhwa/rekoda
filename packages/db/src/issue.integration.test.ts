@@ -247,9 +247,9 @@ describe('all of it, or none of it', () => {
      * and the payment have already been inserted. The transaction is what
      * takes them back out.
      *
-     * The first version of this test used `paidK` above `totalK` and passed
-     * for the wrong reason: `issueSale` clamps the paid figure before posting,
-     * so nothing ever threw and the rollback was never exercised.
+     * The failure must come from the posting layer, not from `paidK` above
+     * `totalK` — `issueSale` clamps the paid figure before posting, so that
+     * input never throws and would leave the rollback unexercised.
      */
     await expect(
       withBusiness(db, businessId, (tx) =>
@@ -284,9 +284,8 @@ describe('all of it, or none of it', () => {
      * the "explain the gap" audit event the plan asks for is not needed on
      * this path at all.
      *
-     * The first version of this test asserted the opposite — that the failed
-     * sale burned 000002 — which is what a design that reserves the number in
-     * a separate transaction would do.
+     * A design that reserved the number in a separate transaction would burn
+     * 000002 here; same-transaction numbering must not.
      */
     expect(third.invoiceNumber.endsWith('000002')).toBe(true);
   });
