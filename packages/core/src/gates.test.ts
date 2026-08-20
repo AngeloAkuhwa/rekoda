@@ -14,6 +14,7 @@ import {
   looksLikeCorrection,
   saleToDraft,
   type SaleLike,
+  gatePayment,
 } from './gates.js';
 import { computeMoney } from './money.js';
 
@@ -265,5 +266,50 @@ describe('CG5 — telling a correction from a new sale', () => {
 
   it('treats an empty message as neither', () => {
     expect(looksLikeCorrection('   ', true)).toBe(false);
+  });
+});
+
+describe('reported payments (gatePayment)', () => {
+  const INV = 'INV-2026-000004';
+
+  it('previews an absolute amount and says what is left', () => {
+    const gate = gatePayment({ amount: 20_000, paymentMethod: 'cash' }, INV, 5_000_000);
+    expect(gate.gate).toBe('CG2');
+    if (gate.gate !== 'CG2') return;
+    expect(gate.amountK).toBe(2_000_000);
+    expect(gate.balanceAfterK).toBe(3_000_000);
+    expect(gate.preview).toContain('₦20,000');
+    expect(gate.preview).toContain('Still owing after this: ₦30,000');
+  });
+
+  it('resolves "the rest" against the real balance, settling the invoice', () => {
+    const gate = gatePayment({ relativeAmount: 'remainder' }, INV, 5_000_000);
+    if (gate.gate !== 'CG2') throw new Error('expected a preview');
+    expect(gate.amountK).toBe(5_000_000);
+    expect(gate.balanceAfterK).toBe(0);
+    expect(gate.preview).toContain('settles the invoice');
+  });
+
+  it('resolves "half" as half of what is OWED, not half of the total', () => {
+    const gate = gatePayment({ relativeAmount: 'half' }, INV, 5_000_000);
+    if (gate.gate !== 'CG2') throw new Error('expected a preview');
+    expect(gate.amountK).toBe(2_500_000);
+  });
+
+  it('asks rather than guessing when no amount was stated at all', () => {
+    const gate = gatePayment({ amount: null, relativeAmount: null }, INV, 5_000_000);
+    expect(gate.gate).toBe('CG1');
+    if (gate.gate !== 'CG1') return;
+    expect(gate.question).toContain('How much');
+    expect(gate.question).toContain('₦50,000');
+  });
+
+  it('NEVER absorbs more than the invoice owes — an overpayment is a question', () => {
+    const gate = gatePayment({ amount: 80_000 }, INV, 5_000_000);
+    expect(gate.gate).toBe('CG1');
+    if (gate.gate !== 'CG1') return;
+    // Both figures are in the question: the merchant decides, we do not round.
+    expect(gate.question).toContain('₦50,000');
+    expect(gate.question).toContain('₦80,000');
   });
 });

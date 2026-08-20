@@ -41,6 +41,7 @@ export function help(): Reply {
   return reply(
     'Here is what I can do:\n\n' +
       '• *Record a sale*: "sold 2 bags to Ada for 40k"\n' +
+      '• *Record a payment*: "Ada paid 20k"\n' +
       '• *Record an expense*: "fuel 12k"\n' +
       '• *Record stock*: "bought 10 crates of ankara for 50k"\n' +
       '• *who owes me* shows your debtors\n' +
@@ -305,6 +306,45 @@ export function paymentConfirmed(
   return reply(
     `Money in ✅ ${formatKobo(amountK)} confirmed for ${invoiceNumber}.\n` +
       `Receipt ${receiptNumber} is attached. Forward it to your customer.`,
+  );
+}
+
+/**
+ * A payment the MERCHANT reported, recorded against an invoice.
+ *
+ * Deliberately not the same message as `paymentConfirmed`: that one says
+ * "confirmed" because a provider verified it server-side, and this one must
+ * never borrow that word (ADR 0014). What it can promise is what actually
+ * happened — the books moved, a receipt exists, and this is what is left.
+ */
+export function paymentRecorded(
+  receiptNumber: string,
+  amountK: number,
+  invoiceNumber: string,
+  balanceDueK: number,
+): Reply {
+  const lines = [`Saved ✅ ${formatKobo(amountK)} recorded against ${invoiceNumber}.`];
+  lines.push(
+    balanceDueK === 0
+      ? 'That settles it. Nothing left owing.'
+      : `${formatKobo(balanceDueK)} still owed.`,
+  );
+  lines.push(`Receipt ${receiptNumber} is on its way.`);
+  return reply(lines.join('\n'));
+}
+
+/**
+ * They reported a payment and there is nothing open to put it against.
+ *
+ * Never invents an allocation. An unattached payment in a bookkeeping system
+ * is money with no story, and the merchant is the only one who knows which
+ * invoice they meant.
+ */
+export function paymentNoOpenInvoice(): Reply {
+  return reply(
+    'I could not find an unpaid invoice for that customer. Tell me the invoice ' +
+      'number, like "INV-2026-000004 paid 20k", or record the sale first and I will ' +
+      'take the payment against it.',
   );
 }
 
