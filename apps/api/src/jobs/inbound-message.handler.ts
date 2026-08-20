@@ -630,6 +630,10 @@ async function confirmPayment(
       await refundDocumentUnit();
       return replies.paymentAlreadySettled(invoice.invoiceNumber);
     }
+    if (error instanceof settleRepo.BalanceMoved) {
+      await refundDocumentUnit();
+      return replies.paymentBalanceMoved(error.invoiceNumber, error.balanceDueK, error.excessK);
+    }
     throw error;
   }
 
