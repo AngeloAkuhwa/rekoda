@@ -7,7 +7,7 @@
  * something. The runner does the pinning once, in one place, and the type
  * system carries the guarantee the rest of the way.
  *
- * Claiming and running use two different connections on purpose. The claim
+ * Claiming and running use two different connections. The claim
  * connection holds the `rekoda_worker` credential, which is allowed to see any
  * tenant's job row because it must be — you cannot pin the tenant of a job you
  * have not read. Everything after the claim runs through the ordinary

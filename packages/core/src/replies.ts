@@ -238,10 +238,8 @@ export function paymentConfirmed(
 /**
  * A capability the plan names but the product does not have yet.
  *
- * The "right now I can" list is a CLAIM and it must stay true. An earlier
- * version said "payments and expenses" while both were unbuilt — precisely
- * the invented capability this file exists to prevent. If a capability ships,
- * add it here; if it has not shipped, it does not appear here.
+ * The "right now I can" list is a claim and must stay true: a capability
+ * appears here when it ships and not a day before.
  */
 export function notYet(what: string): Reply {
   return reply(

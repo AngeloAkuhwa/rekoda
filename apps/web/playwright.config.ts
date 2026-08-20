@@ -36,11 +36,9 @@ const ephemeralKey = () => randomBytes(32).toString('hex');
  *
  * Reuse means "if something is already answering on this port, trust it". It
  * cannot tell a server built from this branch from one left running by a
- * different branch — so a stale process silently serves the wrong code and the
- * suite reports failures that belong to neither. That is not hypothetical: it
- * cost a whole investigation here, producing a confident and completely false
- * "Next 16 breaks 12 of 18 tests" when the tests pass. A slow honest signal
- * beats a fast lying one; a port collision now fails loudly instead.
+ * different branch — a stale process silently serves the wrong code and the
+ * suite reports failures that belong to neither. A slow honest signal beats a
+ * fast lying one; a port collision fails loudly instead.
  */
 export default defineConfig({
   testDir: './e2e',

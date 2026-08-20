@@ -7,7 +7,7 @@
  *
  * `body` is TOKENISED text or nothing. This file has no vault key and no way
  * to obtain one; storing a raw message through it is not an oversight that
- * could happen, it is a value the caller would have to construct on purpose.
+ * could happen, it is a value the caller would have to construct by hand.
  */
 import { and, desc, eq, sql } from 'drizzle-orm';
 import type { TenantDb } from '../client.js';

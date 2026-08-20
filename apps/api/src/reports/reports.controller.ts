@@ -1,7 +1,7 @@
 /**
  * The dashboard's numbers (MASTER-PLAN §5.3.7, ADR 0015).
  *
- * Thin on purpose: every figure is computed in SQL by the reports repo, and
+ * Thin by design: every figure is computed in SQL by the reports repo, and
  * this controller only decides WHO may read it. `businessId` comes from the
  * session, never from a body or query — same rule as the payments surface.
  * No model is anywhere in this path, and there is no arithmetic in this file

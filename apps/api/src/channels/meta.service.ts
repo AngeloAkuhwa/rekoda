@@ -11,7 +11,7 @@ import { sealPayload } from '../privacy/payload-vault.js';
 /**
  * Turns an inbound Meta event into a durable, de-duplicated row.
  *
- * Everything here is deliberately cheap. The handler that calls it owes Meta
+ * Everything here is cheap because the handler that calls it owes Meta
  * an answer within seconds, so this resolves the tenant, writes one row, and
  * stops — the actual understanding of the message belongs to a worker reading
  * the same table.

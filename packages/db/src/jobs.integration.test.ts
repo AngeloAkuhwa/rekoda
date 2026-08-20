@@ -7,7 +7,7 @@
  * security policy is not code we could mock without mocking the thing under
  * test.
  *
- * Two roles, two pools, on purpose. `rekoda_worker` is the only credential
+ * Two roles, two pools. `rekoda_worker` is the only credential
  * allowed to claim; `rekoda_app` is what the API holds. Running the whole file
  * as one role would make the last describe block below pass for the wrong
  * reason.

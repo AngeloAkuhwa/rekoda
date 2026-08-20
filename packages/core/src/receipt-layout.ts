@@ -3,9 +3,8 @@
  *
  * Same discipline as `invoice-layout.ts`: everything a reviewer would argue
  * about is decided here, in testable blocks, and the PDF renderer only turns
- * blocks into ink. The block kinds are shared with the invoice on purpose —
- * one style table in the renderer means the two documents cannot drift into
- * looking like they came from different products.
+ * blocks into ink. The block kinds are shared with the invoice so one style
+ * table in the renderer keeps the two documents from drifting apart.
  *
  * A receipt exists because money REALLY moved: it is only ever written by
  * `bookVerifiedPayment`, after the provider confirmed the charge server-side.

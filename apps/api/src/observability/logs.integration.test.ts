@@ -54,7 +54,7 @@ class CapturingLogger implements LoggerService {
 
 const APP_SECRET = 'meta-app-secret-for-tests';
 
-/** The things that must never appear. Distinctive on purpose, so a match is a match. */
+/** The things that must never appear. Distinctive strings, so a match is a match. */
 const CUSTOMER_PHONE = '08039998888';
 const CUSTOMER_EMAIL = 'adaeze.okonkwo@example.com';
 const MESSAGE_TEXT = `Adaeze Okonkwo ${CUSTOMER_PHONE} ${CUSTOMER_EMAIL} bought 3 chiffon wrappers for 150k`;

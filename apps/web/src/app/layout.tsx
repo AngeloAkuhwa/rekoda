@@ -37,10 +37,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <head>
         <script dangerouslySetInnerHTML={{ __html: THEME_SCRIPT }} />
         {/*
-          Self-hosted (scripts/fetch-fonts.mjs). This used to be a stylesheet
-          link to fonts.googleapis.com, which blocks the first paint behind a
-          DNS lookup, a TLS handshake and two round trips to a third party —
-          on exactly the slow mobile networks Rekoda's merchants are on.
+          Self-hosted (scripts/fetch-fonts.mjs). A stylesheet link to
+          fonts.googleapis.com would block first paint behind a DNS lookup, a
+          TLS handshake and two round trips to a third party — on exactly the
+          slow mobile networks Rekoda's merchants are on.
 
           Only the two faces above the fold are preloaded. Preloading all
           twelve would compete with the HTML for the same scarce bandwidth and

@@ -49,7 +49,7 @@ function keyBuffer(hexKey: string, label: string): Buffer {
  * A fresh random IV per call, always. Reusing an IV under the same key in GCM
  * does not merely weaken the ciphertext — it leaks the XOR of two plaintexts
  * and can expose the authentication subkey. There is no counter and no cache
- * here on purpose: the only safe IV is one nobody has planned.
+ * here: the only safe IV is one nobody has planned.
  */
 export function encryptFacet(plaintext: string, hexKey: string): string {
   const key = keyBuffer(hexKey, 'VAULT_KEY');

@@ -8,8 +8,7 @@
  * unset renders as a visible badge saying so, rather than as blank space or a
  * plausible-looking lie.
  *
- * Adapted from the predecessor's approach (MASTER-PLAN §5.2.4), which shipped
- * exactly this pattern for the same reason.
+ * See MASTER-PLAN §5.2.4.
  */
 export interface LegalFact {
   label: string;

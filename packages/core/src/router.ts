@@ -272,7 +272,7 @@ const MAX_COMMAND_CHARS = 60;
 /**
  * How much of the original message normalisation is allowed to discard.
  *
- * Normalisation is aggressive on purpose — it has to be, to survive phone
+ * Normalisation is aggressive because it has to survive phone
  * keyboards, emoji and trailing punctuation. But aggression cuts both ways: a
  * hundred dashes with the word "yes" somewhere inside reduces to exactly "yes"
  * and would confirm a document nobody agreed to. A length cap on the raw

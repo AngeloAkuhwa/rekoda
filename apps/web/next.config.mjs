@@ -8,15 +8,13 @@
  */
 
 /**
- * Why `script-src` allows inline scripts, and what was tried first.
+ * Why `script-src` allows inline scripts.
  *
- * The first version of this policy hashed the inline no-flash theme script.
- * It was strictly worse than useless: browsers IGNORE `'unsafe-inline'` as
- * soon as a hash is present, so Next's own streaming-SSR bootstrap scripts
- * were refused, hydration died with React error #412, and every form on the
- * site silently stopped working while the pages still rendered and looked
- * fine. A CSP that breaks the product is not a security control, it is an
- * outage with good intentions.
+ * Hashing the inline no-flash theme script does not work here: browsers
+ * IGNORE `'unsafe-inline'` as soon as a hash is present, so Next's own
+ * streaming-SSR bootstrap scripts get refused, hydration dies with React
+ * error #412, and every form silently stops working while pages still render.
+ * A CSP that breaks the product is not a security control.
  *
  * Those bootstrap scripts cannot be hashed — their content varies per page and
  * per build. The only strict alternative is a per-request nonce, which forces

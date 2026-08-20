@@ -16,7 +16,7 @@
  *   ₦, and it carries Yoruba ẹ (U+1EB9) and ọ (U+1ECD) too, so a business
  *   named "Adeẹ́ Fashion" prints as itself.
  *
- *   The predecessor hit this exact problem — see MASTER-PLAN Part 4.3.
+ *   See MASTER-PLAN Part 4.3.
  *
  *   node scripts/fetch-pdf-fonts.mjs
  */

@@ -81,7 +81,7 @@ export class MetaWebhookController {
     const raw = request.rawBody;
     if (!raw || !verifyMetaSignature(raw, signature, this.config.metaAppSecret)) {
       /**
-       * Rejected before persistence, deliberately.
+       * Rejected before persistence.
        *
        * Storing unsigned payloads for forensics sounds prudent and is not:
        * this endpoint is unauthenticated and world-reachable, so it would hand
