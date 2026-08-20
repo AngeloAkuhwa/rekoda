@@ -4,18 +4,28 @@ import {
   paymentConnectionResponse,
   paymentExceptionsResponse,
   paymentsListResponse,
+  reportsActivityResponse,
+  reportsCashflowResponse,
+  reportsDebtorsResponse,
+  reportsOverviewResponse,
   requestOtpResponse,
   sessionResponse,
   setupStateResponse,
+  usageMeterResponse,
   verifyOtpResponse,
   type MeResponse,
   type PaymentConnectionResponse,
   type PaymentExceptionsResponse,
   type PaymentsListResponse,
+  type ReportsActivityResponse,
+  type ReportsCashflowResponse,
+  type ReportsDebtorsResponse,
+  type ReportsOverviewResponse,
   type SubmitConnectionRequest,
   type RequestOtpResponse,
   type SessionResponse,
   type SetupStateResponse,
+  type UsageMeterResponse,
   type VerifyOtpResponse,
 } from '@rekoda/contracts';
 
@@ -220,4 +230,56 @@ export async function paymentExceptions(sessionToken: string): Promise<PaymentEx
     expect: [200],
   });
   return paymentExceptionsResponse.parse(json);
+}
+
+/* ── the dashboard's numbers (all computed by SQL in the API tier) ───────── */
+
+export async function reportsOverview(sessionToken: string): Promise<ReportsOverviewResponse> {
+  const { json } = await call({
+    method: 'GET',
+    path: '/v1/reports/overview',
+    headers: { authorization: `Bearer ${sessionToken}` },
+    expect: [200],
+  });
+  return reportsOverviewResponse.parse(json);
+}
+
+export async function reportsCashflow(sessionToken: string): Promise<ReportsCashflowResponse> {
+  const { json } = await call({
+    method: 'GET',
+    path: '/v1/reports/cashflow',
+    headers: { authorization: `Bearer ${sessionToken}` },
+    expect: [200],
+  });
+  return reportsCashflowResponse.parse(json);
+}
+
+export async function reportsDebtors(sessionToken: string): Promise<ReportsDebtorsResponse> {
+  const { json } = await call({
+    method: 'GET',
+    path: '/v1/reports/debtors',
+    headers: { authorization: `Bearer ${sessionToken}` },
+    expect: [200],
+  });
+  return reportsDebtorsResponse.parse(json);
+}
+
+export async function reportsActivity(sessionToken: string): Promise<ReportsActivityResponse> {
+  const { json } = await call({
+    method: 'GET',
+    path: '/v1/reports/activity',
+    headers: { authorization: `Bearer ${sessionToken}` },
+    expect: [200],
+  });
+  return reportsActivityResponse.parse(json);
+}
+
+export async function usageMeter(sessionToken: string): Promise<UsageMeterResponse> {
+  const { json } = await call({
+    method: 'GET',
+    path: '/v1/payments/usage',
+    headers: { authorization: `Bearer ${sessionToken}` },
+    expect: [200],
+  });
+  return usageMeterResponse.parse(json);
 }

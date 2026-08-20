@@ -23,6 +23,14 @@
   --rk-attention: #b45309; /* genuine mismatch only     */
   --rk-danger: #b91c1c;
 
+  /* Chart series — validated against the light surface with the dataviz
+     six-checks script (lightness band, chroma floor, CVD ΔE, contrast).
+     Money in wears the brand teal; money out wears WINE, chosen because every
+     warm orange candidate sat within ΔE 3 of --rk-attention and a spend bar
+     must never read as a warning. Fixed assignment, never cycled. */
+  --rk-chart-in: #0d9488;
+  --rk-chart-out: #9d3557;
+
   --rk-bg: var(--rk-sand-50);
   --rk-surface: #ffffff;
   --rk-surface-sunk: var(--rk-sand-100);
@@ -110,6 +118,10 @@
     --rk-shadow-sm: 0 1px 2px rgb(0 0 0 / 0.4);
     --rk-shadow-md: 0 2px 8px rgb(0 0 0 / 0.45);
     --rk-shadow-lg: 0 8px 24px rgb(0 0 0 / 0.5);
+    /* Re-stepped for the dark surface and re-validated — never an automatic
+       flip of the light values. */
+    --rk-chart-in: #11a897;
+    --rk-chart-out: #a84368;
   }
 }
 
@@ -135,4 +147,6 @@
   --rk-shadow-sm: 0 1px 2px rgb(0 0 0 / 0.4);
   --rk-shadow-md: 0 2px 8px rgb(0 0 0 / 0.45);
   --rk-shadow-lg: 0 8px 24px rgb(0 0 0 / 0.5);
+  --rk-chart-in: #11a897;
+  --rk-chart-out: #a84368;
 }
