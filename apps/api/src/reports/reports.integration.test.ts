@@ -8,14 +8,25 @@
  */
 import { randomBytes } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { paymentReference } from '@rekoda/core';
 import {
   reportsActivityResponse,
   reportsCashflowResponse,
   reportsDebtorsResponse,
+  reportsInvoicesResponse,
   reportsOverviewResponse,
+  reportsReceiptsResponse,
   reportsStatementsResponse,
 } from '@rekoda/contracts';
-import { createDb, spendRepo, withBusiness, type Db } from '@rekoda/db';
+import {
+  createDb,
+  issueRepo,
+  paymentsHub,
+  settleRepo,
+  spendRepo,
+  withBusiness,
+  type Db,
+} from '@rekoda/db';
 import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 
@@ -88,6 +99,8 @@ const ENDPOINTS = [
   '/v1/reports/debtors',
   '/v1/reports/activity',
   '/v1/reports/statements',
+  '/v1/reports/invoices',
+  '/v1/reports/receipts',
 ] as const;
 
 describe('the guardrail', () => {
@@ -149,6 +162,117 @@ describe('the shapes the web tier will parse', () => {
     );
     expect(adaView.moneyOutK).toBe(1_200_000);
     expect(bolaView.moneyOutK).toBe(0);
+  });
+});
+
+describe('the registers (§5.3.7)', () => {
+  /** One tokenised sale, part-settled through the provider — invoice + receipt. */
+  async function seedRegisters(businessId: string) {
+    return withBusiness(db, businessId, async (tx) => {
+      const sale = await issueRepo.issueSale(tx, {
+        businessId,
+        customerId: null,
+        customerToken: 'CUSTOMER_7K2',
+        items: [{ name: 'wig', quantity: 1, unitPriceK: 15_000_000 }],
+        subtotalK: 15_000_000,
+        discountK: 0,
+        deliveryFeeK: 0,
+        vatK: 0,
+        totalK: 15_000_000,
+        paidK: 0,
+        balanceDueK: 15_000_000,
+        method: 'transfer',
+        sourceType: 'chat',
+        sourceId: 'draft-r1',
+        actor: 'system',
+      });
+      const intent = await paymentsHub.createIntent(tx, {
+        businessId,
+        reference: paymentReference(new Date(), (n) => randomBytes(n)),
+        expectedAmountK: 15_000_000,
+        providerType: 'paystack',
+        invoiceId: sale.invoiceId,
+      });
+      await settleRepo.bookVerifiedPayment(tx, {
+        businessId,
+        intent: {
+          id: intent.id,
+          reference: intent.reference,
+          invoiceId: sale.invoiceId,
+          customerId: null,
+        },
+        confirmedAmountK: 6_000_000,
+        currency: 'NGN',
+        providerType: 'paystack',
+        providerRef: 'pst-reg1',
+        providerStatus: 'success',
+        providerFeeK: 0,
+        feePolicy: 'merchant_bearing',
+        method: 'transfer',
+        actor: 'test',
+        eventId: 'evt-reg1',
+      });
+      return { invoiceNumber: sale.invoiceNumber };
+    });
+  }
+
+  it('a fresh business gets empty registers, never an error', async () => {
+    const { auth } = await onboard('+2348177000007');
+    const invoices = reportsInvoicesResponse.parse(
+      (await app.inject({ method: 'GET', url: '/v1/reports/invoices', headers: auth })).json(),
+    );
+    expect(invoices).toMatchObject({ invoices: [], count: 0, outstandingK: 0 });
+
+    const receipts = reportsReceiptsResponse.parse(
+      (await app.inject({ method: 'GET', url: '/v1/reports/receipts', headers: auth })).json(),
+    );
+    expect(receipts).toMatchObject({ receipts: [], count: 0 });
+  });
+
+  it('serves both registers in contract shape, and NEVER leaks a customer token', async () => {
+    const { auth, businessId } = await onboard('+2348177000008');
+    const { invoiceNumber } = await seedRegisters(businessId);
+
+    const invoicesRes = await app.inject({
+      method: 'GET',
+      url: '/v1/reports/invoices',
+      headers: auth,
+    });
+    const invoices = reportsInvoicesResponse.parse(invoicesRes.json());
+    expect(invoices.count).toBe(1);
+    expect(invoices.invoices[0]).toMatchObject({
+      invoiceNumber,
+      status: 'partially_paid',
+      totalK: 15_000_000,
+      paidK: 6_000_000,
+      balanceDueK: 9_000_000,
+    });
+    expect(invoices.outstandingK).toBe(9_000_000);
+    // The sale was recorded with CUSTOMER_7K2; the register must not carry it.
+    expect(invoicesRes.body).not.toContain('CUSTOMER_');
+
+    const receiptsRes = await app.inject({
+      method: 'GET',
+      url: '/v1/reports/receipts',
+      headers: auth,
+    });
+    const receipts = reportsReceiptsResponse.parse(receiptsRes.json());
+    expect(receipts.count).toBe(1);
+    expect(receipts.receipts[0]?.receiptNumber).toMatch(/^RCT-/);
+    expect(receipts.receipts[0]?.amountK).toBe(6_000_000);
+    expect(receipts.receipts[0]?.invoiceNumber).toBe(invoiceNumber);
+    expect(receiptsRes.body).not.toContain('CUSTOMER_');
+  });
+
+  it('registers are scoped to the SESSION tenant', async () => {
+    const ada = await onboard('+2348177000009');
+    const bola = await onboard('+2348177000010');
+    await seedRegisters(ada.businessId);
+
+    const bolaInvoices = reportsInvoicesResponse.parse(
+      (await app.inject({ method: 'GET', url: '/v1/reports/invoices', headers: bola.auth })).json(),
+    );
+    expect(bolaInvoices.count).toBe(0);
   });
 });
 

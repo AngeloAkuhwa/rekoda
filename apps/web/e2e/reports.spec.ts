@@ -26,28 +26,40 @@ async function onboard(page: Page, phone: string) {
   await expect(page).toHaveURL(/\/setup\/complete$/);
 }
 
-test('the dashboard tabs reach all three sections', async ({ page }) => {
+test('the dashboard tabs reach every section', async ({ page }) => {
   await onboard(page, freshPhone());
 
   await page.goto('/app');
-  const nav = page.getByRole('navigation', { name: 'Dashboard sections' });
-  await expect(nav).toBeVisible();
+  const nav = () => page.getByRole('navigation', { name: 'Dashboard sections' });
+  await expect(nav()).toBeVisible();
 
-  await nav.getByRole('link', { name: 'Reports' }).click();
+  await nav().getByRole('link', { name: 'Reports' }).click();
   await expect(page).toHaveURL(/\/app\/reports$/);
   await expect(page.getByRole('heading', { name: 'Ada Fashion' })).toBeVisible();
 
-  await page
-    .getByRole('navigation', { name: 'Dashboard sections' })
-    .getByRole('link', { name: 'Payments' })
-    .click();
+  await nav().getByRole('link', { name: 'Invoices' }).click();
+  await expect(page).toHaveURL(/\/app\/invoices$/);
+
+  await nav().getByRole('link', { name: 'Receipts' }).click();
+  await expect(page).toHaveURL(/\/app\/receipts$/);
+
+  await nav().getByRole('link', { name: 'Payments' }).click();
   await expect(page).toHaveURL(/\/app\/payments$/);
 
-  await page
-    .getByRole('navigation', { name: 'Dashboard sections' })
-    .getByRole('link', { name: 'Overview' })
-    .click();
+  await nav().getByRole('link', { name: 'Overview' }).click();
   await expect(page).toHaveURL(/\/app$/);
+});
+
+test('the invoice and receipt registers explain themselves when empty', async ({ page }) => {
+  await onboard(page, freshPhone());
+
+  await page.goto('/app/invoices');
+  await expect(page.getByRole('heading', { name: 'Everything you have billed' })).toBeVisible();
+  await expect(page.getByText('No invoices yet')).toBeVisible();
+
+  await page.goto('/app/receipts');
+  await expect(page.getByRole('heading', { name: 'Proof of every payment' })).toBeVisible();
+  await expect(page.getByText('No receipts yet')).toBeVisible();
 });
 
 test('an empty month says so instead of rendering zero statements', async ({ page }) => {

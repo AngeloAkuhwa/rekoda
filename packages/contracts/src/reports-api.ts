@@ -129,3 +129,33 @@ export const reportsStatementsResponse = z.object({
   }),
 });
 export type ReportsStatementsResponse = z.infer<typeof reportsStatementsResponse>;
+
+export const reportsInvoicesResponse = z.object({
+  invoices: z.array(
+    z.object({
+      invoiceNumber: z.string(),
+      /** issued | partially_paid | paid | voided */
+      status: z.string(),
+      totalK: kobo,
+      paidK: kobo,
+      balanceDueK: kobo,
+      issuedAt: z.string(),
+    }),
+  ),
+  count: z.number().int().nonnegative(),
+  outstandingK: kobo,
+});
+export type ReportsInvoicesResponse = z.infer<typeof reportsInvoicesResponse>;
+
+export const reportsReceiptsResponse = z.object({
+  receipts: z.array(
+    z.object({
+      receiptNumber: z.string(),
+      amountK: kobo,
+      issuedAt: z.string(),
+      invoiceNumber: z.string().nullable(),
+    }),
+  ),
+  count: z.number().int().nonnegative(),
+});
+export type ReportsReceiptsResponse = z.infer<typeof reportsReceiptsResponse>;

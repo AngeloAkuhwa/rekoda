@@ -303,3 +303,110 @@ export async function accountSumsFor(
     cumulativeCreditK: Number(r.cumulative_credit_k),
   }));
 }
+
+export interface InvoiceListRow {
+  invoiceNumber: string;
+  status: string;
+  totalK: number;
+  paidK: number;
+  balanceDueK: number;
+  issuedAt: Date;
+}
+
+export interface InvoiceList {
+  rows: InvoiceListRow[];
+  /** Every invoice the business has issued, not just the page shown. */
+  count: number;
+  /** Open balances across ALL invoices, so the summary stays honest when truncated. */
+  outstandingK: number;
+}
+
+/** The invoice register, newest first. Numbers only — never a customer name. */
+export async function invoicesFor(
+  tx: TenantDb,
+  businessId: string,
+  limit: number,
+): Promise<InvoiceList> {
+  const rows = await tx.execute<{
+    invoice_number: string;
+    status: string;
+    total_k: string;
+    paid_k: string;
+    balance_due_k: string;
+    issued_at: Date;
+  }>(sql`
+    SELECT invoice_number, status, total_k::bigint AS total_k, paid_k::bigint AS paid_k,
+           balance_due_k::bigint AS balance_due_k, created_at AS issued_at
+    FROM invoices
+    WHERE business_id = ${businessId}::uuid
+    ORDER BY created_at DESC
+    LIMIT ${limit}
+  `);
+  const totals = await tx.execute<{ n: number; outstanding_k: string }>(sql`
+    SELECT count(*)::int AS n,
+           COALESCE(SUM(balance_due_k) FILTER (WHERE status IN ('issued', 'partially_paid')), 0)::bigint
+             AS outstanding_k
+    FROM invoices
+    WHERE business_id = ${businessId}::uuid
+  `);
+  const t = [...totals][0];
+  return {
+    rows: [...rows].map((r) => ({
+      invoiceNumber: r.invoice_number,
+      status: r.status,
+      totalK: Number(r.total_k),
+      paidK: Number(r.paid_k),
+      balanceDueK: Number(r.balance_due_k),
+      issuedAt: new Date(r.issued_at),
+    })),
+    count: t?.n ?? 0,
+    outstandingK: Number(t?.outstanding_k ?? 0),
+  };
+}
+
+export interface ReceiptListRow {
+  receiptNumber: string;
+  amountK: number;
+  issuedAt: Date;
+  /** The invoice this receipt settled, when one exists. */
+  invoiceNumber: string | null;
+}
+
+export interface ReceiptList {
+  rows: ReceiptListRow[];
+  count: number;
+}
+
+/** The receipt register, newest first. Every row is a REAL recorded payment. */
+export async function receiptsFor(
+  tx: TenantDb,
+  businessId: string,
+  limit: number,
+): Promise<ReceiptList> {
+  const rows = await tx.execute<{
+    receipt_number: string;
+    amount_k: string;
+    issued_at: Date;
+    invoice_number: string | null;
+  }>(sql`
+    SELECT r.receipt_number, r.amount_k::bigint AS amount_k, r.created_at AS issued_at,
+           i.invoice_number
+    FROM receipts r
+    LEFT JOIN invoices i ON i.id = r.invoice_id AND i.business_id = r.business_id
+    WHERE r.business_id = ${businessId}::uuid
+    ORDER BY r.created_at DESC
+    LIMIT ${limit}
+  `);
+  const totals = await tx.execute<{ n: number }>(sql`
+    SELECT count(*)::int AS n FROM receipts WHERE business_id = ${businessId}::uuid
+  `);
+  return {
+    rows: [...rows].map((r) => ({
+      receiptNumber: r.receipt_number,
+      amountK: Number(r.amount_k),
+      issuedAt: new Date(r.issued_at),
+      invoiceNumber: r.invoice_number,
+    })),
+    count: [...totals][0]?.n ?? 0,
+  };
+}

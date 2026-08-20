@@ -7,7 +7,9 @@ import {
   reportsActivityResponse,
   reportsCashflowResponse,
   reportsDebtorsResponse,
+  reportsInvoicesResponse,
   reportsOverviewResponse,
+  reportsReceiptsResponse,
   reportsStatementsResponse,
   requestOtpResponse,
   sessionResponse,
@@ -21,7 +23,9 @@ import {
   type ReportsActivityResponse,
   type ReportsCashflowResponse,
   type ReportsDebtorsResponse,
+  type ReportsInvoicesResponse,
   type ReportsOverviewResponse,
+  type ReportsReceiptsResponse,
   type ReportsStatementsResponse,
   type SubmitConnectionRequest,
   type RequestOtpResponse,
@@ -274,6 +278,26 @@ export async function reportsActivity(sessionToken: string): Promise<ReportsActi
     expect: [200],
   });
   return reportsActivityResponse.parse(json);
+}
+
+export async function reportsInvoices(sessionToken: string): Promise<ReportsInvoicesResponse> {
+  const { json } = await call({
+    method: 'GET',
+    path: '/v1/reports/invoices',
+    headers: { authorization: `Bearer ${sessionToken}` },
+    expect: [200],
+  });
+  return reportsInvoicesResponse.parse(json);
+}
+
+export async function reportsReceipts(sessionToken: string): Promise<ReportsReceiptsResponse> {
+  const { json } = await call({
+    method: 'GET',
+    path: '/v1/reports/receipts',
+    headers: { authorization: `Bearer ${sessionToken}` },
+    expect: [200],
+  });
+  return reportsReceiptsResponse.parse(json);
 }
 
 export async function usageMeter(sessionToken: string): Promise<UsageMeterResponse> {

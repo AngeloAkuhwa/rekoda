@@ -29,7 +29,9 @@ import type {
   ReportsActivityResponse,
   ReportsCashflowResponse,
   ReportsDebtorsResponse,
+  ReportsInvoicesResponse,
   ReportsOverviewResponse,
+  ReportsReceiptsResponse,
   ReportsStatementsResponse,
 } from '@rekoda/contracts';
 import { reportsRepo, withBusiness, type Db } from '@rekoda/db';
@@ -39,6 +41,7 @@ import { DB } from '../db/db.module.js';
 const CASHFLOW_MONTHS = 6;
 const DEBTOR_ROWS = 6;
 const ACTIVITY_ROWS = 8;
+const REGISTER_ROWS = 50;
 
 @Controller('v1/reports')
 @UseGuards(SessionGuard)
@@ -117,6 +120,45 @@ export class ReportsController {
       profitAndLoss: buildProfitAndLoss(sums),
       balanceSheet: buildBalanceSheet(sums),
       cashflow: buildCashflowStatement(sums),
+    };
+  }
+
+  /** The invoice register — numbers and figures only, never a customer name. */
+  @Get('invoices')
+  async invoices(@Req() request: AuthedRequest): Promise<ReportsInvoicesResponse> {
+    const businessId = request.auth!.businessId;
+    const list = await withBusiness(this.db, businessId, (tx) =>
+      reportsRepo.invoicesFor(tx, businessId, REGISTER_ROWS),
+    );
+    return {
+      invoices: list.rows.map((r) => ({
+        invoiceNumber: r.invoiceNumber,
+        status: r.status,
+        totalK: r.totalK,
+        paidK: r.paidK,
+        balanceDueK: r.balanceDueK,
+        issuedAt: r.issuedAt.toISOString(),
+      })),
+      count: list.count,
+      outstandingK: list.outstandingK,
+    };
+  }
+
+  /** The receipt register. Every row exists because real money was recorded. */
+  @Get('receipts')
+  async receipts(@Req() request: AuthedRequest): Promise<ReportsReceiptsResponse> {
+    const businessId = request.auth!.businessId;
+    const list = await withBusiness(this.db, businessId, (tx) =>
+      reportsRepo.receiptsFor(tx, businessId, REGISTER_ROWS),
+    );
+    return {
+      receipts: list.rows.map((r) => ({
+        receiptNumber: r.receiptNumber,
+        amountK: r.amountK,
+        issuedAt: r.issuedAt.toISOString(),
+        invoiceNumber: r.invoiceNumber,
+      })),
+      count: list.count,
     };
   }
 
