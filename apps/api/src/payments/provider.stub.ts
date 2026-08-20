@@ -4,6 +4,7 @@ import type {
   InitializeTransactionInput,
   InitializeTransactionResult,
   PaymentProviderPort,
+  ProviderSettlement,
   VerifiedTransaction,
   VerifyTransactionResult,
 } from './provider.port.js';
@@ -21,8 +22,10 @@ export class StubPaymentProvider implements PaymentProviderPort {
   readonly initialized: InitializeTransactionInput[] = [];
   readonly subaccountsCreated: CreateSubaccountInput[] = [];
   private readonly verifications = new Map<string, VerifiedTransaction>();
+  private readonly settlements: Array<ProviderSettlement & { references: string[] }> = [];
   private failInitialize: Error | null = null;
   private failVerify: Error | null = null;
+  private failSettlements: Error | null = null;
   private rejectSubaccountWith: string | null = null;
 
   /** Script the authoritative answer for one reference. */
@@ -55,12 +58,29 @@ export class StubPaymentProvider implements PaymentProviderPort {
     this.rejectSubaccountWith = reason;
   }
 
+  /** Script one settlement batch and the references it carried. */
+  willSettle(settlement: Partial<ProviderSettlement> & { references: string[] }): void {
+    this.settlements.push({
+      settlementId: `stl-${this.settlements.length + 1}`,
+      status: 'settled',
+      providerStatus: 'success',
+      settledAtIso: '2026-08-19T04:00:00.000Z',
+      ...settlement,
+    });
+  }
+
+  failNextSettlementsWith(error: Error): void {
+    this.failSettlements = error;
+  }
+
   reset(): void {
     this.initialized.length = 0;
     this.subaccountsCreated.length = 0;
     this.verifications.clear();
+    this.settlements.length = 0;
     this.failVerify = null;
     this.failInitialize = null;
+    this.failSettlements = null;
     this.rejectSubaccountWith = null;
   }
 
@@ -106,5 +126,21 @@ export class StubPaymentProvider implements PaymentProviderPort {
     const transaction = this.verifications.get(reference);
     if (!transaction) return Promise.resolve({ found: false });
     return Promise.resolve({ found: true, transaction });
+  }
+
+  listSettlements(_fromIso: string): Promise<ProviderSettlement[]> {
+    if (this.failSettlements) {
+      const error = this.failSettlements;
+      this.failSettlements = null;
+      return Promise.reject(error);
+    }
+    return Promise.resolve(
+      this.settlements.map(({ references: _references, ...settlement }) => settlement),
+    );
+  }
+
+  listSettlementTransactions(settlementId: string): Promise<string[]> {
+    const settlement = this.settlements.find((s) => s.settlementId === settlementId);
+    return Promise.resolve(settlement ? [...settlement.references] : []);
   }
 }

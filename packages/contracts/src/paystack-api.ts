@@ -69,3 +69,46 @@ export const paystackVerifyResponse = z
   .loose();
 
 export type PaystackVerifyResponse = z.infer<typeof paystackVerifyResponse>;
+
+export const paystackSettlementListResponse = z
+  .object({
+    status: z.boolean(),
+    message: z.string().optional(),
+    data: z
+      .array(
+        z
+          .object({
+            id: z.union([z.number(), z.string()]),
+            /** success | processing | pending | failed — stored verbatim for audit. */
+            status: z.string(),
+            /** When the batch reached (or is due to reach) the merchant's bank. */
+            effective_date: z.string().nullish(),
+            settlement_date: z.string().nullish(),
+          })
+          .loose(),
+      )
+      .optional(),
+  })
+  .loose();
+
+export type PaystackSettlementListResponse = z.infer<typeof paystackSettlementListResponse>;
+
+export const paystackSettlementTransactionsResponse = z
+  .object({
+    status: z.boolean(),
+    message: z.string().optional(),
+    data: z
+      .array(
+        z
+          .object({
+            reference: z.string().nullish(),
+          })
+          .loose(),
+      )
+      .optional(),
+  })
+  .loose();
+
+export type PaystackSettlementTransactionsResponse = z.infer<
+  typeof paystackSettlementTransactionsResponse
+>;

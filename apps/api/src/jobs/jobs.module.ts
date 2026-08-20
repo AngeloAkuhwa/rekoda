@@ -25,6 +25,7 @@ import { PaymentsModule } from '../payments/payments.module.js';
 import { PaymentIntentsService } from '../payments/payment-intents.service.js';
 import { PAYMENT_PROVIDER, type PaymentProviderPort } from '../payments/provider.port.js';
 import { pumpPaystackEvents } from '../payments/paystack-pump.js';
+import { sweepSettlements } from '../payments/settlement-sweep.js';
 import { MESSAGE_SENDER } from '../channels/sender.tokens.js';
 import type { MessageSender } from '../channels/sender.js';
 import { DocumentsModule, DOCUMENT_STORAGE } from '../documents/documents.module.js';
@@ -88,6 +89,8 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
   private closeWorkerDb: (() => Promise<void>) | null = null;
   private pumpTimer: NodeJS.Timeout | null = null;
   private pumping = false;
+  private sweepTimer: NodeJS.Timeout | null = null;
+  private sweeping = false;
 
   constructor(
     @Inject(CONFIG) private readonly config: ApiConfig,
@@ -143,10 +146,30 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
         });
     }, 2_000);
     this.pumpTimer.unref();
+
+    /**
+     * The settlement sweep rides the same credentials on a much slower
+     * clock: Paystack settles in daily batches, so ten minutes is prompt
+     * without hammering GET /settlement. Same non-overlap guard, same
+     * unref, same log discipline as the pump.
+     */
+    this.sweepTimer = setInterval(() => {
+      if (this.sweeping) return;
+      this.sweeping = true;
+      sweepSettlements({ workerDb, appDb: this.appDb, provider: this.paymentProvider })
+        .catch((error: unknown) => {
+          this.log.warn(`settlement sweep failed: ${redactForLog(describeFailure(error))}`);
+        })
+        .finally(() => {
+          this.sweeping = false;
+        });
+    }, 600_000);
+    this.sweepTimer.unref();
   }
 
   async onApplicationShutdown(): Promise<void> {
     if (this.pumpTimer) clearInterval(this.pumpTimer);
+    if (this.sweepTimer) clearInterval(this.sweepTimer);
     await this.runner?.stop();
     await this.closeWorkerDb?.();
   }

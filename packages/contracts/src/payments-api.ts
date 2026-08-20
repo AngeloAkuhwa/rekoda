@@ -38,6 +38,9 @@ export const paymentsListResponse = z.object({
       grossAmountK: z.number().nullable(),
       providerFeeK: z.number().nullable(),
       settlementAmountK: z.number().nullable(),
+      /** not_applicable · pending · processing · settled · failed · held */
+      settlementStatus: z.string(),
+      settledAt: z.string().nullable(),
     }),
   ),
 });

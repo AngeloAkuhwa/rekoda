@@ -194,3 +194,63 @@ describe('verifying a transaction', () => {
     await expect(provider().verifyTransaction('r')).rejects.toBeInstanceOf(PaystackApiError);
   });
 });
+
+describe('listing settlements (§26–28)', () => {
+  it('asks with the secret and the from date, and translates the vocabulary', async () => {
+    respond = (_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          status: true,
+          data: [
+            { id: 91, status: 'success', settlement_date: '2026-08-19T04:00:00.000Z' },
+            { id: 92, status: 'processing', effective_date: '2026-08-20T04:00:00.000Z' },
+            { id: 93, status: 'dancing', settlement_date: '2026-08-20T04:00:00.000Z' },
+          ],
+        }),
+      );
+    };
+    const settlements = await provider().listSettlements('2026-08-13T00:00:00.000Z');
+
+    expect(requests[0]?.authorization).toBe('Bearer sk_test_secret');
+    expect(requests[0]?.url).toContain('/settlement?from=2026-08-13');
+
+    expect(settlements[0]).toEqual({
+      settlementId: '91',
+      status: 'settled',
+      providerStatus: 'success',
+      settledAtIso: '2026-08-19T04:00:00.000Z',
+    });
+    // Still moving: no settled date is claimed for money not yet landed.
+    expect(settlements[1]?.status).toBe('processing');
+    expect(settlements[1]?.settledAtIso).toBeNull();
+    // A word this adapter has never seen becomes held — NEVER settled or failed.
+    expect(settlements[2]?.status).toBe('held');
+    expect(settlements[2]?.settledAtIso).toBeNull();
+  });
+
+  it('returns the references a batch carried, skipping entries without one', async () => {
+    respond = (_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          status: true,
+          data: [{ reference: 'RKD-PAY-20260819-AAAAAA' }, { reference: null }, {}],
+        }),
+      );
+    };
+    const references = await provider().listSettlementTransactions('91');
+    expect(requests[0]?.url).toContain('/settlement/91/transactions');
+    expect(references).toEqual(['RKD-PAY-20260819-AAAAAA']);
+  });
+
+  it('throws on a 5xx so the sweep logs an outage instead of inventing an empty day', async () => {
+    respond = (_req, res) => {
+      res.writeHead(503);
+      res.end();
+    };
+    await expect(provider().listSettlements('2026-08-13T00:00:00.000Z')).rejects.toBeInstanceOf(
+      PaystackApiError,
+    );
+  });
+});
