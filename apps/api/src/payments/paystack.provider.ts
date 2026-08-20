@@ -27,6 +27,9 @@ import type {
   VerifyTransactionResult,
 } from './provider.port.js';
 
+/** A hung provider must never hold a worker (or its transaction) open. */
+const REQUEST_TIMEOUT_MS = 15_000;
+
 export class PaystackApiError extends Error {}
 
 const CHANNEL_TO_METHOD: Record<string, string> = {
@@ -54,6 +57,7 @@ export class PaystackProvider implements PaymentProviderPort {
      */
     const response = await fetch(`${this.baseUrl}/subaccount`, {
       method: 'POST',
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       headers: { ...this.headers(), 'content-type': 'application/json' },
       body: JSON.stringify({
         business_name: input.businessName,
@@ -121,7 +125,7 @@ export class PaystackProvider implements PaymentProviderPort {
   async verifyTransaction(reference: string): Promise<VerifyTransactionResult> {
     const response = await fetch(
       `${this.baseUrl}/transaction/verify/${encodeURIComponent(reference)}`,
-      { headers: this.headers() },
+      { headers: this.headers(), signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) },
     );
     if (response.status === 404) return { found: false };
     if (!response.ok) {
@@ -153,6 +157,7 @@ export class PaystackProvider implements PaymentProviderPort {
   private async request(method: string, path: string, body: unknown): Promise<unknown> {
     const response = await fetch(`${this.baseUrl}${path}`, {
       method,
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       headers: { ...this.headers(), 'content-type': 'application/json' },
       body: JSON.stringify(body),
     });

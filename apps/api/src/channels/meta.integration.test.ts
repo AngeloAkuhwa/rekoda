@@ -26,12 +26,14 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildRunner, type RunnerDeps } from '../jobs/jobs.module.js';
-import { issueRepo, spendRepo } from '@rekoda/db';
+import { customersRepo, issueRepo, paymentsHub, spendRepo } from '@rekoda/db';
+import { encryptFacet, matchKeyFor } from '@rekoda/core/vault';
 import { PrivacyGateway } from '../privacy/gateway.service.js';
 import { Interpreter } from '../ai/interpreter.service.js';
 import { StubTransport } from '../ai/transport.stub.js';
 import { StubSender } from '../channels/sender.stub.js';
 import { StubPaymentProvider } from '../payments/provider.stub.js';
+import { PaymentIntentsService } from '../payments/payment-intents.service.js';
 import { LocalStorage } from '../documents/r2.storage.js';
 import { ReplySender } from '../replies/reply.service.js';
 import { loadConfig, type ApiConfig } from '../config.js';
@@ -52,6 +54,7 @@ let closeWorkerDb: () => Promise<void>;
 let deps: RunnerDeps;
 let stubTransport: StubTransport;
 let stubSender: StubSender;
+const intentsProvider = new StubPaymentProvider();
 
 beforeAll(async () => {
   urls = requireUrls();
@@ -91,6 +94,7 @@ beforeAll(async () => {
     sender: stubSender,
     config,
     paymentProvider: new StubPaymentProvider(),
+    paymentIntents: new PaymentIntentsService(config, db, intentsProvider),
   };
 });
 
@@ -109,6 +113,7 @@ beforeEach(async () => {
   // "not called since the file started".
   stubTransport.reset();
   stubSender.reset();
+  intentsProvider.reset();
 });
 
 function messagePayload(waId: string, wamid: string, text = 'Ada bought 3 wigs for 150k') {
@@ -564,15 +569,16 @@ describe('answering the merchant', () => {
     expect(stubSender.lastText).toMatch(/tell me a sale/i);
   });
 
-  it('does NOT invent a debtor list it cannot compute', async () => {
+  it('answers the debtor question from rows, never an invented figure', async () => {
     await seedMerchant('+2348031234567', 'Ada Fashion');
     await post(messagePayload('2348031234567', 'wamid.OWES', 'who owes me'));
     expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
 
-    // A bookkeeping assistant that makes up a debtor list has destroyed the
-    // only thing it sells.
-    expect(stubSender.lastText).toMatch(/not ready yet/i);
-    expect(stubSender.lastText).not.toMatch(/₦|owes you/i);
+    // A book with no invoices has exactly one honest answer, and it carries
+    // no figure at all. A bookkeeping assistant that makes up a debtor list
+    // has destroyed the only thing it sells.
+    expect(stubSender.lastText).toContain('Nobody owes you right now');
+    expect(stubSender.lastText).not.toMatch(/₦/);
   });
 
   it('passes the model`s clarifying question through as written', async () => {
@@ -980,6 +986,120 @@ describe("the plan's own example, end to end", () => {
     );
     expect(rows[0]?.description).toBe('ankara fabric');
     expect(JSON.stringify(rows)).not.toContain('Nkechi');
+  });
+});
+
+describe('collecting money from chat (payments-v1 §160)', () => {
+  async function seedMerchant(phone: string, name: string) {
+    const user = await identity.upsertUserByPhone(db, phone);
+    return identity.createBusinessWithOwner(db, { name, businessType: null, ownerUserId: user.id });
+  }
+
+  async function send(text: string, wamid: string) {
+    await post(messagePayload('2348031234567', wamid, text));
+    const runner = buildRunner(workerDb, db, deps);
+    let worked = await runner.runOnce();
+    expect(worked).toBe(true);
+    while (worked) worked = await runner.runOnce();
+  }
+
+  async function activeConnection(businessId: string) {
+    await withBusiness(db, businessId, async (tx) => {
+      const connection = await paymentsHub.upsertConnection(tx, {
+        businessId,
+        providerType: 'paystack',
+        settlementAccountLast4: '4821',
+      });
+      await paymentsHub.setConnectionState(tx, connection.id, {
+        status: 'active',
+        externalSubaccountId: 'ACCT_live1',
+      });
+    });
+  }
+
+  /** An open ₦80,000 invoice for a customer whose email is on file. */
+  async function openInvoiceWithEmail(businessId: string, config: ApiConfig) {
+    const customer = await customersRepo.createCustomerWithIdentities(db, businessId, 'X81', [
+      {
+        facet: 'phone',
+        ciphertext: encryptFacet('+2348039998888', config.vaultKey),
+        matchKey: matchKeyFor(businessId, 'phone', '+2348039998888', config.matchKey),
+      },
+      {
+        facet: 'email',
+        ciphertext: encryptFacet('adaeze@example.com', config.vaultKey),
+        matchKey: null,
+      },
+    ]);
+    return withBusiness(db, businessId, (tx) =>
+      issueRepo.issueSale(tx, {
+        businessId,
+        customerId: customer.id,
+        customerToken: 'CUSTOMER_X81',
+        items: [{ name: 'gown', quantity: 1, unitPriceK: 8_000_000 }],
+        subtotalK: 8_000_000,
+        discountK: 0,
+        deliveryFeeK: 0,
+        vatK: 0,
+        totalK: 8_000_000,
+        paidK: 0,
+        balanceDueK: 8_000_000,
+        method: 'transfer',
+        sourceType: 'chat',
+        sourceId: 'draft-pay',
+        actor: 'system',
+      }),
+    );
+  }
+
+  it('who owes me answers from the ledger: numbers, totals, no names', async () => {
+    const business = await seedMerchant('+2348031234567', 'Ada Fashion');
+    await openInvoiceWithEmail(business.id, deps.config);
+
+    await send('who owes me', 'wamid.OWES');
+    expect(stubSender.lastText).toContain('One invoice is unpaid: ₦80,000 owed to you');
+    expect(stubSender.lastText).toMatch(/INV-\d{4}-000001: ₦80,000/);
+    expect(stubSender.lastText).not.toContain('CUSTOMER_X81');
+  });
+
+  it('payment details with an active connection returns a forwardable link', async () => {
+    const business = await seedMerchant('+2348031234567', 'Ada Fashion');
+    await activeConnection(business.id);
+    await openInvoiceWithEmail(business.id, deps.config);
+
+    await send('send payment link', 'wamid.PAY1');
+    expect(stubSender.lastText).toMatch(/Payment link for INV-\d{4}-000001: ₦80,000 outstanding/);
+    expect(stubSender.lastText).toMatch(/https:\/\/checkout\.stub\/RKD-PAY-/);
+  });
+
+  it('payment details without a connection points at onboarding, never a dead link', async () => {
+    const business = await seedMerchant('+2348031234567', 'Ada Fashion');
+    await openInvoiceWithEmail(business.id, deps.config);
+
+    await send('payment details', 'wamid.PAY2');
+    expect(stubSender.lastText).toContain('add your settlement account');
+    expect(stubSender.lastText).not.toContain('http');
+  });
+
+  it('a provider outage degrades to an honest sentence, and the next try works', async () => {
+    const business = await seedMerchant('+2348031234567', 'Ada Fashion');
+    await activeConnection(business.id);
+    await openInvoiceWithEmail(business.id, deps.config);
+
+    intentsProvider.failNextInitializeWith(new Error('Paystack is down'));
+    await send('payment details', 'wamid.PAYDOWN');
+    expect(stubSender.lastText).toContain('could not reach your payment provider');
+    expect(stubSender.lastText).not.toContain('http');
+
+    // The job completed rather than dying in retries, so the next ask succeeds.
+    await send('payment details', 'wamid.PAYUP');
+    expect(stubSender.lastText).toMatch(/https:\/\/checkout\.stub\/RKD-PAY-/);
+  });
+
+  it('payment details with nothing owed says so', async () => {
+    await seedMerchant('+2348031234567', 'Ada Fashion');
+    await send('payment details', 'wamid.PAY3');
+    expect(stubSender.lastText).toContain('nothing to collect');
   });
 });
 

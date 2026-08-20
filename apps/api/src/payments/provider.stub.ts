@@ -21,6 +21,7 @@ export class StubPaymentProvider implements PaymentProviderPort {
   readonly initialized: InitializeTransactionInput[] = [];
   readonly subaccountsCreated: CreateSubaccountInput[] = [];
   private readonly verifications = new Map<string, VerifiedTransaction>();
+  private failInitialize: Error | null = null;
   private failVerify: Error | null = null;
   private rejectSubaccountWith: string | null = null;
 
@@ -41,6 +42,10 @@ export class StubPaymentProvider implements PaymentProviderPort {
   }
 
   /** Make the next verify call fail, as a provider outage would. */
+  failNextInitializeWith(error: Error): void {
+    this.failInitialize = error;
+  }
+
   failNextVerifyWith(error: Error): void {
     this.failVerify = error;
   }
@@ -55,6 +60,7 @@ export class StubPaymentProvider implements PaymentProviderPort {
     this.subaccountsCreated.length = 0;
     this.verifications.clear();
     this.failVerify = null;
+    this.failInitialize = null;
     this.rejectSubaccountWith = null;
   }
 
@@ -72,6 +78,11 @@ export class StubPaymentProvider implements PaymentProviderPort {
   }
 
   initializeTransaction(input: InitializeTransactionInput): Promise<InitializeTransactionResult> {
+    if (this.failInitialize) {
+      const error = this.failInitialize;
+      this.failInitialize = null;
+      return Promise.reject(error);
+    }
     if (!input.customerEmail) {
       return Promise.resolve({
         state: 'requires_customer_information',
