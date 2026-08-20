@@ -450,3 +450,30 @@ export async function ownerPhoneFor(db: Db, businessId: string): Promise<string 
     return rows[0]?.phone ?? null;
   });
 }
+
+/* ─────────────────────── messaging consent (STOP/START) ─────────────────── */
+
+/**
+ * Record or clear a person's opt-out. Keyed by phone because that is what
+ * both the inbound message and the outbound send actually carry. A phone
+ * nobody has verified is a silent no-op: there is no consent state to keep
+ * for a person who does not exist.
+ */
+export async function setOptOut(q: Queryable, phone: string, at: Date | null): Promise<boolean> {
+  const rows = await q
+    .update(users)
+    .set({ optedOutAt: at })
+    .where(eq(users.phone, phone))
+    .returning({ id: users.id });
+  return rows.length === 1;
+}
+
+/** Null means messages are welcome. Checked before every PROACTIVE send. */
+export async function optedOutAt(q: Queryable, phone: string): Promise<Date | null> {
+  const rows = await q
+    .select({ optedOutAt: users.optedOutAt })
+    .from(users)
+    .where(eq(users.phone, phone))
+    .limit(1);
+  return rows[0]?.optedOutAt ?? null;
+}

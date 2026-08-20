@@ -45,7 +45,18 @@ export function deliverDocumentHandler(deps: DeliverDocumentDeps): JobHandler {
       return;
     }
 
+    /**
+     * STOP is honoured HERE, not just in the reply copy. A delivery is a
+     * proactive send, so an opted-out owner gets nothing — unless they asked
+     * for this exact document ("resend"), which is its own fresh consent.
+     * The job completes rather than retries: consent is not an outage.
+     */
+    const requested = payload['requestedByMerchant'] === true;
     const to = await identity.ownerPhoneFor(deps.db, businessId);
+    if (to && !requested && (await identity.optedOutAt(deps.db, to))) {
+      log.log('delivery suppressed: the owner has opted out of messages');
+      return;
+    }
     if (!to) {
       /**
        * A business with no owner should be impossible — `createBusinessWithOwner`

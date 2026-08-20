@@ -18,6 +18,7 @@ import { RolesGuard } from './roles.guard.js';
 import { HealthController } from '../health/health.controller.js';
 import { issueSetupToken } from './tokens.js';
 import { OTP_MAX_ATTEMPTS } from '@rekoda/core/identity';
+import { StubSender } from '../channels/sender.stub.js';
 
 const SECRET = 'test-secret-at-least-32-characters-long';
 
@@ -430,5 +431,46 @@ describe('roles', () => {
         )
       ).statusCode,
     ).toBe(403);
+  });
+});
+
+describe('OTP delivery (the gate between the funnel and the product)', () => {
+  function serviceWith(sender: StubSender, revealOtp = false) {
+    return new AuthService(
+      db,
+      {
+        otpPepper: 'test-pepper-at-least-32-characters-long',
+        apiSecret: SECRET,
+        revealOtp,
+      } as never,
+      sender,
+    );
+  }
+
+  it('sends the code to the requesting phone over the message channel', async () => {
+    const sender = new StubSender();
+    const response = await serviceWith(sender).requestOtp('+2348031239001');
+
+    expect(response.status).toBe('sent');
+    expect(sender.sent).toHaveLength(1);
+    expect(sender.sent[0]?.to).toBe('+2348031239001');
+    expect(sender.sent[0]?.text).toMatch(/sign-in code is \d{6}/);
+    expect(sender.sent[0]?.text).toContain('Never share this code');
+  });
+
+  it('still answers "sent" when delivery fails — resend is the recovery, not an oracle', async () => {
+    const sender = new StubSender();
+    sender.failWith();
+    const response = await serviceWith(sender).requestOtp('+2348031239002');
+    expect(response.status).toBe('sent');
+  });
+
+  it('does not send twice inside the resend cooldown', async () => {
+    const sender = new StubSender();
+    const service = serviceWith(sender);
+    await service.requestOtp('+2348031239003');
+    const second = await service.requestOtp('+2348031239003');
+    expect(second.status).toBe('resend_too_soon');
+    expect(sender.sent).toHaveLength(1);
   });
 });

@@ -5,6 +5,7 @@ import { bankName } from '@/lib/banks';
 import { paymentConnection, paymentExceptions, paymentsList } from '@/server/api';
 import { requireSessionWithToken } from '@/server/guards';
 import { AppNav } from '../AppNav';
+import { SignOutButton } from '../SignOutButton';
 import { ConnectForm } from './ConnectForm';
 import { markExceptionReviewed } from './actions';
 
@@ -42,6 +43,7 @@ export default async function PaymentsPage() {
           <p className="rk-eyebrow">Payments</p>
           <h1>Where your money lands</h1>
         </div>
+        <SignOutButton />
       </header>
 
       <AppNav active="payments" />
@@ -114,7 +116,7 @@ export default async function PaymentsPage() {
                   <tr key={p.rekodaReference ?? i}>
                     <td>{p.rekodaReference ?? '(recorded)'}</td>
                     <td>
-                      {p.grossAmountK == null ? 'not shown' : <Money kobo={p.grossAmountK} />}
+                      <Money kobo={p.grossAmountK ?? p.amountK} />
                     </td>
                     <td>{p.providerFeeK == null ? 'none' : <Money kobo={p.providerFeeK} />}</td>
                     <td>

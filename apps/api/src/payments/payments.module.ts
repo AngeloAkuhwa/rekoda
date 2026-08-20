@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { CONFIG, type ApiConfig } from '../config.js';
 import { DbModule } from '../db/db.module.js';
+import { RepliesModule } from '../replies/replies.module.js';
 import { AuthService } from '../auth/auth.service.js';
 import { SessionGuard } from '../auth/session.guard.js';
 import { RolesGuard } from '../auth/roles.guard.js';
@@ -20,7 +21,7 @@ import { PAYMENT_PROVIDER } from './provider.port.js';
  * for the same reason.
  */
 @Module({
-  imports: [DbModule],
+  imports: [DbModule, RepliesModule],
   controllers: [PaystackWebhookController, PaymentsController],
   providers: [
     {

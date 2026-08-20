@@ -81,6 +81,7 @@ export class PaymentsController {
         status: p.status,
         verified: p.verified,
         method: p.method,
+        amountK: p.amountK,
         grossAmountK: p.grossAmountK,
         providerFeeK: p.providerFeeK,
         settlementAmountK: p.settlementAmountK,

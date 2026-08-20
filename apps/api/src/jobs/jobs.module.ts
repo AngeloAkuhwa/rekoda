@@ -45,7 +45,7 @@ import type { DocumentStorage } from '../documents/storage.js';
  * a test whose deps type drifts from `buildRunner`'s is a test that stops
  * covering a handler the moment one is added.
  */
-export interface RunnerDeps extends InboundMessageDeps {
+export interface RunnerDeps extends Omit<InboundMessageDeps, 'db'> {
   storage: DocumentStorage;
   sender: MessageSender;
   paymentProvider: PaymentProviderPort;
@@ -58,7 +58,7 @@ export function buildRunner(
   options?: { idleMs?: number },
 ): JobRunner {
   const runner = new JobRunner(workerDb, appDb, options);
-  runner.register(JobKind.InboundMessage, inboundMessageHandler(deps));
+  runner.register(JobKind.InboundMessage, inboundMessageHandler({ ...deps, db: appDb }));
   runner.register(
     JobKind.RenderDocument,
     renderDocumentHandler({ storage: deps.storage, db: appDb }),

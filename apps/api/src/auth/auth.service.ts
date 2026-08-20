@@ -19,6 +19,7 @@ import {
   verifyOtp,
   type RandomSource,
 } from '@rekoda/core/identity';
+import { replies } from '@rekoda/core';
 import { identity, type Db } from '@rekoda/db';
 import type {
   MeResponse,
@@ -29,6 +30,8 @@ import type {
 } from '@rekoda/contracts';
 import { CONFIG, type ApiConfig } from '../config.js';
 import { DB } from '../db/db.module.js';
+import { MESSAGE_SENDER } from '../channels/sender.tokens.js';
+import type { MessageSender } from '../channels/sender.js';
 import { issueSetupToken, readSetupToken, type SetupGrant } from './tokens.js';
 
 /** Resends inside this window return the live challenge instead of minting one. */
@@ -50,6 +53,7 @@ export class AuthService {
   constructor(
     @Inject(DB) private readonly db: Db,
     @Inject(CONFIG) private readonly config: ApiConfig,
+    @Inject(MESSAGE_SENDER) private readonly sender: MessageSender,
   ) {}
 
   /**
@@ -62,10 +66,11 @@ export class AuthService {
   async requestOtp(rawPhone: string, now = new Date()): Promise<RequestOtpResponse> {
     const phone = normalisePhone(rawPhone);
 
-    return identity.withPhoneLock(this.db, phone, async (tx) => {
+    let minted: string | null = null;
+    const response = await identity.withPhoneLock(this.db, phone, async (tx) => {
       const since = new Date(now.getTime() - FAILURE_WINDOW_MS);
       if ((await identity.failuresSince(tx, phone, since)) >= MAX_FAILURES_PER_WINDOW) {
-        return { status: 'locked_out', phone };
+        return { status: 'locked_out', phone } as const;
       }
 
       const live = await identity.liveChallengeFor(tx, phone, now);
@@ -79,25 +84,40 @@ export class AuthService {
             status: 'resend_too_soon',
             phone,
             retryInSeconds: Math.ceil((RESEND_COOLDOWN_MS - age) / 1_000),
-          };
+          } as const;
         }
       }
 
       const { code, challenge } = issueOtp(phone, this.random, now, this.config.otpPepper);
       await identity.insertChallenge(tx, challenge);
-
-      // TODO(M2): deliver over the Meta Cloud API (ADR 0011). Until the channel
-      // layer lands the code never leaves the server in a deployed environment —
-      // logging it would put a live credential in the log store beside the phone
-      // number it unlocks.
-      if (!this.config.revealOtp) {
-        this.log.log(`OTP issued for ${redact(phone)} (delivery pending channel layer)`);
-      }
+      minted = code;
 
       return this.config.revealOtp
-        ? { status: 'sent', phone, devCode: code }
-        : { status: 'sent', phone };
+        ? ({ status: 'sent', phone, devCode: code } as const)
+        : ({ status: 'sent', phone } as const);
     });
+
+    /**
+     * Delivery happens AFTER the phone lock releases — a WhatsApp round trip
+     * must never hold the per-number rate-limit lock. A failed send still
+     * returns "sent": the challenge is live and a resend after the cooldown
+     * is the recovery path, while a distinct error here would let a caller
+     * probe which numbers have WhatsApp.
+     */
+    if (minted !== null && response.status === 'sent') {
+      await this.deliverOtp(phone, minted);
+    }
+    return response;
+  }
+
+  private async deliverOtp(phone: string, code: string): Promise<void> {
+    try {
+      await this.sender.send({ to: phone, text: replies.otpMessage(code).text });
+    } catch {
+      // The reason is logged without the code — the one string that must
+      // never reach a log store beside the phone number it unlocks.
+      this.log.warn(`OTP delivery failed for ${redact(phone)}; resend is the recovery path`);
+    }
   }
 
   /**

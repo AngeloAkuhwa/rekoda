@@ -66,6 +66,17 @@ export default function PricingPage() {
                 ))}
               </ul>
 
+              {plan.coming?.length ? (
+                <>
+                  <p className="rk-fineprint rk-plan-coming-label">Coming soon</p>
+                  <ul className="rk-features rk-features-out">
+                    {plan.coming.map((f) => (
+                      <li key={f}>{f}</li>
+                    ))}
+                  </ul>
+                </>
+              ) : null}
+
               {plan.excludes?.length ? (
                 <ul className="rk-features rk-features-out">
                   {plan.excludes.map((f) => (

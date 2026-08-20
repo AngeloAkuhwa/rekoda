@@ -1221,3 +1221,122 @@ describe('records, resend and messages Rekoda cannot read', () => {
     expect(messages[0]?.body).toBe('[audio message]');
   });
 });
+
+describe('consent (STOP/START) and erasure, as facts not sentences', () => {
+  async function seedMerchant(phone: string, name: string) {
+    const user = await identity.upsertUserByPhone(db, phone);
+    return identity.createBusinessWithOwner(db, { name, businessType: null, ownerUserId: user.id });
+  }
+
+  it('STOP persists, suppresses proactive deliveries, and START undoes it', async () => {
+    const business = await seedMerchant('+2348031234567', 'Ada Fashion');
+
+    await post(messagePayload('2348031234567', 'wamid.STOP1', 'stop'));
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+    expect(stubSender.lastText).toContain('I will not message you again');
+    expect(await identity.optedOutAt(db, '+2348031234567')).not.toBeNull();
+
+    // A receipt delivery — the proactive send class — goes nowhere now.
+    await deps.storage.put('test/suppressed-1', Buffer.from('%PDF-fake'), 'application/pdf');
+    const doc = await withBusiness(db, business.id, (tx) =>
+      issueRepo.recordDocument(tx, {
+        businessId: business.id,
+        kind: 'receipt_pdf',
+        storageKey: 'test/suppressed-1',
+        refNumber: 'RCT-2026-000009',
+        bytes: 9,
+      }),
+    );
+    await withBusiness(db, business.id, (tx) =>
+      jobsRepo.enqueue(tx, {
+        businessId: business.id,
+        kind: 'document.deliver',
+        payload: { documentId: doc.id },
+        singletonKey: `deliver:${doc.id}`,
+      }),
+    );
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+    expect(stubSender.documents).toHaveLength(0);
+
+    // START clears the flag; the same delivery class flows again.
+    await post(messagePayload('2348031234567', 'wamid.START1', 'start'));
+    const runner = buildRunner(workerDb, db, deps);
+    expect(await runner.runOnce()).toBe(true);
+    expect(await identity.optedOutAt(db, '+2348031234567')).toBeNull();
+  });
+
+  it('an explicit resend still delivers to an opted-out merchant — they asked', async () => {
+    const business = await seedMerchant('+2348031234567', 'Ada Fashion');
+    await identity.setOptOut(db, '+2348031234567', new Date());
+
+    await deps.storage.put('test/resend-1', Buffer.from('%PDF-fake'), 'application/pdf');
+    await withBusiness(db, business.id, (tx) =>
+      issueRepo.recordDocument(tx, {
+        businessId: business.id,
+        kind: 'invoice_pdf',
+        storageKey: 'test/resend-1',
+        refNumber: 'INV-2026-000011',
+        bytes: 9,
+      }),
+    );
+
+    await post(messagePayload('2348031234567', 'wamid.RESENDOPT', 'resend'));
+    const runner = buildRunner(workerDb, db, deps);
+    expect(await runner.runOnce()).toBe(true); // the inbound command
+    expect(await runner.runOnce()).toBe(true); // the delivery it queued
+    expect(stubSender.documents).toHaveLength(1);
+    expect(stubSender.lastDocument?.filename).toBe('INV-2026-000011.pdf');
+  });
+
+  it('erasure takes two exact asks, deletes every identity facet, and says how many', async () => {
+    const business = await seedMerchant('+2348031234567', 'Ada Fashion');
+    const customer = await customersRepo.createCustomerWithIdentities(
+      db,
+      business.id,
+      'CUSTOMER_T1',
+      [
+        { facet: 'name', ciphertext: 'sealed-name', matchKey: 'mk-name' },
+        { facet: 'phone', ciphertext: 'sealed-phone', matchKey: 'mk-phone' },
+      ],
+    );
+
+    await post(messagePayload('2348031234567', 'wamid.DEL1', 'delete my data'));
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+    expect(stubSender.lastText).toContain('Reply *DELETE MY DATA* again');
+
+    await post(messagePayload('2348031234567', 'wamid.DEL2', 'delete my data'));
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+    expect(stubSender.lastText).toContain('deleted (2 records)');
+
+    const left = await withBusiness(db, business.id, (tx) =>
+      customersRepo.identityFacetsFor(tx, business.id, customer.id),
+    );
+    expect(left).toEqual([]);
+  });
+
+  it('a "yes" after the erasure prompt keeps everything — only the phrase confirms', async () => {
+    const business = await seedMerchant('+2348031234567', 'Ada Fashion');
+    const customer = await customersRepo.createCustomerWithIdentities(
+      db,
+      business.id,
+      'CUSTOMER_T2',
+      [{ facet: 'name', ciphertext: 'sealed', matchKey: 'mk' }],
+    );
+
+    await post(messagePayload('2348031234567', 'wamid.DEL3', 'delete my data'));
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+    await post(messagePayload('2348031234567', 'wamid.DELYES', 'yes'));
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+
+    expect(stubSender.lastText).toContain('Kept');
+    const left = await withBusiness(db, business.id, (tx) =>
+      customersRepo.identityFacetsFor(tx, business.id, customer.id),
+    );
+    expect(left).toHaveLength(1);
+
+    // And the claimed draft cannot be resurrected: a fresh ask starts over.
+    await post(messagePayload('2348031234567', 'wamid.DEL4', 'delete my data'));
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+    expect(stubSender.lastText).toContain('Reply *DELETE MY DATA* again');
+  });
+});

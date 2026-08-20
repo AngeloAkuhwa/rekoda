@@ -3,6 +3,7 @@ import { Money } from '@/components/ui/Money';
 import { reportsInvoices } from '@/server/api';
 import { requireSessionWithToken } from '@/server/guards';
 import { AppNav } from '../AppNav';
+import { SignOutButton } from '../SignOutButton';
 
 export const metadata: Metadata = {
   title: 'Invoices',
@@ -26,6 +27,7 @@ export default async function InvoicesPage() {
           <p className="rk-eyebrow">Invoices</p>
           <h1>Everything you have billed</h1>
         </div>
+        <SignOutButton />
       </header>
 
       <AppNav active="invoices" />

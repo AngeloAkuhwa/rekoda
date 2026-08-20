@@ -12,16 +12,20 @@ import {
   type DeterministicIntent,
   type Reply,
 } from '@rekoda/core';
+import { normalisePhone } from '@rekoda/core/identity';
 import { extractInboundEvents, metaWebhookBody } from '@rekoda/contracts';
 import type { StructuredBusinessCommand } from '@rekoda/contracts';
 import {
   conversationsRepo,
+  customersRepo,
   events,
+  identity,
   issueRepo,
   jobsRepo,
   reportsRepo,
   spendRepo,
   usageRepo,
+  type Db,
   type TenantDb,
 } from '@rekoda/db';
 import type { ApiConfig } from '../config.js';
@@ -41,6 +45,8 @@ export interface InboundMessageDeps {
   replySender: ReplySender;
   config: ApiConfig;
   paymentIntents: PaymentIntentsService;
+  /** The app pool, for the rows that live ABOVE tenancy: users' consent state. */
+  db: Db;
 }
 
 /**
@@ -143,7 +149,11 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
 
     const answer =
       route.route === 'deterministic'
-        ? await deterministicReply(deps, tx, businessId, route.intent, eventId)
+        ? await deterministicReply(deps, tx, businessId, route.intent, {
+            eventId,
+            messageId: message.id,
+            from: inbound.from,
+          })
         : await interpretedReply(deps, tx, businessId, text, tokenised!.text, message.id);
 
     if (answer) {
@@ -161,6 +171,14 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
   };
 }
 
+/** What a deterministic answer may need beyond the tenant: the ask itself. */
+interface CommandContext {
+  eventId: string;
+  messageId: string;
+  /** The sender's wa id — the phone whose consent state STOP/START moves. */
+  from: string;
+}
+
 /**
  * Answers that need no model. `who owes me` and `payment details` are free
  * commands answered from rows; what is not built yet still says so honestly.
@@ -170,7 +188,7 @@ async function deterministicReply(
   tx: TenantDb,
   businessId: string,
   intent: DeterministicIntent,
-  eventId: string,
+  ctx: CommandContext,
 ): Promise<Reply | null> {
   if (intent.kind === 'affirm') return confirmPendingDraft(tx, businessId);
   if (intent.kind === 'deny' || intent.kind === 'cancel') {
@@ -190,11 +208,36 @@ async function deterministicReply(
     case 'help':
       return replies.help();
     case 'stop':
+      // The fact first, the sentence second: every proactive send checks this.
+      await recordConsent(deps.db, ctx.from, new Date());
       return replies.optedOut();
     case 'start':
+      await recordConsent(deps.db, ctx.from, null);
       return replies.optedIn();
-    case 'delete_my_data':
+    case 'delete_my_data': {
+      /* Two-message erasure (CG-style): the first ask parks an EraseData
+       * draft, the second ask claims it and deletes. Anything else in
+       * between claims the draft through the ordinary yes/no paths and
+       * keeps the data. */
+      const pending = await conversationsRepo.pendingDraft(tx, businessId);
+      const pendingCommand = pending?.command as { intent?: string } | undefined;
+      if (pending && pendingCommand?.intent === 'EraseData') {
+        if (!(await conversationsRepo.claimDraft(tx, pending.id))) {
+          return replies.alreadyConfirmed();
+        }
+        const erased = await customersRepo.eraseAllIdentities(tx, businessId);
+        return replies.erasureDone(erased);
+      }
+      await conversationsRepo.supersedePendingDrafts(tx, businessId);
+      await conversationsRepo.recordDraft(tx, {
+        businessId,
+        conversationMessageId: ctx.messageId,
+        intent: 'EraseData',
+        command: { intent: 'EraseData' },
+        model: null,
+      });
       return replies.confirmErasure();
+    }
     case 'number':
       return replies.strayNumber();
     case 'debtors': {
@@ -211,9 +254,23 @@ async function deterministicReply(
       return replies.recordsSummary(overview);
     }
     case 'resend':
-      return resendReply(tx, businessId, eventId);
+      return resendReply(tx, businessId, ctx.eventId);
     default:
       return null;
+  }
+}
+
+/**
+ * STOP/START, written where sends can see it. A phone that fails to
+ * normalise or belongs to no user is a quiet no-op — there is no consent
+ * row to keep for a person the system has never verified.
+ */
+async function recordConsent(db: Db, from: string, at: Date | null): Promise<void> {
+  try {
+    await identity.setOptOut(db, normalisePhone(from), at);
+  } catch {
+    // InvalidPhoneError only: upstream attribution already accepted this
+    // sender, so anything else here would have failed there first.
   }
 }
 
@@ -231,7 +288,9 @@ async function resendReply(tx: TenantDb, businessId: string, eventId: string): P
   await jobsRepo.enqueue(tx, {
     businessId,
     kind: 'document.deliver',
-    payload: { documentId: newest.id },
+    // requestedByMerchant: an explicit ask overrides a standing STOP for
+    // exactly this one delivery — they messaged us for this document.
+    payload: { documentId: newest.id, requestedByMerchant: true },
     singletonKey: `redeliver:${newest.id}:${eventId}`,
   });
   return replies.resending(newest.refNumber ?? 'your latest document');
@@ -301,6 +360,11 @@ async function confirmPendingDraft(tx: TenantDb, businessId: string): Promise<Re
   if (command.intent === 'RecordExpense') return confirmExpense(tx, businessId, draft.id, command);
   if (command.intent === 'RecordPurchase')
     return confirmPurchase(tx, businessId, draft.id, command);
+  if (command.intent === 'EraseData') {
+    // Erasure confirms ONLY with the exact phrase. A "yes" is "anything
+    // else" in the confirmation copy's terms, and anything else keeps the data.
+    return replies.erasureKept();
+  }
   if (command.intent !== 'RecordSale') {
     // Anything else is not actionable yet. The draft is claimed either way,
     // so an unconfirmable one cannot sit pending forever inviting another yes.

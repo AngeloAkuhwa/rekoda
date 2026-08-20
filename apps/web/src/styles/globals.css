@@ -982,11 +982,17 @@ button,
   border-bottom: 1px solid var(--rk-border);
 }
 /* Ledger idiom: dashed rules between rows, the same mark as the receipt's
-   tear line; amounts right-aligned in tabular figures. */
+   tear line; amounts right-aligned in tabular figures. Cells never wrap —
+   a document number split across three lines stops reading as a number.
+   Overflow is the scroll container's job, not the line-breaker's. */
 .rk-table td {
   padding: var(--rk-space-2) var(--rk-space-3) var(--rk-space-2) 0;
   border-bottom: 1px dashed var(--rk-border);
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.rk-table th {
+  white-space: nowrap;
 }
 .rk-table td:nth-child(2),
 .rk-table td:nth-child(3),
@@ -1307,4 +1313,14 @@ button,
    wordmark and the theme toggle do not shift between pages. */
 .rk-header-spacer {
   flex: 1;
+}
+
+/* "Coming soon" label above a plan's not-yet list — the pricing page's
+   honesty rule made visible. */
+.rk-plan-coming-label {
+  margin-top: var(--rk-space-3);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.7rem;
+  font-weight: 600;
 }
