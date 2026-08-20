@@ -58,6 +58,8 @@ export const invoices = pgTable(
     docHash: text('doc_hash'),
     sourceType: text('source_type').notNull(),
     sourceId: text('source_id'),
+    /** Where the sale happened (§27) — NOT how it reached Rekoda. Optional. */
+    saleSource: text('sale_source'),
     issuedAt: createdAt(),
   },
   /**

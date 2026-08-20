@@ -264,7 +264,9 @@ already excludes non-product amounts (§15); tenant scoping via RLS (§42.7);
    connection, missing customer email, provider outage mid-verify.
    Deferred to slice 3: receipt PDF rendering, owner WhatsApp notification
    on confirmed payment, chat/"send payment details" wiring, settlement
-   tracking from provider settlement events.
+   tracking from provider settlement events. When receipt rendering ships,
+   also render ONE demo receipt as an image for the landing page — the
+   "real documents" claim lands harder shown than said.
 3. Connection onboarding flow + dashboard Payments/Providers pages + admin
    exception views (+ the slice-2 deferrals above).
 4. (M4) `Rekoda.Billing` per §B.

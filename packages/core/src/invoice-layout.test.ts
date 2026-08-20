@@ -97,7 +97,7 @@ describe('VAT', () => {
     const withVat = { ...INVOICE, vatK: 1_000_000, vatRatePercent: 7.5 };
     const vat = layoutInvoice(withVat).find((b) => b.text.includes('VAT'))!;
     expect(vat.kind).toBe('memo');
-    expect(vat.text).toBe('Includes VAT @ 7.5% — ₦10,000');
+    expect(vat.text).toBe('Includes VAT @ 7.5%: ₦10,000');
   });
 
   it('states the amount without a rate when the rate is unknown', () => {

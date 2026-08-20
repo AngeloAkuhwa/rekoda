@@ -13,7 +13,7 @@ export default function SecurityPage() {
   return (
     <LegalPage
       title="Security"
-      intro="Your books are only useful if you can trust them. Here is what actually protects them — described precisely enough that you could check it."
+      intro="Your books are only useful if you can trust them. Here is what actually protects them, described precisely enough that you could check it."
       sections={[
         {
           id: 'isolation',
@@ -22,7 +22,7 @@ export default function SecurityPage() {
             <>
               <p>
                 Every record carries the business it belongs to, and the database itself refuses to
-                return rows from any other business — the rule lives in PostgreSQL, not only in our
+                return rows from any other business. The rule lives in PostgreSQL, not only in our
                 code. An application query that forgets to filter returns <strong>nothing</strong>,
                 rather than someone else&rsquo;s ledger.
               </p>
@@ -41,9 +41,9 @@ export default function SecurityPage() {
             <>
               <p>
                 There is no password to steal, because Rekoda has none. You sign in with a code sent
-                to your WhatsApp number. That code is never stored — only a keyed hash of it, using
-                a secret held outside the database, so a copy of the database alone will not reveal
-                a working code.
+                to your WhatsApp number. That code is never stored, only a keyed hash of it, using a
+                secret held outside the database, so a copy of the database alone will not reveal a
+                working code.
               </p>
               <p>
                 Session tokens are stored the same way. Payment provider keys are encrypted before
@@ -68,7 +68,7 @@ export default function SecurityPage() {
           heading: 'Records are added to, not rewritten',
           body: (
             <p>
-              The ledger, stock movements and the audit trail are append-only — the application is
+              The ledger, stock movements and the audit trail are append-only. The application is
               not permitted to update or delete them, and that permission is withheld by the
               database. A correction is recorded as a correction, so the history of a figure stays
               readable.

@@ -17,8 +17,8 @@ export default function PricingPage() {
       <section className="rk-hero rk-container">
         <h1>Priced against an accountant&rsquo;s afternoon</h1>
         <p className="rk-lede">
-          Every plan includes the full books. What changes is how your business activity reaches
-          Rekoda — you tell it, your shop tells it, or both.
+          Every plan includes the full books. What changes is how your business reaches Rekoda: you
+          tell it, your shop tells it, or both.
         </p>
       </section>
 
@@ -53,7 +53,7 @@ export default function PricingPage() {
                 <span className="rk-plan-per">/month</span>
               </p>
               <p className="rk-plan-annual">
-                or <Money kobo={plan.annualK} /> a year — two months free
+                or <Money kobo={plan.annualK} /> a year (two months free)
               </p>
 
               <Button href="/start" variant={plan.highlight ? 'primary' : 'secondary'}>
@@ -89,7 +89,7 @@ export default function PricingPage() {
         </p>
         <p style={{ marginTop: 'var(--rk-space-3)' }}>
           Rekoda never holds your money. Payments settle straight into your account, and your
-          subscription pays for the records, the reconciliation and the verification — not for
+          subscription pays for the records, the reconciliation and the verification. Never for
           moving your money.
         </p>
       </section>

@@ -25,12 +25,17 @@ const FAQS = [
   {
     question: 'Do I need a registered business or a CAC number to use Rekoda?',
     answer:
-      'No. Rekoda never asks for CAC registration or a TIN, and it never will. Most WhatsApp vendors have neither, and requiring them would exclude exactly the businesses Rekoda is built for.',
+      'No. Rekoda never asks for CAC registration or a TIN, and it never will. Most small vendors have neither, and requiring them would exclude exactly the businesses Rekoda is built for.',
+  },
+  {
+    question: 'Do I have to sell on WhatsApp to use Rekoda?',
+    answer:
+      'No. WhatsApp is where you talk to Rekoda, not where you have to sell. Record sales from your shop, Instagram, TikTok, phone orders, the market or anywhere else. Rekoda Integrate is the optional plan that also connects a WhatsApp catalogue shop.',
   },
   {
     question: 'Does Rekoda hold my money?',
     answer:
-      'No. Payments go to your own Paystack account and settle to your own bank account. Rekoda only reads what happened so it can build your records — it is never a step the money passes through.',
+      'No. Payments go to your own Paystack account and settle to your own bank account. Rekoda only reads what happened so it can build your records. It is never a step the money passes through.',
   },
   {
     question: 'How does Rekoda know a payment is real?',
@@ -40,7 +45,7 @@ const FAQS = [
   {
     question: 'Do I need to install anything?',
     answer:
-      'No. Rekoda works inside WhatsApp, on the phone you already use. There is no app to download and no password to remember — you sign in with a code sent to your number.',
+      'No. Rekoda works inside WhatsApp, on the phone you already use. There is no app to download and no password to remember. You sign in with a code sent to your number.',
   },
   {
     question: 'What does it cost?',
@@ -58,8 +63,9 @@ export default function HomePage() {
       <section className="rk-hero rk-container">
         <h1>You run the business. Rekoda builds the records.</h1>
         <p className="rk-lede">
-          Tell Rekoda what happened, or let your shop tell it. You get real invoices, real receipts,
-          and books that show whether the money actually arrived.
+          Sell anywhere: your shop, Instagram, TikTok, phone orders, the market. Tell Rekoda on
+          WhatsApp what happened, and it becomes real invoices, real receipts, and books that show
+          whether the money truly arrived.
         </p>
         <div className="rk-cta-row">
           <Button href="/start">Start free for 30 days</Button>
@@ -71,7 +77,7 @@ export default function HomePage() {
         <div className="rk-grid rk-phone">
           <div className="rk-bubble rk-bubble-out">Ada bought 3 wigs for 150k. She paid 100k.</div>
           <div className="rk-bubble rk-bubble-in">
-            Got it — record this?
+            Got it. Record this?
             <dl>
               <dt>Sale</dt>
               <dd>
@@ -87,8 +93,28 @@ export default function HomePage() {
               </dd>
             </dl>
           </div>
-          <div className="rk-bubble rk-bubble-in">
-            Done. Invoice and receipt created.
+          {/* The demo ends on the artefact itself: a real, numbered receipt
+              with the bookkeeper's double rule under the figure that matters.
+              "You get real documents" lands harder shown than said. */}
+          <div className="rk-receipt" aria-label="Example of the receipt Rekoda creates">
+            <p className="rk-receipt-head">
+              <span>Receipt</span>
+              <span>RCT-2026-000114</span>
+            </p>
+            <dl className="rk-receipt-rows">
+              <dt>3 × Wig</dt>
+              <dd>
+                <Money kobo={demo.totalK} />
+              </dd>
+              <dt>Paid</dt>
+              <dd>
+                <Money kobo={demo.amountPaidK} />
+              </dd>
+              <dt>Balance owed</dt>
+              <dd>
+                <Money kobo={demo.balanceDueK} />
+              </dd>
+            </dl>
             <p className="rk-bubble-badge">
               <MoneyBadge state="recorded" />
             </p>
@@ -99,8 +125,9 @@ export default function HomePage() {
       <section className="rk-section rk-container">
         <h2>Know when the money really landed</h2>
         <p>
-          A customer shows you an alert. Did the money actually arrive? Rekoda answers that — and
-          the answer you need most is the one that says <strong>no</strong>.
+          A customer shows you a transfer alert. Did the money actually arrive? Rekoda gives you a
+          straight answer, and the answer that saves your business is the one that says{' '}
+          <strong>no</strong>.
         </p>
         <div className="rk-grid rk-grid-3">
           <article className="rk-card rk-card-badged">
@@ -111,15 +138,15 @@ export default function HomePage() {
           <article className="rk-card rk-card-badged">
             <h3>Recorded</h3>
             <p>
-              You told Rekoda about it — a cash sale, or a transfer we do not watch. Perfectly
-              normal, and kept in your books.
+              You told Rekoda about it: a cash sale, or a transfer we do not watch. Perfectly
+              normal, and kept safely in your books.
             </p>
             <MoneyBadge state="recorded" />
           </article>
           <article className="rk-card rk-card-badged">
             <h3>Not seen yet</h3>
             <p>
-              We have not seen this money. Usually it is still on its way — but do not release goods
+              We have not seen this money. Usually it is still on its way. Just do not release goods
               on a screenshot.
             </p>
             <MoneyBadge state="notSeen" />

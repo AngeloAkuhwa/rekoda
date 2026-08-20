@@ -28,8 +28,8 @@ const reply = (text: string): Reply => ({ text });
 
 export function greeting(): Reply {
   return reply(
-    'Hello 👋 I keep your books. Tell me a sale as you would tell a person — ' +
-      '"Ada bought 3 wigs for 150k, paid 100k" — and I will record it.\n\n' +
+    'Hello 👋 I keep your books. Tell me a sale the way you would tell a person, ' +
+      'like "Ada bought 3 wigs for 150k, paid 100k", and I will record it.\n\n' +
       'Type *help* to see everything I can do.',
   );
 }
@@ -37,18 +37,18 @@ export function greeting(): Reply {
 export function help(): Reply {
   return reply(
     'Here is what I can do:\n\n' +
-      '• *Record a sale* — "sold 2 bags to Ada for 40k"\n' +
-      '• *Record a payment* — "Ada paid 20k"\n' +
-      '• *Record an expense* — "fuel 12k"\n' +
-      '• *who owes me* — your debtors\n' +
-      '• *records* — your transactions\n\n' +
+      '• *Record a sale*: "sold 2 bags to Ada for 40k"\n' +
+      '• *Record a payment*: "Ada paid 20k"\n' +
+      '• *Record an expense*: "fuel 12k"\n' +
+      '• *who owes me* shows your debtors\n' +
+      '• *records* shows your transactions\n\n' +
       'Reply *STOP* at any time to stop messages.',
   );
 }
 
 export function optedOut(): Reply {
   return reply(
-    'Done — I will not message you again. Your records are untouched and still ' +
+    'Done. I will not message you again. Your records are untouched and still ' +
       'yours.\n\nReply *START* whenever you want me back.',
   );
 }
@@ -84,8 +84,8 @@ export function confirmErasure(): Reply {
  */
 export function strayNumber(): Reply {
   return reply(
-    'I am not sure what that number is for. Tell me the whole thing — ' +
-      '"sold 3 wigs for 150k" — and I will record it.',
+    'I am not sure what that number is for. Tell me the whole thing, like ' +
+      '"sold 3 wigs for 150k", and I will record it.',
   );
 }
 
@@ -102,7 +102,7 @@ export function quotaReachedForBusiness(): Reply {
   return reply(
     'You have reached today’s limit for messages I need to think about. ' +
       'It resets at midnight.\n\n' +
-      'Short commands still work — try *who owes me* or *records*.',
+      'Short commands still work. Try *who owes me* or *records*.',
   );
 }
 
@@ -110,7 +110,7 @@ export function quotaReachedForBusiness(): Reply {
 export function busyRightNow(): Reply {
   return reply(
     'I am very busy right now and could not read that properly. Please send it ' +
-      'again in a few minutes — nothing was lost.',
+      'again in a few minutes. Nothing was lost.',
   );
 }
 
@@ -122,8 +122,8 @@ export function busyRightNow(): Reply {
  */
 export function couldNotRead(): Reply {
   return reply(
-    'I could not turn that into a record. Try it as one line with the amount — ' +
-      '"sold 3 wigs to Ada for 150k, paid 100k".',
+    'I could not turn that into a record. Try it as one line with the amount, ' +
+      'like "sold 3 wigs to Ada for 150k, paid 100k".',
   );
 }
 
@@ -163,7 +163,7 @@ export function nothingToConfirm(): Reply {
 
 /** CG5 — the correction landed and replaced what came before. */
 export function correctionTaken(): Reply {
-  return reply('Got it — I have replaced the earlier version.');
+  return reply('Got it. I have replaced the earlier version.');
 }
 
 /**
@@ -174,7 +174,7 @@ export function correctionTaken(): Reply {
  * is the question they will be asked next.
  */
 export function issued(documentNumber: string, totalK: number, balanceDueK: number): Reply {
-  const lines = [`Saved ✅ ${documentNumber} — ${formatNaira(totalK)}.`];
+  const lines = [`Saved ✅ ${documentNumber} for ${formatNaira(totalK)}.`];
   if (balanceDueK > 0) lines.push(`${formatNaira(balanceDueK)} still owed.`);
   return reply(lines.join('\n'));
 }
@@ -195,13 +195,13 @@ function formatNaira(kobo: number): string {
  * a figure is a second place for that figure to be wrong.
  */
 export function documentSent(reference: string): Reply {
-  return reply(`${reference} — here is your copy. Forward it to your customer.`);
+  return reply(`${reference} is ready. Here is your copy. Forward it to your customer.`);
 }
 
 /** A capability the plan names but the product does not have yet. */
 export function notYet(what: string): Reply {
   return reply(
-    `${what} is not ready yet — it is coming. Right now I can record sales, ` +
+    `${what} is not ready yet, but it is coming. Right now I can record sales, ` +
       'payments and expenses.',
   );
 }
@@ -215,7 +215,7 @@ export function notYet(what: string): Reply {
 export function noAccount(): Reply {
   return reply(
     'Hello 👋 I keep the books for businesses on Rekoda, and I do not have an ' +
-      'account for this number yet.\n\nVisit rekoda.app to set one up — it takes a minute.',
+      'account for this number yet.\n\nVisit rekoda.app to set one up. It takes a minute.',
   );
 }
 

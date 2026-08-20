@@ -25,7 +25,7 @@ export const softwareApplicationSchema = {
   applicationCategory: 'BusinessApplication',
   operatingSystem: 'Web, WhatsApp',
   description:
-    'A WhatsApp-first financial assistant for Nigerian small businesses. Turns messages and voice notes into invoices, receipts and books you can trust.',
+    'Accounting and business operations through WhatsApp for Nigerian merchants selling anywhere. Turns messages and voice notes into invoices, receipts and books you can trust.',
   url: SITE_URL,
   areaServed: { '@type': 'Country', name: 'Nigeria' },
   offers: {

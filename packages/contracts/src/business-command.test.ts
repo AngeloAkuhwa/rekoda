@@ -17,6 +17,26 @@ describe('StructuredBusinessCommand — the AI border checkpoint', () => {
     expect(r.ok).toBe(true);
   });
 
+  it('carries where the sale happened ONLY when the merchant said so (§27)', () => {
+    const base = {
+      intent: 'RecordSale',
+      customer: { kind: 'none' },
+      items: [{ name: 'Wig', quantity: 2, unitPrice: 60000 }],
+      statedTotal: null,
+      reportedPayment: null,
+      paymentMethod: 'transfer',
+      discount: null,
+      deliveryFee: null,
+      dueDescription: null,
+    };
+    // Named channel: accepted verbatim from the fixed list.
+    expect(parseBusinessCommand({ ...base, saleSource: 'instagram' }).ok).toBe(true);
+    // Nothing said: the field is simply absent, and that is a valid sale.
+    expect(parseBusinessCommand(base).ok).toBe(true);
+    // An invented channel is rejected at the border, not stored as data.
+    expect(parseBusinessCommand({ ...base, saleSource: 'darkweb' }).ok).toBe(false);
+  });
+
   it('rejects hostile amounts — the ₦10bn injection ceiling holds', () => {
     const r = parseBusinessCommand({
       intent: 'RecordSale',

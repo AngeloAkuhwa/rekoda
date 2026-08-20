@@ -11,11 +11,11 @@ export const metadata: Metadata = {
   // page and splits the ranking of the one it should have.
   alternates: { canonical: '/' },
   title: {
-    default: 'Rekoda — You run the business. Rekoda builds the records.',
+    default: 'Rekoda | You run the business. Rekoda builds the records.',
     template: '%s · Rekoda',
   },
   description:
-    'Rekoda turns what happens in your business into real financial records — invoices, receipts, and books you can trust. Works on WhatsApp.',
+    'Sell anywhere. Tell Rekoda on WhatsApp what happened, and every sale becomes real invoices, real receipts, and books that show whether the money truly arrived.',
   openGraph: {
     type: 'website',
     locale: 'en_NG',

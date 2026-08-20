@@ -89,14 +89,14 @@ function mismatchQuestion(sale: SaleLike, money: MoneyBlock): string {
     return (
       `These do not add up:\n${items}\n` +
       `That comes to ${computed}, but you said ${stated}.\n\n` +
-      `Is ${gap} a discount? Reply *yes* — or tell me the right total.`
+      `Is ${gap} a discount? Reply *yes*, or tell me the right total.`
     );
   }
 
   const gap = formatKobo(Math.abs(money.totalK - money.computedTotalK));
   return (
     `These do not add up:\n${items}\n` +
-    `That comes to ${computed}, but you said ${stated} — ${gap} more.\n\n` +
+    `That comes to ${computed}, but you said ${stated}, which is ${gap} more.\n\n` +
     `Did I get a price wrong? Tell me the right one.`
   );
 }
@@ -134,7 +134,7 @@ function previewOf(sale: SaleLike, money: MoneyBlock): string {
    * and the merchant is the one who decides which.
    */
   if (money.overpaymentK > 0) {
-    lines.push(`Paid over by ${formatKobo(money.overpaymentK)} — I will note it as a credit.`);
+    lines.push(`Paid over by ${formatKobo(money.overpaymentK)}. I will note it as a credit.`);
   }
 
   lines.push('', 'Reply *yes* to save it, or tell me what to change.');

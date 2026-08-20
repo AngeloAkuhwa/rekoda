@@ -44,8 +44,8 @@ export default function PrivacyPage() {
                   CAC registration or a TIN.
                 </li>
                 <li>
-                  <strong>What you tell Rekoda</strong> — messages and voice notes about sales,
-                  expenses, stock and customers — and the records built from them.
+                  <strong>What you tell Rekoda</strong>: messages and voice notes about sales,
+                  expenses, stock and customers, plus the records built from them.
                 </li>
                 <li>
                   <strong>Your customers&rsquo; details</strong>, when you give them to us so an
@@ -68,7 +68,7 @@ export default function PrivacyPage() {
           heading: 'Why we are allowed to hold it',
           body: (
             <p>
-              Mostly because you asked us to keep your books — we cannot provide the service without
+              Mostly because you asked us to keep your books; we cannot provide the service without
               the records it is made of. Some of it we must keep by law: Nigerian tax and company
               law requires financial records to survive for {FINANCIAL_RETENTION_YEARS} years, and
               that obligation outlives your account.
@@ -86,7 +86,7 @@ export default function PrivacyPage() {
                   WhatsApp conversation you have.
                 </li>
                 <li>
-                  <strong>Your payment provider</strong> — your own account, which you control.
+                  <strong>Your payment provider</strong>: your own account, which you control.
                 </li>
                 <li>
                   <strong>An AI provider</strong> sees your message text with customer identities
@@ -106,8 +106,8 @@ export default function PrivacyPage() {
           body: (
             <>
               <p>
-                Conversations and drafts are kept while your account is open. Financial records —
-                invoices, receipts, ledger entries — are kept for {FINANCIAL_RETENTION_YEARS} years
+                Conversations and drafts are kept while your account is open. Financial records
+                (invoices, receipts, ledger entries) are kept for {FINANCIAL_RETENTION_YEARS} years
                 after the transaction, because the law requires it.
               </p>
               <p>
@@ -124,10 +124,10 @@ export default function PrivacyPage() {
           heading: 'Your rights',
           body: (
             <p>
-              You can ask for a copy of your data, ask us to correct it, or ask us to delete it —
-              see <a href="/data-deletion">Delete my data</a>. You can withdraw consent at any time
-              by replying <strong>STOP</strong> on WhatsApp, which ends the messages without
-              destroying the books you may still need.
+              You can ask for a copy of your data, ask us to correct it, or ask us to delete it, see{' '}
+              <a href="/data-deletion">Delete my data</a>. You can withdraw consent at any time by
+              replying <strong>STOP</strong> on WhatsApp, which ends the messages without destroying
+              the books you may still need.
             </p>
           ),
         },

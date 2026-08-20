@@ -25,7 +25,8 @@ export const PLANS: Plan[] = [
   {
     id: 'chat',
     name: 'Rekoda Chat',
-    tagline: 'Talk to Rekoda. Your records build themselves.',
+    /** §31: WhatsApp is the interface, never the sales-channel restriction. */
+    tagline: 'Sell anywhere. Tell Rekoda what happened.',
     monthlyK: m(9_900),
     annualK: m(99_000),
     cta: 'Start with Chat',
@@ -36,7 +37,7 @@ export const PLANS: Plan[] = [
       'Invoices, receipts and customer balances',
       'Sales, expenses, purchases and suppliers',
       'Products and inventory',
-      'Full books — P&L, balance sheet, cash flow',
+      'Full books: profit and loss, balance sheet, cash flow',
       'Dashboard, plus 1 accountant',
     ],
     excludes: ['No online shop', 'Payments are recorded, not automatically verified'],
@@ -44,14 +45,14 @@ export const PLANS: Plan[] = [
   {
     id: 'integrate',
     name: 'Rekoda Integrate',
-    tagline: 'Your shop takes the order. Rekoda handles the money trail.',
+    tagline: 'Connect your WhatsApp shop. Rekoda handles the money trail.',
     monthlyK: m(19_900),
     annualK: m(199_000),
     highlight: true,
     cta: 'Connect my shop',
     includes: [
       'Your own shop link, shared on WhatsApp',
-      'Orders captured automatically — no re-typing',
+      'Orders captured automatically, nothing retyped',
       'A payment account created for every order',
       'Payments verified the moment they land',
       'Automatic invoices and receipts',
@@ -84,7 +85,7 @@ export const TRIAL = {
   name: 'Free trial',
   tagline: '30 days. No card needed.',
   includes: [
-    '25 documents — enough to see it working',
+    '25 documents, enough to see it working',
     '50 messages, 10 voice minutes',
     '25 recorded transactions',
     'Dashboard, customers and products',

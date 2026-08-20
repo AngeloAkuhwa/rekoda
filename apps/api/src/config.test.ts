@@ -71,3 +71,32 @@ describe('the default model follows the provider', () => {
     expect(config.aiModelDefault).toBe('o4-mini');
   });
 });
+
+describe('the role ensemble (docs/ai-model-strategy.md)', () => {
+  it('gives every role its documented default', () => {
+    const config = loadConfig({ ...BASE, ANTHROPIC_API_KEY: 'k' });
+    // Cheap where nuance does not pay, capable where it does, and OpenAI for
+    // the one role Claude structurally cannot serve: audio transcription.
+    expect(config.aiModelClassifier).toMatch(/haiku/);
+    expect(config.aiModelVision).toMatch(/claude/);
+    expect(config.aiModelEscalation).toMatch(/opus/);
+    // ADR 0008: the transcriber defaults to the SELF-HOSTED AfriSpeech-tuned
+    // sidecar, never a hosted API — "audio never leaves Rekoda" is a trust
+    // claim, and this assertion is what keeps a convenience swap from
+    // sneaking in as a default.
+    expect(config.aiModelTranscriber).toMatch(/afrispeech/);
+    // Dual-extraction threshold is configuration, defaulting to ₦500,000.
+    expect(config.aiDualExtractThresholdK).toBe(50_000_000);
+  });
+
+  it('lets any role be re-pointed by env without touching code', () => {
+    const config = loadConfig({
+      ...BASE,
+      ANTHROPIC_API_KEY: 'k',
+      AI_MODEL_CLASSIFIER: 'claude-sonnet-latest',
+      AI_MODEL_TRANSCRIBER: 'whisper-1',
+    });
+    expect(config.aiModelClassifier).toBe('claude-sonnet-latest');
+    expect(config.aiModelTranscriber).toBe('whisper-1');
+  });
+});

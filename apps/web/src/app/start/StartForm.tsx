@@ -21,7 +21,7 @@ export function StartForm() {
         <Field
           id="phone"
           label="WhatsApp number"
-          hint="Nigerian mobile — 0803 123 4567"
+          hint="Nigerian mobile, like 0803 123 4567"
           error={state.error}
         >
           <input
