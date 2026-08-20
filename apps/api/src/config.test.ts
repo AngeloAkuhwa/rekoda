@@ -71,3 +71,26 @@ describe('the default model follows the provider', () => {
     expect(config.aiModelDefault).toBe('o4-mini');
   });
 });
+
+describe('the role ensemble (docs/ai-model-strategy.md)', () => {
+  it('gives every role its documented default', () => {
+    const config = loadConfig({ ...BASE, ANTHROPIC_API_KEY: 'k' });
+    // Cheap where nuance does not pay, capable where it does, and OpenAI for
+    // the one role Claude structurally cannot serve: audio transcription.
+    expect(config.aiModelClassifier).toMatch(/haiku/);
+    expect(config.aiModelVision).toMatch(/claude/);
+    expect(config.aiModelEscalation).toMatch(/opus/);
+    expect(config.aiModelTranscriber).toMatch(/transcribe|whisper/);
+  });
+
+  it('lets any role be re-pointed by env without touching code', () => {
+    const config = loadConfig({
+      ...BASE,
+      ANTHROPIC_API_KEY: 'k',
+      AI_MODEL_CLASSIFIER: 'claude-sonnet-latest',
+      AI_MODEL_TRANSCRIBER: 'whisper-1',
+    });
+    expect(config.aiModelClassifier).toBe('claude-sonnet-latest');
+    expect(config.aiModelTranscriber).toBe('whisper-1');
+  });
+});

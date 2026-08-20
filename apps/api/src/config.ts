@@ -50,6 +50,17 @@ export interface ApiConfig {
   anthropicApiKey: string;
   openaiApiKey: string;
   aiModelDefault: string;
+  /**
+   * Per-role model selection (docs/ai-model-strategy.md). The interpreter
+   * uses aiModelDefault (unchanged); these name the rest of the ensemble.
+   * `classifier` and `vision` land with the document slice, `transcriber`
+   * with the voice slice, `escalation` behind a confidence gate — declared
+   * now so no call site can ever hard-code a model name.
+   */
+  aiModelClassifier: string;
+  aiModelVision: string;
+  aiModelEscalation: string;
+  aiModelTranscriber: string;
   /** Daily ceilings. The thing on the other side of these is a bill. */
   aiCallsPerBusinessPerDay: number;
   aiCallsGlobalPerDay: number;
@@ -105,6 +116,21 @@ const DEFAULT_MODEL: Record<'anthropic' | 'openai', string> = {
   anthropic: 'claude-sonnet-latest',
   openai: 'gpt-4.1',
 };
+
+/**
+ * Role defaults (docs/ai-model-strategy.md §1). Every AI call belongs to a
+ * ROLE, and each role has its own model — nothing anywhere says "call
+ * Sonnet", it says "call the classifier". Two roles are provider-fixed by
+ * capability, not preference: transcription is OpenAI because the Claude API
+ * accepts no audio, and the reasoning roles default to the Claude family
+ * because vision + native PDF + strict tools is where extraction lives.
+ */
+const ROLE_DEFAULTS = {
+  classifier: 'claude-haiku-4-5',
+  vision: 'claude-sonnet-latest',
+  escalation: 'claude-opus-5',
+  transcriber: 'gpt-4o-transcribe',
+} as const;
 
 function required(env: NodeJS.ProcessEnv, key: string, minLength = 0): string {
   const value = env[key];
@@ -215,6 +241,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
      * gets a sensible default of its own.
      */
     aiModelDefault: env['AI_MODEL_DEFAULT'] ?? DEFAULT_MODEL[aiProvider],
+    aiModelClassifier: env['AI_MODEL_CLASSIFIER'] ?? ROLE_DEFAULTS.classifier,
+    aiModelVision: env['AI_MODEL_VISION'] ?? ROLE_DEFAULTS.vision,
+    aiModelEscalation: env['AI_MODEL_ESCALATION'] ?? ROLE_DEFAULTS.escalation,
+    aiModelTranscriber: env['AI_MODEL_TRANSCRIBER'] ?? ROLE_DEFAULTS.transcriber,
     /**
      * Defaults are a ceiling, not a target. At ~₦8 a call (pricing-model.md),
      * 60 per merchant is about ₦480 a day against a subscription, and 5,000
