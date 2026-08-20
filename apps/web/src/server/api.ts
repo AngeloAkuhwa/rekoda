@@ -8,6 +8,7 @@ import {
   reportsCashflowResponse,
   reportsDebtorsResponse,
   reportsOverviewResponse,
+  reportsStatementsResponse,
   requestOtpResponse,
   sessionResponse,
   setupStateResponse,
@@ -21,6 +22,7 @@ import {
   type ReportsCashflowResponse,
   type ReportsDebtorsResponse,
   type ReportsOverviewResponse,
+  type ReportsStatementsResponse,
   type SubmitConnectionRequest,
   type RequestOtpResponse,
   type SessionResponse,
@@ -282,4 +284,18 @@ export async function usageMeter(sessionToken: string): Promise<UsageMeterRespon
     expect: [200],
   });
   return usageMeterResponse.parse(json);
+}
+
+export async function reportsStatements(
+  sessionToken: string,
+  period?: string,
+): Promise<ReportsStatementsResponse> {
+  const query = period ? `?period=${encodeURIComponent(period)}` : '';
+  const { json } = await call({
+    method: 'GET',
+    path: `/v1/reports/statements${query}`,
+    headers: { authorization: `Bearer ${sessionToken}` },
+    expect: [200],
+  });
+  return reportsStatementsResponse.parse(json);
 }

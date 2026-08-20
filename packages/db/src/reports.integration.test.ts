@@ -205,3 +205,40 @@ describe('recent activity', () => {
     expect(JSON.stringify(items)).not.toContain('CUSTOMER_7K2');
   });
 });
+
+describe('per-account sums (the statements query)', () => {
+  it('splits period from cumulative, and both agree with the seeded month', async () => {
+    const businessId = await seedBusiness();
+    await seedTradingMonth(businessId);
+
+    const period = usagePeriod(new Date());
+    const rows = await withBusiness(db, businessId, (tx) =>
+      reportsRepo.accountSumsFor(tx, businessId, period),
+    );
+    const byAccount = Object.fromEntries(rows.map((r) => [r.account, r]));
+
+    // Cash: ₦40,000 in at the counter; ₦12,000 fuel + ₦20,000 stock out.
+    expect(byAccount['CASH']).toMatchObject({
+      periodDebitK: 4_000_000,
+      periodCreditK: 3_200_000,
+    });
+    // Everything seeded this month: period equals cumulative for every account.
+    for (const row of rows) {
+      expect(row.cumulativeDebitK).toBe(row.periodDebitK);
+      expect(row.cumulativeCreditK).toBe(row.periodCreditK);
+    }
+    // Double entry survives aggregation.
+    const debits = rows.reduce((n, r) => n + r.cumulativeDebitK, 0);
+    const credits = rows.reduce((n, r) => n + r.cumulativeCreditK, 0);
+    expect(debits).toBe(credits);
+  });
+
+  it('a period before any entry returns nothing at all', async () => {
+    const businessId = await seedBusiness();
+    await seedTradingMonth(businessId);
+    const rows = await withBusiness(db, businessId, (tx) =>
+      reportsRepo.accountSumsFor(tx, businessId, '2020-01'),
+    );
+    expect(rows).toEqual([]);
+  });
+});

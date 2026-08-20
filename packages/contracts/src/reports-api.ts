@@ -79,3 +79,53 @@ export const reportsActivityResponse = z.object({
     .max(50),
 });
 export type ReportsActivityResponse = z.infer<typeof reportsActivityResponse>;
+
+/* ── the four statements (ADR 0015) ─────────────────────────────────────── */
+
+const statementLine = z.object({
+  account: z.string(),
+  code: z.string(),
+  name: z.string(),
+  amountK: z.number().int().finite(),
+});
+
+export const reportsStatementsResponse = z.object({
+  period: z.string().regex(/^\d{4}-\d{2}$/),
+  trialBalance: z.object({
+    rows: z.array(
+      z.object({
+        account: z.string(),
+        code: z.string(),
+        name: z.string(),
+        debitK: kobo,
+        creditK: kobo,
+      }),
+    ),
+    totalDebitK: kobo,
+    totalCreditK: kobo,
+    balanced: z.boolean(),
+  }),
+  profitAndLoss: z.object({
+    income: z.array(statementLine),
+    expenses: z.array(statementLine),
+    totalIncomeK: z.number().int().finite(),
+    totalExpensesK: z.number().int().finite(),
+    netProfitK: z.number().int().finite(),
+  }),
+  balanceSheet: z.object({
+    assets: z.array(statementLine),
+    liabilities: z.array(statementLine),
+    equity: z.array(statementLine),
+    totalAssetsK: z.number().int().finite(),
+    totalLiabilitiesK: z.number().int().finite(),
+    totalEquityK: z.number().int().finite(),
+    balanced: z.boolean(),
+  }),
+  cashflow: z.object({
+    openingK: z.number().int().finite(),
+    inK: kobo,
+    outK: kobo,
+    closingK: z.number().int().finite(),
+  }),
+});
+export type ReportsStatementsResponse = z.infer<typeof reportsStatementsResponse>;

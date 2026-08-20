@@ -1,6 +1,5 @@
 import type { Metadata } from 'next';
 import { allowanceFor } from '@rekoda/core';
-import { Button } from '@/components/ui/Button';
 import { Money } from '@/components/ui/Money';
 import { MoneyBadge } from '@/components/ui/MoneyBadge';
 import { requireSessionWithToken } from '@/server/guards';
@@ -11,6 +10,7 @@ import {
   reportsOverview,
   usageMeter,
 } from '@/server/api';
+import { AppNav } from './AppNav';
 import { CashflowChart } from './CashflowChart';
 import { SignOutButton } from './SignOutButton';
 
@@ -66,6 +66,8 @@ export default async function DashboardPage() {
         </div>
         <SignOutButton />
       </header>
+
+      <AppNav active="overview" />
 
       {overview.exceptionsOpen > 0 ? (
         <a href="/app/payments" className="rk-attention-strip">
@@ -199,11 +201,6 @@ export default async function DashboardPage() {
             Free commands like *who owes me* and *records* never count. Need more?{' '}
             <a href="/pricing">See plans</a>.
           </p>
-          <div className="rk-cta-row">
-            <Button href="/app/payments" variant="secondary">
-              Payments
-            </Button>
-          </div>
         </div>
       </div>
     </section>

@@ -710,6 +710,110 @@ button,
   text-decoration: underline;
 }
 
+/* Section tabs. The active tab carries the ledger's accent top rule — the
+   same mark as the stat tiles, so "you are here" and "this is a ledger cell"
+   read as one language. */
+.rk-appnav {
+  display: flex;
+  gap: var(--rk-space-1);
+  border-bottom: 1px solid var(--rk-border);
+}
+.rk-appnav a {
+  padding: var(--rk-space-2) var(--rk-space-4);
+  text-decoration: none;
+  color: var(--rk-text-muted);
+  font-weight: 500;
+  font-size: var(--rk-text-sm);
+  border-top: 3px solid transparent;
+  border-radius: var(--rk-radius-sm) var(--rk-radius-sm) 0 0;
+}
+.rk-appnav a:hover {
+  color: var(--rk-text);
+}
+.rk-appnav a.rk-appnav-active {
+  color: var(--rk-text);
+  background: var(--rk-surface);
+  border-top-color: var(--rk-accent);
+  border-left: 1px solid var(--rk-border);
+  border-right: 1px solid var(--rk-border);
+  margin-bottom: -1px;
+}
+
+/* Period switcher on the reports page. */
+.rk-period-row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--rk-space-4);
+  flex-wrap: wrap;
+}
+.rk-period-current {
+  font-weight: 600;
+  font-size: var(--rk-text-lg);
+}
+.rk-period-link {
+  font-size: var(--rk-text-sm);
+  color: var(--rk-text-muted);
+}
+.rk-period-now {
+  text-decoration: none;
+}
+
+/* Statement tables: the bookkeeper's rules. A single rule above a section
+   total, a double rule under a grand total — the same marks as the receipt
+   and the section headings. Money right-aligned, tabular. */
+.rk-statement {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--rk-text-sm);
+}
+.rk-statement td,
+.rk-statement th {
+  padding: var(--rk-space-2) 0;
+  text-align: left;
+  vertical-align: baseline;
+}
+.rk-statement td:last-child,
+.rk-statement th:last-child,
+.rk-tbal td:nth-child(n + 2),
+.rk-tbal th:nth-child(n + 2) {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  padding-left: var(--rk-space-3);
+}
+.rk-statement-section th {
+  padding-top: var(--rk-space-4);
+  font-size: var(--rk-text-xs);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--rk-text-muted);
+  font-weight: 600;
+}
+.rk-statement-total td {
+  border-top: 1px solid var(--rk-text);
+  font-weight: 600;
+}
+.rk-statement-grand td {
+  border-top: 1px solid var(--rk-text);
+  border-bottom: 4px double var(--rk-text);
+  font-weight: 700;
+}
+.rk-tbal thead th {
+  font-weight: 500;
+  color: var(--rk-text-muted);
+  border-bottom: 1px solid var(--rk-border);
+}
+
+.rk-balanced {
+  color: var(--rk-verified);
+  font-size: var(--rk-text-sm);
+  font-weight: 500;
+}
+.rk-unbalanced {
+  color: var(--rk-danger);
+  font-weight: 600;
+}
+
 /* ── the dashboard's working area ────────────────────────────────────── */
 
 .rk-dash-grid {
