@@ -79,6 +79,15 @@ export interface ApiConfig {
    * site — the threshold is a commercial risk decision. Default ₦500,000.
    */
   aiDualExtractThresholdK: number;
+  /**
+   * Daily ceiling on AI document-understanding calls per business (uploaded
+   * receipts, invoices, statements — rekoda-chat-v1 §4–7). This cost class
+   * did not exist when the pricing model was researched (16 Aug) and has no
+   * plan unit yet; until it is priced, this ceiling is what stops a heavy
+   * uploader from quietly eating a plan's margin. Same shape as the message
+   * ceilings: the merchant is told plainly, never cut off mid-transaction.
+   */
+  aiDocExtractionsPerBusinessPerDay: number;
   /** Recorded on every usage row, so a past cost is never re-derived. */
   planningFxNairaPerUsd: number;
   /**
@@ -265,6 +274,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     aiCallsGlobalPerDay: Number(env['AI_DAILY_CALLS_GLOBAL'] ?? 5_000),
     voiceNoteMaxDurationSeconds: Number(env['VOICE_NOTE_MAX_DURATION_SECONDS'] ?? 120),
     aiDualExtractThresholdK: Number(env['AI_DUAL_EXTRACT_THRESHOLD_K'] ?? 50_000_000),
+    aiDocExtractionsPerBusinessPerDay: Number(env['AI_DOC_EXTRACTIONS_PER_BUSINESS'] ?? 25),
     planningFxNairaPerUsd: Number(env['PLANNING_FX_NGN_PER_USD'] ?? 1_450),
     paystackSecretKey: env['PAYSTACK_SECRET_KEY'] ?? '',
     paystackBaseUrl: env['PAYSTACK_BASE_URL'] ?? 'https://api.paystack.co',

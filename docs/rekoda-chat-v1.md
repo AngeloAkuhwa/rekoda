@@ -200,7 +200,10 @@ interpreter may fill only when the merchant names a channel);
 
 **Still ahead (build order, each slice a reviewed PR)**: voice notes
 (transcription pipeline + multi-note composition); document upload + photo
-capture with instruction handling; quotations and purchase orders; statement
-import and the matching conversation; report generation from chat; magic-link
-dashboard access; correction/void/refund conversations. Each lands on the
-existing ingress → gateway → understanding → engine spine.
+capture with instruction handling — **gated on pricing the new
+document-understanding cost class first (plan unit + daily ceiling + usage
+row; see docs/pricing-model.md "Known gap")**; quotations and purchase
+orders; statement import and the matching conversation; report generation
+from chat; magic-link dashboard access; correction/void/refund
+conversations. Each lands on the existing ingress → gateway → understanding
+→ engine spine.

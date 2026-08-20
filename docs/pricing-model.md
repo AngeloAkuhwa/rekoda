@@ -194,6 +194,25 @@ Tracked as `usage_events`: `businessId · provider · usageType · quantity ·
 providerCostKobo · currency · billingPeriod`. **Six weeks after launch,
 telemetry replaces every assumption in this document.**
 
+## Known gap: document understanding is a new, unpriced cost class
+
+> **Flagged 20 Aug 2026.** The Rekoda Chat V1 directive (docs/rekoda-chat-v1.md
+> §4–7) adds uploaded-document understanding — receipt photos, supplier
+> invoices, proofs of payment, bank statements — which did NOT exist when this
+> cost stack was researched on 16 Aug. Unlike generated documents (which cost
+> ~nothing), every upload is a vision-model call (~₦10–15 per photo at
+> planning FX) and a statement can run ₦300–800 even at batch pricing. A
+> merchant uploading 200 receipts a month is ₦2–3k of COGS no plan currently
+> charges for.
+>
+> **Rule: the document slice must not ship before this class has (a) a plan
+> unit ("documents understood", distinct from documents generated), (b) a
+> per-business daily ceiling (config `AI_DOC_EXTRACTIONS_PER_BUSINESS`,
+> declared 20 Aug, default 25/day), and (c) a usage row per extraction so the
+> first-50-merchants telemetry checkpoint can price it from data.** Soft-limit
+> rules apply as everywhere: the merchant is told plainly, never cut off
+> mid-transaction.
+
 ## Standing review triggers
 
 * 1 September 2026 — Meta publishes post-October service-message rates →
