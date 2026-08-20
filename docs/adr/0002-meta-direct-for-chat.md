@@ -5,7 +5,7 @@
 
 > **Superseded 2026-08-19.** The channel decision (Meta-direct for Chat,
 > Twilio for Integrate WABAs) still stands and is unchanged. What this ADR
-> got wrong is the *economics*: it assumed free-form service replies stay
+> got wrong is the _economics_: it assumed free-form service replies stay
 > free, and built a ~₦2,900/merchant/month saving and a 75%+ margin on that
 > assumption. Meta begins charging for service messages on 1 October 2026.
 > Read [ADR 0011](0011-messaging-economics-revised.md) for the corrected
@@ -27,11 +27,11 @@ chargeable **1 October 2026** (rates publish ~1 September 2026).
 
 ## Decision
 
-* **Rekoda Chat: Meta Cloud API direct.** No Twilio in the Chat path.
-* **Rekoda Integrate: Twilio Tech Provider programme** for per-merchant
+- **Rekoda Chat: Meta Cloud API direct.** No Twilio in the Chat path.
+- **Rekoda Integrate: Twilio Tech Provider programme** for per-merchant
   WABA onboarding, where Twilio's tooling genuinely reduces operational
   surface. Meta-direct embedded signup remains an option to revisit.
-* The channel layer stays **provider-agnostic** (one interface; Meta,
+- The channel layer stays **provider-agnostic** (one interface; Meta,
   Twilio and the local simulator as implementations) so this decision is
   configuration, not architecture.
 

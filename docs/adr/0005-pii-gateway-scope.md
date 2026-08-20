@@ -36,9 +36,9 @@ Token types are distinct, non-assignable TypeScript types:
 
 ## Consequences
 
-The public claim is exactly what the system does: *identities tokenised,
+The public claim is exactly what the system does: _identities tokenised,
 audio never leaves our infrastructure, AI providers receive minimised
-pseudonymised context under no-training terms* — never "AI never sees any
+pseudonymised context under no-training terms_ — never "AI never sees any
 name ever." Layer 1 improves automatically as a business's customer list
 grows. The vault is the single highest-sensitivity store in the system:
 encrypted at rest, access-audited, and excluded from ordinary backups'

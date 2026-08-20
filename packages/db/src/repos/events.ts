@@ -220,3 +220,62 @@ export async function eventCount(q: Queryable): Promise<number> {
   const rows = await q.execute<{ n: number }>(sql`SELECT count(*)::int AS n FROM external_events`);
   return [...rows][0]?.n ?? 0;
 }
+
+/**
+ * Claim the right to answer a stranger, at most once per window.
+ *
+ * One statement, so two workers racing produce one reply: the conditional
+ * UPDATE fires only when the last reply is older than the window, and
+ * "no row returned" means somebody else just answered them.
+ */
+export async function claimStrangerReply(
+  db: Db,
+  matchKey: string,
+  windowMs = 24 * 60 * 60 * 1_000,
+  now = new Date(),
+): Promise<boolean> {
+  const since = new Date(now.getTime() - windowMs);
+  const rows = await db.execute<{ match_key: string }>(sql`
+    INSERT INTO stranger_contacts (match_key, last_replied_at)
+    VALUES (${matchKey}, ${now.toISOString()}::timestamptz)
+    ON CONFLICT (match_key) DO UPDATE
+      SET last_replied_at = ${now.toISOString()}::timestamptz
+      WHERE stranger_contacts.last_replied_at < ${since.toISOString()}::timestamptz
+    RETURNING match_key
+  `);
+  return [...rows].length === 1;
+}
+
+export interface EventHealth {
+  /** Stored, never processed. A backlog here means a sweep is not running. */
+  unprocessed: number;
+  /** Processed but marked with a reason — the admin exception queue (§35). */
+  flagged: number;
+  /** Signature checks that failed. Should be zero; anything else is an attack or a key. */
+  badSignatures: number;
+}
+
+/**
+ * Webhook intake, in three numbers.
+ *
+ * The paystack pump has always marked events with WHY they went nowhere
+ * ('unknown_reference', 'foreign_reference') and called those marks "the
+ * admin exception queue" — a queue nothing could read until now.
+ */
+export async function eventHealth(db: Db, provider: string): Promise<EventHealth> {
+  const rows = await db.execute<{ unprocessed: number; flagged: number; bad: number }>(sql`
+    SELECT
+      count(*) FILTER (WHERE processed_at IS NULL)::int              AS unprocessed,
+      count(*) FILTER (WHERE processed_at IS NOT NULL
+                         AND error IS NOT NULL)::int                 AS flagged,
+      count(*) FILTER (WHERE signature_valid = 0)::int               AS bad
+    FROM external_events
+    WHERE provider = ${provider}
+  `);
+  const row = [...rows][0];
+  return {
+    unprocessed: row?.unprocessed ?? 0,
+    flagged: row?.flagged ?? 0,
+    badSignatures: row?.bad ?? 0,
+  };
+}

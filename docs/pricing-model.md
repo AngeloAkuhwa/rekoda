@@ -33,7 +33,7 @@ accountant's afternoon, not against an invoice template.
 
 > **Corrected 19 Aug 2026 — the original 5-document trial was self-defeating.**
 > The trial allowed **25 recorded transactions but only 5 documents**. Since a
-> sale typically produces an invoice *and* a receipt, the document credit was
+> sale typically produces an invoice _and_ a receipt, the document credit was
 > exhausted at roughly the **third transaction**, leaving 22 transactions that
 > generate no invoice and no receipt — i.e. the merchant hits the wall before
 > ever seeing the thing they would be paying for.
@@ -54,7 +54,8 @@ cost money, and they cap trial COGS at roughly the same ₦800–₦1,200 the or
 model assumed. Documents are an abuse-control ceiling, not a value gate.
 
 ### Rekoda Chat — ₦9,900/month
-*Talk to Rekoda. Your records build themselves.*
+
+_Talk to Rekoda. Your records build themselves._
 1 business · owner + 1 accountant/delegate · **400 messages** ·
 **60 voice minutes** · **100 document generations** · 25 utility reminders ·
 10 PDF/Excel reports · unlimited-reasonable customers & products · sales,
@@ -62,11 +63,12 @@ expenses, purchases, suppliers, inventory, partial payments, customer
 balances, invoices, receipts, dashboard, AI financial questions, magic-link
 dashboard, manual payment matching. **No** automatic Paystack
 reconciliation, **no** catalogue connection. Statuses shown honestly:
-*Payment Recorded* (merchant said so) vs *Payment Verified* (Paystack
+_Payment Recorded_ (merchant said so) vs _Payment Verified_ (Paystack
 confirmed).
 
 ### Rekoda Integrate — ₦19,900/month
-*Connect your WhatsApp shop. Rekoda handles the money trail automatically.*
+
+_Connect your WhatsApp shop. Rekoda handles the money trail automatically._
 1 business · 1 WhatsApp Business number/WABA · 1 catalogue · 1 Paystack
 connection · owner + 2 delegates · **800 messages** · **200 catalogue
 orders** · **500 document generations** · 100 utility templates · 25
@@ -75,7 +77,8 @@ verification → receipts → inventory → reconciliation, with unmatched/
 short-payment/exception detection. **No** voice bookkeeping.
 
 ### Rekoda Complete — ₦29,900/month
-*However you sell, Rekoda keeps the complete money trail.*
+
+_However you sell, Rekoda keeps the complete money trail._
 Chat + Integrate combined: **1,200 messages** · **120 voice minutes** ·
 **300 orders** · **750 documents** · 150 utility templates · **50 reports** ·
 3 delegates · daily/weekly/monthly summaries · priority support · branded
@@ -84,14 +87,14 @@ online reality in one consolidated financial position.
 
 ## Add-on packs (launch overage model)
 
-| Add-on | Price |
-|---|---|
-| +100 WhatsApp messages | ₦2,500 |
-| +30 voice minutes | ₦1,500 |
-| +50 document generations | ₦2,000 |
-| +50 Integrate orders + related capacity | ₦5,000 |
-| Extra accountant/delegate | ₦1,500/month |
-| Additional WhatsApp number | Custom initially |
+| Add-on                                  | Price            |
+| --------------------------------------- | ---------------- |
+| +100 WhatsApp messages                  | ₦2,500           |
+| +30 voice minutes                       | ₦1,500           |
+| +50 document generations                | ₦2,000           |
+| +50 Integrate orders + related capacity | ₦5,000           |
+| Extra accountant/delegate               | ₦1,500/month     |
+| Additional WhatsApp number              | Custom initially |
 
 No unlimited usage at launch — real merchant behaviour is unknown; packs
 protect against the ₦9,900-payer who scripts 30,000 messages.
@@ -99,7 +102,7 @@ protect against the ₦9,900-payer who scripts 30,000 messages.
 > **Payment-processing fee, confirmed 19 Aug 2026.** Collection runs on
 > **Pay with Transfer**, charged at Nigeria's **local rate: 1.5% + ₦100, capped
 > ₦2,000**, with the ₦100 waived below ₦2,500. The **1% capped ₦300** rate is
-> **Dedicated-Virtual-Account-specific** and does *not* apply — a PwT temporary
+> **Dedicated-Virtual-Account-specific** and does _not_ apply — a PwT temporary
 > account is not a DVA (ADR 0016). On a ₦105,000 order that is **₦1,675**, not
 > ₦300. The merchant bears it, so `/pricing` must say so plainly. The cheaper
 > DVA rate would require customer BVN validation, a per-platform 1,000-account
@@ -110,14 +113,14 @@ protect against the ₦9,900-payer who scripts 30,000 messages.
 > 16 Aug 2026 and several lines are now superseded by decisions taken since.
 > Where they conflict, **the ADR wins**:
 >
-> | Original assumption | Superseded by |
-> |---|---|
-> | Twilio ₦7.25/msg both directions for Chat | **ADR 0002/0011** — Chat is Meta-direct; Twilio applies to the Integrate WABA path only |
+> | Original assumption                                                | Superseded by                                                                                                                  |
+> | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------ |
+> | Twilio ₦7.25/msg both directions for Chat                          | **ADR 0002/0011** — Chat is Meta-direct; Twilio applies to the Integrate WABA path only                                        |
 > | Free-form replies and utility templates free inside the 24h window | **ADR 0011** — Meta charges for **every service message from 1 Oct 2026**, flat, no volume discount (~₦10/outbound in Nigeria) |
-> | Twilio Verify ~₦80+/OTP | **ADR 0002** — OTP over Rekoda's own WhatsApp number (~₦10), SMS fallback only |
-> | OpenAI transcription ~₦6.53/min | **ADR 0008** — self-hosted AfriSpeech-tuned model on the existing server; no per-minute fee |
-> | Azure hosting ₦75–150k/month | **ADR 0006** — Hetzner + Cloudflare + R2, **~₦30–40k/month** at launch |
-> | Nightly `pg_dump` backups | **ADR 0010** — continuous WAL archiving (PITR) |
+> | Twilio Verify ~₦80+/OTP                                            | **ADR 0002** — OTP over Rekoda's own WhatsApp number (~₦10), SMS fallback only                                                 |
+> | OpenAI transcription ~₦6.53/min                                    | **ADR 0008** — self-hosted AfriSpeech-tuned model on the existing server; no per-minute fee                                    |
+> | Azure hosting ₦75–150k/month                                       | **ADR 0006** — Hetzner + Cloudflare + R2, **~₦30–40k/month** at launch                                                         |
+> | Nightly `pg_dump` backups                                          | **ADR 0010** — continuous WAL archiving (PITR)                                                                                 |
 >
 > Net effect: hosting and STT are **much** cheaper than modelled, messaging is
 > **more** expensive from October, and the ₦9,900 tier lands at **39–60% margin**
@@ -126,20 +129,20 @@ protect against the ₦9,900-payer who scripts 30,000 messages.
 
 ## External cost stack (research of 16 Aug 2026, at ₦1,450/$)
 
-| Service | Underlying price | ≈ Cost | Note |
-|---|---|---|---|
-| Twilio WhatsApp | $0.005/msg each way | ₦7.25/msg | Integrate path only — see ADR 0002 |
-| Meta utility template (NG) | ~$0.0067 | ₦9.72 | Only when required |
-| Meta authentication (NG) | ~$0.0067 | ₦9.72 | OTP |
-| Meta marketing (NG) | ~$0.0516 | ₦74.82 | **Excluded from V1 entirely** |
-| In-window service replies | currently ₦0 Meta-side | — | **Chargeable from 1 Oct 2026; re-run maths when rates publish ~1 Sep** |
-| OpenAI transcription | $0.0045/min | ~₦6.53/min | Benchmark only — STT is self-hosted (ADR 0005) |
-| Claude Haiku 4.5 | $1/$5 per MTok | ~₦2–4/call | Trivial classification |
-| Claude Sonnet | $2/$10 per MTok | ~₦8/call | **Runtime default** (ADR 0007) |
-| Claude Fable 5 | $10/$50 per MTok | ~₦40/call | Build-time & evals, escalation flag only |
-| Paystack local card | 1.5% + ₦100, cap ₦2,000 | merchant-borne | Never absorbed into subscription |
-| Paystack DVA/transfer | 1%, cap ₦300 | merchant-borne | Encourage "pay by transfer" |
-| Hosting (ADR 0006) | Hetzner+CF+R2 | ~₦30–40k/mo shared | ~₦1,500/business at 25 businesses |
+| Service                    | Underlying price        | ≈ Cost             | Note                                                                   |
+| -------------------------- | ----------------------- | ------------------ | ---------------------------------------------------------------------- |
+| Twilio WhatsApp            | $0.005/msg each way     | ₦7.25/msg          | Integrate path only — see ADR 0002                                     |
+| Meta utility template (NG) | ~$0.0067                | ₦9.72              | Only when required                                                     |
+| Meta authentication (NG)   | ~$0.0067                | ₦9.72              | OTP                                                                    |
+| Meta marketing (NG)        | ~$0.0516                | ₦74.82             | **Excluded from V1 entirely**                                          |
+| In-window service replies  | currently ₦0 Meta-side  | —                  | **Chargeable from 1 Oct 2026; re-run maths when rates publish ~1 Sep** |
+| OpenAI transcription       | $0.0045/min             | ~₦6.53/min         | Benchmark only — STT is self-hosted (ADR 0005)                         |
+| Claude Haiku 4.5           | $1/$5 per MTok          | ~₦2–4/call         | Trivial classification                                                 |
+| Claude Sonnet              | $2/$10 per MTok         | ~₦8/call           | **Runtime default** (ADR 0007)                                         |
+| Claude Fable 5             | $10/$50 per MTok        | ~₦40/call          | Build-time & evals, escalation flag only                               |
+| Paystack local card        | 1.5% + ₦100, cap ₦2,000 | merchant-borne     | Never absorbed into subscription                                       |
+| Paystack DVA/transfer      | 1%, cap ₦300            | merchant-borne     | Encourage "pay by transfer"                                            |
+| Hosting (ADR 0006)         | Hetzner+CF+R2           | ~₦30–40k/mo shared | ~₦1,500/business at 25 businesses                                      |
 
 ## Commercial rules
 
@@ -164,11 +167,11 @@ funding engineering, support, sales, compliance, profit. Launch estimates
 (planning assumptions, not vendor quotes — Chat margin reflects the
 Meta-direct decision of ADR 0002):
 
-| Plan | Price | Expected COGS | Rough gross margin |
-|---|---|---|---|
-| Chat | ₦9,900 | ~₦2.5–4k | ~60–75% |
-| Integrate | ₦19,900 | ~₦7–9k | ~55–65% |
-| Complete | ₦29,900 | ~₦11–15k | ~50–63% |
+| Plan      | Price   | Expected COGS | Rough gross margin |
+| --------- | ------- | ------------- | ------------------ |
+| Chat      | ₦9,900  | ~₦2.5–4k      | ~60–75%            |
+| Integrate | ₦19,900 | ~₦7–9k        | ~55–65%            |
+| Complete  | ₦29,900 | ~₦11–15k      | ~50–63%            |
 
 A normally used trial should cost **~₦500–900 per activated business**
 (WhatsApp-OTP onboarding, ADR/plan F2) — acceptable CAC if conversion is
@@ -200,7 +203,7 @@ telemetry replaces every assumption in this document.**
 > §4–7) adds uploaded-document understanding — receipt photos, supplier
 > invoices, proofs of payment, bank statements — which did NOT exist when this
 > cost stack was researched on 16 Aug. Unlike generated documents (which cost
-> ~nothing), every upload is a vision-model call (~₦10–15 per photo at
+> ~~nothing), every upload is a vision-model call (~~₦10–15 per photo at
 > planning FX) and a statement can run ₦300–800 even at batch pricing. A
 > merchant uploading 200 receipts a month is ₦2–3k of COGS no plan currently
 > charges for.
@@ -215,12 +218,12 @@ telemetry replaces every assumption in this document.**
 
 ## Standing review triggers
 
-* 1 September 2026 — Meta publishes post-October service-message rates →
+- 1 September 2026 — Meta publishes post-October service-message rates →
   re-run all COGS.
-* First 50 paying merchants → replace planning COGS with telemetry;
+- First 50 paying merchants → replace planning COGS with telemetry;
   re-examine allowances against real P50/P95 usage.
-* First pilot cohort with real results → collect one to three NAMED merchant
+- First pilot cohort with real results → collect one to three NAMED merchant
   testimonials with naira figures for the landing page. Social proof is
   deliberately absent until it is real (fabricating it would break the trust
   positioning); the moment it exists, it outperforms any redesign.
-* Any FX move beyond the ₦1,450/$ planning buffer.
+- Any FX move beyond the ₦1,450/$ planning buffer.

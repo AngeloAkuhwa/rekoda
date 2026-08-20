@@ -119,6 +119,26 @@ export function matchKeyFor(
   return createHmac('sha256', key).update(message, 'utf8').digest('base64url');
 }
 
+/**
+ * A match key for someone who has no tenant: a stranger messaging the number.
+ *
+ * `matchKeyFor` is business-scoped on purpose — two businesses must never be
+ * able to correlate a customer through their keys. That scoping cannot apply
+ * here, because the question this key answers ("have we greeted this number
+ * yet") is global by nature and the person belongs to no business at all.
+ *
+ * The `contact:` domain prefix keeps it in a different keyspace from every
+ * tenant-scoped key, so a value from here can never be mistaken for, or
+ * matched against, an identity facet.
+ */
+export function contactKeyFor(normalisedValue: string, hexMatchKey: string): string {
+  const key = keyBuffer(hexMatchKey, 'MATCH_KEY');
+  if (!normalisedValue) throw new VaultError('cannot derive a contact key from an empty value');
+  return createHmac('sha256', key)
+    .update(`contact:${normalisedValue.length}:${normalisedValue}`, 'utf8')
+    .digest('base64url');
+}
+
 /** Constant-time compare of two match keys. */
 export function matchKeyEquals(a: string, b: string): boolean {
   const ab = Buffer.from(a);

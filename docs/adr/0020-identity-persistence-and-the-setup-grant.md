@@ -7,7 +7,7 @@
 
 ## Context
 
-M1 shipped the identity *rules* as pure, tested logic in `packages/core` behind a
+M1 shipped the identity _rules_ as pure, tested logic in `packages/core` behind a
 dev-only in-memory store in `apps/web`. Replacing that store was an M1 exit
 criterion, and doing it surfaced three decisions that are not obvious from the
 spec and would otherwise be rediscovered — expensively — by whoever touches
@@ -17,7 +17,7 @@ identity next.
 
 `sessions.business_id` is `NOT NULL`, deliberately: a session that is not
 scoped to a tenant is a credential with no blast radius. But onboarding has a
-real gap between *"this phone is verified"* and *"this merchant has a business"*,
+real gap between _"this phone is verified"_ and _"this merchant has a business"_,
 and something has to authorise the request that closes it.
 
 The tempting fix is to make `business_id` nullable. **Rejected:** it weakens the
@@ -38,7 +38,7 @@ not both stay live.
 ## Decision 2 — `app.user_id`, a second pin, for the one read that precedes the tenant
 
 `memberships` is under `tenant_isolation`, which keys on `app.business_id`. But
-the first question a sign-in must answer is *which* business — and at that
+the first question a sign-in must answer is _which_ business — and at that
 moment there is nothing to pin, so an unpinned `SELECT` correctly returns
 nothing and the merchant can never get in.
 
@@ -51,10 +51,10 @@ would have returned zero rows while looking like a fix.
 The decision is a second, deliberately narrow pin — `app.user_id`, set by
 `withUser()` — backed by a policy that is:
 
-* **`SELECT`-only** — a pinned user can *discover* memberships, never mint one.
+- **`SELECT`-only** — a pinned user can _discover_ memberships, never mint one.
   Writes still go through `tenant_isolation`'s `WITH CHECK`.
-* **one table** — businesses, ledgers and everything else are untouched.
-* **fail-closed** — the same `nullif()` guard, so an unpinned transaction sees
+- **one table** — businesses, ledgers and everything else are untouched.
+- **fail-closed** — the same `nullif()` guard, so an unpinned transaction sees
   nothing rather than everything.
 
 What it costs: code that can pin an arbitrary user id learns that user's
@@ -80,20 +80,20 @@ split across two ledgers. `ON CONFLICT` makes the unique index decide instead.
 
 ## Consequences
 
-* **`apps/web` can no longer assert identity.** It holds no pool, no signing
+- **`apps/web` can no longer assert identity.** It holds no pool, no signing
   secret and no tenant pin — only opaque tokens the API issued. The interim
   signed-cookie marker is deleted.
-* **Every guard is a round trip.** "A cookie is present" is a fact an attacker
+- **Every guard is a round trip.** "A cookie is present" is a fact an attacker
   controls; the guards now ask the API instead. That costs latency on three
   onboarding pages and buys a check the web tier could not otherwise make.
-* **One status for "no live challenge."** Consumed, expired and never-issued all
+- **One status for "no live challenge."** Consumed, expired and never-issued all
   answer `expired`, so probing a number cannot reveal whether a sign-in there
   recently succeeded. The merchant-facing copy has to be true of all three, and
   is.
-* **The tenancy claim is now tested rather than asserted** — two tenants over
+- **The tenancy claim is now tested rather than asserted** — two tenants over
   one pooled connection, with the suite proven to go red under a superuser
   connection.
-* **Boundaries are enforced in CI.** `scripts/check-boundaries.mjs` fails the
+- **Boundaries are enforced in CI.** `scripts/check-boundaries.mjs` fails the
   build on a raw driver import outside `packages/db`, or any `@rekoda/db` import
   from `apps/web`. It should fold into `no-restricted-imports` when an ESLint
   toolchain lands.

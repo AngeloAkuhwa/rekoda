@@ -23,13 +23,13 @@ The fix costs a few dollars a month.
 **pgBackRest with continuous WAL archiving to S3-compatible object storage**
 (Cloudflare R2 or Backblaze B2 — both speak S3; B2 is ~$6/TB/month).
 
-* Full backup weekly, differential daily, **WAL streamed continuously** →
+- Full backup weekly, differential daily, **WAL streamed continuously** →
   point-in-time recovery with an **RPO of minutes**, not a day.
-* Repository encrypted at rest; credentials in the environment, never the repo.
-* **Keep the nightly `pg_dump -Fc` as well.** It is an independent logical
+- Repository encrypted at rest; credentials in the environment, never the repo.
+- **Keep the nightly `pg_dump -Fc` as well.** It is an independent logical
   format that survives a physical-format or version problem that would take
   pgBackRest down with it. Two formats, two failure modes.
-* Documents in R2 are already durable and are backed up by lifecycle policy,
+- Documents in R2 are already durable and are backed up by lifecycle policy,
   not by pgBackRest.
 
 **A backup that has not been restore-drilled does not count as a backup.**
@@ -53,7 +53,7 @@ becomes a measured number instead of a hope, because the drill reports it.
 
 The drill's ledger-balance sweep doubles as a **correctness canary**: it is the
 same invariant the trial-balance monitoring job asserts in production, so a
-restore that balances proves both the backup *and* the ledger.
+restore that balances proves both the backup _and_ the ledger.
 
 This does not remove the single-point-of-failure — it bounds the data loss.
 The availability answer remains ADR 0006's scale-out path: when revenue
@@ -62,5 +62,5 @@ justifies it, a streaming replica on a second small Hetzner node takes RTO from
 
 ## Sources
 
-* https://mysticmind.dev/postgresql-point-in-time-recovery-with-pgbackrest-and-s3-compatible-storage/
-* https://ramnode.com/guides/series/postgres-superstack/pgbackrest
+- https://mysticmind.dev/postgresql-point-in-time-recovery-with-pgbackrest-and-s3-compatible-storage/
+- https://ramnode.com/guides/series/postgres-superstack/pgbackrest

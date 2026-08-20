@@ -2,19 +2,19 @@
 
 **Status:** Superseded by [0012](0012-integrate-without-cac.md)
 
-> **Superseded 2026-08-19.** The *mechanism* below is correct and still used:
+> **Superseded 2026-08-19.** The _mechanism_ below is correct and still used:
 > per-customer NUBANs, attribution by arrival account, lazy issuance, vault-held
 > customer→NUBAN map. What this ADR got wrong is its **position** — it treated
 > DVAs as the answer to bank-transfer reconciliation, when they only serve
 > CAC-registered merchants, who are a minority of Rekoda's market. ADR 0012
 > makes DVAs rung **B2** of a ladder whose first rung requires no registration
 > at all. Read 0012 first.
-**Date:** 2026-08-19
-**Extends:** [0003](0003-paystack-merchant-owned-account.md)
+> **Date:** 2026-08-19
+> **Extends:** [0003](0003-paystack-merchant-owned-account.md)
 
 ## Context
 
-The reconciliation moat (MASTER-PLAN §1.3) closes only when a *provider*
+The reconciliation moat (MASTER-PLAN §1.3) closes only when a _provider_
 confirms money moved. Until now that meant Paystack **checkout** — a card or
 transfer through a Paystack payment page. But the dominant way a Nigerian small
 business is actually paid is a **direct bank transfer** to their account, which
@@ -33,23 +33,23 @@ from any Nigerian bank over NIP lands a `charge.success` webhook with
 
 The design turns on one fact that is easy to get wrong: **a DVA is assigned to
 a customer, not to the business.** Each of the merchant's customers gets their
-own unique NUBAN. That is precisely what makes attribution automatic — *the
-account the money arrived into is the identity of who paid*, before any
+own unique NUBAN. That is precisely what makes attribution automatic — _the
+account the money arrived into is the identity of who paid_, before any
 matching heuristic runs. `findUniqueAmountMatch()`'s refusal to guess between
 two debtors owing the same amount stops being the common path and becomes the
 exception, because amount-matching is no longer the primary signal.
 
 Consequences of per-customer assignment, all of which are design constraints:
 
-* **A `Customer` record must exist before a DVA can be issued.** DVA
+- **A `Customer` record must exist before a DVA can be issued.** DVA
   provisioning is a step in the customer lifecycle, not in business onboarding.
-* **~1,000 DVAs per business.** Issue lazily — on a customer's first order or
+- **~1,000 DVAs per business.** Issue lazily — on a customer's first order or
   first invoice, never in bulk — and build a reclamation policy for dormant
   customers before a merchant approaches the ceiling.
-* **The DVA lives under the merchant's own Paystack account** (ADR 0003), so
+- **The DVA lives under the merchant's own Paystack account** (ADR 0003), so
   money still never touches Rekoda and the settlement-liability position is
   unchanged.
-* **The customer-to-NUBAN map is Zone 1 identity data.** It is a direct
+- **The customer-to-NUBAN map is Zone 1 identity data.** It is a direct
   identifier of a merchant's customer; it lives in the vault and is rehydrated
   only in the authorised output layer, never sent to the AI zone.
 
@@ -60,7 +60,7 @@ retried into a gap. This is Paystack's own guidance and it is cheap.
 ## Consequences
 
 **Eligibility is the risk, and it is material.** DVAs require a **CAC-registered
-business** (BN or RC/LTD) on a Paystack account that is *not* a Starter or
+business** (BN or RC/LTD) on a Paystack account that is _not_ a Starter or
 Individual account, with **full KYC approved** — certificate of registration,
 director ID, proof of address. This is a CBN-driven regulatory condition, not a
 Paystack policy that support can waive.
@@ -86,7 +86,7 @@ before. Do not let the roadmap lean on this until that confirmation exists.
 
 ## Sources
 
-* https://paystack.com/docs/payments/dedicated-virtual-accounts/
-* https://paystack.com/docs/api/dedicated-virtual-account/
-* https://support.paystack.com/en/articles/2124866 — fees (1%, capped ₦300), 1,000-account limit, registered-business-only
-* https://paystack.com/blog/product/paystack-titan
+- https://paystack.com/docs/payments/dedicated-virtual-accounts/
+- https://paystack.com/docs/api/dedicated-virtual-account/
+- https://support.paystack.com/en/articles/2124866 — fees (1%, capped ₦300), 1,000-account limit, registered-business-only
+- https://paystack.com/blog/product/paystack-titan

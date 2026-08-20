@@ -8,20 +8,20 @@
 The early pricing analysis budgeted ₦75–150k/month on Azure. The owner has
 ruled Azure out on cost. V1 needs: one Postgres, a Node API, a Next.js app,
 an STT container, object storage for generated PDFs (frequently
-*downloaded* — egress matters), TLS, CDN and backups. Everything is
+_downloaded_ — egress matters), TLS, CDN and backups. Everything is
 containerised, so the choice must be reversible.
 
 ## Decision
 
-* **Hetzner Cloud CPX31** (4 vCPU / 8 GB, EU) running Docker Compose:
+- **Hetzner Cloud CPX31** (4 vCPU / 8 GB, EU) running Docker Compose:
   Caddy → web + api + stt + Postgres. ~€13.6/month.
-* **Cloudflare free tier** in front: CDN for Nigerian latency, WAF, TLS,
+- **Cloudflare free tier** in front: CDN for Nigerian latency, WAF, TLS,
   DDoS protection.
-* **Cloudflare R2** for documents/exports — S3-compatible with **zero
+- **Cloudflare R2** for documents/exports — S3-compatible with **zero
   egress fees**.
-* **Backblaze B2** for nightly encrypted Postgres dumps + document backups;
+- **Backblaze B2** for nightly encrypted Postgres dumps + document backups;
   Hetzner snapshots for whole-box restore.
-* All-in at launch: **~₦30–40k/month** — roughly four Chat subscriptions.
+- All-in at launch: **~₦30–40k/month** — roughly four Chat subscriptions.
 
 ## Consequences
 

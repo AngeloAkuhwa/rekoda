@@ -6,8 +6,8 @@ Paystack accounts the default so Rekoda never enters the money flow. Everything
 below stays designed and valid for the day Phase 2 is taken; it ships only once
 counsel confirms aggregation, the empirical split check passes, and the controls
 below exist. Collection mechanism **corrected by
-[0016](0016-per-transaction-accounts-not-per-customer.md)**: per-*transaction*
-transfer accounts, not per-*customer* DVAs, because a dedicated account requires
+[0016](0016-per-transaction-accounts-not-per-customer.md)**: per-_transaction_
+transfer accounts, not per-_customer_ DVAs, because a dedicated account requires
 **BVN validation of the end customer** for our business category. The platform
 model (Rekoda's Paystack account, merchants as subaccounts) is unchanged; only
 the instrument is. **Three of four questions answered from Paystack's own
@@ -20,8 +20,8 @@ unknown remains, plus counsel.
 
 ADR 0012 removed the CAC barrier by giving merchants alternatives they onboard
 to themselves: link your own bank account (B0), or get virtual accounts on an
-unregistered tier (B1). Both work. Both still ask the merchant to *do something
-with a financial provider*, and every such step is a place a market vendor
+unregistered tier (B1). Both work. Both still ask the merchant to _do something
+with a financial provider_, and every such step is a place a market vendor
 drops out.
 
 The owner asked the sharper question: **can Rekoda be the only party that
@@ -30,7 +30,7 @@ integrates, and carry every merchant implicitly underneath it?**
 For payments the answer is yes, and the mechanism already exists.
 
 **Paystack subaccounts:** a sub-merchant does **not** need their own Paystack
-account. The platform transacts on *its* Paystack account and splits proceeds
+account. The platform transacts on _its_ Paystack account and splits proceeds
 to the sub-merchant. Onboarding a sub-merchant requires **a bank account,
 validated through Resolve Account** — no CAC, no Paystack signup, no KYC queue
 the merchant has to survive.
@@ -41,7 +41,7 @@ also be attached to an existing dedicated account. So Rekoda can issue
 **per-customer NUBANs under Rekoda's own CAC**, with proceeds splitting straight
 to the merchant's bank account.
 
-That collapses the entire onboarding to: *give us your account number.*
+That collapses the entire onboarding to: _give us your account number._
 
 ## What the documentation settles (researched 19 Aug 2026)
 
@@ -63,10 +63,10 @@ can be borne by the sub-merchant — which is exactly what MASTER-PLAN Part 8's
 
 ### ✅ Q4 — Who bears chargebacks? **Documented, and it is a choice of flow.**
 
-| Flow | Who onboards the merchant | Who does KYC | **Who bears transaction risk** | Merchant gets |
-|---|---|---|---|---|
-| **Standard** | Sub-merchant onboards directly on Paystack | **Paystack** | **Sub-merchant** | Own dashboard + API; manages own chargebacks, fraud, reconciliation |
-| **Platform-managed** | Rekoda onboards them | **Rekoda** | **Rekoda** | Nothing to set up — Rekoda collects bank details only |
+| Flow                 | Who onboards the merchant                  | Who does KYC | **Who bears transaction risk** | Merchant gets                                                       |
+| -------------------- | ------------------------------------------ | ------------ | ------------------------------ | ------------------------------------------------------------------- |
+| **Standard**         | Sub-merchant onboards directly on Paystack | **Paystack** | **Sub-merchant**               | Own dashboard + API; manages own chargebacks, fraud, reconciliation |
+| **Platform-managed** | Rekoda onboards them                       | **Rekoda**   | **Rekoda**                     | Nothing to set up — Rekoda collects bank details only               |
 
 This is the central trade-off of the whole design, and it is ours to pick.
 
@@ -74,15 +74,15 @@ This is the central trade-off of the whole design, and it is ours to pick.
 
 Support states "all businesses have a limit of 1,000 virtual accounts to be
 assigned to customers" — which reads **per Paystack account**, i.e. per
-*platform*. Under the platform-managed flow that is 1,000 NUBANs shared across
+_platform_. Under the platform-managed flow that is 1,000 NUBANs shared across
 **every merchant's customers combined**, which would bind almost immediately.
 **This single number decides whether the platform model scales.** Only Paystack
 can answer it.
 
 ### The Starter Business finding — it changes the trade-off
 
-**Unregistered individuals can already open a Paystack account.** A *Starter
-Business* needs only a government ID, a BVN and a personal bank account — **no
+**Unregistered individuals can already open a Paystack account.** A _Starter
+Business_ needs only a government ID, a BVN and a personal bank account — **no
 CAC**. But it is capped at a **₦2M lifetime collections limit** (₦3M with
 Truecaller phone verification), after which collections are **disabled** until
 the business upgrades to Registered — and Starter accounts have **no access to
@@ -90,11 +90,11 @@ Transfers or Identity verification**, so **Dedicated Virtual Accounts are out**.
 
 So the two flows serve genuinely different merchants:
 
-* **Standard flow** — merchant opens their own Starter account (ID + BVN + bank
+- **Standard flow** — merchant opens their own Starter account (ID + BVN + bank
   account). They bear their own risk, Paystack does KYC, and Rekoda's exposure
   is nil. **But: ₦2M lifetime cap, and no DVAs — so no bank-transfer
   reconciliation.** An active fashion vendor can exhaust ₦2M in months.
-* **Platform-managed flow** — merchant gives a bank account and nothing else.
+- **Platform-managed flow** — merchant gives a bank account and nothing else.
   No cap of their own (the ceiling is Rekoda's, and Rekoda is Registered), and
   **DVAs work, because they are issued under Rekoda's registration**. Rekoda
   bears the risk.
@@ -114,7 +114,7 @@ plainly because it matters:
 
 **1. The ₦2M lifetime cap kills the standard flow for exactly the merchants who
 succeed.** A Starter Business — the only Paystack account a non-CAC merchant can
-open — is capped at **₦2,000,000 in *lifetime* collections** (₦3M with Truecaller
+open — is capped at **₦2,000,000 in _lifetime_ collections** (₦3M with Truecaller
 verification), after which **collections are disabled** until the business
 upgrades to Registered, which requires CAC. A fashion vendor turning over
 ₦500k/month exhausts it in **four months**. So the standard flow does not remove
@@ -132,14 +132,14 @@ delivered), not chargeback leakage — a different problem, and a tractable one.
 
 **The recommendation:**
 
-* **Platform-managed flow is the destination**, and the model to build toward:
+- **Platform-managed flow is the destination**, and the model to build toward:
   merchant supplies a bank account, Rekoda holds the Paystack relationship,
   per-transaction accounts collect, proceeds split to the merchant's bank.
   No cap, no CAC, no customer KYC.
-* **Standard flow stays available** for merchants who *want* their own Paystack
+- **Standard flow stays available** for merchants who _want_ their own Paystack
   relationship — and it remains the zero-liability option — but it is a
   preference, not the default, and its ceiling must be disclosed at signup.
-* **Phase it by trust, not by flow.** The M5 concierge alpha is 5–10 merchants
+- **Phase it by trust, not by flow.** The M5 concierge alpha is 5–10 merchants
   you have personally met; platform-managed risk there is negligible. Self-serve
   comes after the controls below exist and have been exercised.
 
@@ -148,12 +148,12 @@ delivered), not chargeback leakage — a different problem, and a tractable one.
 Stating this explicitly because it is easy to slide back into "everyone needs
 CAC", which would undo the whole design:
 
-| Party | Verified by | With what | Needs CAC? |
-|---|---|---|---|
-| **Rekoda Ltd** | Paystack | Full registered-business KYC | **Yes** — Rekoda's own registration is what carries the platform relationship |
-| **The vendor (Ada)** | **Rekoda** | **BVN or NIN + Resolve Account name match** | **No** |
-| **The customer (Jennifer)** | **Nobody** | Nothing | **No** (ADR 0016) |
-| Meta / Facebook | — | — | **Not in the default path at all** — the storefront (ADR 0012 rung A1) needs no WABA, so Meta verification only appears if a merchant *chooses* the A2 upgrade |
+| Party                       | Verified by | With what                                   | Needs CAC?                                                                                                                                                     |
+| --------------------------- | ----------- | ------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Rekoda Ltd**              | Paystack    | Full registered-business KYC                | **Yes** — Rekoda's own registration is what carries the platform relationship                                                                                  |
+| **The vendor (Ada)**        | **Rekoda**  | **BVN or NIN + Resolve Account name match** | **No**                                                                                                                                                         |
+| **The customer (Jennifer)** | **Nobody**  | Nothing                                     | **No** (ADR 0016)                                                                                                                                              |
+| Meta / Facebook             | —           | —                                           | **Not in the default path at all** — the storefront (ADR 0012 rung A1) needs no WABA, so Meta verification only appears if a merchant _chooses_ the A2 upgrade |
 
 **Rekoda's CAC is the one that does the work.** That is precisely what allows the
 vendor to have none.
@@ -161,16 +161,16 @@ vendor to have none.
 **"Can we just let Paystack verify the vendors instead?"** Only by choosing the
 **standard flow** — which is exactly the trade documented above: Paystack does the
 KYC and carries the risk, and in exchange the vendor is on a Starter Business
-capped at **₦2M lifetime collections**. You cannot have Paystack's KYC *and*
+capped at **₦2M lifetime collections**. You cannot have Paystack's KYC _and_
 uncapped collections through their own account. That is the trade, and the cap is
 why platform-managed wins.
 
-*(One thing worth asking Paystack: some Connect material suggests a platform may
+_(One thing worth asking Paystack: some Connect material suggests a platform may
 **delegate sub-merchant KYC to Paystack** while still running the
 platform-managed flow. If that is real and does not re-impose the Starter cap, it
 is the best of both — Paystack's KYC rigour with uncapped collections. Add it to
 the question list; it is not load-bearing, but it would be a meaningful
-simplification.)*
+simplification.)_
 
 ### CAC is not what makes this safe — BVN is
 
@@ -182,7 +182,7 @@ requirement for virtual accounts is **BVN or NIN**, not CAC.
 
 So CAC stays **a benefit, never a gate**. A merchant who has one can unlock the
 things that genuinely require it — Meta verification and a native WABA catalogue,
-Paystack DVAs, and optionally a *"Registered business"* badge on their storefront
+Paystack DVAs, and optionally a _"Registered business"_ badge on their storefront
 that is a real trust signal to their own customers. None of it is required to
 trade on Rekoda.
 
@@ -205,7 +205,7 @@ The controls must therefore act on **limits and visibility**, never on custody:
    a spike in customer complaints, a settlement account changing.
 4. **Settlement-account change is a re-verification event**, never a silent edit.
 5. **A kill switch per sub-merchant** — deactivate collection instantly, which
-   is legitimate because it stops *future* payments rather than holding existing
+   is legitimate because it stops _future_ payments rather than holding existing
    ones.
 
 Nothing in M5 is blocked on the open ceiling question, since ADR 0016's
@@ -219,15 +219,15 @@ Rekoda Ltd (one CAC, one Paystack account, one integration)
 
 What this buys, and why it beats both existing rungs:
 
-* **Zero merchant setup.** An account number is the whole onboarding. Compare
+- **Zero merchant setup.** An account number is the whole onboarding. Compare
   B0 (consent to a bank-linking flow) and B1 (a provider signup with BVN + NIN).
-* **Verification by construction.** Every payment — checkout *and* direct bank
+- **Verification by construction.** Every payment — checkout _and_ direct bank
   transfer to a customer's dedicated NUBAN — produces a `charge.success`
   webhook on **Rekoda's** integration. Attribution comes free: the account the
   money arrived into identifies the payer (ADR 0009's mechanism, now available
   to unregistered merchants).
-* **One integration to build, operate and monitor** instead of one per merchant.
-* **The merchant remains the seller.** Funds split to *their* bank account and
+- **One integration to build, operate and monitor** instead of one per merchant.
+- **The merchant remains the seller.** Funds split to _their_ bank account and
   never rest with Rekoda, so Rekoda's documents stay the merchant's records —
   the product promise is intact.
 
@@ -241,7 +241,7 @@ aspirational.
 **WhatsApp cannot be made implicit the same way, and the plan must not pretend
 otherwise.** Meta is **deprecating the OBO ("on behalf of") model** in which a
 tech provider owned WABAs for its clients; the surviving path is Embedded Signup
-with the *client* owning the WABA and passing business verification. So Rekoda
+with the _client_ owning the WABA and passing business verification. So Rekoda
 cannot hold merchants' WhatsApp numbers on their behalf. The answer stays ADR
 0012 ladder A: make a WABA **unnecessary** — the Rekoda storefront carries
 orders, and the merchant keeps using the free WhatsApp Business App they already
@@ -263,7 +263,7 @@ application approval". This is the maximal path: highest margin, highest control
 and a licensing and compliance burden that took a company of Intuit's size to
 carry.
 
-**Xero — integrate the rails, own none of them.** Xero deliberately did *not*
+**Xero — integrate the rails, own none of them.** Xero deliberately did _not_
 become a processor. It partners with **Stripe, GoCardless and TransferWise** and
 lets those providers hold the licence, the underwriting and the risk. Lower
 margin and more merchant setup friction, but near-zero regulatory surface.
@@ -291,11 +291,11 @@ per-transaction accounts are what route around it.
 
 ## Precedent — this model is well-trodden
 
-| Who | What they prove |
-|---|---|
-| **Selar** (NG) | 241,000 creators, **₦9.8bn paid out in 2024**, individuals selling with no company registration and no payment-provider onboarding. The single-integration model at national scale, in this exact market. |
-| **Shopify Payments · Stripe Connect · Gumroad** | The global pattern: the platform holds the processor relationship; sellers supply a bank account. |
-| **Flowcart · Wapikit** (IN/BR) | WhatsApp commerce aggregators that sync catalogues and handle checkout so sellers never touch the WhatsApp API. **Borrow the onboarding model, not the product** — they are commerce and marketing tools; none of them keeps a double-entry ledger or reconciles. |
+| Who                                             | What they prove                                                                                                                                                                                                                                                   |
+| ----------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Selar** (NG)                                  | 241,000 creators, **₦9.8bn paid out in 2024**, individuals selling with no company registration and no payment-provider onboarding. The single-integration model at national scale, in this exact market.                                                         |
+| **Shopify Payments · Stripe Connect · Gumroad** | The global pattern: the platform holds the processor relationship; sellers supply a bank account.                                                                                                                                                                 |
+| **Flowcart · Wapikit** (IN/BR)                  | WhatsApp commerce aggregators that sync catalogues and handle checkout so sellers never touch the WhatsApp API. **Borrow the onboarding model, not the product** — they are commerce and marketing tools; none of them keeps a double-entry ledger or reconciles. |
 
 ## Risks — every one of these is why this ADR is Proposed, not Accepted
 
@@ -319,7 +319,7 @@ per-transaction accounts are what route around it.
    "hold until delivery", payout scheduling — crosses into licensed territory
    and must not be built without counsel.**
 4. **The DVA ceiling may bind far sooner.** The ~1,000 dedicated-account limit
-   was assumed per merchant. Under one Rekoda account it may apply across *all*
+   was assumed per merchant. Under one Rekoda account it may apply across _all_
    merchants' customers, which at scale is nothing. Establish the actual limit
    and whether it is negotiable before designing issuance.
 5. **Contractual permission.** Paystack's merchant agreement may restrict
@@ -328,24 +328,24 @@ per-transaction accounts are what route around it.
 
 ## Before this becomes Accepted
 
-* **The only blocking question left for Paystack: is the ~1,000
+- **The only blocking question left for Paystack: is the ~1,000
   dedicated-account ceiling per platform or per subaccount, and is it
   negotiable?** Aggregation (Q1), DVA-with-split (Q2) and chargeback liability
   (Q4) are all settled by the Connect documentation. Worth confirming in the
   same message: does DVA-with-split behave identically for a sub-merchant
   subaccount as for the platform's own account?
-* An opinion from **Nigerian fintech counsel** that split-settled aggregation
+- An opinion from **Nigerian fintech counsel** that split-settled aggregation
   without fund custody sits outside licensable activity — and exactly where the
   line is.
-* A decision on **sub-merchant KYC depth** Rekoda will perform (minimum:
+- A decision on **sub-merchant KYC depth** Rekoda will perform (minimum:
   BVN/NIN plus Resolve Account name match against the claimed business owner).
 
 ## Sources
 
-* Paystack split payments — https://paystack.com/docs/payments/split-payments/
-* Paystack transaction splits (subaccounts, settlement) — https://support.paystack.com/en/articles/2132802
-* Dedicated Virtual Account API — `subaccount` / `split_code` on assignment — https://paystack.com/docs/api/dedicated-virtual-account/
-* Dedicated NUBAN — https://paystack.com/docs/payments/dedicated-virtual-accounts/
-* Meta Tech Provider onboarding / OBO deprecation — https://www.infobip.com/docs/whatsapp/tech-provider-program/business-onboarding
-* CBN PSSP licensing, capital, and the no-fund-custody rule — https://srjlegal.com/licencing-regime-series-payment-solution-service-provider-pssp-in-nigeria/
-* Selar payouts and creator count — https://techpoint.africa/news/selar-paid-out-9-8-billion-in-2024/
+- Paystack split payments — https://paystack.com/docs/payments/split-payments/
+- Paystack transaction splits (subaccounts, settlement) — https://support.paystack.com/en/articles/2132802
+- Dedicated Virtual Account API — `subaccount` / `split_code` on assignment — https://paystack.com/docs/api/dedicated-virtual-account/
+- Dedicated NUBAN — https://paystack.com/docs/payments/dedicated-virtual-accounts/
+- Meta Tech Provider onboarding / OBO deprecation — https://www.infobip.com/docs/whatsapp/tech-provider-program/business-onboarding
+- CBN PSSP licensing, capital, and the no-fund-custody rule — https://srjlegal.com/licencing-regime-series-payment-solution-service-provider-pssp-in-nigeria/
+- Selar payouts and creator count — https://techpoint.africa/news/selar-paid-out-9-8-billion-in-2024/

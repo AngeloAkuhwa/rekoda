@@ -5,6 +5,7 @@ import { SessionGuard } from './auth/session.guard.js';
 import { RolesGuard } from './auth/roles.guard.js';
 import { DbModule } from './db/db.module.js';
 import { HealthController } from './health/health.controller.js';
+import { OpsController } from './health/ops.controller.js';
 import { MetaWebhookController } from './channels/meta.controller.js';
 import { MetaIngressService } from './channels/meta.service.js';
 import { JobsModule } from './jobs/jobs.module.js';
@@ -14,7 +15,13 @@ import { ReportsModule } from './reports/reports.module.js';
 
 @Module({
   imports: [DbModule, JobsModule, PaymentsModule, RepliesModule, ReportsModule],
-  controllers: [AuthController, BusinessController, HealthController, MetaWebhookController],
+  controllers: [
+    AuthController,
+    BusinessController,
+    HealthController,
+    OpsController,
+    MetaWebhookController,
+  ],
   providers: [AuthService, SessionGuard, RolesGuard, MetaIngressService],
 })
 export class AppModule {}

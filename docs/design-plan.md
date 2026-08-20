@@ -2,8 +2,8 @@
 
 **Version:** 1.0 · 19 August 2026
 **Owns:** how every Rekoda surface is designed, built and reviewed.
-**Companion to:** `MASTER-PLAN.md` Part 6 (which lists *what* screens exist —
-this document says *how they are made good*).
+**Companion to:** `MASTER-PLAN.md` Part 6 (which lists _what_ screens exist —
+this document says _how they are made good_).
 
 ---
 
@@ -17,12 +17,12 @@ the numbers on the screen are true.
 
 Four constraints fall out of the market and none of them are negotiable:
 
-| Constraint | Consequence for design |
-|---|---|
-| **The median device is a budget Android at 360–390 CSS px** | Mobile-first is literal, not aspirational. Every screen is designed at 360px *first* and enhanced upward. A layout that only works at 1440 has failed. |
-| **Data costs real money to the user** | Payload is a design constraint. Performance budget: **< 120 KB JS on first load** for marketing, **< 250 KB** for the dashboard shell. No web fonts over 2 files. Images WebP/AVIF, lazy, with reserved space (CLS < 0.1). |
-| **The network is flaky** | Skeletons not spinners; optimistic states only where reversible; every failed action states what happened and how to retry. Never a dead screen. |
-| **Trust is the conversion barrier, not features** | Money figures get typographic weight and never move on load. `RECORDED` vs `VERIFIED` is a visual distinction, not a tooltip. Trust pages (`/security`, `/ai-privacy`) are designed, not dumped. |
+| Constraint                                                  | Consequence for design                                                                                                                                                                                                     |
+| ----------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **The median device is a budget Android at 360–390 CSS px** | Mobile-first is literal, not aspirational. Every screen is designed at 360px _first_ and enhanced upward. A layout that only works at 1440 has failed.                                                                     |
+| **Data costs real money to the user**                       | Payload is a design constraint. Performance budget: **< 120 KB JS on first load** for marketing, **< 250 KB** for the dashboard shell. No web fonts over 2 files. Images WebP/AVIF, lazy, with reserved space (CLS < 0.1). |
+| **The network is flaky**                                    | Skeletons not spinners; optimistic states only where reversible; every failed action states what happened and how to retry. Never a dead screen.                                                                           |
+| **Trust is the conversion barrier, not features**           | Money figures get typographic weight and never move on load. `RECORDED` vs `VERIFIED` is a visual distinction, not a tooltip. Trust pages (`/security`, `/ai-privacy`) are designed, not dumped.                           |
 
 ---
 
@@ -33,7 +33,7 @@ interchangeable.
 
 > **The full skill is vendored at
 > [`design-system/reference/ui-ux-pro-max/`](../design-system/reference/ui-ux-pro-max/)
-> — scripts *and* data — and runs from this repo.** No session depends on the
+> — scripts _and_ data — and runs from this repo.** No session depends on the
 > skill being synced, and the earlier caveat about remote sessions no longer
 > applies. Run it from the repo root:
 >
@@ -54,11 +54,11 @@ python3 "$SKILL/scripts/search.py" \
   --density 6 --motion 4 --variance 3
 ```
 
-* `--density 6` — financial tables need tighter rhythm than a marketing page;
+- `--density 6` — financial tables need tighter rhythm than a marketing page;
   generate a second pass at `--density 8 --page dashboard` for `/business/*`.
-* `--motion 4` — this is a trust product. Motion clarifies state change and
+- `--motion 4` — this is a trust product. Motion clarifies state change and
   nothing else. No scroll-jacking, no decorative choreography.
-* `--variance 3` — conventional, centred, unsurprising. Brutalism and
+- `--variance 3` — conventional, centred, unsurprising. Brutalism and
   asymmetry sell agencies; they do not sell ledgers.
 
 Output lands at `design-system/rekoda/MASTER.md` with page overrides under
@@ -83,14 +83,14 @@ Every imported component is immediately re-skinned onto Rekoda tokens in the
 same commit. A component that still carries its author's palette after review
 is a bug. Scouted starting points:
 
-| Surface | Component | Use for |
-|---|---|---|
-| `/business` overview | [Financial Dashboard](https://21st.dev/@ravikatiyar162/components/financial-dashboard) | Hub layout, quick actions, recent-transaction rhythm |
-| Stat tiles | [Financial Score Cards](https://21st.dev/@designali-in/components/financial-score-cards) | Staggered entrance, badge treatment |
-| Reports | [Advanced Stats](https://21st.dev/@uilayout.contact/components/advanced-stats) | KPI row + area chart pairing |
-| Payments summary | [Payment Summary Card](https://21st.dev/@kavikatiyar/components/card-3) | Primary metric + clickable sub-section |
-| `/pricing` | Search `pricing table monthly annual toggle` | Tier ladder |
-| `/` hero | Search `financial hero scroll reveal` | Phone-mock hero |
+| Surface              | Component                                                                                | Use for                                              |
+| -------------------- | ---------------------------------------------------------------------------------------- | ---------------------------------------------------- |
+| `/business` overview | [Financial Dashboard](https://21st.dev/@ravikatiyar162/components/financial-dashboard)   | Hub layout, quick actions, recent-transaction rhythm |
+| Stat tiles           | [Financial Score Cards](https://21st.dev/@designali-in/components/financial-score-cards) | Staggered entrance, badge treatment                  |
+| Reports              | [Advanced Stats](https://21st.dev/@uilayout.contact/components/advanced-stats)           | KPI row + area chart pairing                         |
+| Payments summary     | [Payment Summary Card](https://21st.dev/@kavikatiyar/components/card-3)                  | Primary metric + clickable sub-section               |
+| `/pricing`           | Search `pricing table monthly annual toggle`                                             | Tier ladder                                          |
+| `/` hero             | Search `financial hero scroll reveal`                                                    | Phone-mock hero                                      |
 
 ---
 
@@ -99,7 +99,7 @@ is a bug. Scouted starting points:
 Derived from `ui-ux-pro-max` priority categories 1–10, ordered by their
 priority, with Rekoda-specific bindings.
 
-**P1 Accessibility.** 4.5:1 contrast in *both* themes. Every icon-only control
+**P1 Accessibility.** 4.5:1 contrast in _both_ themes. Every icon-only control
 carries an accessible label. Focus rings visible and never removed. Keyboard
 path through every flow. Decorative icons `aria-hidden`.
 
@@ -134,40 +134,40 @@ pattern. Legends and tooltips always.
 
 ### 3.1 Rekoda-specific additions
 
-* **Every money figure renders through `formatKobo`.** Hand-rolled currency
+- **Every money figure renders through `formatKobo`.** Hand-rolled currency
   formatting anywhere in `apps/web` is a review rejection. One function, one
   truth, matching the PDFs exactly.
-* **`RECORDED` and `VERIFIED` are visually distinct and equally calm.** Both
+- **`RECORDED` and `VERIFIED` are visually distinct and equally calm.** Both
   are normal states. `VERIFIED` gets a quiet affirmative mark; `RECORDED` gets
   a neutral one. Neither is styled as a warning — see §4.3.
-* **Money never shifts on load.** Reserve the exact space; a figure that
+- **Money never shifts on load.** Reserve the exact space; a figure that
   reflows after hydration reads as an unreliable figure.
-* **Empty states teach.** "No invoices yet" is a failure. "Send Rekoda a
+- **Empty states teach.** "No invoices yet" is a failure. "Send Rekoda a
   message on WhatsApp and your first invoice appears here" is the product.
 
 ---
 
 ## 4. Surface-by-surface UX intent
 
-### 4.0 Surface 0 — the WhatsApp conversation *(the primary UI)*
+### 4.0 Surface 0 — the WhatsApp conversation _(the primary UI)_
 
 The highest-traffic interface in the product renders no HTML. It gets the same
 rigour as a screen and the same review process.
 
-* **Voice:** warm, direct, Nigerian English. Pidgin *understood*, never
+- **Voice:** warm, direct, Nigerian English. Pidgin _understood_, never
   performed — writing pidgin back at a merchant who wrote standard English is
   condescending and will be read that way.
-* **Every flow is specced like a screen**: happy path, each failure, each
+- **Every flow is specced like a screen**: happy path, each failure, each
   recovery, with exact copy. Copy is reviewed the way pixels are.
-* **Native controls over free text** where a choice is bounded: buttons (≤3),
+- **Native controls over free text** where a choice is bounded: buttons (≤3),
   lists (≤10). Cheaper, faster, and unambiguous to parse.
-* **One message per turn.** ADR 0011 makes this an economic rule as well as a
+- **One message per turn.** ADR 0011 makes this an economic rule as well as a
   UX one: confirmation and result batch into a single message.
-* **Emoji sparse, never as icons or status.**
+- **Emoji sparse, never as icons or status.**
 
 ### 4.1 Marketing site — the job is belief, not explanation
 
-Hero states the promise (*"You run the business. Rekoda builds the records."*)
+Hero states the promise (_"You run the business. Rekoda builds the records."_)
 and shows the animated WhatsApp mock immediately — the product **is** a
 conversation, so showing the conversation is showing the product. Below:
 how-it-works in three steps, the reconciliation story, pricing transparency
@@ -192,21 +192,21 @@ The only surface a merchant's **customer** sees (ADR 0012 rung A1), and the
 hardest brief in the product: a stranger on a budget phone, on mobile data,
 arriving from a WhatsApp link, who has never heard of Rekoda.
 
-* **Merchant branding leads.** Their name, logo, colours. Rekoda appears as a
+- **Merchant branding leads.** Their name, logo, colours. Rekoda appears as a
   discreet credit — the same restraint as the PDF footer, never a banner.
-* **Fastest page we ship.** The < 120 KB JS budget is a ceiling here, not a
+- **Fastest page we ship.** The < 120 KB JS budget is a ceiling here, not a
   target. Server-rendered, images sized and lazy, zero layout shift.
-* **No account, no login, no install** to place an order. Any friction here is
+- **No account, no login, no install** to place an order. Any friction here is
   paid for by the merchant, in lost sales.
-* **Checkout asks the minimum** — name, phone, delivery note — and every field
+- **Checkout asks the minimum** — name, phone, delivery note — and every field
   is Zone 1 vault data the instant it is submitted.
-* **Say who is being paid.** The confirmation names the *merchant*, the amount,
+- **Say who is being paid.** The confirmation names the _merchant_, the amount,
   and what happens next. A customer who cannot tell who they just paid will not
   pay again.
 
 ### 4.3 Merchant dashboard — visibility, not work
 
-The dashboard is where a merchant *looks*, and the design must not imply
+The dashboard is where a merchant _looks_, and the design must not imply
 otherwise. Overview leads with the financial pulse: sales, received, expenses,
 outstanding, unreconciled.
 

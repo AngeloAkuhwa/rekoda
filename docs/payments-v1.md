@@ -235,6 +235,7 @@ already excludes non-product amounts (§15); tenant scoping via RLS (§42.7);
 `AuditEvent` (§42.13).
 
 **Decided by this spec:**
+
 - ADR 0003 ("merchant's own Paystack account", PROPOSED) is **superseded in
   direction**: V1 is the platform-subaccount model of ADR 0013/0019, gated by
   §47's written Paystack confirmation. The vaulted-merchant-key path remains a
@@ -250,6 +251,7 @@ already excludes non-product amounts (§15); tenant scoping via RLS (§42.7);
   the webhook-processing slice lands (it is unused surface before then).
 
 **Build order (each slice a reviewed PR, tests first where they have teeth):**
+
 1. ✅ **Shipped (PR #32).** Domain rules in `@rekoda/core` (references,
    verification decision, fee split, reconciliation states) +
    `payment_connections` and `payment_intents` + authenticated

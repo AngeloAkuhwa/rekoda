@@ -23,13 +23,13 @@ configurable model; nothing anywhere says "call Sonnet", it says "call the
 interpreter". Defaults, chosen from current capability and price
 (Anthropic first-party rates, June 2026 cache):
 
-| Role | Default model | Price in/out per MTok | Job |
-|---|---|---|---|
-| `transcriber` | self-hosted `afrispeech-whisper-medium-all` (ADR 0005/0008) | hosting only | Voice note → text. Self-hosted for two reasons that outrank ops convenience: "audio never leaves Rekoda" is a trust-page claim, and generic models run 30–45% WER on African-accented English (worse on names and amounts, which is all Rekoda's utterances are). OpenAI `gpt-4o-transcribe` exists in this role ONLY as the M3 benchmark comparator; it never becomes a silent fallback. |
-| `classifier` | Claude Haiku 4.5 | $1 / $5 | Document-type detection ("is this a receipt, an invoice, a statement?"), routing, and formatting §16 answers from deterministic query results. High volume, low nuance. |
-| `interpreter` | Claude Sonnet 5 | $3 / $15 (intro $2/$10 ends 2026-08-31) | Text or transcript → StructuredBusinessCommand. The existing interpreter role. |
-| `vision` | Claude Sonnet 5 | $3 / $15 | Receipts, handwritten bills, POS slips, photos (image blocks); supplier invoices and bank statements (native PDF document blocks, 32 MB / 600 pages) **with citations enabled**, so every extracted figure is pinned to the page that says it. |
-| `escalation` | Claude Opus 5 | $5 / $25 | Fired ONLY by a confidence gate on high-value work: an unreadable scan worth re-trying, an ambiguous statement match, a large correction. Never a default path. |
+| Role          | Default model                                               | Price in/out per MTok                   | Job                                                                                                                                                                                                                                                                                                                                                                                       |
+| ------------- | ----------------------------------------------------------- | --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `transcriber` | self-hosted `afrispeech-whisper-medium-all` (ADR 0005/0008) | hosting only                            | Voice note → text. Self-hosted for two reasons that outrank ops convenience: "audio never leaves Rekoda" is a trust-page claim, and generic models run 30–45% WER on African-accented English (worse on names and amounts, which is all Rekoda's utterances are). OpenAI `gpt-4o-transcribe` exists in this role ONLY as the M3 benchmark comparator; it never becomes a silent fallback. |
+| `classifier`  | Claude Haiku 4.5                                            | $1 / $5                                 | Document-type detection ("is this a receipt, an invoice, a statement?"), routing, and formatting §16 answers from deterministic query results. High volume, low nuance.                                                                                                                                                                                                                   |
+| `interpreter` | Claude Sonnet 5                                             | $3 / $15 (intro $2/$10 ends 2026-08-31) | Text or transcript → StructuredBusinessCommand. The existing interpreter role.                                                                                                                                                                                                                                                                                                            |
+| `vision`      | Claude Sonnet 5                                             | $3 / $15                                | Receipts, handwritten bills, POS slips, photos (image blocks); supplier invoices and bank statements (native PDF document blocks, 32 MB / 600 pages) **with citations enabled**, so every extracted figure is pinned to the page that says it.                                                                                                                                            |
+| `escalation`  | Claude Opus 5                                               | $5 / $25                                | Fired ONLY by a confidence gate on high-value work: an unreadable scan worth re-trying, an ambiguous statement match, a large correction. Never a default path.                                                                                                                                                                                                                           |
 
 Env overrides: `AI_MODEL_TRANSCRIBER`, `AI_MODEL_CLASSIFIER`,
 `AI_MODEL_INTERPRETER`, `AI_MODEL_VISION`, `AI_MODEL_ESCALATION`. Unset roles
@@ -54,6 +54,7 @@ input → cheapest capable model → confidence check
 ```
 
 Two rules make the ladder safe:
+
 - **Escalation is bounded**: one retry, one tier up, under the existing
   per-business and global spend ceilings. A merchant's blurry photo cannot
   become an Opus loop.
@@ -71,7 +72,7 @@ Two rules make the ladder safe:
   a retry, never a parse adventure.
 - **Citations for evidence** — statement and invoice extraction enables
   per-document citations, so reconciliation exceptions can show the merchant
-  *where* a figure came from.
+  _where_ a figure came from.
 
 ## 4. The rules that do not bend (unchanged, restated)
 

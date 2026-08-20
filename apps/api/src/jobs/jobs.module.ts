@@ -6,9 +6,9 @@ import {
   type OnApplicationShutdown,
   type OnModuleInit,
 } from '@nestjs/common';
-import { createDb, type Db } from '@rekoda/db';
+import { type Db } from '@rekoda/db';
 import { CONFIG, type ApiConfig } from '../config.js';
-import { DB } from '../db/db.module.js';
+import { DB, WORKER_DB } from '../db/db.module.js';
 import { AiModule } from '../ai/ai.module.js';
 import { RepliesModule } from '../replies/replies.module.js';
 import { ReplySender } from '../replies/reply.service.js';
@@ -26,6 +26,7 @@ import { PaymentIntentsService } from '../payments/payment-intents.service.js';
 import { PAYMENT_PROVIDER, type PaymentProviderPort } from '../payments/provider.port.js';
 import { pumpPaystackEvents } from '../payments/paystack-pump.js';
 import { sweepSettlements } from '../payments/settlement-sweep.js';
+import { sweepUnknownSenders } from '../channels/stranger-sweep.js';
 import { MESSAGE_SENDER } from '../channels/sender.tokens.js';
 import type { MessageSender } from '../channels/sender.js';
 import { DocumentsModule, DOCUMENT_STORAGE } from '../documents/documents.module.js';
@@ -91,15 +92,17 @@ export function buildRunner(
 class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
   private readonly log = new Logger(JobRunnerLifecycle.name);
   private runner: JobRunner | null = null;
-  private closeWorkerDb: (() => Promise<void>) | null = null;
   private pumpTimer: NodeJS.Timeout | null = null;
   private pumping = false;
   private sweepTimer: NodeJS.Timeout | null = null;
   private sweeping = false;
+  private strangerTimer: NodeJS.Timeout | null = null;
+  private greeting = false;
 
   constructor(
     @Inject(CONFIG) private readonly config: ApiConfig,
     @Inject(DB) private readonly appDb: Db,
+    @Inject(WORKER_DB) private readonly workerDb: Db | null,
     @Inject(PrivacyGateway) private readonly gateway: PrivacyGateway,
     @Inject(Interpreter) private readonly interpreter: Interpreter,
     @Inject(ReplySender) private readonly replySender: ReplySender,
@@ -110,15 +113,12 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
   ) {}
 
   onModuleInit(): void {
-    if (!this.config.workerEnabled || !this.config.workerDatabaseUrl) {
+    if (!this.config.workerEnabled || !this.workerDb) {
       this.log.log('job runner disabled for this process (REKODA_WORKER is not 1)');
       return;
     }
-    // A small pool: the claim query is one statement and the work happens on
-    // the application connection.
-    const handle = createDb(this.config.workerDatabaseUrl, { max: 2 });
-    this.closeWorkerDb = handle.close;
-    this.runner = buildRunner(handle.db, this.appDb, {
+    const workerDb = this.workerDb;
+    this.runner = buildRunner(workerDb, this.appDb, {
       gateway: this.gateway,
       interpreter: this.interpreter,
       replySender: this.replySender,
@@ -136,7 +136,6 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
      * never stack pump runs — and the timer is unref'd so a shutting-down
      * process is not held open by attribution nobody will act on.
      */
-    const workerDb = handle.db;
     this.pumpTimer = setInterval(() => {
       if (this.pumping) return;
       this.pumping = true;
@@ -170,13 +169,37 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
         });
     }, 600_000);
     this.sweepTimer.unref();
+
+    /**
+     * Answering strangers rides the same worker on a middle clock: fast
+     * enough that someone who just messaged the number is not left waiting,
+     * slow enough that it is not competing with the attribution pump for the
+     * same small pool.
+     */
+    this.strangerTimer = setInterval(() => {
+      if (this.greeting) return;
+      this.greeting = true;
+      sweepUnknownSenders({
+        workerDb,
+        sender: this.sender,
+        vaultKey: this.config.vaultKey,
+        matchKey: this.config.matchKey,
+      })
+        .catch((error: unknown) => {
+          this.log.warn(`stranger sweep failed: ${redactForLog(describeFailure(error))}`);
+        })
+        .finally(() => {
+          this.greeting = false;
+        });
+    }, 20_000);
+    this.strangerTimer.unref();
   }
 
   async onApplicationShutdown(): Promise<void> {
     if (this.pumpTimer) clearInterval(this.pumpTimer);
     if (this.sweepTimer) clearInterval(this.sweepTimer);
+    if (this.strangerTimer) clearInterval(this.strangerTimer);
     await this.runner?.stop();
-    await this.closeWorkerDb?.();
   }
 }
 

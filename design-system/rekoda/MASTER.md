@@ -31,11 +31,11 @@ python3 design-system/reference/ui-ux-pro-max/scripts/search.py "<query>" --doma
 
 **The skill independently confirmed the two decisions that matter most:**
 
-| Decision | Skill output | Verdict |
-|---|---|---|
-| **Typography — Calistoga + Inter** | Same pairing, matched to *"B2B SaaS mobile, **fintech apps**, analytics dashboards"*, mood *"fintech, business, dual font, human warmth"* | ✅ **Independently confirmed.** Chosen here from predecessor testing; the database agrees. |
-| **Style — Minimalism & Swiss** | *"Clean, functional, high contrast, grid-based… best for dashboards, SaaS platforms, professional tools"* | ✅ Matches the `--variance 3` brief exactly |
-| **Pattern — Trust & Authority + Conversion** | *"Security badges. Transparent pricing. Low-friction form."* | ✅ Matches "trust is the conversion barrier, not features" |
+| Decision                                     | Skill output                                                                                                                              | Verdict                                                                                    |
+| -------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| **Typography — Calistoga + Inter**           | Same pairing, matched to _"B2B SaaS mobile, **fintech apps**, analytics dashboards"_, mood _"fintech, business, dual font, human warmth"_ | ✅ **Independently confirmed.** Chosen here from predecessor testing; the database agrees. |
+| **Style — Minimalism & Swiss**               | _"Clean, functional, high contrast, grid-based… best for dashboards, SaaS platforms, professional tools"_                                 | ✅ Matches the `--variance 3` brief exactly                                                |
+| **Pattern — Trust & Authority + Conversion** | _"Security badges. Transparent pricing. Low-friction form."_                                                                              | ✅ Matches "trust is the conversion barrier, not features"                                 |
 
 **One deliberate override — colour.** The generated system proposes **indigo
 `#6366F1` + emerald `#059669` on a violet-tinted ground `#F5F3FF`** ("Navy/Grey
@@ -44,7 +44,7 @@ database cannot see:
 
 1. **Market evidence beats a category match.** The predecessor (VoiceReceipt)
    shipped teal-on-warm-neutral to real Nigerian merchants and it tested well.
-   MASTER-PLAN Part 5.2.1 says *evolve, don't discard*.
+   MASTER-PLAN Part 5.2.1 says _evolve, don't discard_.
 2. **The exact values are in the database anyway** — a `--domain color` search
    returns **Primary `#0F766E`, Secondary `#14B8A6`**, the precise teals used
    here, just filed under a different product type. The palette is validated;
@@ -58,9 +58,9 @@ database cannot see:
 checklist items this file was missing — **`cursor: pointer` on every clickable
 element**, and testing at **375px** as well as 360.
 
-**Motion note from the skill's stagger preset, worth keeping:** *"Don't use
+**Motion note from the skill's stagger preset, worth keeping:** _"Don't use
 `back.out` on dense data tables — the overshoot reads as sloppy on informational
-UI."* That is exactly why Rekoda runs a **low** motion tier on `/business/*`.
+UI."_ That is exactly why Rekoda runs a **low** motion tier on `/business/*`.
 
 ---
 
@@ -85,53 +85,66 @@ clinical.
 ```css
 :root {
   /* Brand */
-  --rk-teal-50:  #f0fdfa;  --rk-teal-100: #ccfbf1;  --rk-teal-200: #99f6e4;
-  --rk-teal-500: #14b8a6;  --rk-teal-600: #0d9488;  --rk-teal-700: #0f766e;
-  --rk-teal-800: #115e59;  --rk-teal-900: #134e4a;
+  --rk-teal-50: #f0fdfa;
+  --rk-teal-100: #ccfbf1;
+  --rk-teal-200: #99f6e4;
+  --rk-teal-500: #14b8a6;
+  --rk-teal-600: #0d9488;
+  --rk-teal-700: #0f766e;
+  --rk-teal-800: #115e59;
+  --rk-teal-900: #134e4a;
 
   /* Warm neutral ground */
-  --rk-sand-50:  #fcfcfb;  --rk-sand-100: #f7f6f3;  --rk-sand-200: #eceae4;
-  --rk-sand-300: #ddd9d0;  --rk-sand-600: #6b6862;  --rk-sand-700: #4a4843;
+  --rk-sand-50: #fcfcfb;
+  --rk-sand-100: #f7f6f3;
+  --rk-sand-200: #eceae4;
+  --rk-sand-300: #ddd9d0;
+  --rk-sand-600: #6b6862;
+  --rk-sand-700: #4a4843;
   --rk-sand-900: #1c1b19;
 
   /* Semantic — money states (ADR 0014: three states, never two) */
-  --rk-verified:   #0d9488;  /* provider-confirmed. Quiet affirmative. */
-  --rk-recorded:   #6b6862;  /* merchant said so. NEUTRAL — never a warning. */
-  --rk-notseen:    #8a877f;  /* not observed yet. NEVER styled as failure.  */
-  --rk-attention:  #b45309;  /* genuine mismatch only                       */
-  --rk-danger:     #b91c1c;
+  --rk-verified: #0d9488; /* provider-confirmed. Quiet affirmative. */
+  --rk-recorded: #6b6862; /* merchant said so. NEUTRAL — never a warning. */
+  --rk-notseen: #8a877f; /* not observed yet. NEVER styled as failure.  */
+  --rk-attention: #b45309; /* genuine mismatch only                       */
+  --rk-danger: #b91c1c;
 
   /* Applied */
-  --rk-bg:            var(--rk-sand-50);
-  --rk-surface:       #ffffff;
-  --rk-surface-sunk:  var(--rk-sand-100);
-  --rk-border:        var(--rk-sand-300);
-  --rk-text:          var(--rk-sand-900);
-  --rk-text-muted:    var(--rk-sand-600);
-  --rk-accent:        var(--rk-teal-700);
-  --rk-accent-hover:  var(--rk-teal-800);
-  --rk-focus:         var(--rk-teal-600);
+  --rk-bg: var(--rk-sand-50);
+  --rk-surface: #ffffff;
+  --rk-surface-sunk: var(--rk-sand-100);
+  --rk-border: var(--rk-sand-300);
+  --rk-text: var(--rk-sand-900);
+  --rk-text-muted: var(--rk-sand-600);
+  --rk-accent: var(--rk-teal-700);
+  --rk-accent-hover: var(--rk-teal-800);
+  --rk-focus: var(--rk-teal-600);
 }
 
-:root:not([data-theme="light"]) { /* dark via system */ }
+:root:not([data-theme='light']) {
+  /* dark via system */
+}
 @media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --rk-bg:           #14140f;
-    --rk-surface:      #1c1b18;
+  :root:not([data-theme='light']) {
+    --rk-bg: #14140f;
+    --rk-surface: #1c1b18;
     --rk-surface-sunk: #232220;
-    --rk-border:       #35332e;
-    --rk-text:         #f2f1ec;
-    --rk-text-muted:   #a8a49b;
-    --rk-accent:       var(--rk-teal-500);
+    --rk-border: #35332e;
+    --rk-text: #f2f1ec;
+    --rk-text-muted: #a8a49b;
+    --rk-accent: var(--rk-teal-500);
     --rk-accent-hover: var(--rk-teal-200);
-    --rk-verified:     #2dd4bf;
-    --rk-recorded:     #a8a49b;
-    --rk-notseen:      #8a877f;
-    --rk-attention:    #f59e0b;
-    --rk-danger:       #f87171;
+    --rk-verified: #2dd4bf;
+    --rk-recorded: #a8a49b;
+    --rk-notseen: #8a877f;
+    --rk-attention: #f59e0b;
+    --rk-danger: #f87171;
   }
 }
-:root[data-theme="dark"] { /* same overrides — toggle must win both ways */ }
+:root[data-theme='dark'] {
+  /* same overrides — toggle must win both ways */
+}
 ```
 
 **Contrast, verified targets (P1):** `--rk-text` on `--rk-bg` ≥ 15:1 ·
@@ -150,8 +163,10 @@ its own surface with the dataviz six-checks script (lightness band, chroma
 floor, CVD ΔE ≥ 8 adjacent, ≥ 3:1 contrast) — dark is a re-step, not a flip.
 
 ```css
---rk-chart-in:  #0d9488;  /* light */   --rk-chart-out: #9d3557;
---rk-chart-in:  #11a897;  /* dark  */   --rk-chart-out: #a84368;
+--rk-chart-in: #0d9488; /* light */
+--rk-chart-out: #9d3557;
+--rk-chart-in: #11a897; /* dark  */
+--rk-chart-out: #a84368;
 ```
 
 Status colours (`--rk-attention`, `--rk-danger`) are never chart series.
@@ -160,17 +175,24 @@ Status colours (`--rk-attention`, `--rk-danger`) are never chart series.
 
 ## 3. Typography
 
-| Role | Family | Notes |
-|---|---|---|
-| Display | **Calistoga** | Headings only. Tested well on the predecessor. One weight (400). |
-| Body / UI | **Inter** | 400/500/600. `font-feature-settings: "tnum"` on **all** money. |
-| Mono | `ui-monospace, SFMono-Regular, Menlo, monospace` | Document numbers, references |
+| Role      | Family                                           | Notes                                                            |
+| --------- | ------------------------------------------------ | ---------------------------------------------------------------- |
+| Display   | **Calistoga**                                    | Headings only. Tested well on the predecessor. One weight (400). |
+| Body / UI | **Inter**                                        | 400/500/600. `font-feature-settings: "tnum"` on **all** money.   |
+| Mono      | `ui-monospace, SFMono-Regular, Menlo, monospace` | Document numbers, references                                     |
 
 ```css
---rk-text-xs: 0.75rem;  --rk-text-sm: 0.875rem; --rk-text-base: 1rem;
---rk-text-lg: 1.125rem; --rk-text-xl: 1.375rem; --rk-text-2xl: 1.75rem;
---rk-text-3xl: 2.25rem; --rk-text-4xl: 3rem;
---rk-leading-tight: 1.2; --rk-leading-normal: 1.5; --rk-leading-relaxed: 1.65;
+--rk-text-xs: 0.75rem;
+--rk-text-sm: 0.875rem;
+--rk-text-base: 1rem;
+--rk-text-lg: 1.125rem;
+--rk-text-xl: 1.375rem;
+--rk-text-2xl: 1.75rem;
+--rk-text-3xl: 2.25rem;
+--rk-text-4xl: 3rem;
+--rk-leading-tight: 1.2;
+--rk-leading-normal: 1.5;
+--rk-leading-relaxed: 1.65;
 ```
 
 **Rules (P6):** body base **16px minimum**, never below 12px anywhere.
@@ -183,14 +205,23 @@ jitter on update.
 ## 4. Spacing, radius, elevation
 
 ```css
---rk-space-1: 4px;  --rk-space-2: 8px;  --rk-space-3: 12px; --rk-space-4: 16px;
---rk-space-5: 24px; --rk-space-6: 32px; --rk-space-8: 48px; --rk-space-10: 64px;
+--rk-space-1: 4px;
+--rk-space-2: 8px;
+--rk-space-3: 12px;
+--rk-space-4: 16px;
+--rk-space-5: 24px;
+--rk-space-6: 32px;
+--rk-space-8: 48px;
+--rk-space-10: 64px;
 
---rk-radius-sm: 6px; --rk-radius-md: 10px; --rk-radius-lg: 14px; --rk-radius-full: 999px;
+--rk-radius-sm: 6px;
+--rk-radius-md: 10px;
+--rk-radius-lg: 14px;
+--rk-radius-full: 999px;
 
 --rk-shadow-sm: 0 1px 2px rgb(28 27 25 / 0.06);
 --rk-shadow-md: 0 2px 8px rgb(28 27 25 / 0.08);
---rk-shadow-lg: 0 8px 24px rgb(28 27 25 / 0.10);
+--rk-shadow-lg: 0 8px 24px rgb(28 27 25 / 0.1);
 ```
 
 **Density:** marketing and storefront use 4–8 (spacious); `/business/*` uses
@@ -201,9 +232,9 @@ jitter on update.
 ## 5. Motion
 
 ```css
---rk-dur-fast: 120ms;  /* state feedback            */
---rk-dur-base: 200ms;  /* enters, reveals           */
---rk-dur-slow: 320ms;  /* page-level transitions    */
+--rk-dur-fast: 120ms; /* state feedback            */
+--rk-dur-base: 200ms; /* enters, reveals           */
+--rk-dur-slow: 320ms; /* page-level transitions    */
 --rk-ease: cubic-bezier(0.2, 0, 0.2, 1);
 --rk-ease-out: cubic-bezier(0, 0, 0.2, 1);
 ```
@@ -214,9 +245,13 @@ Animate `transform`/`opacity` only, never `width`/`height`.
 
 ```css
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after {
-    animation-duration: 0.01ms !important; animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important; scroll-behavior: auto !important;
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 }
 ```

@@ -11,7 +11,7 @@ This decision has moved twice, and the reader deserves to know why rather than
 finding three contradictory recommendations in the repo:
 
 1. **First:** platform-managed flow (Rekoda's Paystack, merchants as subaccounts),
-   because it made onboarding *"give us your account number."*
+   because it made onboarding _"give us your account number."_
 2. **Then:** standard flow first, on the reasoning that it carries no transaction
    liability while the product is unproven.
 3. **Then back to platform-managed**, once the **₦2M lifetime cap** on Starter
@@ -20,21 +20,21 @@ finding three contradictory recommendations in the repo:
 Three facts have landed since, and together they settle it in the other
 direction:
 
-* **The friction gap is much smaller than assumed.** Platform-managed still
+- **The friction gap is much smaller than assumed.** Platform-managed still
   requires Rekoda to collect **BVN/NIN + a Resolve Account name match** for every
   sub-merchant (ADR 0013's own controls). A Starter Business requires **ID + BVN
-  + a bank account**. **Both ask the merchant for the same things.** The
-  difference is *who* collects them and *who* carries the consequences — not how
-  much the merchant is asked to do.
-* **The ₦2M cap is a graduation gate, not a wall.** It is a *lifetime* cap on
+  - a bank account**. **Both ask the merchant for the same things.** The
+    difference is _who_ collects them and _who_ carries the consequences — not how
+    much the merchant is asked to do.
+- **The ₦2M cap is a graduation gate, not a wall.** It is a _lifetime_ cap on
   **Starter** accounts only. A merchant who reaches it is turning over real money
   and has an obvious next step — CAC registration, which Paystack itself sells as
   a service. Hitting the cap is a **success signal**, and the moment to help
   rather than the moment to lose them.
-* **Aggregation itself — not just custody — is what PSSP licenses.** The PSSP
+- **Aggregation itself — not just custody — is what PSSP licenses.** The PSSP
   scope is "payment processing gateway and portals, solution/application
   development, **merchant service aggregation and collections**." The plan has
-  been careful about *custody* (safety-review R1/R2) while treating aggregation
+  been careful about _custody_ (safety-review R1/R2) while treating aggregation
   as free. It is not obviously free. Paystack Connect existing as a product
   strongly implies Paystack has structured it so platforms may use it — but
   **that is an inference, and it is exactly what counsel has not yet confirmed.**
@@ -62,14 +62,14 @@ nothing to ask counsel before starting.
 
 What this buys, beyond compliance:
 
-* **Chargebacks, fraud and AML stay with Paystack and the merchant** — Paystack
+- **Chargebacks, fraud and AML stay with Paystack and the merchant** — Paystack
   does the KYC, as its standard flow documents.
-* **No concentration risk.** One bad merchant cannot take down every other
+- **No concentration risk.** One bad merchant cannot take down every other
   merchant, which was ADR 0013's single largest exposure.
-* **The merchant sees their own Paystack dashboard** — their money, their
+- **The merchant sees their own Paystack dashboard** — their money, their
   records, verifiable independently of Rekoda. For a product whose entire pitch
-  is *"know what actually happened"*, that transparency is on-message.
-* **Low lock-in, honestly.** They can leave and keep their payment relationship.
+  is _"know what actually happened"_, that transparency is on-message.
+- **Low lock-in, honestly.** They can leave and keep their payment relationship.
   Charging ₦19,900 for books, not for holding their money hostage, is the
   stronger position.
 
@@ -79,12 +79,12 @@ Phase 2 is ever taken.
 
 ### The graduation path — design it as a feature, not an edge case
 
-| Stage | Merchant state | Rekoda's move |
-|---|---|---|
-| Start | Starter account, no CAC | Onboard, collect nothing but their key |
-| ~₦1.5M collected | Approaching the cap | **Proactive nudge**: "you've collected ₦1.5M — time to register, here's how, we'll help" |
-| Cap reached | Collections disabled | Registration support; Paystack sells this. **A retention moment, possibly a revenue line** |
-| Registered | Uncapped, DVAs available | Full capability |
+| Stage            | Merchant state           | Rekoda's move                                                                              |
+| ---------------- | ------------------------ | ------------------------------------------------------------------------------------------ |
+| Start            | Starter account, no CAC  | Onboard, collect nothing but their key                                                     |
+| ~₦1.5M collected | Approaching the cap      | **Proactive nudge**: "you've collected ₦1.5M — time to register, here's how, we'll help"   |
+| Cap reached      | Collections disabled     | Registration support; Paystack sells this. **A retention moment, possibly a revenue line** |
+| Registered       | Uncapped, DVAs available | Full capability                                                                            |
 
 **Instrument this from day one.** Collected-to-date per merchant is a
 first-class telemetry field, and crossing ₦1.5M fires an alert in admin. A
@@ -103,7 +103,7 @@ for merchants who genuinely will not open any account of their own. It ships whe
    **January 2026 acquisition of Ladder Microfinance Bank**, now Paystack
    Microfinance Bank, which changes what Paystack itself may hold.
 2. The **empirical split check** passes: a live PwT charge with `split_code`
-   returns a **populated `split` object**, asserted on a field *inside* it —
+   returns a **populated `split` object**, asserted on a field _inside_ it —
    never on truthiness, per the `plan: {}` trap.
 3. The **ADR 0013 controls exist and have been exercised**: sub-merchant KYC,
    velocity limits, anomaly alerts, settlement-change re-verification, kill
@@ -119,17 +119,17 @@ moves off the critical path.
 bounded, visible and turned into a product moment rather than a failure.
 
 **A structural benefit worth naming:** the merchant-owned model makes Rekoda's
-value proposition *purely* the books, the reconciliation and the fake-alert
+value proposition _purely_ the books, the reconciliation and the fake-alert
 defence. It cannot be mistaken for a payment company, does not compete with
 Paystack, and is the easiest possible story to tell a regulator, a partner or a
 merchant.
 
 ## What this does not change
 
-* **Catalogue management is Rekoda's storefront** ([ADR 0018](0018-retire-waba-catalogue-capture.md)) — nothing to do with Paystack.
-* **Pay with Transfer is the collection method** ([ADR 0016](0016-per-transaction-accounts-not-per-customer.md)) — per-transaction accounts, **no customer KYC**, at **1.5% + ₦100 capped ₦2,000**, borne by the merchant and stated on `/pricing`.
-* **No customer is ever KYC'd** (R25) and **no BVN is ever stored** (R26).
-* **The fake-alert defence is unaffected** — verification still arrives in seconds from `charge.success`.
+- **Catalogue management is Rekoda's storefront** ([ADR 0018](0018-retire-waba-catalogue-capture.md)) — nothing to do with Paystack.
+- **Pay with Transfer is the collection method** ([ADR 0016](0016-per-transaction-accounts-not-per-customer.md)) — per-transaction accounts, **no customer KYC**, at **1.5% + ₦100 capped ₦2,000**, borne by the merchant and stated on `/pricing`.
+- **No customer is ever KYC'd** (R25) and **no BVN is ever stored** (R26).
+- **The fake-alert defence is unaffected** — verification still arrives in seconds from `charge.success`.
 
 ## One setup detail to solve properly
 
