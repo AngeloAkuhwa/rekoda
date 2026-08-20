@@ -111,7 +111,10 @@ describe('a capability that is not built', () => {
     const text = replies.notYet('Your debtor list').text;
     expect(text).toContain('Your debtor list');
     expect(text).toMatch(/not ready yet/i);
-    expect(text).toMatch(/sales, payments and expenses/i);
+    // This list is a capability CLAIM: it may only name what actually ships.
+    // "payments" stays out until RecordPayment is wired end to end.
+    expect(text).toMatch(/sales, expenses and stock purchases/i);
+    expect(text).not.toMatch(/\bpayments\b/i);
   });
 });
 

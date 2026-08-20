@@ -235,12 +235,39 @@ export function paymentConfirmed(
   );
 }
 
-/** A capability the plan names but the product does not have yet. */
+/**
+ * A capability the plan names but the product does not have yet.
+ *
+ * The "right now I can" list is a CLAIM and it must stay true. An earlier
+ * version said "payments and expenses" while both were unbuilt — precisely
+ * the invented capability this file exists to prevent. If a capability ships,
+ * add it here; if it has not shipped, it does not appear here.
+ */
 export function notYet(what: string): Reply {
   return reply(
     `${what} is not ready yet, but it is coming. Right now I can record sales, ` +
-      'payments and expenses.',
+      'expenses and stock purchases.',
   );
+}
+
+/**
+ * An expense is saved. Books moved, no document exists — an expense has no
+ * customer to hand paper to, so the message says "in your books", never
+ * "receipt" or "invoice".
+ */
+export function expenseSaved(amountK: number, description: string): Reply {
+  return reply(`Saved ✅ ${formatNaira(amountK)} expense: ${description}. It is in your books.`);
+}
+
+/**
+ * A stock purchase is saved. The figure a merchant needs next is what they
+ * still owe the supplier, so it is in the message when it exists — same
+ * reasoning as the balance line in `issued`.
+ */
+export function purchaseSaved(amountK: number, owedK: number): Reply {
+  const lines = [`Saved ✅ ${formatNaira(amountK)} stock purchase.`];
+  if (owedK > 0) lines.push(`${formatNaira(owedK)} still owed to your supplier.`);
+  return reply(lines.join('\n'));
 }
 
 /**
