@@ -11,7 +11,10 @@ import {
 } from './money.js';
 
 describe('kobo conversion', () => {
-  it('round-trips exactly for every 10-kobo step across ₦0–₦10,000', () => {
+  // 100,001 assertions: a property sweep, not a unit test. On a loaded CI
+  // runner it has been measured past vitest's 5s default, so it carries its
+  // own budget.
+  it('round-trips exactly for every 10-kobo step across ₦0–₦10,000', { timeout: 30_000 }, () => {
     for (let k = 0; k <= 1_000_000; k += 10) {
       expect(toKobo(fromKobo(k))).toBe(k);
     }
