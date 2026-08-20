@@ -1,16 +1,25 @@
 import { Logger } from '@nestjs/common';
 import {
+  allowanceFor,
   gateSale,
   isSaleSource,
   looksLikeCorrection,
   replies,
   routeMessage,
+  usagePeriod,
   type DeterministicIntent,
   type Reply,
 } from '@rekoda/core';
 import { extractInboundEvents, metaWebhookBody } from '@rekoda/contracts';
 import type { StructuredBusinessCommand } from '@rekoda/contracts';
-import { conversationsRepo, events, issueRepo, jobsRepo, type TenantDb } from '@rekoda/db';
+import {
+  conversationsRepo,
+  events,
+  issueRepo,
+  jobsRepo,
+  usageRepo,
+  type TenantDb,
+} from '@rekoda/db';
 import type { ApiConfig } from '../config.js';
 import type { Interpreter } from '../ai/interpreter.service.js';
 import type { PrivacyGateway } from '../privacy/gateway.service.js';
@@ -260,7 +269,31 @@ async function interpretedReply(
   safeText: string,
   conversationMessageId: string,
 ): Promise<Reply> {
+  /**
+   * The MONTHLY meter (docs/metering-v1.md), checked before the model is
+   * paid for. Router-served turns never reach this function, so free
+   * commands stay free at zero units. The consume is atomic: two racing
+   * messages cannot both take the last unit. Refusal is the doorway reply,
+   * and the unit was not spent — a refused message costs the merchant
+   * nothing.
+   */
+  const plan = await usageRepo.planFor(tx, businessId);
+  const monthlyMessages = allowanceFor(plan, 'messages');
+  const period = usagePeriod(new Date());
+  const granted = await usageRepo.consumeUnit(tx, businessId, period, 'messages', monthlyMessages);
+  if (!granted) return replies.allowanceExhausted(monthlyMessages);
+
   const interpreted = await deps.interpreter.interpret(businessId, safeText);
+
+  /**
+   * The meter only moves when the product worked. If the model never ran
+   * (daily ceiling, provider down) or its answer was unusable, the unit
+   * goes back in the same transaction — a merchant must never watch their
+   * allowance shrink on Rekoda's failures.
+   */
+  if (interpreted.outcome !== 'command') {
+    await usageRepo.refundUnit(tx, businessId, period, 'messages');
+  }
 
   /**
    * Three failures, three different sentences. Collapsing them into one

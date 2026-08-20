@@ -97,6 +97,22 @@ export function clarification(question: string): Reply {
   return reply(question.trim());
 }
 
+/**
+ * The MONTHLY allowance ran out (docs/metering-v1.md §3) — a doorway, not a
+ * wall. Says exactly three things: what ran out, that nothing was lost, and
+ * the two ways to continue. Reading is never gated, so the free commands are
+ * named rather than implied. The merchant who hits this is the product
+ * working, and the message must feel that way.
+ */
+export function allowanceExhausted(monthlyMessages: number): Reply {
+  return reply(
+    `You have used all ${monthlyMessages} messages in your plan this month. ` +
+      'Nothing is lost. Your records are safe, and *who owes me*, *records* and ' +
+      'your dashboard still work.\n\n' +
+      'To keep recording this month, upgrade your plan or top up at rekoda.app/pricing.',
+  );
+}
+
 /** The daily ceiling refused this merchant. Their own budget, their own day. */
 export function quotaReachedForBusiness(): Reply {
   return reply(

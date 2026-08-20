@@ -16,9 +16,11 @@ import {
   jobsRepo,
   quotaRepo,
   schema,
+  usageRepo,
   withBusiness,
   type Db,
 } from '@rekoda/db';
+import { PLAN_ALLOWANCES, usagePeriod } from '@rekoda/core';
 import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -862,6 +864,50 @@ describe("the plan's own example, end to end", () => {
     // A discarded draft must not be confirmable by an accidental yes later.
     await send('yes', 'wamid.LATE');
     expect(await invoiceCount(business.id)).toBe(0);
+  });
+
+  it('closes an exhausted month with a doorway, not a wall (metering-v1 §3)', async () => {
+    const business = await seedMerchant('+2348031234567', 'Ada Fashion');
+    const allowance = PLAN_ALLOWANCES.trial.messages;
+    // The whole trial allowance, spent the atomic way fifty messages would.
+    await withBusiness(db, business.id, (tx) =>
+      usageRepo.consumeUnit(
+        tx,
+        business.id,
+        usagePeriod(new Date()),
+        'messages',
+        allowance,
+        allowance,
+      ),
+    );
+
+    stubTransport.replyWith(THE_SALE);
+    await send('Ada bought 3 wigs for 150k, paid 100k', 'wamid.EXHAUSTED');
+
+    // Three things, exactly: what ran out, nothing lost, two doors forward.
+    expect(stubSender.lastText).toContain(`used all ${allowance} messages`);
+    expect(stubSender.lastText).toContain('who owes me');
+    expect(stubSender.lastText).toContain('upgrade');
+    // And the model was never paid for a refused message.
+    expect(stubTransport.requests).toHaveLength(0);
+
+    // Reading stays free FOREVER at zero units — the router tier is not metered.
+    await send('help', 'wamid.STILLFREE');
+    expect(stubSender.lastText).toContain('Record a sale');
+  });
+
+  it('refunds the unit when Rekoda failed, not the merchant (metering-v1)', async () => {
+    const business = await seedMerchant('+2348031234567', 'Ada Fashion');
+    // A reply the border checkpoint rejects: the model ran, Rekoda paid,
+    // the merchant got nothing. Their meter must not move.
+    stubTransport.replyWith({ intent: 'SomethingUnparseable' });
+    await send('Ada bought 3 wigs for 150k, paid 100k', 'wamid.UNUSABLE');
+    expect(stubSender.lastText).toContain('could not turn that into a record');
+
+    const rows = await withBusiness(db, business.id, (tx) =>
+      usageRepo.usageFor(tx, business.id, usagePeriod(new Date())),
+    );
+    expect(rows[0]?.used ?? 0).toBe(0);
   });
 });
 
