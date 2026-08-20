@@ -455,6 +455,31 @@ export async function ownerPhoneFor(db: Db, businessId: string): Promise<string 
   });
 }
 
+/**
+ * What this phone is allowed to do in this business, under an existing pin.
+ *
+ * The `ownerPhoneFor` above opens its own pin and so cannot be called from
+ * inside a job's transaction. This one takes the pin it is given, which is
+ * what a handler already holds.
+ *
+ * Null for a phone with no membership here. `memberships` is under row-level
+ * security and `users` is deliberately outside it, so the pin is what decides
+ * which user ids are reachable at all.
+ */
+export async function roleOfPhone(
+  tx: TenantDb,
+  businessId: string,
+  phone: string,
+): Promise<string | null> {
+  const rows = await tx
+    .select({ role: memberships.role })
+    .from(memberships)
+    .innerJoin(users, eq(users.id, memberships.userId))
+    .where(and(eq(memberships.businessId, businessId), eq(users.phone, phone)))
+    .limit(1);
+  return rows[0]?.role ?? null;
+}
+
 /* ─────────────────────── messaging consent (STOP/START) ─────────────────── */
 
 /**

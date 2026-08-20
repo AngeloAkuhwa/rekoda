@@ -21,12 +21,26 @@ export interface ReceiptDocument {
   readonly businessName: string;
   /** The obligation this money answered. */
   readonly invoiceNumber: string;
-  /** The RKD-PAY reference — what support and the provider both search by. */
+  /**
+   * The RKD-PAY reference — what support and the provider both search by.
+   * Empty for a payment the merchant reported: there is no provider record
+   * to search, and an empty labelled line is worse than no line.
+   */
   readonly reference: string;
-  /** What the provider confirmed arrived, in kobo. */
+  /** What arrived, in kobo. */
   readonly amountK: number;
   /** What was applied to the invoice — less than `amountK` on an overpayment. */
   readonly allocatedK: number;
+  /**
+   * Whether a PROVIDER confirmed this money, server to server (ADR 0014).
+   *
+   * The whole difference between the two receipts this product issues. A
+   * VERIFIED one can say so and that claim is what separates it from a
+   * screenshot; a RECORDED one is the merchant's own word about cash at the
+   * counter, and saying otherwise on a document they forward to the customer
+   * would be a lie printed on their letterhead.
+   */
+  readonly verified: boolean;
 }
 
 function issuedLine(at: Date): string {
@@ -44,10 +58,18 @@ export function layoutReceipt(doc: ReceiptDocument): LayoutBlock[] {
     { kind: 'meta', text: 'Receipt', value: doc.documentNumber },
     { kind: 'meta', text: 'Date', value: issuedLine(doc.issuedAt) },
     { kind: 'meta', text: 'For invoice', value: doc.invoiceNumber },
-    { kind: 'meta', text: 'Payment reference', value: doc.reference },
+  ];
+
+  // Only when there is one. A "Payment reference" line printed blank invites
+  // the reader to think something failed.
+  if (doc.reference) {
+    blocks.push({ kind: 'meta', text: 'Payment reference', value: doc.reference });
+  }
+
+  blocks.push(
     { kind: 'grand-total', text: 'Amount received', value: formatKobo(doc.amountK) },
     { kind: 'words', text: nairaInWords(doc.amountK) },
-  ];
+  );
 
   /**
    * Overpayment, stated rather than absorbed. The books applied only the
@@ -68,12 +90,18 @@ export function layoutReceipt(doc: ReceiptDocument): LayoutBlock[] {
   }
 
   /**
-   * The trust line. This is what separates a Rekoda receipt from a screenshot:
-   * the provider was asked, server to server, before this document existed.
+   * The trust line, and it says only what is true of THIS receipt.
+   *
+   * On a verified payment it is what separates a Rekoda receipt from a
+   * screenshot: the provider was asked, server to server, before this
+   * document existed. On one the merchant reported it says that instead, so
+   * the customer holding it knows exactly whose word it rests on.
    */
   blocks.push({
     kind: 'memo',
-    text: 'Payment confirmed with the payment provider before this receipt was issued.',
+    text: doc.verified
+      ? 'Payment confirmed with the payment provider before this receipt was issued.'
+      : 'Recorded by the seller from their own records. Not confirmed with a payment provider.',
   });
 
   blocks.push({ kind: 'footnote', text: 'E&OE' });

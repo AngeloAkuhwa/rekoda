@@ -13,6 +13,7 @@ import { and, eq } from 'drizzle-orm';
 import type { Db, TenantDb } from '../client.js';
 import { withBusiness } from '../client.js';
 import { customerIdentities, customers } from '../schema/privacy.js';
+import { auditEvents } from '../schema/ops.js';
 
 export type Queryable = Db | TenantDb;
 
@@ -228,11 +229,34 @@ function isUniqueViolation(error: unknown): boolean {
  * one statement. The customers rows stay — they hold only the CUSTOMER_x
  * token, which after this deletion resolves to nobody. Financial records
  * keep their reference numbers and nothing else.
+ *
+ * Audited in the same transaction, like every other privileged mutation in
+ * this codebase. An irreversible NDPR deletion that left no trace would be
+ * the one place a merchant could not answer "when did this happen and who
+ * asked for it" — including to a regulator asking on their customer's
+ * behalf. Counts only: an audit row that preserved what was erased would
+ * defeat the erasure.
  */
-export async function eraseAllIdentities(tx: TenantDb, businessId: string): Promise<number> {
+export async function eraseAllIdentities(
+  tx: TenantDb,
+  businessId: string,
+  sourceType: string,
+): Promise<number> {
   const deleted = await tx
     .delete(customerIdentities)
     .where(eq(customerIdentities.businessId, businessId))
     .returning({ id: customerIdentities.id });
+
+  await tx.insert(auditEvents).values({
+    businessId,
+    actor: 'system',
+    entity: 'customer_identities',
+    entityId: null,
+    action: 'erased',
+    newValue: { facetsDeleted: deleted.length },
+    reason: 'the merchant asked for erasure',
+    sourceType,
+  });
+
   return deleted.length;
 }

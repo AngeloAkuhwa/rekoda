@@ -71,7 +71,16 @@ export interface InboundMessageDeps {
 export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
   const log = new Logger('InboundMessageJob');
 
-  return async ({ tx, payload, businessId }: JobContext): Promise<void> => {
+  return async ({ tx, payload, businessId, attempt }: JobContext): Promise<void> => {
+    /**
+     * Metered units are taken in their own committed transactions, which is
+     * the one thing this job's rollback cannot undo. So a retry must not take
+     * them again: attempt 1 already did, and five attempts of one message
+     * would otherwise burn five units of a merchant's allowance for a failure
+     * that was ours. Under-counting by one on the rare first-attempt-crashed
+     * case is the right side to err on.
+     */
+    const retrying = attempt > 1;
     const eventId = typeof payload['eventId'] === 'string' ? payload['eventId'] : null;
     if (!eventId) {
       // Dies rather than retries: a payload with no event id will not grow one.
@@ -157,8 +166,9 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
             eventId,
             messageId: message.id,
             from: inbound.from,
+            retrying,
           })
-        : await interpretedReply(deps, tx, businessId, text, tokenised!.text, message.id);
+        : await interpretedReply(deps, tx, businessId, text, tokenised!.text, message.id, retrying);
 
     if (answer) {
       await deps.replySender.send(tx, {
@@ -181,6 +191,8 @@ interface CommandContext {
   messageId: string;
   /** The sender's wa id — the phone whose consent state STOP/START moves. */
   from: string;
+  /** True on attempt 2 and later. See the note where it is set. */
+  retrying: boolean;
 }
 
 /**
@@ -194,7 +206,7 @@ async function deterministicReply(
   intent: DeterministicIntent,
   ctx: CommandContext,
 ): Promise<Reply | null> {
-  if (intent.kind === 'affirm') return confirmPendingDraft(deps, tx, businessId);
+  if (intent.kind === 'affirm') return confirmPendingDraft(deps, tx, businessId, ctx.retrying);
   if (intent.kind === 'deny' || intent.kind === 'cancel') {
     // A refusal after a preview discards the draft rather than leaving it to
     // be confirmed by an accidental "yes" ten minutes later.
@@ -219,6 +231,11 @@ async function deterministicReply(
       await recordConsent(deps.db, ctx.from, null);
       return replies.optedIn();
     case 'delete_my_data': {
+      /* Owner only. This deletes every customer's contact details for the
+       * whole business in one irreversible statement, which is not a thing an
+       * accountant or a delegate should be able to do from a phone. */
+      if (!(await isOwner(tx, businessId, ctx.from))) return replies.erasureNotYours();
+
       /* Two-message erasure (CG-style): the first ask parks an EraseData
        * draft, the second ask claims it and deletes. Anything else in
        * between claims the draft through the ordinary yes/no paths and
@@ -229,10 +246,10 @@ async function deterministicReply(
         if (!(await conversationsRepo.claimDraft(tx, pending.id))) {
           return replies.alreadyConfirmed();
         }
-        const erased = await customersRepo.eraseAllIdentities(tx, businessId);
+        const erased = await customersRepo.eraseAllIdentities(tx, businessId, 'chat');
         return replies.erasureDone(erased);
       }
-      await conversationsRepo.supersedePendingDrafts(tx, businessId);
+      const discarded = await conversationsRepo.supersedePendingDrafts(tx, businessId);
       await conversationsRepo.recordDraft(tx, {
         businessId,
         conversationMessageId: ctx.messageId,
@@ -240,7 +257,7 @@ async function deterministicReply(
         command: { intent: 'EraseData' },
         model: null,
       });
-      return replies.confirmErasure();
+      return replies.confirmErasure(discarded);
     }
     case 'number':
       return replies.strayNumber();
@@ -276,6 +293,21 @@ async function deterministicReply(
  * normalise or belongs to no user is a quiet no-op — there is no consent
  * row to keep for a person the system has never verified.
  */
+/**
+ * Is this wa id the business's owner?
+ *
+ * False for an unparseable number rather than throwing: upstream attribution
+ * already accepted this sender, and the safe answer to "may they erase
+ * everything" when we cannot tell is no.
+ */
+async function isOwner(tx: TenantDb, businessId: string, from: string): Promise<boolean> {
+  try {
+    return (await identity.roleOfPhone(tx, businessId, normalisePhone(from))) === 'owner';
+  } catch {
+    return false;
+  }
+}
+
 async function recordConsent(db: Db, from: string, at: Date | null): Promise<void> {
   try {
     await identity.setOptOut(db, normalisePhone(from), at);
@@ -366,6 +398,7 @@ async function confirmPendingDraft(
   deps: InboundMessageDeps,
   tx: TenantDb,
   businessId: string,
+  retrying: boolean,
 ): Promise<Reply | null> {
   const draft = await conversationsRepo.pendingDraft(tx, businessId);
   if (!draft) return replies.nothingToConfirm();
@@ -373,24 +406,41 @@ async function confirmPendingDraft(
   const command = draft.command as { intent?: string } & Record<string, unknown>;
 
   /**
-   * A sale becomes an invoice, and invoices are a metered unit
-   * (docs/metering-v1.md §1). Checked BEFORE the draft is claimed and before
-   * anything is booked: the soft-limit rule is that nobody is cut off
-   * mid-transaction, and this is the last moment that is still between
-   * transactions. Refusing here leaves the draft pending, so the same "yes"
-   * works the moment they upgrade.
+   * An invoice and a receipt are both metered documents (metering-v1.md §1),
+   * and the copy says so: "invoices and receipts". A reported payment issues
+   * a receipt, so it costs a unit exactly like a sale does; leaving that free
+   * let a merchant on an exhausted plan take receipts without limit.
+   *
+   * Checked BEFORE the draft is claimed and before anything is booked: the
+   * soft-limit rule is that nobody is cut off mid-transaction, and this is
+   * the last moment that is still between transactions. Refusing here leaves
+   * the draft pending, so the same "yes" works the moment they upgrade.
    */
-  if (command.intent === 'RecordSale') {
+  const issuesDocument = command.intent === 'RecordSale' || command.intent === 'RecordPayment';
+  const period = usagePeriod(new Date());
+  let documentTaken = false;
+  if (issuesDocument && !retrying) {
     const plan = await usageRepo.planFor(tx, businessId);
+    /* A trial that lapsed between the preview and the yes is its own
+     * sentence. The allowance path would refuse correctly and say "you have
+     * used all 0 invoices this month", which is true of the number and
+     * useless about the reason. */
+    if (plan === 'expired') return replies.trialEnded();
     const allowance = allowanceFor(plan, 'documents');
-    const period = usagePeriod(new Date());
     const granted = await withBusiness(deps.db, businessId, (own) =>
       usageRepo.consumeUnit(own, businessId, period, 'documents', allowance),
     );
     if (!granted) return replies.allowanceExhausted(allowance, 'documents');
+    documentTaken = true;
   }
 
-  if (!(await conversationsRepo.claimDraft(tx, draft.id))) return replies.alreadyConfirmed();
+  if (!(await conversationsRepo.claimDraft(tx, draft.id))) {
+    /* The other "yes" won. It is issuing the invoice and it took its own
+     * unit, so this one goes back: two rapid confirmations must cost one
+     * document, which is how many the merchant ends up with. */
+    if (documentTaken) await refundDocument(deps, businessId, period);
+    return replies.alreadyConfirmed();
+  }
   if (command.intent === 'RecordExpense') return confirmExpense(tx, businessId, draft.id, command);
   if (command.intent === 'RecordPurchase')
     return confirmPurchase(tx, businessId, draft.id, command);
@@ -399,7 +449,14 @@ async function confirmPendingDraft(
     // else" in the confirmation copy's terms, and anything else keeps the data.
     return replies.erasureKept();
   }
-  if (command.intent === 'RecordPayment') return confirmPayment(tx, businessId, draft.id, command);
+  if (command.intent === 'RecordPayment') {
+    /* Refunds its own unit on every path that answers without issuing a
+     * receipt: an invoice settled from under the merchant, or a payment we
+     * could not place, must not cost them a document they never got. */
+    return confirmPayment(tx, businessId, draft.id, command, () =>
+      documentTaken ? refundDocument(deps, businessId, period) : Promise.resolve(),
+    );
+  }
   if (command.intent !== 'RecordSale') {
     // Anything else is not actionable yet. The draft is claimed either way,
     // so an unconfirmable one cannot sit pending forever inviting another yes.
@@ -409,7 +466,9 @@ async function confirmPendingDraft(
   const gate = gateSale(command as never);
   if (gate.gate !== 'CG2') {
     // Should be unreachable: a CG1 draft is never previewed, so nothing ever
-    // invited a yes for it. Handled rather than asserted.
+    // invited a yes for it. Handled rather than asserted, and the unit goes
+    // back with it, because no invoice comes out of this branch.
+    if (documentTaken) await refundDocument(deps, businessId, period);
     return replies.arithmeticQuestion(gate.question);
   }
 
@@ -528,25 +587,51 @@ async function confirmPayment(
   businessId: string,
   draftId: string,
   command: Record<string, unknown>,
+  refundDocumentUnit: () => Promise<void>,
 ): Promise<Reply> {
-  const invoice = await issueRepo.openInvoiceForPayment(tx, businessId, {
+  const target = await issueRepo.openInvoiceForPayment(tx, businessId, {
     invoiceNumber: (command['documentRef'] as string | null) ?? null,
     customerToken: customerTokenOf(command),
   });
-  if (!invoice) return replies.paymentNoOpenInvoice();
+  if (target.outcome === 'none') {
+    await refundDocumentUnit();
+    return replies.paymentNoOpenInvoice();
+  }
+  if (target.outcome === 'ambiguous') {
+    await refundDocumentUnit();
+    return replies.paymentWhichInvoice(target.openCount);
+  }
+  const invoice = target.invoice;
 
   const gate = gatePayment(command as never, invoice.invoiceNumber, invoice.balanceDueK);
-  if (gate.gate !== 'CG2') return replies.arithmeticQuestion(gate.question);
+  if (gate.gate !== 'CG2') {
+    await refundDocumentUnit();
+    return replies.arithmeticQuestion(gate.question);
+  }
 
-  const recorded = await settleRepo.recordMerchantPayment(tx, {
-    businessId,
-    invoiceId: invoice.id,
-    amountK: gate.amountK,
-    method: command['paymentMethod'] === 'cash' ? 'cash' : 'transfer',
-    sourceType: 'chat',
-    sourceId: draftId,
-    actor: 'system',
-  });
+  /* The gate read the balance without a lock; the write takes one. If a
+   * provider payment settled the invoice in between, the write refuses.
+   * Caught here because the alternative is what it used to do: throw, fail
+   * the job, retry to exhaustion, and leave the merchant who typed "yes"
+   * with no answer at all. */
+  let recorded: Awaited<ReturnType<typeof settleRepo.recordMerchantPayment>>;
+  try {
+    recorded = await settleRepo.recordMerchantPayment(tx, {
+      businessId,
+      invoiceId: invoice.id,
+      amountK: gate.amountK,
+      method: command['paymentMethod'] === 'cash' ? 'cash' : 'transfer',
+      sourceType: 'chat',
+      sourceId: draftId,
+      actor: 'system',
+    });
+  } catch (error) {
+    if (error instanceof settleRepo.AlreadySettled) {
+      await refundDocumentUnit();
+      return replies.paymentAlreadySettled(invoice.invoiceNumber);
+    }
+    throw error;
+  }
 
   /* The receipt gets the same render-then-deliver treatment a verified
    * payment's does, enqueued in this transaction so paper and record commit
@@ -558,9 +643,12 @@ async function confirmPayment(
     singletonKey: `receipt:${recorded.receiptId}`,
   });
 
+  /* Every figure here comes from the WRITE, never from the gate. The gate
+   * read the balance without a lock, so its amount is what we hoped to post;
+   * `recorded.amountK` is what the ledger actually took. */
   return replies.paymentRecorded(
     recorded.receiptNumber,
-    gate.amountK,
+    recorded.amountK,
     recorded.invoiceNumber,
     recorded.balanceDueK,
   );
@@ -579,6 +667,7 @@ async function interpretedReply(
   rawText: string,
   safeText: string,
   conversationMessageId: string,
+  retrying: boolean,
 ): Promise<Reply> {
   /**
    * The MONTHLY meter (docs/metering-v1.md), checked before the model is
@@ -607,7 +696,10 @@ async function interpretedReply(
    * what makes a separate transaction safe: the meter is corrected by a
    * second statement rather than by a rollback.
    */
-  const granted = await consumeMessage(deps, businessId, period, monthlyMessages);
+  /* Skipped on a retry: attempt 1's consume committed in its own transaction
+   * and survived this job's rollback, so taking another would charge the
+   * merchant again for one message. */
+  const granted = retrying || (await consumeMessage(deps, businessId, period, monthlyMessages));
   if (!granted) return replies.allowanceExhausted(monthlyMessages);
 
   const interpreted = await deps.interpreter.interpret(businessId, safeText);
@@ -618,7 +710,7 @@ async function interpretedReply(
    * back — a merchant must never watch their allowance shrink on Rekoda's
    * failures.
    */
-  if (interpreted.outcome !== 'command') {
+  if (interpreted.outcome !== 'command' && !retrying) {
     await refundMessage(deps, businessId, period);
   }
 
@@ -681,11 +773,13 @@ async function acknowledge(
    * never the model's arithmetic about what a customer owes.
    */
   if (command.intent === 'RecordPayment') {
-    const invoice = await issueRepo.openInvoiceForPayment(tx, businessId, {
+    const target = await issueRepo.openInvoiceForPayment(tx, businessId, {
       invoiceNumber: command.documentRef,
       customerToken: customerTokenOf(command as never),
     });
-    if (!invoice) return replies.paymentNoOpenInvoice();
+    if (target.outcome === 'none') return replies.paymentNoOpenInvoice();
+    if (target.outcome === 'ambiguous') return replies.paymentWhichInvoice(target.openCount);
+    const invoice = target.invoice;
 
     const paymentGate = gatePayment(command, invoice.invoiceNumber, invoice.balanceDueK);
     if (paymentGate.gate === 'CG1') return replies.arithmeticQuestion(paymentGate.question);
@@ -733,6 +827,17 @@ function consumeMessage(
 ): Promise<boolean> {
   return withBusiness(deps.db, businessId, (tx) =>
     usageRepo.consumeUnit(tx, businessId, period, 'messages', allowance),
+  );
+}
+
+/** Put a document unit back. Same standalone transaction as taking one. */
+function refundDocument(
+  deps: InboundMessageDeps,
+  businessId: string,
+  period: string,
+): Promise<void> {
+  return withBusiness(deps.db, businessId, (tx) =>
+    usageRepo.refundUnit(tx, businessId, period, 'documents'),
   );
 }
 

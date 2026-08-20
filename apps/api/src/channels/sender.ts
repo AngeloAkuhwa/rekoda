@@ -33,8 +33,28 @@ export interface OutboundDocument {
   caption?: string;
 }
 
+/**
+ * A one-time code, sent as an AUTHENTICATION TEMPLATE.
+ *
+ * The only sanctioned way to reach a phone that has not messaged the business
+ * number in the last 24 hours, which is every phone signing in for the first
+ * time. A free-form text to that number is rejected by Meta (131047), so a
+ * sign-in built on `send` cannot work in production however well it tests.
+ */
+export interface OutboundAuthCode {
+  to: string;
+  /** The code itself. Fills both the body placeholder and the copy button. */
+  code: string;
+}
+
 export interface MessageSender {
   send(message: OutboundMessage): Promise<SendResult>;
+  /**
+   * Deliver a one-time code. Separate from `send` for the same reason
+   * `sendDocument` is: on Meta it is a different message type under different
+   * rules, and hiding that behind `send` is what made sign-in look shipped.
+   */
+  sendAuthCode(code: OutboundAuthCode): Promise<SendResult>;
   /**
    * Send a file.
    *

@@ -6,8 +6,8 @@ points to. Keep it updated at the end of every working session — it is the
 project's memory, and it lives in the repo so it can never be lost with a
 chat.
 
-**Last updated:** 19 August 2026 · M1 identity complete (PR #9 merged, identity
-persistence follow-on in review).
+**Last updated:** 20 August 2026 · M2 chat and dashboard feature complete
+(through PR #51). Not launched: see "What is still missing" below.
 
 ---
 
@@ -63,14 +63,12 @@ repository's README commit; history is now on `main` plus this branch.
 delivered; **118 tests pass, 0 failed**; ~10,500 LOC / 15 service modules. The
 Part 4.3 port map is now against verified-working code.
 
-**M0 follow-ups are listed in MASTER-PLAN Part 4.4.** Three are now **done**
-(#1 boundary ban, #2 pooled-connection leakage test, #5 `businesses` INSERT
-helper). Still open: **#3** pg-boss jobs must run inside `withBusiness`,
-**#4** composite indexes on the debtors and reconciliation queues, and the two
-money-engine consistency fixes — **#6 is a real defect**: `computeMoney`
-silently clamps overpayment while `applyPayment` refuses it, so "sold for
-₦100k, she paid ₦150k" becomes ₦100k instead of surfacing as an exception.
-That contradicts the rule that mismatches are flagged, never fixed.
+**M0 follow-ups (MASTER-PLAN Part 4.4) are all closed.** The boundary ban and
+the pooled-connection leakage test are enforced in CI, jobs run pinned inside
+`withBusiness` under their own row-level-security policy (ADR 0022 replaced
+pg-boss with a queue in our own schema), the composite indexes landed with the
+reporting layer, and the overpayment clamp is fixed: an overpayment is now a
+CG1 question the merchant answers, never a figure the books round away.
 
 **`docs/safety-review.md` is the one-page risk view** — GREEN (safe to build
 now), AMBER (needs written confirmation from Paystack / counsel / Mono /
@@ -84,8 +82,8 @@ the review gate. Note the verified caveat: in remote sessions only the skill's
 session with the full skill payload and be committed.
 
 **M1 identity is complete.** The design system, marketing surface and the
-four-step onboarding flow shipped in PR #9. The follow-on replaced the dev-only
-in-memory store with real persistence:
+four-step onboarding flow shipped in PR #9; the follow-on replaced the dev-only
+in-memory store with real persistence.
 
 - **`apps/api`** — NestJS on Fastify. Auth module (OTP request/verify, business
   creation, sessions, role guard), health endpoint reporting the applied
@@ -99,25 +97,50 @@ in-memory store with real persistence:
   the fact that the OTP attempt limit did not survive concurrency until the
   decision moved inside an advisory lock.
 - **`apps/web` can no longer assert identity** — no pool, no signing secret, no
-  tenant pin. The interim signed-cookie marker is deleted.
+  tenant pin.
 
-**Known gap, deliberate:** OTP delivery. The code is issued and verified
-against a real row, but nothing sends it over WhatsApp until the M2 channel
-layer. `REKODA_REVEAL_OTP` exists for the test suite and the API refuses to
-boot with it set when `NODE_ENV=production`.
+**M2 is feature complete.** What a merchant can now do, end to end, against a
+real database in CI:
 
-**Recommended next**, in order:
+- **Chat.** Inbound WhatsApp message → privacy gateway (PII tokenised before
+  the model) → routed model call → conversation gates CG1-CG5 → transaction
+  engine. Sales, expenses, purchases and merchant-reported payments each become
+  a confirmed, balanced, numbered, audited record with a PDF that is rendered
+  and delivered. Free deterministic commands answer from rows and cost nothing:
+  `who owes me`, `payment details`, `records`, `resend`, `help`, `upgrade`,
+  STOP/START, and a two-ask erasure.
+- **Payments.** Paystack connection onboarding, intent minting, webhook
+  verification server-side, attribution across tenants on the worker
+  credential, booking, receipt, settlement tracking, and an exception queue a
+  human can resolve. VERIFIED and RECORDED stay distinguishable everywhere they
+  surface (ADR 0014) — chat, register, receipt PDF and activity feed.
+- **Dashboard.** Overview, the four statements, and registers for invoices,
+  receipts and payments, with the sign-out and empty states each page needs.
+- **Commercial.** Exhaustible monthly allowances consumed atomically, a
+  30-day trial that actually expires, an operator plan endpoint, and cost
+  telemetry per provider call including the ones that time out.
+- **Operations.** A stranger messaging the number gets answered once,
+  `GET /v1/ops/health` reports queue depth and webhook intake as numbers with
+  no tenant named, and the job runner, attribution pump, settlement sweep and
+  stranger sweep all ride the worker credential on their own clocks.
 
-1. **Self-host the fonts** (`next/font/google`). `layout.tsx` currently loads
-   Calistoga + Inter via a render-blocking `fonts.googleapis.com` stylesheet —
-   a third-party round trip on the critical path for merchants on exactly the
-   slow mobile networks Rekoda targets. Small change, measurable win.
-2. **MASTER-PLAN 4.4 #6** — the overpayment clamp. It is a correctness bug in
-   the money engine, and money bugs get more expensive the longer they sit.
-3. **M2 channel layer** — which unblocks real OTP delivery and the magic-link
-   HTTP surface in one go.
-4. Remaining marketing and the six legal pages (port from VoiceReceipt's
-   `services/legal.js`).
+**What is still missing before merchants.** In rough order:
+
+1. **A Meta-approved authentication template.** Sign-in codes go out as a
+   template (`META_OTP_TEMPLATE`); without an approved one on the WABA, nobody
+   can sign in. The API refuses to boot in production if the token is set and
+   the template is not, so this fails loudly rather than silently.
+2. **Credentials.** Meta WABA, Paystack test keys, and the four secrets
+   (`REKODA_API_SECRET`, `REKODA_OPERATOR_SECRET`, `VAULT_KEY`, `MATCH_KEY`).
+   Paystack stays in test mode until written confirmation (spec §47).
+3. **The remaining legal pages** — messaging policy, refund policy, contact.
+   These need real business facts (address, support address, refund terms) and
+   must not be invented.
+4. **Model realignment.** GPT-4.1 retires from the API on 14 Oct 2026, and the
+   Sonnet default costs roughly ₦10.7 a message against a ₦3,500 subscription.
+   See `docs/ai-model-strategy.md`.
+5. **M3** — voice, conversational reporting from SQL, Excel export, accountant
+   access.
 
 ## 4. Operational facts a new session must know
 
@@ -136,7 +159,24 @@ boot with it set when `NODE_ENV=production`.
    build `@rekoda/db` before `generate`. Migration 0001 is hand-written
    RLS; keep custom SQL migrations for policy work.
 5. **CI** activates fully once `pnpm-lock.yaml` exists at root (it does);
-   gitleaks scans full history on every push.
+   gitleaks scans full history on every push, and it reads a high-entropy
+   string literal in a test as a credential. Compose test secrets from one
+   another rather than writing new ones down.
+6. **Three database URLs** are needed for the integration suites, and they are
+   three different roles on purpose: `DATABASE_URL` (owner, runs migrations),
+   `APP_DATABASE_URL` (`rekoda_app`, what the API holds), `WORKER_DATABASE_URL`
+   (`rekoda_worker`, the only credential that reads across tenants). Running a
+   suite as the owner makes every tenancy assertion pass for the wrong reason.
+7. **postgres-js cannot bind a JS `Date` or an array into raw SQL.** Cast
+   explicitly (`${d.toISOString()}::timestamptz`) or use the drizzle query
+   builder. Coming back the other way, `tx.execute` returns `timestamptz` as a
+   **string**, so wrap it in `new Date(...)` before it reaches a caller that
+   expects one.
+8. **Secrets are not interchangeable.** `REKODA_API_SECRET` signs setup grants;
+   `REKODA_OPERATOR_SECRET` is the plaintext header for operator endpoints and
+   must differ (config refuses to boot otherwise); `VAULT_KEY` seals payloads
+   and `MATCH_KEY` derives match keys, and they are deliberately not the same
+   as `CONNECTION_KEY`.
 
 ## 5. Working agreements with Angelo (standing preferences)
 
@@ -164,7 +204,12 @@ boot with it set when `NODE_ENV=production`.
 
 ## 6. Open items owned by Angelo
 
-- Confirm ADR 0003 (Paystack: merchant-owned account with vaulted key).
+- **Get an authentication template approved on the WABA** and set
+  `META_OTP_TEMPLATE`. Nobody can sign in until this exists.
+- **Written confirmation before Paystack goes live** (spec §47). Until then
+  the platform stays in test mode.
+- **The three legal pages** — messaging policy, refund policy, contact. These
+  need real business facts and must not be written from guesses.
 - Revoke the two burned PATs.
 - Secure `rekoda.app` (and ideally `rekoda.ng`) — needed before M1 ships
   pages with canonical URLs.

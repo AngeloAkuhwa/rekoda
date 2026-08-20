@@ -3,6 +3,7 @@ import { redactForLog } from '@rekoda/core/privacy';
 import {
   SendFailed,
   type MessageSender,
+  type OutboundAuthCode,
   type OutboundDocument,
   type OutboundMessage,
   type SendResult,
@@ -15,12 +16,15 @@ import {
  * a dependency here would buy retry logic the job runner already owns and a
  * surface area we would have to keep pinned.
  *
- * Every message this sends is a **service reply inside the 24-hour window** —
- * it is always an answer to something the merchant just said. That is the
- * cheap path (currently ₦0 Meta-side, chargeable from 1 Oct 2026 — see
- * pricing-model.md) and it needs no template approval. Anything outside that
- * window is a template message and a different code path, deliberately not
- * this one.
+ * Almost every message this sends is a **service reply inside the 24-hour
+ * window** — an answer to something the merchant just said. That is the cheap
+ * path (currently ₦0 Meta-side, chargeable from 1 Oct 2026 — see
+ * pricing-model.md) and it needs no template approval.
+ *
+ * `sendAuthCode` is the one exception, and it exists because sign-in has no
+ * choice: the phone asking for a code has by definition not messaged the
+ * business number, so there is no window to reply inside. It is a template
+ * message, priced as authentication, and it is the only one here.
  */
 export class MetaSender implements MessageSender {
   private readonly log = new Logger(MetaSender.name);
@@ -30,7 +34,47 @@ export class MetaSender implements MessageSender {
     private readonly phoneNumberId: string,
     private readonly graphVersion = 'v21.0',
     private readonly timeoutMs = 10_000,
+    /** Meta-approved authentication template. Null means sign-in cannot send. */
+    private readonly otpTemplate: string | null = null,
+    private readonly otpTemplateLocale = 'en',
   ) {}
+
+  /**
+   * The sign-in code, as an authentication template.
+   *
+   * The code appears twice on purpose. Meta's copy-code authentication
+   * template puts it in the body text AND in the button that copies it, and
+   * the API wants a parameter for each; sending only one is rejected as a
+   * parameter-count mismatch rather than silently rendering half a message.
+   *
+   * Refuses loudly when no template is configured. The alternative was a
+   * free-form text that Meta rejects with 131047, swallowed by the caller,
+   * which is how a sign-in flow passes every test and reaches nobody.
+   */
+  async sendAuthCode(code: OutboundAuthCode): Promise<SendResult> {
+    if (!this.otpTemplate) {
+      throw new SendFailed('no authentication template configured (META_OTP_TEMPLATE)');
+    }
+    return this.post({
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to: code.to,
+      type: 'template',
+      template: {
+        name: this.otpTemplate,
+        language: { code: this.otpTemplateLocale },
+        components: [
+          { type: 'body', parameters: [{ type: 'text', text: code.code }] },
+          {
+            type: 'button',
+            sub_type: 'url',
+            index: '0',
+            parameters: [{ type: 'text', text: code.code }],
+          },
+        ],
+      },
+    });
+  }
 
   /**
    * A document, in two steps, because that is what Meta requires.
@@ -147,6 +191,10 @@ export class MetaSender implements MessageSender {
  */
 export class NoSenderConfigured implements MessageSender {
   send(): Promise<never> {
+    return Promise.reject(new SendFailed('META_ACCESS_TOKEN is not set'));
+  }
+
+  sendAuthCode(): Promise<never> {
     return Promise.reject(new SendFailed('META_ACCESS_TOKEN is not set'));
   }
 

@@ -149,6 +149,35 @@ describe('sweeping unknown senders', () => {
     expect(await events.unattributedEvents(workerDb, 'meta')).toHaveLength(0);
   });
 
+  /**
+   * The exception queue only counts exceptions.
+   *
+   * `error` on a processed event is what the ops health surface reports as
+   * "flagged", so marking every stranger with a reason would bury the real
+   * failures under the ordinary case this sweep exists for.
+   */
+  it('does not count an answered stranger as a flagged event', async () => {
+    await arrive('2348031111111', 'wamid.stranger.1');
+    await sweepUnknownSenders(deps());
+
+    const health = await events.eventHealth(workerDb, 'meta');
+    expect(health.unprocessed).toBe(0);
+    expect(health.flagged).toBe(0);
+  });
+
+  it('does flag a message whose payload will not open', async () => {
+    await events.recordEvent(workerDb, {
+      provider: 'meta',
+      eventType: 'message.text',
+      externalId: 'wamid.flagme',
+      payload: { not: 'sealed' },
+      businessId: null,
+    });
+    await sweepUnknownSenders(deps());
+
+    expect((await events.eventHealth(workerDb, 'meta')).flagged).toBe(1);
+  });
+
   it('sets an unopenable payload aside rather than stalling on it', async () => {
     await events.recordEvent(workerDb, {
       provider: 'meta',

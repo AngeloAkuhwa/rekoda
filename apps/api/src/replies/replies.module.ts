@@ -22,6 +22,9 @@ import { ReplySender } from './reply.service.js';
               config.metaAccessToken,
               config.metaPhoneNumberId,
               config.metaGraphVersion,
+              undefined,
+              config.metaOtpTemplate,
+              config.metaOtpTemplateLocale,
             )
           : new NoSenderConfigured(),
     },
