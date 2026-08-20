@@ -1,6 +1,7 @@
 import { Logger } from '@nestjs/common';
 import {
   gateSale,
+  isSaleSource,
   looksLikeCorrection,
   replies,
   routeMessage,
@@ -216,8 +217,12 @@ async function confirmPendingDraft(tx: TenantDb, businessId: string): Promise<Re
     paidK: money.amountPaidK,
     balanceDueK: money.balanceDueK,
     method: command['paymentMethod'] === 'cash' ? 'cash' : 'transfer',
+    /* Captured-via vs where-it-happened (rekoda-chat-v1 §27): sourceType says
+     * this arrived through a Chat conversation; saleSource carries the channel
+     * ONLY when the merchant named one, validated against the domain list. */
     sourceType: 'chat',
     sourceId: draft.id,
+    saleSource: isSaleSource(command['saleSource']) ? command['saleSource'] : null,
     actor: 'system',
   });
 

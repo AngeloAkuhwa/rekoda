@@ -40,6 +40,25 @@ export type LineItem = z.infer<typeof LineItem>;
 
 export const PaymentMethod = z.enum(['cash', 'transfer', 'pos', 'unknown']);
 
+/**
+ * Where the sale happened (docs/rekoda-chat-v1.md §27) — filled ONLY when the
+ * merchant names a channel ("from my Instagram page"). Never guessed, never
+ * demanded; a sale with no stated channel is simply a sale. Mirrors
+ * SALE_SOURCES in @rekoda/core.
+ */
+export const SaleSource = z.enum([
+  'physical_store',
+  'instagram',
+  'facebook',
+  'tiktok',
+  'whatsapp_catalogue',
+  'website',
+  'phone',
+  'marketplace',
+  'event',
+  'other',
+]);
+
 /* ── the commands ── */
 
 export const RecordSale = z.object({
@@ -53,6 +72,8 @@ export const RecordSale = z.object({
   discount: naira.nullable(),
   deliveryFee: naira.nullable(),
   dueDescription: text(60).nullable(),
+  /** Only when the merchant SAID where the sale happened. Otherwise null. */
+  saleSource: SaleSource.nullish(),
 });
 
 export const RecordPayment = z.object({

@@ -15,7 +15,7 @@ export const metadata: Metadata = {
     template: '%s · Rekoda',
   },
   description:
-    'Sell on WhatsApp like you always do. Rekoda turns every sale into real invoices, real receipts, and books that show whether the money truly arrived.',
+    'Sell anywhere. Tell Rekoda on WhatsApp what happened, and every sale becomes real invoices, real receipts, and books that show whether the money truly arrived.',
   openGraph: {
     type: 'website',
     locale: 'en_NG',

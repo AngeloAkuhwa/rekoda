@@ -56,6 +56,9 @@ export interface IssueSaleInput {
   /** Where this came from: the draft that was confirmed. */
   sourceType: string;
   sourceId: string;
+  /** Where the sale HAPPENED (§27) — Instagram, the shop, a phone order.
+   * Optional by design; captured only when the merchant names a channel. */
+  saleSource?: string | null;
   actor: string;
   issuedAt?: Date;
 }
@@ -182,6 +185,7 @@ export async function issueSale(tx: TenantDb, input: IssueSaleInput): Promise<Is
       docHash,
       sourceType: input.sourceType,
       sourceId: input.sourceId,
+      saleSource: input.saleSource ?? null,
       issuedAt,
     })
     .returning({ id: invoices.id });

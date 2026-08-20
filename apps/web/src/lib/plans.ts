@@ -25,7 +25,8 @@ export const PLANS: Plan[] = [
   {
     id: 'chat',
     name: 'Rekoda Chat',
-    tagline: 'Talk to Rekoda. Your records build themselves.',
+    /** §31: WhatsApp is the interface, never the sales-channel restriction. */
+    tagline: 'Sell anywhere. Tell Rekoda what happened.',
     monthlyK: m(9_900),
     annualK: m(99_000),
     cta: 'Start with Chat',
@@ -44,7 +45,7 @@ export const PLANS: Plan[] = [
   {
     id: 'integrate',
     name: 'Rekoda Integrate',
-    tagline: 'Your shop takes the order. Rekoda handles the money trail.',
+    tagline: 'Connect your WhatsApp shop. Rekoda handles the money trail.',
     monthlyK: m(19_900),
     annualK: m(199_000),
     highlight: true,

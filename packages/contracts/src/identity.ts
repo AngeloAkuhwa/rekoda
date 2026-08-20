@@ -74,7 +74,7 @@ export type VerifyOtpResponse = z.infer<typeof verifyOtpResponse>;
 /**
  * CAC and TIN are deliberately absent, and must stay absent.
  *
- * Most WhatsApp vendors have neither, and requiring either would exclude
+ * Most small vendors have neither, and requiring either would exclude
  * exactly the merchants Rekoda exists for (spec §20, ADR 0012). Capture them
  * later, from settings, when the merchant offers them.
  */

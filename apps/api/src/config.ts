@@ -53,6 +53,14 @@ export interface ApiConfig {
   /** Daily ceilings. The thing on the other side of these is a bill. */
   aiCallsPerBusinessPerDay: number;
   aiCallsGlobalPerDay: number;
+  /**
+   * The longest voice note Rekoda will transcribe, in seconds
+   * (docs/rekoda-chat-v1.md §2). Configuration, never application logic:
+   * the commercial limit varies by plan, environment and future pricing,
+   * and an over-length note gets a natural reply, not a silent failure.
+   * Consumed by the voice slice; declared now so it cannot be hard-coded.
+   */
+  voiceNoteMaxDurationSeconds: number;
   /** Recorded on every usage row, so a past cost is never re-derived. */
   planningFxNairaPerUsd: number;
   /**
@@ -216,6 +224,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
      */
     aiCallsPerBusinessPerDay: Number(env['AI_DAILY_CALLS_PER_BUSINESS'] ?? 60),
     aiCallsGlobalPerDay: Number(env['AI_DAILY_CALLS_GLOBAL'] ?? 5_000),
+    voiceNoteMaxDurationSeconds: Number(env['VOICE_NOTE_MAX_DURATION_SECONDS'] ?? 120),
     planningFxNairaPerUsd: Number(env['PLANNING_FX_NGN_PER_USD'] ?? 1_450),
     paystackSecretKey: env['PAYSTACK_SECRET_KEY'] ?? '',
     paystackBaseUrl: env['PAYSTACK_BASE_URL'] ?? 'https://api.paystack.co',

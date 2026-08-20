@@ -89,6 +89,33 @@ describe('issuing a sale', () => {
     expect(await countOf(businessId, 'audit_events')).toBe(1);
   });
 
+  it('keeps where-it-happened apart from how-it-arrived (rekoda-chat-v1 §27)', async () => {
+    const businessId = await seedBusiness();
+    // An Instagram sale, told to Rekoda Chat: captured via chat, earned on
+    // Instagram. Neither fact may overwrite the other.
+    await withBusiness(db, businessId, (tx) =>
+      issueRepo.issueSale(tx, { ...theSale(businessId), saleSource: 'instagram' }),
+    );
+
+    const rows = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ source_type: string; sale_source: string | null }>(
+        sql`SELECT source_type, sale_source FROM invoices`,
+      ),
+    );
+    const invoice = [...rows][0];
+    expect(invoice?.source_type).toBe('chat');
+    expect(invoice?.sale_source).toBe('instagram');
+
+    // And a sale with no stated channel is simply a sale.
+    await withBusiness(db, businessId, (tx) => issueRepo.issueSale(tx, theSale(businessId)));
+    const untagged = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ sale_source: string | null }>(
+        sql`SELECT sale_source FROM invoices ORDER BY invoice_number DESC LIMIT 1`,
+      ),
+    );
+    expect([...untagged][0]?.sale_source).toBeNull();
+  });
+
   it('balances the books', async () => {
     const businessId = await seedBusiness();
     await withBusiness(db, businessId, (tx) => issueRepo.issueSale(tx, theSale(businessId)));

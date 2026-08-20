@@ -25,7 +25,12 @@ const FAQS = [
   {
     question: 'Do I need a registered business or a CAC number to use Rekoda?',
     answer:
-      'No. Rekoda never asks for CAC registration or a TIN, and it never will. Most WhatsApp vendors have neither, and requiring them would exclude exactly the businesses Rekoda is built for.',
+      'No. Rekoda never asks for CAC registration or a TIN, and it never will. Most small vendors have neither, and requiring them would exclude exactly the businesses Rekoda is built for.',
+  },
+  {
+    question: 'Do I have to sell on WhatsApp to use Rekoda?',
+    answer:
+      'No. WhatsApp is where you talk to Rekoda, not where you have to sell. Record sales from your shop, Instagram, TikTok, phone orders, the market or anywhere else. Rekoda Integrate is the optional plan that also connects a WhatsApp catalogue shop.',
   },
   {
     question: 'Does Rekoda hold my money?',
@@ -58,9 +63,9 @@ export default function HomePage() {
       <section className="rk-hero rk-container">
         <h1>You run the business. Rekoda builds the records.</h1>
         <p className="rk-lede">
-          Sell on WhatsApp the way you already do. Say what happened, or let your shop say it, and
-          Rekoda turns it into real invoices, real receipts, and books that show whether the money
-          truly arrived.
+          Sell anywhere: your shop, Instagram, TikTok, phone orders, the market. Tell Rekoda on
+          WhatsApp what happened, and it becomes real invoices, real receipts, and books that show
+          whether the money truly arrived.
         </p>
         <div className="rk-cta-row">
           <Button href="/start">Start free for 30 days</Button>
