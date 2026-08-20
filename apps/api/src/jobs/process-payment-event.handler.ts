@@ -23,7 +23,7 @@
 import { Logger } from '@nestjs/common';
 import { judgeProviderPayment, type FeePolicy } from '@rekoda/core';
 import { paystackWebhookBody, summarisePaystackEvent } from '@rekoda/contracts';
-import { events, paymentsHub, settleRepo, type TenantDb } from '@rekoda/db';
+import { events, jobsRepo, paymentsHub, settleRepo, type TenantDb } from '@rekoda/db';
 import type { ApiConfig } from '../config.js';
 import { openPayload } from '../privacy/payload-vault.js';
 import type { PaymentProviderPort } from '../payments/provider.port.js';
@@ -160,6 +160,22 @@ export function processPaymentEventHandler(deps: ProcessPaymentEventDeps): JobHa
       actor: 'system:payments',
       eventId,
     });
+
+    /**
+     * The receipt's paper, and the owner's "money in" message, ride the same
+     * render → deliver chain invoices use — enqueued INSIDE this transaction,
+     * so a booked payment and "someone will send the receipt" are one fact.
+     * Rendering is a separate job for the same reason it is for invoices: a
+     * bucket outage or an expired Meta token must never un-book real money.
+     */
+    if (booked.receiptId) {
+      await jobsRepo.enqueue(tx, {
+        businessId,
+        kind: 'document.render',
+        payload: { receiptId: booked.receiptId },
+        singletonKey: `render:receipt:${booked.receiptId}`,
+      });
+    }
 
     await events.markProcessed(tx, eventId, null, businessId);
     log.log(

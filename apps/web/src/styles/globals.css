@@ -678,6 +678,69 @@ button,
   line-height: 1.45;
 }
 
+/* ── the Payments page (payments-v1 §35) ─────────────────────────────── */
+
+.rk-connection {
+  display: grid;
+  gap: var(--rk-space-2);
+}
+/* The masked account, in figures: `GTBank •••• 4821` is the whole promise
+   of the vault made visible. Tabular numerals, always masked, never a full
+   number anywhere in the DOM. */
+.rk-connection-account {
+  font-size: var(--rk-text-lg);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+/* Wide money tables scroll inside themselves; the page never scrolls
+   sideways (design-system responsive rule). */
+.rk-table-scroll {
+  overflow-x: auto;
+  margin-top: var(--rk-space-3);
+}
+.rk-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--rk-text-sm);
+}
+.rk-table th {
+  text-align: left;
+  color: var(--rk-text-muted);
+  font-weight: 500;
+  padding: var(--rk-space-2) var(--rk-space-3) var(--rk-space-2) 0;
+  border-bottom: 1px solid var(--rk-border);
+}
+/* Ledger idiom: dashed rules between rows, the same mark as the receipt's
+   tear line; amounts right-aligned in tabular figures. */
+.rk-table td {
+  padding: var(--rk-space-2) var(--rk-space-3) var(--rk-space-2) 0;
+  border-bottom: 1px dashed var(--rk-border);
+  font-variant-numeric: tabular-nums;
+}
+.rk-table td:nth-child(2),
+.rk-table td:nth-child(3),
+.rk-table td:nth-child(4),
+.rk-table th:nth-child(2),
+.rk-table th:nth-child(3),
+.rk-table th:nth-child(4) {
+  text-align: right;
+}
+
+.rk-exception-list {
+  list-style: none;
+  display: grid;
+  gap: var(--rk-space-3);
+  margin-top: var(--rk-space-3);
+  padding: 0;
+}
+.rk-exception-list li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--rk-space-2);
+  align-items: center;
+}
+
 /* The "unknown" money state (spec §7). Deliberately NOT styled like a figure:
    muted words ("none yet") must never be mistaken for a computed total. */
 .rk-stat-empty {
@@ -852,6 +915,44 @@ button,
   border-left: 2px solid var(--rk-accent);
   border-bottom: 2px solid var(--rk-accent);
   transform: rotate(-45deg);
+}
+
+/* The "real documents" proof: the checklist beside an image of an ACTUAL
+   engine-rendered receipt (scripts/render-demo-receipt.mjs). The slight tilt
+   is the bookkeeper's desk, not a card in a design system — kept to a degree
+   so it reads as placed, never as broken. */
+.rk-proof-grid {
+  margin-top: var(--rk-space-5);
+  display: grid;
+  gap: var(--rk-space-6);
+  align-items: center;
+}
+@media (min-width: 760px) {
+  .rk-proof-grid {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 26rem);
+  }
+  .rk-proof-grid .rk-check-list {
+    margin-top: 0;
+  }
+}
+.rk-doc-proof {
+  margin: 0;
+  justify-self: center;
+  max-width: 26rem;
+}
+.rk-doc-proof img {
+  width: 100%;
+  height: auto;
+  border: 1px solid var(--rk-border);
+  border-radius: var(--rk-radius-sm);
+  box-shadow: var(--rk-shadow-lg);
+  transform: rotate(-1deg);
+}
+.rk-doc-proof figcaption {
+  margin-top: var(--rk-space-4);
+  font-size: var(--rk-text-sm);
+  color: var(--rk-text-muted);
+  text-align: center;
 }
 
 .rk-faq {

@@ -13,8 +13,14 @@
  *  - the secret key goes into an Authorization header and nowhere else.
  */
 import { Logger } from '@nestjs/common';
-import { paystackInitializeResponse, paystackVerifyResponse } from '@rekoda/contracts';
+import {
+  paystackInitializeResponse,
+  paystackSubaccountResponse,
+  paystackVerifyResponse,
+} from '@rekoda/contracts';
 import type {
+  CreateSubaccountInput,
+  CreateSubaccountResult,
   InitializeTransactionInput,
   InitializeTransactionResult,
   PaymentProviderPort,
@@ -39,6 +45,46 @@ export class PaystackProvider implements PaymentProviderPort {
     private readonly secretKey: string,
     private readonly baseUrl: string,
   ) {}
+
+  async createSubaccount(input: CreateSubaccountInput): Promise<CreateSubaccountResult> {
+    /**
+     * percentage_charge is the PLATFORM's cut of each split payment, and in
+     * V1 Rekoda takes none (§14: platform fee is zero) — the merchant's
+     * subaccount receives everything Paystack does not keep as its own fee.
+     */
+    const response = await fetch(`${this.baseUrl}/subaccount`, {
+      method: 'POST',
+      headers: { ...this.headers(), 'content-type': 'application/json' },
+      body: JSON.stringify({
+        business_name: input.businessName,
+        settlement_bank: input.settlementBankCode,
+        account_number: input.settlementAccountNumber,
+        percentage_charge: 0,
+      }),
+    });
+
+    /**
+     * Paystack answers 400 for an account IT rejected (bad NUBAN, name
+     * mismatch, unsupported bank) — that is a product state the merchant
+     * fixes, not an outage to retry. Anything else non-OK is an outage.
+     */
+    const parsed = paystackSubaccountResponse.safeParse(
+      await response.json().catch(() => ({ status: false })),
+    );
+    if (response.ok && parsed.success && parsed.data.status && parsed.data.data) {
+      return { state: 'created', subaccountCode: parsed.data.data.subaccount_code };
+    }
+    if (response.status === 400 || (response.ok && parsed.success && !parsed.data.status)) {
+      return {
+        state: 'rejected',
+        reason: parsed.success
+          ? (parsed.data.message ?? 'provider rejected the account')
+          : 'provider rejected the account',
+      };
+    }
+    this.log.warn(`Paystack /subaccount answered HTTP ${response.status}`);
+    throw new PaystackApiError(`/subaccount failed with HTTP ${response.status}`);
+  }
 
   async initializeTransaction(
     input: InitializeTransactionInput,

@@ -1,11 +1,18 @@
 import 'server-only';
 import {
   meResponse,
+  paymentConnectionResponse,
+  paymentExceptionsResponse,
+  paymentsListResponse,
   requestOtpResponse,
   sessionResponse,
   setupStateResponse,
   verifyOtpResponse,
   type MeResponse,
+  type PaymentConnectionResponse,
+  type PaymentExceptionsResponse,
+  type PaymentsListResponse,
+  type SubmitConnectionRequest,
   type RequestOtpResponse,
   type SessionResponse,
   type SetupStateResponse,
@@ -158,4 +165,59 @@ export async function signOut(sessionToken: string): Promise<void> {
     headers: { authorization: `Bearer ${sessionToken}` },
     expect: [204],
   });
+}
+
+/* ── the Payment Hub (docs/payments-v1.md §3–5, §35) ─────────────────────── */
+
+export async function paymentConnection(sessionToken: string): Promise<PaymentConnectionResponse> {
+  const { json } = await call({
+    method: 'GET',
+    path: '/v1/payments/connection',
+    headers: { authorization: `Bearer ${sessionToken}` },
+    expect: [200],
+  });
+  return paymentConnectionResponse.parse(json);
+}
+
+export type SubmitConnectionOutcome =
+  | { state: 'submitted'; connection: PaymentConnectionResponse; held: boolean }
+  | { state: 'invalid' }
+  | { state: 'unavailable' };
+
+export async function submitPaymentConnection(
+  sessionToken: string,
+  input: SubmitConnectionRequest,
+): Promise<SubmitConnectionOutcome> {
+  const { status, json } = await call({
+    method: 'POST',
+    path: '/v1/payments/connection',
+    body: input,
+    headers: { authorization: `Bearer ${sessionToken}` },
+    expect: [200, 400, 503],
+  });
+  if (status === 400) return { state: 'invalid' };
+  if (status === 503) return { state: 'unavailable' };
+  const parsed = paymentConnectionResponse.parse(json);
+  const held = typeof json === 'object' && json !== null && 'held' in json;
+  return { state: 'submitted', connection: parsed, held };
+}
+
+export async function paymentsList(sessionToken: string): Promise<PaymentsListResponse> {
+  const { json } = await call({
+    method: 'GET',
+    path: '/v1/payments/list',
+    headers: { authorization: `Bearer ${sessionToken}` },
+    expect: [200],
+  });
+  return paymentsListResponse.parse(json);
+}
+
+export async function paymentExceptions(sessionToken: string): Promise<PaymentExceptionsResponse> {
+  const { json } = await call({
+    method: 'GET',
+    path: '/v1/payments/exceptions',
+    headers: { authorization: `Bearer ${sessionToken}` },
+    expect: [200],
+  });
+  return paymentExceptionsResponse.parse(json);
 }

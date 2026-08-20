@@ -1,4 +1,6 @@
 import type {
+  CreateSubaccountInput,
+  CreateSubaccountResult,
   InitializeTransactionInput,
   InitializeTransactionResult,
   PaymentProviderPort,
@@ -17,8 +19,10 @@ import type {
 export class StubPaymentProvider implements PaymentProviderPort {
   readonly providerType = 'paystack';
   readonly initialized: InitializeTransactionInput[] = [];
+  readonly subaccountsCreated: CreateSubaccountInput[] = [];
   private readonly verifications = new Map<string, VerifiedTransaction>();
   private failVerify: Error | null = null;
+  private rejectSubaccountWith: string | null = null;
 
   /** Script the authoritative answer for one reference. */
   willVerify(reference: string, overrides: Partial<VerifiedTransaction> = {}): void {
@@ -41,10 +45,30 @@ export class StubPaymentProvider implements PaymentProviderPort {
     this.failVerify = error;
   }
 
+  /** Make the provider refuse the next subaccount, as a bad NUBAN would. */
+  rejectNextSubaccount(reason = 'Account number is invalid'): void {
+    this.rejectSubaccountWith = reason;
+  }
+
   reset(): void {
     this.initialized.length = 0;
+    this.subaccountsCreated.length = 0;
     this.verifications.clear();
     this.failVerify = null;
+    this.rejectSubaccountWith = null;
+  }
+
+  createSubaccount(input: CreateSubaccountInput): Promise<CreateSubaccountResult> {
+    if (this.rejectSubaccountWith) {
+      const reason = this.rejectSubaccountWith;
+      this.rejectSubaccountWith = null;
+      return Promise.resolve({ state: 'rejected', reason });
+    }
+    this.subaccountsCreated.push(input);
+    return Promise.resolve({
+      state: 'created',
+      subaccountCode: `ACCT_stub${this.subaccountsCreated.length}`,
+    });
   }
 
   initializeTransaction(input: InitializeTransactionInput): Promise<InitializeTransactionResult> {

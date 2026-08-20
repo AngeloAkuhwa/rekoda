@@ -60,8 +60,31 @@ export interface VerifiedTransaction {
 export type VerifyTransactionResult =
   { found: true; transaction: VerifiedTransaction } | { found: false };
 
+export interface CreateSubaccountInput {
+  businessName: string;
+  settlementBankCode: string;
+  /**
+   * Plaintext at THIS boundary only: it arrives from the owner's form, goes
+   * to the provider over TLS, and is stored solely as a vault cipher plus
+   * last4. No log, no reply and no response object ever carries it onward.
+   */
+  settlementAccountNumber: string;
+}
+
+export type CreateSubaccountResult =
+  /** The provider accepted the account and minted a settlement target. */
+  | { state: 'created'; subaccountCode: string }
+  /**
+   * The provider looked and said no — wrong account number, name mismatch,
+   * unsupported bank. A product state for the merchant to fix, not an error
+   * to retry: retrying the same wrong account yields the same no.
+   */
+  | { state: 'rejected'; reason: string };
+
 export interface PaymentProviderPort {
   readonly providerType: string;
+  /** The merchant's settlement destination, provider-side (§3–5). */
+  createSubaccount(input: CreateSubaccountInput): Promise<CreateSubaccountResult>;
   initializeTransaction(input: InitializeTransactionInput): Promise<InitializeTransactionResult>;
   /** Server-side verification — the ONLY source of authoritative amounts (§20). */
   verifyTransaction(reference: string): Promise<VerifyTransactionResult>;

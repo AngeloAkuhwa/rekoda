@@ -1,6 +1,13 @@
 import { Logger } from '@nestjs/common';
 import { replies } from '@rekoda/core';
-import { conversationsRepo, identity, issueRepo, type Db } from '@rekoda/db';
+import {
+  conversationsRepo,
+  identity,
+  issueRepo,
+  settleRepo,
+  type Db,
+  type TenantDb,
+} from '@rekoda/db';
 import { SendFailed, type MessageSender } from '../channels/sender.js';
 import type { DocumentStorage } from '../documents/storage.js';
 import type { JobContext, JobHandler } from './runner.js';
@@ -57,7 +64,7 @@ export function deliverDocumentHandler(deps: DeliverDocumentDeps): JobHandler {
     }
 
     const filename = `${stored.refNumber ?? 'document'}.pdf`;
-    const caption = replies.documentSent(stored.refNumber ?? 'Your document').text;
+    const caption = await captionFor(tx, businessId, stored.kind, stored.refNumber);
 
     try {
       const result = await deps.sender.sendDocument({
@@ -96,4 +103,34 @@ export function deliverDocumentHandler(deps: DeliverDocumentDeps): JobHandler {
       throw error;
     }
   };
+}
+
+/**
+ * A receipt's caption is the owner's payment notification — the one WhatsApp
+ * message that says confirmed money arrived, with the figure in it, so the
+ * decision to release goods never requires opening a PDF. Everything else
+ * keeps the generic "here is your copy" caption.
+ *
+ * Falls back to the generic caption if the receipt row cannot be found, which
+ * would take manual data surgery — a slightly duller caption is the right
+ * failure there, not an undelivered document.
+ */
+async function captionFor(
+  tx: TenantDb,
+  businessId: string,
+  kind: string,
+  refNumber: string | null,
+): Promise<string> {
+  if (kind === 'receipt_pdf' && refNumber) {
+    const receipt = await settleRepo.receiptByNumber(tx, businessId, refNumber);
+    const snapshot = receipt?.snapshot as Record<string, unknown> | undefined;
+    if (snapshot) {
+      return replies.paymentConfirmed(
+        Number(snapshot['amountK'] ?? 0),
+        String(snapshot['invoiceNumber'] ?? ''),
+        refNumber,
+      ).text;
+    }
+  }
+  return replies.documentSent(refNumber ?? 'Your document').text;
 }

@@ -1,7 +1,7 @@
 import { Logger } from '@nestjs/common';
-import type { InvoiceDocument } from '@rekoda/core';
-import { identity, issueRepo, jobsRepo, type Db } from '@rekoda/db';
-import { renderInvoicePdf } from '../documents/pdf.js';
+import type { InvoiceDocument, ReceiptDocument } from '@rekoda/core';
+import { identity, issueRepo, jobsRepo, settleRepo, type Db, type TenantDb } from '@rekoda/db';
+import { renderInvoicePdf, renderReceiptPdf } from '../documents/pdf.js';
 import { documentKey, type DocumentStorage } from '../documents/storage.js';
 import type { JobContext, JobHandler } from './runner.js';
 
@@ -20,16 +20,25 @@ export interface RenderDocumentDeps {
  * to refuse a merchant's sale. The invoice is already in the books; this
  * produces the paper.
  *
- * The document is rendered from the SNAPSHOT, not from the live invoice row.
- * That is what makes a re-render years later produce the same document rather
- * than one reflecting every correction since (spec §42).
+ * One handler, two document kinds: the payload names an `invoiceId` or a
+ * `receiptId`, never both. Receipts joined rather than getting their own job
+ * kind because everything that makes this job what it is — snapshot-only
+ * reads, store-then-record ordering, the deliver hand-off — is identical, and
+ * two copies of that reasoning would drift.
+ *
+ * The document is rendered from the SNAPSHOT, not from the live row. That is
+ * what makes a re-render years later produce the same document rather than
+ * one reflecting every correction since (spec §42).
  */
 export function renderDocumentHandler(deps: RenderDocumentDeps): JobHandler {
   const log = new Logger('RenderDocumentJob');
 
   return async ({ tx, payload, businessId }: JobContext): Promise<void> => {
+    const receiptId = typeof payload['receiptId'] === 'string' ? payload['receiptId'] : null;
+    if (receiptId) return renderReceipt(deps, log, tx, businessId, receiptId);
+
     const invoiceId = typeof payload['invoiceId'] === 'string' ? payload['invoiceId'] : null;
-    if (!invoiceId) throw new Error('document.render: payload is missing invoiceId');
+    if (!invoiceId) throw new Error('document.render: payload names no invoiceId or receiptId');
 
     const invoice = await issueRepo.invoiceForRender(tx, businessId, invoiceId);
     if (!invoice) {
@@ -94,4 +103,60 @@ export function renderDocumentHandler(deps: RenderDocumentDeps): JobHandler {
 
     log.debug(`rendered ${invoice.invoiceNumber} (${stored.bytes} bytes)`);
   };
+}
+
+/**
+ * The receipt path: snapshot → blocks → A5 PDF → storage → document row →
+ * deliver job. Field for field the invoice path, and deliberately so — see
+ * the handler comment.
+ */
+async function renderReceipt(
+  deps: RenderDocumentDeps,
+  log: Logger,
+  tx: TenantDb,
+  businessId: string,
+  receiptId: string,
+): Promise<void> {
+  const receipt = await settleRepo.receiptForRender(tx, businessId, receiptId);
+  if (!receipt) {
+    log.warn('document.render: no receipt for this tenant');
+    return;
+  }
+
+  const business = await identity.businessById(deps.db, businessId);
+  const snapshot = receipt.snapshot as Record<string, unknown>;
+
+  const doc: ReceiptDocument = {
+    documentNumber: receipt.receiptNumber,
+    issuedAt: receipt.issuedAt ?? new Date(),
+    businessName: business?.name ?? 'Rekoda',
+    invoiceNumber: String(snapshot['invoiceNumber'] ?? ''),
+    reference: String(snapshot['rekodaReference'] ?? ''),
+    amountK: Number(snapshot['amountK'] ?? 0),
+    allocatedK: Number(snapshot['allocatedK'] ?? 0),
+  };
+
+  const bytes = await renderReceiptPdf(doc);
+
+  // Stored before recorded, same order and same reasoning as the invoice
+  // path: an orphaned object is cheap, a listed-but-unopenable document is not.
+  const key = documentKey(businessId, 'receipt_pdf');
+  const stored = await deps.storage.put(key, bytes, 'application/pdf');
+
+  const record = await issueRepo.recordDocument(tx, {
+    businessId,
+    kind: 'receipt_pdf',
+    storageKey: stored.key,
+    refNumber: receipt.receiptNumber,
+    bytes: stored.bytes,
+  });
+
+  await jobsRepo.enqueue(tx, {
+    businessId,
+    kind: 'document.deliver',
+    payload: { documentId: record.id },
+    singletonKey: `deliver:${record.id}`,
+  });
+
+  log.debug(`rendered ${receipt.receiptNumber} (${stored.bytes} bytes)`);
 }

@@ -1,4 +1,5 @@
 import type { Metadata } from 'next';
+import { Button } from '@/components/ui/Button';
 import { requireSession } from '@/server/guards';
 import { SignOutButton } from './SignOutButton';
 
@@ -36,6 +37,12 @@ export default async function DashboardPage() {
         <StatTile label="Money in" hint="Payments you have confirmed" />
         <StatTile label="Money out" hint="Expenses and stock you have recorded" />
         <StatTile label="Owed to you" hint="Invoices still unpaid" />
+      </div>
+
+      <div className="rk-cta-row">
+        <Button href="/app/payments" variant="secondary">
+          Payments
+        </Button>
       </div>
 
       <div className="rk-card rk-dash-empty">

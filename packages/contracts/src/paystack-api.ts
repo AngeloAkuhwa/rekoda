@@ -29,6 +29,21 @@ export const paystackInitializeResponse = z
 
 export type PaystackInitializeResponse = z.infer<typeof paystackInitializeResponse>;
 
+export const paystackSubaccountResponse = z
+  .object({
+    status: z.boolean(),
+    message: z.string().optional(),
+    data: z
+      .object({
+        subaccount_code: z.string().min(1),
+      })
+      .loose()
+      .optional(),
+  })
+  .loose();
+
+export type PaystackSubaccountResponse = z.infer<typeof paystackSubaccountResponse>;
+
 export const paystackVerifyResponse = z
   .object({
     status: z.boolean(),

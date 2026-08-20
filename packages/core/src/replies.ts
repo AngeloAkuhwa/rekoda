@@ -214,6 +214,27 @@ export function documentSent(reference: string): Reply {
   return reply(`${reference} is ready. Here is your copy. Forward it to your customer.`);
 }
 
+/**
+ * The caption above a delivered RECEIPT — which is also the owner's payment
+ * notification, in one message instead of two.
+ *
+ * This is the moment the product exists for, so the first word is the news.
+ * "Confirmed" is load-bearing: it means the provider said so server-side
+ * (PAYMENT_PROVIDER_CONFIRMED), never that someone showed a screenshot. The
+ * amount IS repeated here, unlike an invoice caption, because a merchant
+ * deciding whether to release goods should not have to open a PDF first.
+ */
+export function paymentConfirmed(
+  amountK: number,
+  invoiceNumber: string,
+  receiptNumber: string,
+): Reply {
+  return reply(
+    `Money in ✅ ${formatNaira(amountK)} confirmed for ${invoiceNumber}.\n` +
+      `Receipt ${receiptNumber} is attached. Forward it to your customer.`,
+  );
+}
+
 /** A capability the plan names but the product does not have yet. */
 export function notYet(what: string): Reply {
   return reply(

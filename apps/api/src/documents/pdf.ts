@@ -2,7 +2,14 @@ import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import PDFDocument from 'pdfkit';
-import { layoutInvoice, pageLabel, type InvoiceDocument, type LayoutBlock } from '@rekoda/core';
+import {
+  layoutInvoice,
+  layoutReceipt,
+  pageLabel,
+  type InvoiceDocument,
+  type LayoutBlock,
+  type ReceiptDocument,
+} from '@rekoda/core';
 
 /**
  * The PDF engine (MASTER-PLAN §5.3.6).
@@ -88,16 +95,44 @@ export async function renderInvoicePdf(
   doc: InvoiceDocument,
   options: RenderOptions = {},
 ): Promise<Buffer> {
+  return renderBlocksPdf(
+    layoutInvoice(doc),
+    `${doc.documentNumber} — ${doc.businessName}`,
+    options,
+  );
+}
+
+/**
+ * Render a receipt to PDF bytes — same engine, same fonts, same A5 default.
+ * The two documents share one block vocabulary precisely so a receipt cannot
+ * drift into looking like it came from a different product than the invoice
+ * it answers.
+ */
+export async function renderReceiptPdf(
+  doc: ReceiptDocument,
+  options: RenderOptions = {},
+): Promise<Buffer> {
+  return renderBlocksPdf(
+    layoutReceipt(doc),
+    `${doc.documentNumber} — ${doc.businessName}`,
+    options,
+  );
+}
+
+async function renderBlocksPdf(
+  blocks: LayoutBlock[],
+  title: string,
+  options: RenderOptions = {},
+): Promise<Buffer> {
   if (!fontsAvailable()) throw new FontsMissing();
 
-  const blocks = layoutInvoice(doc);
   const pdf = new PDFDocument({
     size: options.size ?? 'A5',
     margin: MARGIN,
     // Metadata a merchant's customer can see in a viewer. No PII: the customer
     // label may be a token, and the business name is public by definition.
     info: {
-      Title: `${doc.documentNumber} — ${doc.businessName}`,
+      Title: title,
       Creator: 'Rekoda',
     },
   });

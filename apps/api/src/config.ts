@@ -102,6 +102,22 @@ export interface ApiConfig {
   paystackSecretKey: string;
   /** Overridden only by tests and sandboxes; production uses the default. */
   paystackBaseUrl: string;
+  /**
+   * §47 in code (docs/payments-v1.md): auto-onboarding merchants as
+   * subaccounts under a LIVE key is forbidden until Paystack's written
+   * platform-model confirmation exists. Setting this true is the owner
+   * recording that the confirmation is in hand. Test keys (sandbox-first,
+   * §36) never need it.
+   */
+  paystackPlatformConfirmed: boolean;
+  /**
+   * Encrypts merchant settlement details (the full account number) at rest.
+   * Deliberately NOT the vault key: customer identities and merchant banking
+   * credentials are different blast radii, and holding one must not imply
+   * holding the other. Optional at boot — connection onboarding refuses
+   * plainly at call time when it is missing, and nothing else needs it.
+   */
+  connectionKey: string;
   /** Sends replies. Empty means replies are recorded but not delivered. */
   metaAccessToken: string;
   metaPhoneNumberId: string;
@@ -278,6 +294,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     planningFxNairaPerUsd: Number(env['PLANNING_FX_NGN_PER_USD'] ?? 1_450),
     paystackSecretKey: env['PAYSTACK_SECRET_KEY'] ?? '',
     paystackBaseUrl: env['PAYSTACK_BASE_URL'] ?? 'https://api.paystack.co',
+    paystackPlatformConfirmed: env['REKODA_PAYSTACK_PLATFORM_CONFIRMED'] === '1',
+    connectionKey: env['CONNECTION_KEY'] ?? '',
     metaAccessToken: env['META_ACCESS_TOKEN'] ?? '',
     metaPhoneNumberId: env['META_PHONE_NUMBER_ID'] ?? '',
     metaGraphVersion: env['META_GRAPH_VERSION'] ?? 'v21.0',
