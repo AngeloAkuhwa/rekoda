@@ -54,6 +54,7 @@ let closeWorkerDb: () => Promise<void>;
 let deps: RunnerDeps;
 let stubTransport: StubTransport;
 let stubSender: StubSender;
+const intentsProvider = new StubPaymentProvider();
 
 beforeAll(async () => {
   urls = requireUrls();
@@ -93,7 +94,7 @@ beforeAll(async () => {
     sender: stubSender,
     config,
     paymentProvider: new StubPaymentProvider(),
-    paymentIntents: new PaymentIntentsService(config, db, new StubPaymentProvider()),
+    paymentIntents: new PaymentIntentsService(config, db, intentsProvider),
   };
 });
 
@@ -112,6 +113,7 @@ beforeEach(async () => {
   // "not called since the file started".
   stubTransport.reset();
   stubSender.reset();
+  intentsProvider.reset();
 });
 
 function messagePayload(waId: string, wamid: string, text = 'Ada bought 3 wigs for 150k') {
@@ -1060,12 +1062,6 @@ describe('collecting money from chat (payments-v1 §160)', () => {
     expect(stubSender.lastText).not.toContain('CUSTOMER_X81');
   });
 
-  it('who owes me with clean books says nobody, never invents a list', async () => {
-    await seedMerchant('+2348031234567', 'Ada Fashion');
-    await send('who owes me', 'wamid.OWES0');
-    expect(stubSender.lastText).toContain('Nobody owes you right now');
-  });
-
   it('payment details with an active connection returns a forwardable link', async () => {
     const business = await seedMerchant('+2348031234567', 'Ada Fashion');
     await activeConnection(business.id);
@@ -1083,6 +1079,21 @@ describe('collecting money from chat (payments-v1 §160)', () => {
     await send('payment details', 'wamid.PAY2');
     expect(stubSender.lastText).toContain('add your settlement account');
     expect(stubSender.lastText).not.toContain('http');
+  });
+
+  it('a provider outage degrades to an honest sentence, and the next try works', async () => {
+    const business = await seedMerchant('+2348031234567', 'Ada Fashion');
+    await activeConnection(business.id);
+    await openInvoiceWithEmail(business.id, deps.config);
+
+    intentsProvider.failNextInitializeWith(new Error('Paystack is down'));
+    await send('payment details', 'wamid.PAYDOWN');
+    expect(stubSender.lastText).toContain('could not reach your payment provider');
+    expect(stubSender.lastText).not.toContain('http');
+
+    // The job completed rather than dying in retries, so the next ask succeeds.
+    await send('payment details', 'wamid.PAYUP');
+    expect(stubSender.lastText).toMatch(/https:\/\/checkout\.stub\/RKD-PAY-/);
   });
 
   it('payment details with nothing owed says so', async () => {

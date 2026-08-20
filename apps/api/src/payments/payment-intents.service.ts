@@ -44,7 +44,13 @@ const INTENT_TTL_MS = 24 * 60 * 60 * 1000;
 
 export type IntentCreation =
   | { state: 'ready'; reference: string; checkoutUrl: string; amountK: number }
-  | { state: 'requires_customer_information'; missing: readonly string[] }
+  | {
+      state: 'requires_customer_information';
+      missing: readonly string[];
+      /** Pre-mint no-email is fixable by the merchant; a post-mint provider
+       * rejection is not their doing and must not be blamed on their records. */
+      reason: 'no_email_on_file' | 'provider_rejected_details';
+    }
   | { state: 'connection_not_active'; connectionStatus: string }
   | { state: 'nothing_to_pay' };
 
@@ -105,7 +111,13 @@ export class PaymentIntentsService {
       }
 
       const email = await this.customerEmail(tx, businessId, invoice.customerId);
-      if (!email) return { state: 'requires_customer_information' as const, missing: ['email'] };
+      if (!email) {
+        return {
+          state: 'requires_customer_information' as const,
+          missing: ['email'],
+          reason: 'no_email_on_file' as const,
+        };
+      }
 
       /* Re-offering payment for the same invoice reuses the live intent —
        * one obligation, one reference. */
@@ -165,7 +177,9 @@ export class PaymentIntentsService {
       customerEmail: prepared.email,
       subaccountCode: prepared.subaccountCode,
     });
-    if (initialised.state === 'requires_customer_information') return initialised;
+    if (initialised.state === 'requires_customer_information') {
+      return { ...initialised, reason: 'provider_rejected_details' };
+    }
 
     /* Phase 3 — record what the provider handed back. */
     await withBusiness(this.db, businessId, async (tx) => {

@@ -30,7 +30,10 @@ import type { PrivacyGateway } from '../privacy/gateway.service.js';
 import type { ReplySender } from '../replies/reply.service.js';
 import type { PaymentIntentsService } from '../payments/payment-intents.service.js';
 import { openPayload } from '../privacy/payload-vault.js';
-import type { JobContext, JobHandler } from './runner.js';
+import { redactForLog } from '@rekoda/core/privacy';
+import { describeFailure, type JobContext, type JobHandler } from './runner.js';
+
+const paymentLog = new Logger('InboundMessageJob');
 
 export interface InboundMessageDeps {
   gateway: PrivacyGateway;
@@ -175,11 +178,7 @@ async function deterministicReply(
       // Answered from the same SQL the dashboard uses. Invoice numbers, not
       // customer names: this text crosses WhatsApp in the clear.
       const debtors = await reportsRepo.debtorsFor(tx, businessId, 8);
-      return replies.debtorList(
-        debtors.rows.map((r) => ({ invoiceNumber: r.invoiceNumber, balanceDueK: r.balanceDueK })),
-        debtors.totalK,
-        debtors.count,
-      );
+      return replies.debtorList(debtors.rows, debtors.totalK, debtors.count);
     }
     case 'payment_details':
       return paymentDetailsReply(deps, tx, businessId);
@@ -208,16 +207,34 @@ async function paymentDetailsReply(
   const invoice = await issueRepo.latestOpenInvoice(tx, businessId);
   if (!invoice) return replies.paymentLinkNothingOwed();
 
-  const outcome = await deps.paymentIntents.createForInvoice(businessId, invoice.id);
+  /* A provider outage must degrade to an honest sentence, not kill the job:
+   * a thrown error here would roll back the recorded message and retry the
+   * same failure until the job dies, with the merchant hearing nothing. */
+  let outcome;
+  try {
+    outcome = await deps.paymentIntents.createForInvoice(businessId, invoice.id);
+  } catch (error) {
+    paymentLog.warn(
+      `payment details failed at the provider: ${redactForLog(describeFailure(error))}`,
+    );
+    return replies.paymentLinkUnavailable();
+  }
+
   switch (outcome.state) {
     case 'ready':
       return replies.paymentLinkReady(invoice.invoiceNumber, outcome.amountK, outcome.checkoutUrl);
     case 'connection_not_active':
       return replies.paymentLinkNeedsConnection();
     case 'requires_customer_information':
-      return replies.paymentLinkNeedsEmail(invoice.invoiceNumber);
+      /* Only the pre-mint no-email case is the merchant's records; a post-mint
+       * provider rejection must not be blamed on them. */
+      return outcome.reason === 'no_email_on_file'
+        ? replies.paymentLinkNeedsEmail(invoice.invoiceNumber)
+        : replies.paymentLinkUnavailable();
     case 'nothing_to_pay':
-      return replies.paymentLinkNothingOwed();
+      /* The invoice settled between our read and the mint. Scoped to that
+       * invoice: an older one may still be open. */
+      return replies.paymentLinkSettled(invoice.invoiceNumber);
   }
 }
 

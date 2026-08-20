@@ -253,6 +253,24 @@ export function paymentLinkReady(
   );
 }
 
+/** The latest invoice settled between the ask and the mint. Scoped to that
+ * invoice only: another may still be open, and "who owes me" is the answer. */
+export function paymentLinkSettled(invoiceNumber: string): Reply {
+  return reply(
+    `${invoiceNumber} is fully paid. Nothing to collect on it. ` +
+      'Ask *who owes me* to see what is still open.',
+  );
+}
+
+/** The provider could not be reached or refused the link. Not the merchant's
+ * doing, so the message never blames their records. */
+export function paymentLinkUnavailable(): Reply {
+  return reply(
+    'I could not reach your payment provider just now, so there is no link yet. ' +
+      'Try *payment details* again in a few minutes. Nothing was lost.',
+  );
+}
+
 /** Nothing is owed, so there is nothing to collect. */
 export function paymentLinkNothingOwed(): Reply {
   return reply(
