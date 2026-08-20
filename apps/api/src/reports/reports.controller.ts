@@ -7,13 +7,30 @@
  * No model is anywhere in this path, and there is no arithmetic in this file
  * beyond none at all.
  */
-import { Controller, Get, Inject, Req, UseGuards } from '@nestjs/common';
-import { usagePeriod } from '@rekoda/core';
+import {
+  BadRequestException,
+  Controller,
+  Get,
+  Inject,
+  Query,
+  Req,
+  UseGuards,
+} from '@nestjs/common';
+import {
+  buildBalanceSheet,
+  buildCashflowStatement,
+  buildProfitAndLoss,
+  buildTrialBalance,
+  isAccountKey,
+  usagePeriod,
+  type AccountSums,
+} from '@rekoda/core';
 import type {
   ReportsActivityResponse,
   ReportsCashflowResponse,
   ReportsDebtorsResponse,
   ReportsOverviewResponse,
+  ReportsStatementsResponse,
 } from '@rekoda/contracts';
 import { reportsRepo, withBusiness, type Db } from '@rekoda/db';
 import { SessionGuard, type AuthedRequest } from '../auth/session.guard.js';
@@ -60,6 +77,46 @@ export class ReportsController {
       })),
       totalK: debtors.totalK,
       count: debtors.count,
+    };
+  }
+
+  /**
+   * The four statements for one Lagos month, assembled by the pure builders
+   * in @rekoda/core from a single per-account sums query. An unknown account
+   * string in storage would mean a write path bypassed the posting builders;
+   * it is dropped here and the trial balance's own `balanced` flag is what
+   * would expose the damage.
+   */
+  @Get('statements')
+  async statements(
+    @Req() request: AuthedRequest,
+    @Query('period') periodParam?: string,
+  ): Promise<ReportsStatementsResponse> {
+    const period = periodParam ?? usagePeriod(new Date());
+    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(period)) {
+      throw new BadRequestException('period must look like 2026-08');
+    }
+
+    const businessId = request.auth!.businessId;
+    const rows = await withBusiness(this.db, businessId, (tx) =>
+      reportsRepo.accountSumsFor(tx, businessId, period),
+    );
+    const sums: AccountSums[] = rows
+      .filter((r) => isAccountKey(r.account))
+      .map((r) => ({
+        account: r.account as AccountSums['account'],
+        periodDebitK: r.periodDebitK,
+        periodCreditK: r.periodCreditK,
+        cumulativeDebitK: r.cumulativeDebitK,
+        cumulativeCreditK: r.cumulativeCreditK,
+      }));
+
+    return {
+      period,
+      trialBalance: buildTrialBalance(sums),
+      profitAndLoss: buildProfitAndLoss(sums),
+      balanceSheet: buildBalanceSheet(sums),
+      cashflow: buildCashflowStatement(sums),
     };
   }
 

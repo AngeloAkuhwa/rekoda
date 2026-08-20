@@ -1,10 +1,10 @@
 import type { Metadata } from 'next';
 import { MoneyBadge } from '@/components/ui/MoneyBadge';
 import { Money } from '@/components/ui/Money';
-import { Button } from '@/components/ui/Button';
 import { bankName } from '@/lib/banks';
 import { paymentConnection, paymentExceptions, paymentsList } from '@/server/api';
 import { requireSessionWithToken } from '@/server/guards';
+import { AppNav } from '../AppNav';
 import { ConnectForm } from './ConnectForm';
 
 export const metadata: Metadata = {
@@ -40,6 +40,8 @@ export default async function PaymentsPage() {
           <h1>Where your money lands</h1>
         </div>
       </header>
+
+      <AppNav active="payments" />
 
       {/* ── the settlement connection (§3–5) ── */}
       {connection.status === 'active' ? (
@@ -153,12 +155,6 @@ export default async function PaymentsPage() {
             ))}
           </ul>
         )}
-      </div>
-
-      <div className="rk-cta-row">
-        <Button href="/app" variant="secondary">
-          Back to dashboard
-        </Button>
       </div>
     </section>
   );

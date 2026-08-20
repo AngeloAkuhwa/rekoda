@@ -31,6 +31,11 @@ export const ACCOUNTS = {
 export type AccountKey = keyof typeof ACCOUNTS;
 export type AccountType = 'asset' | 'liability' | 'equity' | 'income' | 'expense';
 
+/** For rows read back from storage, where `account` arrives as a string. */
+export function isAccountKey(value: unknown): value is AccountKey {
+  return typeof value === 'string' && value in ACCOUNTS;
+}
+
 /* ── postings ────────────────────────────────────────────────────────────── */
 
 export interface LedgerLine {

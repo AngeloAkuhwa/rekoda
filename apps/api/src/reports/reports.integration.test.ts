@@ -13,6 +13,7 @@ import {
   reportsCashflowResponse,
   reportsDebtorsResponse,
   reportsOverviewResponse,
+  reportsStatementsResponse,
 } from '@rekoda/contracts';
 import { createDb, spendRepo, withBusiness, type Db } from '@rekoda/db';
 import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
@@ -86,6 +87,7 @@ const ENDPOINTS = [
   '/v1/reports/cashflow',
   '/v1/reports/debtors',
   '/v1/reports/activity',
+  '/v1/reports/statements',
 ] as const;
 
 describe('the guardrail', () => {
@@ -147,5 +149,55 @@ describe('the shapes the web tier will parse', () => {
     );
     expect(adaView.moneyOutK).toBe(1_200_000);
     expect(bolaView.moneyOutK).toBe(0);
+  });
+});
+
+describe('the four statements (ADR 0015)', () => {
+  it('a fresh business gets empty, balanced statements for the current month', async () => {
+    const { auth } = await onboard('+2348177000004');
+    const res = await app.inject({ method: 'GET', url: '/v1/reports/statements', headers: auth });
+    const statements = reportsStatementsResponse.parse(res.json());
+    expect(statements.trialBalance.rows).toEqual([]);
+    expect(statements.trialBalance.balanced).toBe(true);
+    expect(statements.balanceSheet.balanced).toBe(true);
+    expect(statements.profitAndLoss.netProfitK).toBe(0);
+    expect(statements.cashflow.closingK).toBe(0);
+  });
+
+  it('refuses a malformed period with 400, never a crash', async () => {
+    const { auth } = await onboard('+2348177000005');
+    for (const bad of ['2026-13', 'now', '2026-1', "2026-08'--"]) {
+      const res = await app.inject({
+        method: 'GET',
+        url: `/v1/reports/statements?period=${encodeURIComponent(bad)}`,
+        headers: auth,
+      });
+      expect(res.statusCode).toBe(400);
+    }
+  });
+
+  it('an expense shows up in the P&L, the trial balance stays balanced', async () => {
+    const { auth, businessId } = await onboard('+2348177000006');
+    await withBusiness(db, businessId, (tx) =>
+      spendRepo.recordExpense(tx, {
+        businessId,
+        description: 'fuel',
+        category: null,
+        amountK: 1_200_000,
+        method: 'cash',
+        sourceType: 'chat',
+        sourceId: 'd2',
+      }),
+    );
+
+    const res = await app.inject({ method: 'GET', url: '/v1/reports/statements', headers: auth });
+    const statements = reportsStatementsResponse.parse(res.json());
+    expect(statements.profitAndLoss.totalExpensesK).toBe(1_200_000);
+    expect(statements.profitAndLoss.netProfitK).toBe(-1_200_000);
+    expect(statements.trialBalance.balanced).toBe(true);
+    expect(statements.balanceSheet.balanced).toBe(true);
+    // Cash went negative (an expense with no income): it crosses to credit.
+    const cash = statements.trialBalance.rows.find((r) => r.account === 'CASH');
+    expect(cash?.creditK).toBe(1_200_000);
   });
 });

@@ -254,3 +254,52 @@ export async function activityFor(
 
   return items.sort((a, b) => b.at.getTime() - a.at.getTime()).slice(0, limit);
 }
+
+export interface AccountSumsRow {
+  account: string;
+  periodDebitK: number;
+  periodCreditK: number;
+  cumulativeDebitK: number;
+  cumulativeCreditK: number;
+}
+
+/**
+ * Per-account debit/credit sums for one Lagos month and cumulatively up to
+ * its end — the single query all four statements are assembled from
+ * (@rekoda/core statements.ts). `period` is validated as YYYY-MM upstream.
+ */
+export async function accountSumsFor(
+  tx: TenantDb,
+  businessId: string,
+  period: string,
+): Promise<AccountSumsRow[]> {
+  const rows = await tx.execute<{
+    account: string;
+    period_debit_k: string;
+    period_credit_k: string;
+    cumulative_debit_k: string;
+    cumulative_credit_k: string;
+  }>(sql`
+    WITH bounds AS (
+      SELECT (${period} || '-01T00:00:00Z')::timestamptz - interval '1 hour' AS pstart,
+             ((${period} || '-01T00:00:00Z')::timestamptz - interval '1 hour')
+               + interval '1 month' AS pend
+    )
+    SELECT e.account,
+      COALESCE(SUM(e.debit_k)  FILTER (WHERE e.created_at >= b.pstart), 0)::bigint AS period_debit_k,
+      COALESCE(SUM(e.credit_k) FILTER (WHERE e.created_at >= b.pstart), 0)::bigint AS period_credit_k,
+      COALESCE(SUM(e.debit_k), 0)::bigint  AS cumulative_debit_k,
+      COALESCE(SUM(e.credit_k), 0)::bigint AS cumulative_credit_k
+    FROM ledger_entries e, bounds b
+    WHERE e.business_id = ${businessId}::uuid AND e.created_at < b.pend
+    GROUP BY e.account
+    ORDER BY e.account
+  `);
+  return [...rows].map((r) => ({
+    account: r.account,
+    periodDebitK: Number(r.period_debit_k),
+    periodCreditK: Number(r.period_credit_k),
+    cumulativeDebitK: Number(r.cumulative_debit_k),
+    cumulativeCreditK: Number(r.cumulative_credit_k),
+  }));
+}
