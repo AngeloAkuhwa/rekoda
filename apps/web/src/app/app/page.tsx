@@ -198,7 +198,7 @@ export default async function DashboardPage() {
             />
           </div>
           <p className="rk-fineprint">
-            Free commands like *who owes me* and *records* never count. Need more?{' '}
+            Free commands like *who owes me* and *payment details* never count. Need more?{' '}
             <a href="/pricing">See plans</a>.
           </p>
         </div>

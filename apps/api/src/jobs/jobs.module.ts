@@ -22,6 +22,7 @@ import { renderDocumentHandler } from './render-document.handler.js';
 import { deliverDocumentHandler } from './deliver-document.handler.js';
 import { processPaymentEventHandler } from './process-payment-event.handler.js';
 import { PaymentsModule } from '../payments/payments.module.js';
+import { PaymentIntentsService } from '../payments/payment-intents.service.js';
 import { PAYMENT_PROVIDER, type PaymentProviderPort } from '../payments/provider.port.js';
 import { pumpPaystackEvents } from '../payments/paystack-pump.js';
 import { MESSAGE_SENDER } from '../channels/sender.tokens.js';
@@ -97,6 +98,7 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
     @Inject(DOCUMENT_STORAGE) private readonly storage: DocumentStorage,
     @Inject(MESSAGE_SENDER) private readonly sender: MessageSender,
     @Inject(PAYMENT_PROVIDER) private readonly paymentProvider: PaymentProviderPort,
+    @Inject(PaymentIntentsService) private readonly paymentIntents: PaymentIntentsService,
   ) {}
 
   onModuleInit(): void {
@@ -116,6 +118,7 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
       sender: this.sender,
       config: this.config,
       paymentProvider: this.paymentProvider,
+      paymentIntents: this.paymentIntents,
     });
     this.runner.start();
 

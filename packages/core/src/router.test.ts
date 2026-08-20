@@ -145,12 +145,24 @@ describe('the deterministic queries', () => {
     expect(intentOf(message)).toEqual({ kind: 'records' });
   });
 
+  it.each([
+    'payment details',
+    'send payment link',
+    'Send her payment details',
+    'abeg send payment link',
+    'payment link pls',
+  ])('%j collects for the latest open invoice', (message) => {
+    expect(intentOf(message)).toEqual({ kind: 'payment_details' });
+  });
+
   it('sends a QUALIFIED version of the same question to the model', () => {
     // "who owes me more than 50k" is a filtered query. Answering it with the
     // plain debtor list would be answering a different question.
     expect(goesToModel('who owes me more than 50k')).toBe(true);
     expect(goesToModel('who owes me from last month')).toBe(true);
     expect(goesToModel('send my records for March')).toBe(true);
+    // Naming a SPECIFIC invoice is a different question than "the latest".
+    expect(goesToModel('send payment link for INV-2026-000003')).toBe(true);
   });
 });
 

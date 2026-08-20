@@ -386,6 +386,31 @@ export async function documentsFor(tx: TenantDb, businessId: string): Promise<St
     .orderBy(documents.createdAt);
 }
 
+/** The newest invoice still carrying a balance — what "payment details" collects for. */
+export async function latestOpenInvoice(
+  tx: TenantDb,
+  businessId: string,
+): Promise<{ id: string; invoiceNumber: string; balanceDueK: number } | null> {
+  const rows = await tx.execute<{
+    id: string;
+    invoice_number: string;
+    balance_due_k: string;
+  }>(sql`
+    SELECT id, invoice_number, balance_due_k::bigint AS balance_due_k
+    FROM invoices
+    WHERE business_id = ${businessId}::uuid AND status IN ('issued', 'partially_paid')
+    ORDER BY created_at DESC
+    LIMIT 1
+  `);
+  const row = [...rows][0];
+  if (!row) return null;
+  return {
+    id: row.id,
+    invoiceNumber: row.invoice_number,
+    balanceDueK: Number(row.balance_due_k),
+  };
+}
+
 /** One invoice, for minting a payment intent against it. */
 export async function invoiceForPayment(
   tx: TenantDb,

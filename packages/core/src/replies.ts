@@ -107,7 +107,7 @@ export function clarification(question: string): Reply {
 export function allowanceExhausted(monthlyMessages: number): Reply {
   return reply(
     `You have used all ${monthlyMessages} messages in your plan this month. ` +
-      'Nothing is lost. Your records are safe, and *who owes me*, *records* and ' +
+      'Nothing is lost. Your records are safe, and *who owes me*, *payment details* and ' +
       'your dashboard still work.\n\n' +
       'To keep recording this month, upgrade your plan or top up at rekoda.app/pricing.',
   );
@@ -118,7 +118,7 @@ export function quotaReachedForBusiness(): Reply {
   return reply(
     'You have reached today’s limit for messages I need to think about. ' +
       'It resets at midnight.\n\n' +
-      'Short commands still work. Try *who owes me* or *records*.',
+      'Short commands still work. Try *who owes me* or *payment details*.',
   );
 }
 
@@ -233,6 +233,74 @@ export function paymentConfirmed(
     `Money in ✅ ${formatNaira(amountK)} confirmed for ${invoiceNumber}.\n` +
       `Receipt ${receiptNumber} is attached. Forward it to your customer.`,
   );
+}
+
+/* ── collecting money: the payment-details command ───────────────────────── */
+
+/**
+ * The payment link, ready to forward. The figure is repeated here because the
+ * merchant forwards this message as-is and the customer decides from it.
+ */
+export function paymentLinkReady(
+  invoiceNumber: string,
+  amountK: number,
+  checkoutUrl: string,
+): Reply {
+  return reply(
+    `Payment link for ${invoiceNumber}: ${formatNaira(amountK)} outstanding.\n${checkoutUrl}\n\n` +
+      'Forward it to your customer. I will tell you the moment the money lands, ' +
+      'and the receipt follows by itself.',
+  );
+}
+
+/** Nothing is owed, so there is nothing to collect. */
+export function paymentLinkNothingOwed(): Reply {
+  return reply(
+    'Every invoice you have issued is fully paid, so there is nothing to collect. ' +
+      'Record a sale first and I can make a payment link for it.',
+  );
+}
+
+/** Collection needs a settlement account first (§47 posture: honest, never a dead link). */
+export function paymentLinkNeedsConnection(): Reply {
+  return reply(
+    'To collect payments straight to your bank, first add your settlement account ' +
+      'at rekoda.app under Payments. It takes one minute, once.',
+  );
+}
+
+/** The provider requires an email Rekoda does not hold for this customer. */
+export function paymentLinkNeedsEmail(invoiceNumber: string): Reply {
+  return reply(
+    `To make a payment link for ${invoiceNumber}, your payment provider needs the ` +
+      'customer’s email address, and I do not have one for them yet. ' +
+      'Adding customer details by chat is coming.',
+  );
+}
+
+/* ── who owes me ─────────────────────────────────────────────────────────── */
+
+export interface DebtorLine {
+  invoiceNumber: string;
+  balanceDueK: number;
+}
+
+/**
+ * The debtor list, answered from the ledger. Invoice numbers only, never
+ * customer names: this reply crosses WhatsApp in plain text.
+ */
+export function debtorList(rows: DebtorLine[], totalK: number, count: number): Reply {
+  if (count === 0) {
+    return reply('Nobody owes you right now. Every invoice you have issued is fully paid.');
+  }
+  const lines = rows.map((r) => `${r.invoiceNumber}: ${formatNaira(r.balanceDueK)}`);
+  const heading =
+    count === 1
+      ? `One invoice is unpaid: ${formatNaira(totalK)} owed to you.`
+      : `${count} invoices are unpaid: ${formatNaira(totalK)} owed to you in total.`;
+  const overflow =
+    count > rows.length ? `\n...and ${count - rows.length} more on your dashboard.` : '';
+  return reply(`${heading}\n\n${lines.join('\n')}${overflow}`);
 }
 
 /**

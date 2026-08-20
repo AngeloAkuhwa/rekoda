@@ -80,6 +80,7 @@ beforeAll(async () => {
     sender: stubSender,
     config,
     paymentProvider: provider,
+    paymentIntents: new PaymentIntentsService(config, appDb, provider),
   };
 });
 

@@ -26,6 +26,7 @@ import { Interpreter } from '../ai/interpreter.service.js';
 import { StubTransport } from '../ai/transport.stub.js';
 import { StubSender } from '../channels/sender.stub.js';
 import { StubPaymentProvider } from '../payments/provider.stub.js';
+import { PaymentIntentsService } from '../payments/payment-intents.service.js';
 import { LocalStorage } from '../documents/r2.storage.js';
 import { ReplySender } from '../replies/reply.service.js';
 import { buildRunner, type RunnerDeps } from '../jobs/jobs.module.js';
@@ -120,6 +121,7 @@ beforeAll(async () => {
     sender: stubSender,
     config,
     paymentProvider: new StubPaymentProvider(),
+    paymentIntents: new PaymentIntentsService(config, db, new StubPaymentProvider()),
   };
 });
 

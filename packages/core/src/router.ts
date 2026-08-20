@@ -37,6 +37,7 @@ export type DeterministicIntent =
   | { kind: 'start' }
   | { kind: 'records' }
   | { kind: 'debtors' }
+  | { kind: 'payment_details' }
   | { kind: 'resend' }
   /** Begins the NDPR erasure flow. Always confirmed before anything is erased. */
   | { kind: 'delete_my_data' };
@@ -214,6 +215,21 @@ const PHRASES: ReadonlyArray<readonly [readonly string[], DeterministicIntent]> 
       'who dey owe',
     ],
     { kind: 'debtors' },
+  ],
+  [
+    [
+      'payment details',
+      'send payment details',
+      'payment link',
+      'send payment link',
+      'send the payment link',
+      'send her payment details',
+      'send him payment details',
+      'send them payment details',
+      'how can they pay',
+      'collect payment',
+    ],
+    { kind: 'payment_details' },
   ],
   [['resend', 'send again', 'send it again', 'resend it'], { kind: 'resend' }],
 ];

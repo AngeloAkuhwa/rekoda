@@ -19,6 +19,7 @@ import {
   events,
   issueRepo,
   jobsRepo,
+  reportsRepo,
   spendRepo,
   usageRepo,
   type TenantDb,
@@ -27,6 +28,7 @@ import type { ApiConfig } from '../config.js';
 import type { Interpreter } from '../ai/interpreter.service.js';
 import type { PrivacyGateway } from '../privacy/gateway.service.js';
 import type { ReplySender } from '../replies/reply.service.js';
+import type { PaymentIntentsService } from '../payments/payment-intents.service.js';
 import { openPayload } from '../privacy/payload-vault.js';
 import type { JobContext, JobHandler } from './runner.js';
 
@@ -35,6 +37,7 @@ export interface InboundMessageDeps {
   interpreter: Interpreter;
   replySender: ReplySender;
   config: ApiConfig;
+  paymentIntents: PaymentIntentsService;
 }
 
 /**
@@ -115,7 +118,7 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
 
     const answer =
       route.route === 'deterministic'
-        ? await deterministicReply(tx, businessId, route.intent)
+        ? await deterministicReply(deps, tx, businessId, route.intent)
         : await interpretedReply(deps, tx, businessId, text, tokenised!.text, message.id);
 
     if (answer) {
@@ -134,14 +137,11 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
 }
 
 /**
- * Answers that need no model — and honest placeholders where the capability is
- * not built.
- *
- * `records` and `debtors` are deliberately NOT answered with a summary. There
- * is no ledger to read yet, and a bookkeeping assistant that invents a debtor
- * list has destroyed the only thing it sells.
+ * Answers that need no model. `who owes me` and `payment details` are free
+ * commands answered from rows; what is not built yet still says so honestly.
  */
 async function deterministicReply(
+  deps: InboundMessageDeps,
   tx: TenantDb,
   businessId: string,
   intent: DeterministicIntent,
@@ -171,14 +171,53 @@ async function deterministicReply(
       return replies.confirmErasure();
     case 'number':
       return replies.strayNumber();
-    case 'debtors':
-      return replies.notYet('Your debtor list');
+    case 'debtors': {
+      // Answered from the same SQL the dashboard uses. Invoice numbers, not
+      // customer names: this text crosses WhatsApp in the clear.
+      const debtors = await reportsRepo.debtorsFor(tx, businessId, 8);
+      return replies.debtorList(
+        debtors.rows.map((r) => ({ invoiceNumber: r.invoiceNumber, balanceDueK: r.balanceDueK })),
+        debtors.totalK,
+        debtors.count,
+      );
+    }
+    case 'payment_details':
+      return paymentDetailsReply(deps, tx, businessId);
     case 'records':
       return replies.notYet('Sending your records');
     case 'resend':
       return replies.notYet('Resending a document');
     default:
       return null;
+  }
+}
+
+/**
+ * "Send payment details" (payments-v1 §160): the newest open invoice becomes
+ * a payable link. Every non-link outcome is an honest sentence, never a dead
+ * URL — a merchant forwards this to a customer, so it must not lie.
+ *
+ * The intents service runs its own transactions and talks to the provider;
+ * the same shape process-payment-event already uses inside a job.
+ */
+async function paymentDetailsReply(
+  deps: InboundMessageDeps,
+  tx: TenantDb,
+  businessId: string,
+): Promise<Reply> {
+  const invoice = await issueRepo.latestOpenInvoice(tx, businessId);
+  if (!invoice) return replies.paymentLinkNothingOwed();
+
+  const outcome = await deps.paymentIntents.createForInvoice(businessId, invoice.id);
+  switch (outcome.state) {
+    case 'ready':
+      return replies.paymentLinkReady(invoice.invoiceNumber, outcome.amountK, outcome.checkoutUrl);
+    case 'connection_not_active':
+      return replies.paymentLinkNeedsConnection();
+    case 'requires_customer_information':
+      return replies.paymentLinkNeedsEmail(invoice.invoiceNumber);
+    case 'nothing_to_pay':
+      return replies.paymentLinkNothingOwed();
   }
 }
 
