@@ -15,6 +15,8 @@
 import { Logger } from '@nestjs/common';
 import {
   paystackInitializeResponse,
+  paystackSettlementListResponse,
+  paystackSettlementTransactionsResponse,
   paystackSubaccountResponse,
   paystackVerifyResponse,
 } from '@rekoda/contracts';
@@ -24,6 +26,7 @@ import type {
   InitializeTransactionInput,
   InitializeTransactionResult,
   PaymentProviderPort,
+  ProviderSettlement,
   VerifyTransactionResult,
 } from './provider.port.js';
 
@@ -31,6 +34,18 @@ import type {
 const REQUEST_TIMEOUT_MS = 15_000;
 
 export class PaystackApiError extends Error {}
+
+/**
+ * Paystack's settlement vocabulary → ours. Anything unrecognised becomes
+ * `held` in the adapter (see the port): the sweep will neither claim money
+ * settled nor failed on a word this file has never seen.
+ */
+const SETTLEMENT_STATUS: Record<string, 'pending' | 'processing' | 'settled' | 'failed'> = {
+  success: 'settled',
+  processing: 'processing',
+  pending: 'pending',
+  failed: 'failed',
+};
 
 const CHANNEL_TO_METHOD: Record<string, string> = {
   bank_transfer: 'transfer',
@@ -152,6 +167,47 @@ export class PaystackProvider implements PaymentProviderPort {
         paidAtIso: d.paid_at ?? null,
       },
     };
+  }
+
+  async listSettlements(fromIso: string): Promise<ProviderSettlement[]> {
+    const query = `?from=${encodeURIComponent(fromIso)}&perPage=100`;
+    const parsed = paystackSettlementListResponse.safeParse(await this.get(`/settlement${query}`));
+    if (!parsed.success || !parsed.data.status) {
+      throw new PaystackApiError('settlement list returned an unreadable response');
+    }
+    return (parsed.data.data ?? []).map((s) => ({
+      settlementId: String(s.id),
+      status: SETTLEMENT_STATUS[s.status] ?? 'held',
+      providerStatus: s.status,
+      settledAtIso:
+        SETTLEMENT_STATUS[s.status] === 'settled'
+          ? (s.settlement_date ?? s.effective_date ?? null)
+          : null,
+    }));
+  }
+
+  async listSettlementTransactions(settlementId: string): Promise<string[]> {
+    const parsed = paystackSettlementTransactionsResponse.safeParse(
+      await this.get(`/settlement/${encodeURIComponent(settlementId)}/transactions?perPage=200`),
+    );
+    if (!parsed.success || !parsed.data.status) {
+      throw new PaystackApiError('settlement transactions returned an unreadable response');
+    }
+    return (parsed.data.data ?? [])
+      .map((t) => t.reference)
+      .filter((r): r is string => typeof r === 'string' && r.length > 0);
+  }
+
+  private async get(path: string): Promise<unknown> {
+    const response = await fetch(`${this.baseUrl}${path}`, {
+      headers: this.headers(),
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+    if (!response.ok) {
+      this.log.warn(`Paystack ${path.split('?')[0]} answered HTTP ${response.status}`);
+      throw new PaystackApiError(`${path.split('?')[0]} failed with HTTP ${response.status}`);
+    }
+    return response.json();
   }
 
   private async request(method: string, path: string, body: unknown): Promise<unknown> {

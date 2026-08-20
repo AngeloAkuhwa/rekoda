@@ -84,6 +84,9 @@ export class PaymentsController {
         grossAmountK: p.grossAmountK,
         providerFeeK: p.providerFeeK,
         settlementAmountK: p.settlementAmountK,
+        // NULL means merchant-recorded: there is no provider settlement to track.
+        settlementStatus: p.settlementStatus ?? 'not_applicable',
+        settledAt: p.settledAt ? p.settledAt.toISOString() : null,
       })),
     };
   }

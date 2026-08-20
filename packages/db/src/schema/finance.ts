@@ -126,7 +126,10 @@ export const payments = pgTable(
     /** The provider's native status verbatim, for audit — never trusted. */
     providerStatus: text('provider_status'),
     status: text('status'), // pending|processing|confirmed|failed|reversed|refunded|partially_refunded
+    /** not_applicable (merchant-recorded: NULL) · pending · processing · settled · failed · held */
     settlementStatus: text('settlement_status'),
+    /** The provider's effective settlement date, stamped by the polling sweep. */
+    settledAt: timestamp('settled_at', { withTimezone: true }),
     createdAt: createdAt(),
   },
   (t) => [

@@ -119,9 +119,12 @@ export default async function PaymentsPage() {
                     <td>{p.providerFeeK == null ? 'none' : <Money kobo={p.providerFeeK} />}</td>
                     <td>
                       {p.settlementAmountK == null ? (
-                        'pending'
+                        settlementWord(p.settlementStatus)
                       ) : (
-                        <Money kobo={p.settlementAmountK} />
+                        <>
+                          <Money kobo={p.settlementAmountK} />
+                          <span className="rk-fineprint"> · {settlementCell(p)}</span>
+                        </>
                       )}
                     </td>
                     <td>
@@ -176,6 +179,30 @@ export default async function PaymentsPage() {
       </div>
     </section>
   );
+}
+
+/** The settlement column when a settled amount exists: date if landed, state if not. */
+function settlementCell(p: { settlementStatus: string; settledAt: string | null }): string {
+  if (p.settlementStatus === 'settled' && p.settledAt) return exceptionDate(p.settledAt);
+  return settlementWord(p.settlementStatus);
+}
+
+/** Settlement states, said the way a merchant would say them. */
+function settlementWord(status: string): string {
+  switch (status) {
+    case 'settled':
+      return 'in your bank';
+    case 'processing':
+      return 'on the way';
+    case 'pending':
+      return 'pending';
+    case 'failed':
+      return 'settlement failed';
+    case 'held':
+      return 'held by provider';
+    default:
+      return 'no settlement';
+  }
 }
 
 /** `12 Aug` beside each item, so age is visible at a glance. */

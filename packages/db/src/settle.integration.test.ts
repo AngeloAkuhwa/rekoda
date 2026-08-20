@@ -380,3 +380,82 @@ describe('the exception queue (§35): resolving', () => {
     expect(row?.resolvedAt).not.toBeNull();
   });
 });
+
+describe('settlement stamping (§26–28)', () => {
+  it('moves pending → settled with the settlement date, exactly once', async () => {
+    const businessId = await seedBusiness();
+    const { intent } = await seedObligation(businessId);
+    await withBusiness(db, businessId, (tx) => book(tx, businessId, intent, 15_000_000));
+
+    const first = await withBusiness(db, businessId, (tx) =>
+      settleRepo.markSettlements(
+        tx,
+        businessId,
+        [intent.reference],
+        'settled',
+        '2026-08-19T04:00:00.000Z',
+      ),
+    );
+    expect(first).toBe(1);
+
+    const row = await one<{ settlement_status: string; settled_at: Date | null }>(
+      businessId,
+      sql`SELECT settlement_status, settled_at FROM payments`,
+    );
+    expect(row?.settlement_status).toBe('settled');
+    expect(row?.settled_at).not.toBeNull();
+
+    // Re-polling the same batch is a no-op, not a rewrite.
+    const second = await withBusiness(db, businessId, (tx) =>
+      settleRepo.markSettlements(
+        tx,
+        businessId,
+        [intent.reference],
+        'settled',
+        '2026-08-20T04:00:00.000Z',
+      ),
+    );
+    expect(second).toBe(0);
+  });
+
+  it('a failed batch marks failed and NEVER stamps a settled date', async () => {
+    const businessId = await seedBusiness();
+    const { intent } = await seedObligation(businessId);
+    await withBusiness(db, businessId, (tx) => book(tx, businessId, intent, 15_000_000));
+
+    const stamped = await withBusiness(db, businessId, (tx) =>
+      settleRepo.markSettlements(tx, businessId, [intent.reference], 'failed', null),
+    );
+    expect(stamped).toBe(1);
+
+    const row = await one<{ settlement_status: string; settled_at: Date | null }>(
+      businessId,
+      sql`SELECT settlement_status, settled_at FROM payments`,
+    );
+    expect(row?.settlement_status).toBe('failed');
+    expect(row?.settled_at).toBeNull();
+  });
+
+  it('another tenant stamping the same reference changes nothing', async () => {
+    const businessId = await seedBusiness();
+    const { intent } = await seedObligation(businessId);
+    await withBusiness(db, businessId, (tx) => book(tx, businessId, intent, 15_000_000));
+
+    const otherUser = await identity.upsertUserByPhone(db, '+2348120000003');
+    const other = await identity.createBusinessWithOwner(db, {
+      name: 'Bode Spares',
+      businessType: null,
+      ownerUserId: otherUser.id,
+    });
+    const stamped = await withBusiness(db, other.id, (tx) =>
+      settleRepo.markSettlements(tx, other.id, [intent.reference], 'settled', null),
+    );
+    expect(stamped).toBe(0);
+
+    const row = await one<{ settlement_status: string }>(
+      businessId,
+      sql`SELECT settlement_status FROM payments`,
+    );
+    expect(row?.settlement_status).toBe('pending');
+  });
+});

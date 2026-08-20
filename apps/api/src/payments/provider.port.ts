@@ -81,6 +81,22 @@ export type CreateSubaccountResult =
    */
   | { state: 'rejected'; reason: string };
 
+/** One settlement batch, normalised (§26–28). */
+export interface ProviderSettlement {
+  settlementId: string;
+  /**
+   * The adapter's translation into the settlement vocabulary the payments
+   * table speaks. `held` is the conservative bucket for any provider status
+   * the adapter does not recognise: neither settled nor failed is claimed
+   * about money whose state is unknown.
+   */
+  status: 'pending' | 'processing' | 'settled' | 'failed' | 'held';
+  /** The provider's native status, verbatim, for audit. */
+  providerStatus: string;
+  /** When the batch reached the merchant's bank; null until it has. */
+  settledAtIso: string | null;
+}
+
 export interface PaymentProviderPort {
   readonly providerType: string;
   /** The merchant's settlement destination, provider-side (§3–5). */
@@ -88,4 +104,11 @@ export interface PaymentProviderPort {
   initializeTransaction(input: InitializeTransactionInput): Promise<InitializeTransactionResult>;
   /** Server-side verification — the ONLY source of authoritative amounts (§20). */
   verifyTransaction(reference: string): Promise<VerifyTransactionResult>;
+  /**
+   * Settlement batches since a date. Polled, not webhook-fed: settlement
+   * webhooks are best-effort at Paystack, so the sweep asks directly.
+   */
+  listSettlements(fromIso: string): Promise<ProviderSettlement[]>;
+  /** The transaction references a settlement batch carried. */
+  listSettlementTransactions(settlementId: string): Promise<string[]>;
 }

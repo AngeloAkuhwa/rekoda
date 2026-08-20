@@ -23,7 +23,7 @@
  * it becomes a refund or a credit. Books that quietly absorb an overpayment
  * are books that overstate what the merchant may keep.
  */
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { postProviderPayment, splitFees, type FeePolicy } from '@rekoda/core';
 import { documentHash } from '@rekoda/core/documents';
 import type { TenantDb } from '../client.js';
@@ -434,6 +434,8 @@ export interface PaymentReadback {
   providerFeeK: number | null;
   settlementAmountK: number | null;
   rekodaReference: string | null;
+  settlementStatus: string | null;
+  settledAt: Date | null;
 }
 
 /** Every payment for the pinned business, oldest first. */
@@ -447,10 +449,45 @@ export async function paymentsFor(tx: TenantDb): Promise<PaymentReadback[]> {
       providerFeeK: payments.providerFeeK,
       settlementAmountK: payments.settlementAmountK,
       rekodaReference: payments.rekodaReference,
+      settlementStatus: payments.settlementStatus,
+      settledAt: payments.settledAt,
     })
     .from(payments)
     .orderBy(payments.createdAt);
   return rows;
+}
+
+/**
+ * Stamp settlement state onto verified payments by Rekoda reference.
+ *
+ * Only VERIFIED payments carry a reference, so merchant-recorded rows can
+ * never be touched. The IS DISTINCT FROM predicate makes the sweep
+ * idempotent: re-polling the same settlement changes nothing and reports
+ * zero. `settled_at` is written only when the money actually settled —
+ * a failed or held batch keeps the column honest at NULL.
+ */
+export async function markSettlements(
+  tx: TenantDb,
+  businessId: string,
+  references: string[],
+  settlementStatus: 'pending' | 'processing' | 'settled' | 'failed' | 'held',
+  settledAtIso: string | null,
+): Promise<number> {
+  if (references.length === 0) return 0;
+  const settledAt = settlementStatus === 'settled' && settledAtIso ? new Date(settledAtIso) : null;
+  const rows = await tx
+    .update(payments)
+    .set({ settlementStatus, ...(settledAt ? { settledAt } : {}) })
+    .where(
+      and(
+        eq(payments.businessId, businessId),
+        eq(payments.verified, 1),
+        inArray(payments.rekodaReference, references),
+        sql`${payments.settlementStatus} IS DISTINCT FROM ${settlementStatus}`,
+      ),
+    )
+    .returning({ id: payments.id });
+  return rows.length;
 }
 
 export interface ReconciliationReadback {
