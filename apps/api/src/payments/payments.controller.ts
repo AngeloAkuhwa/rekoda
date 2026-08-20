@@ -14,6 +14,8 @@ import {
   Get,
   HttpCode,
   Inject,
+  NotFoundException,
+  Param,
   Post,
   Req,
   ServiceUnavailableException,
@@ -94,12 +96,39 @@ export class PaymentsController {
       exceptions: rows
         .filter((r) => r.status === 'EXCEPTION')
         .map((r) => ({
+          id: r.id,
           status: r.status,
           reason: r.reason,
           amountK: r.amountK,
           outstandingK: r.outstandingK,
+          createdAt: r.createdAt.toISOString(),
+          resolvedAt: r.resolvedAt ? r.resolvedAt.toISOString() : null,
         })),
     };
+  }
+
+  /**
+   * Mark one exception reviewed. Owner-only: deciding that odd money has been
+   * looked at is the same class of act as deciding where money settles. The
+   * update is conditional (unresolved EXCEPTION rows only), so a stale or
+   * foreign id is a 404, never a silent success.
+   */
+  @Post('exceptions/:id/resolve')
+  @HttpCode(200)
+  @UseGuards(RolesGuard)
+  @Roles('owner')
+  async resolveException(
+    @Req() request: AuthedRequest,
+    @Param('id') id: string,
+  ): Promise<{ resolved: true }> {
+    if (!/^[0-9a-f-]{36}$/i.test(id)) throw new BadRequestException('not an exception id');
+    const businessId = request.auth!.businessId;
+    const actor = `user:${request.auth!.userId}`;
+    const resolved = await withBusiness(this.db, businessId, (tx) =>
+      settleRepo.resolveException(tx, businessId, id, actor),
+    );
+    if (!resolved) throw new NotFoundException('no unresolved exception with that id');
+    return { resolved: true };
   }
 
   /** This month's meter, so the dashboard can show usage without guessing. */

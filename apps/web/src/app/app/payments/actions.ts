@@ -1,7 +1,7 @@
 'use server';
 
 import { revalidatePath } from 'next/cache';
-import { submitPaymentConnection } from '@/server/api';
+import { resolvePaymentException, submitPaymentConnection } from '@/server/api';
 import { readSessionToken } from '@/server/session-cookies';
 
 export interface ConnectFormState {
@@ -42,4 +42,17 @@ export async function submitConnection(
 
   revalidatePath('/app/payments');
   return {};
+}
+
+/**
+ * Mark an exception reviewed. A stale id (already reviewed in another tab)
+ * lands on the refreshed list rather than an error page.
+ */
+export async function markExceptionReviewed(formData: FormData): Promise<void> {
+  const id = formData.get('exceptionId');
+  if (typeof id !== 'string' || id.length === 0) return;
+  const token = await readSessionToken();
+  if (!token) return;
+  await resolvePaymentException(token, id);
+  revalidatePath('/app/payments');
 }

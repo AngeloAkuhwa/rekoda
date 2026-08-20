@@ -454,24 +454,54 @@ export async function paymentsFor(tx: TenantDb): Promise<PaymentReadback[]> {
 }
 
 export interface ReconciliationReadback {
+  id: string;
   status: string;
   reason: string | null;
   amountK: number | null;
   outstandingK: number | null;
+  createdAt: Date;
+  resolvedAt: Date | null;
 }
 
 /** The reconciliation trail — the admin exception queue's query. */
 export async function reconciliationsFor(tx: TenantDb): Promise<ReconciliationReadback[]> {
   const rows = await tx
     .select({
+      id: reconciliations.id,
       status: reconciliations.status,
       reason: reconciliations.reason,
       amountK: reconciliations.amountK,
       outstandingK: reconciliations.outstandingK,
+      createdAt: reconciliations.createdAt,
+      resolvedAt: reconciliations.resolvedAt,
     })
     .from(reconciliations)
     .orderBy(reconciliations.createdAt);
   return rows;
+}
+
+/**
+ * Mark one exception reviewed. Conditional on being an UNRESOLVED EXCEPTION,
+ * so a double-tap or a stale id changes nothing and says so: exactly one
+ * caller ever wins, and a resolved row stays resolved by whoever reviewed it
+ * first.
+ */
+export async function resolveException(
+  tx: TenantDb,
+  businessId: string,
+  reconciliationId: string,
+  actor: string,
+): Promise<boolean> {
+  const rows = await tx.execute<{ id: string }>(sql`
+    UPDATE reconciliations
+    SET resolved_at = now(), resolved_by = ${actor}
+    WHERE id = ${reconciliationId}::uuid
+      AND business_id = ${businessId}::uuid
+      AND status = 'EXCEPTION'
+      AND resolved_at IS NULL
+    RETURNING id
+  `);
+  return [...rows].length === 1;
 }
 
 /** PostgreSQL unique-violation, wrapped by drizzle under `.cause`. */

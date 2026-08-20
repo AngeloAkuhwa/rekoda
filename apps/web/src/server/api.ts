@@ -299,3 +299,17 @@ export async function reportsStatements(
   });
   return reportsStatementsResponse.parse(json);
 }
+
+/** Owner action: mark one reconciliation exception reviewed. */
+export async function resolvePaymentException(
+  sessionToken: string,
+  exceptionId: string,
+): Promise<'resolved' | 'not_found'> {
+  const { status } = await call({
+    method: 'POST',
+    path: `/v1/payments/exceptions/${encodeURIComponent(exceptionId)}/resolve`,
+    headers: { authorization: `Bearer ${sessionToken}` },
+    expect: [200, 404],
+  });
+  return status === 200 ? 'resolved' : 'not_found';
+}

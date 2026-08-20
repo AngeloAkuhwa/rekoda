@@ -12,7 +12,16 @@
 import { createServer, type Server } from 'node:http';
 import { randomBytes } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { createDb, paymentsHub, withBusiness, type Db } from '@rekoda/db';
+import { paymentReference } from '@rekoda/core';
+import {
+  createDb,
+  identity,
+  issueRepo,
+  paymentsHub,
+  settleRepo,
+  withBusiness,
+  type Db,
+} from '@rekoda/db';
 import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { PaymentConnectionsService } from './connections.service.js';
@@ -209,6 +218,135 @@ describe('submitting settlement details', () => {
       headers: auth,
     });
     expect((exceptions.json() as { exceptions: unknown[] }).exceptions).toEqual([]);
+  });
+});
+
+/**
+ * Book an overpaid invoice for the business, leaving one unresolved
+ * EXCEPTION reconciliation — the same path the webhook job takes.
+ */
+async function seedException(businessId: string): Promise<string> {
+  return withBusiness(db, businessId, async (tx) => {
+    const sale = await issueRepo.issueSale(tx, {
+      businessId,
+      customerId: null,
+      customerToken: 'CUSTOMER_7K2',
+      items: [{ name: 'wig', quantity: 1, unitPriceK: 15_000_000 }],
+      subtotalK: 15_000_000,
+      discountK: 0,
+      deliveryFeeK: 0,
+      vatK: 0,
+      totalK: 15_000_000,
+      paidK: 0,
+      balanceDueK: 15_000_000,
+      method: 'transfer',
+      sourceType: 'chat',
+      sourceId: 'draft-x',
+      actor: 'system',
+    });
+    const intent = await paymentsHub.createIntent(tx, {
+      businessId,
+      reference: paymentReference(new Date(), (n) => randomBytes(n)),
+      expectedAmountK: 15_000_000,
+      providerType: 'paystack',
+      invoiceId: sale.invoiceId,
+    });
+    await settleRepo.bookVerifiedPayment(tx, {
+      businessId,
+      intent: {
+        id: intent.id,
+        reference: intent.reference,
+        invoiceId: intent.invoiceId,
+        customerId: intent.customerId,
+      },
+      confirmedAmountK: 20_000_000,
+      currency: 'NGN',
+      providerType: 'paystack',
+      providerRef: `pst-${randomBytes(4).toString('hex')}`,
+      providerStatus: 'success',
+      providerFeeK: 0,
+      feePolicy: 'merchant_bearing',
+      method: 'transfer',
+      actor: 'test',
+      eventId: 'event-x',
+    });
+    const rows = await settleRepo.reconciliationsFor(tx);
+    const exception = rows.find((r) => r.status === 'EXCEPTION');
+    if (!exception) throw new Error('seed did not produce an exception');
+    return exception.id;
+  });
+}
+
+/** POST with no body — the resolve route takes everything from the URL. */
+function resolve(exceptionId: string, headers: Record<string, string> = {}) {
+  return app.inject({
+    method: 'POST',
+    url: `/v1/payments/exceptions/${exceptionId}/resolve`,
+    headers,
+  });
+}
+
+describe('resolving an exception (§35)', () => {
+  it('marks it reviewed for the owner, then answers 404 to the second tap', async () => {
+    const { businessId, auth } = await onboard('+2348150000007');
+    const exceptionId = await seedException(businessId);
+
+    const listed = await app.inject({
+      method: 'GET',
+      url: '/v1/payments/exceptions',
+      headers: auth,
+    });
+    const before = (
+      listed.json() as { exceptions: Array<{ id: string; resolvedAt: string | null }> }
+    ).exceptions;
+    expect(before).toHaveLength(1);
+    expect(before[0]?.id).toBe(exceptionId);
+    expect(before[0]?.resolvedAt).toBeNull();
+
+    const resolved = await resolve(exceptionId, auth);
+    expect(resolved.statusCode).toBe(200);
+    expect(resolved.json()).toEqual({ resolved: true });
+
+    const relisted = await app.inject({
+      method: 'GET',
+      url: '/v1/payments/exceptions',
+      headers: auth,
+    });
+    const after = (relisted.json() as { exceptions: Array<{ resolvedAt: string | null }> })
+      .exceptions;
+    expect(after[0]?.resolvedAt).not.toBeNull();
+
+    // Already reviewed: the conditional update finds nothing, and says so.
+    expect((await resolve(exceptionId, auth)).statusCode).toBe(404);
+  });
+
+  it('answers 401 without a session, 400 for a non-id, 404 for an unknown id', async () => {
+    const { auth } = await onboard('+2348150000008');
+    const unknownId = '2b0f9b6a-0000-4000-8000-000000000000';
+    expect((await resolve(unknownId)).statusCode).toBe(401);
+    expect((await resolve('not-an-id', auth)).statusCode).toBe(400);
+    expect((await resolve(unknownId, auth)).statusCode).toBe(404);
+  });
+
+  it('keeps an accountant out (owner-only), and another tenant finds nothing', async () => {
+    const { businessId, auth } = await onboard('+2348150000009');
+    const exceptionId = await seedException(businessId);
+
+    const accountant = await identity.upsertUserByPhone(db, '+2348150000010');
+    await identity.addMembership(db, businessId, accountant.id, 'accountant');
+    const requested = (await post('/v1/auth/otp/request', { phone: '+2348150000010' })).json() as {
+      devCode?: string;
+    };
+    const signedIn = (
+      await post('/v1/auth/otp/verify', { phone: '+2348150000010', code: requested.devCode })
+    ).json() as { sessionToken: string };
+    expect(
+      (await resolve(exceptionId, { authorization: `Bearer ${signedIn.sessionToken}` })).statusCode,
+    ).toBe(403);
+
+    // A different business holding the same id: 404, never a cross-tenant write.
+    const stranger = await onboard('+2348150000011');
+    expect((await resolve(exceptionId, stranger.auth)).statusCode).toBe(404);
   });
 });
 
