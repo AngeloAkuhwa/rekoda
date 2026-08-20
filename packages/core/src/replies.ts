@@ -321,6 +321,66 @@ export function debtorList(rows: DebtorLine[], totalK: number, count: number): R
   return reply(`${heading}\n\n${lines.join('\n')}${overflow}`);
 }
 
+/* ── the records command ─────────────────────────────────────────────────── */
+
+/**
+ * "records" answered from the same SQL as the dashboard overview — figures a
+ * merchant can act on in chat, with the full statements one tap away. No
+ * customer appears here; these are totals, and this text crosses WhatsApp in
+ * the clear.
+ */
+export function recordsSummary(input: {
+  salesK: number;
+  moneyInK: number;
+  moneyOutK: number;
+  owedToYouK: number;
+}): Reply {
+  if (
+    input.salesK === 0 &&
+    input.moneyInK === 0 &&
+    input.moneyOutK === 0 &&
+    input.owedToYouK === 0
+  ) {
+    return reply(
+      'Nothing in your books yet this month. Record a sale or an expense and the totals build from there.',
+    );
+  }
+  return reply(
+    'Your books this month:\n' +
+      `Sales ${formatNaira(input.salesK)}\n` +
+      `Money in ${formatNaira(input.moneyInK)}\n` +
+      `Money out ${formatNaira(input.moneyOutK)}\n` +
+      `Owed to you ${formatNaira(input.owedToYouK)}\n\n` +
+      'The full statements are on your dashboard.',
+  );
+}
+
+/* ── the resend command ──────────────────────────────────────────────────── */
+
+/** The document exists and is on its way again. Named, so they know which one. */
+export function resending(reference: string): Reply {
+  return reply(`Sending ${reference} again now.`);
+}
+
+/** Nothing has ever been issued — an honest miss, not an error. */
+export function nothingToResend(): Reply {
+  return reply(
+    'There is no document to resend yet. When an invoice or receipt is issued, ask again and I will send the latest one.',
+  );
+}
+
+/* ── messages Rekoda cannot read yet ─────────────────────────────────────── */
+
+/**
+ * A voice note or a photo arrived. Saying so costs nothing and keeps the
+ * merchant moving; silently ignoring it teaches them the number is dead.
+ */
+export function onlyText(): Reply {
+  return reply(
+    'I can only read typed messages for now. Voice notes and photos are coming. Type it and I will record it.',
+  );
+}
+
 /**
  * A capability the plan names but the product does not have yet.
  *
