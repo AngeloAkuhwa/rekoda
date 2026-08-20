@@ -72,6 +72,13 @@ export interface ApiConfig {
    * Consumed by the voice slice; declared now so it cannot be hard-coded.
    */
   voiceNoteMaxDurationSeconds: number;
+  /**
+   * Invoices at or above this many KOBO get dual-extracted by two different
+   * models, with disagreement routed to requires_review
+   * (docs/ai-model-strategy.md §6). Configuration, never a literal at a call
+   * site — the threshold is a commercial risk decision. Default ₦500,000.
+   */
+  aiDualExtractThresholdK: number;
   /** Recorded on every usage row, so a past cost is never re-derived. */
   planningFxNairaPerUsd: number;
   /**
@@ -120,16 +127,18 @@ const DEFAULT_MODEL: Record<'anthropic' | 'openai', string> = {
 /**
  * Role defaults (docs/ai-model-strategy.md §1). Every AI call belongs to a
  * ROLE, and each role has its own model — nothing anywhere says "call
- * Sonnet", it says "call the classifier". Two roles are provider-fixed by
- * capability, not preference: transcription is OpenAI because the Claude API
- * accepts no audio, and the reasoning roles default to the Claude family
- * because vision + native PDF + strict tools is where extraction lives.
+ * Sonnet", it says "call the classifier". The reasoning roles default to the
+ * Claude family (vision + native PDF + strict tools is where extraction
+ * lives); the transcriber defaults to the SELF-HOSTED AfriSpeech-tuned
+ * Whisper sidecar (ADR 0005/0008) — "audio never leaves Rekoda" is a trust
+ * claim, and generic hosted models mishear African-accented English badly.
+ * A hosted transcriber id here is for the M3 benchmark comparator only.
  */
 const ROLE_DEFAULTS = {
   classifier: 'claude-haiku-4-5',
   vision: 'claude-sonnet-latest',
   escalation: 'claude-opus-5',
-  transcriber: 'gpt-4o-transcribe',
+  transcriber: 'afrispeech-whisper-medium-all',
 } as const;
 
 function required(env: NodeJS.ProcessEnv, key: string, minLength = 0): string {
@@ -255,6 +264,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     aiCallsPerBusinessPerDay: Number(env['AI_DAILY_CALLS_PER_BUSINESS'] ?? 60),
     aiCallsGlobalPerDay: Number(env['AI_DAILY_CALLS_GLOBAL'] ?? 5_000),
     voiceNoteMaxDurationSeconds: Number(env['VOICE_NOTE_MAX_DURATION_SECONDS'] ?? 120),
+    aiDualExtractThresholdK: Number(env['AI_DUAL_EXTRACT_THRESHOLD_K'] ?? 50_000_000),
     planningFxNairaPerUsd: Number(env['PLANNING_FX_NGN_PER_USD'] ?? 1_450),
     paystackSecretKey: env['PAYSTACK_SECRET_KEY'] ?? '',
     paystackBaseUrl: env['PAYSTACK_BASE_URL'] ?? 'https://api.paystack.co',

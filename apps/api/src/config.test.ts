@@ -80,7 +80,13 @@ describe('the role ensemble (docs/ai-model-strategy.md)', () => {
     expect(config.aiModelClassifier).toMatch(/haiku/);
     expect(config.aiModelVision).toMatch(/claude/);
     expect(config.aiModelEscalation).toMatch(/opus/);
-    expect(config.aiModelTranscriber).toMatch(/transcribe|whisper/);
+    // ADR 0008: the transcriber defaults to the SELF-HOSTED AfriSpeech-tuned
+    // sidecar, never a hosted API — "audio never leaves Rekoda" is a trust
+    // claim, and this assertion is what keeps a convenience swap from
+    // sneaking in as a default.
+    expect(config.aiModelTranscriber).toMatch(/afrispeech/);
+    // Dual-extraction threshold is configuration, defaulting to ₦500,000.
+    expect(config.aiDualExtractThresholdK).toBe(50_000_000);
   });
 
   it('lets any role be re-pointed by env without touching code', () => {

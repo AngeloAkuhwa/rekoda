@@ -200,4 +200,8 @@ telemetry replaces every assumption in this document.**
   re-run all COGS.
 * First 50 paying merchants → replace planning COGS with telemetry;
   re-examine allowances against real P50/P95 usage.
+* First pilot cohort with real results → collect one to three NAMED merchant
+  testimonials with naira figures for the landing page. Social proof is
+  deliberately absent until it is real (fabricating it would break the trust
+  positioning); the moment it exists, it outperforms any redesign.
 * Any FX move beyond the ₦1,450/$ planning buffer.

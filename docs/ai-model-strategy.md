@@ -8,10 +8,13 @@ rules that keep it safe and swappable.
 ## 0. Why a mix is structural, not optional
 
 The Claude API accepts text, images and PDFs. It accepts **no audio** — so a
-voice note cannot be a single-provider pipeline no matter how good any one
-model is. Rekoda already holds both an Anthropic and an OpenAI key and already
-has a provider-neutral transport (ADR 0007); this strategy extends that from
-"one interchangeable brain" to **one role-addressed ensemble**.
+voice note can never be a single-vendor pipeline no matter how good any one
+model is. Rekoda's answer to audio is self-hosted (ADR 0005/0008, see §7),
+which makes the ensemble three-legged by construction: a self-hosted
+transcriber, the Claude family for reasoning and vision, and OpenAI as the
+switchable second reasoning provider (ADR 0007) and STT benchmark comparator.
+This strategy extends the existing provider-neutral transport from "one
+interchangeable brain" to **one role-addressed ensemble**.
 
 ## 1. The roles and their defaults
 
@@ -22,7 +25,7 @@ interpreter". Defaults, chosen from current capability and price
 
 | Role | Default model | Price in/out per MTok | Job |
 |---|---|---|---|
-| `transcriber` | OpenAI `gpt-4o-transcribe` | audio-token priced | Voice note → text. OpenAI because Claude takes no audio; strongest current WER on accented English. `whisper-1` is the cost fallback. |
+| `transcriber` | self-hosted `afrispeech-whisper-medium-all` (ADR 0005/0008) | hosting only | Voice note → text. Self-hosted for two reasons that outrank ops convenience: "audio never leaves Rekoda" is a trust-page claim, and generic models run 30–45% WER on African-accented English (worse on names and amounts, which is all Rekoda's utterances are). OpenAI `gpt-4o-transcribe` exists in this role ONLY as the M3 benchmark comparator; it never becomes a silent fallback. |
 | `classifier` | Claude Haiku 4.5 | $1 / $5 | Document-type detection ("is this a receipt, an invoice, a statement?"), routing, and formatting §16 answers from deterministic query results. High volume, low nuance. |
 | `interpreter` | Claude Sonnet 5 | $3 / $15 (intro $2/$10 ends 2026-08-31) | Text or transcript → StructuredBusinessCommand. The existing interpreter role. |
 | `vision` | Claude Sonnet 5 | $3 / $15 | Receipts, handwritten bills, POS slips, photos (image blocks); supplier invoices and bank statements (native PDF document blocks, 32 MB / 600 pages) **with citations enabled**, so every extracted figure is pinned to the page that says it. |
@@ -32,6 +35,13 @@ Env overrides: `AI_MODEL_TRANSCRIBER`, `AI_MODEL_CLASSIFIER`,
 `AI_MODEL_INTERPRETER`, `AI_MODEL_VISION`, `AI_MODEL_ESCALATION`. Unset roles
 fall back to the provider family's default, so a deployment that sets nothing
 behaves exactly as today.
+
+**The classifier is a gate, never a mandatory hop.** For a single receipt
+photo, one `vision` call that classifies AND extracts is cheaper than
+classify-then-extract (two calls). The classifier runs only where a cheap
+answer AVOIDS an expensive call: rejecting junk images, routing statements to
+the batch path, formatting §16 query answers. A pipeline that sends every
+document through Haiku first has misread this table.
 
 ## 2. The escalation ladder
 
@@ -84,10 +94,11 @@ Two rules make the ladder safe:
 Defaults above are the best current choice on paper; the sales pitch is not
 the measurement. Before the voice and document slices ship:
 
-- **Voice bench**: a recorded set of Nigerian-accented English voice notes
-  (with Pidgin and code-switching), scored on word error rate AND on
-  field-level accuracy of the resulting StructuredBusinessCommand — the
-  metric that pays is "did the books come out right", not WER alone.
+- **Voice bench**: ADR 0008's M3 benchmark is the authority — three
+  self-hosted candidates head-to-head plus the hosted comparator, gated on
+  ENTITY-LEVEL accuracy (amount, quantity, name-string closeness for the
+  fuzzy match), because the metric that pays is "did the books come out
+  right", not WER.
 - **Document bench**: a set of real receipt photos, handwritten bills and
   supplier invoices, scored per extracted field (merchant, date, amount,
   line items) against hand-labelled truth.
@@ -129,17 +140,23 @@ where two different models fail differently, so agreement carries signal:
 The shape to hold: **a validator model is an exception-finder on high-stakes
 documents, never a toll booth on every message.**
 
-## 7. STT: API-first at launch, self-host as a scale decision
+## 7. STT: self-hosted stays the baseline — a correction on the record
 
-The pricing model (16 Aug research) carried self-hosted STT per ADR 0005 with
-the OpenAI API as "benchmark only". This strategy inverts that FOR LAUNCH:
-transcription starts on the OpenAI API (~₦7/min at planning FX; a Chat plan's
-full 60 voice minutes is ~₦400/month, comfortably inside the plan's ~60–75%
-margin), because a starting business should not carry GPU ops for a workload
-this small. Self-hosting becomes worth revisiting when total transcription
-spend clears hosting-plus-ops for a dedicated box — re-run the arithmetic at
-the first-50-merchants telemetry checkpoint the pricing model already
-schedules.
+An earlier revision of this section proposed starting transcription on the
+OpenAI API for launch-ops simplicity. **That was wrong, and ADR 0008 explains
+why**: the self-host decision is anchored on privacy and accuracy, not cost.
+"Audio never leaves Rekoda" is the strongest sentence on the trust page, and
+generic hosted models measure 30–45% WER on African-accented English (above
+70% on entity-rich utterances, which is every Rekoda voice note). Cheap ops
+that break the trust claim and mishear the amounts is not cheap.
+
+So the baseline holds: **self-hosted AfriSpeech-tuned Whisper in the
+faster-whisper sidecar** (ADR 0008), with the M3 benchmark deciding weights
+among the three self-hosted candidates on ADR 0008's gate metric —
+entity-level accuracy (amount, quantity, name-string closeness), not WER.
+The OpenAI transcriber config exists so the benchmark has a hosted
+comparator and so a future, explicitly-consented fallback is one env var
+away; it is never a silent default.
 
 ## 8. What this changes in code, and when
 
