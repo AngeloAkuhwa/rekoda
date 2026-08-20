@@ -84,6 +84,22 @@ export const createBusinessRequest = z.object({
 });
 export type CreateBusinessRequest = z.infer<typeof createBusinessRequest>;
 
+/**
+ * An operator moving a business onto a plan (docs/pricing-model.md).
+ *
+ * `expiresAt` is explicit rather than derived: a month, a year and a
+ * never-expires arrangement are all real, and guessing which one an
+ * operator meant is how a paying merchant gets cut off.
+ */
+export const setPlanRequest = z.object({
+  businessId: z.string().uuid(),
+  plan: z.enum(['trial', 'expired', 'chat', 'integrate', 'complete']),
+  expiresAt: z.iso.datetime().nullable(),
+  /** Who is doing this. Recorded in the audit trail verbatim. */
+  actor: z.string().trim().min(2).max(60),
+});
+export type SetPlanRequest = z.infer<typeof setPlanRequest>;
+
 export const sessionResponse = z.object({
   sessionToken: z.string(),
   expiresAt: z.string(),

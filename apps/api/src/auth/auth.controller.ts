@@ -2,20 +2,27 @@ import {
   BadRequestException,
   Body,
   Controller,
+  ForbiddenException,
   Inject,
   Delete,
   Get,
   Headers,
   HttpCode,
+  NotFoundException,
   Post,
   Req,
   UnauthorizedException,
   UseGuards,
 } from '@nestjs/common';
+import { timingSafeEqual } from 'node:crypto';
+import { billingRepo, type Db } from '@rekoda/db';
+import { CONFIG, type ApiConfig } from '../config.js';
+import { DB } from '../db/db.module.js';
 import { InvalidPhoneError } from '@rekoda/core/identity';
 import {
   createBusinessRequest,
   requestOtpRequest,
+  setPlanRequest,
   verifyOtpRequest,
   type MeResponse,
   type RequestOtpResponse,
@@ -101,7 +108,11 @@ export class AuthController {
 
 @Controller('v1/businesses')
 export class BusinessController {
-  constructor(@Inject(AuthService) private readonly auth: AuthService) {}
+  constructor(
+    @Inject(AuthService) private readonly auth: AuthService,
+    @Inject(CONFIG) private readonly config: ApiConfig,
+    @Inject(DB) private readonly db: Db,
+  ) {}
 
   /**
    * Guarded by the setup grant rather than a session, because at this point
@@ -138,4 +149,47 @@ export class BusinessController {
   updateSettings(@Req() request: AuthedRequest): { businessId: string } {
     return { businessId: request.auth!.businessId };
   }
+
+  /**
+   * Move a business onto a plan. An OPERATOR action, not a merchant one:
+   * an owner who could set their own plan could award themselves Complete
+   * for free, so this is gated on the deployment secret rather than on any
+   * session, and the acting operator is named in the audit trail.
+   *
+   * This is the smallest thing that stops a paying merchant being stuck on
+   * trial allowances. Self-service purchase (M4) replaces the caller, not
+   * the audit row.
+   */
+  @Post('plan')
+  @HttpCode(200)
+  async setPlan(
+    @Headers('x-rekoda-operator-secret') secret: string | undefined,
+    @Body() body: unknown,
+  ): Promise<{ plan: string }> {
+    if (!secret || !matchesSecret(secret, this.config.secret)) {
+      throw new ForbiddenException('operator secret required');
+    }
+
+    const parsed = setPlanRequest.safeParse(body);
+    if (!parsed.success) {
+      throw new BadRequestException('businessId, plan, expiresAt and actor are required');
+    }
+
+    const { businessId, plan, expiresAt, actor } = parsed.data;
+    const changed = await billingRepo.setPlan(this.db, {
+      businessId,
+      plan,
+      expiresAt: expiresAt ? new Date(expiresAt) : null,
+      actor: `operator:${actor}`,
+    });
+    if (!changed) throw new NotFoundException('no business with that id');
+    return { plan };
+  }
+}
+
+/** Constant-time, and length-safe: `timingSafeEqual` throws on a mismatch. */
+function matchesSecret(given: string, expected: string): boolean {
+  const a = Buffer.from(given);
+  const b = Buffer.from(expected);
+  return a.length === b.length && timingSafeEqual(a, b);
 }

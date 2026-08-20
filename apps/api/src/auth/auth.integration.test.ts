@@ -474,3 +474,86 @@ describe('OTP delivery (the gate between the funnel and the product)', () => {
     expect(sender.sent).toHaveLength(1);
   });
 });
+
+describe('the operator plan endpoint', () => {
+  const OPERATOR = { 'x-rekoda-operator-secret': SECRET };
+
+  async function businessFor(phone: string): Promise<string> {
+    const code = await requestCode(phone);
+    const verified = (await post('/v1/auth/otp/verify', { phone, code })).json() as {
+      setupToken: string;
+    };
+    const created = await post(
+      '/v1/businesses',
+      { name: 'Ada Fashion', businessType: 'Fashion & clothing' },
+      { 'x-rekoda-setup-token': verified.setupToken },
+    );
+    return (created.json() as { businessId: string }).businessId;
+  }
+
+  const change = (body: unknown, headers: Record<string, string> = OPERATOR) =>
+    post('/v1/businesses/plan', body, headers);
+
+  it('moves a business onto a paid plan for the operator who names themselves', async () => {
+    const businessId = await businessFor('08031234590');
+    const res = await change({
+      businessId,
+      plan: 'chat',
+      expiresAt: new Date(Date.now() + 31 * 86_400_000).toISOString(),
+      actor: 'angelo',
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ plan: 'chat' });
+  });
+
+  it('refuses without the operator secret, and with a wrong one', async () => {
+    const businessId = await businessFor('08031234591');
+    const body = { businessId, plan: 'complete', expiresAt: null, actor: 'angelo' };
+
+    expect((await change(body, {})).statusCode).toBe(403);
+    expect(
+      (await change(body, { 'x-rekoda-operator-secret': 'not-the-secret-but-long-enough-here' }))
+        .statusCode,
+    ).toBe(403);
+  });
+
+  it('refuses a session token in place of the operator secret', async () => {
+    // The whole point of the gate: an owner cannot award themselves a plan.
+    const phone = '08031234592';
+    const code = await requestCode(phone);
+    const verified = (await post('/v1/auth/otp/verify', { phone, code })).json() as {
+      setupToken: string;
+    };
+    const created = await post(
+      '/v1/businesses',
+      { name: 'Ada Fashion', businessType: 'Fashion & clothing' },
+      { 'x-rekoda-setup-token': verified.setupToken },
+    );
+    const session = created.json() as { sessionToken: string; businessId: string };
+
+    const res = await change(
+      { businessId: session.businessId, plan: 'complete', expiresAt: null, actor: 'self' },
+      { 'x-rekoda-operator-secret': session.sessionToken },
+    );
+    expect(res.statusCode).toBe(403);
+  });
+
+  it('answers 400 for a malformed body and 404 for an unknown business', async () => {
+    expect((await change({ plan: 'chat' })).statusCode).toBe(400);
+    expect(
+      (await change({ businessId: 'not-a-uuid', plan: 'chat', expiresAt: null, actor: 'a' }))
+        .statusCode,
+    ).toBe(400);
+    expect(
+      (
+        await change({
+          businessId: '2b0f9b6a-0000-4000-8000-000000000000',
+          plan: 'chat',
+          expiresAt: null,
+          actor: 'angelo',
+        })
+      ).statusCode,
+    ).toBe(404);
+  });
+});

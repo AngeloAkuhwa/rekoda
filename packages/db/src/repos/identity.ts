@@ -11,6 +11,7 @@
  * inside them is not.
  */
 import { and, desc, eq, gt, isNull, sql } from 'drizzle-orm';
+import { trialExpiry } from '@rekoda/core';
 import type { Db, TenantDb } from '../client.js';
 import { withBusiness, withUser } from '../client.js';
 import {
@@ -218,6 +219,9 @@ export async function createBusinessWithOwner(db: Db, input: NewBusiness): Promi
         name: input.name,
         businessType: input.businessType,
         ownerUserId: input.ownerUserId,
+        // The trial clock starts here, written once. Without it the monthly
+        // counters would hand out a fresh free trial every calendar month.
+        planExpiresAt: trialExpiry(new Date()),
       })
       .returning();
     const row = rows[0];

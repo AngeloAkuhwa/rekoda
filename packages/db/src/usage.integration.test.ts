@@ -10,7 +10,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { createDb, withBusiness, type Db } from './client.js';
-import { identity, usageRepo } from './index.js';
+import { billingRepo, identity, usageRepo } from './index.js';
 import { migrate, requireUrls, truncateAll, type Urls } from './testing.js';
 
 let urls: Urls;
@@ -124,5 +124,119 @@ describe('the atomic gate', () => {
       usageRepo.consumeUnit(tx, businessId, '2026-09', 'messages', 1),
     );
     expect(nextMonth).toBe(true);
+  });
+});
+
+describe('the trial clock (docs/pricing-model.md)', () => {
+  /** Move a business's plan and expiry directly, as an operator or time would. */
+  async function setPlanRow(businessId: string, plan: string, expiresAt: Date | null) {
+    await withBusiness(db, businessId, (tx) =>
+      tx.execute(sql`
+        UPDATE businesses
+        SET plan = ${plan}, plan_expires_at = ${expiresAt ? expiresAt.toISOString() : null}::timestamptz
+        WHERE id = ${businessId}::uuid
+      `),
+    );
+  }
+
+  const planOf = (businessId: string, now?: Date) =>
+    withBusiness(db, businessId, (tx) => usageRepo.planFor(tx, businessId, now));
+
+  it('gives a new business a 30-day trial, dated at creation', async () => {
+    const businessId = await seedBusiness();
+    const rows = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ plan: string; plan_expires_at: string | null }>(
+        sql`SELECT plan, plan_expires_at FROM businesses WHERE id = ${businessId}::uuid`,
+      ),
+    );
+    const row = [...rows][0];
+    expect(row?.plan).toBe('trial');
+    expect(row?.plan_expires_at).not.toBeNull();
+
+    const days = (new Date(row!.plan_expires_at!).getTime() - Date.now()) / 86_400_000;
+    expect(days).toBeGreaterThan(29.9);
+    expect(days).toBeLessThan(30.1);
+  });
+
+  it('answers "expired" once the trial date passes, and "trial" before it', async () => {
+    const businessId = await seedBusiness();
+    expect(await planOf(businessId)).toBe('trial');
+
+    // A minute before the date, still a trial; a minute after, expired.
+    const expiry = new Date(Date.now() + 60_000);
+    await setPlanRow(businessId, 'trial', expiry);
+    expect(await planOf(businessId)).toBe('trial');
+    expect(await planOf(businessId, new Date(expiry.getTime() + 1_000))).toBe('expired');
+  });
+
+  it('NEVER expires a paid plan, even with a date in the past', async () => {
+    const businessId = await seedBusiness();
+    // A late billing job must not cut off a merchant who is paying us.
+    await setPlanRow(businessId, 'chat', new Date(Date.now() - 86_400_000));
+    expect(await planOf(businessId)).toBe('chat');
+  });
+
+  it('refuses the first message once expired — zero allowance, not a special case', async () => {
+    const businessId = await seedBusiness();
+    await setPlanRow(businessId, 'trial', new Date(Date.now() - 1_000));
+    expect(await planOf(businessId)).toBe('expired');
+    // allowanceFor('expired', 'messages') is 0, and a zero allowance refuses.
+    expect(await consume(businessId, 0)).toBe(false);
+  });
+});
+
+describe('plan changes and upgrade requests', () => {
+  it('moves a business onto a plan and records who did it', async () => {
+    const businessId = await seedBusiness();
+    const expiresAt = new Date(Date.now() + 365 * 86_400_000);
+
+    const changed = await billingRepo.setPlan(db, {
+      businessId,
+      plan: 'chat',
+      expiresAt,
+      actor: 'operator:angelo',
+    });
+    expect(changed).toBe(true);
+    expect(await withBusiness(db, businessId, (tx) => usageRepo.planFor(tx, businessId))).toBe(
+      'chat',
+    );
+
+    const audit = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ actor: string; action: string; old_value: { plan: string } }>(sql`
+        SELECT actor, action, old_value FROM audit_events WHERE action = 'plan_changed'
+      `),
+    );
+    const row = [...audit][0];
+    expect(row?.actor).toBe('operator:angelo');
+    // The previous plan is kept: "what were they on before" is the question
+    // a billing dispute actually asks.
+    expect(row?.old_value.plan).toBe('trial');
+  });
+
+  it('answers false for a business that does not exist, changing nothing', async () => {
+    const changed = await billingRepo.setPlan(db, {
+      businessId: '2b0f9b6a-0000-4000-8000-000000000000',
+      plan: 'complete',
+      expiresAt: null,
+      actor: 'operator:typo',
+    });
+    expect(changed).toBe(false);
+  });
+
+  it('records every upgrade request with the plan it came from', async () => {
+    const businessId = await seedBusiness();
+    await withBusiness(db, businessId, (tx) =>
+      billingRepo.recordUpgradeRequest(tx, businessId, 'expired'),
+    );
+    await withBusiness(db, businessId, (tx) =>
+      billingRepo.recordUpgradeRequest(tx, businessId, 'expired'),
+    );
+
+    const requests = await withBusiness(db, businessId, (tx) =>
+      billingRepo.upgradeRequestsFor(tx, businessId),
+    );
+    // Two asks are two rows: a merchant who repeats themselves is information.
+    expect(requests).toHaveLength(2);
+    expect(requests[0]?.fromPlan).toBe('expired');
   });
 });

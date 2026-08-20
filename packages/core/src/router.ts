@@ -39,6 +39,7 @@ export type DeterministicIntent =
   | { kind: 'debtors' }
   | { kind: 'payment_details' }
   | { kind: 'resend' }
+  | { kind: 'upgrade' }
   /** Begins the NDPR erasure flow. Always confirmed before anything is erased. */
   | { kind: 'delete_my_data' };
 
@@ -232,6 +233,19 @@ const PHRASES: ReadonlyArray<readonly [readonly string[], DeterministicIntent]> 
     { kind: 'payment_details' },
   ],
   [['resend', 'send again', 'send it again', 'resend it'], { kind: 'resend' }],
+  [
+    [
+      'upgrade',
+      'upgrade me',
+      'upgrade my plan',
+      'i want to upgrade',
+      'i want to pay',
+      'top up',
+      'topup',
+      'buy more messages',
+    ],
+    { kind: 'upgrade' },
+  ],
 ];
 
 /**
