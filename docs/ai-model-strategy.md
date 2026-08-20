@@ -93,7 +93,55 @@ the measurement. Before the voice and document slices ship:
   line items) against hand-labelled truth.
 - Winners take the role defaults; the losers stay one env var away.
 
-## 6. What this changes in code, and when
+## 6. Validation: deterministic first, a second model only where it adds signal
+
+**Decision (owner question, 20 Aug 2026): no blanket LLM validator on outputs.**
+Rekoda already has four validators stronger and cheaper than any model:
+
+1. the strict zod schema at the AI border (malformed or hostile output is
+   rejected, never parsed around);
+2. the deterministic money engine, which recomputes every figure and surfaces
+   disagreement as CG1 instead of trusting either party;
+3. the confirmation gate: the MERCHANT reads the preview before anything
+   posts — a free human validator on every material transaction;
+4. server-side provider verification for payments, which trusts neither
+   webhook nor model nor screenshot.
+
+A second LLM checking the first shares the first's failure modes (both can
+misread "150" as 150k), adds latency to a chat product, and at Chat-plan
+volume would cost real margin: even a Haiku pass on every interpreted message
+is roughly ₦600–1,200 per merchant per month against a ₦9,900 plan — several
+points of gross margin spent re-checking what code already checks.
+
+**Where a second model DOES earn its cost — cross-model extraction agreement
+on high-stakes documents.** Extraction from images and PDFs is the one task
+where two different models fail differently, so agreement carries signal:
+
+- bank-statement imports (§7 of rekoda-chat-v1): rows extracted by `vision`
+  are re-extracted by `classifier` (Haiku) in the same half-price batch;
+  disagreeing rows land in `requires_review`, never auto-post. Cost per
+  statement: single-digit naira.
+- supplier invoices above a configurable threshold
+  (`AI_DUAL_EXTRACT_THRESHOLD_K`, default ₦500,000): same dual-extract,
+  same rule — agreement proceeds to the normal confirmation gate,
+  disagreement asks the merchant.
+
+The shape to hold: **a validator model is an exception-finder on high-stakes
+documents, never a toll booth on every message.**
+
+## 7. STT: API-first at launch, self-host as a scale decision
+
+The pricing model (16 Aug research) carried self-hosted STT per ADR 0005 with
+the OpenAI API as "benchmark only". This strategy inverts that FOR LAUNCH:
+transcription starts on the OpenAI API (~₦7/min at planning FX; a Chat plan's
+full 60 voice minutes is ~₦400/month, comfortably inside the plan's ~60–75%
+margin), because a starting business should not carry GPU ops for a workload
+this small. Self-hosting becomes worth revisiting when total transcription
+spend clears hosting-plus-ops for a dedicated box — re-run the arithmetic at
+the first-50-merchants telemetry checkpoint the pricing model already
+schedules.
+
+## 8. What this changes in code, and when
 
 - **Now** (with this document): per-role model config in `apps/api/config.ts`
   with env overrides and family defaults; the interpreter reads its role.
