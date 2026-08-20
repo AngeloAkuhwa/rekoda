@@ -412,6 +412,28 @@ export function paymentAlreadySettled(invoiceNumber: string): Reply {
   );
 }
 
+/**
+ * The invoice owes less than the merchant just reported.
+ *
+ * Between the preview and the write a provider payment landed, so part of
+ * their figure has nowhere to go. Nothing is posted: applying what fits and
+ * dropping the rest would leave real money with no story, and only the
+ * merchant knows whether the excess is a second invoice, a deposit, or a
+ * mistake.
+ */
+export function paymentBalanceMoved(
+  invoiceNumber: string,
+  balanceDueK: number,
+  excessK: number,
+): Reply {
+  return reply(
+    `${invoiceNumber} only has ${formatKobo(balanceDueK)} owing now, which is ` +
+      `${formatKobo(excessK)} less than you said. Another payment came in while you ` +
+      'were typing, so I have not recorded anything. Tell me the amount to put on ' +
+      'this invoice, or which invoice the rest belongs to.',
+  );
+}
+
 /* ── collecting money: the payment-details command ───────────────────────── */
 
 /**

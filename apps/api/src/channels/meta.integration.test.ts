@@ -1873,6 +1873,55 @@ describe('a payment the merchant reports (RecordPayment)', () => {
     expect(usedOf(after, 'documents')).toBe(usedOf(before, 'documents'));
   });
 
+  /**
+   * The balance fell between the preview and the yes.
+   *
+   * The confirmation re-resolves the invoice and re-gates on the FRESH
+   * balance, which is the whole reason it does not carry the preview's
+   * figure forward: the merchant is asked before anything is attempted.
+   * `BalanceMoved` in settle.ts guards the narrower race that remains,
+   * between that read and the row lock, and refuses there too. Neither path
+   * posts what fits and drops the rest, which would leave real money with no
+   * story and only the merchant knows where it belongs.
+   */
+  it('asks rather than posting less when the invoice owes less than reported', async () => {
+    const business = await seedMerchant('+2348031234567');
+    await issueUnpaidInvoice('wamid.PD');
+
+    stubTransport.replyWith(paymentOf({ amount: 150_000 }));
+    await post(messagePayload('2348031234567', 'wamid.PD-pay', 'Ada paid 150k'));
+    await drain();
+    expect(stubSender.lastText).toContain('Reply *yes*');
+
+    // A transfer lands while the merchant is typing their confirmation.
+    const open = await withBusiness(db, business.id, (tx) =>
+      issueRepo.latestOpenInvoice(tx, business.id),
+    );
+    await withBusiness(db, business.id, (tx) =>
+      settleRepo.recordMerchantPayment(tx, {
+        businessId: business.id,
+        invoiceId: open!.id,
+        amountK: 10_000_000,
+        method: 'transfer',
+        sourceType: 'chat',
+        sourceId: 'landed-meanwhile',
+        actor: 'test',
+      }),
+    );
+
+    await post(messagePayload('2348031234567', 'wamid.PD-confirm', 'yes'));
+    await drain();
+
+    expect(stubSender.lastText).toContain('only has ₦50,000 owing');
+    expect(stubSender.lastText).toContain('you said ₦150,000');
+    // A question, never a preview: nothing here invites another yes.
+    expect(stubSender.lastText).not.toContain('Reply *yes*');
+
+    // Exactly the one payment that really landed, and no second receipt.
+    const payments = await withBusiness(db, business.id, (tx) => settleRepo.paymentsFor(tx));
+    expect(payments).toHaveLength(1);
+  });
+
   it('tells the customer on the receipt that the seller recorded it, not a provider', async () => {
     await seedMerchant('+2348031234567');
     await issueUnpaidInvoice('wamid.PA');

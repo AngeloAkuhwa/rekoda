@@ -459,3 +459,148 @@ describe('settlement stamping (§26–28)', () => {
     expect(row?.settlement_status).toBe('pending');
   });
 });
+
+/**
+ * A payment the MERCHANT reported: cash at the counter, a transfer they saw
+ * land (ADR 0014). Real money and a real receipt, distinguishable forever
+ * from one a provider confirmed.
+ */
+describe('recording a merchant-reported payment', () => {
+  /** Just the invoice. No intent: nobody asked a provider for this money. */
+  async function seedUnpaidInvoice(businessId: string) {
+    return withBusiness(db, businessId, (tx) =>
+      issueRepo.issueSale(tx, {
+        businessId,
+        customerId: null,
+        customerToken: 'CUSTOMER_7K2',
+        items: [{ name: 'wig', quantity: 3, unitPriceK: 5_000_000 }],
+        subtotalK: 15_000_000,
+        discountK: 0,
+        deliveryFeeK: 0,
+        vatK: 0,
+        totalK: 15_000_000,
+        paidK: 0,
+        balanceDueK: 15_000_000,
+        method: 'cash',
+        sourceType: 'chat',
+        sourceId: 'draft-1',
+        actor: 'system',
+      }),
+    );
+  }
+
+  const record = (businessId: string, invoiceId: string, amountK: number) =>
+    withBusiness(db, businessId, (tx) =>
+      settleRepo.recordMerchantPayment(tx, {
+        businessId,
+        invoiceId,
+        amountK,
+        method: 'cash',
+        sourceType: 'chat',
+        sourceId: 'draft-pay',
+        actor: 'system',
+      }),
+    );
+
+  it('allocates a part payment and leaves the balance owing', async () => {
+    const businessId = await seedBusiness();
+    const sale = await seedUnpaidInvoice(businessId);
+
+    const recorded = await record(businessId, sale.invoiceId, 6_000_000);
+
+    expect(recorded.amountK).toBe(6_000_000);
+    expect(recorded.balanceDueK).toBe(9_000_000);
+    expect(recorded.invoiceStatus).toBe('partially_paid');
+    expect(recorded.receiptNumber).toMatch(/^RCT-/);
+  });
+
+  it('settles the invoice when the payment covers the balance', async () => {
+    const businessId = await seedBusiness();
+    const sale = await seedUnpaidInvoice(businessId);
+
+    const recorded = await record(businessId, sale.invoiceId, 15_000_000);
+
+    expect(recorded.balanceDueK).toBe(0);
+    expect(recorded.invoiceStatus).toBe('paid');
+  });
+
+  it('keeps the ledger balanced and takes the receivable down by the payment', async () => {
+    const businessId = await seedBusiness();
+    const sale = await seedUnpaidInvoice(businessId);
+
+    await record(businessId, sale.invoiceId, 6_000_000);
+
+    const entries = await withBusiness(db, businessId, (tx) =>
+      issueRepo.ledgerEntriesFor(tx, businessId),
+    );
+    const debits = entries.reduce((n, e) => n + e.debitK, 0);
+    const credits = entries.reduce((n, e) => n + e.creditK, 0);
+    expect(debits).toBe(credits);
+
+    const arCredit = entries
+      .filter((e) => e.account === 'ACCOUNTS_RECEIVABLE')
+      .reduce((n, e) => n + e.creditK, 0);
+    expect(arCredit).toBe(6_000_000);
+    const cashDebit = entries.filter((e) => e.account === 'CASH').reduce((n, e) => n + e.debitK, 0);
+    expect(cashDebit).toBe(6_000_000);
+  });
+
+  it('books RECORDED, never verified: no provider vouched for this', async () => {
+    const businessId = await seedBusiness();
+    const sale = await seedUnpaidInvoice(businessId);
+
+    await record(businessId, sale.invoiceId, 6_000_000);
+
+    const payments = await withBusiness(db, businessId, (tx) => settleRepo.paymentsFor(tx));
+    expect(payments).toHaveLength(1);
+    expect(payments[0]?.verified).toBe(0);
+    expect(payments[0]?.amountK).toBe(6_000_000);
+  });
+
+  it('two part payments accumulate rather than overwrite', async () => {
+    const businessId = await seedBusiness();
+    const sale = await seedUnpaidInvoice(businessId);
+
+    await record(businessId, sale.invoiceId, 6_000_000);
+    const second = await record(businessId, sale.invoiceId, 4_000_000);
+
+    expect(second.balanceDueK).toBe(5_000_000);
+    const entries = await withBusiness(db, businessId, (tx) =>
+      issueRepo.ledgerEntriesFor(tx, businessId),
+    );
+    expect(entries.reduce((n, e) => n + e.debitK, 0)).toBe(
+      entries.reduce((n, e) => n + e.creditK, 0),
+    );
+  });
+
+  it('refuses an invoice that is already settled rather than crediting nothing', async () => {
+    const businessId = await seedBusiness();
+    const sale = await seedUnpaidInvoice(businessId);
+    await record(businessId, sale.invoiceId, 15_000_000);
+
+    await expect(record(businessId, sale.invoiceId, 2_000_000)).rejects.toBeInstanceOf(
+      settleRepo.AlreadySettled,
+    );
+  });
+
+  /**
+   * The balance moved between the merchant's preview and this write. Nothing
+   * is posted: applying what fits and dropping the rest would leave real
+   * money with no story, and only the merchant knows where the excess goes.
+   */
+  it('refuses with the exact excess when the invoice owes less than reported', async () => {
+    const businessId = await seedBusiness();
+    const sale = await seedUnpaidInvoice(businessId);
+    await record(businessId, sale.invoiceId, 10_000_000);
+
+    await expect(record(businessId, sale.invoiceId, 8_000_000)).rejects.toMatchObject({
+      invoiceNumber: sale.invoiceNumber,
+      balanceDueK: 5_000_000,
+      excessK: 3_000_000,
+    });
+
+    // And nothing moved: the refusal is a refusal, not a partial write.
+    const payments = await withBusiness(db, businessId, (tx) => settleRepo.paymentsFor(tx));
+    expect(payments).toHaveLength(1);
+  });
+});

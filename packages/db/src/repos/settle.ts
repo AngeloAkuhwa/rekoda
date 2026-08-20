@@ -31,6 +31,7 @@ import {
   type FeePolicy,
 } from '@rekoda/core';
 import { documentHash } from '@rekoda/core/documents';
+import { applyPayment } from '@rekoda/core';
 import type { TenantDb } from '../client.js';
 import { auditEvents } from '../schema/ops.js';
 import {
@@ -644,14 +645,23 @@ export async function recordMerchantPayment(
   if (!invoice) throw new Error('recordMerchantPayment: no invoice for this tenant');
 
   const balanceK = Number(invoice.balance_due_k);
+  if (balanceK <= 0) throw new AlreadySettled(`${invoice.invoice_number} has nothing owing`);
+
   /**
-   * Clamped, not trusted. The gate already refused an overpayment, but this
-   * function is the last thing between a number and the ledger, and the
-   * balance may have moved since the preview — a provider payment could have
-   * landed while the merchant was typing.
+   * `applyPayment` decides, not a clamp.
+   *
+   * The gate already refused an overpayment, but it read the balance without
+   * a lock and this is the last thing between a number and the ledger: a
+   * provider payment can land while the merchant is typing. A clamp here
+   * would post the smaller figure and drop the difference, which is money
+   * with no story — the excess is real and belongs to somebody. So core
+   * refuses instead, with the exact excess, and the caller asks.
    */
-  const applied = Math.min(input.amountK, balanceK);
-  if (applied <= 0) throw new AlreadySettled(`${invoice.invoice_number} has nothing owing`);
+  const outcome = applyPayment(Number(invoice.paid_k), Number(invoice.total_k), input.amountK);
+  if (!outcome.ok) {
+    throw new BalanceMoved(invoice.invoice_number, balanceK, outcome.excessK);
+  }
+  const applied = input.amountK;
 
   const paymentRows = await tx
     .insert(payments)
@@ -768,3 +778,21 @@ export async function recordMerchantPayment(
 
 /** The invoice was settled between the preview and the confirmation. */
 export class AlreadySettled extends Error {}
+
+/**
+ * The balance fell between the preview and the write, so the reported amount
+ * no longer fits.
+ *
+ * Carries what the merchant needs to decide rather than a bare failure: what
+ * the invoice actually owes now, and how much of their figure has nowhere to
+ * go. Posting the difference away silently is the one thing this must not do.
+ */
+export class BalanceMoved extends Error {
+  constructor(
+    readonly invoiceNumber: string,
+    readonly balanceDueK: number,
+    readonly excessK: number,
+  ) {
+    super(`${invoiceNumber} now owes ${balanceDueK}, which is ${excessK} less than reported`);
+  }
+}
