@@ -4,6 +4,7 @@ import { AnthropicTransport } from './anthropic.transport.js';
 import { OpenAiTransport } from './openai.transport.js';
 import { Interpreter } from './interpreter.service.js';
 import { MODEL_TRANSPORT, ProviderUnreachable, type ModelTransport } from './transport.js';
+import { assertModelIsPriced, registerRuntimeModelPrices } from './model-prices.js';
 
 // Re-exported for convenience; the token itself is defined in transport.ts so
 // that this module and the service it provides do not import each other.
@@ -42,11 +43,18 @@ class NoTransportConfigured implements ModelTransport {
          * schema border, the spend ceiling, the conversation gates — sits
          * above this line and does not know which provider answered.
          */
+        /* Prices before transports: a call that cannot be costed is a call
+         * that quietly reports as free, so the check happens at boot rather
+         * than at the first invoice. */
+        registerRuntimeModelPrices();
+
         if (config.aiProvider === 'openai') {
+          assertModelIsPriced(config.aiModelDefault, Boolean(config.openaiApiKey));
           return config.openaiApiKey
             ? new OpenAiTransport(config.openaiApiKey)
             : new NoTransportConfigured();
         }
+        assertModelIsPriced(config.aiModelDefault, Boolean(config.anthropicApiKey));
         return config.anthropicApiKey
           ? new AnthropicTransport(config.anthropicApiKey)
           : new NoTransportConfigured();

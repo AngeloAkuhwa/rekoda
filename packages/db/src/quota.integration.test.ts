@@ -106,8 +106,11 @@ describe('the per-business ceiling', () => {
   it('starts fresh on a new day', async () => {
     const businessId = await seedBusiness('Ada Fashion', '+2348070000001');
     const limits = { perBusinessPerDay: 1, globalPerDay: 1_000 };
-    const monday = new Date('2026-08-17T23:00:00Z');
-    const tuesday = new Date('2026-08-18T01:00:00Z');
+    /* The boundary is LAGOS midnight (23:00 UTC), because that is the
+     * midnight the reply promises the merchant. 22:00 UTC is still Monday
+     * evening in Lagos; 23:30 UTC is half past midnight on Tuesday. */
+    const monday = new Date('2026-08-17T22:00:00Z');
+    const tuesday = new Date('2026-08-17T23:30:00Z');
 
     expect(await quotaRepo.reserveAiCall(db, businessId, limits, monday)).toMatchObject({
       ok: true,

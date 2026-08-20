@@ -133,9 +133,17 @@ export function costOfCall(modelId: string, usage: TokenUsage, fxNairaPerUsd: nu
   return { usdMicros, nairaKobo, priced: true };
 }
 
-/** `YYYY-MM` for the `billing_period` column. */
+/**
+ * `YYYY-MM` for the `billing_period` column — the SAME Lagos month the usage
+ * meter counts in (`usagePeriod`).
+ *
+ * These were UTC and the meter was Lagos, so for the hour before midnight UTC
+ * on the last day of a month the cost row and the counter it explains landed
+ * in different months. A margin view that can never exactly tie to the meter
+ * is a margin view nobody trusts.
+ */
 export function billingPeriod(at: Date): string {
-  return `${at.getUTCFullYear()}-${String(at.getUTCMonth() + 1).padStart(2, '0')}`;
+  return new Date(at.getTime() + 3_600_000).toISOString().slice(0, 7);
 }
 
 /**

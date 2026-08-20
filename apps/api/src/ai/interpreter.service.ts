@@ -72,9 +72,15 @@ export class Interpreter {
       });
     } catch (error) {
       if (error instanceof ProviderUnreachable) {
-        // Nothing was billed, so the merchant keeps the slot. Being unable to
-        // reach a provider must not spend a merchant's daily allowance.
+        // The merchant keeps the slot: being unable to reach a provider must
+        // not spend their daily allowance.
         await quotaRepo.releaseAiCall(this.db, businessId);
+        /* But WE may still have been billed. A request that timed out after
+         * the provider began generating is charged, and recording it as
+         * nothing would put a real cost outside the margin view entirely.
+         * Zero tokens with `priced: false` says "this happened and we cannot
+         * price it", which is a row somebody can reconcile. */
+        await this.recordUnpricedCall(businessId, model, 'llm_failed', error.message);
         return { outcome: 'unavailable', reason: error.message };
       }
       throw error;
@@ -120,13 +126,43 @@ export class Interpreter {
     await withBusiness(this.db, businessId, (tx: TenantDb) =>
       quotaRepo.recordUsage(tx, {
         businessId,
-        provider: 'anthropic',
+        // The provider that actually answered. Hard-coding one meant the
+        // margin view attributed every OpenAI call to Anthropic.
+        provider: this.config.aiProvider,
         usageType: 'llm_call',
         quantity: 1,
         providerCostMicros: cost.usdMicros,
         nairaEquivalentK: cost.nairaKobo,
         billingPeriod: billingPeriod(new Date()),
         meta: { model, priced: cost.priced, stopReason, ...usage },
+      }),
+    );
+  }
+
+  /**
+   * A call that happened and cannot be costed: a timeout, a dropped socket.
+   *
+   * Deliberately separate from `recordUsage` — it has no token counts to
+   * price, and inventing an estimate would be the wrong kind of certainty.
+   * The row exists so the count of calls in the margin view matches the count
+   * on the invoice; the money on it is the provider's to tell us.
+   */
+  private async recordUnpricedCall(
+    businessId: string,
+    model: string,
+    usageType: string,
+    reason: string,
+  ): Promise<void> {
+    await withBusiness(this.db, businessId, (tx: TenantDb) =>
+      quotaRepo.recordUsage(tx, {
+        businessId,
+        provider: this.config.aiProvider,
+        usageType,
+        quantity: 1,
+        providerCostMicros: 0,
+        nairaEquivalentK: 0,
+        billingPeriod: billingPeriod(new Date()),
+        meta: { model, priced: false, reason: redactForLog(reason) },
       }),
     );
   }

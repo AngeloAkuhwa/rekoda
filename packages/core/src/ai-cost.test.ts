@@ -8,6 +8,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { billingPeriod, cacheSaving, costOfCall, modelFamily } from './ai-cost.js';
+import { usagePeriod } from './allowances.js';
 
 const FX = 1_450; // PLANNING_FX_NGN_PER_USD
 
@@ -134,5 +135,21 @@ describe('billing period', () => {
     expect(billingPeriod(new Date('2026-01-01T00:00:00Z'))).toBe('2026-01');
     // Zero-padded, so string sorting is chronological.
     expect(billingPeriod(new Date('2026-09-30T12:00:00Z'))).toBe('2026-09');
+  });
+});
+
+describe('the billing period ties to the meter', () => {
+  it('uses the LAGOS month, the same one usagePeriod counts in', () => {
+    // 23:30 UTC on the last day of August is 00:30 on 1 September in Lagos.
+    // The counter has already rolled; the cost row must roll with it, or the
+    // margin view can never tie to the meter it explains.
+    const lateAugust = new Date('2026-08-31T23:30:00Z');
+    expect(billingPeriod(lateAugust)).toBe('2026-09');
+    expect(billingPeriod(lateAugust)).toBe(usagePeriod(lateAugust));
+  });
+
+  it('agrees with the meter across an ordinary month too', () => {
+    const midMonth = new Date('2026-08-15T09:00:00Z');
+    expect(billingPeriod(midMonth)).toBe(usagePeriod(midMonth));
   });
 });

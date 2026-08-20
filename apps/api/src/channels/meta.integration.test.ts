@@ -1416,3 +1416,83 @@ describe('the trial clock and the upgrade door', () => {
     expect(stubSender.lastText).not.toContain('trial has ended');
   });
 });
+
+describe('metering the things that cost money', () => {
+  /** A sale the stub will hand back, so the confirm path is reached. */
+  const A_SALE = {
+    intent: 'RecordSale',
+    customer: { kind: 'token', token: 'CUSTOMER_7K2' },
+    items: [{ name: 'wig', quantity: 3, unitPrice: 50_000 }],
+    statedTotal: 150_000,
+    reportedPayment: 100_000,
+    paymentMethod: 'transfer',
+    discount: null,
+    deliveryFee: null,
+    dueDescription: null,
+  };
+
+  it('spends a documents unit per invoice, and refuses between transactions when they run out', async () => {
+    const user = await identity.upsertUserByPhone(db, '+2348031234567');
+    const business = await identity.createBusinessWithOwner(db, {
+      name: 'Ada Fashion',
+      businessType: null,
+      ownerUserId: user.id,
+    });
+
+    // Burn the trial's 25 documents, leaving the allowance exactly spent.
+    const period = usagePeriod(new Date());
+    await withBusiness(db, business.id, (tx) =>
+      usageRepo.consumeUnit(tx, business.id, period, 'documents', 25, 25),
+    );
+
+    stubTransport.replyWith(A_SALE);
+    await post(messagePayload('2348031234567', 'wamid.DOC1', 'Ada bought 3 wigs for 150k'));
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+    // The preview still happens: the message unit paid for reading it.
+    expect(stubSender.lastText).toContain('Reply *yes*');
+
+    await post(messagePayload('2348031234567', 'wamid.DOC2', 'yes'));
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+
+    expect(stubSender.lastText).toContain('invoices and receipts');
+    expect(stubSender.lastText).toContain('Reply *upgrade*');
+    // Nothing was booked: the refusal happened BEFORE the sale, so the
+    // merchant lost neither the sale nor the draft.
+    expect(await invoiceCount(business.id)).toBe(0);
+  });
+
+  it('records the Meta media cost when a document is delivered', async () => {
+    const user = await identity.upsertUserByPhone(db, '+2348031234567');
+    const business = await identity.createBusinessWithOwner(db, {
+      name: 'Ada Fashion',
+      businessType: null,
+      ownerUserId: user.id,
+    });
+
+    await deps.storage.put('test/cost-1', Buffer.from('%PDF-fake'), 'application/pdf');
+    const doc = await withBusiness(db, business.id, (tx) =>
+      issueRepo.recordDocument(tx, {
+        businessId: business.id,
+        kind: 'invoice_pdf',
+        storageKey: 'test/cost-1',
+        refNumber: 'INV-2026-000021',
+        bytes: 9,
+      }),
+    );
+    await withBusiness(db, business.id, (tx) =>
+      jobsRepo.enqueue(tx, {
+        businessId: business.id,
+        kind: 'document.deliver',
+        payload: { documentId: doc.id },
+        singletonKey: `deliver:${doc.id}`,
+      }),
+    );
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+    expect(stubSender.documents).toHaveLength(1);
+
+    /* Media is chargeable from 1 October 2026. The row has to exist NOW or
+     * the repricing arrives with no baseline for the expensive class. */
+    const totals = await withBusiness(db, business.id, (tx) => quotaRepo.usageTotals(tx, 'meta'));
+    expect(totals.calls).toBeGreaterThanOrEqual(1);
+  });
+});

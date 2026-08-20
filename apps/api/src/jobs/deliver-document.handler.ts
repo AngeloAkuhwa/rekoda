@@ -1,14 +1,16 @@
 import { Logger } from '@nestjs/common';
-import { replies } from '@rekoda/core';
+import { billingPeriod, replies } from '@rekoda/core';
 import {
   conversationsRepo,
   identity,
   issueRepo,
+  quotaRepo,
   settleRepo,
   type Db,
   type TenantDb,
 } from '@rekoda/db';
 import { SendFailed, type MessageSender } from '../channels/sender.js';
+import type { ApiConfig } from '../config.js';
 import type { DocumentStorage } from '../documents/storage.js';
 import type { JobContext, JobHandler } from './runner.js';
 
@@ -17,6 +19,7 @@ export interface DeliverDocumentDeps {
   sender: MessageSender;
   /** For the owner's WhatsApp number — a question that lives above the tenant. */
   db: Db;
+  config: ApiConfig;
 }
 
 /**
@@ -98,6 +101,25 @@ export function deliverDocumentHandler(deps: DeliverDocumentDeps): JobHandler {
         body: caption,
       });
       await conversationsRepo.markOutboundSent(tx, recorded.id, result.providerMessageId);
+
+      /**
+       * A delivered PDF is a Meta MEDIA message, and media is chargeable from
+       * 1 October 2026. Text replies have been writing a cost row since the
+       * reply layer shipped; documents were not, so the baseline being built
+       * for the repricing had a hole in it exactly where the expensive
+       * message class sits.
+       */
+      const costMicros = deps.config.metaServiceReplyCostMicros;
+      await quotaRepo.recordUsage(tx, {
+        businessId,
+        provider: 'meta',
+        usageType: 'message_out',
+        quantity: 1,
+        providerCostMicros: costMicros,
+        nairaEquivalentK: Math.round((costMicros * deps.config.planningFxNairaPerUsd) / 10_000),
+        billingPeriod: billingPeriod(new Date()),
+        meta: { window: 'service', kind: 'media', documentKind: stored.kind },
+      });
       log.debug(`delivered ${filename}`);
     } catch (error) {
       if (error instanceof SendFailed) {
