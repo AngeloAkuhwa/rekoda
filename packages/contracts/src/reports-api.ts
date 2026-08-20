@@ -154,6 +154,8 @@ export const reportsReceiptsResponse = z.object({
       amountK: kobo,
       issuedAt: z.string(),
       invoiceNumber: z.string().nullable(),
+      /** 1 provider-confirmed, 0 merchant-reported (ADR 0014). */
+      verified: z.union([z.literal(0), z.literal(1)]),
     }),
   ),
   count: z.number().int().nonnegative(),

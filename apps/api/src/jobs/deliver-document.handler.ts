@@ -158,11 +158,14 @@ async function captionFor(
     const receipt = await settleRepo.receiptByNumber(tx, businessId, refNumber);
     const snapshot = receipt?.snapshot as Record<string, unknown> | undefined;
     if (snapshot) {
-      return replies.paymentConfirmed(
-        Number(snapshot['amountK'] ?? 0),
-        String(snapshot['invoiceNumber'] ?? ''),
-        refNumber,
-      ).text;
+      const amountK = Number(snapshot['amountK'] ?? 0);
+      const invoiceNumber = String(snapshot['invoiceNumber'] ?? '');
+      /* "Confirmed" is a claim about a provider, not about a receipt, and
+       * this caption is the message the merchant forwards. A payment they
+       * reported themselves gets the caption that matches its receipt. */
+      return snapshot['verified'] === false
+        ? replies.receiptRecordedReady(amountK, invoiceNumber, refNumber).text
+        : replies.paymentConfirmed(amountK, invoiceNumber, refNumber).text;
     }
   }
   return replies.documentSent(refNumber ?? 'Your document').text;

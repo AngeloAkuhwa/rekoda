@@ -1322,6 +1322,61 @@ describe('consent (STOP/START) and erasure, as facts not sentences', () => {
     expect(left).toEqual([]);
   });
 
+  /**
+   * Owner only. This deletes every customer's contact details for the whole
+   * business in one irreversible statement, which is not a thing an
+   * accountant or a delegate should be able to do from a phone.
+   */
+  it('refuses erasure from a member who is not the owner', async () => {
+    const business = await seedMerchant('+2348031234567', 'Ada Fashion');
+    const accountant = await identity.upsertUserByPhone(db, '+2348039990001');
+    await identity.addMembership(db, business.id, accountant.id, 'accountant');
+    const customer = await customersRepo.createCustomerWithIdentities(
+      db,
+      business.id,
+      'CUSTOMER_T9',
+      [{ facet: 'name', ciphertext: 'sealed-name', matchKey: 'mk-name-9' }],
+    );
+
+    await post(messagePayload('2348039990001', 'wamid.DELX', 'delete my data'));
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+
+    expect(stubSender.lastText).toContain('Only the business owner can delete');
+    const left = await withBusiness(db, business.id, (tx) =>
+      customersRepo.identityFacetsFor(tx, business.id, customer.id),
+    );
+    expect(left).toHaveLength(1);
+  });
+
+  /**
+   * Asking to erase clears whatever was waiting for a yes, and the merchant
+   * has to be told: a sale they previewed a minute ago silently vanishing is
+   * how a shop ends up with a day's takings unrecorded.
+   */
+  it('says so when the erasure ask discards an entry waiting for a yes', async () => {
+    await seedMerchant('+2348031234567', 'Ada Fashion');
+
+    stubTransport.replyWith({
+      intent: 'RecordSale',
+      customer: { kind: 'token', token: 'CUSTOMER_7K2' },
+      items: [{ name: 'wig', quantity: 3, unitPrice: 50_000 }],
+      statedTotal: 150_000,
+      reportedPayment: 0,
+      paymentMethod: 'transfer',
+      discount: null,
+      deliveryFee: null,
+      dueDescription: null,
+    });
+    await post(messagePayload('2348031234567', 'wamid.DELD1', 'Ada bought 3 wigs for 150k'));
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+    expect(stubSender.lastText).toContain('Reply *yes*');
+
+    await post(messagePayload('2348031234567', 'wamid.DELD2', 'delete my data'));
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+
+    expect(stubSender.lastText).toContain('waiting for your yes has been dropped');
+  });
+
   it('a "yes" after the erasure prompt keeps everything — only the phrase confirms', async () => {
     const business = await seedMerchant('+2348031234567', 'Ada Fashion');
     const customer = await customersRepo.createCustomerWithIdentities(
@@ -1632,5 +1687,206 @@ describe('a payment the merchant reports (RecordPayment)', () => {
     await drain();
 
     expect(stubSender.lastText).toContain('could not find an unpaid invoice');
+  });
+
+  /**
+   * The one that matters most on this whole path.
+   *
+   * A chat-issued invoice carries `customer_id = NULL` and keeps the customer
+   * token in its snapshot, so resolving by a customer JOIN alone matched
+   * nothing and fell through to "the newest open invoice at all" — which for
+   * a shop that issues more than one invoice a day is somebody else's.
+   */
+  it('puts a named customer payment on THEIR invoice, not the newest one', async () => {
+    const business = await seedMerchant('+2348031234567');
+    // Ada first, then Bola. Bola's is newest, so a fallback would take it.
+    await issueUnpaidInvoice('wamid.P5');
+    stubTransport.replyWith({
+      ...A_SALE_FOR_PAYMENT,
+      customer: { kind: 'token', token: 'CUSTOMER_B9L' },
+      items: [{ name: 'bag', quantity: 1, unitPrice: 80_000 }],
+      statedTotal: 80_000,
+    });
+    await post(messagePayload('2348031234567', 'wamid.P5-sale2', 'Bola bought a bag for 80k'));
+    await drain();
+    await post(messagePayload('2348031234567', 'wamid.P5-yes2', 'yes'));
+    await drain();
+
+    const before = await withBusiness(db, business.id, (tx) =>
+      reportsRepo.invoicesFor(tx, business.id, 10),
+    );
+    const adaInvoice = before.rows.find((r) => r.totalK === 15_000_000)!;
+    const bolaInvoice = before.rows.find((r) => r.totalK === 8_000_000)!;
+
+    stubTransport.replyWith(paymentOf({ amount: 20_000 }));
+    await post(messagePayload('2348031234567', 'wamid.P5-pay', 'Ada paid 20k'));
+    await drain();
+    expect(stubSender.lastText).toContain(`Payment on ${adaInvoice.invoiceNumber}`);
+
+    await post(messagePayload('2348031234567', 'wamid.P5-confirm', 'yes'));
+    await drain();
+
+    const after = await withBusiness(db, business.id, (tx) =>
+      reportsRepo.invoicesFor(tx, business.id, 10),
+    );
+    const ada = after.rows.find((r) => r.invoiceNumber === adaInvoice.invoiceNumber)!;
+    const bola = after.rows.find((r) => r.invoiceNumber === bolaInvoice.invoiceNumber)!;
+    expect(ada.paidK).toBe(2_000_000);
+    // Bola never paid anything, and nothing may say otherwise.
+    expect(bola.paidK).toBe(0);
+    expect(bola.balanceDueK).toBe(8_000_000);
+  });
+
+  it('asks which invoice when nobody is named and several are open', async () => {
+    await seedMerchant('+2348031234567');
+    await issueUnpaidInvoice('wamid.P6');
+    stubTransport.replyWith({
+      ...A_SALE_FOR_PAYMENT,
+      customer: { kind: 'token', token: 'CUSTOMER_B9L' },
+      items: [{ name: 'bag', quantity: 1, unitPrice: 80_000 }],
+      statedTotal: 80_000,
+    });
+    await post(messagePayload('2348031234567', 'wamid.P6-sale2', 'Bola bought a bag for 80k'));
+    await drain();
+    await post(messagePayload('2348031234567', 'wamid.P6-yes2', 'yes'));
+    await drain();
+
+    stubTransport.replyWith(paymentOf({ amount: 20_000, customer: { kind: 'none' } }));
+    await post(messagePayload('2348031234567', 'wamid.P6-pay', 'received 20k'));
+    await drain();
+
+    expect(stubSender.lastText).toContain('2 unpaid invoices open');
+    expect(stubSender.lastText).not.toContain('Reply *yes*');
+  });
+
+  it('says so rather than guessing when the named customer owes nothing', async () => {
+    await seedMerchant('+2348031234567');
+    await issueUnpaidInvoice('wamid.P7');
+
+    stubTransport.replyWith(
+      paymentOf({ amount: 20_000, customer: { kind: 'token', token: 'CUSTOMER_ZZZ' } }),
+    );
+    await post(messagePayload('2348031234567', 'wamid.P7-pay', 'Ngozi paid 20k'));
+    await drain();
+
+    expect(stubSender.lastText).toContain('could not find an unpaid invoice');
+  });
+
+  it('takes the invoice number the merchant typed over the customer they named', async () => {
+    const business = await seedMerchant('+2348031234567');
+    await issueUnpaidInvoice('wamid.P8');
+    const open = await withBusiness(db, business.id, (tx) =>
+      reportsRepo.invoicesFor(tx, business.id, 10),
+    );
+    const number = open.rows[0]!.invoiceNumber;
+
+    stubTransport.replyWith(
+      paymentOf({
+        amount: 20_000,
+        documentRef: number,
+        customer: { kind: 'token', token: 'CUSTOMER_ZZZ' },
+      }),
+    );
+    await post(messagePayload('2348031234567', 'wamid.P8-pay', `${number} paid 20k`));
+    await drain();
+
+    expect(stubSender.lastText).toContain(`Payment on ${number}`);
+  });
+
+  it('refuses an invoice number that names nothing open, rather than falling back', async () => {
+    await seedMerchant('+2348031234567');
+    await issueUnpaidInvoice('wamid.P9');
+
+    stubTransport.replyWith(paymentOf({ amount: 20_000, documentRef: 'INV-2026-999999' }));
+    await post(messagePayload('2348031234567', 'wamid.P9-pay', 'INV-2026-999999 paid 20k'));
+    await drain();
+
+    expect(stubSender.lastText).toContain('could not find an unpaid invoice');
+  });
+
+  /** Units used of one kind, or zero before the counter row exists. */
+  const usedOf = (rows: Array<{ unit: string; used: number }>, unit: string) =>
+    rows.find((r) => r.unit === unit)?.used ?? 0;
+
+  /**
+   * A receipt is a metered document, and the copy has always said so
+   * ("invoices and receipts"). Recording a payment issues one, so it costs a
+   * unit exactly like a sale does: leaving it free let a merchant on an
+   * exhausted plan take receipts without limit.
+   */
+  it('spends a documents unit on the receipt a reported payment issues', async () => {
+    const business = await seedMerchant('+2348031234567');
+    await issueUnpaidInvoice('wamid.PB');
+    const period = usagePeriod(new Date());
+    const before = await withBusiness(db, business.id, (tx) =>
+      usageRepo.usageFor(tx, business.id, period),
+    );
+
+    stubTransport.replyWith(paymentOf({ amount: 60_000 }));
+    await post(messagePayload('2348031234567', 'wamid.PB-pay', 'Ada paid 60k'));
+    await drain();
+    await post(messagePayload('2348031234567', 'wamid.PB-confirm', 'yes'));
+    await drain();
+
+    const after = await withBusiness(db, business.id, (tx) =>
+      usageRepo.usageFor(tx, business.id, period),
+    );
+    expect(usedOf(after, 'documents') - usedOf(before, 'documents')).toBe(1);
+  });
+
+  it('gives the unit back when the payment could not be placed', async () => {
+    const business = await seedMerchant('+2348031234567');
+    await issueUnpaidInvoice('wamid.PC');
+    const period = usagePeriod(new Date());
+
+    // Preview against the real invoice, then let the invoice settle before
+    // the yes lands: the message unit is spent, the receipt never issues.
+    stubTransport.replyWith(paymentOf({ amount: 20_000 }));
+    await post(messagePayload('2348031234567', 'wamid.PC-pay', 'Ada paid 20k'));
+    await drain();
+
+    const before = await withBusiness(db, business.id, (tx) =>
+      usageRepo.usageFor(tx, business.id, period),
+    );
+    const open = await withBusiness(db, business.id, (tx) =>
+      issueRepo.latestOpenInvoice(tx, business.id),
+    );
+    await withBusiness(db, business.id, (tx) =>
+      settleRepo.recordMerchantPayment(tx, {
+        businessId: business.id,
+        invoiceId: open!.id,
+        amountK: 15_000_000,
+        method: 'transfer',
+        sourceType: 'chat',
+        sourceId: 'settled-elsewhere',
+        actor: 'test',
+      }),
+    );
+
+    await post(messagePayload('2348031234567', 'wamid.PC-confirm', 'yes'));
+    await drain();
+
+    expect(stubSender.lastText).toContain('could not find an unpaid invoice');
+    const after = await withBusiness(db, business.id, (tx) =>
+      usageRepo.usageFor(tx, business.id, period),
+    );
+    expect(usedOf(after, 'documents')).toBe(usedOf(before, 'documents'));
+  });
+
+  it('tells the customer on the receipt that the seller recorded it, not a provider', async () => {
+    await seedMerchant('+2348031234567');
+    await issueUnpaidInvoice('wamid.PA');
+
+    stubTransport.replyWith(paymentOf({ amount: 60_000 }));
+    await post(messagePayload('2348031234567', 'wamid.PA-pay', 'Ada paid 60k'));
+    await drain();
+    await post(messagePayload('2348031234567', 'wamid.PA-confirm', 'yes'));
+    await drain();
+
+    const receipt = stubSender.documents.at(-1);
+    expect(receipt).toBeDefined();
+    // The caption the merchant forwards must never borrow "confirmed".
+    expect(receipt?.caption ?? '').not.toContain('confirmed');
+    expect(receipt?.caption ?? '').toContain('Forward it to your customer');
   });
 });

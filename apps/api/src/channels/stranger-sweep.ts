@@ -38,9 +38,11 @@ export async function sweepUnknownSenders(deps: StrangerSweepDeps, limit = 25): 
   let answered = 0;
 
   for (const event of pending) {
-    // Status callbacks carry nobody to answer. Nothing to do, nothing to keep.
+    /* Status callbacks carry nobody to answer. Marked handled with NO reason:
+     * `error` is what the ops health surface counts as the exception queue,
+     * and an ordinary delivery receipt is not an exception. */
     if (!event.eventType.startsWith('message.')) {
-      await events.markProcessed(deps.workerDb, event.id, 'not_a_message');
+      await events.markProcessed(deps.workerDb, event.id);
       continue;
     }
 
@@ -53,8 +55,12 @@ export async function sweepUnknownSenders(deps: StrangerSweepDeps, limit = 25): 
     /* Marked BEFORE the send: a Meta outage must not leave the event pending
      * for the next pass to answer again. A stranger who hears nothing because
      * we were down can message again; one who gets the same greeting every
-     * two seconds cannot make it stop. */
-    await events.markProcessed(deps.workerDb, event.id, 'no_account');
+     * twenty seconds cannot make it stop.
+     *
+     * No reason recorded, again: somebody without an account messaging the
+     * number is the ordinary case this sweep exists for, and counting it as
+     * an exception would bury the real ones under it. */
+    await events.markProcessed(deps.workerDb, event.id);
 
     const claimed = await events.claimStrangerReply(
       deps.workerDb,

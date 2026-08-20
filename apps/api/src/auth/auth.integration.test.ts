@@ -21,6 +21,10 @@ import { OTP_MAX_ATTEMPTS } from '@rekoda/core/identity';
 import { StubSender } from '../channels/sender.stub.js';
 
 const SECRET = 'test-secret-at-least-32-characters-long';
+/* The operator credential is deliberately NOT the session-signing secret:
+ * it travels in a plaintext header, and config refuses to boot if they
+ * match. See the note on `operatorSecret` in config.ts. */
+const OPERATOR_SECRET = `operator-${SECRET}`;
 
 let urls: Urls;
 let app: NestFastifyApplication;
@@ -43,6 +47,7 @@ beforeAll(async () => {
   process.env['VAULT_KEY'] = randomBytes(32).toString('hex');
   process.env['MATCH_KEY'] = randomBytes(32).toString('hex');
   process.env['REKODA_API_SECRET'] = SECRET;
+  process.env['REKODA_OPERATOR_SECRET'] = OPERATOR_SECRET;
   process.env['REKODA_REVEAL_OTP'] = '1';
   // This suite makes a few hundred requests from one address in seconds, which
   // is exactly what the limiter exists to stop. The limiter gets its own test
@@ -452,10 +457,24 @@ describe('OTP delivery (the gate between the funnel and the product)', () => {
     const response = await serviceWith(sender).requestOtp('+2348031239001');
 
     expect(response.status).toBe('sent');
-    expect(sender.sent).toHaveLength(1);
-    expect(sender.sent[0]?.to).toBe('+2348031239001');
-    expect(sender.sent[0]?.text).toMatch(/sign-in code is \d{6}/);
-    expect(sender.sent[0]?.text).toContain('Never share this code');
+    expect(sender.authCodes).toHaveLength(1);
+    expect(sender.authCodes[0]?.to).toBe('+2348031239001');
+    expect(sender.authCodes[0]?.code).toMatch(/^\d{6}$/);
+  });
+
+  /**
+   * The distinction that decides whether anybody can sign in at all.
+   *
+   * A code goes to a phone that has NOT messaged the business number, so
+   * there is no 24-hour service window to reply inside and Meta rejects a
+   * free-form text to it. Sending one anyway is how sign-in passes every test
+   * and reaches nobody.
+   */
+  it('never sends a sign-in code as an ordinary text message', async () => {
+    const sender = new StubSender();
+    await serviceWith(sender).requestOtp('+2348031239011');
+
+    expect(sender.sent).toHaveLength(0);
   });
 
   it('still answers "sent" when delivery fails — resend is the recovery, not an oracle', async () => {
@@ -471,12 +490,12 @@ describe('OTP delivery (the gate between the funnel and the product)', () => {
     await service.requestOtp('+2348031239003');
     const second = await service.requestOtp('+2348031239003');
     expect(second.status).toBe('resend_too_soon');
-    expect(sender.sent).toHaveLength(1);
+    expect(sender.authCodes).toHaveLength(1);
   });
 });
 
 describe('the operator plan endpoint', () => {
-  const OPERATOR = { 'x-rekoda-operator-secret': SECRET };
+  const OPERATOR = { 'x-rekoda-operator-secret': OPERATOR_SECRET };
 
   async function businessFor(phone: string): Promise<string> {
     const code = await requestCode(phone);

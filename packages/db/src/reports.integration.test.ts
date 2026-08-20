@@ -198,11 +198,34 @@ describe('recent activity', () => {
       reportsRepo.activityFor(tx, businessId, 8),
     );
     const kinds = items.map((i) => i.kind).sort();
-    expect(kinds).toEqual(['expense', 'payment', 'purchase', 'sale']);
+    /* Two payments, because the month has two: cash at the counter, which the
+     * merchant reported, and ₦50,000 the provider confirmed. Both are real
+     * money and both belong here (ADR 0014); showing only the verified one
+     * meant a merchant who recorded a payment in chat saw the invoice change
+     * with nothing behind it. */
+    expect(kinds).toEqual(['expense', 'payment', 'payment', 'purchase', 'sale']);
     expect(items.find((i) => i.kind === 'sale')?.label).toBe(`Invoice ${invoiceNumber} issued`);
     expect(items.find((i) => i.kind === 'purchase')?.label).toBe('Stock: ankara fabric');
     // Customer tokens exist in memos and snapshots; the feed must not leak them.
     expect(JSON.stringify(items)).not.toContain('CUSTOMER_7K2');
+  });
+
+  /**
+   * The label carries the distinction, because the feed is the one place a
+   * merchant reads the two side by side. "Confirmed" is a claim about a
+   * provider and must never appear on money only the merchant vouched for.
+   */
+  it('says confirmed only of the payment a provider confirmed', async () => {
+    const businessId = await seedBusiness();
+    await seedTradingMonth(businessId);
+
+    const items = await withBusiness(db, businessId, (tx) =>
+      reportsRepo.activityFor(tx, businessId, 8),
+    );
+    const payments = items.filter((i) => i.kind === 'payment');
+
+    expect(payments.filter((p) => p.label.includes('confirmed'))).toHaveLength(1);
+    expect(payments.filter((p) => p.label === 'Payment recorded')).toHaveLength(1);
   });
 });
 

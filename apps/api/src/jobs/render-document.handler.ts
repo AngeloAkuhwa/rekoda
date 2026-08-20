@@ -133,6 +133,10 @@ async function renderReceipt(
     reference: String(snapshot['rekodaReference'] ?? ''),
     amountK: Number(snapshot['amountK'] ?? 0),
     allocatedK: Number(snapshot['allocatedK'] ?? 0),
+    /* The snapshot is written with `verified: false` for a payment the
+     * merchant reported. Absent means an older verified receipt, from before
+     * the merchant path existed. */
+    verified: snapshot['verified'] !== false,
   };
 
   const bytes = await renderReceiptPdf(doc);

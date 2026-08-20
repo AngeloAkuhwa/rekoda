@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import { Money } from '@/components/ui/Money';
+import { MoneyBadge } from '@/components/ui/MoneyBadge';
 import { reportsReceipts } from '@/server/api';
 import { requireSessionWithToken } from '@/server/guards';
 import { AppNav } from '../AppNav';
@@ -49,6 +50,7 @@ export default async function ReceiptsPage() {
                     <th>Date</th>
                     <th>Amount</th>
                     <th>Invoice</th>
+                    <th>Basis</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -60,6 +62,13 @@ export default async function ReceiptsPage() {
                         <Money kobo={receipt.amountK} />
                       </td>
                       <td>{receipt.invoiceNumber ?? '(no invoice)'}</td>
+                      {/* ADR 0014 on the register too. A receipt for cash at
+                          the counter and one a provider confirmed are both
+                          real, and a merchant answering a query needs to know
+                          which of the two they are looking at. */}
+                      <td>
+                        <MoneyBadge state={receipt.verified === 1 ? 'verified' : 'recorded'} />
+                      </td>
                     </tr>
                   ))}
                 </tbody>

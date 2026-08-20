@@ -461,26 +461,50 @@ export async function invoiceForRender(
   return rows[0] ?? null;
 }
 
+export interface OpenInvoice {
+  id: string;
+  invoiceNumber: string;
+  balanceDueK: number;
+}
+
+/**
+ * What resolving a reported payment to an invoice can honestly conclude.
+ *
+ * Three outcomes rather than "an invoice or null", because "there is nothing
+ * open" and "I could not tell which one" need different answers from the
+ * merchant, and collapsing them is how a payment ends up on a guess.
+ */
+export type PaymentTarget =
+  | { outcome: 'found'; invoice: OpenInvoice }
+  | { outcome: 'none' }
+  | { outcome: 'ambiguous'; openCount: number };
+
 /**
  * The invoice a reported payment belongs to.
  *
- * Three ways of naming one, in the order a merchant's certainty runs:
- * an invoice number they typed, then the newest open invoice of the customer
- * they named, then the newest open invoice at all. Never a guess wider than
- * that — money applied to the wrong customer's books is worse than money not
- * applied yet, because only one of those is visible.
+ * Two ways of naming one, in the order a merchant's certainty runs: an
+ * invoice number they typed, then the newest open invoice of the customer
+ * they named. Neither FALLS THROUGH to a wider search when it misses, and
+ * that is the whole point of the function. Money applied to the wrong
+ * customer's books is worse than money not applied yet, because only one of
+ * those is visible: the customer who paid still shows as owing, and the one
+ * who did not shows as settled.
+ *
+ * Naming nobody is allowed only where it is unambiguous. One open invoice is
+ * the only invoice they could have meant; several is a question.
+ *
+ * The customer match reads the SNAPSHOT as well as the joined customer row.
+ * A chat-issued invoice carries `customer_id = NULL` and keeps the token in
+ * `snapshot_json`, so a join alone matched nothing for exactly the invoices
+ * this product creates.
  */
 export async function openInvoiceForPayment(
   tx: TenantDb,
   businessId: string,
   hint: { invoiceNumber?: string | null; customerToken?: string | null },
-): Promise<{ id: string; invoiceNumber: string; balanceDueK: number } | null> {
+): Promise<PaymentTarget> {
   if (hint.invoiceNumber) {
-    const rows = await tx.execute<{
-      id: string;
-      invoice_number: string;
-      balance_due_k: string;
-    }>(sql`
+    const rows = await tx.execute<OpenInvoiceRow>(sql`
       SELECT id, invoice_number, balance_due_k::bigint AS balance_due_k
       FROM invoices
       WHERE business_id = ${businessId}::uuid
@@ -489,39 +513,51 @@ export async function openInvoiceForPayment(
       LIMIT 1
     `);
     const row = [...rows][0];
-    return row
-      ? {
-          id: row.id,
-          invoiceNumber: row.invoice_number,
-          balanceDueK: Number(row.balance_due_k),
-        }
-      : null;
+    return row ? { outcome: 'found', invoice: readOpenInvoice(row) } : { outcome: 'none' };
   }
 
   if (hint.customerToken) {
-    const rows = await tx.execute<{
-      id: string;
-      invoice_number: string;
-      balance_due_k: string;
-    }>(sql`
+    const rows = await tx.execute<OpenInvoiceRow>(sql`
       SELECT i.id, i.invoice_number, i.balance_due_k::bigint AS balance_due_k
       FROM invoices i
-      JOIN customers c ON c.id = i.customer_id AND c.business_id = i.business_id
+      LEFT JOIN customers c ON c.id = i.customer_id AND c.business_id = i.business_id
       WHERE i.business_id = ${businessId}::uuid
-        AND c.token = ${hint.customerToken}
         AND i.status IN ('issued', 'partially_paid')
+        AND (c.token = ${hint.customerToken}
+             OR i.snapshot_json ->> 'customerToken' = ${hint.customerToken})
       ORDER BY i.created_at DESC
       LIMIT 1
     `);
     const row = [...rows][0];
-    if (row) {
-      return {
-        id: row.id,
-        invoiceNumber: row.invoice_number,
-        balanceDueK: Number(row.balance_due_k),
-      };
-    }
+    return row ? { outcome: 'found', invoice: readOpenInvoice(row) } : { outcome: 'none' };
   }
 
-  return latestOpenInvoice(tx, businessId);
+  /* Nobody named. `count(*) OVER ()` is evaluated before LIMIT, so one pass
+   * reads the candidate and how many candidates there were. */
+  const rows = await tx.execute<OpenInvoiceRow & { open_count: number }>(sql`
+    SELECT id, invoice_number, balance_due_k::bigint AS balance_due_k,
+           count(*) OVER ()::int AS open_count
+    FROM invoices
+    WHERE business_id = ${businessId}::uuid AND status IN ('issued', 'partially_paid')
+    ORDER BY created_at DESC
+    LIMIT 1
+  `);
+  const row = [...rows][0];
+  if (!row) return { outcome: 'none' };
+  if (row.open_count > 1) return { outcome: 'ambiguous', openCount: row.open_count };
+  return { outcome: 'found', invoice: readOpenInvoice(row) };
+}
+
+type OpenInvoiceRow = {
+  id: string;
+  invoice_number: string;
+  balance_due_k: string;
+};
+
+function readOpenInvoice(row: OpenInvoiceRow): OpenInvoice {
+  return {
+    id: row.id,
+    invoiceNumber: row.invoice_number,
+    balanceDueK: Number(row.balance_due_k),
+  };
 }

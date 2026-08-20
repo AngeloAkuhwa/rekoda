@@ -157,6 +157,7 @@ export class ReportsController {
         amountK: r.amountK,
         issuedAt: r.issuedAt.toISOString(),
         invoiceNumber: r.invoiceNumber,
+        verified: r.verified === 1 ? (1 as const) : (0 as const),
       })),
       count: list.count,
     };

@@ -225,6 +225,11 @@ export async function bookVerifiedPayment(
     amountK: input.confirmedAmountK,
     allocatedK,
     currency: input.currency,
+    /* Stated rather than implied by absence. The renderer reads this to decide
+     * whether the receipt may say a provider confirmed the money (ADR 0014),
+     * and a reader should not have to work that out from a missing key. Rows
+     * written before this existed still read as verified, which they were. */
+    verified: true,
   };
   const receiptRows = await tx
     .insert(receipts)
@@ -589,6 +594,14 @@ export interface RecordedPayment {
   receiptId: string;
   receiptNumber: string;
   invoiceNumber: string;
+  /**
+   * What was actually POSTED, which is the requested amount CLAMPED to the
+   * balance under the row lock. Anything the merchant is told has to come
+   * from here: the gate reads the balance without a lock, so a provider
+   * payment landing in between makes the gate's figure a number that reached
+   * no ledger.
+   */
+  amountK: number;
   /** What the invoice still owes AFTER this payment. */
   balanceDueK: number;
   invoiceStatus: string;
@@ -747,6 +760,7 @@ export async function recordMerchantPayment(
     receiptId,
     receiptNumber,
     invoiceNumber: invoice.invoice_number,
+    amountK: applied,
     balanceDueK: newBalanceK,
     invoiceStatus,
   };

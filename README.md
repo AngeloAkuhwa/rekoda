@@ -33,17 +33,27 @@ happened when money moved.
 
 **M0 complete.** The deterministic financial core: money engine (integer kobo),
 double-entry ledger with its balancing invariant, reconciliation engine,
-document numbering, the AI border-checkpoint schemas, and the 30-table Postgres
-schema with row-level-security policies.
+document numbering, the AI border-checkpoint schemas, and the Postgres schema
+with row-level-security policies.
 
 **M1 identity complete.** A merchant goes from a phone number to an
 authenticated dashboard: OTP over `apps/api`, business creation under RLS, and
-a revocable session — all against PostgreSQL, all covered end to end. Delivery
-of the code over WhatsApp lands with the channel layer in M2; today it is
-issued and verified for real but not yet sent.
+a revocable session, all against PostgreSQL and covered end to end. Sign-in
+codes go out as a WhatsApp authentication template, which needs an approved
+template on the WABA (`META_OTP_TEMPLATE`).
 
-Milestones M2 (Chat MVP) → M5 (Integrate alpha) follow — see
-[docs/engineering-plan.md](docs/engineering-plan.md).
+**M2 chat and dashboard, feature complete.** An inbound WhatsApp message runs
+through the privacy gateway, a routed model call, the conversation gates, and
+the transaction engine: sales, expenses, purchases and merchant-reported
+payments all become confirmed, balanced, numbered, audited records with a PDF.
+Paystack payments are verified server-side, booked, receipted, settlement
+tracked and exception queued. The dashboard carries an overview, the four
+statements, and registers for invoices, receipts and payments. Usage is metered
+against exhaustible plan allowances, and there is an operator health surface.
+
+**Not yet.** Voice (M3), conversational reporting from SQL, Excel export,
+accountant access, and self-service purchase. Paystack stays in test mode until
+written confirmation (spec §47).
 
 ```bash
 # see the core prove itself: a balanced sale, trial balance, reconciliation

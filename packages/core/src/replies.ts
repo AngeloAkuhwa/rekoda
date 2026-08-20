@@ -74,11 +74,36 @@ export function cancelled(): Reply {
  * an accidental deletion of a merchant's books cannot be undone by any amount
  * of apology.
  */
-export function confirmErasure(): Reply {
-  return reply(
+export function confirmErasure(draftsDiscarded = 0): Reply {
+  const lines = [
     'You are asking me to delete your data. This removes your customers and ' +
-      'their details permanently and cannot be undone.\n\n' +
-      'Reply *DELETE MY DATA* again to confirm, or anything else to keep it.',
+      'their details permanently and cannot be undone.',
+  ];
+  /* Asking to erase clears whatever was waiting for a yes, and the merchant
+   * has to be told: a sale they previewed a minute ago silently vanishing is
+   * how a shop ends up with a day's takings unrecorded. */
+  if (draftsDiscarded > 0) {
+    lines.push(
+      draftsDiscarded === 1
+        ? 'The entry that was waiting for your yes has been dropped. Send it again after this.'
+        : `The ${draftsDiscarded} entries waiting for your yes have been dropped. Send them again after this.`,
+    );
+  }
+  lines.push('Reply *DELETE MY DATA* again to confirm, or anything else to keep it.');
+  return reply(lines.join('\n\n'));
+}
+
+/**
+ * Erasure asked for by somebody who is not the owner.
+ *
+ * Deleting every customer's contact details is irreversible and business
+ * wide, so it is the owner's decision and nobody else's. Says who can rather
+ * than only who cannot, so the person asking knows what to do next.
+ */
+export function erasureNotYours(): Reply {
+  return reply(
+    'Only the business owner can delete customer data, because it cannot be ' +
+      'undone. Ask them to send "delete my data" from their own number.',
   );
 }
 
@@ -98,17 +123,6 @@ export function erasureDone(erasedFacets: number): Reply {
 /** The merchant asked to delete, then said anything but the confirm phrase. */
 export function erasureKept(): Reply {
   return reply('Kept. Nothing was deleted.');
-}
-
-/**
- * The sign-in code, on its way to WhatsApp. The one message that carries a
- * live credential: the code and the warning travel together, always.
- */
-export function otpMessage(code: string): Reply {
-  return reply(
-    `Your Rekoda sign-in code is ${code}. It expires in 10 minutes.\n\n` +
-      'Never share this code. Rekoda will never ask you for it.',
-  );
 }
 
 /**
@@ -334,6 +348,24 @@ export function paymentRecorded(
 }
 
 /**
+ * The receipt for a merchant-reported payment, arriving as a document.
+ *
+ * The delivery caption for `paymentRecorded`, and the same discipline: the
+ * merchant forwards this message with the PDF attached, so it says the
+ * receipt is theirs to send and never that anybody confirmed the money.
+ */
+export function receiptRecordedReady(
+  amountK: number,
+  invoiceNumber: string,
+  receiptNumber: string,
+): Reply {
+  return reply(
+    `Receipt ${receiptNumber} for ${formatKobo(amountK)} on ${invoiceNumber} is ` +
+      'attached. Forward it to your customer.',
+  );
+}
+
+/**
  * They reported a payment and there is nothing open to put it against.
  *
  * Never invents an allocation. An unattached payment in a bookkeeping system
@@ -345,6 +377,38 @@ export function paymentNoOpenInvoice(): Reply {
     'I could not find an unpaid invoice for that customer. Tell me the invoice ' +
       'number, like "INV-2026-000004 paid 20k", or record the sale first and I will ' +
       'take the payment against it.',
+  );
+}
+
+/**
+ * They reported a payment, named nobody, and more than one invoice is open.
+ *
+ * The newest is not the answer. A merchant who says "received 20k" after
+ * issuing three invoices this morning has told us the amount and nothing
+ * else, and guessing puts a customer's money on another customer's account
+ * where nobody will look for it again.
+ */
+export function paymentWhichInvoice(openCount: number): Reply {
+  return reply(
+    `You have ${openCount} unpaid invoices open, so I do not want to guess which ` +
+      'one this is. Tell me the invoice number, like "INV-2026-000004 paid 20k", ' +
+      'or say the customer, like "Ada paid 20k".',
+  );
+}
+
+/**
+ * The invoice was settled between the preview and the yes.
+ *
+ * A provider payment landing in that window is the ordinary cause, and the
+ * merchant is owed the reason rather than silence. Nothing is posted: the
+ * money is already on the books, and recording it twice would put the
+ * customer in credit for a payment they made once.
+ */
+export function paymentAlreadySettled(invoiceNumber: string): Reply {
+  return reply(
+    `${invoiceNumber} was already paid off before I could record that, so I have ` +
+      'not added it twice. Check the payments list, and if this is a separate ' +
+      'payment tell me which invoice it belongs to.',
   );
 }
 

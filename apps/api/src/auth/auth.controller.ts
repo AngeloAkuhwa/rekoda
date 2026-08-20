@@ -166,7 +166,8 @@ export class BusinessController {
     @Headers('x-rekoda-operator-secret') secret: string | undefined,
     @Body() body: unknown,
   ): Promise<{ plan: string }> {
-    if (!secret || !matchesSecret(secret, this.config.secret)) {
+    const expected = this.config.operatorSecret;
+    if (!expected || !secret || !matchesSecret(secret, expected)) {
       throw new ForbiddenException('operator secret required');
     }
 

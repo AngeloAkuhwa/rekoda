@@ -42,7 +42,8 @@ export class OpsController {
     meta: Awaited<ReturnType<typeof events.eventHealth>>;
     paystack: Awaited<ReturnType<typeof events.eventHealth>>;
   }> {
-    if (!secret || !matchesSecret(secret, this.config.secret)) {
+    const expected = this.config.operatorSecret;
+    if (!expected || !secret || !matchesSecret(secret, expected)) {
       throw new ForbiddenException('operator secret required');
     }
 

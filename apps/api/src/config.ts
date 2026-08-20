@@ -14,6 +14,18 @@ export interface ApiConfig {
   /** Signs setup grants and session-adjacent artefacts. */
   secret: string;
   /**
+   * The header credential for operator endpoints (plan changes, ops health).
+   *
+   * DELIBERATELY not `secret`. That one signs setup grants, so reusing it
+   * here would mean every proxy access log, shell history and ops runbook
+   * that ever saw the header now holds a key that forges those grants: a
+   * capability far beyond the endpoint it was typed for.
+   *
+   * Null when unset, and the endpoints refuse rather than fall back. A gate
+   * that silently degrades to a different key is the failure being fixed.
+   */
+  operatorSecret: string | null;
+  /**
    * Returns the OTP in the API response. Development and end-to-end tests
    * only — refused outright when NODE_ENV is production, because the failure
    * mode is handing every caller a working credential for any number.
@@ -123,6 +135,16 @@ export interface ApiConfig {
   metaPhoneNumberId: string;
   metaGraphVersion: string;
   /**
+   * The Meta-approved AUTHENTICATION template that carries a sign-in code.
+   *
+   * Null means sign-in cannot deliver anything, which is the honest state
+   * before a WABA has an approved template: a free-form text to a phone that
+   * has never messaged the business number is rejected by Meta, so there is
+   * no working fallback to quietly take instead.
+   */
+  metaOtpTemplate: string | null;
+  metaOtpTemplateLocale: string;
+  /**
    * USD micros per in-window service reply. Zero today — Meta does not charge
    * for them yet — and chargeable from 1 October 2026, at which point this is
    * the one number that needs changing.
@@ -165,6 +187,30 @@ const ROLE_DEFAULTS = {
   escalation: 'claude-opus-5',
   transcriber: 'afrispeech-whisper-medium-all',
 } as const;
+
+/**
+ * The operator credential, held to the same 32 characters as every other
+ * secret here. Optional outside production so a developer is not blocked by
+ * a key they do not need; when it is absent the endpoints answer 403, which
+ * is the correct behaviour for a gate with no key rather than a reason to
+ * open a different one.
+ */
+function operatorSecret(env: NodeJS.ProcessEnv, isProduction: boolean): string | null {
+  const value = env['REKODA_OPERATOR_SECRET'];
+  if (!value) {
+    if (isProduction) {
+      throw new ConfigError('REKODA_OPERATOR_SECRET is required in production');
+    }
+    return null;
+  }
+  if (value.length < 32) {
+    throw new ConfigError('REKODA_OPERATOR_SECRET must be at least 32 characters');
+  }
+  if (value === env['REKODA_API_SECRET']) {
+    throw new ConfigError('REKODA_OPERATOR_SECRET must differ from REKODA_API_SECRET');
+  }
+  return value;
+}
 
 function required(env: NodeJS.ProcessEnv, key: string, minLength = 0): string {
   const value = env[key];
@@ -210,6 +256,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     throw new ConfigError('AI_PROVIDER=openai but OPENAI_API_KEY is not set');
   }
 
+  /* A deployment that can send WhatsApp but has no approved authentication
+   * template can take sign-ups and deliver no sign-in codes, and the failure
+   * is invisible: the API answers "sent" by design, so nobody can distinguish
+   * it from a phone that simply has no WhatsApp. Caught at boot instead. */
+  if (isProduction && env['META_ACCESS_TOKEN'] && !env['META_OTP_TEMPLATE']) {
+    throw new ConfigError(
+      'META_ACCESS_TOKEN is set but META_OTP_TEMPLATE is not: sign-in codes cannot be delivered',
+    );
+  }
+
   const workerEnabled = env['REKODA_WORKER'] === '1';
   if (workerEnabled && !env['WORKER_DATABASE_URL']) {
     throw new ConfigError('REKODA_WORKER=1 requires WORKER_DATABASE_URL (the rekoda_worker role)');
@@ -220,6 +276,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     databaseUrl: required(env, 'DATABASE_URL'),
     otpPepper: required(env, 'OTP_PEPPER', 32),
     secret: required(env, 'REKODA_API_SECRET', 32),
+    operatorSecret: operatorSecret(env, isProduction),
     revealOtp,
     /**
      * Both required everywhere, not just in production. A deployment without
@@ -299,6 +356,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     metaAccessToken: env['META_ACCESS_TOKEN'] ?? '',
     metaPhoneNumberId: env['META_PHONE_NUMBER_ID'] ?? '',
     metaGraphVersion: env['META_GRAPH_VERSION'] ?? 'v21.0',
+    metaOtpTemplate: env['META_OTP_TEMPLATE'] || null,
+    metaOtpTemplateLocale: env['META_OTP_TEMPLATE_LOCALE'] ?? 'en',
     metaServiceReplyCostMicros: Number(env['META_SERVICE_REPLY_COST_MICROS'] ?? 0),
     r2AccountId: env['R2_ACCOUNT_ID'] ?? '',
     r2AccessKeyId: env['R2_ACCESS_KEY_ID'] ?? '',

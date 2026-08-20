@@ -215,9 +215,19 @@ export async function activityFor(
     FROM invoices WHERE business_id = ${businessId}::uuid
     ORDER BY created_at DESC LIMIT ${limit}
   `);
-  const payments = await tx.execute<{ reference: string | null; amount_k: string; at: Date }>(sql`
-    SELECT rekoda_reference AS reference, amount_k::bigint AS amount_k, created_at AS at
-    FROM payments WHERE business_id = ${businessId}::uuid AND verified = 1
+  /* Verified AND recorded. Filtering to `verified = 1` here meant a merchant
+   * who recorded a payment in chat, got "Saved", and opened the dashboard saw
+   * the invoice change with no payment behind it (ADR 0014: both are real
+   * money, they differ in who vouches for it, not in whether it happened). */
+  const payments = await tx.execute<{
+    reference: string | null;
+    amount_k: string;
+    at: Date;
+    verified: number;
+  }>(sql`
+    SELECT rekoda_reference AS reference, amount_k::bigint AS amount_k, created_at AS at,
+           verified
+    FROM payments WHERE business_id = ${businessId}::uuid
     ORDER BY created_at DESC LIMIT ${limit}
   `);
   const spend = await tx.execute<{
@@ -240,7 +250,12 @@ export async function activityFor(
     })),
     ...[...payments].map((r): ActivityItem => ({
       kind: 'payment',
-      label: r.reference ? `Payment ${r.reference} confirmed` : 'Payment confirmed',
+      label:
+        r.verified === 1
+          ? r.reference
+            ? `Payment ${r.reference} confirmed`
+            : 'Payment confirmed'
+          : 'Payment recorded',
       amountK: Number(r.amount_k),
       at: new Date(r.at),
     })),
@@ -370,6 +385,8 @@ export interface ReceiptListRow {
   issuedAt: Date;
   /** The invoice this receipt settled, when one exists. */
   invoiceNumber: string | null;
+  /** 1 when a provider confirmed the money behind it, 0 when the merchant did. */
+  verified: number;
 }
 
 export interface ReceiptList {
@@ -388,10 +405,12 @@ export async function receiptsFor(
     amount_k: string;
     issued_at: Date;
     invoice_number: string | null;
+    verified: number;
   }>(sql`
     SELECT r.receipt_number, r.amount_k::bigint AS amount_k, r.created_at AS issued_at,
-           i.invoice_number
+           i.invoice_number, p.verified
     FROM receipts r
+    JOIN payments p ON p.id = r.payment_id AND p.business_id = r.business_id
     LEFT JOIN invoices i ON i.id = r.invoice_id AND i.business_id = r.business_id
     WHERE r.business_id = ${businessId}::uuid
     ORDER BY r.created_at DESC
@@ -406,6 +425,7 @@ export async function receiptsFor(
       amountK: Number(r.amount_k),
       issuedAt: new Date(r.issued_at),
       invoiceNumber: r.invoice_number,
+      verified: r.verified,
     })),
     count: [...totals][0]?.n ?? 0,
   };

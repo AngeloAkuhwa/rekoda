@@ -1,6 +1,7 @@
 import {
   SendFailed,
   type MessageSender,
+  type OutboundAuthCode,
   type OutboundDocument,
   type OutboundMessage,
   type SendResult,
@@ -18,6 +19,8 @@ export class StubSender implements MessageSender {
   readonly sent: OutboundMessage[] = [];
   /** Documents, kept apart from text so a test can assert on either. */
   readonly documents: OutboundDocument[] = [];
+  /** Codes, kept apart again: a test asserting sign-in must not match a reply. */
+  readonly authCodes: OutboundAuthCode[] = [];
   private failNext: Error | null = null;
   private failDocuments: Error | null = null;
 
@@ -40,6 +43,7 @@ export class StubSender implements MessageSender {
   reset(): void {
     this.sent.length = 0;
     this.documents.length = 0;
+    this.authCodes.length = 0;
     this.failNext = null;
     this.failDocuments = null;
   }
@@ -62,6 +66,16 @@ export class StubSender implements MessageSender {
     }
     this.sent.push(message);
     return Promise.resolve({ providerMessageId: `wamid.STUB${this.sent.length}` });
+  }
+
+  sendAuthCode(code: OutboundAuthCode): Promise<SendResult> {
+    if (this.failNext) {
+      const error = this.failNext;
+      this.failNext = null;
+      return Promise.reject(error);
+    }
+    this.authCodes.push(code);
+    return Promise.resolve({ providerMessageId: `wamid.OTP${this.authCodes.length}` });
   }
 
   sendDocument(document: OutboundDocument): Promise<SendResult> {

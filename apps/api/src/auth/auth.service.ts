@@ -112,7 +112,10 @@ export class AuthService {
 
   private async deliverOtp(phone: string, code: string): Promise<void> {
     try {
-      await this.sender.send({ to: phone, text: replies.otpMessage(code).text });
+      /* A template, not a text. The phone asking for a code has not messaged
+       * the business number, so there is no service window to reply inside
+       * and Meta rejects free-form text to it (131047). */
+      await this.sender.sendAuthCode({ to: phone, code });
     } catch {
       // The reason is logged without the code — the one string that must
       // never reach a log store beside the phone number it unlocks.

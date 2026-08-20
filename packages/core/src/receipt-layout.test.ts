@@ -16,6 +16,14 @@ const RECEIPT: ReceiptDocument = {
   reference: 'RKD-PAY-20260820-A7K2Q9',
   amountK: 15_000_000,
   allocatedK: 15_000_000,
+  verified: true,
+};
+
+/** The same money, taken as cash at the counter and reported by the merchant. */
+const RECORDED: ReceiptDocument = {
+  ...RECEIPT,
+  reference: '',
+  verified: false,
 };
 
 const textOf = (doc: ReceiptDocument) =>
@@ -40,6 +48,33 @@ describe('the non-negotiables', () => {
 
   it('says the payment was CONFIRMED with the provider — the whole point of the paper', () => {
     expect(textOf(RECEIPT)).toContain('confirmed with the payment provider');
+  });
+
+  /**
+   * ADR 0014, printed. The merchant forwards this document to their customer,
+   * so a receipt for cash at the counter claiming a provider confirmed it is
+   * a lie on their letterhead, and the one lie this product cannot afford.
+   */
+  it('never claims a provider confirmed a payment the merchant reported', () => {
+    const text = textOf(RECORDED);
+    expect(text).not.toContain('confirmed with the payment provider');
+    expect(text).toContain('Recorded by the seller');
+    expect(text).toContain('Not confirmed with a payment provider');
+  });
+
+  it('omits the payment reference line when there is no provider reference', () => {
+    expect(textOf(RECORDED)).not.toContain('Payment reference');
+  });
+
+  it('still names the receipt, the invoice, and the amount when merchant reported', () => {
+    const text = textOf(RECORDED);
+    expect(text).toContain('RCT-2026-000007');
+    expect(text).toContain('INV-2026-000041');
+    expect(text).toContain('₦150,000');
+  });
+
+  it('reads like a person wrote it on the recorded receipt too', () => {
+    expect(textOf(RECORDED)).not.toMatch(/[–—]/);
   });
 
   it('carries the E&OE footnote', () => {
