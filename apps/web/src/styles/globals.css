@@ -678,6 +678,172 @@ button,
   line-height: 1.45;
 }
 
+/* A computed figure in a ledger cell: tabular numerals at display size. Only
+   real ledger-derived values wear this — "none yet" keeps its own muted style
+   so the unknown never borrows the typography of a confirmed number. */
+.rk-stat-value {
+  font-size: var(--rk-text-2xl);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.rk-stat-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--rk-space-2);
+  font-size: var(--rk-text-xs);
+  color: var(--rk-text-muted);
+}
+
+/* Exceptions strip: the attention colour, used for a genuine mismatch only —
+   the one thing on this page allowed to interrupt. */
+.rk-attention-strip {
+  display: block;
+  padding: var(--rk-space-3) var(--rk-space-4);
+  border: 1px solid var(--rk-warn-border);
+  border-radius: var(--rk-radius-md);
+  background: var(--rk-warn-surface);
+  color: var(--rk-warn-text);
+  font-weight: 500;
+  text-decoration: none;
+}
+.rk-attention-strip:hover {
+  text-decoration: underline;
+}
+
+/* ── the dashboard's working area ────────────────────────────────────── */
+
+.rk-dash-grid {
+  display: grid;
+  gap: var(--rk-space-4);
+  grid-template-columns: 1fr;
+  align-items: start;
+}
+@media (min-width: 52rem) {
+  .rk-dash-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+.rk-dash-card {
+  display: grid;
+  gap: var(--rk-space-3);
+  align-content: start;
+}
+.rk-dash-card h2 {
+  font-size: var(--rk-text-lg);
+}
+.rk-dash-empty-line {
+  color: var(--rk-text-muted);
+  line-height: 1.65;
+  max-width: 44ch;
+}
+.rk-dash-total {
+  font-size: var(--rk-text-xl);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Debtor and activity rows share the receipt's dashed rule — the same mark
+   as the tear line and the payments table, one visual language. */
+.rk-debtor-list,
+.rk-activity-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+}
+.rk-debtor-list li,
+.rk-activity-list li {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: var(--rk-space-3);
+  padding: var(--rk-space-2) 0;
+  border-bottom: 1px dashed var(--rk-border);
+  font-size: var(--rk-text-sm);
+}
+.rk-debtor-list li:last-child,
+.rk-activity-list li:last-child {
+  border-bottom: none;
+}
+.rk-debtor-list .rk-money,
+.rk-activity-list .rk-money {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* The usage meter: a single quiet bar. Accent fill on a sunk track — this is
+   information, not an alarm; exhaustion is a doorway, not a wall. */
+.rk-meter {
+  height: 8px;
+  border-radius: var(--rk-radius-full);
+  background: var(--rk-surface-sunk);
+  border: 1px solid var(--rk-border);
+  overflow: hidden;
+}
+.rk-meter-fill {
+  display: block;
+  height: 100%;
+  background: var(--rk-accent);
+  border-radius: var(--rk-radius-full);
+}
+
+/* ── the cash-flow chart (dataviz method; tokens validated in tokens.css) ── */
+
+.rk-cashflow {
+  margin: 0;
+  display: grid;
+  gap: var(--rk-space-2);
+}
+.rk-chart {
+  width: 100%;
+  height: auto;
+}
+.rk-chart-legend {
+  display: flex;
+  gap: var(--rk-space-4);
+  font-size: var(--rk-text-xs);
+  color: var(--rk-text-muted);
+}
+.rk-chart-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--rk-space-1);
+}
+.rk-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  display: inline-block;
+}
+.rk-swatch-in {
+  background: var(--rk-chart-in);
+}
+.rk-swatch-out {
+  background: var(--rk-chart-out);
+}
+.rk-bar-in {
+  fill: var(--rk-chart-in);
+}
+.rk-bar-out {
+  fill: var(--rk-chart-out);
+}
+.rk-chart-baseline {
+  stroke: var(--rk-border);
+  stroke-width: 1;
+}
+/* Text wears text tokens, never the series colour (dataviz rule). */
+.rk-chart-month {
+  fill: var(--rk-text-muted);
+  font-size: 11px;
+  text-anchor: middle;
+  font-family: var(--rk-font-body);
+}
+.rk-chart-latest {
+  font-size: var(--rk-text-xs);
+  color: var(--rk-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
 /* ── the Payments page (payments-v1 §35) ─────────────────────────────── */
 
 .rk-connection {

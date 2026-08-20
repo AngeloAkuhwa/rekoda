@@ -140,6 +140,22 @@ dark-mode `--rk-accent` on `--rk-bg` ≥ 7:1.
 
 **Rule: a raw hex in a component is a bug.** Semantic tokens only.
 
+### Chart series (dashboard)
+
+Two fixed series, assigned by entity and never cycled: money **in** wears the
+brand teal, money **out** wears wine. Wine and not orange, deliberately: every
+warm orange candidate sat within ΔE 3 of `--rk-attention`, and a spend bar must
+never read as a warning. Each mode's steps were validated separately against
+its own surface with the dataviz six-checks script (lightness band, chroma
+floor, CVD ΔE ≥ 8 adjacent, ≥ 3:1 contrast) — dark is a re-step, not a flip.
+
+```css
+--rk-chart-in:  #0d9488;  /* light */   --rk-chart-out: #9d3557;
+--rk-chart-in:  #11a897;  /* dark  */   --rk-chart-out: #a84368;
+```
+
+Status colours (`--rk-attention`, `--rk-danger`) are never chart series.
+
 ---
 
 ## 3. Typography
