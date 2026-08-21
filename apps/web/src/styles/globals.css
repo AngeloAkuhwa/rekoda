@@ -1447,6 +1447,16 @@ button,
   color: var(--rk-accent);
 }
 
+/* The hand written correction. Shares the folded-away treatment with
+   voiding an invoice, and takes a little more room above it because it
+   follows four statements rather than a single register row. */
+.rk-journal {
+  margin-top: var(--rk-space-6);
+}
+.rk-journal form {
+  margin-top: var(--rk-space-4);
+}
+
 /* A closed month, marked where the month is named rather than only down by
    the control. A merchant scanning the period row should see it without
    scrolling to the bottom of four statements. */

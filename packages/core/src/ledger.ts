@@ -347,6 +347,69 @@ export function postStockCount(args: { memo: string; differenceK: number }): Pos
 }
 
 /**
+ * What to call each account when a merchant has to choose one.
+ *
+ * Separate from `ACCOUNTS[k].name`, which is what a statement prints and what
+ * an accountant expects to read. A person picking where money went needs the
+ * thing they would say out loud: "the bank", not "Bank (Paystack)"; "money
+ * customers owe me", not "Accounts Receivable". Both are true, and a dropdown
+ * that used the statement's wording would be a dropdown nobody uses.
+ */
+export const ACCOUNT_PICKER_LABELS: Record<AccountKey, string> = {
+  CASH: 'Cash in hand',
+  BANK_PAYSTACK: 'Money in the bank',
+  ACCOUNTS_RECEIVABLE: 'Money customers owe you',
+  INVENTORY: 'Stock on the shelf',
+  ACCOUNTS_PAYABLE: 'Money you owe suppliers',
+  VAT_PAYABLE: 'VAT you are holding',
+  OWNERS_EQUITY: 'Your own money in the business',
+  SALES_REVENUE: 'Sales',
+  COGS: 'Cost of goods sold',
+  EXPENSES: 'Running costs',
+};
+
+/**
+ * A correction a merchant makes by hand.
+ *
+ * Every other posting in this file is derived: a sale, a payment, a delivery,
+ * a count. That is why the books have stayed right without the merchant
+ * having to be an accountant, and it is also the one thing an accountant
+ * looking at Rekoda asks for and does not find. Money moved from the till to
+ * the bank, an amount that went to the wrong account, an owner putting their
+ * own money in: all real, all ordinary, and none of them a sale.
+ *
+ * Two sides and one amount, rather than a list of lines. A free journal is a
+ * loaded gun pointed at the property Rekoda sells, and the shape here makes
+ * the failure impossible instead of catching it: with one figure moving
+ * between two named accounts there is no arrangement of the inputs that does
+ * not balance. What it cannot express is a genuine multi-line journal, which
+ * is a real limit and a deliberate one.
+ *
+ * The accounts are the fixed ten (ADR 0004), so a merchant cannot invent a
+ * place to hide a difference.
+ */
+export function postJournal(args: {
+  memo: string;
+  amountK: Kobo;
+  /** Debited: what gains. */
+  intoAccount: AccountKey;
+  /** Credited: what gives it up. */
+  outOfAccount: AccountKey;
+}): Posting {
+  if (args.intoAccount === args.outOfAccount) {
+    throw new RangeError('an entry into and out of the same account moves nothing');
+  }
+  const posting: Posting = {
+    memo: args.memo,
+    lines: [line(args.intoAccount, args.amountK, 0), line(args.outOfAccount, 0, args.amountK)],
+  };
+  /* Catches a zero or negative amount as well as an imbalance, which the
+   * shape above already rules out. */
+  assertBalanced(posting);
+  return posting;
+}
+
+/**
  * What the goods a sale took off the shelf cost.
  *
  * A SECOND posting, written alongside the sale rather than folded into it,

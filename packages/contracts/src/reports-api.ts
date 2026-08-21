@@ -711,6 +711,66 @@ export const reopenBooksResponse = z.discriminatedUnion('outcome', [
   z.object({ outcome: z.literal('already_open') }),
 ]);
 
+/**
+ * The fixed ten (ADR 0004). Mirrors `ACCOUNTS` in @rekoda/core, which cannot
+ * be imported here: contracts depends on zod and nothing else, so the wire
+ * shape never drags the money engine along with it. The two lists are held
+ * together by a test rather than by hope
+ * (apps/api/src/reports/accounts.test.ts).
+ */
+export const LedgerAccount = z.enum([
+  'CASH',
+  'BANK_PAYSTACK',
+  'ACCOUNTS_RECEIVABLE',
+  'INVENTORY',
+  'ACCOUNTS_PAYABLE',
+  'VAT_PAYABLE',
+  'OWNERS_EQUITY',
+  'SALES_REVENUE',
+  'COGS',
+  'EXPENSES',
+]);
+
+/**
+ * A correction written by hand.
+ *
+ * One amount between two accounts, so there is no arrangement of these fields
+ * that fails to balance and the merchant is never asked to make one. A
+ * genuine multi-line journal is not expressible, deliberately.
+ */
+export const journalEntryRequest = z.object({
+  /** Why. Required: an entry nobody can explain is the one that hurts. */
+  memo: z.string().trim().min(3).max(200),
+  amountK: z.number().int().finite().positive(),
+  /** Debited: what gains. */
+  intoAccount: LedgerAccount,
+  /** Credited: what gives it up. */
+  outOfAccount: LedgerAccount,
+  /** The day it happened. Absent means today. */
+  occurredOn: z
+    .string()
+    .regex(/^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/, 'a day like 2026-08-21')
+    .optional(),
+});
+
+export const journalEntryResponse = z.discriminatedUnion('outcome', [
+  z.object({
+    outcome: z.literal('recorded'),
+    /** JNL-2026-000001. What an accountant writes down when they ask which. */
+    journalNumber: z.string(),
+  }),
+  /** Into and out of the same account moves nothing. */
+  z.object({ outcome: z.literal('same_account') }),
+  /** Dated in the future, which is a plan rather than a correction. */
+  z.object({ outcome: z.literal('not_yet') }),
+  /** Dated into a month the merchant closed. */
+  z.object({ outcome: z.literal('period_closed'), closedThrough: z.string() }),
+]);
+
+export type LedgerAccountKey = z.infer<typeof LedgerAccount>;
+export type JournalEntryRequest = z.infer<typeof journalEntryRequest>;
+export type JournalEntryResponse = z.infer<typeof journalEntryResponse>;
+
 export type CloseBooksRequest = z.infer<typeof closeBooksRequest>;
 export type CloseBooksResponse = z.infer<typeof closeBooksResponse>;
 export type ReopenBooksRequest = z.infer<typeof reopenBooksRequest>;

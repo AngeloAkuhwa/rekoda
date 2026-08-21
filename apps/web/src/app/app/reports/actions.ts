@@ -2,7 +2,7 @@
 
 import { revalidatePath } from 'next/cache';
 import { formatKobo, lagosDay, periodLabel, parseAmountText, toKobo } from '@rekoda/core';
-import { closeBooks, countStock, openBooks, reopenBooks } from '@/server/api';
+import { closeBooks, countStock, openBooks, recordJournal, reopenBooks } from '@/server/api';
 import { readSessionToken } from '@/server/session-cookies';
 
 export interface OpeningFormState {
@@ -179,5 +179,74 @@ export async function closeBooksAction(
   revalidatePath('/app/reports');
   return {
     done: `Closed through ${periodLabel(outcome.through)}. Nothing can change that month now, so a statement you send stays true.`,
+  };
+}
+
+export interface JournalState {
+  error?: string;
+  done?: string;
+}
+
+/**
+ * Record a correction the merchant wrote themselves.
+ *
+ * One amount in naira, converted once by `toKobo`, and two accounts. Nothing
+ * here does arithmetic: the posting builder in `@rekoda/core` makes both
+ * sides from the single figure, which is why an unbalanced correction is not
+ * something this form can produce and not something it has to check for.
+ */
+export async function journalAction(
+  _prev: JournalState,
+  formData: FormData,
+): Promise<JournalState> {
+  const token = await readSessionToken();
+  if (!token) return { error: 'Your session expired. Sign in again.' };
+
+  const memo = String(formData.get('memo') ?? '').trim();
+  if (memo.length < 3) return { error: 'Say what this is for, so it makes sense later.' };
+
+  const naira = parseAmountText(String(formData.get('amount') ?? ''));
+  if (naira === null || naira <= 0) {
+    return { error: 'Say how much, in naira. For example 50000, or 50k.' };
+  }
+
+  const outOfAccount = String(formData.get('outOf') ?? '');
+  const intoAccount = String(formData.get('into') ?? '');
+  if (!outOfAccount || !intoAccount) return { error: 'Pick where it came from and where it went.' };
+  if (outOfAccount === intoAccount) {
+    return {
+      error: 'Pick two different places. Moving money to where it already is changes nothing.',
+    };
+  }
+
+  const occurredOn = String(formData.get('occurredOn') ?? '').trim();
+  const outcome = await recordJournal(token, {
+    memo,
+    amountK: toKobo(naira),
+    intoAccount: intoAccount as never,
+    outOfAccount: outOfAccount as never,
+    ...(occurredOn === '' ? {} : { occurredOn }),
+  });
+  if (!outcome) return { error: 'That did not go through. Nothing was changed.' };
+
+  if (outcome.outcome === 'same_account') {
+    return {
+      error: 'Pick two different places. Moving money to where it already is changes nothing.',
+    };
+  }
+  if (outcome.outcome === 'not_yet') {
+    return {
+      error: 'That day has not happened yet. A correction is about something that already did.',
+    };
+  }
+  if (outcome.outcome === 'period_closed') {
+    return {
+      error: `Your books are closed through ${periodLabel(outcome.closedThrough)}, so nothing can be dated on or before then. Pick a later day, or reopen that month first.`,
+    };
+  }
+
+  revalidatePath('/app/reports');
+  return {
+    done: `Recorded as ${outcome.journalNumber}. It is on your statements and in your audit trail.`,
   };
 }

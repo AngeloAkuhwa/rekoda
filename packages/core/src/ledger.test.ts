@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
+  ACCOUNTS,
   UnbalancedPostingError,
   assertBalanced,
   postCreditNote,
   postExpense,
+  postJournal,
   postOpeningBalances,
   postStockCount,
   postProviderPayment,
@@ -391,5 +393,59 @@ describe('a stock count', () => {
 
   it('refuses to write an entry for a count that agrees', () => {
     expect(() => postStockCount({ memo: 'x', differenceK: 0 })).toThrow(RangeError);
+  });
+});
+
+describe('a correction made by hand', () => {
+  it('moves one amount between two accounts, balanced by its shape', () => {
+    const posting = postJournal({
+      memo: 'Took the day takings to the bank',
+      amountK: 5_000_000,
+      intoAccount: 'BANK_PAYSTACK',
+      outOfAccount: 'CASH',
+    });
+    expect(posting.lines).toEqual([
+      { account: 'BANK_PAYSTACK', debitK: 5_000_000, creditK: 0 },
+      { account: 'CASH', debitK: 0, creditK: 5_000_000 },
+    ]);
+    expect(() => assertBalanced(posting)).not.toThrow();
+  });
+
+  /* The shape is the guarantee: there is no arrangement of these inputs that
+   * produces an unbalanced posting, which is why the merchant is never asked
+   * to make one balance. */
+  it('balances for every pair of accounts and any amount', () => {
+    const keys = Object.keys(ACCOUNTS) as (keyof typeof ACCOUNTS)[];
+    for (const into of keys) {
+      for (const out of keys) {
+        if (into === out) continue;
+        const posting = postJournal({
+          memo: 'x',
+          amountK: 1,
+          intoAccount: into,
+          outOfAccount: out,
+        });
+        expect(() => assertBalanced(posting)).not.toThrow();
+      }
+    }
+  });
+
+  it('refuses an entry into and out of the same account', () => {
+    expect(() =>
+      postJournal({ memo: 'x', amountK: 100, intoAccount: 'CASH', outOfAccount: 'CASH' }),
+    ).toThrow(RangeError);
+  });
+
+  it('refuses nothing, and refuses less than nothing', () => {
+    for (const amountK of [0, -100]) {
+      expect(() =>
+        postJournal({
+          memo: 'x',
+          amountK,
+          intoAccount: 'CASH',
+          outOfAccount: 'BANK_PAYSTACK',
+        }),
+      ).toThrow();
+    }
   });
 });

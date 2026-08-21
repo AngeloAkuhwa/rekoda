@@ -102,6 +102,35 @@ describe('every shape a writer actually stores', () => {
   });
 
   /**
+   * The row an audit log exists for. Every other posting is derived from an
+   * event; this is the one somebody typed, so it has to carry the number, the
+   * reason and the amount rather than the word "journal".
+   */
+  it('quotes a hand written correction in full', () => {
+    expect(
+      describe_('journal', 'recorded', {
+        journalNumber: 'JNL-2026-000001',
+        memo: "Took the day's takings to the bank",
+        amountK: 5_000_000,
+      }),
+    ).toEqual({
+      summary: "Correction JNL-2026-000001: Took the day's takings to the bank",
+      amountK: 5_000_000,
+    });
+  });
+
+  it('carries what the books were opened with, summed from the three figures', () => {
+    expect(
+      describe_('opening_balances', 'recorded', {
+        asAt: '2026-07-31',
+        cashK: 20_000_000,
+        bankK: 5_000_000,
+        stockK: 15_000_000,
+      }),
+    ).toEqual({ summary: 'Books opened as at 2026-07-31', amountK: 40_000_000 });
+  });
+
+  /**
    * Both directions, because they are different events. A count that finds
    * less than the books claim is a loss; one that finds more is not, and a
    * row that read the same for both would leave a reader to work it out from

@@ -22,6 +22,7 @@ import {
   reportsStatementsResponse,
   stockCountResponse,
   closeBooksResponse,
+  journalEntryResponse,
   reopenBooksResponse,
   voidExpenseResponse,
   voidInvoiceResponse,
@@ -1952,5 +1953,111 @@ describe('closing a month', () => {
     const bola = await onboard('+2348177000057');
     await closeIt(ada.auth, { through: OLD });
     expect((await statements(bola.auth)).booksClosedThrough).toBeNull();
+  });
+});
+
+/**
+ * A correction written by hand, end to end.
+ *
+ * The posting itself is proven in packages/db/src/journal.integration.test.ts.
+ * What this pins is the border: that the endpoint refuses a stranger, that
+ * every refusal arrives as an outcome rather than a 500, and that a
+ * correction reaches the statements it is supposed to move.
+ */
+describe('a correction written by hand', () => {
+  const journal = (auth: Record<string, string>, body: Record<string, unknown>) =>
+    app.inject({
+      method: 'POST',
+      url: '/v1/reports/journal',
+      payload: body,
+      headers: { 'content-type': 'application/json', ...auth },
+    });
+
+  const ENTRY = {
+    memo: "Took the day's takings to the bank",
+    amountK: 5_000_000,
+    intoAccount: 'BANK_PAYSTACK',
+    outOfAccount: 'CASH',
+  };
+
+  it('refuses a caller with no session', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/reports/journal',
+      payload: ENTRY,
+      headers: { 'content-type': 'application/json' },
+    });
+    expect(res.statusCode).toBe(401);
+  });
+
+  /**
+   * The cases the ten-account chart can describe and no write path produces.
+   * Cash carried to the bank moves two assets and changes no profit, which is
+   * exactly what a merchant would expect and exactly what nothing else in
+   * Rekoda could have recorded.
+   */
+  it('moves money between two accounts without inventing profit', async () => {
+    const { auth } = await onboard('+2348177000061');
+    const posted = journalEntryResponse.parse((await journal(auth, ENTRY)).json());
+    expect(posted).toEqual({
+      outcome: 'recorded',
+      journalNumber: expect.stringMatching(/^JNL-\d{4}-000001$/),
+    });
+
+    const seen = reportsStatementsResponse.parse(
+      (await app.inject({ method: 'GET', url: '/v1/reports/statements', headers: auth })).json(),
+    );
+    expect(seen.balanceSheet.balanced).toBe(true);
+    expect(seen.profitAndLoss.netProfitK).toBe(0);
+    const bank = seen.balanceSheet.assets.find((a) => a.account === 'BANK_PAYSTACK');
+    const cash = seen.balanceSheet.assets.find((a) => a.account === 'CASH');
+    expect(bank?.amountK).toBe(5_000_000);
+    expect(cash?.amountK).toBe(-5_000_000);
+  });
+
+  it('names every refusal instead of failing', async () => {
+    const { auth } = await onboard('+2348177000062');
+    expect((await journal(auth, { ...ENTRY, intoAccount: 'CASH' })).json()).toEqual({
+      outcome: 'same_account',
+    });
+    expect((await journal(auth, { ...ENTRY, occurredOn: '2099-01-01' })).json()).toEqual({
+      outcome: 'not_yet',
+    });
+  });
+
+  it('refuses a body the form should have caught', async () => {
+    const { auth } = await onboard('+2348177000063');
+    /* No reason, an account that is not in the chart, and nothing at all. */
+    expect((await journal(auth, { ...ENTRY, memo: '' })).statusCode).toBe(400);
+    expect((await journal(auth, { ...ENTRY, intoAccount: 'PETTY_CASH' })).statusCode).toBe(400);
+    expect((await journal(auth, { ...ENTRY, amountK: 0 })).statusCode).toBe(400);
+  });
+
+  /* The escape hatch is not an escape from the close. */
+  it('cannot reach into a month that has been closed', async () => {
+    const { auth } = await onboard('+2348177000064');
+    await app.inject({
+      method: 'POST',
+      url: '/v1/reports/close',
+      payload: { through: '2026-03' },
+      headers: { 'content-type': 'application/json', ...auth },
+    });
+
+    const res = await journal(auth, { ...ENTRY, occurredOn: '2026-03-15' });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ outcome: 'period_closed', closedThrough: '2026-03' });
+  });
+
+  it('is one tenant at a time', async () => {
+    const ada = await onboard('+2348177000065');
+    const bola = await onboard('+2348177000066');
+    await journal(ada.auth, ENTRY);
+
+    const theirs = reportsStatementsResponse.parse(
+      (
+        await app.inject({ method: 'GET', url: '/v1/reports/statements', headers: bola.auth })
+      ).json(),
+    );
+    expect(theirs.trialBalance.rows).toEqual([]);
   });
 });

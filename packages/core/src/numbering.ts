@@ -6,7 +6,7 @@
  * same DB transaction that issues the document).
  */
 
-export type DocType = 'invoice' | 'receipt' | 'credit_note' | 'order';
+export type DocType = 'invoice' | 'receipt' | 'credit_note' | 'order' | 'journal';
 
 const PREFIX: Record<DocType, string> = {
   invoice: 'INV',
@@ -17,6 +17,11 @@ const PREFIX: Record<DocType, string> = {
    * merchant asking "what happened to the order Sandra sent on Tuesday" needs
    * something to say back that is not a description. */
   order: 'ORD',
+  /* Numbered because an accountant asks "which entry", and the answer has to
+   * be something they can write down. On its own counter, so a business that
+   * makes two corrections all year has JNL-2026-000001 and JNL-2026-000002
+   * rather than two numbers from the middle of the invoice run. */
+  journal: 'JNL',
 };
 
 export function formatDocumentNumber(docType: DocType, year: number, seq: number): string {

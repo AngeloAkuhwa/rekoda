@@ -57,6 +57,7 @@ import {
   describeAuditEvent,
   isAccountKey,
   lagosDay,
+  lagosNoon,
   nextDueAfter,
   periodBefore,
   statementSheets,
@@ -79,6 +80,7 @@ import type {
   OpeningBalancesResponse,
   StockCountResponse,
   CloseBooksResponse,
+  JournalEntryResponse,
   ReopenBooksResponse,
   CreditInvoiceResponse,
   ReportsStatementsResponse,
@@ -91,6 +93,7 @@ import {
   openingBalancesRequest,
   stockCountRequest,
   closeBooksRequest,
+  journalEntryRequest,
   reopenBooksRequest,
   creditInvoiceRequest,
   stopRecurringRequest,
@@ -104,6 +107,7 @@ import {
   openingRepo,
   stocktakeRepo,
   closeRepo,
+  journalRepo,
   recurringRepo,
   reportsRepo,
   spendRepo,
@@ -720,6 +724,62 @@ export class ReportsController {
       };
     }
     return result;
+  }
+
+  /**
+   * A correction written by hand.
+   *
+   * Every other posting on this surface is derived from a business event, and
+   * that is why the books have stayed right without the merchant having to be
+   * an accountant. This is the escape hatch for what no write path produces:
+   * money carried from the till to the bank, an amount that went to the wrong
+   * account, an owner putting their own money in.
+   *
+   * One amount between two of the fixed ten, so there is no arrangement of
+   * the request that fails to balance. A genuine multi-line journal is not
+   * expressible here, deliberately: a free journal is a loaded gun pointed at
+   * the one property this product sells.
+   */
+  @Post('journal')
+  @HttpCode(200)
+  async recordJournal(
+    @Req() request: AuthedRequest,
+    @Body() body: unknown,
+  ): Promise<JournalEntryResponse> {
+    const parsed = journalEntryRequest.safeParse(body);
+    if (!parsed.success) {
+      throw new BadRequestException('an amount, two accounts and a reason');
+    }
+    const { memo, amountK, intoAccount, outOfAccount, occurredOn } = parsed.data;
+    if (intoAccount === outOfAccount) return { outcome: 'same_account' };
+    /* A correction dated tomorrow is a plan, and one accepted would sit
+     * outside every period the merchant can look at until the day arrives. */
+    if (occurredOn !== undefined && occurredOn > lagosDay(new Date())) {
+      return { outcome: 'not_yet' };
+    }
+
+    const businessId = request.auth!.businessId;
+    try {
+      const recorded = await withBusiness(this.db, businessId, (tx) =>
+        journalRepo.recordJournal(tx, {
+          businessId,
+          memo,
+          amountK,
+          intoAccount,
+          outOfAccount,
+          ...(occurredOn === undefined ? {} : { occurredAt: lagosNoon(occurredOn) }),
+          actor: `user:${request.auth!.userId}`,
+        }),
+      );
+      return { outcome: 'recorded', journalNumber: recorded.journalNumber };
+    } catch (error) {
+      /* Nothing was written before this threw, so the transaction rolled back
+       * clean and the refusal can be returned rather than raised. */
+      if (error instanceof closeRepo.PeriodClosed) {
+        return { outcome: 'period_closed', closedThrough: error.closedThrough };
+      }
+      throw error;
+    }
   }
 
   /**
