@@ -3,7 +3,7 @@ import { businessMembers } from '@/server/api';
 import { requireSessionWithToken } from '@/server/guards';
 import { AppNav } from '../AppNav';
 import { SignOutButton } from '../SignOutButton';
-import { TeamForms } from './TeamForms';
+import { InviteForm, RemoveMemberForm } from './TeamForms';
 
 export const metadata: Metadata = {
   title: 'Who can see your books',
@@ -86,7 +86,7 @@ export default async function TeamPage() {
                     {member.role === 'owner' ? (
                       <span className="rk-fineprint">that is you</span>
                     ) : (
-                      <TeamForms.Remove userId={member.userId} phone={member.phone} />
+                      <RemoveMemberForm userId={member.userId} phone={member.phone} />
                     )}
                   </td>
                 </tr>
@@ -102,7 +102,7 @@ export default async function TeamPage() {
           They sign in on their own phone with their own code. They do not need a Rekoda account
           first, and you can remove them at any time.
         </p>
-        <TeamForms.Invite />
+        <InviteForm />
       </div>
     </section>
   );

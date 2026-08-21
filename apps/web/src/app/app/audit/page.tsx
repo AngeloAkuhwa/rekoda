@@ -61,7 +61,7 @@ export default async function AuditPage() {
                     <th>Who</th>
                     <th>Where</th>
                     <th>Why</th>
-                    <th>Amount</th>
+                    <th className="rk-num">Amount</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -74,7 +74,9 @@ export default async function AuditPage() {
                       {/* Blank rather than "none": most actions do not require
                           a reason, and only the ones that do look bare. */}
                       <td>{event.reason ?? ''}</td>
-                      <td>{event.amountK === null ? '' : <Money kobo={event.amountK} />}</td>
+                      <td className="rk-num">
+                        {event.amountK === null ? '' : <Money kobo={event.amountK} />}
+                      </td>
                     </tr>
                   ))}
                 </tbody>

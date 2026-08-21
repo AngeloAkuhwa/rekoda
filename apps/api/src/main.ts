@@ -1,9 +1,11 @@
 import 'reflect-metadata';
 import { Logger } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
+import multipart from '@fastify/multipart';
 import rateLimit from '@fastify/rate-limit';
 import { FastifyAdapter, type NestFastifyApplication } from '@nestjs/platform-fastify';
 import { AppModule } from './app.module.js';
+import { MAX_IMAGE_BYTES } from '@rekoda/core';
 import { CONFIG, loadConfig, type ApiConfig } from './config.js';
 
 export async function createApp(): Promise<NestFastifyApplication> {
@@ -45,6 +47,30 @@ export async function createApp(): Promise<NestFastifyApplication> {
    * having now: it turns an unbounded spend into a bounded one.
    */
   const config = app.get<ApiConfig>(CONFIG);
+
+  /**
+   * Product photos, and nothing else.
+   *
+   * The ceiling is set here rather than per route so that a body larger than
+   * a product photo is refused by the parser before it reaches any handler:
+   * checking a size after buffering is checking it too late. `files: 1`
+   * because every upload in the product is one photo, and an endpoint that
+   * quietly accepted twenty would be a way to fill a bucket with one request.
+   */
+  await app.register(multipart, {
+    limits: { fileSize: MAX_IMAGE_BYTES, files: 1, fields: 4 },
+    /**
+     * Truncate at the ceiling rather than throw at it.
+     *
+     * Either way the parser stops reading there, so memory is bounded the
+     * same. The difference is what the merchant gets: throwing produces a
+     * bare 413 that no contract can parse, and a person who has just picked
+     * a five megabyte photo on their phone is told "that did not go through"
+     * with no idea why. Truncating lets the handler see it was cut off and
+     * answer with the limit, which is the sentence they can act on.
+     */
+    throwFileSizeLimit: false,
+  });
 
   await app.register(rateLimit, {
     global: true,

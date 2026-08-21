@@ -12,10 +12,19 @@ import { JobsModule } from './jobs/jobs.module.js';
 import { BillingModule } from './billing/billing.module.js';
 import { PaymentsModule } from './payments/payments.module.js';
 import { RepliesModule } from './replies/replies.module.js';
+import { CatalogueModule } from './catalogue/catalogue.module.js';
 import { ReportsModule } from './reports/reports.module.js';
 
 @Module({
-  imports: [BillingModule, DbModule, JobsModule, PaymentsModule, RepliesModule, ReportsModule],
+  imports: [
+    BillingModule,
+    CatalogueModule,
+    DbModule,
+    JobsModule,
+    PaymentsModule,
+    RepliesModule,
+    ReportsModule,
+  ],
   controllers: [
     AuthController,
     BusinessController,

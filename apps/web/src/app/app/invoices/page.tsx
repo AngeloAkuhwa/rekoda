@@ -73,10 +73,10 @@ export default async function InvoicesPage() {
                     <th>Issued</th>
                     <th>Due</th>
                     <th>Status</th>
-                    <th>Total</th>
-                    <th>Paid</th>
-                    <th>Credited</th>
-                    <th>Balance</th>
+                    <th className="rk-num">Total</th>
+                    <th className="rk-num">Paid</th>
+                    <th className="rk-num">Credited</th>
+                    <th className="rk-num">Balance</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -93,16 +93,20 @@ export default async function InvoicesPage() {
                           ? `${invoice.daysOverdue} ${invoice.daysOverdue === 1 ? 'day' : 'days'} late`
                           : statusWord(invoice.status)}
                       </td>
-                      <td>
+                      <td className="rk-num">
                         <Money kobo={invoice.totalK} />
                       </td>
-                      <td>{invoice.paidK === 0 ? 'nothing' : <Money kobo={invoice.paidK} />}</td>
+                      <td className="rk-num">
+                        {invoice.paidK === 0 ? 'nothing' : <Money kobo={invoice.paidK} />}
+                      </td>
                       {/* A credit note is a document raised against this row, and
                           the register is where a merchant looks for it. Without
                           this column a partly credited invoice is
                           indistinguishable from one nobody has touched. */}
-                      <td>{invoice.creditedK === 0 ? '' : <Money kobo={invoice.creditedK} />}</td>
-                      <td>
+                      <td className="rk-num">
+                        {invoice.creditedK === 0 ? '' : <Money kobo={invoice.creditedK} />}
+                      </td>
+                      <td className="rk-num">
                         {invoice.balanceDueK === 0 ? (
                           'settled'
                         ) : (

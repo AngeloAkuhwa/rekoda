@@ -53,7 +53,7 @@ export default async function StockPage() {
                 <thead>
                   <tr>
                     <th>Product</th>
-                    <th>On hand</th>
+                    <th className="rk-num">On hand</th>
                     <th>Status</th>
                   </tr>
                 </thead>
@@ -64,7 +64,7 @@ export default async function StockPage() {
                   {products.map((product) => (
                     <tr key={product.name}>
                       <td>{product.name}</td>
-                      <td>{product.onHand}</td>
+                      <td className="rk-num">{product.onHand}</td>
                       <td>
                         {product.onHand <= 0 ? (
                           <span className="rk-status-warn">Out of stock</span>
