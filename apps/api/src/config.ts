@@ -187,6 +187,16 @@ export interface ApiConfig {
   metaBillingTemplate: string | null;
   metaBillingTemplateLocale: string;
   /**
+   * The Meta-approved UTILITY template that warns about deletion.
+   *
+   * Null means the retention sweep warns nobody and therefore deletes
+   * nothing: a schedule that promises notice cannot delete an account it
+   * failed to notify, so the absence of a template stops the sweep rather
+   * than being routed around.
+   */
+  metaRetentionTemplate: string | null;
+  metaRetentionTemplateLocale: string;
+  /**
    * USD micros per in-window service reply. Zero today — Meta does not charge
    * for them yet — and chargeable from 1 October 2026, at which point this is
    * the one number that needs changing.
@@ -452,6 +462,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     metaOtpTemplateLocale: env['META_OTP_TEMPLATE_LOCALE'] ?? 'en',
     metaBillingTemplate: env['META_BILLING_TEMPLATE'] || null,
     metaBillingTemplateLocale: env['META_BILLING_TEMPLATE_LOCALE'] ?? 'en',
+    metaRetentionTemplate: env['META_RETENTION_TEMPLATE'] || null,
+    metaRetentionTemplateLocale: env['META_RETENTION_TEMPLATE_LOCALE'] ?? 'en',
     metaServiceReplyCostMicros: Number(env['META_SERVICE_REPLY_COST_MICROS'] ?? 0),
     r2AccountId: env['R2_ACCOUNT_ID'] ?? '',
     r2AccessKeyId: env['R2_ACCESS_KEY_ID'] ?? '',

@@ -79,6 +79,22 @@ export interface OutboundBillingNotice {
   endsOn: string;
 }
 
+/**
+ * A retention warning, sent as a UTILITY TEMPLATE.
+ *
+ * The recipient by definition has not messaged the business number in
+ * months - that is what makes them due - so a free-form text is the one thing
+ * that cannot reach them.
+ *
+ * Two parameters: how many days until the records go, and the date. Enough to
+ * act on, and nothing about what the business sold.
+ */
+export interface OutboundRetentionNotice {
+  to: string;
+  daysLeft: string;
+  deletesOn: string;
+}
+
 export interface MessageSender {
   send(message: OutboundMessage): Promise<SendResult>;
   /** Download media by Meta's id. Throws `SendFailed` when it cannot. */
@@ -106,6 +122,12 @@ export interface MessageSender {
    * would make the sweep pass every test and reach nobody outside the window.
    */
   sendBillingNotice(notice: OutboundBillingNotice): Promise<SendResult>;
+  /**
+   * A retention warning (ADR 0024). Its own template, not a reuse of the
+   * billing one: Meta approves templates by their text, and one generic
+   * enough to carry both messages is one they refuse as free-form.
+   */
+  sendRetentionNotice(notice: OutboundRetentionNotice): Promise<SendResult>;
 }
 
 /** The send failed. The reply is lost; the merchant's record is not. */

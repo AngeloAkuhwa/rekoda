@@ -11,6 +11,7 @@ export * as quotaRepo from './repos/quota.js';
 export * as issueRepo from './repos/issue.js';
 export * as paymentsHub from './repos/payments-hub.js';
 export * as reportsRepo from './repos/reports.js';
+export * as retentionRepo from './repos/retention.js';
 export * as settleRepo from './repos/settle.js';
 export * as stockRepo from './repos/stock.js';
 export * as subscriptionsRepo from './repos/subscriptions.js';

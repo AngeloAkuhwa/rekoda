@@ -159,11 +159,22 @@ not exist yet, so both are built behind a port the way `SpeechToText` already
 is: the pipeline and its tests can land before the service does, and neither
 feature turns on until a URL is configured.
 
-The retention schedule is written, in `apps/web/src/lib/legal.ts`, and
-published on `/privacy`. Its periods are maximums, which makes them promises
-about dates: the sweep that enforces them does not exist yet, and the shortest
-period is 90 days for an abandoned trial. That is a deadline counted from the
-first merchant who walks away, not an open intention.
+The retention schedule is written, in `@rekoda/core/retention`, published on
+`/privacy` and kept by `apps/api/src/privacy/retention-sweep.ts`. Its periods
+are maximums, which makes them promises about dates, so the sweep exists
+rather than the schedule being an intention.
+
+Two stages, thirty days apart, and neither runs without the other. Anyone who
+ever completed a subscription charge is excluded from both: their books belong
+to the financial retention period instead. A warning that could not be
+delivered leaves the account unclaimed, and an unclaimed account is never
+deleted, so a missing WhatsApp template cannot cause a deletion.
+
+The deletion itself is a `SECURITY DEFINER` function the worker may execute
+and nothing more. The capability granted is "delete a business the schedule
+says is due", with the predicate inside the database where no caller can pass
+around it, rather than "delete a business" -- which a compromised worker could
+aim at a paying merchant.
 
 The refund matrix is published at `/refunds`, linked from the footer and from
 the billing clause in the terms. The registered entity and support address
