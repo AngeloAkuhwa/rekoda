@@ -99,9 +99,38 @@ export function buildTrialBalance(rows: readonly AccountSums[]): TrialBalance {
 
 export interface ProfitAndLoss {
   readonly income: StatementLine[];
+  /**
+   * Every expense account, cost of sales included.
+   *
+   * Kept whole so `totalExpensesK` still means what it always meant and
+   * nothing reading this has to add two numbers to get it. The gross profit
+   * figures below are a SECOND view of the same rows, not a replacement.
+   */
   readonly expenses: StatementLine[];
+  /**
+   * The same rows without cost of sales.
+   *
+   * What the "Expenses" block of a statement actually lists once gross profit
+   * is shown above it. Derived here rather than filtered in each renderer,
+   * because a page, a PDF and a workbook filtering separately is three places
+   * for one of them to stop.
+   */
+  readonly operatingExpenses: StatementLine[];
   readonly totalIncomeK: number;
   readonly totalExpensesK: number;
+  /**
+   * What the goods sold cost, on its own.
+   *
+   * The line every accountant looks for first, because revenue minus the cost
+   * of what was sold is the only number that says whether the trade itself
+   * works. It sat inside "Total expenses" beside rent and diesel until COGS
+   * had anything posted to it, which made gross profit unreadable.
+   */
+  readonly costOfSalesK: number;
+  /** Revenue less the cost of the goods that earned it. */
+  readonly grossProfitK: number;
+  /** Everything else: rent, salaries, transport, fees. */
+  readonly operatingExpensesK: number;
   readonly netProfitK: number;
 }
 
@@ -109,6 +138,7 @@ export interface ProfitAndLoss {
 export function buildProfitAndLoss(rows: readonly AccountSums[]): ProfitAndLoss {
   const income: StatementLine[] = [];
   const expenses: StatementLine[] = [];
+  let costOfSalesK = 0;
   for (const row of rows) {
     const meta = ACCOUNTS[row.account];
     if (meta.type === 'income') {
@@ -117,6 +147,7 @@ export function buildProfitAndLoss(rows: readonly AccountSums[]): ProfitAndLoss 
         income.push({ account: row.account, code: meta.code, name: meta.name, amountK });
     } else if (meta.type === 'expense') {
       const amountK = row.periodDebitK - row.periodCreditK;
+      if (row.account === 'COGS') costOfSalesK += amountK;
       if (amountK !== 0)
         expenses.push({ account: row.account, code: meta.code, name: meta.name, amountK });
     }
@@ -128,8 +159,14 @@ export function buildProfitAndLoss(rows: readonly AccountSums[]): ProfitAndLoss 
   return {
     income,
     expenses,
+    operatingExpenses: expenses.filter((l) => l.account !== 'COGS'),
     totalIncomeK,
     totalExpensesK,
+    costOfSalesK,
+    grossProfitK: totalIncomeK - costOfSalesK,
+    /* Derived by subtraction rather than summed again, so the three figures
+     * cannot disagree about which account went where. */
+    operatingExpensesK: totalExpensesK - costOfSalesK,
     netProfitK: totalIncomeK - totalExpensesK,
   };
 }

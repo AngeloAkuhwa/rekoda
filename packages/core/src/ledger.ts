@@ -312,6 +312,26 @@ export function postCreditNote(args: { memo: string; amountK: Kobo; vatK?: Kobo 
   return posting;
 }
 
+/**
+ * What the goods a sale took off the shelf cost.
+ *
+ * A SECOND posting, written alongside the sale rather than folded into it,
+ * and the separation is deliberate. A sale is a fact about money and is known
+ * exactly; what the goods cost is an estimate from a costing method and is
+ * known only for products the merchant has told Rekoda about. Two postings
+ * means a sale whose cost is unknown still records the sale, and an auditor
+ * can see revenue and cost as the separate assertions they are.
+ */
+export function postCostOfSale(args: { memo: string; costK: Kobo }): Posting {
+  if (args.costK <= 0) throw new RangeError('a cost of sale is more than nothing');
+  const posting: Posting = {
+    memo: args.memo,
+    lines: [line('COGS', args.costK, 0), line('INVENTORY', 0, args.costK)],
+  };
+  assertBalanced(posting);
+  return posting;
+}
+
 /** Reversing posting — the ONLY way to correct: never edit, always reverse. */
 export function reversal(original: Posting, memo: string): Posting {
   const posting: Posting = {

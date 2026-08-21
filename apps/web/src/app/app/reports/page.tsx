@@ -168,6 +168,29 @@ export default async function ReportsPage({
                         <Money kobo={comparison.totalIncomeK} />
                       </td>
                     </tr>
+                    {/* Gross profit, printed only when there is a cost of
+                        sales to take off. Revenue less nothing is revenue,
+                        and a "gross profit" line equal to the sales line
+                        dresses up "we were never told what it cost" as a
+                        margin. */}
+                    {profitAndLoss.costOfSalesK !== 0 ? (
+                      <>
+                        <tr>
+                          <td>Cost of goods sold</td>
+                          <td className="rk-num">
+                            <Money kobo={profitAndLoss.costOfSalesK} />
+                          </td>
+                          <td />
+                        </tr>
+                        <tr className="rk-statement-total">
+                          <td>Gross profit</td>
+                          <td className="rk-num">
+                            <Money kobo={profitAndLoss.grossProfitK} />
+                          </td>
+                          <td />
+                        </tr>
+                      </>
+                    ) : null}
                     <tr className="rk-statement-section">
                       <th colSpan={3}>Expenses</th>
                     </tr>
@@ -183,9 +206,19 @@ export default async function ReportsPage({
                       </tr>
                     ))}
                     <tr className="rk-statement-total">
-                      <td>Total expenses</td>
                       <td>
-                        <Money kobo={profitAndLoss.totalExpensesK} />
+                        {profitAndLoss.costOfSalesK !== 0
+                          ? 'Total running costs'
+                          : 'Total expenses'}
+                      </td>
+                      <td>
+                        <Money
+                          kobo={
+                            profitAndLoss.costOfSalesK !== 0
+                              ? profitAndLoss.operatingExpensesK
+                              : profitAndLoss.totalExpensesK
+                          }
+                        />
                       </td>
                       <td>
                         <Money kobo={comparison.totalExpensesK} />

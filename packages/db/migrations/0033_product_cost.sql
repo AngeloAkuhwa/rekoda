@@ -1,0 +1,19 @@
+-- What a product cost the merchant, so a sale can carry a cost against it.
+--
+-- COGS has been in the chart at code 5000 since the ledger was designed and
+-- nothing has ever posted to it. Inventory only ever grew, a sale credited
+-- revenue with nothing against it, and the profit and loss reported gross
+-- profit equal to revenue: not a figure a merchant can trust or a lender can
+-- read.
+--
+-- Weighted average, one number per product, maintained as deliveries arrive.
+-- FIFO would need a purchase history complete enough to say which batch a
+-- sale came out of, and a small business tells Rekoda about the deliveries it
+-- remembers, in the order it remembers them. A method that breaks when the
+-- history has holes is worse than one that moves.
+--
+-- NULLABLE, and the null is load-bearing. A product nobody has told Rekoda
+-- the cost of has no cost, and inventing one would put a made-up figure into
+-- a profit calculation. Sales of such products post no cost of sale, and the
+-- statements say how much revenue that was rather than implying it was free.
+ALTER TABLE products ADD COLUMN unit_cost_k bigint;

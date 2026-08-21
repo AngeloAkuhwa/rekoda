@@ -3267,6 +3267,94 @@ describe('stock arriving with a purchase', () => {
     expect((await onHand(business.id, 'crates of ankara'))?.onHand).toBe(14);
   });
 
+  /**
+   * The whole point of a cost, end to end and through the real chat path.
+   *
+   * A delivery says what ten crates cost. A sale of three takes three off the
+   * shelf AND posts what those three cost, so the profit and loss stops
+   * reporting gross profit equal to revenue.
+   */
+  it('a delivery sets the cost, and a later sale posts it against the goods', async () => {
+    const business = await seedMerchant('+2348031234567');
+
+    await say('wamid.C1', buy(), 'bought 10 crates of ankara for 50k');
+    await plain('wamid.C2', 'yes');
+    expect((await onHand(business.id, 'crates of ankara'))?.unitCostK).toBe(5_000_00);
+
+    await say(
+      'wamid.C3',
+      {
+        intent: 'RecordSale',
+        customer: { kind: 'token', token: 'CUSTOMER_7K2' },
+        items: [{ name: 'crates of ankara', quantity: 3, unitPrice: 9_000 }],
+        statedTotal: 27_000,
+        reportedPayment: 27_000,
+        paymentMethod: 'cash',
+        discount: null,
+        deliveryFee: null,
+        dueDescription: null,
+      },
+      'sold 3 crates of ankara for 27k',
+    );
+    await plain('wamid.C4', 'yes');
+
+    const entries = await withBusiness(db, business.id, (tx) =>
+      issueRepo.ledgerEntriesFor(tx, business.id),
+    );
+    /* Three at ₦5,000: the cost of exactly what left the shelf. */
+    expect(entries).toContainEqual(expect.objectContaining({ account: 'COGS', debitK: 15_000_00 }));
+    expect(entries).toContainEqual(
+      expect.objectContaining({ account: 'INVENTORY', creditK: 15_000_00 }),
+    );
+    /* And the books still balance with a second posting on the same sale. */
+    const debits = entries.reduce((n, e) => n + Number(e.debitK), 0);
+    const credits = entries.reduce((n, e) => n + Number(e.creditK), 0);
+    expect(debits).toBe(credits);
+    expect((await onHand(business.id, 'crates of ankara'))?.onHand).toBe(7);
+  });
+
+  /**
+   * A product nobody has ever bought through Rekoda has no cost, and a sale
+   * of it must post none rather than nothing-per-unit. The revenue stands;
+   * the statements say how much of it had no cost against it.
+   */
+  it('posts no cost for goods nobody has told Rekoda the price of', async () => {
+    const business = await seedMerchant('+2348031234567');
+
+    await say(
+      'wamid.C5',
+      { intent: 'AdjustInventory', productMention: 'head ties', quantityDelta: 40 },
+      'add 40 head ties',
+    );
+    await plain('wamid.C6', 'yes');
+    await say(
+      'wamid.C7',
+      {
+        intent: 'RecordSale',
+        customer: { kind: 'token', token: 'CUSTOMER_7K2' },
+        items: [{ name: 'head ties', quantity: 2, unitPrice: 2_500 }],
+        statedTotal: 5_000,
+        reportedPayment: 5_000,
+        paymentMethod: 'cash',
+        discount: null,
+        deliveryFee: null,
+        dueDescription: null,
+      },
+      'sold 2 head ties for 5k',
+    );
+    await plain('wamid.C8', 'yes');
+
+    const entries = await withBusiness(db, business.id, (tx) =>
+      issueRepo.ledgerEntriesFor(tx, business.id),
+    );
+    expect(entries.some((e) => e.account === 'COGS')).toBe(false);
+    /* The sale itself is recorded in full: an unknown cost is not a reason to
+     * lose the revenue. */
+    expect(entries).toContainEqual(
+      expect.objectContaining({ account: 'SALES_REVENUE', creditK: 5_000_00 }),
+    );
+  });
+
   it('moves no stock for a purchase the merchant described in prose', async () => {
     const business = await seedMerchant('+2348031234567');
 

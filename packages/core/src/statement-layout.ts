@@ -108,23 +108,34 @@ export function layoutStatements(doc: StatementDocument): LayoutBlock[] {
   blocks.push({ kind: 'subtotal', text: 'Total income', value: formatKobo(pl.totalIncomeK) });
 
   /**
-   * Where it came from, printed directly under the income it explains.
+   * Gross profit, before the statement moves on to running costs.
    *
-   * Unlike the expense schedule this one sits INSIDE the profit and loss
-   * rather than after it, because there is only one income line and the
-   * detail belongs against it. The expenses have two accounts above them and
-   * a schedule for only one, which is why that one needs its own heading and
-   * its own distance.
+   * Printed only when there IS a cost of sales. A gross profit line equal to
+   * revenue tells a reader nothing except that Rekoda has not been told what
+   * anything cost, and printing it would dress that up as a margin.
    */
-  if (doc.revenueSchedule.lines.length > 0) {
-    blocks.push({ kind: 'subhead', text: 'Where the sales came from' });
-    for (const line of doc.revenueSchedule.lines) {
-      blocks.push({ kind: 'item', text: line.label, value: formatKobo(line.amountK) });
-    }
+  if (pl.costOfSalesK !== 0) {
+    blocks.push({ kind: 'item', text: 'Cost of goods sold', value: formatKobo(pl.costOfSalesK) });
+    blocks.push({
+      kind: 'subtotal',
+      text: 'Gross profit',
+      value: formatKobo(pl.grossProfitK),
+    });
   }
-  blocks.push({ kind: 'subhead', text: 'Expenses' });
-  blocks.push(...lines(pl.expenses, 'No expenses recorded this month'));
-  blocks.push({ kind: 'subtotal', text: 'Total expenses', value: formatKobo(pl.totalExpensesK) });
+
+  /* Once gross profit is shown, this block lists what it costs to RUN the
+   * shop and nothing else. Printing cost of sales again underneath its own
+   * subtotal invites a reader to add it twice. */
+  const showsGross = pl.costOfSalesK !== 0;
+  blocks.push({ kind: 'subhead', text: showsGross ? 'Running costs' : 'Expenses' });
+  blocks.push(
+    ...lines(showsGross ? pl.operatingExpenses : pl.expenses, 'No expenses recorded this month'),
+  );
+  blocks.push({
+    kind: 'subtotal',
+    text: showsGross ? 'Total running costs' : 'Total expenses',
+    value: formatKobo(showsGross ? pl.operatingExpensesK : pl.totalExpensesK),
+  });
   blocks.push({
     /* Named for the sign, because a bracketed negative is read wrong by
      * exactly the people who most need to read it right. */
@@ -132,6 +143,27 @@ export function layoutStatements(doc: StatementDocument): LayoutBlock[] {
     text: pl.netProfitK < 0 ? 'Net loss' : 'Net profit',
     value: formatKobo(Math.abs(pl.netProfitK)),
   });
+
+  /**
+   * Where the income came from.
+   *
+   * A supporting schedule, printed after the statement rather than inside it,
+   * for the reason a render made obvious: on a page that reads top to bottom,
+   * a list of channels under the income line runs straight into whatever
+   * follows, and "Cost of goods sold" arriving after "Instagram" and "In the
+   * shop" reads as a third channel.
+   */
+  if (doc.revenueSchedule.lines.length > 0) {
+    blocks.push({ kind: 'subhead', text: 'Where the sales came from' });
+    for (const line of doc.revenueSchedule.lines) {
+      blocks.push({ kind: 'item', text: line.label, value: formatKobo(line.amountK) });
+    }
+    blocks.push({
+      kind: 'subtotal',
+      text: 'Total sales',
+      value: formatKobo(doc.revenueSchedule.totalK),
+    });
+  }
 
   /**
    * The detail behind ONE of the expense lines above, not behind all of them.
@@ -255,22 +287,32 @@ export function statementSheets(doc: StatementDocument): Sheet[] {
         ['Income', null],
         ...money(pl.income),
         ['Total income', xlsxNaira(pl.totalIncomeK)],
-        ...(doc.revenueSchedule.lines.length > 0
+        ...(pl.costOfSalesK !== 0
           ? ([
-              [null, null],
-              ['Where the sales came from', null],
-              ...doc.revenueSchedule.lines.map((line) => [line.label, xlsxNaira(line.amountK)]),
+              ['Cost of goods sold', xlsxNaira(pl.costOfSalesK)],
+              ['Gross profit', xlsxNaira(pl.grossProfitK)],
             ] as CellValue[][])
           : []),
         [null, null],
-        ['Expenses', null],
-        ...money(pl.expenses),
-        ['Total expenses', xlsxNaira(pl.totalExpensesK)],
+        [pl.costOfSalesK !== 0 ? 'Running costs' : 'Expenses', null],
+        ...money(pl.costOfSalesK !== 0 ? pl.operatingExpenses : pl.expenses),
+        [
+          pl.costOfSalesK !== 0 ? 'Total running costs' : 'Total expenses',
+          xlsxNaira(pl.costOfSalesK !== 0 ? pl.operatingExpensesK : pl.totalExpensesK),
+        ],
         [null, null],
         /* Signed here rather than named, unlike the PDF. A spreadsheet cell is
          * arithmetic input: somebody will add this column, and "Net loss
          * 15,000" as a positive would make their total wrong. */
         ['Net profit', xlsxNaira(pl.netProfitK)],
+        ...(doc.revenueSchedule.lines.length > 0
+          ? ([
+              [null, null],
+              ['Where the sales came from', null],
+              ...doc.revenueSchedule.lines.map((line) => [line.label, xlsxNaira(line.amountK)]),
+              ['Total sales', xlsxNaira(doc.revenueSchedule.totalK)],
+            ] as CellValue[][])
+          : []),
         /* Below the net profit, not among the expense lines. Somebody will
          * select this column and total it, and a breakdown sitting inside the
          * statement it breaks down would be counted twice. */

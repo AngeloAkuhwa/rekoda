@@ -14,6 +14,7 @@ import {
   looksLikeCorrection,
   orderPreview,
   orderQuestion,
+  postCostOfSale,
   priceOrder,
   replies,
   routeMessage,
@@ -956,9 +957,44 @@ async function confirmPendingDraft(
    * not asked Rekoda to count it, and a stock figure that appears uninvited
    * is a stock figure nobody trusts.
    */
-  await stockRepo.recordSaleMovements(tx, businessId, items, issued.invoiceNumber);
+  const movements = await stockRepo.recordSaleMovements(
+    tx,
+    businessId,
+    items,
+    issued.invoiceNumber,
+  );
+  await postCostOfGoods(tx, businessId, issued.invoiceNumber, movements);
 
   return replies.issued(issued.invoiceNumber, money.totalK, money.balanceDueK);
+}
+
+/**
+ * What the goods a sale took off the shelf cost.
+ *
+ * A SECOND posting beside the sale, in the same transaction, and the
+ * separation is the point. A sale is a fact about money and is known exactly;
+ * what the goods cost is an estimate from a costing method and is known only
+ * for products the merchant has told Rekoda about. Two postings means a sale
+ * whose cost is unknown still records the sale.
+ *
+ * Nothing is written when nothing that moved had a cost, which is not the
+ * same as the goods having been free. The statements say how much revenue
+ * that was rather than reporting a gross margin that assumes it.
+ */
+async function postCostOfGoods(
+  tx: TenantDb,
+  businessId: string,
+  invoiceNumber: string,
+  movements: { costK: number },
+): Promise<void> {
+  if (movements.costK <= 0) return;
+  await issueRepo.writePosting(
+    tx,
+    businessId,
+    postCostOfSale({ memo: `Cost of goods on ${invoiceNumber}`, costK: movements.costK }),
+    'invoice',
+    invoiceNumber,
+  );
 }
 
 /**
@@ -1075,7 +1111,8 @@ async function confirmOrder(
     singletonKey: `link:${issued.invoiceId}`,
   });
 
-  await stockRepo.recordSaleMovements(tx, businessId, items, issued.invoiceNumber);
+  const moved = await stockRepo.recordSaleMovements(tx, businessId, items, issued.invoiceNumber);
+  await postCostOfGoods(tx, businessId, issued.invoiceNumber, moved);
 
   return replies.orderRaised(placed.orderNumber, issued.invoiceNumber, order.totalK);
 }
@@ -1174,11 +1211,14 @@ async function confirmPurchase(
   const arriving = purchaseArrival(command as never);
   if (arriving) {
     const product = await stockRepo.findOrCreateProduct(tx, businessId, arriving.productMention);
-    await stockRepo.recordMovement(tx, {
+    /* And it moves what this product is reckoned to cost. The merchant named
+     * a thing, a number of it and an amount; that is a unit cost, and it is
+     * the only one they have given us. */
+    await stockRepo.recordDelivery(tx, {
       businessId,
-      productId: product.id,
-      delta: arriving.quantity,
-      reason: 'purchase',
+      product,
+      quantity: arriving.quantity,
+      costK: gate.amountK,
       sourceType: 'chat',
       sourceId: draftId,
     });

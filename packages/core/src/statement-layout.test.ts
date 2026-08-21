@@ -14,8 +14,14 @@ const K = (naira: number) => naira * 100;
 const PROFIT: ProfitAndLoss = {
   income: [{ account: 'SALES_REVENUE', code: '4000', name: 'Sales', amountK: K(150_000) }],
   expenses: [{ account: 'RENT', code: '6100', name: 'Rent', amountK: K(12_000) }],
+  operatingExpenses: [{ account: 'RENT', code: '6100', name: 'Rent', amountK: K(12_000) }],
   totalIncomeK: K(150_000),
   totalExpensesK: K(12_000),
+  /* Nothing sold has a cost recorded, which is the state a business is in
+   * until it tells Rekoda what its stock cost. */
+  costOfSalesK: 0,
+  grossProfitK: K(150_000),
+  operatingExpensesK: K(12_000),
   netProfitK: K(138_000),
 };
 
@@ -196,10 +202,12 @@ describe('what the statements document says', () => {
     expect(rendered).toContain('Instagram');
 
     const at = (label: string) => blocks.findIndex((b) => b.text === label);
-    /* Inside the profit and loss, not after it: there is one income line and
-     * the detail belongs against it. */
-    expect(at('Where the sales came from')).toBeGreaterThan(at('Total income'));
-    expect(at('Where the sales came from')).toBeLessThan(at('Expenses'));
+    /* A supporting schedule, AFTER the statement. Inside it, a list of
+     * channels runs straight into whatever follows, and a render showed
+     * "Cost of goods sold" arriving after "Instagram" reading as a third
+     * channel. */
+    expect(at('Where the sales came from')).toBeGreaterThan(at('Net profit'));
+    expect(at('Where the sales came from')).toBeLessThan(at('Balance sheet'));
   });
 
   it('prints no channels for a month with nothing sold', () => {
@@ -210,6 +218,52 @@ describe('what the statements document says', () => {
   it('prints no schedule for a month with nothing to break down', () => {
     const blocks = layoutStatements(doc({ expenseSchedule: { lines: [], totalK: 0 } }));
     expect(text(blocks)).not.toContain('Operating expenses in detail');
+  });
+
+  /**
+   * Gross profit, and the reason it is conditional. Revenue less nothing is
+   * revenue, and a "gross profit" line equal to the sales line dresses up
+   * "Rekoda was never told what anything cost" as a margin.
+   */
+  it('prints gross profit when there is a cost of sales, and not when there is not', () => {
+    const withCost = layoutStatements(
+      doc({
+        profitAndLoss: { ...PROFIT, costOfSalesK: K(20_000), grossProfitK: K(30_000) },
+      }),
+    );
+    expect(find(withCost, 'Cost of goods sold')?.value).toBe('\u20a620,000');
+    expect(find(withCost, 'Gross profit')?.value).toBe('\u20a630,000');
+
+    const withoutCost = layoutStatements(doc());
+    expect(text(withoutCost)).not.toContain('Gross profit');
+  });
+
+  /**
+   * Cost of sales appears ONCE. Listed again under its own subtotal it
+   * invites a reader to add it twice, and the "Expenses" heading stops being
+   * true the moment gross profit is shown above it.
+   */
+  it('lists running costs rather than every expense once gross profit is shown', () => {
+    const blocks = layoutStatements(
+      doc({
+        profitAndLoss: {
+          ...PROFIT,
+          expenses: [
+            { account: 'COGS', code: '5000', name: 'Cost of Goods Sold', amountK: K(20_000) },
+            ...PROFIT.operatingExpenses,
+          ],
+          costOfSalesK: K(20_000),
+          grossProfitK: K(130_000),
+          totalExpensesK: K(32_000),
+        },
+      }),
+    );
+    const rendered = text(blocks);
+    expect(rendered).toContain('Running costs');
+    expect(find(blocks, 'Total running costs')?.value).toBe('\u20a612,000');
+    expect(rendered).not.toContain('Total expenses');
+    /* Once, in the gross profit block, and nowhere else. */
+    expect(rendered.match(/Cost of [Gg]oods [Ss]old/g)).toHaveLength(1);
   });
 
   it('carries the ADR 0014 caveat and E&OE in the footnote', () => {
@@ -224,8 +278,12 @@ describe('what the statements document says', () => {
         profitAndLoss: {
           income: [],
           expenses: [],
+          operatingExpenses: [],
           totalIncomeK: 0,
           totalExpensesK: 0,
+          costOfSalesK: 0,
+          grossProfitK: 0,
+          operatingExpensesK: 0,
           netProfitK: 0,
         },
       }),
@@ -320,8 +378,7 @@ describe('the statements as a workbook', () => {
   it('puts the channels under the income row in the workbook too', () => {
     const rows = sheets()[0]!.rows.map((r) => String(r[0]));
     expect(rows).toContain('Where the sales came from');
-    expect(rows.indexOf('Where the sales came from')).toBeGreaterThan(rows.indexOf('Total income'));
-    expect(rows.indexOf('Where the sales came from')).toBeLessThan(rows.indexOf('Expenses'));
+    expect(rows.indexOf('Where the sales came from')).toBeGreaterThan(rows.indexOf('Net profit'));
   });
 
   it('says the books agree when they do', () => {

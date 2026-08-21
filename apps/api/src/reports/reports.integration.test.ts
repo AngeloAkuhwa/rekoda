@@ -1261,7 +1261,7 @@ describe('the stock register', () => {
 
   it('is empty for a shop that counts nothing', async () => {
     const { auth } = await onboard('+2348120000041');
-    expect((await get(auth)).json()).toEqual({ products: [], outOfStock: 0 });
+    expect((await get(auth)).json()).toEqual({ products: [], outOfStock: 0, withoutCost: 0 });
   });
 
   it('sums the movements and puts what is running out first', async () => {
@@ -1272,10 +1272,13 @@ describe('the stock register', () => {
 
     const body = (await get(auth)).json();
     expect(body.products).toEqual([
-      { name: 'Wigs', onHand: 2 },
-      { name: 'Bags of rice', onHand: 35 },
+      { name: 'Wigs', onHand: 2, unitCostK: null },
+      { name: 'Bags of rice', onHand: 35, unitCostK: null },
     ]);
     expect(body.outOfStock).toBe(0);
+    /* Counted by hand and never bought through Rekoda, so neither has a cost.
+     * The page says so rather than showing a zero. */
+    expect(body.withoutCost).toBe(2);
   });
 
   it('counts what has run out, and keeps it in the list', async () => {
@@ -1286,7 +1289,7 @@ describe('the stock register', () => {
     const body = (await get(auth)).json();
     /* Still listed: something counted and sold down to nothing is exactly the
      * row a merchant needs to see, and dropping it would hide the restock. */
-    expect(body.products).toEqual([{ name: 'Wigs', onHand: 0 }]);
+    expect(body.products).toEqual([{ name: 'Wigs', onHand: 0, unitCostK: null }]);
     expect(body.outOfStock).toBe(1);
   });
 
@@ -1298,13 +1301,25 @@ describe('the stock register', () => {
     expect((await get(mine.auth)).json().products).toEqual([]);
   });
 
-  it('carries no money, because a valuation is a cost basis Rekoda does not hold', async () => {
+  /**
+   * The rule changed, on purpose, and this is the new boundary.
+   *
+   * A unit cost is here now because deliveries maintain one and it is real.
+   * A TOTAL valuation still is not: inventory on the balance sheet is the
+   * ledger figure and includes purchases that named no product, so a column
+   * summed here would be a second answer to the same question, differing by
+   * exactly the purchases nobody itemised.
+   */
+  it('carries what a unit cost, and never a valuation or a selling price', async () => {
     const { auth, businessId } = await onboard('+2348120000046');
     await count(businessId, 'Wigs', 3);
 
+    const body = (await get(auth)).json();
+    expect(body.products[0]).toEqual({ name: 'Wigs', onHand: 3, unitCostK: null });
     const raw = (await get(auth)).body;
-    expect(raw).not.toContain('K"');
-    expect(raw).not.toContain('price');
+    for (const absent of ['price', 'valuation', 'totalCost', 'valueK']) {
+      expect(raw).not.toContain(absent);
+    }
   });
 });
 

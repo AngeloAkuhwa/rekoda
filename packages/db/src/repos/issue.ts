@@ -21,10 +21,12 @@
 import { and, eq, sql } from 'drizzle-orm';
 import {
   formatDocumentNumber,
+  isAccountKey,
   lagosYear,
   postCreditNote,
   postSale,
   reversal,
+  type LedgerLine,
   type Posting,
 } from '@rekoda/core';
 import { snapshotHash, type DocumentSnapshot } from '@rekoda/core/documents';
@@ -463,8 +465,80 @@ export async function voidInvoice(
     invoice.ledgerTransactionId ? { reversesId: invoice.ledgerTransactionId } : {},
   );
 
+  /**
+   * And the cost of the goods, if the sale carried one.
+   *
+   * A sale writes TWO postings once products have costs: the revenue, and
+   * what the goods cost. Reversing only the first leaves COGS debited and
+   * inventory credited with no revenue against them, which balances
+   * perfectly and says the shop gave the goods away.
+   *
+   * Built from the ENTRIES that were written rather than recomputed, for the
+   * reason `voidExpense` records: the average cost has moved since, so
+   * recomputing would reverse a different figure from the one posted and
+   * leave inventory wrong by the difference.
+   *
+   * The stock itself is deliberately NOT put back. That is the same rule a
+   * voided purchase follows: money is a bookkeeping fact and can be mirrored,
+   * what is on the shelf is a physical fact and only a merchant knows it.
+   */
+  await reverseCostOfSale(tx, businessId, invoiceNumber);
+
   await recordVoidedDocument(tx, businessId, invoiceNumber, reason, actor);
   return { outcome: 'voided', invoiceNumber, reversedK: totalK };
+}
+
+async function reverseCostOfSale(
+  tx: TenantDb,
+  businessId: string,
+  invoiceNumber: string,
+): Promise<void> {
+  const posted = await tx.execute<{
+    transaction_id: string;
+    account: string;
+    debit_k: string;
+    credit_k: string;
+  }>(sql`
+    SELECT e.transaction_id, e.account, e.debit_k::bigint AS debit_k, e.credit_k::bigint AS credit_k
+    FROM ledger_entries e
+    JOIN ledger_transactions t
+      ON t.id = e.transaction_id AND t.business_id = e.business_id
+    WHERE e.business_id = ${businessId}::uuid
+      AND t.source_type = 'invoice'
+      AND t.source_id = ${invoiceNumber}
+      AND t.reverses_id IS NULL
+      AND EXISTS (
+        SELECT 1 FROM ledger_entries c
+        WHERE c.transaction_id = t.id AND c.business_id = e.business_id AND c.account = 'COGS'
+      )
+  `);
+
+  const byTransaction = new Map<string, LedgerLine[]>();
+  for (const row of posted) {
+    if (!isAccountKey(row.account)) continue;
+    const lines = byTransaction.get(row.transaction_id) ?? [];
+    lines.push({
+      account: row.account,
+      debitK: Number(row.debit_k),
+      creditK: Number(row.credit_k),
+    });
+    byTransaction.set(row.transaction_id, lines);
+  }
+
+  for (const [transactionId, lines] of byTransaction) {
+    if (lines.length === 0) continue;
+    await writePosting(
+      tx,
+      businessId,
+      reversal(
+        { memo: `Cost of goods on ${invoiceNumber}`, lines },
+        `Void cost on ${invoiceNumber}`,
+      ),
+      'invoice',
+      invoiceNumber,
+      { reversesId: transactionId },
+    );
+  }
 }
 
 /** Every ledger entry for a business, for the trial-balance check. */
