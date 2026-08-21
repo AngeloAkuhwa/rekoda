@@ -20,6 +20,7 @@ export * from './ai-cost.js';
 export * from './margin.js';
 export * from './billing.js';
 export * from './retention.js';
+export * from './audit.js';
 export * as replies from './replies.js';
 export type { Reply } from './replies.js';
 

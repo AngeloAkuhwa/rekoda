@@ -43,6 +43,10 @@ test('the dashboard tabs reach every section', async ({ page }) => {
   await nav().getByRole('link', { name: 'Receipts' }).click();
   await expect(page).toHaveURL(/\/app\/receipts$/);
 
+  await nav().getByRole('link', { name: 'Audit' }).click();
+  await expect(page).toHaveURL(/\/app\/audit$/);
+  await expect(page.getByRole('heading', { name: 'Who changed what' })).toBeVisible();
+
   await nav().getByRole('link', { name: 'Expenses' }).click();
   await expect(page).toHaveURL(/\/app\/expenses$/);
   await expect(page.getByRole('heading', { name: 'Where the money went' })).toBeVisible();
@@ -86,6 +90,18 @@ test('the spend register explains itself when empty, and keeps stock apart', asy
   /* Same rule as the invoice register: a destructive control offered against
    * an empty list is an invitation to wonder what it would have done. */
   await expect(page.getByText('Withdraw an entry')).toHaveCount(0);
+});
+
+test('the audit trail says what it is, and that nothing can be removed', async ({ page }) => {
+  await onboard(page, freshPhone());
+  await page.goto('/app/audit');
+
+  await expect(page.getByRole('heading', { name: 'Who changed what' })).toBeVisible();
+  await expect(page.getByText('Nothing recorded yet', { exact: false })).toBeVisible();
+
+  /* The claim that makes the page worth showing anybody. If it ever stops
+   * being true the words have to go first, so they are asserted. */
+  await expect(page.getByText('only ever added', { exact: false })).toBeVisible();
 });
 
 test('an empty month says so instead of rendering zero statements', async ({ page }) => {

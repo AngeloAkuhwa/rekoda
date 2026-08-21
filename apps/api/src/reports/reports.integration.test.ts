@@ -13,6 +13,7 @@ import {
   reportsActivityResponse,
   reportsCashflowResponse,
   reportsDebtorsResponse,
+  reportsAuditResponse,
   reportsExpensesResponse,
   reportsInvoicesResponse,
   reportsOverviewResponse,
@@ -105,6 +106,7 @@ const ENDPOINTS = [
   '/v1/reports/invoices',
   '/v1/reports/receipts',
   '/v1/reports/expenses',
+  '/v1/reports/audit',
 ] as const;
 
 describe('the guardrail', () => {
@@ -406,6 +408,140 @@ describe('the spend register', () => {
     );
     expect(theirs.count).toBe(0);
     expect(theirs.payableK).toBe(0);
+  });
+});
+
+/**
+ * The record an accountant asks for by name.
+ *
+ * Written since M1 by five repos and read by nothing until now, which is why
+ * the assertion that matters here is not the shape: it is that a real trail,
+ * built from a real sale and a real withdrawal, comes out as sentences a
+ * person can check and carries no token from the sale that produced it.
+ */
+describe('the audit trail', () => {
+  it('a fresh business has an empty trail, never an error', async () => {
+    const { auth } = await onboard('+2348177000041');
+    const trail = reportsAuditResponse.parse(
+      (await app.inject({ method: 'GET', url: '/v1/reports/audit', headers: auth })).json(),
+    );
+    expect(trail).toEqual({ events: [], count: 0 });
+  });
+
+  it('records the sale and the withdrawal as sentences, newest first', async () => {
+    const { auth, businessId } = await onboard('+2348177000042');
+    const { invoiceNumber } = await withBusiness(db, businessId, async (tx) => {
+      const sale = await issueRepo.issueSale(tx, {
+        businessId,
+        customerId: null,
+        customerToken: 'CUSTOMER_7K2',
+        items: [{ name: 'wig', quantity: 1, unitPriceK: 15_000_000 }],
+        subtotalK: 15_000_000,
+        discountK: 0,
+        deliveryFeeK: 0,
+        vatK: 0,
+        totalK: 15_000_000,
+        paidK: 0,
+        balanceDueK: 15_000_000,
+        method: 'transfer',
+        sourceType: 'chat',
+        sourceId: 'draft-audit',
+        actor: 'system',
+      });
+      return { invoiceNumber: sale.invoiceNumber };
+    });
+
+    const res = await post(
+      '/v1/reports/invoices/void',
+      { invoiceNumber, reason: 'duplicate' },
+      auth,
+    );
+    expect(res.statusCode).toBe(200);
+
+    const trailRes = await app.inject({ method: 'GET', url: '/v1/reports/audit', headers: auth });
+    const trail = reportsAuditResponse.parse(trailRes.json());
+
+    expect(trail.count).toBe(2);
+    expect(trail.events.map((e) => e.summary)).toEqual([
+      `Invoice ${invoiceNumber} withdrawn`,
+      `Invoice ${invoiceNumber} issued`,
+    ]);
+    expect(trail.events[0]?.reason).toBe('duplicate');
+    expect(trail.events[1]?.amountK).toBe(15_000_000);
+
+    /* The sale carried CUSTOMER_7K2 and the trail must not. Nothing any
+     * writer stores in `new_value` is a customer reference today, and this is
+     * the assertion that would notice the day one is. */
+    expect(trailRes.body).not.toContain('CUSTOMER_');
+  });
+
+  /**
+   * "Who did this" is the entire point, so a raw `user:<uuid>` on the page
+   * would be the feature failing quietly. Two accountants both rendered
+   * "Accountant" would be the same failure, which is why the tail travels.
+   */
+  it('resolves the actor to a role and a phone tail, not a uuid', async () => {
+    const { auth, businessId } = await onboard('+2348177000043');
+    await withBusiness(db, businessId, (tx) =>
+      issueRepo.issueSale(tx, {
+        businessId,
+        customerId: null,
+        customerToken: null,
+        items: [{ name: 'wig', quantity: 1, unitPriceK: 1_000_000 }],
+        subtotalK: 1_000_000,
+        discountK: 0,
+        deliveryFeeK: 0,
+        vatK: 0,
+        totalK: 1_000_000,
+        paidK: 0,
+        balanceDueK: 1_000_000,
+        method: 'transfer',
+        sourceType: 'chat',
+        sourceId: 'draft-actor',
+        actor: 'system',
+      }),
+    );
+    await post(
+      '/v1/reports/invoices/void',
+      { invoiceNumber: 'INV-2026-000001', reason: 'wrong' },
+      auth,
+    );
+
+    const trail = reportsAuditResponse.parse(
+      (await app.inject({ method: 'GET', url: '/v1/reports/audit', headers: auth })).json(),
+    );
+    const byUser = trail.events.find((e) => e.action === 'voided');
+    expect(byUser?.actor).toMatch(/^Owner \d{4}$/);
+    expect(byUser?.actor).not.toContain('user:');
+  });
+
+  it('is scoped to the SESSION tenant', async () => {
+    const ada = await onboard('+2348177000044');
+    const bola = await onboard('+2348177000045');
+    await withBusiness(db, ada.businessId, (tx) =>
+      issueRepo.issueSale(tx, {
+        businessId: ada.businessId,
+        customerId: null,
+        customerToken: null,
+        items: [{ name: 'wig', quantity: 1, unitPriceK: 1_000_000 }],
+        subtotalK: 1_000_000,
+        discountK: 0,
+        deliveryFeeK: 0,
+        vatK: 0,
+        totalK: 1_000_000,
+        paidK: 0,
+        balanceDueK: 1_000_000,
+        method: 'transfer',
+        sourceType: 'chat',
+        sourceId: 'draft-tenancy',
+        actor: 'system',
+      }),
+    );
+
+    const theirs = reportsAuditResponse.parse(
+      (await app.inject({ method: 'GET', url: '/v1/reports/audit', headers: bola.auth })).json(),
+    );
+    expect(theirs).toEqual({ events: [], count: 0 });
   });
 });
 

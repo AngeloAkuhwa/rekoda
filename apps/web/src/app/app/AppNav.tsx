@@ -9,6 +9,7 @@ const TABS = [
   { key: 'expenses', href: '/app/expenses', label: 'Expenses' },
   { key: 'stock', href: '/app/stock', label: 'Stock' },
   { key: 'reports', href: '/app/reports', label: 'Reports' },
+  { key: 'audit', href: '/app/audit', label: 'Audit' },
   { key: 'payments', href: '/app/payments', label: 'Payments' },
   { key: 'team', href: '/app/team', label: 'Team' },
   { key: 'billing', href: '/app/billing', label: 'Billing' },

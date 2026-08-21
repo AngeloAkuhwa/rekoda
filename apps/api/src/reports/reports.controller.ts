@@ -48,6 +48,8 @@ import {
   csvKobo,
   daysOverdue,
   buildXlsx,
+  describeActor,
+  describeAuditEvent,
   isAccountKey,
   periodBefore,
   statementSheets,
@@ -58,6 +60,7 @@ import {
 import { FontsMissing, renderStatementsPdf } from '../documents/pdf.js';
 import type {
   ReportsActivityResponse,
+  ReportsAuditResponse,
   ReportsCashflowResponse,
   ReportsDebtorsResponse,
   ReportsExpensesResponse,
@@ -70,7 +73,15 @@ import type {
   VoidInvoiceResponse,
 } from '@rekoda/contracts';
 import { voidExpenseRequest, voidInvoiceRequest } from '@rekoda/contracts';
-import { issueRepo, reportsRepo, spendRepo, stockRepo, withBusiness, type Db } from '@rekoda/db';
+import {
+  identity,
+  issueRepo,
+  reportsRepo,
+  spendRepo,
+  stockRepo,
+  withBusiness,
+  type Db,
+} from '@rekoda/db';
 import { SessionGuard, type AuthedRequest } from '../auth/session.guard.js';
 import { DB } from '../db/db.module.js';
 
@@ -79,6 +90,8 @@ const DEBTOR_ROWS = 6;
 const ACTIVITY_ROWS = 8;
 const REGISTER_ROWS = 50;
 const STOCK_ROWS = 200;
+/** A year of an active shop's changes is well inside this. */
+const AUDIT_ROWS = 100;
 /** What a spreadsheet is, to a browser and to every mail client. */
 const XLSX_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 /**
@@ -354,6 +367,52 @@ export class ReportsController {
   }
 
   /**
+   * The audit trail: every recorded change, and who made it.
+   *
+   * `audit_events` has been written since M1 by five repos and read by
+   * nothing. This is the surface an accountant or a tax officer asks for by
+   * name, and QuickBooks calls it the Audit Log for the same reason: it is a
+   * record of CHANGES, not a feed of business events. The overview's activity
+   * strip answers "what happened to my money"; this answers "who did that,
+   * and why".
+   *
+   * Actors are resolved to a role and a phone tail rather than left as
+   * `user:<uuid>`. Rekoda stores no names, and two accountants both rendered
+   * "Accountant" would defeat the one question the page exists to answer.
+   * A member who has since been removed keeps their raw actor, because an id
+   * support can look up beats "somebody".
+   */
+  @Get('audit')
+  async audit(@Req() request: AuthedRequest): Promise<ReportsAuditResponse> {
+    const businessId = request.auth!.businessId;
+    const { list, members } = await withBusiness(this.db, businessId, async (tx) => ({
+      list: await reportsRepo.auditFor(tx, businessId, AUDIT_ROWS),
+      members: await identity.membersOf(tx, businessId),
+    }));
+
+    const label = new Map(
+      members.map((m) => [m.userId, `${roleWord(m.role)} ${m.phone.slice(-4)}`]),
+    );
+    return {
+      events: list.rows.map((row) => {
+        const { summary, amountK } = describeAuditEvent(row);
+        return {
+          id: row.id,
+          at: row.at.toISOString(),
+          actor: describeActor(row.actor, (userId) => label.get(userId)),
+          entity: row.entity,
+          action: row.action,
+          summary,
+          amountK,
+          reason: row.reason,
+          source: row.sourceType,
+        };
+      }),
+      count: list.count,
+    };
+  }
+
+  /**
    * The spend register.
    *
    * Money in has had two registers since M2 and money out had none, which is
@@ -560,4 +619,12 @@ function sendCsv(reply: CsvReply, filename: string, csv: string): void {
      * holding it is a cross-tenant leak with a friendly name. */
     .header('cache-control', 'no-store')
     .send(csv);
+}
+
+/** Roles in the words the team page already uses. */
+function roleWord(role: string): string {
+  if (role === 'owner') return 'Owner';
+  if (role === 'accountant') return 'Accountant';
+  if (role === 'delegate') return 'Delegate';
+  return role;
 }

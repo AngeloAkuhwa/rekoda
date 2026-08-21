@@ -5,6 +5,7 @@ import {
   paymentExceptionsResponse,
   paymentsListResponse,
   reportsActivityResponse,
+  reportsAuditResponse,
   reportsCashflowResponse,
   reportsDebtorsResponse,
   reportsExpensesResponse,
@@ -34,6 +35,7 @@ import {
   type PaymentExceptionsResponse,
   type PaymentsListResponse,
   type ReportsActivityResponse,
+  type ReportsAuditResponse,
   type ReportsCashflowResponse,
   type ReportsStockResponse,
   type ReportsDebtorsResponse,
@@ -364,6 +366,16 @@ export async function reportsReceipts(sessionToken: string): Promise<ReportsRece
     expect: [200],
   });
   return reportsReceiptsResponse.parse(json);
+}
+
+export async function reportsAudit(sessionToken: string): Promise<ReportsAuditResponse> {
+  const { json } = await call({
+    method: 'GET',
+    path: '/v1/reports/audit',
+    headers: { authorization: `Bearer ${sessionToken}` },
+    expect: [200],
+  });
+  return reportsAuditResponse.parse(json);
 }
 
 export async function reportsExpenses(sessionToken: string): Promise<ReportsExpensesResponse> {
