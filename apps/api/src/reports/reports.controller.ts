@@ -14,15 +14,31 @@ import {
   Inject,
   Query,
   Req,
+  Res,
   UseGuards,
 } from '@nestjs/common';
+
+/**
+ * The two methods a CSV response needs, and nothing else.
+ *
+ * Structural rather than `FastifyReply`, because `fastify` is a transitive
+ * dependency here and importing a type from one is how a transitive
+ * dependency quietly becomes a direct one nobody chose.
+ */
+interface CsvReply {
+  header(name: string, value: string): CsvReply;
+  send(payload: string): unknown;
+}
 import {
   buildBalanceSheet,
   buildCashflowStatement,
   buildProfitAndLoss,
   buildTrialBalance,
+  csvDate,
+  csvKobo,
   daysOverdue,
   isAccountKey,
+  toCsv,
   usagePeriod,
   type AccountSums,
 } from '@rekoda/core';
@@ -43,6 +59,15 @@ const CASHFLOW_MONTHS = 6;
 const DEBTOR_ROWS = 6;
 const ACTIVITY_ROWS = 8;
 const REGISTER_ROWS = 50;
+/**
+ * The export ceiling, and it is not the register's.
+ *
+ * A register shows a page because a screen has a size; an export that
+ * silently gave somebody the latest fifty of their four hundred invoices
+ * would be worse than no export at all, because they would not know. Ten
+ * thousand rows is roughly a decade of a busy shop and about a megabyte.
+ */
+const EXPORT_ROWS = 10_000;
 
 @Controller('v1/reports')
 @UseGuards(SessionGuard)
@@ -174,6 +199,58 @@ export class ReportsController {
     };
   }
 
+  /**
+   * The books, as a file a spreadsheet opens.
+   *
+   * This is the answer to "what happens to my records if I leave", which
+   * Nigerian merchants learned to ask the hard way. A product that cannot be
+   * left has to be trusted blindly, and asking for that is worse than
+   * earning it. Everything, not the page: see EXPORT_ROWS.
+   */
+  @Get('invoices.csv')
+  async invoicesCsv(@Req() request: AuthedRequest, @Res() reply: CsvReply): Promise<void> {
+    const businessId = request.auth!.businessId;
+    const now = new Date();
+    const list = await withBusiness(this.db, businessId, (tx) =>
+      reportsRepo.invoicesFor(tx, businessId, EXPORT_ROWS),
+    );
+    const csv = toCsv(
+      ['Invoice', 'Issued', 'Due', 'Status', 'Days late', 'Total', 'Paid', 'Balance'],
+      list.rows.map((r) => [
+        r.invoiceNumber,
+        csvDate(r.issuedAt),
+        csvDate(r.dueDate),
+        r.status,
+        daysOverdue(r.dueDate, r.balanceDueK, now),
+        csvKobo(r.totalK),
+        csvKobo(r.paidK),
+        csvKobo(r.balanceDueK),
+      ]),
+    );
+    sendCsv(reply, `rekoda-invoices-${csvDate(now)}.csv`, csv);
+  }
+
+  @Get('receipts.csv')
+  async receiptsCsv(@Req() request: AuthedRequest, @Res() reply: CsvReply): Promise<void> {
+    const businessId = request.auth!.businessId;
+    const list = await withBusiness(this.db, businessId, (tx) =>
+      reportsRepo.receiptsFor(tx, businessId, EXPORT_ROWS),
+    );
+    const csv = toCsv(
+      ['Receipt', 'Date', 'Invoice', 'Amount', 'Basis'],
+      list.rows.map((r) => [
+        r.receiptNumber,
+        csvDate(r.issuedAt),
+        r.invoiceNumber,
+        csvKobo(r.amountK),
+        /* ADR 0014 travels into the export too. A row that did not say which
+         * of the two it was would let a spreadsheet total them as one thing. */
+        r.verified === 1 ? 'verified' : 'recorded',
+      ]),
+    );
+    sendCsv(reply, `rekoda-receipts-${csvDate(new Date())}.csv`, csv);
+  }
+
   @Get('activity')
   async activity(@Req() request: AuthedRequest): Promise<ReportsActivityResponse> {
     const businessId = request.auth!.businessId;
@@ -189,4 +266,22 @@ export class ReportsController {
       })),
     };
   }
+}
+
+/**
+ * Hand a file over, with the header that makes a browser save it.
+ *
+ * `attachment` and an explicit filename rather than letting the browser guess
+ * from a URL: a merchant opening this on a phone should end up with something
+ * named for what it is and when they took it, not `invoices.csv` for the
+ * fourth time this month.
+ */
+function sendCsv(reply: CsvReply, filename: string, csv: string): void {
+  void reply
+    .header('content-type', 'text/csv; charset=utf-8')
+    .header('content-disposition', `attachment; filename="${filename}"`)
+    /* Never cached. This is a merchant's whole book, and a shared cache
+     * holding it is a cross-tenant leak with a friendly name. */
+    .header('cache-control', 'no-store')
+    .send(csv);
 }

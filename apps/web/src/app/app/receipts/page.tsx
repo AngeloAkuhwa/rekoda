@@ -74,6 +74,14 @@ export default async function ReceiptsPage() {
                 </tbody>
               </table>
             </div>
+            {/* The answer to "what happens to my records if I leave". A
+                product that cannot be left has to be trusted blindly, and
+                asking for that is worse than earning it. */}
+            <p className="rk-fineprint">
+              <a href="/app/export/receipts" download>
+                Download all receipts as a spreadsheet (CSV)
+              </a>
+            </p>
             <p className="rk-fineprint">
               {count === 1 ? 'One receipt' : `${count} receipts`} all time
               {count > receipts.length ? ` · showing the latest ${receipts.length}` : ''}
