@@ -2064,6 +2064,198 @@ describe('a voice note', () => {
   });
 });
 
+/**
+ * Asking the books a question (M3 conversational reporting).
+ *
+ * `Query` has been in the command contract since M0 with nothing handling
+ * it, so the model could emit one and the merchant got "Recording that kind
+ * of entry is not built yet" — the wrong sentence for a question, about a
+ * thing they were not recording.
+ *
+ * A question is a READ, so it answers immediately: no draft, no preview, no
+ * yes. And the model computes nothing — it decides which question was asked,
+ * and every figure comes from SQL over a window core resolved.
+ */
+describe('asking the books a question', () => {
+  const askAbout = (over: Record<string, unknown>) => ({
+    intent: 'Query',
+    topic: 'sales_summary',
+    customer: null,
+    period: 'month',
+    periodText: null,
+    format: 'chat',
+    ...over,
+  });
+
+  async function seedMerchant(phone: string) {
+    const user = await identity.upsertUserByPhone(db, phone);
+    return identity.createBusinessWithOwner(db, {
+      name: 'Ada Fashion',
+      businessType: null,
+      ownerUserId: user.id,
+    });
+  }
+
+  async function drain() {
+    const runner = buildRunner(workerDb, db, deps);
+    let worked = await runner.runOnce();
+    while (worked) worked = await runner.runOnce();
+  }
+
+  async function ask(wamid: string, command: Record<string, unknown>, text = 'how am I doing') {
+    stubTransport.replyWith(command);
+    await post(messagePayload('2348031234567', wamid, text));
+    await drain();
+  }
+
+  /** One ₦150,000 invoice with ₦60,000 paid, and ₦12,000 of fuel. */
+  async function seedTrading(businessId: string) {
+    await withBusiness(db, businessId, async (tx) => {
+      const sale = await issueRepo.issueSale(tx, {
+        businessId,
+        customerId: null,
+        customerToken: 'CUSTOMER_7K2',
+        items: [{ name: 'wig', quantity: 3, unitPriceK: 5_000_000 }],
+        subtotalK: 15_000_000,
+        discountK: 0,
+        deliveryFeeK: 0,
+        vatK: 0,
+        totalK: 15_000_000,
+        paidK: 0,
+        balanceDueK: 15_000_000,
+        method: 'transfer',
+        sourceType: 'chat',
+        sourceId: 'draft-q',
+        actor: 'system',
+      });
+      await settleRepo.recordMerchantPayment(tx, {
+        businessId,
+        invoiceId: sale.invoiceId,
+        amountK: 6_000_000,
+        method: 'cash',
+        sourceType: 'chat',
+        sourceId: 'pay-q',
+        actor: 'system',
+      });
+      await spendRepo.recordExpense(tx, {
+        businessId,
+        description: 'fuel for generator',
+        category: 'utilities',
+        amountK: 1_200_000,
+        method: 'cash',
+        sourceType: 'chat',
+        sourceId: 'draft-q2',
+      });
+    });
+  }
+
+  it('answers a sales question from the ledger, with no yes to give', async () => {
+    const business = await seedMerchant('+2348031234567');
+    await seedTrading(business.id);
+
+    await ask('wamid.Q1', askAbout({ topic: 'sales_summary' }), 'what did I sell this month');
+
+    expect(stubSender.lastText).toContain('₦150,000');
+    expect(stubSender.lastText).toContain('₦60,000');
+    /* A question is a read. Asking "shall I tell you?" would be absurd. */
+    expect(stubSender.lastText).not.toContain('Reply *yes*');
+  });
+
+  it('answers a spending question', async () => {
+    const business = await seedMerchant('+2348031234567');
+    await seedTrading(business.id);
+
+    await ask('wamid.Q2', askAbout({ topic: 'expenses_summary' }), 'how much did I spend');
+
+    expect(stubSender.lastText).toContain('₦12,000');
+    expect(stubSender.lastText).toContain('one entry');
+  });
+
+  it('names the window it counted, so a merchant can see what was asked', async () => {
+    const business = await seedMerchant('+2348031234567');
+    await seedTrading(business.id);
+
+    await ask('wamid.Q3', askAbout({ topic: 'sales_summary', period: 'today' }), 'sales today');
+
+    expect(stubSender.lastText).toContain('oday');
+  });
+
+  it('says plainly when there is nothing in the window', async () => {
+    await seedMerchant('+2348031234567');
+
+    await ask('wamid.Q4', askAbout({ topic: 'sales_summary' }), 'what did I sell');
+
+    expect(stubSender.lastText).toContain('not recorded any sales');
+  });
+
+  /**
+   * A balance is reported by INVOICE, never by name. This text crosses
+   * WhatsApp in the clear, and the merchant already knows who they asked
+   * about; anybody reading over their shoulder does not.
+   */
+  it('answers a customer balance by invoice number, never by name', async () => {
+    const business = await seedMerchant('+2348031234567');
+    await seedTrading(business.id);
+
+    await ask(
+      'wamid.Q5',
+      askAbout({
+        topic: 'customer_balance',
+        customer: { kind: 'token', token: 'CUSTOMER_7K2' },
+      }),
+      'how much does Ada owe me',
+    );
+
+    expect(stubSender.lastText).toContain('₦90,000');
+    expect(stubSender.lastText).toContain('INV-');
+    expect(stubSender.lastText).not.toContain('CUSTOMER_');
+    expect(stubSender.lastText).not.toContain('Ada');
+  });
+
+  it('answers the debtors question the same way the free command does', async () => {
+    const business = await seedMerchant('+2348031234567');
+    await seedTrading(business.id);
+
+    await ask('wamid.Q6', askAbout({ topic: 'debtors' }), 'who has not paid me');
+
+    expect(stubSender.lastText).toContain('₦90,000');
+    expect(stubSender.lastText).toContain('INV-');
+  });
+
+  it('answers a supplier question, and an exceptions question', async () => {
+    const business = await seedMerchant('+2348031234567');
+    await seedTrading(business.id);
+
+    await ask('wamid.Q7', askAbout({ topic: 'supplier_balances' }), 'who do I owe');
+    expect(stubSender.lastText).toContain('do not owe any supplier');
+
+    await ask('wamid.Q8', askAbout({ topic: 'unreconciled' }), 'anything strange');
+    expect(stubSender.lastText).toContain('Nothing needs your attention');
+  });
+
+  /* Points at the dashboard rather than promising a file: the statement PDF
+   * is not built, and a bookkeeper that says "sending it now" and sends
+   * nothing is worse than one that says where to look. */
+  it('points at the dashboard for a document, rather than promising one', async () => {
+    await seedMerchant('+2348031234567');
+
+    await ask('wamid.Q9', askAbout({ topic: 'report_request' }), 'send me my accounts');
+
+    expect(stubSender.lastText).toContain('dashboard');
+    expect(stubSender.lastText).not.toContain('sending');
+  });
+
+  it('never writes anything: a question leaves the books untouched', async () => {
+    const business = await seedMerchant('+2348031234567');
+    await seedTrading(business.id);
+    const before = await invoiceCount(business.id);
+
+    await ask('wamid.QA', askAbout({ topic: 'sales_summary' }), 'what did I sell');
+
+    expect(await invoiceCount(business.id)).toBe(before);
+  });
+});
+
 describe('a payment the merchant reports (RecordPayment)', () => {
   const A_SALE_FOR_PAYMENT = {
     intent: 'RecordSale',
