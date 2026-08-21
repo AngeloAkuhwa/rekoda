@@ -255,6 +255,26 @@ this file has not seen must be DULL on the page, never loud. Every current
 writer was inventoried before it was built and none stores a customer name or
 a CUSTOMER_ token.
 
+**Chat finally links somewhere (PR #86).** Until this shipped, nothing Rekoda
+ever said linked anywhere at all - `REKODA_WEB_URL` appeared twice in the
+whole codebase and neither was a reply. A merchant who wanted their statements
+had to leave the thread, recall an address, type their number and wait for a
+code that arrived back in the thread they had just left. Now "dashboard",
+"my books" or "sign in" gets a one-tap link, and `/enter` exchanges it for a
+session.
+
+This is what the magic-link code was always for: the schema comment has said
+"the raw token exists only in the WhatsApp message" since M1. It is NOT a
+second sign-in method, and the distinction matters if anyone extends it. The
+thread is already the credential - it is where the OTP is delivered and what a
+CG2 confirmation moves money on - so a link into it is no weaker than the code
+it saves. What keeps it narrow is that it is issued for one MEMBER, resolved
+from the sending phone, so it can never carry more access than the sender
+already had. A stranger gets nothing.
+
+Delegate invites were never the use for it: those have worked by phone and OTP
+since `POST /v1/auth/members` shipped, with `/app/team` in front.
+
 **A note on how the last six were found.** By grepping for exported functions
 with no production caller. Every hit was a missing surface rather than dead
 code: `dueForRenewal`, `applySettledCharge`, `businessForCharge`,
@@ -266,12 +286,6 @@ usually a feature somebody designed and then could not reach.
 a bug today; each is a surface that does not exist. Listed so the next session
 inherits the triage instead of repeating it:
 
-- **A whole magic-link path** (`issueMagicLink`, `validateMagicLink`,
-  `insertMagicLink`, `findMagicLinkByHash`, `consumeMagicLink`, and the
-  `magic_links` table). Sign-in is OTP over WhatsApp and always has been.
-  This looks like the intended accountant or delegate invite, beside
-  `addMembership`, which is also uncalled. Decide whether delegates are
-  invited by link before building either.
 - **No chat-history surface** (`threadFor`, `messagesFor`, `draftsFor`), and
   Angelo decided against building one. Neither QuickBooks nor HelloBooks has a
   transcript, because neither has a chat input; what they have is an Audit Log,

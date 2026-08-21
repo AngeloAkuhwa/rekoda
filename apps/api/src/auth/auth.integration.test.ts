@@ -8,7 +8,7 @@
  */
 import { randomBytes } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { createDb, identity, type Db } from '@rekoda/db';
+import { createDb, identity, withBusiness, type Db } from '@rekoda/db';
 import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { MAX_FAILURES_PER_WINDOW, AuthService } from './auth.service.js';
@@ -17,7 +17,7 @@ import { SessionGuard } from './session.guard.js';
 import { RolesGuard } from './roles.guard.js';
 import { HealthController } from '../health/health.controller.js';
 import { issueSetupToken } from './tokens.js';
-import { OTP_MAX_ATTEMPTS } from '@rekoda/core/identity';
+import { OTP_MAX_ATTEMPTS, normalisePhone } from '@rekoda/core/identity';
 import { StubSender } from '../channels/sender.stub.js';
 
 const SECRET = 'test-secret-at-least-32-characters-long';
@@ -53,6 +53,9 @@ beforeAll(async () => {
   // is exactly what the limiter exists to stop. The limiter gets its own test
   // below, on its own app instance, rather than throttling everything else.
   process.env['REKODA_RATE_LIMIT_MAX'] = '100000';
+  // The dashboard link needs somewhere to point. Without it the chat path
+  // refuses honestly, which is asserted separately.
+  process.env['REKODA_WEB_URL'] = 'https://books.example.test';
   delete process.env['NODE_ENV'];
 
   const { createApp } = await import('../main.js');
@@ -782,4 +785,119 @@ describe('the team an owner can build', () => {
     expect(members.members).toHaveLength(1);
     expect(JSON.stringify(members)).not.toContain('2348149990007');
   });
+});
+
+/**
+ * The link Rekoda sends into a WhatsApp thread.
+ *
+ * Not a second sign-in method: the thread is already the credential, and this
+ * saves a merchant leaving it to type an address and wait for a code that
+ * would arrive back in the thread they just left. What has to hold is that
+ * the link belongs to ONE person, dies after ONE tap, and fails identically
+ * however it fails.
+ */
+describe('the dashboard sign-in link', () => {
+  async function linkFor(phone: string) {
+    const session = await onboard(phone);
+    const auth = app.get(AuthService);
+    const member = await withBusiness(db, session.businessId, (tx) =>
+      identity.memberByPhone(tx, session.businessId, normalisePhone(phone)),
+    );
+    const url = await auth.issueDashboardLink(member!.userId, session.businessId);
+    return { url: url!, session, userId: member!.userId };
+  }
+
+  const tokenOf = (url: string) => new URL(url).searchParams.get('t')!;
+
+  it('mints a link that points at the configured dashboard', async () => {
+    const { url } = await linkFor('+2348133000001');
+    expect(url.startsWith('https://books.example.test/enter?t=')).toBe(true);
+    expect(tokenOf(url).length).toBeGreaterThan(16);
+  });
+
+  it('signs the merchant in, once', async () => {
+    const { url, session } = await linkFor('+2348133000002');
+    const token = tokenOf(url);
+
+    const first = (await post('/v1/auth/magic/redeem', { token })).json() as {
+      status: string;
+      sessionToken?: string;
+      businessId?: string;
+    };
+    expect(first.status).toBe('signed_in');
+    expect(first.businessId).toBe(session.businessId);
+
+    /* The session it hands over is a real one, not a shape that parses. */
+    const me = await app.inject({
+      method: 'GET',
+      url: '/v1/auth/me',
+      headers: { authorization: `Bearer ${first.sessionToken}` },
+    });
+    expect(me.statusCode).toBe(200);
+
+    // Single use. A link that has been exchanged is dead forever.
+    expect((await post('/v1/auth/magic/redeem', { token })).json()).toEqual({ status: 'invalid' });
+  });
+
+  /**
+   * The property a read-then-write would not deliver. Two taps of the same URL
+   * arrive together often enough in practice: a merchant double-taps, or a
+   * link preview fetches it before they do.
+   */
+  it('lets exactly ONE of two simultaneous taps through', async () => {
+    const { url } = await linkFor('+2348133000003');
+    const token = tokenOf(url);
+
+    const outcomes = await Promise.all([
+      post('/v1/auth/magic/redeem', { token }),
+      post('/v1/auth/magic/redeem', { token }),
+    ]);
+    const statuses = outcomes.map((r) => (r.json() as { status: string }).status);
+    expect(statuses.filter((s) => s === 'signed_in')).toHaveLength(1);
+    expect(statuses.filter((s) => s === 'invalid')).toHaveLength(1);
+  });
+
+  it('refuses an expired link', async () => {
+    const session = await onboard('+2348133000004');
+    const auth = app.get(AuthService);
+    const member = await withBusiness(db, session.businessId, (tx) =>
+      identity.memberByPhone(tx, session.businessId, normalisePhone('+2348133000004')),
+    );
+    const issuedAt = new Date(Date.now() - 60 * 60 * 1_000);
+    const url = await auth.issueDashboardLink(member!.userId, session.businessId, issuedAt);
+
+    expect((await post('/v1/auth/magic/redeem', { token: tokenOf(url!) })).json()).toEqual({
+      status: 'invalid',
+    });
+  });
+
+  /**
+   * Every failure looks the same from outside. Telling expired from spent from
+   * never-existed would tell whoever is guessing which of the three they
+   * achieved, which is the whole value of guessing.
+   */
+  it('answers a forged token exactly as it answers a spent one', async () => {
+    const { url } = await linkFor('+2348133000005');
+    const token = tokenOf(url);
+    await post('/v1/auth/magic/redeem', { token });
+
+    const spent = await post('/v1/auth/magic/redeem', { token });
+    const forged = await post('/v1/auth/magic/redeem', { token: 'x'.repeat(43) });
+
+    expect(spent.statusCode).toBe(forged.statusCode);
+    expect(spent.json()).toEqual(forged.json());
+    expect(forged.json()).toEqual({ status: 'invalid' });
+  });
+
+  it('refuses a token too short to be one, without touching the database', async () => {
+    expect((await post('/v1/auth/magic/redeem', { token: 'short' })).json()).toEqual({
+      status: 'invalid',
+    });
+    expect((await post('/v1/auth/magic/redeem', {})).json()).toEqual({ status: 'invalid' });
+  });
+
+  /* That the row stores a HASH rather than the token is asserted in
+   * packages/db, where reading a column is allowed: apps/api deliberately
+   * cannot import drizzle-orm, and reaching around that boundary to check a
+   * storage detail from here would be the rule failing quietly. */
 });

@@ -480,6 +480,29 @@ export async function roleOfPhone(
   return rows[0]?.role ?? null;
 }
 
+/**
+ * The member behind a phone number, or null for a stranger.
+ *
+ * `roleOfPhone` answers "may they", which is the question at almost every
+ * gate. This answers "who are they", which is only needed where something is
+ * written AGAINST a person - a magic link belongs to one member, and issuing
+ * one against a business without knowing which member asked would be a
+ * credential with no owner.
+ */
+export async function memberByPhone(
+  tx: TenantDb,
+  businessId: string,
+  phone: string,
+): Promise<{ userId: string; role: string } | null> {
+  const rows = await tx
+    .select({ userId: memberships.userId, role: memberships.role })
+    .from(memberships)
+    .innerJoin(users, eq(users.id, memberships.userId))
+    .where(and(eq(memberships.businessId, businessId), eq(users.phone, phone)))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
 /* ─────────────────────────── who can see the books ──────────────────────── */
 
 export interface TeamMember {

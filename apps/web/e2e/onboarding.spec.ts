@@ -406,3 +406,29 @@ test.describe('the test hook itself', () => {
     expect(await home.text()).not.toContain('data-e2e-otp');
   });
 });
+
+/**
+ * The landing point of the link Rekoda sends in chat.
+ *
+ * A merchant whose link went stale wants a sentence and a way forward, not a
+ * 400, which is why this route is a page rather than a handler. The failure
+ * text is deliberately the same for expired, already used and never existed:
+ * telling them apart would tell whoever is guessing which they achieved.
+ */
+test.describe('the sign-in link', () => {
+  test('a stale link explains itself and offers the way back', async ({ page }) => {
+    const response = await page.goto('/enter?t=' + 'x'.repeat(43));
+    expect(response?.status()).toBe(200);
+
+    await expect(page.getByRole('heading', { name: 'That link has expired' })).toBeVisible();
+    await expect(page.getByText('dashboard', { exact: false })).toBeVisible();
+    await page.getByRole('link', { name: 'sign in with your phone number' }).click();
+    await expect(page).toHaveURL(/\/start$/);
+  });
+
+  test('a link with no token at all lands on the same page, never an error', async ({ page }) => {
+    const response = await page.goto('/enter');
+    expect(response?.status()).toBe(200);
+    await expect(page.getByRole('heading', { name: 'That link has expired' })).toBeVisible();
+  });
+});

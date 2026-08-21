@@ -41,6 +41,8 @@ export type DeterministicIntent =
   | { kind: 'stock' }
   | { kind: 'remind'; invoiceNumber: string }
   | { kind: 'payment_details' }
+  /** Take me to my books on the web. Answered with a tap-through, not a URL to type. */
+  | { kind: 'dashboard' }
   | { kind: 'resend' }
   | { kind: 'upgrade' }
   /** Begins the NDPR erasure flow. Always confirmed before anything is erased. */
@@ -207,6 +209,28 @@ const PHRASES: ReadonlyArray<readonly [readonly string[], DeterministicIntent]> 
       'my transactions',
     ],
     { kind: 'records' },
+  ],
+  [
+    [
+      'dashboard',
+      'my dashboard',
+      'open dashboard',
+      'open my dashboard',
+      'dashboard link',
+      'my books',
+      'open my books',
+      'see my books',
+      'show me my books',
+      'web',
+      'website',
+      'log in',
+      'login',
+      'sign in',
+      'signin',
+      'portal',
+      'my account',
+    ],
+    { kind: 'dashboard' },
   ],
   [
     [

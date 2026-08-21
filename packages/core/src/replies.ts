@@ -707,6 +707,42 @@ export function reportRequestAnswer(): Reply {
   );
 }
 
+/* ── the dashboard tap-through ───────────────────────────────────────────── */
+
+/**
+ * "Open my books", answered with a tap rather than a URL to remember.
+ *
+ * Rekoda is WhatsApp-native and until this existed nothing it ever said
+ * linked anywhere: a merchant who wanted the statements had to leave the
+ * thread, recall an address, type their number and wait for a code that
+ * arrived back in the thread they had just left.
+ *
+ * The link is single use and short-lived, and it is not a weaker door than
+ * the code it replaces. This thread is ALREADY the credential: it is where
+ * the code is delivered, and it is what a confirmation moves money on. Anyone
+ * holding the unlocked phone could ask for a code anyway.
+ */
+export function dashboardLink(url: string, minutes: number): Reply {
+  return reply(
+    `Here are your books 👇\n\n${url}\n\n` +
+      `Tap within ${minutes} minutes and you will be signed in. The link works once, ` +
+      'so do not forward it.',
+  );
+}
+
+/**
+ * The honest answer when this deployment has no web address configured.
+ *
+ * Never a broken link. A merchant who taps one and lands nowhere learns that
+ * Rekoda's links do not work, and that is a lesson that outlasts the outage.
+ */
+export function dashboardUnavailable(): Reply {
+  return reply(
+    'I cannot open your books on the web just now. Send *records* and I will give you ' +
+      'this month at a glance right here.',
+  );
+}
+
 /* ── the records command ─────────────────────────────────────────────────── */
 
 /**

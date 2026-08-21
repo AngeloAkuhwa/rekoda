@@ -77,6 +77,7 @@ beforeAll(async () => {
   process.env['OTP_PEPPER'] = 'test-pepper-at-least-32-characters-long';
   process.env['REKODA_API_SECRET'] = 'test-secret-at-least-32-characters-long';
   process.env['REKODA_RATE_LIMIT_MAX'] = '100000';
+  process.env['REKODA_WEB_URL'] = 'https://books.example.test';
   process.env['META_APP_SECRET'] = APP_SECRET;
   process.env['META_VERIFY_TOKEN'] = VERIFY_TOKEN;
   // 64 hex characters each, derived per run rather than written down.
@@ -3291,5 +3292,71 @@ describe('stock arriving with a purchase', () => {
 
     expect(stubSender.lastText).toContain('₦30,000');
     expect((await onHand(business.id, 'crates of ankara'))?.onHand).toBe(10);
+  });
+});
+
+/**
+ * The one thing Rekoda says that links anywhere.
+ *
+ * Until this existed a merchant who wanted their statements had to leave the
+ * thread, recall an address, type their number and wait for a code that
+ * arrived back in the thread they had just left.
+ */
+describe('asking for the dashboard in chat', () => {
+  async function seedMerchant(phone: string, name = 'Ada Fashion') {
+    const user = await identity.upsertUserByPhone(db, phone);
+    return identity.createBusinessWithOwner(db, { name, businessType: null, ownerUserId: user.id });
+  }
+
+  async function drain() {
+    const runner = buildRunner(workerDb, db, deps);
+    let worked = await runner.runOnce();
+    while (worked) worked = await runner.runOnce();
+  }
+
+  it('sends a tappable link, not an address to remember', async () => {
+    await seedMerchant('+2348031234567');
+
+    await post(messagePayload('2348031234567', 'wamid.DASH1', 'dashboard'));
+    await drain();
+
+    const sent = stubSender.sent.map((m) => m.text);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toContain('https://books.example.test/enter?t=');
+    // The merchant is told what they are holding: it dies, and it dies fast.
+    expect(sent[0]).toContain('works once');
+    expect(sent[0]).toContain('15 minutes');
+  });
+
+  it('mints a fresh link each time, never reuses one', async () => {
+    await seedMerchant('+2348031234567');
+
+    await post(messagePayload('2348031234567', 'wamid.DASH2', 'my books'));
+    await drain();
+    await post(messagePayload('2348031234567', 'wamid.DASH3', 'open my books'));
+    await drain();
+
+    const links = stubSender.sent.map((m) => /\/enter\?t=([^\s]+)/.exec(m.text)?.[1]);
+    expect(links).toHaveLength(2);
+    expect(links[0]).toBeTruthy();
+    /* A reused link would be a credential with two lives, and the second tap
+     * would find the first had already burned it. */
+    expect(links[0]).not.toBe(links[1]);
+  });
+
+  /**
+   * Free, like `stock` and `records`. A merchant reaching for their own books
+   * should not be paying for a model call to be handed a URL.
+   */
+  it('costs no model call, because it is a deterministic command', async () => {
+    const business = await seedMerchant('+2348031234567');
+
+    await post(messagePayload('2348031234567', 'wamid.DASH4', 'sign in'));
+    await drain();
+
+    const spend = await withBusiness(db, business.id, (tx) =>
+      quotaRepo.usageTotals(tx, 'anthropic'),
+    );
+    expect(spend.calls).toBe(0);
   });
 });
