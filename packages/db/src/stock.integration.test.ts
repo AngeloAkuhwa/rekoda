@@ -8,7 +8,8 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { createDb, withBusiness, type Db } from './client.js';
-import { identity, stockRepo } from './index.js';
+import { postCostOfSale } from '@rekoda/core';
+import { identity, issueRepo, stockRepo } from './index.js';
 import { migrate, requireUrls, truncateAll, type Urls } from './testing.js';
 
 let urls: Urls;
@@ -421,5 +422,145 @@ describe('what the stock cost', () => {
       stockRepo.productByName(tx, businessId, 'Lace'),
     );
     expect(product).toMatchObject({ onHand: 4, unitCostK: 10_000_00 });
+  });
+});
+
+/**
+ * Voiding a sale that carried a cost.
+ *
+ * A sale writes two postings once products have costs. Reversing only the
+ * revenue leaves COGS debited and inventory credited with no revenue against
+ * them: books that balance perfectly and say the shop gave the goods away.
+ */
+describe('withdrawing a sale that cost something', () => {
+  it('reverses the cost as well as the revenue', async () => {
+    const businessId = await seedBusiness('+2348120000211');
+
+    const invoiceNumber = await withBusiness(db, businessId, async (tx) => {
+      const product = await stockRepo.findOrCreateProduct(tx, businessId, 'Rice bag');
+      await stockRepo.recordDelivery(tx, {
+        businessId,
+        product,
+        quantity: 10,
+        costK: 20_000_00,
+        sourceType: 'chat',
+        sourceId: 'd1',
+      });
+      const sale = await issueRepo.issueSale(tx, {
+        businessId,
+        customerId: null,
+        customerToken: null,
+        items: [{ name: 'Rice bag', quantity: 3, unitPriceK: 3_000_00 }],
+        subtotalK: 9_000_00,
+        discountK: 0,
+        deliveryFeeK: 0,
+        vatK: 0,
+        totalK: 9_000_00,
+        paidK: 0,
+        balanceDueK: 9_000_00,
+        method: 'cash',
+        sourceType: 'chat',
+        sourceId: 's1',
+        actor: 'test',
+      });
+      const moved = await stockRepo.recordSaleMovements(
+        tx,
+        businessId,
+        [{ name: 'Rice bag', quantity: 3 }],
+        sale.invoiceNumber,
+      );
+      await issueRepo.writePosting(
+        tx,
+        businessId,
+        postCostOfSale({ memo: `Cost of goods on ${sale.invoiceNumber}`, costK: moved.costK }),
+        'invoice',
+        sale.invoiceNumber,
+      );
+      return sale.invoiceNumber;
+    });
+
+    const balance = async (account: string) => {
+      const entries = await withBusiness(db, businessId, (tx) =>
+        issueRepo.ledgerEntriesFor(tx, businessId),
+      );
+      return entries
+        .filter((e) => e.account === account)
+        .reduce((n, e) => n + Number(e.debitK) - Number(e.creditK), 0);
+    };
+
+    expect(await balance('COGS')).toBe(6_000_00);
+
+    await withBusiness(db, businessId, (tx) =>
+      issueRepo.voidInvoice(tx, businessId, invoiceNumber, 'never happened', 'user:1'),
+    );
+
+    /* Both postings mirrored: the sale, and what it said the goods cost. */
+    expect(await balance('COGS')).toBe(0);
+    expect(await balance('SALES_REVENUE')).toBe(0);
+    /* Back to nothing, and that is right: this test recorded a DELIVERY,
+     * which moves the count and the cost basis, and no purchase, which is
+     * what moves the money. Inventory's only movements here were the credit
+     * the cost posting made and the mirror that undid it. */
+    expect(await balance('INVENTORY')).toBe(0);
+
+    const entries = await withBusiness(db, businessId, (tx) =>
+      issueRepo.ledgerEntriesFor(tx, businessId),
+    );
+    const debits = entries.reduce((n, e) => n + Number(e.debitK), 0);
+    const credits = entries.reduce((n, e) => n + Number(e.creditK), 0);
+    expect(debits).toBe(credits);
+  });
+
+  /* The count is not put back. Money is a bookkeeping fact and can be
+   * mirrored; what is on the shelf is a physical fact only a merchant knows,
+   * which is the same rule a voided purchase follows. */
+  it('leaves the shelf alone, because only the merchant knows what is on it', async () => {
+    const businessId = await seedBusiness('+2348120000212');
+    const invoiceNumber = await withBusiness(db, businessId, async (tx) => {
+      const product = await stockRepo.findOrCreateProduct(tx, businessId, 'Rice bag');
+      await stockRepo.recordDelivery(tx, {
+        businessId,
+        product,
+        quantity: 10,
+        costK: 20_000_00,
+        sourceType: 'chat',
+        sourceId: 'd1',
+      });
+      const sale = await issueRepo.issueSale(tx, {
+        businessId,
+        customerId: null,
+        customerToken: null,
+        items: [{ name: 'Rice bag', quantity: 3, unitPriceK: 3_000_00 }],
+        subtotalK: 9_000_00,
+        discountK: 0,
+        deliveryFeeK: 0,
+        vatK: 0,
+        totalK: 9_000_00,
+        paidK: 0,
+        balanceDueK: 9_000_00,
+        method: 'cash',
+        sourceType: 'chat',
+        sourceId: 's1',
+        actor: 'test',
+      });
+      await stockRepo.recordSaleMovements(
+        tx,
+        businessId,
+        [{ name: 'Rice bag', quantity: 3 }],
+        sale.invoiceNumber,
+      );
+      return sale.invoiceNumber;
+    });
+
+    await withBusiness(db, businessId, (tx) =>
+      issueRepo.voidInvoice(tx, businessId, invoiceNumber, 'never happened', 'user:1'),
+    );
+    expect(
+      (
+        await withBusiness(db, businessId, (tx) =>
+          stockRepo.productByName(tx, businessId, 'Rice bag'),
+        )
+      )?.onHand,
+    ).toBe(7);
   });
 });
