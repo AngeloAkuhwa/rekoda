@@ -65,21 +65,9 @@ export async function recordExpense(
   tx: TenantDb,
   input: RecordExpenseInput,
 ): Promise<RecordedSpend> {
-  const rows = await tx
-    .insert(expenses)
-    .values({
-      businessId: input.businessId,
-      description: input.description,
-      category: input.category,
-      amountK: input.amountK,
-      method: input.method,
-      sourceType: input.sourceType,
-      sourceId: input.sourceId,
-    })
-    .returning({ id: expenses.id });
-  const row = rows[0];
-  if (!row) throw new Error('recordExpense: insert returned no row');
-
+  /* The posting first, so the row can carry its id and a withdrawal has
+   * something exact to reverse. Same transaction either way: the operational
+   * row and its balanced posting still commit together or not at all. */
   const posting = postExpense({
     memo: `Expense: ${input.description}`,
     amountK: input.amountK,
@@ -93,10 +81,21 @@ export async function recordExpense(
     input.sourceId,
   );
 
-  await tx
-    .update(expenses)
-    .set({ ledgerTransactionId })
-    .where(and(eq(expenses.id, row.id), eq(expenses.businessId, input.businessId)));
+  const rows = await tx
+    .insert(expenses)
+    .values({
+      businessId: input.businessId,
+      description: input.description,
+      category: input.category,
+      amountK: input.amountK,
+      method: input.method,
+      sourceType: input.sourceType,
+      sourceId: input.sourceId,
+      ledgerTransactionId,
+    })
+    .returning({ id: expenses.id });
+  const row = rows[0];
+  if (!row) throw new Error('recordExpense: insert returned no row');
 
   return { expenseId: row.id, ledgerTransactionId, owedK: 0 };
 }
@@ -105,24 +104,6 @@ export async function recordPurchase(
   tx: TenantDb,
   input: RecordPurchaseInput,
 ): Promise<RecordedSpend> {
-  const rows = await tx
-    .insert(expenses)
-    .values({
-      businessId: input.businessId,
-      description: input.description,
-      /** The fixed marker the read layer filters on — not merchant testimony. */
-      category: 'stock',
-      amountK: input.amountK,
-      /* The contract carries no method for purchases yet; 'cash' is the
-       * honest default for money out of pocket that no provider tracks. */
-      method: 'cash',
-      sourceType: input.sourceType,
-      sourceId: input.sourceId,
-    })
-    .returning({ id: expenses.id });
-  const row = rows[0];
-  if (!row) throw new Error('recordPurchase: insert returned no row');
-
   const posting = postPurchase({
     memo: `Stock: ${input.description}`,
     amountK: input.amountK,
@@ -137,10 +118,24 @@ export async function recordPurchase(
     input.sourceId,
   );
 
-  await tx
-    .update(expenses)
-    .set({ ledgerTransactionId })
-    .where(and(eq(expenses.id, row.id), eq(expenses.businessId, input.businessId)));
+  const rows = await tx
+    .insert(expenses)
+    .values({
+      businessId: input.businessId,
+      description: input.description,
+      /** The fixed marker the read layer filters on — not merchant testimony. */
+      category: 'stock',
+      amountK: input.amountK,
+      /* The contract carries no method for purchases yet; 'cash' is the
+       * honest default for money out of pocket that no provider tracks. */
+      method: 'cash',
+      sourceType: input.sourceType,
+      sourceId: input.sourceId,
+      ledgerTransactionId,
+    })
+    .returning({ id: expenses.id });
+  const row = rows[0];
+  if (!row) throw new Error('recordPurchase: insert returned no row');
 
   return { expenseId: row.id, ledgerTransactionId, owedK: input.amountK - input.paidK };
 }
