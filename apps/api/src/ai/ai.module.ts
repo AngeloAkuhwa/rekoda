@@ -5,6 +5,8 @@ import { OpenAiTransport } from './openai.transport.js';
 import { Interpreter } from './interpreter.service.js';
 import { MODEL_TRANSPORT, ProviderUnreachable, type ModelTransport } from './transport.js';
 import { assertModelIsPriced, registerRuntimeModelPrices } from './model-prices.js';
+import { SPEECH_TO_TEXT, type SpeechToText } from './stt.js';
+import { HttpSpeechToText, NoSpeechToTextConfigured } from './stt.http.js';
 
 // Re-exported for convenience; the token itself is defined in transport.ts so
 // that this module and the service it provides do not import each other.
@@ -64,8 +66,21 @@ class NoTransportConfigured implements ModelTransport {
           : new NoTransportConfigured();
       },
     },
+    /**
+     * The transcriber, and WHERE it points is the promise.
+     *
+     * "Audio never leaves Rekoda" is true exactly while `STT_URL` names our
+     * own sidecar (ADR 0005/0008). Without one, voice notes are answered
+     * honestly rather than sent somewhere else by default.
+     */
+    {
+      provide: SPEECH_TO_TEXT,
+      inject: [CONFIG],
+      useFactory: (config: ApiConfig): SpeechToText =>
+        config.sttUrl ? new HttpSpeechToText(config.sttUrl) : new NoSpeechToTextConfigured(),
+    },
     Interpreter,
   ],
-  exports: [Interpreter, MODEL_TRANSPORT],
+  exports: [Interpreter, MODEL_TRANSPORT, SPEECH_TO_TEXT],
 })
 export class AiModule {}

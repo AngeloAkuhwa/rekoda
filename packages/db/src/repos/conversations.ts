@@ -306,3 +306,32 @@ export async function supersedePendingDrafts(tx: TenantDb, businessId: string): 
     .returning({ id: commandDrafts.id });
   return updated.length;
 }
+
+/**
+ * Fill in the body of a message that was already claimed.
+ *
+ * The voice path inserts the row FIRST, as its idempotency claim, before the
+ * transcript exists: that claim is what stops a redelivered webhook
+ * transcribing and metering the same recording twice. The words arrive a
+ * moment later and land here.
+ *
+ * Returns true so the caller can treat it exactly like a fresh
+ * `recordInbound` — the row is new, it just filled up in two steps. Pinned on
+ * `business_id` as well as the id: this table is under row-level security,
+ * and a stray id from a job payload deserves the second predicate anyway.
+ */
+export async function setInboundBody(
+  tx: TenantDb,
+  businessId: string,
+  messageId: string,
+  body: string,
+): Promise<boolean> {
+  const rows = await tx
+    .update(conversationMessages)
+    .set({ body })
+    .where(
+      and(eq(conversationMessages.id, messageId), eq(conversationMessages.businessId, businessId)),
+    )
+    .returning({ id: conversationMessages.id });
+  return rows.length === 1;
+}

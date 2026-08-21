@@ -1,5 +1,6 @@
 import {
   SendFailed,
+  type InboundMedia,
   type MessageSender,
   type OutboundAuthCode,
   type OutboundDocument,
@@ -44,6 +45,7 @@ export class StubSender implements MessageSender {
     this.sent.length = 0;
     this.documents.length = 0;
     this.authCodes.length = 0;
+    this.media.clear();
     this.failNext = null;
     this.failDocuments = null;
   }
@@ -66,6 +68,15 @@ export class StubSender implements MessageSender {
     }
     this.sent.push(message);
     return Promise.resolve({ providerMessageId: `wamid.STUB${this.sent.length}` });
+  }
+
+  /** Media a test arranged for this id to return. */
+  readonly media = new Map<string, InboundMedia>();
+
+  fetchMedia(mediaId: string): Promise<InboundMedia> {
+    const found = this.media.get(mediaId);
+    if (!found) return Promise.reject(new SendFailed(`no stub media for ${mediaId}`));
+    return Promise.resolve(found);
   }
 
   sendAuthCode(code: OutboundAuthCode): Promise<SendResult> {

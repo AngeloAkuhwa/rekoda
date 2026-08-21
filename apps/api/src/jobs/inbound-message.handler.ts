@@ -42,6 +42,8 @@ import type { PaymentIntentsService } from '../payments/payment-intents.service.
 import { openPayload } from '../privacy/payload-vault.js';
 import { redactForLog } from '@rekoda/core/privacy';
 import { describeFailure, type JobContext, type JobHandler } from './runner.js';
+import type { SpeechToText, Transcript } from '../ai/stt.js';
+import type { MessageSender } from '../channels/sender.js';
 
 const paymentLog = new Logger('InboundMessageJob');
 
@@ -51,6 +53,10 @@ export interface InboundMessageDeps {
   replySender: ReplySender;
   config: ApiConfig;
   paymentIntents: PaymentIntentsService;
+  /** Fetches media a merchant sent, and delivers the OTP template. */
+  sender: MessageSender;
+  /** The AfriSpeech sidecar (ADR 0008), or something that refuses honestly. */
+  stt: SpeechToText;
   /** The app pool, for the rows that live ABOVE tenancy: users' consent state. */
   db: Db;
 }
@@ -109,10 +115,25 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
       return;
     }
 
-    /* A voice note or a photo. Answered deterministically and honestly, and
-     * NEVER routed to a model: an empty transcript is not a sentence to
-     * interpret, and a paid call on silence is a bug with a bill. */
-    if (inbound.messageType !== 'text') {
+    /**
+     * A voice note becomes a sentence; everything else that is not text says
+     * so honestly.
+     *
+     * The transcript then takes EXACTLY the path a typed message takes:
+     * tokenised before any model sees it, routed, gated, confirmed. Voice is
+     * an input method, not a second product, and a parallel path is where the
+     * two would drift until one of them lost a conversation gate.
+     */
+    let spoken: { transcript: Transcript; messageId: string } | null = null;
+    if (isVoiceNote(inbound)) {
+      spoken = await transcribeVoiceNote(deps, tx, businessId, inbound, log);
+      if (!spoken) {
+        /* Already answered inside, and already marked new-or-not. Nothing to
+         * interpret and nothing to charge for. */
+        await events.markProcessed(tx, eventId, null, businessId);
+        return;
+      }
+    } else if (inbound.messageType !== 'text') {
       const recorded = await conversationsRepo.recordInbound(tx, {
         businessId,
         channel: 'meta',
@@ -131,7 +152,7 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
       return;
     }
 
-    const text = inbound.text ?? '';
+    const text = spoken?.transcript.text ?? inbound.text ?? '';
     const route = routeMessage(text);
     const tokenised =
       route.route === 'deterministic' ? null : await deps.gateway.tokenise(businessId, text);
@@ -144,13 +165,32 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
      * establish a path where raw merchant text reaches a column, and the next
      * person to touch this file would reasonably follow it.
      */
-    const message = await conversationsRepo.recordInbound(tx, {
-      businessId,
-      channel: 'meta',
-      kind: 'text',
-      body: route.route === 'deterministic' ? describeIntent(route.intent) : tokenised!.text,
-      providerMessageId: inbound.externalId,
-    });
+    /**
+     * ONE row per inbound message, whichever way it arrived.
+     *
+     * A voice note was already claimed by `transcribeVoiceNote` — that claim
+     * is what stops a redelivered webhook transcribing and metering twice —
+     * so recording again here would hit `messages_provider_ux`, come back
+     * `isNew: false`, and silently return without answering the merchant.
+     * The body is filled in now that there is a transcript to store.
+     */
+    const message = spoken
+      ? {
+          id: spoken.messageId,
+          isNew: await conversationsRepo.setInboundBody(
+            tx,
+            businessId,
+            spoken.messageId,
+            route.route === 'deterministic' ? describeIntent(route.intent) : tokenised!.text,
+          ),
+        }
+      : await conversationsRepo.recordInbound(tx, {
+          businessId,
+          channel: 'meta',
+          kind: 'text',
+          body: route.route === 'deterministic' ? describeIntent(route.intent) : tokenised!.text,
+          providerMessageId: inbound.externalId,
+        });
 
     /**
      * `isNew` is what stops a re-run — a reclaimed job, a redelivered webhook
@@ -185,6 +225,100 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
     await events.markProcessed(tx, eventId, null, businessId);
     log.debug(`answered an inbound message routed as ${route.route}`);
   };
+}
+
+/** A recording somebody made with the microphone button, not an attached file. */
+function isVoiceNote(inbound: { messageType: string; audioId: string | null }): boolean {
+  return (inbound.messageType === 'audio' || inbound.messageType === 'voice') && !!inbound.audioId;
+}
+
+/**
+ * A voice note, turned into a sentence, or an honest answer about why not.
+ *
+ * Returns null when there is nothing to interpret — and in that case has
+ * already replied, because every path out of here owes the merchant a
+ * sentence. Somebody who recorded a voice note is holding their phone
+ * waiting.
+ *
+ * THE AUDIO IS NEVER STORED. It is fetched, passed to the sidecar, and left
+ * to the garbage collector. A merchant's voice is the most identifying thing
+ * they can send us, "audio never leaves Rekoda" is a promise we make out
+ * loud, and the only way that stays true is if there is nowhere for it to
+ * leave from.
+ */
+async function transcribeVoiceNote(
+  deps: InboundMessageDeps,
+  tx: TenantDb,
+  businessId: string,
+  inbound: { externalId: string; from: string; audioId: string | null },
+  log: Logger,
+): Promise<{ transcript: Transcript; messageId: string } | null> {
+  const recorded = await conversationsRepo.recordInbound(tx, {
+    businessId,
+    channel: 'meta',
+    kind: 'voice',
+    body: '[voice note]',
+    providerMessageId: inbound.externalId,
+  });
+  /* A redelivered webhook must not transcribe, meter and answer twice. The
+   * body is replaced with the transcript below only on the first pass. */
+  if (!recorded.isNew) return null;
+
+  const plan = await usageRepo.planFor(tx, businessId);
+  if (plan === 'expired') {
+    await deps.replySender.send(tx, { businessId, to: inbound.from, reply: replies.trialEnded() });
+    return null;
+  }
+
+  let audio;
+  try {
+    audio = await deps.sender.fetchMedia(inbound.audioId!);
+  } catch {
+    log.warn('could not fetch a voice note from the provider');
+    await deps.replySender.send(tx, {
+      businessId,
+      to: inbound.from,
+      reply: replies.voiceUnavailable(),
+    });
+    return null;
+  }
+
+  let transcript: Transcript;
+  try {
+    transcript = await deps.stt.transcribe(audio.bytes, audio.mimeType);
+  } catch {
+    /* An outage, not the merchant's fault, and nothing metered. The reason is
+     * logged without the audio and without their words. */
+    log.warn('the transcriber could not be reached');
+    await deps.replySender.send(tx, {
+      businessId,
+      to: inbound.from,
+      reply: replies.voiceUnavailable(),
+    });
+    return null;
+  }
+
+  /**
+   * Metered AFTER the work, unlike messages, because the unit is seconds and
+   * nobody knows how many there are until the sidecar says so. Consumed in
+   * its own transaction for the same reason the message unit is: the counter
+   * must not be held across a network call.
+   */
+  const period = usagePeriod(new Date());
+  const allowance = allowanceFor(plan, 'voice_seconds');
+  const granted = await withBusiness(deps.db, businessId, (own) =>
+    usageRepo.consumeUnit(own, businessId, period, 'voice_seconds', allowance, transcript.seconds),
+  );
+  if (!granted) {
+    await deps.replySender.send(tx, {
+      businessId,
+      to: inbound.from,
+      reply: replies.allowanceExhausted(allowance, 'voice_seconds'),
+    });
+    return null;
+  }
+
+  return { transcript, messageId: recorded.id };
 }
 
 /** What a deterministic answer may need beyond the tenant: the ask itself. */

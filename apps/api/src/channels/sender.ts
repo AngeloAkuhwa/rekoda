@@ -47,8 +47,24 @@ export interface OutboundAuthCode {
   code: string;
 }
 
+/**
+ * Fetching media a merchant sent us.
+ *
+ * On the sender rather than in its own port because it is the same credential
+ * and the same host: splitting it would mean two objects holding one access
+ * token. Returns BYTES and never a path — a voice note is the most
+ * identifying thing a merchant can send, and the promise is that it lives in
+ * memory for one request and nowhere else.
+ */
+export interface InboundMedia {
+  bytes: Buffer;
+  mimeType: string;
+}
+
 export interface MessageSender {
   send(message: OutboundMessage): Promise<SendResult>;
+  /** Download media by Meta's id. Throws `SendFailed` when it cannot. */
+  fetchMedia(mediaId: string): Promise<InboundMedia>;
   /**
    * Deliver a one-time code. Separate from `send` for the same reason
    * `sendDocument` is: on Meta it is a different message type under different
