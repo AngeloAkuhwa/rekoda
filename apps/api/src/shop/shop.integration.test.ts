@@ -1,0 +1,324 @@
+/**
+ * The hosted shop, end to end: a slug in a URL, no session anywhere.
+ *
+ * This is the first surface Rekoda serves to strangers, so the claims worth
+ * pinning are mostly about what it does NOT do. A published shop shows the
+ * catalogue its owner listed and priced, and nothing else reaches the wire:
+ * no stock counts, no hidden products, no unpriced ones, and nothing at all
+ * about the business behind it.
+ */
+import { randomBytes } from 'node:crypto';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { publicShopResponse, shopSettingsResponse } from '@rekoda/contracts';
+import { createDb, stockRepo, withBusiness, type Db } from '@rekoda/db';
+import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
+import type { NestFastifyApplication } from '@nestjs/platform-fastify';
+
+let urls: Urls;
+let app: NestFastifyApplication;
+let db: Db;
+let closeDb: () => Promise<void>;
+let storageRoot: string;
+
+beforeAll(async () => {
+  urls = requireUrls();
+  await migrate(urls);
+  storageRoot = await mkdtemp(join(tmpdir(), 'rekoda-shop-'));
+
+  process.env['DATABASE_URL'] = urls.app;
+  process.env['OTP_PEPPER'] = randomBytes(24).toString('hex');
+  process.env['REKODA_API_SECRET'] = randomBytes(24).toString('hex');
+  process.env['VAULT_KEY'] = randomBytes(32).toString('hex');
+  process.env['MATCH_KEY'] = randomBytes(32).toString('hex');
+  process.env['REKODA_REVEAL_OTP'] = '1';
+  process.env['REKODA_RATE_LIMIT_MAX'] = '100000';
+  process.env['REKODA_LOCAL_STORAGE'] = storageRoot;
+  delete process.env['NODE_ENV'];
+
+  const { createApp } = await import('../main.js');
+  app = await createApp();
+  await app.init();
+  await app.getHttpAdapter().getInstance().ready();
+
+  ({ db, close: closeDb } = createDb(urls.app, { max: 4 }));
+});
+
+afterAll(async () => {
+  await app?.close();
+  await closeDb?.();
+  delete process.env['REKODA_LOCAL_STORAGE'];
+  if (storageRoot) await rm(storageRoot, { recursive: true, force: true });
+});
+
+beforeEach(async () => {
+  await truncateAll(urls);
+});
+
+function post(path: string, payload: unknown, headers: Record<string, string> = {}) {
+  return app.inject({
+    method: 'POST',
+    url: path,
+    payload: payload as Record<string, unknown>,
+    headers: { 'content-type': 'application/json', ...headers },
+  });
+}
+
+/** Deliberately no headers: a customer has no session and never gets one. */
+const anonymous = (url: string) => app.inject({ method: 'GET', url });
+
+async function onboard(phone: string) {
+  const requested = (await post('/v1/auth/otp/request', { phone })).json() as { devCode?: string };
+  const verified = (
+    await post('/v1/auth/otp/verify', { phone, code: requested.devCode })
+  ).json() as { setupToken: string };
+  const created = await post(
+    '/v1/businesses',
+    { name: 'Ada Fashion', businessType: 'Fashion & clothing' },
+    { 'x-rekoda-setup-token': verified.setupToken },
+  );
+  const session = created.json() as { sessionToken: string; businessId: string };
+  return {
+    businessId: session.businessId,
+    auth: { authorization: `Bearer ${session.sessionToken}` },
+  };
+}
+
+const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x01]);
+
+/**
+ * A shop with one of everything the page has to decide about: listed and
+ * priced, listed and unpriced, hidden but priced.
+ */
+async function seedCatalogue(businessId: string, auth: Record<string, string>) {
+  const ids = await withBusiness(db, businessId, async (tx) => {
+    const out: Record<string, string> = {};
+    for (const [name, count] of [
+      ['Ankara bale', 10],
+      ['Head tie', 40],
+      ['Aso oke set', 3],
+    ] as const) {
+      const product = await stockRepo.findOrCreateProduct(tx, businessId, name);
+      await stockRepo.recordMovement(tx, {
+        businessId,
+        productId: product.id,
+        delta: count,
+        reason: 'adjustment',
+        sourceType: 'chat',
+        sourceId: `seed-${name}`,
+      });
+      out[name] = product.id;
+    }
+    return out;
+  });
+
+  await post('/v1/catalogue/product', { id: ids['Ankara bale'], unitPriceK: 850_000 }, auth);
+  await post(
+    '/v1/catalogue/product',
+    { id: ids['Ankara bale'], description: 'Six yards, wax print' },
+    auth,
+  );
+  /* Priced but taken out of the shop. */
+  await post('/v1/catalogue/product', { id: ids['Aso oke set'], unitPriceK: 4_000_000 }, auth);
+  await post('/v1/catalogue/product', { id: ids['Aso oke set'], active: false }, auth);
+  /* Head tie is listed and has never been priced. */
+  return ids;
+}
+
+const publish = (auth: Record<string, string>, slug: string, published = true) =>
+  post(
+    '/v1/shop-settings',
+    { slug, displayName: 'Ada Fashion', tagline: 'Wax print by the bale', published },
+    auth,
+  );
+
+describe('the settings a merchant sees first', () => {
+  it('refuses a caller with no session', async () => {
+    expect((await anonymous('/v1/shop-settings')).statusCode).toBe(401);
+    expect((await post('/v1/shop-settings', { slug: 'x' })).statusCode).toBe(401);
+  });
+
+  it('offers a handle built from their business name, and no shop yet', async () => {
+    const { auth } = await onboard('+2348177400001');
+    const settings = shopSettingsResponse.parse(
+      (
+        await app.inject({
+          method: 'GET',
+          url: '/v1/shop-settings',
+          headers: auth,
+        })
+      ).json(),
+    );
+
+    expect(settings.shop).toBeNull();
+    expect(settings.suggestedSlug).toBe('ada-fashion');
+    expect(settings.sellableCount).toBe(0);
+  });
+
+  /* Publishing an empty page is worse than not publishing: a customer opens
+   * it once, finds nothing, and does not come back. */
+  it('refuses to publish a shop with nothing priced in it', async () => {
+    const { auth } = await onboard('+2348177400002');
+    expect((await publish(auth, 'ada-fashion')).json()).toEqual({ outcome: 'nothing_to_sell' });
+    expect((await anonymous('/v1/shop/ada-fashion')).statusCode).toBe(404);
+  });
+
+  it('refuses a handle that is not one', async () => {
+    const { businessId, auth } = await onboard('+2348177400003');
+    await seedCatalogue(businessId, auth);
+    expect((await publish(auth, 'Ada Fashion')).json()).toEqual({ outcome: 'bad_slug' });
+    expect((await publish(auth, 'ad')).json()).toEqual({ outcome: 'bad_slug' });
+  });
+
+  it('tells the second merchant a handle is taken', async () => {
+    const first = await onboard('+2348177400004');
+    const second = await onboard('+2348177400005');
+    await seedCatalogue(first.businessId, first.auth);
+    await seedCatalogue(second.businessId, second.auth);
+
+    expect((await publish(first.auth, 'ada-fashion')).json()).toMatchObject({ outcome: 'saved' });
+    expect((await publish(second.auth, 'ada-fashion')).json()).toEqual({ outcome: 'slug_taken' });
+  });
+});
+
+describe('the page a customer opens', () => {
+  it('answers with no session at all', async () => {
+    const { businessId, auth } = await onboard('+2348177400006');
+    await seedCatalogue(businessId, auth);
+    await publish(auth, 'ada-fashion');
+
+    const res = await anonymous('/v1/shop/ada-fashion');
+    expect(res.statusCode).toBe(200);
+    const shop = publicShopResponse.parse(res.json());
+    expect(shop).toMatchObject({
+      slug: 'ada-fashion',
+      displayName: 'Ada Fashion',
+      tagline: 'Wax print by the bale',
+      whatsappE164: '+2348177400006',
+    });
+  });
+
+  /**
+   * Listed AND priced, and nothing else. A hidden product is hidden; an
+   * unpriced one cannot be sold from a page with no way to ask the price.
+   */
+  it('shows only what is listed and priced', async () => {
+    const { businessId, auth } = await onboard('+2348177400007');
+    await seedCatalogue(businessId, auth);
+    await publish(auth, 'ada-fashion');
+
+    const shop = publicShopResponse.parse((await anonymous('/v1/shop/ada-fashion')).json());
+    expect(shop.products.map((p) => p.name)).toEqual(['Ankara bale']);
+    expect(shop.products[0]).toMatchObject({
+      priceK: 850_000,
+      description: 'Six yards, wax print',
+    });
+  });
+
+  /**
+   * How many are left is the merchant's business and a competitor's homework,
+   * and a customer told there are two left is being pressured, not informed.
+   */
+  it('never puts a stock count on the wire', async () => {
+    const { businessId, auth } = await onboard('+2348177400008');
+    await seedCatalogue(businessId, auth);
+    await publish(auth, 'ada-fashion');
+
+    const body = (await anonymous('/v1/shop/ada-fashion')).body;
+    expect(body).not.toContain('onHand');
+    expect(body).not.toContain('"10"');
+    expect(JSON.parse(body).products[0]).not.toHaveProperty('onHand');
+  });
+
+  /* Nothing about the business behind the shop. The lookup cannot reach that
+   * row at all, and this is the assertion that says so out loud. */
+  it('says nothing about the business itself', async () => {
+    const { businessId, auth } = await onboard('+2348177400009');
+    await seedCatalogue(businessId, auth);
+    await publish(auth, 'ada-fashion');
+
+    const body = (await anonymous('/v1/shop/ada-fashion')).body;
+    for (const leak of ['businessId', businessId, 'plan', 'trial', 'tin', 'rcNumber']) {
+      expect(body).not.toContain(leak);
+    }
+  });
+
+  it('is not there before it is published, and not there after it is taken down', async () => {
+    const { businessId, auth } = await onboard('+2348177400010');
+    await seedCatalogue(businessId, auth);
+
+    await publish(auth, 'ada-fashion', false);
+    expect((await anonymous('/v1/shop/ada-fashion')).statusCode).toBe(404);
+
+    await publish(auth, 'ada-fashion', true);
+    expect((await anonymous('/v1/shop/ada-fashion')).statusCode).toBe(200);
+
+    await publish(auth, 'ada-fashion', false);
+    expect((await anonymous('/v1/shop/ada-fashion')).statusCode).toBe(404);
+  });
+
+  it('answers the same way for a slug nobody has and one that is not a slug', async () => {
+    expect((await anonymous('/v1/shop/nobody-here')).statusCode).toBe(404);
+    expect((await anonymous('/v1/shop/NOT-A-SLUG')).statusCode).toBe(404);
+  });
+});
+
+describe('a photo on a public page', () => {
+  it('is served to anybody, cacheable, with the type read from its bytes', async () => {
+    const { businessId, auth } = await onboard('+2348177400011');
+    const ids = await seedCatalogue(businessId, auth);
+    await publish(auth, 'ada-fashion');
+
+    const boundary = '----rekodashop';
+    const body = Buffer.concat([
+      Buffer.from(
+        `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="b.png"\r\n` +
+          `Content-Type: image/png\r\n\r\n`,
+      ),
+      PNG,
+      Buffer.from(`\r\n--${boundary}--\r\n`),
+    ]);
+    await app.inject({
+      method: 'POST',
+      url: `/v1/catalogue/${ids['Ankara bale']}/image`,
+      payload: body,
+      headers: { 'content-type': `multipart/form-data; boundary=${boundary}`, ...auth },
+    });
+
+    const shop = publicShopResponse.parse((await anonymous('/v1/shop/ada-fashion')).json());
+    expect(shop.products[0]!.imagePath).toBe(`/v1/shop/ada-fashion/photo/${ids['Ankara bale']}`);
+
+    const served = await anonymous(shop.products[0]!.imagePath!);
+    expect(served.statusCode).toBe(200);
+    expect(served.headers['content-type']).toBe('image/png');
+    expect(String(served.headers['cache-control'])).toContain('public');
+    expect(served.headers['x-content-type-options']).toBe('nosniff');
+  });
+
+  /**
+   * The route is keyed on the slug as well as the product, so one shop's URL
+   * can never serve another shop's image even with a real product id.
+   */
+  it('will not serve another shop’s product through this shop’s URL', async () => {
+    const mine = await onboard('+2348177400012');
+    const theirs = await onboard('+2348177400013');
+    await seedCatalogue(mine.businessId, mine.auth);
+    const theirIds = await seedCatalogue(theirs.businessId, theirs.auth);
+    await publish(mine.auth, 'my-shop');
+    await publish(theirs.auth, 'their-shop');
+
+    const served = await anonymous(`/v1/shop/my-shop/photo/${theirIds['Ankara bale']}`);
+    expect(served.statusCode).toBe(404);
+  });
+
+  it('404s a product with no photo rather than an empty 200', async () => {
+    const { businessId, auth } = await onboard('+2348177400014');
+    const ids = await seedCatalogue(businessId, auth);
+    await publish(auth, 'ada-fashion');
+    expect((await anonymous(`/v1/shop/ada-fashion/photo/${ids['Ankara bale']}`)).statusCode).toBe(
+      404,
+    );
+  });
+});

@@ -76,6 +76,7 @@ export async function truncateAll(urls: Urls): Promise<void> {
         usage_events, usage_counters,
         jobs,
         conversation_messages, conversations,
+        shops,
         memberships, business_connections, products,
         customer_identities, customers,
         external_events, stranger_contacts,

@@ -211,6 +211,13 @@
       "when": 1787187808126,
       "tag": "0029_order_invoice",
       "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1787187808127,
+      "tag": "0030_shops",
+      "breakpoints": true
     }
   ]
 }

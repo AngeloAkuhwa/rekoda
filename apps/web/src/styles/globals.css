@@ -1446,3 +1446,86 @@ button,
 .rk-void summary:hover {
   color: var(--rk-accent);
 }
+
+/* ── the hosted shop (Door 1) ──────────────────────────────────────────────
+   A public page, so it shares the site's type and colour and nothing else:
+   the dashboard's density is right for somebody reading their own books and
+   wrong for a customer deciding whether to buy a bale of ankara. */
+.rk-shop {
+  display: grid;
+  gap: var(--rk-space-6);
+  padding-block: var(--rk-space-6) var(--rk-space-8);
+  grid-template-columns: minmax(0, 1fr);
+}
+.rk-shop-head h1 {
+  margin: 0;
+}
+.rk-shop-tagline {
+  margin: var(--rk-space-2) 0 0;
+  color: var(--rk-text-muted);
+  font-size: var(--rk-text-lg);
+}
+/* Two up on a phone, more as there is room. `auto-fill` rather than a fixed
+   count so a shop with three products does not stretch them across a laptop. */
+.rk-shop-grid {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--rk-space-4);
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 220px), 1fr));
+}
+.rk-shop-item {
+  border: 1px solid var(--rk-border);
+  border-radius: var(--rk-radius-md);
+  background: var(--rk-surface);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+/* A fixed aspect box, so a portrait phone photo and a square one leave the
+   grid even rather than ragged. */
+.rk-shop-photo {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  object-fit: cover;
+  display: block;
+  background: var(--rk-surface-sunk);
+}
+/* A flex COLUMN, not a grid, and only because of the button below: `margin-top:
+   auto` needs a flex line to push against, and under grid every card put its
+   button wherever its description happened to end. */
+.rk-shop-body {
+  padding: var(--rk-space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--rk-space-2);
+  flex: 1;
+}
+.rk-shop-body h2 {
+  margin: 0;
+  font-size: var(--rk-text-base);
+}
+.rk-shop-body p {
+  margin: 0;
+  color: var(--rk-text-muted);
+  font-size: var(--rk-text-sm);
+}
+.rk-shop-price {
+  font-weight: 600;
+  color: var(--rk-text) !important;
+  font-variant-numeric: tabular-nums;
+}
+/* Pushed to the bottom of the card, so every button in a row lines up
+   whatever length the descriptions above them are. */
+.rk-shop-ask {
+  margin-top: auto;
+  text-align: center;
+  text-decoration: none;
+}
+.rk-shop-foot {
+  display: grid;
+  gap: var(--rk-space-2);
+  border-top: 1px solid var(--rk-border);
+  padding-top: var(--rk-space-4);
+}

@@ -131,3 +131,37 @@ export const orderItems = pgTable(
   },
   (t) => [index('order_items_order_ix').on(t.orderId)],
 );
+
+/**
+ * The public face of a business (migration 0030).
+ *
+ * Its own table rather than columns on `businesses`, because a public page
+ * has to turn a slug into a tenant and `businesses` is under strict row-level
+ * security keyed on the pinned tenant. A policy letting anyone read a
+ * published business would expose the whole row: the plan, the TIN, the
+ * owner's user id, the date a card last failed. None of that is a shop.
+ *
+ * Everything here is published on purpose, which is why it is readable by
+ * anyone and writable only under a tenant pin.
+ */
+export const shops = pgTable(
+  'shops',
+  {
+    id: id(),
+    businessId: businessId(),
+    /** The handle in the URL. Globally unique, because a URL is. */
+    slug: text('slug').notNull(),
+    displayName: text('display_name').notNull(),
+    /** E.164, published deliberately. Copied, never joined from `users`. */
+    whatsappE164: text('whatsapp_e164').notNull(),
+    tagline: text('tagline'),
+    /** Null until the merchant switches it on. Reserved is not live. */
+    publishedAt: timestamp('published_at', { withTimezone: true }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex('shops_slug_ux').on(t.slug),
+    uniqueIndex('shops_business_ux').on(t.businessId),
+  ],
+);

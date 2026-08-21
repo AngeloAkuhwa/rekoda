@@ -14,6 +14,7 @@ import { PaymentsModule } from './payments/payments.module.js';
 import { RepliesModule } from './replies/replies.module.js';
 import { CatalogueModule } from './catalogue/catalogue.module.js';
 import { ReportsModule } from './reports/reports.module.js';
+import { ShopModule } from './shop/shop.module.js';
 
 @Module({
   imports: [
@@ -24,6 +25,7 @@ import { ReportsModule } from './reports/reports.module.js';
     PaymentsModule,
     RepliesModule,
     ReportsModule,
+    ShopModule,
   ],
   controllers: [
     AuthController,

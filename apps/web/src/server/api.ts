@@ -25,6 +25,9 @@ import {
   usageMeterResponse,
   catalogueResponse,
   createRecurringResponse,
+  publicShopResponse,
+  saveShopResponse,
+  shopSettingsResponse,
   creditInvoiceResponse,
   editProductResponse,
   uploadImageResponse,
@@ -38,6 +41,10 @@ import {
   type MeResponse,
   type CatalogueResponse,
   type CreateRecurringRequest,
+  type PublicShopResponse,
+  type SaveShopRequest,
+  type SaveShopResponse,
+  type ShopSettingsResponse,
   type CreateRecurringResponse,
   type EditProductRequest,
   type EditProductResponse,
@@ -545,6 +552,47 @@ export async function voidExpense(
     expect: [200, 400],
   });
   return status === 200 ? voidExpenseResponse.parse(json) : null;
+}
+
+/**
+ * A shop, by slug, with no session anywhere.
+ *
+ * The one read in this file that carries no token, because the page it feeds
+ * is public. Null when there is no such published shop, which the route turns
+ * into an ordinary 404 rather than an error.
+ */
+export async function publicShop(slug: string): Promise<PublicShopResponse | null> {
+  const { status, json } = await call({
+    method: 'GET',
+    path: `/v1/shop/${encodeURIComponent(slug)}`,
+    expect: [200, 404],
+  });
+  return status === 200 ? publicShopResponse.parse(json) : null;
+}
+
+/** The merchant's own shop settings. */
+export async function shopSettings(sessionToken: string): Promise<ShopSettingsResponse> {
+  const { json } = await call({
+    method: 'GET',
+    path: '/v1/shop-settings',
+    headers: { authorization: `Bearer ${sessionToken}` },
+    expect: [200],
+  });
+  return shopSettingsResponse.parse(json);
+}
+
+export async function saveShop(
+  sessionToken: string,
+  input: SaveShopRequest,
+): Promise<SaveShopResponse | null> {
+  const { status, json } = await call({
+    method: 'POST',
+    path: '/v1/shop-settings',
+    body: input,
+    headers: { authorization: `Bearer ${sessionToken}` },
+    expect: [200, 400],
+  });
+  return status === 200 ? saveShopResponse.parse(json) : null;
 }
 
 /** Everything the shop could sell, listed and hidden alike. */
