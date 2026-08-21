@@ -8,7 +8,7 @@
  */
 import { randomBytes } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { paymentReference } from '@rekoda/core';
+import { paymentReference, postCostOfSale } from '@rekoda/core';
 import {
   reportsActivityResponse,
   reportsCashflowResponse,
@@ -20,6 +20,7 @@ import {
   reportsOverviewResponse,
   reportsReceiptsResponse,
   reportsStatementsResponse,
+  stockCountResponse,
   voidExpenseResponse,
   voidInvoiceResponse,
 } from '@rekoda/contracts';
@@ -1624,5 +1625,195 @@ describe('voiding an invoice', () => {
     expect(after.invoices).toHaveLength(1);
     expect(after.invoices[0]).toMatchObject({ status: 'voided', balanceDueK: 0 });
     expect(after.outstandingK).toBe(0);
+  });
+});
+
+/**
+ * The shelf against the books, end to end.
+ *
+ * The arithmetic is proven in packages/db/src/stocktake.integration.test.ts;
+ * what this pins is that the two figures reach the page that shows them, that
+ * the endpoint refuses a stranger, and that nothing it posts is computed from
+ * anything the caller sent.
+ */
+describe('counting the shelf', () => {
+  const countIt = (auth: Record<string, string>, body: Record<string, unknown>) =>
+    app.inject({
+      method: 'POST',
+      url: '/v1/reports/stock-count',
+      payload: body,
+      headers: { 'content-type': 'application/json', ...auth },
+    });
+
+  const today = () => new Date(Date.now() + 60 * 60 * 1000).toISOString().slice(0, 10);
+
+  it('refuses a caller with no session', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/reports/stock-count',
+      payload: { countedOn: today() },
+      headers: { 'content-type': 'application/json' },
+    });
+    expect(res.statusCode).toBe(401);
+  });
+
+  /**
+   * The drift, and the correction, as a merchant meets them. A lump-sum
+   * restock debits stock against no product, so the balance sheet claims
+   * goods nobody is holding and nothing ever credits them back.
+   */
+  it('shows the gap on the balance sheet, then closes it', async () => {
+    const { auth, businessId } = await onboard('+2348177000041');
+    await withBusiness(db, businessId, (tx) =>
+      spendRepo.recordPurchase(tx, {
+        businessId,
+        description: 'restocked the shop',
+        amountK: 5_000_000,
+        paidK: 5_000_000,
+        sourceType: 'chat',
+        sourceId: 'p1',
+      }),
+    );
+
+    const before = reportsStatementsResponse.parse(
+      (await app.inject({ method: 'GET', url: '/v1/reports/statements', headers: auth })).json(),
+    );
+    expect(before.stockValuation).toEqual({
+      ledgerK: 5_000_000,
+      countedK: 0,
+      differenceK: -5_000_000,
+      uncosted: 0,
+    });
+
+    const posted = stockCountResponse.parse((await countIt(auth, { countedOn: today() })).json());
+    expect(posted).toEqual({ outcome: 'adjusted', differenceK: -5_000_000, countedK: 0 });
+
+    const after = reportsStatementsResponse.parse(
+      (await app.inject({ method: 'GET', url: '/v1/reports/statements', headers: auth })).json(),
+    );
+    expect(after.stockValuation).toMatchObject({ ledgerK: 0, differenceK: 0 });
+    expect(after.balanceSheet.balanced).toBe(true);
+    /* And the write-down is a cost, where stock that left without a sale
+     * belongs, rather than vanishing off the sheet unexplained. */
+    expect(after.profitAndLoss.costOfSalesK).toBe(5_000_000);
+  });
+
+  it('says so plainly when there is nothing to post', async () => {
+    const { auth } = await onboard('+2348177000042');
+    expect((await countIt(auth, { countedOn: today() })).json()).toEqual({
+      outcome: 'agrees',
+      countedK: 0,
+    });
+  });
+
+  it('refuses a day that has not happened, and a body without one', async () => {
+    const { auth } = await onboard('+2348177000043');
+    expect((await countIt(auth, { countedOn: '2099-01-01' })).json()).toEqual({
+      outcome: 'not_yet',
+    });
+    expect((await countIt(auth, { countedOn: 'today' })).statusCode).toBe(400);
+  });
+
+  /**
+   * The refusal that keeps the instrument honest. Goods on the shelf with no
+   * cost are missing from the count by an unknown amount, so posting it would
+   * write off stock the business is still holding.
+   */
+  it('refuses while a product holds stock nobody has priced', async () => {
+    const { auth, businessId } = await onboard('+2348177000044');
+    await withBusiness(db, businessId, (tx) =>
+      spendRepo.recordPurchase(tx, {
+        businessId,
+        description: 'restocked the shop',
+        amountK: 5_000_000,
+        paidK: 5_000_000,
+        sourceType: 'chat',
+        sourceId: 'p1',
+      }),
+    );
+    await withBusiness(db, businessId, async (tx) => {
+      const product = await stockRepo.findOrCreateProduct(tx, businessId, 'Ankara');
+      await stockRepo.recordMovement(tx, {
+        businessId,
+        productId: product.id,
+        delta: 6,
+        reason: 'adjustment',
+        sourceType: 'chat',
+        sourceId: 'counted',
+      });
+    });
+
+    expect((await countIt(auth, { countedOn: today() })).json()).toEqual({
+      outcome: 'costs_missing',
+      uncosted: 1,
+    });
+
+    const still = reportsStatementsResponse.parse(
+      (await app.inject({ method: 'GET', url: '/v1/reports/statements', headers: auth })).json(),
+    );
+    expect(still.stockValuation).toMatchObject({ ledgerK: 5_000_000, uncosted: 1 });
+    expect(still.profitAndLoss.costOfSalesK).toBe(0);
+  });
+
+  /**
+   * A cost typed onto a product that was never delivered lets a sale credit
+   * INVENTORY straight through zero, and the statements response has to
+   * carry that. Pinned end to end because the failure mode is not a wrong
+   * figure: an unsigned schema would reject the whole payload and take the
+   * reports page down over the very books this exists to repair.
+   */
+  it('carries a stock account that has gone below zero', async () => {
+    const { auth, businessId } = await onboard('+2348177000047');
+    await withBusiness(db, businessId, (tx) =>
+      issueRepo.writePosting(
+        tx,
+        businessId,
+        postCostOfSale({ memo: 'Sold goods nobody bought', costK: 1_500_000 }),
+        'invoice',
+        'INV-1',
+      ),
+    );
+
+    const seen = reportsStatementsResponse.parse(
+      (await app.inject({ method: 'GET', url: '/v1/reports/statements', headers: auth })).json(),
+    );
+    expect(seen.stockValuation).toEqual({
+      ledgerK: -1_500_000,
+      countedK: 0,
+      differenceK: 1_500_000,
+      uncosted: 0,
+    });
+
+    expect((await countIt(auth, { countedOn: today() })).json()).toMatchObject({
+      outcome: 'adjusted',
+      differenceK: 1_500_000,
+    });
+  });
+
+  it('is one tenant at a time', async () => {
+    const ada = await onboard('+2348177000045');
+    const bola = await onboard('+2348177000046');
+    await withBusiness(db, ada.businessId, (tx) =>
+      spendRepo.recordPurchase(tx, {
+        businessId: ada.businessId,
+        description: 'restocked the shop',
+        amountK: 5_000_000,
+        paidK: 5_000_000,
+        sourceType: 'chat',
+        sourceId: 'p1',
+      }),
+    );
+
+    const theirs = reportsStatementsResponse.parse(
+      (
+        await app.inject({ method: 'GET', url: '/v1/reports/statements', headers: bola.auth })
+      ).json(),
+    );
+    expect(theirs.stockValuation).toEqual({
+      ledgerK: 0,
+      countedK: 0,
+      differenceK: 0,
+      uncosted: 0,
+    });
   });
 });

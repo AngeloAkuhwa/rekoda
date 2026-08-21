@@ -204,6 +204,31 @@ export const reportsStatementsResponse = z.object({
     })
     .nullable(),
   /**
+   * What the shelf is worth, beside what the books say it is worth.
+   *
+   * Deliberately as at today rather than as at the end of the period being
+   * read: a count is a fact about now, and one taken today cannot say what
+   * was on the shelf in March. Which is why the page shows it beside the
+   * current month alone: against a past one the two Inventory figures would
+   * differ for a reason no merchant could see.
+   *
+   * `uncosted` is why the two figures may differ for an innocent reason, so
+   * it travels with them rather than being fetched separately.
+   */
+  stockValuation: z.object({
+    /**
+     * Signed, and it has to be. A product whose cost was typed rather than
+     * delivered can be sold before anything ever debited stock, and the cost
+     * of that sale credits INVENTORY straight through zero. A schema that
+     * refused the negative would take the whole reports page down over a
+     * figure the page exists to show.
+     */
+    ledgerK: z.number().int().finite(),
+    countedK: kobo,
+    differenceK: z.number().int().finite(),
+    uncosted: z.number().int().nonnegative(),
+  }),
+  /**
    * Where the sales came from.
    *
    * The mirror of `expenseSchedule`, under the income line rather than the
@@ -590,6 +615,42 @@ export const openingBalancesResponse = z.discriminatedUnion('outcome', [
 
 export type OpeningBalancesRequest = z.infer<typeof openingBalancesRequest>;
 export type OpeningBalancesResponse = z.infer<typeof openingBalancesResponse>;
+
+/**
+ * Act on a count of the shelf.
+ *
+ * Carries the day and nothing else. The figures are read from the database
+ * inside the same transaction that writes the entry, because a count posted
+ * back from a browser is a count from whenever that page was rendered, and an
+ * adjustment computed from a stale figure is precisely the quiet misstatement
+ * this instrument exists to expose.
+ */
+export const stockCountRequest = z.object({
+  countedOn: z
+    .string()
+    .regex(/^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/, 'a day like 2026-08-21'),
+});
+
+export const stockCountResponse = z.discriminatedUnion('outcome', [
+  z.object({
+    outcome: z.literal('adjusted'),
+    /** Negative when the books held stock the shelf does not. */
+    differenceK: z.number().int().finite(),
+    countedK: kobo,
+  }),
+  /** The books already say what the shelf says. Nothing to post. */
+  z.object({ outcome: z.literal('agrees'), countedK: kobo }),
+  /**
+   * Stock is on the shelf that nobody has said the cost of, so the count is
+   * short by an unknown amount and an adjustment would write off real goods.
+   */
+  z.object({ outcome: z.literal('costs_missing'), uncosted: z.number().int().positive() }),
+  /** Dated in the future, which is a typo rather than a count. */
+  z.object({ outcome: z.literal('not_yet') }),
+]);
+
+export type StockCountRequest = z.infer<typeof stockCountRequest>;
+export type StockCountResponse = z.infer<typeof stockCountResponse>;
 
 export const stopRecurringRequest = z.object({ id: z.string().uuid() });
 

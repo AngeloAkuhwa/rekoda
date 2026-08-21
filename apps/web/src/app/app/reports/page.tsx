@@ -5,6 +5,7 @@ import { requireSessionWithToken } from '@/server/guards';
 import { reportsStatements } from '@/server/api';
 import { AppNav } from '../AppNav';
 import { OpeningForm } from './OpeningForm';
+import { StockCountForm } from './StockCountForm';
 import { SignOutButton } from '../SignOutButton';
 
 export const metadata: Metadata = {
@@ -43,6 +44,7 @@ export default async function ReportsPage({
     expenseSchedule,
     revenueSchedule,
     openingBalances,
+    stockValuation,
   } = statements;
 
   /**
@@ -454,6 +456,71 @@ export default async function ReportsPage({
                   <OpeningForm today={today} />
                 </details>
               )}
+              {/* Stock is the one asset on this sheet that can be counted, and
+                  the only one that drifts in a direction nothing corrects. A
+                  purchase dictated as prose debits stock against no product,
+                  so nothing ever credits it back when those goods sell. Both
+                  figures are shown rather than one reconciled: writing the
+                  ledger down quietly would destroy the evidence that anything
+                  was ever wrong.
+
+                  The current month only, and not as a courtesy. A count is a
+                  fact about TODAY, while the sheet above it is as at the end
+                  of whichever month is being read. Beside a past month the
+                  two Inventory figures would differ for a reason no merchant
+                  could see, which is the exact confusion this exists to end. */}
+              {period === current &&
+              (stockValuation.ledgerK !== 0 || stockValuation.countedK !== 0) ? (
+                <div className="rk-stocktake">
+                  <h3 className="rk-substack">Stock on the shelf</h3>
+                  <table className="rk-statement">
+                    <tbody>
+                      <tr>
+                        <td>What your books say</td>
+                        <td>
+                          <Money kobo={stockValuation.ledgerK} />
+                        </td>
+                      </tr>
+                      <tr>
+                        <td>What you are holding, at cost</td>
+                        <td>
+                          <Money kobo={stockValuation.countedK} />
+                        </td>
+                      </tr>
+                      <tr className="rk-statement-total">
+                        <td>Difference</td>
+                        <td>
+                          <Money kobo={stockValuation.differenceK} />
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                  {stockValuation.uncosted > 0 ? (
+                    <p className="rk-fineprint">
+                      {stockValuation.uncosted === 1
+                        ? 'One product is on your shelf with no cost recorded, so the count above leaves it out.'
+                        : `${stockValuation.uncosted} products are on your shelf with no cost recorded, so the count above leaves them out.`}{' '}
+                      <a href="/app/catalogue">
+                        {stockValuation.uncosted === 1
+                          ? 'Set what it costs you'
+                          : 'Set what they cost you'}
+                      </a>{' '}
+                      and this will settle.
+                    </p>
+                  ) : stockValuation.differenceK === 0 ? (
+                    <p className="rk-fineprint">Your books and your shelf agree.</p>
+                  ) : (
+                    <>
+                      <p className="rk-fineprint">
+                        {stockValuation.differenceK < 0
+                          ? 'Your books claim stock you are not holding. Most often that is stock bought as a lump sum, which goes onto the shelf as money but never comes off as goods sold.'
+                          : 'You are holding more stock than your books account for. Most often that is stock that arrived without a purchase being recorded.'}
+                      </p>
+                      <StockCountForm short={stockValuation.differenceK < 0} />
+                    </>
+                  )}
+                </div>
+              ) : null}
             </div>
 
             <div className="rk-card rk-dash-card">

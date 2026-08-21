@@ -5,6 +5,7 @@ import {
   postCreditNote,
   postExpense,
   postOpeningBalances,
+  postStockCount,
   postProviderPayment,
   postPurchase,
   postReceivablePayment,
@@ -362,5 +363,33 @@ describe('opening balances', () => {
     expect(() => postOpeningBalances({ memo: 'x' })).toThrow(RangeError);
     expect(() => postOpeningBalances({ memo: 'x', cashK: 0, bankK: 0 })).toThrow(RangeError);
     expect(() => postOpeningBalances({ memo: 'x', cashK: -1 })).toThrow(RangeError);
+  });
+});
+
+describe('a stock count', () => {
+  /**
+   * The ordinary case. A purchase described in prose debits inventory and
+   * nothing ever credits it, so the account sits above what the shelf holds
+   * and the difference is cost that was incurred and never recorded.
+   */
+  it('puts a shortfall through cost of sales', () => {
+    const posting = postStockCount({ memo: 'Stock count', differenceK: -15_000_00 });
+    expect(posting.lines).toEqual([
+      { account: 'COGS', debitK: 15_000_00, creditK: 0 },
+      { account: 'INVENTORY', debitK: 0, creditK: 15_000_00 },
+    ]);
+  });
+
+  /* And a surplus gives the same account back what it was overcharged. */
+  it('puts a surplus back the other way', () => {
+    const posting = postStockCount({ memo: 'Stock count', differenceK: 4_000_00 });
+    expect(posting.lines).toEqual([
+      { account: 'INVENTORY', debitK: 4_000_00, creditK: 0 },
+      { account: 'COGS', debitK: 0, creditK: 4_000_00 },
+    ]);
+  });
+
+  it('refuses to write an entry for a count that agrees', () => {
+    expect(() => postStockCount({ memo: 'x', differenceK: 0 })).toThrow(RangeError);
   });
 });

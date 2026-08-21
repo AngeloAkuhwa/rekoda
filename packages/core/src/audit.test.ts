@@ -101,6 +101,23 @@ describe('every shape a writer actually stores', () => {
     ).toEqual({ summary: 'Charge refunded (duplicate charge)', amountK: 500_000 });
   });
 
+  /**
+   * Both directions, because they are different events. A count that finds
+   * less than the books claim is a loss; one that finds more is not, and a
+   * row that read the same for both would leave a reader to work it out from
+   * a sign they cannot see.
+   */
+  it('says which way a stock count went, and carries what moved', () => {
+    expect(describe_('stock_count', 'adjusted', { differenceK: -3_800_000 })).toEqual({
+      summary: 'Stock written down to a count',
+      amountK: 3_800_000,
+    });
+    expect(describe_('stock_count', 'adjusted', { differenceK: 1_200_000 })).toEqual({
+      summary: 'Stock written up to a count',
+      amountK: 1_200_000,
+    });
+  });
+
   it('counts erased records, and gets the singular right', () => {
     expect(describe_('customer_identities', 'erased', { facetsDeleted: 1 }).summary).toBe(
       'Customer details erased on request (1 record)',

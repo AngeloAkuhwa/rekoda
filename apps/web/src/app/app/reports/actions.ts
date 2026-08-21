@@ -1,8 +1,8 @@
 'use server';
 
 import { revalidatePath } from 'next/cache';
-import { parseAmountText, toKobo } from '@rekoda/core';
-import { openBooks } from '@/server/api';
+import { formatKobo, lagosDay, parseAmountText, toKobo } from '@rekoda/core';
+import { countStock, openBooks } from '@/server/api';
 import { readSessionToken } from '@/server/session-cookies';
 
 export interface OpeningFormState {
@@ -68,5 +68,51 @@ export async function openBooksAction(
   revalidatePath('/app/reports');
   return {
     done: `Opened as at ${outcome.asAt}. Your balance sheet now starts from what you had.`,
+  };
+}
+
+export interface StockCountState {
+  error?: string;
+  done?: string;
+}
+
+/**
+ * Settle the shelf against the books.
+ *
+ * Sends a day and nothing else. Every figure that decides what gets posted is
+ * read on the server inside the writing transaction, so this action cannot
+ * hand the ledger a number that was true when the page rendered and is not
+ * true now.
+ */
+export async function countStockAction(
+  _prev: StockCountState,
+  _formData: FormData,
+): Promise<StockCountState> {
+  const token = await readSessionToken();
+  if (!token) return { error: 'Your session expired. Sign in again.' };
+
+  const outcome = await countStock(token, { countedOn: lagosDay(new Date()) });
+  if (!outcome) return { error: 'That did not go through. Nothing was changed.' };
+
+  if (outcome.outcome === 'costs_missing') {
+    const many = outcome.uncosted > 1;
+    return {
+      error: `${outcome.uncosted} ${many ? 'products hold' : 'product holds'} stock with no cost recorded, so the count is short by an unknown amount. Set ${many ? 'those costs' : 'that cost'} on your catalogue first.`,
+    };
+  }
+  if (outcome.outcome === 'not_yet') {
+    return { error: 'That day has not happened yet.' };
+  }
+  if (outcome.outcome === 'agrees') {
+    return { done: 'Your books already match the shelf. Nothing was posted.' };
+  }
+
+  revalidatePath('/app/reports');
+  const short = outcome.differenceK < 0;
+  const amount = formatKobo(Math.abs(outcome.differenceK));
+  return {
+    done: short
+      ? `Written down by ${amount}. That went to cost of goods sold, where stock that left without a sale belongs.`
+      : `Written up by ${amount}. Your stock was worth more than the books said.`,
   };
 }

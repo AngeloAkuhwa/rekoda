@@ -162,6 +162,23 @@ export function describeAuditEvent(row: AuditRow): AuditDescription {
     };
   }
 
+  if (entity === 'stock_count' && action === 'adjusted') {
+    const differenceK = int(newValue, 'differenceK');
+    /* The amount column carries what MOVED, and the direction belongs in the
+     * words: an audit row reading "minus ₦38,000" beside "stock adjusted"
+     * makes a reader work out which way, and a write-down and a write-up are
+     * different events. */
+    return {
+      summary:
+        differenceK === null
+          ? 'Stock brought to a count'
+          : differenceK < 0
+            ? 'Stock written down to a count'
+            : 'Stock written up to a count',
+      amountK: differenceK === null ? null : Math.abs(differenceK),
+    };
+  }
+
   /* Unknown shape. Name what happened and print nothing that was stored: a
    * writer added since this file was last read must be dull here, never loud. */
   return { summary: `${humanise(entity)}: ${humanise(action)}`, amountK: null };
