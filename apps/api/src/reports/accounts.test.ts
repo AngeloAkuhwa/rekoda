@@ -18,8 +18,10 @@ describe('the chart of accounts, on the wire', () => {
     expect([...LedgerAccount.options].sort()).toEqual(Object.keys(ACCOUNTS).sort());
   });
 
-  it('is still the fixed ten (ADR 0004)', () => {
-    expect(LedgerAccount.options).toHaveLength(10);
+  /* Eleven since ADR 0025 split the bank. Still fixed: a merchant cannot add
+   * one, which is the property ADR 0004 exists to protect. */
+  it('is still a fixed chart, and still small', () => {
+    expect(LedgerAccount.options).toHaveLength(11);
   });
 
   /* A picker missing a label renders a blank option, which is how a merchant

@@ -244,7 +244,10 @@ export interface CashflowStatement {
   readonly closingK: number;
 }
 
-const CASH_KEYS: readonly AccountKey[] = ['CASH', 'BANK_PAYSTACK'];
+/* Both bank accounts (ADR 0025). A merchant's cash position is what they can
+ * spend, and money sitting at the provider waiting to settle is still theirs.
+ * Splitting the account changed where money is recorded, never what counts. */
+const CASH_KEYS: readonly AccountKey[] = ['CASH', 'BANK', 'BANK_PAYSTACK'];
 
 /**
  * Direct method, merchant labels: what you started the period with, what

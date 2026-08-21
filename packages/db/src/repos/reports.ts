@@ -6,9 +6,9 @@
  *   - Every figure is computed by PostgreSQL from `ledger_entries`, `invoices`
  *     and `reconciliations`. No AI anywhere near a number (M3 exit criterion:
  *     "every report figure traceable to SQL").
- *   - "Money in / money out" is the CASH lens: movement on the CASH and
- *     BANK_PAYSTACK accounts. The merchant's default view is money that
- *     actually moved, in plain labels — never the words "cash basis".
+ *   - "Money in / money out" is the CASH lens: movement on the CASH, BANK and
+ *     BANK_PAYSTACK accounts (ADR 0025). The merchant's default view is money
+ *     that actually moved, in plain labels, never the words "cash basis".
  *   - Months are Lagos months. Nigeria is UTC+1 with no DST, so the bucket is
  *     `date_trunc('month', created_at + interval '1 hour')` — the same fixed
  *     offset `usagePeriod` uses, applied in SQL.
@@ -28,7 +28,10 @@ import {
 import type { TenantDb } from '../client.js';
 
 /** Accounts whose movement IS "money in / money out" under the cash lens. */
-const CASH_ACCOUNTS = sql`'CASH', 'BANK_PAYSTACK'`;
+/* All three, since ADR 0025 split the bank. Money waiting to settle at the
+ * provider is still the merchant's money; the split changed where it is
+ * recorded, never whether it counts. */
+const CASH_ACCOUNTS = sql`'CASH', 'BANK', 'BANK_PAYSTACK'`;
 
 export interface Overview {
   /** Cash that arrived this Lagos month, in kobo. */

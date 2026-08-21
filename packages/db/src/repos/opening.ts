@@ -131,7 +131,7 @@ export async function openingBalancesFor(
   }>(sql`
     SELECT t.source_id AS as_at,
            COALESCE(SUM(e.debit_k) FILTER (WHERE e.account = 'CASH'), 0)::bigint AS cash_k,
-           COALESCE(SUM(e.debit_k) FILTER (WHERE e.account = 'BANK_PAYSTACK'), 0)::bigint AS bank_k,
+           COALESCE(SUM(e.debit_k) FILTER (WHERE e.account = 'BANK'), 0)::bigint AS bank_k,
            COALESCE(SUM(e.debit_k) FILTER (WHERE e.account = 'INVENTORY'), 0)::bigint AS stock_k
     FROM ledger_transactions t
     JOIN ledger_entries e

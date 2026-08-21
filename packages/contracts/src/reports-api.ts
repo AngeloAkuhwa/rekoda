@@ -712,7 +712,7 @@ export const reopenBooksResponse = z.discriminatedUnion('outcome', [
 ]);
 
 /**
- * The fixed ten (ADR 0004). Mirrors `ACCOUNTS` in @rekoda/core, which cannot
+ * The chart (ADR 0004, extended by 0025). Mirrors `ACCOUNTS` in @rekoda/core, which cannot
  * be imported here: contracts depends on zod and nothing else, so the wire
  * shape never drags the money engine along with it. The two lists are held
  * together by a test rather than by hope
@@ -721,6 +721,7 @@ export const reopenBooksResponse = z.discriminatedUnion('outcome', [
 export const LedgerAccount = z.enum([
   'CASH',
   'BANK_PAYSTACK',
+  'BANK',
   'ACCOUNTS_RECEIVABLE',
   'INVENTORY',
   'ACCOUNTS_PAYABLE',

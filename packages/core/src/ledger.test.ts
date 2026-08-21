@@ -60,7 +60,12 @@ describe('posting builders balance by construction', () => {
 
   it('a part-paid sale: the unpaid part is a receivable — the debt book IS the ledger', () => {
     const p = postSale({ memo: 'Amaka 4 bags', totalK: 11_200_000, paidK: 8_000_000 });
-    expect(p.lines).toContainEqual({ account: 'BANK_PAYSTACK', debitK: 8_000_000, creditK: 0 });
+    /* The merchant's own bank, not the settlement account (ADR 0025). A
+     * customer transferring into a GTB account has nothing to do with
+     * Paystack, and putting it there is what made the balance sheet match no
+     * statement anybody holds. */
+    expect(p.lines).toContainEqual({ account: 'BANK', debitK: 8_000_000, creditK: 0 });
+    expect(p.lines.map((l) => l.account)).not.toContain('BANK_PAYSTACK');
     expect(p.lines).toContainEqual({
       account: 'ACCOUNTS_RECEIVABLE',
       debitK: 3_200_000,
@@ -106,6 +111,16 @@ describe('a provider-confirmed payment (payments-v1 §15, §23)', () => {
       { account: 'EXPENSES', debitK: 150_000, creditK: 0 },
       { account: 'ACCOUNTS_RECEIVABLE', debitK: 0, creditK: 10_000_000 },
     ]);
+  });
+
+  /* The other half of the split (ADR 0025). Settlements are the one thing
+   * that belongs on the provider account, and if this ever reached BANK a
+   * merchant would be reconciling their own statement against money that has
+   * not arrived in it yet. */
+  it('settles to the provider account and never to the merchant`s own bank', () => {
+    const p = postProviderPayment({ memo: 'ref', allocatedK: 10_000_000 });
+    expect(p.lines.map((l) => l.account)).toContain('BANK_PAYSTACK');
+    expect(p.lines.map((l) => l.account)).not.toContain('BANK');
   });
 
   it('customer-borne: the fee never enters the merchant`s books', () => {
@@ -178,7 +193,10 @@ describe('trial balance', () => {
     expect(by['SALES_REVENUE']).toBe(57_500_000); // ₦575k sold
     expect(by['ACCOUNTS_RECEIVABLE']).toBe(3_000_000); // ₦50k new debt − ₦20k cleared
     expect(by['CASH']).toBe(1_700_000); // ₦45k in − ₦28k out
-    expect(by['BANK_PAYSTACK']).toBe(50_000_000); // ₦400k + ₦80k + ₦20k
+    expect(by['BANK']).toBe(50_000_000); // ₦400k + ₦80k + ₦20k
+    /* Not a penny of an ordinary trading day reaches the settlement account.
+     * Only `postProviderPayment` writes there, and none of these is one. */
+    expect(by['BANK_PAYSTACK']).toBeUndefined();
     expect(by['EXPENSES']).toBe(2_800_000);
   });
 
@@ -318,7 +336,7 @@ describe('a credit note', () => {
   it('never touches cash or the bank', () => {
     const posting = postCreditNote({ memo: 'Credit', amountK: 5_000_000, vatK: 100_000 });
     for (const l of posting.lines) {
-      expect(['CASH', 'BANK_PAYSTACK']).not.toContain(l.account);
+      expect(['CASH', 'BANK', 'BANK_PAYSTACK']).not.toContain(l.account);
     }
   });
 });
@@ -333,7 +351,7 @@ describe('opening balances', () => {
     });
     expect(posting.lines).toEqual([
       { account: 'CASH', debitK: 20_000_000, creditK: 0 },
-      { account: 'BANK_PAYSTACK', debitK: 5_000_000, creditK: 0 },
+      { account: 'BANK', debitK: 5_000_000, creditK: 0 },
       { account: 'INVENTORY', debitK: 15_000_000, creditK: 0 },
       /* The accounting equation, stated as a line: what the business holds
        * is what the owner has in it. */
