@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { layoutStatements, periodLabel, type StatementDocument } from './statement-layout.js';
+import {
+  layoutStatements,
+  periodLabel,
+  statementSheets,
+  type StatementDocument,
+} from './statement-layout.js';
 import type { LayoutBlock } from './invoice-layout.js';
 import type { BalanceSheet, CashflowStatement, ProfitAndLoss, TrialBalance } from './statements.js';
 
@@ -172,5 +177,73 @@ describe('what the statements document says', () => {
   it('names no customer, because a statement is totals and not a ledger dump', () => {
     const rendered = text(layoutStatements(doc()));
     expect(rendered).not.toContain('CUSTOMER_');
+  });
+});
+
+describe('the statements as a workbook', () => {
+  const sheets = () => statementSheets(doc());
+  const sheet = (name: string) => sheets().find((s) => s.name === name)!;
+  const rowFor = (name: string, label: string) =>
+    sheet(name).rows.find((r) => r[0] === label) ?? [];
+
+  it('is four sheets, in the order an accountant reads them', () => {
+    expect(sheets().map((s) => s.name)).toEqual([
+      'Profit and loss',
+      'Balance sheet',
+      'Cash flow',
+      'Trial balance',
+    ]);
+  });
+
+  it('heads every sheet with the business and the month', () => {
+    for (const s of sheets()) {
+      expect(s.rows[0]?.[0]).toBe('Mama Chidi Stores');
+      expect(s.rows[1]?.[1]).toBe('August 2026');
+    }
+  });
+
+  it('writes naira as numbers, not kobo and not text', () => {
+    /* Kobo is Rekoda's internal unit. In a cell it would read as a hundred
+     * times the truth to whoever opened the file. */
+    expect(rowFor('Profit and loss', 'Total income')[1]).toBe(150_000);
+    expect(typeof rowFor('Profit and loss', 'Total income')[1]).toBe('number');
+  });
+
+  it('signs a loss rather than naming it, because a cell gets summed', () => {
+    const loss = statementSheets(
+      doc({
+        profitAndLoss: {
+          ...PROFIT,
+          totalIncomeK: K(10_000),
+          totalExpensesK: K(25_000),
+          netProfitK: K(-15_000),
+        },
+      }),
+    );
+    const row = loss[0]!.rows.find((r) => r[0] === 'Net profit');
+    /* The PDF says "Net loss ₦15,000" because a bracketed negative is read
+     * wrong on paper. A spreadsheet is the opposite: somebody will add this
+     * column, and a positive here would make their total wrong. */
+    expect(row?.[1]).toBe(-15_000);
+  });
+
+  it('gives the trial balance real debit and credit columns', () => {
+    const rows = sheet('Trial balance').rows;
+    expect(rows.find((r) => r[0] === 'Account')).toEqual(['Account', 'Debit', 'Credit']);
+    expect(rows.find((r) => r[0] === 'Cash')).toEqual(['Cash', 40_000, null]);
+    expect(rows.find((r) => r[0] === 'Sales')).toEqual(['Sales', null, 40_000]);
+    expect(rows.find((r) => r[0] === 'Total')).toEqual(['Total', 40_000, 40_000]);
+  });
+
+  it('carries the balance warning into the workbook too', () => {
+    const unbalanced = statementSheets(
+      doc({ trialBalance: { ...TRIAL, totalCreditK: K(39_000), balanced: false } }),
+    );
+    const flat = JSON.stringify(unbalanced);
+    expect(flat).toContain('DO NOT agree');
+  });
+
+  it('says the books agree when they do', () => {
+    expect(JSON.stringify(sheets())).toContain('Debits and credits agree');
   });
 });

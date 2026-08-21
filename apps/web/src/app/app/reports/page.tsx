@@ -310,6 +310,12 @@ export default async function ReportsPage({
             <a href={`/app/export/statements?period=${period}`} download>
               Download all four statements for {label} as a PDF
             </a>
+            {' · '}
+            {/* The PDF is for somebody who will read it. This is for somebody
+                who will work with it: four tabs, every figure a real number. */}
+            <a href={`/app/export/workbook?period=${period}`} download>
+              or as an Excel workbook
+            </a>
           </p>
         </>
       )}

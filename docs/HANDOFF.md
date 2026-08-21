@@ -118,7 +118,13 @@ real database in CI:
   receipts and payments, with the sign-out and empty states each page needs.
   All four statements download as one dated A4 PDF from the reports page
   (`GET /v1/reports/statements.pdf?period=YYYY-MM`), which is the artefact a
-  bank, a landlord or a grant officer asks for and a screen is not.
+  bank, a landlord or a grant officer asks for and a screen is not, and as an
+  Excel workbook (`statements.xlsx`) with one sheet per statement and every
+  figure a real number. The xlsx writer is ours, in `@rekoda/core`: a few
+  hundred lines against a large dependency that would also be a parser, and a
+  parser is attack surface for something that only ever writes. Zip entries
+  are stored rather than deflated, so it pulls in no node built-in and stays
+  importable anywhere core is.
 - **Commercial.** Exhaustible monthly allowances consumed atomically, a
   30-day trial that actually expires, an operator plan endpoint, and cost
   telemetry per provider call including the ones that time out.
