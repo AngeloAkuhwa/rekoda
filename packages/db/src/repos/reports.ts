@@ -592,3 +592,80 @@ export async function summaryFor(
     expenses: row?.expenses ?? 0,
   };
 }
+
+/* ── the audit trail (MASTER-PLAN §42) ───────────────────────────────────── */
+
+export interface AuditRow {
+  id: string;
+  actor: string;
+  entity: string;
+  entityId: string | null;
+  action: string;
+  oldValue: unknown;
+  newValue: unknown;
+  reason: string | null;
+  sourceType: string;
+  at: Date;
+}
+
+export interface AuditList {
+  rows: AuditRow[];
+  count: number;
+}
+
+/**
+ * Every recorded change, newest first.
+ *
+ * `audit_events` has been written since M1 by five repos and read by nothing,
+ * which meant the compliance record Rekoda keeps for a merchant had never
+ * been shown to one. This is the query that ends that.
+ *
+ * The values travel as stored and are turned into sentences by
+ * `describeAuditEvent` in @rekoda/core, where every shape is pinned by a
+ * test. That split is deliberate: what a change MEANS is a product decision
+ * and does not belong in SQL, and a page that formatted jsonb inline would be
+ * the place a future writer's payload leaked out of.
+ */
+export async function auditFor(
+  tx: TenantDb,
+  businessId: string,
+  limit: number,
+): Promise<AuditList> {
+  const rows = await tx.execute<{
+    id: string;
+    actor: string;
+    entity: string;
+    entity_id: string | null;
+    action: string;
+    old_value: unknown;
+    new_value: unknown;
+    reason: string | null;
+    source_type: string;
+    at: Date;
+  }>(sql`
+    SELECT id, actor, entity, entity_id, action, old_value, new_value, reason,
+           source_type, created_at AS at
+    FROM audit_events
+    WHERE business_id = ${businessId}::uuid
+    ORDER BY created_at DESC, id DESC
+    LIMIT ${limit}
+  `);
+  const totals = await tx.execute<{ n: number }>(sql`
+    SELECT count(*)::int AS n FROM audit_events WHERE business_id = ${businessId}::uuid
+  `);
+  return {
+    rows: [...rows].map((r) => ({
+      id: r.id,
+      actor: r.actor,
+      entity: r.entity,
+      entityId: r.entity_id,
+      action: r.action,
+      oldValue: r.old_value,
+      newValue: r.new_value,
+      reason: r.reason,
+      sourceType: r.source_type,
+      at: new Date(r.at),
+    })),
+    count: [...totals][0]?.n ?? 0,
+  };
+}

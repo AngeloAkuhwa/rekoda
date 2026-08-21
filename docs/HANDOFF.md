@@ -240,6 +240,21 @@ prevent. The status read settles nothing: both transactions read `issued`
 before either writes. Only the UPDATE decides, so the posting now comes after
 it. Two concurrency tests, each verified by restoring the old order.
 
+**The audit trail is finally readable (PR #85).** `audit_events` had been
+written since M1 by five repos and read by NOTHING - the compliance record
+Rekoda keeps for a merchant had never been shown to one. `/app/audit` is the
+QuickBooks Audit Log equivalent and the surface an accountant asks for by
+name. It is not the overview's activity strip: that answers "what happened to
+my money" and this answers "who changed something, and why".
+
+Sentences are built by `describeAuditEvent` in @rekoda/core, one case per
+stored shape, with the unknown case falling back to naming the entity rather
+than printing what it held. That fallback is the rule to keep: whatever a
+future writer puts in `new_value` is what a merchant reads here, so a shape
+this file has not seen must be DULL on the page, never loud. Every current
+writer was inventoried before it was built and none stores a customer name or
+a CUSTOMER_ token.
+
 **A note on how the last six were found.** By grepping for exported functions
 with no production caller. Every hit was a missing surface rather than dead
 code: `dueForRenewal`, `applySettledCharge`, `businessForCharge`,
@@ -257,8 +272,13 @@ inherits the triage instead of repeating it:
   This looks like the intended accountant or delegate invite, beside
   `addMembership`, which is also uncalled. Decide whether delegates are
   invited by link before building either.
-- **No chat-history surface** (`threadFor`, `messagesFor`, `draftsFor`). A
-  merchant cannot read back what they told Rekoda, only what it recorded.
+- **No chat-history surface** (`threadFor`, `messagesFor`, `draftsFor`), and
+  Angelo decided against building one. Neither QuickBooks nor HelloBooks has a
+  transcript, because neither has a chat input; what they have is an Audit Log,
+  and that is what PR #85 built instead (`/app/audit`). A transcript would
+  also need the vault opened on a second path besides `ReplySender`, since
+  `conversation_messages.body` is stored tokenised. If it is ever revisited,
+  that is the cost to weigh.
 - **Ops visibility gaps**: `jobsForBusiness`, `callsToday`, `usageTotals`.
   The exception queue is now workable (PR #84) - `GET /v1/ops/exceptions` and
   `POST /v1/ops/exceptions/:id/resolve` - and it is the ONE place on that

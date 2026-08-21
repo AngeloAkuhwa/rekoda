@@ -262,6 +262,44 @@ export const reportsStockResponse = z.object({
 export type ReportsStockResponse = z.infer<typeof reportsStockResponse>;
 
 /**
+ * The audit trail (MASTER-PLAN §42).
+ *
+ * The accounting-standard surface, and deliberately not a chat transcript:
+ * QuickBooks calls this the Audit Log and it is what an accountant or a tax
+ * officer asks for by name. Every row is a CHANGE and who made it.
+ *
+ * `summary` arrives already built by `describeAuditEvent` in @rekoda/core,
+ * where every stored shape is pinned by a test and an unrecognised one falls
+ * back to naming the entity rather than printing what it held. Raw
+ * `old_value` and `new_value` never cross this boundary: a page that
+ * formatted them inline would be the place a future writer's payload leaked.
+ */
+export const reportsAuditResponse = z.object({
+  events: z.array(
+    z.object({
+      id: z.string(),
+      at: z.string(),
+      /** A role and a phone tail, or a plain statement that it was not a person. */
+      actor: z.string(),
+      /** invoice | payment | expense | business | subscription_charge | ... */
+      entity: z.string(),
+      /** issued | voided | confirmed | recorded | plan_changed | ... */
+      action: z.string(),
+      /** The sentence a person reads. Never carries money: see amountK. */
+      summary: z.string(),
+      /** The figure this change was about, when it was about one. */
+      amountK: kobo.nullable(),
+      /** Why, when the action required saying. Voids and refunds always do. */
+      reason: z.string().nullable(),
+      /** chat | dashboard | system | operator | webhook */
+      source: z.string(),
+    }),
+  ),
+  count: z.number().int().nonnegative(),
+});
+export type ReportsAuditResponse = z.infer<typeof reportsAuditResponse>;
+
+/**
  * Withdrawing an invoice that should not have been issued.
  *
  * A reason is REQUIRED and is not decoration: the document sequence stays
