@@ -20,6 +20,7 @@ import { JobRunner, describeFailure } from './runner.js';
 import { inboundMessageHandler, type InboundMessageDeps } from './inbound-message.handler.js';
 import { renderDocumentHandler } from './render-document.handler.js';
 import { deliverDocumentHandler } from './deliver-document.handler.js';
+import { paymentLinkHandler } from './payment-link.handler.js';
 import { processPaymentEventHandler } from './process-payment-event.handler.js';
 import { processBillingChargeHandler } from './process-billing-charge.handler.js';
 import { PaymentsModule } from '../payments/payments.module.js';
@@ -87,6 +88,15 @@ export function buildRunner(
   runner.register(
     JobKind.ProcessBillingCharge,
     processBillingChargeHandler({ provider: deps.paymentProvider, config: deps.config }),
+  );
+  runner.register(
+    JobKind.PaymentLink,
+    paymentLinkHandler({
+      paymentIntents: deps.paymentIntents,
+      replySender: deps.replySender,
+      db: appDb,
+      config: deps.config,
+    }),
   );
   return runner;
 }

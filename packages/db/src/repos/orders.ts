@@ -107,6 +107,11 @@ export type MarkOutcome = 'marked' | 'already' | 'not_found';
  * settles nothing, because two callers both read `placed` before either
  * writes. Only this UPDATE decides, so only its winner may raise the invoice
  * that follows.
+ *
+ * `invoiceId` is written by the same statement that moves the status, not by
+ * a second one. A confirmed order with no invoice attached would be a row
+ * claiming a document exists with no way to find it, and the register would
+ * be back to matching them by eye.
  */
 export async function markOrder(
   tx: TenantDb,
@@ -114,10 +119,11 @@ export async function markOrder(
   id: string,
   from: string,
   to: string,
+  invoiceId?: string,
 ): Promise<MarkOutcome> {
   const moved = await tx
     .update(orders)
-    .set({ status: to, updatedAt: new Date() })
+    .set({ status: to, updatedAt: new Date(), ...(invoiceId ? { invoiceId } : {}) })
     .where(and(eq(orders.businessId, businessId), eq(orders.id, id), eq(orders.status, from)))
     .returning({ id: orders.id });
   if (moved.length === 1) return 'marked';
@@ -135,6 +141,7 @@ export interface OrderRow {
   orderNumber: string;
   status: string;
   totalK: number;
+  invoiceId: string | null;
   placedAt: Date;
   lines: { name: string; quantity: number; unitPriceK: number; lineTotalK: number }[];
 }
@@ -151,6 +158,7 @@ export async function orderByNumber(
       orderNumber: orders.orderNumber,
       status: orders.status,
       totalK: orders.totalK,
+      invoiceId: orders.invoiceId,
       placedAt: orders.createdAt,
     })
     .from(orders)
@@ -187,6 +195,8 @@ export interface OrderSummary {
   orderNumber: string;
   status: string;
   totalK: number;
+  /** The invoice it became, by NUMBER, or null while it is still a request. */
+  invoiceNumber: string | null;
   placedAt: Date;
   itemCount: number;
 }
@@ -202,16 +212,18 @@ export async function ordersFor(
     order_number: string;
     status: string;
     total_k: string;
+    invoice_number: string | null;
     placed_at: Date;
     item_count: number;
   }>(sql`
     SELECT o.id, o.order_number, o.status, o.total_k::bigint AS total_k,
-           o.created_at AS placed_at,
+           inv.invoice_number, o.created_at AS placed_at,
            count(i.id)::int AS item_count
     FROM orders o
     LEFT JOIN order_items i ON i.order_id = o.id AND i.business_id = o.business_id
+    LEFT JOIN invoices inv ON inv.id = o.invoice_id AND inv.business_id = o.business_id
     WHERE o.business_id = ${businessId}::uuid
-    GROUP BY o.id, o.order_number, o.status, o.total_k, o.created_at
+    GROUP BY o.id, o.order_number, o.status, o.total_k, inv.invoice_number, o.created_at
     ORDER BY o.created_at DESC
     LIMIT ${limit}
   `);
@@ -221,6 +233,7 @@ export async function ordersFor(
     orderNumber: r.order_number,
     status: r.status,
     totalK: Number(r.total_k),
+    invoiceNumber: r.invoice_number,
     placedAt: new Date(r.placed_at),
     itemCount: r.item_count,
   }));

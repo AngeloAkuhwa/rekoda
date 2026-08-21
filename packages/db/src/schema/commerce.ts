@@ -91,6 +91,13 @@ export const orders = pgTable(
     businessId: businessId(),
     customerId: uuid('customer_id').references(() => customers.id),
     orderNumber: text('order_number').notNull(),
+    /**
+     * The invoice this order became, once the merchant agreed to it.
+     *
+     * Null while it is still only a request, which is every order until
+     * somebody says yes (migration 0029).
+     */
+    invoiceId: uuid('invoice_id'),
     status: text('status').notNull().default('placed'), // placed | confirmed | paid | cancelled
     totalK: kobo('total_k').notNull(),
     currency: text('currency').notNull().default('NGN'),

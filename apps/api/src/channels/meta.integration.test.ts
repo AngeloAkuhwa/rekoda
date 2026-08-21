@@ -3521,6 +3521,79 @@ describe('a forwarded order', () => {
     expect(await invoiceCount(business.id)).toBe(0);
   });
 
+  /**
+   * The whole of Door 2, with the money door open: a customer's own message
+   * becomes an invoice and a link the merchant can forward straight back.
+   *
+   * The link needs the customer's EMAIL, which lives in the identity vault
+   * against a customer row. Chat-issued invoices used to carry
+   * `customer_id = NULL` and keep only the token, so the vault had nothing to
+   * hang on and no chat-created invoice could ever be paid online. That is
+   * what resolving the token at issue time fixes.
+   */
+  it('offers a payable link when the shop can take one', async () => {
+    const business = await seedMerchant('+2348031234567');
+    await seedCatalogue(business.id);
+    await withBusiness(db, business.id, async (tx) => {
+      const connection = await paymentsHub.upsertConnection(tx, {
+        businessId: business.id,
+        providerType: 'paystack',
+        settlementAccountLast4: '4821',
+      });
+      await paymentsHub.setConnectionState(tx, connection.id, {
+        status: 'active',
+        externalSubaccountId: 'ACCT_live1',
+      });
+    });
+
+    /* The customer the gateway would have resolved, with an email on file:
+     * the forwarded message named them, and Rekoda never invents an address. */
+    await customersRepo.createCustomerWithIdentities(db, business.id, 'CUSTOMER_7K2', [
+      {
+        facet: 'email',
+        ciphertext: encryptFacet('adaeze@example.com', deps.config.vaultKey),
+        matchKey: null,
+      },
+    ]);
+
+    stubTransport.replyWith(THE_ORDER);
+    await send('please I want 2 ankara bale', 'wamid.LINK');
+    await send('yes', 'wamid.LINKYES');
+
+    expect(stubSender.lastText).toMatch(/Payment link for INV-\d{4}-000001: ₦17,000 outstanding/);
+    expect(stubSender.lastText).toMatch(/https:\/\/checkout\.stub\/RKD-PAY-/);
+  });
+
+  /* A shop with no provider connection hears nothing extra. The link job runs
+   * and stays quiet: telling them after every order that they cannot take
+   * card is a sentence they would learn to scroll past. */
+  it('says nothing extra when the shop cannot take a payment', async () => {
+    const business = await seedMerchant('+2348031234567');
+    await seedCatalogue(business.id);
+    stubTransport.replyWith(THE_ORDER);
+
+    await send('please I want 2 ankara bale', 'wamid.NOLINK');
+    await send('yes', 'wamid.NOLINKYES');
+
+    /* The last thing they heard is the confirmation itself, not an apology. */
+    expect(stubSender.lastText).toMatch(/ORD-\d{4}-000001 is now INV-\d{4}-000001/);
+    expect(stubSender.lastText).not.toContain('Payment link');
+  });
+
+  it('records which invoice the order became', async () => {
+    const business = await seedMerchant('+2348031234567');
+    await seedCatalogue(business.id);
+    stubTransport.replyWith(THE_ORDER);
+
+    await send('please I want 2 ankara bale', 'wamid.LINKED');
+    await send('yes', 'wamid.LINKEDYES');
+
+    const [order] = await withBusiness(db, business.id, (tx) =>
+      ordersRepo.ordersFor(tx, business.id),
+    );
+    expect(order!.invoiceNumber).toMatch(/^INV-\d{4}-000001$/);
+  });
+
   /* A quote is not an agreement to pay on a day. What the customer said about
    * timing is about DELIVERY, and reading it as a payment date would put
    * somebody on the debtors list on a day nobody agreed. */

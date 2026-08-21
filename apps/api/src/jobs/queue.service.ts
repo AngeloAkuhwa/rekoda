@@ -20,6 +20,14 @@ export const JobKind = {
    * and the other must never touch it.
    */
   ProcessBillingCharge: 'billing.process',
+  /**
+   * An invoice that has just been raised needs a payable link.
+   *
+   * A job rather than part of the confirmation, because minting one reads an
+   * invoice that the confirming transaction has not committed yet and talks
+   * to a provider over HTTP. Same reason `document.render` is a job.
+   */
+  PaymentLink: 'payment.link',
 } as const;
 
 export type JobKindName = (typeof JobKind)[keyof typeof JobKind];

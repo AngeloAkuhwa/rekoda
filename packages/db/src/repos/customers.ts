@@ -76,6 +76,32 @@ export class IdentityConflict extends Error {}
  * base32 characters is 32,768 per business, so a collision is rare and a
  * retry is cheaper than a longer token on every preview message.
  */
+/**
+ * The customer a token stands for.
+ *
+ * Chat-issued invoices carried `customer_id = NULL` and kept the token in
+ * `snapshot_json`, which was enough for matching a payment to an invoice
+ * (see `openInvoiceForPayment`) and not enough for anything that needs the
+ * PERSON: minting a payment link reads their email off the identity vault,
+ * and there is no vault to read without a customer row to hang it on. The
+ * privacy gateway has always resolved one; the sale simply threw it away.
+ *
+ * Null for a token nobody has seen, which is not an error: a merchant can
+ * name somebody the gateway has never tokenised.
+ */
+export async function customerIdForToken(
+  tx: TenantDb,
+  businessId: string,
+  token: string,
+): Promise<string | null> {
+  const rows = await tx
+    .select({ id: customers.id })
+    .from(customers)
+    .where(and(eq(customers.businessId, businessId), eq(customers.token, token)))
+    .limit(1);
+  return rows[0]?.id ?? null;
+}
+
 export async function createCustomerWithIdentities(
   db: Db,
   businessId: string,
