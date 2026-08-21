@@ -10,7 +10,7 @@
  * the lock and the transaction are a persistence concern, the decision made
  * inside them is not.
  */
-import { and, desc, eq, gt, isNull, sql } from 'drizzle-orm';
+import { and, desc, eq, gt, isNull, ne, sql } from 'drizzle-orm';
 import { trialExpiry } from '@rekoda/core';
 import type { Db, TenantDb } from '../client.js';
 import { withBusiness, withUser } from '../client.js';
@@ -478,6 +478,120 @@ export async function roleOfPhone(
     .where(and(eq(memberships.businessId, businessId), eq(users.phone, phone)))
     .limit(1);
   return rows[0]?.role ?? null;
+}
+
+/* ─────────────────────────── who can see the books ──────────────────────── */
+
+export interface TeamMember {
+  userId: string;
+  /** E.164. The only identifier an owner has for somebody they invited. */
+  phone: string;
+  role: string;
+  addedAt: Date;
+}
+
+/**
+ * Everyone who can reach this business, under its own pin.
+ *
+ * `memberships` is under row-level security and `users` is deliberately
+ * outside it, so the pin is what decides which user ids are reachable at all
+ * — the join cannot wander into another tenant's people.
+ */
+export async function membersOf(tx: TenantDb, businessId: string): Promise<TeamMember[]> {
+  const rows = await tx
+    .select({
+      userId: users.id,
+      phone: users.phone,
+      role: memberships.role,
+      addedAt: memberships.createdAt,
+    })
+    .from(memberships)
+    .innerJoin(users, eq(users.id, memberships.userId))
+    .where(eq(memberships.businessId, businessId))
+    .orderBy(memberships.createdAt);
+  return rows.map((r) => ({ ...r, addedAt: new Date(r.addedAt) }));
+}
+
+export class AlreadyAMember extends Error {}
+
+/**
+ * Give somebody access to a business by their phone number.
+ *
+ * The user row is created if this is the first Rekoda has heard of them:
+ * an accountant should not have to sign up before they can be invited, and
+ * `upsertUserByPhone` is what the OTP flow will find when they do sign in.
+ *
+ * Refuses a duplicate rather than adding a second membership. Two rows for
+ * one person is not a worse kind of access, it is a person whose role
+ * depends on which row a query happens to read first.
+ */
+export async function inviteMember(
+  db: Db,
+  businessId: string,
+  phone: string,
+  role: 'accountant' | 'delegate',
+): Promise<TeamMember> {
+  const user = await upsertUserByPhone(db, phone);
+  return withBusiness(db, businessId, async (tx) => {
+    const existing = await tx
+      .select({ role: memberships.role })
+      .from(memberships)
+      .where(and(eq(memberships.businessId, businessId), eq(memberships.userId, user.id)))
+      .limit(1);
+    if (existing.length > 0) {
+      throw new AlreadyAMember(`already a ${existing[0]!.role} of this business`);
+    }
+
+    const inserted = await tx
+      .insert(memberships)
+      .values({ businessId, userId: user.id, role })
+      .returning({ createdAt: memberships.createdAt });
+    return {
+      userId: user.id,
+      phone: user.phone,
+      role,
+      addedAt: new Date(inserted[0]!.createdAt),
+    };
+  });
+}
+
+export class CannotRemoveOwner extends Error {}
+
+/**
+ * Take access away.
+ *
+ * The OWNER cannot be removed, by anybody including themselves. A business
+ * with no owner has nobody who can invite one back, change its plan, or
+ * delete its data: it is a tenant nobody can administer, and the repair is a
+ * database console. Refusing here is cheaper than that.
+ *
+ * Returns false when there was nothing to remove, so a caller can tell "gone
+ * now" from "was never here" without a second query.
+ */
+export async function removeMember(
+  tx: TenantDb,
+  businessId: string,
+  userId: string,
+): Promise<boolean> {
+  const removed = await tx
+    .delete(memberships)
+    .where(
+      and(
+        eq(memberships.businessId, businessId),
+        eq(memberships.userId, userId),
+        ne(memberships.role, 'owner'),
+      ),
+    )
+    .returning({ id: memberships.userId });
+  if (removed.length === 1) return true;
+
+  const owner = await tx
+    .select({ role: memberships.role })
+    .from(memberships)
+    .where(and(eq(memberships.businessId, businessId), eq(memberships.userId, userId)))
+    .limit(1);
+  if (owner[0]?.role === 'owner') throw new CannotRemoveOwner('the owner cannot be removed');
+  return false;
 }
 
 /* ─────────────────────── messaging consent (STOP/START) ─────────────────── */

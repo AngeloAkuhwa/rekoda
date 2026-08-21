@@ -8,6 +8,7 @@ const TABS = [
   { key: 'receipts', href: '/app/receipts', label: 'Receipts' },
   { key: 'reports', href: '/app/reports', label: 'Reports' },
   { key: 'payments', href: '/app/payments', label: 'Payments' },
+  { key: 'team', href: '/app/team', label: 'Team' },
 ] as const;
 
 export type AppTab = (typeof TABS)[number]['key'];

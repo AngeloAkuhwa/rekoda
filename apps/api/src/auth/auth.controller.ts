@@ -8,19 +8,22 @@ import {
   Get,
   Headers,
   HttpCode,
+  ConflictException,
   NotFoundException,
+  Param,
   Post,
   Req,
   UnauthorizedException,
   UseGuards,
 } from '@nestjs/common';
 import { timingSafeEqual } from 'node:crypto';
-import { billingRepo, type Db } from '@rekoda/db';
+import { billingRepo, identity, withBusiness, type Db } from '@rekoda/db';
 import { CONFIG, type ApiConfig } from '../config.js';
 import { DB } from '../db/db.module.js';
-import { InvalidPhoneError } from '@rekoda/core/identity';
+import { InvalidPhoneError, normalisePhone } from '@rekoda/core/identity';
 import {
   createBusinessRequest,
+  inviteMemberRequest,
   requestOtpRequest,
   setPlanRequest,
   verifyOtpRequest,
@@ -28,6 +31,8 @@ import {
   type RequestOtpResponse,
   type SessionResponse,
   type SetupStateResponse,
+  type TeamMember,
+  type TeamResponse,
   type VerifyOtpResponse,
 } from '@rekoda/contracts';
 import { AuthService, SetupTokenInvalid } from './auth.service.js';
@@ -151,6 +156,83 @@ export class BusinessController {
   }
 
   /**
+   * Who can see this business's books.
+   *
+   * Owner only, and by the same reasoning the settings endpoint exists for:
+   * an accountant is INSIDE the tenant and passes every row-level security
+   * policy, so the guard is the only thing between them and the ability to
+   * add somebody else.
+   */
+  @Get('members')
+  @UseGuards(SessionGuard, RolesGuard)
+  @Roles('owner')
+  async members(@Req() request: AuthedRequest): Promise<TeamResponse> {
+    const businessId = request.auth!.businessId;
+    const members = await withBusiness(this.db, businessId, (tx) =>
+      identity.membersOf(tx, businessId),
+    );
+    return { members: members.map(toWire) };
+  }
+
+  /**
+   * Invite an accountant, by phone.
+   *
+   * The role has been enforced since M1 and nobody could ever become one,
+   * which made the guard a fence around an empty field. The invitee needs no
+   * Rekoda account first: their user row is created here and the OTP flow
+   * finds it when they sign in on their own phone.
+   */
+  @Post('members')
+  @HttpCode(201)
+  @UseGuards(SessionGuard, RolesGuard)
+  @Roles('owner')
+  async invite(@Req() request: AuthedRequest, @Body() body: unknown): Promise<TeamMember> {
+    const parsed = inviteMemberRequest.safeParse(body);
+    if (!parsed.success) throw new BadRequestException('phone and role are required');
+
+    let phone: string;
+    try {
+      phone = normalisePhone(parsed.data.phone);
+    } catch {
+      throw new BadRequestException('that does not look like a Nigerian phone number');
+    }
+
+    try {
+      return toWire(
+        await identity.inviteMember(this.db, request.auth!.businessId, phone, parsed.data.role),
+      );
+    } catch (error) {
+      if (error instanceof identity.AlreadyAMember) {
+        throw new ConflictException(error.message);
+      }
+      throw error;
+    }
+  }
+
+  /** Take access away. The owner cannot be removed, by anybody. */
+  @Delete('members/:userId')
+  @HttpCode(200)
+  @UseGuards(SessionGuard, RolesGuard)
+  @Roles('owner')
+  async removeMember(
+    @Req() request: AuthedRequest,
+    @Param('userId') userId: string,
+  ): Promise<{ removed: boolean }> {
+    const businessId = request.auth!.businessId;
+    try {
+      const removed = await withBusiness(this.db, businessId, (tx) =>
+        identity.removeMember(tx, businessId, userId),
+      );
+      return { removed };
+    } catch (error) {
+      if (error instanceof identity.CannotRemoveOwner) {
+        throw new BadRequestException(error.message);
+      }
+      throw error;
+    }
+  }
+
+  /**
    * Move a business onto a plan. An OPERATOR action, not a merchant one:
    * an owner who could set their own plan could award themselves Complete
    * for free, so this is gated on the deployment secret rather than on any
@@ -193,4 +275,15 @@ function matchesSecret(given: string, expected: string): boolean {
   const a = Buffer.from(given);
   const b = Buffer.from(expected);
   return a.length === b.length && timingSafeEqual(a, b);
+}
+
+/** A member as the wire sees one. Phone included: it is the only handle an
+ * owner has for a person they invited, and it is their own team. */
+function toWire(member: identity.TeamMember): TeamMember {
+  return {
+    userId: member.userId,
+    phone: member.phone,
+    role: member.role,
+    addedAt: member.addedAt.toISOString(),
+  };
 }

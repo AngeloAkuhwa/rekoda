@@ -576,3 +576,210 @@ describe('the operator plan endpoint', () => {
     ).toBe(404);
   });
 });
+
+/**
+ * Who can see the books.
+ *
+ * The `accountant` role has been enforced since M1 and nobody could ever
+ * become one, which made the guard a fence around an empty field. Most of
+ * what follows is about the boundary rather than the feature: an accountant
+ * is INSIDE the tenant and passes every row-level security policy, so this
+ * guard is the only thing standing between them and handing out access.
+ */
+describe('the team an owner can build', () => {
+  async function ownerOf(phone: string) {
+    const requested = (await post('/v1/auth/otp/request', { phone })).json() as {
+      devCode?: string;
+    };
+    const verified = (
+      await post('/v1/auth/otp/verify', { phone, code: requested.devCode })
+    ).json() as { setupToken: string };
+    const created = await post(
+      '/v1/businesses',
+      { name: 'Ada Fashion', businessType: 'Fashion & clothing' },
+      { 'x-rekoda-setup-token': verified.setupToken },
+    );
+    const session = created.json() as { sessionToken: string; businessId: string };
+    return {
+      businessId: session.businessId,
+      auth: { authorization: `Bearer ${session.sessionToken}` },
+    };
+  }
+
+  const team = (auth: Record<string, string>) =>
+    app.inject({ method: 'GET', url: '/v1/businesses/members', headers: auth });
+
+  it('starts with the owner alone', async () => {
+    const owner = await ownerOf('+2348140000001');
+    const body = team(owner.auth);
+    const members = (await body).json() as { members: Array<{ role: string }> };
+    expect(members.members).toHaveLength(1);
+    expect(members.members[0]?.role).toBe('owner');
+  });
+
+  it('invites an accountant by phone, before they have ever signed in', async () => {
+    const owner = await ownerOf('+2348140000002');
+
+    const invited = await post(
+      '/v1/businesses/members',
+      { phone: '+2348149990001', role: 'accountant' },
+      owner.auth,
+    );
+    expect(invited.statusCode).toBe(201);
+    expect(invited.json()).toMatchObject({ role: 'accountant', phone: '+2348149990001' });
+
+    const members = (await team(owner.auth)).json() as { members: Array<{ role: string }> };
+    expect(members.members.map((m) => m.role).sort()).toEqual(['accountant', 'owner']);
+  });
+
+  it('that accountant can then sign in on their own phone and reach the books', async () => {
+    const owner = await ownerOf('+2348140000003');
+    await post(
+      '/v1/businesses/members',
+      { phone: '+2348149990002', role: 'accountant' },
+      owner.auth,
+    );
+
+    const requested = (await post('/v1/auth/otp/request', { phone: '+2348149990002' })).json() as {
+      devCode?: string;
+    };
+    const verified = (
+      await post('/v1/auth/otp/verify', {
+        phone: '+2348149990002',
+        code: requested.devCode,
+      })
+    ).json() as {
+      status: string;
+      sessionToken?: string;
+      memberships?: Array<{ businessId: string; role: string }>;
+    };
+
+    /* No setup grant: they already belong to a business, so verifying hands
+     * them a session for it rather than sending them to onboarding. */
+    expect(verified.status).toBe('signed_in');
+    expect(verified.memberships).toEqual([
+      expect.objectContaining({ businessId: owner.businessId, role: 'accountant' }),
+    ]);
+  });
+
+  /**
+   * The boundary, stated. An accountant passes every RLS policy on every row
+   * of this business, so nothing below the guard would stop them.
+   */
+  it('REFUSES an accountant who tries to invite somebody else', async () => {
+    const owner = await ownerOf('+2348140000004');
+    await post(
+      '/v1/businesses/members',
+      { phone: '+2348149990003', role: 'accountant' },
+      owner.auth,
+    );
+
+    const requested = (await post('/v1/auth/otp/request', { phone: '+2348149990003' })).json() as {
+      devCode?: string;
+    };
+    const signedIn = (
+      await post('/v1/auth/otp/verify', {
+        phone: '+2348149990003',
+        code: requested.devCode,
+      })
+    ).json() as { sessionToken: string };
+    const accountant = { authorization: `Bearer ${signedIn.sessionToken}` };
+
+    expect(
+      (
+        await post(
+          '/v1/businesses/members',
+          { phone: '+2348149990009', role: 'delegate' },
+          accountant,
+        )
+      ).statusCode,
+    ).toBe(403);
+    expect((await team(accountant)).statusCode).toBe(403);
+  });
+
+  it('refuses a second membership for the same person', async () => {
+    const owner = await ownerOf('+2348140000005');
+    const body = { phone: '+2348149990004', role: 'accountant' };
+    expect((await post('/v1/businesses/members', body, owner.auth)).statusCode).toBe(201);
+    /* Two rows for one person is not richer access, it is a role that depends
+     * on which row a query reads first. */
+    expect((await post('/v1/businesses/members', body, owner.auth)).statusCode).toBe(409);
+  });
+
+  it('refuses a role nobody may hand out, and a phone that is not one', async () => {
+    const owner = await ownerOf('+2348140000006');
+    expect(
+      (await post('/v1/businesses/members', { phone: '+2348149990005', role: 'owner' }, owner.auth))
+        .statusCode,
+    ).toBe(400);
+    expect(
+      (
+        await post(
+          '/v1/businesses/members',
+          { phone: 'not-a-phone', role: 'accountant' },
+          owner.auth,
+        )
+      ).statusCode,
+    ).toBe(400);
+  });
+
+  it('removes an accountant, and says so honestly when there was nobody to remove', async () => {
+    const owner = await ownerOf('+2348140000007');
+    const invited = (
+      await post(
+        '/v1/businesses/members',
+        { phone: '+2348149990006', role: 'accountant' },
+        owner.auth,
+      )
+    ).json() as { userId: string };
+
+    const removed = await app.inject({
+      method: 'DELETE',
+      url: `/v1/businesses/members/${invited.userId}`,
+      headers: owner.auth,
+    });
+    expect(removed.json()).toEqual({ removed: true });
+
+    const again = await app.inject({
+      method: 'DELETE',
+      url: `/v1/businesses/members/${invited.userId}`,
+      headers: owner.auth,
+    });
+    expect(again.json()).toEqual({ removed: false });
+  });
+
+  /**
+   * A business with no owner has nobody who can invite one back, change its
+   * plan, or delete its data. It is a tenant nobody can administer, and the
+   * repair is a database console.
+   */
+  it('REFUSES to remove the owner, even at the owner request', async () => {
+    const owner = await ownerOf('+2348140000008');
+    const members = (await team(owner.auth)).json() as {
+      members: Array<{ userId: string; role: string }>;
+    };
+    const self = members.members.find((m) => m.role === 'owner')!;
+
+    const res = await app.inject({
+      method: 'DELETE',
+      url: `/v1/businesses/members/${self.userId}`,
+      headers: owner.auth,
+    });
+    expect(res.statusCode).toBe(400);
+    expect((await team(owner.auth)).json()).toMatchObject({ members: [{ role: 'owner' }] });
+  });
+
+  it('never shows one business the people of another', async () => {
+    const mine = await ownerOf('+2348140000009');
+    const theirs = await ownerOf('+2348140000010');
+    await post(
+      '/v1/businesses/members',
+      { phone: '+2348149990007', role: 'accountant' },
+      theirs.auth,
+    );
+
+    const members = (await team(mine.auth)).json() as { members: unknown[] };
+    expect(members.members).toHaveLength(1);
+    expect(JSON.stringify(members)).not.toContain('2348149990007');
+  });
+});
