@@ -122,6 +122,61 @@ export function postSale(args: {
   return posting;
 }
 
+/**
+ * What the business was already holding on the day it started with Rekoda.
+ *
+ * Every other posting here records something that HAPPENED. This one records
+ * something that was already true, and it exists because without it the books
+ * describe a business that came into existence with nothing.
+ *
+ * The symptom is not subtle. A merchant who joins with ₦200,000 in the till
+ * and spends ₦195,500 of it gets "Cash on Hand: minus ₦93,500" on their
+ * balance sheet: arithmetic that balances perfectly and describes a business
+ * that has never existed. Owner's equity has been in the chart since ADR 0004
+ * and nothing has ever posted to it, which is the same bug seen from the
+ * other side.
+ *
+ * ── what it deliberately cannot set ───────────────────────────────────────
+ *
+ * Not receivables and not payables. An opening figure for "what customers
+ * owe" has no invoices behind it, so the debtors page and the ledger would
+ * hold two different answers to the same question, and the merchant would
+ * have no way to chase either. Old unpaid invoices belong in Rekoda AS
+ * invoices; that is what invoices are for.
+ *
+ * ── the balancing figure ──────────────────────────────────────────────────
+ *
+ * Owner's equity takes whatever makes the entry balance, which is the
+ * accounting equation stated as code: what the business holds, less what it
+ * owes, is what the owner has in it. It may be zero and it cannot be
+ * negative here, because the only things this posting can set are assets.
+ */
+export function postOpeningBalances(args: {
+  memo: string;
+  cashK?: Kobo;
+  bankK?: Kobo;
+  stockK?: Kobo;
+}): Posting {
+  const cashK = args.cashK ?? 0;
+  const bankK = args.bankK ?? 0;
+  const stockK = args.stockK ?? 0;
+  if (cashK < 0 || bankK < 0 || stockK < 0) {
+    throw new RangeError('opening balances cannot be negative');
+  }
+  const equityK = cashK + bankK + stockK;
+  if (equityK === 0) throw new RangeError('opening balances of nothing are not an entry');
+
+  const lines: LedgerLine[] = [];
+  if (cashK > 0) lines.push(line('CASH', cashK, 0));
+  if (bankK > 0) lines.push(line('BANK_PAYSTACK', bankK, 0));
+  if (stockK > 0) lines.push(line('INVENTORY', stockK, 0));
+  lines.push(line('OWNERS_EQUITY', 0, equityK));
+
+  const posting = { memo: args.memo, lines };
+  assertBalanced(posting);
+  return posting;
+}
+
 /** A later payment against an outstanding receivable. */
 export function postReceivablePayment(args: {
   memo: string;

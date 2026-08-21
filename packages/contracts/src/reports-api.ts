@@ -167,6 +167,22 @@ export const reportsStatementsResponse = z.object({
     totalK: z.number().int().finite(),
   }),
   /**
+   * What the business was holding before it started with Rekoda, or null.
+   *
+   * On the statements response rather than its own endpoint because the
+   * balance sheet is where its absence shows: a merchant spending from money
+   * Rekoda never knew they had reads "Cash on Hand: minus ₦93,500", and the
+   * control belongs beside the figure that is wrong.
+   */
+  openingBalances: z
+    .object({
+      asAt: z.string(),
+      cashK: kobo,
+      bankK: kobo,
+      stockK: kobo,
+    })
+    .nullable(),
+  /**
    * Where the sales came from.
    *
    * The mirror of `expenseSchedule`, under the income line rather than the
@@ -500,6 +516,43 @@ export const createRecurringResponse = z.discriminatedUnion('outcome', [
   /** A stock purchase is a delivery somebody took, not a standing cost. */
   z.object({ outcome: z.literal('not_stock') }),
 ]);
+
+/**
+ * What the business was already holding when it started with Rekoda.
+ *
+ * `asAt` is the day the figures were true, not today. Books opened "as at 31
+ * July" put the entry in July, so it becomes the opening balance of August
+ * rather than appearing as money that arrived in August.
+ *
+ * Deliberately no field for what customers owe or what is owed to suppliers.
+ * An opening receivable has no invoice behind it, so the debtors page and the
+ * ledger would hold two different answers to the same question and the
+ * merchant could chase neither. Old unpaid invoices belong here as invoices.
+ */
+export const openingBalancesRequest = z.object({
+  asAt: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/, 'a day like 2026-07-31'),
+  cashK: kobo,
+  bankK: kobo,
+  stockK: kobo,
+});
+
+export const openingBalancesResponse = z.discriminatedUnion('outcome', [
+  z.object({
+    outcome: z.literal('recorded'),
+    asAt: z.string(),
+    /** Everything held, which is what went to owner's equity. */
+    equityK: kobo,
+  }),
+  /** Once only. The books cannot be opened twice without saying which is true. */
+  z.object({ outcome: z.literal('already_set') }),
+  /** Every figure zero. An entry of nothing is not an entry. */
+  z.object({ outcome: z.literal('nothing_to_open') }),
+  /** Dated in the future, which is a typo rather than a balance. */
+  z.object({ outcome: z.literal('not_yet') }),
+]);
+
+export type OpeningBalancesRequest = z.infer<typeof openingBalancesRequest>;
+export type OpeningBalancesResponse = z.infer<typeof openingBalancesResponse>;
 
 export const stopRecurringRequest = z.object({ id: z.string().uuid() });
 

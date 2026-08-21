@@ -4,6 +4,7 @@ import {
   assertBalanced,
   postCreditNote,
   postExpense,
+  postOpeningBalances,
   postProviderPayment,
   postPurchase,
   postReceivablePayment,
@@ -316,5 +317,50 @@ describe('a credit note', () => {
     for (const l of posting.lines) {
       expect(['CASH', 'BANK_PAYSTACK']).not.toContain(l.account);
     }
+  });
+});
+
+describe('opening balances', () => {
+  it('debits what the business holds and credits it all to the owner', () => {
+    const posting = postOpeningBalances({
+      memo: 'Opening balances',
+      cashK: 20_000_000,
+      bankK: 5_000_000,
+      stockK: 15_000_000,
+    });
+    expect(posting.lines).toEqual([
+      { account: 'CASH', debitK: 20_000_000, creditK: 0 },
+      { account: 'BANK_PAYSTACK', debitK: 5_000_000, creditK: 0 },
+      { account: 'INVENTORY', debitK: 15_000_000, creditK: 0 },
+      /* The accounting equation, stated as a line: what the business holds
+       * is what the owner has in it. */
+      { account: 'OWNERS_EQUITY', debitK: 0, creditK: 40_000_000 },
+    ]);
+  });
+
+  it('writes only the lines it was given something for', () => {
+    const posting = postOpeningBalances({ memo: 'Opening balances', cashK: 20_000_000 });
+    expect(posting.lines.map((l) => l.account)).toEqual(['CASH', 'OWNERS_EQUITY']);
+  });
+
+  /* Never touches receivables or payables. An opening figure for what
+   * customers owe would have no invoice behind it, and the debtors page and
+   * the ledger would answer the same question differently. */
+  it('cannot set what customers owe or what is owed to suppliers', () => {
+    const posting = postOpeningBalances({
+      memo: 'Opening balances',
+      cashK: 1,
+      bankK: 1,
+      stockK: 1,
+    });
+    const accounts = posting.lines.map((l) => l.account);
+    expect(accounts).not.toContain('ACCOUNTS_RECEIVABLE');
+    expect(accounts).not.toContain('ACCOUNTS_PAYABLE');
+  });
+
+  it('refuses an entry of nothing, and refuses a negative holding', () => {
+    expect(() => postOpeningBalances({ memo: 'x' })).toThrow(RangeError);
+    expect(() => postOpeningBalances({ memo: 'x', cashK: 0, bankK: 0 })).toThrow(RangeError);
+    expect(() => postOpeningBalances({ memo: 'x', cashK: -1 })).toThrow(RangeError);
   });
 });

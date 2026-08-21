@@ -25,6 +25,7 @@ import {
   usageMeterResponse,
   catalogueResponse,
   createRecurringResponse,
+  openingBalancesResponse,
   publicShopIndexResponse,
   publicShopResponse,
   saveShopResponse,
@@ -42,6 +43,8 @@ import {
   type MeResponse,
   type CatalogueResponse,
   type CreateRecurringRequest,
+  type OpeningBalancesRequest,
+  type OpeningBalancesResponse,
   type PublicShopIndexResponse,
   type PublicShopResponse,
   type SaveShopRequest,
@@ -583,6 +586,27 @@ export async function publicShop(slug: string): Promise<PublicShopResponse | nul
 export async function publicShopIndex(): Promise<PublicShopIndexResponse> {
   const { json } = await call({ method: 'GET', path: '/v1/shops', expect: [200] });
   return publicShopIndexResponse.parse(json);
+}
+
+/**
+ * Open the books: what the business was already holding.
+ *
+ * `expect` carries 200 alone because every refusal is an outcome rather than
+ * a status: already open, nothing to open, dated in the future. A 4xx here
+ * would mean the merchant typed something the form should have caught.
+ */
+export async function openBooks(
+  sessionToken: string,
+  body: OpeningBalancesRequest,
+): Promise<OpeningBalancesResponse | null> {
+  const { status, json } = await call({
+    method: 'POST',
+    path: '/v1/reports/opening-balances',
+    body,
+    headers: { authorization: `Bearer ${sessionToken}` },
+    expect: [200, 400],
+  });
+  return status === 200 ? openingBalancesResponse.parse(json) : null;
 }
 
 /** The merchant's own shop settings. */
