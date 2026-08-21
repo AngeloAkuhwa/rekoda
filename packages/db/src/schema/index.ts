@@ -4,3 +4,4 @@ export * from './commerce.js';
 export * from './finance.js';
 export * from './ops.js';
 export * from './payments-hub.js';
+export * from './subscriptions.js';

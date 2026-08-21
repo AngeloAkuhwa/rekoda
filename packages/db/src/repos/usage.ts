@@ -10,8 +10,9 @@
  *
  * The allowance arrives as an argument (from `@rekoda/core`'s plan table)
  * rather than living here, so the decision stays in core and this file stays
- * SQL. `bonus` raises the ceiling and is written ONLY by a verified billing
- * top-up (M4) — nothing in this file mutates it.
+ * SQL. `bonus` raises the ceiling and is written by exactly one function,
+ * `creditBonus`, whose only caller is a subscription charge the provider has
+ * confirmed.
  */
 import { sql } from 'drizzle-orm';
 import type { TenantDb } from '../client.js';
@@ -75,6 +76,38 @@ export async function refundUnit(
     UPDATE usage_counters
     SET used = GREATEST(used - ${n}, 0), updated_at = now()
     WHERE business_id = ${businessId}::uuid AND period = ${period} AND unit = ${unit}
+  `);
+}
+
+/**
+ * Add bought capacity to this month's ceiling (ADR 0024's add-on packs).
+ *
+ * Separate from `used` and never netted against it, so the two questions stay
+ * answerable apart: how much a merchant consumed, and how much they paid to
+ * be allowed to. Netting would make a pack look like usage that never
+ * happened.
+ *
+ * Called only after a provider has confirmed the charge, in the same
+ * transaction that settles it. That transaction settles once, so this credits
+ * once: there is no idempotency key here because there is no second call to
+ * guard against.
+ *
+ * The pack is spent in the month it is bought and does not roll over, which
+ * is why the period is an argument and not derived: the caller passes the
+ * period the charge covers.
+ */
+export async function creditBonus(
+  tx: TenantDb,
+  businessId: string,
+  period: string,
+  unit: UsageUnit,
+  n: number,
+): Promise<void> {
+  await tx.execute(sql`
+    INSERT INTO usage_counters (business_id, period, unit, bonus)
+    VALUES (${businessId}::uuid, ${period}, ${unit}, ${n})
+    ON CONFLICT (business_id, period, unit) DO UPDATE
+      SET bonus = usage_counters.bonus + ${n}, updated_at = now()
   `);
 }
 
