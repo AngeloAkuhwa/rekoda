@@ -28,6 +28,7 @@ import { pumpPaystackEvents } from '../payments/paystack-pump.js';
 import { sweepSettlements } from '../payments/settlement-sweep.js';
 import { sweepUnknownSenders } from '../channels/stranger-sweep.js';
 import { MESSAGE_SENDER } from '../channels/sender.tokens.js';
+import { SPEECH_TO_TEXT, type SpeechToText } from '../ai/stt.js';
 import type { MessageSender } from '../channels/sender.js';
 import { DocumentsModule, DOCUMENT_STORAGE } from '../documents/documents.module.js';
 import type { DocumentStorage } from '../documents/storage.js';
@@ -110,6 +111,7 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
     @Inject(MESSAGE_SENDER) private readonly sender: MessageSender,
     @Inject(PAYMENT_PROVIDER) private readonly paymentProvider: PaymentProviderPort,
     @Inject(PaymentIntentsService) private readonly paymentIntents: PaymentIntentsService,
+    @Inject(SPEECH_TO_TEXT) private readonly stt: SpeechToText,
   ) {}
 
   onModuleInit(): void {
@@ -127,6 +129,7 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
       config: this.config,
       paymentProvider: this.paymentProvider,
       paymentIntents: this.paymentIntents,
+      stt: this.stt,
     });
     this.runner.start();
 

@@ -11,12 +11,28 @@ import { z } from 'zod';
 
 const metaText = z.object({ body: z.string() });
 
+/**
+ * A voice note, as Meta describes it.
+ *
+ * Only the ID and the type travel: the audio itself is fetched separately and
+ * never lands in the event store. `voice` is true for a recording made with
+ * the microphone button, false for an audio FILE somebody attached, and the
+ * two are worth telling apart because only the first is somebody talking to
+ * their bookkeeper.
+ */
+const metaAudio = z.object({
+  id: z.string().min(1),
+  mime_type: z.string().optional(),
+  voice: z.boolean().optional(),
+});
+
 const metaMessage = z.object({
   id: z.string().min(1),
   from: z.string().min(1),
   timestamp: z.string().optional(),
   type: z.string(),
   text: metaText.optional(),
+  audio: metaAudio.optional(),
 });
 
 const metaStatus = z.object({
@@ -68,6 +84,15 @@ export interface InboundEvent {
   readonly messageType: string;
   /** Present only for text messages. Never logged. */
   readonly text: string | null;
+  /**
+   * Meta's media id for a voice note, to be fetched and transcribed.
+   *
+   * An ID, never the audio. The bytes are pulled at transcription time and
+   * held in memory for the length of one request: a merchant's voice is the
+   * most identifying thing they can send us, and the promise is that it never
+   * lands anywhere it could be recovered from.
+   */
+  readonly audioId: string | null;
   readonly status: string | null;
 }
 
@@ -95,6 +120,7 @@ export function extractInboundEvents(body: MetaWebhookBody): InboundEvent[] {
           phoneNumberId,
           messageType: message.type,
           text: message.text?.body ?? null,
+          audioId: message.audio?.id ?? null,
           status: null,
         });
       }
@@ -109,6 +135,7 @@ export function extractInboundEvents(body: MetaWebhookBody): InboundEvent[] {
           phoneNumberId,
           messageType: 'status',
           text: null,
+          audioId: null,
           status: status.status,
         });
       }

@@ -33,6 +33,7 @@ import { PrivacyGateway } from '../privacy/gateway.service.js';
 import { Interpreter } from '../ai/interpreter.service.js';
 import { StubTransport } from '../ai/transport.stub.js';
 import { StubSender } from '../channels/sender.stub.js';
+import { StubSpeechToText } from '../ai/stt.stub.js';
 import { LocalStorage } from '../documents/r2.storage.js';
 import { ReplySender } from '../replies/reply.service.js';
 import { loadConfig, type ApiConfig } from '../config.js';
@@ -55,6 +56,7 @@ let closeWorker: () => Promise<void>;
 let config: ApiConfig;
 let provider: StubPaymentProvider;
 let stubSender: StubSender;
+let stubStt: StubSpeechToText;
 let deps: RunnerDeps;
 
 beforeAll(async () => {
@@ -72,6 +74,7 @@ beforeAll(async () => {
 
   provider = new StubPaymentProvider();
   stubSender = new StubSender();
+  stubStt = new StubSpeechToText();
   deps = {
     gateway: new PrivacyGateway(appDb, config),
     interpreter: new Interpreter(appDb, config, StubTransport.answering({ intent: 'Unclear' })),
@@ -81,6 +84,7 @@ beforeAll(async () => {
     config,
     paymentProvider: provider,
     paymentIntents: new PaymentIntentsService(config, appDb, provider),
+    stt: stubStt,
   };
 });
 

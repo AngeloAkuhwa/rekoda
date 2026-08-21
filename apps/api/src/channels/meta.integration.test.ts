@@ -40,6 +40,7 @@ import { PrivacyGateway } from '../privacy/gateway.service.js';
 import { Interpreter } from '../ai/interpreter.service.js';
 import { StubTransport } from '../ai/transport.stub.js';
 import { StubSender } from '../channels/sender.stub.js';
+import { StubSpeechToText } from '../ai/stt.stub.js';
 import { StubPaymentProvider } from '../payments/provider.stub.js';
 import { PaymentIntentsService } from '../payments/payment-intents.service.js';
 import { LocalStorage } from '../documents/r2.storage.js';
@@ -62,6 +63,7 @@ let closeWorkerDb: () => Promise<void>;
 let deps: RunnerDeps;
 let stubTransport: StubTransport;
 let stubSender: StubSender;
+let stubStt: StubSpeechToText;
 const intentsProvider = new StubPaymentProvider();
 
 beforeAll(async () => {
@@ -92,6 +94,7 @@ beforeAll(async () => {
     clarification: 'How many wigs?',
   });
   stubSender = new StubSender();
+  stubStt = new StubSpeechToText();
   deps = {
     gateway: new PrivacyGateway(db, config),
     interpreter: new Interpreter(db, config, stubTransport),
@@ -103,6 +106,7 @@ beforeAll(async () => {
     config,
     paymentProvider: new StubPaymentProvider(),
     paymentIntents: new PaymentIntentsService(config, db, intentsProvider),
+    stt: stubStt,
   };
 });
 
@@ -121,6 +125,7 @@ beforeEach(async () => {
   // "not called since the file started".
   stubTransport.reset();
   stubSender.reset();
+  stubStt.reset();
   intentsProvider.reset();
 });
 
@@ -1213,12 +1218,18 @@ describe('records, resend and messages Rekoda cannot read', () => {
     expect(stubSender.lastText).toContain('no document to resend yet');
   });
 
-  it('a voice note gets an honest sentence, never a model call on silence', async () => {
+  /**
+   * An audio message with NO media id: nothing to fetch, so nothing to
+   * transcribe. Voice notes that carry one take the transcription path (see
+   * the "a voice note" suite); this is the malformed remainder, and it still
+   * must never become a paid model call on silence.
+   */
+  it('a voice note with nothing to fetch gets an honest sentence', async () => {
     const business = await seedMerchant('+2348031234567', 'Ada Fashion');
     await post(audioPayload('2348031234567', 'wamid.VOICE'));
     expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
 
-    expect(stubSender.lastText).toContain('only read typed messages');
+    expect(stubSender.lastText).toContain('listen to voice notes');
     // The whole point: silence never becomes a paid interpretation call.
     expect(stubTransport.requests).toHaveLength(0);
 
@@ -1831,6 +1842,225 @@ describe('chasing an overdue invoice', () => {
 
     expect(stubSender.lastText).toContain('nothing owing');
     expect(stubSender.sent.every((m) => !m.text.includes('Chidi'))).toBe(true);
+  });
+});
+
+/**
+ * A voice note, end to end (ADR 0005, ADR 0008).
+ *
+ * The claim that matters most here is a NEGATIVE one: the audio is fetched,
+ * transcribed and dropped. "Audio never leaves Rekoda" is a promise made out
+ * loud on the privacy page, and the only way it stays true is if there is
+ * nowhere for the audio to leave from.
+ */
+describe('a voice note', () => {
+  const A_SPOKEN_SALE = {
+    intent: 'RecordSale',
+    customer: { kind: 'token', token: 'CUSTOMER_7K2' },
+    items: [{ name: 'wig', quantity: 3, unitPrice: 50_000 }],
+    statedTotal: 150_000,
+    reportedPayment: 0,
+    paymentMethod: 'transfer',
+    discount: null,
+    deliveryFee: null,
+    dueDescription: null,
+  };
+
+  function voicePayload(waId: string, wamid: string, mediaId = 'media-1') {
+    return {
+      object: 'whatsapp_business_account',
+      entry: [
+        {
+          id: 'WABA',
+          changes: [
+            {
+              field: 'messages',
+              value: {
+                messaging_product: 'whatsapp',
+                metadata: { phone_number_id: 'PNID' },
+                messages: [
+                  {
+                    id: wamid,
+                    from: waId,
+                    timestamp: '1700000000',
+                    type: 'audio',
+                    audio: { id: mediaId, mime_type: 'audio/ogg', voice: true },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+    };
+  }
+
+  async function seedMerchant(phone: string) {
+    const user = await identity.upsertUserByPhone(db, phone);
+    return identity.createBusinessWithOwner(db, {
+      name: 'Ada Fashion',
+      businessType: null,
+      ownerUserId: user.id,
+    });
+  }
+
+  async function drain() {
+    const runner = buildRunner(workerDb, db, deps);
+    let worked = await runner.runOnce();
+    while (worked) worked = await runner.runOnce();
+  }
+
+  /** Audio the provider will hand back for `media-1`. */
+  function arrangeAudio(bytes = Buffer.from('OggS-fake-audio')) {
+    stubSender.media.set('media-1', { bytes, mimeType: 'audio/ogg' });
+  }
+
+  it('turns speech into the same preview a typed sentence would get', async () => {
+    await seedMerchant('+2348031234567');
+    arrangeAudio();
+    stubStt.answerWith({ text: 'Ada bought 3 wigs for 150k', seconds: 5, confidence: 0.94 });
+    stubTransport.replyWith(A_SPOKEN_SALE);
+
+    await post(voicePayload('2348031234567', 'wamid.V1'));
+    await drain();
+
+    /* The SAME conversation gate a typed message hits. Voice is an input
+     * method, not a second product with its own rules. */
+    expect(stubSender.lastText).toContain('Reply *yes*');
+    expect(stubSender.lastText).toContain('₦150,000');
+  });
+
+  it('confirms into a real invoice, through the ordinary yes', async () => {
+    const business = await seedMerchant('+2348031234567');
+    arrangeAudio();
+    stubStt.answerWith({ text: 'Ada bought 3 wigs for 150k', seconds: 5, confidence: 0.9 });
+    stubTransport.replyWith(A_SPOKEN_SALE);
+
+    await post(voicePayload('2348031234567', 'wamid.V2'));
+    await drain();
+    await post(messagePayload('2348031234567', 'wamid.V2-yes', 'yes'));
+    await drain();
+
+    expect(await invoiceCount(business.id)).toBe(1);
+  });
+
+  /**
+   * The promise, asserted. The transcript is kept because it is what the
+   * merchant said and the books are built from it; the audio is not, because
+   * a recording of somebody's voice is the most identifying thing they can
+   * send and we said it would not be kept.
+   */
+  it('keeps the transcript and never the audio', async () => {
+    const business = await seedMerchant('+2348031234567');
+    arrangeAudio(Buffer.from('OggS-secret-voice-of-ada'));
+    stubStt.answerWith({ text: 'Ada bought 3 wigs for 150k', seconds: 5, confidence: 0.9 });
+    stubTransport.replyWith(A_SPOKEN_SALE);
+
+    await post(voicePayload('2348031234567', 'wamid.V3'));
+    await drain();
+
+    const rows = await withBusiness(db, business.id, (tx) =>
+      conversationsRepo.messagesFor(tx, business.id, 20),
+    );
+    const dump = JSON.stringify(rows);
+    expect(dump).not.toContain('OggS');
+    expect(dump).not.toContain('secret-voice');
+    // The audio went to the sidecar and nowhere else.
+    expect(stubStt.calls).toHaveLength(1);
+    expect(stubStt.calls[0]?.mimeType).toBe('audio/ogg');
+  });
+
+  it('meters the seconds the sidecar reports, not our guess at them', async () => {
+    const business = await seedMerchant('+2348031234567');
+    arrangeAudio();
+    stubStt.answerWith({ text: 'Ada bought 3 wigs for 150k', seconds: 17, confidence: 0.9 });
+    stubTransport.replyWith(A_SPOKEN_SALE);
+
+    await post(voicePayload('2348031234567', 'wamid.V4'));
+    await drain();
+
+    const period = usagePeriod(new Date());
+    const rows = await withBusiness(db, business.id, (tx) =>
+      usageRepo.usageFor(tx, business.id, period),
+    );
+    expect(rows.find((r) => r.unit === 'voice_seconds')?.used).toBe(17);
+  });
+
+  /* Our failure, so it costs the merchant nothing and says what to do. */
+  it('answers honestly when the transcriber cannot be reached', async () => {
+    const business = await seedMerchant('+2348031234567');
+    arrangeAudio();
+    stubStt.failWith();
+
+    await post(voicePayload('2348031234567', 'wamid.V5'));
+    await drain();
+
+    expect(stubSender.lastText).toContain('could not listen to that voice note');
+    const period = usagePeriod(new Date());
+    const rows = await withBusiness(db, business.id, (tx) =>
+      usageRepo.usageFor(tx, business.id, period),
+    );
+    expect(rows.find((r) => r.unit === 'voice_seconds')?.used ?? 0).toBe(0);
+  });
+
+  it('answers honestly when the audio cannot be fetched', async () => {
+    await seedMerchant('+2348031234567');
+    // No media arranged: the provider has nothing for this id.
+    stubStt.answerWith({ text: 'should never be reached', seconds: 3, confidence: 1 });
+
+    await post(voicePayload('2348031234567', 'wamid.V6'));
+    await drain();
+
+    expect(stubSender.lastText).toContain('could not listen to that voice note');
+    expect(stubStt.calls).toHaveLength(0);
+  });
+
+  it('does not transcribe, meter or answer twice for a redelivered webhook', async () => {
+    const business = await seedMerchant('+2348031234567');
+    arrangeAudio();
+    stubStt.answerWith({ text: 'Ada bought 3 wigs for 150k', seconds: 5, confidence: 0.9 });
+    stubTransport.replyWith(A_SPOKEN_SALE);
+
+    await post(voicePayload('2348031234567', 'wamid.V7'));
+    await drain();
+    await post(voicePayload('2348031234567', 'wamid.V7'));
+    await drain();
+
+    expect(stubStt.calls).toHaveLength(1);
+    const period = usagePeriod(new Date());
+    const rows = await withBusiness(db, business.id, (tx) =>
+      usageRepo.usageFor(tx, business.id, period),
+    );
+    expect(rows.find((r) => r.unit === 'voice_seconds')?.used).toBe(5);
+  });
+
+  /* A photo is still a photo. Only voice got a path. */
+  it('still answers a photo with the honest text-only reply', async () => {
+    await seedMerchant('+2348031234567');
+    await post({
+      object: 'whatsapp_business_account',
+      entry: [
+        {
+          id: 'WABA',
+          changes: [
+            {
+              field: 'messages',
+              value: {
+                messaging_product: 'whatsapp',
+                metadata: { phone_number_id: 'PNID' },
+                messages: [
+                  { id: 'wamid.V8', from: '2348031234567', timestamp: '1', type: 'image' },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+    });
+    await drain();
+
+    expect(stubSender.lastText).toContain('Photos are coming');
+    expect(stubStt.calls).toHaveLength(0);
   });
 });
 

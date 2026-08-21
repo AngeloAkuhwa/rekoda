@@ -94,6 +94,17 @@ export interface ApiConfig {
    * would go stale silently. See apps/api/src/ai/model-prices.ts.
    */
   aiModelPrices: string | null;
+  /**
+   * The self-hosted transcription sidecar (ADR 0005/0008).
+   *
+   * `.env.example` has documented this since M0 and nothing read it, so voice
+   * notes were answered with "text only" no matter what was deployed. Null
+   * means no transcriber, and a voice note gets an honest sentence rather
+   * than being sent somewhere the privacy page does not mention. WHERE this
+   * points is the promise: "audio never leaves Rekoda" is true exactly while
+   * it names our own machine.
+   */
+  sttUrl: string | null;
   /** Daily ceilings. The thing on the other side of these is a bill. */
   aiCallsPerBusinessPerDay: number;
   aiCallsGlobalPerDay: number;
@@ -406,6 +417,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     aiModelTranscriber: env['AI_MODEL_TRANSCRIBER'] ?? ROLE_DEFAULTS.transcriber,
     aiBaseUrl: env['AI_BASE_URL'] || null,
     aiModelPrices: env['AI_MODEL_PRICES'] || null,
+    sttUrl: env['STT_URL'] || null,
     /**
      * Defaults are a ceiling, not a target. At ~₦8 a call (pricing-model.md),
      * 60 per merchant is about ₦480 a day against a subscription, and 5,000

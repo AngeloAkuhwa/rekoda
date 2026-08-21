@@ -2,6 +2,7 @@ import { Logger } from '@nestjs/common';
 import { redactForLog } from '@rekoda/core/privacy';
 import {
   SendFailed,
+  type InboundMedia,
   type MessageSender,
   type OutboundAuthCode,
   type OutboundDocument,
@@ -100,6 +101,40 @@ export class MetaSender implements MessageSender {
     });
   }
 
+  /**
+   * Media, in two steps, because that is what Meta requires in this direction
+   * too: `/{media-id}` returns a short-lived URL, and the bytes come from
+   * there. The second request carries the access token as well, because the
+   * URL is on a different host and is not itself a credential.
+   */
+  async fetchMedia(mediaId: string): Promise<InboundMedia> {
+    const meta = (await this.request(`/${mediaId}`, {
+      method: 'GET',
+      headers: { authorization: `Bearer ${this.accessToken}` },
+    })) as { url?: string; mime_type?: string };
+
+    if (!meta.url) throw new SendFailed('meta media lookup returned no url');
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    try {
+      const response = await fetch(meta.url, {
+        headers: { authorization: `Bearer ${this.accessToken}` },
+        signal: controller.signal,
+      });
+      if (!response.ok) throw new SendFailed(`meta media download answered ${response.status}`);
+      return {
+        bytes: Buffer.from(await response.arrayBuffer()),
+        mimeType: meta.mime_type ?? response.headers.get('content-type') ?? 'audio/ogg',
+      };
+    } catch (error) {
+      if (error instanceof SendFailed) throw error;
+      throw new SendFailed(redactForLog(String((error as Error)?.name ?? 'download failed')));
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   private async uploadMedia(document: OutboundDocument): Promise<string> {
     const form = new FormData();
     form.append('messaging_product', 'whatsapp');
@@ -195,6 +230,10 @@ export class NoSenderConfigured implements MessageSender {
   }
 
   sendAuthCode(): Promise<never> {
+    return Promise.reject(new SendFailed('META_ACCESS_TOKEN is not set'));
+  }
+
+  fetchMedia(): Promise<never> {
     return Promise.reject(new SendFailed('META_ACCESS_TOKEN is not set'));
   }
 

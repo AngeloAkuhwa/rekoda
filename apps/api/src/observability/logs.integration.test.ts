@@ -25,6 +25,7 @@ import { PrivacyGateway } from '../privacy/gateway.service.js';
 import { Interpreter } from '../ai/interpreter.service.js';
 import { StubTransport } from '../ai/transport.stub.js';
 import { StubSender } from '../channels/sender.stub.js';
+import { StubSpeechToText } from '../ai/stt.stub.js';
 import { StubPaymentProvider } from '../payments/provider.stub.js';
 import { PaymentIntentsService } from '../payments/payment-intents.service.js';
 import { LocalStorage } from '../documents/r2.storage.js';
@@ -73,6 +74,7 @@ let logger: CapturingLogger;
 let deps: RunnerDeps;
 let stubTransport: StubTransport;
 let stubSender: StubSender;
+let stubStt: StubSpeechToText;
 
 beforeAll(async () => {
   urls = requireUrls();
@@ -111,6 +113,7 @@ beforeAll(async () => {
     clarification: 'How many wrappers?',
   });
   stubSender = new StubSender();
+  stubStt = new StubSpeechToText();
   deps = {
     gateway: new PrivacyGateway(db, config),
     interpreter: new Interpreter(db, config, stubTransport),
@@ -122,6 +125,7 @@ beforeAll(async () => {
     config,
     paymentProvider: new StubPaymentProvider(),
     paymentIntents: new PaymentIntentsService(config, db, new StubPaymentProvider()),
+    stt: stubStt,
   };
 });
 

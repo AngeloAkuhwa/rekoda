@@ -594,6 +594,20 @@ export function reminderNothingToChase(invoiceNumber: string): Reply {
   );
 }
 
+/**
+ * A voice note arrived and could not be turned into words.
+ *
+ * The provider was unreachable, or our own transcriber was. Either way it is
+ * OUR failure, so it says so and it costs the merchant nothing: no allowance
+ * moved, and the way forward is one line rather than an apology.
+ */
+export function voiceUnavailable(): Reply {
+  return reply(
+    'I could not listen to that voice note just now. Type it instead and I will ' +
+      'record it, or send the voice note again in a minute.',
+  );
+}
+
 /* ── the records command ─────────────────────────────────────────────────── */
 
 /**
@@ -650,7 +664,7 @@ export function nothingToResend(): Reply {
  */
 export function onlyText(): Reply {
   return reply(
-    'I can only read typed messages for now. Voice notes and photos are coming. Type it and I will record it.',
+    'I can read typed messages and listen to voice notes. Photos are coming. Type it or say it, and I will record it.',
   );
 }
 
