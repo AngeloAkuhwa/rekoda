@@ -15,6 +15,7 @@ import {
   saleToDraft,
   type SaleLike,
   gatePayment,
+  gateStockChange,
 } from './gates.js';
 import { computeMoney } from './money.js';
 
@@ -311,5 +312,64 @@ describe('reported payments (gatePayment)', () => {
     // Both figures are in the question: the merchant decides, we do not round.
     expect(gate.question).toContain('₦50,000');
     expect(gate.question).toContain('₦80,000');
+  });
+});
+
+describe('gateStockChange', () => {
+  it('previews an arrival with the count before and after', () => {
+    const gate = gateStockChange({ productMention: 'bags of rice', quantityDelta: 20 }, 5);
+    expect(gate.gate).toBe('CG2');
+    if (gate.gate !== 'CG2') return;
+    expect(gate.preview).toContain('Adding 20 bags of rice');
+    expect(gate.preview).toContain('Was: 5');
+    expect(gate.preview).toContain('Now: 25');
+    expect(gate.onHandAfter).toBe(25);
+    expect(gate.quantityDelta).toBe(20);
+  });
+
+  it('previews a removal as a removal, not a negative addition', () => {
+    const gate = gateStockChange({ productMention: 'wigs', quantityDelta: -3 }, 10);
+    expect(gate.gate).toBe('CG2');
+    if (gate.gate !== 'CG2') return;
+    expect(gate.preview).toContain('Removing 3 wigs');
+    expect(gate.preview).not.toContain('-3');
+    expect(gate.onHandAfter).toBe(7);
+  });
+
+  it('asks rather than saving a change of nothing', () => {
+    const gate = gateStockChange({ productMention: 'crates', quantityDelta: 0 }, 4);
+    expect(gate.gate).toBe('CG1');
+    if (gate.gate !== 'CG1') return;
+    expect(gate.question).toContain('add or remove');
+    expect(gate.question).toContain('4');
+  });
+
+  it('refuses to take a shop below zero', () => {
+    const gate = gateStockChange({ productMention: 'bags of rice', quantityDelta: -9 }, 4);
+    expect(gate.gate).toBe('CG1');
+    if (gate.gate !== 'CG1') return;
+    expect(gate.question).toContain('less than none');
+    expect(gate.question).toContain('4');
+  });
+
+  it('allows a removal that lands exactly on zero', () => {
+    const gate = gateStockChange({ productMention: 'wigs', quantityDelta: -4 }, 4);
+    expect(gate.gate).toBe('CG2');
+    if (gate.gate !== 'CG2') return;
+    expect(gate.onHandAfter).toBe(0);
+  });
+
+  it('adds onto a product nothing is known about yet', () => {
+    const gate = gateStockChange({ productMention: 'new thing', quantityDelta: 12 }, 0);
+    expect(gate.gate).toBe('CG2');
+    if (gate.gate !== 'CG2') return;
+    expect(gate.onHandAfter).toBe(12);
+  });
+
+  it('takes whole units only, because half a bag is not a count', () => {
+    const gate = gateStockChange({ productMention: 'bags', quantityDelta: 7.8 }, 0);
+    expect(gate.gate).toBe('CG2');
+    if (gate.gate !== 'CG2') return;
+    expect(gate.quantityDelta).toBe(7);
   });
 });

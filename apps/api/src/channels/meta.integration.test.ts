@@ -17,6 +17,7 @@ import {
   quotaRepo,
   schema,
   usageRepo,
+  stockRepo,
   withBusiness,
   type Db,
 } from '@rekoda/db';
@@ -2642,5 +2643,193 @@ describe('a payment the merchant reports (RecordPayment)', () => {
     // The caption the merchant forwards must never borrow "confirmed".
     expect(receipt?.caption ?? '').not.toContain('confirmed');
     expect(receipt?.caption ?? '').toContain('Forward it to your customer');
+  });
+});
+
+/**
+ * Stock that actually moves.
+ *
+ * `products` and `inventory_movements` have existed since migration 0000 and
+ * nothing ever wrote to either, while `AdjustInventory` sat in the command
+ * contract since M0 with no handler. A merchant who typed "add 20 bags of
+ * rice" was told that recording that kind of entry was not built yet.
+ *
+ * On-hand is SUM(delta) over an append-only ledger, so every assertion below
+ * is about a figure nothing stores.
+ */
+describe('counting stock', () => {
+  const adjust = (mention: string, delta: number) => ({
+    intent: 'AdjustInventory',
+    productMention: mention,
+    quantityDelta: delta,
+  });
+
+  async function seedMerchant(phone: string) {
+    const user = await identity.upsertUserByPhone(db, phone);
+    return identity.createBusinessWithOwner(db, {
+      name: 'Ada Fashion',
+      businessType: null,
+      ownerUserId: user.id,
+    });
+  }
+
+  async function drain() {
+    const runner = buildRunner(workerDb, db, deps);
+    let worked = await runner.runOnce();
+    while (worked) worked = await runner.runOnce();
+  }
+
+  async function say(wamid: string, command: Record<string, unknown>, text: string) {
+    stubTransport.replyWith(command);
+    await post(messagePayload('2348031234567', wamid, text));
+    await drain();
+  }
+
+  async function plain(wamid: string, text: string) {
+    await post(messagePayload('2348031234567', wamid, text));
+    await drain();
+  }
+
+  const onHand = (businessId: string, name: string) =>
+    withBusiness(db, businessId, (tx) => stockRepo.productByName(tx, businessId, name));
+
+  it('previews a count before saving it, like every other write', async () => {
+    const business = await seedMerchant('+2348031234567');
+
+    await say('wamid.S1', adjust('bags of rice', 20), 'add 20 bags of rice');
+
+    expect(stubSender.lastText).toContain('Adding 20 bags of rice');
+    expect(stubSender.lastText).toContain('Was: 0');
+    expect(stubSender.lastText).toContain('Now: 20');
+    /* Nothing written until the yes. The product does not exist yet either. */
+    expect(await onHand(business.id, 'bags of rice')).toBeNull();
+  });
+
+  it('saves the count on yes and says what is left', async () => {
+    const business = await seedMerchant('+2348031234567');
+
+    await say('wamid.S2', adjust('bags of rice', 20), 'add 20 bags of rice');
+    await plain('wamid.S3', 'yes');
+
+    expect(stubSender.lastText).toContain('Added 20 bags of rice');
+    expect(stubSender.lastText).toContain('You now have 20');
+    expect((await onHand(business.id, 'bags of rice'))?.onHand).toBe(20);
+  });
+
+  it('adds onto a count that is already there', async () => {
+    const business = await seedMerchant('+2348031234567');
+
+    await say('wamid.S4', adjust('bags of rice', 20), 'add 20 bags of rice');
+    await plain('wamid.S5', 'yes');
+    await say('wamid.S6', adjust('bags of rice', 5), 'add 5 more bags of rice');
+
+    expect(stubSender.lastText).toContain('Was: 20');
+    expect(stubSender.lastText).toContain('Now: 25');
+
+    await plain('wamid.S7', 'yes');
+    expect((await onHand(business.id, 'bags of rice'))?.onHand).toBe(25);
+  });
+
+  it('refuses to take a shop below zero, and writes nothing', async () => {
+    const business = await seedMerchant('+2348031234567');
+
+    await say('wamid.S8', adjust('bags of rice', 4), 'add 4 bags of rice');
+    await plain('wamid.S9', 'yes');
+    await say('wamid.S10', adjust('bags of rice', -9), 'remove 9 bags of rice');
+
+    expect(stubSender.lastText).toContain('less than none');
+    /* A question, not a preview: there is no yes to give, so nothing moved. */
+    expect(stubSender.lastText).not.toContain('Reply *yes*');
+    expect((await onHand(business.id, 'bags of rice'))?.onHand).toBe(4);
+  });
+
+  it('answers what is left without a model call', async () => {
+    const business = await seedMerchant('+2348031234567');
+    await say('wamid.S11', adjust('bags of rice', 40), 'add 40 bags of rice');
+    await plain('wamid.S12', 'yes');
+    await say('wamid.S13', adjust('wigs', 2), 'add 2 wigs');
+    await plain('wamid.S14', 'yes');
+
+    const before = stubTransport.requests.length;
+    await plain('wamid.S15', 'stock');
+
+    /* Free, because a merchant checks stock several times a day and charging
+     * a model call to answer a SELECT would be charging them for nothing. */
+    expect(stubTransport.requests.length).toBe(before);
+    expect(stubSender.lastText).toContain('wigs: 2');
+    expect(stubSender.lastText).toContain('bags of rice: 40');
+    /* Lowest first: the row that needs them is the one about to run out. */
+    expect(stubSender.lastText!.indexOf('wigs')).toBeLessThan(
+      stubSender.lastText!.indexOf('bags of rice'),
+    );
+    expect(business.id).toBeTruthy();
+  });
+
+  it('says so plainly when nothing is counted yet', async () => {
+    await seedMerchant('+2348031234567');
+    await plain('wamid.S16', 'stock');
+    expect(stubSender.lastText).toContain('not counting any stock yet');
+  });
+
+  it('takes stock off the shelf when a sale is confirmed', async () => {
+    const business = await seedMerchant('+2348031234567');
+    await say('wamid.S17', adjust('wig', 10), 'add 10 wigs');
+    await plain('wamid.S18', 'yes');
+
+    await say(
+      'wamid.S19',
+      {
+        intent: 'RecordSale',
+        customer: { kind: 'none' },
+        items: [{ name: 'wig', quantity: 3, unitPrice: 50_000 }],
+        statedTotal: 150_000,
+        reportedPayment: 0,
+        paymentMethod: 'transfer',
+        discount: 0,
+        deliveryFee: 0,
+        dueDescription: null,
+      },
+      'sold 3 wigs for 150k',
+    );
+    await plain('wamid.S20', 'yes');
+
+    expect((await onHand(business.id, 'wig'))?.onHand).toBe(7);
+  });
+
+  it('does not invent a product for a sale of something never counted', async () => {
+    const business = await seedMerchant('+2348031234567');
+
+    await say(
+      'wamid.S21',
+      {
+        intent: 'RecordSale',
+        customer: { kind: 'none' },
+        items: [{ name: 'generator', quantity: 1, unitPrice: 200_000 }],
+        statedTotal: 200_000,
+        reportedPayment: 0,
+        paymentMethod: 'transfer',
+        discount: 0,
+        deliveryFee: 0,
+        dueDescription: null,
+      },
+      'sold a generator for 200k',
+    );
+    await plain('wamid.S22', 'yes');
+
+    /* Otherwise a shop that sold one of something it never stocked would be
+     * told it holds minus one, forever. */
+    expect(await onHand(business.id, 'generator')).toBeNull();
+  });
+
+  it('costs no document unit, because a count produces no paper', async () => {
+    const business = await seedMerchant('+2348031234567');
+    await say('wamid.S23', adjust('bags of rice', 20), 'add 20 bags of rice');
+    await plain('wamid.S24', 'yes');
+
+    const rows = await withBusiness(db, business.id, (tx) =>
+      usageRepo.usageFor(tx, business.id, usagePeriod(new Date())),
+    );
+    const documents = rows.find((r) => r.unit === 'documents');
+    expect(documents?.used ?? 0).toBe(0);
   });
 });

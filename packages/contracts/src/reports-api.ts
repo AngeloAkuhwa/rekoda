@@ -183,3 +183,23 @@ export const reportsReceiptsResponse = z.object({
   count: z.number().int().nonnegative(),
 });
 export type ReportsReceiptsResponse = z.infer<typeof reportsReceiptsResponse>;
+
+/**
+ * What is on the shelf.
+ *
+ * No money on the row. A product's price is what it sells FOR, and a stock
+ * page that showed a valuation would be asserting a cost basis Rekoda does
+ * not hold: what a merchant paid for the stock they are holding is a purchase
+ * question, and mixing the two is how a shop reads a profit that is not there.
+ */
+export const reportsStockResponse = z.object({
+  products: z.array(
+    z.object({
+      name: z.string(),
+      onHand: z.number().int(),
+    }),
+  ),
+  /** How many are at or below zero. The number an operator acts on. */
+  outOfStock: z.number().int().nonnegative(),
+});
+export type ReportsStockResponse = z.infer<typeof reportsStockResponse>;

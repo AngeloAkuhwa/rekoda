@@ -43,6 +43,10 @@ test('the dashboard tabs reach every section', async ({ page }) => {
   await nav().getByRole('link', { name: 'Receipts' }).click();
   await expect(page).toHaveURL(/\/app\/receipts$/);
 
+  await nav().getByRole('link', { name: 'Stock' }).click();
+  await expect(page).toHaveURL(/\/app\/stock$/);
+  await expect(page.getByRole('heading', { name: 'What you have on hand' })).toBeVisible();
+
   await nav().getByRole('link', { name: 'Payments' }).click();
   await expect(page).toHaveURL(/\/app\/payments$/);
 

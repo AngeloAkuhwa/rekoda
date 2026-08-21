@@ -333,3 +333,67 @@ export function gatePayment(
   lines.push('', 'Reply *yes* to save it, or tell me what to change.');
   return { gate: 'CG2', preview: lines.join('\n'), amountK, balanceAfterK };
 }
+
+/* ── stock ────────────────────────────────────────────────────────────────── */
+
+export interface StockChangeLike {
+  /** What the merchant called it. Matched to a product by the caller. */
+  readonly productMention: string;
+  /** Signed: positive is stock arriving, negative is stock leaving. */
+  readonly quantityDelta: number;
+}
+
+export type StockGate =
+  | { gate: 'CG1'; question: string }
+  | { gate: 'CG2'; preview: string; quantityDelta: number; onHandAfter: number };
+
+/**
+ * A merchant correcting their own stock count.
+ *
+ * `onHand` is passed in from SQL rather than read here, for the same reason
+ * `gatePayment` takes a balance: resolving "I have 5 left" into a movement is
+ * arithmetic over a real figure, and a model that guessed at it would be a
+ * model deciding what a merchant owns.
+ *
+ * Two things become CG1 questions instead of previews:
+ *
+ *   - A delta of zero, which is a sentence nobody meant to send.
+ *   - A removal larger than the count on hand. Negative stock is not a number
+ *     a shop can have, and it usually means the arrival was never recorded
+ *     rather than that the count is wrong. Asking is cheap; a book that says
+ *     minus four bags of rice is not correctable by the person reading it.
+ */
+export function gateStockChange(change: StockChangeLike, onHand: number): StockGate {
+  const delta = Math.trunc(change.quantityDelta);
+
+  if (delta === 0) {
+    return {
+      gate: 'CG1',
+      question:
+        `How many ${change.productMention} should I add or remove? ` +
+        `You have ${onHand} on record now.`,
+    };
+  }
+
+  if (onHand + delta < 0) {
+    return {
+      gate: 'CG1',
+      question:
+        `You have ${onHand} ${change.productMention} on record and asked me to take ` +
+        `${Math.abs(delta)} away, which would leave less than none.\n\n` +
+        'Tell me the right number, or add the stock that came in first.',
+    };
+  }
+
+  const onHandAfter = onHand + delta;
+  const lines: string[] = ['Please check this before I save it:', ''];
+  lines.push(
+    delta > 0
+      ? `Adding ${delta} ${change.productMention}`
+      : `Removing ${Math.abs(delta)} ${change.productMention}`,
+  );
+  lines.push(`Was: ${onHand}`);
+  lines.push(`*Now: ${onHandAfter}*`);
+  lines.push('', 'Reply *yes* to save it, or tell me what to change.');
+  return { gate: 'CG2', preview: lines.join('\n'), quantityDelta: delta, onHandAfter };
+}

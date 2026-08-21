@@ -814,6 +814,15 @@ button,
   font-weight: 600;
 }
 
+/* A stock row at zero. Weight rather than colour alone: a merchant reading
+   this in bright Lagos sun on a cheap screen should still see which line
+   needs them. */
+.rk-status-warn {
+  color: var(--rk-danger);
+  font-size: var(--rk-text-sm);
+  font-weight: 600;
+}
+
 /* ── the dashboard's working area ────────────────────────────────────── */
 
 .rk-dash-grid {
