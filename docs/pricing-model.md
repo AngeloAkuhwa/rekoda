@@ -58,7 +58,7 @@ model assumed. Documents are an abuse-control ceiling, not a value gate.
 _Talk to Rekoda. Your records build themselves._
 1 business · owner + 1 accountant/delegate · **400 messages** ·
 **60 voice minutes** · **100 document generations** · 25 utility reminders ·
-10 PDF/Excel reports · unlimited-reasonable customers & products · sales,
+unlimited PDF/Excel reports · unlimited-reasonable customers & products · sales,
 expenses, purchases, suppliers, inventory, partial payments, customer
 balances, invoices, receipts, dashboard, AI financial questions, magic-link
 dashboard, manual payment matching. **No** automatic Paystack
@@ -71,8 +71,8 @@ confirmed).
 _Connect your WhatsApp shop. Rekoda handles the money trail automatically._
 1 business · 1 WhatsApp Business number/WABA · 1 catalogue · 1 Paystack
 connection · owner + 2 delegates · **800 messages** · **200 catalogue
-orders** · **500 document generations** · 100 utility templates · 25
-reports · automatic order capture → customer records → invoices → payment
+orders** · **500 document generations** · 100 utility templates ·
+unlimited reports · automatic order capture → customer records → invoices → payment
 verification → receipts → inventory → reconciliation, with unmatched/
 short-payment/exception detection. **No** voice bookkeeping.
 
@@ -80,7 +80,7 @@ short-payment/exception detection. **No** voice bookkeeping.
 
 _However you sell, Rekoda keeps the complete money trail._
 Chat + Integrate combined: **1,200 messages** · **120 voice minutes** ·
-**300 orders** · **750 documents** · 150 utility templates · **50 reports** ·
+**300 orders** · **750 documents** · 150 utility templates · unlimited reports ·
 3 delegates · daily/weekly/monthly summaries · priority support · branded
 documents. This is the plan growing merchants should land on — offline and
 online reality in one consolidated financial position.
@@ -96,8 +96,11 @@ online reality in one consolidated financial position.
 | Extra accountant/delegate               | ₦1,500/month     |
 | Additional WhatsApp number              | Custom initially |
 
-No unlimited usage at launch — real merchant behaviour is unknown; packs
-protect against the ₦9,900-payer who scripts 30,000 messages.
+No unlimited CONSUMABLE usage at launch — real merchant behaviour is unknown,
+and packs protect against the ₦9,900-payer who scripts 30,000 messages.
+Reports are not a consumable: a PDF or a workbook costs compute and costs no
+provider a naira, and metering the one habit worth encouraging would be
+charging a merchant to look at their own accounts (ADR 0024).
 
 > **Payment-processing fee, confirmed 19 Aug 2026.** Collection runs on
 > **Pay with Transfer**, charged at Nigeria's **local rate: 1.5% + ₦100, capped
