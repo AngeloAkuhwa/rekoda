@@ -131,7 +131,19 @@ export async function recordSaleMovements(
   for (const item of items) {
     const product = await productByName(tx, businessId, item.name);
     if (!product) continue;
-    const quantity = Math.trunc(item.quantity);
+    /**
+     * Rounded UP, not truncated.
+     *
+     * `delta` is an integer column and a stock count is whole units, but a
+     * sale line is not: the contract allows 2.5, and a merchant selling rice
+     * by weight will send it. Truncating would leave the shop believing it
+     * holds MORE than it does, and a merchant who thinks they have stock
+     * promises a customer something that is not on the shelf. Believing they
+     * hold less only sends them to restock early, which is the error a shop
+     * recovers from. Sub-unit quantities still round to 1 rather than
+     * vanishing, for the same reason.
+     */
+    const quantity = Math.ceil(item.quantity);
     if (quantity <= 0) continue;
     await recordMovement(tx, {
       businessId,
