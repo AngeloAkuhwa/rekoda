@@ -144,6 +144,17 @@ real database in CI:
   a service moves nothing. The prompt is explicit that a quantity must never
   be inferred from an amount, because 50k of ankara is not 50 crates and a
   guess there becomes a stock count the merchant never took.
+- **M3, complete.** Voice notes transcribe through the same gates as text,
+  the books answer questions from SQL with the model computing nothing, an
+  owner can invite an accountant who is kept out of settings by the guard
+  rather than by row-level security, and the four statements download as a
+  dated A4 PDF or an Excel workbook. A profit and loss carries the prior
+  month beside it, as every accounting package does.
+- **The model.** There is no OpenAI default any more, so GPT-4.1 leaving the
+  API on 14 Oct 2026 costs this deployment nothing: `AI_MODEL_DEFAULT` is
+  `claude-haiku-4-5` (ADR 0023). At ₦1,450/$ that is ≈₦4 a call, about 10% of
+  the ₦9,900 Chat subscription for a heavy merchant, where the previous
+  Sonnet default was ≈₦12 and 30%. See `docs/ai-model-strategy.md`.
 - **Margin.** `GET /v1/ops/margin?period=YYYY-MM` reads what `usage_events`
   has been collecting since metering shipped: plan revenue against provider
   cost, per business and per provider, for one Lagos billing month. Same
@@ -163,12 +174,23 @@ real database in CI:
 3. **The remaining legal pages** — messaging policy, refund policy, contact.
    These need real business facts (address, support address, refund terms) and
    must not be invented.
-4. **Model realignment.** GPT-4.1 retires from the API on 14 Oct 2026. The
-   Sonnet default costs ≈₦12 a call at its standard rate, roughly 30% of the
-   ₦9,900 Chat subscription for a heavy merchant; Haiku is ≈₦4, about 10%.
-   See `docs/ai-model-strategy.md`.
-5. **M3** — voice, conversational reporting from SQL, Excel export, accountant
-   access.
+4. **M4, self-service billing.** The one thing between a working product and
+   a paying one, and it is NOT blocked on code. It is blocked on commercial
+   terms nobody should invent: what happens when a merchant downgrades
+   mid-month or cancels on day three (proration and refunds), and how many
+   days a failed payment gets before access stops. The refund half is the
+   same fact the `/refund` page needs, so item 3 and this one unblock
+   together. `usage_events`, the plan endpoint, the Paystack adapter and the
+   margin view are all built and waiting for it.
+5. **Receipt-photo OCR** — a product decision, not a build. The privacy
+   gateway tokenises TEXT; it cannot tokenise an image, so reading a photo of
+   a receipt would send a customer's details to the model provider intact.
+   That contradicts the standing rule that PII is tokenised before the model,
+   and the rule should not be bent without somebody deciding to bend it.
+6. **M5 Integrate** — catalogue orders and their reconciliation. Partly
+   superseded by ADR 0018 and needs re-specifying before anybody builds it;
+   the `orders` allowance and the `orders`/`order_items` tables exist and are
+   written by nothing.
 
 ## 4. Operational facts a new session must know
 
