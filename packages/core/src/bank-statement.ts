@@ -16,6 +16,7 @@
  * They are what makes a line matchable to an invoice, and they are also the
  * one field in a statement that carries somebody's name.
  */
+import { createHash } from 'node:crypto';
 
 /** One movement, as the bank reports it. */
 export interface BankStatementLine {
@@ -406,4 +407,46 @@ function readAmount(
     return (credit ?? 0) - Math.abs(debit ?? 0);
   }
   return at.amountAt >= 0 ? parseStatementAmountK(row[at.amountAt] ?? '') : null;
+}
+
+/**
+ * A stable key for one statement line, so re-uploading a statement does not
+ * duplicate it.
+ *
+ * Merchants re-upload constantly: last month's file again, or a new one
+ * overlapping the last by two weeks. Without a key every overlap doubles the
+ * lines, and the reconciliation gets further from the truth with each upload,
+ * which is the opposite of what importing is for.
+ *
+ * `occurrence` is the part that is easy to get wrong. Two identical charges
+ * on the same day are two real charges, and a key built from the line's
+ * contents alone would collapse them into one and lose the merchant's money.
+ * So identical lines within a file are numbered, and the number is part of
+ * the key: the same file uploaded twice produces the same numbers, while two
+ * genuine twins both survive.
+ *
+ * Fields are joined with a character no bank narration contains, so a
+ * narration ending in a digit cannot run into the amount beside it and make
+ * two different lines look like one.
+ */
+const SEP = String.fromCharCode(31);
+
+export function fingerprintLines(
+  lines: readonly BankStatementLine[],
+): readonly (BankStatementLine & { fingerprint: string })[] {
+  const seen = new Map<string, number>();
+  return lines.map((line) => {
+    const body = [line.postedOn, String(line.amountK), line.narration, line.bankRef ?? ''].join(
+      SEP,
+    );
+    const occurrence = (seen.get(body) ?? 0) + 1;
+    seen.set(body, occurrence);
+    return {
+      ...line,
+      fingerprint: createHash('sha256')
+        .update(body + SEP + occurrence, 'utf8')
+        .digest('hex')
+        .slice(0, 32),
+    };
+  });
 }

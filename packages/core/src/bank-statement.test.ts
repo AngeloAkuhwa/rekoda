@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseBankStatement, parseStatementAmountK } from './bank-statement.js';
+import { fingerprintLines, parseBankStatement, parseStatementAmountK } from './bank-statement.js';
 
 /* The shapes real Nigerian banks export. None of them agree, which is the
  * whole reason this parser finds columns by name rather than by position. */
@@ -175,5 +175,59 @@ describe('money as a statement prints it', () => {
    */
   it.each(['', '   ', 'abc', '50k', '1.234', '12.3.4', '--5'])('refuses %j', (text) => {
     expect(parseStatementAmountK(text)).toBeNull();
+  });
+});
+
+describe('not importing the same line twice', () => {
+  const parse = (csv: string) => {
+    const p = parseBankStatement(csv);
+    if (!p.ok) throw new Error(`expected a parse, got ${p.reason}`);
+    return fingerprintLines(p.lines);
+  };
+
+  it('gives the same file the same keys however often it is uploaded', () => {
+    const once = parse(ACCESS).map((l) => l.fingerprint);
+    const twice = parse(ACCESS).map((l) => l.fingerprint);
+    expect(twice).toEqual(once);
+  });
+
+  it('tells two different lines apart', () => {
+    const keys = parse(ACCESS).map((l) => l.fingerprint);
+    expect(new Set(keys).size).toBe(keys.length);
+  });
+
+  /**
+   * The case a naive key loses. Two identical charges on the same day are two
+   * real charges, and collapsing them takes money off the merchant's
+   * statement that their bank says is gone.
+   */
+  it('keeps both of two identical charges on the same day', () => {
+    const keys = parse(
+      'Date,Description,Amount\n' +
+        '20/08/2026,SMS ALERT CHARGE,-52.50\n' +
+        '20/08/2026,SMS ALERT CHARGE,-52.50\n',
+    ).map((l) => l.fingerprint);
+    expect(keys).toHaveLength(2);
+    expect(new Set(keys).size).toBe(2);
+  });
+
+  /* And re-uploading a file containing twins still matches both, rather than
+   * matching one and importing the other again. */
+  it('matches both twins on a second upload', () => {
+    const csv =
+      'Date,Description,Amount\n' +
+      '20/08/2026,SMS ALERT CHARGE,-52.50\n' +
+      '20/08/2026,SMS ALERT CHARGE,-52.50\n';
+    expect(parse(csv).map((l) => l.fingerprint)).toEqual(parse(csv).map((l) => l.fingerprint));
+  });
+
+  /* A narration ending in a digit must not run into the field beside it. */
+  it('does not confuse two lines whose fields merely concatenate the same', () => {
+    const keys = parse(
+      'Date,Description,Amount\n' +
+        '20/08/2026,"PAYMENT 1",-100.00\n' +
+        '20/08/2026,"PAYMENT",-100.00\n',
+    ).map((l) => l.fingerprint);
+    expect(new Set(keys).size).toBe(2);
   });
 });
