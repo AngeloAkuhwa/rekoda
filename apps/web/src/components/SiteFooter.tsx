@@ -6,11 +6,15 @@ import { usePathname } from 'next/navigation';
  * The legal links stay everywhere — they are the ones a merchant is most
  * likely to want exactly when they are logged in and wondering what we hold.
  * The marketing sentence does not: on the dashboard it is a pitch to someone
- * who has already bought.
+ * who has already bought, and on a merchant's shop it is addressed to the
+ * wrong person entirely. A customer reading "payments run through your own
+ * Paystack account" is being told about a business arrangement that is not
+ * theirs, on a page they opened to buy a bale of ankara.
  */
 export function SiteFooter() {
   const pathname = usePathname() ?? '/';
-  const inProduct = pathname.startsWith('/app') || pathname.startsWith('/setup');
+  const inProduct =
+    pathname.startsWith('/app') || pathname.startsWith('/setup') || pathname.startsWith('/s/');
 
   return (
     <footer className="rk-footer">

@@ -1,7 +1,7 @@
 import type { Metadata } from 'next';
 import { formatKobo, MAX_IMAGE_BYTES } from '@rekoda/core';
 import { Money } from '@/components/ui/Money';
-import { catalogue } from '@/server/api';
+import { catalogue, shopSettings } from '@/server/api';
 import { requireSessionWithToken } from '@/server/guards';
 import { AppNav } from '../AppNav';
 import { SignOutButton } from '../SignOutButton';
@@ -12,6 +12,7 @@ import {
   UploadPhotoForm,
   type Choice,
 } from './CatalogueForms';
+import { ShopForm } from './ShopForm';
 
 export const metadata: Metadata = {
   title: 'Catalogue',
@@ -35,7 +36,10 @@ export const metadata: Metadata = {
  */
 export default async function CataloguePage() {
   const { token } = await requireSessionWithToken();
-  const { products, unpriced } = await catalogue(token);
+  const [{ products, unpriced }, settings] = await Promise.all([
+    catalogue(token),
+    shopSettings(token),
+  ]);
 
   /* Every picker gets the price and the count as well as the name: two
    * similar products in one shop is the ordinary case, and a list of bare
@@ -78,6 +82,43 @@ export default async function CataloguePage() {
           </p>
         </div>
       ) : null}
+
+      {/* Below the products, because a shop is what a priced catalogue turns
+          into. A merchant who has not set a price yet cannot open one, and
+          the form says so rather than failing when they try. */}
+      <div className="rk-card">
+        <h2>Your shop</h2>
+        <p className="rk-fineprint">
+          A page customers can open, showing what you have listed and priced. There is no cart and
+          no card details: tapping an item messages you on WhatsApp with the order already written,
+          and forwarding that message to Rekoda prices it and raises the invoice.
+        </p>
+        {settings.shop?.publishedAt ? (
+          <p className="rk-fineprint">
+            Open at <strong>rekoda.app/s/{settings.shop.slug}</strong>. Share that link anywhere.
+          </p>
+        ) : (
+          <p className="rk-fineprint">
+            Nothing is public until you open it, and closing it again takes one change.
+          </p>
+        )}
+        <details className="rk-void">
+          <summary>{settings.shop ? 'Change your shop' : 'Set up your shop'}</summary>
+          <ShopForm
+            current={
+              settings.shop
+                ? {
+                    slug: settings.shop.slug,
+                    displayName: settings.shop.displayName,
+                    tagline: settings.shop.tagline,
+                    published: settings.shop.publishedAt !== null,
+                  }
+                : null
+            }
+            suggestedSlug={settings.suggestedSlug}
+          />
+        </details>
+      </div>
 
       <div className="rk-card">
         <h2>Your products</h2>
