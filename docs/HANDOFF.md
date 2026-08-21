@@ -126,6 +126,17 @@ real database in CI:
   `GET /v1/ops/health` reports queue depth and webhook intake as numbers with
   no tenant named, and the job runner, attribution pump, settlement sweep and
   stranger sweep all ride the worker credential on their own clocks.
+- **Stock.** On-hand is `SUM(delta)` over an append-only movement ledger and
+  is never stored. A merchant counts stock in chat ("add 20 bags of rice",
+  previewed and confirmed like every write), asks "stock" for what is left
+  free of any model call, and a confirmed sale takes its lines off the shelf
+  in the same transaction as the invoice. The dashboard has the same register.
+  **A recorded PURCHASE does not move stock**, and this is a contract limit
+  rather than an oversight: `RecordPurchase` carries a free-text description
+  and an amount, with no product or quantity to move. Giving it one means
+  changing the command contract and the model prompt, and until then the
+  merchant adds the arrival themselves. The stock page says so in as many
+  words rather than implying a count that maintains itself.
 - **Margin.** `GET /v1/ops/margin?period=YYYY-MM` reads what `usage_events`
   has been collecting since metering shipped: plan revenue against provider
   cost, per business and per provider, for one Lagos billing month. Same

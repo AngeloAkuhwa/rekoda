@@ -37,6 +37,8 @@ export type DeterministicIntent =
   | { kind: 'start' }
   | { kind: 'records' }
   | { kind: 'debtors' }
+  /** What is left on the shelf. Free, because a merchant checks it hourly. */
+  | { kind: 'stock' }
   | { kind: 'remind'; invoiceNumber: string }
   | { kind: 'payment_details' }
   | { kind: 'resend' }
@@ -205,6 +207,21 @@ const PHRASES: ReadonlyArray<readonly [readonly string[], DeterministicIntent]> 
       'my transactions',
     ],
     { kind: 'records' },
+  ],
+  [
+    [
+      'stock',
+      'my stock',
+      'stock level',
+      'stock levels',
+      'check stock',
+      'what is left',
+      'what dey left',
+      'wetin remain',
+      'inventory',
+      'my inventory',
+    ],
+    { kind: 'stock' },
   ],
   [
     [

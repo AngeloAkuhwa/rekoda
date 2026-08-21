@@ -44,6 +44,8 @@ export function help(): Reply {
       '• *Record a payment*: "Ada paid 20k"\n' +
       '• *Record an expense*: "fuel 12k"\n' +
       '• *Record stock*: "bought 10 crates of ankara for 50k"\n' +
+      '• *Count stock*: "add 20 bags of rice"\n' +
+      '• *stock* shows what you have left\n' +
       '• *who owes me* shows your debtors\n' +
       '• *remind INV-2026-000004* writes a reminder you can forward\n' +
       "• *records* shows this month's totals\n" +
@@ -831,4 +833,44 @@ export function truncateForSending(candidate: Reply): Reply {
   const text = candidate.text.trim();
   if (text.length <= MAX_REPLY_CHARS) return reply(text);
   return reply(`${text.slice(0, MAX_REPLY_CHARS - 1).trimEnd()}…`);
+}
+
+/* ── stock ───────────────────────────────────────────────────────────────── */
+
+export interface StockLine {
+  name: string;
+  onHand: number;
+}
+
+/**
+ * What is on the shelf, lowest first.
+ *
+ * The order is the answer. A merchant checking stock is deciding what to buy
+ * today, and an alphabetical list makes them read all of it to find the one
+ * row that needed them. Nothing here is money, and nothing here is a customer.
+ */
+export function stockList(rows: StockLine[]): Reply {
+  if (rows.length === 0) {
+    return reply(
+      'You are not counting any stock yet. Tell me what you have, like ' +
+        '*add 20 bags of rice*, and I will keep the count from there.',
+    );
+  }
+
+  const out = rows.filter((r) => r.onHand <= 0);
+  const lines = rows.map((r) => `${r.name}: ${r.onHand === 0 ? 'none left' : r.onHand}`);
+  const warning =
+    out.length === 0
+      ? ''
+      : out.length === 1
+        ? `\n\nYou have run out of ${out[0]!.name}.`
+        : `\n\n${out.length} of these have run out.`;
+  return reply(`What you have on hand:\n${lines.join('\n')}${warning}`);
+}
+
+/** A stock change saved, with the figure that matters after it. */
+export function stockSaved(name: string, delta: number, onHand: number): Reply {
+  const moved = delta > 0 ? `Added ${delta} ${name}.` : `Removed ${Math.abs(delta)} ${name}.`;
+  const left = onHand === 0 ? `You have none left.` : `You now have ${onHand}.`;
+  return reply(`${moved} ${left}`);
 }

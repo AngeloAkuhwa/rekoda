@@ -57,9 +57,10 @@ import type {
   ReportsInvoicesResponse,
   ReportsOverviewResponse,
   ReportsReceiptsResponse,
+  ReportsStockResponse,
   ReportsStatementsResponse,
 } from '@rekoda/contracts';
-import { reportsRepo, withBusiness, type Db } from '@rekoda/db';
+import { reportsRepo, stockRepo, withBusiness, type Db } from '@rekoda/db';
 import { SessionGuard, type AuthedRequest } from '../auth/session.guard.js';
 import { DB } from '../db/db.module.js';
 
@@ -67,6 +68,7 @@ const CASHFLOW_MONTHS = 6;
 const DEBTOR_ROWS = 6;
 const ACTIVITY_ROWS = 8;
 const REGISTER_ROWS = 50;
+const STOCK_ROWS = 200;
 /**
  * The export ceiling, and it is not the register's.
  *
@@ -300,6 +302,25 @@ export class ReportsController {
       ]),
     );
     sendCsv(reply, `rekoda-receipts-${csvDate(new Date())}.csv`, csv);
+  }
+
+  /**
+   * The stock register.
+   *
+   * Lowest count first, same as the chat answer and for the same reason: the
+   * row that needs the merchant is the one about to run out, and a list
+   * sorted by name is a list somebody has to read all of.
+   */
+  @Get('stock')
+  async stock(@Req() request: AuthedRequest): Promise<ReportsStockResponse> {
+    const businessId = request.auth!.businessId;
+    const products = await withBusiness(this.db, businessId, (tx) =>
+      stockRepo.stockList(tx, businessId, STOCK_ROWS),
+    );
+    return {
+      products: products.map((p) => ({ name: p.name, onHand: p.onHand })),
+      outOfStock: products.filter((p) => p.onHand <= 0).length,
+    };
   }
 
   @Get('activity')

@@ -8,6 +8,7 @@ import {
   resolvePeriod,
   gatePurchase,
   gateSale,
+  gateStockChange,
   isSaleSource,
   looksLikeCorrection,
   replies,
@@ -31,6 +32,7 @@ import {
   reportsRepo,
   settleRepo,
   spendRepo,
+  stockRepo,
   usageRepo,
   type Db,
   type TenantDb,
@@ -425,6 +427,14 @@ async function deterministicReply(
       const overview = await reportsRepo.overviewFor(tx, businessId);
       return replies.recordsSummary(overview);
     }
+    case 'stock': {
+      /* Free and deterministic, because a merchant checks stock several times
+       * a day and paying for a model call to answer "what is left" would be
+       * charging them for a SELECT. Lowest count first: the row that needs
+       * them is the one about to run out. */
+      const rows = await stockRepo.stockList(tx, businessId, 20);
+      return replies.stockList(rows.map((p) => ({ name: p.name, onHand: p.onHand })));
+    }
     case 'resend':
       return resendReply(tx, businessId, ctx.eventId);
     case 'upgrade': {
@@ -649,6 +659,13 @@ async function confirmPendingDraft(
       documentTaken ? refundDocument(deps, businessId, period) : Promise.resolve(),
     );
   }
+  if (command.intent === 'AdjustInventory') {
+    /* No document, so the unit this confirmation reserved goes back. A stock
+     * count produces nothing to send and must not cost the merchant one of
+     * the documents they are allowed to generate. */
+    if (documentTaken) await refundDocument(deps, businessId, period);
+    return confirmStockChange(tx, businessId, command as never);
+  }
   if (command.intent !== 'RecordSale') {
     // Anything else is not actionable yet. The draft is claimed either way,
     // so an unconfirmable one cannot sit pending forever inviting another yes.
@@ -665,17 +682,18 @@ async function confirmPendingDraft(
   }
 
   const money = gate.money;
+  const items = (
+    command['items'] as Array<{ name: string; quantity: number; unitPrice: number }>
+  ).map((item) => ({
+    name: item.name,
+    quantity: item.quantity,
+    unitPriceK: Math.round(item.unitPrice * 100),
+  }));
   const issued = await issueRepo.issueSale(tx, {
     businessId,
     customerId: null,
     customerToken: customerTokenOf(command),
-    items: (command['items'] as Array<{ name: string; quantity: number; unitPrice: number }>).map(
-      (item) => ({
-        name: item.name,
-        quantity: item.quantity,
-        unitPriceK: Math.round(item.unitPrice * 100),
-      }),
-    ),
+    items,
     subtotalK: money.subtotalK,
     discountK: money.discountK,
     deliveryFeeK: money.deliveryFeeK,
@@ -717,7 +735,50 @@ async function confirmPendingDraft(
     singletonKey: issued.invoiceId,
   });
 
+  /**
+   * Stock comes off the shelf in the same transaction as the invoice.
+   *
+   * Only for lines naming something the shop ALREADY counts. A sale of
+   * something never counted must not create a product and then report it as
+   * minus three: a merchant who has not told Rekoda they stock something has
+   * not asked Rekoda to count it, and a stock figure that appears uninvited
+   * is a stock figure nobody trusts.
+   */
+  await stockRepo.recordSaleMovements(tx, businessId, items, issued.invoiceNumber);
+
   return replies.issued(issued.invoiceNumber, money.totalK, money.balanceDueK);
+}
+
+/**
+ * A confirmed stock count.
+ *
+ * The product is created on first mention, so a shop's catalogue builds
+ * itself out of what they actually trade rather than out of a setup screen
+ * nobody fills in. The count is re-read here rather than carried on the
+ * draft: a sale may have landed between the preview and the yes, and a
+ * movement applied against a stale figure would report a total the shelf
+ * disagrees with.
+ */
+async function confirmStockChange(
+  tx: TenantDb,
+  businessId: string,
+  command: StructuredBusinessCommand & { intent: 'AdjustInventory' },
+): Promise<Reply> {
+  const product = await stockRepo.findOrCreateProduct(tx, businessId, command.productMention);
+  const gate = gateStockChange(command, product.onHand);
+  /* The count moved under the merchant between preview and confirmation. The
+   * gate says why in the merchant's own terms; nothing is written. */
+  if (gate.gate === 'CG1') return replies.arithmeticQuestion(gate.question);
+
+  await stockRepo.recordMovement(tx, {
+    businessId,
+    productId: product.id,
+    delta: gate.quantityDelta,
+    reason: 'adjustment',
+    sourceType: 'chat',
+    sourceId: null,
+  });
+  return replies.stockSaved(product.name, gate.quantityDelta, gate.onHandAfter);
 }
 
 /**
@@ -1083,6 +1144,23 @@ async function acknowledge(
       correcting
         ? `${replies.correctionTaken().text}\n\n${paymentGate.preview}`
         : paymentGate.preview,
+    );
+  }
+
+  if (command.intent === 'AdjustInventory') {
+    /**
+     * The count comes from SQL, never from the model.
+     *
+     * "I have 5 left" and "add 20" are both a delta against a real figure,
+     * and a model that guessed at the figure would be a model deciding what a
+     * merchant owns. Reading it here also means the preview can say what the
+     * count was and what it becomes, which is the whole point of a preview.
+     */
+    const product = await stockRepo.productByName(tx, businessId, command.productMention);
+    const stockGate = gateStockChange(command, product?.onHand ?? 0);
+    if (stockGate.gate === 'CG1') return replies.arithmeticQuestion(stockGate.question);
+    return replies.preview(
+      correcting ? `${replies.correctionTaken().text}\n\n${stockGate.preview}` : stockGate.preview,
     );
   }
 

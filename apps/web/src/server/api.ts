@@ -12,6 +12,7 @@ import {
   reportsOverviewResponse,
   reportsReceiptsResponse,
   reportsStatementsResponse,
+  reportsStockResponse,
   requestOtpResponse,
   sessionResponse,
   setupStateResponse,
@@ -23,6 +24,7 @@ import {
   type PaymentsListResponse,
   type ReportsActivityResponse,
   type ReportsCashflowResponse,
+  type ReportsStockResponse,
   type ReportsDebtorsResponse,
   type ReportsInvoicesResponse,
   type TeamResponse,
@@ -350,6 +352,16 @@ export async function reportsReceipts(sessionToken: string): Promise<ReportsRece
     expect: [200],
   });
   return reportsReceiptsResponse.parse(json);
+}
+
+export async function reportsStock(sessionToken: string): Promise<ReportsStockResponse> {
+  const { json } = await call({
+    method: 'GET',
+    path: '/v1/reports/stock',
+    headers: { authorization: `Bearer ${sessionToken}` },
+    expect: [200],
+  });
+  return reportsStockResponse.parse(json);
 }
 
 export async function usageMeter(sessionToken: string): Promise<UsageMeterResponse> {

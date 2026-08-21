@@ -24,6 +24,7 @@ import {
   paymentsHub,
   settleRepo,
   spendRepo,
+  stockRepo,
   withBusiness,
   type Db,
 } from '@rekoda/db';
@@ -537,4 +538,82 @@ describe('the statements PDF', () => {
       });
     });
   }
+});
+
+/**
+ * The stock register.
+ *
+ * `products` and `inventory_movements` have existed since migration 0000 and
+ * nothing wrote to either until now, so every figure below is a sum over an
+ * append-only ledger rather than a stored count.
+ */
+describe('the stock register', () => {
+  const get = (auth: Record<string, string> = {}) =>
+    app.inject({ method: 'GET', url: '/v1/reports/stock', headers: auth });
+
+  async function count(businessId: string, name: string, delta: number) {
+    await withBusiness(db, businessId, async (tx) => {
+      const product = await stockRepo.findOrCreateProduct(tx, businessId, name);
+      await stockRepo.recordMovement(tx, {
+        businessId,
+        productId: product.id,
+        delta,
+        reason: 'adjustment',
+        sourceType: 'chat',
+        sourceId: null,
+      });
+    });
+  }
+
+  it('refuses without a session, like every other report', async () => {
+    expect((await get()).statusCode).toBe(401);
+  });
+
+  it('is empty for a shop that counts nothing', async () => {
+    const { auth } = await onboard('+2348120000041');
+    expect((await get(auth)).json()).toEqual({ products: [], outOfStock: 0 });
+  });
+
+  it('sums the movements and puts what is running out first', async () => {
+    const { auth, businessId } = await onboard('+2348120000042');
+    await count(businessId, 'Bags of rice', 40);
+    await count(businessId, 'Bags of rice', -5);
+    await count(businessId, 'Wigs', 2);
+
+    const body = (await get(auth)).json();
+    expect(body.products).toEqual([
+      { name: 'Wigs', onHand: 2 },
+      { name: 'Bags of rice', onHand: 35 },
+    ]);
+    expect(body.outOfStock).toBe(0);
+  });
+
+  it('counts what has run out, and keeps it in the list', async () => {
+    const { auth, businessId } = await onboard('+2348120000043');
+    await count(businessId, 'Wigs', 4);
+    await count(businessId, 'Wigs', -4);
+
+    const body = (await get(auth)).json();
+    /* Still listed: something counted and sold down to nothing is exactly the
+     * row a merchant needs to see, and dropping it would hide the restock. */
+    expect(body.products).toEqual([{ name: 'Wigs', onHand: 0 }]);
+    expect(body.outOfStock).toBe(1);
+  });
+
+  it('shows one business nothing of another', async () => {
+    const mine = await onboard('+2348120000044');
+    const theirs = await onboard('+2348120000045');
+    await count(theirs.businessId, 'Their product', 50);
+
+    expect((await get(mine.auth)).json().products).toEqual([]);
+  });
+
+  it('carries no money, because a valuation is a cost basis Rekoda does not hold', async () => {
+    const { auth, businessId } = await onboard('+2348120000046');
+    await count(businessId, 'Wigs', 3);
+
+    const raw = (await get(auth)).body;
+    expect(raw).not.toContain('K"');
+    expect(raw).not.toContain('price');
+  });
 });
