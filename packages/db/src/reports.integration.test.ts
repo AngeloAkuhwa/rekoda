@@ -266,6 +266,108 @@ describe('per-account sums (the statements query)', () => {
   });
 });
 
+/**
+ * The schedule under the profit and loss statement's operating expenses line.
+ *
+ * Every assertion here is really one assertion in three shapes: the schedule
+ * must equal the ledger. It is built from ledger movement rather than from
+ * the expenses register precisely so that it cannot drift, and these are the
+ * three ways a register-driven query would have drifted.
+ */
+describe('where the operating expenses went', () => {
+  const period = () => usagePeriod(new Date());
+  const schedule = (businessId: string) =>
+    withBusiness(db, businessId, (tx) => reportsRepo.expenseScheduleFor(tx, businessId, period()));
+
+  it('groups by category and ties to the EXPENSES account exactly', async () => {
+    const businessId = await seedBusiness();
+    await seedTradingMonth(businessId);
+    await withBusiness(db, businessId, (tx) =>
+      spendRepo.recordExpense(tx, {
+        businessId,
+        description: 'shop rent for August',
+        category: null,
+        amountK: 8_000_000,
+        method: 'transfer',
+        sourceType: 'chat',
+        sourceId: 'draft-rent',
+      }),
+    );
+
+    const result = await schedule(businessId);
+    expect(result.lines).toEqual([
+      { category: 'rent', amountK: 8_000_000 },
+      { category: 'power', amountK: 1_200_000 },
+    ]);
+    expect(result.totalK).toBe(9_200_000);
+
+    /* The tie. The statement prints one figure from the sums query and this
+     * schedule underneath it, and a merchant reading both must not find two
+     * different numbers. */
+    const sums = await withBusiness(db, businessId, (tx) =>
+      reportsRepo.accountSumsFor(tx, businessId, period()),
+    );
+    const expensesAccount = sums.find((r) => r.account === 'EXPENSES');
+    expect(result.totalK).toBe(
+      (expensesAccount?.periodDebitK ?? 0) - (expensesAccount?.periodCreditK ?? 0),
+    );
+  });
+
+  /* The stock purchase in the seeded month debits INVENTORY. A query over
+   * the expenses TABLE would have to remember to exclude it; this one cannot
+   * see it at all. */
+  it('leaves stock out, because stock is not an operating expense', async () => {
+    const businessId = await seedBusiness();
+    await seedTradingMonth(businessId);
+    const result = await schedule(businessId);
+    expect(result.lines.map((l) => l.category)).not.toContain('stock');
+    expect(result.totalK).toBe(1_200_000);
+  });
+
+  /**
+   * A withdrawn expense nets to nothing, and it does so through the reversal
+   * rather than through the row's status. That distinction is the whole
+   * reason this reads the ledger: a status flag says the entry is wrong NOW,
+   * while the ledger says which month stopped carrying the cost.
+   */
+  it('cancels a withdrawn expense against its own category', async () => {
+    const businessId = await seedBusiness();
+    const recorded = await withBusiness(db, businessId, (tx) =>
+      spendRepo.recordExpense(tx, {
+        businessId,
+        description: 'dispatch rider to Yaba',
+        category: null,
+        amountK: 300_000,
+        method: 'cash',
+        sourceType: 'chat',
+        sourceId: 'draft-9',
+      }),
+    );
+    expect((await schedule(businessId)).lines).toEqual([
+      { category: 'transport', amountK: 300_000 },
+    ]);
+
+    await withBusiness(db, businessId, (tx) =>
+      spendRepo.voidExpense(tx, businessId, recorded.expenseId, 'never happened', 'user:1'),
+    );
+
+    const after = await schedule(businessId);
+    /* Not "transport: 0" and not "fees: -3,000". The reversal takes the
+     * category of what it reverses, the two cancel, and a line worth nothing
+     * is not a line. */
+    expect(after.lines).toEqual([]);
+    expect(after.totalK).toBe(0);
+  });
+
+  it('has nothing to say about a month with no expenses', async () => {
+    const businessId = await seedBusiness();
+    const result = await withBusiness(db, businessId, (tx) =>
+      reportsRepo.expenseScheduleFor(tx, businessId, '2020-01'),
+    );
+    expect(result).toEqual({ lines: [], totalK: 0 });
+  });
+});
+
 describe('the registers (§5.3.7)', () => {
   it('lists the invoice with its running figures and totals the outstanding', async () => {
     const businessId = await seedBusiness();

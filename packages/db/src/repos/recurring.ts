@@ -9,6 +9,7 @@
  * here is plumbing around it.
  */
 import { and, desc, eq, sql } from 'drizzle-orm';
+import { categoriseExpense } from '@rekoda/core';
 import type { Db, TenantDb } from '../client.js';
 import { recurringEntries } from '../schema/finance.js';
 
@@ -42,7 +43,14 @@ export async function createSchedule(tx: TenantDb, input: CreateScheduleInput): 
     .values({
       businessId: input.businessId,
       description: input.description,
-      category: input.category,
+      /* Folded at creation, the same way `recordExpense` folds it, so the
+       * schedule shows a merchant the category the entries it raises will
+       * actually carry. A schedule saying "fuel" that raises twelve entries
+       * saying "Power and fuel" is a page arguing with its own consequences. */
+      category: categoriseExpense({
+        description: input.description,
+        category: input.category,
+      }),
       amountK: input.amountK,
       method: input.method,
       anchorDay: input.anchorDay,

@@ -64,7 +64,10 @@ describe('an expense', () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({
       description: 'fuel for generator',
-      category: 'utilities',
+      /* Not 'utilities'. The model's word is a hint; what lands in the column
+       * is one of the ten the profit and loss groups by, decided by
+       * `categoriseExpense` so no write path can invent an eleventh. */
+      category: 'power',
       amountK: 1_200_000,
       method: 'cash',
     });

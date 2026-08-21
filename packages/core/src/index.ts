@@ -19,6 +19,7 @@ export * from './periods.js';
 export * from './recurring.js';
 export * from './images.js';
 export * from './orders.js';
+export * from './expenses.js';
 export * from './ai-cost.js';
 export * from './margin.js';
 export * from './billing.js';

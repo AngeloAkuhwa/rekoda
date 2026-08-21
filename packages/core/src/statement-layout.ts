@@ -23,6 +23,19 @@ import type {
   TrialBalance,
 } from './statements.js';
 
+/**
+ * The supporting schedule under the profit and loss statement's operating
+ * expenses line, already labelled and totalled.
+ *
+ * Labels rather than category keys, because this module lays documents out
+ * and does not decide what an expense is called. The figures come from the
+ * ledger; the words come from `expenses.ts`; this joins them to a page.
+ */
+export interface ExpenseSchedule {
+  readonly lines: ReadonlyArray<{ readonly label: string; readonly amountK: number }>;
+  readonly totalK: number;
+}
+
 export interface StatementDocument {
   readonly businessName: string;
   /** `YYYY-MM`, the Lagos calendar month the figures cover. */
@@ -34,6 +47,12 @@ export interface StatementDocument {
   readonly balanceSheet: BalanceSheet;
   readonly cashflow: CashflowStatement;
   readonly trialBalance: TrialBalance;
+  /**
+   * Required rather than optional, so a caller cannot quietly ship a document
+   * without it while the dashboard shows one with it. An empty schedule is a
+   * fact worth stating and prints nothing.
+   */
+  readonly expenseSchedule: ExpenseSchedule;
 }
 
 /** `2026-08` as a Nigerian reader says it. */
@@ -91,6 +110,30 @@ export function layoutStatements(doc: StatementDocument): LayoutBlock[] {
     text: pl.netProfitK < 0 ? 'Net loss' : 'Net profit',
     value: formatKobo(Math.abs(pl.netProfitK)),
   });
+
+  /**
+   * The detail behind ONE of the expense lines above, not behind all of them.
+   *
+   * "Total expenses" includes cost of goods sold, which is a different
+   * account and a different kind of cost; this schedule breaks out operating
+   * expenses only, and its total ties to that line. Saying so in the heading
+   * is what stops a reader adding the two together.
+   *
+   * Printed after the profit and loss rather than inside it, which is where a
+   * statement pack puts a supporting schedule: the statement is the claim and
+   * the schedule is the working.
+   */
+  if (doc.expenseSchedule.lines.length > 0) {
+    blocks.push({ kind: 'subhead', text: 'Operating expenses in detail' });
+    for (const line of doc.expenseSchedule.lines) {
+      blocks.push({ kind: 'item', text: line.label, value: formatKobo(line.amountK) });
+    }
+    blocks.push({
+      kind: 'subtotal',
+      text: 'Total operating expenses',
+      value: formatKobo(doc.expenseSchedule.totalK),
+    });
+  }
 
   blocks.push({ kind: 'section', text: 'Balance sheet' });
   blocks.push({ kind: 'subhead', text: 'Assets' });
@@ -199,6 +242,17 @@ export function statementSheets(doc: StatementDocument): Sheet[] {
          * arithmetic input: somebody will add this column, and "Net loss
          * 15,000" as a positive would make their total wrong. */
         ['Net profit', xlsxNaira(pl.netProfitK)],
+        /* Below the net profit, not among the expense lines. Somebody will
+         * select this column and total it, and a breakdown sitting inside the
+         * statement it breaks down would be counted twice. */
+        ...(doc.expenseSchedule.lines.length > 0
+          ? ([
+              [null, null],
+              ['Operating expenses in detail', null],
+              ...doc.expenseSchedule.lines.map((line) => [line.label, xlsxNaira(line.amountK)]),
+              ['Total operating expenses', xlsxNaira(doc.expenseSchedule.totalK)],
+            ] as CellValue[][])
+          : []),
       ],
     },
     {

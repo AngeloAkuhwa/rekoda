@@ -783,6 +783,21 @@ describe('the four statements (ADR 0015)', () => {
     // Cash went negative (an expense with no income): it crosses to credit.
     const cash = statements.trialBalance.rows.find((r) => r.account === 'CASH');
     expect(cash?.creditK).toBe(1_200_000);
+
+    /* And the schedule underneath it, labelled the way the statement is:
+     * the merchant said "fuel" and named no category at all, and the books
+     * say "Power and fuel" in every place that prints it. */
+    expect(statements.expenseSchedule.lines).toEqual([
+      { category: 'power', label: 'Power and fuel', amountK: 1_200_000 },
+    ]);
+    expect(statements.expenseSchedule.totalK).toBe(statements.profitAndLoss.totalExpensesK);
+  });
+
+  it('a month with nothing spent gets an empty schedule rather than no schedule', async () => {
+    const { auth } = await onboard('+2348177000007');
+    const res = await app.inject({ method: 'GET', url: '/v1/reports/statements', headers: auth });
+    const statements = reportsStatementsResponse.parse(res.json());
+    expect(statements.expenseSchedule).toEqual({ lines: [], totalK: 0 });
   });
 });
 
@@ -912,8 +927,11 @@ describe('exporting the books as CSV', () => {
     expect(res.body).toContain('Date,Type,Description,Category,Method,Source,Status,Amount');
     /* Without this column a spreadsheet totals 58,000 of cost against a shop
      * that spent 8,000 and still holds 50,000 of stock. */
-    expect(res.body).toContain('Stock purchase,ankara bales,stock,cash,chat,recorded,50000.00');
-    expect(res.body).toContain('Expense,diesel,utilities,cash,chat,recorded,8000.00');
+    expect(res.body).toContain('Stock purchase,ankara bales,Stock,cash,chat,recorded,50000.00');
+    /* "Power and fuel", not "utilities": the export names a category the way
+     * the statements do, so an accountant pivoting one against the other is
+     * matching the same words. */
+    expect(res.body).toContain('Expense,diesel,Power and fuel,cash,chat,recorded,8000.00');
     expect(res.body).toContain('8000.00');
     expect(res.body).not.toContain('₦');
   });

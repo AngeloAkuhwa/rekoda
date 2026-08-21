@@ -24,6 +24,14 @@ const SCAN = [
   'packages/core/src/gates.ts',
   'packages/core/src/invoice-layout.ts',
   'packages/core/src/words.ts',
+  /* The chart of accounts and the statement layouts. These were missed for
+   * months because they read like internals, and they are not: an account's
+   * NAME is printed on the trial balance, the balance sheet, the PDF a
+   * merchant sends their bank, and the workbook their accountant opens. */
+  'packages/core/src/ledger.ts',
+  'packages/core/src/statement-layout.ts',
+  'packages/core/src/receipt-layout.ts',
+  'packages/core/src/expenses.ts',
 ];
 
 const DASHES = /[—–]/; // em dash, en dash

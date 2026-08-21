@@ -30,7 +30,8 @@ export default async function ReportsPage({
   const period = requested ?? current;
 
   const statements = await reportsStatements(token, period);
-  const { trialBalance, profitAndLoss, balanceSheet, cashflow, comparison } = statements;
+  const { trialBalance, profitAndLoss, balanceSheet, cashflow, comparison, expenseSchedule } =
+    statements;
 
   /**
    * VAT, read straight off the liability account the posting builder already
@@ -201,6 +202,44 @@ export default async function ReportsPage({
               ) : null}
             </div>
 
+            {/* The working behind one line above, which is the line a merchant
+                argues with. "Operating Expenses ₦412,000" invites the
+                question; this answers it, biggest first, so the thing eating
+                the month is the first thing read. */}
+            {expenseSchedule.lines.length > 0 ? (
+              <div className="rk-card rk-dash-card">
+                <h2>Where the expenses went</h2>
+                <p className="rk-fineprint">
+                  Operating expenses in {label}, broken down. Stock bought for resale is not here:
+                  it reaches the books as cost of goods sold when it sells.
+                </p>
+                <table className="rk-statement">
+                  <tbody>
+                    {expenseSchedule.lines.map((line) => (
+                      <tr key={line.category}>
+                        <td>{line.label}</td>
+                        <td className="rk-num">
+                          <Money kobo={line.amountK} />
+                        </td>
+                        {/* Share of the month, because ₦80,000 means nothing
+                            without knowing it is a fifth of everything spent. */}
+                        <td className="rk-num rk-fineprint">
+                          {share(line.amountK, expenseSchedule.totalK)}
+                        </td>
+                      </tr>
+                    ))}
+                    <tr className="rk-statement-total">
+                      <td>Total operating expenses</td>
+                      <td className="rk-num">
+                        <Money kobo={expenseSchedule.totalK} />
+                      </td>
+                      <td />
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            ) : null}
+
             <div className="rk-card rk-dash-card">
               <h2>Cash flow</h2>
               <p className="rk-fineprint">Money that actually moved in {label}.</p>
@@ -370,4 +409,17 @@ export default async function ReportsPage({
  */
 function Prior({ kobo }: { kobo: number | undefined }) {
   return kobo === undefined ? <span className="rk-fineprint">-</span> : <Money kobo={kobo} />;
+}
+
+/**
+ * A line's share of the month.
+ *
+ * "0%" beside ₦2,000 reads as a bug rather than as a small number, so
+ * anything that rounds to nothing says so as "under 1%" instead. Nothing at
+ * all when there is no total to be a share of.
+ */
+function share(amountK: number, totalK: number): string | null {
+  if (totalK <= 0) return null;
+  const percent = Math.round((amountK / totalK) * 100);
+  return percent === 0 ? 'under 1%' : `${percent}%`;
 }
