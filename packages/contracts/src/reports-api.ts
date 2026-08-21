@@ -188,6 +188,25 @@ export const reportsInvoicesResponse = z.object({
   ),
   count: z.number().int().nonnegative(),
   outstandingK: kobo,
+  /**
+   * Orders a customer placed, which the merchant forwarded.
+   *
+   * On the invoice register's response because an order is what an invoice
+   * comes FROM, and "did that order ever become an invoice" is a question a
+   * merchant asks while looking at this page. An order is not a financial
+   * document: nothing is owed until the merchant agrees to it, which is why
+   * it is a separate list rather than another row in the register.
+   */
+  orders: z.array(
+    z.object({
+      orderNumber: z.string(),
+      /** placed | confirmed | cancelled */
+      status: z.string(),
+      totalK: kobo,
+      itemCount: z.number().int().nonnegative(),
+      placedAt: z.string(),
+    }),
+  ),
 });
 export type ReportsInvoicesResponse = z.infer<typeof reportsInvoicesResponse>;
 

@@ -87,6 +87,7 @@ import {
 import {
   identity,
   issueRepo,
+  ordersRepo,
   recurringRepo,
   reportsRepo,
   spendRepo,
@@ -372,9 +373,10 @@ export class ReportsController {
   async invoices(@Req() request: AuthedRequest): Promise<ReportsInvoicesResponse> {
     const businessId = request.auth!.businessId;
     const now = new Date();
-    const list = await withBusiness(this.db, businessId, (tx) =>
-      reportsRepo.invoicesFor(tx, businessId, REGISTER_ROWS),
-    );
+    const { list, orders } = await withBusiness(this.db, businessId, async (tx) => ({
+      list: await reportsRepo.invoicesFor(tx, businessId, REGISTER_ROWS),
+      orders: await ordersRepo.ordersFor(tx, businessId, REGISTER_ROWS),
+    }));
     return {
       invoices: list.rows.map((r) => ({
         invoiceNumber: r.invoiceNumber,
@@ -389,6 +391,13 @@ export class ReportsController {
       })),
       count: list.count,
       outstandingK: list.outstandingK,
+      orders: orders.map((order) => ({
+        orderNumber: order.orderNumber,
+        status: order.status,
+        totalK: order.totalK,
+        itemCount: order.itemCount,
+        placedAt: order.placedAt.toISOString(),
+      })),
     };
   }
 

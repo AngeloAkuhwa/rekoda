@@ -859,6 +859,20 @@ export function expenseSaved(amountK: number, description: string): Reply {
 }
 
 /**
+ * A forwarded order, turned into an invoice the merchant can send back.
+ *
+ * The order number comes first because it is what the customer's message
+ * becomes, and a merchant asked "what happened to my order" needs something
+ * to answer with. The invoice number follows because that is the document.
+ */
+export function orderRaised(orderNumber: string, invoiceNumber: string, totalK: number): Reply {
+  return reply(
+    `Saved ✅ ${orderNumber} is now ${invoiceNumber} for ${formatKobo(totalK)}.\n` +
+      `Nothing has been paid yet. Send them the invoice and I will watch for the money.`,
+  );
+}
+
+/**
  * A stock purchase is saved. The figure a merchant needs next is what they
  * still owe the supplier, so it is in the message when it exists — same
  * reasoning as the balance line in `issued`.

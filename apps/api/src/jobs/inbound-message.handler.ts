@@ -12,6 +12,9 @@ import {
   purchaseArrival,
   isSaleSource,
   looksLikeCorrection,
+  orderPreview,
+  orderQuestion,
+  priceOrder,
   replies,
   routeMessage,
   usagePeriod,
@@ -23,6 +26,7 @@ import { extractInboundEvents, metaWebhookBody } from '@rekoda/contracts';
 import type { StructuredBusinessCommand } from '@rekoda/contracts';
 import {
   billingRepo,
+  catalogueRepo,
   conversationsRepo,
   withBusiness,
   customersRepo,
@@ -30,6 +34,7 @@ import {
   identity,
   issueRepo,
   jobsRepo,
+  ordersRepo,
   reportsRepo,
   settleRepo,
   spendRepo,
@@ -777,7 +782,13 @@ async function confirmPendingDraft(
    * the last moment that is still between transactions. Refusing here leaves
    * the draft pending, so the same "yes" works the moment they upgrade.
    */
-  const issuesDocument = command.intent === 'RecordSale' || command.intent === 'RecordPayment';
+  const issuesDocument =
+    command.intent === 'RecordSale' ||
+    command.intent === 'RecordPayment' ||
+    /* A confirmed order raises a real invoice, so it costs a document unit
+     * exactly like a sale does. Leaving it free would be a second door into
+     * the same metered thing. */
+    command.intent === 'RecordOrder';
   const period = usagePeriod(new Date());
   let documentTaken = false;
   if (issuesDocument && !retrying) {
@@ -839,6 +850,11 @@ async function confirmPendingDraft(
      * the documents they are allowed to generate. */
     if (documentTaken) await refundDocument(deps, businessId, period);
     return confirmStockChange(tx, businessId, command as never);
+  }
+  if (command.intent === 'RecordOrder') {
+    return confirmOrder(tx, businessId, draft.id, command as never, () =>
+      documentTaken ? refundDocument(deps, businessId, period) : Promise.resolve(),
+    );
   }
   if (command.intent !== 'RecordSale') {
     // Anything else is not actionable yet. The draft is claimed either way,
@@ -921,6 +937,102 @@ async function confirmPendingDraft(
   await stockRepo.recordSaleMovements(tx, businessId, items, issued.invoiceNumber);
 
   return replies.issued(issued.invoiceNumber, money.totalK, money.balanceDueK);
+}
+
+/**
+ * A confirmed order: the order, the invoice it becomes, and the stock it
+ * commits, in one transaction.
+ *
+ * The catalogue is re-read here rather than carried on the draft, for the
+ * same reason `confirmStockChange` re-reads the count: the merchant may have
+ * changed a price between the preview and the yes, and quoting from a stale
+ * figure would issue an invoice for a number they have since decided against.
+ * If that re-read changes anything the order cannot be quoted on, this
+ * refuses and says so rather than issuing at yesterday's price.
+ *
+ * The stock moves, exactly as it does for a sale the merchant dictates. An
+ * order they have agreed to IS a sale on credit: the goods are committed, the
+ * customer owes for them, and the shelf figure has to say so or the next
+ * customer is quoted for bales that are already spoken for.
+ */
+async function confirmOrder(
+  tx: TenantDb,
+  businessId: string,
+  draftId: string,
+  command: StructuredBusinessCommand & { intent: 'RecordOrder' },
+  refund: () => Promise<void>,
+): Promise<Reply> {
+  const catalogue = await catalogueRepo.catalogueFor(tx, businessId);
+  const order = priceOrder(command.items, catalogue);
+
+  const question = orderQuestion(order);
+  if (question) {
+    /* No invoice comes out of this branch, so the document unit goes back. */
+    await refund();
+    return replies.arithmeticQuestion(question);
+  }
+
+  const placed = await ordersRepo.placeOrder(tx, {
+    businessId,
+    customerId: null,
+    lines: order.lines.map((line) => ({
+      productId: line.productId,
+      name: line.name,
+      quantity: line.quantity,
+      unitPriceK: line.unitPriceK,
+      lineTotalK: line.lineTotalK,
+    })),
+    totalK: order.totalK,
+    sourceType: 'chat',
+    sourceId: draftId,
+  });
+
+  const items = order.lines.map((line) => ({
+    name: line.name,
+    quantity: line.quantity,
+    unitPriceK: line.unitPriceK,
+  }));
+  const issued = await issueRepo.issueSale(tx, {
+    businessId,
+    customerId: null,
+    customerToken: customerTokenOf(command as never),
+    items,
+    subtotalK: order.totalK,
+    discountK: 0,
+    deliveryFeeK: 0,
+    vatK: 0,
+    totalK: order.totalK,
+    /* Nothing is paid. A customer asked and the merchant agreed to supply;
+     * the money is the next event, not this one. */
+    paidK: 0,
+    balanceDueK: order.totalK,
+    method: 'transfer',
+    sourceType: 'chat',
+    sourceId: draftId,
+    /* Where the sale happened is not knowable from a forwarded message: the
+     * customer wrote it somewhere, and guessing which app would be Rekoda
+     * inventing a channel the merchant never named. */
+    saleSource: null,
+    /* A forwarded order carries no agreed due date. What the customer said
+     * about timing is about DELIVERY, not payment, and reading it as a
+     * payment date would put somebody on the debtors list on a day nobody
+     * agreed. */
+    dueDate: null,
+    actor: 'system',
+  });
+
+  await ordersRepo.markOrder(tx, businessId, placed.id, 'placed', 'confirmed');
+
+  await jobsRepo.enqueue(tx, {
+    businessId,
+    kind: 'document.render',
+    payload: { invoiceId: issued.invoiceId },
+    singletonKey: issued.invoiceId,
+  });
+
+  await stockRepo.recordSaleMovements(tx, businessId, items, issued.invoiceNumber);
+
+  return replies.orderRaised(placed.orderNumber, issued.invoiceNumber, order.totalK);
 }
 
 /**
@@ -1380,6 +1492,35 @@ async function acknowledge(
         correcting
           ? `${replies.correctionTaken().text}\n\n${paymentGate.preview}`
           : paymentGate.preview,
+      ),
+    );
+  }
+
+  /**
+   * An order somebody else placed, forwarded here by the merchant.
+   *
+   * The prices come from the merchant's catalogue, read now. That is the
+   * whole difference between this and a sale: a sale reports what the
+   * merchant charged, and this proposes what they WOULD charge, so there is
+   * no testimony to check the arithmetic against and no figure the model is
+   * allowed to name. An unpriced product becomes a question rather than a
+   * guess, because inventing a price would put a number in front of a
+   * customer that the merchant never agreed to.
+   */
+  if (command.intent === 'RecordOrder') {
+    const catalogue = await catalogueRepo.catalogueFor(tx, businessId);
+    const order = priceOrder(command.items, catalogue);
+
+    const question = orderQuestion(order);
+    if (question) return plain(replies.arithmeticQuestion(question));
+
+    /* A link proposal belongs here for the same reason it does on a sale:
+     * the `yes` is about a customer, and this is the message that asks. */
+    return withLink(
+      replies.preview(
+        correcting
+          ? `${replies.correctionTaken().text}\n\n${orderPreview(order, command.note)}`
+          : orderPreview(order, command.note),
       ),
     );
   }

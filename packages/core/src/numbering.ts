@@ -6,12 +6,17 @@
  * same DB transaction that issues the document).
  */
 
-export type DocType = 'invoice' | 'receipt' | 'credit_note';
+export type DocType = 'invoice' | 'receipt' | 'credit_note' | 'order';
 
 const PREFIX: Record<DocType, string> = {
   invoice: 'INV',
   receipt: 'RCT',
   credit_note: 'CRN',
+  /* An order is not a financial document: nothing is owed until the merchant
+   * agrees to it. It is numbered anyway, and on the same counter, because a
+   * merchant asking "what happened to the order Sandra sent on Tuesday" needs
+   * something to say back that is not a description. */
+  order: 'ORD',
 };
 
 export function formatDocumentNumber(docType: DocType, year: number, seq: number): string {

@@ -21,7 +21,7 @@ export const metadata: Metadata = {
  */
 export default async function InvoicesPage() {
   const { token } = await requireSessionWithToken();
-  const { invoices, count, outstandingK } = await reportsInvoices(token);
+  const { invoices, count, outstandingK, orders } = await reportsInvoices(token);
 
   /* Only what CAN be voided is offered. An invoice with money against it is
    * corrected by refunding rather than reversing, and one already voided has
@@ -55,6 +55,51 @@ export default async function InvoicesPage() {
       </header>
 
       <AppNav active="invoices" />
+
+      {/* Above the register, because an order is what an invoice comes FROM.
+          A merchant looking for "did that order ever get billed" is looking
+          at this page, and the answer belongs before the thing it explains.
+
+          No status column, and that is a deliberate omission rather than a
+          missing one. An order row is written when the merchant says yes, so
+          every row here is confirmed and a column that can only say one thing
+          teaches them to stop reading it. When the WhatsApp catalogue can
+          place an order without anybody being asked, "waiting on you" becomes
+          a state that exists, and the column comes back with it. */}
+      {orders.length > 0 ? (
+        <div className="rk-card">
+          <h2>Orders customers sent you</h2>
+          <p className="rk-fineprint">
+            Forward a customer&apos;s message to Rekoda on WhatsApp and it prices what they asked
+            for from your own catalogue, never from what they said it costs. Each of these became
+            the invoice below it when you said yes.
+          </p>
+          <div className="rk-table-scroll">
+            <table className="rk-table">
+              <thead>
+                <tr>
+                  <th>Order</th>
+                  <th>Taken</th>
+                  <th className="rk-num">Items</th>
+                  <th className="rk-num">Total</th>
+                </tr>
+              </thead>
+              <tbody>
+                {orders.map((order) => (
+                  <tr key={order.orderNumber}>
+                    <td>{order.orderNumber}</td>
+                    <td>{shortDate(order.placedAt)}</td>
+                    <td className="rk-num">{order.itemCount}</td>
+                    <td className="rk-num">
+                      <Money kobo={order.totalK} />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : null}
 
       <div className="rk-card">
         <h2>Invoice register</h2>

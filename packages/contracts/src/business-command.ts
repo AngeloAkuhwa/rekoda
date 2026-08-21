@@ -121,6 +121,35 @@ export const AdjustInventory = z.object({
   quantityDelta: z.number().finite().int().min(-1_000_000).max(1_000_000),
 });
 
+/**
+ * An order somebody ELSE placed, forwarded by the merchant (Door 2).
+ *
+ * The one command in the contract that carries no money at all, and the
+ * omission is the design. Everywhere else an amount from the model is
+ * testimony: what the merchant said, reported so the arithmetic can disagree
+ * with it out loud. Here the person who wrote the message is not the person
+ * who sets the prices, so anything they said about money is a hope rather
+ * than a quote. Names and quantities come from the message; every figure
+ * comes from the merchant's own catalogue.
+ */
+export const RecordOrder = z.object({
+  intent: z.literal('RecordOrder'),
+  customer: CustomerRef,
+  items: z
+    .array(z.object({ name: text(120), quantity }))
+    .min(1)
+    .max(50),
+  /**
+   * What the customer said about delivery or timing, in their words.
+   *
+   * Echoed back to the merchant once and never stored. A delivery address is
+   * the customer's, it is already on the merchant's phone in the message they
+   * forwarded, and keeping a copy would be a liability with no bookkeeping
+   * purpose.
+   */
+  note: text(160).nullable(),
+});
+
 export const Query = z.object({
   intent: z.literal('Query'),
   topic: z.enum([
@@ -149,6 +178,7 @@ export const StructuredBusinessCommand = z.discriminatedUnion('intent', [
   RecordPayment,
   RecordExpense,
   RecordPurchase,
+  RecordOrder,
   AdjustInventory,
   Query,
   Unclear,
