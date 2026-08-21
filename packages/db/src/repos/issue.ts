@@ -41,6 +41,7 @@ import {
   paymentAllocations,
   payments,
 } from '../schema/finance.js';
+import { assertPeriodOpen } from './close.js';
 
 export interface IssueItem {
   name: string;
@@ -152,6 +153,14 @@ export async function writePosting(
     reversesId?: string;
   } = {},
 ): Promise<string> {
+  /* Refused here as well as by the trigger behind it (migration 0034), and
+   * the two are not redundant. The trigger is the guarantee: it catches a
+   * writer added later, a hand typed statement, anything that never read this
+   * function. This is the good error message, raised before a single row is
+   * written, so an ordinary refusal reaches the caller as something they can
+   * act on rather than as a transaction that fails at COMMIT. */
+  await assertPeriodOpen(tx, businessId, opts.occurredAt ?? new Date());
+
   const inserted = await tx
     .insert(ledgerTransactions)
     .values({

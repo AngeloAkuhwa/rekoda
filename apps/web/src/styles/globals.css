@@ -1447,6 +1447,29 @@ button,
   color: var(--rk-accent);
 }
 
+/* A closed month, marked where the month is named rather than only down by
+   the control. A merchant scanning the period row should see it without
+   scrolling to the bottom of four statements. */
+.rk-closed-chip {
+  margin-left: var(--rk-space-2);
+  padding: 1px 7px;
+  border: 1px solid var(--rk-border);
+  border-radius: 999px;
+  font-family: var(--rk-font-body);
+  font-size: var(--rk-text-xs);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--rk-text-muted);
+  vertical-align: middle;
+}
+.rk-closebooks {
+  margin-top: var(--rk-space-4);
+}
+.rk-closebooks form {
+  margin-top: var(--rk-space-3);
+}
+
 /* The shelf against the books. Set apart from the balance sheet above it by
    a rule rather than by a card of its own: it is a reading OF the stock line,
    and a separate card would read as a separate asset. */

@@ -6,6 +6,7 @@ import { reportsStatements } from '@/server/api';
 import { AppNav } from '../AppNav';
 import { OpeningForm } from './OpeningForm';
 import { StockCountForm } from './StockCountForm';
+import { CloseBooksForm } from './CloseBooksForm';
 import { SignOutButton } from '../SignOutButton';
 
 export const metadata: Metadata = {
@@ -45,6 +46,7 @@ export default async function ReportsPage({
     revenueSchedule,
     openingBalances,
     stockValuation,
+    booksClosedThrough,
   } = statements;
 
   /**
@@ -67,6 +69,12 @@ export default async function ReportsPage({
   const priorLabel = periodLabel(comparison.period);
   const previous = periodBefore(period);
   const empty = trialBalance.rows.length === 0;
+  /* Closed through August means August and everything before it. A watermark
+   * comparison rather than equality, or July would read as open. */
+  const periodClosed = booksClosedThrough !== null && period <= booksClosedThrough;
+  /* Only a month that has ENDED can be closed, which is also why the guard can
+   * never catch an ordinary posting: those are stamped now. */
+  const closable = period < current;
 
   return (
     <section className="rk-container rk-dash">
@@ -89,7 +97,10 @@ export default async function ReportsPage({
         >
           ← {periodLabel(previous)}
         </a>
-        <span className="rk-period-current">{label}</span>
+        <span className="rk-period-current">
+          {label}
+          {periodClosed ? <span className="rk-closed-chip">Closed</span> : null}
+        </span>
         {period !== current ? (
           <a href="/app/reports" className="rk-period-link">
             This month →
@@ -564,6 +575,23 @@ export default async function ReportsPage({
               </p>
             </div>
           </div>
+
+          {/* Closing sits beside the download, because the download is what it
+              protects. A statement forwarded to a bank should still say the
+              same thing next month, and until a month is closed nothing
+              promises that: a backdated expense, a caught-up recurring entry
+              or a late opening balance would all change it silently. */}
+          {closable ? (
+            <div className="rk-card rk-dash-card rk-closebooks">
+              <h2>{periodClosed ? `${label} is closed` : `Closing ${label}`}</h2>
+              <p className="rk-fineprint">
+                {periodClosed
+                  ? 'Nothing new can be dated into this month, so the statements above will still say this next year. Reopen it if you have a correction to make.'
+                  : 'Once you have sent these statements to anybody, close the month. Nothing dated in it can be recorded afterwards, so the copy they hold and the copy here cannot drift apart.'}
+              </p>
+              <CloseBooksForm period={period} label={label} closed={periodClosed} />
+            </div>
+          ) : null}
 
           {/* A screen is not something a merchant can forward. A bank, a
               landlord or a grant officer wants a file with a date on it. */}

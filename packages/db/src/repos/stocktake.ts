@@ -90,8 +90,11 @@ export interface StockCountInput {
   /**
    * The day it was counted, as `YYYY-MM-DD`.
    *
-   * Stamped on the posting so the write-down lands in the month the count
-   * happened rather than the month the sweep ran.
+   * Recorded on the entry, deliberately NOT stamped as its date. The
+   * difference being posted was computed from the shelf and the ledger as
+   * they are right now, so dating it back into the month the merchant walked
+   * the shelf would put figures derived from today into a month that did not
+   * produce them. It lands today, where it was worked out.
    */
   countedOn: string;
 }
