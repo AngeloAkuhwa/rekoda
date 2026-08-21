@@ -90,8 +90,8 @@ export default async function ExpensesPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {entries.map((entry, index) => (
-                    <tr key={`${entry.recordedAt}-${index}`}>
+                  {entries.map((entry) => (
+                    <tr key={entry.id}>
                       <td>{shortDate(entry.recordedAt)}</td>
                       <td>{entry.description}</td>
                       <td>{entry.kind === 'purchase' ? 'Stock purchase' : 'Expense'}</td>
