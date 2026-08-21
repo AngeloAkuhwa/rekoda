@@ -13,6 +13,7 @@
  * into ink stays in `apps/api/src/documents/pdf.ts`.
  */
 import { formatKobo } from './money.js';
+import { xlsxNaira, type CellValue, type Sheet } from './xlsx.js';
 import type { LayoutBlock } from './invoice-layout.js';
 import type {
   BalanceSheet,
@@ -155,4 +156,102 @@ export function layoutStatements(doc: StatementDocument): LayoutBlock[] {
   });
 
   return blocks;
+}
+
+/* ── the same statements, as a spreadsheet ────────────────────────────────── */
+
+/**
+ * The four statements as four sheets.
+ *
+ * What a CSV cannot do, and the reason this exists alongside the PDF: an
+ * accountant asked for the statements gets ONE file with four tabs, and every
+ * figure is a number their spreadsheet can total rather than text it cannot.
+ * Four separate CSVs is four files to reconcile by hand.
+ *
+ * Naira, not kobo. Kobo is Rekoda's internal unit and would read as a hundred
+ * times the truth to anybody opening this.
+ */
+export function statementSheets(doc: StatementDocument): Sheet[] {
+  const { profitAndLoss: pl, balanceSheet: bs, cashflow: cf, trialBalance: tb } = doc;
+  const label = periodLabel(doc.period);
+  const heading = (title: string): CellValue[][] => [
+    [doc.businessName, null],
+    [title, label],
+    [null, null],
+  ];
+  const money = (rows: readonly StatementLine[]): CellValue[][] =>
+    rows.map((line) => [line.name, xlsxNaira(line.amountK)]);
+
+  return [
+    {
+      name: 'Profit and loss',
+      rows: [
+        ...heading('Profit and loss'),
+        ['Income', null],
+        ...money(pl.income),
+        ['Total income', xlsxNaira(pl.totalIncomeK)],
+        [null, null],
+        ['Expenses', null],
+        ...money(pl.expenses),
+        ['Total expenses', xlsxNaira(pl.totalExpensesK)],
+        [null, null],
+        /* Signed here rather than named, unlike the PDF. A spreadsheet cell is
+         * arithmetic input: somebody will add this column, and "Net loss
+         * 15,000" as a positive would make their total wrong. */
+        ['Net profit', xlsxNaira(pl.netProfitK)],
+      ],
+    },
+    {
+      name: 'Balance sheet',
+      rows: [
+        ...heading('Balance sheet'),
+        ['Assets', null],
+        ...money(bs.assets),
+        ['Total assets', xlsxNaira(bs.totalAssetsK)],
+        [null, null],
+        ['Liabilities', null],
+        ...money(bs.liabilities),
+        ['Total liabilities', xlsxNaira(bs.totalLiabilitiesK)],
+        [null, null],
+        ['Equity', null],
+        ...money(bs.equity),
+        ['Total equity', xlsxNaira(bs.totalEquityK)],
+        [null, null],
+        ['Liabilities and equity', xlsxNaira(bs.totalLiabilitiesK + bs.totalEquityK)],
+      ],
+    },
+    {
+      name: 'Cash flow',
+      rows: [
+        ...heading('Cash flow'),
+        ['Opening balance', xlsxNaira(cf.openingK)],
+        ['Money in', xlsxNaira(cf.inK)],
+        ['Money out', xlsxNaira(cf.outK)],
+        ['Closing balance', xlsxNaira(cf.closingK)],
+      ],
+    },
+    {
+      name: 'Trial balance',
+      rows: [
+        ...heading('Trial balance'),
+        /* Two real columns here, where the PDF prints one side per line: a
+         * spreadsheet has the width for it, and an accountant checking a trial
+         * balance wants to sum each column separately. */
+        ['Account', 'Debit', 'Credit'],
+        ...tb.rows.map((row) => [
+          row.name,
+          row.debitK > 0 ? xlsxNaira(row.debitK) : null,
+          row.creditK > 0 ? xlsxNaira(row.creditK) : null,
+        ]),
+        ['Total', xlsxNaira(tb.totalDebitK), xlsxNaira(tb.totalCreditK)],
+        [null, null],
+        [
+          tb.balanced
+            ? 'Debits and credits agree.'
+            : 'Debits and credits DO NOT agree. Treat these figures as provisional.',
+          null,
+        ],
+      ],
+    },
+  ];
 }

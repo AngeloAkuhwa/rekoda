@@ -44,7 +44,9 @@ import {
   csvDate,
   csvKobo,
   daysOverdue,
+  buildXlsx,
   isAccountKey,
+  statementSheets,
   toCsv,
   usagePeriod,
   type AccountSums,
@@ -69,6 +71,8 @@ const DEBTOR_ROWS = 6;
 const ACTIVITY_ROWS = 8;
 const REGISTER_ROWS = 50;
 const STOCK_ROWS = 200;
+/** What a spreadsheet is, to a browser and to every mail client. */
+const XLSX_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 /**
  * The export ceiling, and it is not the register's.
  *
@@ -189,6 +193,40 @@ export class ReportsController {
       .header('content-disposition', `attachment; filename="rekoda-statements-${period}.pdf"`)
       .header('cache-control', 'no-store')
       .send(pdf);
+  }
+
+  /**
+   * The same four statements as a workbook, one sheet each.
+   *
+   * The PDF is for somebody who will read it; this is for somebody who will
+   * work with it. Every figure is a real number in a real cell, which is the
+   * whole difference between a spreadsheet and a picture of one, and four
+   * tabs in one file is what a CSV per statement cannot be.
+   */
+  @Get('statements.xlsx')
+  async statementsXlsx(
+    @Req() request: AuthedRequest,
+    @Res() reply: FileReply,
+    @Query('period') periodParam?: string,
+  ): Promise<void> {
+    const period = requirePeriod(periodParam);
+    const auth = request.auth!;
+    const sums = await this.sumsFor(auth.businessId, period);
+
+    const book = buildXlsx(
+      statementSheets({
+        businessName: auth.businessName,
+        period,
+        generatedAt: new Date(),
+        ...buildAll(sums),
+      }),
+    );
+
+    void reply
+      .header('content-type', XLSX_TYPE)
+      .header('content-disposition', `attachment; filename="rekoda-statements-${period}.xlsx"`)
+      .header('cache-control', 'no-store')
+      .send(Buffer.from(book));
   }
 
   /** Per-account sums for one month, with any account the chart does not know

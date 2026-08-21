@@ -617,3 +617,131 @@ describe('the stock register', () => {
     expect(raw).not.toContain('price');
   });
 });
+
+/**
+ * The statements as a workbook.
+ *
+ * The PDF is for somebody who will read it; this is for somebody who will
+ * work with it. So the assertions are about the archive being real and the
+ * figures being numbers, not about bytes existing.
+ */
+describe('the statements workbook', () => {
+  const get = (path: string, auth: Record<string, string> = {}) =>
+    app.inject({ method: 'GET', url: path, headers: auth });
+
+  /**
+   * Read one part out of the zip, by WALKING the local headers.
+   *
+   * Not by searching for the filename: `[Content_Types].xml` lists every part
+   * by path and sorts first in the archive, so a search finds the name inside
+   * that part's data and reads the wrong bytes entirely. Entries are stored,
+   * so once found there is nothing to inflate.
+   */
+  function part(zip: Buffer, name: string): string {
+    let at = 0;
+    while (at + 30 <= zip.length && zip.readUInt32LE(at) === 0x04034b50) {
+      const size = zip.readUInt32LE(at + 18);
+      const nameLength = zip.readUInt16LE(at + 26);
+      const extraLength = zip.readUInt16LE(at + 28);
+      const entry = zip.subarray(at + 30, at + 30 + nameLength).toString('utf8');
+      const start = at + 30 + nameLength + extraLength;
+      if (entry === name) return zip.subarray(start, start + size).toString('utf8');
+      at = start + size;
+    }
+    throw new Error(`${name} is not in the archive`);
+  }
+
+  it('refuses without a session, like every other report', async () => {
+    expect((await get('/v1/reports/statements.xlsx')).statusCode).toBe(401);
+  });
+
+  it('refuses a period that is not a month', async () => {
+    const { auth } = await onboard('+2348120000051');
+    expect((await get('/v1/reports/statements.xlsx?period=2026-13', auth)).statusCode).toBe(400);
+  });
+
+  it('hands over a real archive a browser saves and no cache keeps', async () => {
+    const { auth } = await onboard('+2348120000052');
+    const res = await get('/v1/reports/statements.xlsx?period=2026-08', auth);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['content-type']).toContain('spreadsheetml.sheet');
+    expect(res.headers['content-disposition']).toContain('rekoda-statements-2026-08.xlsx');
+    expect(res.headers['cache-control']).toBe('no-store');
+    /* The zip local-header signature, not merely a 200. */
+    expect([...res.rawPayload.subarray(0, 4)]).toEqual([0x50, 0x4b, 0x03, 0x04]);
+  });
+
+  it('carries four named sheets in the order an accountant reads them', async () => {
+    const { auth } = await onboard('+2348120000053');
+    const res = await get('/v1/reports/statements.xlsx?period=2026-08', auth);
+    const workbook = part(res.rawPayload, 'xl/workbook.xml');
+
+    expect(workbook).toContain('name="Profit and loss"');
+    expect(workbook).toContain('name="Balance sheet"');
+    expect(workbook).toContain('name="Cash flow"');
+    expect(workbook).toContain('name="Trial balance"');
+    expect(workbook.indexOf('Profit and loss')).toBeLessThan(workbook.indexOf('Balance sheet'));
+  });
+
+  it('writes the figures as numbers a spreadsheet can total', async () => {
+    const { auth, businessId } = await onboard('+2348120000054');
+    await seedWorkbook(businessId);
+
+    const period = new Date(Date.now() + 3_600_000).toISOString().slice(0, 7);
+    const res = await get(`/v1/reports/statements.xlsx?period=${period}`, auth);
+    const sheet = part(res.rawPayload, 'xl/worksheets/sheet1.xml');
+
+    /* Naira, not kobo, and in a value cell rather than an inline string. A
+     * figure written as text is a figure nobody can sum, which is the entire
+     * reason to ship this instead of another PDF. */
+    expect(sheet).toContain('<v>150000</v>');
+    expect(sheet).not.toContain('15000000');
+    expect(sheet).not.toContain('₦');
+  });
+
+  it('agrees with the PDF built from the same month', async () => {
+    const { auth, businessId } = await onboard('+2348120000055');
+    await seedWorkbook(businessId);
+
+    const period = new Date(Date.now() + 3_600_000).toISOString().slice(0, 7);
+    const [pdf, xlsx] = await Promise.all([
+      get(`/v1/reports/statements.pdf?period=${period}`, auth),
+      get(`/v1/reports/statements.xlsx?period=${period}`, auth),
+    ]);
+
+    /* Both come from one `sumsFor` and one `buildAll`, so this guards against
+     * them drifting apart later rather than claiming anything about today. */
+    expect(pdf.statusCode).toBe(200);
+    expect(xlsx.statusCode).toBe(200);
+  });
+
+  it('builds a month with no trading rather than failing on it', async () => {
+    const { auth } = await onboard('+2348120000056');
+    const res = await get('/v1/reports/statements.xlsx?period=2020-01', auth);
+    expect(res.statusCode).toBe(200);
+    expect([...res.rawPayload.subarray(0, 4)]).toEqual([0x50, 0x4b, 0x03, 0x04]);
+  });
+
+  async function seedWorkbook(businessId: string) {
+    await withBusiness(db, businessId, async (tx) => {
+      await issueRepo.issueSale(tx, {
+        businessId,
+        customerId: null,
+        customerToken: 'CUSTOMER_XLS',
+        items: [{ name: 'wig', quantity: 3, unitPriceK: 5_000_000 }],
+        subtotalK: 15_000_000,
+        discountK: 0,
+        deliveryFeeK: 0,
+        vatK: 0,
+        totalK: 15_000_000,
+        paidK: 0,
+        balanceDueK: 15_000_000,
+        method: 'transfer',
+        sourceType: 'chat',
+        sourceId: 'sale-xls',
+        actor: 'system',
+      });
+    });
+  }
+});
