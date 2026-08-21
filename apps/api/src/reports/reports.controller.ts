@@ -15,6 +15,7 @@ import {
   Query,
   Req,
   Res,
+  ServiceUnavailableException,
   UseGuards,
 } from '@nestjs/common';
 
@@ -29,6 +30,12 @@ interface CsvReply {
   header(name: string, value: string): CsvReply;
   send(payload: string): unknown;
 }
+
+/** The same, for bytes. A PDF is not a string and must not be sent as one. */
+interface FileReply {
+  header(name: string, value: string): FileReply;
+  send(payload: Buffer): unknown;
+}
 import {
   buildBalanceSheet,
   buildCashflowStatement,
@@ -42,6 +49,7 @@ import {
   usagePeriod,
   type AccountSums,
 } from '@rekoda/core';
+import { FontsMissing, renderStatementsPdf } from '../documents/pdf.js';
 import type {
   ReportsActivityResponse,
   ReportsCashflowResponse,
@@ -128,16 +136,67 @@ export class ReportsController {
     @Req() request: AuthedRequest,
     @Query('period') periodParam?: string,
   ): Promise<ReportsStatementsResponse> {
-    const period = periodParam ?? usagePeriod(new Date());
-    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(period)) {
-      throw new BadRequestException('period must look like 2026-08');
+    const period = requirePeriod(periodParam);
+    const sums = await this.sumsFor(request.auth!.businessId, period);
+    return { period, ...buildAll(sums) };
+  }
+
+  /**
+   * The same four statements, as a file somebody can send to a bank.
+   *
+   * A dashboard is not a deliverable. A merchant asked for a loan, a grant or
+   * a landlord's reference needs something with a date on it that they can
+   * forward, and "log in and look at my screen" is not that. This is also the
+   * file the chat assistant has been pointing at the dashboard INSTEAD of,
+   * because it did not exist.
+   *
+   * Not metered. It costs compute and no provider a naira, and locking a
+   * merchant out of their own accounts to protect a report allowance would
+   * be the wrong trade in both directions.
+   */
+  @Get('statements.pdf')
+  async statementsPdf(
+    @Req() request: AuthedRequest,
+    @Res() reply: FileReply,
+    @Query('period') periodParam?: string,
+  ): Promise<void> {
+    const period = requirePeriod(periodParam);
+    const auth = request.auth!;
+    const sums = await this.sumsFor(auth.businessId, period);
+
+    let pdf: Buffer;
+    try {
+      pdf = await renderStatementsPdf({
+        businessName: auth.businessName,
+        period,
+        generatedAt: new Date(),
+        ...buildAll(sums),
+      });
+    } catch (error) {
+      /* The naira sign needs a font that carries it, and a deployment
+       * missing one should say so rather than hand over a document with a
+       * box where every amount used to be. */
+      if (error instanceof FontsMissing) {
+        throw new ServiceUnavailableException('document fonts are not installed on this server');
+      }
+      throw error;
     }
 
-    const businessId = request.auth!.businessId;
+    void reply
+      .header('content-type', 'application/pdf')
+      .header('content-disposition', `attachment; filename="rekoda-statements-${period}.pdf"`)
+      .header('cache-control', 'no-store')
+      .send(pdf);
+  }
+
+  /** Per-account sums for one month, with any account the chart does not know
+   * dropped. An unknown key means a write path bypassed the posting builders,
+   * and the trial balance's own `balanced` flag is what exposes the damage. */
+  private async sumsFor(businessId: string, period: string): Promise<AccountSums[]> {
     const rows = await withBusiness(this.db, businessId, (tx) =>
       reportsRepo.accountSumsFor(tx, businessId, period),
     );
-    const sums: AccountSums[] = rows
+    return rows
       .filter((r) => isAccountKey(r.account))
       .map((r) => ({
         account: r.account as AccountSums['account'],
@@ -146,14 +205,6 @@ export class ReportsController {
         cumulativeDebitK: r.cumulativeDebitK,
         cumulativeCreditK: r.cumulativeCreditK,
       }));
-
-    return {
-      period,
-      trialBalance: buildTrialBalance(sums),
-      profitAndLoss: buildProfitAndLoss(sums),
-      balanceSheet: buildBalanceSheet(sums),
-      cashflow: buildCashflowStatement(sums),
-    };
   }
 
   /** The invoice register — numbers and figures only, never a customer name. */
@@ -276,6 +327,24 @@ export class ReportsController {
  * named for what it is and when they took it, not `invoices.csv` for the
  * fourth time this month.
  */
+function requirePeriod(period: string | undefined): string {
+  const wanted = period ?? usagePeriod(new Date());
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(wanted)) {
+    throw new BadRequestException('period must look like 2026-08');
+  }
+  return wanted;
+}
+
+/** All four, from one set of sums, so the JSON and the PDF cannot disagree. */
+function buildAll(sums: AccountSums[]) {
+  return {
+    trialBalance: buildTrialBalance(sums),
+    profitAndLoss: buildProfitAndLoss(sums),
+    balanceSheet: buildBalanceSheet(sums),
+    cashflow: buildCashflowStatement(sums),
+  };
+}
+
 function sendCsv(reply: CsvReply, filename: string, csv: string): void {
   void reply
     .header('content-type', 'text/csv; charset=utf-8')

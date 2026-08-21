@@ -10,6 +10,7 @@ export * from './allowances.js';
 export * from './invoice-layout.js';
 export * from './receipt-layout.js';
 export * from './statements.js';
+export * from './statement-layout.js';
 export * from './payments.js';
 export * from './due-dates.js';
 export * from './csv.js';

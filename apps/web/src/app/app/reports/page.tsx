@@ -303,6 +303,14 @@ export default async function ReportsPage({
               </p>
             </div>
           </div>
+
+          {/* A screen is not something a merchant can forward. A bank, a
+              landlord or a grant officer wants a file with a date on it. */}
+          <p className="rk-fineprint">
+            <a href={`/app/export/statements?period=${period}`} download>
+              Download all four statements for {label} as a PDF
+            </a>
+          </p>
         </>
       )}
     </section>

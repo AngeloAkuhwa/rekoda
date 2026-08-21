@@ -2245,6 +2245,15 @@ describe('asking the books a question', () => {
     expect(stubSender.lastText).not.toContain('sending');
   });
 
+  it('names the PDF now that it exists, without promising to send it here', async () => {
+    await seedMerchant('+2348031234567');
+
+    await ask('wamid.Q9B', askAbout({ topic: 'report_request' }), 'send me my accounts');
+
+    expect(stubSender.lastText).toContain('PDF');
+    expect(stubSender.lastText).not.toContain('attached');
+  });
+
   it('never writes anything: a question leaves the books untouched', async () => {
     const business = await seedMerchant('+2348031234567');
     await seedTrading(business.id);

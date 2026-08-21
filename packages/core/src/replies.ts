@@ -692,14 +692,16 @@ export function unreconciledAnswer(count: number): Reply {
 /**
  * They asked for a document rather than a figure.
  *
- * Points at the dashboard rather than promising a file, because the statement
- * PDF is not built yet and a bookkeeper that says "sending it now" and sends
- * nothing is worse than one that says where to look.
+ * Points at the dashboard rather than promising to send one here. The file
+ * exists now and downloads in one tap, but WhatsApp delivery of it is not
+ * wired, and a bookkeeper that says "sending it now" and sends nothing is
+ * worse than one that says exactly where the file is.
  */
 export function reportRequestAnswer(): Reply {
   return reply(
     'Your full reports are on your dashboard: profit and loss, cash flow, balance ' +
-      'sheet and trial balance, month by month. Send *records* for this month at a glance.',
+      'sheet and trial balance, month by month. All four download there as one PDF ' +
+      'you can send on. Send *records* for this month at a glance.',
   );
 }
 
