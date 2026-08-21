@@ -5,6 +5,7 @@ export * as billingRepo from './repos/billing.js';
 export * as customersRepo from './repos/customers.js';
 export * as events from './repos/events.js';
 export * as jobsRepo from './repos/jobs.js';
+export * as marginRepo from './repos/margin.js';
 export * as conversationsRepo from './repos/conversations.js';
 export * as quotaRepo from './repos/quota.js';
 export * as issueRepo from './repos/issue.js';

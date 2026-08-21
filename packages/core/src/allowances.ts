@@ -78,3 +78,29 @@ export function allowanceFor(plan: string, unit: UsageUnit): number {
 export function usagePeriod(at: Date): string {
   return new Date(at.getTime() + 3_600_000).toISOString().slice(0, 7);
 }
+
+/**
+ * What each plan costs, in kobo (docs/pricing-model.md).
+ *
+ * These lived only in prose — the pricing page, the marketing copy and this
+ * repository's own ADRs each carried a figure typed by hand, and one of them
+ * was wrong for a day. A plan price is arithmetic input: the margin view
+ * divides by it, and self-service billing (M4) will charge it. It belongs
+ * beside the allowances it buys.
+ *
+ * `trial` and `expired` are zero because nobody is billed for either. That is
+ * not a placeholder: a trial genuinely earns nothing, and the margin view
+ * should show it as the cost centre it is rather than hiding it.
+ */
+export const PLAN_PRICES_K: Record<PlanId, number> = {
+  trial: 0,
+  expired: 0,
+  chat: 990_000,
+  integrate: 1_990_000,
+  complete: 2_990_000,
+};
+
+/** An unknown plan earns nothing, which is the safe direction for a margin. */
+export function planPriceK(plan: string): number {
+  return (PLAN_PRICES_K as Record<string, number>)[plan] ?? 0;
+}
