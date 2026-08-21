@@ -13,6 +13,7 @@ export * from './statements.js';
 export * from './payments.js';
 export * from './due-dates.js';
 export * from './csv.js';
+export * from './periods.js';
 export * from './ai-cost.js';
 export * as replies from './replies.js';
 export type { Reply } from './replies.js';

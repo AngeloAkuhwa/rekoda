@@ -608,6 +608,101 @@ export function voiceUnavailable(): Reply {
   );
 }
 
+/* ── answering a question ────────────────────────────────────────────────── */
+
+/**
+ * What the books say about a window of trading.
+ *
+ * Every figure here came from SQL. The model decided WHICH question was
+ * asked and over what period; it did not compute a single naira, and the
+ * period it named was resolved to real boundaries by `resolvePeriod` before
+ * anything was counted.
+ *
+ * No customer appears, in this or any other answer below: these cross
+ * WhatsApp in the clear.
+ */
+export function salesAnswer(input: {
+  label: string;
+  salesK: number;
+  invoices: number;
+  moneyInK: number;
+}): Reply {
+  if (input.invoices === 0) {
+    return reply(
+      `You have not recorded any sales ${input.label}. Tell me one the way you would ` +
+        'tell a person, like "sold 2 bags to Ada for 40k".',
+    );
+  }
+  return reply(
+    `${input.label[0]!.toUpperCase()}${input.label.slice(1)}: ${formatKobo(input.salesK)} ` +
+      `invoiced across ${input.invoices === 1 ? 'one sale' : `${input.invoices} sales`}.\n` +
+      `${formatKobo(input.moneyInK)} of that has actually come in.`,
+  );
+}
+
+export function expensesAnswer(input: {
+  label: string;
+  moneyOutK: number;
+  expenses: number;
+}): Reply {
+  if (input.expenses === 0) {
+    return reply(`You have not recorded any spending ${input.label}. Tell me one like "fuel 12k".`);
+  }
+  return reply(
+    `${input.label[0]!.toUpperCase()}${input.label.slice(1)}: ${formatKobo(input.moneyOutK)} ` +
+      `spent across ${input.expenses === 1 ? 'one entry' : `${input.expenses} entries`}.`,
+  );
+}
+
+/**
+ * A question about ONE customer's balance.
+ *
+ * Answered by invoice, never by name. The merchant knows who they asked
+ * about; anybody reading over their shoulder does not, and this text is
+ * plaintext on somebody else's servers.
+ */
+export function customerBalanceAnswer(rows: DebtorLine[], totalK: number): Reply {
+  if (rows.length === 0) {
+    return reply('That customer has nothing outstanding. Every invoice of theirs is paid.');
+  }
+  const lines = rows.map((r) => `${r.invoiceNumber}: ${formatKobo(r.balanceDueK)}`);
+  return reply(`They owe you ${formatKobo(totalK)} in total.\n\n${lines.join('\n')}`);
+}
+
+/** Money owed OUT, to suppliers. The other side of the debtors question. */
+export function suppliersAnswer(owedK: number): Reply {
+  if (owedK === 0) return reply('You do not owe any supplier anything right now.');
+  return reply(
+    `You owe suppliers ${formatKobo(owedK)} in total. The breakdown is on your ` +
+      'dashboard under Reports.',
+  );
+}
+
+/** Payments that arrived and did not match anything (spec §35). */
+export function unreconciledAnswer(count: number): Reply {
+  if (count === 0) {
+    return reply('Nothing needs your attention. Every payment matched what was expected.');
+  }
+  return reply(
+    `${count === 1 ? 'One payment needs' : `${count} payments need`} a look: the amount did ` +
+      'not match what was expected. Open Payments on your dashboard to settle them.',
+  );
+}
+
+/**
+ * They asked for a document rather than a figure.
+ *
+ * Points at the dashboard rather than promising a file, because the statement
+ * PDF is not built yet and a bookkeeper that says "sending it now" and sends
+ * nothing is worse than one that says where to look.
+ */
+export function reportRequestAnswer(): Reply {
+  return reply(
+    'Your full reports are on your dashboard: profit and loss, cash flow, balance ' +
+      'sheet and trial balance, month by month. Send *records* for this month at a glance.',
+  );
+}
+
 /* ── the records command ─────────────────────────────────────────────────── */
 
 /**

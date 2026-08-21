@@ -5,6 +5,7 @@ import {
   gatePayment,
   daysOverdue,
   resolveDueDate,
+  resolvePeriod,
   gatePurchase,
   gateSale,
   isSaleSource,
@@ -773,6 +774,84 @@ async function confirmPurchase(
 }
 
 /**
+ * What the books say, in answer to a spoken question.
+ *
+ * The model decided WHICH question was asked and over what period. It
+ * computed nothing: the window comes from `resolvePeriod` and every figure
+ * from SQL, which is the same rule that keeps it out of the arithmetic on
+ * every other path.
+ *
+ * No customer is ever named in what comes back. These answers cross WhatsApp
+ * in the clear, so a balance is reported by invoice number exactly as the
+ * debtors list is.
+ */
+async function answerQuery(
+  tx: TenantDb,
+  businessId: string,
+  command: Extract<StructuredBusinessCommand, { intent: 'Query' }>,
+): Promise<Reply> {
+  /* `custom` periods carry only the merchant's words, which nothing here can
+   * turn into boundaries yet. This month is the honest default and the reply
+   * names the window, so a merchant who meant something else can see that. */
+  const period = resolvePeriod(
+    command.period === 'today' || command.period === 'week' ? command.period : 'month',
+    new Date(),
+  );
+
+  switch (command.topic) {
+    case 'debtors': {
+      const debtors = await reportsRepo.debtorsFor(tx, businessId, 8);
+      const now = new Date();
+      return replies.debtorList(
+        debtors.rows.map((r) => ({
+          invoiceNumber: r.invoiceNumber,
+          balanceDueK: r.balanceDueK,
+          daysOverdue: daysOverdue(r.dueDate, r.balanceDueK, now),
+        })),
+        debtors.totalK,
+        debtors.count,
+      );
+    }
+
+    case 'customer_balance': {
+      const token = customerTokenOf(command as never);
+      /* No token means the model heard a name it could not resolve to
+       * anybody we know. Asking is better than answering about the wrong
+       * person, or about everybody. */
+      if (!token) return replies.paymentNoOpenInvoice();
+      const owed = await issueRepo.openInvoicesForCustomer(tx, businessId, token);
+      return replies.customerBalanceAnswer(
+        owed.map((r) => ({ invoiceNumber: r.invoiceNumber, balanceDueK: r.balanceDueK })),
+        owed.reduce((n, r) => n + r.balanceDueK, 0),
+      );
+    }
+
+    case 'sales_summary': {
+      const summary = await reportsRepo.summaryFor(tx, businessId, period.from, period.to);
+      return replies.salesAnswer({ label: period.label, ...summary });
+    }
+
+    case 'expenses_summary': {
+      const summary = await reportsRepo.summaryFor(tx, businessId, period.from, period.to);
+      return replies.expensesAnswer({ label: period.label, ...summary });
+    }
+
+    case 'supplier_balances': {
+      const overview = await reportsRepo.overviewFor(tx, businessId);
+      return replies.suppliersAnswer(overview.youOweK);
+    }
+
+    case 'unreconciled': {
+      const overview = await reportsRepo.overviewFor(tx, businessId);
+      return replies.unreconciledAnswer(overview.exceptionsOpen);
+    }
+
+    case 'report_request':
+      return replies.reportRequestAnswer();
+  }
+}
+
+/**
  * A confirmed payment the merchant reported.
  *
  * The invoice is resolved AGAIN here rather than carried on the draft: a
@@ -966,6 +1045,21 @@ async function acknowledge(
   correcting: boolean,
 ): Promise<Reply> {
   if (command.intent === 'Unclear') return replies.clarification(command.clarification);
+
+  /**
+   * A question is a READ, so it answers now.
+   *
+   * No draft, no preview, no yes. The conversation gates exist because a
+   * write a merchant did not intend is expensive to undo; a wrong answer to
+   * a question costs one message and they ask again. Routing questions
+   * through CG2 would make the product ask "shall I tell you?".
+   *
+   * `Query` has been in the command contract since M0 with nothing handling
+   * it, so the model could emit one and the merchant got "Recording that kind
+   * of entry is not built yet" — the wrong sentence for a question, about a
+   * thing they were not recording.
+   */
+  if (command.intent === 'Query') return answerQuery(tx, businessId, command);
 
   /**
    * A reported payment is gated against a REAL balance, read here.

@@ -526,3 +526,69 @@ export async function receiptsFor(
     count: [...totals][0]?.n ?? 0,
   };
 }
+
+export interface WindowSummary {
+  /** Invoiced in the window, at issue: accrual, not cash. */
+  salesK: number;
+  invoices: number;
+  /** Money that actually arrived, verified and merchant-reported together. */
+  moneyInK: number;
+  moneyOutK: number;
+  expenses: number;
+}
+
+/**
+ * What happened between two instants — the figures a spoken question wants.
+ *
+ * A window rather than a Lagos month, because "what did I sell this week" is
+ * a question the statements page cannot answer and a merchant asks constantly.
+ * The boundaries come from `resolvePeriod` in core: the model reports which
+ * period was MEANT and code decides what that period is, so a figure in a
+ * reply is only ever as trustworthy as a window somebody can read.
+ */
+export async function summaryFor(
+  tx: TenantDb,
+  businessId: string,
+  from: Date,
+  to: Date,
+): Promise<WindowSummary> {
+  const rows = await tx.execute<{
+    sales_k: string;
+    invoices: number;
+    money_in_k: string;
+    money_out_k: string;
+    expenses: number;
+  }>(sql`
+    SELECT
+      COALESCE((SELECT SUM(total_k) FROM invoices
+                WHERE business_id = ${businessId}::uuid
+                  AND status <> 'voided'
+                  AND created_at BETWEEN ${from.toISOString()}::timestamptz
+                                     AND ${to.toISOString()}::timestamptz), 0)::bigint AS sales_k,
+      COALESCE((SELECT count(*) FROM invoices
+                WHERE business_id = ${businessId}::uuid
+                  AND status <> 'voided'
+                  AND created_at BETWEEN ${from.toISOString()}::timestamptz
+                                     AND ${to.toISOString()}::timestamptz), 0)::int    AS invoices,
+      COALESCE((SELECT SUM(amount_k) FROM payments
+                WHERE business_id = ${businessId}::uuid
+                  AND created_at BETWEEN ${from.toISOString()}::timestamptz
+                                     AND ${to.toISOString()}::timestamptz), 0)::bigint AS money_in_k,
+      COALESCE((SELECT SUM(amount_k) FROM expenses
+                WHERE business_id = ${businessId}::uuid
+                  AND created_at BETWEEN ${from.toISOString()}::timestamptz
+                                     AND ${to.toISOString()}::timestamptz), 0)::bigint AS money_out_k,
+      COALESCE((SELECT count(*) FROM expenses
+                WHERE business_id = ${businessId}::uuid
+                  AND created_at BETWEEN ${from.toISOString()}::timestamptz
+                                     AND ${to.toISOString()}::timestamptz), 0)::int    AS expenses
+  `);
+  const row = [...rows][0];
+  return {
+    salesK: Number(row?.sales_k ?? 0),
+    invoices: row?.invoices ?? 0,
+    moneyInK: Number(row?.money_in_k ?? 0),
+    moneyOutK: Number(row?.money_out_k ?? 0),
+    expenses: row?.expenses ?? 0,
+  };
+}

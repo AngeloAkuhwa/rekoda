@@ -606,3 +606,33 @@ export async function invoiceByNumber(
     dueDate: row.due_date === null ? null : new Date(row.due_date),
   };
 }
+
+/**
+ * Everything one customer still owes.
+ *
+ * Matches the snapshot token as well as the joined customer row, for the same
+ * reason `openInvoiceForPayment` does: a chat-issued invoice carries
+ * `customer_id = NULL` and keeps the token in `snapshot_json`, so a join
+ * alone finds nothing for exactly the invoices this product creates.
+ *
+ * Oldest first. A balance question is usually the prelude to a chase, and the
+ * oldest debt is the one that matters.
+ */
+export async function openInvoicesForCustomer(
+  tx: TenantDb,
+  businessId: string,
+  customerToken: string,
+): Promise<OpenInvoice[]> {
+  const rows = await tx.execute<OpenInvoiceRow>(sql`
+    SELECT i.id, i.invoice_number, i.balance_due_k::bigint AS balance_due_k
+    FROM invoices i
+    LEFT JOIN customers c ON c.id = i.customer_id AND c.business_id = i.business_id
+    WHERE i.business_id = ${businessId}::uuid
+      AND i.status IN ('issued', 'partially_paid')
+      AND (c.token = ${customerToken}
+           OR i.snapshot_json ->> 'customerToken' = ${customerToken})
+    ORDER BY i.created_at ASC
+    LIMIT 20
+  `);
+  return [...rows].map(readOpenInvoice);
+}
