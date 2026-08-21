@@ -69,6 +69,39 @@ export async function shopBySlug(db: Db, slug: string): Promise<PublicShop | nul
   return rows[0] ?? null;
 }
 
+export interface ShopIndexEntry {
+  slug: string;
+  /** When the shop itself last changed. Not when its catalogue did. */
+  updatedAt: Date;
+}
+
+/**
+ * Every open shop, for the sitemap.
+ *
+ * The second cross-tenant read, and the one that needs its limits saying out
+ * loud. It returns SLUGS AND DATES and nothing else: not the business, not
+ * the display name, not the WhatsApp number. A sitemap needs a URL and a
+ * date, and a list of merchants with their phone numbers attached is a
+ * different thing entirely from a list of pages.
+ *
+ * Ordered by slug rather than by date so the file is stable between builds:
+ * a sitemap that reshuffles on every fetch teaches a crawler that the whole
+ * site changed when nothing did.
+ *
+ * `limit` is the caller's, and the caller is expected to notice when it is
+ * reached. A sitemap silently truncated at its cap reads exactly like a
+ * complete one, which is the failure mode worth being loud about.
+ */
+export async function publishedShops(db: Db, limit: number): Promise<ShopIndexEntry[]> {
+  const rows = await db
+    .select({ slug: shops.slug, updatedAt: shops.updatedAt })
+    .from(shops)
+    .where(isNotNull(shops.publishedAt))
+    .orderBy(shops.slug)
+    .limit(limit);
+  return rows.map((row) => ({ slug: row.slug, updatedAt: row.updatedAt }));
+}
+
 export interface ShopSettings {
   slug: string;
   displayName: string;

@@ -37,6 +37,8 @@ import {
   saveShopRequest,
   shopSettingsResponse,
   type PublicShopResponse,
+  publicShopIndexResponse,
+  type PublicShopIndexResponse,
   type SaveShopResponse,
   type ShopSettingsResponse,
 } from '@rekoda/contracts';
@@ -54,6 +56,42 @@ interface ImageReply {
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * How many shops one sitemap will carry.
+ *
+ * Far below the 50,000 URL ceiling the sitemap protocol sets, and chosen so
+ * that reaching it is a signal rather than a wall: at this many merchants the
+ * right answer is a sitemap index with one file per slice, not a bigger
+ * number here. The response says when it was hit so nobody has to guess.
+ */
+const SITEMAP_SHOPS = 5_000;
+
+/**
+ * The list of open shops, on its own path.
+ *
+ * `v1/shops` rather than a route under `v1/shop`, because every path under
+ * that controller is a slug: `/v1/shop/index` would be unreachable the day a
+ * merchant chose `index` as their handle, and nothing stops them.
+ */
+@Controller('v1/shops')
+export class PublicShopIndexController {
+  constructor(@Inject(DB) private readonly db: Db) {}
+
+  @Get()
+  async index(): Promise<PublicShopIndexResponse> {
+    const shops = await shopsRepo.publishedShops(this.db, SITEMAP_SHOPS + 1);
+    return publicShopIndexResponse.parse({
+      shops: shops.slice(0, SITEMAP_SHOPS).map((shop) => ({
+        slug: shop.slug,
+        updatedAt: shop.updatedAt.toISOString(),
+      })),
+      /* One more than the cap was asked for, so this is a fact rather than a
+       * guess about whether the list ran out or was cut off. */
+      truncated: shops.length > SITEMAP_SHOPS,
+    });
+  }
+}
 
 /**
  * The public half. No guard, by design, and nothing here reads a session.

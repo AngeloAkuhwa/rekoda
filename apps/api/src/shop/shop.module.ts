@@ -4,7 +4,11 @@ import { SessionGuard } from '../auth/session.guard.js';
 import { DbModule } from '../db/db.module.js';
 import { DocumentsModule } from '../documents/documents.module.js';
 import { RepliesModule } from '../replies/replies.module.js';
-import { PublicShopController, ShopSettingsController } from './shop.controller.js';
+import {
+  PublicShopController,
+  PublicShopIndexController,
+  ShopSettingsController,
+} from './shop.controller.js';
 
 /**
  * Two controllers, one public and one behind a session, in one module because
@@ -14,7 +18,7 @@ import { PublicShopController, ShopSettingsController } from './shop.controller.
  */
 @Module({
   imports: [DbModule, DocumentsModule, RepliesModule],
-  controllers: [PublicShopController, ShopSettingsController],
+  controllers: [PublicShopIndexController, PublicShopController, ShopSettingsController],
   providers: [AuthService, SessionGuard],
 })
 export class ShopModule {}

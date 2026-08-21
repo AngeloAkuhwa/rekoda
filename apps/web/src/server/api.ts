@@ -25,6 +25,7 @@ import {
   usageMeterResponse,
   catalogueResponse,
   createRecurringResponse,
+  publicShopIndexResponse,
   publicShopResponse,
   saveShopResponse,
   shopSettingsResponse,
@@ -41,6 +42,7 @@ import {
   type MeResponse,
   type CatalogueResponse,
   type CreateRecurringRequest,
+  type PublicShopIndexResponse,
   type PublicShopResponse,
   type SaveShopRequest,
   type SaveShopResponse,
@@ -568,6 +570,19 @@ export async function publicShop(slug: string): Promise<PublicShopResponse | nul
     expect: [200, 404],
   });
   return status === 200 ? publicShopResponse.parse(json) : null;
+}
+
+/**
+ * Every open shop, for the sitemap.
+ *
+ * The only read in this file with neither a token nor an argument. It is also
+ * the only one whose failure is routine rather than exceptional: the caller
+ * catches it and ships a shorter file, so this stays a plain throw and does
+ * not invent a null.
+ */
+export async function publicShopIndex(): Promise<PublicShopIndexResponse> {
+  const { json } = await call({ method: 'GET', path: '/v1/shops', expect: [200] });
+  return publicShopIndexResponse.parse(json);
 }
 
 /** The merchant's own shop settings. */
