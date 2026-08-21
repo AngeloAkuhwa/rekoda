@@ -2,6 +2,12 @@
 
 **Status:** Accepted
 **Date:** 2026-08-21
+**Corrected:** 2026-08-21 — as first written, this ADR claimed the Chat
+subscription "is now ₦3,500". That was wrong: it is ₦9,900 and always has been
+(pricing-model.md §"Rekoda Chat"). The figure was invented, not read. The
+decision below is unchanged and the arithmetic that supports it is now the
+real one; the error is recorded rather than quietly rewritten, because an ADR
+whose reasoning moves without saying so cannot be trusted by the next reader.
 **Supersedes the default-model choice in:** [0007](0007-ai-router-sonnet-default.md)
 (the deterministic-first router, the escalation flag and the guardrails in 0007
 all stand unchanged)
@@ -12,11 +18,15 @@ Three things have moved since 0007 was written on 19 August 2026, and each of
 them on its own would be worth a paragraph. Together they change the answer.
 
 **The arithmetic 0007 did no longer holds.** It priced Sonnet at ≈₦8 a call
-against a ₦9,900 subscription and concluded that ~₦2,000/month of model cost
-"fits with room". The subscription is now ₦3,500, and Sonnet's standard rate is
-$3/$15 per MTok rather than the $2/$10 the price table in `@rekoda/core`
-carried. The same call is dearer against a plan less than half the size: the
-model was eating roughly a third of subscription revenue.
+against the ₦9,900 Chat subscription and concluded that ~₦2,000/month of model
+cost "fits with room". The price moved: Sonnet's standard rate is $3/$15 per
+MTok, not the $2/$10 the table in `@rekoda/core` carried.
+
+At the planning FX of ₦1,450/$ and 0007's own typical extraction (≈1,500 input
+/ 250 output tokens), that is **₦11.96 a call** rather than ₦8. A heavy Chat
+merchant routing ~250 messages a month through the model therefore costs
+**≈₦2,990 against ₦9,900 — about 30% of subscription revenue**, before Meta,
+storage or Paystack. That is not "with room".
 
 **Two configured model ids were not real ids.** `AI_MODEL_DEFAULT` and
 `AI_MODEL_VISION` both defaulted to `claude-sonnet-latest`, which is not a
@@ -68,10 +78,12 @@ direction.
 
 ## Consequences
 
-- Model cost per interpreted message falls to roughly a third, which is the
-  difference between the model eating a third of a ₦3,500 subscription and
-  eating a rounding error. Prompt caching on the static system prompt (already
-  built) applies on top.
+- Model cost per interpreted message falls to roughly a third: **₦3.99 a call,
+  ≈₦997 a month for that same heavy merchant, about 10% of ₦9,900**. Not a
+  rounding error, and it should not be described as one, but the difference
+  between 30% and 10% of revenue is the difference between the model being a
+  line item and the model being a problem. Prompt caching on the static system
+  prompt (already built) applies on top of that.
 - `AI_BASE_URL` makes the OpenAI transport an OpenAI-COMPATIBLE one: Groq,
   Together, OpenRouter and DeepSeek weights on a US host are a deployment
   decision rather than a new adapter. **DeepSeek's own API stays out of

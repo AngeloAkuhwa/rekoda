@@ -136,8 +136,9 @@ real database in CI:
 3. **The remaining legal pages** — messaging policy, refund policy, contact.
    These need real business facts (address, support address, refund terms) and
    must not be invented.
-4. **Model realignment.** GPT-4.1 retires from the API on 14 Oct 2026, and the
-   Sonnet default costs roughly ₦10.7 a message against a ₦3,500 subscription.
+4. **Model realignment.** GPT-4.1 retires from the API on 14 Oct 2026. The
+   Sonnet default costs ≈₦12 a call at its standard rate, roughly 30% of the
+   ₦9,900 Chat subscription for a heavy merchant; Haiku is ≈₦4, about 10%.
    See `docs/ai-model-strategy.md`.
 5. **M3** — voice, conversational reporting from SQL, Excel export, accountant
    access.
