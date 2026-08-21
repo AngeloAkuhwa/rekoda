@@ -266,16 +266,39 @@ export async function applySettledCharge(
 
   if (charge.plan) {
     const subscription = await subscriptionsRepo.subscriptionFor(tx, input.businessId);
-    /* An upgrade keeps the renewal date it already had; a first purchase and
-     * a renewal start a month from the cycle they just paid for. */
-    const cycleStartedAt =
-      charge.kind === 'upgrade' ? (subscription?.cycleStartedAt ?? input.when) : input.when;
+
+    /**
+     * A first purchase resets the anchor to the day it was bought, and MUST.
+     *
+     * `renewal_anchor_day` survives an expiry, so a merchant who lapsed on a
+     * 3rd-of-the-month cycle and came back on the 20th would inherit the 3rd:
+     * `addMonth(20 Aug, 3)` is 3 September, and they would have paid a full
+     * month for fourteen days. Only a renewal or an upgrade keeps the anchor,
+     * because only those continue a cycle that already exists.
+     */
+    const lagosDay = new Date(input.when.getTime() + 3_600_000).getUTCDate();
     const anchorDay =
-      subscription?.renewalAnchorDay ?? new Date(input.when.getTime() + 3_600_000).getUTCDate();
+      charge.kind === 'first_purchase' ? lagosDay : (subscription?.renewalAnchorDay ?? lagosDay);
+
+    /**
+     * When the cycle being paid for STARTED, which is not when the payment
+     * settled. A renewal paid three days late still bought the month that
+     * began when the last one ended, and `plan_expires_at` still holds that
+     * date at this moment. Getting it wrong would not move the renewal date,
+     * which the anchor protects, but it would shorten the denominator a later
+     * upgrade prorates against and overcharge for it.
+     */
+    const cycleStartedAt =
+      charge.kind === 'upgrade'
+        ? (subscription?.cycleStartedAt ?? input.when)
+        : charge.kind === 'renewal'
+          ? (subscription?.planExpiresAt ?? input.when)
+          : input.when;
+
     const renewsAt =
       charge.kind === 'upgrade'
         ? (subscription?.planExpiresAt ?? addMonth(input.when, anchorDay))
-        : addMonth(input.when, anchorDay);
+        : addMonth(cycleStartedAt, anchorDay);
 
     await subscriptionsRepo.applyCycle(tx, input.businessId, {
       plan: charge.plan,

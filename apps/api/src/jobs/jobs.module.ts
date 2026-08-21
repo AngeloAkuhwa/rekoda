@@ -28,6 +28,7 @@ import { pumpPaystackEvents } from '../payments/paystack-pump.js';
 import { sweepSettlements } from '../payments/settlement-sweep.js';
 import { sweepUnknownSenders } from '../channels/stranger-sweep.js';
 import { sweepGracePeriods } from '../billing/grace-sweep.js';
+import { sweepRenewals } from '../billing/renewal-sweep.js';
 import { sweepRetention } from '../privacy/retention-sweep.js';
 import { MESSAGE_SENDER } from '../channels/sender.tokens.js';
 import { SPEECH_TO_TEXT, type SpeechToText } from '../ai/stt.js';
@@ -104,6 +105,8 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
   private greeting = false;
   private graceTimer: NodeJS.Timeout | null = null;
   private sweepingGrace = false;
+  private renewalTimer: NodeJS.Timeout | null = null;
+  private sweepingRenewals = false;
   private retentionTimer: NodeJS.Timeout | null = null;
   private sweepingRetention = false;
 
@@ -226,6 +229,24 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
     this.graceTimer.unref();
 
     /**
+     * Renewals ride the same hourly clock as grace, and for the same reason:
+     * a cycle ends at a moment, and a merchant should not keep paid features
+     * for most of a day after theirs did.
+     */
+    this.renewalTimer = setInterval(() => {
+      if (this.sweepingRenewals) return;
+      this.sweepingRenewals = true;
+      sweepRenewals({ workerDb, appDb: this.appDb })
+        .catch((error: unknown) => {
+          this.log.warn(`renewal sweep failed: ${redactForLog(describeFailure(error))}`);
+        })
+        .finally(() => {
+          this.sweepingRenewals = false;
+        });
+    }, 3_600_000);
+    this.renewalTimer.unref();
+
+    /**
      * Retention runs slowest of all, because its unit is a month. Six hours
      * is far more often than the answer can change and still means a record
      * never outlives its schedule by more than a fraction of a day.
@@ -247,6 +268,7 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
   async onApplicationShutdown(): Promise<void> {
     if (this.pumpTimer) clearInterval(this.pumpTimer);
     if (this.graceTimer) clearInterval(this.graceTimer);
+    if (this.renewalTimer) clearInterval(this.renewalTimer);
     if (this.retentionTimer) clearInterval(this.retentionTimer);
     if (this.sweepTimer) clearInterval(this.sweepTimer);
     if (this.strangerTimer) clearInterval(this.strangerTimer);
