@@ -78,6 +78,8 @@ import type {
   CreateRecurringResponse,
   OpeningBalancesResponse,
   StockCountResponse,
+  CloseBooksResponse,
+  ReopenBooksResponse,
   CreditInvoiceResponse,
   ReportsStatementsResponse,
   StopRecurringResponse,
@@ -88,6 +90,8 @@ import {
   createRecurringRequest,
   openingBalancesRequest,
   stockCountRequest,
+  closeBooksRequest,
+  reopenBooksRequest,
   creditInvoiceRequest,
   stopRecurringRequest,
   voidExpenseRequest,
@@ -99,6 +103,7 @@ import {
   ordersRepo,
   openingRepo,
   stocktakeRepo,
+  closeRepo,
   recurringRepo,
   reportsRepo,
   spendRepo,
@@ -195,14 +200,16 @@ export class ReportsController {
      * column is what every accounting package puts beside a profit and loss,
      * and a merchant reading this page always wants it: gating it behind a
      * flag would mean a second round trip for the thing they came for. */
-    const [sums, priorSums, schedule, revenue, opening, stockValuation] = await Promise.all([
-      this.sumsFor(businessId, period),
-      this.sumsFor(businessId, before),
-      this.expenseScheduleFor(businessId, period),
-      this.revenueScheduleFor(businessId, period),
-      withBusiness(this.db, businessId, (tx) => openingRepo.openingBalancesFor(tx, businessId)),
-      withBusiness(this.db, businessId, (tx) => stocktakeRepo.stockValuationFor(tx, businessId)),
-    ]);
+    const [sums, priorSums, schedule, revenue, opening, stockValuation, booksClosedThrough] =
+      await Promise.all([
+        this.sumsFor(businessId, period),
+        this.sumsFor(businessId, before),
+        this.expenseScheduleFor(businessId, period),
+        this.revenueScheduleFor(businessId, period),
+        withBusiness(this.db, businessId, (tx) => openingRepo.openingBalancesFor(tx, businessId)),
+        withBusiness(this.db, businessId, (tx) => stocktakeRepo.stockValuationFor(tx, businessId)),
+        withBusiness(this.db, businessId, (tx) => closeRepo.booksClosedThroughFor(tx, businessId)),
+      ]);
 
     const prior = buildProfitAndLoss(priorSums);
     return {
@@ -212,6 +219,7 @@ export class ReportsController {
       revenueSchedule: revenue,
       openingBalances: opening,
       stockValuation,
+      booksClosedThrough,
       comparison: {
         period: before,
         totalIncomeK: prior.totalIncomeK,
@@ -657,6 +665,11 @@ export class ReportsController {
       if (error instanceof openingRepo.OpeningBalancesAlreadySet) {
         return { outcome: 'already_set' };
       }
+      /* Nothing was written before this threw, so the transaction rolled back
+       * clean and the outcome can be returned rather than raised. */
+      if (error instanceof closeRepo.PeriodClosed) {
+        return { outcome: 'period_closed', closedThrough: error.closedThrough };
+      }
       throw error;
     }
   }
@@ -707,6 +720,65 @@ export class ReportsController {
       };
     }
     return result;
+  }
+
+  /**
+   * Close a month, so a statement somebody already sent cannot change.
+   *
+   * The four statements are a file a merchant hands to a bank or a landlord.
+   * Until this existed, a posting could land in a month that had already been
+   * reported: an expense carries the day it was paid, a recurring entry the
+   * day it fell due, and opening balances the merchant's own date. September
+   * could change in October and neither copy would say so.
+   *
+   * The refusal itself is a trigger on the ledger (migration 0034) rather
+   * than a check any writer is trusted to make. This endpoint only moves the
+   * watermark; nothing downstream has to remember it exists.
+   */
+  @Post('close')
+  @HttpCode(200)
+  async closeBooks(
+    @Req() request: AuthedRequest,
+    @Body() body: unknown,
+  ): Promise<CloseBooksResponse> {
+    const parsed = closeBooksRequest.safeParse(body);
+    if (!parsed.success) throw new BadRequestException('the month to close through');
+
+    const businessId = request.auth!.businessId;
+    return withBusiness(this.db, businessId, (tx) =>
+      closeRepo.closeBooks(tx, {
+        businessId,
+        through: parsed.data.through,
+        actor: `user:${request.auth!.userId}`,
+      }),
+    );
+  }
+
+  /**
+   * Open a closed month back up, and record that it happened.
+   *
+   * Never refused. A merchant who has to correct a filed month must be able
+   * to, and a lock with no key is a support ticket rather than a control.
+   * What it is not is quiet: this lands in the audit trail beside the close
+   * it undoes, which is the honest version of the trade.
+   */
+  @Post('reopen')
+  @HttpCode(200)
+  async reopenBooks(
+    @Req() request: AuthedRequest,
+    @Body() body: unknown,
+  ): Promise<ReopenBooksResponse> {
+    const parsed = reopenBooksRequest.safeParse(body);
+    if (!parsed.success) throw new BadRequestException('the month to reopen from');
+
+    const businessId = request.auth!.businessId;
+    return withBusiness(this.db, businessId, (tx) =>
+      closeRepo.reopenBooks(tx, {
+        businessId,
+        from: parsed.data.from,
+        actor: `user:${request.auth!.userId}`,
+      }),
+    );
   }
 
   /**

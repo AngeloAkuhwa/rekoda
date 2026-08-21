@@ -215,6 +215,15 @@ export const reportsStatementsResponse = z.object({
    * `uncosted` is why the two figures may differ for an innocent reason, so
    * it travels with them rather than being fetched separately.
    */
+  /**
+   * The Lagos month through which the books are closed, or null.
+   *
+   * On the statements response because this is where a merchant reads the
+   * figures a close protects, and where the control belongs. A closed month
+   * is not a different statement: it is the same one, with a promise that it
+   * will still say this tomorrow.
+   */
+  booksClosedThrough: z.string().nullable(),
   stockValuation: z.object({
     /**
      * Signed, and it has to be. A product whose cost was typed rather than
@@ -611,6 +620,14 @@ export const openingBalancesResponse = z.discriminatedUnion('outcome', [
   z.object({ outcome: z.literal('nothing_to_open') }),
   /** Dated in the future, which is a typo rather than a balance. */
   z.object({ outcome: z.literal('not_yet') }),
+  /**
+   * Dated inside a month the merchant has closed.
+   *
+   * Rare and not impossible: opening balances are a setup act, and a business
+   * that has closed months has usually opened its books long ago. Carried as
+   * an outcome anyway, because the alternative to naming it is a 500.
+   */
+  z.object({ outcome: z.literal('period_closed'), closedThrough: z.string() }),
 ]);
 
 export type OpeningBalancesRequest = z.infer<typeof openingBalancesRequest>;
@@ -651,6 +668,53 @@ export const stockCountResponse = z.discriminatedUnion('outcome', [
 
 export type StockCountRequest = z.infer<typeof stockCountRequest>;
 export type StockCountResponse = z.infer<typeof stockCountResponse>;
+
+const period = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, 'a month like 2026-08');
+
+/**
+ * Close the books through a month.
+ *
+ * A watermark, not a list. Closing through August means every month up to and
+ * including August is closed, which is what a merchant means when they say
+ * their books are done to the end of August.
+ */
+export const closeBooksRequest = z.object({ through: period });
+
+export const closeBooksResponse = z.discriminatedUnion('outcome', [
+  z.object({ outcome: z.literal('closed'), through: period }),
+  /**
+   * The month has not ended. Refused rather than allowed, and the refusal is
+   * what keeps the guard's blast radius honest: every live posting is stamped
+   * now, so nothing a merchant does today can ever meet it.
+   */
+  z.object({ outcome: z.literal('not_ended') }),
+  /** Already closed through that month or later. Nothing to do, said plainly. */
+  z.object({ outcome: z.literal('already_closed'), through: period }),
+]);
+
+/**
+ * Open a closed month, and every month after it.
+ *
+ * One watermark cannot express "July open, August closed", so reopening July
+ * necessarily reopens August too. Saying that is better than a second way to
+ * describe what is closed.
+ */
+export const reopenBooksRequest = z.object({ from: period });
+
+export const reopenBooksResponse = z.discriminatedUnion('outcome', [
+  z.object({
+    outcome: z.literal('reopened'),
+    from: period,
+    /** What the watermark was, so the page can say what else came open. */
+    wasClosedThrough: period,
+  }),
+  z.object({ outcome: z.literal('already_open') }),
+]);
+
+export type CloseBooksRequest = z.infer<typeof closeBooksRequest>;
+export type CloseBooksResponse = z.infer<typeof closeBooksResponse>;
+export type ReopenBooksRequest = z.infer<typeof reopenBooksRequest>;
+export type ReopenBooksResponse = z.infer<typeof reopenBooksResponse>;
 
 export const stopRecurringRequest = z.object({ id: z.string().uuid() });
 

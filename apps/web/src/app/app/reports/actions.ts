@@ -1,8 +1,8 @@
 'use server';
 
 import { revalidatePath } from 'next/cache';
-import { formatKobo, lagosDay, parseAmountText, toKobo } from '@rekoda/core';
-import { countStock, openBooks } from '@/server/api';
+import { formatKobo, lagosDay, periodLabel, parseAmountText, toKobo } from '@rekoda/core';
+import { closeBooks, countStock, openBooks, reopenBooks } from '@/server/api';
 import { readSessionToken } from '@/server/session-cookies';
 
 export interface OpeningFormState {
@@ -64,6 +64,14 @@ export async function openBooksAction(
   if (outcome.outcome === 'already_set') {
     return { error: 'Your books are already open. Anything since then is a normal entry.' };
   }
+  /* An opening balance dated inside a month the merchant themselves closed.
+   * Rare, and named rather than swallowed: the fix is theirs to choose,
+   * either a later date or reopening the month. */
+  if (outcome.outcome === 'period_closed') {
+    return {
+      error: `Your books are closed through ${periodLabel(outcome.closedThrough)}, so nothing can be dated on or before then. Pick a later day, or reopen that month first.`,
+    };
+  }
 
   revalidatePath('/app/reports');
   return {
@@ -114,5 +122,62 @@ export async function countStockAction(
     done: short
       ? `Written down by ${amount}. That went to cost of goods sold, where stock that left without a sale belongs.`
       : `Written up by ${amount}. Your stock was worth more than the books said.`,
+  };
+}
+
+export interface CloseBooksState {
+  error?: string;
+  done?: string;
+}
+
+/**
+ * Close a month, or open one back up.
+ *
+ * One action for both because they are one control: a month is closed or it
+ * is not, and the button a merchant sees says which way it will move. Two
+ * actions would mean two places for the same permission check and the same
+ * revalidation to drift apart.
+ */
+export async function closeBooksAction(
+  _prev: CloseBooksState,
+  formData: FormData,
+): Promise<CloseBooksState> {
+  const token = await readSessionToken();
+  if (!token) return { error: 'Your session expired. Sign in again.' };
+
+  const period = String(formData.get('period') ?? '').trim();
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(period)) return { error: 'Pick a month.' };
+  const reopening = String(formData.get('intent') ?? '') === 'reopen';
+
+  if (reopening) {
+    const outcome = await reopenBooks(token, { from: period });
+    if (!outcome) return { error: 'That did not go through. Nothing was changed.' };
+    if (outcome.outcome === 'already_open') {
+      return { done: `${periodLabel(period)} was already open.` };
+    }
+    revalidatePath('/app/reports');
+    /* Named plainly when reopening one month opened later ones with it. A
+     * single watermark cannot hold "July open, August closed", and a merchant
+     * who is not told would find August open and assume a bug. */
+    const alsoOpened = outcome.wasClosedThrough !== period;
+    return {
+      done: alsoOpened
+        ? `${periodLabel(period)} is open again, and so is everything after it up to ${periodLabel(outcome.wasClosedThrough)}. Entries dated in those months can be recorded and will change those statements.`
+        : `${periodLabel(period)} is open again. Entries dated in it can be recorded and will change that statement.`,
+    };
+  }
+
+  const outcome = await closeBooks(token, { through: period });
+  if (!outcome) return { error: 'That did not go through. Nothing was changed.' };
+  if (outcome.outcome === 'not_ended') {
+    return { error: 'That month has not finished yet. You can close it once it has.' };
+  }
+  if (outcome.outcome === 'already_closed') {
+    return { done: `Your books were already closed through ${periodLabel(outcome.through)}.` };
+  }
+
+  revalidatePath('/app/reports');
+  return {
+    done: `Closed through ${periodLabel(outcome.through)}. Nothing can change that month now, so a statement you send stays true.`,
   };
 }

@@ -27,6 +27,8 @@ import {
   createRecurringResponse,
   openingBalancesResponse,
   stockCountResponse,
+  closeBooksResponse,
+  reopenBooksResponse,
   publicShopIndexResponse,
   publicShopResponse,
   saveShopResponse,
@@ -47,6 +49,10 @@ import {
   type OpeningBalancesRequest,
   type StockCountRequest,
   type StockCountResponse,
+  type CloseBooksRequest,
+  type CloseBooksResponse,
+  type ReopenBooksRequest,
+  type ReopenBooksResponse,
   type OpeningBalancesResponse,
   type PublicShopIndexResponse,
   type PublicShopResponse,
@@ -631,6 +637,41 @@ export async function countStock(
     expect: [200, 400],
   });
   return status === 200 ? stockCountResponse.parse(json) : null;
+}
+
+/**
+ * Close the books through a month, so a statement already sent cannot change.
+ *
+ * `expect` carries 200 alone because every refusal here is an outcome rather
+ * than a status: the month has not ended, or it was closed already.
+ */
+export async function closeBooks(
+  sessionToken: string,
+  body: CloseBooksRequest,
+): Promise<CloseBooksResponse | null> {
+  const { status, json } = await call({
+    method: 'POST',
+    path: '/v1/reports/close',
+    body,
+    headers: { authorization: `Bearer ${sessionToken}` },
+    expect: [200, 400],
+  });
+  return status === 200 ? closeBooksResponse.parse(json) : null;
+}
+
+/** Open a closed month, and every month after it. */
+export async function reopenBooks(
+  sessionToken: string,
+  body: ReopenBooksRequest,
+): Promise<ReopenBooksResponse | null> {
+  const { status, json } = await call({
+    method: 'POST',
+    path: '/v1/reports/reopen',
+    body,
+    headers: { authorization: `Bearer ${sessionToken}` },
+    expect: [200, 400],
+  });
+  return status === 200 ? reopenBooksResponse.parse(json) : null;
 }
 
 /** The merchant's own shop settings. */

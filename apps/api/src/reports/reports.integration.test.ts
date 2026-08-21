@@ -21,6 +21,8 @@ import {
   reportsReceiptsResponse,
   reportsStatementsResponse,
   stockCountResponse,
+  closeBooksResponse,
+  reopenBooksResponse,
   voidExpenseResponse,
   voidInvoiceResponse,
 } from '@rekoda/contracts';
@@ -1815,5 +1817,140 @@ describe('counting the shelf', () => {
       differenceK: 0,
       uncosted: 0,
     });
+  });
+});
+
+/**
+ * Closing a month, end to end.
+ *
+ * The refusal is proven against the database in
+ * packages/db/src/close.integration.test.ts. What this pins is the wiring:
+ * that the endpoints exist, refuse strangers, scope to the session's tenant,
+ * and that a closed month reaches the page which is supposed to show it.
+ */
+describe('closing a month', () => {
+  const closeIt = (auth: Record<string, string>, body: Record<string, unknown>) =>
+    app.inject({
+      method: 'POST',
+      url: '/v1/reports/close',
+      payload: body,
+      headers: { 'content-type': 'application/json', ...auth },
+    });
+
+  const reopenIt = (auth: Record<string, string>, body: Record<string, unknown>) =>
+    app.inject({
+      method: 'POST',
+      url: '/v1/reports/reopen',
+      payload: body,
+      headers: { 'content-type': 'application/json', ...auth },
+    });
+
+  const statements = async (auth: Record<string, string>, period?: string) =>
+    reportsStatementsResponse.parse(
+      (
+        await app.inject({
+          method: 'GET',
+          url: period ? `/v1/reports/statements?period=${period}` : '/v1/reports/statements',
+          headers: auth,
+        })
+      ).json(),
+    );
+
+  const OLD = '2026-03';
+
+  it('refuses a caller with no session', async () => {
+    for (const url of ['/v1/reports/close', '/v1/reports/reopen']) {
+      const res = await app.inject({
+        method: 'POST',
+        url,
+        payload: { through: OLD, from: OLD },
+        headers: { 'content-type': 'application/json' },
+      });
+      expect(res.statusCode).toBe(401);
+    }
+  });
+
+  it('reports the books open until they are closed, then says through when', async () => {
+    const { auth } = await onboard('+2348177000051');
+    expect((await statements(auth)).booksClosedThrough).toBeNull();
+
+    expect(closeBooksResponse.parse((await closeIt(auth, { through: OLD })).json())).toEqual({
+      outcome: 'closed',
+      through: OLD,
+    });
+    expect((await statements(auth)).booksClosedThrough).toBe(OLD);
+  });
+
+  /**
+   * The whole point, reached through the API a merchant actually uses: an
+   * expense dated into a month that has been closed is refused, and the
+   * statement for that month does not move.
+   */
+  it('will not let a backdated entry change a month that was closed', async () => {
+    const { auth, businessId } = await onboard('+2348177000052');
+    await closeIt(auth, { through: OLD });
+
+    await expect(
+      withBusiness(db, businessId, (tx) =>
+        spendRepo.recordExpense(tx, {
+          businessId,
+          description: 'diesel',
+          category: null,
+          amountK: 1_200_000,
+          method: 'cash',
+          sourceType: 'chat',
+          sourceId: 'late',
+          recordedAt: new Date('2026-03-15T11:00:00Z'),
+        }),
+      ),
+    ).rejects.toBeTruthy();
+
+    const march = await statements(auth, OLD);
+    expect(march.profitAndLoss.totalExpensesK).toBe(0);
+  });
+
+  it('refuses a month that has not ended, and a body without one', async () => {
+    const { auth } = await onboard('+2348177000053');
+    const current = new Date().toISOString().slice(0, 7);
+    expect((await closeIt(auth, { through: current })).json()).toEqual({ outcome: 'not_ended' });
+    expect((await closeIt(auth, { through: 'August' })).statusCode).toBe(400);
+    expect((await reopenIt(auth, {})).statusCode).toBe(400);
+  });
+
+  it('opens a month back up, and says what else came open with it', async () => {
+    const { auth } = await onboard('+2348177000054');
+    await closeIt(auth, { through: '2026-05' });
+
+    expect(reopenBooksResponse.parse((await reopenIt(auth, { from: '2026-03' })).json())).toEqual({
+      outcome: 'reopened',
+      from: '2026-03',
+      wasClosedThrough: '2026-05',
+    });
+    expect((await statements(auth)).booksClosedThrough).toBe('2026-02');
+  });
+
+  /**
+   * An opening balance dated into a month the merchant closed. Rare, and
+   * named rather than left to become a 500 on a page they cannot get past.
+   */
+  it('names a closed period rather than failing when the books are opened late', async () => {
+    const { auth } = await onboard('+2348177000055');
+    await closeIt(auth, { through: OLD });
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/reports/opening-balances',
+      payload: { asAt: '2026-03-31', cashK: 20_000_000, bankK: 0, stockK: 0 },
+      headers: { 'content-type': 'application/json', ...auth },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ outcome: 'period_closed', closedThrough: OLD });
+  });
+
+  it('is one tenant at a time', async () => {
+    const ada = await onboard('+2348177000056');
+    const bola = await onboard('+2348177000057');
+    await closeIt(ada.auth, { through: OLD });
+    expect((await statements(bola.auth)).booksClosedThrough).toBeNull();
   });
 });

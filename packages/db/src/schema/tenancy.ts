@@ -72,6 +72,16 @@ export const businesses = pgTable(
     pendingPlan: text('pending_plan'),
     /** The last grace-reminder day sent, claimed by conditional UPDATE. */
     lastGraceReminderDay: smallint('last_grace_reminder_day'),
+    /**
+     * The Lagos month through which the books are closed, or null.
+     *
+     * A watermark rather than a list of closed periods (migration 0034):
+     * closing is monotonic, "closed through August" is one fact a merchant
+     * can hold in their head, and reopening is then a single visible act. A
+     * trigger on the ledger enforces it, so no writer can post behind it by
+     * forgetting to look.
+     */
+    booksClosedThrough: text('books_closed_through'),
     settings: jsonb('settings')
       .notNull()
       .default(sql`'{}'::jsonb`),
