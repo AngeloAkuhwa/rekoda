@@ -87,6 +87,11 @@ export const externalEvents = pgTable(
     signatureValid: integer('signature_valid').notNull(),
     processedAt: timestamp('processed_at', { withTimezone: true }),
     error: text('error'),
+    /** When an operator worked this exception. Null while it is still open. */
+    resolvedAt: timestamp('resolved_at', { withTimezone: true }),
+    resolvedBy: text('resolved_by'),
+    /** What they decided. Never overwrites `error`, which is why it was flagged. */
+    resolution: text('resolution'),
     createdAt: createdAt(),
   },
   (t) => [
