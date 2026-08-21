@@ -12,7 +12,11 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { publicShopResponse, shopSettingsResponse } from '@rekoda/contracts';
+import {
+  publicShopIndexResponse,
+  publicShopResponse,
+  shopSettingsResponse,
+} from '@rekoda/contracts';
 import { createDb, stockRepo, withBusiness, type Db } from '@rekoda/db';
 import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
@@ -262,6 +266,60 @@ describe('the page a customer opens', () => {
   it('answers the same way for a slug nobody has and one that is not a slug', async () => {
     expect((await anonymous('/v1/shop/nobody-here')).statusCode).toBe(404);
     expect((await anonymous('/v1/shop/NOT-A-SLUG')).statusCode).toBe(404);
+  });
+});
+
+/**
+ * The list a sitemap is built from.
+ *
+ * Its own path, `v1/shops`, and that is not a style choice: every route under
+ * `v1/shop` is a slug, so a listing route there would go dark the day a
+ * merchant chose that word as their handle.
+ */
+describe('the list of open shops', () => {
+  it('needs no session, and carries slugs and dates only', async () => {
+    const { businessId, auth } = await onboard('+2348177300010');
+    /* A shop with nothing priced in it cannot be opened at all, which is a
+     * guard this test learned about by tripping over it. */
+    await seedCatalogue(businessId, auth);
+    await publish(auth, 'ada-fashion');
+
+    const res = await anonymous('/v1/shops');
+    expect(res.statusCode).toBe(200);
+    const body = publicShopIndexResponse.parse(res.json());
+    expect(body).toEqual({
+      shops: [{ slug: 'ada-fashion', updatedAt: expect.any(String) }],
+      truncated: false,
+    });
+
+    /* The thing this response must NOT become. Every one of these is public
+     * on the shop's own page; a downloadable file that gathers them for every
+     * merchant at once is a directory, which is a different product. */
+    const raw = res.body;
+    for (const leak of ['Ada Fashion', 'Wax print', '+234', 'businessId']) {
+      expect(raw).not.toContain(leak);
+    }
+  });
+
+  it('never lists a shop that is not open', async () => {
+    const { businessId, auth } = await onboard('+2348177300011');
+    await seedCatalogue(businessId, auth);
+    await publish(auth, 'ada-fashion', false);
+    expect(publicShopIndexResponse.parse((await anonymous('/v1/shops')).json()).shops).toEqual([]);
+
+    await publish(auth, 'ada-fashion', true);
+    expect(
+      publicShopIndexResponse.parse((await anonymous('/v1/shops')).json()).shops.map((s) => s.slug),
+    ).toEqual(['ada-fashion']);
+
+    await publish(auth, 'ada-fashion', false);
+    expect(publicShopIndexResponse.parse((await anonymous('/v1/shops')).json()).shops).toEqual([]);
+  });
+
+  it('answers with an empty list rather than an error when nobody has opened one', async () => {
+    const res = await anonymous('/v1/shops');
+    expect(res.statusCode).toBe(200);
+    expect(publicShopIndexResponse.parse(res.json())).toEqual({ shops: [], truncated: false });
   });
 });
 

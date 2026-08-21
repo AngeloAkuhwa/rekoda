@@ -19,6 +19,12 @@ export interface ShopState {
  * DOWN has to be as easy as putting it up: a merchant who needs to stop
  * selling for a week should not have to look for a different control from the
  * one they used to start.
+ *
+ * The hint on that control earns its place. Open shops go into the sitemap,
+ * which means Rekoda publishes a list of them, and a merchant reading "open
+ * to customers" would reasonably picture only the people they send the link
+ * to. Saying it here is cheaper than being asked afterwards why a competitor
+ * found their page.
  */
 export function ShopForm({
   current,
@@ -72,7 +78,11 @@ export function ShopForm({
         />
       </Field>
 
-      <Field id="published" label="Open to customers">
+      <Field
+        id="published"
+        label="Open to customers"
+        hint="An open shop can be found by search engines, and is listed on rekoda.app"
+      >
         <select
           name="published"
           id="published"

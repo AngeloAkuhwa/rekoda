@@ -47,6 +47,32 @@ export const publicShopResponse = z.object({
 });
 export type PublicShopResponse = z.infer<typeof publicShopResponse>;
 
+/**
+ * Every open shop, for the sitemap.
+ *
+ * Slugs and dates and nothing else. It is tempting to reuse the shop shape
+ * here, and it would be wrong: this response is the one place Rekoda lists
+ * its merchants together, and a list of merchants carrying their display
+ * names and WhatsApp numbers is a directory rather than a sitemap. Each of
+ * those facts is public on the shop's own page; assembling them into one
+ * downloadable file is a different act.
+ *
+ * `truncated` is not decoration. A sitemap cut off at its cap reads exactly
+ * like a complete one, and the only way anybody finds out is that half the
+ * shops were never crawled.
+ */
+export const publicShopIndexResponse = z.object({
+  shops: z.array(
+    z.object({
+      slug: z.string(),
+      /** ISO 8601. What `<lastmod>` becomes. */
+      updatedAt: z.string(),
+    }),
+  ),
+  truncated: z.boolean(),
+});
+export type PublicShopIndexResponse = z.infer<typeof publicShopIndexResponse>;
+
 /** The merchant's own view: the same shop, plus whether anybody can see it. */
 export const shopSettingsResponse = z.object({
   shop: z

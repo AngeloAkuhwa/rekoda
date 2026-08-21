@@ -131,6 +131,56 @@ describe('a published shop', () => {
   });
 });
 
+/**
+ * The list the sitemap is built from.
+ *
+ * Same invisibility rule as `shopBySlug`, checked separately because it is a
+ * separate query: a shop that is unreachable by its own URL but present in
+ * the file that advertises URLs is worse than either failure alone.
+ */
+describe('listing the open shops', () => {
+  it('carries only the ones that are open, in a stable order', async () => {
+    const open = await seedBusiness('+2348120000091');
+    const closed = await seedBusiness('+2348120000092');
+    const alsoOpen = await seedBusiness('+2348120000093');
+    await save(open, 'bola-foods', true);
+    await save(closed, 'quiet-shop', false);
+    await save(alsoOpen, 'ada-fashion', true);
+
+    const listed = await shopsRepo.publishedShops(db, 50);
+    /* By slug, not by date. A file that reshuffles between fetches tells a
+     * crawler the whole site changed when nothing did. */
+    expect(listed.map((s) => s.slug)).toEqual(['ada-fashion', 'bola-foods']);
+    for (const entry of listed) expect(entry.updatedAt).toBeInstanceOf(Date);
+  });
+
+  it('drops a shop the day it is taken down', async () => {
+    const businessId = await seedBusiness('+2348120000094');
+    await save(businessId, 'ada-fashion', true);
+    expect((await shopsRepo.publishedShops(db, 50)).map((s) => s.slug)).toEqual(['ada-fashion']);
+
+    await save(businessId, 'ada-fashion', false);
+    expect(await shopsRepo.publishedShops(db, 50)).toEqual([]);
+  });
+
+  /* The cap is the caller's, and the caller asks for one more than it wants
+   * so that "the list ran out" and "the list was cut off" are different
+   * answers rather than the same one. */
+  it('stops at the limit it is given', async () => {
+    for (const [n, phone] of [
+      ['aaa-shop', '+2348120000095'],
+      ['bbb-shop', '+2348120000096'],
+      ['ccc-shop', '+2348120000097'],
+    ] as const) {
+      await save(await seedBusiness(phone), n, true);
+    }
+    expect((await shopsRepo.publishedShops(db, 2)).map((s) => s.slug)).toEqual([
+      'aaa-shop',
+      'bbb-shop',
+    ]);
+  });
+});
+
 describe('choosing a handle', () => {
   it('refuses one the database would refuse, before asking it', async () => {
     const businessId = await seedBusiness();
