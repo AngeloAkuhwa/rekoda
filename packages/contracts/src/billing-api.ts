@@ -108,3 +108,28 @@ export type BillingOverviewResponse = z.infer<typeof billingOverviewResponse>;
 export type BillingQuoteResponse = z.infer<typeof billingQuoteResponse>;
 export type BillingPlanChangeRequest = z.infer<typeof billingPlanChangeRequest>;
 export type BillingPlanChangeResponse = z.infer<typeof billingPlanChangeResponse>;
+
+/**
+ * What an operator must say to refund (ADR 0024's matrix).
+ *
+ * `reason` is one of the published rows rather than free text: a refund
+ * policy that is a table and an audit trail that is a sentence somebody typed
+ * cannot be reconciled with each other later.
+ */
+export const opsRefundRequest = z.object({
+  businessId: z.string().regex(/^[0-9a-f-]{36}$/i),
+  reference: z.string().min(1),
+  /** Integer kobo, positive. A zero refund is not a refund. */
+  amountK: z.number().int().positive(),
+  reason: z.enum([
+    'duplicate_charge',
+    'incorrect_amount',
+    'service_failure',
+    'unused_add_on',
+    'suspension_error',
+  ]),
+  /** `operator:<name>`, never a bare 'system'. */
+  actor: z.string().min(3),
+});
+
+export type OpsRefundRequest = z.infer<typeof opsRefundRequest>;

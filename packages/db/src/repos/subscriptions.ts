@@ -273,6 +273,8 @@ export async function refundCharge(
   reference: string,
   amountK: number,
   when: Date,
+  /** Who decided, and under which of ADR 0024's rows. */
+  record?: { actor: string; reason: string },
 ): Promise<ChargeRow | null> {
   const rows = await tx.execute<RawCharge>(sql`
     UPDATE subscription_charges SET
@@ -286,7 +288,22 @@ export async function refundCharge(
     RETURNING *
   `);
   const row = [...rows][0];
-  return row ? shape(row) : null;
+  if (!row) return null;
+
+  /* Written here rather than by the caller, because a refund and the record
+   * of who decided it are one fact: a caller that could forget the second is
+   * a caller that will. */
+  if (record) {
+    await tx.execute(sql`
+      INSERT INTO audit_events
+        (business_id, actor, entity, entity_id, action, new_value, source_type)
+      VALUES (${row.business_id}::uuid, ${record.actor}, 'subscription_charge',
+              ${reference}, 'refunded',
+              ${JSON.stringify({ amountK, reason: record.reason, status: row.status })}::jsonb,
+              'operator')
+    `);
+  }
+  return shape(row);
 }
 
 /**

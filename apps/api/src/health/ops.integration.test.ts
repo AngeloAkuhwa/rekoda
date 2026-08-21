@@ -16,6 +16,7 @@ import {
   identity,
   jobsRepo,
   quotaRepo,
+  subscriptionsRepo,
   withBusiness,
   type Db,
 } from '@rekoda/db';
@@ -330,5 +331,165 @@ describe('the margin report', () => {
     expect(raw).toContain(shop);
     expect(raw).not.toContain('Chidi');
     expect(raw).not.toContain('2348030000208');
+  });
+});
+
+/**
+ * The operator's commercial surface (ADR 0024).
+ *
+ * `/refunds` publishes a matrix promising money back in five situations, and
+ * until now nothing in the system could record a refund at all. Upgrade
+ * requests had the same shape: `recordUpgradeRequest` has stored them since
+ * before self-service billing existed and nothing has ever shown one to
+ * anybody.
+ */
+describe('the operator billing surface', () => {
+  const auth = { 'x-rekoda-operator-secret': OPERATOR_SECRET };
+
+  async function merchantWithCharge(phone: string): Promise<{
+    businessId: string;
+    reference: string;
+  }> {
+    const user = await identity.upsertUserByPhone(db, phone);
+    const business = await identity.createBusinessWithOwner(db, {
+      name: 'Ada Fashion',
+      businessType: null,
+      ownerUserId: user.id,
+    });
+    const reference = 'RKD-SUB-20260821-AAAAAA';
+    await withBusiness(db, business.id, (tx) =>
+      subscriptionsRepo.openCharge(tx, {
+        businessId: business.id,
+        kind: 'first_purchase',
+        plan: 'chat',
+        amountK: 990_000,
+        reference,
+        periodStart: new Date(),
+        periodEnd: new Date(Date.now() + 30 * 86_400_000),
+      }),
+    );
+    await withBusiness(db, business.id, (tx) =>
+      subscriptionsRepo.settleCharge(tx, { reference, status: 'paid', when: new Date() }),
+    );
+    return { businessId: business.id, reference };
+  }
+
+  const view = (businessId: string, headers: Record<string, string> = auth) =>
+    app.inject({ method: 'GET', url: `/v1/ops/business/${businessId}`, headers });
+
+  const refund = (payload: unknown, headers: Record<string, string> = auth) =>
+    app.inject({
+      method: 'POST',
+      url: '/v1/ops/refund',
+      payload: payload as Record<string, unknown>,
+      headers: { 'content-type': 'application/json', ...headers },
+    });
+
+  it('refuses both endpoints without the operator secret', async () => {
+    const { businessId, reference } = await merchantWithCharge('+2348140001001');
+    expect((await view(businessId, {})).statusCode).toBe(403);
+    expect(
+      (
+        await refund(
+          { businessId, reference, amountK: 1, reason: 'duplicate_charge', actor: 'x' },
+          {},
+        )
+      ).statusCode,
+    ).toBe(403);
+  });
+
+  it('shows the plan, the charges and the upgrade requests together', async () => {
+    const { businessId, reference } = await merchantWithCharge('+2348140001002');
+    await withBusiness(db, businessId, (tx) =>
+      billingRepo.recordUpgradeRequest(tx, businessId, 'trial'),
+    );
+
+    const body = (await view(businessId)).json() as {
+      plan: string;
+      charges: Array<{ reference: string; status: string }>;
+      upgradeRequests: Array<{ fromPlan: string }>;
+    };
+    expect(body.charges[0]).toMatchObject({ reference, status: 'paid' });
+    // Three rows nobody could see, before this.
+    expect(body.upgradeRequests).toEqual([{ fromPlan: 'trial', at: expect.any(String) }]);
+  });
+
+  it('refuses a business id that is not a UUID, and one that does not exist', async () => {
+    expect((await view('not-a-uuid')).statusCode).toBe(400);
+    expect((await view('00000000-0000-4000-8000-000000000000')).statusCode).toBe(404);
+  });
+
+  it('records a partial refund without calling the charge refunded', async () => {
+    const { businessId, reference } = await merchantWithCharge('+2348140001003');
+
+    const res = await refund({
+      businessId,
+      reference,
+      amountK: 490_000,
+      reason: 'service_failure',
+      actor: 'operator:angelo',
+    });
+    expect(res.statusCode).toBe(200);
+    // Half back is still a charge that happened.
+    expect(res.json()).toMatchObject({ refunded: true, status: 'paid', refundedK: 490_000 });
+
+    const charge = await withBusiness(db, businessId, (tx) =>
+      subscriptionsRepo.chargeByReference(tx, businessId, reference),
+    );
+    expect(charge?.status).toBe('paid');
+  });
+
+  it('calls it refunded only when the whole amount is back, and never more', async () => {
+    const { businessId, reference } = await merchantWithCharge('+2348140001004');
+    const body = (amountK: number) => ({
+      businessId,
+      reference,
+      amountK,
+      reason: 'duplicate_charge' as const,
+      actor: 'operator:angelo',
+    });
+
+    expect((await refund(body(990_000))).json()).toMatchObject({ status: 'refunded' });
+    // A second refund cannot take back more than we ever took.
+    expect((await refund(body(1))).statusCode).toBe(400);
+  });
+
+  it('leaves the PLAN alone: a refund is money, not a cancellation', async () => {
+    const { businessId, reference } = await merchantWithCharge('+2348140001005');
+    await withBusiness(db, businessId, (tx) =>
+      billingRepo.setPlan(db, {
+        businessId,
+        plan: 'chat',
+        expiresAt: new Date(Date.now() + 20 * 86_400_000),
+        actor: 'operator:test',
+      }),
+    );
+
+    await refund({
+      businessId,
+      reference,
+      amountK: 990_000,
+      reason: 'service_failure',
+      actor: 'operator:angelo',
+    });
+
+    /* ADR 0024 refunds money in several situations that all leave the
+     * merchant with the period they paid for. Cancelling here would be a
+     * second decision nobody made. */
+    const body = (await view(businessId)).json() as { plan: string };
+    expect(body.plan).toBe('chat');
+  });
+
+  it('refuses a reason that is not one of the published rows', async () => {
+    const { businessId, reference } = await merchantWithCharge('+2348140001006');
+    const res = await refund({
+      businessId,
+      reference,
+      amountK: 1_000,
+      reason: 'because I felt like it',
+      actor: 'operator:angelo',
+    });
+    // The policy is a table; the audit trail has to reconcile with it.
+    expect(res.statusCode).toBe(400);
   });
 });

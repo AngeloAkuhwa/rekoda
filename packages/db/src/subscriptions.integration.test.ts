@@ -554,3 +554,70 @@ describe('an add-on pack', () => {
     expect(september).toBe(false);
   });
 });
+
+describe('recording a refund', () => {
+  async function paidCharge(businessId: string, reference: string): Promise<void> {
+    await inTenant(businessId, (tx) =>
+      subscriptionsRepo.openCharge(tx, {
+        businessId,
+        kind: 'first_purchase',
+        plan: 'chat',
+        amountK: 990_000,
+        reference,
+        periodStart: CYCLE_START,
+        periodEnd: RENEWS_AT,
+      }),
+    );
+    await inTenant(businessId, (tx) =>
+      subscriptionsRepo.settleCharge(tx, { reference, status: 'paid', when: CYCLE_START }),
+    );
+  }
+
+  it('writes WHO decided and under which of the published rows', async () => {
+    const businessId = await seedBusiness();
+    await paidCharge(businessId, 'RKD-SUB-20260821-EEEEEE');
+
+    await inTenant(businessId, (tx) =>
+      subscriptionsRepo.refundCharge(tx, 'RKD-SUB-20260821-EEEEEE', 990_000, new Date(), {
+        actor: 'operator:angelo',
+        reason: 'unused_add_on',
+      }),
+    );
+
+    const audit = await inTenant(businessId, (tx) =>
+      tx.execute<{ actor: string; new_value: { reason: string; amountK: number } }>(sql`
+        SELECT actor, new_value FROM audit_events
+        WHERE business_id = ${businessId}::uuid AND action = 'refunded'
+      `),
+    );
+    const row = [...audit][0];
+    /* A refund policy that is a published table and an audit trail that is a
+     * sentence somebody typed cannot be reconciled with each other later. */
+    expect(row?.actor).toBe('operator:angelo');
+    expect(row?.new_value.reason).toBe('unused_add_on');
+    expect(row?.new_value.amountK).toBe(990_000);
+  });
+
+  it('writes no audit row when the refund was refused', async () => {
+    const businessId = await seedBusiness();
+    await paidCharge(businessId, 'RKD-SUB-20260821-FFFFFF');
+
+    // More than was ever charged.
+    expect(
+      await inTenant(businessId, (tx) =>
+        subscriptionsRepo.refundCharge(tx, 'RKD-SUB-20260821-FFFFFF', 990_001, new Date(), {
+          actor: 'operator:angelo',
+          reason: 'duplicate_charge',
+        }),
+      ),
+    ).toBeNull();
+
+    const audit = await inTenant(businessId, (tx) =>
+      tx.execute<{ n: number }>(sql`
+        SELECT count(*)::int AS n FROM audit_events
+        WHERE business_id = ${businessId}::uuid AND action = 'refunded'
+      `),
+    );
+    expect(Number([...audit][0]?.n)).toBe(0);
+  });
+});

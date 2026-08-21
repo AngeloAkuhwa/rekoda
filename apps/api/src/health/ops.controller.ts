@@ -1,15 +1,29 @@
 import {
   BadRequestException,
+  Body,
   Controller,
   ForbiddenException,
   Get,
   Headers,
+  HttpCode,
   Inject,
+  NotFoundException,
+  Param,
+  Post,
   Query,
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { timingSafeEqual } from 'node:crypto';
-import { events, jobsRepo, marginRepo, type Db } from '@rekoda/db';
+import { opsRefundRequest } from '@rekoda/contracts';
+import {
+  billingRepo,
+  events,
+  jobsRepo,
+  marginRepo,
+  subscriptionsRepo,
+  withBusiness,
+  type Db,
+} from '@rekoda/db';
 import {
   estateCount,
   estateMargin,
@@ -41,6 +55,8 @@ import { DB, WORKER_DB } from '../db/db.module.js';
  * queue depth, and no session is the right credential for a question that
  * spans every tenant.
  */
+const UUID = /^[0-9a-f-]{36}$/i;
+
 @Controller('v1/ops')
 export class OpsController {
   constructor(
@@ -159,6 +175,117 @@ export class OpsController {
         ...margin({ plan: row.plan, costK: row.costK }),
       })),
     };
+  }
+
+  /**
+   * One merchant's commercial state, for the operator about to act on it.
+   *
+   * Three things that were each being written and never read: the plan and
+   * its cycle, every charge Rekoda has made, and the upgrade requests a
+   * merchant has typed in chat. `recordUpgradeRequest` has been storing those
+   * since before self-service billing existed, and nothing has ever shown
+   * them to anybody, so a merchant asking three times to pay us was three
+   * rows nobody saw.
+   *
+   * Ids and references, never names, in keeping with the rest of this
+   * controller.
+   */
+  @Get('business/:businessId')
+  async businessBilling(
+    @Headers('x-rekoda-operator-secret') secret: string | undefined,
+    @Param('businessId') businessId: string,
+  ): Promise<{
+    plan: string;
+    renewsAt: string | null;
+    cycleStartedAt: string | null;
+    pendingPlan: string | null;
+    paymentFailedAt: string | null;
+    charges: Array<{
+      reference: string;
+      kind: string;
+      plan: string | null;
+      packId: string | null;
+      amountK: number;
+      status: string;
+      createdAt: string;
+    }>;
+    upgradeRequests: Array<{ fromPlan: string; at: string }>;
+  }> {
+    this.assertOperator(secret);
+    if (!UUID.test(businessId)) throw new BadRequestException('businessId must be a UUID');
+
+    return withBusiness(this.db, businessId, async (tx) => {
+      const subscription = await subscriptionsRepo.subscriptionFor(tx, businessId);
+      if (!subscription) throw new NotFoundException('no such business');
+
+      const charges = await subscriptionsRepo.chargesFor(tx, businessId);
+      const upgradeRequests = await billingRepo.upgradeRequestsFor(tx, businessId);
+      return {
+        plan: subscription.plan,
+        renewsAt: subscription.planExpiresAt?.toISOString() ?? null,
+        cycleStartedAt: subscription.cycleStartedAt?.toISOString() ?? null,
+        pendingPlan: subscription.pendingPlan,
+        paymentFailedAt: subscription.paymentFailedAt?.toISOString() ?? null,
+        charges: charges.map((charge) => ({
+          reference: charge.reference,
+          kind: charge.kind,
+          plan: charge.plan,
+          packId: charge.packId,
+          amountK: charge.amountK,
+          status: charge.status,
+          createdAt: charge.createdAt.toISOString(),
+        })),
+        upgradeRequests: upgradeRequests.map((request) => ({
+          fromPlan: request.fromPlan,
+          at: request.at.toISOString(),
+        })),
+      };
+    });
+  }
+
+  /**
+   * Record a refund against a charge (ADR 0024's matrix).
+   *
+   * THIS DOES NOT MOVE MONEY. Returning the naira is a Paystack action the
+   * operator performs, and saying otherwise in a method name is how somebody
+   * comes to believe a merchant has been paid because a row says so. What
+   * this does is make the refund a fact Rekoda knows: the amount comes off
+   * the charge, the status becomes `refunded` only when the whole of it is
+   * back, and an audit row records who decided and under which rule.
+   *
+   * The plan is deliberately untouched. ADR 0024 refunds money in several
+   * situations that all leave the merchant with the period they paid for, and
+   * a refund that silently cancelled a subscription would be a second
+   * decision nobody made.
+   */
+  @Post('refund')
+  @HttpCode(200)
+  async refund(
+    @Headers('x-rekoda-operator-secret') secret: string | undefined,
+    @Body() body: unknown,
+  ): Promise<{ refunded: true; status: string; refundedK: number }> {
+    this.assertOperator(secret);
+
+    const input = opsRefundRequest.safeParse(body);
+    if (!input.success) {
+      throw new BadRequestException(
+        'businessId, reference, amountK (positive kobo) and reason are required',
+      );
+    }
+    const { businessId, reference, amountK, reason, actor } = input.data;
+
+    return withBusiness(this.db, businessId, async (tx) => {
+      const charge = await subscriptionsRepo.refundCharge(tx, reference, amountK, new Date(), {
+        actor,
+        reason,
+      });
+      /* Refused because the charge was never paid, has gone, or this refund
+       * would take back more than we ever took. All three are an operator
+       * mistake to correct rather than an error to retry. */
+      if (!charge) throw new BadRequestException('that charge cannot be refunded by that amount');
+
+      return { refunded: true as const, status: charge.status, refundedK: amountK };
+    });
   }
 
   private assertOperator(secret: string | undefined): void {
