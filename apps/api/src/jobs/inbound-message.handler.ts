@@ -40,7 +40,7 @@ import {
 } from '@rekoda/db';
 import type { ApiConfig } from '../config.js';
 import type { Interpreter } from '../ai/interpreter.service.js';
-import type { PrivacyGateway } from '../privacy/gateway.service.js';
+import type { IdentityLinkProposal, PrivacyGateway } from '../privacy/gateway.service.js';
 import type { ReplySender } from '../replies/reply.service.js';
 import type { PaymentIntentsService } from '../payments/payment-intents.service.js';
 import { openPayload } from '../privacy/payload-vault.js';
@@ -230,7 +230,16 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
             from: inbound.from,
             retrying,
           })
-        : await interpretedReply(deps, tx, businessId, text, tokenised!.text, message.id, retrying);
+        : await interpretedReply(
+            deps,
+            tx,
+            businessId,
+            text,
+            tokenised!.text,
+            message.id,
+            retrying,
+            tokenised!.link,
+          );
 
     if (answer) {
       await deps.replySender.send(tx, {
@@ -714,6 +723,21 @@ async function paymentDetailsReply(
  * The loser is told the truth — the document IS being issued — rather than
  * apologised to for a success.
  */
+/**
+ * The stored proposal, read back defensively.
+ *
+ * A jsonb column can hold anything a past version wrote, and this one decides
+ * which customer record disappears. Anything not shaped exactly right links
+ * nothing.
+ */
+function identityLinkOf(value: unknown): { survivorId: string; orphanId: string } | null {
+  if (!value || typeof value !== 'object') return null;
+  const link = value as { survivorId?: unknown; orphanId?: unknown };
+  return typeof link.survivorId === 'string' && typeof link.orphanId === 'string'
+    ? { survivorId: link.survivorId, orphanId: link.orphanId }
+    : null;
+}
+
 async function confirmPendingDraft(
   deps: InboundMessageDeps,
   tx: TenantDb,
@@ -761,6 +785,21 @@ async function confirmPendingDraft(
     if (documentTaken) await refundDocument(deps, businessId, period);
     return replies.alreadyConfirmed();
   }
+  /**
+   * The link the merchant was asked about in the preview, applied by the same
+   * `yes`. Before the sale, so the invoice below names the record that
+   * survives rather than one about to be absorbed.
+   *
+   * `linkCustomers` refuses a record with any history of its own, so a `yes`
+   * can only ever undo a split made moments earlier. A refusal is silent: the
+   * merchant asked for a sale and got one, and "I could not tidy your
+   * customer list" is not worth a message in the middle of that.
+   */
+  const proposal = identityLinkOf(draft.identityLink);
+  if (proposal) {
+    await customersRepo.linkCustomers(tx, businessId, proposal.survivorId, proposal.orphanId);
+  }
+
   if (command.intent === 'RecordExpense') return confirmExpense(tx, businessId, draft.id, command);
   if (command.intent === 'RecordPurchase')
     return confirmPurchase(tx, businessId, draft.id, command);
@@ -1154,6 +1193,8 @@ async function interpretedReply(
   safeText: string,
   conversationMessageId: string,
   retrying: boolean,
+  /** Two records this message may have made of one person. Usually null. */
+  link: IdentityLinkProposal | null,
 ): Promise<Reply> {
   /**
    * The MONTHLY meter (docs/metering-v1.md), checked before the model is
@@ -1225,15 +1266,27 @@ async function interpretedReply(
   const correcting = looksLikeCorrection(rawText, existing !== null);
   if (correcting) await conversationsRepo.supersedePendingDrafts(tx, businessId);
 
+  /**
+   * The answer is built BEFORE the draft is stored, because what the draft
+   * carries depends on what the merchant was actually asked.
+   *
+   * A link proposal is only saved when the question about it reached them. A
+   * CG1 arithmetic question comes first and leaves no room for a second
+   * question, and storing the proposal anyway would mean a later `yes` joining
+   * two customer records nobody was ever asked about.
+   */
+  const answered = await acknowledge(tx, businessId, interpreted.command, correcting, link);
+
   await conversationsRepo.recordDraft(tx, {
     businessId,
     conversationMessageId,
     intent: interpreted.command.intent,
     command: interpreted.command,
     model: deps.config.aiModelDefault,
+    identityLink: answered.linkAsked ? link : null,
   });
 
-  return acknowledge(tx, businessId, interpreted.command, correcting);
+  return answered.reply;
 }
 
 /**
@@ -1248,8 +1301,25 @@ async function acknowledge(
   businessId: string,
   command: StructuredBusinessCommand,
   correcting: boolean,
-): Promise<Reply> {
-  if (command.intent === 'Unclear') return replies.clarification(command.clarification);
+  link: IdentityLinkProposal | null = null,
+): Promise<{ reply: Reply; linkAsked: boolean }> {
+  /**
+   * The link question rides a PREVIEW and nothing else. A clarification, an
+   * answered query and a CG1 arithmetic question are all the wrong moment:
+   * none of them ends in the `yes` that would confirm it.
+   */
+  const withLink = (preview: Reply): { reply: Reply; linkAsked: boolean } => {
+    if (!link) return { reply: preview, linkAsked: false };
+    return {
+      reply: replies.preview(
+        `${preview.text}\n\n${replies.linkQuestion(link.survivorToken, link.orphanToken)}`,
+      ),
+      linkAsked: true,
+    };
+  };
+  const plain = (reply: Reply) => ({ reply, linkAsked: false });
+
+  if (command.intent === 'Unclear') return plain(replies.clarification(command.clarification));
 
   /**
    * A question is a READ, so it answers now.
@@ -1264,7 +1334,7 @@ async function acknowledge(
    * of entry is not built yet" — the wrong sentence for a question, about a
    * thing they were not recording.
    */
-  if (command.intent === 'Query') return answerQuery(tx, businessId, command);
+  if (command.intent === 'Query') return plain(await answerQuery(tx, businessId, command));
 
   /**
    * A reported payment is gated against a REAL balance, read here.
@@ -1278,16 +1348,22 @@ async function acknowledge(
       invoiceNumber: command.documentRef,
       customerToken: customerTokenOf(command as never),
     });
-    if (target.outcome === 'none') return replies.paymentNoOpenInvoice();
-    if (target.outcome === 'ambiguous') return replies.paymentWhichInvoice(target.openCount);
+    if (target.outcome === 'none') return plain(replies.paymentNoOpenInvoice());
+    if (target.outcome === 'ambiguous') {
+      return plain(replies.paymentWhichInvoice(target.openCount));
+    }
     const invoice = target.invoice;
 
     const paymentGate = gatePayment(command, invoice.invoiceNumber, invoice.balanceDueK);
-    if (paymentGate.gate === 'CG1') return replies.arithmeticQuestion(paymentGate.question);
-    return replies.preview(
-      correcting
-        ? `${replies.correctionTaken().text}\n\n${paymentGate.preview}`
-        : paymentGate.preview,
+    if (paymentGate.gate === 'CG1') {
+      return plain(replies.arithmeticQuestion(paymentGate.question));
+    }
+    return withLink(
+      replies.preview(
+        correcting
+          ? `${replies.correctionTaken().text}\n\n${paymentGate.preview}`
+          : paymentGate.preview,
+      ),
     );
   }
 
@@ -1302,9 +1378,16 @@ async function acknowledge(
      */
     const product = await stockRepo.productByName(tx, businessId, command.productMention);
     const stockGate = gateStockChange(command, product?.onHand ?? 0);
-    if (stockGate.gate === 'CG1') return replies.arithmeticQuestion(stockGate.question);
-    return replies.preview(
-      correcting ? `${replies.correctionTaken().text}\n\n${stockGate.preview}` : stockGate.preview,
+    if (stockGate.gate === 'CG1') return plain(replies.arithmeticQuestion(stockGate.question));
+    /* Stock has no customer, so a link proposal in the same message is about
+     * somebody the merchant mentioned rather than about this entry. Asked
+     * only where the `yes` is about a customer. */
+    return plain(
+      replies.preview(
+        correcting
+          ? `${replies.correctionTaken().text}\n\n${stockGate.preview}`
+          : stockGate.preview,
+      ),
     );
   }
 
@@ -1321,11 +1404,17 @@ async function acknowledge(
         : command.intent === 'RecordPurchase'
           ? gatePurchase(command)
           : null;
-  if (!gate) return replies.notYet('Recording that kind of entry');
+  if (!gate) return plain(replies.notYet('Recording that kind of entry'));
 
-  if (gate.gate === 'CG1') return replies.arithmeticQuestion(gate.question);
-  return replies.preview(
-    correcting ? `${replies.correctionTaken().text}\n\n${gate.preview}` : gate.preview,
+  if (gate.gate === 'CG1') return plain(replies.arithmeticQuestion(gate.question));
+
+  /* A sale names a customer; an expense and a purchase do not. Only the first
+   * ends in a `yes` that is about the person the question asks about. */
+  const wrap = command.intent === 'RecordSale' ? withLink : plain;
+  return wrap(
+    replies.preview(
+      correcting ? `${replies.correctionTaken().text}\n\n${gate.preview}` : gate.preview,
+    ),
   );
 }
 

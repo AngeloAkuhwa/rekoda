@@ -769,6 +769,22 @@ export function onlyText(): Reply {
 }
 
 /**
+ * Two records for what may be one person, asked before either is touched.
+ *
+ * Rekoda cannot tell. "Ada 0803..., send it to accounts@bigco.com" is an
+ * ordinary sentence, and guessing wrong would put one customer's address on
+ * another customer's invoice. The merchant knows, so the merchant is asked,
+ * and it rides the preview they are already reading rather than costing them
+ * a second exchange.
+ *
+ * The tokens are rehydrated on the way out, so what a merchant reads is the
+ * number and the address they typed.
+ */
+export function linkQuestion(survivorToken: string, orphanToken: string): string {
+  return `Is ${orphanToken} the same customer as ${survivorToken}? Reply *yes* and I will save this and keep them together.`;
+}
+
+/**
  * A photograph arrived and could not be turned into words.
  *
  * OUR failure, so it says so and costs the merchant nothing: no allowance

@@ -256,6 +256,11 @@ export const commandDrafts = pgTable(
     intent: text('intent').notNull(),
     command: jsonb('command').notNull(),
     model: text('model'),
+    /**
+     * A proposal to join two customer records, waiting for the merchant's
+     * `yes` (migration 0023). Null on almost every draft.
+     */
+    identityLink: jsonb('identity_link'),
     /** pending | superseded | confirmed | abandoned */
     state: text('state').notNull().default('pending'),
     createdAt: createdAt(),

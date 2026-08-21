@@ -1,0 +1,22 @@
+-- Asking before two customer records become one (ADR 0005, Angelo's decision).
+--
+-- A message naming one person by BOTH phone and email created two customers,
+-- because the gateway resolves each facet independently and mints a record
+-- whenever one does not match. Nothing unsafe followed - the payment path
+-- answers `requires_customer_information` rather than inventing an address -
+-- but the merchant's ledger showed one person twice, and a payment link could
+-- not be built for whichever record lacked the email.
+--
+-- The fix is deliberately NOT an automatic merge. The two failure directions
+-- are not symmetric: splitting one person is untidy, while merging two people
+-- puts one customer's address on another customer's invoice. "Ada 0803...,
+-- send it to accounts@bigco.com" is an ordinary sentence, and no heuristic
+-- that reads it can be sure.
+--
+-- So the merchant is asked, in the PREVIEW they are already reading, and
+-- their `yes` covers the sale and the link together. This column is where the
+-- proposal waits in between: the draft already survives from preview to
+-- confirmation, and a second place to keep half a decision is a second place
+-- for it to go stale.
+ALTER TABLE command_drafts
+  ADD COLUMN IF NOT EXISTS identity_link jsonb;

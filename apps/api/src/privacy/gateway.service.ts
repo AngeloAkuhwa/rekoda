@@ -22,6 +22,66 @@ import { DB } from '../db/db.module.js';
  *
  * Traffic here is one-way. Nothing in this file rehydrates.
  */
+/** One facet resolved to a customer, and whether that customer is brand new. */
+interface ResolvedCustomer {
+  token: string;
+  customerId: string;
+  facet: 'phone' | 'email';
+  created: boolean;
+}
+
+/**
+ * Two records this message may have made out of one person.
+ *
+ * A PROPOSAL and never an action. The merchant is asked in the preview they
+ * are already reading, and their `yes` covers the sale and the link together.
+ */
+export interface IdentityLinkProposal {
+  /** The record that survives, and the token the command will name. */
+  survivorId: string;
+  survivorToken: string;
+  /** The record created moments ago, whose facet moves across. */
+  orphanId: string;
+  orphanToken: string;
+}
+
+export interface GatewayTokenised extends TokenisedMessage {
+  /** Null on almost every message. */
+  readonly link: IdentityLinkProposal | null;
+}
+
+/**
+ * Decide whether this message split one person in two.
+ *
+ * Only when exactly two customers were referenced and at least one of them was
+ * CREATED here. Two records the merchant has been using for weeks are a
+ * different question with different consequences, and joining those should
+ * not ride on a sale preview. Three or more is not a link, it is a sentence
+ * about several people.
+ *
+ * The survivor is the one that already existed; when both are new, the
+ * phone-keyed record wins, because a phone is the identity anchor everywhere
+ * else in this system and a merchant reaches a customer on it.
+ */
+function proposeLink(seen: ResolvedCustomer[]): IdentityLinkProposal | null {
+  if (seen.length !== 2) return null;
+  const [a, b] = seen as [ResolvedCustomer, ResolvedCustomer];
+  if (!a.created && !b.created) return null;
+
+  const survivor = !a.created ? a : !b.created ? b : a.facet === 'phone' ? a : b;
+  const orphan = survivor === a ? b : a;
+  /* Both existing was excluded above, so an orphan that is not new means the
+   * survivor is the new one, and the two are the wrong way round. */
+  if (!orphan.created) return null;
+
+  return {
+    survivorId: survivor.customerId,
+    survivorToken: survivor.token,
+    orphanId: orphan.customerId,
+    orphanToken: orphan.token,
+  };
+}
+
 @Injectable()
 export class PrivacyGateway {
   constructor(
@@ -42,9 +102,10 @@ export class PrivacyGateway {
    * Rekoda has no reason to keep a bank account number a merchant happened to
    * type, and the cheapest way to protect one is not to hold it.
    */
-  async tokenise(businessId: string, text: string): Promise<TokenisedMessage> {
+  async tokenise(businessId: string, text: string): Promise<GatewayTokenised> {
     let accounts = 0;
     const pending: Array<{ kind: 'phone' | 'email'; value: string; placeholder: string }> = [];
+    const seen: ResolvedCustomer[] = [];
 
     /**
      * `tokeniseMessage` is synchronous — it walks a string — while resolving a
@@ -68,12 +129,13 @@ export class PrivacyGateway {
     }
 
     for (const item of pending) {
-      const token = await this.customerTokenFor(businessId, item.kind, item.value);
-      out = out.split(item.placeholder).join(token);
-      tokens.set(token, item.value);
+      const resolved = await this.customerTokenFor(businessId, item.kind, item.value);
+      out = out.split(item.placeholder).join(resolved.token);
+      tokens.set(resolved.token, item.value);
+      if (!seen.some((c) => c.customerId === resolved.customerId)) seen.push(resolved);
     }
 
-    return { text: out, tokens };
+    return { text: out, tokens, link: proposeLink(seen) };
   }
 
   /**
@@ -87,7 +149,7 @@ export class PrivacyGateway {
     businessId: string,
     facet: 'phone' | 'email',
     value: string,
-  ): Promise<string> {
+  ): Promise<ResolvedCustomer> {
     const normalised = normaliseFacet(facet, value);
     const matchKey = matchKeyFor(businessId, facet, normalised, this.config.matchKey);
 
@@ -97,7 +159,9 @@ export class PrivacyGateway {
       facet,
       matchKey,
     );
-    if (existing) return existing.token;
+    if (existing) {
+      return { token: existing.token, customerId: existing.id, facet, created: false };
+    }
 
     /**
      * Two failures are possible from here and they want opposite responses.
@@ -117,7 +181,7 @@ export class PrivacyGateway {
           token,
           [{ facet, ciphertext: encryptFacet(value, this.config.vaultKey), matchKey }],
         );
-        return created.token;
+        return { token: created.token, customerId: created.id, facet, created: true };
       } catch (error) {
         if (error instanceof customersRepo.IdentityConflict) {
           const winner = await customersRepo.findCustomerByMatchKey(
@@ -126,7 +190,9 @@ export class PrivacyGateway {
             facet,
             matchKey,
           );
-          if (winner) return winner.token;
+          if (winner) {
+            return { token: winner.token, customerId: winner.id, facet, created: false };
+          }
           continue;
         }
         if (!(error instanceof customersRepo.TokenCollision)) throw error;

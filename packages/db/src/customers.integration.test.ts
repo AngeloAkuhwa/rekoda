@@ -13,8 +13,8 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
-import { createDb, type Db } from './client.js';
-import { customersRepo, identity } from './index.js';
+import { createDb, withBusiness, type Db } from './client.js';
+import { customersRepo, identity, issueRepo } from './index.js';
 import { migrate, requireUrls, truncateAll, type Urls } from './testing.js';
 import { decryptFacet, encryptFacet, matchKeyFor, normaliseFacet } from '@rekoda/core/vault';
 import { generateCustomerToken } from '@rekoda/core/privacy';
@@ -163,5 +163,123 @@ describe('erasure', () => {
 
     const left = await customersRepo.identitiesForCustomer(db, business.id, customer.id);
     expect(left.map((l) => l.facet)).toEqual(['phone']);
+  });
+});
+
+/**
+ * Joining two records the merchant has confirmed are one person.
+ *
+ * The merchant is asked in chat and the answer arrives here. What matters at
+ * this level is that the join moves ciphertext without opening it, that the
+ * orphan really goes, and above all that a record with financial history is
+ * REFUSED: moving a merchant's invoices is not something a `yes` in a chat
+ * should be able to do.
+ */
+describe('linking two customers', () => {
+  /** A bare customer holding one facet, as the gateway mints one. */
+  async function mintCustomer(businessId: string, facet: 'phone' | 'email', value: string) {
+    return customersRepo.createCustomerWithIdentities(
+      db,
+      businessId,
+      generateCustomerToken(random),
+      [
+        {
+          facet,
+          ciphertext: encryptFacet(value, VAULT_KEY),
+          matchKey: matchKeyFor(businessId, facet, normaliseFacet(facet, value), MATCH_KEY),
+        },
+      ],
+    );
+  }
+
+  const link = (businessId: string, survivorId: string, orphanId: string) =>
+    withBusiness(db, businessId, (tx) =>
+      customersRepo.linkCustomers(tx, businessId, survivorId, orphanId),
+    );
+
+  it('moves the facet across and takes the orphan with it', async () => {
+    const business = await seedBusiness('Ada Fashion', '+2348030000201');
+    const byPhone = await mintCustomer(business.id, 'phone', '08031234567');
+    const byEmail = await mintCustomer(business.id, 'email', 'ada@example.com');
+
+    expect(await link(business.id, byPhone.id, byEmail.id)).toBe(true);
+
+    /* Both facets on one record, and the email still decrypts: an UPDATE of
+     * customer_id rather than a decrypt-and-reinsert, so a merge never opens
+     * the vault. */
+    const facets = await withBusiness(db, business.id, (tx) =>
+      customersRepo.identityFacetsFor(tx, business.id, byPhone.id),
+    );
+    expect(facets.map((f) => f.facet).sort()).toEqual(['email', 'phone']);
+    const email = facets.find((f) => f.facet === 'email');
+    expect(decryptFacet(email!.ciphertext, VAULT_KEY)).toBe('ada@example.com');
+
+    const orphan = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ n: number }>(
+        sql`SELECT count(*)::int AS n FROM customers WHERE id = ${byEmail.id}::uuid`,
+      ),
+    );
+    expect(Number([...orphan][0]?.n)).toBe(0);
+  });
+
+  it('REFUSES a record that has an invoice against it', async () => {
+    const business = await seedBusiness('Ada Fashion', '+2348030000202');
+    const byPhone = await mintCustomer(business.id, 'phone', '08031234567');
+    const byEmail = await mintCustomer(business.id, 'email', 'ada@example.com');
+
+    await withBusiness(db, business.id, (tx) =>
+      issueRepo.issueSale(tx, {
+        businessId: business.id,
+        customerId: byEmail.id,
+        customerToken: byEmail.token,
+        items: [{ name: 'wig', quantity: 1, unitPriceK: 5_000_000 }],
+        subtotalK: 5_000_000,
+        discountK: 0,
+        deliveryFeeK: 0,
+        vatK: 0,
+        totalK: 5_000_000,
+        paidK: 0,
+        balanceDueK: 5_000_000,
+        method: 'transfer',
+        sourceType: 'chat',
+        sourceId: 'draft-1',
+        actor: 'system',
+      }),
+    );
+
+    /* A record with history needs its invoices moved too, and moving a
+     * merchant's financial history is a different operation with different
+     * consequences. Refused, and both records stand. */
+    expect(await link(business.id, byPhone.id, byEmail.id)).toBe(false);
+    const still = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ n: number }>(
+        sql`SELECT count(*)::int AS n FROM customers WHERE id = ${byEmail.id}::uuid`,
+      ),
+    );
+    expect(Number([...still][0]?.n)).toBe(1);
+  });
+
+  it('refuses to link a record to itself, or to one that has gone', async () => {
+    const business = await seedBusiness('Ada Fashion', '+2348030000203');
+    const one = await mintCustomer(business.id, 'phone', '08031234567');
+
+    expect(await link(business.id, one.id, one.id)).toBe(false);
+    expect(await link(business.id, '00000000-0000-4000-8000-000000000000', one.id)).toBe(false);
+  });
+
+  it('cannot reach another tenant record, whatever id it is handed', async () => {
+    const ada = await seedBusiness('Ada Fashion', '+2348030000204');
+    const bola = await seedBusiness('Bola Electronics', '+2348030000205');
+    const adasCustomer = await mintCustomer(ada.id, 'phone', '08031234567');
+    const bolasCustomer = await mintCustomer(bola.id, 'phone', '08039999999');
+
+    // Bola's tenant pin, Ada's customer id. Row-level security answers first.
+    expect(await link(bola.id, bolasCustomer.id, adasCustomer.id)).toBe(false);
+    const survived = await withBusiness(db, ada.id, (tx) =>
+      tx.execute<{ n: number }>(
+        sql`SELECT count(*)::int AS n FROM customers WHERE id = ${adasCustomer.id}::uuid`,
+      ),
+    );
+    expect(Number([...survived][0]?.n)).toBe(1);
   });
 });
