@@ -26,6 +26,20 @@ const metaAudio = z.object({
   voice: z.boolean().optional(),
 });
 
+/**
+ * A photograph, as Meta describes it.
+ *
+ * The same shape as audio and for the same reason: only the id travels, and
+ * the bytes are fetched at read time so there is nowhere for a merchant's
+ * photograph to sit. The caption, when there is one, is ordinary merchant
+ * text and takes the ordinary path.
+ */
+const metaImage = z.object({
+  id: z.string().min(1),
+  mime_type: z.string().optional(),
+  caption: z.string().optional(),
+});
+
 const metaMessage = z.object({
   id: z.string().min(1),
   from: z.string().min(1),
@@ -33,6 +47,7 @@ const metaMessage = z.object({
   type: z.string(),
   text: metaText.optional(),
   audio: metaAudio.optional(),
+  image: metaImage.optional(),
 });
 
 const metaStatus = z.object({
@@ -93,6 +108,15 @@ export interface InboundEvent {
    * lands anywhere it could be recovered from.
    */
   readonly audioId: string | null;
+  /**
+   * Meta's media id for a photograph, to be read by our own OCR.
+   *
+   * An ID, never the image. ADR 0024 fixes what happens to the bytes: they
+   * are fetched, extracted inside infrastructure we control, and dropped.
+   */
+  readonly imageId: string | null;
+  /** A caption typed alongside a photograph. Ordinary merchant text. */
+  readonly caption: string | null;
   readonly status: string | null;
 }
 
@@ -121,6 +145,8 @@ export function extractInboundEvents(body: MetaWebhookBody): InboundEvent[] {
           messageType: message.type,
           text: message.text?.body ?? null,
           audioId: message.audio?.id ?? null,
+          imageId: message.image?.id ?? null,
+          caption: message.image?.caption ?? null,
           status: null,
         });
       }
@@ -136,6 +162,8 @@ export function extractInboundEvents(body: MetaWebhookBody): InboundEvent[] {
           messageType: 'status',
           text: null,
           audioId: null,
+          imageId: null,
+          caption: null,
           status: status.status,
         });
       }

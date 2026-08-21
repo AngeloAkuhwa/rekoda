@@ -31,6 +31,7 @@ import { sweepGracePeriods } from '../billing/grace-sweep.js';
 import { sweepRetention } from '../privacy/retention-sweep.js';
 import { MESSAGE_SENDER } from '../channels/sender.tokens.js';
 import { SPEECH_TO_TEXT, type SpeechToText } from '../ai/stt.js';
+import { TEXT_EXTRACTION, type TextExtraction } from '../ai/ocr.js';
 import type { MessageSender } from '../channels/sender.js';
 import { DocumentsModule, DOCUMENT_STORAGE } from '../documents/documents.module.js';
 import type { DocumentStorage } from '../documents/storage.js';
@@ -118,6 +119,7 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
     @Inject(PAYMENT_PROVIDER) private readonly paymentProvider: PaymentProviderPort,
     @Inject(PaymentIntentsService) private readonly paymentIntents: PaymentIntentsService,
     @Inject(SPEECH_TO_TEXT) private readonly stt: SpeechToText,
+    @Inject(TEXT_EXTRACTION) private readonly ocr: TextExtraction,
   ) {}
 
   onModuleInit(): void {
@@ -136,6 +138,7 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
       paymentProvider: this.paymentProvider,
       paymentIntents: this.paymentIntents,
       stt: this.stt,
+      ocr: this.ocr,
     });
     this.runner.start();
 

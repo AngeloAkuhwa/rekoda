@@ -23,6 +23,7 @@ import { PrivacyGateway } from '../privacy/gateway.service.js';
 import { Interpreter } from '../ai/interpreter.service.js';
 import { StubTransport } from '../ai/transport.stub.js';
 import { StubSender } from '../channels/sender.stub.js';
+import { StubTextExtraction } from '../ai/ocr.stub.js';
 import { StubSpeechToText } from '../ai/stt.stub.js';
 import { StubPaymentProvider } from '../payments/provider.stub.js';
 import { PaymentIntentsService } from '../payments/payment-intents.service.js';
@@ -46,6 +47,7 @@ let deps: RunnerDeps;
 let stubTransport: StubTransport;
 let stubSender: StubSender;
 let stubStt: StubSpeechToText;
+let stubOcr: StubTextExtraction;
 
 beforeAll(async () => {
   urls = requireUrls();
@@ -65,6 +67,7 @@ beforeAll(async () => {
   });
   stubSender = new StubSender();
   stubStt = new StubSpeechToText();
+  stubOcr = new StubTextExtraction();
   deps = {
     gateway: new PrivacyGateway(appDb, config),
     interpreter: new Interpreter(appDb, config, stubTransport),
@@ -77,6 +80,7 @@ beforeAll(async () => {
     paymentProvider: new StubPaymentProvider(),
     paymentIntents: new PaymentIntentsService(config, appDb, new StubPaymentProvider()),
     stt: stubStt,
+    ocr: stubOcr,
   };
 });
 

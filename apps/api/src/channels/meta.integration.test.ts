@@ -41,6 +41,7 @@ import { PrivacyGateway } from '../privacy/gateway.service.js';
 import { Interpreter } from '../ai/interpreter.service.js';
 import { StubTransport } from '../ai/transport.stub.js';
 import { StubSender } from '../channels/sender.stub.js';
+import { StubTextExtraction } from '../ai/ocr.stub.js';
 import { StubSpeechToText } from '../ai/stt.stub.js';
 import { StubPaymentProvider } from '../payments/provider.stub.js';
 import { PaymentIntentsService } from '../payments/payment-intents.service.js';
@@ -65,6 +66,7 @@ let deps: RunnerDeps;
 let stubTransport: StubTransport;
 let stubSender: StubSender;
 let stubStt: StubSpeechToText;
+let stubOcr: StubTextExtraction;
 const intentsProvider = new StubPaymentProvider();
 
 beforeAll(async () => {
@@ -96,6 +98,7 @@ beforeAll(async () => {
   });
   stubSender = new StubSender();
   stubStt = new StubSpeechToText();
+  stubOcr = new StubTextExtraction();
   deps = {
     gateway: new PrivacyGateway(db, config),
     interpreter: new Interpreter(db, config, stubTransport),
@@ -108,6 +111,7 @@ beforeAll(async () => {
     paymentProvider: new StubPaymentProvider(),
     paymentIntents: new PaymentIntentsService(config, db, intentsProvider),
     stt: stubStt,
+    ocr: stubOcr,
   };
 });
 
@@ -127,6 +131,7 @@ beforeEach(async () => {
   stubTransport.reset();
   stubSender.reset();
   stubStt.reset();
+  stubOcr.reset();
   intentsProvider.reset();
 });
 
@@ -2037,8 +2042,8 @@ describe('a voice note', () => {
     expect(rows.find((r) => r.unit === 'voice_seconds')?.used).toBe(5);
   });
 
-  /* A photo is still a photo. Only voice got a path. */
-  it('still answers a photo with the honest text-only reply', async () => {
+  /* A photo with no media id is not a receipt anybody can read. */
+  it('answers an image with no media id with the honest capability line', async () => {
     await seedMerchant('+2348031234567');
     await post({
       object: 'whatsapp_business_account',
@@ -2062,8 +2067,205 @@ describe('a voice note', () => {
     });
     await drain();
 
-    expect(stubSender.lastText).toContain('Photos are coming');
+    expect(stubSender.lastText).toContain('read photos of receipts');
     expect(stubStt.calls).toHaveLength(0);
+  });
+});
+
+/**
+ * A photograph of a receipt (ADR 0024, decision C9).
+ *
+ * The pipeline is photo, self-hosted OCR, PII tokenisation, then a model, and
+ * the property that matters most is the one that is hardest to see in a diff:
+ * there is NO other route for the image. Every failure below must produce a
+ * sentence rather than a second attempt somewhere a photograph could reach a
+ * third party.
+ */
+describe('a receipt photo', () => {
+  const A_PHOTOGRAPHED_EXPENSE = {
+    intent: 'RecordExpense',
+    description: 'diesel',
+    amount: 12_000,
+    category: 'utilities',
+    paymentMethod: 'cash',
+  };
+
+  function photoPayload(
+    waId: string,
+    wamid: string,
+    opts: { mediaId?: string | null; caption?: string } = {},
+  ) {
+    const mediaId = opts.mediaId === undefined ? 'photo-1' : opts.mediaId;
+    return {
+      object: 'whatsapp_business_account',
+      entry: [
+        {
+          id: 'WABA',
+          changes: [
+            {
+              field: 'messages',
+              value: {
+                messaging_product: 'whatsapp',
+                metadata: { phone_number_id: 'PNID' },
+                messages: [
+                  {
+                    id: wamid,
+                    from: waId,
+                    timestamp: '1700000000',
+                    type: 'image',
+                    ...(mediaId
+                      ? {
+                          image: {
+                            id: mediaId,
+                            mime_type: 'image/jpeg',
+                            ...(opts.caption ? { caption: opts.caption } : {}),
+                          },
+                        }
+                      : {}),
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+    };
+  }
+
+  async function seedMerchant(phone: string) {
+    const user = await identity.upsertUserByPhone(db, phone);
+    return identity.createBusinessWithOwner(db, {
+      name: 'Ada Fashion',
+      businessType: null,
+      ownerUserId: user.id,
+    });
+  }
+
+  async function drain() {
+    const runner = buildRunner(workerDb, db, deps);
+    let worked = await runner.runOnce();
+    while (worked) worked = await runner.runOnce();
+  }
+
+  function arrangePhoto(bytes = Buffer.from('JFIF-fake-photo')) {
+    stubSender.media.set('photo-1', { bytes, mimeType: 'image/jpeg' });
+  }
+
+  it('takes the SAME path a typed sentence takes, gates included', async () => {
+    await seedMerchant('+2348031234567');
+    arrangePhoto();
+    stubOcr.answerWith({ text: 'TOTAL 12,000 diesel', confidence: 0.88 });
+    stubTransport.replyWith(A_PHOTOGRAPHED_EXPENSE);
+
+    await post(photoPayload('2348031234567', 'wamid.P1'));
+    await drain();
+
+    // A photograph is an input method, not a second product with its own rules.
+    expect(stubSender.lastText).toContain('Reply *yes*');
+    expect(stubSender.lastText).toContain('₦12,000');
+  });
+
+  it('keeps the extracted text and NEVER the image', async () => {
+    const business = await seedMerchant('+2348031234567');
+    arrangePhoto(Buffer.from('JFIF-secret-photo-of-adas-shop'));
+    stubOcr.answerWith({ text: 'TOTAL 12,000 diesel', confidence: 0.9 });
+    stubTransport.replyWith(A_PHOTOGRAPHED_EXPENSE);
+
+    await post(photoPayload('2348031234567', 'wamid.P2'));
+    await drain();
+
+    const rows = await withBusiness(db, business.id, (tx) =>
+      conversationsRepo.messagesFor(tx, business.id, 20),
+    );
+    const dump = JSON.stringify(rows);
+    expect(dump).not.toContain('JFIF');
+    expect(dump).not.toContain('secret-photo');
+    // The bytes went to OUR sidecar and nowhere else.
+    expect(stubOcr.calls).toHaveLength(1);
+    expect(stubOcr.calls[0]?.mimeType).toBe('image/jpeg');
+  });
+
+  it('reaches no model at all when OCR fails, and costs the merchant nothing', async () => {
+    const business = await seedMerchant('+2348031234567');
+    arrangePhoto();
+    stubOcr.failWith();
+    const modelCallsBefore = stubTransport.requests.length;
+
+    await post(photoPayload('2348031234567', 'wamid.P3'));
+    await drain();
+
+    expect(stubSender.lastText).toContain('could not read that photo');
+    /* THE point of ADR 0024's no-fallback clause. A failed extraction must
+     * not become a photograph sent to a model provider, so the model is not
+     * called at all. */
+    expect(stubTransport.requests.length).toBe(modelCallsBefore);
+
+    const period = usagePeriod(new Date());
+    const rows = await withBusiness(db, business.id, (tx) =>
+      usageRepo.usageFor(tx, business.id, period),
+    );
+    expect(rows.find((r) => r.unit === 'documents_understood')?.used ?? 0).toBe(0);
+  });
+
+  it('answers honestly when the image cannot be fetched, and reads nothing', async () => {
+    await seedMerchant('+2348031234567');
+    // No media arranged: the provider has nothing for this id.
+    stubOcr.answerWith({ text: 'should never be reached', confidence: 1 });
+
+    await post(photoPayload('2348031234567', 'wamid.P4'));
+    await drain();
+
+    expect(stubSender.lastText).toContain('could not read that photo');
+    expect(stubOcr.calls).toHaveLength(0);
+  });
+
+  it('meters one documents_understood unit per photograph read', async () => {
+    const business = await seedMerchant('+2348031234567');
+    arrangePhoto();
+    stubOcr.answerWith({ text: 'TOTAL 12,000 diesel', confidence: 0.9 });
+    stubTransport.replyWith(A_PHOTOGRAPHED_EXPENSE);
+
+    await post(photoPayload('2348031234567', 'wamid.P5'));
+    await drain();
+
+    const period = usagePeriod(new Date());
+    const rows = await withBusiness(db, business.id, (tx) =>
+      usageRepo.usageFor(tx, business.id, period),
+    );
+    expect(rows.find((r) => r.unit === 'documents_understood')?.used).toBe(1);
+  });
+
+  it('puts the caption in front of the page, because it says what the page is for', async () => {
+    await seedMerchant('+2348031234567');
+    arrangePhoto();
+    stubOcr.answerWith({ text: 'TOTAL 12,000', confidence: 0.9 });
+    stubTransport.replyWith(A_PHOTOGRAPHED_EXPENSE);
+
+    await post(photoPayload('2348031234567', 'wamid.P6', { caption: 'this is my diesel receipt' }));
+    await drain();
+
+    const sentToModel = JSON.stringify(stubTransport.requests.at(-1));
+    expect(sentToModel).toContain('this is my diesel receipt');
+    expect(sentToModel).toContain('TOTAL 12,000');
+  });
+
+  it('does not read, meter or answer twice for a redelivered webhook', async () => {
+    const business = await seedMerchant('+2348031234567');
+    arrangePhoto();
+    stubOcr.answerWith({ text: 'TOTAL 12,000 diesel', confidence: 0.9 });
+    stubTransport.replyWith(A_PHOTOGRAPHED_EXPENSE);
+
+    await post(photoPayload('2348031234567', 'wamid.P7'));
+    await drain();
+    await post(photoPayload('2348031234567', 'wamid.P7'));
+    await drain();
+
+    expect(stubOcr.calls).toHaveLength(1);
+    const period = usagePeriod(new Date());
+    const rows = await withBusiness(db, business.id, (tx) =>
+      usageRepo.usageFor(tx, business.id, period),
+    );
+    expect(rows.find((r) => r.unit === 'documents_understood')?.used).toBe(1);
   });
 });
 
