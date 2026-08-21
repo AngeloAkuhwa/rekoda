@@ -46,6 +46,12 @@ export class MetaSender implements MessageSender {
     /** Meta-approved UTILITY template for retention warnings. */
     private readonly retentionTemplate: string | null = null,
     private readonly retentionTemplateLocale = 'en',
+    /**
+     * Graph's host. Injectable for the same reason the Paystack adapter's is:
+     * the claims worth having about an adapter are about what goes over the
+     * wire, and asserting those needs a server that can be listened to.
+     */
+    private readonly baseUrl = 'https://graph.facebook.com',
   ) {}
 
   /**
@@ -264,7 +270,7 @@ export class MetaSender implements MessageSender {
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
 
     try {
-      const response = await fetch(`https://graph.facebook.com/${this.graphVersion}${path}`, {
+      const response = await fetch(`${this.baseUrl}/${this.graphVersion}${path}`, {
         ...init,
         signal: controller.signal,
       });
