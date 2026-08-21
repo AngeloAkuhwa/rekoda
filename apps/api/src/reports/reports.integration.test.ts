@@ -13,6 +13,7 @@ import {
   reportsActivityResponse,
   reportsCashflowResponse,
   reportsDebtorsResponse,
+  creditInvoiceResponse,
   reportsAuditResponse,
   reportsExpensesResponse,
   reportsInvoicesResponse,
@@ -20,6 +21,7 @@ import {
   reportsReceiptsResponse,
   reportsStatementsResponse,
   voidExpenseResponse,
+  voidInvoiceResponse,
 } from '@rekoda/contracts';
 import {
   createDb,
@@ -419,6 +421,190 @@ describe('the spend register', () => {
  * built from a real sale and a real withdrawal, comes out as sentences a
  * person can check and carries no token from the sale that produced it.
  */
+/**
+ * The other half of the pair the void opens.
+ *
+ * What matters here is that the two instruments cover every invoice between
+ * them and overlap on none: a merchant refused by one is always sent to the
+ * other, and the pair of refusals below is what proves there is no gap.
+ */
+describe('crediting an invoice', () => {
+  async function paidSale(businessId: string) {
+    return withBusiness(db, businessId, async (tx) => {
+      const sale = await issueRepo.issueSale(tx, {
+        businessId,
+        customerId: null,
+        customerToken: 'CUSTOMER_7K2',
+        items: [{ name: 'wig', quantity: 1, unitPriceK: 15_000_000 }],
+        subtotalK: 15_000_000,
+        discountK: 0,
+        deliveryFeeK: 0,
+        vatK: 0,
+        totalK: 15_000_000,
+        paidK: 6_000_000,
+        balanceDueK: 9_000_000,
+        method: 'transfer',
+        sourceType: 'chat',
+        sourceId: 'draft-credit',
+        actor: 'system',
+      });
+      return sale.invoiceNumber;
+    });
+  }
+
+  it('issues a numbered credit note and reduces what is owed', async () => {
+    const { auth, businessId } = await onboard('+2348177000051');
+    const invoiceNumber = await paidSale(businessId);
+
+    const res = await post(
+      '/v1/reports/invoices/credit',
+      { invoiceNumber, amountK: 9_000_000, reason: 'goods returned' },
+      auth,
+    );
+    expect(res.statusCode).toBe(200);
+    const outcome = creditInvoiceResponse.parse(res.json());
+    expect(outcome).toMatchObject({
+      outcome: 'credited',
+      invoiceNumber,
+      amountK: 9_000_000,
+      balanceDueK: 0,
+      owedToCustomerK: 0,
+    });
+
+    const register = reportsInvoicesResponse.parse(
+      (await app.inject({ method: 'GET', url: '/v1/reports/invoices', headers: auth })).json(),
+    );
+    expect(register.invoices[0]).toMatchObject({ balanceDueK: 0, creditedK: 9_000_000 });
+    /* Nothing is outstanding any more, so it leaves the ageing. */
+    expect(register.outstandingK).toBe(0);
+    expect(res.body).not.toContain('CUSTOMER_');
+  });
+
+  it('says when the merchant now owes the customer', async () => {
+    const { auth, businessId } = await onboard('+2348177000052');
+    const invoiceNumber = await paidSale(businessId);
+
+    const outcome = creditInvoiceResponse.parse(
+      (
+        await post(
+          '/v1/reports/invoices/credit',
+          { invoiceNumber, amountK: 15_000_000, reason: 'all returned' },
+          auth,
+        )
+      ).json(),
+    );
+    expect(outcome).toMatchObject({ owedToCustomerK: 6_000_000 });
+  });
+
+  /* The pair must leave no invoice without a path, and give none two. */
+  it('sends an unpaid invoice to the void, and a paid one away from it', async () => {
+    const { auth, businessId } = await onboard('+2348177000053');
+    const paid = await paidSale(businessId);
+    const unpaid = await withBusiness(db, businessId, async (tx) => {
+      const sale = await issueRepo.issueSale(tx, {
+        businessId,
+        customerId: null,
+        customerToken: null,
+        items: [{ name: 'bag', quantity: 1, unitPriceK: 2_000_000 }],
+        subtotalK: 2_000_000,
+        discountK: 0,
+        deliveryFeeK: 0,
+        vatK: 0,
+        totalK: 2_000_000,
+        paidK: 0,
+        balanceDueK: 2_000_000,
+        method: 'transfer',
+        sourceType: 'chat',
+        sourceId: 'draft-unpaid',
+        actor: 'system',
+      });
+      return sale.invoiceNumber;
+    });
+
+    expect(
+      creditInvoiceResponse.parse(
+        (
+          await post(
+            '/v1/reports/invoices/credit',
+            { invoiceNumber: unpaid, amountK: 1_000_000, reason: 'wrong figure' },
+            auth,
+          )
+        ).json(),
+      ),
+    ).toEqual({ outcome: 'unpaid' });
+
+    expect(
+      voidInvoiceResponse.parse(
+        (
+          await post('/v1/reports/invoices/void', { invoiceNumber: paid, reason: 'mistake' }, auth)
+        ).json(),
+      ),
+    ).toMatchObject({ outcome: 'has_payments' });
+  });
+
+  it('refuses more than is left, and another tenant`s invoice', async () => {
+    const ada = await onboard('+2348177000054');
+    const bola = await onboard('+2348177000055');
+    const invoiceNumber = await paidSale(ada.businessId);
+
+    expect(
+      creditInvoiceResponse.parse(
+        (
+          await post(
+            '/v1/reports/invoices/credit',
+            { invoiceNumber, amountK: 20_000_000, reason: 'too much' },
+            ada.auth,
+          )
+        ).json(),
+      ),
+    ).toEqual({ outcome: 'exceeds_invoice', creditableK: 15_000_000 });
+
+    expect(
+      creditInvoiceResponse.parse(
+        (
+          await post(
+            '/v1/reports/invoices/credit',
+            { invoiceNumber, amountK: 1_000_000, reason: 'not mine' },
+            bola.auth,
+          )
+        ).json(),
+      ),
+    ).toEqual({ outcome: 'not_found' });
+
+    expect(
+      (
+        await post(
+          '/v1/reports/invoices/credit',
+          { invoiceNumber, amountK: 1_000_000, reason: 'no' },
+          ada.auth,
+        )
+      ).statusCode,
+    ).toBe(400);
+  });
+
+  it('shows up on the audit trail as a sentence', async () => {
+    const { auth, businessId } = await onboard('+2348177000056');
+    const invoiceNumber = await paidSale(businessId);
+    await post(
+      '/v1/reports/invoices/credit',
+      { invoiceNumber, amountK: 1_000_000, reason: 'one came back' },
+      auth,
+    );
+
+    const trail = reportsAuditResponse.parse(
+      (await app.inject({ method: 'GET', url: '/v1/reports/audit', headers: auth })).json(),
+    );
+    const credited = trail.events.find((e) => e.action === 'credited');
+    expect(credited?.reason).toBe('one came back');
+    expect(credited?.amountK).toBe(1_000_000);
+    /* Where the merchant was standing, not what ran the code. Labelling a
+     * deliberate correction 'system' put "Automatic" on the trail beside a
+     * change a person made on purpose. */
+    expect(credited?.source).toBe('dashboard');
+    expect(credited?.actor).toMatch(/^Owner \d{4}$/);
+  });
+});
+
 describe('the audit trail', () => {
   it('a fresh business has an empty trail, never an error', async () => {
     const { auth } = await onboard('+2348177000041');
@@ -603,7 +789,7 @@ describe('the four statements (ADR 0015)', () => {
  * and never another tenant's.
  */
 describe('exporting the books as CSV', () => {
-  const EMPTY_INVOICES = 'Invoice,Issued,Due,Status,Days late,Total,Paid,Balance\r\n';
+  const EMPTY_INVOICES = 'Invoice,Issued,Due,Status,Days late,Total,Paid,Credited,Balance\r\n';
 
   const download = (path: string, auth: Record<string, string>) =>
     app.inject({ method: 'GET', url: path, headers: auth });

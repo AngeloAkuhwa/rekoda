@@ -23,6 +23,7 @@ import {
   billingPlanChangeResponse,
   billingQuoteResponse,
   usageMeterResponse,
+  creditInvoiceResponse,
   voidExpenseResponse,
   voidInvoiceResponse,
   verifyOtpResponse,
@@ -30,6 +31,7 @@ import {
   type BillingPlanChangeResponse,
   type BillingQuoteResponse,
   type MeResponse,
+  type CreditInvoiceResponse,
   type VoidExpenseResponse,
   type VoidInvoiceResponse,
   type PaymentConnectionResponse,
@@ -531,6 +533,22 @@ export async function voidExpense(
     expect: [200, 400],
   });
   return status === 200 ? voidExpenseResponse.parse(json) : null;
+}
+
+export async function creditInvoice(
+  sessionToken: string,
+  invoiceNumber: string,
+  amountK: number,
+  reason: string,
+): Promise<CreditInvoiceResponse | null> {
+  const { status, json } = await call({
+    method: 'POST',
+    path: '/v1/reports/invoices/credit',
+    body: { invoiceNumber, amountK, reason },
+    headers: { authorization: `Bearer ${sessionToken}` },
+    expect: [200, 400],
+  });
+  return status === 200 ? creditInvoiceResponse.parse(json) : null;
 }
 
 export async function voidInvoice(

@@ -596,3 +596,217 @@ describe('voiding an invoice', () => {
     expect(await countOf(ada, 'ledger_transactions')).toBe(1);
   });
 });
+
+/**
+ * Crediting an invoice money has already arrived against.
+ *
+ * The instrument the void refuses to be. `voidInvoice` mirrors the whole
+ * posting, which would describe a payment that is still sitting in the
+ * merchant's account; this reduces the sale and leaves the cash alone. The
+ * two are mutually exclusive by construction, and the pair of refusals below
+ * is what proves a merchant can never fall between them.
+ */
+describe('crediting an invoice', () => {
+  const netByAccount = async (businessId: string): Promise<Map<string, number>> => {
+    const entries = await withBusiness(db, businessId, (tx) =>
+      issueRepo.ledgerEntriesFor(tx, businessId),
+    );
+    const net = new Map<string, number>();
+    for (const e of entries) {
+      net.set(e.account, (net.get(e.account) ?? 0) + Number(e.debitK) - Number(e.creditK));
+    }
+    return net;
+  };
+
+  const credit = (
+    businessId: string,
+    invoiceNumber: string,
+    amountK: number,
+    reason = 'returned',
+  ) =>
+    withBusiness(db, businessId, (tx) =>
+      issueRepo.issueCreditNote(tx, {
+        businessId,
+        invoiceNumber,
+        amountK,
+        reason,
+        actor: 'user:ada',
+      }),
+    );
+
+  it('reduces what is owed, and takes the revenue back with it', async () => {
+    const businessId = await seedBusiness();
+    const sale = await withBusiness(db, businessId, (tx) =>
+      issueRepo.issueSale(tx, theSale(businessId)),
+    );
+
+    // Billed 15m, 10m paid, 5m outstanding. Credit the 5m that is still owed.
+    const outcome = await credit(businessId, sale.invoiceNumber, 5_000_000);
+    expect(outcome).toMatchObject({
+      outcome: 'credited',
+      invoiceNumber: sale.invoiceNumber,
+      amountK: 5_000_000,
+      balanceDueK: 0,
+      owedToCustomerK: 0,
+    });
+    expect((outcome as { creditNoteNumber: string }).creditNoteNumber).toMatch(/^CRN-\d{4}-\d{6}$/);
+
+    const net = await netByAccount(businessId);
+    expect(net.get('ACCOUNTS_RECEIVABLE')).toBe(0);
+    expect(net.get('SALES_REVENUE')).toBe(-10_000_000);
+    /* The cash the customer actually sent is untouched. This is the whole
+     * reason a credit note is not a void. */
+    expect(net.get('BANK_PAYSTACK')).toBe(10_000_000);
+  });
+
+  it('says plainly when the merchant now owes the customer', async () => {
+    const businessId = await seedBusiness();
+    const sale = await withBusiness(db, businessId, (tx) =>
+      issueRepo.issueSale(tx, theSale(businessId)),
+    );
+
+    // The whole sale credited, with 10m already collected against it.
+    const outcome = await credit(businessId, sale.invoiceNumber, 15_000_000, 'all returned');
+    expect(outcome).toMatchObject({
+      outcome: 'credited',
+      balanceDueK: 0,
+      owedToCustomerK: 10_000_000,
+    });
+
+    /* A customer in credit IS a negative receivable. That is what stops this
+     * needing an account the chart does not have. */
+    expect((await netByAccount(businessId)).get('ACCOUNTS_RECEIVABLE')).toBe(-10_000_000);
+  });
+
+  it('gives back VAT in proportion, and the last kobo of it on the final credit', async () => {
+    const businessId = await seedBusiness();
+    const sale = await withBusiness(db, businessId, (tx) =>
+      issueRepo.issueSale(tx, {
+        ...theSale(businessId),
+        vatK: 1_000_001,
+        paidK: 1_000_000,
+        balanceDueK: 14_000_000,
+      }),
+    );
+
+    await credit(businessId, sale.invoiceNumber, 5_000_000);
+    await credit(businessId, sale.invoiceNumber, 10_000_000);
+
+    /* Two partial credits summing to the whole invoice must give back the
+     * whole VAT. An odd figure is deliberate: rounding each share
+     * independently would strand a kobo of liability forever. */
+    expect((await netByAccount(businessId)).get('VAT_PAYABLE')).toBe(0);
+  });
+
+  it('refuses more than the invoice was ever worth, cumulatively', async () => {
+    const businessId = await seedBusiness();
+    const sale = await withBusiness(db, businessId, (tx) =>
+      issueRepo.issueSale(tx, theSale(businessId)),
+    );
+
+    await credit(businessId, sale.invoiceNumber, 9_000_000);
+    expect(await credit(businessId, sale.invoiceNumber, 7_000_000)).toEqual({
+      outcome: 'exceeds_invoice',
+      creditableK: 6_000_000,
+    });
+    expect(await credit(businessId, sale.invoiceNumber, 0)).toMatchObject({
+      outcome: 'exceeds_invoice',
+    });
+  });
+
+  /**
+   * The guard that a read-then-write would not give. Both credits read the
+   * same `credited_k`, both conclude there is room, and between them they take
+   * back more than the invoice was worth.
+   */
+  it('lets only ONE of two concurrent credits through when together they overflow', async () => {
+    const businessId = await seedBusiness();
+    const sale = await withBusiness(db, businessId, (tx) =>
+      issueRepo.issueSale(tx, theSale(businessId)),
+    );
+
+    const outcomes = await Promise.all([
+      credit(businessId, sale.invoiceNumber, 10_000_000, 'first'),
+      credit(businessId, sale.invoiceNumber, 10_000_000, 'second'),
+    ]);
+    expect(outcomes.filter((o) => o.outcome === 'credited')).toHaveLength(1);
+    expect(outcomes.filter((o) => o.outcome === 'exceeds_invoice')).toHaveLength(1);
+
+    const rows = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ credited_k: string }>(
+        sql`SELECT credited_k FROM invoices WHERE invoice_number = ${sale.invoiceNumber}`,
+      ),
+    );
+    expect(Number([...rows][0]?.credited_k)).toBe(10_000_000);
+  });
+
+  /* The two instruments must not overlap, and must not leave a gap. */
+  it('sends an unpaid invoice to the void, and a voided one nowhere', async () => {
+    const businessId = await seedBusiness();
+    const unpaid = await withBusiness(db, businessId, (tx) =>
+      issueRepo.issueSale(tx, { ...theSale(businessId), paidK: 0, balanceDueK: 15_000_000 }),
+    );
+
+    expect(await credit(businessId, unpaid.invoiceNumber, 1_000_000)).toEqual({
+      outcome: 'unpaid',
+    });
+
+    await withBusiness(db, businessId, (tx) =>
+      issueRepo.voidInvoice(tx, businessId, unpaid.invoiceNumber, 'duplicate', 'user:ada'),
+    );
+    expect(await credit(businessId, unpaid.invoiceNumber, 1_000_000)).toEqual({
+      outcome: 'voided',
+    });
+  });
+
+  it('marks a fully credited invoice, and keeps the note as a numbered document', async () => {
+    const businessId = await seedBusiness();
+    const sale = await withBusiness(db, businessId, (tx) =>
+      issueRepo.issueSale(tx, theSale(businessId)),
+    );
+    await credit(businessId, sale.invoiceNumber, 15_000_000, 'all returned');
+
+    const rows = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ status: string; balance_due_k: string }>(
+        sql`SELECT status, balance_due_k FROM invoices WHERE invoice_number = ${sale.invoiceNumber}`,
+      ),
+    );
+    expect([...rows][0]?.status).toBe('credited');
+    expect(Number([...rows][0]?.balance_due_k)).toBe(0);
+
+    const notes = await withBusiness(db, businessId, (tx) =>
+      issueRepo.creditNotesFor(tx, businessId, sale.invoiceNumber),
+    );
+    expect(notes).toHaveLength(1);
+    expect(notes[0]).toMatchObject({ amountK: 15_000_000, reason: 'all returned' });
+  });
+
+  it('answers not_found for another tenant`s invoice number', async () => {
+    const ada = await seedBusiness('Ada Fashion', '+2348100000001');
+    const bola = await seedBusiness('Bola Electronics', '+2348100000002');
+    const sale = await withBusiness(db, ada, (tx) => issueRepo.issueSale(tx, theSale(ada)));
+
+    expect(await credit(bola, sale.invoiceNumber, 1_000_000)).toEqual({ outcome: 'not_found' });
+    expect(await countOf(bola, 'credit_notes')).toBe(0);
+  });
+
+  it('writes the reason and the actor into the audit trail', async () => {
+    const businessId = await seedBusiness();
+    const sale = await withBusiness(db, businessId, (tx) =>
+      issueRepo.issueSale(tx, theSale(businessId)),
+    );
+    await credit(businessId, sale.invoiceNumber, 1_000_000, 'one wig came back');
+
+    const rows = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ actor: string; reason: string; action: string }>(
+        sql`SELECT actor, reason, action FROM audit_events
+            WHERE business_id = ${businessId}::uuid AND action = 'credited'`,
+      ),
+    );
+    expect([...rows][0]).toMatchObject({
+      actor: 'user:ada',
+      reason: 'one wig came back',
+      action: 'credited',
+    });
+  });
+});

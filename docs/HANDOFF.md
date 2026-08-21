@@ -275,6 +275,32 @@ already had. A stranger gets nothing.
 Delegate invites were never the use for it: those have worked by phone and OTP
 since `POST /v1/auth/members` shipped, with `/app/team` in front.
 
+**An invoice can be credited (PR #87).** The void refused any invoice with a
+payment on it and told the merchant a credit note was the right instrument;
+there was no such instrument, so that refusal was a dead end. Now the two
+cover every invoice between them and overlap on none: the void takes unpaid
+ones and mirrors the whole posting, the credit note takes the rest and reduces
+without touching the cash that already moved.
+
+The receivable is allowed to go NEGATIVE, and that is the design rather than a
+bug to guard. A customer credited past what they still owe is in credit, and a
+negative receivable is how a ledger says so - inventing a refunds-payable
+account would have put customer credits in with what the shop owes suppliers.
+VAT comes back proportionally, and the final credit on an invoice takes the
+whole remaining VAT so repeated partial credits cannot strand a kobo.
+
+`credited_k + amount <= total_k` lives inside the UPDATE. Two credits racing
+would otherwise both read the same `credited_k`, both conclude there was room,
+and between them take back more than the invoice was ever worth.
+
+**Two things the browser found that the tests did not.** The register showed
+nothing when an invoice had been partly credited, so a credit note existed and
+the row a merchant looks at was unchanged; there is a Credited column now, in
+the page and in the CSV. And all three corrections were writing
+`source_type: 'system'` on their audit rows, which rendered as "Automatic"
+beside a change a person had deliberately made from the dashboard. Both void
+paths carried that from the start. All three now say `dashboard`.
+
 **A note on how the last six were found.** By grepping for exported functions
 with no production caller. Every hit was a missing surface rather than dead
 code: `dueForRenewal`, `applySettledCharge`, `businessForCharge`,

@@ -56,6 +56,8 @@ export const invoices = pgTable(
     /** The document exactly as issued (tokenised refs, not PII). */
     snapshotJson: jsonb('snapshot_json'),
     docHash: text('doc_hash'),
+    /** How much of this invoice has been credited. The over-credit guard. */
+    creditedK: kobo('credited_k').notNull().default(0),
     sourceType: text('source_type').notNull(),
     sourceId: text('source_id'),
     /** Where the sale happened (§27) — NOT how it reached Rekoda. Optional. */
@@ -212,6 +214,37 @@ export const expenses = pgTable(
   (t) => [
     index('expenses_business_ix').on(t.businessId),
     index('expenses_business_status_ix').on(t.businessId, t.status),
+  ],
+);
+
+/**
+ * Credit notes — reducing an invoice money has already arrived against.
+ *
+ * A document, so it is never rewritten: the grants revoke UPDATE and DELETE
+ * for the application role exactly as the append-only tables do.
+ */
+export const creditNotes = pgTable(
+  'credit_notes',
+  {
+    id: id(),
+    businessId: businessId(),
+    invoiceId: uuid('invoice_id')
+      .notNull()
+      .references(() => invoices.id),
+    creditNoteNumber: text('credit_note_number').notNull(),
+    amountK: kobo('amount_k').notNull(),
+    /** The share of the credit that was VAT. Zero when the sale carried none. */
+    vatK: kobo('vat_k').notNull().default(0),
+    reason: text('reason').notNull(),
+    actor: text('actor').notNull(),
+    ledgerTransactionId: uuid('ledger_transaction_id'),
+    snapshotJson: jsonb('snapshot_json'),
+    docHash: text('doc_hash'),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    uniqueIndex('credit_notes_number_ux').on(t.businessId, t.creditNoteNumber),
+    index('credit_notes_invoice_ix').on(t.businessId, t.invoiceId),
   ],
 );
 

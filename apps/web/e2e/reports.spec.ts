@@ -92,6 +92,22 @@ test('the spend register explains itself when empty, and keeps stock apart', asy
   await expect(page.getByText('Withdraw an entry')).toHaveCount(0);
 });
 
+/**
+ * The pair of correction instruments, and the rule that keeps them apart.
+ *
+ * The void takes unpaid invoices, the credit note takes the rest. A merchant
+ * refused by one is always sent to the other, so an empty register offering
+ * neither is the honest state and is what this asserts.
+ */
+test('an empty register offers neither correction control', async ({ page }) => {
+  await onboard(page, freshPhone());
+  await page.goto('/app/invoices');
+
+  await expect(page.getByText('No invoices yet', { exact: false })).toBeVisible();
+  await expect(page.getByText('Void an invoice')).toHaveCount(0);
+  await expect(page.getByText('Credit an invoice')).toHaveCount(0);
+});
+
 test('the audit trail says what it is, and that nothing can be removed', async ({ page }) => {
   await onboard(page, freshPhone());
   await page.goto('/app/audit');
