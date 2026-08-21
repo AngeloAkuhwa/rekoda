@@ -26,6 +26,7 @@ export function SiteFooter() {
           <a href="/terms">Terms</a>
           <a href="/security">Security</a>
           <a href="/ai-privacy">AI &amp; privacy</a>
+          <a href="/refunds">Refunds</a>
           <a href="/data-deletion">Delete my data</a>
         </nav>
       </div>

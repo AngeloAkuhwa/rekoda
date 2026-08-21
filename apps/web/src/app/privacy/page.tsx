@@ -1,7 +1,7 @@
 import type { Metadata } from 'next';
 import { LegalPage } from '@/components/legal/LegalPage';
 import { Fact } from '@/components/legal/Fact';
-import { FINANCIAL_RETENTION_YEARS, LEGAL } from '@/lib/legal';
+import { FINANCIAL_RETENTION_YEARS, LEGAL, RETENTION } from '@/lib/legal';
 import { canonical } from '@/lib/site';
 
 export const metadata: Metadata = {
@@ -106,9 +106,57 @@ export default function PrivacyPage() {
           body: (
             <>
               <p>
-                Conversations and drafts are kept while your account is open. Financial records
-                (invoices, receipts, ledger entries) are kept for {FINANCIAL_RETENTION_YEARS} years
-                after the transaction, because the law requires it.
+                A schedule rather than a promise to keep things forever. Two rules pull against each
+                other and this is where they meet: tax law expects business books to survive for
+                years, and data-protection law says personal information should not outlive the
+                reason it was collected.
+              </p>
+              <div className="rk-table-scroll">
+                <table className="rk-table">
+                  <thead>
+                    <tr>
+                      <th>What</th>
+                      <th>How long</th>
+                      <th>Why</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr>
+                      <td>Invoices, receipts, ledger entries</td>
+                      <td>{RETENTION.financialYears} years</td>
+                      <td>Nigerian tax law expects your books to be available for that long.</td>
+                    </tr>
+                    <tr>
+                      <td>Chat history and drafts</td>
+                      <td>While your account is open, then {RETENTION.conversationDays} days</td>
+                      <td>They are how the records were made, not records themselves.</td>
+                    </tr>
+                    <tr>
+                      <td>Voice notes</td>
+                      <td>Not kept</td>
+                      <td>Turned into text and deleted in the same request. Never stored.</td>
+                    </tr>
+                    <tr>
+                      <td>A trial you never converted</td>
+                      <td>{RETENTION.abandonedTrialDays} days after it ends</td>
+                      <td>Long enough to come back or export. Not forever.</td>
+                    </tr>
+                    <tr>
+                      <td>Customer names, phones and addresses</td>
+                      <td>While you need them, or until you ask us to erase them</td>
+                      <td>Encrypted separately from the books throughout.</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <p>
+                Nothing on this schedule is deleted without warning: you get at least{' '}
+                {RETENTION.noticeDays} days&apos; notice on the number and email we have for you.
+              </p>
+              <p>
+                If you stop paying, your account becomes read-only rather than closed. You can open
+                the dashboard, read your books and export them, for as long as this schedule keeps
+                them.
               </p>
               <p>
                 This is the honest carve-out: if you ask us to delete everything, we delete
