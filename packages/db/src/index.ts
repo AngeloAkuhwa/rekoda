@@ -13,6 +13,7 @@ export * as paymentsHub from './repos/payments-hub.js';
 export * as reportsRepo from './repos/reports.js';
 export * as settleRepo from './repos/settle.js';
 export * as stockRepo from './repos/stock.js';
+export * as subscriptionsRepo from './repos/subscriptions.js';
 export * as spendRepo from './repos/spend.js';
 export * as usageRepo from './repos/usage.js';
 export { applyMigrations } from './migrate.js';

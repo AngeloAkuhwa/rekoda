@@ -10,6 +10,7 @@ import {
   integer,
   jsonb,
   pgTable,
+  smallint,
   text,
   timestamp,
   uniqueIndex,
@@ -55,8 +56,20 @@ export const businesses = pgTable(
       .notNull()
       .references(() => users.id),
     plan: text('plan').notNull().default('trial'), // trial | chat | integrate | complete
+    /**
+     * When the current plan period ends: a hard stop on a trial, the renewal
+     * date on a paid plan (ADR 0024). One column, one meaning.
+     */
     planExpiresAt: timestamp('plan_expires_at', { withTimezone: true }),
     trialStartedAt: timestamp('trial_started_at', { withTimezone: true }).notNull().defaultNow(),
+    /** Start of the current paid cycle. The denominator when prorating. */
+    cycleStartedAt: timestamp('cycle_started_at', { withTimezone: true }),
+    /** The day of the month renewals anchor to, so short months do not drift. */
+    renewalAnchorDay: smallint('renewal_anchor_day'),
+    /** Set when a renewal charge fails; the seven-day grace clock starts here. */
+    paymentFailedAt: timestamp('payment_failed_at', { withTimezone: true }),
+    /** A downgrade waiting for the next renewal. Null renews onto the same plan. */
+    pendingPlan: text('pending_plan'),
     settings: jsonb('settings')
       .notNull()
       .default(sql`'{}'::jsonb`),
