@@ -47,6 +47,7 @@ import { openPayload } from '../privacy/payload-vault.js';
 import { redactForLog } from '@rekoda/core/privacy';
 import { describeFailure, type JobContext, type JobHandler } from './runner.js';
 import type { SpeechToText, Transcript } from '../ai/stt.js';
+import type { TextExtraction } from '../ai/ocr.js';
 import type { MessageSender } from '../channels/sender.js';
 
 const paymentLog = new Logger('InboundMessageJob');
@@ -61,6 +62,12 @@ export interface InboundMessageDeps {
   sender: MessageSender;
   /** The AfriSpeech sidecar (ADR 0008), or something that refuses honestly. */
   stt: SpeechToText;
+  /**
+   * The self-hosted OCR sidecar (ADR 0024), or something that refuses
+   * honestly. Never a vision model: see `ocr.ts` for why there is no such
+   * option and must not be one.
+   */
+  ocr: TextExtraction;
   /** The app pool, for the rows that live ABOVE tenancy: users' consent state. */
   db: Db;
 }
@@ -129,11 +136,18 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
      * two would drift until one of them lost a conversation gate.
      */
     let spoken: { transcript: Transcript; messageId: string } | null = null;
+    let read: { text: string; messageId: string } | null = null;
     if (isVoiceNote(inbound)) {
       spoken = await transcribeVoiceNote(deps, tx, businessId, inbound, log);
       if (!spoken) {
         /* Already answered inside, and already marked new-or-not. Nothing to
          * interpret and nothing to charge for. */
+        await events.markProcessed(tx, eventId, null, businessId);
+        return;
+      }
+    } else if (isReceiptPhoto(inbound)) {
+      read = await readReceiptPhoto(deps, tx, businessId, inbound, log);
+      if (!read) {
         await events.markProcessed(tx, eventId, null, businessId);
         return;
       }
@@ -156,7 +170,7 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
       return;
     }
 
-    const text = spoken?.transcript.text ?? inbound.text ?? '';
+    const text = spoken?.transcript.text ?? read?.text ?? inbound.text ?? '';
     const route = routeMessage(text);
     const tokenised =
       route.route === 'deterministic' ? null : await deps.gateway.tokenise(businessId, text);
@@ -172,19 +186,21 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
     /**
      * ONE row per inbound message, whichever way it arrived.
      *
-     * A voice note was already claimed by `transcribeVoiceNote` — that claim
-     * is what stops a redelivered webhook transcribing and metering twice —
-     * so recording again here would hit `messages_provider_ux`, come back
-     * `isNew: false`, and silently return without answering the merchant.
-     * The body is filled in now that there is a transcript to store.
+     * A voice note was already claimed by `transcribeVoiceNote`, and a
+     * photograph by `readReceiptPhoto` — that claim is what stops a
+     * redelivered webhook doing the work and metering twice — so recording
+     * again here would hit `messages_provider_ux`, come back `isNew: false`,
+     * and silently return without answering the merchant. The body is filled
+     * in now that there is something to store.
      */
-    const message = spoken
+    const claimed = spoken?.messageId ?? read?.messageId ?? null;
+    const message = claimed
       ? {
-          id: spoken.messageId,
+          id: claimed,
           isNew: await conversationsRepo.setInboundBody(
             tx,
             businessId,
-            spoken.messageId,
+            claimed,
             route.route === 'deterministic' ? describeIntent(route.intent) : tokenised!.text,
           ),
         }
@@ -234,6 +250,107 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
 /** A recording somebody made with the microphone button, not an attached file. */
 function isVoiceNote(inbound: { messageType: string; audioId: string | null }): boolean {
   return (inbound.messageType === 'audio' || inbound.messageType === 'voice') && !!inbound.audioId;
+}
+
+/** A photograph, which for a bookkeeper means a receipt or an invoice. */
+function isReceiptPhoto(inbound: { messageType: string; imageId: string | null }): boolean {
+  return inbound.messageType === 'image' && !!inbound.imageId;
+}
+
+/**
+ * A photograph, turned into text by our own OCR, or an honest answer.
+ *
+ * Returns null when there is nothing to interpret, having already replied:
+ * somebody who photographed a receipt is holding their phone waiting.
+ *
+ * THE IMAGE IS NEVER STORED and never leaves infrastructure we control. ADR
+ * 0024 fixed the pipeline - photo, self-hosted OCR, PII tokenisation, then a
+ * model - because the privacy gateway tokenises TEXT and cannot tokenise an
+ * image. A photograph handed to a model provider carries a customer's name,
+ * phone and address intact.
+ *
+ * There is no branch below that sends the image anywhere when extraction
+ * fails. That is the whole design, and it is why the failure path answers
+ * with a sentence rather than a second attempt somewhere else.
+ */
+async function readReceiptPhoto(
+  deps: InboundMessageDeps,
+  tx: TenantDb,
+  businessId: string,
+  inbound: { externalId: string; from: string; imageId: string | null; caption: string | null },
+  log: Logger,
+): Promise<{ text: string; messageId: string } | null> {
+  const recorded = await conversationsRepo.recordInbound(tx, {
+    businessId,
+    channel: 'meta',
+    kind: 'media',
+    body: '[receipt photo]',
+    providerMessageId: inbound.externalId,
+  });
+  /* A redelivered webhook must not read, meter and answer twice. */
+  if (!recorded.isNew) return null;
+
+  const plan = await usageRepo.planFor(tx, businessId);
+  if (plan === 'expired') {
+    await deps.replySender.send(tx, { businessId, to: inbound.from, reply: replies.trialEnded() });
+    return null;
+  }
+
+  let image;
+  try {
+    image = await deps.sender.fetchMedia(inbound.imageId!);
+  } catch {
+    log.warn('could not fetch a photograph from the provider');
+    await deps.replySender.send(tx, {
+      businessId,
+      to: inbound.from,
+      reply: replies.photoUnavailable(),
+    });
+    return null;
+  }
+
+  let extracted;
+  try {
+    extracted = await deps.ocr.extract(image.bytes, image.mimeType);
+  } catch {
+    /* Our failure, not the merchant's, and nothing metered. The image is
+     * dropped here and goes nowhere else: no vision model, no retry against a
+     * hosted engine, no exception "just this once". */
+    log.warn('the OCR engine could not be reached');
+    await deps.replySender.send(tx, {
+      businessId,
+      to: inbound.from,
+      reply: replies.photoUnavailable(),
+    });
+    return null;
+  }
+
+  /**
+   * Metered as a document UNDERSTOOD, which is the unit that exists for
+   * exactly this and has never been consumed by anything. Charged after the
+   * work, like voice seconds, because a page nobody could read is a page
+   * nobody should pay for.
+   */
+  const period = usagePeriod(new Date());
+  const allowance = allowanceFor(plan, 'documents_understood');
+  const granted = await withBusiness(deps.db, businessId, (own) =>
+    usageRepo.consumeUnit(own, businessId, period, 'documents_understood', allowance),
+  );
+  if (!granted) {
+    await deps.replySender.send(tx, {
+      businessId,
+      to: inbound.from,
+      reply: replies.allowanceExhausted(allowance, 'documents_understood'),
+    });
+    return null;
+  }
+
+  /* The caption is what the merchant TYPED, and it says what the photograph
+   * is for. Kept in front of the extracted text so "this is my fuel receipt"
+   * reaches the interpreter as the instruction it is. */
+  const caption = inbound.caption?.trim();
+  const text = caption ? `${caption}\n${extracted.text}` : extracted.text;
+  return { text, messageId: recorded.id };
 }
 
 /**

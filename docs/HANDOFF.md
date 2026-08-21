@@ -6,8 +6,9 @@ points to. Keep it updated at the end of every working session — it is the
 project's memory, and it lives in the repo so it can never be lost with a
 chat.
 
-**Last updated:** 20 August 2026 · M2 chat and dashboard feature complete
-(through PR #51). Not launched: see "What is still missing" below.
+**Last updated:** 21 August 2026 · M4 self-service billing built end to end
+(through PR #74). Not launched: see "What is still missing" below, which is
+now four deployments and a set of company facts rather than code.
 
 ---
 
@@ -162,35 +163,55 @@ real database in CI:
   Revenue is the plan price only, because add-on packs are priced in
   `docs/pricing-model.md` and recorded in no table yet.
 
-**What is still missing before merchants.** In rough order:
+**M4 is built (PRs #68 to #71).** ADR 0024 records the commercial terms
+Angelo decided; `@rekoda/core/billing` implements the arithmetic, migration
+0020 stores the cycle and every charge Rekoda makes, `/v1/billing` and
+`/app/billing` are the merchant's surface, and the grace sweep runs the seven
+days after a card fails: reminders on days 1 and 5, then read-only with the
+books intact. The plan never moves on a merchant's say-so alone, only when a
+provider confirms, and §47 refuses a paid change BEFORE opening a charge so
+lifting the gate leaves nothing to reconcile.
 
-1. **A Meta-approved authentication template.** Sign-in codes go out as a
-   template (`META_OTP_TEMPLATE`); without an approved one on the WABA, nobody
-   can sign in. The API refuses to boot in production if the token is set and
-   the template is not, so this fails loudly rather than silently.
-2. **Credentials.** Meta WABA, Paystack test keys, and the four secrets
+**The retention schedule is published AND enforced (PRs #72, #73).**
+`/privacy#retention` states maximums; `apps/api/src/privacy/retention-sweep.ts`
+keeps them. Anyone who ever completed a subscription charge is excluded from
+both stages. The deletion is a `SECURITY DEFINER` function the worker may
+execute and nothing else: the capability is "delete a business the schedule
+says is due", not "delete a business". `/refunds` publishes the matrix.
+
+**Receipt OCR is built behind a port (PR #74).** Photo, self-hosted OCR, PII
+tokenisation, then the model, with NO raw-image fallback: a failed extraction
+answers the merchant and reaches no model at all, and a test asserts that
+rather than a comment claiming it.
+
+**What is still missing before merchants.** Almost none of it is code:
+
+1. **Three Meta-approved templates.** Authentication for sign-in codes
+   (`META_OTP_TEMPLATE`), and two Utility templates: the grace reminder
+   (`META_BILLING_TEMPLATE`) and the retention warning
+   (`META_RETENTION_TEMPLATE`). Each has two body parameters and each fails
+   in the safe direction while unset. The retention one has teeth: no
+   template means no warnings means no deletions, so the published schedule
+   is not actually being kept until it is approved.
+2. **Two sidecars to deploy.** `STT_URL` for AfriSpeech transcription (ADR 0008) and `OCR_URL` for receipt text (ADR 0024). Both are promises the
+   privacy pages make out loud, both refuse honestly while unset, and NEITHER
+   may be pointed at a hosted provider without changing the page first.
+3. **Credentials.** Meta WABA, Paystack test keys, and the four secrets
    (`REKODA_API_SECRET`, `REKODA_OPERATOR_SECRET`, `VAULT_KEY`, `MATCH_KEY`).
    Paystack stays in test mode until written confirmation (spec §47).
-3. **The remaining legal pages** — messaging policy, refund policy, contact.
-   These need real business facts (address, support address, refund terms) and
-   must not be invented.
-4. **M4, self-service billing.** The one thing between a working product and
-   a paying one, and it is NOT blocked on code. It is blocked on commercial
-   terms nobody should invent: what happens when a merchant downgrades
-   mid-month or cancels on day three (proration and refunds), and how many
-   days a failed payment gets before access stops. The refund half is the
-   same fact the `/refund` page needs, so item 3 and this one unblock
-   together. `usage_events`, the plan endpoint, the Paystack adapter and the
-   margin view are all built and waiting for it.
-5. **Receipt-photo OCR** — a product decision, not a build. The privacy
-   gateway tokenises TEXT; it cannot tokenise an image, so reading a photo of
-   a receipt would send a customer's details to the model provider intact.
-   That contradicts the standing rule that PII is tokenised before the model,
-   and the rule should not be bent without somebody deciding to bend it.
-6. **M5 Integrate** — catalogue orders and their reconciliation. Partly
-   superseded by ADR 0018 and needs re-specifying before anybody builds it;
-   the `orders` allowance and the `orders`/`order_items` tables exist and are
-   written by nothing.
+4. **Company facts for the legal pages.** Registered entity, address and
+   support address. `/terms`, `/refunds` and `/privacy` render a visible "not
+   set yet" badge wherever one is missing, so nothing can go live naming the
+   wrong body, but they mean little until the facts are real.
+5. **The voice benchmark** (ADR 0024, C11). 30 to 50 real Nigerian voice
+   notes spanning male and female voices, Lagos and non-Lagos accents, noisy
+   shops, code-switching and spoken amounts. The metric is whether the
+   financial instruction came out right, not word accuracy.
+6. **M5 Integrate** — deferred from launch by ADR 0024 and to be re-specified
+   against real merchant usage. When it resumes, the priority is ingesting
+   and reconciling EXTERNAL orders rather than building a native catalogue:
+   the product is a bookkeeper, and turning it into commerce software before
+   the bookkeeping is validated would blur what it is.
 
 ## 4. Operational facts a new session must know
 
@@ -254,15 +275,21 @@ real database in CI:
 
 ## 6. Open items owned by Angelo
 
-- **Get an authentication template approved on the WABA** and set
-  `META_OTP_TEMPLATE`. Nobody can sign in until this exists.
-- **Written confirmation before Paystack goes live** (spec §47). Until then
-  the platform stays in test mode.
-- **The three legal pages** — messaging policy, refund policy, contact. These
-  need real business facts and must not be written from guesses.
+- **Three WhatsApp templates approved on the WABA.** Authentication for
+  sign-in (`META_OTP_TEMPLATE`) — nobody can sign in until this exists — and
+  two Utility templates, `META_BILLING_TEMPLATE` (days of grace left, date
+  grace ends) and `META_RETENTION_TEMPLATE` (days until deletion, date).
+- **Deploy the two sidecars**, `STT_URL` and `OCR_URL`. Both are marketing
+  claims until they exist, and neither may be swapped for a hosted provider
+  without the privacy page changing first.
+- **Written confirmation before Paystack goes live** (spec §47), after live
+  account verification, secured credentials, confirmed webhook verification,
+  the published refund policy, and one controlled live transaction.
+- **The company facts** — registered entity, address, support address — for
+  `/terms`, `/refunds` and `/privacy`.
+- **30 to 50 Nigerian voice notes** for the accent benchmark (ADR 0024, C11).
 - Revoke the two burned PATs.
-- Secure `rekoda.app` (and ideally `rekoda.ng`) — needed before M1 ships
-  pages with canonical URLs.
+- Secure `rekoda.app` (and ideally `rekoda.ng`).
 - Decide VoiceReceipt's fate for current testers (recommendation: keep it
   running, migrate testers at M3).
 - CAC name alignment for the eventual Meta business verification (legal
@@ -276,6 +303,9 @@ real database in CI:
   `usage_events` telemetry.
 - **M3 accent benchmark** — self-hosted STT vs provider baseline gates the
   "audio never leaves Rekoda" marketing claim (ADR 0005).
+- **The first abandoned trial reaching 90 days** — the retention sweep must
+  have a working `META_RETENTION_TEMPLATE` by then, or the schedule
+  `/privacy` publishes stops being kept (ADR 0024).
 
 ---
 

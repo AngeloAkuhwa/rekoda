@@ -6,6 +6,8 @@ import { Interpreter } from './interpreter.service.js';
 import { MODEL_TRANSPORT, ProviderUnreachable, type ModelTransport } from './transport.js';
 import { assertModelIsPriced, registerRuntimeModelPrices } from './model-prices.js';
 import { SPEECH_TO_TEXT, type SpeechToText } from './stt.js';
+import { TEXT_EXTRACTION, type TextExtraction } from './ocr.js';
+import { HttpTextExtraction, NoTextExtractionConfigured } from './ocr.http.js';
 import { HttpSpeechToText, NoSpeechToTextConfigured } from './stt.http.js';
 
 // Re-exported for convenience; the token itself is defined in transport.ts so
@@ -79,8 +81,24 @@ class NoTransportConfigured implements ModelTransport {
       useFactory: (config: ApiConfig): SpeechToText =>
         config.sttUrl ? new HttpSpeechToText(config.sttUrl) : new NoSpeechToTextConfigured(),
     },
+    /**
+     * The OCR engine, and WHERE it points is the privacy boundary itself.
+     *
+     * ADR 0024 decided the pipeline: photo, then self-hosted OCR, then the
+     * PII gateway, then a model. Without `OCR_URL` a photograph is answered
+     * honestly and goes nowhere. There is deliberately NO branch here that
+     * sends the image to a vision model instead: a boundary with a fallback
+     * is not a boundary, and this factory is where such a fallback would be
+     * written.
+     */
+    {
+      provide: TEXT_EXTRACTION,
+      inject: [CONFIG],
+      useFactory: (config: ApiConfig): TextExtraction =>
+        config.ocrUrl ? new HttpTextExtraction(config.ocrUrl) : new NoTextExtractionConfigured(),
+    },
     Interpreter,
   ],
-  exports: [Interpreter, MODEL_TRANSPORT, SPEECH_TO_TEXT],
+  exports: [Interpreter, MODEL_TRANSPORT, SPEECH_TO_TEXT, TEXT_EXTRACTION],
 })
 export class AiModule {}

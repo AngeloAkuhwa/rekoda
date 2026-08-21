@@ -105,6 +105,16 @@ export interface ApiConfig {
    * it names our own machine.
    */
   sttUrl: string | null;
+  /**
+   * The self-hosted OCR sidecar (ADR 0024, C9).
+   *
+   * Null means photographs of receipts are answered honestly and read by
+   * nobody. It must NEVER mean "send the image to a vision model instead":
+   * the gateway tokenises text and cannot tokenise an image, so that
+   * fallback would put a customer's name and address in front of a third
+   * party intact.
+   */
+  ocrUrl: string | null;
   /** Daily ceilings. The thing on the other side of these is a bill. */
   aiCallsPerBusinessPerDay: number;
   aiCallsGlobalPerDay: number;
@@ -438,6 +448,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     aiBaseUrl: env['AI_BASE_URL'] || null,
     aiModelPrices: env['AI_MODEL_PRICES'] || null,
     sttUrl: env['STT_URL'] || null,
+    ocrUrl: env['OCR_URL'] || null,
     /**
      * Defaults are a ceiling, not a target. At ~₦8 a call (pricing-model.md),
      * 60 per merchant is about ₦480 a day against a subscription, and 5,000
