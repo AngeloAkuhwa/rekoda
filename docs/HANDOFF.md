@@ -244,7 +244,16 @@ inherits the triage instead of repeating it:
   merchant cannot read back what they told Rekoda, only what it recorded.
 - **Ops visibility gaps**: `jobsForBusiness`, `callsToday`, `usageTotals`,
   `unprocessedEvents`. The exception queue that the Paystack pump's comments
-  describe is still only readable as a count.
+  describe is still only readable as a count. Read `ops.controller.ts` before
+  building rows: it is deliberately numbers and not rows, because a
+  cross-tenant console is exactly where a cross-tenant read stops being a
+  question and becomes a feature. Turning the count into a work list is a
+  decision to take on purpose, not a gap to fill.
+- **These read-backs are not dead code.** Every function in the two entries
+  above is called by the integration suites as a read-back, which is a real
+  and intended role - `expensesFor` was one until `spendFor` gave the
+  dashboard its own query and left it where it was. The no-caller sweep means
+  "no PRODUCTION caller"; check the tests before deleting anything it names.
 - **`addIdentityFacet` remains uncalled**, and deliberately. PR #77 joins two
   customer records by UPDATE-ing the facet's `customer_id` rather than
   inserting a new facet, so the vault is never opened by a merge. The
