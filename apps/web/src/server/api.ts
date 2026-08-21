@@ -26,6 +26,7 @@ import {
   catalogueResponse,
   createRecurringResponse,
   openingBalancesResponse,
+  stockCountResponse,
   publicShopIndexResponse,
   publicShopResponse,
   saveShopResponse,
@@ -44,6 +45,8 @@ import {
   type CatalogueResponse,
   type CreateRecurringRequest,
   type OpeningBalancesRequest,
+  type StockCountRequest,
+  type StockCountResponse,
   type OpeningBalancesResponse,
   type PublicShopIndexResponse,
   type PublicShopResponse,
@@ -607,6 +610,27 @@ export async function openBooks(
     expect: [200, 400],
   });
   return status === 200 ? openingBalancesResponse.parse(json) : null;
+}
+
+/**
+ * Act on a count of the shelf.
+ *
+ * Carries the day and nothing else, on purpose. The count and the ledger
+ * balance are read on the server inside the transaction that writes the
+ * entry, so a page left open for an hour cannot post an hour-old figure.
+ */
+export async function countStock(
+  sessionToken: string,
+  body: StockCountRequest,
+): Promise<StockCountResponse | null> {
+  const { status, json } = await call({
+    method: 'POST',
+    path: '/v1/reports/stock-count',
+    body,
+    headers: { authorization: `Bearer ${sessionToken}` },
+    expect: [200, 400],
+  });
+  return status === 200 ? stockCountResponse.parse(json) : null;
 }
 
 /** The merchant's own shop settings. */

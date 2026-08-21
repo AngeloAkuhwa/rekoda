@@ -313,6 +313,40 @@ export function postCreditNote(args: { memo: string; amountK: Kobo; vatK?: Kobo 
 }
 
 /**
+ * Bringing the inventory account to what was actually counted.
+ *
+ * The books and the shelf drift apart for a reason nothing else can fix. A
+ * purchase described in prose ("restocked the shop, 50k") debits INVENTORY
+ * and nothing ever credits it, because there is no product for a cost to
+ * attach to; a product with no cost sells and takes nothing off the account.
+ * Both leave the balance sheet saying the business owns more than it does,
+ * and neither is a bug in a write path: they are what happens when a shop
+ * tells its books less than it knows.
+ *
+ * So the instrument is the one an accountant already uses: count the shelf,
+ * value it, and put the difference through cost of sales. A shortfall is
+ * cost that was incurred and never recorded, which is exactly what COGS is
+ * for. A surplus is that same account being given back what it was
+ * overcharged.
+ *
+ * `differenceK` is counted value LESS what the account says. Negative is the
+ * ordinary case and the one the drift produces.
+ */
+export function postStockCount(args: { memo: string; differenceK: number }): Posting {
+  if (args.differenceK === 0) throw new RangeError('a count that agrees needs no entry');
+  const amountK = Math.abs(args.differenceK);
+  const short = args.differenceK < 0;
+  const posting: Posting = {
+    memo: args.memo,
+    lines: short
+      ? [line('COGS', amountK, 0), line('INVENTORY', 0, amountK)]
+      : [line('INVENTORY', amountK, 0), line('COGS', 0, amountK)],
+  };
+  assertBalanced(posting);
+  return posting;
+}
+
+/**
  * What the goods a sale took off the shelf cost.
  *
  * A SECOND posting, written alongside the sale rather than folded into it,

@@ -18,6 +18,7 @@ export * as reportsRepo from './repos/reports.js';
 export * as retentionRepo from './repos/retention.js';
 export * as settleRepo from './repos/settle.js';
 export * as stockRepo from './repos/stock.js';
+export * as stocktakeRepo from './repos/stocktake.js';
 export * as subscriptionsRepo from './repos/subscriptions.js';
 export * as shopsRepo from './repos/shops.js';
 export * as spendRepo from './repos/spend.js';

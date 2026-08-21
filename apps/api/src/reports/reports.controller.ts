@@ -77,6 +77,7 @@ import type {
   ReportsStockResponse,
   CreateRecurringResponse,
   OpeningBalancesResponse,
+  StockCountResponse,
   CreditInvoiceResponse,
   ReportsStatementsResponse,
   StopRecurringResponse,
@@ -86,6 +87,7 @@ import type {
 import {
   createRecurringRequest,
   openingBalancesRequest,
+  stockCountRequest,
   creditInvoiceRequest,
   stopRecurringRequest,
   voidExpenseRequest,
@@ -96,6 +98,7 @@ import {
   issueRepo,
   ordersRepo,
   openingRepo,
+  stocktakeRepo,
   recurringRepo,
   reportsRepo,
   spendRepo,
@@ -192,12 +195,13 @@ export class ReportsController {
      * column is what every accounting package puts beside a profit and loss,
      * and a merchant reading this page always wants it: gating it behind a
      * flag would mean a second round trip for the thing they came for. */
-    const [sums, priorSums, schedule, revenue, opening] = await Promise.all([
+    const [sums, priorSums, schedule, revenue, opening, stockValuation] = await Promise.all([
       this.sumsFor(businessId, period),
       this.sumsFor(businessId, before),
       this.expenseScheduleFor(businessId, period),
       this.revenueScheduleFor(businessId, period),
       withBusiness(this.db, businessId, (tx) => openingRepo.openingBalancesFor(tx, businessId)),
+      withBusiness(this.db, businessId, (tx) => stocktakeRepo.stockValuationFor(tx, businessId)),
     ]);
 
     const prior = buildProfitAndLoss(priorSums);
@@ -207,6 +211,7 @@ export class ReportsController {
       expenseSchedule: schedule,
       revenueSchedule: revenue,
       openingBalances: opening,
+      stockValuation,
       comparison: {
         period: before,
         totalIncomeK: prior.totalIncomeK,
@@ -654,6 +659,54 @@ export class ReportsController {
       }
       throw error;
     }
+  }
+
+  /**
+   * Count the shelf, and settle the difference.
+   *
+   * The instrument for the one drift the books cannot correct on their own.
+   * Stock bought in prose — "restocked, 50k" — debits INVENTORY against no
+   * product, and nothing credits it back when those goods sell, because cost
+   * of sale only reaches the ledger through a product carrying a cost. So the
+   * figure climbs and never comes down.
+   *
+   * Nothing here is computed from what the browser sent. The request carries
+   * a day; the count and the ledger balance are both read inside the writing
+   * transaction, because an adjustment derived from a figure rendered minutes
+   * ago is the same quiet misstatement in a new place.
+   *
+   * Refused outright while any product holds stock with no cost recorded. The
+   * count would be short by an unknown amount, and posting it would write off
+   * goods the business still has.
+   */
+  @Post('stock-count')
+  @HttpCode(200)
+  async countStock(
+    @Req() request: AuthedRequest,
+    @Body() body: unknown,
+  ): Promise<StockCountResponse> {
+    const parsed = stockCountRequest.safeParse(body);
+    if (!parsed.success) throw new BadRequestException('the day you counted');
+    const { countedOn } = parsed.data;
+    /* A count dated tomorrow has not happened. */
+    if (countedOn > lagosDay(new Date())) return { outcome: 'not_yet' };
+
+    const businessId = request.auth!.businessId;
+    const result = await withBusiness(this.db, businessId, (tx) =>
+      stocktakeRepo.recordStockCount(tx, {
+        businessId,
+        countedOn,
+        actor: `user:${request.auth!.userId}`,
+      }),
+    );
+    if (result.outcome === 'adjusted') {
+      return {
+        outcome: 'adjusted',
+        differenceK: result.differenceK,
+        countedK: result.countedK,
+      };
+    }
+    return result;
   }
 
   /**

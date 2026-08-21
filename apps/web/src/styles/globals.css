@@ -1447,6 +1447,27 @@ button,
   color: var(--rk-accent);
 }
 
+/* The shelf against the books. Set apart from the balance sheet above it by
+   a rule rather than by a card of its own: it is a reading OF the stock line,
+   and a separate card would read as a separate asset. */
+.rk-stocktake {
+  margin-top: var(--rk-space-4);
+  border-top: 1px solid var(--rk-border);
+  padding-top: var(--rk-space-3);
+}
+.rk-substack {
+  margin: 0 0 var(--rk-space-2);
+  font-family: var(--rk-font-body);
+  font-size: var(--rk-text-xs);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-weight: 600;
+  color: var(--rk-text-muted);
+}
+.rk-stocktake form {
+  margin-top: var(--rk-space-3);
+}
+
 /* ── the hosted shop (Door 1) ──────────────────────────────────────────────
    A public page, so it shares the site's type and colour and nothing else:
    the dashboard's density is right for somebody reading their own books and
