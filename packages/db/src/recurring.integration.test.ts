@@ -67,7 +67,10 @@ describe('a schedule', () => {
     );
     expect(row).toMatchObject({
       description: 'Shop rent',
-      category: 'Rent',
+      /* 'Rent' as the merchant capitalised it, folded to the key the
+       * statements group by, so the schedule names its entries' category
+       * rather than a near-miss of it. */
+      category: 'rent',
       amountK: 15_000_000,
       method: 'transfer',
       anchorDay: 1,

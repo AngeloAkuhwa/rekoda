@@ -5,6 +5,7 @@ import {
   statementSheets,
   type StatementDocument,
 } from './statement-layout.js';
+import { xlsxNaira } from './xlsx.js';
 import type { LayoutBlock } from './invoice-layout.js';
 import type { BalanceSheet, CashflowStatement, ProfitAndLoss, TrialBalance } from './statements.js';
 
@@ -55,6 +56,15 @@ const TRIAL: TrialBalance = {
   balanced: true,
 };
 
+/** Two lines that sum to the operating expenses line in PROFIT. */
+const SCHEDULE = {
+  lines: [
+    { label: 'Rent', amountK: K(9_000) },
+    { label: 'Power and fuel', amountK: K(3_000) },
+  ],
+  totalK: K(12_000),
+};
+
 function doc(overrides: Partial<StatementDocument> = {}): StatementDocument {
   return {
     businessName: 'Mama Chidi Stores',
@@ -64,6 +74,7 @@ function doc(overrides: Partial<StatementDocument> = {}): StatementDocument {
     balanceSheet: SHEET,
     cashflow: CASHFLOW,
     trialBalance: TRIAL,
+    expenseSchedule: SCHEDULE,
     ...overrides,
   };
 }
@@ -149,6 +160,28 @@ describe('what the statements document says', () => {
     expect(rendered).toContain('DO NOT agree');
     expect(rendered).toContain('provisional');
     expect(rendered).not.toContain('Debits and credits agree');
+  });
+
+  /**
+   * The schedule that makes "Operating Expenses ₦120,000" answerable. Its
+   * heading has to say operating, because the total above it includes cost of
+   * goods sold and a reader who adds the two double-counts the month.
+   */
+  it('breaks operating expenses out, after the statement rather than inside it', () => {
+    const blocks = layoutStatements(doc());
+    const rendered = text(blocks);
+    expect(rendered).toContain('Operating expenses in detail');
+    expect(rendered).toContain('Power and fuel');
+    expect(find(blocks, 'Total operating expenses')?.value).toBe('\u20a612,000');
+
+    const at = (label: string) => blocks.findIndex((b) => b.text === label);
+    expect(at('Operating expenses in detail')).toBeGreaterThan(at('Net profit'));
+    expect(at('Operating expenses in detail')).toBeLessThan(at('Balance sheet'));
+  });
+
+  it('prints no schedule for a month with nothing to break down', () => {
+    const blocks = layoutStatements(doc({ expenseSchedule: { lines: [], totalK: 0 } }));
+    expect(text(blocks)).not.toContain('Operating expenses in detail');
   });
 
   it('carries the ADR 0014 caveat and E&OE in the footnote', () => {
@@ -241,6 +274,19 @@ describe('the statements as a workbook', () => {
     );
     const flat = JSON.stringify(unbalanced);
     expect(flat).toContain('DO NOT agree');
+  });
+
+  /* Below the net profit, because somebody will select the column and sum it
+   * and a breakdown inside the statement would be counted twice. */
+  it('puts the expense schedule under the profit and loss sheet', () => {
+    const rows = sheets()[0]!.rows.map((r) => String(r[0]));
+    expect(rows).toContain('Operating expenses in detail');
+    expect(rows.indexOf('Operating expenses in detail')).toBeGreaterThan(
+      rows.indexOf('Net profit'),
+    );
+    expect(sheets()[0]!.rows.find((r) => r[0] === 'Total operating expenses')?.[1]).toEqual(
+      xlsxNaira(K(12_000)),
+    );
   });
 
   it('says the books agree when they do', () => {

@@ -49,6 +49,9 @@ import {
   daysOverdue,
   buildXlsx,
   describeActor,
+  EXPENSE_CATEGORY_LABELS,
+  isExpenseCategory,
+  STOCK_CATEGORY,
   describeAuditEvent,
   isAccountKey,
   lagosDay,
@@ -184,15 +187,17 @@ export class ReportsController {
      * column is what every accounting package puts beside a profit and loss,
      * and a merchant reading this page always wants it: gating it behind a
      * flag would mean a second round trip for the thing they came for. */
-    const [sums, priorSums] = await Promise.all([
+    const [sums, priorSums, schedule] = await Promise.all([
       this.sumsFor(businessId, period),
       this.sumsFor(businessId, before),
+      this.expenseScheduleFor(businessId, period),
     ]);
 
     const prior = buildProfitAndLoss(priorSums);
     return {
       period,
       ...buildAll(sums),
+      expenseSchedule: schedule,
       comparison: {
         period: before,
         totalIncomeK: prior.totalIncomeK,
@@ -226,7 +231,10 @@ export class ReportsController {
   ): Promise<void> {
     const period = requirePeriod(periodParam);
     const auth = request.auth!;
-    const sums = await this.sumsFor(auth.businessId, period);
+    const [sums, schedule] = await Promise.all([
+      this.sumsFor(auth.businessId, period),
+      this.expenseScheduleFor(auth.businessId, period),
+    ]);
 
     let pdf: Buffer;
     try {
@@ -235,6 +243,7 @@ export class ReportsController {
         period,
         generatedAt: new Date(),
         ...buildAll(sums),
+        expenseSchedule: schedule,
       });
     } catch (error) {
       /* The naira sign needs a font that carries it, and a deployment
@@ -269,13 +278,17 @@ export class ReportsController {
   ): Promise<void> {
     const period = requirePeriod(periodParam);
     const auth = request.auth!;
-    const sums = await this.sumsFor(auth.businessId, period);
+    const [sums, schedule] = await Promise.all([
+      this.sumsFor(auth.businessId, period),
+      this.expenseScheduleFor(auth.businessId, period),
+    ]);
 
     const book = buildXlsx(
       statementSheets({
         businessName: auth.businessName,
         period,
         generatedAt: new Date(),
+        expenseSchedule: schedule,
         ...buildAll(sums),
       }),
     );
@@ -285,6 +298,27 @@ export class ReportsController {
       .header('content-disposition', `attachment; filename="rekoda-statements-${period}.xlsx"`)
       .header('cache-control', 'no-store')
       .send(Buffer.from(book));
+  }
+
+  /**
+   * The operating expense breakdown, already labelled.
+   *
+   * Shared by the JSON, the PDF and the workbook so all three carry the same
+   * schedule: three call sites assembling it separately is how the file a
+   * merchant sends their bank stops agreeing with the page they read it on.
+   */
+  private async expenseScheduleFor(businessId: string, period: string) {
+    const schedule = await withBusiness(this.db, businessId, (tx) =>
+      reportsRepo.expenseScheduleFor(tx, businessId, period),
+    );
+    return {
+      lines: schedule.lines.map((line) => ({
+        category: line.category,
+        label: EXPENSE_CATEGORY_LABELS[line.category],
+        amountK: line.amountK,
+      })),
+      totalK: schedule.totalK,
+    };
   }
 
   /** Per-account sums for one month, with any account the chart does not know
@@ -645,7 +679,10 @@ export class ReportsController {
         /* The column that stops a spreadsheet totalling stock as cost. */
         r.kind === 'purchase' ? 'Stock purchase' : 'Expense',
         r.description,
-        r.category ?? '',
+        /* The label the statements print, not the key stored beside it. An
+         * accountant pivoting this against the profit and loss should be
+         * matching the same words in both, not learning our vocabulary. */
+        categoryLabel(r.category),
         r.method,
         /* How it reached the books. An accountant reconciling a month wants
          * to know which lines nobody typed. */
@@ -749,6 +786,19 @@ function sendCsv(reply: CsvReply, filename: string, csv: string): void {
      * holding it is a cross-tenant leak with a friendly name. */
     .header('cache-control', 'no-store')
     .send(csv);
+}
+
+/**
+ * An expense category as a statement names it.
+ *
+ * Blank rather than "Uncategorised" when there is none: a CSV cell is data
+ * somebody will group on, and a word invented here becomes a category in
+ * their pivot table that does not exist in ours.
+ */
+function categoryLabel(category: string | null): string {
+  if (category === null) return '';
+  if (category === STOCK_CATEGORY) return 'Stock';
+  return isExpenseCategory(category) ? EXPENSE_CATEGORY_LABELS[category] : category;
 }
 
 /** Roles in the words the team page already uses. */

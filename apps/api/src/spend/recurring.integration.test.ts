@@ -187,7 +187,9 @@ describe('setting one up', () => {
     const [schedule] = (await registerOf(auth)).recurring;
     expect(schedule).toMatchObject({
       description: 'Shop rent',
-      category: 'Rent',
+      /* Folded on the way in, so the schedule advertises the category its
+       * entries will actually carry onto the profit and loss. */
+      category: 'rent',
       amountK: 15_000_000,
       method: 'transfer',
       anchorDay: 1,
@@ -230,7 +232,7 @@ describe('the sweep', () => {
     expect(register.entries).toHaveLength(1);
     expect(register.entries[0]).toMatchObject({
       description: 'Shop rent',
-      category: 'Rent',
+      category: 'rent',
       amountK: 15_000_000,
       method: 'transfer',
       kind: 'expense',

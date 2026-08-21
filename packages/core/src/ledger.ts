@@ -17,7 +17,7 @@ import { assertKobo, type Kobo } from './money.js';
 
 export const ACCOUNTS = {
   CASH: { code: '1000', name: 'Cash on Hand', type: 'asset' },
-  BANK_PAYSTACK: { code: '1010', name: 'Bank — Paystack Settlements', type: 'asset' },
+  BANK_PAYSTACK: { code: '1010', name: 'Bank (Paystack)', type: 'asset' },
   ACCOUNTS_RECEIVABLE: { code: '1100', name: 'Accounts Receivable', type: 'asset' },
   INVENTORY: { code: '1200', name: 'Inventory', type: 'asset' },
   ACCOUNTS_PAYABLE: { code: '2000', name: 'Accounts Payable', type: 'liability' },
@@ -55,7 +55,7 @@ export class UnbalancedPostingError extends Error {
   constructor(memo: string, debitsK: Kobo, creditsK: Kobo) {
     super(
       `Posting "${memo}" does not balance: debits ${debitsK} ≠ credits ${creditsK} (kobo). ` +
-        'This is a bug in the calling code — postings must balance by construction.',
+        'This is a bug in the calling code: postings must balance by construction.',
     );
   }
 }

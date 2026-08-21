@@ -146,6 +146,27 @@ export const reportsStatementsResponse = z.object({
     closingK: z.number().int().finite(),
   }),
   /**
+   * Where the operating expenses went.
+   *
+   * The supporting schedule under the profit and loss statement's single
+   * "Operating Expenses" line. `totalK` equals that line, because both come
+   * from the same ledger movement rather than from two different tables.
+   *
+   * Carries the label as well as the key so the wire says what it means: the
+   * words on a statement are part of the statement, and a client deriving
+   * them from a key is a client that can disagree with the PDF.
+   */
+  expenseSchedule: z.object({
+    lines: z.array(
+      z.object({
+        category: z.string(),
+        label: z.string(),
+        amountK: z.number().int().finite(),
+      }),
+    ),
+    totalK: z.number().int().finite(),
+  }),
+  /**
    * The month before, for the column every accounting package puts beside a
    * profit and loss. "₦150,000 of sales" is a figure; "₦150,000, up from
    * ₦92,000" is the thing a merchant actually wanted to know.

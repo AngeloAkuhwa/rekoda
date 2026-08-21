@@ -1,5 +1,10 @@
 import type { Metadata } from 'next';
-import { formatKobo } from '@rekoda/core';
+import {
+  EXPENSE_CATEGORY_LABELS,
+  formatKobo,
+  isExpenseCategory,
+  STOCK_CATEGORY,
+} from '@rekoda/core';
 import { Money } from '@/components/ui/Money';
 import { reportsExpenses } from '@/server/api';
 import { requireSessionWithToken } from '@/server/guards';
@@ -146,7 +151,7 @@ export default async function ExpensesPage() {
                 {recurring.map((schedule) => (
                   <tr key={schedule.id}>
                     <td>{schedule.description}</td>
-                    <td>{schedule.category ?? 'Uncategorised'}</td>
+                    <td>{describeCategory(schedule.category)}</td>
                     <td>{ordinal(schedule.anchorDay)}</td>
                     <td>{schedule.method === 'transfer' ? 'Transfer' : 'Cash'}</td>
                     {/* A stopped schedule has no next entry, and a date beside
@@ -275,16 +280,21 @@ function SpendStat({ label, valueK, hint }: { label: string; valueK: number; hin
 }
 
 /**
- * The category as the merchant typed it, with one exception.
+ * The category, in the words the statements use.
  *
- * `stock` is Rekoda's own marker rather than anybody's word, and lowercase
- * beside categories a person capitalised reads as a bug. Everything else is
- * left exactly as it was said: correcting a merchant's spelling of their own
- * books is not this column's job.
+ * Reading the same label here as on the profit and loss is the point. Until
+ * these were a fixed set this column showed whatever the model wrote, so a
+ * merchant comparing their register against their own statement was reading
+ * "fuel" in one place and "Power and fuel" in the other and had no way to
+ * know they were the same money.
+ *
+ * `stock` is Rekoda's own marker rather than a category, and anything else
+ * unrecognised is a row written before the set existed.
  */
 function describeCategory(category: string | null): string {
   if (category === null) return 'Uncategorised';
-  return category === 'stock' ? 'Stock' : category;
+  if (category === STOCK_CATEGORY) return 'Stock';
+  return isExpenseCategory(category) ? EXPENSE_CATEGORY_LABELS[category] : category;
 }
 
 /**

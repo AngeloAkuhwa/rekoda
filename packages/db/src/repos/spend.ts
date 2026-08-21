@@ -20,6 +20,7 @@
  */
 import { and, eq, sql } from 'drizzle-orm';
 import {
+  categoriseExpense,
   isAccountKey,
   postExpense,
   postPurchase,
@@ -85,7 +86,7 @@ export async function recordExpense(
     posting,
     input.sourceType,
     input.sourceId,
-    input.recordedAt,
+    input.recordedAt ? { occurredAt: input.recordedAt } : {},
   );
 
   const rows = await tx
@@ -93,7 +94,14 @@ export async function recordExpense(
     .values({
       businessId: input.businessId,
       description: input.description,
-      category: input.category,
+      /* Folded here rather than at the caller so no write path can skip it:
+       * the category is what the profit and loss statement groups by, and a
+       * row that arrives with the model's own spelling becomes its own line
+       * in a statement that should have ten. */
+      category: categoriseExpense({
+        description: input.description,
+        category: input.category,
+      }),
       amountK: input.amountK,
       method: input.method,
       sourceType: input.sourceType,
@@ -403,6 +411,9 @@ export async function voidExpense(
     reversal(original, `Void ${label.toLowerCase()}: ${entry.description}`),
     entry.sourceType,
     entry.sourceId ?? entry.id,
+    /* What it undoes, so a report grouping the ledger can give this posting
+     * the category of the entry it cancels instead of stranding it. */
+    { reversesId: entry.ledgerTransactionId },
   );
 
   await tx.insert(auditEvents).values({

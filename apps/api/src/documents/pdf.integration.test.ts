@@ -156,6 +156,13 @@ describe('pagination', () => {
       totalCreditK: 2_600_000,
       balanced: true,
     },
+    expenseSchedule: {
+      lines: [
+        { label: 'Rent', amountK: 500_000 },
+        { label: 'Power and fuel', amountK: 300_000 },
+      ],
+      totalK: 800_000,
+    },
   };
 
   it('runs onto a second page and stops there', async () => {

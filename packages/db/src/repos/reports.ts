@@ -19,6 +19,7 @@
  * into one figure.
  */
 import { sql } from 'drizzle-orm';
+import { isExpenseCategory, type ExpenseCategory } from '@rekoda/core';
 import type { TenantDb } from '../client.js';
 
 /** Accounts whose movement IS "money in / money out" under the cash lens. */
@@ -410,6 +411,100 @@ export async function accountSumsFor(
     cumulativeCreditK: Number(r.cumulative_credit_k),
   }));
 }
+
+export interface ExpenseScheduleLine {
+  category: ExpenseCategory;
+  amountK: number;
+}
+
+export interface ExpenseSchedule {
+  lines: ExpenseScheduleLine[];
+  /** Equal to the lines summed, and to the EXPENSES movement for the period. */
+  totalK: number;
+}
+
+/**
+ * Where the operating expenses went, for one Lagos month.
+ *
+ * The supporting schedule an accountant expects under the single "Operating
+ * Expenses" line of a profit and loss statement. QuickBooks and HelloBooks
+ * both break that line out; a statement that does not is a total with no
+ * story, and a merchant cannot act on a total.
+ *
+ * ── the ledger is the authority, the register only supplies the label ──────
+ *
+ * The obvious query sums the `expenses` table by category. It is wrong in two
+ * ways that matter. Not every debit to EXPENSES has a row there: a payment
+ * provider's fee is deducted at settlement and posted straight to the ledger.
+ * And a void writes a MIRROR posting rather than deleting anything, so a cost
+ * recorded in September and withdrawn in October must stay in September and
+ * come off October, which a query over the register's current status cannot
+ * express.
+ *
+ * So this starts from the ledger movement and joins outwards for a name. Every
+ * kobo the statement shows is a kobo the ledger moved, by construction, and
+ * the schedule ties to the P&L line without anybody reconciling the two. A
+ * reversal takes the category of what it reverses, through `reverses_id`;
+ * movement with no register row at all is a charge deducted by a provider,
+ * which is what `fees` means.
+ */
+export async function expenseScheduleFor(
+  tx: TenantDb,
+  businessId: string,
+  period: string,
+): Promise<ExpenseSchedule> {
+  const rows = await tx.execute<{ category: string | null; amount_k: string }>(sql`
+    WITH bounds AS (
+      SELECT (${period} || '-01T00:00:00Z')::timestamptz - interval '1 hour' AS pstart,
+             ((${period} || '-01T00:00:00Z')::timestamptz - interval '1 hour')
+               + interval '1 month' AS pend
+    ),
+    movement AS (
+      SELECT e.transaction_id, SUM(e.debit_k - e.credit_k) AS amount_k
+      FROM ledger_entries e, bounds b
+      WHERE e.business_id = ${businessId}::uuid
+        AND e.account = 'EXPENSES'
+        AND e.created_at >= b.pstart AND e.created_at < b.pend
+      GROUP BY e.transaction_id
+    )
+    SELECT x.category AS category, SUM(m.amount_k)::bigint AS amount_k
+    FROM movement m
+    JOIN ledger_transactions t
+      ON t.id = m.transaction_id AND t.business_id = ${businessId}::uuid
+    LEFT JOIN expenses x
+      ON x.business_id = ${businessId}::uuid
+     AND x.ledger_transaction_id = COALESCE(t.reverses_id, t.id)
+    GROUP BY x.category
+  `);
+
+  /*
+   * Folded here rather than in the CASE this would otherwise need, so the
+   * category rules live in exactly one place. Anything the column holds that
+   * is not one of the ten - a row written before the set existed, a value
+   * some future import invents - lands in `other` rather than inventing an
+   * eleventh line, and a null means the ledger moved with no register row
+   * behind it, which is a provider's charge.
+   */
+  const totals = new Map<ExpenseCategory, number>();
+  for (const row of rows) {
+    const amountK = Number(row.amount_k);
+    if (amountK === 0) continue;
+    const category = row.category === null ? 'fees' : fold(row.category);
+    totals.set(category, (totals.get(category) ?? 0) + amountK);
+  }
+
+  const lines = [...totals]
+    .filter(([, amountK]) => amountK !== 0)
+    .map(([category, amountK]) => ({ category, amountK }))
+    /* Biggest first: a merchant reads this to find what is eating the month,
+     * and the answer should be the first line rather than somewhere in an
+     * alphabetical list. */
+    .sort((a, b) => b.amountK - a.amountK);
+
+  return { lines, totalK: lines.reduce((n, l) => n + l.amountK, 0) };
+}
+
+const fold = (raw: string): ExpenseCategory => (isExpenseCategory(raw) ? raw : 'other');
 
 export interface InvoiceListRow {
   invoiceNumber: string;

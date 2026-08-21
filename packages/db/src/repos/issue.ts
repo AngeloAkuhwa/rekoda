@@ -124,19 +124,31 @@ export async function writePosting(
   posting: Posting,
   sourceType: string,
   sourceId: string,
-  /**
-   * When the money moved, if that is not now.
-   *
-   * The statements period on `ledger_entries.created_at`, so a posting for a
-   * cost that fell due in September must SAY September or it lands in
-   * whichever month the writer happened to run. That is the difference
-   * between a catch-up and a misstatement: three months of rent stamped on
-   * one day would put a quarter's cost into one month's profit and loss.
-   * Both rows take it, because a transaction and its entries dated
-   * differently is a trial balance that reconciles on one date and not the
-   * other.
-   */
-  occurredAt?: Date,
+  opts: {
+    /**
+     * When the money moved, if that is not now.
+     *
+     * The statements period on `ledger_entries.created_at`, so a posting for
+     * a cost that fell due in September must SAY September or it lands in
+     * whichever month the writer happened to run. That is the difference
+     * between a catch-up and a misstatement: three months of rent stamped on
+     * one day would put a quarter's cost into one month's profit and loss.
+     * Both rows take it, because a transaction and its entries dated
+     * differently is a trial balance that reconciles on one date and not the
+     * other.
+     */
+    occurredAt?: Date;
+    /**
+     * The transaction this one reverses.
+     *
+     * An append-only ledger records a correction as a second posting that
+     * mirrors the first, and without this link the two are related only by
+     * a memo somebody has to read. Anything grouping the ledger has to know
+     * which posting a reversal belongs to: a correction carries no meaning
+     * of its own, only the meaning of what it undoes.
+     */
+    reversesId?: string;
+  } = {},
 ): Promise<string> {
   const inserted = await tx
     .insert(ledgerTransactions)
@@ -145,7 +157,8 @@ export async function writePosting(
       memo: posting.memo,
       sourceType,
       sourceId,
-      ...(occurredAt ? { createdAt: occurredAt } : {}),
+      ...(opts.occurredAt ? { createdAt: opts.occurredAt } : {}),
+      ...(opts.reversesId ? { reversesId: opts.reversesId } : {}),
     })
     .returning({ id: ledgerTransactions.id });
 
@@ -159,7 +172,7 @@ export async function writePosting(
       account: line.account,
       debitK: line.debitK,
       creditK: line.creditK,
-      ...(occurredAt ? { createdAt: occurredAt } : {}),
+      ...(opts.occurredAt ? { createdAt: opts.occurredAt } : {}),
     })),
   );
   return transaction.id;
