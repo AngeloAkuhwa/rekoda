@@ -43,8 +43,8 @@ export default async function StockPage() {
         {products.length === 0 ? (
           <p className="rk-fineprint">
             You are not counting any stock yet. Tell Rekoda on WhatsApp what you have, like{' '}
-            <strong>add 20 bags of rice</strong>, and the count keeps itself from there. Every sale
-            you record takes stock off the shelf automatically.
+            <strong>add 20 bags of rice</strong>, and the count keeps itself from there. Stock you
+            buy is added when you record the purchase, and every sale takes it off the shelf.
           </p>
         ) : (
           <>
@@ -85,8 +85,8 @@ export default async function StockPage() {
                   {outOfStock === 1 ? 'one has' : `${outOfStock} have`} run out
                 </>
               ) : null}
-              . Counts come from what you record on WhatsApp: what you add, and what each sale takes
-              away.
+              . Counts come from what you record on WhatsApp: what you add, what you buy, and what
+              each sale takes away.
             </p>
           </>
         )}

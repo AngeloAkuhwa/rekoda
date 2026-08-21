@@ -974,6 +974,8 @@ describe("the plan's own example, end to end", () => {
       description: 'ankara fabric',
       amount: 50_000,
       reportedPayment: 20_000,
+      productMention: null,
+      quantity: null,
     });
 
     await send('bought ankara from Mama Nkechi 50k, paid 20k', 'wamid.PUR');
@@ -2831,5 +2833,117 @@ describe('counting stock', () => {
     );
     const documents = rows.find((r) => r.unit === 'documents');
     expect(documents?.used ?? 0).toBe(0);
+  });
+});
+
+/**
+ * A purchase that is also a delivery.
+ *
+ * "bought 10 crates of ankara for 50k" is two facts, and until the contract
+ * carried a product and a quantity only the money one was recorded: a sale
+ * took stock off the shelf and a purchase never put any back.
+ */
+describe('stock arriving with a purchase', () => {
+  const buy = (over: Record<string, unknown> = {}) => ({
+    intent: 'RecordPurchase',
+    supplierMention: 'Mama Nkechi',
+    description: '10 crates of ankara',
+    amount: 50_000,
+    reportedPayment: 50_000,
+    productMention: 'crates of ankara',
+    quantity: 10,
+    ...over,
+  });
+
+  async function seedMerchant(phone: string) {
+    const user = await identity.upsertUserByPhone(db, phone);
+    return identity.createBusinessWithOwner(db, {
+      name: 'Ada Fashion',
+      businessType: null,
+      ownerUserId: user.id,
+    });
+  }
+
+  async function drain() {
+    const runner = buildRunner(workerDb, db, deps);
+    let worked = await runner.runOnce();
+    while (worked) worked = await runner.runOnce();
+  }
+
+  async function say(wamid: string, command: Record<string, unknown>, text: string) {
+    stubTransport.replyWith(command);
+    await post(messagePayload('2348031234567', wamid, text));
+    await drain();
+  }
+
+  async function plain(wamid: string, text: string) {
+    await post(messagePayload('2348031234567', wamid, text));
+    await drain();
+  }
+
+  const onHand = (businessId: string, name: string) =>
+    withBusiness(db, businessId, (tx) => stockRepo.productByName(tx, businessId, name));
+
+  it('names the delivery in the preview and writes nothing yet', async () => {
+    const business = await seedMerchant('+2348031234567');
+
+    await say('wamid.P1', buy(), 'bought 10 crates of ankara for 50k');
+
+    expect(stubSender.lastText).toContain('Adding to stock: 10 crates of ankara');
+    expect(await onHand(business.id, 'crates of ankara')).toBeNull();
+  });
+
+  it('puts the stock on the shelf on yes, and says the new count', async () => {
+    const business = await seedMerchant('+2348031234567');
+
+    await say('wamid.P2', buy(), 'bought 10 crates of ankara for 50k');
+    await plain('wamid.P3', 'yes');
+
+    expect(stubSender.lastText).toContain('crates of ankara is now 10 on hand');
+    expect((await onHand(business.id, 'crates of ankara'))?.onHand).toBe(10);
+  });
+
+  it('adds onto a count the merchant already had', async () => {
+    const business = await seedMerchant('+2348031234567');
+
+    await say(
+      'wamid.P4',
+      { intent: 'AdjustInventory', productMention: 'crates of ankara', quantityDelta: 4 },
+      'add 4 crates of ankara',
+    );
+    await plain('wamid.P5', 'yes');
+    await say('wamid.P6', buy(), 'bought 10 more crates of ankara for 50k');
+    await plain('wamid.P7', 'yes');
+
+    expect((await onHand(business.id, 'crates of ankara'))?.onHand).toBe(14);
+  });
+
+  it('moves no stock for a purchase the merchant described in prose', async () => {
+    const business = await seedMerchant('+2348031234567');
+
+    await say(
+      'wamid.P8',
+      buy({ description: 'restocked the shop', productMention: null, quantity: null }),
+      'restocked the shop, 50k',
+    );
+    await plain('wamid.P9', 'yes');
+
+    /* A purchase of a service, or one described only in prose, is still a
+     * purchase. It just is not a count. */
+    expect(stubSender.lastText).toContain('Saved');
+    expect(stubSender.lastText).not.toContain('on hand');
+    expect(
+      await withBusiness(db, business.id, (tx) => stockRepo.stockList(tx, business.id)),
+    ).toEqual([]);
+  });
+
+  it('still records the money owed when stock arrives part paid', async () => {
+    const business = await seedMerchant('+2348031234567');
+
+    await say('wamid.P10', buy({ reportedPayment: 20_000 }), 'bought 10 crates, paid 20k');
+    await plain('wamid.P11', 'yes');
+
+    expect(stubSender.lastText).toContain('₦30,000');
+    expect((await onHand(business.id, 'crates of ankara'))?.onHand).toBe(10);
   });
 });

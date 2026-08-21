@@ -794,8 +794,15 @@ export function expenseSaved(amountK: number, description: string): Reply {
  * still owe the supplier, so it is in the message when it exists — same
  * reasoning as the balance line in `issued`.
  */
-export function purchaseSaved(amountK: number, owedK: number): Reply {
+export function purchaseSaved(
+  amountK: number,
+  owedK: number,
+  /** The delivery, when the merchant counted one. Absent for a purchase in
+   * prose, or for a service, and then this reads exactly as it always did. */
+  arrived?: { name: string; onHand: number },
+): Reply {
   const lines = [`Saved ✅ ${formatKobo(amountK)} stock purchase.`];
+  if (arrived) lines.push(`${arrived.name} is now ${arrived.onHand} on hand.`);
   if (owedK > 0) lines.push(`${formatKobo(owedK)} still owed to your supplier.`);
   return reply(lines.join('\n'));
 }

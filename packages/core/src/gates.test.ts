@@ -16,6 +16,7 @@ import {
   type SaleLike,
   gatePayment,
   gateStockChange,
+  purchaseArrival,
 } from './gates.js';
 import { computeMoney } from './money.js';
 
@@ -371,5 +372,73 @@ describe('gateStockChange', () => {
     expect(gate.gate).toBe('CG2');
     if (gate.gate !== 'CG2') return;
     expect(gate.quantityDelta).toBe(7);
+  });
+});
+
+describe('a purchase that is also a delivery', () => {
+  const ANKARA = {
+    description: '10 crates of ankara',
+    amount: 50_000,
+    supplierMention: 'Mama Nkechi',
+    reportedPayment: 50_000,
+  };
+
+  it('names the stock arriving in the preview', () => {
+    const gate = gatePurchase({ ...ANKARA, productMention: 'crates of ankara', quantity: 10 });
+    expect(gate.gate).toBe('CG2');
+    if (gate.gate !== 'CG2') return;
+    /* A purchase that moves stock and does not say so in the preview is a
+     * stock change nobody confirmed. */
+    expect(gate.preview).toContain('Adding to stock: 10 crates of ankara');
+  });
+
+  it('says nothing about stock when the merchant counted none', () => {
+    const gate = gatePurchase({ ...ANKARA, productMention: null, quantity: null });
+    expect(gate.gate).toBe('CG2');
+    if (gate.gate !== 'CG2') return;
+    expect(gate.preview).not.toContain('Adding to stock');
+  });
+
+  it('reads exactly as before for a purchase with no stock fields at all', () => {
+    const withFields = gatePurchase({ ...ANKARA, productMention: null, quantity: null });
+    const without = gatePurchase(ANKARA);
+    expect(withFields).toEqual(without);
+  });
+});
+
+describe('purchaseArrival', () => {
+  const BASE = { description: 'ankara', amount: 50_000 };
+
+  it('is the product and quantity when both are there', () => {
+    expect(purchaseArrival({ ...BASE, productMention: 'crates', quantity: 10 })).toEqual({
+      productMention: 'crates',
+      quantity: 10,
+    });
+  });
+
+  it('is nothing when only a quantity was named', () => {
+    /* A number with no product is not a delivery anybody can count. */
+    expect(purchaseArrival({ ...BASE, productMention: null, quantity: 10 })).toBeNull();
+  });
+
+  it('is nothing when only a product was named', () => {
+    /* And a product with no number is not a count. */
+    expect(purchaseArrival({ ...BASE, productMention: 'crates', quantity: null })).toBeNull();
+  });
+
+  it('is nothing for a purchase of a service', () => {
+    expect(purchaseArrival(BASE)).toBeNull();
+  });
+
+  it('ignores whitespace that names nothing', () => {
+    expect(purchaseArrival({ ...BASE, productMention: '   ', quantity: 4 })).toBeNull();
+  });
+
+  it('takes whole units, because half a crate is not a delivery', () => {
+    expect(purchaseArrival({ ...BASE, productMention: 'crates', quantity: 9.7 })?.quantity).toBe(9);
+  });
+
+  it('refuses a zero or negative count', () => {
+    expect(purchaseArrival({ ...BASE, productMention: 'crates', quantity: 0 })).toBeNull();
   });
 });
