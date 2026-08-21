@@ -19,7 +19,12 @@
  * into one figure.
  */
 import { sql } from 'drizzle-orm';
-import { isExpenseCategory, type ExpenseCategory } from '@rekoda/core';
+import {
+  isExpenseCategory,
+  isSaleSource,
+  type ExpenseCategory,
+  type SaleSource,
+} from '@rekoda/core';
 import type { TenantDb } from '../client.js';
 
 /** Accounts whose movement IS "money in / money out" under the cash lens. */
@@ -505,6 +510,110 @@ export async function expenseScheduleFor(
 }
 
 const fold = (raw: string): ExpenseCategory => (isExpenseCategory(raw) ? raw : 'other');
+
+export interface RevenueScheduleLine {
+  /** A `SaleSource`, or null for revenue nobody attributed to a channel. */
+  source: SaleSource | null;
+  amountK: number;
+}
+
+export interface RevenueSchedule {
+  lines: RevenueScheduleLine[];
+  /** Equal to the lines summed, and to the SALES_REVENUE movement. */
+  totalK: number;
+}
+
+/**
+ * Where the sales came from, for one Lagos month.
+ *
+ * The mirror of `expenseScheduleFor`, and it exists for the same reason: a
+ * merchant who sells on Instagram, in the shop, at the market and over the
+ * phone gets one "Sales" line and no way to know which of the four earns.
+ * `invoices.sale_source` has recorded the answer since the chat slice and
+ * nothing has ever read it.
+ *
+ * Ledger first, again, and the same three reasons. A credit note reduces
+ * revenue and is its own posting rather than an edit; a void writes a mirror
+ * that has to come off the month it is written in, not the month it cancels;
+ * and the total has to equal the income line above it without anybody
+ * reconciling two tables. So this sums movement and joins outward for a
+ * label, three ways, each on a key that is unique:
+ *
+ *   - the sale itself, through `invoices.ledger_transaction_id`
+ *   - a credit note, through its own link and then its invoice
+ *   - a void's reversal, through `ledger_transactions.reverses_id`
+ *
+ * Anything left is revenue with no document behind it, which should not
+ * happen and is reported as unattributed rather than hidden.
+ *
+ * A null `source` is the honest answer and not a failure. Rekoda never
+ * demands a channel per sale and never guesses one, so most sales have none;
+ * the line is labelled for what it is and stays out of the way of the ones
+ * that do.
+ */
+export async function revenueScheduleFor(
+  tx: TenantDb,
+  businessId: string,
+  period: string,
+): Promise<RevenueSchedule> {
+  const rows = await tx.execute<{ source: string | null; amount_k: string }>(sql`
+    WITH bounds AS (
+      SELECT (${period} || '-01T00:00:00Z')::timestamptz - interval '1 hour' AS pstart,
+             ((${period} || '-01T00:00:00Z')::timestamptz - interval '1 hour')
+               + interval '1 month' AS pend
+    ),
+    movement AS (
+      SELECT e.transaction_id, SUM(e.credit_k - e.debit_k) AS amount_k
+      FROM ledger_entries e, bounds b
+      WHERE e.business_id = ${businessId}::uuid
+        AND e.account = 'SALES_REVENUE'
+        AND e.created_at >= b.pstart AND e.created_at < b.pend
+      GROUP BY e.transaction_id
+    )
+    SELECT COALESCE(sale.sale_source, credited.sale_source, undone.sale_source) AS source,
+           SUM(m.amount_k)::bigint AS amount_k
+    FROM movement m
+    JOIN ledger_transactions t
+      ON t.id = m.transaction_id AND t.business_id = ${businessId}::uuid
+    LEFT JOIN invoices sale
+      ON sale.business_id = ${businessId}::uuid
+     AND sale.ledger_transaction_id = m.transaction_id
+    LEFT JOIN credit_notes cn
+      ON cn.business_id = ${businessId}::uuid
+     AND cn.ledger_transaction_id = m.transaction_id
+    LEFT JOIN invoices credited
+      ON credited.business_id = ${businessId}::uuid AND credited.id = cn.invoice_id
+    LEFT JOIN invoices undone
+      ON undone.business_id = ${businessId}::uuid
+     AND undone.ledger_transaction_id = t.reverses_id
+    GROUP BY 1
+  `);
+
+  /* Folded here for the same reason the expense one is: an enum lives in
+   * `@rekoda/core`, and a value the column holds that is no longer one of
+   * them must not become an eleventh channel on somebody's statement. */
+  const totals = new Map<SaleSource | null, number>();
+  for (const row of rows) {
+    const amountK = Number(row.amount_k);
+    if (amountK === 0) continue;
+    const source = isSaleSource(row.source) ? row.source : null;
+    totals.set(source, (totals.get(source) ?? 0) + amountK);
+  }
+
+  const lines = [...totals]
+    .filter(([, amountK]) => amountK !== 0)
+    .map(([source, amountK]) => ({ source, amountK }))
+    /* Biggest first, but unattributed last whatever its size: it is the
+     * absence of an answer rather than a channel competing with the others,
+     * and putting it at the top would bury the ones that are. */
+    .sort((a, b) => {
+      if (a.source === null) return 1;
+      if (b.source === null) return -1;
+      return b.amountK - a.amountK;
+    });
+
+  return { lines, totalK: lines.reduce((n, l) => n + l.amountK, 0) };
+}
 
 export interface InvoiceListRow {
   invoiceNumber: string;

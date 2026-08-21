@@ -167,6 +167,27 @@ export const reportsStatementsResponse = z.object({
     totalK: z.number().int().finite(),
   }),
   /**
+   * Where the sales came from.
+   *
+   * The mirror of `expenseSchedule`, under the income line rather than the
+   * expenses one, and its `totalK` equals that line for the same reason: both
+   * come from the same ledger movement.
+   *
+   * `source` is null for revenue nobody attributed to a channel, which is the
+   * ordinary case rather than a gap. Rekoda never asks which channel a sale
+   * came through and never guesses one.
+   */
+  revenueSchedule: z.object({
+    lines: z.array(
+      z.object({
+        source: z.string().nullable(),
+        label: z.string(),
+        amountK: z.number().int().finite(),
+      }),
+    ),
+    totalK: z.number().int().finite(),
+  }),
+  /**
    * The month before, for the column every accounting package puts beside a
    * profit and loss. "₦150,000 of sales" is a figure; "₦150,000, up from
    * ₦92,000" is the thing a merchant actually wanted to know.

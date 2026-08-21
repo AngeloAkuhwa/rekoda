@@ -65,6 +65,15 @@ const SCHEDULE = {
   totalK: K(12_000),
 };
 
+/** Two channels that sum to the income line in PROFIT. */
+const REVENUE = {
+  lines: [
+    { label: 'Instagram', amountK: K(30_000) },
+    { label: 'In the shop', amountK: K(20_000) },
+  ],
+  totalK: K(50_000),
+};
+
 function doc(overrides: Partial<StatementDocument> = {}): StatementDocument {
   return {
     businessName: 'Mama Chidi Stores',
@@ -75,6 +84,7 @@ function doc(overrides: Partial<StatementDocument> = {}): StatementDocument {
     cashflow: CASHFLOW,
     trialBalance: TRIAL,
     expenseSchedule: SCHEDULE,
+    revenueSchedule: REVENUE,
     ...overrides,
   };
 }
@@ -177,6 +187,24 @@ describe('what the statements document says', () => {
     const at = (label: string) => blocks.findIndex((b) => b.text === label);
     expect(at('Operating expenses in detail')).toBeGreaterThan(at('Net profit'));
     expect(at('Operating expenses in detail')).toBeLessThan(at('Balance sheet'));
+  });
+
+  it('puts the channels under the income they explain', () => {
+    const blocks = layoutStatements(doc());
+    const rendered = text(blocks);
+    expect(rendered).toContain('Where the sales came from');
+    expect(rendered).toContain('Instagram');
+
+    const at = (label: string) => blocks.findIndex((b) => b.text === label);
+    /* Inside the profit and loss, not after it: there is one income line and
+     * the detail belongs against it. */
+    expect(at('Where the sales came from')).toBeGreaterThan(at('Total income'));
+    expect(at('Where the sales came from')).toBeLessThan(at('Expenses'));
+  });
+
+  it('prints no channels for a month with nothing sold', () => {
+    const blocks = layoutStatements(doc({ revenueSchedule: { lines: [], totalK: 0 } }));
+    expect(text(blocks)).not.toContain('Where the sales came from');
   });
 
   it('prints no schedule for a month with nothing to break down', () => {
@@ -287,6 +315,13 @@ describe('the statements as a workbook', () => {
     expect(sheets()[0]!.rows.find((r) => r[0] === 'Total operating expenses')?.[1]).toEqual(
       xlsxNaira(K(12_000)),
     );
+  });
+
+  it('puts the channels under the income row in the workbook too', () => {
+    const rows = sheets()[0]!.rows.map((r) => String(r[0]));
+    expect(rows).toContain('Where the sales came from');
+    expect(rows.indexOf('Where the sales came from')).toBeGreaterThan(rows.indexOf('Total income'));
+    expect(rows.indexOf('Where the sales came from')).toBeLessThan(rows.indexOf('Expenses'));
   });
 
   it('says the books agree when they do', () => {

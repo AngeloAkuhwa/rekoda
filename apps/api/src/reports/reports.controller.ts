@@ -51,7 +51,9 @@ import {
   describeActor,
   EXPENSE_CATEGORY_LABELS,
   isExpenseCategory,
+  SALE_SOURCE_LABELS,
   STOCK_CATEGORY,
+  UNATTRIBUTED_SALE_LABEL,
   describeAuditEvent,
   isAccountKey,
   lagosDay,
@@ -187,10 +189,11 @@ export class ReportsController {
      * column is what every accounting package puts beside a profit and loss,
      * and a merchant reading this page always wants it: gating it behind a
      * flag would mean a second round trip for the thing they came for. */
-    const [sums, priorSums, schedule] = await Promise.all([
+    const [sums, priorSums, schedule, revenue] = await Promise.all([
       this.sumsFor(businessId, period),
       this.sumsFor(businessId, before),
       this.expenseScheduleFor(businessId, period),
+      this.revenueScheduleFor(businessId, period),
     ]);
 
     const prior = buildProfitAndLoss(priorSums);
@@ -198,6 +201,7 @@ export class ReportsController {
       period,
       ...buildAll(sums),
       expenseSchedule: schedule,
+      revenueSchedule: revenue,
       comparison: {
         period: before,
         totalIncomeK: prior.totalIncomeK,
@@ -231,9 +235,10 @@ export class ReportsController {
   ): Promise<void> {
     const period = requirePeriod(periodParam);
     const auth = request.auth!;
-    const [sums, schedule] = await Promise.all([
+    const [sums, schedule, revenue] = await Promise.all([
       this.sumsFor(auth.businessId, period),
       this.expenseScheduleFor(auth.businessId, period),
+      this.revenueScheduleFor(auth.businessId, period),
     ]);
 
     let pdf: Buffer;
@@ -244,6 +249,7 @@ export class ReportsController {
         generatedAt: new Date(),
         ...buildAll(sums),
         expenseSchedule: schedule,
+        revenueSchedule: revenue,
       });
     } catch (error) {
       /* The naira sign needs a font that carries it, and a deployment
@@ -278,9 +284,10 @@ export class ReportsController {
   ): Promise<void> {
     const period = requirePeriod(periodParam);
     const auth = request.auth!;
-    const [sums, schedule] = await Promise.all([
+    const [sums, schedule, revenue] = await Promise.all([
       this.sumsFor(auth.businessId, period),
       this.expenseScheduleFor(auth.businessId, period),
+      this.revenueScheduleFor(auth.businessId, period),
     ]);
 
     const book = buildXlsx(
@@ -289,6 +296,7 @@ export class ReportsController {
         period,
         generatedAt: new Date(),
         expenseSchedule: schedule,
+        revenueSchedule: revenue,
         ...buildAll(sums),
       }),
     );
@@ -307,6 +315,20 @@ export class ReportsController {
    * schedule: three call sites assembling it separately is how the file a
    * merchant sends their bank stops agreeing with the page they read it on.
    */
+  private async revenueScheduleFor(businessId: string, period: string) {
+    const schedule = await withBusiness(this.db, businessId, (tx) =>
+      reportsRepo.revenueScheduleFor(tx, businessId, period),
+    );
+    return {
+      lines: schedule.lines.map((line) => ({
+        source: line.source,
+        label: line.source === null ? UNATTRIBUTED_SALE_LABEL : SALE_SOURCE_LABELS[line.source],
+        amountK: line.amountK,
+      })),
+      totalK: schedule.totalK,
+    };
+  }
+
   private async expenseScheduleFor(businessId: string, period: string) {
     const schedule = await withBusiness(this.db, businessId, (tx) =>
       reportsRepo.expenseScheduleFor(tx, businessId, period),

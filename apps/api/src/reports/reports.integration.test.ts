@@ -798,6 +798,49 @@ describe('the four statements (ADR 0015)', () => {
     const res = await app.inject({ method: 'GET', url: '/v1/reports/statements', headers: auth });
     const statements = reportsStatementsResponse.parse(res.json());
     expect(statements.expenseSchedule).toEqual({ lines: [], totalK: 0 });
+    expect(statements.revenueSchedule).toEqual({ lines: [], totalK: 0 });
+  });
+
+  /**
+   * The channel a sale was made on, in the merchant's words, tying to the
+   * income line above it. `sale_source` has been recorded since the chat
+   * slice and this is the first thing that reads it.
+   */
+  it('says which channel the sales came from, and what nobody named', async () => {
+    const { auth, businessId } = await onboard('+2348177000008');
+    const sell = (saleSource: string | null, totalK: number, ref: string) =>
+      withBusiness(db, businessId, (tx) =>
+        issueRepo.issueSale(tx, {
+          businessId,
+          customerId: null,
+          customerToken: null,
+          items: [{ name: 'wig', quantity: 1, unitPriceK: totalK }],
+          subtotalK: totalK,
+          discountK: 0,
+          deliveryFeeK: 0,
+          vatK: 0,
+          totalK,
+          paidK: 0,
+          balanceDueK: totalK,
+          method: 'cash',
+          sourceType: 'chat',
+          sourceId: ref,
+          saleSource,
+          actor: 'test',
+        }),
+      );
+    await sell('instagram', 3_000_000, 'r1');
+    await sell(null, 1_000_000, 'r2');
+
+    const res = await app.inject({ method: 'GET', url: '/v1/reports/statements', headers: auth });
+    const statements = reportsStatementsResponse.parse(res.json());
+    expect(statements.revenueSchedule.lines).toEqual([
+      { source: 'instagram', label: 'Instagram', amountK: 3_000_000 },
+      /* Last whatever its size, and named for what it is rather than for
+       * something the merchant failed to do. */
+      { source: null, label: 'Not recorded', amountK: 1_000_000 },
+    ]);
+    expect(statements.revenueSchedule.totalK).toBe(statements.profitAndLoss.totalIncomeK);
   });
 });
 

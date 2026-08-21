@@ -368,6 +368,133 @@ describe('where the operating expenses went', () => {
   });
 });
 
+/**
+ * The schedule under the profit and loss statement's income line.
+ *
+ * Its own describe rather than a case in the expense one, because the join it
+ * makes is genuinely harder: revenue is reduced by credit notes, which are
+ * their own postings, and cancelled by voids, which are mirrors. Each has to
+ * find its way back to the channel of the sale it belongs to.
+ */
+describe('where the sales came from', () => {
+  const period = () => usagePeriod(new Date());
+  const schedule = (businessId: string) =>
+    withBusiness(db, businessId, (tx) => reportsRepo.revenueScheduleFor(tx, businessId, period()));
+
+  const sell = (
+    businessId: string,
+    saleSource: string | null,
+    totalK: number,
+    ref: string,
+    paidK = 0,
+  ) =>
+    withBusiness(db, businessId, (tx) =>
+      issueRepo.issueSale(tx, {
+        businessId,
+        customerId: null,
+        customerToken: null,
+        items: [{ name: 'wig', quantity: 1, unitPriceK: totalK }],
+        subtotalK: totalK,
+        discountK: 0,
+        deliveryFeeK: 0,
+        vatK: 0,
+        totalK,
+        paidK,
+        balanceDueK: totalK - paidK,
+        method: 'cash',
+        sourceType: 'chat',
+        sourceId: ref,
+        saleSource,
+        actor: 'test',
+      }),
+    );
+
+  it('groups by channel and ties to the SALES_REVENUE account exactly', async () => {
+    const businessId = await seedBusiness();
+    await sell(businessId, 'instagram', 3_000_000, 'd1');
+    await sell(businessId, 'physical_store', 2_000_000, 'd2');
+    await sell(businessId, 'instagram', 1_000_000, 'd3');
+
+    const result = await schedule(businessId);
+    expect(result.lines).toEqual([
+      { source: 'instagram', amountK: 4_000_000 },
+      { source: 'physical_store', amountK: 2_000_000 },
+    ]);
+    expect(result.totalK).toBe(6_000_000);
+
+    const sums = await withBusiness(db, businessId, (tx) =>
+      reportsRepo.accountSumsFor(tx, businessId, period()),
+    );
+    const revenue = sums.find((r) => r.account === 'SALES_REVENUE');
+    expect(result.totalK).toBe((revenue?.periodCreditK ?? 0) - (revenue?.periodDebitK ?? 0));
+  });
+
+  /**
+   * The common case, and not a failure. Rekoda never asks which channel a
+   * sale came through, so most sales have none; the line says so and sorts
+   * last whatever its size, because it is the absence of an answer rather
+   * than a channel competing with the others.
+   */
+  it('keeps unattributed sales last, however big they are', async () => {
+    const businessId = await seedBusiness();
+    await sell(businessId, null, 9_000_000, 'd1');
+    await sell(businessId, 'tiktok', 1_000_000, 'd2');
+
+    expect((await schedule(businessId)).lines).toEqual([
+      { source: 'tiktok', amountK: 1_000_000 },
+      { source: null, amountK: 9_000_000 },
+    ]);
+  });
+
+  /* A credit note is its own posting against SALES_REVENUE, not an edit. It
+   * has to come off the channel of the invoice it credits, and the only route
+   * there is the invoice's own ledger link. */
+  it('takes a credit note off the channel it was sold on', async () => {
+    const businessId = await seedBusiness();
+    /* Paid in full, because a credit note against an invoice nobody has paid
+     * is refused: there is nothing to give back. */
+    const sale = await sell(businessId, 'instagram', 5_000_000, 'd1', 5_000_000);
+    const credited = await withBusiness(db, businessId, (tx) =>
+      issueRepo.issueCreditNote(tx, {
+        businessId,
+        invoiceNumber: sale.invoiceNumber,
+        amountK: 2_000_000,
+        reason: 'returned one',
+        actor: 'user:1',
+      }),
+    );
+    expect(credited.outcome).toBe('credited');
+
+    expect((await schedule(businessId)).lines).toEqual([
+      { source: 'instagram', amountK: 3_000_000 },
+    ]);
+  });
+
+  /* And a void writes a mirror, which finds its channel through reverses_id.
+   * Before invoices carried a ledger link this was impossible: the reversal
+   * would have shown as unattributed revenue of minus five thousand. */
+  it('cancels a voided sale against its own channel', async () => {
+    const businessId = await seedBusiness();
+    const sale = await sell(businessId, 'instagram', 5_000_000, 'd1');
+    await sell(businessId, 'phone', 1_000_000, 'd2');
+    await withBusiness(db, businessId, (tx) =>
+      issueRepo.voidInvoice(tx, businessId, sale.invoiceNumber, 'never happened', 'user:1'),
+    );
+
+    const after = await schedule(businessId);
+    expect(after.lines).toEqual([{ source: 'phone', amountK: 1_000_000 }]);
+    expect(after.totalK).toBe(1_000_000);
+  });
+
+  it('has nothing to say about a month with no sales', async () => {
+    const businessId = await seedBusiness();
+    const result = await withBusiness(db, businessId, (tx) =>
+      reportsRepo.revenueScheduleFor(tx, businessId, '2020-01'),
+    );
+    expect(result).toEqual({ lines: [], totalK: 0 });
+  });
+});
+
 describe('the registers (§5.3.7)', () => {
   it('lists the invoice with its running figures and totals the outstanding', async () => {
     const businessId = await seedBusiness();
