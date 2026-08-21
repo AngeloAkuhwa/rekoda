@@ -249,7 +249,12 @@ export async function claimStrangerReply(
 export interface EventHealth {
   /** Stored, never processed. A backlog here means a sweep is not running. */
   unprocessed: number;
-  /** Processed but marked with a reason — the admin exception queue (§35). */
+  /**
+   * Processed but marked with a reason, and not yet worked — the exception
+   * queue (§35). OPEN ones only, so this count and `exceptionQueue` below
+   * agree: a number that kept reporting exceptions an operator had already
+   * dealt with would teach them to stop believing the number.
+   */
   flagged: number;
   /** Signature checks that failed. Should be zero; anything else is an attack or a key. */
   badSignatures: number;
@@ -267,7 +272,8 @@ export async function eventHealth(db: Db, provider: string): Promise<EventHealth
     SELECT
       count(*) FILTER (WHERE processed_at IS NULL)::int              AS unprocessed,
       count(*) FILTER (WHERE processed_at IS NOT NULL
-                         AND error IS NOT NULL)::int                 AS flagged,
+                         AND error IS NOT NULL
+                         AND resolved_at IS NULL)::int               AS flagged,
       count(*) FILTER (WHERE signature_valid = 0)::int               AS bad
     FROM external_events
     WHERE provider = ${provider}
@@ -278,4 +284,128 @@ export async function eventHealth(db: Db, provider: string): Promise<EventHealth
     flagged: row?.flagged ?? 0,
     badSignatures: row?.bad ?? 0,
   };
+}
+
+/* ── the exception queue an operator works ───────────────────────────────── */
+
+export interface OpsEventRow {
+  id: string;
+  provider: string;
+  eventType: string;
+  /** The tenant it reached, when it reached one. An id, never a name. */
+  businessId: string | null;
+  /** Why it was flagged. Never overwritten, including by a resolution. */
+  error: string | null;
+  signatureValid: number;
+  createdAt: Date;
+  /** How long it has been sitting. What an operator actually judges by. */
+  ageSeconds: number;
+}
+
+export interface ExceptionQueue {
+  /**
+   * Stored, never processed, never attributed. A handful is normal traffic in
+   * flight; a growing list with real age on it means a sweep is not running.
+   */
+  stuck: OpsEventRow[];
+  /** Processed and flagged with a reason, and nobody has worked it yet. */
+  flagged: OpsEventRow[];
+}
+
+/**
+ * The queue, as ROWS (MASTER-PLAN §6.4).
+ *
+ * Everything else on the ops surface is deliberately numbers, so that a
+ * cross-tenant console never quietly becomes a feature. This is the one
+ * exception and it earns it: a mark the pump left cannot be acted on by any
+ * merchant, because an unattributed event belongs to nobody, so if no operator
+ * can see it then nobody can.
+ *
+ * What it will NOT return is the payload. Those are sealed under `VAULT_KEY`
+ * (see privacy/payload-vault.ts) and hold the sender's number and message
+ * text; a queue that unsealed them to help somebody triage would be a
+ * plaintext feed of every merchant's conversations behind one header. The id,
+ * the type and the reason are what triage actually needs, and the payload is
+ * one deliberate lookup away for whoever has cause.
+ *
+ * No age threshold is baked in. "Stuck" is a judgement about a deployment's
+ * normal latency, and `ageSeconds` is the number to make it with.
+ */
+export async function exceptionQueue(q: Queryable, limit = 50): Promise<ExceptionQueue> {
+  const rows = await q.execute<{
+    id: string;
+    provider: string;
+    event_type: string;
+    business_id: string | null;
+    error: string | null;
+    signature_valid: number;
+    created_at: Date;
+    age_seconds: number;
+    bucket: string;
+  }>(sql`
+    (SELECT id, provider, event_type, business_id, error, signature_valid, created_at,
+            EXTRACT(EPOCH FROM (now() - created_at))::int AS age_seconds,
+            'stuck' AS bucket
+       FROM external_events
+      WHERE processed_at IS NULL AND business_id IS NULL
+      ORDER BY created_at
+      LIMIT ${limit})
+    UNION ALL
+    (SELECT id, provider, event_type, business_id, error, signature_valid, created_at,
+            EXTRACT(EPOCH FROM (now() - created_at))::int AS age_seconds,
+            'flagged' AS bucket
+       FROM external_events
+      WHERE error IS NOT NULL AND resolved_at IS NULL
+      ORDER BY created_at
+      LIMIT ${limit})
+  `);
+
+  const queue: ExceptionQueue = { stuck: [], flagged: [] };
+  for (const r of rows) {
+    const row: OpsEventRow = {
+      id: r.id,
+      provider: r.provider,
+      eventType: r.event_type,
+      businessId: r.business_id,
+      error: r.error,
+      signatureValid: r.signature_valid,
+      createdAt: new Date(r.created_at),
+      ageSeconds: Number(r.age_seconds),
+    };
+    if (r.bucket === 'stuck') queue.stuck.push(row);
+    else queue.flagged.push(row);
+  }
+  return queue;
+}
+
+/**
+ * Work one exception: record who decided and what they decided.
+ *
+ * `resolved_at IS NULL` in the WHERE is the mutual exclusion, so two operators
+ * clicking at once produce one resolution and the loser is told the row was
+ * already worked rather than silently overwriting the first decision.
+ *
+ * A stuck event is stamped processed at the same time, because that is what
+ * resolving it MEANS: it was never going to be attributed, and leaving it
+ * unprocessed would keep a sweep picking it up forever. A flagged one is
+ * already processed and only gains the decision.
+ */
+export async function resolveEvent(
+  q: Queryable,
+  id: string,
+  resolution: string,
+  actor: string,
+  now = new Date(),
+): Promise<boolean> {
+  const rows = await q.execute<{ id: string }>(sql`
+    UPDATE external_events
+       SET resolved_at = ${now.toISOString()}::timestamptz,
+           resolved_by = ${actor},
+           resolution  = ${resolution},
+           processed_at = COALESCE(processed_at, ${now.toISOString()}::timestamptz)
+     WHERE id = ${id}::uuid
+       AND resolved_at IS NULL
+     RETURNING id
+  `);
+  return [...rows].length === 1;
 }

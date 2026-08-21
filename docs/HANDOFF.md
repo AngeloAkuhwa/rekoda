@@ -259,13 +259,17 @@ inherits the triage instead of repeating it:
   invited by link before building either.
 - **No chat-history surface** (`threadFor`, `messagesFor`, `draftsFor`). A
   merchant cannot read back what they told Rekoda, only what it recorded.
-- **Ops visibility gaps**: `jobsForBusiness`, `callsToday`, `usageTotals`,
-  `unprocessedEvents`. The exception queue that the Paystack pump's comments
-  describe is still only readable as a count. Read `ops.controller.ts` before
-  building rows: it is deliberately numbers and not rows, because a
-  cross-tenant console is exactly where a cross-tenant read stops being a
-  question and becomes a feature. Turning the count into a work list is a
-  decision to take on purpose, not a gap to fill.
+- **Ops visibility gaps**: `jobsForBusiness`, `callsToday`, `usageTotals`.
+  The exception queue is now workable (PR #84) - `GET /v1/ops/exceptions` and
+  `POST /v1/ops/exceptions/:id/resolve` - and it is the ONE place on that
+  surface that returns rows. Angelo took that decision deliberately. Read the
+  method comment before adding a second: everything else there is numbers so
+  that a cross-tenant console never quietly becomes a feature, and this earns
+  its exception only because an unattributed event belongs to no tenant, so if
+  no operator can see it then nobody can. There is no UI: the ops surface is
+  secret-gated rather than session-gated, so it has no place under `/app`, and
+  `/v1/ops/margin` has been curl-only since it shipped. A small operator
+  console is the natural follow-on and a deliberate one.
 - **These read-backs are not dead code.** Every function in the two entries
   above is called by the integration suites as a read-back, which is a real
   and intended role - `expensesFor` was one until `spendFor` gave the

@@ -76,6 +76,19 @@ function margin(query = '', headers: Record<string, string> = {}) {
   return app.inject({ method: 'GET', url: `/v1/ops/margin${query}`, headers });
 }
 
+function exceptions(query = '', headers: Record<string, string> = {}) {
+  return app.inject({ method: 'GET', url: `/v1/ops/exceptions${query}`, headers });
+}
+
+function resolveException(id: string, body: unknown, headers: Record<string, string> = {}) {
+  return app.inject({
+    method: 'POST',
+    url: `/v1/ops/exceptions/${id}/resolve`,
+    payload: body as Record<string, unknown>,
+    headers: { 'content-type': 'application/json', ...headers },
+  });
+}
+
 describe('who can read the operator health surface', () => {
   it('refuses a request with no secret', async () => {
     expect((await health()).statusCode).toBe(403);
@@ -491,5 +504,113 @@ describe('the operator billing surface', () => {
     });
     // The policy is a table; the audit trail has to reconcile with it.
     expect(res.statusCode).toBe(400);
+  });
+});
+
+/**
+ * The one surface here that returns rows.
+ *
+ * It earns the exception because an unattributed event belongs to no tenant:
+ * no merchant can ever see it, so if an operator cannot then nobody can. What
+ * it must never return is the payload, and that is the assertion below that
+ * would matter most if it broke.
+ */
+describe('the exception queue', () => {
+  const operator = { 'x-rekoda-operator-secret': OPERATOR_SECRET };
+
+  async function record(externalId: string) {
+    return events.recordEvent(db, {
+      provider: 'paystack',
+      eventType: 'charge.success',
+      externalId,
+      payload: { sender: '+2348120000001', text: 'a merchant said something private' },
+      businessId: null,
+    });
+  }
+
+  it('is shut to anyone without the operator secret', async () => {
+    expect((await exceptions()).statusCode).toBe(403);
+    expect((await exceptions('', { 'x-rekoda-operator-secret': 'nope' })).statusCode).toBe(403);
+    expect(
+      (await resolveException('00000000-0000-0000-0000-000000000000', { resolution: 'x' }))
+        .statusCode,
+    ).toBe(403);
+  });
+
+  it('is two empty lists on a quiet platform', async () => {
+    const res = await exceptions('', operator);
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ stuck: [], flagged: [] });
+  });
+
+  it('shows what is waiting and what was flagged, and NEVER the payload', async () => {
+    const stuck = await record('evt.api.stuck');
+    const flagged = await record('evt.api.flagged');
+    await events.markProcessed(db, flagged.id, 'unknown_reference');
+
+    const res = await exceptions('', operator);
+    const body = res.json() as { stuck: Array<{ id: string }>; flagged: Array<{ id: string }> };
+
+    expect(body.stuck.map((r) => r.id)).toEqual([stuck.id]);
+    expect(body.flagged.map((r) => r.id)).toEqual([flagged.id]);
+
+    /* The seal is the point: a triage list that leaked a provider body would
+     * put a merchant's number and their message behind one plaintext header.
+     *
+     * Two independent guards hold this, which was worth finding out. The repo
+     * query does not select the payload, and `opsExceptionsResponse.parse`
+     * strips anything the shape does not name - so adding a payload column to
+     * the row still cannot reach the wire. This assertion covers the second
+     * guard; the first is asserted on the row itself in packages/db. */
+    expect(res.body).not.toContain('+2348120000001');
+    expect(res.body).not.toContain('a merchant said something private');
+  });
+
+  it('works one exception and takes it out of the list and the count', async () => {
+    const flagged = await record('evt.api.worked');
+    await events.markProcessed(db, flagged.id, 'foreign_reference');
+
+    const done = await resolveException(
+      flagged.id,
+      { resolution: 'not our merchant', actor: 'operator:ada' },
+      operator,
+    );
+    expect(done.statusCode).toBe(200);
+    expect(done.json()).toEqual({ resolved: true });
+
+    expect((await exceptions('', operator)).json()).toEqual({ stuck: [], flagged: [] });
+
+    const healthNow = (await health(operator)).json() as { paystack: { flagged: number } };
+    expect(healthNow.paystack.flagged).toBe(0);
+  });
+
+  it('refuses a resolution with nothing said, and one already worked', async () => {
+    const flagged = await record('evt.api.refusals');
+    await events.markProcessed(db, flagged.id, 'unknown_reference');
+
+    expect(
+      (await resolveException(flagged.id, { resolution: 'no', actor: 'operator:ada' }, operator))
+        .statusCode,
+    ).toBe(400);
+    expect(
+      (await resolveException('not-a-uuid', { resolution: 'fine' }, operator)).statusCode,
+    ).toBe(400);
+
+    await resolveException(
+      flagged.id,
+      { resolution: 'handled by hand', actor: 'operator:ada' },
+      operator,
+    );
+    /* A second operator arriving late is TOLD, rather than quietly
+     * overwriting the decision the first one recorded. */
+    expect(
+      (
+        await resolveException(
+          flagged.id,
+          { resolution: 'handled again', actor: 'operator:bola' },
+          operator,
+        )
+      ).statusCode,
+    ).toBe(404);
   });
 });

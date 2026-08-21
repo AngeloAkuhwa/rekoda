@@ -14,7 +14,8 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { timingSafeEqual } from 'node:crypto';
-import { opsRefundRequest } from '@rekoda/contracts';
+import { opsExceptionsResponse, opsRefundRequest, opsResolveEventRequest } from '@rekoda/contracts';
+import type { OpsExceptionsResponse } from '@rekoda/contracts';
 import {
   billingRepo,
   events,
@@ -288,6 +289,79 @@ export class OpsController {
     });
   }
 
+  /**
+   * The exception queue, as rows (MASTER-PLAN §6.4).
+   *
+   * The one place on this surface that returns rows rather than numbers, and
+   * it earns the exception: an unattributed event belongs to no tenant, so no
+   * merchant can ever see it. If an operator cannot, nobody can, and the
+   * pump's marks accumulate forever with the only remedy being somebody
+   * reading `external_events` by hand at 2am.
+   *
+   * Still no payload and still no names. Provider bodies are sealed under
+   * `VAULT_KEY` and carry the sender's number and their message; a triage
+   * list that unsealed them would be a plaintext feed of every merchant's
+   * conversations behind one header.
+   *
+   * Worker-credentialed, because the queue spans tenants by its nature and an
+   * empty answer from a process without the credential would be
+   * indistinguishable from a quiet night.
+   */
+  @Get('exceptions')
+  async exceptions(
+    @Headers('x-rekoda-operator-secret') secret: string | undefined,
+    @Query('limit') limitParam?: string,
+  ): Promise<OpsExceptionsResponse> {
+    this.assertOperator(secret);
+    if (!this.workerDb) {
+      throw new ServiceUnavailableException('this process holds no worker credential');
+    }
+
+    const limit = Math.min(Math.max(Number(limitParam) || 50, 1), 200);
+    const queue = await events.exceptionQueue(this.workerDb, limit);
+    return opsExceptionsResponse.parse({
+      stuck: queue.stuck.map(toEventView),
+      flagged: queue.flagged.map(toEventView),
+    });
+  }
+
+  /**
+   * Work one exception: who decided, and what they decided.
+   *
+   * The update is conditional on the row still being open, so two operators
+   * acting at once produce one resolution and the loser is told rather than
+   * silently overwriting the first decision. `error` is never touched: it is
+   * the reason the row was flagged, and a resolution that erased it would
+   * destroy the only record of what went wrong.
+   */
+  @Post('exceptions/:id/resolve')
+  @HttpCode(200)
+  async resolveException(
+    @Headers('x-rekoda-operator-secret') secret: string | undefined,
+    @Param('id') id: string,
+    @Body() body: unknown,
+  ): Promise<{ resolved: true }> {
+    this.assertOperator(secret);
+    if (!this.workerDb) {
+      throw new ServiceUnavailableException('this process holds no worker credential');
+    }
+    if (!UUID.test(id)) throw new BadRequestException('not an event id');
+
+    const input = opsResolveEventRequest.safeParse(body);
+    if (!input.success) {
+      throw new BadRequestException('resolution (at least 4 characters) and actor are required');
+    }
+
+    const resolved = await events.resolveEvent(
+      this.workerDb,
+      id,
+      input.data.resolution,
+      input.data.actor,
+    );
+    if (!resolved) throw new NotFoundException('no open exception with that id');
+    return { resolved: true as const };
+  }
+
   private assertOperator(secret: string | undefined): void {
     const expected = this.config.operatorSecret;
     if (!expected || !secret || !matchesSecret(secret, expected)) {
@@ -301,4 +375,27 @@ function matchesSecret(given: string, expected: string): boolean {
   const a = Buffer.from(given);
   const b = Buffer.from(expected);
   return a.length === b.length && timingSafeEqual(a, b);
+}
+
+/** Row to wire. Nothing here that a payload or a name could reach. */
+function toEventView(row: {
+  id: string;
+  provider: string;
+  eventType: string;
+  businessId: string | null;
+  error: string | null;
+  signatureValid: number;
+  createdAt: Date;
+  ageSeconds: number;
+}) {
+  return {
+    id: row.id,
+    provider: row.provider,
+    eventType: row.eventType,
+    businessId: row.businessId,
+    error: row.error,
+    signatureValid: row.signatureValid === 1 ? (1 as const) : (0 as const),
+    createdAt: row.createdAt.toISOString(),
+    ageSeconds: Math.max(0, row.ageSeconds),
+  };
 }

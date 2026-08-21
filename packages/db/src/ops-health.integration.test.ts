@@ -185,3 +185,113 @@ describe('event health', () => {
     expect(health).toEqual({ unprocessed: 0, flagged: 0, badSignatures: 0 });
   });
 });
+
+describe('the exception queue an operator works', () => {
+  async function record(externalId: string, provider: 'meta' | 'paystack' = 'paystack') {
+    return events.recordEvent(workerDb, {
+      provider,
+      eventType: 'charge.success',
+      externalId,
+      payload: { sealed: true },
+      businessId: null,
+    });
+  }
+
+  it('separates what is stuck from what was flagged, and carries neither payload', async () => {
+    const stuck = await record('evt.stuck');
+    const flagged = await record('evt.flagged');
+    await events.markProcessed(workerDb, flagged.id, 'unknown_reference');
+
+    const queue = await events.exceptionQueue(workerDb);
+
+    expect(queue.stuck.map((r) => r.id)).toEqual([stuck.id]);
+    expect(queue.flagged.map((r) => r.id)).toEqual([flagged.id]);
+    expect(queue.flagged[0]?.error).toBe('unknown_reference');
+
+    /* The payload is sealed and holds the sender's number and their message.
+     * A triage list that carried it would be a plaintext feed behind one
+     * header, so the shape itself must not have anywhere to put it. */
+    for (const row of [...queue.stuck, ...queue.flagged]) {
+      expect(Object.keys(row)).not.toContain('payload');
+    }
+  });
+
+  it('leaves the queue once worked, without erasing why it was flagged', async () => {
+    const flagged = await record('evt.worked');
+    await events.markProcessed(workerDb, flagged.id, 'foreign_reference');
+
+    expect(
+      await events.resolveEvent(workerDb, flagged.id, 'not our merchant', 'operator:ada'),
+    ).toBe(true);
+
+    const queue = await events.exceptionQueue(workerDb);
+    expect(queue.flagged).toHaveLength(0);
+
+    const rows = await workerDb.execute<{
+      error: string | null;
+      resolution: string | null;
+      resolved_by: string | null;
+    }>(
+      sql`SELECT error, resolution, resolved_by FROM external_events WHERE id = ${flagged.id}::uuid`,
+    );
+    /* `error` survives. It is the reason the row was flagged, and a
+     * resolution that overwrote it would destroy the only record of what
+     * actually went wrong. */
+    expect([...rows][0]).toMatchObject({
+      error: 'foreign_reference',
+      resolution: 'not our merchant',
+      resolved_by: 'operator:ada',
+    });
+  });
+
+  it('stamps a stuck event processed, so no sweep keeps picking it up', async () => {
+    const stuck = await record('evt.abandoned');
+    await events.resolveEvent(workerDb, stuck.id, 'reference was never ours', 'operator:ada');
+
+    const queue = await events.exceptionQueue(workerDb);
+    expect(queue.stuck).toHaveLength(0);
+    expect(await events.unattributedEvents(workerDb, 'paystack')).toHaveLength(0);
+  });
+
+  it('lets exactly ONE of two operators resolve the same row', async () => {
+    const flagged = await record('evt.raced');
+    await events.markProcessed(workerDb, flagged.id, 'unknown_reference');
+
+    const outcomes = await Promise.all([
+      events.resolveEvent(workerDb, flagged.id, 'first decision', 'operator:ada'),
+      events.resolveEvent(workerDb, flagged.id, 'second decision', 'operator:bola'),
+    ]);
+    expect(outcomes.filter(Boolean)).toHaveLength(1);
+
+    const rows = await workerDb.execute<{ resolution: string }>(
+      sql`SELECT resolution FROM external_events WHERE id = ${flagged.id}::uuid`,
+    );
+    /* Whichever won, the loser must not have overwritten it. */
+    expect(['first decision', 'second decision']).toContain([...rows][0]?.resolution);
+  });
+
+  it('answers false for an id that is not open', async () => {
+    expect(
+      await events.resolveEvent(
+        workerDb,
+        '00000000-0000-0000-0000-000000000000',
+        'nothing here',
+        'operator:ada',
+      ),
+    ).toBe(false);
+  });
+
+  /**
+   * The count and the list have to agree. A health number that kept reporting
+   * exceptions an operator had already worked would teach them to stop
+   * believing the number, which is worse than not having it.
+   */
+  it('drops a worked exception out of the health count too', async () => {
+    const flagged = await record('evt.counted', 'meta');
+    await events.markProcessed(workerDb, flagged.id, 'unknown_reference');
+    expect((await events.eventHealth(workerDb, 'meta')).flagged).toBe(1);
+
+    await events.resolveEvent(workerDb, flagged.id, 'handled by hand', 'operator:ada');
+    expect((await events.eventHealth(workerDb, 'meta')).flagged).toBe(0);
+  });
+});
