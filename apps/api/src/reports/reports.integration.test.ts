@@ -325,3 +325,109 @@ describe('the four statements (ADR 0015)', () => {
     expect(cash?.creditK).toBe(1_200_000);
   });
 });
+
+/**
+ * The export a merchant takes with them.
+ *
+ * Two things are being asserted: that the file is complete and openable, and
+ * that it is SHUT — a whole business's books behind a session, never cached,
+ * and never another tenant's.
+ */
+describe('exporting the books as CSV', () => {
+  const EMPTY_INVOICES = 'Invoice,Issued,Due,Status,Days late,Total,Paid,Balance\r\n';
+
+  const download = (path: string, auth: Record<string, string>) =>
+    app.inject({ method: 'GET', url: path, headers: auth });
+
+  /** One ₦150,000 invoice with ₦60,000 recorded against it, and its receipt. */
+  async function seedOneOfEach(businessId: string) {
+    await withBusiness(db, businessId, async (tx) => {
+      const sale = await issueRepo.issueSale(tx, {
+        businessId,
+        customerId: null,
+        customerToken: 'CUSTOMER_7K2',
+        items: [{ name: 'wig', quantity: 1, unitPriceK: 15_000_000 }],
+        subtotalK: 15_000_000,
+        discountK: 0,
+        deliveryFeeK: 0,
+        vatK: 0,
+        totalK: 15_000_000,
+        paidK: 0,
+        balanceDueK: 15_000_000,
+        method: 'transfer',
+        sourceType: 'chat',
+        sourceId: 'draft-export',
+        actor: 'system',
+      });
+      await settleRepo.recordMerchantPayment(tx, {
+        businessId,
+        invoiceId: sale.invoiceId,
+        amountK: 6_000_000,
+        method: 'cash',
+        sourceType: 'chat',
+        sourceId: 'pay-export',
+        actor: 'system',
+      });
+    });
+  }
+
+  it('refuses without a session, like every other report', async () => {
+    expect((await app.inject({ method: 'GET', url: '/v1/reports/invoices.csv' })).statusCode).toBe(
+      401,
+    );
+    expect((await app.inject({ method: 'GET', url: '/v1/reports/receipts.csv' })).statusCode).toBe(
+      401,
+    );
+  });
+
+  it('hands over a file a browser saves, never one a cache keeps', async () => {
+    const { auth } = await onboard('+2348120000021');
+    const res = await download('/v1/reports/invoices.csv', auth);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['content-type']).toContain('text/csv');
+    expect(res.headers['content-disposition']).toContain('attachment');
+    expect(res.headers['content-disposition']).toContain('rekoda-invoices-');
+    /* A merchant's whole book in a shared cache is a cross-tenant leak with
+     * a friendly name. */
+    expect(res.headers['cache-control']).toBe('no-store');
+  });
+
+  it('writes a header row even when there is nothing to export', async () => {
+    const { auth } = await onboard('+2348120000022');
+    expect((await download('/v1/reports/invoices.csv', auth)).body).toBe(EMPTY_INVOICES);
+  });
+
+  /**
+   * Never `formatKobo`. `₦150,000` is four things a spreadsheet reads as
+   * text, and an export whose money column will not add up is an export
+   * nobody can do anything with.
+   */
+  it('exports money as a decimal a spreadsheet will sum, not as naira text', async () => {
+    const { auth, businessId } = await onboard('+2348120000023');
+    await seedOneOfEach(businessId);
+
+    const body = (await download('/v1/reports/invoices.csv', auth)).body;
+    expect(body).toContain('150000.00');
+    expect(body).not.toContain('₦');
+    expect(body).not.toContain('150,000');
+  });
+
+  it('marks each receipt with the basis it was issued on (ADR 0014)', async () => {
+    const { auth, businessId } = await onboard('+2348120000024');
+    await seedOneOfEach(businessId);
+
+    const body = (await download('/v1/reports/receipts.csv', auth)).body;
+    expect(body).toContain('Receipt,Date,Invoice,Amount,Basis');
+    expect(body).toMatch(/verified|recorded/);
+  });
+
+  it('exports only the signed-in business books', async () => {
+    const mine = await onboard('+2348120000025');
+    const theirs = await onboard('+2348120000026');
+    await seedOneOfEach(theirs.businessId);
+
+    // Their register exists; none of it may appear in my file.
+    expect((await download('/v1/reports/invoices.csv', mine.auth)).body).toBe(EMPTY_INVOICES);
+  });
+});

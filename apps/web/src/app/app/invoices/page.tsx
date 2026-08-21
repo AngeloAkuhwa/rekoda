@@ -84,6 +84,14 @@ export default async function InvoicesPage() {
                 </tbody>
               </table>
             </div>
+            {/* The answer to "what happens to my records if I leave". A
+                product that cannot be left has to be trusted blindly, and
+                asking for that is worse than earning it. */}
+            <p className="rk-fineprint">
+              <a href="/app/export/invoices" download>
+                Download all invoices as a spreadsheet (CSV)
+              </a>
+            </p>
             <p className="rk-fineprint">
               {count === 1 ? 'One invoice' : `${count} invoices`} all time
               {outstandingK > 0 ? (

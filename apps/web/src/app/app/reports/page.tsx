@@ -32,6 +32,22 @@ export default async function ReportsPage({
   const statements = await reportsStatements(token, period);
   const { trialBalance, profitAndLoss, balanceSheet, cashflow } = statements;
 
+  /**
+   * VAT, read straight off the liability account the posting builder already
+   * credits. `chargedK` is this month; `owedK` is everything collected and
+   * not yet paid over, which is the balance a merchant is actually holding.
+   */
+  const vatRow = trialBalance.rows.find((r) => r.account === 'VAT_PAYABLE');
+  const vat = {
+    /* The trial balance is the PERIOD; the balance sheet carries the running
+     * liability, which is the money actually being held. */
+    chargedK: Math.max(0, (vatRow?.creditK ?? 0) - (vatRow?.debitK ?? 0)),
+    owedK: Math.max(
+      0,
+      balanceSheet.liabilities.find((l) => l.account === 'VAT_PAYABLE')?.amountK ?? 0,
+    ),
+  };
+
   const label = periodLabel(period);
   const previous = previousPeriod(period);
   const empty = trialBalance.rows.length === 0;
@@ -77,6 +93,25 @@ export default async function ReportsPage({
         </div>
       ) : (
         <>
+          {/* VAT first, because it is the figure with a deadline attached.
+              Everything else on this page tells a merchant how they are
+              doing; this one tells them what they owe somebody else. */}
+          {vat.chargedK > 0 || vat.owedK > 0 ? (
+            <div className="rk-card rk-dash-card">
+              <h2>VAT</h2>
+              <p className="rk-dash-total">
+                <Money kobo={vat.chargedK} />{' '}
+                <span className="rk-fineprint">charged to customers in {label}</span>
+              </p>
+              <p className="rk-fineprint">
+                <Money kobo={vat.owedK} /> is sitting on your books as VAT you have collected and
+                not yet paid over. This is what your ledger says, not a return: what you actually
+                owe depends on your registration and what you can reclaim, and your accountant
+                decides that.
+              </p>
+            </div>
+          ) : null}
+
           <div className="rk-dash-grid">
             <div className="rk-card rk-dash-card">
               <h2>Profit and loss</h2>
