@@ -213,6 +213,54 @@ describe('a sale taking stock off the shelf', () => {
     expect(found?.onHand).toBe(8);
   });
 
+  it('rounds a fractional sale UP, so a shop never believes it holds more', async () => {
+    const businessId = await seedBusiness('+2348050000016');
+    const rice = await withBusiness(db, businessId, (tx) =>
+      stockRepo.findOrCreateProduct(tx, businessId, 'Bags of rice'),
+    );
+    await adjust(businessId, rice.id, 20);
+
+    /* The contract allows 2.5 and a merchant selling by weight will send it.
+     * Truncating to 2 would leave them believing they hold 18 when 17 is the
+     * truth, and a merchant who thinks they have stock promises a customer
+     * something that is not on the shelf. */
+    await withBusiness(db, businessId, (tx) =>
+      stockRepo.recordSaleMovements(
+        tx,
+        businessId,
+        [{ name: 'Bags of rice', quantity: 2.5 }],
+        'INV-F',
+      ),
+    );
+
+    const found = await withBusiness(db, businessId, (tx) =>
+      stockRepo.productByName(tx, businessId, 'Bags of rice'),
+    );
+    expect(found?.onHand).toBe(17);
+  });
+
+  it('does not let a sub-unit sale vanish', async () => {
+    const businessId = await seedBusiness('+2348050000017');
+    const rice = await withBusiness(db, businessId, (tx) =>
+      stockRepo.findOrCreateProduct(tx, businessId, 'Bags of rice'),
+    );
+    await adjust(businessId, rice.id, 5);
+
+    const moved = await withBusiness(db, businessId, (tx) =>
+      stockRepo.recordSaleMovements(
+        tx,
+        businessId,
+        [{ name: 'Bags of rice', quantity: 0.5 }],
+        'INV-G',
+      ),
+    );
+    expect(moved).toBe(1);
+    const found = await withBusiness(db, businessId, (tx) =>
+      stockRepo.productByName(tx, businessId, 'Bags of rice'),
+    );
+    expect(found?.onHand).toBe(4);
+  });
+
   it('ignores a line with no quantity rather than writing a zero movement', async () => {
     const businessId = await seedBusiness('+2348050000012');
     const wigs = await withBusiness(db, businessId, (tx) =>
