@@ -18,10 +18,19 @@
  * until then the mention appears in the CG2 preview the merchant confirms and
  * is dropped at this boundary.
  */
-import { eq, sql } from 'drizzle-orm';
-import { postExpense, postPurchase } from '@rekoda/core';
+import { and, eq, sql } from 'drizzle-orm';
+import {
+  isAccountKey,
+  postExpense,
+  postPurchase,
+  reversal,
+  type LedgerLine,
+  type Posting,
+} from '@rekoda/core';
 import type { TenantDb } from '../client.js';
-import { expenses } from '../schema/finance.js';
+import { auditEvents } from '../schema/ops.js';
+import { expenses, ledgerEntries } from '../schema/finance.js';
+import { inventoryMovements } from '../schema/commerce.js';
 import { writePosting } from './issue.js';
 
 export interface RecordExpenseInput {
@@ -56,21 +65,9 @@ export async function recordExpense(
   tx: TenantDb,
   input: RecordExpenseInput,
 ): Promise<RecordedSpend> {
-  const rows = await tx
-    .insert(expenses)
-    .values({
-      businessId: input.businessId,
-      description: input.description,
-      category: input.category,
-      amountK: input.amountK,
-      method: input.method,
-      sourceType: input.sourceType,
-      sourceId: input.sourceId,
-    })
-    .returning({ id: expenses.id });
-  const row = rows[0];
-  if (!row) throw new Error('recordExpense: insert returned no row');
-
+  /* The posting first, so the row can carry its id and a withdrawal has
+   * something exact to reverse. Same transaction either way: the operational
+   * row and its balanced posting still commit together or not at all. */
   const posting = postExpense({
     memo: `Expense: ${input.description}`,
     amountK: input.amountK,
@@ -84,6 +81,22 @@ export async function recordExpense(
     input.sourceId,
   );
 
+  const rows = await tx
+    .insert(expenses)
+    .values({
+      businessId: input.businessId,
+      description: input.description,
+      category: input.category,
+      amountK: input.amountK,
+      method: input.method,
+      sourceType: input.sourceType,
+      sourceId: input.sourceId,
+      ledgerTransactionId,
+    })
+    .returning({ id: expenses.id });
+  const row = rows[0];
+  if (!row) throw new Error('recordExpense: insert returned no row');
+
   return { expenseId: row.id, ledgerTransactionId, owedK: 0 };
 }
 
@@ -91,24 +104,6 @@ export async function recordPurchase(
   tx: TenantDb,
   input: RecordPurchaseInput,
 ): Promise<RecordedSpend> {
-  const rows = await tx
-    .insert(expenses)
-    .values({
-      businessId: input.businessId,
-      description: input.description,
-      /** The fixed marker the read layer filters on — not merchant testimony. */
-      category: 'stock',
-      amountK: input.amountK,
-      /* The contract carries no method for purchases yet; 'cash' is the
-       * honest default for money out of pocket that no provider tracks. */
-      method: 'cash',
-      sourceType: input.sourceType,
-      sourceId: input.sourceId,
-    })
-    .returning({ id: expenses.id });
-  const row = rows[0];
-  if (!row) throw new Error('recordPurchase: insert returned no row');
-
   const posting = postPurchase({
     memo: `Stock: ${input.description}`,
     amountK: input.amountK,
@@ -122,6 +117,25 @@ export async function recordPurchase(
     input.sourceType,
     input.sourceId,
   );
+
+  const rows = await tx
+    .insert(expenses)
+    .values({
+      businessId: input.businessId,
+      description: input.description,
+      /** The fixed marker the read layer filters on — not merchant testimony. */
+      category: 'stock',
+      amountK: input.amountK,
+      /* The contract carries no method for purchases yet; 'cash' is the
+       * honest default for money out of pocket that no provider tracks. */
+      method: 'cash',
+      sourceType: input.sourceType,
+      sourceId: input.sourceId,
+      ledgerTransactionId,
+    })
+    .returning({ id: expenses.id });
+  const row = rows[0];
+  if (!row) throw new Error('recordPurchase: insert returned no row');
 
   return { expenseId: row.id, ledgerTransactionId, owedK: input.amountK - input.paidK };
 }
@@ -151,6 +165,8 @@ export async function expensesFor(tx: TenantDb, businessId: string): Promise<Exp
 /* ── the spend register (dashboard) ──────────────────────────────────────── */
 
 export interface SpendRow {
+  /** Tenant-scoped and opaque. What a withdraw control posts back. */
+  id: string;
   recordedAt: Date;
   description: string;
   category: string | null;
@@ -158,6 +174,8 @@ export interface SpendRow {
   method: string;
   /** What the posting did with the money: a cost, or stock on the shelf. */
   kind: 'expense' | 'purchase';
+  /** recorded | voided. A voided row stays visible and stops counting. */
+  status: string;
 }
 
 export interface SpendList {
@@ -196,24 +214,31 @@ export async function spendFor(
   limit: number,
 ): Promise<SpendList> {
   const rows = await tx.execute<{
+    id: string;
     description: string;
     category: string | null;
     amount_k: string;
     method: string;
+    status: string;
     recorded_at: Date;
   }>(sql`
-    SELECT description, category, amount_k::bigint AS amount_k, method,
+    SELECT id, description, category, amount_k::bigint AS amount_k, method, status,
            created_at AS recorded_at
     FROM expenses
     WHERE business_id = ${businessId}::uuid
     ORDER BY created_at DESC
     LIMIT ${limit}
   `);
+  /* Withdrawn entries stay on the page and stop counting. Both halves matter:
+   * dropping the row would leave a merchant wondering where their entry went,
+   * and counting it would leave the totals describing a cost they reversed. */
   const totals = await tx.execute<{ n: number; expenses_k: string; purchases_k: string }>(sql`
     SELECT count(*)::int AS n,
-           COALESCE(SUM(amount_k) FILTER (WHERE category IS DISTINCT FROM 'stock'), 0)::bigint
+           COALESCE(SUM(amount_k) FILTER (
+             WHERE category IS DISTINCT FROM 'stock' AND status = 'recorded'), 0)::bigint
              AS expenses_k,
-           COALESCE(SUM(amount_k) FILTER (WHERE category = 'stock'), 0)::bigint AS purchases_k
+           COALESCE(SUM(amount_k) FILTER (
+             WHERE category = 'stock' AND status = 'recorded'), 0)::bigint AS purchases_k
     FROM expenses
     WHERE business_id = ${businessId}::uuid
   `);
@@ -225,16 +250,178 @@ export async function spendFor(
   const t = [...totals][0];
   return {
     rows: [...rows].map((r) => ({
+      id: r.id,
       description: r.description,
       category: r.category,
       amountK: Number(r.amount_k),
       method: r.method,
       kind: r.category === 'stock' ? ('purchase' as const) : ('expense' as const),
+      status: r.status,
       recordedAt: new Date(r.recorded_at),
     })),
     count: t?.n ?? 0,
     expensesK: Number(t?.expenses_k ?? 0),
     purchasesK: Number(t?.purchases_k ?? 0),
     payableK: Number([...payable][0]?.payable_k ?? 0),
+  };
+}
+
+/* ── withdrawing an entry ────────────────────────────────────────────────── */
+
+export type VoidSpendOutcome =
+  | {
+      outcome: 'voided';
+      description: string;
+      kind: 'expense' | 'purchase';
+      reversedK: number;
+      /**
+       * True when this entry also brought stock in and that count has NOT
+       * been touched. The money is a bookkeeping fact and can be mirrored;
+       * what is on the shelf is a physical fact and only a merchant knows it.
+       */
+      stockUnchanged: boolean;
+    }
+  | { outcome: 'not_found' }
+  | { outcome: 'already_void' }
+  /** Recorded before the posting link existed, so nothing safe to reverse. */
+  | { outcome: 'no_posting' };
+
+/**
+ * Withdraw a spend entry that should not have been recorded.
+ *
+ * The same instrument as `voidInvoice` and for the same reason: the ledger is
+ * append-only, so the row stays, gets marked, and the books get the MIRROR of
+ * what was written. An auditor sees an expense and its reversal, which is a
+ * different story from an expense that never happened.
+ *
+ * The reversal is built from the ENTRIES that were actually written rather
+ * than rebuilt from the row. A purchase's posting depends on how much was
+ * paid at the time and the row has never stored that, so rebuilding would be
+ * guessing at whatever went to ACCOUNTS_PAYABLE. The foreign key cannot drift
+ * the way a memo match can.
+ *
+ * Stock is deliberately NOT reversed, and the outcome says so rather than
+ * leaving it unsaid. A purchase that brought bales in may have been counted,
+ * sold from, or corrected by hand since, and silently subtracting a delivery
+ * would put a count in the shop's books that nobody took. `AdjustInventory`
+ * is how a merchant fixes a count, and it is one sentence in chat.
+ */
+export async function voidExpense(
+  tx: TenantDb,
+  businessId: string,
+  expenseId: string,
+  reason: string,
+  actor: string,
+): Promise<VoidSpendOutcome> {
+  const rows = await tx
+    .select({
+      id: expenses.id,
+      description: expenses.description,
+      category: expenses.category,
+      amountK: expenses.amountK,
+      status: expenses.status,
+      sourceType: expenses.sourceType,
+      sourceId: expenses.sourceId,
+      ledgerTransactionId: expenses.ledgerTransactionId,
+    })
+    .from(expenses)
+    .where(and(eq(expenses.businessId, businessId), eq(expenses.id, expenseId)))
+    .limit(1);
+
+  const entry = rows[0];
+  if (!entry) return { outcome: 'not_found' };
+  if (entry.status === 'voided') return { outcome: 'already_void' };
+  if (!entry.ledgerTransactionId) return { outcome: 'no_posting' };
+
+  const lines = await tx
+    .select({
+      account: ledgerEntries.account,
+      debitK: ledgerEntries.debitK,
+      creditK: ledgerEntries.creditK,
+    })
+    .from(ledgerEntries)
+    .where(
+      and(
+        eq(ledgerEntries.businessId, businessId),
+        eq(ledgerEntries.transactionId, entry.ledgerTransactionId),
+      ),
+    );
+  /* An unknown account key would mean a write path bypassed the posting
+   * builders. Reversing what we cannot name is worse than refusing. */
+  const posted: LedgerLine[] = [];
+  for (const l of lines) {
+    if (!isAccountKey(l.account)) return { outcome: 'no_posting' };
+    posted.push({ account: l.account, debitK: Number(l.debitK), creditK: Number(l.creditK) });
+  }
+  if (posted.length === 0) return { outcome: 'no_posting' };
+
+  const kind = entry.category === 'stock' ? ('purchase' as const) : ('expense' as const);
+  const label = kind === 'purchase' ? 'Stock' : 'Expense';
+  const original: Posting = { memo: `${label}: ${entry.description}`, lines: posted };
+
+  /*
+   * Claim the row BEFORE writing anything to the ledger.
+   *
+   * `status = 'recorded'` in the WHERE is the mutual exclusion, and the order
+   * is the whole of it. The status read above is a courtesy that gives a
+   * merchant a sentence instead of a shrug; it settles nothing, because two
+   * transactions both read `recorded` before either writes. Only this UPDATE
+   * decides, so only its winner may post. Reversing first and claiming second
+   * would leave the loser's reversal standing in an append-only ledger with
+   * nothing to explain it, which is exactly the unexplained entry the void
+   * exists to prevent.
+   */
+  const marked = await tx
+    .update(expenses)
+    .set({ status: 'voided' })
+    .where(and(eq(expenses.id, entry.id), eq(expenses.status, 'recorded')))
+    .returning({ id: expenses.id });
+  if (marked.length !== 1) return { outcome: 'already_void' };
+
+  await writePosting(
+    tx,
+    businessId,
+    reversal(original, `Void ${label.toLowerCase()}: ${entry.description}`),
+    entry.sourceType,
+    entry.sourceId ?? entry.id,
+  );
+
+  await tx.insert(auditEvents).values({
+    businessId,
+    actor,
+    entity: 'expense',
+    entityId: entry.id,
+    action: 'voided',
+    newValue: { description: entry.description, kind } as never,
+    reason,
+    sourceType: 'system',
+  });
+
+  /* Only a purchase can have brought stock in, and only one with a source to
+   * match on. Asking without those two conditions would let an unrelated
+   * movement answer for this entry, and a merchant told their count needs
+   * checking when it does not is a merchant who stops reading the sentence. */
+  const moved =
+    kind === 'purchase' && entry.sourceId
+      ? await tx
+          .select({ id: inventoryMovements.id })
+          .from(inventoryMovements)
+          .where(
+            and(
+              eq(inventoryMovements.businessId, businessId),
+              eq(inventoryMovements.reason, 'purchase'),
+              eq(inventoryMovements.sourceType, entry.sourceType),
+              eq(inventoryMovements.sourceId, entry.sourceId),
+            ),
+          )
+          .limit(1)
+      : [];
+
+  return {
+    outcome: 'voided',
+    description: entry.description,
+    kind,
+    reversedK: Number(entry.amountK),
+    stockUnchanged: moved.length > 0,
   };
 }

@@ -82,6 +82,10 @@ test('the spend register explains itself when empty, and keeps stock apart', asy
   await expect(page.getByText('Operating expenses')).toBeVisible();
   await expect(page.getByText('Stock purchases')).toBeVisible();
   await expect(page.getByText('Owed to suppliers')).toBeVisible();
+
+  /* Same rule as the invoice register: a destructive control offered against
+   * an empty list is an invitation to wonder what it would have done. */
+  await expect(page.getByText('Withdraw an entry')).toHaveCount(0);
 });
 
 test('an empty month says so instead of rendering zero statements', async ({ page }) => {

@@ -378,18 +378,15 @@ export async function voidInvoice(
   const totalK = Number(invoice.totalK);
   const vatK = Number(invoice.vatK);
   const original = postSale({ memo: `Sale ${invoiceNumber}`, totalK, paidK: 0, vatK });
-  await writePosting(
-    tx,
-    businessId,
-    reversal(original, `Void ${invoiceNumber}`),
-    invoice.sourceType,
-    invoice.sourceId ?? invoiceNumber,
-  );
 
   /**
-   * `status = 'issued'` in the WHERE is the mutual exclusion. Two operators
-   * clicking void at once would otherwise write two reversals against one
-   * invoice, and the books would show the sale cancelled twice.
+   * Claim the invoice BEFORE writing to the ledger.
+   *
+   * The status in the WHERE is the mutual exclusion, and the order is the
+   * whole of it. The status read above settles nothing: two operators both
+   * read `issued` before either writes. Only this UPDATE decides, so only its
+   * winner may post. Posting first would leave the loser's reversal standing
+   * in an append-only ledger with nothing to explain it.
    */
   const marked = await tx
     .update(invoices)
@@ -397,6 +394,14 @@ export async function voidInvoice(
     .where(and(eq(invoices.id, invoice.id), eq(invoices.status, invoice.status)))
     .returning({ id: invoices.id });
   if (marked.length !== 1) return { outcome: 'already_void' };
+
+  await writePosting(
+    tx,
+    businessId,
+    reversal(original, `Void ${invoiceNumber}`),
+    invoice.sourceType,
+    invoice.sourceId ?? invoiceNumber,
+  );
 
   await recordVoidedDocument(tx, businessId, invoiceNumber, reason, actor);
   return { outcome: 'voided', invoiceNumber, reversedK: totalK };

@@ -225,10 +225,15 @@ export const reportsExpensesResponse = z.object({
       method: z.string(),
       /** expense | purchase, decided by what the posting debited. */
       kind: z.union([z.literal('expense'), z.literal('purchase')]),
+      /** recorded | voided. A withdrawn entry stays visible and stops counting. */
+      status: z.string(),
+      /** Tenant-scoped and opaque. What the withdraw control posts back. */
+      id: z.string(),
       recordedAt: z.string(),
     }),
   ),
   count: z.number().int().nonnegative(),
+  /** Recorded entries only: a withdrawn one is reversed, not spent. */
   expensesK: kobo,
   purchasesK: kobo,
   /** Still owed to suppliers: the accounts payable balance from the ledger. */
@@ -275,6 +280,42 @@ export const voidInvoiceResponse = z.discriminatedUnion('outcome', [
   /** Money arrived against it. A credit note is the right instrument, not a void. */
   z.object({ outcome: z.literal('has_payments'), paidK: kobo }),
 ]);
+
+/**
+ * Withdrawing a spend entry.
+ *
+ * Same instrument as the invoice void and the same requirement: a reason,
+ * because a reversal an auditor cannot explain is worse than the entry it
+ * corrects. The entry is named by id rather than by description, because two
+ * "diesel" rows in one week is the normal case and the wrong one reversed is
+ * a second error on top of the first.
+ */
+export const voidExpenseRequest = z.object({
+  expenseId: z.string().uuid(),
+  reason: z.string().trim().min(4).max(200),
+});
+
+export const voidExpenseResponse = z.discriminatedUnion('outcome', [
+  z.object({
+    outcome: z.literal('voided'),
+    description: z.string(),
+    kind: z.union([z.literal('expense'), z.literal('purchase')]),
+    reversedK: kobo,
+    /**
+     * The entry brought stock in and that count was NOT touched. Money is a
+     * bookkeeping fact and can be mirrored; what is on the shelf is a
+     * physical one, and only the merchant knows whether it arrived.
+     */
+    stockUnchanged: z.boolean(),
+  }),
+  z.object({ outcome: z.literal('not_found') }),
+  z.object({ outcome: z.literal('already_void') }),
+  /** Recorded before entries carried their posting, so nothing safe to reverse. */
+  z.object({ outcome: z.literal('no_posting') }),
+]);
+
+export type VoidExpenseRequest = z.infer<typeof voidExpenseRequest>;
+export type VoidExpenseResponse = z.infer<typeof voidExpenseResponse>;
 
 export type VoidInvoiceRequest = z.infer<typeof voidInvoiceRequest>;
 export type VoidInvoiceResponse = z.infer<typeof voidInvoiceResponse>;

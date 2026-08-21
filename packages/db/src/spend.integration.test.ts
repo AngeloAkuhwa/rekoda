@@ -8,7 +8,8 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createDb, withBusiness, type Db } from './client.js';
-import { identity, issueRepo, spendRepo } from './index.js';
+import { sql } from 'drizzle-orm';
+import { identity, issueRepo, spendRepo, stockRepo } from './index.js';
 import { migrate, requireUrls, truncateAll, type Urls } from './testing.js';
 
 let urls: Urls;
@@ -258,6 +259,196 @@ describe('the spend register', () => {
       expensesK: 0,
       purchasesK: 0,
       payableK: 0,
+    });
+  });
+});
+
+describe('withdrawing an entry', () => {
+  async function recordOne(businessId: string, description = 'diesel') {
+    return withBusiness(db, businessId, (tx) =>
+      spendRepo.recordExpense(tx, {
+        businessId,
+        description,
+        category: 'utilities',
+        amountK: 800_000,
+        method: 'cash',
+        sourceType: 'chat',
+        sourceId: `draft-${description}`,
+      }),
+    );
+  }
+
+  it('mirrors the posting instead of deleting anything', async () => {
+    const businessId = await seedBusiness();
+    const recorded = await recordOne(businessId);
+
+    const outcome = await withBusiness(db, businessId, (tx) =>
+      spendRepo.voidExpense(tx, businessId, recorded.expenseId, 'recorded twice', 'user:1'),
+    );
+    expect(outcome).toMatchObject({
+      outcome: 'voided',
+      description: 'diesel',
+      kind: 'expense',
+      reversedK: 800_000,
+      stockUnchanged: false,
+    });
+
+    /* BOTH transactions remain. An expense and its reversal is a different
+     * story from an expense that never happened, and the books must tell
+     * those apart. */
+    const entries = await entriesOf(businessId);
+    expect(entries).toHaveLength(4);
+    const net = new Map<string, number>();
+    for (const e of entries) {
+      net.set(e.account, (net.get(e.account) ?? 0) + Number(e.debitK) - Number(e.creditK));
+    }
+    expect([...net.values()].every((v) => v === 0)).toBe(true);
+  });
+
+  it('stops the withdrawn entry counting, and leaves it on the page', async () => {
+    const businessId = await seedBusiness();
+    const recorded = await recordOne(businessId);
+    await withBusiness(db, businessId, (tx) =>
+      spendRepo.voidExpense(tx, businessId, recorded.expenseId, 'recorded twice', 'user:1'),
+    );
+
+    const list = await withBusiness(db, businessId, (tx) => spendRepo.spendFor(tx, businessId, 50));
+    expect(list.expensesK).toBe(0);
+    expect(list.count).toBe(1);
+    expect(list.rows[0]).toMatchObject({ description: 'diesel', status: 'voided' });
+  });
+
+  it('reverses a part-paid purchase for what the LEDGER says, not what the row says', async () => {
+    const businessId = await seedBusiness();
+    const recorded = await withBusiness(db, businessId, (tx) =>
+      spendRepo.recordPurchase(tx, {
+        businessId,
+        description: 'ankara bales',
+        amountK: 5_000_000,
+        paidK: 2_000_000,
+        sourceType: 'chat',
+        sourceId: 'draft-p',
+      }),
+    );
+
+    const outcome = await withBusiness(db, businessId, (tx) =>
+      spendRepo.voidExpense(tx, businessId, recorded.expenseId, 'never delivered', 'user:1'),
+    );
+    expect(outcome).toMatchObject({ outcome: 'voided', kind: 'purchase' });
+
+    /* The row stores 5,000,000 and nothing else. Only the ledger knows that
+     * 3,000,000 of it went to ACCOUNTS_PAYABLE, and rebuilding the posting
+     * from the row would have left that debt standing. */
+    const list = await withBusiness(db, businessId, (tx) => spendRepo.spendFor(tx, businessId, 50));
+    expect(list.payableK).toBe(0);
+    expect(list.purchasesK).toBe(0);
+  });
+
+  it('says so when the entry also brought stock in', async () => {
+    const businessId = await seedBusiness();
+    const recorded = await withBusiness(db, businessId, async (tx) => {
+      const purchase = await spendRepo.recordPurchase(tx, {
+        businessId,
+        description: 'lace',
+        amountK: 900_000,
+        paidK: 900_000,
+        sourceType: 'chat',
+        sourceId: 'draft-s',
+      });
+      const product = await stockRepo.findOrCreateProduct(tx, businessId, 'lace');
+      await stockRepo.recordMovement(tx, {
+        businessId,
+        productId: product.id,
+        delta: 12,
+        reason: 'purchase',
+        sourceType: 'chat',
+        sourceId: 'draft-s',
+      });
+      return purchase;
+    });
+
+    const outcome = await withBusiness(db, businessId, (tx) =>
+      spendRepo.voidExpense(tx, businessId, recorded.expenseId, 'never delivered', 'user:1'),
+    );
+    expect(outcome).toMatchObject({ outcome: 'voided', stockUnchanged: true });
+
+    /* Deliberate: what is on the shelf is a physical fact, and subtracting a
+     * delivery nobody recounted would put a number in the books that no
+     * merchant took. The outcome flag is how they are told. */
+    const stock = await withBusiness(db, businessId, (tx) =>
+      stockRepo.stockList(tx, businessId, 10),
+    );
+    expect(stock[0]).toMatchObject({ name: 'lace', onHand: 12 });
+  });
+
+  /**
+   * The real test of the exclusion, because the sequential one is not.
+   *
+   * Two transactions both read `recorded` before either writes, so the status
+   * check inside the function settles nothing. Only the UPDATE decides, and
+   * the reversal has to come after it: one winner, one reversal, and never a
+   * posting in an append-only ledger with nothing to explain it.
+   */
+  it('two concurrent withdrawals write exactly ONE reversal between them', async () => {
+    const businessId = await seedBusiness();
+    const recorded = await recordOne(businessId);
+
+    const attempt = () =>
+      withBusiness(db, businessId, (tx) =>
+        spendRepo.voidExpense(tx, businessId, recorded.expenseId, 'raced', 'user:1'),
+      );
+    const outcomes = await Promise.all([attempt(), attempt()]);
+
+    expect(outcomes.filter((o) => o.outcome === 'voided')).toHaveLength(1);
+    expect(outcomes.filter((o) => o.outcome === 'already_void')).toHaveLength(1);
+    // Two lines for the expense, two for its single reversal. Never six.
+    expect(await entriesOf(businessId)).toHaveLength(4);
+  });
+
+  it('refuses the second withdrawal, so one entry can never reverse twice', async () => {
+    const businessId = await seedBusiness();
+    const recorded = await recordOne(businessId);
+    await withBusiness(db, businessId, (tx) =>
+      spendRepo.voidExpense(tx, businessId, recorded.expenseId, 'recorded twice', 'user:1'),
+    );
+
+    const again = await withBusiness(db, businessId, (tx) =>
+      spendRepo.voidExpense(tx, businessId, recorded.expenseId, 'again', 'user:1'),
+    );
+    expect(again).toEqual({ outcome: 'already_void' });
+    expect(await entriesOf(businessId)).toHaveLength(4);
+  });
+
+  it('answers not_found for an id that is not this tenant`s', async () => {
+    const ada = await seedBusiness('+2348120000001');
+    const bola = await seedBusiness('+2348120000002');
+    const recorded = await recordOne(ada);
+
+    const outcome = await withBusiness(db, bola, (tx) =>
+      spendRepo.voidExpense(tx, bola, recorded.expenseId, 'not mine', 'user:2'),
+    );
+    expect(outcome).toEqual({ outcome: 'not_found' });
+    expect(await entriesOf(ada)).toHaveLength(2);
+  });
+
+  it('writes the reason and the actor into the audit trail', async () => {
+    const businessId = await seedBusiness();
+    const recorded = await recordOne(businessId);
+    await withBusiness(db, businessId, (tx) =>
+      spendRepo.voidExpense(tx, businessId, recorded.expenseId, 'supplier cancelled', 'user:7'),
+    );
+
+    const rows = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ actor: string; reason: string; entity: string; entity_id: string }>(
+        sql`SELECT actor, reason, entity, entity_id FROM audit_events
+            WHERE business_id = ${businessId}::uuid AND action = 'voided'`,
+      ),
+    );
+    expect([...rows][0]).toMatchObject({
+      actor: 'user:7',
+      reason: 'supplier cancelled',
+      entity: 'expense',
+      entity_id: recorded.expenseId,
     });
   });
 });
