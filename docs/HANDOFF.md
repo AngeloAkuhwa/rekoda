@@ -6,9 +6,11 @@ points to. Keep it updated at the end of every working session — it is the
 project's memory, and it lives in the repo so it can never be lost with a
 chat.
 
-**Last updated:** 21 August 2026 · M4 complete end to end (through PR #79).
-Not launched: see "What is still missing" below, which is now three WhatsApp
-templates, two deployments and a set of company facts rather than code.
+**Last updated:** 21 August 2026 · through PR #100. M4 complete; Doors 1 and
+2 shipped; the books now carry a cost of sales, an opening balance and both
+statement schedules. Not launched: see "What is still missing" below, which is
+still three WhatsApp templates, two deployments and a set of company facts
+rather than code.
 
 ---
 
@@ -32,15 +34,15 @@ for M2/M3 (PDF templates, Meta/Twilio channel code, conversation gates).
 
 ## 2. Where everything lives
 
-| Thing                 | Location                                                                                                                                                                        |
-| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Decisions and why     | [adr/](adr/) — 7 ADRs, all Accepted except 0003 (Paystack model, awaiting Angelo)                                                                                               |
-| Product & system spec | [architecture.md](architecture.md)                                                                                                                                              |
-| Commercial model      | [pricing-model.md](pricing-model.md) — incl. standing review triggers                                                                                                           |
-| Milestones M0–M5      | [engineering-plan.md](engineering-plan.md) §11                                                                                                                                  |
-| SEO/content plan      | [content-plan.md](content-plan.md)                                                                                                                                              |
-| Ops procedures        | [runbooks/](runbooks/)                                                                                                                                                          |
-| Code                  | `packages/core` (money/ledger/reconciliation — most-tested), `packages/contracts` (AI border schemas), `packages/db` (30-table schema + RLS), `packages/shared` (branded types) |
+| Thing                 | Location                                                                                                                                                                                            |
+| --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Decisions and why     | [adr/](adr/) — 25 ADRs. Two superseded (0002 by 0011, 0009 by 0012) and one still Proposed: **0013**, deferred to Phase 2. 0003 is Accepted, not pending: it was reinstated as the default          |
+| Product & system spec | [architecture.md](architecture.md)                                                                                                                                                                  |
+| Commercial model      | [pricing-model.md](pricing-model.md) — incl. standing review triggers                                                                                                                               |
+| Milestones M0–M5      | [engineering-plan.md](engineering-plan.md) §11                                                                                                                                                      |
+| SEO/content plan      | [content-plan.md](content-plan.md)                                                                                                                                                                  |
+| Ops procedures        | [runbooks/](runbooks/)                                                                                                                                                                              |
+| Code                  | `packages/core` (money/ledger/costing/statements — most-tested), `packages/contracts` (AI border schemas), `packages/db` (schema + RLS, migrations through 0033), `packages/shared` (branded types) |
 
 ## 3. Status at handoff
 
@@ -362,6 +364,96 @@ inherits the triage instead of repeating it:
 - **`settlementCipherFor`** reads back the encrypted settlement account and
   nothing needs to yet. It stays write-only until something does.
 
+### Since PR #87: the doors, and the books becoming books
+
+**Money out got its remaining halves (PRs #88, #89).** Accounts payable is
+aged in the same buckets receivables are, because "what do I owe" with no age
+on it is a number a supplier's phone call cannot be answered from. And a cost
+that arrives every month whether or not anybody mentions it is a schedule now:
+`recurring_entries` plus a daily sweep that CLAIMS a row before raising it, so
+two sweeps racing cannot raise a month's rent twice. Entries are dated the day
+they fell due, not the day the sweep caught up: a quarter of rent stamped on
+one day would put three months of cost into one month's profit.
+
+**A price list a merchant can manage (PR #90).** Prices, descriptions, photos
+and a listed/hidden flag, all edited from `/app/catalogue`. Absent and null are
+different throughout: a form that submits only what it changed must not wipe
+what it did not, which is what `CatalogueEdit` exists to express.
+
+**Door 2, orders somebody else wrote (PRs #91, #92).** A merchant forwards the
+message a customer sent them; Rekoda parses it into names and quantities with
+NO money in it, because the person who wrote it does not set the prices, and
+prices it from the merchant's own catalogue. `RecordOrder` carrying no amount
+is the whole design. The catalogue is re-read at the yes rather than carried on
+the draft, so a price changed in between cannot issue at yesterday's figure.
+The order then becomes an invoice and a payment link a customer can open.
+
+**Door 1, the first page with no session behind it (PR #93).** `rekoda.app/s/<handle>`
+is a merchant's own shop, open to anybody. The design turns on one problem: a
+public page has to resolve a slug to a tenant, and `businesses` is under
+row-level security keyed on the pinned tenant. A policy letting anyone read a
+published business would expose the WHOLE row — plan, TIN, RC number, owner id,
+the date a card last failed. So the public face of a business is its own table
+holding only what the merchant published, readable by anyone and writable only
+under a pin. No cart and no checkout: every item is a wa.me link with the order
+already typed, which hands Door 1 to Door 2.
+
+**What a shared link looks like (PR #94).** Icons and Open Graph cards. Two
+bugs came out of asking for the images rather than trusting the build: the shop
+card 500'd for every shop that had a product (Satori refuses a div with two
+children, and `{count} items · order on WhatsApp` is two), and every shop page
+declared the HOMEPAGE as its canonical while asking to be indexed. `apps/web`
+got its first unit test and it renders to bytes, because nothing else catches a
+layout the type system accepts and the renderer refuses.
+
+**Both halves of the profit and loss now show their working (PRs #95, #97).**
+`expenses.category` was free text nothing read and `invoices.sale_source` was
+written and never read. Both are fixed sets now, folded deterministically —
+the model's word is a hint, never the decision, because a category is what a
+whole P&L groups by and a prompt revision would otherwise regroup a year of
+history. Both schedules are built from LEDGER movement rather than from the
+registers, which is the part to keep: a provider fee has no expense row, a
+credit note is its own posting, and a void is a mirror that must come off the
+month it is written in. Reading the ledger and joining outward for a label
+makes each schedule tie to its statement line by construction.
+
+That needed a column `invoices` never had. `expenses` and `credit_notes` have
+carried `ledger_transaction_id` since they existed; invoices did not, so
+`reverses_id` sat in the schema unwritten and nothing could get from a credit
+on SALES_REVENUE back to the invoice behind it. Migration 0031 closes both.
+
+**Open shops are in the sitemap, and the form says so (PR #96).** Slugs and
+dates only: every merchant's name and number is public on their own page, and
+gathering all of them into one downloadable file would be a directory rather
+than a sitemap. The publish control now says an open shop is findable by search
+engines and listed on rekoda.app, because "open to customers" should not
+quietly mean more than a merchant read.
+
+**The books can be opened (PR #98).** `OWNERS_EQUITY` had been in the chart
+since ADR 0004 with nothing ever posted to it, so every business came into
+existence holding nothing and a merchant who spent from money they already had
+read a NEGATIVE cash balance. One posting, once, enforced by a partial unique
+index rather than by a check the caller is trusted to make. Deliberately no box
+for what customers owe: an opening receivable has no invoice behind it, so the
+debtors page and the ledger would answer the same question differently.
+
+**A sale costs something (PRs #99, #100).** `COGS` sat at code 5000 with
+nothing ever posted to it, so inventory only grew and gross profit equalled
+revenue. Weighted average per product, moved by deliveries, with the null
+load-bearing: a product nobody has priced posts no cost and the statements say
+how much revenue that was. Two postings per sale, because a sale is exact and
+a cost is an estimate — which also means a void has to mirror both, a bug
+caught by re-reading the diff rather than by a test. The statement gained the
+shape an accountant reads: revenue, cost of sales, gross profit, running costs,
+net. A merchant can state a cost by hand for stock they counted or already had.
+
+**The chart of accounts is no longer untouched by reporting.** ADR 0004's ten
+accounts are unchanged, but four of them now carry something they never did:
+`OWNERS_EQUITY`, `COGS`, and the two schedules that break `EXPENSES` and
+`SALES_REVENUE` out by category and channel WITHOUT adding accounts. That is
+the pattern to keep if more detail is ever wanted: a supporting schedule tied
+to a ledger line, not a wider chart.
+
 **What is still missing before merchants.** Almost none of it is code:
 
 1. **Three Meta-approved templates.** Authentication for sign-in codes
@@ -385,11 +477,14 @@ inherits the triage instead of repeating it:
    notes spanning male and female voices, Lagos and non-Lagos accents, noisy
    shops, code-switching and spoken amounts. The metric is whether the
    financial instruction came out right, not word accuracy.
-6. **M5 Integrate** — deferred from launch by ADR 0024 and to be re-specified
-   against real merchant usage. When it resumes, the priority is ingesting
-   and reconciling EXTERNAL orders rather than building a native catalogue:
-   the product is a bookkeeper, and turning it into commerce software before
-   the bookkeeping is validated would blur what it is.
+6. **M5 Integrate** — the WhatsApp catalogue webhook (Door 3) is what remains,
+   and it waits on Meta approval rather than on us. The note that used to sit
+   here said the priority was ingesting external orders rather than building a
+   native catalogue; PRs #90 to #93 built the catalogue and the shop anyway,
+   and that was right: Doors 1 and 2 need no approval from anybody and they
+   feed the bookkeeping rather than replacing it. Every price on the shop is
+   the merchant's own, every order still becomes an invoice through the same
+   engine, and Rekoda still holds no money.
 
 ## 4. Operational facts a new session must know
 
@@ -465,6 +560,11 @@ inherits the triage instead of repeating it:
   the published refund policy, and one controlled live transaction.
 - **The company facts** — registered entity, address, support address — for
   `/terms`, `/refunds` and `/privacy`.
+- **`REKODA_WEB_URL`** on the API deployment. Chat replies link to the
+  dashboard and the shop settings page shows a merchant their own
+  `rekoda.app/s/<handle>`; both fall back to a local default while it is
+  unset, which is right for development and wrong the moment a real merchant
+  reads one.
 - **30 to 50 Nigerian voice notes** for the accent benchmark (ADR 0024, C11).
 - Revoke the two burned PATs.
 - Secure `rekoda.app` (and ideally `rekoda.ng`).
@@ -484,6 +584,14 @@ inherits the triage instead of repeating it:
 - **The first abandoned trial reaching 90 days** — the retention sweep must
   have a working `META_RETENTION_TEMPLATE` by then, or the schedule
   `/privacy` publishes stops being kept (ADR 0024).
+- **5,000 published shops** — `/v1/shops` caps the sitemap there and reports
+  `truncated`. At that point the answer is a sitemap index with one file per
+  slice, not a bigger number in `SITEMAP_SHOPS`.
+- **The first merchant to query their gross margin** — weighted average is
+  the method (PR #99) and it is only as good as the deliveries recorded. If
+  merchants routinely buy without naming a product, the honest response is to
+  make the stock page's "no cost recorded" line louder, not to start
+  inferring costs from amounts.
 
 ---
 

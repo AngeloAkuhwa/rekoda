@@ -75,6 +75,7 @@ export class CatalogueController {
         name: item.name,
         description: item.description,
         unitPriceK: item.unitPriceK,
+        unitCostK: item.unitCostK,
         /* A path, never the key. The key is where the bucket keeps it and
          * says nothing a browser can use; this is the route that will hand
          * the bytes back, having checked who is asking. */
@@ -103,6 +104,7 @@ export class CatalogueController {
     const edit: catalogueRepo.CatalogueEdit = {};
     if ('description' in parsed.data) edit.description = parsed.data.description ?? null;
     if ('unitPriceK' in parsed.data) edit.unitPriceK = parsed.data.unitPriceK ?? null;
+    if ('unitCostK' in parsed.data) edit.unitCostK = parsed.data.unitCostK ?? null;
     if ('active' in parsed.data) edit.active = parsed.data.active!;
 
     const businessId = request.auth!.businessId;

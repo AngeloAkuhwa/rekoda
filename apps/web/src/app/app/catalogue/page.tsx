@@ -8,6 +8,7 @@ import { SignOutButton } from '../SignOutButton';
 import {
   ListingForm,
   SetDescriptionForm,
+  SetCostForm,
   SetPriceForm,
   UploadPhotoForm,
   type Choice,
@@ -139,6 +140,7 @@ export default async function CataloguePage() {
                     <th>What it is</th>
                     <th>In the shop</th>
                     <th className="rk-num">On hand</th>
+                    <th className="rk-num">Cost</th>
                     <th className="rk-num">Price</th>
                   </tr>
                 </thead>
@@ -168,6 +170,16 @@ export default async function CataloguePage() {
                       <td>{product.description ?? 'Not described'}</td>
                       <td>{product.active ? 'Listed' : 'Hidden'}</td>
                       <td className="rk-num">{product.onHand}</td>
+                      {/* What it cost, beside what it sells for. Two different
+                          facts, and a shop that reads one as the other reads a
+                          profit that is not there. */}
+                      <td className="rk-num">
+                        {product.unitCostK === null ? (
+                          <span className="rk-fineprint">no cost</span>
+                        ) : (
+                          <Money kobo={product.unitCostK} />
+                        )}
+                      </td>
                       <td className="rk-num">
                         {product.unitPriceK === null ? (
                           <span className="rk-fineprint">no price</span>
@@ -188,6 +200,17 @@ export default async function CataloguePage() {
                 issued: what something sold for is a fact about that sale, and it stays.
               </p>
               <SetPriceForm choices={choices} />
+            </details>
+
+            <details className="rk-void">
+              <summary>Say what it costs you</summary>
+              <p className="rk-fineprint">
+                Recording a purchase sets this on its own, so most products never need this form. It
+                is here for stock you counted by hand or had before you joined: without a cost,
+                selling it shows income with nothing against it and every profit figure you read is
+                too high. What you type replaces the average rather than joining it.
+              </p>
+              <SetCostForm choices={choices} />
             </details>
 
             <details className="rk-void">

@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/Button';
 import { Field } from '@/components/ui/Field';
 import {
   setDescriptionAction,
+  setCostAction,
   setPriceAction,
   setProductListedAction,
   uploadProductImageAction,
@@ -70,6 +71,34 @@ export function SetPriceForm({ choices }: { choices: Choice[] }) {
       <Result state={state} />
       <Button type="submit" disabled={pending}>
         {pending ? 'Saving' : 'Save this price'}
+      </Button>
+    </form>
+  );
+}
+
+/**
+ * What one of them costs the merchant.
+ *
+ * Beside the price and deliberately not merged with it: what something sells
+ * for and what it cost are different facts, and a shop that reads one as the
+ * other reads a profit that is not there.
+ */
+export function SetCostForm({ choices }: { choices: Choice[] }) {
+  const [state, action, pending] = useActionState<CatalogueFormState, FormData>(setCostAction, {});
+
+  return (
+    <form action={action} className="rk-form" noValidate>
+      <ProductPicker id="cost-product" choices={choices} error={state.error} />
+      <Field
+        id="cost"
+        label="What one costs you"
+        hint="In naira, what you pay for it. Recording a purchase sets this on its own"
+      >
+        <input name="cost" id="cost" required className="rk-input" placeholder="4500" />
+      </Field>
+      <Result state={state} />
+      <Button type="submit" disabled={pending}>
+        {pending ? 'Saving' : 'Save this cost'}
       </Button>
     </form>
   );

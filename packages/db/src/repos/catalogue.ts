@@ -21,6 +21,8 @@ export interface CatalogueItem {
   name: string;
   description: string | null;
   unitPriceK: number | null;
+  /** Weighted average of what it cost, or null when nobody has said. */
+  unitCostK: number | null;
   /** Storage key, not a URL. What serves it decides what a URL looks like. */
   imageKey: string | null;
   active: boolean;
@@ -45,16 +47,17 @@ export async function catalogueFor(
     name: string;
     description: string | null;
     unit_price_k: string | number | null;
+    unit_cost_k: string | number | null;
     image_key: string | null;
     active: number;
     on_hand: number | null;
   }>(sql`
-    SELECT p.id, p.name, p.description, p.unit_price_k, p.image_key, p.active,
+    SELECT p.id, p.name, p.description, p.unit_price_k, p.unit_cost_k, p.image_key, p.active,
            coalesce(sum(m.delta), 0)::int AS on_hand
     FROM products p
     LEFT JOIN inventory_movements m ON m.product_id = p.id
     WHERE p.business_id = ${businessId}::uuid
-    GROUP BY p.id, p.name, p.description, p.unit_price_k, p.image_key, p.active
+    GROUP BY p.id, p.name, p.description, p.unit_price_k, p.unit_cost_k, p.image_key, p.active
     ORDER BY lower(p.name) ASC
     LIMIT ${limit}
   `);
@@ -64,6 +67,7 @@ export async function catalogueFor(
     name: r.name,
     description: r.description,
     unitPriceK: r.unit_price_k === null ? null : Number(r.unit_price_k),
+    unitCostK: r.unit_cost_k === null ? null : Number(r.unit_cost_k),
     imageKey: r.image_key,
     active: r.active === 1,
     onHand: r.on_hand ?? 0,
@@ -74,6 +78,15 @@ export interface CatalogueEdit {
   /** Absent means leave it. Present and null means clear it. */
   description?: string | null | undefined;
   unitPriceK?: number | null | undefined;
+  /**
+   * A cost the merchant STATES, which replaces the weighted average.
+   *
+   * A delivery is a fact about goods arriving and moves the average.
+   * This is a merchant correcting or supplying what something costs, and
+   * averaging their answer with the history they are correcting would give
+   * them neither figure.
+   */
+  unitCostK?: number | null | undefined;
   active?: boolean | undefined;
 }
 
@@ -95,6 +108,7 @@ export async function editProduct(
   const values: Record<string, unknown> = {};
   if ('description' in edit) values['description'] = edit.description;
   if ('unitPriceK' in edit) values['unitPriceK'] = edit.unitPriceK;
+  if ('unitCostK' in edit) values['unitCostK'] = edit.unitCostK;
   if ('active' in edit) values['active'] = edit.active ? 1 : 0;
   if (Object.keys(values).length === 0) return 'nothing_to_do';
 
