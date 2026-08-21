@@ -46,12 +46,16 @@ class NoTransportConfigured implements ModelTransport {
         /* Prices before transports: a call that cannot be costed is a call
          * that quietly reports as free, so the check happens at boot rather
          * than at the first invoice. */
-        registerRuntimeModelPrices();
+        registerRuntimeModelPrices(config.aiModelPrices ?? undefined);
 
         if (config.aiProvider === 'openai') {
           assertModelIsPriced(config.aiModelDefault, Boolean(config.openaiApiKey));
+          /* `aiBaseUrl` is what makes this an OPENAI-COMPATIBLE transport
+           * rather than an OpenAI one: DeepSeek weights on a US host, Groq,
+           * Together, OpenRouter all speak this wire format. Undefined means
+           * OpenAI itself, which is the SDK's own default. */
           return config.openaiApiKey
-            ? new OpenAiTransport(config.openaiApiKey)
+            ? new OpenAiTransport(config.openaiApiKey, undefined, config.aiBaseUrl ?? undefined)
             : new NoTransportConfigured();
         }
         assertModelIsPriced(config.aiModelDefault, Boolean(config.anthropicApiKey));

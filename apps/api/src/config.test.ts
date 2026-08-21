@@ -18,16 +18,19 @@ const BASE = {
 
 describe('picking a provider', () => {
   it('follows an explicit choice', () => {
-    expect(loadConfig({ ...BASE, AI_PROVIDER: 'openai', OPENAI_API_KEY: 'k' }).aiProvider).toBe(
-      'openai',
-    );
+    expect(
+      loadConfig({ ...BASE, AI_PROVIDER: 'openai', OPENAI_API_KEY: 'k', AI_MODEL_DEFAULT: 'm' })
+        .aiProvider,
+    ).toBe('openai');
     expect(
       loadConfig({ ...BASE, AI_PROVIDER: 'anthropic', ANTHROPIC_API_KEY: 'k' }).aiProvider,
     ).toBe('anthropic');
   });
 
   it('uses whichever key is present when no choice is made', () => {
-    expect(loadConfig({ ...BASE, OPENAI_API_KEY: 'k' }).aiProvider).toBe('openai');
+    expect(loadConfig({ ...BASE, OPENAI_API_KEY: 'k', AI_MODEL_DEFAULT: 'm' }).aiProvider).toBe(
+      'openai',
+    );
     expect(loadConfig({ ...BASE, ANTHROPIC_API_KEY: 'k' }).aiProvider).toBe('anthropic');
   });
 
@@ -61,14 +64,66 @@ describe('picking a provider', () => {
 });
 
 describe('the default model follows the provider', () => {
-  it('because a model id is not portable between them', () => {
-    expect(loadConfig({ ...BASE, ANTHROPIC_API_KEY: 'k' }).aiModelDefault).toMatch(/claude/);
-    expect(loadConfig({ ...BASE, OPENAI_API_KEY: 'k' }).aiModelDefault).toMatch(/gpt/);
+  it('ships one for Anthropic, by EXACT id and never an alias', () => {
+    const model = loadConfig({ ...BASE, ANTHROPIC_API_KEY: 'k' }).aiModelDefault;
+    expect(model).toBe('claude-haiku-4-5');
+    /* An alias that silently moves tiers takes the price with it: cost
+     * telemetry keys on the family, so last month's rate would be reported
+     * against this month's bill. */
+    expect(model).not.toMatch(/latest/);
   });
 
-  it('and an explicit model wins over both', () => {
-    const config = loadConfig({ ...BASE, OPENAI_API_KEY: 'k', AI_MODEL_DEFAULT: 'o4-mini' });
-    expect(config.aiModelDefault).toBe('o4-mini');
+  /**
+   * No OpenAI default ships, and that is the point.
+   *
+   * `gpt-4.1` leaves the API on 14 October 2026, and naming a successor here
+   * would mean shipping a price this repository cannot verify against the
+   * vendor's own page. Refusing at boot is the honest failure.
+   */
+  it('REFUSES an OpenAI-compatible provider with no model named', () => {
+    expect(() => loadConfig({ ...BASE, OPENAI_API_KEY: 'k' })).toThrow(/AI_MODEL_DEFAULT/);
+  });
+
+  it('and an explicit model is all it needs', () => {
+    const config = loadConfig({ ...BASE, OPENAI_API_KEY: 'k', AI_MODEL_DEFAULT: 'gpt-5-mini' });
+    expect(config.aiModelDefault).toBe('gpt-5-mini');
+  });
+
+  it('lets an explicit model override the Anthropic default too', () => {
+    const config = loadConfig({
+      ...BASE,
+      ANTHROPIC_API_KEY: 'k',
+      AI_MODEL_DEFAULT: 'claude-opus-5',
+    });
+    expect(config.aiModelDefault).toBe('claude-opus-5');
+  });
+});
+
+describe('an OpenAI-compatible endpoint that is not OpenAI', () => {
+  /**
+   * Groq, Together, OpenRouter and DeepSeek weights on a US host all speak
+   * this wire format, so reaching one is a deployment decision rather than a
+   * new adapter. Which host is a compliance decision: DeepSeek's own API is
+   * PRC-hosted and trains on inputs by default.
+   */
+  it('carries a base URL through when one is set', () => {
+    const config = loadConfig({
+      ...BASE,
+      OPENAI_API_KEY: 'k',
+      AI_MODEL_DEFAULT: 'm',
+      AI_BASE_URL: 'https://api.groq.com/openai/v1',
+    });
+    expect(config.aiBaseUrl).toBe('https://api.groq.com/openai/v1');
+  });
+
+  it('is null when unset, which means the provider default', () => {
+    expect(loadConfig({ ...BASE, ANTHROPIC_API_KEY: 'k' }).aiBaseUrl).toBeNull();
+  });
+
+  it('carries configured prices through as written', () => {
+    const prices = '{"llama-3.3-70b":{"in":590000,"out":790000}}';
+    const config = loadConfig({ ...BASE, ANTHROPIC_API_KEY: 'k', AI_MODEL_PRICES: prices });
+    expect(config.aiModelPrices).toBe(prices);
   });
 });
 

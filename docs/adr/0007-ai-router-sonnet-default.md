@@ -1,6 +1,10 @@
 # 0007 — AI router: deterministic-first, Sonnet as the default brain
 
-**Status:** Accepted
+**Status:** Accepted — **the default model is superseded by
+[0023](0023-haiku-reads-the-message.md)** (21 Aug 2026): Haiku reads the
+merchant's message, on 0007's own reasoning applied one tier lower and against
+economics that have since changed. The deterministic-first router, the
+escalation flag, prompt caching and the guardrails below all stand.
 **Date:** 2026-08-19
 
 ## Context
