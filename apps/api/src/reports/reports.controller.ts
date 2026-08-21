@@ -46,6 +46,7 @@ import {
   daysOverdue,
   buildXlsx,
   isAccountKey,
+  periodBefore,
   statementSheets,
   toCsv,
   usagePeriod,
@@ -143,8 +144,32 @@ export class ReportsController {
     @Query('period') periodParam?: string,
   ): Promise<ReportsStatementsResponse> {
     const period = requirePeriod(periodParam);
-    const sums = await this.sumsFor(request.auth!.businessId, period);
-    return { period, ...buildAll(sums) };
+    const businessId = request.auth!.businessId;
+    const before = periodBefore(period);
+
+    /* Two grouped scans over one tenant's ledger, in parallel. The prior
+     * column is what every accounting package puts beside a profit and loss,
+     * and a merchant reading this page always wants it: gating it behind a
+     * flag would mean a second round trip for the thing they came for. */
+    const [sums, priorSums] = await Promise.all([
+      this.sumsFor(businessId, period),
+      this.sumsFor(businessId, before),
+    ]);
+
+    const prior = buildProfitAndLoss(priorSums);
+    return {
+      period,
+      ...buildAll(sums),
+      comparison: {
+        period: before,
+        totalIncomeK: prior.totalIncomeK,
+        totalExpensesK: prior.totalExpensesK,
+        netProfitK: prior.netProfitK,
+        lines: Object.fromEntries(
+          [...prior.income, ...prior.expenses].map((line) => [line.account, line.amountK]),
+        ),
+      },
+    };
   }
 
   /**

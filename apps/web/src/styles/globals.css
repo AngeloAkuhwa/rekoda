@@ -781,6 +781,30 @@ button,
   white-space: nowrap;
   padding-left: var(--rk-space-3);
 }
+/* A comparison table has TWO money columns, and the rule above right-aligns
+   only the last one. Without this the current month sits left-aligned beside
+   a right-aligned prior month, which reads as two unrelated tables. */
+.rk-statement-compare td:nth-child(n + 2),
+.rk-statement-compare th:nth-child(n + 2) {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  padding-left: var(--rk-space-3);
+}
+/* The prior column is context, not the answer. Muted so the eye lands on the
+   month the merchant asked about. */
+.rk-statement-compare td:last-child,
+.rk-statement-compare thead th:last-child {
+  color: var(--rk-text-muted);
+  font-weight: 400;
+}
+.rk-statement-compare thead th {
+  font-size: var(--rk-text-xs);
+  color: var(--rk-text-muted);
+  font-weight: 600;
+  border-bottom: 1px solid var(--rk-border);
+}
+
 .rk-statement-section th {
   padding-top: var(--rk-space-4);
   font-size: var(--rk-text-xs);

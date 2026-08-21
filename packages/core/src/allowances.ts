@@ -80,6 +80,18 @@ export function usagePeriod(at: Date): string {
 }
 
 /**
+ * The billing month before this one.
+ *
+ * Arithmetic on the label rather than on a Date, so December rolls back to
+ * November of the previous year without anybody reasoning about it, and
+ * `2026-01` gives `2025-12` rather than a month that does not exist.
+ */
+export function periodBefore(period: string): string {
+  const [year, month] = period.split('-').map(Number);
+  return new Date(Date.UTC(year ?? 1970, (month ?? 1) - 2, 1)).toISOString().slice(0, 7);
+}
+
+/**
  * What each plan costs, in kobo (docs/pricing-model.md).
  *
  * These lived only in prose — the pricing page, the marketing copy and this

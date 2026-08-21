@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { estateCount, estateMargin, margin, payingCount } from './margin.js';
-import { PLAN_PRICES_K, planPriceK } from './allowances.js';
+import { PLAN_PRICES_K, periodBefore, planPriceK } from './allowances.js';
 
 describe('plan prices', () => {
   it('match the published pricing model', () => {
@@ -106,5 +106,20 @@ describe('counting the estate', () => {
 
   it('does not count an expired trial as paying', () => {
     expect(payingCount([{ plan: 'expired', businesses: 9 }])).toBe(0);
+  });
+});
+
+describe('periodBefore', () => {
+  it('steps back one month', () => {
+    expect(periodBefore('2026-08')).toBe('2026-07');
+  });
+
+  it('rolls back across a year without anybody reasoning about it', () => {
+    expect(periodBefore('2026-01')).toBe('2025-12');
+  });
+
+  it('keeps two digits, because the label is compared as a string', () => {
+    expect(periodBefore('2026-11')).toBe('2026-10');
+    expect(periodBefore('2026-10')).toBe('2026-09');
   });
 });

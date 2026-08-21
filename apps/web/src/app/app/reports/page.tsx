@@ -1,5 +1,5 @@
 import type { Metadata } from 'next';
-import { usagePeriod } from '@rekoda/core';
+import { periodBefore, periodLabel, usagePeriod } from '@rekoda/core';
 import { Money } from '@/components/ui/Money';
 import { requireSessionWithToken } from '@/server/guards';
 import { reportsStatements } from '@/server/api';
@@ -30,7 +30,7 @@ export default async function ReportsPage({
   const period = requested ?? current;
 
   const statements = await reportsStatements(token, period);
-  const { trialBalance, profitAndLoss, balanceSheet, cashflow } = statements;
+  const { trialBalance, profitAndLoss, balanceSheet, cashflow, comparison } = statements;
 
   /**
    * VAT, read straight off the liability account the posting builder already
@@ -49,7 +49,8 @@ export default async function ReportsPage({
   };
 
   const label = periodLabel(period);
-  const previous = previousPeriod(period);
+  const priorLabel = periodLabel(comparison.period);
+  const previous = periodBefore(period);
   const empty = trialBalance.rows.length === 0;
 
   return (
@@ -115,51 +116,89 @@ export default async function ReportsPage({
           <div className="rk-dash-grid">
             <div className="rk-card rk-dash-card">
               <h2>Profit and loss</h2>
-              <p className="rk-fineprint">What you earned and spent in {label}.</p>
-              <table className="rk-statement">
-                <tbody>
-                  <tr className="rk-statement-section">
-                    <th colSpan={2}>Income</th>
-                  </tr>
-                  {profitAndLoss.income.map((line) => (
-                    <tr key={line.account}>
-                      <td>{line.name}</td>
+              <p className="rk-fineprint">
+                What you earned and spent in {label}, against {priorLabel}.
+              </p>
+              <div className="rk-table-scroll">
+                <table className="rk-statement rk-statement-compare">
+                  <thead>
+                    <tr>
+                      <th />
+                      <th>{label}</th>
+                      {/* The column every accounting package puts here.
+                          "₦150,000 of sales" is a figure; "₦150,000, up from
+                          ₦92,000" is what the merchant wanted to know. */}
+                      <th>{priorLabel}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr className="rk-statement-section">
+                      <th colSpan={3}>Income</th>
+                    </tr>
+                    {profitAndLoss.income.map((line) => (
+                      <tr key={line.account}>
+                        <td>{line.name}</td>
+                        <td>
+                          <Money kobo={line.amountK} />
+                        </td>
+                        <td>
+                          <Prior kobo={comparison.lines[line.account]} />
+                        </td>
+                      </tr>
+                    ))}
+                    <tr className="rk-statement-total">
+                      <td>Total income</td>
                       <td>
-                        <Money kobo={line.amountK} />
+                        <Money kobo={profitAndLoss.totalIncomeK} />
+                      </td>
+                      <td>
+                        <Money kobo={comparison.totalIncomeK} />
                       </td>
                     </tr>
-                  ))}
-                  <tr className="rk-statement-total">
-                    <td>Total income</td>
-                    <td>
-                      <Money kobo={profitAndLoss.totalIncomeK} />
-                    </td>
-                  </tr>
-                  <tr className="rk-statement-section">
-                    <th colSpan={2}>Expenses</th>
-                  </tr>
-                  {profitAndLoss.expenses.map((line) => (
-                    <tr key={line.account}>
-                      <td>{line.name}</td>
+                    <tr className="rk-statement-section">
+                      <th colSpan={3}>Expenses</th>
+                    </tr>
+                    {profitAndLoss.expenses.map((line) => (
+                      <tr key={line.account}>
+                        <td>{line.name}</td>
+                        <td>
+                          <Money kobo={line.amountK} />
+                        </td>
+                        <td>
+                          <Prior kobo={comparison.lines[line.account]} />
+                        </td>
+                      </tr>
+                    ))}
+                    <tr className="rk-statement-total">
+                      <td>Total expenses</td>
                       <td>
-                        <Money kobo={line.amountK} />
+                        <Money kobo={profitAndLoss.totalExpensesK} />
+                      </td>
+                      <td>
+                        <Money kobo={comparison.totalExpensesK} />
                       </td>
                     </tr>
-                  ))}
-                  <tr className="rk-statement-total">
-                    <td>Total expenses</td>
-                    <td>
-                      <Money kobo={profitAndLoss.totalExpensesK} />
-                    </td>
-                  </tr>
-                  <tr className="rk-statement-grand">
-                    <td>{profitAndLoss.netProfitK >= 0 ? 'Net profit' : 'Net loss'}</td>
-                    <td>
-                      <Money kobo={Math.abs(profitAndLoss.netProfitK)} />
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
+                    <tr className="rk-statement-grand">
+                      <td>{profitAndLoss.netProfitK >= 0 ? 'Net profit' : 'Net loss'}</td>
+                      <td>
+                        <Money kobo={Math.abs(profitAndLoss.netProfitK)} />
+                      </td>
+                      <td>
+                        <Money kobo={Math.abs(comparison.netProfitK)} />
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              {profitAndLoss.netProfitK !== comparison.netProfitK ? (
+                <p className="rk-fineprint">
+                  {comparison.netProfitK < 0 && profitAndLoss.netProfitK >= 0
+                    ? `You were at a loss in ${priorLabel} and are in profit now.`
+                    : profitAndLoss.netProfitK > comparison.netProfitK
+                      ? `Up on ${priorLabel}.`
+                      : `Down on ${priorLabel}.`}
+                </p>
+              ) : null}
             </div>
 
             <div className="rk-card rk-dash-card">
@@ -323,16 +362,12 @@ export default async function ReportsPage({
   );
 }
 
-function periodLabel(period: string): string {
-  return new Date(`${period}-01T00:00:00Z`).toLocaleDateString('en-NG', {
-    month: 'long',
-    year: 'numeric',
-    timeZone: 'UTC',
-  });
-}
-
-function previousPeriod(period: string): string {
-  const [year, month] = period.split('-').map(Number);
-  const d = new Date(Date.UTC(year!, month! - 2, 1));
-  return d.toISOString().slice(0, 7);
+/**
+ * A prior-period figure, or a dash when that account had none.
+ *
+ * A dash and a zero mean different things on a comparison column: zero says
+ * they spent nothing on it last month, a dash says the line did not exist.
+ */
+function Prior({ kobo }: { kobo: number | undefined }) {
+  return kobo === undefined ? <span className="rk-fineprint">-</span> : <Money kobo={kobo} />;
 }

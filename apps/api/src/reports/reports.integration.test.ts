@@ -745,3 +745,93 @@ describe('the statements workbook', () => {
     });
   }
 });
+
+/**
+ * The prior-period column.
+ *
+ * Every accounting package puts one beside a profit and loss, because
+ * "₦150,000 of sales" is a figure and "₦150,000, up from ₦92,000" is the
+ * thing a merchant actually wanted to know.
+ */
+describe('comparing against the month before', () => {
+  const statements = (period: string, auth: Record<string, string>) =>
+    app
+      .inject({ method: 'GET', url: `/v1/reports/statements?period=${period}`, headers: auth })
+      .then((r) => r.json());
+
+  it('names the month before, rolling back across a year', async () => {
+    const { auth } = await onboard('+2348120000061');
+    expect((await statements('2026-08', auth)).comparison.period).toBe('2026-07');
+    expect((await statements('2026-01', auth)).comparison.period).toBe('2025-12');
+  });
+
+  it('is zero for a business that was not trading, not absent', async () => {
+    const { auth } = await onboard('+2348120000062');
+    const body = await statements('2026-08', auth);
+    /* Zero under a column labelled July says what it is. Omitting the column
+     * would make the current month look like it had nothing to beat. */
+    expect(body.comparison).toMatchObject({
+      totalIncomeK: 0,
+      totalExpensesK: 0,
+      netProfitK: 0,
+      lines: {},
+    });
+  });
+
+  it('reads the prior month from the ledger, not from this one', async () => {
+    const { auth, businessId } = await onboard('+2348120000063');
+    await seedExpense(businessId, 'fuel', 1_200_000);
+
+    const period = new Date(Date.now() + 3_600_000).toISOString().slice(0, 7);
+    const thisMonth = await statements(period, auth);
+    expect(thisMonth.profitAndLoss.totalExpensesK).toBe(1_200_000);
+    /* The expense landed today, so the month before must not see it. */
+    expect(thisMonth.comparison.totalExpensesK).toBe(0);
+
+    /* And asking about NEXT month puts the same expense in the comparison. */
+    const next = await statements(nextPeriod(period), auth);
+    expect(next.profitAndLoss.totalExpensesK).toBe(0);
+    expect(next.comparison.totalExpensesK).toBe(1_200_000);
+  });
+
+  it('carries a per-account lookup the page reads line by line', async () => {
+    const { auth, businessId } = await onboard('+2348120000064');
+    await seedExpense(businessId, 'fuel for generator', 1_200_000);
+
+    const period = new Date(Date.now() + 3_600_000).toISOString().slice(0, 7);
+    const next = await statements(nextPeriod(period), auth);
+
+    const accounts = Object.keys(next.comparison.lines);
+    expect(accounts.length).toBeGreaterThan(0);
+    expect(Object.values(next.comparison.lines)).toContain(1_200_000);
+  });
+
+  it('never leaks another tenant into the comparison', async () => {
+    const mine = await onboard('+2348120000065');
+    const theirs = await onboard('+2348120000066');
+    await seedExpense(theirs.businessId, 'their fuel', 9_900_000);
+
+    const period = new Date(Date.now() + 3_600_000).toISOString().slice(0, 7);
+    const next = await statements(nextPeriod(period), mine.auth);
+    expect(next.comparison.totalExpensesK).toBe(0);
+  });
+
+  function nextPeriod(period: string): string {
+    const [year, month] = period.split('-').map(Number);
+    return new Date(Date.UTC(year!, month!, 1)).toISOString().slice(0, 7);
+  }
+
+  async function seedExpense(businessId: string, description: string, amountK: number) {
+    await withBusiness(db, businessId, (tx) =>
+      spendRepo.recordExpense(tx, {
+        businessId,
+        description,
+        category: 'utilities',
+        amountK,
+        method: 'cash',
+        sourceType: 'chat',
+        sourceId: `cmp-${description}`,
+      }),
+    );
+  }
+});
