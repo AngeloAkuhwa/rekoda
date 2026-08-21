@@ -64,6 +64,18 @@ export const invoices = pgTable(
     sourceId: text('source_id'),
     /** Where the sale happened (§27) — NOT how it reached Rekoda. Optional. */
     saleSource: text('sale_source'),
+    /**
+     * The posting this invoice wrote.
+     *
+     * `expenses` and `credit_notes` have carried this since they existed;
+     * invoices did not, and two things depended on it. A void could not say
+     * what it reverses, and nothing could get from a credit on SALES_REVENUE
+     * back to the invoice that caused it, which is why `sale_source` was
+     * written and never read. Nullable: documents issued before the column
+     * existed keep their null, and a null means unattributed rather than
+     * something invented.
+     */
+    ledgerTransactionId: uuid('ledger_transaction_id'),
     issuedAt: createdAt(),
   },
   /**

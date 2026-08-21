@@ -32,6 +32,7 @@ const SCAN = [
   'packages/core/src/statement-layout.ts',
   'packages/core/src/receipt-layout.ts',
   'packages/core/src/expenses.ts',
+  'packages/core/src/sources.ts',
 ];
 
 const DASHES = /[—–]/; // em dash, en dash

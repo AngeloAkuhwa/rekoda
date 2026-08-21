@@ -53,6 +53,12 @@ export interface StatementDocument {
    * fact worth stating and prints nothing.
    */
   readonly expenseSchedule: ExpenseSchedule;
+  /**
+   * Where the income came from. Same shape as the expense schedule and
+   * required for the same reason: a document that can silently omit half its
+   * working is a document that will.
+   */
+  readonly revenueSchedule: ExpenseSchedule;
 }
 
 /** `2026-08` as a Nigerian reader says it. */
@@ -100,6 +106,22 @@ export function layoutStatements(doc: StatementDocument): LayoutBlock[] {
   blocks.push({ kind: 'subhead', text: 'Income' });
   blocks.push(...lines(pl.income, 'No income recorded this month'));
   blocks.push({ kind: 'subtotal', text: 'Total income', value: formatKobo(pl.totalIncomeK) });
+
+  /**
+   * Where it came from, printed directly under the income it explains.
+   *
+   * Unlike the expense schedule this one sits INSIDE the profit and loss
+   * rather than after it, because there is only one income line and the
+   * detail belongs against it. The expenses have two accounts above them and
+   * a schedule for only one, which is why that one needs its own heading and
+   * its own distance.
+   */
+  if (doc.revenueSchedule.lines.length > 0) {
+    blocks.push({ kind: 'subhead', text: 'Where the sales came from' });
+    for (const line of doc.revenueSchedule.lines) {
+      blocks.push({ kind: 'item', text: line.label, value: formatKobo(line.amountK) });
+    }
+  }
   blocks.push({ kind: 'subhead', text: 'Expenses' });
   blocks.push(...lines(pl.expenses, 'No expenses recorded this month'));
   blocks.push({ kind: 'subtotal', text: 'Total expenses', value: formatKobo(pl.totalExpensesK) });
@@ -233,6 +255,13 @@ export function statementSheets(doc: StatementDocument): Sheet[] {
         ['Income', null],
         ...money(pl.income),
         ['Total income', xlsxNaira(pl.totalIncomeK)],
+        ...(doc.revenueSchedule.lines.length > 0
+          ? ([
+              [null, null],
+              ['Where the sales came from', null],
+              ...doc.revenueSchedule.lines.map((line) => [line.label, xlsxNaira(line.amountK)]),
+            ] as CellValue[][])
+          : []),
         [null, null],
         ['Expenses', null],
         ...money(pl.expenses),

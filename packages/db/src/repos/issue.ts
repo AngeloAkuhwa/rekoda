@@ -316,6 +316,15 @@ export async function issueSale(tx: TenantDb, input: IssueSaleInput): Promise<Is
     input.sourceId,
   );
 
+  /* Written back rather than carried only in the return value. A report
+   * grouping revenue has to get from a credit on SALES_REVENUE to the invoice
+   * that caused it, and an id that lives only in this function's answer is no
+   * use to a query run three months later. */
+  await tx
+    .update(invoices)
+    .set({ ledgerTransactionId })
+    .where(and(eq(invoices.businessId, input.businessId), eq(invoices.id, invoice.id)));
+
   await tx.insert(auditEvents).values({
     businessId: input.businessId,
     actor: input.actor,
@@ -409,6 +418,7 @@ export async function voidInvoice(
       vatK: invoices.vatK,
       sourceType: invoices.sourceType,
       sourceId: invoices.sourceId,
+      ledgerTransactionId: invoices.ledgerTransactionId,
     })
     .from(invoices)
     .where(and(eq(invoices.businessId, businessId), eq(invoices.invoiceNumber, invoiceNumber)))
@@ -447,6 +457,10 @@ export async function voidInvoice(
     reversal(original, `Void ${invoiceNumber}`),
     invoice.sourceType,
     invoice.sourceId ?? invoiceNumber,
+    /* What it undoes. Until invoices carried this link the column existed and
+     * was never filled in, and a revenue report had no way to give a void the
+     * channel of the sale it cancels. */
+    invoice.ledgerTransactionId ? { reversesId: invoice.ledgerTransactionId } : {},
   );
 
   await recordVoidedDocument(tx, businessId, invoiceNumber, reason, actor);

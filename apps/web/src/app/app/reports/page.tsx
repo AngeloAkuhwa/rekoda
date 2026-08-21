@@ -30,8 +30,15 @@ export default async function ReportsPage({
   const period = requested ?? current;
 
   const statements = await reportsStatements(token, period);
-  const { trialBalance, profitAndLoss, balanceSheet, cashflow, comparison, expenseSchedule } =
-    statements;
+  const {
+    trialBalance,
+    profitAndLoss,
+    balanceSheet,
+    cashflow,
+    comparison,
+    expenseSchedule,
+    revenueSchedule,
+  } = statements;
 
   /**
    * VAT, read straight off the liability account the posting builder already
@@ -201,6 +208,42 @@ export default async function ReportsPage({
                 </p>
               ) : null}
             </div>
+
+            {/* The other half of the same question. A merchant selling in the
+                shop, on Instagram, at the market and over the phone gets one
+                "Sales" line, and the one thing they most want from it is
+                which of the four is worth the effort. */}
+            {revenueSchedule.lines.length > 0 ? (
+              <div className="rk-card rk-dash-card">
+                <h2>Where the sales came from</h2>
+                <p className="rk-fineprint">
+                  Sales in {label} by channel. Rekoda records a channel only when you name one, so
+                  anything you did not say stays as not recorded.
+                </p>
+                <table className="rk-statement">
+                  <tbody>
+                    {revenueSchedule.lines.map((line) => (
+                      <tr key={line.source ?? 'unattributed'}>
+                        <td>{line.label}</td>
+                        <td className="rk-num">
+                          <Money kobo={line.amountK} />
+                        </td>
+                        <td className="rk-num rk-fineprint">
+                          {share(line.amountK, revenueSchedule.totalK)}
+                        </td>
+                      </tr>
+                    ))}
+                    <tr className="rk-statement-total">
+                      <td>Total sales</td>
+                      <td className="rk-num">
+                        <Money kobo={revenueSchedule.totalK} />
+                      </td>
+                      <td />
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            ) : null}
 
             {/* The working behind one line above, which is the line a merchant
                 argues with. "Operating Expenses ₦412,000" invites the

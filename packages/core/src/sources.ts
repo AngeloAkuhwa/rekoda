@@ -33,3 +33,33 @@ export type SaleSource = (typeof SALE_SOURCES)[number];
 export function isSaleSource(value: unknown): value is SaleSource {
   return typeof value === 'string' && (SALE_SOURCES as readonly string[]).includes(value);
 }
+
+/**
+ * What each channel is called on a page a merchant reads.
+ *
+ * Their words, not the enum's. `physical_store` is a database value;
+ * "In the shop" is where somebody actually stood. These appear on a
+ * management report rather than a statutory statement, so they are allowed to
+ * sound like a person.
+ */
+export const SALE_SOURCE_LABELS: Readonly<Record<SaleSource, string>> = {
+  physical_store: 'In the shop',
+  instagram: 'Instagram',
+  facebook: 'Facebook',
+  tiktok: 'TikTok',
+  whatsapp_catalogue: 'WhatsApp catalogue',
+  website: 'Website',
+  phone: 'Phone order',
+  marketplace: 'Marketplace',
+  event: 'Event or market day',
+  other: 'Somewhere else',
+};
+
+/**
+ * Revenue nobody attributed to a channel.
+ *
+ * The common case, and deliberately so: Rekoda never asks which channel a
+ * sale came through and never guesses. "Not recorded" says exactly that, and
+ * says it without implying the merchant failed to do something.
+ */
+export const UNATTRIBUTED_SALE_LABEL = 'Not recorded';

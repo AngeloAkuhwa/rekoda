@@ -163,6 +163,13 @@ describe('pagination', () => {
       ],
       totalK: 800_000,
     },
+    revenueSchedule: {
+      lines: [
+        { label: 'Instagram', amountK: 500_000 },
+        { label: 'In the shop', amountK: 300_000 },
+      ],
+      totalK: 800_000,
+    },
   };
 
   it('runs onto a second page and stops there', async () => {
