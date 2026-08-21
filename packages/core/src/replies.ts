@@ -45,6 +45,7 @@ export function help(): Reply {
       '• *Record an expense*: "fuel 12k"\n' +
       '• *Record stock*: "bought 10 crates of ankara for 50k"\n' +
       '• *who owes me* shows your debtors\n' +
+      '• *remind INV-2026-000004* writes a reminder you can forward\n' +
       "• *records* shows this month's totals\n" +
       '• *payment details* sends a payment link\n' +
       '• *resend* sends your last document again\n\n' +
@@ -538,6 +539,59 @@ export function debtorList(rows: DebtorLine[], totalK: number, count: number): R
   const overflow =
     count > rows.length ? `\n...and ${count - rows.length} more on your dashboard.` : '';
   return reply(`${heading}${chase}\n\n${lines.join('\n')}${overflow}`);
+}
+
+/**
+ * A reminder the merchant FORWARDS, unedited, to the person who owes them.
+ *
+ * Written to be read by the customer rather than by the merchant, which is
+ * the whole difference between this and every other reply in this file. That
+ * means no Rekoda voice, no emoji, no "your merchant asked me to" — a
+ * chasing message that announces it was generated is a chasing message that
+ * gets ignored.
+ *
+ * ONE invoice, never a list. The merchant forwards this into a private
+ * conversation, and a list would carry other customers' invoice numbers and
+ * balances to somebody with no business seeing them. That is the reason it
+ * takes an invoice number rather than answering "remind everybody".
+ *
+ * No name in it, from either side of the transaction: this text crosses
+ * WhatsApp in the clear and the merchant is the one who knows who they are
+ * sending it to.
+ */
+export function overdueReminder(input: {
+  invoiceNumber: string;
+  balanceDueK: number;
+  daysOverdue: number;
+  businessName: string;
+}): Reply {
+  const when =
+    input.daysOverdue <= 0
+      ? 'now due'
+      : input.daysOverdue === 1
+        ? 'one day overdue'
+        : `${input.daysOverdue} days overdue`;
+  return reply(
+    `Hello, a friendly reminder about invoice ${input.invoiceNumber} from ` +
+      `${input.businessName}. The balance of ${formatKobo(input.balanceDueK)} is ${when}. ` +
+      'If you have already sent it, please ignore this message and accept our thanks.',
+  );
+}
+
+/** The reminder, handed over with an instruction meant for the merchant. */
+export function reminderReady(invoiceNumber: string): Reply {
+  return reply(
+    `Here is a reminder for ${invoiceNumber}. Forward the next message to your ` +
+      'customer as it is.',
+  );
+}
+
+/** Asked to chase an invoice that is settled, or was never issued. */
+export function reminderNothingToChase(invoiceNumber: string): Reply {
+  return reply(
+    `${invoiceNumber} has nothing owing on it, so there is nothing to chase. ` +
+      'Send *who owes me* to see what is still open.',
+  );
 }
 
 /* ── the records command ─────────────────────────────────────────────────── */

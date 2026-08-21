@@ -574,3 +574,35 @@ function readOpenInvoice(row: OpenInvoiceRow): OpenInvoice {
     balanceDueK: Number(row.balance_due_k),
   };
 }
+
+/**
+ * One invoice by its number, for chasing it.
+ *
+ * Deliberately not `openInvoiceForPayment`: that one resolves what a merchant
+ * MEANT and refuses to guess, which is right for money and wrong here. A
+ * reminder names an exact document, and "that one is already paid" is a
+ * useful answer rather than a failure.
+ */
+export async function invoiceByNumber(
+  tx: TenantDb,
+  businessId: string,
+  invoiceNumber: string,
+): Promise<{ invoiceNumber: string; balanceDueK: number; dueDate: Date | null } | null> {
+  const rows = await tx.execute<{
+    invoice_number: string;
+    balance_due_k: string;
+    due_date: Date | null;
+  }>(sql`
+    SELECT invoice_number, balance_due_k::bigint AS balance_due_k, due_date
+    FROM invoices
+    WHERE business_id = ${businessId}::uuid AND upper(invoice_number) = upper(${invoiceNumber})
+    LIMIT 1
+  `);
+  const row = [...rows][0];
+  if (!row) return null;
+  return {
+    invoiceNumber: row.invoice_number,
+    balanceDueK: Number(row.balance_due_k),
+    dueDate: row.due_date === null ? null : new Date(row.due_date),
+  };
+}
