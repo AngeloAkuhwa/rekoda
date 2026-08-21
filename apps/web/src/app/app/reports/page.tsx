@@ -1,9 +1,10 @@
 import type { Metadata } from 'next';
-import { periodBefore, periodLabel, usagePeriod } from '@rekoda/core';
+import { lagosDay, periodBefore, periodLabel, usagePeriod } from '@rekoda/core';
 import { Money } from '@/components/ui/Money';
 import { requireSessionWithToken } from '@/server/guards';
 import { reportsStatements } from '@/server/api';
 import { AppNav } from '../AppNav';
+import { OpeningForm } from './OpeningForm';
 import { SignOutButton } from '../SignOutButton';
 
 export const metadata: Metadata = {
@@ -28,6 +29,9 @@ export default async function ReportsPage({
   const requested = typeof raw === 'string' && /^\d{4}-(0[1-9]|1[0-2])$/.test(raw) ? raw : null;
   const current = usagePeriod(new Date());
   const period = requested ?? current;
+  /* The ceiling on the opening date. Lagos, not the browser's zone: a
+   * merchant in Lagos at 00:30 must not be told their own today is tomorrow. */
+  const today = lagosDay(new Date());
 
   const statements = await reportsStatements(token, period);
   const {
@@ -38,6 +42,7 @@ export default async function ReportsPage({
     comparison,
     expenseSchedule,
     revenueSchedule,
+    openingBalances,
   } = statements;
 
   /**
@@ -381,6 +386,41 @@ export default async function ReportsPage({
                   ? 'Assets equal liabilities plus equity.'
                   : 'These books do not balance. Contact support and do not rely on this page.'}
               </p>
+              {/* A negative asset is not a small presentational problem: a till
+                  cannot hold less than nothing, so the figure is telling the
+                  merchant something is missing rather than telling them a
+                  balance. Said plainly, with the likeliest cause named. */}
+              {balanceSheet.assets.some((line) => line.amountK < 0) ? (
+                <p className="rk-fineprint">
+                  One of these balances is below zero, which cannot be true of a real till or a real
+                  account. It means Rekoda has recorded more going out than it knows came in.{' '}
+                  {openingBalances
+                    ? 'Something you sold or were paid is probably not recorded yet.'
+                    : 'Most often that is money you already had before you joined.'}
+                </p>
+              ) : null}
+              {/* The control sits under the figure it fixes. A merchant who
+                  joined with money in the till and spent from it is reading a
+                  NEGATIVE cash balance a few lines above this, and telling
+                  them about opening balances anywhere else on the site would
+                  be telling them somewhere they are not looking. */}
+              {openingBalances ? (
+                <p className="rk-fineprint">
+                  Your books open on {shortDate(openingBalances.asAt)} with{' '}
+                  <Money kobo={openingBalances.cashK + openingBalances.bankK} /> in money and{' '}
+                  <Money kobo={openingBalances.stockK} /> of stock.
+                </p>
+              ) : (
+                <details className="rk-void">
+                  <summary>Open your books with what you already had</summary>
+                  <p className="rk-fineprint">
+                    Rekoda only knows what you have told it since you joined. If you already had
+                    cash, money in the bank or stock on the shelf, say so once and your balance
+                    sheet starts from the truth instead of from zero.
+                  </p>
+                  <OpeningForm today={today} />
+                </details>
+              )}
             </div>
 
             <div className="rk-card rk-dash-card">
@@ -465,4 +505,16 @@ function share(amountK: number, totalK: number): string | null {
   if (totalK <= 0) return null;
   const percent = Math.round((amountK / totalK) * 100);
   return percent === 0 ? 'under 1%' : `${percent}%`;
+}
+
+/** `31 Jul 2026`. Longer than the register's `31 Jul` on purpose: opening
+ * balances are read once, months later, and the year is the part that
+ * matters. */
+function shortDate(day: string): string {
+  return new Date(`${day}T12:00:00+01:00`).toLocaleDateString('en-NG', {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+    timeZone: 'Africa/Lagos',
+  });
 }

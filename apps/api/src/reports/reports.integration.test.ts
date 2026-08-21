@@ -845,6 +845,140 @@ describe('the four statements (ADR 0015)', () => {
 });
 
 /**
+ * Opening the books.
+ *
+ * The only write on this surface that records something already true. What
+ * matters is that it happens once, that it lands on the day the merchant
+ * named, and that it fixes the figure it exists for.
+ */
+describe('what the business was already holding', () => {
+  const open = (auth: Record<string, string>, body: Record<string, unknown>) =>
+    app.inject({
+      method: 'POST',
+      url: '/v1/reports/opening-balances',
+      payload: body,
+      headers: { 'content-type': 'application/json', ...auth },
+    });
+
+  it('refuses a caller with no session', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/reports/opening-balances',
+      payload: { asAt: '2026-07-31', cashK: 1, bankK: 0, stockK: 0 },
+      headers: { 'content-type': 'application/json' },
+    });
+    expect(res.statusCode).toBe(401);
+  });
+
+  /**
+   * The whole reason this exists, end to end. Before it, a merchant who
+   * joined with ₦200,000 in the till and spent ₦120,000 of it read
+   * "Cash on Hand: minus ₦120,000" and total assets to match.
+   */
+  it('turns a negative cash balance into the truth', async () => {
+    const { auth, businessId } = await onboard('+2348177000021');
+    await withBusiness(db, businessId, (tx) =>
+      spendRepo.recordExpense(tx, {
+        businessId,
+        description: 'diesel',
+        category: null,
+        amountK: 12_000_000,
+        method: 'cash',
+        sourceType: 'chat',
+        sourceId: 'd1',
+      }),
+    );
+
+    const before = reportsStatementsResponse.parse(
+      (await app.inject({ method: 'GET', url: '/v1/reports/statements', headers: auth })).json(),
+    );
+    expect(before.openingBalances).toBeNull();
+    expect(before.balanceSheet.totalAssetsK).toBe(-12_000_000);
+
+    expect(
+      (
+        await open(auth, {
+          asAt: '2026-07-31',
+          cashK: 20_000_000,
+          bankK: 0,
+          stockK: 0,
+        })
+      ).json(),
+    ).toEqual({ outcome: 'recorded', asAt: '2026-07-31', equityK: 20_000_000 });
+
+    const after = reportsStatementsResponse.parse(
+      (await app.inject({ method: 'GET', url: '/v1/reports/statements', headers: auth })).json(),
+    );
+    expect(after.balanceSheet.totalAssetsK).toBe(8_000_000);
+    expect(after.balanceSheet.balanced).toBe(true);
+    expect(after.openingBalances).toEqual({
+      asAt: '2026-07-31',
+      cashK: 20_000_000,
+      bankK: 0,
+      stockK: 0,
+    });
+  });
+
+  /**
+   * Dated before the period, so it is the month's OPENING balance rather than
+   * money that arrived in it. Every balance-sheet account is cumulative and
+   * would not care; the cash flow statement would, and would report a
+   * merchant's existing till as income.
+   */
+  it("does not report a merchant's own till as money that came in", async () => {
+    const { auth } = await onboard('+2348177000022');
+    await open(auth, { asAt: '2020-01-15', cashK: 5_000_000, bankK: 0, stockK: 0 });
+
+    const now = reportsStatementsResponse.parse(
+      (await app.inject({ method: 'GET', url: '/v1/reports/statements', headers: auth })).json(),
+    );
+    expect(now.cashflow.openingK).toBe(5_000_000);
+    expect(now.cashflow.inK).toBe(0);
+    expect(now.cashflow.closingK).toBe(5_000_000);
+  });
+
+  it('opens once, and says so plainly the second time', async () => {
+    const { auth } = await onboard('+2348177000023');
+    expect(
+      (await open(auth, { asAt: '2026-07-31', cashK: 1_000, bankK: 0, stockK: 0 })).json(),
+    ).toMatchObject({ outcome: 'recorded' });
+    expect(
+      (await open(auth, { asAt: '2026-06-30', cashK: 9_000, bankK: 0, stockK: 0 })).json(),
+    ).toEqual({ outcome: 'already_set' });
+  });
+
+  it('refuses an entry of nothing, and a day that has not happened', async () => {
+    const { auth } = await onboard('+2348177000024');
+    expect(
+      (await open(auth, { asAt: '2026-07-31', cashK: 0, bankK: 0, stockK: 0 })).json(),
+    ).toEqual({ outcome: 'nothing_to_open' });
+    expect(
+      (await open(auth, { asAt: '2099-01-01', cashK: 1_000, bankK: 0, stockK: 0 })).json(),
+    ).toEqual({ outcome: 'not_yet' });
+
+    /* And neither wrote anything. */
+    const statements = reportsStatementsResponse.parse(
+      (await app.inject({ method: 'GET', url: '/v1/reports/statements', headers: auth })).json(),
+    );
+    expect(statements.openingBalances).toBeNull();
+  });
+
+  it('is one business at a time', async () => {
+    const ada = await onboard('+2348177000025');
+    const bola = await onboard('+2348177000026');
+    await open(ada.auth, { asAt: '2026-07-31', cashK: 20_000_000, bankK: 0, stockK: 0 });
+
+    const theirs = reportsStatementsResponse.parse(
+      (
+        await app.inject({ method: 'GET', url: '/v1/reports/statements', headers: bola.auth })
+      ).json(),
+    );
+    expect(theirs.openingBalances).toBeNull();
+    expect(theirs.balanceSheet.totalAssetsK).toBe(0);
+  });
+});
+
+/**
  * The export a merchant takes with them.
  *
  * Two things are being asserted: that the file is complete and openable, and

@@ -76,6 +76,7 @@ import type {
   ReportsReceiptsResponse,
   ReportsStockResponse,
   CreateRecurringResponse,
+  OpeningBalancesResponse,
   CreditInvoiceResponse,
   ReportsStatementsResponse,
   StopRecurringResponse,
@@ -84,6 +85,7 @@ import type {
 } from '@rekoda/contracts';
 import {
   createRecurringRequest,
+  openingBalancesRequest,
   creditInvoiceRequest,
   stopRecurringRequest,
   voidExpenseRequest,
@@ -93,6 +95,7 @@ import {
   identity,
   issueRepo,
   ordersRepo,
+  openingRepo,
   recurringRepo,
   reportsRepo,
   spendRepo,
@@ -189,11 +192,12 @@ export class ReportsController {
      * column is what every accounting package puts beside a profit and loss,
      * and a merchant reading this page always wants it: gating it behind a
      * flag would mean a second round trip for the thing they came for. */
-    const [sums, priorSums, schedule, revenue] = await Promise.all([
+    const [sums, priorSums, schedule, revenue, opening] = await Promise.all([
       this.sumsFor(businessId, period),
       this.sumsFor(businessId, before),
       this.expenseScheduleFor(businessId, period),
       this.revenueScheduleFor(businessId, period),
+      withBusiness(this.db, businessId, (tx) => openingRepo.openingBalancesFor(tx, businessId)),
     ]);
 
     const prior = buildProfitAndLoss(priorSums);
@@ -202,6 +206,7 @@ export class ReportsController {
       ...buildAll(sums),
       expenseSchedule: schedule,
       revenueSchedule: revenue,
+      openingBalances: opening,
       comparison: {
         period: before,
         totalIncomeK: prior.totalIncomeK,
@@ -593,6 +598,62 @@ export class ReportsController {
       payableAgeing,
       recurring,
     };
+  }
+
+  /**
+   * Open the books: what the business was already holding.
+   *
+   * The only write on this surface that records something which was already
+   * true rather than something that happened, and the reason it exists is
+   * visible on the balance sheet directly above the control. Owner's equity
+   * has been in the chart since ADR 0004 with nothing ever posted to it, so a
+   * merchant who joined with money in the till and spent from it reads a
+   * negative cash balance: arithmetic that balances and describes a business
+   * that has never existed.
+   *
+   * Once only, and the database is what says so. Two requests arriving
+   * together both read no opening entry and both post; only the partial
+   * unique index decides, and the outcome here is a classification of its
+   * refusal rather than a check this method is trusted to make.
+   */
+  @Post('opening-balances')
+  @HttpCode(200)
+  async openBooks(
+    @Req() request: AuthedRequest,
+    @Body() body: unknown,
+  ): Promise<OpeningBalancesResponse> {
+    const parsed = openingBalancesRequest.safeParse(body);
+    if (!parsed.success) {
+      throw new BadRequestException('a day, and what was in cash, in the bank and on the shelf');
+    }
+    const { asAt, cashK, bankK, stockK } = parsed.data;
+    if (cashK + bankK + stockK === 0) return { outcome: 'nothing_to_open' };
+    /* A balance dated tomorrow is a typo, and one accepted would sit outside
+     * every period the merchant can look at until the day arrives. */
+    if (asAt > lagosDay(new Date())) return { outcome: 'not_yet' };
+
+    const businessId = request.auth!.businessId;
+    try {
+      const recorded = await withBusiness(this.db, businessId, (tx) =>
+        openingRepo.recordOpeningBalances(tx, {
+          businessId,
+          asAt,
+          cashK,
+          bankK,
+          stockK,
+          actor: `user:${request.auth!.userId}`,
+        }),
+      );
+      return { outcome: 'recorded', asAt, equityK: recorded.equityK };
+    } catch (error) {
+      /* Classified OUTSIDE the transaction, which is the point of the throw:
+       * a unique violation aborts the transaction, so returning an outcome
+       * from inside it would fail at the commit with no context left. */
+      if (error instanceof openingRepo.OpeningBalancesAlreadySet) {
+        return { outcome: 'already_set' };
+      }
+      throw error;
+    }
   }
 
   /**

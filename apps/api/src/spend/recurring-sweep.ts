@@ -23,7 +23,7 @@
  * than collapsing them into a single entry with the wrong figure.
  */
 import { Logger } from '@nestjs/common';
-import { lagosDay, nextDueAfter } from '@rekoda/core';
+import { lagosDay, lagosNoon, nextDueAfter } from '@rekoda/core';
 import { redactForLog } from '@rekoda/core/privacy';
 import { recurringRepo, spendRepo, withBusiness, type Db } from '@rekoda/db';
 
@@ -116,15 +116,4 @@ export async function sweepRecurring(
   }
 
   return result;
-}
-
-/**
- * Midday Lagos on a calendar day.
- *
- * Noon rather than midnight so that nothing about which month a cost lands in
- * turns on an hour: every reader that periods on this column converts to
- * Lagos first, and midday is twelve hours clear of both boundaries.
- */
-function lagosNoon(day: string): Date {
-  return new Date(`${day}T12:00:00+01:00`);
 }

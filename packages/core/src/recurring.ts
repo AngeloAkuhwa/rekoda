@@ -50,6 +50,21 @@ function inMonth(year: number, month: number, anchorDay: number): string {
 }
 
 /** 1 to 31. Anything else is a schedule that could never fall due. */
+/**
+ * Midday Lagos on a calendar day.
+ *
+ * Noon rather than midnight so that nothing about which month an entry lands
+ * in turns on an hour: every reader that periods on a timestamp converts to
+ * Lagos first, and midday is twelve hours clear of both boundaries.
+ *
+ * Used by anything that has to date a posting for a day the merchant named
+ * rather than for the moment the code ran: the recurring sweep catching up,
+ * and the opening balances a business already held.
+ */
+export function lagosNoon(day: string): Date {
+  return new Date(`${day}T12:00:00+01:00`);
+}
+
 export function isAnchorDay(value: number): boolean {
   return Number.isInteger(value) && value >= 1 && value <= 31;
 }
