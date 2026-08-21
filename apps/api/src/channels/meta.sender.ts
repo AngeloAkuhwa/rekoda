@@ -7,6 +7,7 @@ import {
   type OutboundAuthCode,
   type OutboundBillingNotice,
   type OutboundDocument,
+  type OutboundRetentionNotice,
   type OutboundMessage,
   type SendResult,
 } from './sender.js';
@@ -42,7 +43,42 @@ export class MetaSender implements MessageSender {
     /** Meta-approved UTILITY template for grace reminders. Null means silence. */
     private readonly billingTemplate: string | null = null,
     private readonly billingTemplateLocale = 'en',
+    /** Meta-approved UTILITY template for retention warnings. */
+    private readonly retentionTemplate: string | null = null,
+    private readonly retentionTemplateLocale = 'en',
   ) {}
+
+  /**
+   * A retention warning, as a utility template.
+   *
+   * Refuses loudly when none is configured, like every other template send
+   * here. The sweep catches that and does NOT proceed to delete: a schedule
+   * that promises notice cannot delete somebody it failed to notify.
+   */
+  async sendRetentionNotice(notice: OutboundRetentionNotice): Promise<SendResult> {
+    if (!this.retentionTemplate) {
+      throw new SendFailed('no retention template configured (META_RETENTION_TEMPLATE)');
+    }
+    return this.post({
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to: notice.to,
+      type: 'template',
+      template: {
+        name: this.retentionTemplate,
+        language: { code: this.retentionTemplateLocale },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              { type: 'text', text: notice.daysLeft },
+              { type: 'text', text: notice.deletesOn },
+            ],
+          },
+        ],
+      },
+    });
+  }
 
   /**
    * A grace-period reminder, as a utility template.
@@ -280,6 +316,10 @@ export class NoSenderConfigured implements MessageSender {
   }
 
   sendBillingNotice(): Promise<never> {
+    return Promise.reject(new SendFailed('META_ACCESS_TOKEN is not set'));
+  }
+
+  sendRetentionNotice(): Promise<never> {
     return Promise.reject(new SendFailed('META_ACCESS_TOKEN is not set'));
   }
 }

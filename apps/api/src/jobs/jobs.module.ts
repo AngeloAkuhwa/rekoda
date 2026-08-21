@@ -28,6 +28,7 @@ import { pumpPaystackEvents } from '../payments/paystack-pump.js';
 import { sweepSettlements } from '../payments/settlement-sweep.js';
 import { sweepUnknownSenders } from '../channels/stranger-sweep.js';
 import { sweepGracePeriods } from '../billing/grace-sweep.js';
+import { sweepRetention } from '../privacy/retention-sweep.js';
 import { MESSAGE_SENDER } from '../channels/sender.tokens.js';
 import { SPEECH_TO_TEXT, type SpeechToText } from '../ai/stt.js';
 import type { MessageSender } from '../channels/sender.js';
@@ -102,6 +103,8 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
   private greeting = false;
   private graceTimer: NodeJS.Timeout | null = null;
   private sweepingGrace = false;
+  private retentionTimer: NodeJS.Timeout | null = null;
+  private sweepingRetention = false;
 
   constructor(
     @Inject(CONFIG) private readonly config: ApiConfig,
@@ -218,11 +221,30 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
         });
     }, 3_600_000);
     this.graceTimer.unref();
+
+    /**
+     * Retention runs slowest of all, because its unit is a month. Six hours
+     * is far more often than the answer can change and still means a record
+     * never outlives its schedule by more than a fraction of a day.
+     */
+    this.retentionTimer = setInterval(() => {
+      if (this.sweepingRetention) return;
+      this.sweepingRetention = true;
+      sweepRetention({ workerDb, appDb: this.appDb, sender: this.sender })
+        .catch((error: unknown) => {
+          this.log.warn(`retention sweep failed: ${redactForLog(describeFailure(error))}`);
+        })
+        .finally(() => {
+          this.sweepingRetention = false;
+        });
+    }, 21_600_000);
+    this.retentionTimer.unref();
   }
 
   async onApplicationShutdown(): Promise<void> {
     if (this.pumpTimer) clearInterval(this.pumpTimer);
     if (this.graceTimer) clearInterval(this.graceTimer);
+    if (this.retentionTimer) clearInterval(this.retentionTimer);
     if (this.sweepTimer) clearInterval(this.sweepTimer);
     if (this.strangerTimer) clearInterval(this.strangerTimer);
     await this.runner?.stop();

@@ -5,6 +5,7 @@ import {
   type OutboundAuthCode,
   type OutboundBillingNotice,
   type OutboundDocument,
+  type OutboundRetentionNotice,
   type OutboundMessage,
   type SendResult,
 } from './sender.js';
@@ -25,6 +26,8 @@ export class StubSender implements MessageSender {
   readonly authCodes: OutboundAuthCode[] = [];
   /** Billing notices, kept apart for the same reason codes are. */
   readonly billingNotices: OutboundBillingNotice[] = [];
+  /** Retention warnings, kept apart from billing ones for the same reason. */
+  readonly retentionNotices: OutboundRetentionNotice[] = [];
   private failNext: Error | null = null;
   private failDocuments: Error | null = null;
 
@@ -49,6 +52,7 @@ export class StubSender implements MessageSender {
     this.documents.length = 0;
     this.authCodes.length = 0;
     this.billingNotices.length = 0;
+    this.retentionNotices.length = 0;
     this.media.clear();
     this.failNext = null;
     this.failDocuments = null;
@@ -101,6 +105,16 @@ export class StubSender implements MessageSender {
     }
     this.billingNotices.push(notice);
     return Promise.resolve({ providerMessageId: `wamid.BILL${this.billingNotices.length}` });
+  }
+
+  sendRetentionNotice(notice: OutboundRetentionNotice): Promise<SendResult> {
+    if (this.failNext) {
+      const error = this.failNext;
+      this.failNext = null;
+      return Promise.reject(error);
+    }
+    this.retentionNotices.push(notice);
+    return Promise.resolve({ providerMessageId: `wamid.RET${this.retentionNotices.length}` });
   }
 
   sendDocument(document: OutboundDocument): Promise<SendResult> {
