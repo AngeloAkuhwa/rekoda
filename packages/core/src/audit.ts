@@ -76,6 +76,18 @@ export function describeAuditEvent(row: AuditRow): AuditDescription {
     };
   }
 
+  if (entity === 'invoice' && action === 'credited') {
+    const note = str(newValue, 'creditNoteNumber');
+    const against = str(newValue, 'invoiceNumber');
+    return {
+      summary:
+        note && against
+          ? `Credit note ${note} issued against invoice ${against}`
+          : 'A credit note was issued',
+      amountK: int(newValue, 'amountK'),
+    };
+  }
+
   if (entity === 'expense' && action === 'voided') {
     const what = str(newValue, 'description');
     const kind = str(newValue, 'kind') === 'purchase' ? 'Stock purchase' : 'Expense';

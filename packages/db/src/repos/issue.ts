@@ -19,11 +19,19 @@
  * property this file has to remember to preserve.
  */
 import { and, eq, sql } from 'drizzle-orm';
-import { formatDocumentNumber, postSale, reversal, type Posting } from '@rekoda/core';
+import {
+  formatDocumentNumber,
+  lagosYear,
+  postCreditNote,
+  postSale,
+  reversal,
+  type Posting,
+} from '@rekoda/core';
 import { snapshotHash, type DocumentSnapshot } from '@rekoda/core/documents';
 import type { TenantDb } from '../client.js';
 import { auditEvents, documents } from '../schema/ops.js';
 import {
+  creditNotes,
   invoiceItems,
   invoices,
   ledgerEntries,
@@ -315,7 +323,12 @@ export async function recordVoidedDocument(
     action: 'voided',
     newValue: { documentNumber } as never,
     reason,
-    sourceType: 'system',
+    /* Where the merchant was standing, not what ran the code. All three
+     * corrections - void an invoice, void a spend entry, credit an invoice -
+     * are reachable only from the dashboard, and labelling them 'system' put
+     * "Automatic" on the audit trail beside a change a person deliberately
+     * made. */
+    sourceType: 'dashboard',
   });
 }
 
@@ -723,4 +736,224 @@ export async function openInvoicesForCustomer(
     LIMIT 20
   `);
   return [...rows].map(readOpenInvoice);
+}
+
+/* ── credit notes ────────────────────────────────────────────────────────── */
+
+export type CreditOutcome =
+  | {
+      outcome: 'credited';
+      creditNoteNumber: string;
+      invoiceNumber: string;
+      amountK: number;
+      /** What the customer still owes after it. Never below zero. */
+      balanceDueK: number;
+      /** What the merchant now owes the CUSTOMER, when the credit went past
+       *  what was outstanding. Zero in the ordinary case. */
+      owedToCustomerK: number;
+    }
+  | { outcome: 'not_found' }
+  /** Withdrawn invoices have no value left to credit. */
+  | { outcome: 'voided' }
+  /** Nothing has been paid, so the void is the right instrument, not this. */
+  | { outcome: 'unpaid' }
+  /** Would take back more than the invoice was ever worth. */
+  | { outcome: 'exceeds_invoice'; creditableK: number };
+
+/**
+ * Reduce an invoice money has already arrived against.
+ *
+ * The instrument `voidInvoice` refuses to be, and the two are mutually
+ * exclusive on purpose: the void takes unpaid invoices and mirrors the whole
+ * posting; this takes the rest and reduces without touching the cash that
+ * already moved. A merchant meeting either refusal is now told about the
+ * other, which is the loop this closes.
+ *
+ * VAT comes back proportionally. Crediting half a sale that carried VAT and
+ * leaving the whole liability standing would have the merchant owing tax on
+ * income they no longer have.
+ *
+ * `credited_k + amount <= total_k` lives in the UPDATE rather than in a read
+ * above it. That is the whole guard: two credits racing would both read the
+ * same `credited_k`, both conclude there was room, and between them take back
+ * more than the invoice was ever worth.
+ */
+export async function issueCreditNote(
+  tx: TenantDb,
+  input: {
+    businessId: string;
+    invoiceNumber: string;
+    amountK: number;
+    reason: string;
+    actor: string;
+    issuedAt?: Date;
+  },
+): Promise<CreditOutcome> {
+  const issuedAt = input.issuedAt ?? new Date();
+
+  const rows = await tx
+    .select({
+      id: invoices.id,
+      status: invoices.status,
+      totalK: invoices.totalK,
+      paidK: invoices.paidK,
+      vatK: invoices.vatK,
+      creditedK: invoices.creditedK,
+      balanceDueK: invoices.balanceDueK,
+      sourceType: invoices.sourceType,
+      sourceId: invoices.sourceId,
+    })
+    .from(invoices)
+    .where(
+      and(
+        eq(invoices.businessId, input.businessId),
+        eq(invoices.invoiceNumber, input.invoiceNumber),
+      ),
+    )
+    .limit(1);
+
+  const invoice = rows[0];
+  if (!invoice) return { outcome: 'not_found' };
+  if (invoice.status === 'voided') return { outcome: 'voided' };
+  if (Number(invoice.paidK) === 0) return { outcome: 'unpaid' };
+
+  const totalK = Number(invoice.totalK);
+  const creditableK = totalK - Number(invoice.creditedK);
+  if (input.amountK <= 0 || input.amountK > creditableK) {
+    return { outcome: 'exceeds_invoice', creditableK };
+  }
+
+  /* Proportional, and rounded to whole kobo. A credit for the whole remaining
+   * value takes the whole remaining VAT rather than a rounded share of it, so
+   * repeated partial credits can never leave a stray kobo of liability. */
+  const invoiceVatK = Number(invoice.vatK);
+  const vatK =
+    invoiceVatK === 0
+      ? 0
+      : input.amountK === creditableK
+        ? invoiceVatK - vatAlreadyCredited(invoiceVatK, totalK, Number(invoice.creditedK))
+        : Math.round((invoiceVatK * input.amountK) / totalK);
+
+  const creditNoteNumber = await nextDocumentNumber(
+    tx,
+    input.businessId,
+    'credit_note',
+    lagosYear(issuedAt),
+  );
+
+  /* The claim. Two credits racing meet here and only one passes, because the
+   * ceiling is checked by the same statement that moves it. */
+  const claimed = await tx.execute<{ id: string }>(sql`
+    UPDATE invoices
+       SET credited_k = credited_k + ${input.amountK},
+           balance_due_k = GREATEST(balance_due_k - ${input.amountK}, 0),
+           status = CASE WHEN credited_k + ${input.amountK} >= total_k THEN 'credited' ELSE status END
+     WHERE id = ${invoice.id}::uuid
+       AND business_id = ${input.businessId}::uuid
+       AND credited_k + ${input.amountK} <= total_k
+    RETURNING id
+  `);
+  if ([...claimed].length !== 1) {
+    return { outcome: 'exceeds_invoice', creditableK };
+  }
+
+  const snapshot = {
+    documentNumber: creditNoteNumber,
+    invoiceNumber: input.invoiceNumber,
+    issuedAtIso: issuedAt.toISOString(),
+    amountK: input.amountK,
+    vatK,
+    reason: input.reason,
+    currency: 'NGN',
+  };
+  const docHash = snapshotHash(snapshot as never);
+
+  const ledgerTransactionId = await writePosting(
+    tx,
+    input.businessId,
+    postCreditNote({
+      memo: `Credit ${creditNoteNumber} against ${input.invoiceNumber}`,
+      amountK: input.amountK,
+      vatK,
+    }),
+    invoice.sourceType,
+    invoice.sourceId ?? input.invoiceNumber,
+  );
+
+  await tx.insert(creditNotes).values({
+    businessId: input.businessId,
+    invoiceId: invoice.id,
+    creditNoteNumber,
+    amountK: input.amountK,
+    vatK,
+    reason: input.reason,
+    actor: input.actor,
+    ledgerTransactionId,
+    snapshotJson: snapshot as never,
+    docHash,
+    createdAt: issuedAt,
+  });
+
+  await tx.insert(auditEvents).values({
+    businessId: input.businessId,
+    actor: input.actor,
+    entity: 'invoice',
+    entityId: invoice.id,
+    action: 'credited',
+    newValue: {
+      creditNoteNumber,
+      invoiceNumber: input.invoiceNumber,
+      amountK: input.amountK,
+    } as never,
+    reason: input.reason,
+    // Same as the void above: where the merchant was standing.
+    sourceType: 'dashboard',
+  });
+
+  const balanceDueK = Math.max(Number(invoice.balanceDueK) - input.amountK, 0);
+  /* Credited past what was still owed means the money is now going the other
+   * way. The receivable carries it as a negative; this is the same fact said
+   * in a sentence the merchant can act on. */
+  const owedToCustomerK = Math.max(input.amountK - Number(invoice.balanceDueK), 0);
+
+  return {
+    outcome: 'credited',
+    creditNoteNumber,
+    invoiceNumber: input.invoiceNumber,
+    amountK: input.amountK,
+    balanceDueK,
+    owedToCustomerK,
+  };
+}
+
+/** VAT already given back, at the same proportional rule used above. */
+function vatAlreadyCredited(invoiceVatK: number, totalK: number, creditedK: number): number {
+  if (creditedK === 0 || totalK === 0) return 0;
+  return Math.round((invoiceVatK * creditedK) / totalK);
+}
+
+/** Every credit note raised against one invoice, oldest first. */
+export async function creditNotesFor(
+  tx: TenantDb,
+  businessId: string,
+  invoiceNumber: string,
+): Promise<Array<{ creditNoteNumber: string; amountK: number; reason: string; at: Date }>> {
+  const rows = await tx.execute<{
+    credit_note_number: string;
+    amount_k: string;
+    reason: string;
+    at: Date;
+  }>(sql`
+    SELECT c.credit_note_number, c.amount_k::bigint AS amount_k, c.reason, c.created_at AS at
+    FROM credit_notes c
+    JOIN invoices i ON i.id = c.invoice_id AND i.business_id = c.business_id
+    WHERE c.business_id = ${businessId}::uuid AND i.invoice_number = ${invoiceNumber}
+    ORDER BY c.created_at
+  `);
+  return [...rows].map((r) => ({
+    creditNoteNumber: r.credit_note_number,
+    amountK: Number(r.amount_k),
+    reason: r.reason,
+    at: new Date(r.at),
+  }));
 }

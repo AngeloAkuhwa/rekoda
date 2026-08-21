@@ -181,6 +181,8 @@ export const reportsInvoicesResponse = z.object({
       totalK: kobo,
       paidK: kobo,
       balanceDueK: kobo,
+      /** Already credited. The register offers only what is left. */
+      creditedK: kobo,
       issuedAt: z.string(),
     }),
   ),
@@ -354,6 +356,42 @@ export const voidExpenseResponse = z.discriminatedUnion('outcome', [
 
 export type VoidExpenseRequest = z.infer<typeof voidExpenseRequest>;
 export type VoidExpenseResponse = z.infer<typeof voidExpenseResponse>;
+
+/**
+ * Crediting an invoice money has already arrived against.
+ *
+ * The instrument the void refuses to be, and the reason is the same one the
+ * void's own refusal gives: reversing a paid sale would describe a payment
+ * that is still in the merchant's account. This reduces the sale and leaves
+ * the cash where it is.
+ */
+export const creditInvoiceRequest = z.object({
+  invoiceNumber: z.string().min(1),
+  /** Integer kobo, positive. A credit of nothing is not a credit. */
+  amountK: z.number().int().positive(),
+  reason: z.string().trim().min(4).max(200),
+});
+
+export const creditInvoiceResponse = z.discriminatedUnion('outcome', [
+  z.object({
+    outcome: z.literal('credited'),
+    creditNoteNumber: z.string(),
+    invoiceNumber: z.string(),
+    amountK: kobo,
+    /** What the customer still owes. Never below zero. */
+    balanceDueK: kobo,
+    /** What the merchant now owes the CUSTOMER. Zero in the ordinary case. */
+    owedToCustomerK: kobo,
+  }),
+  z.object({ outcome: z.literal('not_found') }),
+  z.object({ outcome: z.literal('voided') }),
+  /** Nothing was ever paid, so the void is the right instrument. */
+  z.object({ outcome: z.literal('unpaid') }),
+  z.object({ outcome: z.literal('exceeds_invoice'), creditableK: kobo }),
+]);
+
+export type CreditInvoiceRequest = z.infer<typeof creditInvoiceRequest>;
+export type CreditInvoiceResponse = z.infer<typeof creditInvoiceResponse>;
 
 export type VoidInvoiceRequest = z.infer<typeof voidInvoiceRequest>;
 export type VoidInvoiceResponse = z.infer<typeof voidInvoiceResponse>;

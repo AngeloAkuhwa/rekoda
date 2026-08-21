@@ -394,7 +394,12 @@ export async function voidExpense(
     action: 'voided',
     newValue: { description: entry.description, kind } as never,
     reason,
-    sourceType: 'system',
+    /* Where the merchant was standing, not what ran the code. All three
+     * corrections - void an invoice, void a spend entry, credit an invoice -
+     * are reachable only from the dashboard, and labelling them 'system' put
+     * "Automatic" on the audit trail beside a change a person deliberately
+     * made. */
+    sourceType: 'dashboard',
   });
 
   /* Only a purchase can have brought stock in, and only one with a source to

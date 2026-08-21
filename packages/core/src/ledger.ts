@@ -221,6 +221,42 @@ export function postProviderPayment(args: {
   return posting;
 }
 
+/**
+ * A credit note: revenue given back on an invoice money has arrived against.
+ *
+ * The instrument the void refuses to be. A void reverses a sale that should
+ * never have happened; a credit note reduces a sale that did, which is the
+ * case where a customer returned goods, was overcharged, or settled a dispute.
+ * Money can already have moved, so reversing the whole posting would describe
+ * a payment that is still in the merchant's account.
+ *
+ * Revenue is debited because it is being taken back, and VAT with it: crediting
+ * a sale that carried VAT and leaving the VAT liability standing would have the
+ * merchant owing tax on income they no longer have.
+ *
+ * The receivable is credited by the FULL amount, and it is allowed to go
+ * negative. That is not a bug to guard against — a customer credited beyond
+ * what they still owe IS in credit, and a negative receivable is exactly how a
+ * ledger says so. Inventing a "refunds payable" account to avoid the negative
+ * would put customer credits in with what the shop owes its suppliers.
+ *
+ * The credit note moves no cash. Handing the money back is a payment, and it
+ * is a separate posting on the day it actually happens.
+ */
+export function postCreditNote(args: { memo: string; amountK: Kobo; vatK?: Kobo }): Posting {
+  const vatK = args.vatK ?? 0;
+  if (args.amountK <= 0 || vatK < 0 || vatK > args.amountK) {
+    throw new UnbalancedPostingError(args.memo, args.amountK, vatK);
+  }
+  const lines: LedgerLine[] = [line('SALES_REVENUE', args.amountK - vatK, 0)];
+  if (vatK > 0) lines.push(line('VAT_PAYABLE', vatK, 0));
+  lines.push(line('ACCOUNTS_RECEIVABLE', 0, args.amountK));
+
+  const posting = { memo: args.memo, lines };
+  assertBalanced(posting);
+  return posting;
+}
+
 /** Reversing posting — the ONLY way to correct: never edit, always reverse. */
 export function reversal(original: Posting, memo: string): Posting {
   const posting: Posting = {

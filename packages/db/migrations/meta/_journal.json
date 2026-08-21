@@ -183,6 +183,13 @@
       "when": 1787187808122,
       "tag": "0025_ops_exceptions",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1787187808123,
+      "tag": "0026_credit_notes",
+      "breakpoints": true
     }
   ]
 }

@@ -68,11 +68,12 @@ import type {
   ReportsOverviewResponse,
   ReportsReceiptsResponse,
   ReportsStockResponse,
+  CreditInvoiceResponse,
   ReportsStatementsResponse,
   VoidExpenseResponse,
   VoidInvoiceResponse,
 } from '@rekoda/contracts';
-import { voidExpenseRequest, voidInvoiceRequest } from '@rekoda/contracts';
+import { creditInvoiceRequest, voidExpenseRequest, voidInvoiceRequest } from '@rekoda/contracts';
 import {
   identity,
   issueRepo,
@@ -324,6 +325,38 @@ export class ReportsController {
     );
   }
 
+  /**
+   * Credit an invoice money has already arrived against.
+   *
+   * The other half of the pair the void opens. A merchant refused by the void
+   * because a customer has paid is sent here, and a merchant refused here
+   * because nothing was paid is sent back to the void. Neither refusal is a
+   * dead end any more, which is the whole reason this exists.
+   */
+  @Post('invoices/credit')
+  @HttpCode(200)
+  async creditInvoice(
+    @Req() request: AuthedRequest,
+    @Body() body: unknown,
+  ): Promise<CreditInvoiceResponse> {
+    const parsed = creditInvoiceRequest.safeParse(body);
+    if (!parsed.success) {
+      throw new BadRequestException(
+        'invoiceNumber, a positive amount in kobo, and a reason of at least 4 characters',
+      );
+    }
+    const businessId = request.auth!.businessId;
+    return withBusiness(this.db, businessId, (tx) =>
+      issueRepo.issueCreditNote(tx, {
+        businessId,
+        invoiceNumber: parsed.data.invoiceNumber,
+        amountK: parsed.data.amountK,
+        reason: parsed.data.reason,
+        actor: `user:${request.auth!.userId}`,
+      }),
+    );
+  }
+
   @Get('invoices')
   async invoices(@Req() request: AuthedRequest): Promise<ReportsInvoicesResponse> {
     const businessId = request.auth!.businessId;
@@ -340,6 +373,7 @@ export class ReportsController {
         totalK: r.totalK,
         paidK: r.paidK,
         balanceDueK: r.balanceDueK,
+        creditedK: r.creditedK,
         issuedAt: r.issuedAt.toISOString(),
       })),
       count: list.count,
@@ -490,7 +524,7 @@ export class ReportsController {
       reportsRepo.invoicesFor(tx, businessId, EXPORT_ROWS),
     );
     const csv = toCsv(
-      ['Invoice', 'Issued', 'Due', 'Status', 'Days late', 'Total', 'Paid', 'Balance'],
+      ['Invoice', 'Issued', 'Due', 'Status', 'Days late', 'Total', 'Paid', 'Credited', 'Balance'],
       list.rows.map((r) => [
         r.invoiceNumber,
         csvDate(r.issuedAt),
@@ -499,6 +533,9 @@ export class ReportsController {
         daysOverdue(r.dueDate, r.balanceDueK, now),
         csvKobo(r.totalK),
         csvKobo(r.paidK),
+        /* Without this column a spreadsheet reads a credited invoice as a
+         * sale the merchant simply never collected. */
+        csvKobo(r.creditedK),
         csvKobo(r.balanceDueK),
       ]),
     );

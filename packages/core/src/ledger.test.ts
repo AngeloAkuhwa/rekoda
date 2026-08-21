@@ -2,9 +2,10 @@ import { describe, expect, it } from 'vitest';
 import {
   UnbalancedPostingError,
   assertBalanced,
+  postCreditNote,
   postExpense,
-  postPurchase,
   postProviderPayment,
+  postPurchase,
   postReceivablePayment,
   postSale,
   reversal,
@@ -231,5 +232,89 @@ describe('reversing a posting, as a void does', () => {
       net.set(l.account, (net.get(l.account) ?? 0) + l.debitK - l.creditK);
     }
     for (const [, amount] of net) expect(amount).toBe(0);
+  });
+});
+
+/**
+ * The instrument the void refuses to be.
+ *
+ * A void reverses a sale that should never have happened. A credit note
+ * reduces one that did, and money may already have arrived, so reversing the
+ * whole posting would describe a payment still sitting in the merchant's
+ * account.
+ */
+describe('a credit note', () => {
+  it('takes back revenue and clears the receivable, in balance', () => {
+    const posting = postCreditNote({ memo: 'Credit CRN-2026-000001', amountK: 5_000_000 });
+
+    expect(posting.lines).toEqual([
+      { account: 'SALES_REVENUE', debitK: 5_000_000, creditK: 0 },
+      { account: 'ACCOUNTS_RECEIVABLE', debitK: 0, creditK: 5_000_000 },
+    ]);
+    expect(() => assertBalanced(posting)).not.toThrow();
+  });
+
+  /* Leaving the VAT liability standing would have the merchant owing tax on
+   * income they no longer have. */
+  it('gives back the VAT with the revenue it was carved out of', () => {
+    const posting = postCreditNote({
+      memo: 'Credit CRN-2026-000002',
+      amountK: 5_375_000,
+      vatK: 375_000,
+    });
+
+    expect(posting.lines).toContainEqual({
+      account: 'SALES_REVENUE',
+      debitK: 5_000_000,
+      creditK: 0,
+    });
+    expect(posting.lines).toContainEqual({ account: 'VAT_PAYABLE', debitK: 375_000, creditK: 0 });
+    expect(posting.lines).toContainEqual({
+      account: 'ACCOUNTS_RECEIVABLE',
+      debitK: 0,
+      creditK: 5_375_000,
+    });
+  });
+
+  /**
+   * The property that keeps this from needing a new account. A customer
+   * credited beyond what they still owe IS in credit, and a negative
+   * receivable is how a ledger says so. Inventing a refunds-payable account
+   * would put customer credits in with what the shop owes its suppliers.
+   */
+  it('lets the receivable go negative, because a customer in credit is a real thing', () => {
+    const sale = postSale({ memo: 'Sale', totalK: 15_000_000, paidK: 6_000_000 });
+    const credit = postCreditNote({ memo: 'Credit', amountK: 15_000_000 });
+
+    const { rows } = trialBalance([sale, credit]);
+    const receivable = rows.find((r) => r.account === 'ACCOUNTS_RECEIVABLE');
+    // Billed 15m, 9m of it still owed, then all 15m credited: 6m the other way.
+    expect(receivable?.balanceK).toBe(-6_000_000);
+
+    const revenue = rows.find((r) => r.account === 'SALES_REVENUE');
+    expect(revenue?.balanceK).toBe(0);
+  });
+
+  it('still balances the books overall', () => {
+    const sale = postSale({ memo: 'Sale', totalK: 15_000_000, paidK: 6_000_000, vatK: 1_000_000 });
+    const credit = postCreditNote({ memo: 'Credit', amountK: 15_000_000, vatK: 1_000_000 });
+    expect(trialBalance([sale, credit]).balanced).toBe(true);
+  });
+
+  it('refuses a credit of nothing, and VAT larger than the credit', () => {
+    expect(() => postCreditNote({ memo: 'x', amountK: 0 })).toThrow(UnbalancedPostingError);
+    expect(() => postCreditNote({ memo: 'x', amountK: -1 })).toThrow(UnbalancedPostingError);
+    expect(() => postCreditNote({ memo: 'x', amountK: 1_000, vatK: 2_000 })).toThrow(
+      UnbalancedPostingError,
+    );
+  });
+
+  /* A credit note moves no cash. Handing the money back is a payment, and a
+   * separate posting on the day it actually happens. */
+  it('never touches cash or the bank', () => {
+    const posting = postCreditNote({ memo: 'Credit', amountK: 5_000_000, vatK: 100_000 });
+    for (const l of posting.lines) {
+      expect(['CASH', 'BANK_PAYSTACK']).not.toContain(l.account);
+    }
   });
 });

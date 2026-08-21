@@ -417,6 +417,8 @@ export interface InvoiceListRow {
   totalK: number;
   paidK: number;
   balanceDueK: number;
+  /** Already credited. The register offers only what is left to credit. */
+  creditedK: number;
   issuedAt: Date;
   /** When the money was agreed to arrive. Null when nobody said. */
   dueDate: Date | null;
@@ -443,10 +445,12 @@ export async function invoicesFor(
     total_k: string;
     paid_k: string;
     balance_due_k: string;
+    credited_k: string;
     issued_at: Date;
   }>(sql`
     SELECT invoice_number, status, due_date, total_k::bigint AS total_k, paid_k::bigint AS paid_k,
-           balance_due_k::bigint AS balance_due_k, created_at AS issued_at
+           balance_due_k::bigint AS balance_due_k, credited_k::bigint AS credited_k,
+           created_at AS issued_at
     FROM invoices
     WHERE business_id = ${businessId}::uuid
     ORDER BY created_at DESC
@@ -467,6 +471,7 @@ export async function invoicesFor(
       totalK: Number(r.total_k),
       paidK: Number(r.paid_k),
       balanceDueK: Number(r.balance_due_k),
+      creditedK: Number(r.credited_k),
       issuedAt: new Date(r.issued_at),
       dueDate: r.due_date === null ? null : new Date(r.due_date),
     })),

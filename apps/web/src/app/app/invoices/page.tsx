@@ -1,8 +1,10 @@
 import type { Metadata } from 'next';
+import { formatKobo } from '@rekoda/core';
 import { Money } from '@/components/ui/Money';
 import { reportsInvoices } from '@/server/api';
 import { requireSessionWithToken } from '@/server/guards';
 import { AppNav } from '../AppNav';
+import { CreditForm, type CreditableInvoice } from './CreditForm';
 import { VoidForm } from './VoidForm';
 import { SignOutButton } from '../SignOutButton';
 
@@ -27,6 +29,20 @@ export default async function InvoicesPage() {
   const voidable = invoices
     .filter((invoice) => invoice.paidK === 0 && invoice.status !== 'voided')
     .map((invoice) => invoice.invoiceNumber);
+
+  /* And the other half of the pair. A credit note reduces an invoice money HAS
+   * arrived against, which is exactly the set the void refuses, so between the
+   * two controls every invoice has one correction path and never both. */
+  const creditable: CreditableInvoice[] = invoices
+    .filter(
+      (invoice) =>
+        invoice.paidK > 0 && invoice.status !== 'voided' && invoice.creditedK < invoice.totalK,
+    )
+    .map((invoice) => ({
+      invoiceNumber: invoice.invoiceNumber,
+      creditableK: invoice.totalK - invoice.creditedK,
+      label: `${invoice.invoiceNumber} · ${formatKobo(invoice.totalK - invoice.creditedK)} left to credit`,
+    }));
 
   return (
     <section className="rk-container rk-dash">
@@ -59,6 +75,7 @@ export default async function InvoicesPage() {
                     <th>Status</th>
                     <th>Total</th>
                     <th>Paid</th>
+                    <th>Credited</th>
                     <th>Balance</th>
                   </tr>
                 </thead>
@@ -80,6 +97,11 @@ export default async function InvoicesPage() {
                         <Money kobo={invoice.totalK} />
                       </td>
                       <td>{invoice.paidK === 0 ? 'nothing' : <Money kobo={invoice.paidK} />}</td>
+                      {/* A credit note is a document raised against this row, and
+                          the register is where a merchant looks for it. Without
+                          this column a partly credited invoice is
+                          indistinguishable from one nobody has touched. */}
+                      <td>{invoice.creditedK === 0 ? '' : <Money kobo={invoice.creditedK} />}</td>
                       <td>
                         {invoice.balanceDueK === 0 ? (
                           'settled'
@@ -103,6 +125,22 @@ export default async function InvoicesPage() {
                 books show the sale and the reversal that cancelled it. Nothing is deleted.
               </p>
               <VoidForm voidable={voidable} />
+            </details>
+
+            {/* A separate control, because it is a separate instrument. The
+                void withdraws a sale that should never have happened; this
+                reduces one that did, and leaves the money the customer already
+                sent exactly where it is. */}
+            <details className="rk-void">
+              <summary>Credit an invoice</summary>
+              <p className="rk-fineprint">
+                Use this when a customer has paid and something has to come back: goods returned, an
+                overcharge, a dispute settled. The invoice stays, a numbered credit note is raised
+                against it, and your books show the sale and the credit side by side. The money
+                already in your account is not touched, so if you are giving cash back, record that
+                separately as a payment out.
+              </p>
+              <CreditForm invoices={creditable} />
             </details>
 
             {/* The answer to "what happens to my records if I leave". A
@@ -137,6 +175,8 @@ function statusWord(status: string): string {
   switch (status) {
     case 'issued':
       return 'Awaiting payment';
+    case 'credited':
+      return 'Credited';
     case 'partially_paid':
       return 'Partly paid';
     case 'paid':

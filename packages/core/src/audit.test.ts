@@ -22,6 +22,19 @@ describe('every shape a writer actually stores', () => {
     });
   });
 
+  it('names both documents on a credit note, and carries the amount', () => {
+    expect(
+      describe_('invoice', 'credited', {
+        creditNoteNumber: 'CRN-2026-000003',
+        invoiceNumber: 'INV-2026-000041',
+        amountK: 9_000_000,
+      }),
+    ).toEqual({
+      summary: 'Credit note CRN-2026-000003 issued against invoice INV-2026-000041',
+      amountK: 9_000_000,
+    });
+  });
+
   it('tells a withdrawn expense from a withdrawn stock purchase', () => {
     expect(describe_('expense', 'voided', { description: 'diesel', kind: 'expense' }).summary).toBe(
       'Expense "diesel" withdrawn',
