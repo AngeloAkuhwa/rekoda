@@ -5,10 +5,13 @@ import PDFDocument from 'pdfkit';
 import {
   layoutInvoice,
   layoutReceipt,
+  layoutStatements,
   pageLabel,
+  periodLabel,
   type InvoiceDocument,
   type LayoutBlock,
   type ReceiptDocument,
+  type StatementDocument,
 } from '@rekoda/core';
 
 /**
@@ -68,6 +71,15 @@ interface Style {
 /** One place to argue about hierarchy, rather than a magic number per branch. */
 const STYLES: Record<LayoutBlock['kind'], Style> = {
   title: { font: 'semibold', size: 16, gapBefore: 0 },
+  /* Ruled, because the four statements run together on one A4 page and a
+   * reader must be able to see where one ends and the next begins. */
+  section: { font: 'semibold', size: 11.5, gapBefore: 16, rule: true },
+  /* Semibold and unruled: a group label must be tellable from the lines under
+   * it, and at 9.5 regular "Assets" reads as a row whose amount went missing. */
+  subhead: { font: 'semibold', size: 9.5, gapBefore: 9 },
+  /* Ruled, because on a statement the eye finds the total by the line above
+   * it. Without one it is another 9.5 row with a bigger number. */
+  subtotal: { font: 'semibold', size: 9.5, gapBefore: 8, rule: true },
   meta: { font: 'regular', size: 9, gapBefore: 2 },
   party: { font: 'regular', size: 9, gapBefore: 8 },
   item: { font: 'regular', size: 9.5, gapBefore: 4 },
@@ -119,6 +131,21 @@ export async function renderReceiptPdf(
   );
 }
 
+/**
+ * Render the four statements to PDF bytes.
+ *
+ * A4 always, and not by option: this is a document that goes to a bank, a
+ * landlord or a grant officer, and every one of them prints on A4. The
+ * receipt's A5 default exists because a receipt is handed across a counter.
+ */
+export async function renderStatementsPdf(doc: StatementDocument): Promise<Buffer> {
+  return renderBlocksPdf(
+    layoutStatements(doc),
+    `Financial statements ${periodLabel(doc.period)} — ${doc.businessName}`,
+    { size: 'A4' },
+  );
+}
+
 async function renderBlocksPdf(
   blocks: LayoutBlock[],
   title: string,
@@ -129,6 +156,16 @@ async function renderBlocksPdf(
   const pdf = new PDFDocument({
     size: options.size ?? 'A5',
     margin: MARGIN,
+    /**
+     * Required for the page numbering below to run at all.
+     *
+     * Without it pdfkit flushes each page as it finishes and
+     * `bufferedPageRange()` reports a count of zero forever, so the footer
+     * loop was guarded by a condition that could never be true. It went
+     * unnoticed because an invoice and a receipt both fit on one page and a
+     * one-page document is not supposed to be numbered anyway.
+     */
+    bufferPages: true,
     // Metadata a merchant's customer can see in a viewer. No PII: the customer
     // label may be a token, and the business name is public by definition.
     info: {
@@ -180,7 +217,22 @@ async function renderBlocksPdf(
       continue;
     }
 
-    if (style.rule) {
+    /**
+     * Break the page HERE if the row will not fit, rather than letting pdfkit
+     * discover it mid-row.
+     *
+     * The two-column write below draws the label and the figure at the same
+     * fixed y. When that y is already past the bottom margin, pdfkit breaks a
+     * page for each of them independently: the label lands alone at the top of
+     * one page and its amount at the top of the next, with an empty page in
+     * between. A section keeps its rule and a first row with it, because a
+     * heading stranded at the foot of a page is a heading for nothing.
+     */
+    const brokePage = ensureRoom(pdf, block.kind === 'section' ? 3 : 1);
+
+    /* No rule at the very top of a fresh page: a line above the first thing on
+     * a page separates a heading from nothing. */
+    if (style.rule && !brokePage) {
       const y = pdf.y - 4;
       pdf
         .moveTo(MARGIN, y)
@@ -226,13 +278,38 @@ async function renderBlocksPdf(
       const label = pageLabel(i + 1, range.count);
       if (!label) continue;
       pdf.font('regular').fontSize(7);
+      /**
+       * Zero the bottom margin for exactly this write.
+       *
+       * The footer sits BELOW the margin by design, and pdfkit answers a write
+       * past the bottom margin by starting a new page. Numbering two pages
+       * would therefore append two blank ones, and each of those would want a
+       * number of its own. Restored immediately, because the margin is the
+       * page's and not this loop's.
+       */
+      const bottom = pdf.page.margins.bottom;
+      pdf.page.margins.bottom = 0;
       pdf.text(label, MARGIN, pdf.page.height - MARGIN + 4, {
         width: contentWidth,
         align: 'center',
       });
+      pdf.page.margins.bottom = bottom;
     }
   }
 
   pdf.end();
   return finished;
+}
+
+/**
+ * Start a new page unless `lines` of the current font still fit.
+ *
+ * `currentLineHeight()` reads the font already selected on the document, so
+ * this must be called after `pdf.font(...).fontSize(...)` and not before.
+ */
+function ensureRoom(pdf: PDFKit.PDFDocument, lines: number): boolean {
+  const needed = pdf.currentLineHeight() * lines;
+  if (pdf.y + needed <= pdf.page.height - pdf.page.margins.bottom) return false;
+  pdf.addPage();
+  return true;
 }

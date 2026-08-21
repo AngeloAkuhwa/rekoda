@@ -431,3 +431,110 @@ describe('exporting the books as CSV', () => {
     expect((await download('/v1/reports/invoices.csv', mine.auth)).body).toBe(EMPTY_INVOICES);
   });
 });
+
+/**
+ * The statements as a file.
+ *
+ * A dashboard is not a deliverable: a merchant asked for a loan or a grant
+ * needs something dated they can forward. Asserted here as bytes rather than
+ * as text, because the whole point is that it survives the wire.
+ */
+describe('the statements PDF', () => {
+  const get = (path: string, auth: Record<string, string> = {}) =>
+    app.inject({ method: 'GET', url: path, headers: auth });
+
+  it('refuses without a session, like every other report', async () => {
+    expect((await get('/v1/reports/statements.pdf')).statusCode).toBe(401);
+  });
+
+  it('refuses a period that is not a month', async () => {
+    const { auth } = await onboard('+2348120000031');
+    expect((await get('/v1/reports/statements.pdf?period=august', auth)).statusCode).toBe(400);
+    expect((await get('/v1/reports/statements.pdf?period=2026-13', auth)).statusCode).toBe(400);
+  });
+
+  it('hands over a real PDF a browser saves and no cache keeps', async () => {
+    const { auth } = await onboard('+2348120000032');
+    const res = await get('/v1/reports/statements.pdf?period=2026-08', auth);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['content-type']).toContain('application/pdf');
+    expect(res.headers['content-disposition']).toContain('attachment');
+    expect(res.headers['content-disposition']).toContain('rekoda-statements-2026-08.pdf');
+    expect(res.headers['cache-control']).toBe('no-store');
+    /* The magic bytes, not merely a 200. A route that answered with an error
+     * page and the right headers would pass every assertion above. */
+    expect(res.rawPayload.subarray(0, 5).toString('latin1')).toBe('%PDF-');
+    expect(res.rawPayload.length).toBeGreaterThan(1_000);
+  });
+
+  it('builds a month with no trading rather than failing on it', async () => {
+    const { auth } = await onboard('+2348120000033');
+    const res = await get('/v1/reports/statements.pdf?period=2020-01', auth);
+    expect(res.statusCode).toBe(200);
+    expect(res.rawPayload.subarray(0, 5).toString('latin1')).toBe('%PDF-');
+  });
+
+  it('builds from the books once there are books', async () => {
+    const { auth, businessId } = await onboard('+2348120000034');
+    await seedStatements(businessId);
+
+    const period = new Date(Date.now() + 3_600_000).toISOString().slice(0, 7);
+    const res = await get(`/v1/reports/statements.pdf?period=${period}`, auth);
+    expect(res.statusCode).toBe(200);
+    expect(res.rawPayload.length).toBeGreaterThan(1_000);
+  });
+
+  it('defaults to the current month when none is asked for', async () => {
+    const { auth } = await onboard('+2348120000035');
+    const period = new Date(Date.now() + 3_600_000).toISOString().slice(0, 7);
+    const res = await get('/v1/reports/statements.pdf', auth);
+    expect(res.headers['content-disposition']).toContain(`rekoda-statements-${period}.pdf`);
+  });
+
+  it('agrees with the JSON the dashboard renders', async () => {
+    const { auth, businessId } = await onboard('+2348120000036');
+    await seedStatements(businessId);
+
+    const period = new Date(Date.now() + 3_600_000).toISOString().slice(0, 7);
+    const json = (await get(`/v1/reports/statements?period=${period}`, auth)).json();
+    const pdf = await get(`/v1/reports/statements.pdf?period=${period}`, auth);
+
+    /* Both come from one `sumsFor`, so this is a guard against them drifting
+     * apart later rather than a claim about today's arithmetic. */
+    expect(json.trialBalance.balanced).toBe(true);
+    expect(pdf.statusCode).toBe(200);
+  });
+
+  /** One ₦150,000 sale with ₦60,000 recorded, so the statements are not empty. */
+  async function seedStatements(businessId: string) {
+    await withBusiness(db, businessId, async (tx) => {
+      const sale = await issueRepo.issueSale(tx, {
+        businessId,
+        customerId: null,
+        customerToken: 'CUSTOMER_PDF',
+        items: [{ name: 'Bag of rice', quantity: 3, unitPriceK: 5_000_000 }],
+        subtotalK: 15_000_000,
+        discountK: 0,
+        deliveryFeeK: 0,
+        vatK: 0,
+        totalK: 15_000_000,
+        paidK: 0,
+        balanceDueK: 15_000_000,
+        method: 'transfer',
+        sourceType: 'chat',
+        sourceId: 'sale-pdf',
+        actor: 'system',
+      });
+      await settleRepo.recordMerchantPayment(tx, {
+        businessId,
+        invoiceId: sale.invoiceId,
+        amountK: 6_000_000,
+        method: 'cash',
+        sourceType: 'chat',
+        sourceId: 'pay-pdf',
+        actor: 'system',
+      });
+    });
+  }
+});

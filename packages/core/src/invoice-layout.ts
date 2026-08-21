@@ -16,6 +16,12 @@ import { nairaInWords } from './words.js';
 
 export type BlockKind =
   | 'title'
+  /** A heading inside a longer document: the statements, not an invoice. */
+  | 'section'
+  /** A group inside a section: Income, Assets, Equity. Carries no figure. */
+  | 'subhead'
+  /** What a group adds up to, ruled off from the lines above it. */
+  | 'subtotal'
   | 'meta'
   | 'party'
   | 'item'
