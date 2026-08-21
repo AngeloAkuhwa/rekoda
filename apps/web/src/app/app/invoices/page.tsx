@@ -47,6 +47,7 @@ export default async function InvoicesPage() {
                   <tr>
                     <th>Number</th>
                     <th>Issued</th>
+                    <th>Due</th>
                     <th>Status</th>
                     <th>Total</th>
                     <th>Paid</th>
@@ -58,7 +59,15 @@ export default async function InvoicesPage() {
                     <tr key={invoice.invoiceNumber}>
                       <td>{invoice.invoiceNumber}</td>
                       <td>{shortDate(invoice.issuedAt)}</td>
-                      <td>{statusWord(invoice.status)}</td>
+                      <td>{invoice.dueDate ? shortDate(invoice.dueDate) : 'not agreed'}</td>
+                      {/* Late is a status a merchant acts on, so it wins the
+                          column over "issued" or "partially paid" — those are
+                          still legible from the Paid and Balance figures. */}
+                      <td>
+                        {invoice.daysOverdue > 0
+                          ? `${invoice.daysOverdue} ${invoice.daysOverdue === 1 ? 'day' : 'days'} late`
+                          : statusWord(invoice.status)}
+                      </td>
                       <td>
                         <Money kobo={invoice.totalK} />
                       </td>

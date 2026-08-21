@@ -59,6 +59,15 @@ export interface IssueSaleInput {
   /** Where the sale HAPPENED (§27) — Instagram, the shop, a phone order.
    * Optional by design; captured only when the merchant names a channel. */
   saleSource?: string | null;
+  /**
+   * When the merchant said the money is expected, already resolved to a date.
+   *
+   * Resolved by `resolveDueDate` in core, never here and never by the model:
+   * a due date decides when a real customer is chased, and "what day is
+   * Friday" has one right answer. Null when they named no date, which is the
+   * common case and an honest one.
+   */
+  dueDate?: Date | null;
   actor: string;
   issuedAt?: Date;
 }
@@ -163,6 +172,9 @@ export async function issueSale(tx: TenantDb, input: IssueSaleInput): Promise<Is
     totalK: input.totalK,
     paidK: input.paidK,
     balanceDueK: input.balanceDueK,
+    /* Only when there is one. An explicit null on every undated invoice would
+     * change the hash of documents that predate due dates. */
+    ...(input.dueDate ? { dueDateIso: input.dueDate.toISOString() } : {}),
     currency: 'NGN',
   };
   const docHash = snapshotHash(snapshot);
@@ -188,6 +200,7 @@ export async function issueSale(tx: TenantDb, input: IssueSaleInput): Promise<Is
       sourceType: input.sourceType,
       sourceId: input.sourceId,
       saleSource: input.saleSource ?? null,
+      dueDate: input.dueDate ?? null,
       issuedAt,
     })
     .returning({ id: invoices.id });

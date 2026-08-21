@@ -142,6 +142,8 @@ export interface DebtorRow {
   invoiceNumber: string;
   balanceDueK: number;
   issuedAt: Date;
+  /** When the merchant said the money was expected. Null when they did not. */
+  dueDate: Date | null;
 }
 
 export interface Debtors {
@@ -164,19 +166,28 @@ export async function debtorsFor(
   businessId: string,
   limit: number,
 ): Promise<Debtors> {
+  /**
+   * Ordered by DUE DATE, not by issue date.
+   *
+   * A debtors list is a work queue, and the work is oldest-debt-first: the
+   * money most at risk is the money longest past its promised day. Invoices
+   * with no agreed date sort last, because nobody agreed to chase them.
+   */
   const rows = await tx.execute<{
     invoice_number: string;
     balance_due_k: string;
     issued_at: Date;
+    due_date: Date | null;
     total_k: string;
     n: number;
   }>(sql`
     SELECT invoice_number, balance_due_k::bigint AS balance_due_k, created_at AS issued_at,
+           due_date,
            SUM(balance_due_k) OVER ()::bigint AS total_k,
            count(*)  OVER ()::int   AS n
     FROM invoices
     WHERE business_id = ${businessId}::uuid AND status IN ('issued', 'partially_paid')
-    ORDER BY created_at DESC
+    ORDER BY due_date ASC NULLS LAST, created_at DESC
     LIMIT ${limit}
   `);
   const list = [...rows];
@@ -185,9 +196,90 @@ export async function debtorsFor(
       invoiceNumber: r.invoice_number,
       balanceDueK: Number(r.balance_due_k),
       issuedAt: new Date(r.issued_at),
+      dueDate: r.due_date === null ? null : new Date(r.due_date),
     })),
     totalK: Number(list[0]?.total_k ?? 0),
     count: list[0]?.n ?? 0,
+  };
+}
+
+/**
+ * Receivable ageing — the view an accountant opens first, and the one both
+ * QuickBooks and HelloBooks put on the front page.
+ *
+ * Bucketed in SQL rather than in TypeScript because the whole table has to be
+ * summed, not the page of it a list shows: an ageing report that silently
+ * described the latest 20 invoices would be wrong in the direction that
+ * matters. The boundaries match `ageBucket` in core, which the chat and the
+ * PDF use, so the same debt lands in the same bucket wherever it is read.
+ *
+ * `current` deliberately holds BOTH money not yet due and money with no
+ * agreed date: neither is late, and ageing an undated debt would invent a
+ * deadline the merchant never set.
+ */
+export interface Ageing {
+  currentK: number;
+  d1_30K: number;
+  d31_60K: number;
+  d61_90K: number;
+  d90PlusK: number;
+  /** Everything owed, whatever its age. Equal to the buckets summed. */
+  totalK: number;
+  /** Owed and past its agreed day: the part with a name attached. */
+  overdueK: number;
+}
+
+export async function ageingFor(
+  tx: TenantDb,
+  businessId: string,
+  now = new Date(),
+): Promise<Ageing> {
+  const rows = await tx.execute<{
+    current_k: string;
+    d1_30_k: string;
+    d31_60_k: string;
+    d61_90_k: string;
+    d90_plus_k: string;
+    total_k: string;
+  }>(sql`
+    WITH open_invoices AS (
+      SELECT balance_due_k,
+             CASE
+               WHEN due_date IS NULL THEN 0
+               /* Both sides cast to a Lagos DATE first, so this is integer
+                * day arithmetic rather than an interval: a debt due at 23:59
+                * and read at 00:01 is one day late, not zero point something. */
+               ELSE GREATEST(
+                 0,
+                 (${now.toISOString()}::timestamptz AT TIME ZONE 'Africa/Lagos')::date
+                   - (due_date AT TIME ZONE 'Africa/Lagos')::date
+               )
+             END AS days_late
+      FROM invoices
+      WHERE business_id = ${businessId}::uuid
+        AND status IN ('issued', 'partially_paid')
+        AND balance_due_k > 0
+    )
+    SELECT
+      COALESCE(SUM(balance_due_k) FILTER (WHERE days_late <= 0), 0)::bigint  AS current_k,
+      COALESCE(SUM(balance_due_k) FILTER (WHERE days_late BETWEEN 1 AND 30), 0)::bigint  AS d1_30_k,
+      COALESCE(SUM(balance_due_k) FILTER (WHERE days_late BETWEEN 31 AND 60), 0)::bigint AS d31_60_k,
+      COALESCE(SUM(balance_due_k) FILTER (WHERE days_late BETWEEN 61 AND 90), 0)::bigint AS d61_90_k,
+      COALESCE(SUM(balance_due_k) FILTER (WHERE days_late > 90), 0)::bigint   AS d90_plus_k,
+      COALESCE(SUM(balance_due_k), 0)::bigint                                AS total_k
+    FROM open_invoices
+  `);
+  const row = [...rows][0];
+  const current = Number(row?.current_k ?? 0);
+  const total = Number(row?.total_k ?? 0);
+  return {
+    currentK: current,
+    d1_30K: Number(row?.d1_30_k ?? 0),
+    d31_60K: Number(row?.d31_60_k ?? 0),
+    d61_90K: Number(row?.d61_90_k ?? 0),
+    d90PlusK: Number(row?.d90_plus_k ?? 0),
+    totalK: total,
+    overdueK: total - current,
   };
 }
 
@@ -326,6 +418,8 @@ export interface InvoiceListRow {
   paidK: number;
   balanceDueK: number;
   issuedAt: Date;
+  /** When the money was agreed to arrive. Null when nobody said. */
+  dueDate: Date | null;
 }
 
 export interface InvoiceList {
@@ -345,12 +439,13 @@ export async function invoicesFor(
   const rows = await tx.execute<{
     invoice_number: string;
     status: string;
+    due_date: Date | null;
     total_k: string;
     paid_k: string;
     balance_due_k: string;
     issued_at: Date;
   }>(sql`
-    SELECT invoice_number, status, total_k::bigint AS total_k, paid_k::bigint AS paid_k,
+    SELECT invoice_number, status, due_date, total_k::bigint AS total_k, paid_k::bigint AS paid_k,
            balance_due_k::bigint AS balance_due_k, created_at AS issued_at
     FROM invoices
     WHERE business_id = ${businessId}::uuid
@@ -373,6 +468,7 @@ export async function invoicesFor(
       paidK: Number(r.paid_k),
       balanceDueK: Number(r.balance_due_k),
       issuedAt: new Date(r.issued_at),
+      dueDate: r.due_date === null ? null : new Date(r.due_date),
     })),
     count: t?.n ?? 0,
     outstandingK: Number(t?.outstanding_k ?? 0),

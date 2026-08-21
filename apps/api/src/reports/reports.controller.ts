@@ -21,6 +21,7 @@ import {
   buildCashflowStatement,
   buildProfitAndLoss,
   buildTrialBalance,
+  daysOverdue,
   isAccountKey,
   usagePeriod,
   type AccountSums,
@@ -51,10 +52,11 @@ export class ReportsController {
   @Get('overview')
   async overview(@Req() request: AuthedRequest): Promise<ReportsOverviewResponse> {
     const businessId = request.auth!.businessId;
-    const overview = await withBusiness(this.db, businessId, (tx) =>
-      reportsRepo.overviewFor(tx, businessId),
-    );
-    return { period: usagePeriod(new Date()), ...overview };
+    const { overview, ageing } = await withBusiness(this.db, businessId, async (tx) => ({
+      overview: await reportsRepo.overviewFor(tx, businessId),
+      ageing: await reportsRepo.ageingFor(tx, businessId),
+    }));
+    return { period: usagePeriod(new Date()), ...overview, ageing };
   }
 
   @Get('cashflow')
@@ -69,6 +71,7 @@ export class ReportsController {
   @Get('debtors')
   async debtors(@Req() request: AuthedRequest): Promise<ReportsDebtorsResponse> {
     const businessId = request.auth!.businessId;
+    const now = new Date();
     const debtors = await withBusiness(this.db, businessId, (tx) =>
       reportsRepo.debtorsFor(tx, businessId, DEBTOR_ROWS),
     );
@@ -77,6 +80,11 @@ export class ReportsController {
         invoiceNumber: r.invoiceNumber,
         balanceDueK: r.balanceDueK,
         issuedAt: r.issuedAt.toISOString(),
+        dueDate: r.dueDate?.toISOString() ?? null,
+        /* Derived at read time, never stored: a stored flag is a second
+         * source of truth that is wrong between sweeps, and the moment it
+         * matters is the moment a merchant looks. */
+        daysOverdue: daysOverdue(r.dueDate, r.balanceDueK, now),
       })),
       totalK: debtors.totalK,
       count: debtors.count,
@@ -127,6 +135,7 @@ export class ReportsController {
   @Get('invoices')
   async invoices(@Req() request: AuthedRequest): Promise<ReportsInvoicesResponse> {
     const businessId = request.auth!.businessId;
+    const now = new Date();
     const list = await withBusiness(this.db, businessId, (tx) =>
       reportsRepo.invoicesFor(tx, businessId, REGISTER_ROWS),
     );
@@ -134,6 +143,8 @@ export class ReportsController {
       invoices: list.rows.map((r) => ({
         invoiceNumber: r.invoiceNumber,
         status: r.status,
+        dueDate: r.dueDate?.toISOString() ?? null,
+        daysOverdue: daysOverdue(r.dueDate, r.balanceDueK, now),
         totalK: r.totalK,
         paidK: r.paidK,
         balanceDueK: r.balanceDueK,

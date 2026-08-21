@@ -63,6 +63,7 @@ export function renderDocumentHandler(deps: RenderDocumentDeps): JobHandler {
       totalK: Number(snapshot['totalK'] ?? 0),
       paidK: Number(snapshot['paidK'] ?? 0),
       balanceDueK: Number(snapshot['balanceDueK'] ?? 0),
+      dueDate: typeof snapshot['dueDateIso'] === 'string' ? new Date(snapshot['dueDateIso']) : null,
     };
 
     const bytes = await renderInvoicePdf(doc);

@@ -11,6 +11,7 @@ export * from './invoice-layout.js';
 export * from './receipt-layout.js';
 export * from './statements.js';
 export * from './payments.js';
+export * from './due-dates.js';
 export * from './ai-cost.js';
 export * as replies from './replies.js';
 export type { Reply } from './replies.js';

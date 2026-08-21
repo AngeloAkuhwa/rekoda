@@ -322,3 +322,133 @@ describe('the registers (§5.3.7)', () => {
     expect(receipts.count).toBe(0);
   });
 });
+
+/**
+ * Receivable ageing, against real dates in real SQL.
+ *
+ * The bucket boundaries are the whole assertion: an invoice one day late and
+ * one thirty-one days late belong in different columns, and a merchant reads
+ * those columns to decide who to call this morning. Bucketed in SQL over the
+ * WHOLE table rather than a page of it, because an ageing report that aged
+ * only the latest twenty invoices would be wrong in the direction that costs
+ * money.
+ */
+describe('receivable ageing', () => {
+  /** An unpaid invoice due `daysAgo` before `now`, or with no due date. */
+  async function unpaidInvoiceDue(
+    businessId: string,
+    totalK: number,
+    dueDate: Date | null,
+  ): Promise<void> {
+    await withBusiness(db, businessId, (tx) =>
+      issueRepo.issueSale(tx, {
+        businessId,
+        customerId: null,
+        customerToken: 'CUSTOMER_7K2',
+        items: [{ name: 'wig', quantity: 1, unitPriceK: totalK }],
+        subtotalK: totalK,
+        discountK: 0,
+        deliveryFeeK: 0,
+        vatK: 0,
+        totalK,
+        paidK: 0,
+        balanceDueK: totalK,
+        method: 'transfer',
+        sourceType: 'chat',
+        sourceId: `draft-${totalK}`,
+        actor: 'system',
+        dueDate,
+      }),
+    );
+  }
+
+  const NOW = new Date('2026-08-20T09:00:00Z');
+  const daysBefore = (n: number) => new Date(NOW.getTime() - n * 86_400_000);
+
+  it('is all zeros for a business that is owed nothing', async () => {
+    const businessId = await seedBusiness();
+    expect(
+      await withBusiness(db, businessId, (tx) => reportsRepo.ageingFor(tx, businessId, NOW)),
+    ).toEqual({
+      currentK: 0,
+      d1_30K: 0,
+      d31_60K: 0,
+      d61_90K: 0,
+      d90PlusK: 0,
+      totalK: 0,
+      overdueK: 0,
+    });
+  });
+
+  it('sorts each debt into its bucket by whole Lagos days late', async () => {
+    const businessId = await seedBusiness();
+    await unpaidInvoiceDue(businessId, 100_000, daysBefore(-5)); // due in future
+    await unpaidInvoiceDue(businessId, 200_000, daysBefore(10)); // 10 late
+    await unpaidInvoiceDue(businessId, 300_000, daysBefore(45)); // 45 late
+    await unpaidInvoiceDue(businessId, 400_000, daysBefore(75)); // 75 late
+    await unpaidInvoiceDue(businessId, 500_000, daysBefore(200)); // 200 late
+
+    const ageing = await withBusiness(db, businessId, (tx) =>
+      reportsRepo.ageingFor(tx, businessId, NOW),
+    );
+
+    expect(ageing.currentK).toBe(100_000);
+    expect(ageing.d1_30K).toBe(200_000);
+    expect(ageing.d31_60K).toBe(300_000);
+    expect(ageing.d61_90K).toBe(400_000);
+    expect(ageing.d90PlusK).toBe(500_000);
+    expect(ageing.totalK).toBe(1_500_000);
+    expect(ageing.overdueK).toBe(1_400_000);
+  });
+
+  /**
+   * Undated debt is not late. Ageing it would invent a deadline the merchant
+   * never agreed, and put a real customer on a chase list for it.
+   */
+  it('keeps debt with no agreed date in current, however old', async () => {
+    const businessId = await seedBusiness();
+    await unpaidInvoiceDue(businessId, 700_000, null);
+
+    const ageing = await withBusiness(db, businessId, (tx) =>
+      reportsRepo.ageingFor(tx, businessId, NOW),
+    );
+    expect(ageing.currentK).toBe(700_000);
+    expect(ageing.overdueK).toBe(0);
+  });
+
+  it('the buckets always sum to the total', async () => {
+    const businessId = await seedBusiness();
+    await unpaidInvoiceDue(businessId, 111_111, daysBefore(3));
+    await unpaidInvoiceDue(businessId, 222_222, daysBefore(40));
+    await unpaidInvoiceDue(businessId, 333_333, null);
+
+    const a = await withBusiness(db, businessId, (tx) =>
+      reportsRepo.ageingFor(tx, businessId, NOW),
+    );
+    expect(a.currentK + a.d1_30K + a.d31_60K + a.d61_90K + a.d90PlusK).toBe(a.totalK);
+  });
+
+  it('drops an invoice out of ageing once it is paid off', async () => {
+    const businessId = await seedBusiness();
+    await unpaidInvoiceDue(businessId, 900_000, daysBefore(30));
+    const open = await withBusiness(db, businessId, (tx) =>
+      issueRepo.latestOpenInvoice(tx, businessId),
+    );
+    await withBusiness(db, businessId, (tx) =>
+      settleRepo.recordMerchantPayment(tx, {
+        businessId,
+        invoiceId: open!.id,
+        amountK: 900_000,
+        method: 'cash',
+        sourceType: 'chat',
+        sourceId: 'paid-off',
+        actor: 'test',
+      }),
+    );
+
+    const ageing = await withBusiness(db, businessId, (tx) =>
+      reportsRepo.ageingFor(tx, businessId, NOW),
+    );
+    expect(ageing.totalK).toBe(0);
+  });
+});

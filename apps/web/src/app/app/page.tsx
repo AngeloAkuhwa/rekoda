@@ -132,6 +132,60 @@ export default async function DashboardPage() {
         </div>
 
         <div className="rk-card rk-dash-card">
+          <h2>How old the debt is</h2>
+          {overview.ageing.totalK > 0 ? (
+            <>
+              <p className="rk-dash-total">
+                <Money kobo={overview.ageing.overdueK} />{' '}
+                <span className="rk-fineprint">past the day it was promised</span>
+              </p>
+              {/* The ageing columns an accountant reads first, and the ones
+                  both QuickBooks and HelloBooks put on the front page. */}
+              <div className="rk-table-scroll">
+                <table className="rk-table rk-ageing">
+                  <thead>
+                    <tr>
+                      <th>Not due yet</th>
+                      <th>1 to 30 days</th>
+                      <th>31 to 60</th>
+                      <th>61 to 90</th>
+                      <th>Over 90</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr>
+                      <td>
+                        <Money kobo={overview.ageing.currentK} />
+                      </td>
+                      <td>
+                        <Money kobo={overview.ageing.d1_30K} />
+                      </td>
+                      <td>
+                        <Money kobo={overview.ageing.d31_60K} />
+                      </td>
+                      <td>
+                        <Money kobo={overview.ageing.d61_90K} />
+                      </td>
+                      <td>
+                        <Money kobo={overview.ageing.d90PlusK} />
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <p className="rk-fineprint">
+                Money with no agreed date counts as not due yet. Tell Rekoda when you sell, like
+                &quot;she will pay on Friday&quot;, and it lands in the right column.
+              </p>
+            </>
+          ) : (
+            <p className="rk-dash-empty-line">
+              Nothing outstanding. Every invoice you have issued is fully paid.
+            </p>
+          )}
+        </div>
+
+        <div className="rk-card rk-dash-card">
           <h2>Who owes you</h2>
           {debtors.count > 0 ? (
             <>
@@ -146,7 +200,7 @@ export default async function DashboardPage() {
                   <li key={row.invoiceNumber}>
                     <span>
                       {row.invoiceNumber}
-                      <span className="rk-fineprint"> · {issuedLabel(row.issuedAt)}</span>
+                      <span className="rk-fineprint"> · {dueLabel(row)}</span>
                     </span>
                     <Money kobo={row.balanceDueK} />
                   </li>
@@ -230,6 +284,21 @@ function issuedLabel(iso: string): string {
     month: 'short',
     timeZone: 'Africa/Lagos',
   });
+}
+
+/**
+ * What a merchant needs to know about one debt, in the space of a few words.
+ *
+ * How late it is, when there is an agreed day and it has passed; when it is
+ * due, when that day is still ahead; and the issue date when nobody agreed
+ * anything, because that is all we honestly know.
+ */
+function dueLabel(row: { issuedAt: string; dueDate: string | null; daysOverdue: number }): string {
+  if (row.daysOverdue > 0) {
+    return row.daysOverdue === 1 ? 'one day late' : `${row.daysOverdue} days late`;
+  }
+  if (row.dueDate) return `due ${issuedLabel(row.dueDate)}`;
+  return `issued ${issuedLabel(row.issuedAt)}`;
 }
 
 /**

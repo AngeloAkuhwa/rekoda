@@ -3,6 +3,8 @@ import {
   allowanceFor,
   gateExpense,
   gatePayment,
+  daysOverdue,
+  resolveDueDate,
   gatePurchase,
   gateSale,
   isSaleSource,
@@ -265,7 +267,19 @@ async function deterministicReply(
       // Answered from the same SQL the dashboard uses. Invoice numbers, not
       // customer names: this text crosses WhatsApp in the clear.
       const debtors = await reportsRepo.debtorsFor(tx, businessId, 8);
-      return replies.debtorList(debtors.rows, debtors.totalK, debtors.count);
+      /* Oldest promise first, with how late each one is: a debtors list is a
+       * work queue, and a merchant standing in a shop needs to know who to
+       * call before they need the total. */
+      const now = new Date();
+      return replies.debtorList(
+        debtors.rows.map((r) => ({
+          invoiceNumber: r.invoiceNumber,
+          balanceDueK: r.balanceDueK,
+          daysOverdue: daysOverdue(r.dueDate, r.balanceDueK, now),
+        })),
+        debtors.totalK,
+        debtors.count,
+      );
     }
     case 'payment_details':
       return paymentDetailsReply(deps, tx, businessId);
@@ -498,6 +512,13 @@ async function confirmPendingDraft(
     sourceType: 'chat',
     sourceId: draft.id,
     saleSource: isSaleSource(command['saleSource']) ? command['saleSource'] : null,
+    /* The merchant told us when they expect the money and until now we threw
+     * it away. The model reported the PHRASE; core decides which day it is,
+     * because that day is when somebody gets chased. */
+    dueDate: resolveDueDate(
+      typeof command['dueDescription'] === 'string' ? command['dueDescription'] : null,
+      new Date(),
+    ),
     actor: 'system',
   });
 

@@ -1560,6 +1560,145 @@ describe('metering the things that cost money', () => {
   });
 });
 
+/**
+ * When the merchant says the money is expected, and what that turns into.
+ *
+ * The model has always captured the phrase and nothing ever read it: a
+ * merchant told us their customer would pay on Friday and we threw it away,
+ * which is the whole debtors book discarded at the door.
+ */
+describe('due dates from what the merchant said', () => {
+  const A_SALE_DUE = (dueDescription: string | null) => ({
+    intent: 'RecordSale',
+    customer: { kind: 'token', token: 'CUSTOMER_7K2' },
+    items: [{ name: 'wig', quantity: 3, unitPrice: 50_000 }],
+    statedTotal: 150_000,
+    reportedPayment: 0,
+    paymentMethod: 'transfer',
+    discount: null,
+    deliveryFee: null,
+    dueDescription,
+  });
+
+  async function seedMerchant(phone: string) {
+    const user = await identity.upsertUserByPhone(db, phone);
+    return identity.createBusinessWithOwner(db, {
+      name: 'Ada Fashion',
+      businessType: null,
+      ownerUserId: user.id,
+    });
+  }
+
+  async function drain() {
+    const runner = buildRunner(workerDb, db, deps);
+    let worked = await runner.runOnce();
+    while (worked) worked = await runner.runOnce();
+  }
+
+  async function sell(wamid: string, dueDescription: string | null) {
+    stubTransport.replyWith(A_SALE_DUE(dueDescription));
+    await post(messagePayload('2348031234567', `${wamid}-sale`, 'Ada bought 3 wigs for 150k'));
+    await drain();
+    await post(messagePayload('2348031234567', `${wamid}-yes`, 'yes'));
+    await drain();
+  }
+
+  it('turns a spoken day into a date on the invoice', async () => {
+    const business = await seedMerchant('+2348031234567');
+    await sell('wamid.DUE1', 'she will pay on Friday');
+
+    const list = await withBusiness(db, business.id, (tx) =>
+      reportsRepo.invoicesFor(tx, business.id, 10),
+    );
+    expect(list.rows[0]?.dueDate).toBeInstanceOf(Date);
+  });
+
+  /* Null is the honest answer and the common one. A guessed date puts a real
+   * customer on an overdue list for a deadline nobody agreed. */
+  it('leaves the date empty when nobody named one', async () => {
+    const business = await seedMerchant('+2348031234567');
+    await sell('wamid.DUE2', null);
+
+    const list = await withBusiness(db, business.id, (tx) =>
+      reportsRepo.invoicesFor(tx, business.id, 10),
+    );
+    expect(list.rows[0]?.dueDate).toBeNull();
+  });
+
+  it('leaves the date empty for a phrase that names no day', async () => {
+    const business = await seedMerchant('+2348031234567');
+    await sell('wamid.DUE3', 'when she can');
+
+    const list = await withBusiness(db, business.id, (tx) =>
+      reportsRepo.invoicesFor(tx, business.id, 10),
+    );
+    expect(list.rows[0]?.dueDate).toBeNull();
+  });
+
+  it('ages the debt into the right bucket once the day has passed', async () => {
+    const business = await seedMerchant('+2348031234567');
+    await sell('wamid.DUE4', 'in 7 days');
+
+    /* Read from far enough ahead that the promised day is long gone. The
+     * ageing query takes `now`, so this needs no clock trickery. */
+    const inFortyDays = new Date(Date.now() + 40 * 86_400_000);
+    const ageing = await withBusiness(db, business.id, (tx) =>
+      reportsRepo.ageingFor(tx, business.id, inFortyDays),
+    );
+    expect(ageing.d31_60K).toBe(15_000_000);
+    expect(ageing.currentK).toBe(0);
+    expect(ageing.overdueK).toBe(15_000_000);
+  });
+
+  it('tells the merchant in chat how late each debt is', async () => {
+    const business = await seedMerchant('+2348031234567');
+    /* Issued directly with a day already gone. The resolver deliberately
+     * cannot produce a past due date from a phrase — "she will pay
+     * yesterday" is not a thing anybody says — so the overdue state is
+     * seeded rather than spoken. */
+    await withBusiness(db, business.id, (tx) =>
+      issueRepo.issueSale(tx, {
+        businessId: business.id,
+        customerId: null,
+        customerToken: 'CUSTOMER_7K2',
+        items: [{ name: 'wig', quantity: 3, unitPriceK: 5_000_000 }],
+        subtotalK: 15_000_000,
+        discountK: 0,
+        deliveryFeeK: 0,
+        vatK: 0,
+        totalK: 15_000_000,
+        paidK: 0,
+        balanceDueK: 15_000_000,
+        method: 'transfer',
+        sourceType: 'chat',
+        sourceId: 'draft-late',
+        actor: 'system',
+        dueDate: new Date(Date.now() - 5 * 86_400_000),
+      }),
+    );
+
+    await post(messagePayload('2348031234567', 'wamid.DUE5-ask', 'who owes me'));
+    await drain();
+
+    /* A debtors list is a work queue. Invoice numbers, never customer names:
+     * this text crosses WhatsApp in the clear. */
+    expect(stubSender.lastText).toMatch(/day(s)? late/);
+    expect(stubSender.lastText).toContain('past the day it was promised');
+    expect(stubSender.lastText).not.toContain('CUSTOMER_');
+  });
+
+  it('says nothing about lateness when nothing is late', async () => {
+    await seedMerchant('+2348031234567');
+    await sell('wamid.DUE6', 'next month');
+
+    await post(messagePayload('2348031234567', 'wamid.DUE6-ask', 'who owes me'));
+    await drain();
+
+    expect(stubSender.lastText).not.toContain('late');
+    expect(stubSender.lastText).not.toContain('past the day it was promised');
+  });
+});
+
 describe('a payment the merchant reports (RecordPayment)', () => {
   const A_SALE_FOR_PAYMENT = {
     intent: 'RecordSale',

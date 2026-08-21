@@ -21,6 +21,20 @@ export const reportsOverviewResponse = z.object({
   owedToYouK: kobo,
   youOweK: kobo,
   exceptionsOpen: z.number().int().nonnegative(),
+  /**
+   * Receivable ageing — what an accountant looks at before anything else.
+   * `current` holds money not yet due AND money with no agreed date: neither
+   * is late, and ageing an undated debt invents a deadline nobody set.
+   */
+  ageing: z.object({
+    currentK: kobo,
+    d1_30K: kobo,
+    d31_60K: kobo,
+    d61_90K: kobo,
+    d90PlusK: kobo,
+    totalK: kobo,
+    overdueK: kobo,
+  }),
 });
 export type ReportsOverviewResponse = z.infer<typeof reportsOverviewResponse>;
 
@@ -43,6 +57,10 @@ export const reportsDebtorsResponse = z.object({
       z.object({
         invoiceNumber: z.string(),
         balanceDueK: kobo,
+        /** When the merchant said it was expected. Null when they did not. */
+        dueDate: z.string().nullable(),
+        /** Whole Lagos days past that day. Zero when not late, or undated. */
+        daysOverdue: z.number().int().nonnegative(),
         issuedAt: z.string(), // ISO
       }),
     )
@@ -136,6 +154,10 @@ export const reportsInvoicesResponse = z.object({
       invoiceNumber: z.string(),
       /** issued | partially_paid | paid | voided */
       status: z.string(),
+      /** When the money was agreed to arrive. Null when nobody said. */
+      dueDate: z.string().nullable(),
+      /** Whole Lagos days past that day. Zero when not late, or undated. */
+      daysOverdue: z.number().int().nonnegative(),
       totalK: kobo,
       paidK: kobo,
       balanceDueK: kobo,
