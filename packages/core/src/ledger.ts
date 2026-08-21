@@ -17,7 +17,16 @@ import { assertKobo, type Kobo } from './money.js';
 
 export const ACCOUNTS = {
   CASH: { code: '1000', name: 'Cash on Hand', type: 'asset' },
-  BANK_PAYSTACK: { code: '1010', name: 'Bank (Paystack)', type: 'asset' },
+  /**
+   * Settlements from the payment provider, and nothing else (ADR 0025).
+   * Written by `postProviderPayment` alone. Keeps 1010 rather than being
+   * renumbered under `BANK`, because the code is rendered at display time and
+   * moving it would change what a re-rendered statement says about a month
+   * that has already been reported.
+   */
+  BANK_PAYSTACK: { code: '1010', name: 'Bank (Paystack settlements)', type: 'asset' },
+  /** The merchant's own bank account: every ordinary transfer (ADR 0025). */
+  BANK: { code: '1020', name: 'Bank', type: 'asset' },
   ACCOUNTS_RECEIVABLE: { code: '1100', name: 'Accounts Receivable', type: 'asset' },
   INVENTORY: { code: '1200', name: 'Inventory', type: 'asset' },
   ACCOUNTS_PAYABLE: { code: '2000', name: 'Accounts Payable', type: 'liability' },
@@ -95,8 +104,15 @@ const line = (account: AccountKey, debitK: Kobo, creditK: Kobo): LedgerLine => (
 
 export type PaymentMethod = 'cash' | 'transfer';
 
-const cashOrBank = (method: PaymentMethod): AccountKey =>
-  method === 'cash' ? 'CASH' : 'BANK_PAYSTACK';
+/**
+ * The merchant's own bank, never the settlement account (ADR 0025).
+ *
+ * A transfer is a transfer: a customer paying into a merchant's GTB account
+ * and a merchant paying a supplier both move the account they can see a
+ * statement for. Provider settlements are the one thing that does not come
+ * through here, and `postProviderPayment` names its account itself.
+ */
+const cashOrBank = (method: PaymentMethod): AccountKey => (method === 'cash' ? 'CASH' : 'BANK');
 
 /**
  * A sale: revenue is recognised in full; whatever was not paid immediately
@@ -168,7 +184,7 @@ export function postOpeningBalances(args: {
 
   const lines: LedgerLine[] = [];
   if (cashK > 0) lines.push(line('CASH', cashK, 0));
-  if (bankK > 0) lines.push(line('BANK_PAYSTACK', bankK, 0));
+  if (bankK > 0) lines.push(line('BANK', bankK, 0));
   if (stockK > 0) lines.push(line('INVENTORY', stockK, 0));
   lines.push(line('OWNERS_EQUITY', 0, equityK));
 
@@ -357,7 +373,7 @@ export function postStockCount(args: { memo: string; differenceK: number }): Pos
  */
 export const ACCOUNT_PICKER_LABELS: Record<AccountKey, string> = {
   CASH: 'Cash in hand',
-  BANK_PAYSTACK: 'Money in the bank',
+  BANK: 'Money in the bank',
   ACCOUNTS_RECEIVABLE: 'Money customers owe you',
   INVENTORY: 'Stock on the shelf',
   ACCOUNTS_PAYABLE: 'Money you owe suppliers',
@@ -366,6 +382,12 @@ export const ACCOUNT_PICKER_LABELS: Record<AccountKey, string> = {
   SALES_REVENUE: 'Sales',
   COGS: 'Cost of goods sold',
   EXPENSES: 'Running costs',
+  /* Last, and deliberately. A merchant reaches for this list to say where
+   * money went, and the settlement account is the one entry there they almost
+   * never mean: it is written by the provider, not by them. Ordered by how
+   * often a person needs it rather than by account code, which is the reason
+   * this map is separate from ACCOUNTS at all. */
+  BANK_PAYSTACK: 'Paystack settlements',
 };
 
 /**

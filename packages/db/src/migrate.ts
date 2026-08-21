@@ -35,6 +35,8 @@ export async function applyMigrations(
   const sql = postgres(databaseUrl, { max: 1, onnotice: () => {} });
   const applied: string[] = [];
   try {
+    await assertCanReachEveryTenant(sql);
+
     await sql`
       CREATE TABLE IF NOT EXISTS rekoda_migrations (
         tag text PRIMARY KEY,
@@ -68,4 +70,35 @@ if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) {
   }
   const applied = await applyMigrations(url);
   console.log(applied.length ? `applied: ${applied.join(', ')}` : 'already up to date');
+}
+
+/**
+ * Refuse to migrate as a role that cannot see across tenants.
+ *
+ * Every tenant table is under FORCE ROW LEVEL SECURITY, which applies to the
+ * table owner as well, and the policies key on a GUC no migration sets. A
+ * data migration run by a role without superuser or BYPASSRLS therefore
+ * matches NOTHING and reports success: 0017 would leave every trial without
+ * an expiry, 0024 would leave every expense unlinked from its posting, and
+ * nobody would learn about it until a merchant read a wrong figure.
+ *
+ * In development the owner happens to be a superuser, which is exactly why
+ * this cannot be left to be noticed later. Failing here costs a deploy; not
+ * failing here costs silent data.
+ *
+ * A migration may still opt out of RLS explicitly for one statement (0035
+ * does), and that is a different thing: deliberate, scoped and visible in the
+ * file. This is about the migrations that never think to.
+ */
+async function assertCanReachEveryTenant(sql: postgres.Sql): Promise<void> {
+  const rows = await sql<{ unrestricted: boolean }[]>`
+    SELECT (rolsuper OR rolbypassrls) AS unrestricted
+    FROM pg_roles WHERE rolname = current_user`;
+  if (rows[0]?.unrestricted !== true) {
+    throw new Error(
+      'migrations must run as a role with superuser or BYPASSRLS: every tenant table ' +
+        'forces row-level security, so a data migration run without it silently ' +
+        'updates no rows. Grant it with ALTER ROLE <role> BYPASSRLS.',
+    );
+  }
 }

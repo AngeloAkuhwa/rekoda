@@ -655,8 +655,12 @@ describe('crediting an invoice', () => {
     expect(net.get('ACCOUNTS_RECEIVABLE')).toBe(0);
     expect(net.get('SALES_REVENUE')).toBe(-10_000_000);
     /* The cash the customer actually sent is untouched. This is the whole
-     * reason a credit note is not a void. */
-    expect(net.get('BANK_PAYSTACK')).toBe(10_000_000);
+     * reason a credit note is not a void.
+     *
+     * On the merchant's own bank since ADR 0025: the customer transferred to
+     * their account, which has nothing to do with a provider settlement. */
+    expect(net.get('BANK')).toBe(10_000_000);
+    expect(net.has('BANK_PAYSTACK')).toBe(false);
   });
 
   it('says plainly when the merchant now owes the customer', async () => {

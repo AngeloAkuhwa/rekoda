@@ -50,7 +50,7 @@ const record = (
       businessId,
       memo: "Took the day's takings to the bank",
       amountK: 5_000_000,
-      intoAccount: 'BANK_PAYSTACK',
+      intoAccount: 'BANK',
       outOfAccount: 'CASH',
       actor: 'user:1',
       ...over,
@@ -69,9 +69,7 @@ describe('a correction written by hand', () => {
     const debits = entries.reduce((n, e) => n + Number(e.debitK), 0);
     const credits = entries.reduce((n, e) => n + Number(e.creditK), 0);
     expect(debits).toBe(credits);
-    expect(entries).toContainEqual(
-      expect.objectContaining({ account: 'BANK_PAYSTACK', debitK: 5_000_000 }),
-    );
+    expect(entries).toContainEqual(expect.objectContaining({ account: 'BANK', debitK: 5_000_000 }));
     expect(entries).toContainEqual(
       expect.objectContaining({ account: 'CASH', creditK: 5_000_000 }),
     );
