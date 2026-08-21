@@ -89,6 +89,17 @@ export type RandomBytes = (n: number) => Uint8Array;
  * token generator avoids it: 256 % 32 === 0.
  */
 export function paymentReference(at: Date, random: RandomBytes): string {
+  return mintReference('PAY', at, random);
+}
+
+/**
+ * The same shape under a different prefix.
+ *
+ * Shared rather than copied because the properties above are the reason it is
+ * safe to read one aloud, and a second implementation is a second place for
+ * an alphabet to drift.
+ */
+export function mintReference(prefix: string, at: Date, random: RandomBytes): string {
   const y = at.getUTCFullYear();
   const m = String(at.getUTCMonth() + 1).padStart(2, '0');
   const d = String(at.getUTCDate()).padStart(2, '0');
@@ -97,7 +108,7 @@ export function paymentReference(at: Date, random: RandomBytes): string {
   let suffix = '';
   for (let i = 0; i < 6; i++) suffix += ALPHABET[bytes[i]! % 32];
 
-  return `RKD-PAY-${y}${m}${d}-${suffix}`;
+  return `RKD-${prefix}-${y}${m}${d}-${suffix}`;
 }
 
 export const PAYMENT_REFERENCE_PATTERN = /^RKD-PAY-\d{8}-[0-9A-HJKMNP-TV-Z]{6}$/;

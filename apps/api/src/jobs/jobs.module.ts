@@ -27,6 +27,7 @@ import { PAYMENT_PROVIDER, type PaymentProviderPort } from '../payments/provider
 import { pumpPaystackEvents } from '../payments/paystack-pump.js';
 import { sweepSettlements } from '../payments/settlement-sweep.js';
 import { sweepUnknownSenders } from '../channels/stranger-sweep.js';
+import { sweepGracePeriods } from '../billing/grace-sweep.js';
 import { MESSAGE_SENDER } from '../channels/sender.tokens.js';
 import { SPEECH_TO_TEXT, type SpeechToText } from '../ai/stt.js';
 import type { MessageSender } from '../channels/sender.js';
@@ -99,6 +100,8 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
   private sweeping = false;
   private strangerTimer: NodeJS.Timeout | null = null;
   private greeting = false;
+  private graceTimer: NodeJS.Timeout | null = null;
+  private sweepingGrace = false;
 
   constructor(
     @Inject(CONFIG) private readonly config: ApiConfig,
@@ -196,10 +199,30 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
         });
     }, 20_000);
     this.strangerTimer.unref();
+
+    /**
+     * Grace runs on the slowest clock of the four. Its unit is a DAY, so
+     * asking hourly is already far more often than the answer can change,
+     * and a merchant whose card failed at 3am is reminded that morning
+     * rather than the following one.
+     */
+    this.graceTimer = setInterval(() => {
+      if (this.sweepingGrace) return;
+      this.sweepingGrace = true;
+      sweepGracePeriods({ workerDb, appDb: this.appDb, sender: this.sender })
+        .catch((error: unknown) => {
+          this.log.warn(`grace sweep failed: ${redactForLog(describeFailure(error))}`);
+        })
+        .finally(() => {
+          this.sweepingGrace = false;
+        });
+    }, 3_600_000);
+    this.graceTimer.unref();
   }
 
   async onApplicationShutdown(): Promise<void> {
     if (this.pumpTimer) clearInterval(this.pumpTimer);
+    if (this.graceTimer) clearInterval(this.graceTimer);
     if (this.sweepTimer) clearInterval(this.sweepTimer);
     if (this.strangerTimer) clearInterval(this.strangerTimer);
     await this.runner?.stop();

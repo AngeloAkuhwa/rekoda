@@ -177,6 +177,16 @@ export interface ApiConfig {
   metaOtpTemplate: string | null;
   metaOtpTemplateLocale: string;
   /**
+   * The Meta-approved UTILITY template that carries a grace reminder.
+   *
+   * Null means the grace sweep records reminders and delivers none, which is
+   * the honest state before the template is approved. The dashboard still
+   * shows the merchant where they stand; a free-form text to a phone that has
+   * not messaged the business number in days would simply be rejected.
+   */
+  metaBillingTemplate: string | null;
+  metaBillingTemplateLocale: string;
+  /**
    * USD micros per in-window service reply. Zero today — Meta does not charge
    * for them yet — and chargeable from 1 October 2026, at which point this is
    * the one number that needs changing.
@@ -440,6 +450,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     metaGraphVersion: env['META_GRAPH_VERSION'] ?? 'v21.0',
     metaOtpTemplate: env['META_OTP_TEMPLATE'] || null,
     metaOtpTemplateLocale: env['META_OTP_TEMPLATE_LOCALE'] ?? 'en',
+    metaBillingTemplate: env['META_BILLING_TEMPLATE'] || null,
+    metaBillingTemplateLocale: env['META_BILLING_TEMPLATE_LOCALE'] ?? 'en',
     metaServiceReplyCostMicros: Number(env['META_SERVICE_REPLY_COST_MICROS'] ?? 0),
     r2AccountId: env['R2_ACCOUNT_ID'] ?? '',
     r2AccessKeyId: env['R2_ACCESS_KEY_ID'] ?? '',

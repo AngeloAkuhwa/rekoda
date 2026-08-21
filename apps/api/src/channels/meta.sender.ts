@@ -5,6 +5,7 @@ import {
   type InboundMedia,
   type MessageSender,
   type OutboundAuthCode,
+  type OutboundBillingNotice,
   type OutboundDocument,
   type OutboundMessage,
   type SendResult,
@@ -22,10 +23,10 @@ import {
  * path (currently ₦0 Meta-side, chargeable from 1 Oct 2026 — see
  * pricing-model.md) and it needs no template approval.
  *
- * `sendAuthCode` is the one exception, and it exists because sign-in has no
- * choice: the phone asking for a code has by definition not messaged the
- * business number, so there is no window to reply inside. It is a template
- * message, priced as authentication, and it is the only one here.
+ * `sendAuthCode` and `sendBillingNotice` are the exceptions, and both exist
+ * because there is no window to reply inside: the phone asking for a code has
+ * by definition not messaged the business number, and a merchant whose card
+ * failed may not have messaged it in days. Both are template messages.
  */
 export class MetaSender implements MessageSender {
   private readonly log = new Logger(MetaSender.name);
@@ -38,7 +39,44 @@ export class MetaSender implements MessageSender {
     /** Meta-approved authentication template. Null means sign-in cannot send. */
     private readonly otpTemplate: string | null = null,
     private readonly otpTemplateLocale = 'en',
+    /** Meta-approved UTILITY template for grace reminders. Null means silence. */
+    private readonly billingTemplate: string | null = null,
+    private readonly billingTemplateLocale = 'en',
   ) {}
+
+  /**
+   * A grace-period reminder, as a utility template.
+   *
+   * Refuses loudly when none is configured, exactly as `sendAuthCode` does.
+   * The sweep catches that and records the reminder anyway, so the dashboard
+   * still tells the merchant where they stand while the template is pending
+   * approval. What must not happen is a free-form text that Meta rejects and
+   * a sweep that reports it sent something.
+   */
+  async sendBillingNotice(notice: OutboundBillingNotice): Promise<SendResult> {
+    if (!this.billingTemplate) {
+      throw new SendFailed('no billing template configured (META_BILLING_TEMPLATE)');
+    }
+    return this.post({
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to: notice.to,
+      type: 'template',
+      template: {
+        name: this.billingTemplate,
+        language: { code: this.billingTemplateLocale },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              { type: 'text', text: notice.daysLeft },
+              { type: 'text', text: notice.endsOn },
+            ],
+          },
+        ],
+      },
+    });
+  }
 
   /**
    * The sign-in code, as an authentication template.
@@ -238,6 +276,10 @@ export class NoSenderConfigured implements MessageSender {
   }
 
   sendDocument(): Promise<never> {
+    return Promise.reject(new SendFailed('META_ACCESS_TOKEN is not set'));
+  }
+
+  sendBillingNotice(): Promise<never> {
     return Promise.reject(new SendFailed('META_ACCESS_TOKEN is not set'));
   }
 }

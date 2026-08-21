@@ -16,8 +16,14 @@ import {
   requestOtpResponse,
   sessionResponse,
   setupStateResponse,
+  billingOverviewResponse,
+  billingPlanChangeResponse,
+  billingQuoteResponse,
   usageMeterResponse,
   verifyOtpResponse,
+  type BillingOverviewResponse,
+  type BillingPlanChangeResponse,
+  type BillingQuoteResponse,
   type MeResponse,
   type PaymentConnectionResponse,
   type PaymentExceptionsResponse,
@@ -400,4 +406,63 @@ export async function resolvePaymentException(
     expect: [200, 404],
   });
   return status === 200 ? 'resolved' : 'not_found';
+}
+
+/* ── billing (ADR 0024) ───────────────────────────────────────────────────── */
+
+export async function billingOverview(sessionToken: string): Promise<BillingOverviewResponse> {
+  const { json } = await call({
+    method: 'GET',
+    path: '/v1/billing',
+    headers: { authorization: `Bearer ${sessionToken}` },
+    expect: [200],
+  });
+  return billingOverviewResponse.parse(json);
+}
+
+/** What a plan change costs, before the merchant commits to it. */
+export async function billingQuote(
+  sessionToken: string,
+  plan: string,
+): Promise<BillingQuoteResponse | null> {
+  const { status, json } = await call({
+    method: 'POST',
+    path: '/v1/billing/quote',
+    body: { plan },
+    headers: { authorization: `Bearer ${sessionToken}` },
+    expect: [200, 400],
+  });
+  return status === 200 ? billingQuoteResponse.parse(json) : null;
+}
+
+export async function billingChangePlan(
+  sessionToken: string,
+  plan: string,
+): Promise<BillingPlanChangeResponse | null> {
+  const { status, json } = await call({
+    method: 'POST',
+    path: '/v1/billing/plan',
+    body: { plan },
+    headers: { authorization: `Bearer ${sessionToken}` },
+    expect: [200, 400],
+  });
+  return status === 200 ? billingPlanChangeResponse.parse(json) : null;
+}
+
+export type BuyPackOutcome =
+  | { state: 'payment_required'; reference: string; amountK: number }
+  | { state: 'unavailable'; reason: string };
+
+export async function billingBuyPack(
+  sessionToken: string,
+  packId: string,
+): Promise<BuyPackOutcome | null> {
+  const { status, json } = await call({
+    method: 'POST',
+    path: '/v1/billing/packs',
+    body: { packId },
+    headers: { authorization: `Bearer ${sessionToken}` },
+    expect: [200, 400],
+  });
+  return status === 200 ? (json as BuyPackOutcome) : null;
 }
