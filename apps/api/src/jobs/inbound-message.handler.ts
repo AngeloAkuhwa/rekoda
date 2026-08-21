@@ -283,6 +283,8 @@ async function deterministicReply(
     }
     case 'payment_details':
       return paymentDetailsReply(deps, tx, businessId);
+    case 'remind':
+      return remindReply(deps, tx, businessId, ctx, intent.invoiceNumber);
     case 'records': {
       // The same SQL the dashboard overview runs — totals only, no customer.
       const overview = await reportsRepo.overviewFor(tx, businessId);
@@ -320,6 +322,47 @@ async function isOwner(tx: TenantDb, businessId: string, from: string): Promise<
   } catch {
     return false;
   }
+}
+
+/**
+ * A reminder the merchant forwards, sent as TWO messages.
+ *
+ * The first is Rekoda talking to the merchant; the second is the reminder
+ * itself, written to be read by their customer and containing nothing else.
+ * Splitting them is what makes "forward the next message as it is" a thing
+ * they can actually do: a single message would carry our instructions into
+ * their customer's chat.
+ *
+ * One invoice, named explicitly, and never a list. The merchant forwards this
+ * into a private conversation, and a list would take other customers' numbers
+ * and balances with it.
+ */
+async function remindReply(
+  deps: InboundMessageDeps,
+  tx: TenantDb,
+  businessId: string,
+  ctx: CommandContext,
+  invoiceNumber: string,
+): Promise<Reply> {
+  const invoice = await issueRepo.invoiceByNumber(tx, businessId, invoiceNumber);
+  if (!invoice || invoice.balanceDueK <= 0) {
+    return replies.reminderNothingToChase(invoiceNumber);
+  }
+
+  const business = await identity.businessById(deps.db, businessId);
+  const reminder = replies.overdueReminder({
+    invoiceNumber: invoice.invoiceNumber,
+    balanceDueK: invoice.balanceDueK,
+    daysOverdue: daysOverdue(invoice.dueDate, invoice.balanceDueK, new Date()),
+    businessName: business?.name ?? 'us',
+  });
+
+  /* The forwardable one goes first as its own message, then the handler's
+   * return value becomes the instruction above it. Order matters on a phone:
+   * the merchant reads the instruction last and acts on the message under
+   * their thumb. */
+  await deps.replySender.send(tx, { businessId, to: ctx.from, reply: reminder });
+  return replies.reminderReady(invoice.invoiceNumber);
 }
 
 async function recordConsent(db: Db, from: string, at: Date | null): Promise<void> {

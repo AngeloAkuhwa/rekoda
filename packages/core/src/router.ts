@@ -37,6 +37,7 @@ export type DeterministicIntent =
   | { kind: 'start' }
   | { kind: 'records' }
   | { kind: 'debtors' }
+  | { kind: 'remind'; invoiceNumber: string }
   | { kind: 'payment_details' }
   | { kind: 'resend' }
   | { kind: 'upgrade' }
@@ -128,6 +129,9 @@ function stripFillers(text: string): string {
  * decision someone can disagree with, and disagreeing with a list is easier
  * than disagreeing with a regex.
  */
+const REMIND =
+  /^(?:remind|chase|reminder for|send (?:a )?reminder for|remind (?:me )?about)\s+(inv)\s+(\d{4})\s+(\d{6})$/;
+
 const PHRASES: ReadonlyArray<readonly [readonly string[], DeterministicIntent]> = [
   [
     [
@@ -343,6 +347,30 @@ export function routeMessage(raw: string): Route {
 
   if (/^\d{1,2}$/.test(text)) {
     return { route: 'deterministic', intent: { kind: 'number', value: Number(text) } };
+  }
+
+  /**
+   * "remind INV-2026-000004" — the one command here that carries an argument.
+   *
+   * A regex rather than a phrase table entry because the invoice number is
+   * the point of it, and this file's privacy claim survives: a document
+   * number is not PII, it is the reference both sides already share. The
+   * shape is pinned exactly (three letters, a four-digit year, six digits)
+   * so that a sentence merely CONTAINING an invoice number still reaches the
+   * model, where it belongs.
+   *
+   * Normalisation has already turned the dashes into spaces, so the number
+   * is rebuilt rather than read.
+   */
+  const remind = REMIND.exec(text);
+  if (remind) {
+    return {
+      route: 'deterministic',
+      intent: {
+        kind: 'remind',
+        invoiceNumber: `${remind[1]!.toUpperCase()}-${remind[2]}-${remind[3]}`,
+      },
+    };
   }
 
   for (const [phrases, intent] of PHRASES) {

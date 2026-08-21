@@ -1699,6 +1699,141 @@ describe('due dates from what the merchant said', () => {
   });
 });
 
+/**
+ * The reminder a merchant forwards to the person who owes them.
+ *
+ * Two messages: ours to them, then theirs to forward. The second is written
+ * to be read by a customer, so what it must NOT contain is as much of the
+ * assertion as what it must.
+ */
+describe('chasing an overdue invoice', () => {
+  async function seedMerchant(phone: string, name = 'Ada Fashion') {
+    const user = await identity.upsertUserByPhone(db, phone);
+    return identity.createBusinessWithOwner(db, {
+      name,
+      businessType: null,
+      ownerUserId: user.id,
+    });
+  }
+
+  async function drain() {
+    const runner = buildRunner(workerDb, db, deps);
+    let worked = await runner.runOnce();
+    while (worked) worked = await runner.runOnce();
+  }
+
+  /** An unpaid invoice, `daysLate` past the day it was promised. */
+  async function overdueInvoice(businessId: string, daysLate: number, totalK = 15_000_000) {
+    return withBusiness(db, businessId, (tx) =>
+      issueRepo.issueSale(tx, {
+        businessId,
+        customerId: null,
+        customerToken: 'CUSTOMER_7K2',
+        items: [{ name: 'wig', quantity: 3, unitPriceK: totalK / 3 }],
+        subtotalK: totalK,
+        discountK: 0,
+        deliveryFeeK: 0,
+        vatK: 0,
+        totalK,
+        paidK: 0,
+        balanceDueK: totalK,
+        method: 'transfer',
+        sourceType: 'chat',
+        sourceId: `draft-chase-${daysLate}`,
+        actor: 'system',
+        dueDate: new Date(Date.now() - daysLate * 86_400_000),
+      }),
+    );
+  }
+
+  it('hands over a forwardable reminder, as its own message', async () => {
+    const business = await seedMerchant('+2348031234567');
+    const sale = await overdueInvoice(business.id, 5);
+
+    await post(messagePayload('2348031234567', 'wamid.CHASE1', `remind ${sale.invoiceNumber}`));
+    await drain();
+
+    /* Two messages: the forwardable one, then the instruction above it. The
+     * merchant reads the instruction last and forwards what is under their
+     * thumb. */
+    const sent = stubSender.sent.map((m) => m.text);
+    expect(sent).toHaveLength(2);
+    expect(sent[0]).toContain(sale.invoiceNumber);
+    expect(sent[0]).toContain('₦150,000');
+    expect(sent[0]).toContain('5 days overdue');
+    expect(sent[1]).toContain('Forward the next message');
+  });
+
+  /**
+   * The forwardable message is read by a CUSTOMER. It must not announce that
+   * a robot wrote it, and it must not carry a token or anybody's name.
+   */
+  it('writes the reminder for the customer, not for the merchant', async () => {
+    const business = await seedMerchant('+2348031234567');
+    const sale = await overdueInvoice(business.id, 3);
+
+    await post(messagePayload('2348031234567', 'wamid.CHASE2', `remind ${sale.invoiceNumber}`));
+    await drain();
+
+    const forwardable = stubSender.sent[0]!.text;
+    expect(forwardable).toContain('Ada Fashion');
+    expect(forwardable).not.toContain('CUSTOMER_');
+    expect(forwardable).not.toContain('Rekoda');
+    // Somebody who has already paid should not be accused of anything.
+    expect(forwardable).toContain('If you have already sent it');
+  });
+
+  it('says there is nothing to chase on a settled invoice', async () => {
+    const business = await seedMerchant('+2348031234567');
+    const sale = await overdueInvoice(business.id, 10);
+    await withBusiness(db, business.id, (tx) =>
+      settleRepo.recordMerchantPayment(tx, {
+        businessId: business.id,
+        invoiceId: sale.invoiceId,
+        amountK: 15_000_000,
+        method: 'cash',
+        sourceType: 'chat',
+        sourceId: 'settled',
+        actor: 'test',
+      }),
+    );
+
+    await post(messagePayload('2348031234567', 'wamid.CHASE3', `remind ${sale.invoiceNumber}`));
+    await drain();
+
+    expect(stubSender.lastText).toContain('nothing owing');
+  });
+
+  it('says the same for an invoice that never existed', async () => {
+    await seedMerchant('+2348031234567');
+
+    await post(messagePayload('2348031234567', 'wamid.CHASE4', 'remind INV-2026-999999'));
+    await drain();
+
+    expect(stubSender.lastText).toContain('nothing owing');
+  });
+
+  /**
+   * Tenant isolation on a command that names a document by number. Another
+   * merchant's invoice number is not a secret, so the answer has to be the
+   * same as for one that does not exist.
+   */
+  it('will not chase another business invoice', async () => {
+    const ada = await seedMerchant('+2348031234567', 'Ada Fashion');
+    const chidi = await seedMerchant('+2348039990002', 'Chidi Electronics');
+    const chidiSale = await overdueInvoice(chidi.id, 8);
+    expect(ada.id).not.toBe(chidi.id);
+
+    await post(
+      messagePayload('2348031234567', 'wamid.CHASE5', `remind ${chidiSale.invoiceNumber}`),
+    );
+    await drain();
+
+    expect(stubSender.lastText).toContain('nothing owing');
+    expect(stubSender.sent.every((m) => !m.text.includes('Chidi'))).toBe(true);
+  });
+});
+
 describe('a payment the merchant reports (RecordPayment)', () => {
   const A_SALE_FOR_PAYMENT = {
     intent: 'RecordSale',

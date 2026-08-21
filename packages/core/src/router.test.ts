@@ -222,3 +222,64 @@ describe('the privacy claim', () => {
     expect(goesToModel('Ada 08031234567 bought wigs')).toBe(true);
   });
 });
+
+/**
+ * "remind INV-2026-000004" — the one deterministic command with an argument.
+ *
+ * The shape is pinned exactly so that a SENTENCE merely containing an invoice
+ * number still reaches the model, where it belongs. A document number is not
+ * PII, so routing on it costs this file none of its privacy claim.
+ */
+describe('the remind command', () => {
+  const remindIntent = (raw: string) => {
+    const route = routeMessage(raw);
+    return route.route === 'deterministic' ? route.intent : null;
+  };
+
+  it('reads the invoice number back in its canonical form', () => {
+    expect(remindIntent('remind INV-2026-000004')).toEqual({
+      kind: 'remind',
+      invoiceNumber: 'INV-2026-000004',
+    });
+  });
+
+  it('accepts the ways a merchant would actually ask', () => {
+    for (const raw of [
+      'chase INV-2026-000004',
+      'reminder for INV-2026-000004',
+      'send a reminder for INV-2026-000004',
+      'remind me about INV-2026-000004',
+    ]) {
+      expect(remindIntent(raw)).toMatchObject({ kind: 'remind' });
+    }
+  });
+
+  it('survives the politeness merchants wrap commands in', () => {
+    expect(remindIntent('abeg remind INV-2026-000004 please')).toMatchObject({
+      kind: 'remind',
+      invoiceNumber: 'INV-2026-000004',
+    });
+  });
+
+  it('stays local, like every other deterministic command', () => {
+    expect(staysLocal(routeMessage('remind INV-2026-000004'))).toBe(true);
+  });
+
+  /**
+   * A sentence that happens to mention an invoice is a sentence, and belongs
+   * to the model. Routing it here would answer a question nobody asked.
+   */
+  it('sends a sentence merely containing an invoice number to the model', () => {
+    expect(routeMessage('what happened with INV-2026-000004 last week').route).toBe('model');
+    expect(routeMessage('INV-2026-000004 paid 20k').route).toBe('model');
+  });
+
+  it('refuses a number of the wrong shape rather than guessing', () => {
+    expect(routeMessage('remind INV-26-4').route).toBe('model');
+    expect(routeMessage('remind RCT-2026-000004').route).toBe('model');
+  });
+
+  it('is not the bare word, which names no invoice', () => {
+    expect(routeMessage('remind').route).toBe('model');
+  });
+});
