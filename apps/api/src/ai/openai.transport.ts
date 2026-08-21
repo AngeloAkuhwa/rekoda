@@ -20,10 +20,26 @@ import {
 export class OpenAiTransport implements ModelTransport {
   private readonly client: OpenAI;
 
-  constructor(apiKey: string, timeoutMs = 20_000) {
+  /**
+   * `baseUrl` is the whole reason this is the OPENAI-COMPATIBLE transport and
+   * not the OpenAI one. Groq, Together, OpenRouter and DeepSeek weights on a
+   * US host all speak this wire format, so pointing the client elsewhere is a
+   * deployment decision rather than a new adapter.
+   *
+   * Which host is not a neutral choice. DeepSeek's own API is off the table
+   * under the NDPA: it is PRC-hosted and trains on inputs by default, and a
+   * merchant's sentence about their customer is not ours to donate. The
+   * weights served from somewhere with a data-processing agreement are fine.
+   */
+  constructor(apiKey: string, timeoutMs = 20_000, baseUrl?: string) {
     // `maxRetries: 0` for the same reason as the Anthropic client: the job
     // runner already owns retry, with backoff and a dead-letter state.
-    this.client = new OpenAI({ apiKey, timeout: timeoutMs, maxRetries: 0 });
+    this.client = new OpenAI({
+      apiKey,
+      timeout: timeoutMs,
+      maxRetries: 0,
+      ...(baseUrl ? { baseURL: baseUrl } : {}),
+    });
   }
 
   async send(request: ModelRequest): Promise<ModelReply> {

@@ -33,24 +33,47 @@ export interface ModelPrice {
 /**
  * Published list prices (pricing-model.md §"Unit costs").
  *
- * Keyed by model FAMILY rather than by the exact id, because `AI_MODEL_*` is
- * configured with aliases like `claude-sonnet-latest` that point at whatever
- * the current snapshot is. Pricing follows the family; the alias moves.
+ * Keyed by model FAMILY rather than by exact id, because a family's price is
+ * the stable thing: ids gain suffixes and tiers gain members, but every
+ * `claude-haiku-*` bills at the haiku rate. Configuration names an exact id
+ * (see config.ts) and this table costs whichever family it belongs to.
+ *
+ * ALWAYS THE STANDARD RATE, never a promotional one. Introductory pricing
+ * expires on a date nobody will remember, and a margin view that quietly
+ * flatters by 50% the morning it lapses is worse than one that was
+ * pessimistic all along. Costing above the invoice is a margin surprise in
+ * the safe direction; costing below it is the other kind.
  */
 export const MODEL_PRICES: Readonly<Record<string, ModelPrice>> = {
-  // $2 / $10 per MTok. The runtime default (ADR 0007).
+  /**
+   * $3 / $15 per MTok — the STANDARD rate.
+   *
+   * Introductory pricing of $2 / $10 runs to 31 August 2026. Deliberately not
+   * used here: a table that switched itself on a date would report a 50%
+   * better margin for ten days and then correct without anybody noticing
+   * which of the two numbers a decision was made on.
+   *
+   * No longer the interpreter default; vision still reads receipts with it.
+   */
   sonnet: {
-    inputMicrosPerMTok: 2_000_000,
-    outputMicrosPerMTok: 10_000_000,
-    cacheWriteMicrosPerMTok: 2_500_000, // 1.25× input
-    cacheReadMicrosPerMTok: 200_000, // 0.10× input
+    inputMicrosPerMTok: 3_000_000,
+    outputMicrosPerMTok: 15_000_000,
+    cacheWriteMicrosPerMTok: 3_750_000, // 1.25× input
+    cacheReadMicrosPerMTok: 300_000, // 0.10× input
   },
-  // $1 / $5 per MTok. Trivial classification.
+  // $1 / $5 per MTok. The interpreter default (ADR 0007) and the classifier.
   haiku: {
     inputMicrosPerMTok: 1_000_000,
     outputMicrosPerMTok: 5_000_000,
     cacheWriteMicrosPerMTok: 1_250_000,
     cacheReadMicrosPerMTok: 100_000,
+  },
+  // $5 / $25 per MTok. The escalation model, never a default.
+  opus: {
+    inputMicrosPerMTok: 5_000_000,
+    outputMicrosPerMTok: 25_000_000,
+    cacheWriteMicrosPerMTok: 6_250_000,
+    cacheReadMicrosPerMTok: 500_000,
   },
   // $10 / $50 per MTok. Build-time and evals; escalation flag only.
   fable: {

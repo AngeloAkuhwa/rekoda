@@ -73,6 +73,27 @@ export interface ApiConfig {
   aiModelVision: string;
   aiModelEscalation: string;
   aiModelTranscriber: string;
+  /**
+   * An OpenAI-COMPATIBLE endpoint, when it is not OpenAI's own.
+   *
+   * Groq, Together, OpenRouter and DeepSeek weights on a US host all speak
+   * the same wire format, so switching to one is a deployment decision rather
+   * than a new adapter. Null means the SDK's own default.
+   *
+   * Which host matters. DeepSeek's own API is PRC-hosted and trains on inputs
+   * by default, which is not something a merchant's sentence about their
+   * customer can be donated to under the NDPA; the same weights behind a data
+   * processing agreement are fine. The URL is a compliance decision.
+   */
+  aiBaseUrl: string | null;
+  /**
+   * Model prices as JSON, micro-USD per million tokens, keyed by family.
+   *
+   * Prices for anything outside the Claude families in `@rekoda/core` live
+   * with whoever holds the invoice rather than in this repository, where they
+   * would go stale silently. See apps/api/src/ai/model-prices.ts.
+   */
+  aiModelPrices: string | null;
   /** Daily ceilings. The thing on the other side of these is a bill. */
   aiCallsPerBusinessPerDay: number;
   aiCallsGlobalPerDay: number;
@@ -165,10 +186,34 @@ export interface ApiConfig {
 
 class ConfigError extends Error {}
 
-/** A model id is not portable between providers, so the default follows one. */
-const DEFAULT_MODEL: Record<'anthropic' | 'openai', string> = {
-  anthropic: 'claude-sonnet-latest',
-  openai: 'gpt-4.1',
+/**
+ * A model id is not portable between providers, so the default follows one.
+ *
+ * EXACT ids, never `-latest` aliases. An alias that silently moves is an
+ * unannounced change to the thing that reads a merchant's sentence about
+ * money, and it takes the price with it: cost telemetry keys on the family,
+ * so an alias hopping tiers reports last month's rate for this month's bill.
+ *
+ * There is no OpenAI default any more, and that is deliberate. `gpt-4.1`
+ * leaves the API on 14 October 2026, and picking its successor here would
+ * mean shipping a price this repository cannot verify. `AI_MODEL_DEFAULT` is
+ * required when `AI_PROVIDER=openai`, together with a price for it.
+ */
+const DEFAULT_MODEL: Record<'anthropic' | 'openai', string | null> = {
+  /**
+   * Haiku reads the merchant's sentence, not Sonnet.
+   *
+   * The interpreter's job is one extraction from one short message, under
+   * forced tool use against a strict schema, with the arithmetic done
+   * afterwards by code that does not trust the answer. That is what the small
+   * model is for, and it costs a third of Sonnet's input and output. At the
+   * volumes in pricing-model.md the difference is the gap between the model
+   * eating a third of a subscription and eating a rounding error.
+   *
+   * Escalation stays on Opus for the messages that genuinely need it.
+   */
+  anthropic: 'claude-haiku-4-5',
+  openai: null,
 };
 
 /**
@@ -183,7 +228,9 @@ const DEFAULT_MODEL: Record<'anthropic' | 'openai', string> = {
  */
 const ROLE_DEFAULTS = {
   classifier: 'claude-haiku-4-5',
-  vision: 'claude-sonnet-latest',
+  /* Vision keeps the bigger model: reading a photographed receipt is a
+   * harder job than parsing a sentence somebody typed, and it is rare. */
+  vision: 'claude-sonnet-5',
   escalation: 'claude-opus-5',
   transcriber: 'afrispeech-whisper-medium-all',
 } as const;
@@ -210,6 +257,26 @@ function operatorSecret(env: NodeJS.ProcessEnv, isProduction: boolean): string |
     throw new ConfigError('REKODA_OPERATOR_SECRET must differ from REKODA_API_SECRET');
   }
   return value;
+}
+
+/**
+ * The interpreter's model, or a refusal to guess one.
+ *
+ * A provider with no default here is not an oversight: it means nobody has
+ * checked which of its models this product should use or what that model
+ * costs, and both are decisions with a bill attached.
+ */
+function modelDefault(env: NodeJS.ProcessEnv, provider: 'anthropic' | 'openai'): string {
+  const configured = env['AI_MODEL_DEFAULT'];
+  if (configured) return configured;
+  const fallback = DEFAULT_MODEL[provider];
+  if (!fallback) {
+    throw new ConfigError(
+      `AI_PROVIDER=${provider} requires AI_MODEL_DEFAULT (no default ships for it) ` +
+        'and a price for that model in AI_MODEL_PRICES',
+    );
+  }
+  return fallback;
 }
 
 function required(env: NodeJS.ProcessEnv, key: string, minLength = 0): string {
@@ -327,15 +394,18 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     aiProvider,
     /**
      * The default model follows the provider, because a model id is not
-     * portable between them — `claude-sonnet-latest` means nothing to OpenAI.
-     * Set `AI_MODEL_DEFAULT` to override; leave it unset and each provider
-     * gets a sensible default of its own.
+     * portable between them — `claude-haiku-4-5` means nothing to OpenAI.
+     * Set `AI_MODEL_DEFAULT` to override. Anthropic has a default; anything
+     * else must name its model, because this repository will not guess an id
+     * whose price it cannot verify (see DEFAULT_MODEL).
      */
-    aiModelDefault: env['AI_MODEL_DEFAULT'] ?? DEFAULT_MODEL[aiProvider],
+    aiModelDefault: modelDefault(env, aiProvider),
     aiModelClassifier: env['AI_MODEL_CLASSIFIER'] ?? ROLE_DEFAULTS.classifier,
     aiModelVision: env['AI_MODEL_VISION'] ?? ROLE_DEFAULTS.vision,
     aiModelEscalation: env['AI_MODEL_ESCALATION'] ?? ROLE_DEFAULTS.escalation,
     aiModelTranscriber: env['AI_MODEL_TRANSCRIBER'] ?? ROLE_DEFAULTS.transcriber,
+    aiBaseUrl: env['AI_BASE_URL'] || null,
+    aiModelPrices: env['AI_MODEL_PRICES'] || null,
     /**
      * Defaults are a ceiling, not a target. At ~₦8 a call (pricing-model.md),
      * 60 per merchant is about ₦480 a day against a subscription, and 5,000
