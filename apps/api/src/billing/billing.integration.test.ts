@@ -15,7 +15,7 @@
  */
 import { randomBytes } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { GRACE_DAYS, PLAN_PRICES_K } from '@rekoda/core';
+import { addMonth, GRACE_DAYS, PLAN_PRICES_K } from '@rekoda/core';
 import { billingOverviewResponse, billingQuoteResponse } from '@rekoda/contracts';
 import {
   createDb,
@@ -28,6 +28,7 @@ import {
 import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { sweepGracePeriods } from './grace-sweep.js';
+import { sweepRenewals } from './renewal-sweep.js';
 import { applySettledCharge, BillingService } from './billing.service.js';
 import { CONFIG, type ApiConfig } from '../config.js';
 import { StubSender } from '../channels/sender.stub.js';
@@ -355,6 +356,195 @@ describe('a charge the provider confirmed', () => {
     const messages = overview.units.find((unit) => unit.unit === 'messages');
     expect(messages?.bonus).toBe(100);
     expect(messages?.used).toBe(0); // bought capacity is not consumption
+  });
+});
+
+describe('the cycle a payment starts', () => {
+  /** Settle a charge of `kind` and read back the cycle it produced. */
+  async function settleAndRead(
+    businessId: string,
+    kind: 'first_purchase' | 'renewal',
+    plan: string,
+    reference: string,
+    when: Date,
+  ) {
+    await withBusiness(db, businessId, (tx) =>
+      subscriptionsRepo.openCharge(tx, {
+        businessId,
+        kind,
+        plan,
+        amountK: PLAN_PRICES_K[plan as 'chat'],
+        reference,
+        periodStart: when,
+        periodEnd: new Date(when.getTime() + 30 * 86_400_000),
+      }),
+    );
+    await withBusiness(db, businessId, (tx) =>
+      applySettledCharge(tx, { businessId, reference, providerReference: 'ps_x', when }),
+    );
+    return withBusiness(db, businessId, (tx) => subscriptionsRepo.subscriptionFor(tx, businessId));
+  }
+
+  it('gives a RETURNING merchant a full month, not the rest of their old anchor', async () => {
+    const { businessId } = await onboard('+2348177100020');
+
+    // They were on a 3rd-of-the-month cycle and let it lapse.
+    await putOnPlan(
+      businessId,
+      'chat',
+      new Date('2026-06-03T09:00:00Z'),
+      new Date('2026-07-03T09:00:00Z'),
+    );
+    await withBusiness(db, businessId, (tx) =>
+      subscriptionsRepo.expireSubscription(tx, businessId, 'system:grace-sweep'),
+    );
+
+    // And came back on the 20th of August.
+    const backOn = new Date('2026-08-20T10:00:00Z');
+    const sub = await settleAndRead(
+      businessId,
+      'first_purchase',
+      'chat',
+      'RKD-SUB-20260820-CCCCCC',
+      backOn,
+    );
+
+    /* The stale anchor would have renewed them on 3 September: a full month's
+     * price for fourteen days. A first purchase resets it. */
+    expect(sub?.renewalAnchorDay).toBe(20);
+    expect(sub?.planExpiresAt?.toISOString()).toBe(addMonth(backOn, 20).toISOString());
+  });
+
+  it('keeps the anchor on a RENEWAL, so a late payment does not move the date', async () => {
+    const { businessId } = await onboard('+2348177100021');
+    const cycleEnd = new Date('2026-09-01T09:00:00Z');
+    await putOnPlan(businessId, 'chat', new Date('2026-08-01T09:00:00Z'), cycleEnd);
+
+    // Paid three days into the new month.
+    const paidLate = new Date('2026-09-04T15:00:00Z');
+    const sub = await settleAndRead(
+      businessId,
+      'renewal',
+      'chat',
+      'RKD-SUB-20260904-DDDDDD',
+      paidLate,
+    );
+
+    expect(sub?.planExpiresAt?.toISOString()).toBe(new Date('2026-10-01T09:00:00Z').toISOString());
+    /* And the cycle STARTED when the last one ended, not when the money
+     * arrived: a later upgrade prorates against a whole month. */
+    expect(sub?.cycleStartedAt?.toISOString()).toBe(cycleEnd.toISOString());
+  });
+});
+
+describe('the renewal sweep', () => {
+  const raise = (now: Date) => sweepRenewals({ workerDb, appDb: db }, now);
+
+  it('raises nothing while a cycle is still running', async () => {
+    const { businessId } = await onboard('+2348177100022');
+    await putOnPlan(
+      businessId,
+      'chat',
+      new Date(Date.now() - 5 * 86_400_000),
+      new Date(Date.now() + 25 * 86_400_000),
+    );
+    expect(await raise(new Date())).toEqual({ raised: 0, skipped: 0 });
+  });
+
+  it('raises a charge when the cycle ends and starts the clock AT the renewal date', async () => {
+    const { businessId, auth } = await onboard('+2348177100023');
+    const renewsAt = new Date(Date.now() - 2 * 86_400_000);
+    await putOnPlan(businessId, 'chat', new Date(renewsAt.getTime() - 30 * 86_400_000), renewsAt);
+
+    expect(await raise(new Date())).toEqual({ raised: 1, skipped: 0 });
+
+    const charges = await withBusiness(db, businessId, (tx) =>
+      subscriptionsRepo.chargesFor(tx, businessId),
+    );
+    expect(charges[0]).toMatchObject({ kind: 'renewal', plan: 'chat', status: 'pending' });
+    expect(charges[0]?.amountK).toBe(PLAN_PRICES_K.chat);
+    // The month bought starts when the last one ended, not when the sweep ran.
+    expect(charges[0]?.periodStart?.toISOString()).toBe(renewsAt.toISOString());
+
+    /* A sweep two days late must not hand out two extra days of grace, so the
+     * seven days run from the renewal date. */
+    const sub = await withBusiness(db, businessId, (tx) =>
+      subscriptionsRepo.subscriptionFor(tx, businessId),
+    );
+    expect(sub?.paymentFailedAt?.toISOString()).toBe(renewsAt.toISOString());
+
+    const overview = await overviewOf(auth);
+    expect(overview.status.state).toBe('grace');
+    // Paid features keep working while the merchant settles up.
+    expect(overview.plan).toBe('chat');
+  });
+
+  it('raises ONE charge per cycle, however many times it runs', async () => {
+    const { businessId } = await onboard('+2348177100024');
+    const renewsAt = new Date(Date.now() - 86_400_000);
+    await putOnPlan(businessId, 'chat', new Date(renewsAt.getTime() - 30 * 86_400_000), renewsAt);
+
+    expect((await raise(new Date())).raised).toBe(1);
+    /* The second pass finds nothing: the business is now in grace and drops
+     * out of the query, which is the first of two guards. */
+    expect(await raise(new Date())).toEqual({ raised: 0, skipped: 0 });
+
+    const charges = await withBusiness(db, businessId, (tx) =>
+      subscriptionsRepo.chargesFor(tx, businessId),
+    );
+    expect(charges).toHaveLength(1);
+  });
+
+  it('renews onto a scheduled downgrade, which is when it takes effect', async () => {
+    const { businessId } = await onboard('+2348177100025');
+    const renewsAt = new Date(Date.now() - 86_400_000);
+    await putOnPlan(
+      businessId,
+      'complete',
+      new Date(renewsAt.getTime() - 30 * 86_400_000),
+      renewsAt,
+    );
+    await withBusiness(db, businessId, (tx) =>
+      subscriptionsRepo.schedulePlanChange(tx, businessId, 'chat'),
+    );
+
+    await raise(new Date());
+    const charges = await withBusiness(db, businessId, (tx) =>
+      subscriptionsRepo.chargesFor(tx, businessId),
+    );
+    expect(charges[0]?.plan).toBe('chat');
+    expect(charges[0]?.amountK).toBe(PLAN_PRICES_K.chat);
+  });
+
+  it('never renews a trial, which ends rather than lapses', async () => {
+    await onboard('+2348177100026');
+    expect(await raise(new Date(Date.now() + 400 * 86_400_000))).toEqual({
+      raised: 0,
+      skipped: 0,
+    });
+  });
+
+  it('restores everything when the merchant pays the renewal', async () => {
+    const { businessId, auth } = await onboard('+2348177100027');
+    const renewsAt = new Date(Date.now() - 86_400_000);
+    await putOnPlan(businessId, 'chat', new Date(renewsAt.getTime() - 30 * 86_400_000), renewsAt);
+    await raise(new Date());
+
+    const [charge] = await withBusiness(db, businessId, (tx) =>
+      subscriptionsRepo.chargesFor(tx, businessId),
+    );
+    await withBusiness(db, businessId, (tx) =>
+      applySettledCharge(tx, {
+        businessId,
+        reference: charge!.reference,
+        providerReference: 'ps_renewal',
+        when: new Date(),
+      }),
+    );
+
+    const overview = await overviewOf(auth);
+    expect(overview.status.state).toBe('active');
+    expect(overview.charges[0]?.status).toBe('paid');
   });
 });
 
