@@ -223,6 +223,23 @@ remain, because a sale and its reversal is a different story from a sale that
 never happened. Refuses any invoice money has arrived against - that wants a
 refund and a credit, which is a different instrument.
 
+**A spend entry can be withdrawn too (PR #83).** Same instrument as the
+invoice void: the entry stays, gets marked, and the books carry the mirror of
+its posting. The reversal is built from the ENTRIES that were written rather
+than rebuilt from the row, because a purchase's posting depends on how much
+was paid at the time and the row has never stored that - rebuilding would have
+left whatever went to ACCOUNTS_PAYABLE standing. Stock is deliberately not
+reversed and the outcome says so, because what is on the shelf is a physical
+fact and only the merchant knows it.
+
+**Both void paths had the same race, and neither was tested for it (PR #83).**
+The reversal was written BEFORE the row was claimed, so two operators voiding
+at once wrote two reversals and one got told `already_void` - an unexplained
+entry in an append-only ledger, which is the exact thing a void exists to
+prevent. The status read settles nothing: both transactions read `issued`
+before either writes. Only the UPDATE decides, so the posting now comes after
+it. Two concurrency tests, each verified by restoring the old order.
+
 **A note on how the last six were found.** By grepping for exported functions
 with no production caller. Every hit was a missing surface rather than dead
 code: `dueForRenewal`, `applySettledCharge`, `businessForCharge`,

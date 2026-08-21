@@ -472,6 +472,33 @@ describe('voiding an invoice', () => {
     expect(await countOf(businessId, 'invoices')).toBe(1);
   });
 
+  /**
+   * The status check inside `voidInvoice` settles nothing on its own: two
+   * operators both read `issued` before either writes, so only the UPDATE
+   * decides and the reversal has to come after it. Posting first would leave
+   * the loser's reversal standing in an append-only ledger with no invoice
+   * marked to explain it - an entry an auditor cannot account for, which is
+   * the exact thing the void exists to avoid.
+   */
+  it('two concurrent voids write exactly ONE reversal between them', async () => {
+    const businessId = await seedBusiness();
+    const sale = await withBusiness(db, businessId, (tx) =>
+      issueRepo.issueSale(tx, unpaidSale(businessId)),
+    );
+
+    const attempt = () =>
+      withBusiness(db, businessId, (tx) =>
+        issueRepo.voidInvoice(tx, businessId, sale.invoiceNumber, 'raced', 'user:ada'),
+      );
+    const outcomes = await Promise.all([attempt(), attempt()]);
+
+    expect(outcomes.filter((o) => o.outcome === 'voided')).toHaveLength(1);
+    expect(outcomes.filter((o) => o.outcome === 'already_void')).toHaveLength(1);
+    // The sale and its single reversal. Never three.
+    expect(await countOf(businessId, 'ledger_transactions')).toBe(2);
+    for (const [, amount] of await netByAccount(businessId)) expect(amount).toBe(0);
+  });
+
   it('marks the invoice rather than removing it, and clears what is owed', async () => {
     const businessId = await seedBusiness();
     const sale = await withBusiness(db, businessId, (tx) =>

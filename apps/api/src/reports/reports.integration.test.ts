@@ -18,6 +18,7 @@ import {
   reportsOverviewResponse,
   reportsReceiptsResponse,
   reportsStatementsResponse,
+  voidExpenseResponse,
 } from '@rekoda/contracts';
 import {
   createDb,
@@ -339,6 +340,62 @@ describe('the spend register', () => {
     expect(kinds).toEqual({ diesel: 'expense', 'ankara bales': 'purchase' });
   });
 
+  it('withdraws an entry, and the totals stop counting it', async () => {
+    const { auth, businessId } = await onboard('+2348177000035');
+    await seedSpend(businessId);
+
+    const before = reportsExpensesResponse.parse(
+      (await app.inject({ method: 'GET', url: '/v1/reports/expenses', headers: auth })).json(),
+    );
+    const diesel = before.entries.find((e) => e.description === 'diesel')!;
+
+    const res = await post(
+      '/v1/reports/expenses/void',
+      { expenseId: diesel.id, reason: 'recorded twice' },
+      auth,
+    );
+    expect(res.statusCode).toBe(200);
+    expect(voidExpenseResponse.parse(res.json())).toMatchObject({
+      outcome: 'voided',
+      description: 'diesel',
+      kind: 'expense',
+      reversedK: 800_000,
+    });
+
+    const after = reportsExpensesResponse.parse(
+      (await app.inject({ method: 'GET', url: '/v1/reports/expenses', headers: auth })).json(),
+    );
+    expect(after.expensesK).toBe(0);
+    /* Still on the page. Dropping the row would leave a merchant wondering
+     * where their entry went. */
+    expect(after.entries.find((e) => e.id === diesel.id)?.status).toBe('voided');
+  });
+
+  it('refuses a withdrawal without a reason, and one for another tenant`s entry', async () => {
+    const ada = await onboard('+2348177000036');
+    const bola = await onboard('+2348177000037');
+    await seedSpend(ada.businessId);
+
+    const list = reportsExpensesResponse.parse(
+      (await app.inject({ method: 'GET', url: '/v1/reports/expenses', headers: ada.auth })).json(),
+    );
+    const entry = list.entries[0]!;
+
+    expect(
+      (await post('/v1/reports/expenses/void', { expenseId: entry.id, reason: 'no' }, ada.auth))
+        .statusCode,
+    ).toBe(400);
+
+    /* Another tenant holding a real id must get nothing back but a shrug.
+     * Row-level security is what makes it a shrug rather than a leak. */
+    const theirs = await post(
+      '/v1/reports/expenses/void',
+      { expenseId: entry.id, reason: 'not mine at all' },
+      bola.auth,
+    );
+    expect(voidExpenseResponse.parse(theirs.json())).toEqual({ outcome: 'not_found' });
+  });
+
   it('is scoped to the SESSION tenant', async () => {
     const ada = await onboard('+2348177000033');
     const bola = await onboard('+2348177000034');
@@ -525,11 +582,11 @@ describe('exporting the books as CSV', () => {
 
     const res = await download('/v1/reports/expenses.csv', auth);
     expect(res.headers['content-disposition']).toContain('rekoda-expenses-');
-    expect(res.body).toContain('Date,Type,Description,Category,Method,Amount');
+    expect(res.body).toContain('Date,Type,Description,Category,Method,Status,Amount');
     /* Without this column a spreadsheet totals 58,000 of cost against a shop
      * that spent 8,000 and still holds 50,000 of stock. */
-    expect(res.body).toContain('Stock purchase,ankara bales');
-    expect(res.body).toContain('Expense,diesel');
+    expect(res.body).toContain('Stock purchase,ankara bales,stock,cash,recorded,50000.00');
+    expect(res.body).toContain('Expense,diesel,utilities,cash,recorded,8000.00');
     expect(res.body).toContain('8000.00');
     expect(res.body).not.toContain('₦');
   });

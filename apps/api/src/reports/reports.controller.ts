@@ -66,9 +66,10 @@ import type {
   ReportsReceiptsResponse,
   ReportsStockResponse,
   ReportsStatementsResponse,
+  VoidExpenseResponse,
   VoidInvoiceResponse,
 } from '@rekoda/contracts';
-import { voidInvoiceRequest } from '@rekoda/contracts';
+import { voidExpenseRequest, voidInvoiceRequest } from '@rekoda/contracts';
 import { issueRepo, reportsRepo, spendRepo, stockRepo, withBusiness, type Db } from '@rekoda/db';
 import { SessionGuard, type AuthedRequest } from '../auth/session.guard.js';
 import { DB } from '../db/db.module.js';
@@ -360,6 +361,36 @@ export class ReportsController {
    * they share the merchant's question — where did it go — and stay labelled
    * apart because they do not share an answer.
    */
+  /**
+   * Withdraw a spend entry that should not have been recorded.
+   *
+   * On the reports surface for the same reason the invoice void is: the
+   * register is where a merchant is looking when they notice. `voidExpense`
+   * reverses the posting that was written rather than editing anything, and
+   * this controller decides who may ask and nothing else.
+   */
+  @Post('expenses/void')
+  @HttpCode(200)
+  async voidExpense(
+    @Req() request: AuthedRequest,
+    @Body() body: unknown,
+  ): Promise<VoidExpenseResponse> {
+    const parsed = voidExpenseRequest.safeParse(body);
+    if (!parsed.success) {
+      throw new BadRequestException('expenseId and a reason of at least 4 characters');
+    }
+    const businessId = request.auth!.businessId;
+    return withBusiness(this.db, businessId, (tx) =>
+      spendRepo.voidExpense(
+        tx,
+        businessId,
+        parsed.data.expenseId,
+        parsed.data.reason,
+        `user:${request.auth!.userId}`,
+      ),
+    );
+  }
+
   @Get('expenses')
   async expenses(@Req() request: AuthedRequest): Promise<ReportsExpensesResponse> {
     const businessId = request.auth!.businessId;
@@ -373,6 +404,8 @@ export class ReportsController {
         amountK: r.amountK,
         method: r.method,
         kind: r.kind,
+        status: r.status,
+        id: r.id,
         recordedAt: r.recordedAt.toISOString(),
       })),
       count: list.count,
@@ -420,7 +453,7 @@ export class ReportsController {
       spendRepo.spendFor(tx, businessId, EXPORT_ROWS),
     );
     const csv = toCsv(
-      ['Date', 'Type', 'Description', 'Category', 'Method', 'Amount'],
+      ['Date', 'Type', 'Description', 'Category', 'Method', 'Status', 'Amount'],
       list.rows.map((r) => [
         csvDate(r.recordedAt),
         /* The column that stops a spreadsheet totalling stock as cost. */
@@ -428,6 +461,8 @@ export class ReportsController {
         r.description,
         r.category ?? '',
         r.method,
+        /* And the column that stops it totalling what was withdrawn. */
+        r.status,
         csvKobo(r.amountK),
       ]),
     );

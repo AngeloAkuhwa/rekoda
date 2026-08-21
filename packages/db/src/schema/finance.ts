@@ -203,9 +203,16 @@ export const expenses = pgTable(
     supplierId: uuid('supplier_id').references(() => suppliers.id),
     sourceType: text('source_type').notNull(),
     sourceId: text('source_id'),
+    /** recorded | voided. A void marks the row and mirrors its posting. */
+    status: text('status').notNull().default('recorded'),
+    /** The posting this entry wrote, so a void reverses what was written. */
+    ledgerTransactionId: uuid('ledger_transaction_id'),
     createdAt: createdAt(),
   },
-  (t) => [index('expenses_business_ix').on(t.businessId)],
+  (t) => [
+    index('expenses_business_ix').on(t.businessId),
+    index('expenses_business_status_ix').on(t.businessId, t.status),
+  ],
 );
 
 /* ── the double-entry ledger (ADR 0004) ── */
