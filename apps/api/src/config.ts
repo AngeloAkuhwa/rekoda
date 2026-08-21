@@ -26,6 +26,14 @@ export interface ApiConfig {
    */
   operatorSecret: string | null;
   /**
+   * Where the dashboard lives, for the sign-in link chat sends.
+   *
+   * Null when unset, and the chat path says so plainly rather than sending a
+   * link to nowhere: a merchant who taps one and lands on an error learns
+   * that Rekoda's links do not work, and that lesson outlasts the outage.
+   */
+  webUrl: string | null;
+  /**
    * Returns the OTP in the API response. Development and end-to-end tests
    * only — refused outright when NODE_ENV is production, because the failure
    * mode is handing every caller a working credential for any number.
@@ -283,6 +291,26 @@ const ROLE_DEFAULTS = {
  * is the correct behaviour for a gate with no key rather than a reason to
  * open a different one.
  */
+/**
+ * The dashboard's public origin, with any trailing slash removed so the one
+ * place that builds a URL never produces a double slash.
+ *
+ * Refused unless it is http(s). A link is something a merchant taps, and a
+ * scheme somebody typed into an environment variable is not a thing to hand
+ * a phone unchecked.
+ */
+function webUrl(env: NodeJS.ProcessEnv): string | null {
+  const raw = env['REKODA_WEB_URL']?.trim();
+  if (!raw) return null;
+  try {
+    const url = new URL(raw);
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') return null;
+    return raw.replace(/\/+$/, '');
+  } catch {
+    return null;
+  }
+}
+
 function operatorSecret(env: NodeJS.ProcessEnv, isProduction: boolean): string | null {
   const value = env['REKODA_OPERATOR_SECRET'];
   if (!value) {
@@ -385,6 +413,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     otpPepper: required(env, 'OTP_PEPPER', 32),
     secret: required(env, 'REKODA_API_SECRET', 32),
     operatorSecret: operatorSecret(env, isProduction),
+    webUrl: webUrl(env),
     revealOtp,
     /**
      * Both required everywhere, not just in production. A deployment without

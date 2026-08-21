@@ -33,6 +33,7 @@ import { DB } from '../db/db.module.js';
 import { MESSAGE_SENDER } from '../channels/sender.tokens.js';
 import type { MessageSender } from '../channels/sender.js';
 import { issueSetupToken, readSetupToken, type SetupGrant } from './tokens.js';
+import { burnDashboardLink, mintDashboardLink } from './dashboard-link.js';
 
 /** Resends inside this window return the live challenge instead of minting one. */
 export const RESEND_COOLDOWN_MS = 60 * 1_000;
@@ -307,6 +308,44 @@ export class AuthService {
   async revokeSession(token: string, now = new Date()): Promise<void> {
     const row = await identity.findSessionByHash(this.db, hashSecret(token));
     if (row) await identity.revokeSession(this.db, row.id, now);
+  }
+
+  /**
+   * A one-tap way into the dashboard, for a merchant already in the thread.
+   * The rules and the reasoning are in `dashboard-link.ts`; this is the seam
+   * the HTTP layer reaches them through.
+   */
+  async issueDashboardLink(
+    userId: string,
+    businessId: string,
+    now = new Date(),
+  ): Promise<string | null> {
+    return mintDashboardLink({
+      db: this.db,
+      webUrl: this.config.webUrl,
+      userId,
+      businessId,
+      now,
+      random: this.random,
+    });
+  }
+
+  /**
+   * Exchange a tapped link for a session.
+   *
+   * Every failure answers null and the route answers the same body for all of
+   * them: distinguishing expired from spent from never-existed would tell
+   * whoever is guessing which of the three they achieved.
+   */
+  async redeemDashboardLink(
+    token: string,
+    now = new Date(),
+  ): Promise<{ sessionToken: string; expiresAt: string; businessId: string } | null> {
+    const link = await burnDashboardLink(this.db, token, now);
+    if (!link) return null;
+
+    const session = await this.mintSession(link.userId, link.businessId, now);
+    return { ...session, businessId: link.businessId };
   }
 
   private async mintSession(

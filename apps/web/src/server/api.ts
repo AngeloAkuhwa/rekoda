@@ -4,6 +4,7 @@ import {
   paymentConnectionResponse,
   paymentExceptionsResponse,
   paymentsListResponse,
+  magicRedeemResponse,
   reportsActivityResponse,
   reportsAuditResponse,
   reportsCashflowResponse,
@@ -34,6 +35,7 @@ import {
   type PaymentConnectionResponse,
   type PaymentExceptionsResponse,
   type PaymentsListResponse,
+  type MagicRedeemResponse,
   type ReportsActivityResponse,
   type ReportsAuditResponse,
   type ReportsCashflowResponse,
@@ -366,6 +368,23 @@ export async function reportsReceipts(sessionToken: string): Promise<ReportsRece
     expect: [200],
   });
   return reportsReceiptsResponse.parse(json);
+}
+
+/**
+ * Exchange a tapped sign-in link for a session.
+ *
+ * Every failure comes back as `invalid` rather than a status code, so the
+ * page cannot accidentally tell somebody guessing whether a link expired, was
+ * already used, or never existed.
+ */
+export async function redeemMagicLink(token: string): Promise<MagicRedeemResponse> {
+  const { json } = await call({
+    method: 'POST',
+    path: '/v1/auth/magic/redeem',
+    body: { token },
+    expect: [200],
+  });
+  return magicRedeemResponse.parse(json);
 }
 
 export async function reportsAudit(sessionToken: string): Promise<ReportsAuditResponse> {

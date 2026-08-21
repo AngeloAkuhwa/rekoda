@@ -283,3 +283,37 @@ describe('the remind command', () => {
     expect(routeMessage('remind').route).toBe('model');
   });
 });
+
+describe('asking for the dashboard', () => {
+  const kindOf = (text: string) => {
+    const route = routeMessage(text);
+    return route.route === 'deterministic' ? route.intent.kind : 'model';
+  };
+
+  it('recognises the ways a merchant asks for their books on the web', () => {
+    for (const phrase of [
+      'dashboard',
+      'my dashboard',
+      'open my books',
+      'show me my books',
+      'website',
+      'log in',
+      'sign in',
+      'portal',
+    ]) {
+      expect(kindOf(phrase)).toBe('dashboard');
+    }
+  });
+
+  /* `records` answers in the thread and `dashboard` sends a link. Collapsing
+   * them would either cost a merchant a tap they did not want or deny them
+   * the one they asked for. */
+  it('stays distinct from the records command', () => {
+    expect(kindOf('records')).toBe('records');
+    expect(kindOf('my transactions')).toBe('records');
+  });
+
+  it('does not fire on a sentence that merely mentions one of the words', () => {
+    expect(kindOf('I sold a dashboard camera for 20k')).toBe('model');
+  });
+});

@@ -24,9 +24,11 @@ import { InvalidPhoneError, normalisePhone } from '@rekoda/core/identity';
 import {
   createBusinessRequest,
   inviteMemberRequest,
+  magicRedeemRequest,
   requestOtpRequest,
   setPlanRequest,
   verifyOtpRequest,
+  type MagicRedeemResponse,
   type MeResponse,
   type RequestOtpResponse,
   type SessionResponse,
@@ -56,6 +58,24 @@ export class AuthController {
       }
       throw error;
     }
+  }
+
+  /**
+   * Exchange a tapped sign-in link for a session.
+   *
+   * Rate-limited by the same per-IP budget as every other auth route, and
+   * deliberately indistinguishable in its failures: expired, already used and
+   * never existed all answer the same way, because telling them apart would
+   * tell whoever is guessing which of the three they achieved.
+   */
+  @Post('magic/redeem')
+  @HttpCode(200)
+  async redeemMagicLink(@Body() body: unknown): Promise<MagicRedeemResponse> {
+    const parsed = magicRedeemRequest.safeParse(body);
+    if (!parsed.success) return { status: 'invalid' };
+
+    const session = await this.auth.redeemDashboardLink(parsed.data.token);
+    return session ? { status: 'signed_in', ...session } : { status: 'invalid' };
   }
 
   /**

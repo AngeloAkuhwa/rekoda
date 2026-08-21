@@ -39,6 +39,7 @@ import {
   type TenantDb,
 } from '@rekoda/db';
 import type { ApiConfig } from '../config.js';
+import { LINK_MINUTES, mintDashboardLink } from '../auth/dashboard-link.js';
 import type { Interpreter } from '../ai/interpreter.service.js';
 import type { IdentityLinkProposal, PrivacyGateway } from '../privacy/gateway.service.js';
 import type { ReplySender } from '../replies/reply.service.js';
@@ -549,6 +550,22 @@ async function deterministicReply(
       return paymentDetailsReply(deps, tx, businessId);
     case 'remind':
       return remindReply(deps, tx, businessId, ctx, intent.invoiceNumber);
+    case 'dashboard': {
+      /* The link belongs to the PERSON who asked, not to the business. A
+       * stranger messaging the number resolves to no membership and gets the
+       * stranger path elsewhere; a delegate gets a delegate's session. A link
+       * can never carry more access than the sender already had. */
+      const member = await identity.memberByPhone(tx, businessId, normalisePhone(ctx.from));
+      if (!member) return replies.dashboardUnavailable();
+
+      const url = await mintDashboardLink({
+        db: deps.db,
+        webUrl: deps.config.webUrl,
+        userId: member.userId,
+        businessId,
+      });
+      return url ? replies.dashboardLink(url, LINK_MINUTES) : replies.dashboardUnavailable();
+    }
     case 'records': {
       // The same SQL the dashboard overview runs — totals only, no customer.
       const overview = await reportsRepo.overviewFor(tx, businessId);

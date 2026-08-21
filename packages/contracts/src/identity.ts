@@ -168,3 +168,27 @@ export type TeamMember = z.infer<typeof teamMember>;
 
 export const teamResponse = z.object({ members: z.array(teamMember).max(50) });
 export type TeamResponse = z.infer<typeof teamResponse>;
+
+/**
+ * Exchanging a tapped sign-in link for a session.
+ *
+ * One shape for every failure. Expired, already used and never existed answer
+ * identically, because distinguishing them would tell whoever is guessing
+ * which of the three they achieved.
+ */
+export const magicRedeemRequest = z.object({
+  token: z.string().min(16).max(200),
+});
+
+export const magicRedeemResponse = z.discriminatedUnion('status', [
+  z.object({
+    status: z.literal('signed_in'),
+    sessionToken: z.string(),
+    expiresAt: z.string(),
+    businessId: z.string(),
+  }),
+  z.object({ status: z.literal('invalid') }),
+]);
+
+export type MagicRedeemRequest = z.infer<typeof magicRedeemRequest>;
+export type MagicRedeemResponse = z.infer<typeof magicRedeemResponse>;
