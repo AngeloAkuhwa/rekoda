@@ -25,14 +25,22 @@ import {
 export class AnthropicTransport implements ModelTransport {
   private readonly client: Anthropic;
 
-  constructor(apiKey: string, timeoutMs = 20_000) {
+  constructor(apiKey: string, timeoutMs = 20_000, baseUrl?: string) {
     /**
      * `maxRetries: 0` — the job runner already owns retry, with backoff and a
      * dead-letter state. Two retry layers means a merchant waits through both,
      * and a call the SDK silently retried is a call we were billed for twice
      * and recorded once.
      */
-    this.client = new Anthropic({ apiKey, timeout: timeoutMs, maxRetries: 0 });
+    this.client = new Anthropic({
+      apiKey,
+      timeout: timeoutMs,
+      maxRetries: 0,
+      /* Injectable for the same reason the OpenAI client's is, and the
+       * Paystack adapter's: the properties worth asserting here are about
+       * what goes over the wire. */
+      ...(baseUrl ? { baseURL: baseUrl } : {}),
+    });
   }
 
   async send(request: ModelRequest): Promise<ModelReply> {
