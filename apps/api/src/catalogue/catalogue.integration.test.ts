@@ -181,6 +181,7 @@ describe('the list', () => {
       name: 'Ankara bale',
       description: null,
       unitPriceK: null,
+      unitCostK: null,
       imagePath: null,
       active: true,
       onHand: 12,
@@ -220,6 +221,39 @@ describe('editing', () => {
       description: 'Six yards, wax print',
       active: true,
     });
+  });
+
+  /**
+   * A stated cost, for stock a merchant counted by hand or had before they
+   * joined. Without it those sales post no cost of goods forever and every
+   * profit figure they read is too high.
+   */
+  it('sets a cost the merchant states, without touching the price', async () => {
+    const { businessId, auth } = await onboard('+2348177300015');
+    const product = await seedProduct(businessId);
+
+    await post('/v1/catalogue/product', { id: product.id, unitPriceK: 850_000 }, auth);
+    expect(
+      (await post('/v1/catalogue/product', { id: product.id, unitCostK: 450_000 }, auth)).json(),
+    ).toEqual({ outcome: 'updated' });
+
+    const { products } = await catalogueOf(auth);
+    expect(products[0]).toMatchObject({ unitPriceK: 850_000, unitCostK: 450_000 });
+  });
+
+  /* What it sells for and what it cost are different facts, and clearing one
+   * must not touch the other. */
+  it('clearing a cost leaves the price standing', async () => {
+    const { businessId, auth } = await onboard('+2348177300016');
+    const product = await seedProduct(businessId);
+
+    await post('/v1/catalogue/product', { id: product.id, unitPriceK: 850_000 }, auth);
+    await post('/v1/catalogue/product', { id: product.id, unitCostK: 450_000 }, auth);
+    await post('/v1/catalogue/product', { id: product.id, unitCostK: null }, auth);
+
+    const { products } = await catalogueOf(auth);
+    expect(products[0]!.unitCostK).toBeNull();
+    expect(products[0]!.unitPriceK).toBe(850_000);
   });
 
   /**

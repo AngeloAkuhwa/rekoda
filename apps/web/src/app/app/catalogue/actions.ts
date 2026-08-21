@@ -56,6 +56,36 @@ export async function setPriceAction(
   return change({ id, unitPriceK: toKobo(naira) }, 'Price saved.');
 }
 
+/**
+ * What it cost them, stated rather than derived.
+ *
+ * Normally a delivery moves this: "bought 10 bags of rice for 45k" is a
+ * quantity and an amount, and the average follows. This is for the stock a
+ * merchant counted by hand or bought before they joined, which otherwise
+ * sells with no cost against it forever and quietly overstates every profit
+ * figure they read.
+ *
+ * A stated cost REPLACES the average rather than averaging into it. The
+ * merchant is correcting or supplying the figure, and blending their answer
+ * with the history they are correcting would give them neither.
+ */
+export async function setCostAction(
+  _prev: CatalogueFormState,
+  formData: FormData,
+): Promise<CatalogueFormState> {
+  const id = String(formData.get('id') ?? '').trim();
+  if (!id) return { error: 'Pick a product.' };
+
+  const naira = parseAmountText(String(formData.get('cost') ?? ''));
+  if (naira === null || naira <= 0) {
+    return { error: 'Say what one costs you, in naira. For example 4500, or 4.5k.' };
+  }
+  return change(
+    { id, unitCostK: toKobo(naira) },
+    'Cost saved. Sales of it will now show what the goods cost.',
+  );
+}
+
 /** What the merchant would say about it. An empty box clears it. */
 export async function setDescriptionAction(
   _prev: CatalogueFormState,

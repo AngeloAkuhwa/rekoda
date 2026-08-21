@@ -21,6 +21,15 @@ export const catalogueResponse = z.object({
       /** What it sells for. Null means they have never said. */
       unitPriceK: kobo.nullable(),
       /**
+       * What it cost them, as a weighted average, or null.
+       *
+       * Usually moved by deliveries rather than typed. It is here so a
+       * merchant can see it beside the price and set one for stock they
+       * counted by hand or bought before they joined, which otherwise sells
+       * with no cost against it forever.
+       */
+      unitCostK: kobo.nullable(),
+      /**
        * Where this API serves the photo, or null when there is none.
        *
        * An API path, not a browser one: the dashboard proxies it under its
@@ -59,6 +68,15 @@ export const editProductRequest = z.object({
     .optional()
     .transform((value) => (value === '' ? null : value)),
   unitPriceK: kobo.nullable().optional(),
+  /**
+   * A cost the merchant states, which REPLACES the weighted average rather
+   * than averaging into it.
+   *
+   * A delivery is a fact about goods arriving and moves the average; this is
+   * a merchant telling Rekoda what something costs, and averaging their
+   * answer with a history they are correcting would give them neither.
+   */
+  unitCostK: kobo.nullable().optional(),
   active: z.boolean().optional(),
 });
 
