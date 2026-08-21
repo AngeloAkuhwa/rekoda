@@ -145,6 +145,26 @@ export const reportsStatementsResponse = z.object({
     outK: kobo,
     closingK: z.number().int().finite(),
   }),
+  /**
+   * The month before, for the column every accounting package puts beside a
+   * profit and loss. "₦150,000 of sales" is a figure; "₦150,000, up from
+   * ₦92,000" is the thing a merchant actually wanted to know.
+   *
+   * Totals plus a per-account lookup rather than a second full statement:
+   * the comparison is read line by line against the current one, and shipping
+   * two shapes that must be kept in step is how they stop being in step.
+   *
+   * Always present, and zero when the business was not trading. The column is
+   * labelled with its month, so a zero under "July 2026" says what it is.
+   */
+  comparison: z.object({
+    period: z.string().regex(/^\d{4}-\d{2}$/),
+    totalIncomeK: z.number().int().finite(),
+    totalExpensesK: z.number().int().finite(),
+    netProfitK: z.number().int().finite(),
+    /** Prior amount by account key, for the lines that had one. */
+    lines: z.record(z.string(), z.number().int().finite()),
+  }),
 });
 export type ReportsStatementsResponse = z.infer<typeof reportsStatementsResponse>;
 
