@@ -142,31 +142,31 @@ export default async function DashboardPage() {
               {/* The ageing columns an accountant reads first, and the ones
                   both QuickBooks and HelloBooks put on the front page. */}
               <div className="rk-table-scroll">
-                <table className="rk-table rk-ageing">
+                <table className="rk-table">
                   <thead>
                     <tr>
-                      <th>Not due yet</th>
-                      <th>1 to 30 days</th>
-                      <th>31 to 60</th>
-                      <th>61 to 90</th>
-                      <th>Over 90</th>
+                      <th className="rk-num">Not due yet</th>
+                      <th className="rk-num">1 to 30 days</th>
+                      <th className="rk-num">31 to 60</th>
+                      <th className="rk-num">61 to 90</th>
+                      <th className="rk-num">Over 90</th>
                     </tr>
                   </thead>
                   <tbody>
                     <tr>
-                      <td>
+                      <td className="rk-num">
                         <Money kobo={overview.ageing.currentK} />
                       </td>
-                      <td>
+                      <td className="rk-num">
                         <Money kobo={overview.ageing.d1_30K} />
                       </td>
-                      <td>
+                      <td className="rk-num">
                         <Money kobo={overview.ageing.d31_60K} />
                       </td>
-                      <td>
+                      <td className="rk-num">
                         <Money kobo={overview.ageing.d61_90K} />
                       </td>
-                      <td>
+                      <td className="rk-num">
                         <Money kobo={overview.ageing.d90PlusK} />
                       </td>
                     </tr>

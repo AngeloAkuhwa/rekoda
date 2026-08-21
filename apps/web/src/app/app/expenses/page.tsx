@@ -90,24 +90,24 @@ export default async function ExpensesPage() {
             <table className="rk-table">
               <thead>
                 <tr>
-                  <th>Up to 30 days</th>
-                  <th>31 to 60</th>
-                  <th>61 to 90</th>
-                  <th>Over 90 days</th>
+                  <th className="rk-num">Up to 30 days</th>
+                  <th className="rk-num">31 to 60</th>
+                  <th className="rk-num">61 to 90</th>
+                  <th className="rk-num">Over 90 days</th>
                 </tr>
               </thead>
               <tbody>
                 <tr>
-                  <td>
+                  <td className="rk-num">
                     <Money kobo={payableAgeing.d0_30K} />
                   </td>
-                  <td>
+                  <td className="rk-num">
                     <Money kobo={payableAgeing.d31_60K} />
                   </td>
-                  <td>
+                  <td className="rk-num">
                     <Money kobo={payableAgeing.d61_90K} />
                   </td>
-                  <td>
+                  <td className="rk-num">
                     <Money kobo={payableAgeing.d90PlusK} />
                   </td>
                 </tr>
@@ -139,7 +139,7 @@ export default async function ExpensesPage() {
                   <th>Paid by</th>
                   <th>Next entry</th>
                   <th>Status</th>
-                  <th>Amount</th>
+                  <th className="rk-num">Amount</th>
                 </tr>
               </thead>
               <tbody>
@@ -153,7 +153,7 @@ export default async function ExpensesPage() {
                         the word "Stopped" would be a promise it will not keep. */}
                     <td>{schedule.active ? longDate(schedule.nextDueOn) : 'None'}</td>
                     <td>{schedule.active ? 'Running' : 'Stopped'}</td>
-                    <td>
+                    <td className="rk-num">
                       <Money kobo={schedule.amountK} />
                     </td>
                   </tr>
@@ -201,7 +201,7 @@ export default async function ExpensesPage() {
                     <th>Paid by</th>
                     <th>Source</th>
                     <th>Status</th>
-                    <th>Amount</th>
+                    <th className="rk-num">Amount</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -214,7 +214,7 @@ export default async function ExpensesPage() {
                       <td>{entry.method === 'transfer' ? 'Transfer' : 'Cash'}</td>
                       <td>{describeSource(entry.sourceType)}</td>
                       <td>{entry.status === 'voided' ? 'Withdrawn' : 'Recorded'}</td>
-                      <td>
+                      <td className="rk-num">
                         <Money kobo={entry.amountK} />
                       </td>
                     </tr>

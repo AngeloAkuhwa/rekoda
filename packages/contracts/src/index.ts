@@ -6,3 +6,4 @@ export * from './paystack-api.js';
 export * from './billing-api.js';
 export * from './payments-api.js';
 export * from './reports-api.js';
+export * from './catalogue-api.js';

@@ -23,8 +23,11 @@ import {
   billingPlanChangeResponse,
   billingQuoteResponse,
   usageMeterResponse,
+  catalogueResponse,
   createRecurringResponse,
   creditInvoiceResponse,
+  editProductResponse,
+  uploadImageResponse,
   stopRecurringResponse,
   voidExpenseResponse,
   voidInvoiceResponse,
@@ -33,8 +36,12 @@ import {
   type BillingPlanChangeResponse,
   type BillingQuoteResponse,
   type MeResponse,
+  type CatalogueResponse,
   type CreateRecurringRequest,
   type CreateRecurringResponse,
+  type EditProductRequest,
+  type EditProductResponse,
+  type UploadImageResponse,
   type CreditInvoiceResponse,
   type StopRecurringResponse,
   type VoidExpenseResponse,
@@ -538,6 +545,65 @@ export async function voidExpense(
     expect: [200, 400],
   });
   return status === 200 ? voidExpenseResponse.parse(json) : null;
+}
+
+/** Everything the shop could sell, listed and hidden alike. */
+export async function catalogue(sessionToken: string): Promise<CatalogueResponse> {
+  const { json } = await call({
+    method: 'GET',
+    path: '/v1/catalogue',
+    headers: { authorization: `Bearer ${sessionToken}` },
+    expect: [200],
+  });
+  return catalogueResponse.parse(json);
+}
+
+/** Change what the shop says about one product. */
+export async function editProduct(
+  sessionToken: string,
+  input: EditProductRequest,
+): Promise<EditProductResponse | null> {
+  const { status, json } = await call({
+    method: 'POST',
+    path: '/v1/catalogue/product',
+    body: input,
+    headers: { authorization: `Bearer ${sessionToken}` },
+    expect: [200, 400],
+  });
+  return status === 200 ? editProductResponse.parse(json) : null;
+}
+
+/**
+ * Send a product photo through to the API, still as a file.
+ *
+ * Deliberately not `call`, which serialises JSON: re-encoding an image as
+ * base64 to fit a JSON body would inflate it by a third and buffer the whole
+ * thing as a string on the way past. `fetch` sets the multipart boundary
+ * itself from the FormData, which is why no content-type is set here.
+ */
+export async function uploadProductImage(
+  sessionToken: string,
+  productId: string,
+  file: File,
+): Promise<UploadImageResponse | null> {
+  const body = new FormData();
+  body.set('file', file, file.name);
+
+  let response: Response;
+  try {
+    response = await fetch(`${BASE}/v1/catalogue/${productId}/image`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${sessionToken}` },
+      body,
+      cache: 'no-store',
+    });
+  } catch (cause) {
+    throw new ApiUnavailable(`cannot reach the Rekoda API at ${BASE}`, { cause });
+  }
+  if (response.status !== 200) return null;
+  const json: unknown = await response.json().catch(() => null);
+  const parsed = uploadImageResponse.safeParse(json);
+  return parsed.success ? parsed.data : null;
 }
 
 /**

@@ -20,6 +20,12 @@ export interface Product {
   name: string;
   unitPriceK: number | null;
   onHand: number;
+  /**
+   * Whether it is listed in the shop. Not whether it exists: a hidden product
+   * still sits on a shelf and still counts, which is why the stock register
+   * shows it and marks it rather than dropping it.
+   */
+  active: boolean;
 }
 
 /** Why the stock moved. `adjustment` is the merchant counting their own shelf. */
@@ -42,6 +48,14 @@ export interface StockMovement {
  * silently move stock the merchant did not mean. An exact-after-normalising
  * match either finds their product or does not, and "does not" is a question
  * the caller can ask out loud.
+ *
+ * `active` is deliberately NOT part of the match. It says whether a product
+ * is listed in the shop, not whether it exists, and filtering on it here made
+ * `findOrCreateProduct` build a SECOND row the next time a merchant mentioned
+ * something they had hidden. Their stock history would split in two at that
+ * moment and the count would be wrong from then on, silently and forever.
+ * A merchant who says "sold 2 bags of rice" has sold rice, whatever a listing
+ * flag says.
  */
 export async function productByName(
   tx: TenantDb,
@@ -53,15 +67,15 @@ export async function productByName(
     name: string;
     unit_price_k: string | number | null;
     on_hand: number | null;
+    active: number;
   }>(sql`
-    SELECT p.id, p.name, p.unit_price_k,
+    SELECT p.id, p.name, p.unit_price_k, p.active,
            coalesce(sum(m.delta), 0)::int AS on_hand
     FROM products p
     LEFT JOIN inventory_movements m ON m.product_id = p.id
     WHERE p.business_id = ${businessId}::uuid
       AND lower(btrim(p.name)) = lower(btrim(${name}))
-      AND p.active = 1
-    GROUP BY p.id, p.name, p.unit_price_k
+    GROUP BY p.id, p.name, p.unit_price_k, p.active
     LIMIT 1
   `);
   const row = [...rows][0];
@@ -71,6 +85,7 @@ export async function productByName(
     name: row.name,
     unitPriceK: row.unit_price_k === null ? null : Number(row.unit_price_k),
     onHand: row.on_hand ?? 0,
+    active: row.active === 1,
   };
 }
 
@@ -95,7 +110,7 @@ export async function findOrCreateProduct(
     .values({ businessId, name: name.trim() })
     .returning({ id: products.id, name: products.name });
   const row = inserted[0]!;
-  return { id: row.id, name: row.name, unitPriceK: null, onHand: 0 };
+  return { id: row.id, name: row.name, unitPriceK: null, onHand: 0, active: true };
 }
 
 /** Append one movement. Never an UPDATE: the count is the sum of the history. */
@@ -173,13 +188,14 @@ export async function stockList(tx: TenantDb, businessId: string, limit = 200): 
     name: string;
     unit_price_k: string | number | null;
     on_hand: number | null;
+    active: number;
   }>(sql`
-    SELECT p.id, p.name, p.unit_price_k,
+    SELECT p.id, p.name, p.unit_price_k, p.active,
            coalesce(sum(m.delta), 0)::int AS on_hand
     FROM products p
     LEFT JOIN inventory_movements m ON m.product_id = p.id
-    WHERE p.business_id = ${businessId}::uuid AND p.active = 1
-    GROUP BY p.id, p.name, p.unit_price_k
+    WHERE p.business_id = ${businessId}::uuid
+    GROUP BY p.id, p.name, p.unit_price_k, p.active
     ORDER BY coalesce(sum(m.delta), 0) ASC, p.name ASC
     LIMIT ${limit}
   `);
@@ -188,5 +204,6 @@ export async function stockList(tx: TenantDb, businessId: string, limit = 200): 
     name: r.name,
     unitPriceK: r.unit_price_k === null ? null : Number(r.unit_price_k),
     onHand: r.on_hand ?? 0,
+    active: r.active === 1,
   }));
 }

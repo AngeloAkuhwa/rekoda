@@ -239,7 +239,7 @@ export default async function BillingPage({
                 <tr>
                   <th>Plan</th>
                   <th>What it is for</th>
-                  <th>A month</th>
+                  <th className="rk-num">A month</th>
                   <th>
                     <span className="rk-sr-only">Choose</span>
                   </th>
@@ -250,7 +250,7 @@ export default async function BillingPage({
                   <tr key={plan.id}>
                     <td>{plan.name}</td>
                     <td>{plan.tagline}</td>
-                    <td>
+                    <td className="rk-num">
                       <Money kobo={plan.monthlyK} />
                     </td>
                     <td>
@@ -279,7 +279,7 @@ export default async function BillingPage({
               <thead>
                 <tr>
                   <th>Pack</th>
-                  <th>Price</th>
+                  <th className="rk-num">Price</th>
                   <th>
                     <span className="rk-sr-only">Buy</span>
                   </th>
@@ -289,7 +289,7 @@ export default async function BillingPage({
                 {overview.packs.map((pack) => (
                   <tr key={pack.id}>
                     <td>{pack.label}</td>
-                    <td>
+                    <td className="rk-num">
                       <Money kobo={pack.priceK} />
                     </td>
                     <td>
@@ -329,7 +329,7 @@ export default async function BillingPage({
                   <th>What for</th>
                   <th>Reference</th>
                   <th>Status</th>
-                  <th>Amount</th>
+                  <th className="rk-num">Amount</th>
                 </tr>
               </thead>
               <tbody>

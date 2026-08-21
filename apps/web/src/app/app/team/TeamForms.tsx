@@ -9,11 +9,17 @@ import { inviteMemberAction, removeMemberAction, type TeamActionState } from './
  * The two forms on the team page.
  *
  * Together in one file because they share a state shape and neither is big
- * enough to earn its own, and as a namespace so the page reads as
- * `TeamForms.Invite` rather than importing two names that only make sense
- * side by side.
+ * enough to earn its own.
+ *
+ * Exported one by one, and that is not a style choice. A `'use client'`
+ * module's exports become client REFERENCES on the server side, and only
+ * named function exports can be one: bundling them into an object and
+ * exporting that gave the page a proxy whose `.Invite` was undefined, so
+ * every render threw "element type is invalid" and the whole team page
+ * answered 500. It read fine, it type-checked, and no test covered the
+ * route, so it shipped.
  */
-function Invite() {
+export function InviteForm() {
   const [state, action, pending] = useActionState<TeamActionState, FormData>(
     inviteMemberAction,
     {},
@@ -57,7 +63,7 @@ function Invite() {
   );
 }
 
-function Remove({ userId, phone }: { userId: string; phone: string }) {
+export function RemoveMemberForm({ userId, phone }: { userId: string; phone: string }) {
   const [state, action, pending] = useActionState<TeamActionState, FormData>(
     removeMemberAction,
     {},
@@ -75,5 +81,3 @@ function Remove({ userId, phone }: { userId: string; phone: string }) {
     </form>
   );
 }
-
-export const TeamForms = { Invite, Remove };

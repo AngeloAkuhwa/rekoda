@@ -10,6 +10,7 @@ export * as conversationsRepo from './repos/conversations.js';
 export * as quotaRepo from './repos/quota.js';
 export * as issueRepo from './repos/issue.js';
 export * as paymentsHub from './repos/payments-hub.js';
+export * as catalogueRepo from './repos/catalogue.js';
 export * as recurringRepo from './repos/recurring.js';
 export * as reportsRepo from './repos/reports.js';
 export * as retentionRepo from './repos/retention.js';

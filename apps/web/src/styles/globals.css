@@ -1018,6 +1018,15 @@ button,
 .rk-table-scroll {
   overflow-x: auto;
   margin-top: var(--rk-space-3);
+  /* The containing block for anything absolutely positioned inside, and that
+     is not decoration. `.rk-sr-only` is `position: absolute`, so without a
+     positioned ancestor it resolves against the document: a visually hidden
+     header label sitting in a 973px-wide table landed at x=780 on a 390px
+     phone, escaped this scroller entirely, and stretched the ROOT to 782px.
+     The billing page scrolled left to right because of a one-pixel span
+     nobody can see. Making this element the containing block puts it back
+     inside, where `overflow-x` clips it. */
+  position: relative;
 }
 .rk-table {
   width: 100%;
@@ -1044,12 +1053,28 @@ button,
 .rk-table th {
   white-space: nowrap;
 }
-.rk-table td:nth-child(2),
-.rk-table td:nth-child(3),
-.rk-table td:nth-child(4),
-.rk-table th:nth-child(2),
-.rk-table th:nth-child(3),
-.rk-table th:nth-child(4) {
+/* A product photo in a table cell. Fixed box and `cover`, so a portrait
+   phone photo and a square one occupy the same space and the rows stay a
+   consistent height rather than jumping with whatever was uploaded. */
+.rk-thumb {
+  width: 44px;
+  height: 44px;
+  object-fit: cover;
+  border-radius: var(--rk-radius-sm);
+  border: 1px solid var(--rk-border);
+  display: block;
+}
+/* Right-aligned by what the cell HOLDS, not by where it sits.
+ *
+ * This used to be `nth-child(2, 3, 4)`, which happened to line up with money
+ * on the first two registers it was written for and was wrong on every table
+ * added afterwards: the catalogue right-aligned "Product" and "What it is",
+ * the spend register right-aligned descriptions. Ledgers left-align what a
+ * line IS and right-align what it is WORTH, so digits stack under digits and
+ * a column can be read down. `.rk-num` says which is which, and a new table
+ * gets it right by saying so rather than by column order. */
+.rk-table th.rk-num,
+.rk-table td.rk-num {
   text-align: right;
 }
 
@@ -1392,15 +1417,6 @@ button,
 /* The ageing strip: every column is money, so every column is right-aligned
    in tabular figures. The generic .rk-table rule only right-aligns columns
    2 to 4, because most tables here lead with a label. */
-.rk-ageing td,
-.rk-ageing th {
-  text-align: right;
-}
-.rk-ageing td:first-child,
-.rk-ageing th:first-child {
-  text-align: left;
-}
-
 /* Billing (ADR 0024) */
 .rk-plan-current {
   font-size: var(--rk-text-lg);

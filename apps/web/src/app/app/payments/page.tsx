@@ -105,9 +105,9 @@ export default async function PaymentsPage() {
               <thead>
                 <tr>
                   <th>Reference</th>
-                  <th>Received</th>
-                  <th>Fee</th>
-                  <th>Settled</th>
+                  <th className="rk-num">Received</th>
+                  <th className="rk-num">Fee</th>
+                  <th className="rk-num">Settled</th>
                   <th>Status</th>
                 </tr>
               </thead>
@@ -115,11 +115,13 @@ export default async function PaymentsPage() {
                 {payments.payments.map((p, i) => (
                   <tr key={p.rekodaReference ?? i}>
                     <td>{p.rekodaReference ?? '(recorded)'}</td>
-                    <td>
+                    <td className="rk-num">
                       <Money kobo={p.grossAmountK ?? p.amountK} />
                     </td>
-                    <td>{p.providerFeeK == null ? 'none' : <Money kobo={p.providerFeeK} />}</td>
-                    <td>
+                    <td className="rk-num">
+                      {p.providerFeeK == null ? 'none' : <Money kobo={p.providerFeeK} />}
+                    </td>
+                    <td className="rk-num">
                       {p.settlementAmountK == null ? (
                         settlementWord(p.settlementStatus)
                       ) : (

@@ -48,7 +48,7 @@ export default async function ReceiptsPage() {
                   <tr>
                     <th>Number</th>
                     <th>Date</th>
-                    <th>Amount</th>
+                    <th className="rk-num">Amount</th>
                     <th>Invoice</th>
                     <th>Basis</th>
                   </tr>
@@ -58,7 +58,7 @@ export default async function ReceiptsPage() {
                     <tr key={receipt.receiptNumber}>
                       <td>{receipt.receiptNumber}</td>
                       <td>{shortDate(receipt.issuedAt)}</td>
-                      <td>
+                      <td className="rk-num">
                         <Money kobo={receipt.amountK} />
                       </td>
                       <td>{receipt.invoiceNumber ?? '(no invoice)'}</td>

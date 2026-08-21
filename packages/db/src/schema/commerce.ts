@@ -35,6 +35,10 @@ export const products = pgTable(
     businessId: businessId(),
     name: text('name').notNull(),
     unitPriceK: kobo('unit_price_k'),
+    /** The merchant's own words about it. Never generated (migration 0028). */
+    description: text('description'),
+    /** Storage key of the photo, never the bytes. Same rule as `documents`. */
+    imageKey: text('image_key'),
     /** Mapping to the merchant's WhatsApp catalogue item (Integrate). */
     externalCatalogueId: text('external_catalogue_id'),
     active: integer('active').notNull().default(1),
@@ -43,6 +47,7 @@ export const products = pgTable(
   },
   (t) => [
     index('products_business_ix').on(t.businessId),
+    index('products_business_active_ix').on(t.businessId, t.active),
     uniqueIndex('products_catalogue_ux').on(t.businessId, t.externalCatalogueId),
   ],
 );
