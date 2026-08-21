@@ -123,6 +123,12 @@ real database in CI:
   `GET /v1/ops/health` reports queue depth and webhook intake as numbers with
   no tenant named, and the job runner, attribution pump, settlement sweep and
   stranger sweep all ride the worker credential on their own clocks.
+- **Margin.** `GET /v1/ops/margin?period=YYYY-MM` reads what `usage_events`
+  has been collecting since metering shipped: plan revenue against provider
+  cost, per business and per provider, for one Lagos billing month. Same
+  operator secret, same worker credential, business ids and never names.
+  Revenue is the plan price only, because add-on packs are priced in
+  `docs/pricing-model.md` and recorded in no table yet.
 
 **What is still missing before merchants.** In rough order:
 
