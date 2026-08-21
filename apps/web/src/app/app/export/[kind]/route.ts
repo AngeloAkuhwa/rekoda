@@ -17,6 +17,7 @@ import { readSessionToken } from '@/server/session-cookies';
 const EXPORTS: Readonly<Record<string, string>> = {
   invoices: 'invoices.csv',
   receipts: 'receipts.csv',
+  expenses: 'expenses.csv',
   statements: 'statements.pdf',
   workbook: 'statements.xlsx',
 };
