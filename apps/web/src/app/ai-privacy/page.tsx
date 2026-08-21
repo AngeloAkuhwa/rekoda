@@ -64,6 +64,25 @@ export default function AiPrivacyPage() {
           ),
         },
         {
+          id: 'receipts',
+          heading: 'A photo of a receipt is read by us, not sent onward',
+          body: (
+            <>
+              <p>
+                When you photograph a receipt, the picture goes to our own text reader and to
+                nowhere else. What the AI sees is the text that came out of it, with names, phone
+                numbers and addresses already replaced by tokens, exactly as a typed message is.
+              </p>
+              <p>
+                There is no fallback. If our reader is busy or cannot make out the page, we tell you
+                and ask you to type the amount. We do not send the picture to an AI provider
+                instead, because a photograph cannot be tokenised: everything on it would arrive
+                intact.
+              </p>
+            </>
+          ),
+        },
+        {
           id: 'training',
           heading: 'Your business is not training data',
           body: (
