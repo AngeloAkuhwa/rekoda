@@ -3,6 +3,7 @@ import { Money } from '@/components/ui/Money';
 import { reportsInvoices } from '@/server/api';
 import { requireSessionWithToken } from '@/server/guards';
 import { AppNav } from '../AppNav';
+import { VoidForm } from './VoidForm';
 import { SignOutButton } from '../SignOutButton';
 
 export const metadata: Metadata = {
@@ -19,6 +20,13 @@ export const metadata: Metadata = {
 export default async function InvoicesPage() {
   const { token } = await requireSessionWithToken();
   const { invoices, count, outstandingK } = await reportsInvoices(token);
+
+  /* Only what CAN be voided is offered. An invoice with money against it is
+   * corrected by refunding rather than reversing, and one already voided has
+   * nothing left to withdraw. */
+  const voidable = invoices
+    .filter((invoice) => invoice.paidK === 0 && invoice.status !== 'voided')
+    .map((invoice) => invoice.invoiceNumber);
 
   return (
     <section className="rk-container rk-dash">
@@ -84,6 +92,19 @@ export default async function InvoicesPage() {
                 </tbody>
               </table>
             </div>
+            {/* An accounting tool a merchant cannot correct is one they stop
+                trusting. Nothing is deleted: the invoice stays, marked, and
+                the books carry the sale and its reversal. */}
+            <details className="rk-void">
+              <summary>Void an invoice</summary>
+              <p className="rk-fineprint">
+                Use this when an invoice should never have gone out: the wrong customer, the wrong
+                figure, a duplicate. The invoice stays in your records marked as voided, and your
+                books show the sale and the reversal that cancelled it. Nothing is deleted.
+              </p>
+              <VoidForm voidable={voidable} />
+            </details>
+
             {/* The answer to "what happens to my records if I leave". A
                 product that cannot be left has to be trusted blindly, and
                 asking for that is worse than earning it. */}

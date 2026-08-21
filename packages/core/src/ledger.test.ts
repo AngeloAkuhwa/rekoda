@@ -198,3 +198,38 @@ describe('trial balance', () => {
     }
   });
 });
+
+describe('reversing a posting, as a void does', () => {
+  it('swaps every side and still balances', () => {
+    const sale = postSale({ memo: 'Sale INV-2026-000041', totalK: 15_000_000, paidK: 0 });
+    const reversed = reversal(sale, 'Void INV-2026-000041');
+
+    expect(reversed.memo).toBe('Void INV-2026-000041');
+    expect(reversed.lines).toHaveLength(sale.lines.length);
+    for (const [i, original] of sale.lines.entries()) {
+      const mirror = reversed.lines[i]!;
+      expect(mirror.account).toBe(original.account);
+      expect(mirror.debitK).toBe(original.creditK);
+      expect(mirror.creditK).toBe(original.debitK);
+    }
+  });
+
+  it('cancels the original exactly, account by account', () => {
+    const sale = postSale({
+      memo: 'Sale INV-2026-000042',
+      totalK: 10_750_000,
+      paidK: 0,
+      vatK: 750_000,
+    });
+    const reversed = reversal(sale, 'Void INV-2026-000042');
+
+    /* The pair leaves nothing behind: for every account touched, what the
+     * sale did and what the void did sum to zero on both sides. That is the
+     * whole claim a void makes to an auditor. */
+    const net = new Map<string, number>();
+    for (const l of [...sale.lines, ...reversed.lines]) {
+      net.set(l.account, (net.get(l.account) ?? 0) + l.debitK - l.creditK);
+    }
+    for (const [, amount] of net) expect(amount).toBe(0);
+  });
+});

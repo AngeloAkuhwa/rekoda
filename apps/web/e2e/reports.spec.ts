@@ -92,3 +92,18 @@ test('a garbage period falls back to this month, never an error page', async ({ 
   // month; the API's own 400 is pinned in the integration suite.
   await expect(page.getByRole('heading', { name: /No entries for/ })).toBeVisible();
 });
+
+/**
+ * Voiding, from the register where a merchant notices the mistake.
+ *
+ * A fresh business has nothing to void, and the register says nothing about
+ * voiding: a destructive control offered against an empty list is an invitation
+ * to wonder what it would have done.
+ */
+test('the empty invoice register offers no way to void anything', async ({ page }) => {
+  await onboard(page, freshPhone());
+  await page.goto('/app/invoices');
+
+  await expect(page.getByText('No invoices yet', { exact: false })).toBeVisible();
+  await expect(page.getByText('Void an invoice')).toHaveCount(0);
+});

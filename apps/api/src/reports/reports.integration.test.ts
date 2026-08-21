@@ -835,3 +835,89 @@ describe('comparing against the month before', () => {
     );
   }
 });
+
+/**
+ * Withdrawing an invoice, over the wire.
+ *
+ * The ledger claim is proven in packages/db/src/issue.integration.test.ts.
+ * What this pins is the border: who may ask, what a bad ask gets, and that a
+ * refusal comes back as an ANSWER the register can render rather than an
+ * error the merchant has to interpret.
+ */
+describe('voiding an invoice', () => {
+  const voidIt = (body: unknown, headers: Record<string, string> = {}) =>
+    app.inject({
+      method: 'POST',
+      url: '/v1/reports/invoices/void',
+      payload: body as Record<string, unknown>,
+      headers: { 'content-type': 'application/json', ...headers },
+    });
+
+  it('refuses a caller with no session', async () => {
+    expect((await voidIt({ invoiceNumber: 'INV-2026-000001', reason: 'typo' })).statusCode).toBe(
+      401,
+    );
+  });
+
+  it('insists on a reason, because the gap has to be explained', async () => {
+    const { auth } = await onboard('+2348177200001');
+    expect((await voidIt({ invoiceNumber: 'INV-2026-000001' }, auth)).statusCode).toBe(400);
+    expect((await voidIt({ invoiceNumber: 'INV-2026-000001', reason: 'x' }, auth)).statusCode).toBe(
+      400,
+    );
+  });
+
+  it('answers not_found as a RESULT, not an error page', async () => {
+    const { auth } = await onboard('+2348177200002');
+    const res = await voidIt({ invoiceNumber: 'INV-2026-999999', reason: 'wrong one' }, auth);
+
+    /* The register renders this as a sentence. A 404 would make an ordinary
+     * mistyped number look like the product breaking. */
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ outcome: 'not_found' });
+  });
+
+  it('withdraws a real invoice and takes it out of what is owed', async () => {
+    const { businessId, auth } = await onboard('+2348177200003');
+    const sale = await withBusiness(db, businessId, (tx) =>
+      issueRepo.issueSale(tx, {
+        businessId,
+        customerId: null,
+        customerToken: 'CUSTOMER_7K2',
+        items: [{ name: 'wig', quantity: 1, unitPriceK: 15_000_000 }],
+        subtotalK: 15_000_000,
+        discountK: 0,
+        deliveryFeeK: 0,
+        vatK: 0,
+        totalK: 15_000_000,
+        paidK: 0,
+        balanceDueK: 15_000_000,
+        method: 'transfer',
+        sourceType: 'chat',
+        sourceId: 'draft-v1',
+        actor: 'system',
+      }),
+    );
+
+    const before = reportsInvoicesResponse.parse(
+      (await app.inject({ method: 'GET', url: '/v1/reports/invoices', headers: auth })).json(),
+    );
+    expect(before.outstandingK).toBe(15_000_000);
+
+    const res = await voidIt({ invoiceNumber: sale.invoiceNumber, reason: 'wrong customer' }, auth);
+    expect(res.json()).toEqual({
+      outcome: 'voided',
+      invoiceNumber: sale.invoiceNumber,
+      reversedK: 15_000_000,
+    });
+
+    const after = reportsInvoicesResponse.parse(
+      (await app.inject({ method: 'GET', url: '/v1/reports/invoices', headers: auth })).json(),
+    );
+    /* Still in the register, marked, and owed by nobody. A void that removed
+     * the row would look exactly like a deleted invoice. */
+    expect(after.invoices).toHaveLength(1);
+    expect(after.invoices[0]).toMatchObject({ status: 'voided', balanceDueK: 0 });
+    expect(after.outstandingK).toBe(0);
+  });
+});
