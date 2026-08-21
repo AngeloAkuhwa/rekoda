@@ -19,7 +19,7 @@
  * property this file has to remember to preserve.
  */
 import { and, eq, sql } from 'drizzle-orm';
-import { formatDocumentNumber, postSale, type Posting } from '@rekoda/core';
+import { formatDocumentNumber, postSale, reversal, type Posting } from '@rekoda/core';
 import { snapshotHash, type DocumentSnapshot } from '@rekoda/core/documents';
 import type { TenantDb } from '../client.js';
 import { auditEvents, documents } from '../schema/ops.js';
@@ -317,6 +317,89 @@ export async function recordVoidedDocument(
     reason,
     sourceType: 'system',
   });
+}
+
+export type VoidOutcome =
+  | { outcome: 'voided'; invoiceNumber: string; reversedK: number }
+  | { outcome: 'not_found' }
+  | { outcome: 'already_void' }
+  /** Money has been received against it. Credit it, do not void it. */
+  | { outcome: 'has_payments'; paidK: number };
+
+/**
+ * Withdraw an invoice that was issued and should not have been.
+ *
+ * Not a delete. The ledger is append-only and the document sequence is dense
+ * on purpose, so a void leaves the invoice where it is, marks it, and writes
+ * the MIRROR of its original posting. An auditor reading the books sees a
+ * sale and its reversal, which is a different story from a sale that never
+ * happened, and telling those two apart is the reason the rule exists.
+ *
+ * REFUSES an invoice with money against it. That is real practice rather than
+ * caution: reversing the revenue while the cash stays in the account leaves
+ * books that do not describe anything, and what the merchant actually wants
+ * there is a credit note against a refund. An invoice nobody has paid has no
+ * such problem, and it is the case a merchant hits: the wrong customer, the
+ * wrong figure, a duplicate.
+ *
+ * The reversal is built from the invoice rather than looked up, because the
+ * only invoices reachable here are unpaid ones, and `postSale` with nothing
+ * paid is exactly what was written when it was issued. Matching the original
+ * transaction by memo would be one more thing that can drift.
+ */
+export async function voidInvoice(
+  tx: TenantDb,
+  businessId: string,
+  invoiceNumber: string,
+  reason: string,
+  actor: string,
+): Promise<VoidOutcome> {
+  const rows = await tx
+    .select({
+      id: invoices.id,
+      status: invoices.status,
+      totalK: invoices.totalK,
+      paidK: invoices.paidK,
+      vatK: invoices.vatK,
+      sourceType: invoices.sourceType,
+      sourceId: invoices.sourceId,
+    })
+    .from(invoices)
+    .where(and(eq(invoices.businessId, businessId), eq(invoices.invoiceNumber, invoiceNumber)))
+    .limit(1);
+
+  const invoice = rows[0];
+  if (!invoice) return { outcome: 'not_found' };
+  if (invoice.status === 'voided') return { outcome: 'already_void' };
+  if (Number(invoice.paidK) > 0) {
+    return { outcome: 'has_payments', paidK: Number(invoice.paidK) };
+  }
+
+  const totalK = Number(invoice.totalK);
+  const vatK = Number(invoice.vatK);
+  const original = postSale({ memo: `Sale ${invoiceNumber}`, totalK, paidK: 0, vatK });
+  await writePosting(
+    tx,
+    businessId,
+    reversal(original, `Void ${invoiceNumber}`),
+    invoice.sourceType,
+    invoice.sourceId ?? invoiceNumber,
+  );
+
+  /**
+   * `status = 'issued'` in the WHERE is the mutual exclusion. Two operators
+   * clicking void at once would otherwise write two reversals against one
+   * invoice, and the books would show the sale cancelled twice.
+   */
+  const marked = await tx
+    .update(invoices)
+    .set({ status: 'voided', balanceDueK: 0 })
+    .where(and(eq(invoices.id, invoice.id), eq(invoices.status, invoice.status)))
+    .returning({ id: invoices.id });
+  if (marked.length !== 1) return { outcome: 'already_void' };
+
+  await recordVoidedDocument(tx, businessId, invoiceNumber, reason, actor);
+  return { outcome: 'voided', invoiceNumber, reversedK: totalK };
 }
 
 /** Every ledger entry for a business, for the trial-balance check. */

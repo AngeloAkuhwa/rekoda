@@ -420,3 +420,152 @@ describe('tenancy', () => {
     expect(await countOf(bola, 'ledger_entries')).toBe(0);
   });
 });
+
+/**
+ * Voiding an invoice that should never have gone out.
+ *
+ * The claim an accounting tool has to make here is narrow and total: the
+ * books after a void say the sale happened AND was cancelled, and net to the
+ * same place they were before it. Not "the invoice is gone" - that is the one
+ * thing a void must never look like.
+ */
+describe('voiding an invoice', () => {
+  /** The same sale, with nothing paid: the only kind that can be voided. */
+  const unpaidSale = (businessId: string): issueRepo.IssueSaleInput => ({
+    ...theSale(businessId),
+    paidK: 0,
+    balanceDueK: 15_000_000,
+  });
+
+  const netByAccount = async (businessId: string): Promise<Map<string, number>> => {
+    const entries = await withBusiness(db, businessId, (tx) =>
+      issueRepo.ledgerEntriesFor(tx, businessId),
+    );
+    const net = new Map<string, number>();
+    for (const e of entries) {
+      net.set(e.account, (net.get(e.account) ?? 0) + Number(e.debitK) - Number(e.creditK));
+    }
+    return net;
+  };
+
+  it('leaves the books exactly where they were, without deleting anything', async () => {
+    const businessId = await seedBusiness();
+    const sale = await withBusiness(db, businessId, (tx) =>
+      issueRepo.issueSale(tx, unpaidSale(businessId)),
+    );
+
+    const before = await netByAccount(businessId);
+    expect(before.get('ACCOUNTS_RECEIVABLE')).toBe(15_000_000);
+
+    const outcome = await withBusiness(db, businessId, (tx) =>
+      issueRepo.voidInvoice(tx, businessId, sale.invoiceNumber, 'wrong customer', 'user:ada'),
+    );
+    expect(outcome).toMatchObject({ outcome: 'voided', reversedK: 15_000_000 });
+
+    // Every account nets to zero: the reversal cancels the sale exactly.
+    for (const [, amount] of await netByAccount(businessId)) expect(amount).toBe(0);
+
+    /* And BOTH postings are still there. A void that removed the original
+     * would be indistinguishable from a sale that never happened, which is
+     * the story an auditor must never be told by accident. */
+    expect(await countOf(businessId, 'ledger_transactions')).toBe(2);
+    expect(await countOf(businessId, 'invoices')).toBe(1);
+  });
+
+  it('marks the invoice rather than removing it, and clears what is owed', async () => {
+    const businessId = await seedBusiness();
+    const sale = await withBusiness(db, businessId, (tx) =>
+      issueRepo.issueSale(tx, unpaidSale(businessId)),
+    );
+    await withBusiness(db, businessId, (tx) =>
+      issueRepo.voidInvoice(tx, businessId, sale.invoiceNumber, 'duplicate', 'user:ada'),
+    );
+
+    const rows = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ status: string; balance_due_k: string }>(
+        sql`SELECT status, balance_due_k FROM invoices WHERE id = ${sale.invoiceId}::uuid`,
+      ),
+    );
+    const invoice = [...rows][0];
+    expect(invoice?.status).toBe('voided');
+    // Nobody owes anything on a withdrawn invoice, so it leaves the ageing.
+    expect(Number(invoice?.balance_due_k)).toBe(0);
+  });
+
+  it('writes the REASON, because a dense sequence needs its gap explained', async () => {
+    const businessId = await seedBusiness();
+    const sale = await withBusiness(db, businessId, (tx) =>
+      issueRepo.issueSale(tx, unpaidSale(businessId)),
+    );
+    await withBusiness(db, businessId, (tx) =>
+      issueRepo.voidInvoice(tx, businessId, sale.invoiceNumber, 'wrong customer', 'user:ada'),
+    );
+
+    const audit = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ actor: string; reason: string; new_value: { documentNumber: string } }>(
+        sql`SELECT actor, reason, new_value FROM audit_events
+            WHERE business_id = ${businessId}::uuid AND action = 'voided'`,
+      ),
+    );
+    const row = [...audit][0];
+    expect(row?.reason).toBe('wrong customer');
+    expect(row?.actor).toBe('user:ada');
+    expect(row?.new_value.documentNumber).toBe(sale.invoiceNumber);
+  });
+
+  it('REFUSES an invoice money has arrived against', async () => {
+    const businessId = await seedBusiness();
+    // theSale is ₦150,000 with ₦100,000 already paid at the counter.
+    const sale = await withBusiness(db, businessId, (tx) =>
+      issueRepo.issueSale(tx, theSale(businessId)),
+    );
+
+    const outcome = await withBusiness(db, businessId, (tx) =>
+      issueRepo.voidInvoice(tx, businessId, sale.invoiceNumber, 'changed my mind', 'user:ada'),
+    );
+    /* Reversing the revenue while the cash stays in the account leaves books
+     * that describe nothing. The instrument for this is a refund and a credit,
+     * and it is a different one. */
+    expect(outcome).toEqual({ outcome: 'has_payments', paidK: 10_000_000 });
+    expect(await countOf(businessId, 'ledger_transactions')).toBe(1);
+  });
+
+  it('voids once, however many times it is asked', async () => {
+    const businessId = await seedBusiness();
+    const sale = await withBusiness(db, businessId, (tx) =>
+      issueRepo.issueSale(tx, unpaidSale(businessId)),
+    );
+    const voidIt = () =>
+      withBusiness(db, businessId, (tx) =>
+        issueRepo.voidInvoice(tx, businessId, sale.invoiceNumber, 'duplicate', 'user:ada'),
+      );
+
+    expect((await voidIt()).outcome).toBe('voided');
+    expect((await voidIt()).outcome).toBe('already_void');
+    // One reversal, not two: the books cannot cancel one sale twice.
+    expect(await countOf(businessId, 'ledger_transactions')).toBe(2);
+  });
+
+  it('says so plainly when there is no such invoice', async () => {
+    const businessId = await seedBusiness();
+    expect(
+      await withBusiness(db, businessId, (tx) =>
+        issueRepo.voidInvoice(tx, businessId, 'INV-2026-999999', 'typo', 'user:ada'),
+      ),
+    ).toEqual({ outcome: 'not_found' });
+  });
+
+  it('cannot reach another tenant invoice', async () => {
+    const ada = await seedBusiness('Ada Fashion', '+2348100000301');
+    const bola = await seedBusiness('Bola Electronics', '+2348100000302');
+    const sale = await withBusiness(db, ada, (tx) => issueRepo.issueSale(tx, unpaidSale(ada)));
+
+    // Bola's pin, Ada's invoice number. Row-level security answers first.
+    expect(
+      await withBusiness(db, bola, (tx) =>
+        issueRepo.voidInvoice(tx, bola, sale.invoiceNumber, 'not mine', 'user:bola'),
+      ),
+    ).toEqual({ outcome: 'not_found' });
+    expect(await countOf(ada, 'ledger_transactions')).toBe(1);
+  });
+});

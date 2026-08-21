@@ -20,11 +20,13 @@ import {
   billingPlanChangeResponse,
   billingQuoteResponse,
   usageMeterResponse,
+  voidInvoiceResponse,
   verifyOtpResponse,
   type BillingOverviewResponse,
   type BillingPlanChangeResponse,
   type BillingQuoteResponse,
   type MeResponse,
+  type VoidInvoiceResponse,
   type PaymentConnectionResponse,
   type PaymentExceptionsResponse,
   type PaymentsListResponse,
@@ -465,4 +467,23 @@ export async function billingBuyPack(
     expect: [200, 400],
   });
   return status === 200 ? (json as BuyPackOutcome) : null;
+}
+
+/**
+ * Withdraw an invoice. Returns null on a request the API refused outright,
+ * which the caller reports as a sentence rather than an error page.
+ */
+export async function voidInvoice(
+  sessionToken: string,
+  invoiceNumber: string,
+  reason: string,
+): Promise<VoidInvoiceResponse | null> {
+  const { status, json } = await call({
+    method: 'POST',
+    path: '/v1/reports/invoices/void',
+    body: { invoiceNumber, reason },
+    headers: { authorization: `Bearer ${sessionToken}` },
+    expect: [200, 400],
+  });
+  return status === 200 ? voidInvoiceResponse.parse(json) : null;
 }

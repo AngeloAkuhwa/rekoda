@@ -9,9 +9,12 @@
  */
 import {
   BadRequestException,
+  Body,
   Controller,
   Get,
+  HttpCode,
   Inject,
+  Post,
   Query,
   Req,
   Res,
@@ -62,8 +65,10 @@ import type {
   ReportsReceiptsResponse,
   ReportsStockResponse,
   ReportsStatementsResponse,
+  VoidInvoiceResponse,
 } from '@rekoda/contracts';
-import { reportsRepo, stockRepo, withBusiness, type Db } from '@rekoda/db';
+import { voidInvoiceRequest } from '@rekoda/contracts';
+import { issueRepo, reportsRepo, stockRepo, withBusiness, type Db } from '@rekoda/db';
 import { SessionGuard, type AuthedRequest } from '../auth/session.guard.js';
 import { DB } from '../db/db.module.js';
 
@@ -273,6 +278,37 @@ export class ReportsController {
   }
 
   /** The invoice register — numbers and figures only, never a customer name. */
+  /**
+   * Withdraw an invoice that was issued and should not have been.
+   *
+   * A POST on the reports surface because this is where the register lives,
+   * and the register is where a merchant is looking when they notice. The
+   * write itself is `voidInvoice`, which reverses the posting rather than
+   * editing anything: this controller decides who may ask, as every other
+   * method here does, and decides nothing else.
+   */
+  @Post('invoices/void')
+  @HttpCode(200)
+  async voidInvoice(
+    @Req() request: AuthedRequest,
+    @Body() body: unknown,
+  ): Promise<VoidInvoiceResponse> {
+    const parsed = voidInvoiceRequest.safeParse(body);
+    if (!parsed.success) {
+      throw new BadRequestException('invoiceNumber and a reason of at least 4 characters');
+    }
+    const businessId = request.auth!.businessId;
+    return withBusiness(this.db, businessId, (tx) =>
+      issueRepo.voidInvoice(
+        tx,
+        businessId,
+        parsed.data.invoiceNumber,
+        parsed.data.reason,
+        `user:${request.auth!.userId}`,
+      ),
+    );
+  }
+
   @Get('invoices')
   async invoices(@Req() request: AuthedRequest): Promise<ReportsInvoicesResponse> {
     const businessId = request.auth!.businessId;

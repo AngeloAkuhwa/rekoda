@@ -1396,3 +1396,20 @@ button,
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: var(--rk-text-xs);
 }
+
+/* Voiding an invoice: present, but folded away. A destructive control that
+   sits open beside a register invites the tap it exists to prevent. */
+.rk-void {
+  margin-top: var(--rk-space-4);
+  border-top: 1px solid var(--rk-border);
+  padding-top: var(--rk-space-3);
+}
+.rk-void summary {
+  cursor: pointer;
+  font-size: var(--rk-text-sm);
+  font-weight: 600;
+  color: var(--rk-text-muted);
+}
+.rk-void summary:hover {
+  color: var(--rk-accent);
+}

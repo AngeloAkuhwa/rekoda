@@ -223,3 +223,26 @@ export const reportsStockResponse = z.object({
   outOfStock: z.number().int().nonnegative(),
 });
 export type ReportsStockResponse = z.infer<typeof reportsStockResponse>;
+
+/**
+ * Withdrawing an invoice that should not have been issued.
+ *
+ * A reason is REQUIRED and is not decoration: the document sequence stays
+ * dense on purpose, and a gap an auditor cannot explain is what they read as
+ * a deleted invoice. The reason is what explains it.
+ */
+export const voidInvoiceRequest = z.object({
+  invoiceNumber: z.string().min(1),
+  reason: z.string().trim().min(4).max(200),
+});
+
+export const voidInvoiceResponse = z.discriminatedUnion('outcome', [
+  z.object({ outcome: z.literal('voided'), invoiceNumber: z.string(), reversedK: kobo }),
+  z.object({ outcome: z.literal('not_found') }),
+  z.object({ outcome: z.literal('already_void') }),
+  /** Money arrived against it. A credit note is the right instrument, not a void. */
+  z.object({ outcome: z.literal('has_payments'), paidK: kobo }),
+]);
+
+export type VoidInvoiceRequest = z.infer<typeof voidInvoiceRequest>;
+export type VoidInvoiceResponse = z.infer<typeof voidInvoiceResponse>;

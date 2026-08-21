@@ -6,9 +6,9 @@ points to. Keep it updated at the end of every working session — it is the
 project's memory, and it lives in the repo so it can never be lost with a
 chat.
 
-**Last updated:** 21 August 2026 · M4 self-service billing built end to end
-(through PR #74). Not launched: see "What is still missing" below, which is
-now four deployments and a set of company facts rather than code.
+**Last updated:** 21 August 2026 · M4 complete end to end (through PR #79).
+Not launched: see "What is still missing" below, which is now three WhatsApp
+templates, two deployments and a set of company facts rather than code.
 
 ---
 
@@ -183,6 +183,74 @@ says is due", not "delete a business". `/refunds` publishes the matrix.
 tokenisation, then the model, with NO raw-image fallback: a failed extraction
 answers the merchant and reaches no model at all, and a test asserts that
 rather than a comment claiming it.
+
+**The billing loop closes (PRs #75, #76).** `sweepRenewals` raises the charge
+when a cycle ends and starts the grace clock AT the renewal date, so a sweep
+that runs late neither shortens the month nor lengthens the grace. It
+deliberately takes no money: card-on-file needs an authorization from a
+previous payment and §47 means there has been none, so the merchant is billed
+and the grace period they already have takes over. A subscription payment now
+has a path at all - `billing.process`, split from `payment.process` IN THE
+PUMP so our revenue can never meet their ledger. A partial payment does not
+unlock a plan; an overpayment does, and the excess is a human's decision.
+
+**Two customer records for one person, and the rule Angelo chose (PR #77).**
+The gateway resolves each identity independently, so a message naming
+somebody by phone AND email minted two customers. Merging automatically was
+refused as a design: "Ada 0803..., send it to accounts@bigco.com" is the same
+shape to a regular expression, and a wrong merge puts one customer's address
+on another's invoice. The merchant is ASKED, inside the sale preview they are
+already reading, and one `yes` covers both. It only fires on a real split -
+exactly two customers, at least one created by that message, on a sale - and
+the proposal is stored only when the question actually reached them, so a CG1
+arithmetic question cannot lead to a link nobody was asked about.
+
+**The operator can refund and can see who asked to pay (PR #78).**
+`GET /v1/ops/business/:id` and `POST /v1/ops/refund`. The refund RECORDS and
+does not move money, `reason` is one of ADR 0024's five published rows rather
+than free text, and the plan is deliberately untouched: the matrix refunds
+money in several situations that all leave the merchant with the period they
+paid for.
+
+**An invoice can be withdrawn (PR #79).** Not deleted: the invoice stays
+marked `voided`, the books get the mirror of its posting, and the reason and
+actor go in the audit trail. Every account nets to zero and BOTH transactions
+remain, because a sale and its reversal is a different story from a sale that
+never happened. Refuses any invoice money has arrived against - that wants a
+refund and a credit, which is a different instrument.
+
+**A note on how the last six were found.** By grepping for exported functions
+with no production caller. Every hit was a missing surface rather than dead
+code: `dueForRenewal`, `applySettledCharge`, `businessForCharge`,
+`refundCharge`, `upgradeRequestsFor` and `recordVoidedDocument`. The script is
+worth re-running after any large slice; a function written and never called is
+usually a feature somebody designed and then could not reach.
+
+**What that sweep still shows, triaged and NOT yet built.** None of these is
+a bug today; each is a surface that does not exist. Listed so the next session
+inherits the triage instead of repeating it:
+
+- **A whole magic-link path** (`issueMagicLink`, `validateMagicLink`,
+  `insertMagicLink`, `findMagicLinkByHash`, `consumeMagicLink`, and the
+  `magic_links` table). Sign-in is OTP over WhatsApp and always has been.
+  This looks like the intended accountant or delegate invite, beside
+  `addMembership`, which is also uncalled. Decide whether delegates are
+  invited by link before building either.
+- **No expenses register.** `expensesFor` has no page. Money in has two
+  registers (invoices, receipts) and money out has none, which is the most
+  visible remaining gap against the QuickBooks and HelloBooks bar.
+- **No chat-history surface** (`threadFor`, `messagesFor`, `draftsFor`). A
+  merchant cannot read back what they told Rekoda, only what it recorded.
+- **Ops visibility gaps**: `jobsForBusiness`, `callsToday`, `usageTotals`,
+  `unprocessedEvents`. The exception queue that the Paystack pump's comments
+  describe is still only readable as a count.
+- **`addIdentityFacet` remains uncalled**, and deliberately. PR #77 joins two
+  customer records by UPDATE-ing the facet's `customer_id` rather than
+  inserting a new facet, so the vault is never opened by a merge. The
+  function is the right tool for a future "add this customer's email"
+  flow and the wrong one for linking.
+- **`settlementCipherFor`** reads back the encrypted settlement account and
+  nothing needs to yet. It stays write-only until something does.
 
 **What is still missing before merchants.** Almost none of it is code:
 
