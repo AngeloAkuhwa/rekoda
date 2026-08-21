@@ -138,3 +138,33 @@ export const setupStateResponse = z.object({
   expiresAt: z.string(),
 });
 export type SetupStateResponse = z.infer<typeof setupStateResponse>;
+
+/* ─────────────────────────── who can see the books ──────────────────────── */
+
+/**
+ * Roles an owner may hand out.
+ *
+ * `owner` is deliberately absent: ownership is established when the business
+ * is created and there is no path here that mints a second one. Two owners is
+ * not a richer permission model, it is an argument nobody can settle.
+ */
+export const invitableRole = z.enum(['accountant', 'delegate']);
+export type InvitableRole = z.infer<typeof invitableRole>;
+
+export const inviteMemberRequest = z.object({
+  phone: phoneSchema,
+  role: invitableRole,
+});
+export type InviteMemberRequest = z.infer<typeof inviteMemberRequest>;
+
+export const teamMember = z.object({
+  userId: z.string().uuid(),
+  /** E.164. The only identifier an owner has for somebody they invited. */
+  phone: z.string(),
+  role: z.string(),
+  addedAt: z.string(),
+});
+export type TeamMember = z.infer<typeof teamMember>;
+
+export const teamResponse = z.object({ members: z.array(teamMember).max(50) });
+export type TeamResponse = z.infer<typeof teamResponse>;

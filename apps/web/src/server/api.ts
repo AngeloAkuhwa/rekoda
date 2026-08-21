@@ -8,6 +8,7 @@ import {
   reportsCashflowResponse,
   reportsDebtorsResponse,
   reportsInvoicesResponse,
+  teamResponse,
   reportsOverviewResponse,
   reportsReceiptsResponse,
   reportsStatementsResponse,
@@ -24,6 +25,7 @@ import {
   type ReportsCashflowResponse,
   type ReportsDebtorsResponse,
   type ReportsInvoicesResponse,
+  type TeamResponse,
   type ReportsOverviewResponse,
   type ReportsReceiptsResponse,
   type ReportsStatementsResponse,
@@ -278,6 +280,56 @@ export async function reportsActivity(sessionToken: string): Promise<ReportsActi
     expect: [200],
   });
   return reportsActivityResponse.parse(json);
+}
+
+/**
+ * The team, and changes to it.
+ *
+ * Owner only at the API, so a non-owner reaching these gets a 403 rather
+ * than an empty list: "you cannot" and "there is nobody" are different
+ * answers and the page says which.
+ */
+export async function businessMembers(sessionToken: string): Promise<TeamResponse> {
+  const { json } = await call({
+    method: 'GET',
+    path: '/v1/businesses/members',
+    headers: { authorization: `Bearer ${sessionToken}` },
+    expect: [200],
+  });
+  return teamResponse.parse(json);
+}
+
+export async function inviteBusinessMember(
+  sessionToken: string,
+  phone: string,
+  role: 'accountant' | 'delegate',
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const { status, json } = await call({
+    method: 'POST',
+    path: '/v1/businesses/members',
+    headers: { authorization: `Bearer ${sessionToken}` },
+    body: { phone, role },
+    expect: [201, 400, 409],
+  });
+  if (status === 201) return { ok: true };
+  const message = (json as { message?: string })?.message;
+  return {
+    ok: false,
+    reason:
+      status === 409
+        ? 'That number already has access to this business.'
+        : (message ?? 'That does not look like a Nigerian phone number.'),
+  };
+}
+
+export async function removeBusinessMember(sessionToken: string, userId: string): Promise<boolean> {
+  const { json } = await call({
+    method: 'DELETE',
+    path: `/v1/businesses/members/${encodeURIComponent(userId)}`,
+    headers: { authorization: `Bearer ${sessionToken}` },
+    expect: [200, 400],
+  });
+  return (json as { removed?: boolean })?.removed === true;
 }
 
 export async function reportsInvoices(sessionToken: string): Promise<ReportsInvoicesResponse> {
