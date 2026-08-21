@@ -397,20 +397,25 @@ export async function voidExpense(
     sourceType: 'system',
   });
 
-  const moved = await tx
-    .select({ id: inventoryMovements.id })
-    .from(inventoryMovements)
-    .where(
-      and(
-        eq(inventoryMovements.businessId, businessId),
-        eq(inventoryMovements.reason, 'purchase'),
-        eq(inventoryMovements.sourceType, entry.sourceType),
-        entry.sourceId
-          ? eq(inventoryMovements.sourceId, entry.sourceId)
-          : sql`${inventoryMovements.sourceId} IS NULL`,
-      ),
-    )
-    .limit(1);
+  /* Only a purchase can have brought stock in, and only one with a source to
+   * match on. Asking without those two conditions would let an unrelated
+   * movement answer for this entry, and a merchant told their count needs
+   * checking when it does not is a merchant who stops reading the sentence. */
+  const moved =
+    kind === 'purchase' && entry.sourceId
+      ? await tx
+          .select({ id: inventoryMovements.id })
+          .from(inventoryMovements)
+          .where(
+            and(
+              eq(inventoryMovements.businessId, businessId),
+              eq(inventoryMovements.reason, 'purchase'),
+              eq(inventoryMovements.sourceType, entry.sourceType),
+              eq(inventoryMovements.sourceId, entry.sourceId),
+            ),
+          )
+          .limit(1)
+      : [];
 
   return {
     outcome: 'voided',
