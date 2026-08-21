@@ -21,6 +21,7 @@ import { inboundMessageHandler, type InboundMessageDeps } from './inbound-messag
 import { renderDocumentHandler } from './render-document.handler.js';
 import { deliverDocumentHandler } from './deliver-document.handler.js';
 import { processPaymentEventHandler } from './process-payment-event.handler.js';
+import { processBillingChargeHandler } from './process-billing-charge.handler.js';
 import { PaymentsModule } from '../payments/payments.module.js';
 import { PaymentIntentsService } from '../payments/payment-intents.service.js';
 import { PAYMENT_PROVIDER, type PaymentProviderPort } from '../payments/provider.port.js';
@@ -81,6 +82,10 @@ export function buildRunner(
   runner.register(
     JobKind.ProcessPaymentEvent,
     processPaymentEventHandler({ provider: deps.paymentProvider, config: deps.config }),
+  );
+  runner.register(
+    JobKind.ProcessBillingCharge,
+    processBillingChargeHandler({ provider: deps.paymentProvider, config: deps.config }),
   );
   return runner;
 }

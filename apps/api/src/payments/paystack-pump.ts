@@ -18,9 +18,16 @@
  * is singleton-keyed on the event id, so two pumps racing produce one job.
  */
 import { Logger } from '@nestjs/common';
-import { PAYMENT_REFERENCE_PATTERN } from '@rekoda/core';
+import { PAYMENT_REFERENCE_PATTERN, SUBSCRIPTION_REFERENCE_PATTERN } from '@rekoda/core';
 import { paystackWebhookBody, summarisePaystackEvent } from '@rekoda/contracts';
-import { events, jobsRepo, paymentsHub, withBusiness, type Db } from '@rekoda/db';
+import {
+  events,
+  jobsRepo,
+  paymentsHub,
+  subscriptionsRepo,
+  withBusiness,
+  type Db,
+} from '@rekoda/db';
 import { openPayload } from '../privacy/payload-vault.js';
 import { JobKind } from '../jobs/queue.service.js';
 
@@ -60,6 +67,36 @@ export async function pumpPaystackEvents(deps: PumpDeps, limit = 50): Promise<nu
       continue;
     }
     const reference = opened.reference;
+
+    /**
+     * A merchant paying REKODA, not their customer paying them.
+     *
+     * Resolved and enqueued here rather than downstream, because the two
+     * kinds of money must not meet: `billing.process` records our revenue,
+     * `payment.process` books theirs, and the split is made at the earliest
+     * point where the difference is knowable rather than by a branch inside
+     * a handler that already has a merchant's ledger open.
+     */
+    if (SUBSCRIPTION_REFERENCE_PATTERN.test(reference)) {
+      const owner = await subscriptionsRepo.businessForCharge(deps.workerDb, reference);
+      if (!owner) {
+        await events.markProcessed(deps.workerDb, event.id, 'unknown_reference');
+        log.warn('a Paystack event carried a Rekoda-shaped subscription reference with no charge');
+        continue;
+      }
+      if (!(await events.attributeEvent(deps.workerDb, event.id, owner))) continue;
+      await withBusiness(deps.appDb, owner, (tx) =>
+        jobsRepo.enqueue(tx, {
+          businessId: owner,
+          kind: JobKind.ProcessBillingCharge,
+          payload: { eventId: event.id },
+          singletonKey: `billevent:${event.id}`,
+        }),
+      );
+      enqueued += 1;
+      continue;
+    }
+
     if (!PAYMENT_REFERENCE_PATTERN.test(reference)) {
       // A reference, but not OURS — somebody else's traffic on a shared
       // Paystack account, or a manual dashboard charge. Recorded, not ours.

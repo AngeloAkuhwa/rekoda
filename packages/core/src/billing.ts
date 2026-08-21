@@ -288,3 +288,13 @@ export function subscriptionReference(at: Date, random: RandomBytes): string {
 export function addOnReference(at: Date, random: RandomBytes): string {
   return mintReference('PACK', at, random);
 }
+
+/**
+ * What one of ours looks like coming back from a provider.
+ *
+ * Separate from `PAYMENT_REFERENCE_PATTERN` and deliberately so: a merchant's
+ * customer paying an invoice and a merchant paying US arrive on the same
+ * webhook and must not be confused. One books into their ledger; the other
+ * must never touch it.
+ */
+export const SUBSCRIPTION_REFERENCE_PATTERN = /^RKD-(SUB|PACK)-\d{8}-[0-9A-HJKMNP-TV-Z]{6}$/;
