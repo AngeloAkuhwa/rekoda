@@ -9,6 +9,7 @@ export * as marginRepo from './repos/margin.js';
 export * as conversationsRepo from './repos/conversations.js';
 export * as quotaRepo from './repos/quota.js';
 export * as issueRepo from './repos/issue.js';
+export * as bankRepo from './repos/bank.js';
 export * as closeRepo from './repos/close.js';
 export * as journalRepo from './repos/journal.js';
 export * as openingRepo from './repos/opening.js';

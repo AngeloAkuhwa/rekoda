@@ -301,6 +301,43 @@ export const ledgerEntries = pgTable(
 
 /* ── reconciliation (spec §25) ── */
 
+/**
+ * What the merchant's bank says happened (migration 0036).
+ *
+ * The independent half of a reconciliation. Rekoda's books are built from
+ * what a merchant told it; this is what actually moved, according to somebody
+ * with no reason to agree.
+ *
+ * Append-only by grant, like the ledger: a statement line edited to agree
+ * with the books is no longer evidence of anything.
+ */
+export const bankStatementLines = pgTable(
+  'bank_statement_lines',
+  {
+    id: id(),
+    businessId: businessId(),
+    /** The day the bank posted it. A day, because a statement reports days. */
+    postedOn: date('posted_on').notNull(),
+    /** Signed kobo. Positive is money INTO the account. */
+    amountK: kobo('amount_k').notNull(),
+    /**
+     * The bank's own words, which carry counterparty names.
+     *
+     * Stored because it is what makes a line matchable to an invoice, shown
+     * to the merchant who downloaded it, and never sent to a model.
+     */
+    narration: text('narration').notNull().default(''),
+    bankRef: text('bank_ref'),
+    /** Stops a re-upload duplicating. Computed in @rekoda/core. */
+    fingerprint: text('fingerprint').notNull(),
+    importedAt: timestamp('imported_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('bank_lines_fingerprint_ux').on(t.businessId, t.fingerprint),
+    index('bank_lines_business_day_ix').on(t.businessId, t.postedOn),
+  ],
+);
+
 export const reconciliations = pgTable(
   'reconciliations',
   {
