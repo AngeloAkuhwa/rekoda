@@ -101,6 +101,18 @@ export const RecordPurchase = z.object({
   description: text(200),
   amount: naira,
   reportedPayment: naira.nullable(),
+  /**
+   * The stock that arrived, when the merchant named a countable thing and a
+   * number for it. "bought 10 crates of ankara for 50k" is both a payment and
+   * a delivery, and until these existed only the payment was recorded.
+   *
+   * Both nullable and both required together: a quantity with no product is
+   * not a delivery anybody can count, and a product with no quantity is not a
+   * number. A purchase of a service, or of something the merchant described
+   * only in prose, leaves both null and moves no stock, which is correct.
+   */
+  productMention: text(120).nullable(),
+  quantity: quantity.nullable(),
 });
 
 export const AdjustInventory = z.object({

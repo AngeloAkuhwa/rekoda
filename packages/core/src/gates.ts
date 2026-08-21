@@ -170,6 +170,9 @@ export interface PurchaseLike {
   readonly amount: number;
   readonly supplierMention?: string | null;
   readonly reportedPayment?: number | null;
+  /** Stock that arrived with the purchase, when the merchant counted it. */
+  readonly productMention?: string | null;
+  readonly quantity?: number | null;
 }
 
 /**
@@ -223,6 +226,11 @@ export function gatePurchase(purchase: PurchaseLike): SpendGate {
   const lines: string[] = ['Please check this before I save it:', ''];
   lines.push(`Stock: ${purchase.description}`);
   if (purchase.supplierMention) lines.push(`From: ${purchase.supplierMention}`);
+  /* The delivery, named on its own line when the merchant counted it. A
+   * purchase that moves stock and does not say so in the preview is a stock
+   * change nobody confirmed. */
+  const arriving = purchaseArrival(purchase);
+  if (arriving) lines.push(`Adding to stock: ${arriving.quantity} ${arriving.productMention}`);
   lines.push(`*Amount: ${formatKobo(amountK)}*`);
   if (owedK > 0) {
     lines.push(`Paid: ${paidK > 0 ? formatKobo(paidK) : 'nothing yet'}`);
@@ -396,4 +404,21 @@ export function gateStockChange(change: StockChangeLike, onHand: number): StockG
   lines.push(`*Now: ${onHandAfter}*`);
   lines.push('', 'Reply *yes* to save it, or tell me what to change.');
   return { gate: 'CG2', preview: lines.join('\n'), quantityDelta: delta, onHandAfter };
+}
+
+/**
+ * The stock a purchase brings in, or null when it brings none.
+ *
+ * Both halves or neither: a quantity with no product is not a delivery
+ * anybody can count, and a product with no quantity is not a number. A
+ * purchase of a service, or one the merchant described only in prose, moves
+ * no stock, and that is the ordinary case rather than a failure.
+ */
+export function purchaseArrival(
+  purchase: PurchaseLike,
+): { productMention: string; quantity: number } | null {
+  const name = purchase.productMention?.trim();
+  const quantity = Math.trunc(purchase.quantity ?? 0);
+  if (!name || quantity <= 0) return null;
+  return { productMention: name, quantity };
 }

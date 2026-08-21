@@ -131,12 +131,13 @@ real database in CI:
   previewed and confirmed like every write), asks "stock" for what is left
   free of any model call, and a confirmed sale takes its lines off the shelf
   in the same transaction as the invoice. The dashboard has the same register.
-  **A recorded PURCHASE does not move stock**, and this is a contract limit
-  rather than an oversight: `RecordPurchase` carries a free-text description
-  and an amount, with no product or quantity to move. Giving it one means
-  changing the command contract and the model prompt, and until then the
-  merchant adds the arrival themselves. The stock page says so in as many
-  words rather than implying a count that maintains itself.
+  A recorded PURCHASE restocks the shelf too, in the same transaction as the
+  money, but only when the merchant named a countable thing and a number for
+  it: `RecordPurchase` carries a nullable `productMention` and `quantity`, and
+  a purchase described only in prose ("restocked the shop") or a purchase of
+  a service moves nothing. The prompt is explicit that a quantity must never
+  be inferred from an amount, because 50k of ankara is not 50 crates and a
+  guess there becomes a stock count the merchant never took.
 - **Margin.** `GET /v1/ops/margin?period=YYYY-MM` reads what `usage_events`
   has been collecting since metering shipped: plan revenue against provider
   cost, per business and per provider, for one Lagos billing month. Same

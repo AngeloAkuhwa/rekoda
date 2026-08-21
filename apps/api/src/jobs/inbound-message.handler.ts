@@ -9,6 +9,7 @@ import {
   gatePurchase,
   gateSale,
   gateStockChange,
+  purchaseArrival,
   isSaleSource,
   looksLikeCorrection,
   replies,
@@ -831,6 +832,32 @@ async function confirmPurchase(
     sourceType: 'chat',
     sourceId: draftId,
   });
+
+  /**
+   * A purchase is a delivery too, when the merchant counted one.
+   *
+   * Same transaction as the money, so a shop can never hold the payment
+   * without the goods. Only when they named a countable thing AND a number:
+   * inferring a quantity from an amount would put a stock count in their
+   * books that nobody took.
+   */
+  const arriving = purchaseArrival(command as never);
+  if (arriving) {
+    const product = await stockRepo.findOrCreateProduct(tx, businessId, arriving.productMention);
+    await stockRepo.recordMovement(tx, {
+      businessId,
+      productId: product.id,
+      delta: arriving.quantity,
+      reason: 'purchase',
+      sourceType: 'chat',
+      sourceId: draftId,
+    });
+    return replies.purchaseSaved(gate.amountK, recorded.owedK, {
+      name: product.name,
+      onHand: product.onHand + arriving.quantity,
+    });
+  }
+
   return replies.purchaseSaved(gate.amountK, recorded.owedK);
 }
 
