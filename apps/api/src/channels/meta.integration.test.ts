@@ -2073,6 +2073,150 @@ describe('a voice note', () => {
 });
 
 /**
+ * One person, two records, and the question that joins them.
+ *
+ * A message naming somebody by phone AND email used to mint two customers
+ * silently. Merging them automatically was never an option: "Ada 0803...,
+ * send it to accounts@bigco.com" is the same shape to a regular expression,
+ * and guessing would put one customer's address on another's invoice.
+ *
+ * So the merchant is asked, inside the preview they are already reading, and
+ * one `yes` covers the sale and the link. What these tests pin is that the
+ * question is really asked, that it is only asked where a `yes` would answer
+ * it, and that nothing is joined without it.
+ */
+describe('two records for one person', () => {
+  const A_SALE_TO_TOKEN = {
+    intent: 'RecordSale',
+    customer: { kind: 'token', token: 'CUSTOMER_ONE' },
+    items: [{ name: 'wig', quantity: 3, unitPrice: 50_000 }],
+    statedTotal: 150_000,
+    reportedPayment: 0,
+    paymentMethod: 'transfer',
+    discount: null,
+    deliveryFee: null,
+    dueDescription: null,
+  };
+
+  async function seedMerchant(phone: string) {
+    const user = await identity.upsertUserByPhone(db, phone);
+    return identity.createBusinessWithOwner(db, {
+      name: 'Ada Fashion',
+      businessType: null,
+      ownerUserId: user.id,
+    });
+  }
+
+  async function drain() {
+    const runner = buildRunner(workerDb, db, deps);
+    let worked = await runner.runOnce();
+    while (worked) worked = await runner.runOnce();
+  }
+
+  /**
+   * How many customers this pair of facets resolves to, asked the way the
+   * product asks: by tokenising them again. Counting rows would prove the
+   * same thing about the database; this proves it about the merchant, whose
+   * complaint was seeing one person twice.
+   */
+  const distinctCustomers = async (businessId: string): Promise<number> => {
+    const { text } = await deps.gateway.tokenise(
+      businessId,
+      'about 08031234567 and ada@example.com',
+    );
+    return new Set([...text.matchAll(/CUSTOMER_[0-9A-Z]{3}/g)].map((m) => m[0])).size;
+  };
+
+  it('asks in the preview, naming what the merchant actually typed', async () => {
+    await seedMerchant('+2348031234567');
+    stubTransport.replyWith(A_SALE_TO_TOKEN);
+
+    await post(
+      messagePayload(
+        '2348031234567',
+        'wamid.L1',
+        'Ada 08031234567 ada@example.com bought 3 wigs for 150k',
+      ),
+    );
+    await drain();
+
+    /* Rehydrated on the way out, like every other reply that names a
+     * customer: what they read is the number and the address they typed. */
+    expect(stubSender.lastText).toContain('same customer');
+    expect(stubSender.lastText).toContain('08031234567');
+    expect(stubSender.lastText).toContain('ada@example.com');
+    // And it is still a preview: nothing has been written.
+    expect(stubSender.lastText).toContain('Reply *yes*');
+  });
+
+  it('joins them on yes, leaving ONE customer holding BOTH facets', async () => {
+    const business = await seedMerchant('+2348031234567');
+    stubTransport.replyWith(A_SALE_TO_TOKEN);
+
+    await post(
+      messagePayload(
+        '2348031234567',
+        'wamid.L2',
+        'Ada 08031234567 ada@example.com bought 3 wigs for 150k',
+      ),
+    );
+    await drain();
+    expect(await distinctCustomers(business.id)).toBe(2);
+
+    await post(messagePayload('2348031234567', 'wamid.L2-yes', 'yes'));
+    await drain();
+
+    // One person, one token, whichever way the merchant refers to them.
+    expect(await distinctCustomers(business.id)).toBe(1);
+    // And the sale the merchant actually asked for still happened.
+    expect(await invoiceCount(business.id)).toBe(1);
+  });
+
+  it('joins nothing when the merchant says no', async () => {
+    const business = await seedMerchant('+2348031234567');
+    stubTransport.replyWith(A_SALE_TO_TOKEN);
+
+    await post(
+      messagePayload(
+        '2348031234567',
+        'wamid.L3',
+        'Ada 08031234567 ada@example.com bought 3 wigs for 150k',
+      ),
+    );
+    await drain();
+
+    await post(messagePayload('2348031234567', 'wamid.L3-no', 'no'));
+    await drain();
+
+    // Two records, and no sale: `no` refuses the whole preview.
+    expect(await distinctCustomers(business.id)).toBe(2);
+    expect(await invoiceCount(business.id)).toBe(0);
+  });
+
+  it('does not ask on an expense, where a yes would not be about a customer', async () => {
+    await seedMerchant('+2348031234567');
+    stubTransport.replyWith({
+      intent: 'RecordExpense',
+      description: 'diesel',
+      amount: 12_000,
+      category: 'utilities',
+      paymentMethod: 'cash',
+    });
+
+    await post(
+      messagePayload(
+        '2348031234567',
+        'wamid.L4',
+        'paid 12k for diesel, tell 08031234567 and ada@example.com',
+      ),
+    );
+    await drain();
+
+    expect(stubSender.lastText).not.toContain('same customer');
+  });
+});
+
+/**
  * A photograph of a receipt (ADR 0024, decision C9).
  *
  * The pipeline is photo, self-hosted OCR, PII tokenisation, then a model, and

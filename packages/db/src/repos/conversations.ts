@@ -140,6 +140,12 @@ export interface DraftInput {
   /** Tokenised content only — this is verbatim what the model produced. */
   command: unknown;
   model: string | null;
+  /**
+   * A proposal to join two customer records, if this message split one person
+   * into two. Confirmed by the same `yes` that confirms the command, because
+   * it is the same preview the merchant is reading.
+   */
+  identityLink?: unknown;
 }
 
 export interface DraftRow {
@@ -147,6 +153,7 @@ export interface DraftRow {
   intent: string;
   state: string;
   command: unknown;
+  identityLink?: unknown;
 }
 
 /**
@@ -169,6 +176,7 @@ export async function recordDraft(
       intent: draft.intent,
       command: draft.command as never,
       model: draft.model,
+      identityLink: (draft.identityLink ?? null) as never,
     })
     .onConflictDoNothing({ target: [commandDrafts.conversationMessageId] })
     .returning({ id: commandDrafts.id });
@@ -262,6 +270,7 @@ export async function pendingDraft(tx: TenantDb, businessId: string): Promise<Dr
       intent: commandDrafts.intent,
       state: commandDrafts.state,
       command: commandDrafts.command,
+      identityLink: commandDrafts.identityLink,
     })
     .from(commandDrafts)
     .where(and(eq(commandDrafts.businessId, businessId), eq(commandDrafts.state, 'pending')))

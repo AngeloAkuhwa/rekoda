@@ -9,7 +9,7 @@
  * Both tables are under row-level security, so every read and write here goes
  * through a tenant pin.
  */
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import type { Db, TenantDb } from '../client.js';
 import { withBusiness } from '../client.js';
 import { customerIdentities, customers } from '../schema/privacy.js';
@@ -259,4 +259,55 @@ export async function eraseAllIdentities(
   });
 
   return deleted.length;
+}
+
+/**
+ * Join two customer records the merchant has confirmed are one person.
+ *
+ * The orphan's identity facets move onto the survivor and the orphan row goes.
+ * An UPDATE rather than a delete-and-reinsert, so the ciphertext is never
+ * decrypted to be moved: the vault is not opened by a merge.
+ *
+ * REFUSES when the orphan has any history. A record with invoices, payments
+ * or orders against it needs those moved too, and moving a merchant's
+ * financial history is not something a `yes` in a chat should trigger. This
+ * only ever joins a record created moments ago in the same message, which is
+ * the split it exists to undo.
+ *
+ * Returns false when the merge was refused or either record has gone, which
+ * the caller reports plainly rather than retrying: neither is transient.
+ */
+export async function linkCustomers(
+  tx: TenantDb,
+  businessId: string,
+  survivorId: string,
+  orphanId: string,
+): Promise<boolean> {
+  if (survivorId === orphanId) return false;
+
+  const rows = await tx.execute<{ history: number }>(sql`
+    SELECT (
+      (SELECT count(*) FROM invoices WHERE business_id = ${businessId}::uuid AND customer_id = ${orphanId}::uuid)
+      + (SELECT count(*) FROM payments WHERE business_id = ${businessId}::uuid AND customer_id = ${orphanId}::uuid)
+      + (SELECT count(*) FROM orders WHERE business_id = ${businessId}::uuid AND customer_id = ${orphanId}::uuid)
+      + (SELECT count(*) FROM payment_intents WHERE business_id = ${businessId}::uuid AND customer_id = ${orphanId}::uuid)
+    )::int AS history
+  `);
+  if (Number([...rows][0]?.history ?? 1) > 0) return false;
+
+  const survivor = await tx.execute<{ id: string }>(sql`
+    SELECT id FROM customers WHERE business_id = ${businessId}::uuid AND id = ${survivorId}::uuid
+  `);
+  if ([...survivor].length !== 1) return false;
+
+  await tx.execute(sql`
+    UPDATE customer_identities SET customer_id = ${survivorId}::uuid
+    WHERE business_id = ${businessId}::uuid AND customer_id = ${orphanId}::uuid
+  `);
+  const gone = await tx.execute<{ id: string }>(sql`
+    DELETE FROM customers
+    WHERE business_id = ${businessId}::uuid AND id = ${orphanId}::uuid
+    RETURNING id
+  `);
+  return [...gone].length === 1;
 }

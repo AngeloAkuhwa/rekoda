@@ -89,6 +89,57 @@ describe('what leaves, and what does not', () => {
     expect(new Set(found).size).toBe(1);
   });
 
+  it('still gives a phone and an email their own records, and PROPOSES a link', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348060000001');
+    const { text, link } = await gateway.tokenise(
+      businessId,
+      'Ada 08031234567 ada@example.com bought 3 wigs',
+    );
+
+    /* Not merged. "Ada 0803..., send it to accounts@bigco.com" is the same
+     * sentence to a regular expression, and guessing would put one customer's
+     * address on another customer's invoice. */
+    const found = [...text.matchAll(/CUSTOMER_[0-9A-Z]{3}/g)].map((m) => m[0]);
+    expect(new Set(found).size).toBe(2);
+
+    // But the split is REPORTED, so the merchant can be asked about it.
+    expect(link).not.toBeNull();
+    expect(link!.survivorToken).not.toBe(link!.orphanToken);
+    // A phone is the identity anchor everywhere else here, so it survives.
+    expect(text.indexOf(link!.survivorToken)).toBeLessThan(text.indexOf(link!.orphanToken));
+  });
+
+  it('proposes nothing for an ordinary one-customer message', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348060000001');
+    const { link } = await gateway.tokenise(businessId, 'Ada 08031234567 bought 3 wigs');
+    expect(link).toBeNull();
+  });
+
+  it('proposes nothing when both customers are already known', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348060000001');
+    await gateway.tokenise(businessId, 'call 08031234567');
+    await gateway.tokenise(businessId, 'mail ada@example.com');
+
+    /* Two records the merchant has been using are a different question with
+     * different consequences, and joining those must not ride on a sale
+     * preview. */
+    const { link } = await gateway.tokenise(
+      businessId,
+      'Ada 08031234567 ada@example.com bought 3 wigs',
+    );
+    expect(link).toBeNull();
+  });
+
+  it('proposes nothing when a message names three people', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348060000001');
+    const { link } = await gateway.tokenise(
+      businessId,
+      'Ada 08031234567, Bola 08039999999, mail chidi@example.com',
+    );
+    // Three is not a split, it is a sentence about several people.
+    expect(link).toBeNull();
+  });
+
   it('does NOT store an account number anywhere', async () => {
     const businessId = await seedBusiness('Ada Fashion', '+2348060000001');
     const { text } = await gateway.tokenise(businessId, 'transfer to account 0123456789');
