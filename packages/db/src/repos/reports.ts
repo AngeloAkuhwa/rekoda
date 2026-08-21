@@ -397,9 +397,16 @@ export async function accountSumsFor(
     cumulative_credit_k: string;
   }>(sql`
     WITH bounds AS (
+      /* The month added to the DATE, and only then shifted to Lagos.
+       *
+       * Adding a month to a timestamp that has already been pulled back an
+       * hour lands on the wrong day: 1 July Lagos is 30 June 23:00 UTC, and
+       * PostgreSQL keeps the day-of-month, so a month later is 30 July, not
+       * 31 July. Every month following a shorter one lost days that way, and
+       * March lost three. */
       SELECT (${period} || '-01T00:00:00Z')::timestamptz - interval '1 hour' AS pstart,
-             ((${period} || '-01T00:00:00Z')::timestamptz - interval '1 hour')
-               + interval '1 month' AS pend
+             (((${period} || '-01')::date + interval '1 month')::timestamptz
+               - interval '1 hour') AS pend
     )
     SELECT e.account,
       COALESCE(SUM(e.debit_k)  FILTER (WHERE e.created_at >= b.pstart), 0)::bigint AS period_debit_k,
@@ -463,9 +470,16 @@ export async function expenseScheduleFor(
 ): Promise<ExpenseSchedule> {
   const rows = await tx.execute<{ category: string | null; amount_k: string }>(sql`
     WITH bounds AS (
+      /* The month added to the DATE, and only then shifted to Lagos.
+       *
+       * Adding a month to a timestamp that has already been pulled back an
+       * hour lands on the wrong day: 1 July Lagos is 30 June 23:00 UTC, and
+       * PostgreSQL keeps the day-of-month, so a month later is 30 July, not
+       * 31 July. Every month following a shorter one lost days that way, and
+       * March lost three. */
       SELECT (${period} || '-01T00:00:00Z')::timestamptz - interval '1 hour' AS pstart,
-             ((${period} || '-01T00:00:00Z')::timestamptz - interval '1 hour')
-               + interval '1 month' AS pend
+             (((${period} || '-01')::date + interval '1 month')::timestamptz
+               - interval '1 hour') AS pend
     ),
     movement AS (
       SELECT e.transaction_id, SUM(e.debit_k - e.credit_k) AS amount_k
@@ -561,9 +575,16 @@ export async function revenueScheduleFor(
 ): Promise<RevenueSchedule> {
   const rows = await tx.execute<{ source: string | null; amount_k: string }>(sql`
     WITH bounds AS (
+      /* The month added to the DATE, and only then shifted to Lagos.
+       *
+       * Adding a month to a timestamp that has already been pulled back an
+       * hour lands on the wrong day: 1 July Lagos is 30 June 23:00 UTC, and
+       * PostgreSQL keeps the day-of-month, so a month later is 30 July, not
+       * 31 July. Every month following a shorter one lost days that way, and
+       * March lost three. */
       SELECT (${period} || '-01T00:00:00Z')::timestamptz - interval '1 hour' AS pstart,
-             ((${period} || '-01T00:00:00Z')::timestamptz - interval '1 hour')
-               + interval '1 month' AS pend
+             (((${period} || '-01')::date + interval '1 month')::timestamptz
+               - interval '1 hour') AS pend
     ),
     movement AS (
       SELECT e.transaction_id, SUM(e.credit_k - e.debit_k) AS amount_k
