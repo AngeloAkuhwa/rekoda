@@ -23,7 +23,9 @@ import {
   billingPlanChangeResponse,
   billingQuoteResponse,
   usageMeterResponse,
+  createRecurringResponse,
   creditInvoiceResponse,
+  stopRecurringResponse,
   voidExpenseResponse,
   voidInvoiceResponse,
   verifyOtpResponse,
@@ -31,7 +33,10 @@ import {
   type BillingPlanChangeResponse,
   type BillingQuoteResponse,
   type MeResponse,
+  type CreateRecurringRequest,
+  type CreateRecurringResponse,
   type CreditInvoiceResponse,
+  type StopRecurringResponse,
   type VoidExpenseResponse,
   type VoidInvoiceResponse,
   type PaymentConnectionResponse,
@@ -533,6 +538,38 @@ export async function voidExpense(
     expect: [200, 400],
   });
   return status === 200 ? voidExpenseResponse.parse(json) : null;
+}
+
+/**
+ * Set up a cost that repeats. Null when the API refused the shape outright,
+ * which the caller turns into a sentence rather than an error page.
+ */
+export async function createRecurring(
+  sessionToken: string,
+  input: CreateRecurringRequest,
+): Promise<CreateRecurringResponse | null> {
+  const { status, json } = await call({
+    method: 'POST',
+    path: '/v1/reports/expenses/recurring',
+    body: input,
+    headers: { authorization: `Bearer ${sessionToken}` },
+    expect: [200, 400],
+  });
+  return status === 200 ? createRecurringResponse.parse(json) : null;
+}
+
+export async function stopRecurring(
+  sessionToken: string,
+  id: string,
+): Promise<StopRecurringResponse | null> {
+  const { status, json } = await call({
+    method: 'POST',
+    path: '/v1/reports/expenses/recurring/stop',
+    body: { id },
+    headers: { authorization: `Bearer ${sessionToken}` },
+    expect: [200, 400],
+  });
+  return status === 200 ? stopRecurringResponse.parse(json) : null;
 }
 
 export async function creditInvoice(

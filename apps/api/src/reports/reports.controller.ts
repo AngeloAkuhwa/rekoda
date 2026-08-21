@@ -51,6 +51,8 @@ import {
   describeActor,
   describeAuditEvent,
   isAccountKey,
+  lagosDay,
+  nextDueAfter,
   periodBefore,
   statementSheets,
   toCsv,
@@ -68,15 +70,24 @@ import type {
   ReportsOverviewResponse,
   ReportsReceiptsResponse,
   ReportsStockResponse,
+  CreateRecurringResponse,
   CreditInvoiceResponse,
   ReportsStatementsResponse,
+  StopRecurringResponse,
   VoidExpenseResponse,
   VoidInvoiceResponse,
 } from '@rekoda/contracts';
-import { creditInvoiceRequest, voidExpenseRequest, voidInvoiceRequest } from '@rekoda/contracts';
+import {
+  createRecurringRequest,
+  creditInvoiceRequest,
+  stopRecurringRequest,
+  voidExpenseRequest,
+  voidInvoiceRequest,
+} from '@rekoda/contracts';
 import {
   identity,
   issueRepo,
+  recurringRepo,
   reportsRepo,
   spendRepo,
   stockRepo,
@@ -488,10 +499,15 @@ export class ReportsController {
   async expenses(@Req() request: AuthedRequest): Promise<ReportsExpensesResponse> {
     const businessId = request.auth!.businessId;
     const now = new Date();
-    const { list, payableAgeing } = await withBusiness(this.db, businessId, async (tx) => ({
-      list: await spendRepo.spendFor(tx, businessId, REGISTER_ROWS),
-      payableAgeing: await spendRepo.payableAgeingFor(tx, businessId, now),
-    }));
+    const { list, payableAgeing, recurring } = await withBusiness(
+      this.db,
+      businessId,
+      async (tx) => ({
+        list: await spendRepo.spendFor(tx, businessId, REGISTER_ROWS),
+        payableAgeing: await spendRepo.payableAgeingFor(tx, businessId, now),
+        recurring: await recurringRepo.schedulesFor(tx, businessId),
+      }),
+    );
     return {
       entries: list.rows.map((r) => ({
         description: r.description,
@@ -500,6 +516,7 @@ export class ReportsController {
         method: r.method,
         kind: r.kind,
         status: r.status,
+        sourceType: r.sourceType,
         id: r.id,
         recordedAt: r.recordedAt.toISOString(),
       })),
@@ -508,7 +525,67 @@ export class ReportsController {
       purchasesK: list.purchasesK,
       payableK: list.payableK,
       payableAgeing,
+      recurring,
     };
+  }
+
+  /**
+   * Tell Rekoda about a cost that arrives every month.
+   *
+   * The first entry is the NEXT time the anchor comes round, never today.
+   * A merchant setting up "rent, the 1st" on the 1st has almost certainly
+   * already paid this month's and may well have dictated it, and a schedule
+   * whose first act is to record a cost twice is a schedule nobody sets up
+   * a second time.
+   */
+  @Post('expenses/recurring')
+  @HttpCode(200)
+  async createRecurring(
+    @Req() request: AuthedRequest,
+    @Body() body: unknown,
+  ): Promise<CreateRecurringResponse> {
+    const parsed = createRecurringRequest.safeParse(body);
+    if (!parsed.success) {
+      throw new BadRequestException('a description, an amount, a method and a day of the month');
+    }
+    /* `stock` is the marker `recordPurchase` writes and the register splits
+     * on. A schedule wearing it would put a monthly figure into the stock
+     * total with no delivery behind it, and the shelf count would disagree
+     * with the books every month forever. */
+    if (parsed.data.category?.toLowerCase() === 'stock') {
+      return { outcome: 'not_stock' };
+    }
+
+    const businessId = request.auth!.businessId;
+    const firstDueOn = nextDueAfter(lagosDay(new Date()), parsed.data.anchorDay);
+    const id = await withBusiness(this.db, businessId, (tx) =>
+      recurringRepo.createSchedule(tx, {
+        businessId,
+        description: parsed.data.description,
+        category: parsed.data.category,
+        amountK: parsed.data.amountK,
+        method: parsed.data.method,
+        anchorDay: parsed.data.anchorDay,
+        firstDueOn,
+      }),
+    );
+    return { outcome: 'created', id, firstDueOn };
+  }
+
+  /** Stop a schedule. Never a delete: what it already raised is real. */
+  @Post('expenses/recurring/stop')
+  @HttpCode(200)
+  async stopRecurring(
+    @Req() request: AuthedRequest,
+    @Body() body: unknown,
+  ): Promise<StopRecurringResponse> {
+    const parsed = stopRecurringRequest.safeParse(body);
+    if (!parsed.success) throw new BadRequestException('the schedule to stop');
+    const businessId = request.auth!.businessId;
+    const outcome = await withBusiness(this.db, businessId, (tx) =>
+      recurringRepo.stopSchedule(tx, businessId, parsed.data.id),
+    );
+    return { outcome };
   }
 
   /**
@@ -552,7 +629,7 @@ export class ReportsController {
       spendRepo.spendFor(tx, businessId, EXPORT_ROWS),
     );
     const csv = toCsv(
-      ['Date', 'Type', 'Description', 'Category', 'Method', 'Status', 'Amount'],
+      ['Date', 'Type', 'Description', 'Category', 'Method', 'Source', 'Status', 'Amount'],
       list.rows.map((r) => [
         csvDate(r.recordedAt),
         /* The column that stops a spreadsheet totalling stock as cost. */
@@ -560,6 +637,9 @@ export class ReportsController {
         r.description,
         r.category ?? '',
         r.method,
+        /* How it reached the books. An accountant reconciling a month wants
+         * to know which lines nobody typed. */
+        r.sourceType,
         /* And the column that stops it totalling what was withdrawn. */
         r.status,
         csvKobo(r.amountK),

@@ -909,11 +909,11 @@ describe('exporting the books as CSV', () => {
 
     const res = await download('/v1/reports/expenses.csv', auth);
     expect(res.headers['content-disposition']).toContain('rekoda-expenses-');
-    expect(res.body).toContain('Date,Type,Description,Category,Method,Status,Amount');
+    expect(res.body).toContain('Date,Type,Description,Category,Method,Source,Status,Amount');
     /* Without this column a spreadsheet totals 58,000 of cost against a shop
      * that spent 8,000 and still holds 50,000 of stock. */
-    expect(res.body).toContain('Stock purchase,ankara bales,stock,cash,recorded,50000.00');
-    expect(res.body).toContain('Expense,diesel,utilities,cash,recorded,8000.00');
+    expect(res.body).toContain('Stock purchase,ankara bales,stock,cash,chat,recorded,50000.00');
+    expect(res.body).toContain('Expense,diesel,utilities,cash,chat,recorded,8000.00');
     expect(res.body).toContain('8000.00');
     expect(res.body).not.toContain('₦');
   });

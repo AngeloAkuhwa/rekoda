@@ -11,6 +11,8 @@
 import { sql } from 'drizzle-orm';
 import {
   bigint,
+  boolean,
+  date,
   index,
   integer,
   jsonb,
@@ -304,4 +306,33 @@ export const reconciliations = pgTable(
     createdAt: createdAt(),
   },
   (t) => [index('recon_business_status_ix').on(t.businessId, t.status)],
+);
+
+/**
+ * A cost that repeats: the template, plus the day of the month it lands on.
+ *
+ * A working row rather than a document. What it raises is an ordinary expense
+ * with an ordinary posting, correctable the same way, and retiring a schedule
+ * never disturbs an entry it already wrote.
+ */
+export const recurringEntries = pgTable(
+  'recurring_entries',
+  {
+    id: id(),
+    businessId: businessId(),
+    description: text('description').notNull(),
+    category: text('category'),
+    amountK: kobo('amount_k').notNull(),
+    method: text('method').notNull().default('cash'),
+    /** 1 to 31, as the merchant chose it. Never overwritten by a clamped date. */
+    anchorDay: integer('anchor_day').notNull(),
+    /** A Lagos calendar day, `YYYY-MM-DD`. Not an instant: "the 1st" is a day. */
+    nextDueOn: date('next_due_on').notNull(),
+    /** The sweep's claim. Null until the schedule has raised anything. */
+    lastRaisedOn: date('last_raised_on'),
+    active: boolean('active').notNull().default(true),
+    createdAt: createdAt(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('recurring_business_ix').on(t.businessId, t.createdAt)],
 );

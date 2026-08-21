@@ -570,6 +570,12 @@ button,
   padding-block: var(--rk-space-6) var(--rk-space-8);
   display: grid;
   gap: var(--rk-space-6);
+  /* A grid child's default `min-width: auto` is its MIN-CONTENT width, so a
+     card holding a nine-column table grows to fit the table and its own
+     `overflow-x: auto` never engages: the page scrolls sideways instead of
+     the table. `minmax(0, 1fr)` is what makes every `.rk-table-scroll` on
+     the dashboard do the job it was written to do. */
+  grid-template-columns: minmax(0, 1fr);
 }
 
 /* Two columns even on the narrowest phone. Wrapping put "Sign out" alone on
@@ -717,8 +723,19 @@ button,
   display: flex;
   gap: var(--rk-space-1);
   border-bottom: 1px solid var(--rk-border);
+  /* Ten tabs do not fit a phone, and a nav that does not say so drags the
+     whole dashboard sideways with it: every signed-in page scrolled left to
+     right on a 390px screen, tiles and tables and all. It scrolls itself
+     instead, and the page underneath stays put. */
+  overflow-x: auto;
+  scrollbar-width: thin;
+  -webkit-overflow-scrolling: touch;
 }
 .rk-appnav a {
+  /* Never squeezed to fit. A tab compressed to "Recei..." is worse than one
+     the merchant scrolls to. */
+  flex: 0 0 auto;
+  white-space: nowrap;
   padding: var(--rk-space-2) var(--rk-space-4);
   text-decoration: none;
   color: var(--rk-text-muted);

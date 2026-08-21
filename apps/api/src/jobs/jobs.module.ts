@@ -31,6 +31,7 @@ import { sweepUnknownSenders } from '../channels/stranger-sweep.js';
 import { sweepGracePeriods } from '../billing/grace-sweep.js';
 import { sweepRenewals } from '../billing/renewal-sweep.js';
 import { sweepRetention } from '../privacy/retention-sweep.js';
+import { sweepRecurring } from '../spend/recurring-sweep.js';
 import { MESSAGE_SENDER } from '../channels/sender.tokens.js';
 import { SPEECH_TO_TEXT, type SpeechToText } from '../ai/stt.js';
 import { TEXT_EXTRACTION, type TextExtraction } from '../ai/ocr.js';
@@ -112,6 +113,8 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
   private sweepingGrace = false;
   private renewalTimer: NodeJS.Timeout | null = null;
   private sweepingRenewals = false;
+  private recurringTimer: NodeJS.Timeout | null = null;
+  private sweepingRecurring = false;
   private retentionTimer: NodeJS.Timeout | null = null;
   private sweepingRetention = false;
 
@@ -268,12 +271,33 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
         });
     }, 21_600_000);
     this.retentionTimer.unref();
+
+    /**
+     * Repeating costs share the hourly clock with grace and renewals, and for
+     * a different reason: their unit is a DAY, so hourly is already far more
+     * often than the answer can change. What it buys is the first hour of the
+     * Lagos day rather than whenever a nightly job happened to be scheduled,
+     * so a merchant who opens the dashboard on the 1st sees their rent.
+     */
+    this.recurringTimer = setInterval(() => {
+      if (this.sweepingRecurring) return;
+      this.sweepingRecurring = true;
+      sweepRecurring({ workerDb, appDb: this.appDb })
+        .catch((error: unknown) => {
+          this.log.warn(`recurring sweep failed: ${redactForLog(describeFailure(error))}`);
+        })
+        .finally(() => {
+          this.sweepingRecurring = false;
+        });
+    }, 3_600_000);
+    this.recurringTimer.unref();
   }
 
   async onApplicationShutdown(): Promise<void> {
     if (this.pumpTimer) clearInterval(this.pumpTimer);
     if (this.graceTimer) clearInterval(this.graceTimer);
     if (this.renewalTimer) clearInterval(this.renewalTimer);
+    if (this.recurringTimer) clearInterval(this.recurringTimer);
     if (this.retentionTimer) clearInterval(this.retentionTimer);
     if (this.sweepTimer) clearInterval(this.sweepTimer);
     if (this.strangerTimer) clearInterval(this.strangerTimer);
