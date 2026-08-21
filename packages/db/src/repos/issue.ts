@@ -124,10 +124,29 @@ export async function writePosting(
   posting: Posting,
   sourceType: string,
   sourceId: string,
+  /**
+   * When the money moved, if that is not now.
+   *
+   * The statements period on `ledger_entries.created_at`, so a posting for a
+   * cost that fell due in September must SAY September or it lands in
+   * whichever month the writer happened to run. That is the difference
+   * between a catch-up and a misstatement: three months of rent stamped on
+   * one day would put a quarter's cost into one month's profit and loss.
+   * Both rows take it, because a transaction and its entries dated
+   * differently is a trial balance that reconciles on one date and not the
+   * other.
+   */
+  occurredAt?: Date,
 ): Promise<string> {
   const inserted = await tx
     .insert(ledgerTransactions)
-    .values({ businessId, memo: posting.memo, sourceType, sourceId })
+    .values({
+      businessId,
+      memo: posting.memo,
+      sourceType,
+      sourceId,
+      ...(occurredAt ? { createdAt: occurredAt } : {}),
+    })
     .returning({ id: ledgerTransactions.id });
 
   const transaction = inserted[0];
@@ -140,6 +159,7 @@ export async function writePosting(
       account: line.account,
       debitK: line.debitK,
       creditK: line.creditK,
+      ...(occurredAt ? { createdAt: occurredAt } : {}),
     })),
   );
   return transaction.id;

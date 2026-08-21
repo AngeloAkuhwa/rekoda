@@ -42,6 +42,12 @@ export interface RecordExpenseInput {
   method: 'cash' | 'transfer';
   sourceType: string;
   sourceId: string;
+  /**
+   * When the money went, if that is not now. Set by the recurring sweep so a
+   * cost that fell due in September is dated September even when the sweep
+   * catches up in November; left unset by everything a merchant does live.
+   */
+  recordedAt?: Date;
 }
 
 export interface RecordPurchaseInput {
@@ -79,6 +85,7 @@ export async function recordExpense(
     posting,
     input.sourceType,
     input.sourceId,
+    input.recordedAt,
   );
 
   const rows = await tx
@@ -92,6 +99,9 @@ export async function recordExpense(
       sourceType: input.sourceType,
       sourceId: input.sourceId,
       ledgerTransactionId,
+      /* The register and the ledger read the same date or the page disagrees
+       * with the statements it links to. */
+      ...(input.recordedAt ? { createdAt: input.recordedAt } : {}),
     })
     .returning({ id: expenses.id });
   const row = rows[0];
@@ -176,6 +186,13 @@ export interface SpendRow {
   kind: 'expense' | 'purchase';
   /** recorded | voided. A voided row stays visible and stops counting. */
   status: string;
+  /**
+   * How the entry reached the books: `chat`, `recurring`, and so on. Shown
+   * because a cost that appeared on its own needs to say so; a merchant who
+   * cannot tell a schedule's entry from one they dictated has no way to know
+   * which of the two to go and correct.
+   */
+  sourceType: string;
 }
 
 export interface SpendList {
@@ -220,10 +237,11 @@ export async function spendFor(
     amount_k: string;
     method: string;
     status: string;
+    source_type: string;
     recorded_at: Date;
   }>(sql`
     SELECT id, description, category, amount_k::bigint AS amount_k, method, status,
-           created_at AS recorded_at
+           source_type, created_at AS recorded_at
     FROM expenses
     WHERE business_id = ${businessId}::uuid
     ORDER BY created_at DESC
@@ -257,6 +275,7 @@ export async function spendFor(
       method: r.method,
       kind: r.category === 'stock' ? ('purchase' as const) : ('expense' as const),
       status: r.status,
+      sourceType: r.source_type,
       recordedAt: new Date(r.recorded_at),
     })),
     count: t?.n ?? 0,

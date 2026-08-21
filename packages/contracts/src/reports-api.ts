@@ -231,6 +231,12 @@ export const reportsExpensesResponse = z.object({
       status: z.string(),
       /** Tenant-scoped and opaque. What the withdraw control posts back. */
       id: z.string(),
+      /**
+       * How it reached the books: `chat`, `recurring`, and so on. A cost that
+       * appeared on its own has to say so, or a merchant has no way to tell
+       * which of two identical rows is the one to go and correct.
+       */
+      sourceType: z.string(),
       recordedAt: z.string(),
     }),
   ),
@@ -255,6 +261,32 @@ export const reportsExpensesResponse = z.object({
     d90PlusK: kobo,
     totalK: kobo,
   }),
+  /**
+   * Costs the merchant has told Rekoda to expect every month.
+   *
+   * On the register's own response rather than an endpoint of its own: a
+   * schedule and the entries it raises are one thing a merchant is looking
+   * at, and splitting them across two round trips would mean a page that can
+   * show the entry before it can explain where the entry came from.
+   */
+  recurring: z.array(
+    z.object({
+      id: z.string(),
+      description: z.string(),
+      category: z.string().nullable(),
+      amountK: kobo,
+      /** cash | transfer, the same two the register knows. */
+      method: z.string(),
+      /** 1 to 31, as the merchant chose it. */
+      anchorDay: z.number().int().min(1).max(31),
+      /** The next day it will raise, `YYYY-MM-DD`. Lagos, like every day here. */
+      nextDueOn: z.string(),
+      /** The last day it raised one, or null while it has raised nothing. */
+      lastRaisedOn: z.string().nullable(),
+      /** False once stopped. Stopped schedules stay listed, and stay quiet. */
+      active: z.boolean(),
+    }),
+  ),
 });
 export type ReportsExpensesResponse = z.infer<typeof reportsExpensesResponse>;
 
@@ -371,6 +403,46 @@ export const voidExpenseResponse = z.discriminatedUnion('outcome', [
 
 export type VoidExpenseRequest = z.infer<typeof voidExpenseRequest>;
 export type VoidExpenseResponse = z.infer<typeof voidExpenseResponse>;
+
+/**
+ * Setting up a cost that repeats.
+ *
+ * No end date and no "every N months". A schedule that runs until somebody
+ * stops it is the shape every one of these costs actually has: rent does not
+ * come with a final month, and a merchant who guesses one wrong finds out by
+ * their books going quiet. Stopping takes one click and leaves every entry it
+ * already raised exactly where it is.
+ */
+export const createRecurringRequest = z.object({
+  description: z.string().trim().min(2).max(120),
+  /** What the merchant calls it. Never `stock`: a schedule is not a delivery. */
+  category: z.string().trim().min(1).max(60).nullable(),
+  amountK: kobo.refine((k) => k > 0, 'an amount above zero'),
+  method: z.union([z.literal('cash'), z.literal('transfer')]),
+  anchorDay: z.number().int().min(1).max(31),
+});
+
+export const createRecurringResponse = z.discriminatedUnion('outcome', [
+  z.object({
+    outcome: z.literal('created'),
+    id: z.string(),
+    /** The first day it will raise. Always in the future, never today. */
+    firstDueOn: z.string(),
+  }),
+  /** A stock purchase is a delivery somebody took, not a standing cost. */
+  z.object({ outcome: z.literal('not_stock') }),
+]);
+
+export const stopRecurringRequest = z.object({ id: z.string().uuid() });
+
+export const stopRecurringResponse = z.object({
+  outcome: z.union([z.literal('stopped'), z.literal('already_stopped'), z.literal('not_found')]),
+});
+
+export type CreateRecurringRequest = z.infer<typeof createRecurringRequest>;
+export type CreateRecurringResponse = z.infer<typeof createRecurringResponse>;
+export type StopRecurringRequest = z.infer<typeof stopRecurringRequest>;
+export type StopRecurringResponse = z.infer<typeof stopRecurringResponse>;
 
 /**
  * Crediting an invoice money has already arrived against.

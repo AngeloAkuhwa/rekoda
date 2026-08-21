@@ -5,6 +5,7 @@ import { reportsExpenses } from '@/server/api';
 import { requireSessionWithToken } from '@/server/guards';
 import { AppNav } from '../AppNav';
 import { VoidSpendForm, type VoidableEntry } from './VoidSpendForm';
+import { CreateRecurringForm, StopRecurringForm, type StoppableSchedule } from './RecurringForms';
 import { SignOutButton } from '../SignOutButton';
 
 export const metadata: Metadata = {
@@ -25,7 +26,7 @@ export const metadata: Metadata = {
  */
 export default async function ExpensesPage() {
   const { token } = await requireSessionWithToken();
-  const { entries, count, expensesK, purchasesK, payableK, payableAgeing } =
+  const { entries, count, expensesK, purchasesK, payableK, payableAgeing, recurring } =
     await reportsExpenses(token);
 
   /* Only what can still be withdrawn is offered, and each option carries the
@@ -37,6 +38,12 @@ export default async function ExpensesPage() {
       id: entry.id,
       label: `${shortDate(entry.recordedAt)} · ${entry.description} · ${formatKobo(entry.amountK)}`,
     }));
+
+  const running = recurring.filter((schedule) => schedule.active);
+  const stoppable: StoppableSchedule[] = running.map((schedule) => ({
+    id: schedule.id,
+    label: `${schedule.description} · ${formatKobo(schedule.amountK)} · ${ordinal(schedule.anchorDay)}`,
+  }));
 
   return (
     <section className="rk-container rk-dash">
@@ -110,6 +117,70 @@ export default async function ExpensesPage() {
         </div>
       ) : null}
 
+      {/* Above the register, because a schedule EXPLAINS rows in it. A merchant
+          reading an entry they do not remember dictating needs the answer on
+          the way down the page, not below the thing that raised the question. */}
+      <div className="rk-card">
+        <h2>Costs that repeat</h2>
+        <p className="rk-fineprint">
+          Rent, salaries, the generator contract. Tell Rekoda once and the entry lands in your books
+          on the same day every month, marked Repeating in the register below. Nothing is sent to
+          anybody and nothing is paid: this records the cost, exactly as if you had dictated it.
+        </p>
+
+        {recurring.length > 0 ? (
+          <div className="rk-table-scroll">
+            <table className="rk-table">
+              <thead>
+                <tr>
+                  <th>What it is</th>
+                  <th>Category</th>
+                  <th>Day</th>
+                  <th>Paid by</th>
+                  <th>Next entry</th>
+                  <th>Status</th>
+                  <th>Amount</th>
+                </tr>
+              </thead>
+              <tbody>
+                {recurring.map((schedule) => (
+                  <tr key={schedule.id}>
+                    <td>{schedule.description}</td>
+                    <td>{schedule.category ?? 'Uncategorised'}</td>
+                    <td>{ordinal(schedule.anchorDay)}</td>
+                    <td>{schedule.method === 'transfer' ? 'Transfer' : 'Cash'}</td>
+                    {/* A stopped schedule has no next entry, and a date beside
+                        the word "Stopped" would be a promise it will not keep. */}
+                    <td>{schedule.active ? longDate(schedule.nextDueOn) : 'None'}</td>
+                    <td>{schedule.active ? 'Running' : 'Stopped'}</td>
+                    <td>
+                      <Money kobo={schedule.amountK} />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : null}
+
+        <details className="rk-void">
+          <summary>Set up a repeating cost</summary>
+          <CreateRecurringForm />
+        </details>
+
+        {running.length > 0 ? (
+          <details className="rk-void">
+            <summary>Stop one</summary>
+            <p className="rk-fineprint">
+              Stopping ends the schedule and nothing else. Every entry it already recorded stays in
+              your books, because they were real costs on the days they landed. If one of those was
+              wrong, withdraw that entry in the register below.
+            </p>
+            <StopRecurringForm schedules={stoppable} />
+          </details>
+        ) : null}
+      </div>
+
       <div className="rk-card">
         <h2>Spend register</h2>
         {entries.length === 0 ? (
@@ -128,6 +199,7 @@ export default async function ExpensesPage() {
                     <th>Type</th>
                     <th>Category</th>
                     <th>Paid by</th>
+                    <th>Source</th>
                     <th>Status</th>
                     <th>Amount</th>
                   </tr>
@@ -138,8 +210,9 @@ export default async function ExpensesPage() {
                       <td>{shortDate(entry.recordedAt)}</td>
                       <td>{entry.description}</td>
                       <td>{entry.kind === 'purchase' ? 'Stock purchase' : 'Expense'}</td>
-                      <td>{entry.category ?? 'Uncategorised'}</td>
+                      <td>{describeCategory(entry.category)}</td>
                       <td>{entry.method === 'transfer' ? 'Transfer' : 'Cash'}</td>
+                      <td>{describeSource(entry.sourceType)}</td>
                       <td>{entry.status === 'voided' ? 'Withdrawn' : 'Recorded'}</td>
                       <td>
                         <Money kobo={entry.amountK} />
@@ -199,6 +272,50 @@ function SpendStat({ label, valueK, hint }: { label: string; valueK: number; hin
       <p className="rk-fineprint">{hint}</p>
     </div>
   );
+}
+
+/**
+ * The category as the merchant typed it, with one exception.
+ *
+ * `stock` is Rekoda's own marker rather than anybody's word, and lowercase
+ * beside categories a person capitalised reads as a bug. Everything else is
+ * left exactly as it was said: correcting a merchant's spelling of their own
+ * books is not this column's job.
+ */
+function describeCategory(category: string | null): string {
+  if (category === null) return 'Uncategorised';
+  return category === 'stock' ? 'Stock' : category;
+}
+
+/**
+ * Where the entry came from, in the merchant's terms.
+ *
+ * Unrecognised source types fall through to "Recorded" rather than showing a
+ * system word. A merchant should never have to read `paystack_webhook` off
+ * their own spend register to know what happened.
+ */
+function describeSource(sourceType: string): string {
+  if (sourceType === 'recurring') return 'Repeating';
+  if (sourceType === 'chat') return 'WhatsApp';
+  if (sourceType === 'dashboard') return 'Dashboard';
+  return 'Recorded';
+}
+
+/** `1st`, `2nd`, `31st`. The day a merchant would say out loud. */
+function ordinal(day: number): string {
+  if (day >= 11 && day <= 13) return `${day}th`;
+  const suffix = { 1: 'st', 2: 'nd', 3: 'rd' }[day % 10] ?? 'th';
+  return `${day}${suffix}`;
+}
+
+/** `1 Sep 2026`, from a plain calendar day rather than an instant. */
+function longDate(day: string): string {
+  return new Date(`${day}T12:00:00Z`).toLocaleDateString('en-NG', {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+    timeZone: 'Africa/Lagos',
+  });
 }
 
 /** `12 Aug`, Lagos time, same as everywhere else on the dashboard. */
