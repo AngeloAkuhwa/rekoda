@@ -681,3 +681,80 @@ describe('receivable ageing', () => {
     expect(ageing.totalK).toBe(0);
   });
 });
+
+/**
+ * The last day of a month, which every statement was silently dropping.
+ *
+ * The period window added a month to a timestamp that had already been pulled
+ * back an hour for Lagos. 1 July Lagos is 30 June 23:00 UTC, PostgreSQL keeps
+ * the day-of-month when it adds a month, so the window ended on 30 July and
+ * the 31st fell outside it. Every month following a shorter one lost days:
+ * one for July and May, three for March.
+ *
+ * It was invisible in every existing test because they all seed activity in
+ * the middle of a month. These sit an entry on the last day on purpose, which
+ * is exactly where a merchant's month-end takings sit.
+ */
+describe('the last day of the month', () => {
+  const lagosNoonOn = (day: string): Date => new Date(`${day}T12:00:00+01:00`);
+
+  async function spendOn(businessId: string, day: string, amountK: number, ref: string) {
+    await withBusiness(db, businessId, (tx) =>
+      spendRepo.recordExpense(tx, {
+        businessId,
+        description: 'diesel',
+        category: null,
+        amountK,
+        method: 'cash',
+        sourceType: 'chat',
+        sourceId: ref,
+        recordedAt: lagosNoonOn(day),
+      }),
+    );
+  }
+
+  /* March after February is the worst case: three days outside the window. */
+  it.each([
+    ['2026-03', '2026-03-31', 'march'],
+    ['2026-03', '2026-03-29', 'march-29'],
+    ['2026-07', '2026-07-31', 'july'],
+    ['2026-05', '2026-05-31', 'may'],
+    ['2026-08', '2026-08-31', 'august'],
+  ])('counts %s activity dated %s', async (period, day, ref) => {
+    const businessId = await seedBusiness();
+    await spendOn(businessId, day, 1_500_000, ref);
+
+    const sums = await withBusiness(db, businessId, (tx) =>
+      reportsRepo.accountSumsFor(tx, businessId, period),
+    );
+    const expenses = sums.find((r) => r.account === 'EXPENSES');
+    expect(expenses?.periodDebitK).toBe(1_500_000);
+    /* And cumulatively, which is what the balance sheet reads. A sheet "as at
+     * end of March" that omits the 31st is money missing from a file somebody
+     * hands to a bank. */
+    expect(expenses?.cumulativeDebitK).toBe(1_500_000);
+  });
+
+  /* The other edge: the window must still END. An entry on the first of the
+   * next month belongs to that month, not this one. */
+  it('leaves the first of the next month out', async () => {
+    const businessId = await seedBusiness();
+    await spendOn(businessId, '2026-04-01', 1_500_000, 'april');
+
+    const march = await withBusiness(db, businessId, (tx) =>
+      reportsRepo.accountSumsFor(tx, businessId, '2026-03'),
+    );
+    expect(march.find((r) => r.account === 'EXPENSES')?.periodDebitK ?? 0).toBe(0);
+  });
+
+  /* The two schedules carry the same bounds and had the same hole. */
+  it('counts a month-end cost in the expense schedule too', async () => {
+    const businessId = await seedBusiness();
+    await spendOn(businessId, '2026-03-31', 1_500_000, 'schedule');
+
+    const schedule = await withBusiness(db, businessId, (tx) =>
+      reportsRepo.expenseScheduleFor(tx, businessId, '2026-03'),
+    );
+    expect(schedule.totalK).toBe(1_500_000);
+  });
+});
