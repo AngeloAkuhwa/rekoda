@@ -430,3 +430,88 @@ export async function voidExpense(
     stockUnchanged: moved.length > 0,
   };
 }
+
+/* ── what is owed, and for how long ──────────────────────────────────────── */
+
+export interface PayableAgeing {
+  /** Owed on something bought in the last 30 days. */
+  d0_30K: number;
+  d31_60K: number;
+  d61_90K: number;
+  d90PlusK: number;
+  /** Everything owed, whatever its age. Equal to the buckets summed. */
+  totalK: number;
+}
+
+/**
+ * Accounts payable, aged (MASTER-PLAN §5.3.7).
+ *
+ * The receivable side has been aged since the debtors page shipped and this
+ * side was one number, which left a merchant deciding who to pay this week
+ * with no help from the half that costs them money.
+ *
+ * ── it ages differently, and the difference is not cosmetic ────────────────
+ *
+ * The receivable ages by how LATE a debt is, because an invoice carries a due
+ * date the merchant agreed. A purchase carries no terms: Rekoda never asks a
+ * supplier when they want paying, because it stores nothing about suppliers at
+ * all. So this ages by how long the debt has STOOD, which is the honest
+ * measure available and what an ageing report does when there are no terms.
+ * Calling both "overdue" would be inventing a deadline nobody set.
+ *
+ * The amount owed comes from the LEDGER rather than the row. `expenses` stores
+ * what a purchase cost and never what was paid on it, so the only place the
+ * remainder exists is the ACCOUNTS_PAYABLE credit its posting wrote. Withdrawn
+ * entries are excluded by their status, which is why their reversals need no
+ * special handling here.
+ */
+export async function payableAgeingFor(
+  tx: TenantDb,
+  businessId: string,
+  now = new Date(),
+): Promise<PayableAgeing> {
+  const rows = await tx.execute<{
+    d0_30_k: string;
+    d31_60_k: string;
+    d61_90_k: string;
+    d90_plus_k: string;
+    total_k: string;
+  }>(sql`
+    WITH owed AS (
+      SELECT
+        SUM(le.credit_k - le.debit_k) AS owed_k,
+        /* Lagos DATE on both sides, so this is integer day arithmetic: a
+         * purchase made at 23:59 and read at 00:01 is one day old, not zero
+         * point something. Same rule as the receivable ageing. */
+        GREATEST(
+          0,
+          (${now.toISOString()}::timestamptz AT TIME ZONE 'Africa/Lagos')::date
+            - (e.created_at AT TIME ZONE 'Africa/Lagos')::date
+        ) AS days_owed
+      FROM expenses e
+      JOIN ledger_entries le
+        ON le.transaction_id = e.ledger_transaction_id
+       AND le.business_id = e.business_id
+      WHERE e.business_id = ${businessId}::uuid
+        AND e.status = 'recorded'
+        AND le.account = 'ACCOUNTS_PAYABLE'
+      GROUP BY e.id, e.created_at
+      HAVING SUM(le.credit_k - le.debit_k) > 0
+    )
+    SELECT
+      COALESCE(SUM(owed_k) FILTER (WHERE days_owed <= 30), 0)::bigint             AS d0_30_k,
+      COALESCE(SUM(owed_k) FILTER (WHERE days_owed BETWEEN 31 AND 60), 0)::bigint AS d31_60_k,
+      COALESCE(SUM(owed_k) FILTER (WHERE days_owed BETWEEN 61 AND 90), 0)::bigint AS d61_90_k,
+      COALESCE(SUM(owed_k) FILTER (WHERE days_owed > 90), 0)::bigint              AS d90_plus_k,
+      COALESCE(SUM(owed_k), 0)::bigint                                            AS total_k
+    FROM owed
+  `);
+  const row = [...rows][0];
+  return {
+    d0_30K: Number(row?.d0_30_k ?? 0),
+    d31_60K: Number(row?.d31_60_k ?? 0),
+    d61_90K: Number(row?.d61_90_k ?? 0),
+    d90PlusK: Number(row?.d90_plus_k ?? 0),
+    totalK: Number(row?.total_k ?? 0),
+  };
+}

@@ -25,7 +25,8 @@ export const metadata: Metadata = {
  */
 export default async function ExpensesPage() {
   const { token } = await requireSessionWithToken();
-  const { entries, count, expensesK, purchasesK, payableK } = await reportsExpenses(token);
+  const { entries, count, expensesK, purchasesK, payableK, payableAgeing } =
+    await reportsExpenses(token);
 
   /* Only what can still be withdrawn is offered, and each option carries the
    * date and the figure: two "diesel" rows in one week is the normal case,
@@ -66,6 +67,48 @@ export default async function ExpensesPage() {
           hint="Accounts payable: stock taken that has not been fully paid for."
         />
       </div>
+
+      {/* Only when there is a debt to age. An ageing table of four zeros
+          teaches a merchant to scroll past the thing that will matter most
+          the week they owe somebody. */}
+      {payableAgeing.totalK > 0 ? (
+        <div className="rk-card">
+          <h2>How long you have owed it</h2>
+          <p className="rk-fineprint">
+            By age, not by lateness. A supplier bill has no due date in Rekoda, because Rekoda keeps
+            nothing about suppliers, so this counts from the day you bought rather than a deadline
+            nobody agreed. These four add up to the figure above.
+          </p>
+          <div className="rk-table-scroll">
+            <table className="rk-table">
+              <thead>
+                <tr>
+                  <th>Up to 30 days</th>
+                  <th>31 to 60</th>
+                  <th>61 to 90</th>
+                  <th>Over 90 days</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>
+                    <Money kobo={payableAgeing.d0_30K} />
+                  </td>
+                  <td>
+                    <Money kobo={payableAgeing.d31_60K} />
+                  </td>
+                  <td>
+                    <Money kobo={payableAgeing.d61_90K} />
+                  </td>
+                  <td>
+                    <Money kobo={payableAgeing.d90PlusK} />
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : null}
 
       <div className="rk-card">
         <h2>Spend register</h2>

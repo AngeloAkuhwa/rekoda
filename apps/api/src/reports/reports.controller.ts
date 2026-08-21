@@ -487,9 +487,11 @@ export class ReportsController {
   @Get('expenses')
   async expenses(@Req() request: AuthedRequest): Promise<ReportsExpensesResponse> {
     const businessId = request.auth!.businessId;
-    const list = await withBusiness(this.db, businessId, (tx) =>
-      spendRepo.spendFor(tx, businessId, REGISTER_ROWS),
-    );
+    const now = new Date();
+    const { list, payableAgeing } = await withBusiness(this.db, businessId, async (tx) => ({
+      list: await spendRepo.spendFor(tx, businessId, REGISTER_ROWS),
+      payableAgeing: await spendRepo.payableAgeingFor(tx, businessId, now),
+    }));
     return {
       entries: list.rows.map((r) => ({
         description: r.description,
@@ -505,6 +507,7 @@ export class ReportsController {
       expensesK: list.expensesK,
       purchasesK: list.purchasesK,
       payableK: list.payableK,
+      payableAgeing,
     };
   }
 

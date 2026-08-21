@@ -325,6 +325,7 @@ describe('the spend register', () => {
       expensesK: 0,
       purchasesK: 0,
       payableK: 0,
+      payableAgeing: { d0_30K: 0, d31_60K: 0, d61_90K: 0, d90PlusK: 0, totalK: 0 },
     });
   });
 
@@ -339,6 +340,10 @@ describe('the spend register', () => {
     expect(spend.expensesK).toBe(800_000);
     expect(spend.purchasesK).toBe(5_000_000);
     expect(spend.payableK).toBe(3_000_000);
+    /* The ageing and the balance are derived from the same ledger entries, so
+     * the day they disagree a merchant cannot tell which one is lying. */
+    expect(spend.payableAgeing.totalK).toBe(spend.payableK);
+    expect(spend.payableAgeing.d0_30K).toBe(3_000_000);
 
     const kinds = Object.fromEntries(spend.entries.map((e) => [e.description, e.kind]));
     expect(kinds).toEqual({ diesel: 'expense', 'ankara bales': 'purchase' });

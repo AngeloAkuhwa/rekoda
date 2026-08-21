@@ -240,6 +240,21 @@ export const reportsExpensesResponse = z.object({
   purchasesK: kobo,
   /** Still owed to suppliers: the accounts payable balance from the ledger. */
   payableK: kobo,
+  /**
+   * That same debt, split by how long it has STOOD.
+   *
+   * Not by how late it is. An invoice carries a due date the merchant agreed;
+   * a purchase carries no terms, because Rekoda stores nothing about
+   * suppliers. Calling these buckets overdue would invent a deadline nobody
+   * set. The buckets sum to `payableK` exactly.
+   */
+  payableAgeing: z.object({
+    d0_30K: kobo,
+    d31_60K: kobo,
+    d61_90K: kobo,
+    d90PlusK: kobo,
+    totalK: kobo,
+  }),
 });
 export type ReportsExpensesResponse = z.infer<typeof reportsExpensesResponse>;
 
