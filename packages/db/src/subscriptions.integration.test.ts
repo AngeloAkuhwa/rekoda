@@ -407,6 +407,110 @@ describe('the sweeps', () => {
   });
 });
 
+describe('stopping a lapsed subscription', () => {
+  it('is an ACT, with a row saying which plan was stopped and by what', async () => {
+    const businessId = await seedBusiness();
+    await inTenant(businessId, (tx) =>
+      subscriptionsRepo.applyCycle(tx, businessId, {
+        plan: 'complete',
+        cycleStartedAt: CYCLE_START,
+        renewsAt: RENEWS_AT,
+        anchorDay: 1,
+      }),
+    );
+
+    const previous = await inTenant(businessId, (tx) =>
+      subscriptionsRepo.expireSubscription(tx, businessId, 'system:grace-sweep'),
+    );
+    expect(previous).toBe('complete');
+
+    const sub = await inTenant(businessId, (tx) =>
+      subscriptionsRepo.subscriptionFor(tx, businessId),
+    );
+    expect(sub?.plan).toBe('expired');
+
+    const audit = await inTenant(businessId, (tx) =>
+      tx.execute<{ actor: string; old_value: { plan: string }; source_type: string }>(sql`
+        SELECT actor, old_value, source_type FROM audit_events
+        WHERE business_id = ${businessId}::uuid AND action = 'subscription_expired'
+      `),
+    );
+    const row = [...audit][0];
+    // Which plan to resume is answerable later because it was written down.
+    expect(row?.old_value.plan).toBe('complete');
+    expect(row?.actor).toBe('system:grace-sweep');
+    expect(row?.source_type).toBe('system');
+  });
+
+  it('does nothing to a trial, which ends rather than lapses', async () => {
+    const businessId = await seedBusiness();
+    expect(
+      await inTenant(businessId, (tx) =>
+        subscriptionsRepo.expireSubscription(tx, businessId, 'system:grace-sweep'),
+      ),
+    ).toBeNull();
+  });
+
+  it('does nothing twice, so a second sweep pass writes no second row', async () => {
+    const businessId = await seedBusiness();
+    await inTenant(businessId, (tx) =>
+      subscriptionsRepo.applyCycle(tx, businessId, {
+        plan: 'chat',
+        cycleStartedAt: CYCLE_START,
+        renewsAt: RENEWS_AT,
+        anchorDay: 1,
+      }),
+    );
+    await inTenant(businessId, (tx) =>
+      subscriptionsRepo.expireSubscription(tx, businessId, 'system:grace-sweep'),
+    );
+    expect(
+      await inTenant(businessId, (tx) =>
+        subscriptionsRepo.expireSubscription(tx, businessId, 'system:grace-sweep'),
+      ),
+    ).toBeNull();
+  });
+});
+
+describe('the daily reminder claim', () => {
+  it('is won once per day, by one caller', async () => {
+    const businessId = await seedBusiness();
+    // Two overlapping sweep passes, or two workers, against day 1.
+    const races = await Promise.all(
+      Array.from({ length: 5 }, () =>
+        inTenant(businessId, (tx) => subscriptionsRepo.claimGraceReminder(tx, businessId, 1)),
+      ),
+    );
+    expect(races.filter(Boolean)).toHaveLength(1);
+
+    // Day 5 is a later day and may still be claimed.
+    expect(
+      await inTenant(businessId, (tx) => subscriptionsRepo.claimGraceReminder(tx, businessId, 5)),
+    ).toBe(true);
+    // A clock that jumped backwards cannot re-send day 1 afterwards.
+    expect(
+      await inTenant(businessId, (tx) => subscriptionsRepo.claimGraceReminder(tx, businessId, 1)),
+    ).toBe(false);
+  });
+
+  it('is reset by a cycle that gets paid for', async () => {
+    const businessId = await seedBusiness();
+    await inTenant(businessId, (tx) => subscriptionsRepo.claimGraceReminder(tx, businessId, 5));
+    await inTenant(businessId, (tx) =>
+      subscriptionsRepo.applyCycle(tx, businessId, {
+        plan: 'chat',
+        cycleStartedAt: CYCLE_START,
+        renewsAt: RENEWS_AT,
+        anchorDay: 1,
+      }),
+    );
+    // The next failure is a fresh grace period, starting at day zero again.
+    expect(
+      await inTenant(businessId, (tx) => subscriptionsRepo.claimGraceReminder(tx, businessId, 1)),
+    ).toBe(true);
+  });
+});
+
 describe('an add-on pack', () => {
   const PERIOD = '2026-08';
 

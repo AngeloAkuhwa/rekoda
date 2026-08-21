@@ -25,6 +25,8 @@ import { ReplySender } from './reply.service.js';
               undefined,
               config.metaOtpTemplate,
               config.metaOtpTemplateLocale,
+              config.metaBillingTemplate,
+              config.metaBillingTemplateLocale,
             )
           : new NoSenderConfigured(),
     },

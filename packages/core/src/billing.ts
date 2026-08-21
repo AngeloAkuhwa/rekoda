@@ -10,6 +10,7 @@
  * implements them and does not decide them.
  */
 import { PLAN_PRICES_K, type PlanId } from './allowances.js';
+import { mintReference, type RandomBytes } from './payments.js';
 import type { UsageUnit } from './allowances.js';
 
 /** A Lagos day, in milliseconds. Lagos is fixed UTC+1 with no daylight saving. */
@@ -267,4 +268,23 @@ export function packsFor(plan: string): AddOnPack[] {
     if (pack.unit === 'voice_seconds') return plan === 'chat' || plan === 'complete';
     return true;
   });
+}
+
+/* ── references ───────────────────────────────────────────────────────────── */
+
+/**
+ * `RKD-SUB-20260819-A83F92` and `RKD-PACK-…`, minted before anything reaches a
+ * provider.
+ *
+ * The same construction as a payment reference and for the same reasons: the
+ * date segment narrows a human search weeks later, the alphabet is safe to
+ * read over the phone, and randomness is injected because `@rekoda/core` has
+ * none of its own.
+ */
+export function subscriptionReference(at: Date, random: RandomBytes): string {
+  return mintReference('SUB', at, random);
+}
+
+export function addOnReference(at: Date, random: RandomBytes): string {
+  return mintReference('PACK', at, random);
 }

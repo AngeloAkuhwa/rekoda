@@ -70,6 +70,8 @@ export const businesses = pgTable(
     paymentFailedAt: timestamp('payment_failed_at', { withTimezone: true }),
     /** A downgrade waiting for the next renewal. Null renews onto the same plan. */
     pendingPlan: text('pending_plan'),
+    /** The last grace-reminder day sent, claimed by conditional UPDATE. */
+    lastGraceReminderDay: smallint('last_grace_reminder_day'),
     settings: jsonb('settings')
       .notNull()
       .default(sql`'{}'::jsonb`),

@@ -61,6 +61,24 @@ export interface InboundMedia {
   mimeType: string;
 }
 
+/**
+ * A billing notice, sent as a UTILITY TEMPLATE.
+ *
+ * A merchant whose card just failed has not necessarily messaged the business
+ * number in the last 24 hours, so a free-form text is rejected by Meta the
+ * same way a sign-in code is (131047). The reminder is exactly the kind of
+ * message a utility template exists for: an account event the merchant is
+ * already party to.
+ *
+ * Two parameters, in order: how many days of grace remain, and the date it
+ * ends. Enough for the merchant to act, and nothing about what they sell.
+ */
+export interface OutboundBillingNotice {
+  to: string;
+  daysLeft: string;
+  endsOn: string;
+}
+
 export interface MessageSender {
   send(message: OutboundMessage): Promise<SendResult>;
   /** Download media by Meta's id. Throws `SendFailed` when it cannot. */
@@ -80,6 +98,14 @@ export interface MessageSender {
    * costs two round trips and can fail halfway.
    */
   sendDocument(document: OutboundDocument): Promise<SendResult>;
+  /**
+   * A grace-period reminder (ADR 0024).
+   *
+   * Its own method, like `sendAuthCode`, because it is a template rather than
+   * a reply and the difference is not cosmetic: collapsing it into `send`
+   * would make the sweep pass every test and reach nobody outside the window.
+   */
+  sendBillingNotice(notice: OutboundBillingNotice): Promise<SendResult>;
 }
 
 /** The send failed. The reply is lost; the merchant's record is not. */

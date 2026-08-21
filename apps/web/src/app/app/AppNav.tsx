@@ -10,6 +10,7 @@ const TABS = [
   { key: 'reports', href: '/app/reports', label: 'Reports' },
   { key: 'payments', href: '/app/payments', label: 'Payments' },
   { key: 'team', href: '/app/team', label: 'Team' },
+  { key: 'billing', href: '/app/billing', label: 'Billing' },
 ] as const;
 
 export type AppTab = (typeof TABS)[number]['key'];

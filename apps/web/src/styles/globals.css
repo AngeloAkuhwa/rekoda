@@ -1036,6 +1036,9 @@ button,
   text-align: right;
 }
 
+/* The dashboard's button. `.rk-review-btn` is the older name for the same
+   thing, kept so the two screens already using it do not move. */
+.rk-btn,
 .rk-review-btn {
   font: inherit;
   font-size: var(--rk-text-xs);
@@ -1046,8 +1049,13 @@ button,
   border-radius: var(--rk-radius-full);
   padding: 2px var(--rk-space-3);
 }
+.rk-btn:hover,
 .rk-review-btn:hover {
   border-color: var(--rk-accent);
+}
+/* Secondary: same shape, muted, for a row action rather than the page's. */
+.rk-btn-quiet {
+  color: var(--rk-text-muted);
 }
 
 .rk-exception-list {
@@ -1374,4 +1382,17 @@ button,
 .rk-ageing td:first-child,
 .rk-ageing th:first-child {
   text-align: left;
+}
+
+/* Billing (ADR 0024) */
+.rk-plan-current {
+  font-size: var(--rk-text-lg);
+  font-weight: 600;
+  margin-top: var(--rk-space-2);
+}
+/* A payment reference is read back to us over WhatsApp, character by
+   character, so it is set in a face where 0 and O differ. */
+.rk-mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: var(--rk-text-xs);
 }

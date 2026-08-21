@@ -70,10 +70,10 @@ export async function subscriptionFor(
  * without its cycle start is a subscription that cannot be prorated, and a
  * renewal date written without its anchor drifts backwards through the year.
  *
- * Clearing `payment_failed_at` is part of the same fact rather than a
- * separate call: a cycle that has been paid for is not in grace, and leaving
- * that to a second statement is leaving room for a merchant who paid to keep
- * receiving reminders.
+ * Clearing `payment_failed_at` and the reminder day is part of the same fact
+ * rather than a separate call: a cycle that has been paid for is not in
+ * grace, and leaving that to a second statement is leaving room for a
+ * merchant who paid to keep receiving reminders.
  */
 export async function applyCycle(
   tx: TenantDb,
@@ -95,6 +95,7 @@ export async function applyCycle(
       renewal_anchor_day = ${cycle.anchorDay},
       pending_plan = ${cycle.pendingPlan ?? null},
       payment_failed_at = NULL,
+      last_grace_reminder_day = NULL,
       updated_at = now()
     WHERE id = ${businessId}::uuid
   `);
@@ -363,25 +364,118 @@ export async function dueForRenewal(db: Db, now: Date, limit = 200): Promise<Due
   return [...rows].map(due);
 }
 
+export interface GraceBusiness extends DueBusiness {
+  /** E.164, for the reminder. Joined here rather than looked up per row. */
+  ownerPhone: string;
+  /** STOP, as a fact. Checked before every proactive send, this one included. */
+  ownerOptedOut: boolean;
+  /** The last reminder day already sent, or null. */
+  lastReminderDay: number | null;
+}
+
 /**
  * Businesses whose renewal failed and whose grace period is still running.
  *
  * Returned whole rather than filtered to today's reminder days, because which
  * day counts as a reminder is `billingState`'s decision in core and this is
  * SQL. The sweep asks core and sends at most one message.
+ *
+ * The owner's phone is joined rather than fetched per row: a sweep that made
+ * one extra query per merchant in grace would be a sweep that gets slower
+ * exactly when more merchants are having payment trouble.
  */
-export async function inGrace(db: Db, limit = 500): Promise<DueBusiness[]> {
-  const rows = await db.execute<RawDue>(sql`
-    SELECT id, plan, pending_plan, plan_expires_at, cycle_started_at,
-           renewal_anchor_day, payment_failed_at
-    FROM businesses
-    WHERE payment_failed_at IS NOT NULL
-      AND plan NOT IN ('trial', 'expired')
-      AND plan_expires_at IS NOT NULL
-    ORDER BY payment_failed_at
+export async function inGrace(db: Db, limit = 500): Promise<GraceBusiness[]> {
+  const rows = await db.execute<
+    RawDue & {
+      owner_phone: string;
+      opted_out_at: string | null;
+      last_grace_reminder_day: number | null;
+    }
+  >(sql`
+    SELECT b.id, b.plan, b.pending_plan, b.plan_expires_at, b.cycle_started_at,
+           b.renewal_anchor_day, b.payment_failed_at, b.last_grace_reminder_day,
+           u.phone AS owner_phone, u.opted_out_at
+    FROM businesses b
+    JOIN users u ON u.id = b.owner_user_id
+    WHERE b.payment_failed_at IS NOT NULL
+      AND b.plan NOT IN ('trial', 'expired')
+      AND b.plan_expires_at IS NOT NULL
+    ORDER BY b.payment_failed_at
     LIMIT ${limit}
   `);
-  return [...rows].map(due);
+  return [...rows].map((row) => ({
+    ...due(row),
+    ownerPhone: row.owner_phone,
+    ownerOptedOut: row.opted_out_at !== null,
+    lastReminderDay: row.last_grace_reminder_day,
+  }));
+}
+
+/**
+ * Claim today's grace reminder, or discover somebody else already sent it.
+ *
+ * A conditional UPDATE rather than a read then a write, because the sweep
+ * runs on a timer and may run in more than one process: two overlapping
+ * passes would both decide day 5 had not been sent and both send it. The
+ * strictly-greater comparison also stops a clock that jumps backwards
+ * re-sending day 1 after day 5 has gone out.
+ *
+ * Returns true exactly once per day, to exactly one caller.
+ */
+export async function claimGraceReminder(
+  tx: TenantDb,
+  businessId: string,
+  day: number,
+): Promise<boolean> {
+  const rows = await tx.execute<{ id: string }>(sql`
+    UPDATE businesses
+    SET last_grace_reminder_day = ${day}, updated_at = now()
+    WHERE id = ${businessId}::uuid
+      AND (last_grace_reminder_day IS NULL OR last_grace_reminder_day < ${day})
+    RETURNING id
+  `);
+  return [...rows].length === 1;
+}
+
+/**
+ * Stop a lapsed subscription, explicitly.
+ *
+ * `planFor` deliberately never expires a paid plan on a date comparison, so a
+ * late billing job cannot cut off a merchant who is paying. The consequence
+ * is that the transition has to be an ACT: this is it, and it happens only
+ * after seven days of grace and two reminders.
+ *
+ * The previous plan goes into the audit trail rather than being lost, so
+ * "resume your Complete plan" is answerable later. `payment_failed_at` stays
+ * as it was: it is the record of why this happened.
+ */
+export async function expireSubscription(
+  tx: TenantDb,
+  businessId: string,
+  actor: string,
+): Promise<string | null> {
+  const before = await tx.execute<{ plan: string }>(sql`
+    SELECT plan FROM businesses WHERE id = ${businessId}::uuid
+  `);
+  const previous = [...before][0]?.plan;
+  if (!previous || previous === 'trial' || previous === 'expired') return null;
+
+  const updated = await tx.execute<{ id: string }>(sql`
+    UPDATE businesses SET plan = 'expired', pending_plan = NULL, updated_at = now()
+    WHERE id = ${businessId}::uuid AND plan = ${previous}
+    RETURNING id
+  `);
+  /* Somebody paid between the read and the write. Their plan stands. */
+  if ([...updated].length !== 1) return null;
+
+  await tx.execute(sql`
+    INSERT INTO audit_events
+      (business_id, actor, entity, entity_id, action, old_value, new_value, source_type)
+    VALUES (${businessId}::uuid, ${actor}, 'business', ${businessId}, 'subscription_expired',
+            ${JSON.stringify({ plan: previous })}::jsonb,
+            ${JSON.stringify({ plan: 'expired' })}::jsonb, 'system')
+  `);
+  return previous;
 }
 
 /**

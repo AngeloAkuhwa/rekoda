@@ -3,6 +3,7 @@ import {
   type InboundMedia,
   type MessageSender,
   type OutboundAuthCode,
+  type OutboundBillingNotice,
   type OutboundDocument,
   type OutboundMessage,
   type SendResult,
@@ -22,6 +23,8 @@ export class StubSender implements MessageSender {
   readonly documents: OutboundDocument[] = [];
   /** Codes, kept apart again: a test asserting sign-in must not match a reply. */
   readonly authCodes: OutboundAuthCode[] = [];
+  /** Billing notices, kept apart for the same reason codes are. */
+  readonly billingNotices: OutboundBillingNotice[] = [];
   private failNext: Error | null = null;
   private failDocuments: Error | null = null;
 
@@ -45,6 +48,7 @@ export class StubSender implements MessageSender {
     this.sent.length = 0;
     this.documents.length = 0;
     this.authCodes.length = 0;
+    this.billingNotices.length = 0;
     this.media.clear();
     this.failNext = null;
     this.failDocuments = null;
@@ -87,6 +91,16 @@ export class StubSender implements MessageSender {
     }
     this.authCodes.push(code);
     return Promise.resolve({ providerMessageId: `wamid.OTP${this.authCodes.length}` });
+  }
+
+  sendBillingNotice(notice: OutboundBillingNotice): Promise<SendResult> {
+    if (this.failNext) {
+      const error = this.failNext;
+      this.failNext = null;
+      return Promise.reject(error);
+    }
+    this.billingNotices.push(notice);
+    return Promise.resolve({ providerMessageId: `wamid.BILL${this.billingNotices.length}` });
   }
 
   sendDocument(document: OutboundDocument): Promise<SendResult> {
