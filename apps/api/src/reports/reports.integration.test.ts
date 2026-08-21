@@ -13,6 +13,7 @@ import {
   reportsActivityResponse,
   reportsCashflowResponse,
   reportsDebtorsResponse,
+  reportsExpensesResponse,
   reportsInvoicesResponse,
   reportsOverviewResponse,
   reportsReceiptsResponse,
@@ -102,6 +103,7 @@ const ENDPOINTS = [
   '/v1/reports/statements',
   '/v1/reports/invoices',
   '/v1/reports/receipts',
+  '/v1/reports/expenses',
 ] as const;
 
 describe('the guardrail', () => {
@@ -277,6 +279,79 @@ describe('the registers (§5.3.7)', () => {
   });
 });
 
+/**
+ * Money out.
+ *
+ * The register itself is proven against hand arithmetic in packages/db; what
+ * is pinned here is that the two totals stay APART all the way to the wire.
+ * A response that summed them would parse fine and read wrong.
+ */
+describe('the spend register', () => {
+  async function seedSpend(businessId: string) {
+    await withBusiness(db, businessId, async (tx) => {
+      await spendRepo.recordExpense(tx, {
+        businessId,
+        description: 'diesel',
+        category: 'utilities',
+        amountK: 800_000,
+        method: 'cash',
+        sourceType: 'chat',
+        sourceId: 'spend-1',
+      });
+      await spendRepo.recordPurchase(tx, {
+        businessId,
+        description: 'ankara bales',
+        amountK: 5_000_000,
+        paidK: 2_000_000,
+        sourceType: 'chat',
+        sourceId: 'spend-2',
+      });
+    });
+  }
+
+  it('a fresh business gets an empty register, never an error', async () => {
+    const { auth } = await onboard('+2348177000031');
+    const spend = reportsExpensesResponse.parse(
+      (await app.inject({ method: 'GET', url: '/v1/reports/expenses', headers: auth })).json(),
+    );
+    expect(spend).toMatchObject({
+      entries: [],
+      count: 0,
+      expensesK: 0,
+      purchasesK: 0,
+      payableK: 0,
+    });
+  });
+
+  it('keeps expenses, stock and what is still owed as three separate figures', async () => {
+    const { auth, businessId } = await onboard('+2348177000032');
+    await seedSpend(businessId);
+
+    const spend = reportsExpensesResponse.parse(
+      (await app.inject({ method: 'GET', url: '/v1/reports/expenses', headers: auth })).json(),
+    );
+    expect(spend.count).toBe(2);
+    expect(spend.expensesK).toBe(800_000);
+    expect(spend.purchasesK).toBe(5_000_000);
+    expect(spend.payableK).toBe(3_000_000);
+
+    const kinds = Object.fromEntries(spend.entries.map((e) => [e.description, e.kind]));
+    expect(kinds).toEqual({ diesel: 'expense', 'ankara bales': 'purchase' });
+  });
+
+  it('is scoped to the SESSION tenant', async () => {
+    const ada = await onboard('+2348177000033');
+    const bola = await onboard('+2348177000034');
+    await seedSpend(ada.businessId);
+
+    const theirs = reportsExpensesResponse.parse(
+      (await app.inject({ method: 'GET', url: '/v1/reports/expenses', headers: bola.auth })).json(),
+    );
+    expect(theirs.count).toBe(0);
+    expect(theirs.payableK).toBe(0);
+  });
+});
+
 describe('the four statements (ADR 0015)', () => {
   it('a fresh business gets empty, balanced statements for the current month', async () => {
     const { auth } = await onboard('+2348177000004');
@@ -379,6 +454,9 @@ describe('exporting the books as CSV', () => {
     expect((await app.inject({ method: 'GET', url: '/v1/reports/receipts.csv' })).statusCode).toBe(
       401,
     );
+    expect((await app.inject({ method: 'GET', url: '/v1/reports/expenses.csv' })).statusCode).toBe(
+      401,
+    );
   });
 
   it('hands over a file a browser saves, never one a cache keeps', async () => {
@@ -421,6 +499,39 @@ describe('exporting the books as CSV', () => {
     const body = (await download('/v1/reports/receipts.csv', auth)).body;
     expect(body).toContain('Receipt,Date,Invoice,Amount,Basis');
     expect(body).toMatch(/verified|recorded/);
+  });
+
+  it('names the spend export and labels stock apart from cost', async () => {
+    const { auth, businessId } = await onboard('+2348120000027');
+    await withBusiness(db, businessId, async (tx) => {
+      await spendRepo.recordExpense(tx, {
+        businessId,
+        description: 'diesel',
+        category: 'utilities',
+        amountK: 800_000,
+        method: 'cash',
+        sourceType: 'chat',
+        sourceId: 'csv-1',
+      });
+      await spendRepo.recordPurchase(tx, {
+        businessId,
+        description: 'ankara bales',
+        amountK: 5_000_000,
+        paidK: 5_000_000,
+        sourceType: 'chat',
+        sourceId: 'csv-2',
+      });
+    });
+
+    const res = await download('/v1/reports/expenses.csv', auth);
+    expect(res.headers['content-disposition']).toContain('rekoda-expenses-');
+    expect(res.body).toContain('Date,Type,Description,Category,Method,Amount');
+    /* Without this column a spreadsheet totals 58,000 of cost against a shop
+     * that spent 8,000 and still holds 50,000 of stock. */
+    expect(res.body).toContain('Stock purchase,ankara bales');
+    expect(res.body).toContain('Expense,diesel');
+    expect(res.body).toContain('8000.00');
+    expect(res.body).not.toContain('₦');
   });
 
   it('exports only the signed-in business books', async () => {

@@ -205,6 +205,38 @@ export const reportsReceiptsResponse = z.object({
 export type ReportsReceiptsResponse = z.infer<typeof reportsReceiptsResponse>;
 
 /**
+ * Money out.
+ *
+ * Two totals rather than one, because they are not the same kind of fact: an
+ * operating expense is spent, a stock purchase is still on the shelf. Adding
+ * them would overstate the cost of trading by the value of the inventory, and
+ * a merchant reading a single "spent" figure would never know it.
+ *
+ * No supplier column. Supplier names are not stored anywhere in Rekoda.
+ */
+export const reportsExpensesResponse = z.object({
+  entries: z.array(
+    z.object({
+      description: z.string(),
+      /** What the merchant called it. Null when they did not say. */
+      category: z.string().nullable(),
+      amountK: kobo,
+      /** cash | transfer */
+      method: z.string(),
+      /** expense | purchase, decided by what the posting debited. */
+      kind: z.union([z.literal('expense'), z.literal('purchase')]),
+      recordedAt: z.string(),
+    }),
+  ),
+  count: z.number().int().nonnegative(),
+  expensesK: kobo,
+  purchasesK: kobo,
+  /** Still owed to suppliers: the accounts payable balance from the ledger. */
+  payableK: kobo,
+});
+export type ReportsExpensesResponse = z.infer<typeof reportsExpensesResponse>;
+
+/**
  * What is on the shelf.
  *
  * No money on the row. A product's price is what it sells FOR, and a stock

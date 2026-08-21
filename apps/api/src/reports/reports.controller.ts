@@ -60,6 +60,7 @@ import type {
   ReportsActivityResponse,
   ReportsCashflowResponse,
   ReportsDebtorsResponse,
+  ReportsExpensesResponse,
   ReportsInvoicesResponse,
   ReportsOverviewResponse,
   ReportsReceiptsResponse,
@@ -68,7 +69,7 @@ import type {
   VoidInvoiceResponse,
 } from '@rekoda/contracts';
 import { voidInvoiceRequest } from '@rekoda/contracts';
-import { issueRepo, reportsRepo, stockRepo, withBusiness, type Db } from '@rekoda/db';
+import { issueRepo, reportsRepo, spendRepo, stockRepo, withBusiness, type Db } from '@rekoda/db';
 import { SessionGuard, type AuthedRequest } from '../auth/session.guard.js';
 import { DB } from '../db/db.module.js';
 
@@ -352,6 +353,36 @@ export class ReportsController {
   }
 
   /**
+   * The spend register.
+   *
+   * Money in has had two registers since M2 and money out had none, which is
+   * half a set of books. Expenses and stock purchases share the page because
+   * they share the merchant's question — where did it go — and stay labelled
+   * apart because they do not share an answer.
+   */
+  @Get('expenses')
+  async expenses(@Req() request: AuthedRequest): Promise<ReportsExpensesResponse> {
+    const businessId = request.auth!.businessId;
+    const list = await withBusiness(this.db, businessId, (tx) =>
+      spendRepo.spendFor(tx, businessId, REGISTER_ROWS),
+    );
+    return {
+      entries: list.rows.map((r) => ({
+        description: r.description,
+        category: r.category,
+        amountK: r.amountK,
+        method: r.method,
+        kind: r.kind,
+        recordedAt: r.recordedAt.toISOString(),
+      })),
+      count: list.count,
+      expensesK: list.expensesK,
+      purchasesK: list.purchasesK,
+      payableK: list.payableK,
+    };
+  }
+
+  /**
    * The books, as a file a spreadsheet opens.
    *
    * This is the answer to "what happens to my records if I leave", which
@@ -380,6 +411,27 @@ export class ReportsController {
       ]),
     );
     sendCsv(reply, `rekoda-invoices-${csvDate(now)}.csv`, csv);
+  }
+
+  @Get('expenses.csv')
+  async expensesCsv(@Req() request: AuthedRequest, @Res() reply: CsvReply): Promise<void> {
+    const businessId = request.auth!.businessId;
+    const list = await withBusiness(this.db, businessId, (tx) =>
+      spendRepo.spendFor(tx, businessId, EXPORT_ROWS),
+    );
+    const csv = toCsv(
+      ['Date', 'Type', 'Description', 'Category', 'Method', 'Amount'],
+      list.rows.map((r) => [
+        csvDate(r.recordedAt),
+        /* The column that stops a spreadsheet totalling stock as cost. */
+        r.kind === 'purchase' ? 'Stock purchase' : 'Expense',
+        r.description,
+        r.category ?? '',
+        r.method,
+        csvKobo(r.amountK),
+      ]),
+    );
+    sendCsv(reply, `rekoda-expenses-${csvDate(new Date())}.csv`, csv);
   }
 
   @Get('receipts.csv')

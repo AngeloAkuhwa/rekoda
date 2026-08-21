@@ -18,7 +18,7 @@
  * until then the mention appears in the CG2 preview the merchant confirms and
  * is dropped at this boundary.
  */
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { postExpense, postPurchase } from '@rekoda/core';
 import type { TenantDb } from '../client.js';
 import { expenses } from '../schema/finance.js';
@@ -146,4 +146,95 @@ export async function expensesFor(tx: TenantDb, businessId: string): Promise<Exp
     .from(expenses)
     .where(eq(expenses.businessId, businessId))
     .orderBy(expenses.createdAt);
+}
+
+/* ── the spend register (dashboard) ──────────────────────────────────────── */
+
+export interface SpendRow {
+  recordedAt: Date;
+  description: string;
+  category: string | null;
+  amountK: number;
+  method: string;
+  /** What the posting did with the money: a cost, or stock on the shelf. */
+  kind: 'expense' | 'purchase';
+}
+
+export interface SpendList {
+  rows: SpendRow[];
+  count: number;
+  /** Operating expenses. This is the figure the profit and loss subtracts. */
+  expensesK: number;
+  /** Stock purchases, which are an asset swap and not yet a cost. */
+  purchasesK: number;
+  /**
+   * What is still owed on stock taken but not fully paid for: the ACCOUNTS
+   * PAYABLE balance, straight off the ledger. Not derivable from the rows
+   * above, because a row carries what a purchase cost and not what is left
+   * on it, and a spend page that could not answer "what do I still owe" is
+   * not a spend page a supplier's call can be answered from.
+   */
+  payableK: number;
+}
+
+/**
+ * Money out, newest first (MASTER-PLAN §5.3.7).
+ *
+ * Two totals, never one. An expense is gone; a stock purchase is still on the
+ * shelf, and a register that added them into a single "spent" figure would
+ * teach a merchant to read their own cost of trading wrong by exactly the
+ * value of their inventory. The split is the same one the ledger already
+ * makes — EXPENSES against INVENTORY — surfaced where somebody can see it.
+ *
+ * `category = 'stock'` is the marker `recordPurchase` writes, and the same
+ * one the activity feed reads. No supplier column, because no supplier name
+ * is stored: names live in the identity vault or nowhere.
+ */
+export async function spendFor(
+  tx: TenantDb,
+  businessId: string,
+  limit: number,
+): Promise<SpendList> {
+  const rows = await tx.execute<{
+    description: string;
+    category: string | null;
+    amount_k: string;
+    method: string;
+    recorded_at: Date;
+  }>(sql`
+    SELECT description, category, amount_k::bigint AS amount_k, method,
+           created_at AS recorded_at
+    FROM expenses
+    WHERE business_id = ${businessId}::uuid
+    ORDER BY created_at DESC
+    LIMIT ${limit}
+  `);
+  const totals = await tx.execute<{ n: number; expenses_k: string; purchases_k: string }>(sql`
+    SELECT count(*)::int AS n,
+           COALESCE(SUM(amount_k) FILTER (WHERE category IS DISTINCT FROM 'stock'), 0)::bigint
+             AS expenses_k,
+           COALESCE(SUM(amount_k) FILTER (WHERE category = 'stock'), 0)::bigint AS purchases_k
+    FROM expenses
+    WHERE business_id = ${businessId}::uuid
+  `);
+  const payable = await tx.execute<{ payable_k: string }>(sql`
+    SELECT COALESCE(SUM(credit_k) - SUM(debit_k), 0)::bigint AS payable_k
+    FROM ledger_entries
+    WHERE business_id = ${businessId}::uuid AND account = 'ACCOUNTS_PAYABLE'
+  `);
+  const t = [...totals][0];
+  return {
+    rows: [...rows].map((r) => ({
+      description: r.description,
+      category: r.category,
+      amountK: Number(r.amount_k),
+      method: r.method,
+      kind: r.category === 'stock' ? ('purchase' as const) : ('expense' as const),
+      recordedAt: new Date(r.recorded_at),
+    })),
+    count: t?.n ?? 0,
+    expensesK: Number(t?.expenses_k ?? 0),
+    purchasesK: Number(t?.purchases_k ?? 0),
+    payableK: Number([...payable][0]?.payable_k ?? 0),
+  };
 }

@@ -116,7 +116,11 @@ real database in CI:
   human can resolve. VERIFIED and RECORDED stay distinguishable everywhere they
   surface (ADR 0014) — chat, register, receipt PDF and activity feed.
 - **Dashboard.** Overview, the four statements, and registers for invoices,
-  receipts and payments, with the sign-out and empty states each page needs.
+  receipts, spending and payments, with the sign-out and empty states each
+  page needs. `/app/expenses` is the money-out half of the books: operating
+  expenses, stock purchases and the accounts payable balance are three
+  separate figures on purpose, because one combined "spent" number overstates
+  the cost of trading by the value of the inventory still on the shelf.
   All four statements download as one dated A4 PDF from the reports page
   (`GET /v1/reports/statements.pdf?period=YYYY-MM`), which is the artefact a
   bank, a landlord or a grant officer asks for and a screen is not, and as an
@@ -236,9 +240,6 @@ inherits the triage instead of repeating it:
   This looks like the intended accountant or delegate invite, beside
   `addMembership`, which is also uncalled. Decide whether delegates are
   invited by link before building either.
-- **No expenses register.** `expensesFor` has no page. Money in has two
-  registers (invoices, receipts) and money out has none, which is the most
-  visible remaining gap against the QuickBooks and HelloBooks bar.
 - **No chat-history surface** (`threadFor`, `messagesFor`, `draftsFor`). A
   merchant cannot read back what they told Rekoda, only what it recorded.
 - **Ops visibility gaps**: `jobsForBusiness`, `callsToday`, `usageTotals`,
