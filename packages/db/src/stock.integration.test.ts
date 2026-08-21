@@ -179,7 +179,7 @@ describe('a sale taking stock off the shelf', () => {
       ),
     );
 
-    expect(moved).toBe(1);
+    expect(moved.moved).toBe(1);
     const found = await withBusiness(db, businessId, (tx) =>
       stockRepo.productByName(tx, businessId, 'Bags of rice'),
     );
@@ -254,7 +254,7 @@ describe('a sale taking stock off the shelf', () => {
         'INV-G',
       ),
     );
-    expect(moved).toBe(1);
+    expect(moved.moved).toBe(1);
     const found = await withBusiness(db, businessId, (tx) =>
       stockRepo.productByName(tx, businessId, 'Bags of rice'),
     );
@@ -270,7 +270,7 @@ describe('a sale taking stock off the shelf', () => {
     const moved = await withBusiness(db, businessId, (tx) =>
       stockRepo.recordSaleMovements(tx, businessId, [{ name: 'Wigs', quantity: 0 }], 'INV-3'),
     );
-    expect(moved).toBe(0);
+    expect(moved.moved).toBe(0);
   });
 });
 
@@ -304,5 +304,122 @@ describe('the stock list', () => {
         stockRepo.productByName(tx, mine, 'Their secret product'),
       ),
     ).toBeNull();
+  });
+});
+
+/**
+ * What the goods cost, against real PostgreSQL.
+ *
+ * The claims that matter: a delivery moves the weighted average and the count
+ * together; a sale reports the cost of exactly what came off the shelf; and a
+ * product nobody has priced reports nothing rather than nothing-per-unit.
+ */
+describe('what the stock cost', () => {
+  it('sets the average from the first delivery, and moves it on the second', async () => {
+    const businessId = await seedBusiness('+2348120000201');
+    const first = await withBusiness(db, businessId, async (tx) => {
+      const product = await stockRepo.findOrCreateProduct(tx, businessId, 'Ankara bale');
+      return stockRepo.recordDelivery(tx, {
+        businessId,
+        product,
+        quantity: 10,
+        costK: 50_000_00,
+        sourceType: 'chat',
+        sourceId: 'd1',
+      });
+    });
+    expect(first).toBe(5_000_00);
+
+    const second = await withBusiness(db, businessId, async (tx) => {
+      const product = (await stockRepo.productByName(tx, businessId, 'Ankara bale'))!;
+      expect(product.onHand).toBe(10);
+      expect(product.unitCostK).toBe(5_000_00);
+      return stockRepo.recordDelivery(tx, {
+        businessId,
+        product,
+        quantity: 10,
+        costK: 70_000_00,
+        sourceType: 'chat',
+        sourceId: 'd2',
+      });
+    });
+    /* 10 at ₦5,000 plus 10 at ₦7,000 is ₦120,000 over 20. */
+    expect(second).toBe(6_000_00);
+
+    const after = await withBusiness(db, businessId, (tx) =>
+      stockRepo.productByName(tx, businessId, 'Ankara bale'),
+    );
+    expect(after).toMatchObject({ onHand: 20, unitCostK: 6_000_00 });
+  });
+
+  it('reports what a sale took off the shelf, at that average', async () => {
+    const businessId = await seedBusiness('+2348120000202');
+    await withBusiness(db, businessId, async (tx) => {
+      const product = await stockRepo.findOrCreateProduct(tx, businessId, 'Ankara bale');
+      await stockRepo.recordDelivery(tx, {
+        businessId,
+        product,
+        quantity: 10,
+        costK: 50_000_00,
+        sourceType: 'chat',
+        sourceId: 'd1',
+      });
+    });
+
+    const moved = await withBusiness(db, businessId, (tx) =>
+      stockRepo.recordSaleMovements(
+        tx,
+        businessId,
+        [{ name: 'ankara bale', quantity: 3 }],
+        'INV-1',
+      ),
+    );
+    expect(moved).toEqual({ moved: 1, costK: 15_000_00, uncosted: 0 });
+  });
+
+  /**
+   * The state every product starts in, and a great many stay in. Nothing is
+   * reported rather than nothing-per-unit, so the statements can say how much
+   * revenue had no cost against it instead of implying the goods were free.
+   */
+  it('reports no cost for a product nobody has priced, and counts the line', async () => {
+    const businessId = await seedBusiness('+2348120000203');
+    await withBusiness(db, businessId, async (tx) => {
+      const product = await stockRepo.findOrCreateProduct(tx, businessId, 'Head tie');
+      await stockRepo.recordMovement(tx, {
+        businessId,
+        productId: product.id,
+        delta: 40,
+        reason: 'adjustment',
+        sourceType: 'chat',
+        sourceId: null,
+      });
+    });
+
+    const moved = await withBusiness(db, businessId, (tx) =>
+      stockRepo.recordSaleMovements(tx, businessId, [{ name: 'Head tie', quantity: 2 }], 'INV-2'),
+    );
+    expect(moved).toEqual({ moved: 1, costK: 0, uncosted: 1 });
+  });
+
+  /* A count that goes up without the cost following it averages the new goods
+   * in at the old price, silently. One call, so the two cannot separate. */
+  it('moves the count and the cost in the same call', async () => {
+    const businessId = await seedBusiness('+2348120000204');
+    await withBusiness(db, businessId, async (tx) => {
+      const product = await stockRepo.findOrCreateProduct(tx, businessId, 'Lace');
+      await stockRepo.recordDelivery(tx, {
+        businessId,
+        product,
+        quantity: 4,
+        costK: 40_000_00,
+        sourceType: 'chat',
+        sourceId: 'd1',
+      });
+    });
+    const product = await withBusiness(db, businessId, (tx) =>
+      stockRepo.productByName(tx, businessId, 'Lace'),
+    );
+    expect(product).toMatchObject({ onHand: 4, unitCostK: 10_000_00 });
   });
 });

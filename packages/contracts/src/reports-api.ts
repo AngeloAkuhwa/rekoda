@@ -125,9 +125,30 @@ export const reportsStatementsResponse = z.object({
   }),
   profitAndLoss: z.object({
     income: z.array(statementLine),
+    /** Every expense account, cost of sales included. */
     expenses: z.array(statementLine),
+    /**
+     * The same rows without cost of sales.
+     *
+     * What the "Running costs" block lists once gross profit is shown above
+     * it. Listing cost of sales again under its own subtotal is how a reader
+     * ends up counting it twice.
+     */
+    operatingExpenses: z.array(statementLine),
     totalIncomeK: z.number().int().finite(),
     totalExpensesK: z.number().int().finite(),
+    /**
+     * What the goods sold cost, and what is left after it.
+     *
+     * The first thing an accountant looks for, because revenue less the cost
+     * of what was sold is the only figure that says whether the trade itself
+     * works. Zero until a product has a cost recorded against it, which is
+     * honest rather than flattering: nothing has been assumed about goods
+     * nobody has priced.
+     */
+    costOfSalesK: z.number().int().finite(),
+    grossProfitK: z.number().int().finite(),
+    operatingExpensesK: z.number().int().finite(),
     netProfitK: z.number().int().finite(),
   }),
   balanceSheet: z.object({
@@ -375,22 +396,38 @@ export const reportsExpensesResponse = z.object({
 export type ReportsExpensesResponse = z.infer<typeof reportsExpensesResponse>;
 
 /**
- * What is on the shelf.
+ * What is on the shelf, and what it cost.
  *
- * No money on the row. A product's price is what it sells FOR, and a stock
- * page that showed a valuation would be asserting a cost basis Rekoda does
- * not hold: what a merchant paid for the stock they are holding is a purchase
- * question, and mixing the two is how a shop reads a profit that is not there.
+ * The cost is here now and was deliberately absent before, because Rekoda did
+ * not hold a cost basis: a stock page showing a valuation would have been
+ * asserting one it had invented. Deliveries now move a weighted average per
+ * product, so the figure is real, and it is the one thing a merchant needs to
+ * see to know why a sale showed no cost against it.
+ *
+ * A per-product unit cost, and deliberately NOT a total valuation. Inventory
+ * on the balance sheet is the ledger figure and includes purchases that named
+ * no product; a column summed here would be a second answer to the same
+ * question, differing by exactly the purchases nobody itemised.
  */
 export const reportsStockResponse = z.object({
   products: z.array(
     z.object({
       name: z.string(),
       onHand: z.number().int(),
+      /** Weighted average of what it cost, or null when nobody has said. */
+      unitCostK: kobo.nullable(),
     }),
   ),
   /** How many are at or below zero. The number an operator acts on. */
   outOfStock: z.number().int().nonnegative(),
+  /**
+   * How many products have never had a cost recorded.
+   *
+   * The count that explains a profit and loss with no cost of sales on it.
+   * Sales of these show revenue with nothing against them, which overstates
+   * profit by exactly what the goods cost.
+   */
+  withoutCost: z.number().int().nonnegative(),
 });
 export type ReportsStockResponse = z.infer<typeof reportsStockResponse>;
 

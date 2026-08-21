@@ -35,6 +35,15 @@ export const products = pgTable(
     businessId: businessId(),
     name: text('name').notNull(),
     unitPriceK: kobo('unit_price_k'),
+    /**
+     * What it cost, as a weighted average, or null.
+     *
+     * Maintained by deliveries rather than typed: a purchase that names a
+     * product and a quantity moves this figure. The null is load-bearing.
+     * A product nobody has told Rekoda the cost of has no cost, and a sale of
+     * it posts none rather than inventing one.
+     */
+    unitCostK: kobo('unit_cost_k'),
     /** The merchant's own words about it. Never generated (migration 0028). */
     description: text('description'),
     /** Storage key of the photo, never the bytes. Same rule as `documents`. */

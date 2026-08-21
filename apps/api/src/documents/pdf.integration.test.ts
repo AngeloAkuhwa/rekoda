@@ -136,8 +136,12 @@ describe('pagination', () => {
     profitAndLoss: {
       income: ROWS.slice(0, 8).map((r) => ({ ...r, amountK: r.debitK })),
       expenses: ROWS.slice(8, 16).map((r) => ({ ...r, amountK: r.debitK })),
+      operatingExpenses: ROWS.slice(8, 16).map((r) => ({ ...r, amountK: r.debitK })),
       totalIncomeK: 800_000,
       totalExpensesK: 800_000,
+      costOfSalesK: 300_000,
+      grossProfitK: 500_000,
+      operatingExpensesK: 500_000,
       netProfitK: 0,
     },
     balanceSheet: {

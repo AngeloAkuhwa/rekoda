@@ -11,7 +11,8 @@
  * discipline the money ledger already runs under (ADR 0004), applied to
  * things instead of naira.
  */
-import { sql } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
+import { costOfQuantityK, weightedAverageCostK } from '@rekoda/core';
 import type { TenantDb } from '../client.js';
 import { inventoryMovements, products } from '../schema/commerce.js';
 
@@ -19,6 +20,8 @@ export interface Product {
   id: string;
   name: string;
   unitPriceK: number | null;
+  /** Weighted average of what it cost, or null when nobody has said. */
+  unitCostK: number | null;
   onHand: number;
   /**
    * Whether it is listed in the shop. Not whether it exists: a hidden product
@@ -66,16 +69,17 @@ export async function productByName(
     id: string;
     name: string;
     unit_price_k: string | number | null;
+    unit_cost_k: string | number | null;
     on_hand: number | null;
     active: number;
   }>(sql`
-    SELECT p.id, p.name, p.unit_price_k, p.active,
+    SELECT p.id, p.name, p.unit_price_k, p.unit_cost_k, p.active,
            coalesce(sum(m.delta), 0)::int AS on_hand
     FROM products p
     LEFT JOIN inventory_movements m ON m.product_id = p.id
     WHERE p.business_id = ${businessId}::uuid
       AND lower(btrim(p.name)) = lower(btrim(${name}))
-    GROUP BY p.id, p.name, p.unit_price_k, p.active
+    GROUP BY p.id, p.name, p.unit_price_k, p.unit_cost_k, p.active
     LIMIT 1
   `);
   const row = [...rows][0];
@@ -84,6 +88,7 @@ export async function productByName(
     id: row.id,
     name: row.name,
     unitPriceK: row.unit_price_k === null ? null : Number(row.unit_price_k),
+    unitCostK: row.unit_cost_k === null ? null : Number(row.unit_cost_k),
     onHand: row.on_hand ?? 0,
     active: row.active === 1,
   };
@@ -110,7 +115,7 @@ export async function findOrCreateProduct(
     .values({ businessId, name: name.trim() })
     .returning({ id: products.id, name: products.name });
   const row = inserted[0]!;
-  return { id: row.id, name: row.name, unitPriceK: null, onHand: 0, active: true };
+  return { id: row.id, name: row.name, unitPriceK: null, unitCostK: null, onHand: 0, active: true };
 }
 
 /** Append one movement. Never an UPDATE: the count is the sum of the history. */
@@ -123,6 +128,72 @@ export async function recordMovement(tx: TenantDb, movement: StockMovement): Pro
     sourceType: movement.sourceType,
     sourceId: movement.sourceId ?? null,
   });
+}
+
+/**
+ * A delivery arrived, and it moves what this product is reckoned to cost.
+ *
+ * One call rather than a movement and an update side by side, because the two
+ * must not be able to happen separately: a count that rises without the cost
+ * following it quietly averages the new goods in at the old price.
+ *
+ * `costK` is the whole amount the merchant paid for this delivery. When they
+ * said "bought 10 crates of ankara for 50k" that is the only reading
+ * available and it is the one they meant.
+ */
+export async function recordDelivery(
+  tx: TenantDb,
+  input: {
+    businessId: string;
+    product: Product;
+    quantity: number;
+    costK: number;
+    sourceType: string;
+    sourceId?: string | null;
+  },
+): Promise<number> {
+  const averageCostK = weightedAverageCostK({
+    onHand: input.product.onHand,
+    averageCostK: input.product.unitCostK,
+    arriving: input.quantity,
+    costK: input.costK,
+  });
+
+  await recordMovement(tx, {
+    businessId: input.businessId,
+    productId: input.product.id,
+    delta: input.quantity,
+    reason: 'purchase',
+    sourceType: input.sourceType,
+    sourceId: input.sourceId ?? null,
+  });
+
+  await tx
+    .update(products)
+    .set({ unitCostK: averageCostK })
+    .where(and(eq(products.businessId, input.businessId), eq(products.id, input.product.id)));
+
+  return averageCostK;
+}
+
+export interface SaleMovements {
+  /** Lines that matched a product the shop already counts. */
+  moved: number;
+  /**
+   * What those lines cost, at each product's weighted average.
+   *
+   * The caller posts this to COGS. Zero means nothing that moved had a cost
+   * recorded, which is different from the goods having been free.
+   */
+  costK: number;
+  /**
+   * How many of the moved lines had no cost to report.
+   *
+   * Counted rather than swallowed: revenue with no cost against it overstates
+   * profit, and a merchant is owed the fact that it happened rather than a
+   * gross margin that quietly assumes the goods cost nothing.
+   */
+  uncosted: number;
 }
 
 /**
@@ -141,8 +212,10 @@ export async function recordSaleMovements(
   businessId: string,
   items: ReadonlyArray<{ name: string; quantity: number }>,
   sourceId: string,
-): Promise<number> {
+): Promise<SaleMovements> {
   let moved = 0;
+  let costK = 0;
+  let uncosted = 0;
   for (const item of items) {
     const product = await productByName(tx, businessId, item.name);
     if (!product) continue;
@@ -169,8 +242,15 @@ export async function recordSaleMovements(
       sourceId,
     });
     moved += 1;
+
+    /* The cost of what left the shelf, at the average this product carries.
+     * Null when nobody has ever told Rekoda what it cost, which is the state
+     * every product starts in and a great many stay in. */
+    const lineCostK = costOfQuantityK(product.unitCostK, quantity);
+    if (lineCostK === null) uncosted += 1;
+    else costK += lineCostK;
   }
-  return moved;
+  return { moved, costK, uncosted };
 }
 
 /**
@@ -187,15 +267,16 @@ export async function stockList(tx: TenantDb, businessId: string, limit = 200): 
     id: string;
     name: string;
     unit_price_k: string | number | null;
+    unit_cost_k: string | number | null;
     on_hand: number | null;
     active: number;
   }>(sql`
-    SELECT p.id, p.name, p.unit_price_k, p.active,
+    SELECT p.id, p.name, p.unit_price_k, p.unit_cost_k, p.active,
            coalesce(sum(m.delta), 0)::int AS on_hand
     FROM products p
     LEFT JOIN inventory_movements m ON m.product_id = p.id
     WHERE p.business_id = ${businessId}::uuid
-    GROUP BY p.id, p.name, p.unit_price_k, p.active
+    GROUP BY p.id, p.name, p.unit_price_k, p.unit_cost_k, p.active
     ORDER BY coalesce(sum(m.delta), 0) ASC, p.name ASC
     LIMIT ${limit}
   `);
@@ -203,6 +284,7 @@ export async function stockList(tx: TenantDb, businessId: string, limit = 200): 
     id: r.id,
     name: r.name,
     unitPriceK: r.unit_price_k === null ? null : Number(r.unit_price_k),
+    unitCostK: r.unit_cost_k === null ? null : Number(r.unit_cost_k),
     onHand: r.on_hand ?? 0,
     active: r.active === 1,
   }));

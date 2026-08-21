@@ -813,8 +813,15 @@ export class ReportsController {
       stockRepo.stockList(tx, businessId, STOCK_ROWS),
     );
     return {
-      products: products.map((p) => ({ name: p.name, onHand: p.onHand })),
+      products: products.map((p) => ({
+        name: p.name,
+        onHand: p.onHand,
+        unitCostK: p.unitCostK,
+      })),
       outOfStock: products.filter((p) => p.onHand <= 0).length,
+      /* The count that explains a profit and loss with no cost of sales on
+       * it, rather than leaving a merchant to work out why. */
+      withoutCost: products.filter((p) => p.unitCostK === null).length,
     };
   }
 

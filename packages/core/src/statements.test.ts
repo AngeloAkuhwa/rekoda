@@ -124,6 +124,38 @@ describe('profit and loss (the period, accrual)', () => {
   it('net profit is the difference, by hand', () => {
     expect(pl.netProfitK).toBe(K(137_250));
   });
+
+  /**
+   * Nothing sold here has a cost recorded, which is the state a business is
+   * in until it tells Rekoda what its stock cost. Gross profit equals revenue
+   * and says so, rather than being hidden.
+   */
+  it('reports no cost of sales when none has been posted', () => {
+    expect(pl.costOfSalesK).toBe(0);
+    expect(pl.grossProfitK).toBe(pl.totalIncomeK);
+    expect(pl.operatingExpensesK).toBe(pl.totalExpensesK);
+  });
+
+  /* And when there is one, it comes OUT of operating expenses rather than
+   * being counted in both places. */
+  it('separates the cost of goods from the cost of running the shop', () => {
+    const withCost = buildProfitAndLoss([
+      ...ROWS,
+      {
+        account: 'COGS',
+        periodDebitK: K(60_000),
+        periodCreditK: 0,
+        cumulativeDebitK: K(60_000),
+        cumulativeCreditK: 0,
+      },
+    ]);
+    expect(withCost.costOfSalesK).toBe(K(60_000));
+    expect(withCost.grossProfitK).toBe(K(90_000));
+    expect(withCost.operatingExpensesK).toBe(K(12_750));
+    /* The three still add up the only way they can. */
+    expect(withCost.grossProfitK - withCost.operatingExpensesK).toBe(withCost.netProfitK);
+    expect(withCost.totalExpensesK).toBe(withCost.costOfSalesK + withCost.operatingExpensesK);
+  });
 });
 
 describe('balance sheet (as at period end)', () => {

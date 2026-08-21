@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 import { reportsStock } from '@/server/api';
 import { requireSessionWithToken } from '@/server/guards';
+import { Money } from '@/components/ui/Money';
 import { AppNav } from '../AppNav';
 import { SignOutButton } from '../SignOutButton';
 
@@ -24,7 +25,7 @@ export const metadata: Metadata = {
  */
 export default async function StockPage() {
   const { token } = await requireSessionWithToken();
-  const { products, outOfStock } = await reportsStock(token);
+  const { products, outOfStock, withoutCost } = await reportsStock(token);
 
   return (
     <section className="rk-container rk-dash">
@@ -54,6 +55,10 @@ export default async function StockPage() {
                   <tr>
                     <th>Product</th>
                     <th className="rk-num">On hand</th>
+                    {/* What it cost, not what it sells for. The two are
+                        different questions and a shop that reads one as the
+                        other reads a profit that is not there. */}
+                    <th className="rk-num">What it cost you</th>
                     <th>Status</th>
                   </tr>
                 </thead>
@@ -65,6 +70,13 @@ export default async function StockPage() {
                     <tr key={product.name}>
                       <td>{product.name}</td>
                       <td className="rk-num">{product.onHand}</td>
+                      <td className="rk-num">
+                        {product.unitCostK === null ? (
+                          <span className="rk-fineprint">Not recorded</span>
+                        ) : (
+                          <Money kobo={product.unitCostK} />
+                        )}
+                      </td>
                       <td>
                         {product.onHand <= 0 ? (
                           <span className="rk-status-warn">Out of stock</span>
@@ -88,6 +100,17 @@ export default async function StockPage() {
               . Counts come from what you record on WhatsApp: what you add, what you buy, and what
               each sale takes away.
             </p>
+            {/* The line that explains a profit and loss with no cost of sales
+                on it. A merchant reading "gross profit equals sales" is owed
+                the reason rather than left to work it out. */}
+            {withoutCost > 0 ? (
+              <p className="rk-fineprint">
+                {withoutCost === 1 ? 'One product has' : `${withoutCost} products have`} no cost
+                recorded, so selling {withoutCost === 1 ? 'it' : 'them'} shows income with nothing
+                against it. A cost is set when you record buying it, like{' '}
+                <strong>bought 10 bags of rice for 45k</strong>.
+              </p>
+            ) : null}
           </>
         )}
       </div>
