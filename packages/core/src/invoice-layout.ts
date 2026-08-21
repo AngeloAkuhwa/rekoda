@@ -48,6 +48,13 @@ export interface InvoiceDocument {
   readonly totalK: number;
   readonly paidK: number;
   readonly balanceDueK: number;
+  /**
+   * When the money was agreed to arrive. Null when nobody said.
+   *
+   * Printed only when something is still owed: a date on a settled invoice is
+   * noise, and this is a document a customer reads across a counter.
+   */
+  readonly dueDate?: Date | null;
 }
 
 /** `INV-2026-000001` issued on a date a Nigerian merchant reads without pausing. */
@@ -103,6 +110,12 @@ export function layoutInvoice(doc: InvoiceDocument): LayoutBlock[] {
    */
   if (doc.balanceDueK > 0) {
     blocks.push({ kind: 'amount-due', text: 'AMOUNT DUE', value: formatKobo(doc.balanceDueK) });
+    /* The day it was agreed for, on the paper both sides keep. An invoice
+     * that names its own deadline is the difference between a reminder that
+     * reads as a demand and one that reads as a reference. */
+    if (doc.dueDate) {
+      blocks.push({ kind: 'memo', text: `Payment due by ${issuedLine(doc.dueDate)}.` });
+    }
   } else if (doc.paidK > 0) {
     blocks.push({ kind: 'memo', text: 'Paid in full. Thank you.' });
   }

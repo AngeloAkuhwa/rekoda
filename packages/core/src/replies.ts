@@ -500,6 +500,8 @@ export function paymentLinkNeedsEmail(invoiceNumber: string): Reply {
 export interface DebtorLine {
   invoiceNumber: string;
   balanceDueK: number;
+  /** Whole Lagos days past the promised day. Absent or 0 when not late. */
+  daysOverdue?: number;
 }
 
 /**
@@ -510,14 +512,32 @@ export function debtorList(rows: DebtorLine[], totalK: number, count: number): R
   if (count === 0) {
     return reply('Nobody owes you right now. Every invoice you have issued is fully paid.');
   }
-  const lines = rows.map((r) => `${r.invoiceNumber}: ${formatKobo(r.balanceDueK)}`);
+  /* How late, on the line the merchant reads. This is the difference between
+   * a list and a work queue: "INV-000004: ₦20,000" tells them nothing about
+   * who to call first, and the rows arrive oldest-promise-first for exactly
+   * that reason. Still invoice numbers and never customer names, because
+   * WhatsApp is plaintext. */
+  const lines = rows.map((r) => {
+    const late =
+      r.daysOverdue && r.daysOverdue > 0
+        ? r.daysOverdue === 1
+          ? ' (1 day late)'
+          : ` (${r.daysOverdue} days late)`
+        : '';
+    return `${r.invoiceNumber}: ${formatKobo(r.balanceDueK)}${late}`;
+  });
+  const overdueCount = rows.filter((r) => (r.daysOverdue ?? 0) > 0).length;
   const heading =
     count === 1
       ? `One invoice is unpaid: ${formatKobo(totalK)} owed to you.`
       : `${count} invoices are unpaid: ${formatKobo(totalK)} owed to you in total.`;
+  const chase =
+    overdueCount > 0
+      ? `\n\n${overdueCount === 1 ? 'One is' : `${overdueCount} are`} past the day it was promised.`
+      : '';
   const overflow =
     count > rows.length ? `\n...and ${count - rows.length} more on your dashboard.` : '';
-  return reply(`${heading}\n\n${lines.join('\n')}${overflow}`);
+  return reply(`${heading}${chase}\n\n${lines.join('\n')}${overflow}`);
 }
 
 /* ── the records command ─────────────────────────────────────────────────── */

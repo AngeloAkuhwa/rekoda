@@ -70,6 +70,13 @@ export interface DocumentSnapshot {
   readonly paidK: number;
   readonly balanceDueK: number;
   readonly currency: string;
+  /**
+   * When the money was agreed to arrive, ISO. Optional so that every
+   * document issued before due dates existed still hashes to what it hashed
+   * to: a snapshot is the document AS ISSUED, and changing an old one's hash
+   * would break the thing the hash is for.
+   */
+  readonly dueDateIso?: string | null;
 }
 
 export function snapshotHash(snapshot: DocumentSnapshot): string {

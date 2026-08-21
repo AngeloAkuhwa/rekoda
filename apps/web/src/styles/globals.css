@@ -1330,3 +1330,15 @@ button,
 .rk-meter-row + .rk-meter-row {
   margin-top: var(--rk-space-3);
 }
+
+/* The ageing strip: every column is money, so every column is right-aligned
+   in tabular figures. The generic .rk-table rule only right-aligns columns
+   2 to 4, because most tables here lead with a label. */
+.rk-ageing td,
+.rk-ageing th {
+  text-align: right;
+}
+.rk-ageing td:first-child,
+.rk-ageing th:first-child {
+  text-align: left;
+}
