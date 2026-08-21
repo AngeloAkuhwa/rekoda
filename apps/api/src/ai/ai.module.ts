@@ -64,7 +64,7 @@ class NoTransportConfigured implements ModelTransport {
         }
         assertModelIsPriced(config.aiModelDefault, Boolean(config.anthropicApiKey));
         return config.anthropicApiKey
-          ? new AnthropicTransport(config.anthropicApiKey)
+          ? new AnthropicTransport(config.anthropicApiKey, undefined, config.aiBaseUrl ?? undefined)
           : new NoTransportConfigured();
       },
     },
