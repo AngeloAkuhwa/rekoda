@@ -453,6 +453,124 @@ describe('withdrawing an entry', () => {
   });
 });
 
+/**
+ * Accounts payable, aged.
+ *
+ * It ages by how long the debt has STOOD, not by how late it is: a purchase
+ * carries no terms because Rekoda stores nothing about suppliers, so there is
+ * no deadline to be late against. The claim that matters most is the last one
+ * here - the buckets and the ledger must agree, because two figures for the
+ * same debt is how a merchant stops believing either.
+ */
+describe('ageing what is owed to suppliers', () => {
+  async function purchaseAt(businessId: string, daysAgo: number, amountK: number, paidK: number) {
+    const at = new Date(Date.now() - daysAgo * 86_400_000);
+    const recorded = await withBusiness(db, businessId, (tx) =>
+      spendRepo.recordPurchase(tx, {
+        businessId,
+        description: `bales ${daysAgo}d`,
+        amountK,
+        paidK,
+        sourceType: 'chat',
+        sourceId: `p-${daysAgo}`,
+      }),
+    );
+    /* Back-date the row, because the ageing reads the expense's own date. */
+    await withBusiness(db, businessId, (tx) =>
+      tx.execute(
+        sql`UPDATE expenses SET created_at = ${at.toISOString()}::timestamptz
+            WHERE id = ${recorded.expenseId}::uuid`,
+      ),
+    );
+    return recorded;
+  }
+
+  it('sorts what is owed into buckets by how long it has stood', async () => {
+    const businessId = await seedBusiness();
+    await purchaseAt(businessId, 5, 5_000_000, 1_000_000); // owes 4m, fresh
+    await purchaseAt(businessId, 45, 3_000_000, 0); // owes 3m
+    await purchaseAt(businessId, 75, 2_000_000, 500_000); // owes 1.5m
+    await purchaseAt(businessId, 200, 1_000_000, 0); // owes 1m, very old
+
+    const ageing = await withBusiness(db, businessId, (tx) =>
+      spendRepo.payableAgeingFor(tx, businessId),
+    );
+    expect(ageing).toEqual({
+      d0_30K: 4_000_000,
+      d31_60K: 3_000_000,
+      d61_90K: 1_500_000,
+      d90PlusK: 1_000_000,
+      totalK: 9_500_000,
+    });
+  });
+
+  /**
+   * The assertion that keeps two numbers from drifting apart. The buckets are
+   * derived from the same ledger entries the balance is, so if they ever
+   * disagree one of them is lying and a merchant cannot tell which.
+   */
+  it('sums to exactly the accounts payable balance on the register', async () => {
+    const businessId = await seedBusiness();
+    await purchaseAt(businessId, 3, 5_000_000, 2_000_000);
+    await purchaseAt(businessId, 100, 4_000_000, 1_000_000);
+
+    const [ageing, list] = await Promise.all([
+      withBusiness(db, businessId, (tx) => spendRepo.payableAgeingFor(tx, businessId)),
+      withBusiness(db, businessId, (tx) => spendRepo.spendFor(tx, businessId, 50)),
+    ]);
+    expect(ageing.totalK).toBe(list.payableK);
+    expect(ageing.d0_30K + ageing.d31_60K + ageing.d61_90K + ageing.d90PlusK).toBe(ageing.totalK);
+  });
+
+  it('drops a withdrawn purchase out of the ageing, as it drops out of the balance', async () => {
+    const businessId = await seedBusiness();
+    const kept = await purchaseAt(businessId, 10, 5_000_000, 0);
+    const withdrawn = await purchaseAt(businessId, 10, 8_000_000, 0);
+
+    await withBusiness(db, businessId, (tx) =>
+      spendRepo.voidExpense(tx, businessId, withdrawn.expenseId, 'never delivered', 'user:1'),
+    );
+
+    const [ageing, list] = await Promise.all([
+      withBusiness(db, businessId, (tx) => spendRepo.payableAgeingFor(tx, businessId)),
+      withBusiness(db, businessId, (tx) => spendRepo.spendFor(tx, businessId, 50)),
+    ]);
+    expect(ageing.d0_30K).toBe(5_000_000);
+    expect(ageing.totalK).toBe(list.payableK);
+    expect(kept.owedK).toBe(5_000_000);
+  });
+
+  it('ignores a purchase that was paid for in full', async () => {
+    const businessId = await seedBusiness();
+    await purchaseAt(businessId, 10, 5_000_000, 5_000_000);
+
+    expect(
+      await withBusiness(db, businessId, (tx) => spendRepo.payableAgeingFor(tx, businessId)),
+    ).toMatchObject({ totalK: 0, d0_30K: 0 });
+  });
+
+  it('is all zeros for a business that owes nothing', async () => {
+    const businessId = await seedBusiness();
+    expect(
+      await withBusiness(db, businessId, (tx) => spendRepo.payableAgeingFor(tx, businessId)),
+    ).toEqual({ d0_30K: 0, d31_60K: 0, d61_90K: 0, d90PlusK: 0, totalK: 0 });
+  });
+
+  /* The boundary an off-by-one lands on. Exactly 30 days old is still the
+   * first bucket; 31 has moved on. */
+  it('puts the boundary days where the labels say', async () => {
+    const businessId = await seedBusiness();
+    await purchaseAt(businessId, 30, 1_000_000, 0);
+    await purchaseAt(businessId, 31, 2_000_000, 0);
+
+    const ageing = await withBusiness(db, businessId, (tx) =>
+      spendRepo.payableAgeingFor(tx, businessId),
+    );
+    expect(ageing.d0_30K).toBe(1_000_000);
+    expect(ageing.d31_60K).toBe(2_000_000);
+  });
+});
+
 describe('tenancy', () => {
   it('one tenant never reads the other`s spending', async () => {
     const ada = await seedBusiness('+2348120000001');

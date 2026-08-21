@@ -87,6 +87,11 @@ test('the spend register explains itself when empty, and keeps stock apart', asy
   await expect(page.getByText('Stock purchases')).toBeVisible();
   await expect(page.getByText('Owed to suppliers')).toBeVisible();
 
+  /* And no ageing table, because there is nothing to age. Four zeros would
+   * teach a merchant to scroll past the thing that matters most the week
+   * they owe somebody. */
+  await expect(page.getByText('How long you have owed it')).toHaveCount(0);
+
   /* Same rule as the invoice register: a destructive control offered against
    * an empty list is an invitation to wonder what it would have done. */
   await expect(page.getByText('Withdraw an entry')).toHaveCount(0);

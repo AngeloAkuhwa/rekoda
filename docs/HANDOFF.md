@@ -301,6 +301,25 @@ the page and in the CSV. And all three corrections were writing
 beside a change a person had deliberately made from the dashboard. Both void
 paths carried that from the start. All three now say `dashboard`.
 
+**What is owed to suppliers is aged now (PR #88).** The receivable side has
+been bucketed since the debtors page shipped and this side was one number,
+which left a merchant deciding who to pay this week with no help from the half
+that costs them money.
+
+It ages differently on purpose, and the difference is not cosmetic. An invoice
+carries a due date the merchant agreed, so the receivable ages by how LATE a
+debt is. A purchase carries no terms - Rekoda never asks, because it stores
+nothing about suppliers at all - so this ages by how long the debt has STOOD.
+Calling both "overdue" would invent a deadline nobody set, and the page says
+which it is.
+
+The amount owed comes from the LEDGER, not the row: `expenses` stores what a
+purchase cost and never what was paid on it, so the remainder exists only as
+the ACCOUNTS_PAYABLE credit its posting wrote. That link is `ledger_transaction_id`,
+added by migration 0024 for the withdraw path and reused here. Withdrawn
+entries drop out by their status, which is why their reversals need no special
+handling.
+
 **A note on how the last six were found.** By grepping for exported functions
 with no production caller. Every hit was a missing surface rather than dead
 code: `dueForRenewal`, `applySettledCharge`, `businessForCharge`,
