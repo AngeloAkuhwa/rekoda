@@ -159,5 +159,13 @@ not exist yet, so both are built behind a port the way `SpeechToText` already
 is: the pipeline and its tests can land before the service does, and neither
 feature turns on until a URL is configured.
 
-The retention schedule is now a thing that must be written and published, not
-merely an intention. Until it exists, no page should state a retention period.
+The retention schedule is written, in `apps/web/src/lib/legal.ts`, and
+published on `/privacy`. Its periods are maximums, which makes them promises
+about dates: the sweep that enforces them does not exist yet, and the shortest
+period is 90 days for an abandoned trial. That is a deadline counted from the
+first merchant who walks away, not an open intention.
+
+The refund matrix is published at `/refunds`, linked from the footer and from
+the billing clause in the terms. The registered entity and support address
+render as visible "not set yet" badges until they are supplied, so the page
+cannot go live naming nobody or naming the wrong body.

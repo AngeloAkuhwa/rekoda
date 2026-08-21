@@ -25,6 +25,7 @@ export const MARKETING_ROUTES: MarketingRoute[] = [
   { path: '/ai-privacy', changeFrequency: 'monthly', priority: 0.7 },
   { path: '/privacy', changeFrequency: 'yearly', priority: 0.4 },
   { path: '/terms', changeFrequency: 'yearly', priority: 0.4 },
+  { path: '/refunds', changeFrequency: 'yearly', priority: 0.4 },
   { path: '/data-deletion', changeFrequency: 'yearly', priority: 0.4 },
 ];
 

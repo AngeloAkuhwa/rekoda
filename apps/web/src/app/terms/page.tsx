@@ -89,8 +89,23 @@ export default function TermsPage() {
             <p>
               The trial runs 30 days and needs no card. After that, plans are billed monthly in
               advance and you can cancel at any time, which stops the next charge and leaves your
-              access running to the end of the period already paid for. Payment processing fees
-              charged by your own provider are theirs, not ours, and are always shown separately.
+              access running to the end of the period already paid for. Moving to a bigger plan
+              mid-month costs only the days left in it; moving to a smaller one starts at your next
+              renewal, so you keep what you already paid for. Payment processing fees charged by
+              your own provider are theirs, not ours, and are always shown separately.
+            </p>
+          ),
+        },
+        {
+          id: 'unpaid',
+          heading: 'If a payment fails',
+          body: (
+            <p>
+              Nothing stops on the day a card declines. You get 7 days, with a reminder on the first
+              and the fifth, and everything keeps working throughout. After that the account becomes
+              read-only: your books stay, you can still read and export them, and paying again turns
+              everything back on. We refund payments in the situations set out on{' '}
+              <a href="/refunds">Refunds</a>.
             </p>
           ),
         },
