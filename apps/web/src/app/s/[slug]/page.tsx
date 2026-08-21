@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
 import { formatKobo } from '@rekoda/core';
+import { canonical } from '@/lib/site';
 import { publicShop } from '@/server/api';
 
 /**
@@ -25,14 +26,34 @@ export async function generateMetadata({
 }: {
   params: Promise<{ slug: string }>;
 }): Promise<Metadata> {
-  const shop = await publicShop((await params).slug);
+  const slug = (await params).slug;
+  const shop = await publicShop(slug);
   if (!shop) return { title: 'Shop not found', robots: { index: false, follow: false } };
+  const description = shop.tagline ?? `What ${shop.displayName} sells, and how to order.`;
   return {
-    title: shop.displayName,
-    description: shop.tagline ?? `What ${shop.displayName} sells, and how to order.`,
+    /* Absolute, so the layout's "%s · Rekoda" template does not apply. A
+     * merchant's shop is not a Rekoda page with their name on it; putting our
+     * brand in their tab and in their search result is the same mistake the
+     * header made by carrying our pricing link onto their storefront. */
+    title: { absolute: shop.displayName },
+    description,
     /* Indexable, unlike every dashboard page. A shop nobody can find is a
      * shop, and being findable is the point of publishing one. */
     robots: { index: true, follow: true },
+    /* Its own, not the homepage's. Every page inherits the layout's canonical
+     * of "/", and a shop that declares the homepage as its canonical is a shop
+     * telling Google not to index it: exactly the opposite of the line above,
+     * and silently, since the page still renders perfectly. */
+    alternates: { canonical: canonical(`/s/${slug}`) },
+    /* The shop's own name in the card, not Rekoda's. `opengraph-image.tsx`
+     * beside this file draws it; this is what the words around it say. */
+    openGraph: {
+      type: 'website',
+      title: shop.displayName,
+      description,
+      siteName: shop.displayName,
+    },
+    twitter: { card: 'summary_large_image', title: shop.displayName, description },
   };
 }
 
