@@ -28,6 +28,7 @@ import {
   openingBalancesResponse,
   stockCountResponse,
   closeBooksResponse,
+  journalEntryResponse,
   reopenBooksResponse,
   publicShopIndexResponse,
   publicShopResponse,
@@ -50,6 +51,8 @@ import {
   type StockCountRequest,
   type StockCountResponse,
   type CloseBooksRequest,
+  type JournalEntryRequest,
+  type JournalEntryResponse,
   type CloseBooksResponse,
   type ReopenBooksRequest,
   type ReopenBooksResponse,
@@ -657,6 +660,27 @@ export async function closeBooks(
     expect: [200, 400],
   });
   return status === 200 ? closeBooksResponse.parse(json) : null;
+}
+
+/**
+ * A correction written by hand.
+ *
+ * `expect` carries 200 alone because every refusal is an outcome rather than
+ * a status: the same account twice, a day that has not happened, a month that
+ * is closed. A 4xx would mean the form should have caught it.
+ */
+export async function recordJournal(
+  sessionToken: string,
+  body: JournalEntryRequest,
+): Promise<JournalEntryResponse | null> {
+  const { status, json } = await call({
+    method: 'POST',
+    path: '/v1/reports/journal',
+    body,
+    headers: { authorization: `Bearer ${sessionToken}` },
+    expect: [200, 400],
+  });
+  return status === 200 ? journalEntryResponse.parse(json) : null;
 }
 
 /** Open a closed month, and every month after it. */

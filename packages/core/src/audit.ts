@@ -162,6 +162,40 @@ export function describeAuditEvent(row: AuditRow): AuditDescription {
     };
   }
 
+  /**
+   * The only posting in the system a person wrote rather than derived, which
+   * makes this the row an audit is actually for. It carries the number so it
+   * can be quoted, the merchant's own reason so it can be understood, and the
+   * amount so it can be checked, because a hand written entry described as
+   * "journal: recorded" is a row that answers nothing.
+   */
+  if (entity === 'journal' && action === 'recorded') {
+    const number = str(newValue, 'journalNumber');
+    const why = str(newValue, 'memo');
+    return {
+      summary: number
+        ? why
+          ? `Correction ${number}: ${why}`
+          : `Correction ${number}`
+        : 'A correction was recorded by hand',
+      amountK: int(newValue, 'amountK'),
+    };
+  }
+
+  if (entity === 'opening_balances' && action === 'recorded') {
+    const asAt = str(newValue, 'asAt');
+    /* Everything held, which is what went to owner's equity. Summed here
+     * rather than stored, so this row and the posting cannot disagree. */
+    const held =
+      (int(newValue, 'cashK') ?? 0) +
+      (int(newValue, 'bankK') ?? 0) +
+      (int(newValue, 'stockK') ?? 0);
+    return {
+      summary: asAt ? `Books opened as at ${asAt}` : 'The books were opened',
+      amountK: held === 0 ? null : held,
+    };
+  }
+
   if (entity === 'stock_count' && action === 'adjusted') {
     const differenceK = int(newValue, 'differenceK');
     /* The amount column carries what MOVED, and the direction belongs in the

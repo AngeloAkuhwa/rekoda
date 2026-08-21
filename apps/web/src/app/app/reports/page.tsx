@@ -7,6 +7,7 @@ import { AppNav } from '../AppNav';
 import { OpeningForm } from './OpeningForm';
 import { StockCountForm } from './StockCountForm';
 import { CloseBooksForm } from './CloseBooksForm';
+import { JournalForm } from './JournalForm';
 import { SignOutButton } from '../SignOutButton';
 
 export const metadata: Metadata = {
@@ -117,6 +118,23 @@ export default async function ReportsPage({
             Statements build themselves from what you record on WhatsApp. Once a sale, expense or
             payment lands in this month, all four reports fill in here.
           </p>
+          {/* The one control that belongs on an empty page, because the
+              merchant who needs it most is the one who has recorded nothing
+              yet. It lives inside the balance sheet the rest of the time,
+              beside the figure it fixes, and that card is not rendered here
+              at all: without this, a business could not open its books until
+              after it had already posted something to them. */}
+          {openingBalances === null ? (
+            <details className="rk-void">
+              <summary>Open your books with what you already had</summary>
+              <p className="rk-fineprint">
+                Rekoda only knows what you have told it since you joined. If you already had cash,
+                money in the bank or stock on the shelf, say so once and your balance sheet starts
+                from the truth instead of from zero.
+              </p>
+              <OpeningForm today={today} />
+            </details>
+          ) : null}
         </div>
       ) : (
         <>
@@ -575,6 +593,24 @@ export default async function ReportsPage({
               </p>
             </div>
           </div>
+
+          {/* Folded away, like voiding an invoice, and for the same reason: a
+              control that writes straight to the ledger should not sit open
+              beside four statements inviting the tap it exists to prevent.
+              Only on the current month, because a correction dated into a
+              past month is the rarer case and the date field covers it
+              without putting the form on every page a merchant browses. */}
+          {period === current ? (
+            <details className="rk-void rk-journal">
+              <summary>Move money, or fix an entry that went to the wrong place</summary>
+              <p className="rk-fineprint">
+                For the things that are not a sale, a payment or a cost: cash you carried to the
+                bank, money you put in yourself, an amount that landed in the wrong place. Most
+                merchants never need this.
+              </p>
+              <JournalForm today={today} />
+            </details>
+          ) : null}
 
           {/* Closing sits beside the download, because the download is what it
               protects. A statement forwarded to a bank should still say the
