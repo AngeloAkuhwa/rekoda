@@ -1,6 +1,7 @@
 export * from './money.js';
 export * from './ledger.js';
 export * from './reconciliation.js';
+export * from './bank-statement.js';
 export * from './numbering.js';
 export * from './router.js';
 export * from './gates.js';
