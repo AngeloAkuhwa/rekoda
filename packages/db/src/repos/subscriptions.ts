@@ -289,6 +289,26 @@ export async function refundCharge(
   return row ? shape(row) : null;
 }
 
+/**
+ * One charge, by the reference a provider named, under the tenant pin.
+ *
+ * Tenant-scoped deliberately, unlike `businessForCharge`: by the time a job
+ * is running, the tenant is known, and re-deriving it from the reference
+ * would be trusting the attribution instead of checking it.
+ */
+export async function chargeByReference(
+  tx: TenantDb,
+  businessId: string,
+  reference: string,
+): Promise<ChargeRow | null> {
+  const rows = await tx.execute<RawCharge>(sql`
+    SELECT * FROM subscription_charges
+    WHERE business_id = ${businessId}::uuid AND reference = ${reference}
+  `);
+  const row = [...rows][0];
+  return row ? shape(row) : null;
+}
+
 /** A merchant's own billing history, newest first. The receipts page. */
 export async function chargesFor(
   tx: TenantDb,

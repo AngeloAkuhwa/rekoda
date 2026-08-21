@@ -12,6 +12,14 @@ export const JobKind = {
   DeliverDocument: 'document.deliver',
   /** An attributed provider event needs verifying and (maybe) booking. */
   ProcessPaymentEvent: 'payment.process',
+  /**
+   * A merchant paid REKODA, not their customer.
+   *
+   * Its own kind rather than a branch inside `payment.process`, because the
+   * two must never share a code path: one books into the merchant's ledger
+   * and the other must never touch it.
+   */
+  ProcessBillingCharge: 'billing.process',
 } as const;
 
 export type JobKindName = (typeof JobKind)[keyof typeof JobKind];
