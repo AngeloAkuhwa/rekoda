@@ -14,6 +14,8 @@ import {
   events,
   identity,
   jobsRepo,
+  catalogueRepo,
+  ordersRepo,
   quotaRepo,
   schema,
   usageRepo,
@@ -3358,5 +3360,181 @@ describe('asking for the dashboard in chat', () => {
       quotaRepo.usageTotals(tx, 'anthropic'),
     );
     expect(spend.calls).toBe(0);
+  });
+});
+
+/**
+ * An order somebody else placed (Door 2), end to end.
+ *
+ * The whole journey a Nigerian merchant actually has: a customer messages
+ * them asking for things, they forward that message, and what comes back is a
+ * quote priced from their own catalogue. Nothing about it is a sale until
+ * they say yes.
+ */
+describe('a forwarded order', () => {
+  async function seedMerchant(phone: string) {
+    const user = await identity.upsertUserByPhone(db, phone);
+    return identity.createBusinessWithOwner(db, {
+      name: 'Ada Fashion',
+      businessType: null,
+      ownerUserId: user.id,
+    });
+  }
+
+  async function drain() {
+    const runner = buildRunner(workerDb, db, deps);
+    let worked = await runner.runOnce();
+    while (worked) worked = await runner.runOnce();
+  }
+
+  async function send(text: string, wamid: string) {
+    await post(messagePayload('2348031234567', wamid, text));
+    await drain();
+  }
+
+  /** A shop that sells two things, one of them never priced. */
+  async function seedCatalogue(businessId: string) {
+    await withBusiness(db, businessId, async (tx) => {
+      const bale = await stockRepo.findOrCreateProduct(tx, businessId, 'Ankara bale');
+      await stockRepo.recordMovement(tx, {
+        businessId,
+        productId: bale.id,
+        delta: 10,
+        reason: 'adjustment',
+        sourceType: 'chat',
+        sourceId: 'seed',
+      });
+      await catalogueRepo.editProduct(tx, businessId, bale.id, { unitPriceK: 850_000 });
+      await stockRepo.findOrCreateProduct(tx, businessId, 'Head tie');
+    });
+  }
+
+  const THE_ORDER = {
+    intent: 'RecordOrder',
+    customer: { kind: 'token', token: 'CUSTOMER_7K2' },
+    items: [{ name: 'Ankara bale', quantity: 2 }],
+    note: 'deliver to Lekki on Friday',
+  };
+
+  it('quotes from the catalogue, then raises the invoice on a yes', async () => {
+    const business = await seedMerchant('+2348031234567');
+    await seedCatalogue(business.id);
+    stubTransport.replyWith(THE_ORDER);
+
+    await send('please I want 2 ankara bale', 'wamid.ORDER');
+
+    /* Priced by Rekoda, from the merchant's own list. Nothing the customer
+     * or the model said about money reached this figure. */
+    expect(stubSender.lastText).toContain('This is what they are asking for');
+    expect(stubSender.lastText).toContain('2 × Ankara bale at ₦8,500');
+    expect(stubSender.lastText).toContain('Total: ₦17,000');
+    expect(stubSender.lastText).toContain('They also said: deliver to Lekki on Friday');
+
+    // Nothing issued yet, and no order recorded either: this is still a quote.
+    expect(await invoiceCount(business.id)).toBe(0);
+    expect(
+      await withBusiness(db, business.id, (tx) => ordersRepo.ordersFor(tx, business.id)),
+    ).toEqual([]);
+
+    await send('yes', 'wamid.ORDERYES');
+    expect(stubSender.lastText).toMatch(/ORD-\d{4}-000001 is now INV-\d{4}-000001 for ₦17,000/);
+    expect(stubSender.lastText).toContain('Nothing has been paid yet');
+
+    expect(await invoiceCount(business.id)).toBe(1);
+
+    const orders = await withBusiness(db, business.id, (tx) =>
+      ordersRepo.ordersFor(tx, business.id),
+    );
+    expect(orders).toHaveLength(1);
+    expect(orders[0]).toMatchObject({ status: 'confirmed', totalK: 1_700_000, itemCount: 1 });
+
+    /* The books balance, read back out of the database. An order confirmed is
+     * a sale on credit: receivable up, revenue up, nothing paid. */
+    const entries = await withBusiness(db, business.id, (tx) =>
+      issueRepo.ledgerEntriesFor(tx, business.id),
+    );
+    const debits = entries.reduce((n, e) => n + e.debitK, 0);
+    const credits = entries.reduce((n, e) => n + e.creditK, 0);
+    expect(debits).toBe(credits);
+    expect(debits).toBe(1_700_000);
+
+    /* And the shelf says so. Ten bales, two committed. */
+    const stock = await withBusiness(db, business.id, (tx) => stockRepo.stockList(tx, business.id));
+    expect(stock.find((p) => p.name === 'Ankara bale')?.onHand).toBe(8);
+  });
+
+  /**
+   * The refusal that matters. Inventing a price would put a number in front
+   * of a customer that the merchant never agreed to, so it asks instead.
+   */
+  it('asks for a price rather than quoting one it does not have', async () => {
+    const business = await seedMerchant('+2348031234567');
+    await seedCatalogue(business.id);
+    stubTransport.replyWith({
+      ...THE_ORDER,
+      items: [
+        { name: 'Ankara bale', quantity: 1 },
+        { name: 'Head tie', quantity: 2 },
+      ],
+    });
+
+    await send('they want a bale and 2 head ties', 'wamid.UNPRICED');
+    expect(stubSender.lastText).toContain('I do not have a price for Head tie');
+    /* And nothing was quoted, so there is nothing to say yes to. */
+    expect(stubSender.lastText).not.toContain('Total:');
+    expect(await invoiceCount(business.id)).toBe(0);
+  });
+
+  it('says so when the shop does not sell what they asked for', async () => {
+    const business = await seedMerchant('+2348031234567');
+    await seedCatalogue(business.id);
+    stubTransport.replyWith({ ...THE_ORDER, items: [{ name: 'gele', quantity: 1 }] });
+
+    await send('customer wants a gele', 'wamid.UNKNOWN');
+    expect(stubSender.lastText).toContain('I cannot find gele in what you sell');
+    expect(await invoiceCount(business.id)).toBe(0);
+  });
+
+  /**
+   * The catalogue is re-read at the yes, not carried on the draft. A merchant
+   * who changes a price between the preview and the confirmation gets the
+   * price they have now, and one who UNPRICES something gets asked rather
+   * than an invoice at yesterday's figure.
+   */
+  it('refuses at the yes if the price it quoted has since gone', async () => {
+    const business = await seedMerchant('+2348031234567');
+    await seedCatalogue(business.id);
+    stubTransport.replyWith(THE_ORDER);
+
+    await send('please I want 2 ankara bale', 'wamid.STALE');
+    expect(stubSender.lastText).toContain('Total: ₦17,000');
+
+    await withBusiness(db, business.id, async (tx) => {
+      const [bale] = (await catalogueRepo.catalogueFor(tx, business.id)).filter(
+        (p) => p.name === 'Ankara bale',
+      );
+      await catalogueRepo.editProduct(tx, business.id, bale!.id, { unitPriceK: null });
+    });
+
+    await send('yes', 'wamid.STALEYES');
+    expect(stubSender.lastText).toContain('I do not have a price for Ankara bale');
+    expect(await invoiceCount(business.id)).toBe(0);
+  });
+
+  /* A quote is not an agreement to pay on a day. What the customer said about
+   * timing is about DELIVERY, and reading it as a payment date would put
+   * somebody on the debtors list on a day nobody agreed. */
+  it('leaves the invoice undated rather than reading a delivery note as terms', async () => {
+    const business = await seedMerchant('+2348031234567');
+    await seedCatalogue(business.id);
+    stubTransport.replyWith(THE_ORDER);
+
+    await send('please I want 2 ankara bale', 'wamid.DUE');
+    await send('yes', 'wamid.DUEYES');
+
+    const invoices = await withBusiness(db, business.id, (tx) =>
+      reportsRepo.invoicesFor(tx, business.id, 10),
+    );
+    expect(invoices.rows[0]?.dueDate).toBeNull();
   });
 });
