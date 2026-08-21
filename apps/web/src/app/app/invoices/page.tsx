@@ -71,8 +71,8 @@ export default async function InvoicesPage() {
           <h2>Orders customers sent you</h2>
           <p className="rk-fineprint">
             Forward a customer&apos;s message to Rekoda on WhatsApp and it prices what they asked
-            for from your own catalogue, never from what they said it costs. Each of these became
-            the invoice below it when you said yes.
+            for from your own catalogue, never from what they said it costs. Saying yes turns one
+            into the invoice named beside it.
           </p>
           <div className="rk-table-scroll">
             <table className="rk-table">
@@ -80,6 +80,7 @@ export default async function InvoicesPage() {
                 <tr>
                   <th>Order</th>
                   <th>Taken</th>
+                  <th>Became</th>
                   <th className="rk-num">Items</th>
                   <th className="rk-num">Total</th>
                 </tr>
@@ -89,6 +90,11 @@ export default async function InvoicesPage() {
                   <tr key={order.orderNumber}>
                     <td>{order.orderNumber}</td>
                     <td>{shortDate(order.placedAt)}</td>
+                    {/* Named, not implied. The card used to say each order
+                        became the invoice below it and nothing recorded
+                        which, so a shop with thirty of each had to match
+                        them by eye on a page that claimed otherwise. */}
+                    <td>{order.invoiceNumber ?? 'Not yet'}</td>
                     <td className="rk-num">{order.itemCount}</td>
                     <td className="rk-num">
                       <Money kobo={order.totalK} />

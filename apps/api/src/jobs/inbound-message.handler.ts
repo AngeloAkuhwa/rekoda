@@ -746,6 +746,23 @@ async function paymentDetailsReply(
  * apologised to for a success.
  */
 /**
+ * A customer token resolved to the row it stands for, or null.
+ *
+ * Null is ordinary rather than exceptional: a merchant can name somebody the
+ * privacy gateway has never tokenised, and a sale to a walk-in names nobody
+ * at all. What it must never do is invent a customer, which is why it only
+ * ever looks one up.
+ */
+async function customerIdFor(
+  tx: TenantDb,
+  businessId: string,
+  token: string | null,
+): Promise<string | null> {
+  if (!token) return null;
+  return customersRepo.customerIdForToken(tx, businessId, token);
+}
+
+/**
  * The stored proposal, read back defensively.
  *
  * A jsonb column can hold anything a past version wrote, and this one decides
@@ -881,7 +898,12 @@ async function confirmPendingDraft(
   }));
   const issued = await issueRepo.issueSale(tx, {
     businessId,
-    customerId: null,
+    /* The person, not just their pseudonym. The gateway resolved a customer
+     * row before the model ever saw this message and the sale used to throw
+     * it away, which left every chat-issued invoice unable to answer "whose
+     * is this" - and a payment link needs an email off that customer's vault
+     * to exist at all. */
+    customerId: await customerIdFor(tx, businessId, customerTokenOf(command)),
     customerToken: customerTokenOf(command),
     items,
     subtotalK: money.subtotalK,
@@ -974,7 +996,7 @@ async function confirmOrder(
 
   const placed = await ordersRepo.placeOrder(tx, {
     businessId,
-    customerId: null,
+    customerId: await customerIdFor(tx, businessId, customerTokenOf(command as never)),
     lines: order.lines.map((line) => ({
       productId: line.productId,
       name: line.name,
@@ -994,7 +1016,7 @@ async function confirmOrder(
   }));
   const issued = await issueRepo.issueSale(tx, {
     businessId,
-    customerId: null,
+    customerId: await customerIdFor(tx, businessId, customerTokenOf(command as never)),
     customerToken: customerTokenOf(command as never),
     items,
     subtotalK: order.totalK,
@@ -1021,13 +1043,36 @@ async function confirmOrder(
     actor: 'system',
   });
 
-  await ordersRepo.markOrder(tx, businessId, placed.id, 'placed', 'confirmed');
+  /* The invoice id goes on the order in the same statement that confirms it.
+   * A confirmed order with nothing attached would be a row claiming a
+   * document exists with no way to find it, and the register would be back to
+   * matching orders and invoices by eye. */
+  await ordersRepo.markOrder(tx, businessId, placed.id, 'placed', 'confirmed', issued.invoiceId);
 
   await jobsRepo.enqueue(tx, {
     businessId,
     kind: 'document.render',
     payload: { invoiceId: issued.invoiceId },
     singletonKey: issued.invoiceId,
+  });
+
+  /**
+   * And a payable link, if this shop can take one.
+   *
+   * Enqueued unconditionally rather than gated on a connection read here: the
+   * job decides, and it stays silent when there is nothing to offer. That
+   * keeps one place deciding what a merchant hears about payment links, and
+   * it means the day a shop connects Paystack their next order carries a URL
+   * with no code change anywhere.
+   *
+   * The singleton key is the invoice: a re-enqueue cannot mint two intents
+   * for one obligation.
+   */
+  await jobsRepo.enqueue(tx, {
+    businessId,
+    kind: 'payment.link',
+    payload: { invoiceId: issued.invoiceId },
+    singletonKey: `link:${issued.invoiceId}`,
   });
 
   await stockRepo.recordSaleMovements(tx, businessId, items, issued.invoiceNumber);

@@ -396,6 +396,7 @@ export class ReportsController {
         status: order.status,
         totalK: order.totalK,
         itemCount: order.itemCount,
+        invoiceNumber: order.invoiceNumber,
         placedAt: order.placedAt.toISOString(),
       })),
     };

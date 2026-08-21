@@ -204,6 +204,13 @@ export const reportsInvoicesResponse = z.object({
       status: z.string(),
       totalK: kobo,
       itemCount: z.number().int().nonnegative(),
+      /**
+       * The invoice this order became, or null while it is still a request.
+       *
+       * By number rather than by id, because the number is what the merchant
+       * reads on the row below and what a customer sees on the document.
+       */
+      invoiceNumber: z.string().nullable(),
       placedAt: z.string(),
     }),
   ),
