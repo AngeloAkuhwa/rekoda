@@ -40,7 +40,12 @@ describe('the vault — Zone 1', () => {
     const blob = encryptFacet('Ada Obi', KEY);
     const [v, iv, tag, data] = blob.split('.');
     const flipped = Buffer.from(data!, 'base64url');
-    flipped[0] ^= 0x01;
+    /* `readUInt8` rather than `flipped[0] ^= 1`, and not for the types.
+     * Indexing an EMPTY buffer flips nothing and leaves this test passing
+     * while tampering with no bytes at all — a test proving the opposite of
+     * what it claims. `readUInt8(0)` throws on an empty buffer, so the
+     * premise is enforced rather than assumed. */
+    flipped.writeUInt8(flipped.readUInt8(0) ^ 0x01, 0);
     const tampered = [v, iv, tag, flipped.toString('base64url')].join('.');
     expect(() => decryptFacet(tampered, KEY)).toThrow(VaultError);
   });
@@ -53,7 +58,7 @@ describe('the vault — Zone 1', () => {
     const blob = encryptFacet('Ada Obi', KEY);
     const [v, iv, tag, data] = blob.split('.');
     const flipped = Buffer.from(data!, 'base64url');
-    flipped[0] ^= 0x01;
+    flipped.writeUInt8(flipped.readUInt8(0) ^ 0x01, 0);
 
     let tamperedMessage = '';
     let wrongKeyMessage = '';

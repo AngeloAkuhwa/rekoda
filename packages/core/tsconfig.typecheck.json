@@ -1,0 +1,14 @@
+{
+  // The build excludes test files so they stay out of `dist`; this config
+  // exists so they are still CHECKED. Without it a fixture can claim a shape
+  // the type it models cannot hold, and the compiler never says so.
+  //
+  // That is not hypothetical: statement-layout.test.ts asserted against an
+  // account called RENT at code 6100. RENT has never been in the chart, and
+  // 6100 is DEPRECIATION since ADR 0026. A test describing an input the
+  // system cannot produce proves nothing about the system.
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "noEmit": true },
+  "include": ["src"],
+  "exclude": []
+}
