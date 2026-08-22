@@ -31,9 +31,22 @@ export function RecordPaymentForm({ invoices }: { invoices: PayableInvoice[] }) 
 
   if (invoices.length === 0) {
     return (
-      <p className="rk-fineprint">
-        Nothing is owed to you right now. Invoices with money still outstanding appear here.
-      </p>
+      <>
+        {/* The confirmation FIRST, and it is not decoration. Paying off the
+            last outstanding invoice empties this list, so without it a
+            merchant clicks Record, watches the form vanish, and is told
+            nothing is owed with no receipt number and no proof anything
+            happened. The one moment they most need the answer is the one
+            that swallowed it. */}
+        {state.done ? (
+          <p className="rk-fineprint" role="status">
+            {state.done}
+          </p>
+        ) : null}
+        <p className="rk-fineprint">
+          Nothing is owed to you right now. Invoices with money still outstanding appear here.
+        </p>
+      </>
     );
   }
 

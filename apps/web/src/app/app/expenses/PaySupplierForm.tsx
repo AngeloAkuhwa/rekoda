@@ -35,9 +35,20 @@ export function PaySupplierForm({ purchases }: { purchases: OutstandingPurchase[
 
   if (purchases.length === 0) {
     return (
-      <p className="rk-fineprint">
-        You owe nothing on anything you have bought. Purchases you record as unpaid appear here.
-      </p>
+      <>
+        {/* Same reason as the invoice side: settling the last outstanding
+            purchase empties this list, and without the confirmation here the
+            merchant is told they owe nothing with no sign their payment
+            landed. */}
+        {state.done ? (
+          <p className="rk-fineprint" role="status">
+            {state.done}
+          </p>
+        ) : null}
+        <p className="rk-fineprint">
+          You owe nothing on anything you have bought. Purchases you record as unpaid appear here.
+        </p>
+      </>
     );
   }
 
