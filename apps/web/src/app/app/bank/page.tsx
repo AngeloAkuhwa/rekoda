@@ -7,6 +7,7 @@ import { AppNav } from '../AppNav';
 import { SignOutButton } from '../SignOutButton';
 import { StatementForm } from './StatementForm';
 import { ForgetDayForm } from './ForgetDayForm';
+import { ReconcileForm } from './ReconcileForm';
 
 export const metadata: Metadata = {
   title: 'Bank',
@@ -30,7 +31,7 @@ export const metadata: Metadata = {
  */
 export default async function BankPage() {
   const { identity, token } = await requireSessionWithToken();
-  const { position, lines } = await bankPosition(token);
+  const { position, lines, reconciliation } = await bankPosition(token);
   const today = lagosDay(new Date());
   const started = position.lines > 0;
 
@@ -91,6 +92,67 @@ export default async function BankPage() {
           </p>
         </div>
       )}
+
+      {/* What is left over is the answer, not the leftovers. A line nothing
+          explains is money nobody recorded; an entry nothing explains is
+          money the books claim and the bank has never seen. Both are worth
+          more to a merchant than the count of what agreed. */}
+      {started ? (
+        <div className="rk-card rk-dash-card">
+          <h2>Matching the two</h2>
+          <table className="rk-statement">
+            <tbody>
+              <tr>
+                <td>Lines matched to an entry in your books</td>
+                <td>{reconciliation.matched}</td>
+              </tr>
+              {reconciliation.pairable > 0 ? (
+                <tr>
+                  <td>Lines Rekoda can match for you now</td>
+                  <td>{reconciliation.pairable}</td>
+                </tr>
+              ) : null}
+              <tr>
+                <td>Lines your books do not explain</td>
+                <td>
+                  {reconciliation.unmatchedLines}
+                  {reconciliation.unmatchedLines > 0 ? (
+                    <>
+                      {' '}
+                      (<Money kobo={reconciliation.unmatchedLinesK} />)
+                    </>
+                  ) : null}
+                </td>
+              </tr>
+              <tr>
+                <td>Entries the statement does not show</td>
+                <td>
+                  {reconciliation.unmatchedMovements}
+                  {reconciliation.unmatchedMovements > 0 ? (
+                    <>
+                      {' '}
+                      (<Money kobo={reconciliation.unmatchedMovementsK} />)
+                    </>
+                  ) : null}
+                </td>
+              </tr>
+              {reconciliation.ambiguous > 0 ? (
+                <tr>
+                  <td>Lines that could be more than one entry</td>
+                  <td>{reconciliation.ambiguous}</td>
+                </tr>
+              ) : null}
+            </tbody>
+          </table>
+          <p className="rk-fineprint">
+            Rekoda only matches a line when the amount is exact, the day is within a few days, and
+            there is exactly one entry it could be. When two entries would both fit, it leaves the
+            line for you rather than guessing: a wrong match makes your books and your bank look
+            like they agree when they do not.
+          </p>
+          <ReconcileForm pairable={reconciliation.pairable} />
+        </div>
+      ) : null}
 
       <div className="rk-card rk-dash-card">
         <h2>Import a statement</h2>

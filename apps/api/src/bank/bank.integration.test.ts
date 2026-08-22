@@ -9,7 +9,11 @@
  */
 import { randomBytes } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { bankPositionResponse, importStatementResponse } from '@rekoda/contracts';
+import {
+  bankPositionResponse,
+  importStatementResponse,
+  reconcileResponse,
+} from '@rekoda/contracts';
 import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 
@@ -171,5 +175,61 @@ describe('the bank surface', () => {
     );
     expect(theirs.lines).toEqual([]);
     expect(theirs.position.lines).toBe(0);
+  });
+});
+
+describe('pairing the two sides, end to end', () => {
+  const AUG = `Date,Description,Amount
+03/08/2026,TRF FROM ADEBAYO O,150000.00
+05/08/2026,POS PURCHASE SHOPRITE,-20000.00
+`;
+
+  it('refuses a caller with no session', async () => {
+    expect((await post('/v1/bank/reconcile', {})).statusCode).toBe(401);
+  });
+
+  /* A page load must never decide anything: pairing is a write. */
+  it('reads the position without pairing anything', async () => {
+    const { auth } = await onboard('+2348177000081');
+    await post('/v1/bank/statement', { csv: AUG }, auth);
+
+    const first = bankPositionResponse.parse(
+      (await app.inject({ method: 'GET', url: '/v1/bank/position', headers: auth })).json(),
+    );
+    expect(first.reconciliation.matched).toBe(0);
+    expect(first.reconciliation.pairable).toBe(0);
+    expect(first.reconciliation.unmatchedLines).toBe(2);
+
+    /* And reading it again has still stored nothing. */
+    const again = bankPositionResponse.parse(
+      (await app.inject({ method: 'GET', url: '/v1/bank/position', headers: auth })).json(),
+    );
+    expect(again.reconciliation.matched).toBe(0);
+  });
+
+  it('names what is left on each side when nothing can be paired', async () => {
+    const { auth } = await onboard('+2348177000082');
+    await post('/v1/bank/statement', { csv: AUG }, auth);
+
+    const done = reconcileResponse.parse((await post('/v1/bank/reconcile', {}, auth)).json());
+    expect(done).toMatchObject({
+      matched: 0,
+      unmatchedLines: 2,
+      unmatchedMovements: 0,
+      /* 150,000 in less 20,000 out: money the books have never heard of. */
+      unmatchedLinesK: 13_000_000,
+    });
+  });
+
+  it('is one tenant at a time', async () => {
+    const ada = await onboard('+2348177000083');
+    const bola = await onboard('+2348177000084');
+    await post('/v1/bank/statement', { csv: AUG }, ada.auth);
+    await post('/v1/bank/reconcile', {}, ada.auth);
+
+    expect((await post('/v1/bank/reconcile', {}, bola.auth)).json()).toMatchObject({
+      matched: 0,
+      unmatchedLines: 0,
+    });
   });
 });

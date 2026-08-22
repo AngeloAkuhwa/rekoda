@@ -11,9 +11,9 @@
  * mistake to make.
  */
 import { and, eq, sql } from 'drizzle-orm';
-import { fingerprintLines, type BankStatementLine } from '@rekoda/core';
+import { fingerprintLines, matchStatement, type BankStatementLine } from '@rekoda/core';
 import type { TenantDb } from '../client.js';
-import { bankStatementLines } from '../schema/finance.js';
+import { bankLineMatches, bankStatementLines } from '../schema/finance.js';
 import { auditEvents } from '../schema/ops.js';
 
 export interface ImportedStatement {
@@ -203,4 +203,135 @@ export async function forgetStatementDay(
     });
   }
   return removed.length;
+}
+
+export interface Reconciliation {
+  /** Lines paired with a posting, stored. */
+  matched: number;
+  /**
+   * Lines the rule can pair right now and has not.
+   *
+   * Read separately from `matched` because a page load deliberately decides
+   * nothing: this is the offer, and `matched` is what has been accepted. It
+   * is what the button counts, and counting anything else would offer to
+   * pair the lines that provably cannot be.
+   */
+  pairable: number;
+  /** Lines more than one posting fits, waiting on a person. */
+  ambiguous: number;
+  /** Lines nothing in the books explains: money nobody recorded. */
+  unmatchedLines: number;
+  /** Postings nothing on the statement explains: money the bank never saw. */
+  unmatchedMovements: number;
+  /** What the unexplained lines add up to, so the gap has a figure. */
+  unmatchedLinesK: number;
+  unmatchedMovementsK: number;
+}
+
+/**
+ * Movement on the merchant's own bank account, one figure per posting.
+ *
+ * Grouped by transaction rather than listed by entry, because a posting is
+ * the thing a statement line corresponds to: a sale paid by transfer moves
+ * the bank once and the receivable once, and only the first has anything to
+ * do with the bank's version of events.
+ *
+ * The settlement account is deliberately absent (ADR 0025). It has its own
+ * statement behind it, and mixing the two would compare a merchant's bank
+ * against money that has not reached it yet.
+ */
+async function bankMovements(
+  tx: TenantDb,
+  businessId: string,
+): Promise<{ transactionId: string; occurredOn: string; amountK: number }[]> {
+  const rows = await tx.execute<{
+    transaction_id: string;
+    occurred_on: string;
+    amount_k: string;
+  }>(sql`
+    SELECT e.transaction_id,
+           (e.created_at AT TIME ZONE 'Africa/Lagos')::date::text AS occurred_on,
+           (SUM(e.debit_k) - SUM(e.credit_k))::bigint AS amount_k
+    FROM ledger_entries e
+    WHERE e.business_id = ${businessId}::uuid AND e.account = 'BANK'
+    GROUP BY e.transaction_id, (e.created_at AT TIME ZONE 'Africa/Lagos')::date
+    HAVING SUM(e.debit_k) - SUM(e.credit_k) <> 0
+  `);
+  return [...rows].map((r) => ({
+    transactionId: r.transaction_id,
+    occurredOn: r.occurred_on,
+    amountK: Number(r.amount_k),
+  }));
+}
+
+/**
+ * Pair what can only be paired one way, and count what is left.
+ *
+ * Already-matched lines and postings are taken out before the rule runs, so
+ * a second pass never reconsiders a decision a merchant made by hand. The
+ * rule itself is pure and lives in @rekoda/core, where its timidity can be
+ * argued with in a test.
+ */
+export async function reconcile(
+  tx: TenantDb,
+  input: { businessId: string; commit: boolean },
+): Promise<Reconciliation> {
+  const [lines, movements, existing] = await Promise.all([
+    bankLinesFor(tx, input.businessId, 5_000),
+    bankMovements(tx, input.businessId),
+    tx
+      .select({
+        lineId: bankLineMatches.lineId,
+        transactionId: bankLineMatches.transactionId,
+      })
+      .from(bankLineMatches)
+      .where(eq(bankLineMatches.businessId, input.businessId)),
+  ]);
+
+  const matchedLines = new Set(existing.map((m) => m.lineId));
+  const matchedTx = new Set(existing.map((m) => m.transactionId));
+  const open = lines.filter((l) => !matchedLines.has(l.id));
+  const openMovements = movements.filter((m) => !matchedTx.has(m.transactionId));
+
+  const result = matchStatement(
+    open.map((l) => ({ id: l.id, postedOn: l.postedOn, amountK: l.amountK })),
+    openMovements,
+  );
+
+  let claimed = 0;
+  if (input.commit && result.matched.length > 0) {
+    /* ON CONFLICT rather than a check: two reconcile calls arriving together
+     * both read the same open set and both try to claim it, and only the two
+     * unique indexes decide. RETURNING is what makes the count honest — the
+     * loser of that race inserted fewer rows than it proposed, and reporting
+     * the proposal would tell a merchant a pairing was made twice. */
+    const inserted = await tx
+      .insert(bankLineMatches)
+      .values(
+        result.matched.map((m) => ({
+          businessId: input.businessId,
+          lineId: m.lineId,
+          transactionId: m.transactionId,
+          decidedBy: 'auto',
+        })),
+      )
+      .onConflictDoNothing()
+      .returning({ lineId: bankLineMatches.lineId });
+    claimed = inserted.length;
+  }
+
+  const byId = new Map(open.map((l) => [l.id, l]));
+  const movementById = new Map(openMovements.map((m) => [m.transactionId, m]));
+  const sum = (ids: readonly string[], pick: (id: string) => number) =>
+    ids.reduce((n, id) => n + pick(id), 0);
+
+  return {
+    matched: existing.length + claimed,
+    pairable: result.matched.length - claimed,
+    ambiguous: result.ambiguous.length,
+    unmatchedLines: result.unmatchedLines.length,
+    unmatchedMovements: result.unmatchedMovements.length,
+    unmatchedLinesK: sum(result.unmatchedLines, (id) => byId.get(id)?.amountK ?? 0),
+    unmatchedMovementsK: sum(result.unmatchedMovements, (id) => movementById.get(id)?.amountK ?? 0),
+  };
 }

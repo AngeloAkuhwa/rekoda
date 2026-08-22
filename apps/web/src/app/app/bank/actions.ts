@@ -1,7 +1,7 @@
 'use server';
 
 import { revalidatePath } from 'next/cache';
-import { forgetStatementDay, importStatement } from '@/server/api';
+import { forgetStatementDay, importStatement, reconcileBank } from '@/server/api';
 import { readSessionToken } from '@/server/session-cookies';
 
 export interface StatementState {
@@ -95,4 +95,43 @@ export async function forgetDayAction(
     : {
         done: `Removed ${outcome.removed} ${outcome.removed === 1 ? 'line' : 'lines'} from that day. You can import them again at any time.`,
       };
+}
+
+/**
+ * Pair what can only be paired one way.
+ *
+ * The message says what was left as much as what was found, because the
+ * leftovers are the answer: a line nothing explains is money nobody
+ * recorded, and a posting nothing explains is money the bank has never seen.
+ */
+export async function reconcileAction(
+  _prev: StatementState,
+  _formData: FormData,
+): Promise<StatementState> {
+  const token = await readSessionToken();
+  if (!token) return { error: 'Your session expired. Sign in again.' };
+
+  const outcome = await reconcileBank(token);
+  if (!outcome) return { error: 'That did not go through. Nothing was changed.' };
+
+  revalidatePath('/app/bank');
+  const parts = [
+    `${outcome.matched} ${outcome.matched === 1 ? 'line is' : 'lines are'} now matched to your books.`,
+  ];
+  if (outcome.ambiguous > 0) {
+    parts.push(
+      `${outcome.ambiguous} ${outcome.ambiguous === 1 ? 'line' : 'lines'} could be more than one entry, so Rekoda left ${outcome.ambiguous === 1 ? 'it' : 'them'} for you.`,
+    );
+  }
+  if (outcome.unmatchedLines > 0) {
+    parts.push(
+      `${outcome.unmatchedLines} ${outcome.unmatchedLines === 1 ? 'line has' : 'lines have'} nothing in your books to explain ${outcome.unmatchedLines === 1 ? 'it' : 'them'}.`,
+    );
+  }
+  if (outcome.unmatchedMovements > 0) {
+    parts.push(
+      `${outcome.unmatchedMovements} ${outcome.unmatchedMovements === 1 ? 'entry in your books has' : 'entries in your books have'} nothing on the statement.`,
+    );
+  }
+  return { done: parts.join(' ') };
 }

@@ -29,6 +29,7 @@ import {
   type BankPositionResponse,
   type ForgetStatementDayResponse,
   type ImportStatementResponse,
+  type ReconcileResponse,
 } from '@rekoda/contracts';
 import { bankRepo, withBusiness, type Db } from '@rekoda/db';
 import { SessionGuard, type AuthedRequest } from '../auth/session.guard.js';
@@ -43,14 +44,21 @@ export class BankController {
   @Get('position')
   async position(@Req() request: AuthedRequest): Promise<BankPositionResponse> {
     const businessId = request.auth!.businessId;
-    const { position, lines } = await withBusiness(this.db, businessId, async (tx) => ({
-      position: await bankRepo.bankPositionFor(tx, businessId),
-      lines: await bankRepo.bankLinesFor(tx, businessId),
-    }));
+    const { position, lines, reconciliation } = await withBusiness(
+      this.db,
+      businessId,
+      async (tx) => ({
+        position: await bankRepo.bankPositionFor(tx, businessId),
+        lines: await bankRepo.bankLinesFor(tx, businessId),
+        /* Read without committing. Opening a page must not decide anything,
+         * and pairing is a decision the merchant asks for. */
+        reconciliation: await bankRepo.reconcile(tx, { businessId, commit: false }),
+      }),
+    );
     /* Parsed on the way out as well as on the way in. The narration is the
      * one field here that carries somebody's name, and the contract is the
      * border that says which fields may cross at all. */
-    return bankPositionResponse.parse({ position, lines });
+    return bankPositionResponse.parse({ position, lines, reconciliation });
   }
 
   /**
@@ -90,6 +98,24 @@ export class BankController {
       duplicates: stored.duplicates,
       skipped: statement.skipped.length,
     };
+  }
+
+  /**
+   * Pair what can only be paired one way.
+   *
+   * A write, and asked for rather than done on a page load. The rule itself
+   * is timid on purpose: exact amounts, a few days either side, and nothing
+   * paired where two postings fit. A wrong match reports agreement between
+   * books and bank that does not exist, which is the failure this whole
+   * surface was built to catch.
+   */
+  @Post('reconcile')
+  @HttpCode(200)
+  async reconcile(@Req() request: AuthedRequest): Promise<ReconcileResponse> {
+    const businessId = request.auth!.businessId;
+    return withBusiness(this.db, businessId, (tx) =>
+      bankRepo.reconcile(tx, { businessId, commit: true }),
+    );
   }
 
   /**
