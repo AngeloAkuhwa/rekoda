@@ -11,7 +11,9 @@ import {
   reportsDebtorsResponse,
   reportsExpensesResponse,
   paySupplierResponse,
+  recordAssetResponse,
   recordPaymentResponse,
+  withdrawAssetResponse,
   reportsInvoicesResponse,
   teamResponse,
   reportsOverviewResponse,
@@ -96,7 +98,10 @@ import {
   type ReportsDebtorsResponse,
   type ReportsExpensesResponse,
   type PaySupplierResponse,
+  type RecordAssetRequest,
+  type RecordAssetResponse,
   type RecordPaymentResponse,
+  type WithdrawAssetResponse,
   type ReportsInvoicesResponse,
   type TeamResponse,
   type ReportsOverviewResponse,
@@ -465,6 +470,36 @@ export async function recordPayment(
     expect: [200, 400],
   });
   return status === 200 ? recordPaymentResponse.parse(json) : null;
+}
+
+/** Buying something the business keeps and uses (ADR 0026). */
+export async function recordAsset(
+  sessionToken: string,
+  body: RecordAssetRequest,
+): Promise<RecordAssetResponse | null> {
+  const { status, json } = await call({
+    method: 'POST',
+    path: '/v1/reports/assets',
+    body,
+    headers: { authorization: `Bearer ${sessionToken}` },
+    expect: [200, 400],
+  });
+  return status === 200 ? recordAssetResponse.parse(json) : null;
+}
+
+/** Take one back out. Not a disposal. */
+export async function withdrawAsset(
+  sessionToken: string,
+  body: { assetId: string; reason: string },
+): Promise<WithdrawAssetResponse | null> {
+  const { status, json } = await call({
+    method: 'POST',
+    path: '/v1/reports/assets/withdraw',
+    body,
+    headers: { authorization: `Bearer ${sessionToken}` },
+    expect: [200, 400],
+  });
+  return status === 200 ? withdrawAssetResponse.parse(json) : null;
 }
 
 /** Money going back to a supplier, against the purchase it settles. */

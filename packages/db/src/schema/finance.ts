@@ -400,6 +400,32 @@ export const supplierPayments = pgTable(
   (t) => [index('supplier_payments_expense_ix').on(t.businessId, t.expenseId)],
 );
 
+/**
+ * Things the business keeps and uses (ADR 0026).
+ *
+ * `monthsCharged` rather than a last-charged date, because the arithmetic
+ * that keeps an asset depreciating to exactly its cost counts months. A
+ * missed sweep shows up as a count that is behind rather than as a gap
+ * nobody can see.
+ */
+export const fixedAssets = pgTable(
+  'fixed_assets',
+  {
+    id: id(),
+    businessId: businessId(),
+    description: text('description').notNull(),
+    costK: kobo('cost_k').notNull(),
+    usefulLifeMonths: integer('useful_life_months').notNull(),
+    monthsCharged: integer('months_charged').notNull().default(0),
+    boughtOn: date('bought_on').notNull(),
+    ledgerTransactionId: uuid('ledger_transaction_id').references(() => ledgerTransactions.id),
+    /** recorded | withdrawn. A withdrawal mirrors its posting. */
+    status: text('status').notNull().default('recorded'),
+    createdAt: createdAt(),
+  },
+  (t) => [index('fixed_assets_business_ix').on(t.businessId, t.status)],
+);
+
 export const reconciliations = pgTable(
   'reconciliations',
   {

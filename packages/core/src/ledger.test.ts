@@ -3,7 +3,10 @@ import {
   ACCOUNTS,
   UnbalancedPostingError,
   assertBalanced,
+  monthlyDepreciationK,
+  postAssetPurchase,
   postCreditNote,
+  postDepreciation,
   postExpense,
   postJournal,
   postOpeningBalances,
@@ -465,5 +468,94 @@ describe('a correction made by hand', () => {
         }),
       ).toThrow();
     }
+  });
+});
+
+describe('equipment and what wears it down', () => {
+  it('puts what was paid on the balance sheet, not in this month`s profit', () => {
+    const posting = postAssetPurchase({ memo: 'Generator', costK: 45_000_000 });
+    expect(posting.lines).toEqual([
+      { account: 'EQUIPMENT', debitK: 45_000_000, creditK: 0 },
+      { account: 'BANK', debitK: 0, creditK: 45_000_000 },
+    ]);
+    /* Nothing here reaches the profit and loss. That is the whole point. */
+    expect(posting.lines.some((l) => ACCOUNTS[l.account].type === 'expense')).toBe(false);
+  });
+
+  it('carries the unpaid remainder to the supplier, like a purchase', () => {
+    const posting = postAssetPurchase({
+      memo: 'Freezer',
+      costK: 30_000_000,
+      paidK: 10_000_000,
+      method: 'cash',
+    });
+    expect(posting.lines).toEqual([
+      { account: 'EQUIPMENT', debitK: 30_000_000, creditK: 0 },
+      { account: 'CASH', debitK: 0, creditK: 10_000_000 },
+      { account: 'ACCOUNTS_PAYABLE', debitK: 0, creditK: 20_000_000 },
+    ]);
+  });
+
+  it('refuses a cost of nothing and a payment larger than the cost', () => {
+    expect(() => postAssetPurchase({ memo: 'x', costK: 0 })).toThrow(UnbalancedPostingError);
+    expect(() => postAssetPurchase({ memo: 'x', costK: 100, paidK: 101 })).toThrow(
+      UnbalancedPostingError,
+    );
+  });
+
+  /**
+   * The credit goes to the contra-asset, never to EQUIPMENT. What the business
+   * paid and how much has been used up are two facts, and a lender asks about
+   * the first.
+   */
+  it('charges wear without touching what was paid', () => {
+    const posting = postDepreciation({ memo: 'Generator, August', amountK: 750_000 });
+    expect(posting.lines).toEqual([
+      { account: 'DEPRECIATION', debitK: 750_000, creditK: 0 },
+      { account: 'ACCUMULATED_DEPRECIATION', debitK: 0, creditK: 750_000 },
+    ]);
+    expect(posting.lines.some((l) => l.account === 'EQUIPMENT')).toBe(false);
+  });
+
+  it('refuses a charge of nothing', () => {
+    expect(() => postDepreciation({ memo: 'x', amountK: 0 })).toThrow(RangeError);
+  });
+});
+
+describe('what a month of wear costs', () => {
+  it('divides the cost evenly across the life', () => {
+    expect(
+      monthlyDepreciationK({ costK: 45_000_000, usefulLifeMonths: 60, monthsCharged: 0 }),
+    ).toBe(750_000);
+  });
+
+  /**
+   * The property that keeps a balance sheet honest for good. Every month's
+   * charge summed must equal the cost EXACTLY, at every life and every price,
+   * or an asset depreciates to four kobo and stays there forever.
+   */
+  it('always sums to exactly the cost, whatever the arithmetic leaves over', () => {
+    for (const costK of [100_000, 45_000_000, 999_999, 1, 7, 123_456_789]) {
+      for (const months of [1, 2, 3, 7, 12, 13, 60, 84]) {
+        let total = 0;
+        for (let m = 0; m < months; m++) {
+          total += monthlyDepreciationK({ costK, usefulLifeMonths: months, monthsCharged: m });
+        }
+        expect(total).toBe(costK);
+      }
+    }
+  });
+
+  it('stops at the end of the life, and never runs backwards', () => {
+    const args = { costK: 100_000, usefulLifeMonths: 10 };
+    expect(monthlyDepreciationK({ ...args, monthsCharged: 10 })).toBe(0);
+    expect(monthlyDepreciationK({ ...args, monthsCharged: 99 })).toBe(0);
+    expect(monthlyDepreciationK({ ...args, monthsCharged: -1 })).toBe(0);
+  });
+
+  it('refuses a life that is not a whole number of months', () => {
+    const args = { costK: 100_000, monthsCharged: 0 };
+    expect(() => monthlyDepreciationK({ ...args, usefulLifeMonths: 0 })).toThrow(RangeError);
+    expect(() => monthlyDepreciationK({ ...args, usefulLifeMonths: 1.5 })).toThrow(RangeError);
   });
 });

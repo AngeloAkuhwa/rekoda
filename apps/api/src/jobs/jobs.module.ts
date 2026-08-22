@@ -33,6 +33,7 @@ import { sweepGracePeriods } from '../billing/grace-sweep.js';
 import { sweepRenewals } from '../billing/renewal-sweep.js';
 import { sweepRetention } from '../privacy/retention-sweep.js';
 import { sweepRecurring } from '../spend/recurring-sweep.js';
+import { sweepDepreciation } from '../spend/depreciation-sweep.js';
 import { MESSAGE_SENDER } from '../channels/sender.tokens.js';
 import { SPEECH_TO_TEXT, type SpeechToText } from '../ai/stt.js';
 import { TEXT_EXTRACTION, type TextExtraction } from '../ai/ocr.js';
@@ -125,6 +126,8 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
   private sweepingRenewals = false;
   private recurringTimer: NodeJS.Timeout | null = null;
   private sweepingRecurring = false;
+  private depreciationTimer: NodeJS.Timeout | null = null;
+  private sweepingDepreciation = false;
   private retentionTimer: NodeJS.Timeout | null = null;
   private sweepingRetention = false;
 
@@ -301,6 +304,28 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
         });
     }, 3_600_000);
     this.recurringTimer.unref();
+
+    /**
+     * Wear on the equipment, on the same hourly clock and for the same
+     * reason: the unit is a MONTH, so hourly is far more often than the
+     * answer can change, and what it buys is that a merchant opening the
+     * dashboard sees the charge rather than waiting for a nightly job.
+     *
+     * Without this the balance sheet would hold a generator at its full price
+     * forever, which is a new misstatement in place of the old one.
+     */
+    this.depreciationTimer = setInterval(() => {
+      if (this.sweepingDepreciation) return;
+      this.sweepingDepreciation = true;
+      sweepDepreciation({ workerDb, appDb: this.appDb })
+        .catch((error: unknown) => {
+          this.log.warn(`depreciation sweep failed: ${redactForLog(describeFailure(error))}`);
+        })
+        .finally(() => {
+          this.sweepingDepreciation = false;
+        });
+    }, 3_600_000);
+    this.depreciationTimer.unref();
   }
 
   async onApplicationShutdown(): Promise<void> {
@@ -308,6 +333,7 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
     if (this.graceTimer) clearInterval(this.graceTimer);
     if (this.renewalTimer) clearInterval(this.renewalTimer);
     if (this.recurringTimer) clearInterval(this.recurringTimer);
+    if (this.depreciationTimer) clearInterval(this.depreciationTimer);
     if (this.retentionTimer) clearInterval(this.retentionTimer);
     if (this.sweepTimer) clearInterval(this.sweepTimer);
     if (this.strangerTimer) clearInterval(this.strangerTimer);

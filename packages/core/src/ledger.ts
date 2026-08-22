@@ -29,12 +29,33 @@ export const ACCOUNTS = {
   BANK: { code: '1020', name: 'Bank', type: 'asset' },
   ACCOUNTS_RECEIVABLE: { code: '1100', name: 'Accounts Receivable', type: 'asset' },
   INVENTORY: { code: '1200', name: 'Inventory', type: 'asset' },
+  /** What the business paid for things it keeps and uses (ADR 0026). */
+  EQUIPMENT: { code: '1300', name: 'Equipment', type: 'asset' },
+  /**
+   * A CONTRA-ASSET: asset-type, credit-normal, and deliberately so.
+   *
+   * `naturalBalance` computes debits less credits for asset accounts, so this
+   * lands on the balance sheet as a negative directly beneath the equipment
+   * it reduces, which is how a real balance sheet presents it. Nothing needed
+   * telling about depreciation for the accounting identity to hold.
+   *
+   * Separate from EQUIPMENT rather than netted into it because the two facts
+   * are different and an accountant expects both: what the business paid, and
+   * how much of that has been used up. A lender asks about the first.
+   */
+  ACCUMULATED_DEPRECIATION: {
+    code: '1310',
+    name: 'Less: accumulated depreciation',
+    type: 'asset',
+  },
   ACCOUNTS_PAYABLE: { code: '2000', name: 'Accounts Payable', type: 'liability' },
   VAT_PAYABLE: { code: '2100', name: 'VAT Payable', type: 'liability' },
   OWNERS_EQUITY: { code: '3000', name: "Owner's Equity", type: 'equity' },
   SALES_REVENUE: { code: '4000', name: 'Sales Revenue', type: 'income' },
   COGS: { code: '5000', name: 'Cost of Goods Sold', type: 'expense' },
   EXPENSES: { code: '6000', name: 'Operating Expenses', type: 'expense' },
+  /** This period's charge for using the equipment (ADR 0026). */
+  DEPRECIATION: { code: '6100', name: 'Depreciation', type: 'expense' },
 } as const satisfies Record<string, { code: string; name: string; type: AccountType }>;
 
 export type AccountKey = keyof typeof ACCOUNTS;
@@ -382,6 +403,13 @@ export const ACCOUNT_PICKER_LABELS: Record<AccountKey, string> = {
   SALES_REVENUE: 'Sales',
   COGS: 'Cost of goods sold',
   EXPENSES: 'Running costs',
+  EQUIPMENT: 'Equipment you own',
+  DEPRECIATION: 'Wear on your equipment',
+  /* Below the everyday accounts, because a merchant correcting something by
+   * hand almost never means either of these. Accumulated depreciation is
+   * written by the monthly charge, not by a person, and pointing a journal at
+   * it by mistake is how a balance sheet stops adding up. */
+  ACCUMULATED_DEPRECIATION: 'Equipment wear recorded so far',
   /* Last, and deliberately. A merchant reaches for this list to say where
    * money went, and the settlement account is the one entry there they almost
    * never mean: it is written by the provider, not by them. Ordered by how
@@ -407,8 +435,8 @@ export const ACCOUNT_PICKER_LABELS: Record<AccountKey, string> = {
  * not balance. What it cannot express is a genuine multi-line journal, which
  * is a real limit and a deliberate one.
  *
- * The accounts are the fixed ten (ADR 0004), so a merchant cannot invent a
- * place to hide a difference.
+ * The accounts are the fixed chart (ADR 0004, amended by 0025 and 0026), so a
+ * merchant cannot invent a place to hide a difference.
  */
 export function postJournal(args: {
   memo: string;
@@ -499,4 +527,88 @@ export function trialBalance(postings: readonly Posting[]): {
   }
   rows.sort((x, y) => ACCOUNTS[x.account].code.localeCompare(ACCOUNTS[y.account].code));
   return { rows, totalDebitsK, totalCreditsK, balanced: totalDebitsK === totalCreditsK };
+}
+
+/**
+ * Buying something the business keeps and uses (ADR 0026).
+ *
+ * The difference from an expense is not a category, it is which statement the
+ * money lands on. An expense reaches the profit and loss now; this reaches the
+ * balance sheet and only touches profit later, a month at a time, as the thing
+ * is used up. Recording a ₦450,000 generator as an expense reports a loss the
+ * business did not make and hides an asset it owns.
+ *
+ * Paid or owed, like a purchase: a merchant who takes a freezer on credit owes
+ * the supplier, and the remainder carries to ACCOUNTS_PAYABLE so the payable
+ * ageing and the supplier payment already know what to do with it.
+ */
+export function postAssetPurchase(args: {
+  memo: string;
+  costK: Kobo;
+  paidK?: Kobo;
+  method?: PaymentMethod;
+}): Posting {
+  const paidK = args.paidK ?? args.costK;
+  const owedK = args.costK - paidK;
+  if (args.costK <= 0 || paidK < 0 || owedK < 0) {
+    throw new UnbalancedPostingError(args.memo, paidK, args.costK);
+  }
+
+  const lines: LedgerLine[] = [line('EQUIPMENT', args.costK, 0)];
+  if (paidK > 0) lines.push(line(cashOrBank(args.method ?? 'transfer'), 0, paidK));
+  if (owedK > 0) lines.push(line('ACCOUNTS_PAYABLE', 0, owedK));
+
+  const posting: Posting = { memo: args.memo, lines };
+  assertBalanced(posting);
+  return posting;
+}
+
+/**
+ * One month's wear on the equipment (ADR 0026).
+ *
+ * The credit goes to ACCUMULATED_DEPRECIATION rather than to EQUIPMENT,
+ * because what the business PAID and how much has been USED UP are two facts
+ * and an accountant expects both. Netting them would destroy the first, which
+ * is the one a lender asks about.
+ */
+export function postDepreciation(args: { memo: string; amountK: Kobo }): Posting {
+  if (args.amountK <= 0) {
+    throw new RangeError('a depreciation charge of nothing is not a charge');
+  }
+  const posting: Posting = {
+    memo: args.memo,
+    lines: [
+      line('DEPRECIATION', args.amountK, 0),
+      line('ACCUMULATED_DEPRECIATION', 0, args.amountK),
+    ],
+  };
+  assertBalanced(posting);
+  return posting;
+}
+
+/**
+ * What a month's charge is, in kobo, for one asset.
+ *
+ * Straight line with no salvage value (ADR 0026): cost divided by useful life
+ * in months. The LAST month takes whatever rounding left behind, so an asset
+ * always depreciates to exactly its cost and never to a kobo more or less.
+ * Charging `round(cost / months)` every month for a ₦100,000 asset over 7
+ * months would leave 4 kobo stranded on the balance sheet forever, which is
+ * small, permanent, and exactly the kind of thing that makes an accountant
+ * stop trusting a system.
+ */
+export function monthlyDepreciationK(args: {
+  costK: Kobo;
+  usefulLifeMonths: number;
+  monthsCharged: number;
+}): Kobo {
+  const { costK, usefulLifeMonths, monthsCharged } = args;
+  if (!Number.isInteger(usefulLifeMonths) || usefulLifeMonths <= 0) {
+    throw new RangeError('useful life is a whole number of months, at least one');
+  }
+  if (monthsCharged < 0 || monthsCharged >= usefulLifeMonths) return 0;
+
+  const perMonth = Math.floor(costK / usefulLifeMonths);
+  const isLast = monthsCharged === usefulLifeMonths - 1;
+  return isLast ? costK - perMonth * (usefulLifeMonths - 1) : perMonth;
 }

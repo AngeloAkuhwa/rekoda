@@ -18,10 +18,12 @@ describe('the chart of accounts, on the wire', () => {
     expect([...LedgerAccount.options].sort()).toEqual(Object.keys(ACCOUNTS).sort());
   });
 
-  /* Eleven since ADR 0025 split the bank. Still fixed: a merchant cannot add
-   * one, which is the property ADR 0004 exists to protect. */
+  /* Fourteen since ADR 0026 added equipment, its accumulated depreciation and
+   * the charge. Still fixed: a merchant cannot add one, which is the property
+   * ADR 0004 exists to protect, and this number is what makes the next
+   * addition a decision somebody writes down rather than a diff. */
   it('is still a fixed chart, and still small', () => {
-    expect(LedgerAccount.options).toHaveLength(11);
+    expect(LedgerAccount.options).toHaveLength(14);
   });
 
   /* A picker missing a label renders a blank option, which is how a merchant

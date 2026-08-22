@@ -95,6 +95,10 @@ import {
   closeBooksRequest,
   journalEntryRequest,
   paySupplierRequest,
+  recordAssetRequest,
+  withdrawAssetRequest,
+  type RecordAssetResponse,
+  type WithdrawAssetResponse,
   recordPaymentRequest,
   type RecordPaymentResponse,
   type PaySupplierResponse,
@@ -106,6 +110,7 @@ import {
 } from '@rekoda/contracts';
 import {
   identity,
+  assetsRepo,
   issueRepo,
   jobsRepo,
   ordersRepo,
@@ -652,7 +657,7 @@ export class ReportsController {
   async expenses(@Req() request: AuthedRequest): Promise<ReportsExpensesResponse> {
     const businessId = request.auth!.businessId;
     const now = new Date();
-    const { list, payableAgeing, recurring, outstanding } = await withBusiness(
+    const { list, payableAgeing, recurring, outstanding, assets } = await withBusiness(
       this.db,
       businessId,
       async (tx) => ({
@@ -663,6 +668,7 @@ export class ReportsController {
          * it belongs to: a page that fetched these apart could show a total
          * from one moment and a list from another. */
         outstanding: await spendRepo.outstandingPurchases(tx, businessId),
+        assets: await assetsRepo.assetsFor(tx, businessId),
       }),
     );
     return {
@@ -684,7 +690,72 @@ export class ReportsController {
       payableAgeing,
       recurring,
       outstanding,
+      assets,
     };
+  }
+
+  /**
+   * Buying something the business keeps and uses (ADR 0026).
+   *
+   * A ₦450,000 generator recorded as an expense reports a loss the business
+   * did not make, hides an asset it owns, and flatters every month afterwards
+   * by charging nothing for using it. This puts it on the balance sheet.
+   *
+   * The useful life is taken from the merchant and never inferred: a model
+   * deciding how long a freezer lasts would be a model computing money.
+   */
+  @Post('assets')
+  @HttpCode(200)
+  async recordAsset(
+    @Req() request: AuthedRequest,
+    @Body() body: unknown,
+  ): Promise<RecordAssetResponse> {
+    const parsed = recordAssetRequest.safeParse(body);
+    if (!parsed.success) {
+      throw new BadRequestException(
+        'a description, what it cost, what you paid, and how many months it will last',
+      );
+    }
+    const businessId = request.auth!.businessId;
+    const recorded = await withBusiness(this.db, businessId, (tx) =>
+      assetsRepo.recordAsset(tx, {
+        businessId,
+        description: parsed.data.description,
+        costK: parsed.data.costK,
+        paidK: parsed.data.paidK,
+        usefulLifeMonths: parsed.data.usefulLifeMonths,
+        method: parsed.data.method,
+        actor: `user:${request.auth!.userId}`,
+      }),
+    );
+    return { assetId: recorded.assetId, owedK: recorded.owedK };
+  }
+
+  /**
+   * Take back something that should not have been recorded.
+   *
+   * Not a disposal: selling equipment is a real event with a gain or a loss
+   * against book value and ADR 0026 leaves it out of this slice deliberately.
+   */
+  @Post('assets/withdraw')
+  @HttpCode(200)
+  async withdrawAsset(
+    @Req() request: AuthedRequest,
+    @Body() body: unknown,
+  ): Promise<WithdrawAssetResponse> {
+    const parsed = withdrawAssetRequest.safeParse(body);
+    if (!parsed.success) {
+      throw new BadRequestException('the item to withdraw and a reason of at least 4 characters');
+    }
+    const businessId = request.auth!.businessId;
+    return withBusiness(this.db, businessId, (tx) =>
+      assetsRepo.withdrawAsset(tx, {
+        businessId,
+        assetId: parsed.data.assetId,
+        reason: parsed.data.reason,
+        actor: `user:${request.auth!.userId}`,
+      }),
+    );
   }
 
   /**
