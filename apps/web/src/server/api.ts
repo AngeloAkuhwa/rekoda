@@ -10,6 +10,7 @@ import {
   reportsCashflowResponse,
   reportsDebtorsResponse,
   reportsExpensesResponse,
+  paySupplierResponse,
   reportsInvoicesResponse,
   teamResponse,
   reportsOverviewResponse,
@@ -93,6 +94,7 @@ import {
   type ReportsStockResponse,
   type ReportsDebtorsResponse,
   type ReportsExpensesResponse,
+  type PaySupplierResponse,
   type ReportsInvoicesResponse,
   type TeamResponse,
   type ReportsOverviewResponse,
@@ -446,6 +448,21 @@ export async function reportsAudit(sessionToken: string): Promise<ReportsAuditRe
     expect: [200],
   });
   return reportsAuditResponse.parse(json);
+}
+
+/** Money going back to a supplier, against the purchase it settles. */
+export async function paySupplier(
+  sessionToken: string,
+  body: { expenseId: string; amountK: number; method: 'cash' | 'transfer' },
+): Promise<PaySupplierResponse | null> {
+  const { status, json } = await call({
+    method: 'POST',
+    path: '/v1/reports/suppliers/pay',
+    body,
+    headers: { authorization: `Bearer ${sessionToken}` },
+    expect: [200, 400],
+  });
+  return status === 200 ? paySupplierResponse.parse(json) : null;
 }
 
 export async function reportsExpenses(sessionToken: string): Promise<ReportsExpensesResponse> {

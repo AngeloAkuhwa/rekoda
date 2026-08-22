@@ -329,7 +329,8 @@ describe('the spend register', () => {
       expensesK: 0,
       purchasesK: 0,
       payableK: 0,
-      payableAgeing: { d0_30K: 0, d31_60K: 0, d61_90K: 0, d90PlusK: 0, totalK: 0 },
+      payableAgeing: { d0_30K: 0, d31_60K: 0, d61_90K: 0, d90PlusK: 0, unlinkedK: 0, totalK: 0 },
+      outstanding: [],
     });
   });
 
@@ -351,6 +352,98 @@ describe('the spend register', () => {
 
     const kinds = Object.fromEntries(spend.entries.map((e) => [e.description, e.kind]));
     expect(kinds).toEqual({ diesel: 'expense', 'ankara bales': 'purchase' });
+  });
+
+  describe('paying a supplier back', () => {
+    const outstandingOf = async (auth: Record<string, string>) =>
+      reportsExpensesResponse.parse(
+        (await app.inject({ method: 'GET', url: '/v1/reports/expenses', headers: auth })).json(),
+      );
+
+    it('offers what is still owed, and settles it against the purchase', async () => {
+      const { auth, businessId } = await onboard('+2348177000091');
+      await seedSpend(businessId);
+
+      const before = await outstandingOf(auth);
+      expect(before.outstanding).toHaveLength(1);
+      expect(before.outstanding[0]).toMatchObject({
+        description: 'ankara bales',
+        owedK: 3_000_000,
+      });
+
+      const res = await post(
+        '/v1/reports/suppliers/pay',
+        { expenseId: before.outstanding[0]!.expenseId, amountK: 3_000_000, method: 'transfer' },
+        auth,
+      );
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toMatchObject({ outcome: 'paid', owedK: 0 });
+
+      const after = await outstandingOf(auth);
+      /* Both figures moved, which is the whole point: before this shipped the
+       * balance dropped and the ageing did not. */
+      expect(after.payableK).toBe(0);
+      expect(after.payableAgeing).toMatchObject({ d0_30K: 0, unlinkedK: 0, totalK: 0 });
+      expect(after.outstanding).toEqual([]);
+    });
+
+    it('names the figure when a merchant tries to pay more than is owed', async () => {
+      const { auth, businessId } = await onboard('+2348177000092');
+      await seedSpend(businessId);
+      const before = await outstandingOf(auth);
+
+      const res = await post(
+        '/v1/reports/suppliers/pay',
+        { expenseId: before.outstanding[0]!.expenseId, amountK: 3_000_001, method: 'cash' },
+        auth,
+      );
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({
+        outcome: 'refused',
+        reason: 'more_than_owed',
+        owedK: 3_000_000,
+      });
+      expect((await outstandingOf(auth)).payableK).toBe(3_000_000);
+    });
+
+    it('refuses a stranger, and a body that is not a payment', async () => {
+      expect((await post('/v1/reports/suppliers/pay', {})).statusCode).toBe(401);
+
+      const { auth } = await onboard('+2348177000093');
+      expect((await post('/v1/reports/suppliers/pay', {}, auth)).statusCode).toBe(400);
+      expect(
+        (await post('/v1/reports/suppliers/pay', { expenseId: 'nope', amountK: 1 }, auth))
+          .statusCode,
+      ).toBe(400);
+      expect(
+        (
+          await post(
+            '/v1/reports/suppliers/pay',
+            { expenseId: '00000000-0000-4000-8000-000000000000', amountK: 0, method: 'cash' },
+            auth,
+          )
+        ).statusCode,
+      ).toBe(400);
+    });
+
+    /* One tenant's purchase is not another's to settle, uuid in hand or not. */
+    it('is one tenant at a time', async () => {
+      const ada = await onboard('+2348177000094');
+      const bola = await onboard('+2348177000095');
+      await seedSpend(ada.businessId);
+      const theirs = await outstandingOf(ada.auth);
+
+      expect((await outstandingOf(bola.auth)).outstanding).toEqual([]);
+      expect(
+        (
+          await post(
+            '/v1/reports/suppliers/pay',
+            { expenseId: theirs.outstanding[0]!.expenseId, amountK: 1_000_000, method: 'cash' },
+            bola.auth,
+          )
+        ).json(),
+      ).toMatchObject({ outcome: 'refused', reason: 'no_such_purchase' });
+    });
   });
 
   it('withdraws an entry, and the totals stop counting it', async () => {

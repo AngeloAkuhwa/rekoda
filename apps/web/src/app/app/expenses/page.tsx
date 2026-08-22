@@ -10,6 +10,7 @@ import { reportsExpenses } from '@/server/api';
 import { requireSessionWithToken } from '@/server/guards';
 import { AppNav } from '../AppNav';
 import { VoidSpendForm, type VoidableEntry } from './VoidSpendForm';
+import { PaySupplierForm } from './PaySupplierForm';
 import { CreateRecurringForm, StopRecurringForm, type StoppableSchedule } from './RecurringForms';
 import { SignOutButton } from '../SignOutButton';
 
@@ -31,7 +32,7 @@ export const metadata: Metadata = {
  */
 export default async function ExpensesPage() {
   const { token } = await requireSessionWithToken();
-  const { entries, count, expensesK, purchasesK, payableK, payableAgeing, recurring } =
+  const { entries, count, expensesK, purchasesK, payableK, payableAgeing, recurring, outstanding } =
     await reportsExpenses(token);
 
   /* Only what can still be withdrawn is offered, and each option carries the
@@ -89,7 +90,7 @@ export default async function ExpensesPage() {
           <p className="rk-fineprint">
             By age, not by lateness. A supplier bill has no due date in Rekoda, because Rekoda keeps
             nothing about suppliers, so this counts from the day you bought rather than a deadline
-            nobody agreed. These four add up to the figure above.
+            nobody agreed.
           </p>
           <div className="rk-table-scroll">
             <table className="rk-table">
@@ -119,6 +120,24 @@ export default async function ExpensesPage() {
               </tbody>
             </table>
           </div>
+          {/* Only when there is one. A settlement made by manual journal names
+              no purchase, so Rekoda will not claim to know which debt it
+              cleared, and will not drop the money either. The sign says which
+              direction it went. */}
+          {payableAgeing.unlinkedK !== 0 ? (
+            <p className="rk-fineprint">
+              {payableAgeing.unlinkedK < 0
+                ? `A further ${formatKobo(-payableAgeing.unlinkedK)} has been settled by journal entries that do not say which purchase they paid, so it is not taken off any of the four figures above. Recording payments against the purchase itself keeps these buckets true.`
+                : `A further ${formatKobo(payableAgeing.unlinkedK)} is owed through journal entries that name no purchase, so there is no date to age it from.`}
+            </p>
+          ) : null}
+          <h3>Pay a supplier</h3>
+          <p className="rk-fineprint">
+            Recorded against the purchase it settles, which is what lets both the figure above and
+            your balance sheet move together. Nothing is sent to anybody: this records that the
+            money went out. Oldest purchase first.
+          </p>
+          <PaySupplierForm purchases={outstanding} />
         </div>
       ) : null}
 
