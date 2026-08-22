@@ -817,6 +817,20 @@ export const importStatementResponse = z.discriminatedUnion('outcome', [
 
 /** What the books say against what the bank says. */
 export const bankPositionResponse = z.object({
+  /**
+   * Read without committing, so opening the page never decides anything.
+   * Pairing is a write, and a page load must not write.
+   */
+  reconciliation: z.object({
+    matched: z.number().int().nonnegative(),
+    /** What the rule would pair if asked. The read never asks. */
+    pairable: z.number().int().nonnegative(),
+    ambiguous: z.number().int().nonnegative(),
+    unmatchedLines: z.number().int().nonnegative(),
+    unmatchedMovements: z.number().int().nonnegative(),
+    unmatchedLinesK: z.number().int().finite(),
+    unmatchedMovementsK: z.number().int().finite(),
+  }),
   position: z.object({
     ledgerK: z.number().int().finite(),
     statementK: z.number().int().finite(),
@@ -841,6 +855,28 @@ export const bankPositionResponse = z.object({
     }),
   ),
 });
+
+/**
+ * What pairing the two sides found.
+ *
+ * `ambiguous` is not a failure. It is the count of lines where more than one
+ * posting fits, which is exactly where a confident matcher invents a
+ * reconciliation, so they are left for a person.
+ */
+export const reconcileResponse = z.object({
+  matched: z.number().int().nonnegative(),
+  /** Left over after this pass, which outside a race is zero. */
+  pairable: z.number().int().nonnegative(),
+  ambiguous: z.number().int().nonnegative(),
+  /** Lines nothing in the books explains: money nobody recorded. */
+  unmatchedLines: z.number().int().nonnegative(),
+  /** Postings nothing on the statement explains: money the bank never saw. */
+  unmatchedMovements: z.number().int().nonnegative(),
+  unmatchedLinesK: z.number().int().finite(),
+  unmatchedMovementsK: z.number().int().finite(),
+});
+
+export type ReconcileResponse = z.infer<typeof reconcileResponse>;
 
 export const forgetStatementDayRequest = z.object({
   postedOn: z

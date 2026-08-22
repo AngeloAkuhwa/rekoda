@@ -338,6 +338,38 @@ export const bankStatementLines = pgTable(
   ],
 );
 
+/**
+ * Which statement line is which posting (migration 0037).
+ *
+ * Its own table rather than columns on the line, because a match is not part
+ * of what the bank said. It is Rekoda's assertion about it, made later, by a
+ * rule or by a merchant, and revisable without touching the evidence.
+ *
+ * One line to one posting, both ways, enforced by two unique indexes: a
+ * reconciliation that explained the same money twice would report a
+ * difference of zero that means nothing.
+ */
+export const bankLineMatches = pgTable(
+  'bank_line_matches',
+  {
+    id: id(),
+    businessId: businessId(),
+    lineId: uuid('line_id')
+      .notNull()
+      .references(() => bankStatementLines.id, { onDelete: 'cascade' }),
+    transactionId: uuid('transaction_id')
+      .notNull()
+      .references(() => ledgerTransactions.id),
+    /** `auto` when the rule was certain, `manual` when a person decided. */
+    decidedBy: text('decided_by').notNull(),
+    matchedAt: timestamp('matched_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('bank_match_line_ux').on(t.businessId, t.lineId),
+    uniqueIndex('bank_match_tx_ux').on(t.businessId, t.transactionId),
+  ],
+);
+
 export const reconciliations = pgTable(
   'reconciliations',
   {

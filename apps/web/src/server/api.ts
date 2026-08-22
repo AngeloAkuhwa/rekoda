@@ -32,6 +32,7 @@ import {
   bankPositionResponse,
   importStatementResponse,
   forgetStatementDayResponse,
+  reconcileResponse,
   reopenBooksResponse,
   publicShopIndexResponse,
   publicShopResponse,
@@ -59,6 +60,7 @@ import {
   type BankPositionResponse,
   type ImportStatementResponse,
   type ForgetStatementDayResponse,
+  type ReconcileResponse,
   type CloseBooksResponse,
   type ReopenBooksRequest,
   type ReopenBooksResponse,
@@ -720,6 +722,18 @@ export async function importStatement(
     expect: [200, 400],
   });
   return status === 200 ? importStatementResponse.parse(json) : null;
+}
+
+/** Pair what can only be paired one way. A write, so it is asked for. */
+export async function reconcileBank(sessionToken: string): Promise<ReconcileResponse | null> {
+  const { status, json } = await call({
+    method: 'POST',
+    path: '/v1/bank/reconcile',
+    body: {},
+    headers: { authorization: `Bearer ${sessionToken}` },
+    expect: [200, 400],
+  });
+  return status === 200 ? reconcileResponse.parse(json) : null;
 }
 
 /** Take one day's imported lines back out. */

@@ -270,3 +270,165 @@ describe('what the application may not do', () => {
     expect(lines.every((l) => l.amountK !== 1)).toBe(true);
   });
 });
+
+describe('pairing the two sides', () => {
+  /** A posting on the merchant's own bank, dated. */
+  const bankPosting = (businessId: string, day: string, amountK: number, ref: string) =>
+    withBusiness(db, businessId, (tx) =>
+      issueRepo.writePosting(
+        tx,
+        businessId,
+        postJournal({
+          memo: `Money ${amountK > 0 ? 'in' : 'out'}`,
+          amountK: Math.abs(amountK),
+          intoAccount: amountK > 0 ? 'BANK' : 'OWNERS_EQUITY',
+          outOfAccount: amountK > 0 ? 'OWNERS_EQUITY' : 'BANK',
+        }),
+        'journal',
+        ref,
+        { occurredAt: new Date(`${day}T12:00:00+01:00`) },
+      ),
+    );
+
+  const reconcile = (businessId: string, commit = true) =>
+    withBusiness(db, businessId, (tx) => bankRepo.reconcile(tx, { businessId, commit }));
+
+  it('pairs a line with the posting that explains it', async () => {
+    const businessId = await seedBusiness('+2348110000040');
+    await importIt(businessId, AUGUST);
+    await bankPosting(businessId, '2026-08-03', 15_000_000, 'J1');
+
+    expect(await reconcile(businessId)).toMatchObject({
+      matched: 1,
+      ambiguous: 0,
+      unmatchedLines: 1,
+      unmatchedMovements: 0,
+      /* The POS purchase nobody recorded, which is the point of the exercise. */
+      unmatchedLinesK: -2_000_000,
+    });
+  });
+
+  /* Running it again must not re-decide anything, or double-count. */
+  it('leaves a decision it already made alone', async () => {
+    const businessId = await seedBusiness('+2348110000041');
+    await importIt(businessId, AUGUST);
+    await bankPosting(businessId, '2026-08-03', 15_000_000, 'J1');
+
+    await reconcile(businessId);
+    expect(await reconcile(businessId)).toMatchObject({ matched: 1, unmatchedLines: 1 });
+  });
+
+  it('changes nothing when asked not to commit', async () => {
+    const businessId = await seedBusiness('+2348110000042');
+    await importIt(businessId, AUGUST);
+    await bankPosting(businessId, '2026-08-03', 15_000_000, 'J1');
+
+    /* Reports one it COULD pair, and stores nothing. `pairable` is the whole
+     * point of the read: it is what the button on the page counts, and if it
+     * counted the unmatched lines instead it would offer to pair the one
+     * line that provably cannot be paired. */
+    expect(await reconcile(businessId, false)).toMatchObject({
+      matched: 0,
+      pairable: 1,
+      unmatchedLines: 1,
+    });
+    expect(await reconcile(businessId, false)).toMatchObject({ matched: 0, pairable: 1 });
+
+    /* And once accepted, the offer is spent rather than repeated. */
+    expect(await reconcile(businessId)).toMatchObject({ matched: 1, pairable: 0 });
+    expect(await reconcile(businessId, false)).toMatchObject({ matched: 1, pairable: 0 });
+  });
+
+  /**
+   * The refusal that matters, reached through the database. Two postings of
+   * the same amount in the same week is where a confident matcher invents a
+   * reconciliation, so nothing is paired and both stay outstanding.
+   */
+  it('refuses to choose between two postings that both fit', async () => {
+    const businessId = await seedBusiness('+2348110000043');
+    await importIt(businessId, AUGUST);
+    await bankPosting(businessId, '2026-08-02', 15_000_000, 'J1');
+    await bankPosting(businessId, '2026-08-04', 15_000_000, 'J2');
+
+    expect(await reconcile(businessId)).toMatchObject({ matched: 0, ambiguous: 1 });
+  });
+
+  /* One line, one posting, both ways: the indexes are the guarantee. */
+  it('will not let two lines claim the same posting', async () => {
+    const businessId = await seedBusiness('+2348110000044');
+    await importIt(businessId, AUGUST);
+    const txId = await bankPosting(businessId, '2026-08-03', 15_000_000, 'J1');
+    const lines = await withBusiness(db, businessId, (tx) => bankRepo.bankLinesFor(tx, businessId));
+
+    await withBusiness(db, businessId, (tx) =>
+      tx.execute(sql`
+        INSERT INTO bank_line_matches (business_id, line_id, transaction_id, decided_by)
+        VALUES (${businessId}::uuid, ${lines[0]!.id}::uuid, ${txId}::uuid, 'manual')
+      `),
+    );
+
+    await expect(
+      withBusiness(db, businessId, (tx) =>
+        tx.execute(sql`
+          INSERT INTO bank_line_matches (business_id, line_id, transaction_id, decided_by)
+          VALUES (${businessId}::uuid, ${lines[1]!.id}::uuid, ${txId}::uuid, 'manual')
+        `),
+      ),
+    ).rejects.toBeTruthy();
+  });
+
+  /* A posting on the settlement account is a different statement's business
+   * entirely (ADR 0025), so it must never appear as an unexplained movement. */
+  it('never counts a settlement as money the bank has not seen', async () => {
+    const businessId = await seedBusiness('+2348110000045');
+    await withBusiness(db, businessId, (tx) =>
+      issueRepo.writePosting(
+        tx,
+        businessId,
+        postJournal({
+          memo: 'Settled',
+          amountK: 9_000_000,
+          intoAccount: 'BANK_PAYSTACK',
+          outOfAccount: 'OWNERS_EQUITY',
+        }),
+        'journal',
+        'J9',
+      ),
+    );
+    expect(await reconcile(businessId)).toMatchObject({ unmatchedMovements: 0 });
+  });
+
+  it('forgetting a line takes its match with it', async () => {
+    const businessId = await seedBusiness('+2348110000046');
+    await importIt(businessId, AUGUST);
+    await bankPosting(businessId, '2026-08-03', 15_000_000, 'J1');
+    await reconcile(businessId);
+
+    await withBusiness(db, businessId, (tx) =>
+      bankRepo.forgetStatementDay(tx, { businessId, postedOn: '2026-08-03', actor: 'user:1' }),
+    );
+    const rows = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ n: string }>(sql`
+        SELECT COUNT(*)::bigint AS n FROM bank_line_matches
+        WHERE business_id = ${businessId}::uuid
+      `),
+    );
+    /* ON DELETE CASCADE: a match to a line that no longer exists is not a
+     * fact about anything. */
+    expect(Number([...rows][0]!.n)).toBe(0);
+  });
+
+  it('is one business at a time', async () => {
+    const ada = await seedBusiness('+2348110000047');
+    const bola = await seedBusiness('+2348110000048');
+    await importIt(ada, AUGUST);
+    await bankPosting(ada, '2026-08-03', 15_000_000, 'J1');
+    await reconcile(ada);
+
+    expect(await reconcile(bola)).toMatchObject({
+      matched: 0,
+      unmatchedLines: 0,
+      unmatchedMovements: 0,
+    });
+  });
+});
