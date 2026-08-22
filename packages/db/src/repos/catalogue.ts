@@ -13,6 +13,7 @@
  * and changing the list price never touches it.
  */
 import { and, eq, sql } from 'drizzle-orm';
+import { foldProductName } from '@rekoda/core';
 import type { TenantDb } from '../client.js';
 import { products } from '../schema/commerce.js';
 
@@ -29,6 +30,28 @@ export interface CatalogueItem {
   onHand: number;
 }
 
+type CatalogueRow = {
+  id: string;
+  name: string;
+  description: string | null;
+  unit_price_k: string | number | null;
+  unit_cost_k: string | number | null;
+  image_key: string | null;
+  active: number;
+  on_hand: number | null;
+};
+
+const toItem = (r: CatalogueRow): CatalogueItem => ({
+  id: r.id,
+  name: r.name,
+  description: r.description,
+  unitPriceK: r.unit_price_k === null ? null : Number(r.unit_price_k),
+  unitCostK: r.unit_cost_k === null ? null : Number(r.unit_cost_k),
+  imageKey: r.image_key,
+  active: r.active === 1,
+  onHand: r.on_hand ?? 0,
+});
+
 /**
  * Everything the shop could sell, listed and hidden alike, by name.
  *
@@ -42,16 +65,7 @@ export async function catalogueFor(
   businessId: string,
   limit = 300,
 ): Promise<CatalogueItem[]> {
-  const rows = await tx.execute<{
-    id: string;
-    name: string;
-    description: string | null;
-    unit_price_k: string | number | null;
-    unit_cost_k: string | number | null;
-    image_key: string | null;
-    active: number;
-    on_hand: number | null;
-  }>(sql`
+  const rows = await tx.execute<CatalogueRow>(sql`
     SELECT p.id, p.name, p.description, p.unit_price_k, p.unit_cost_k, p.image_key, p.active,
            coalesce(sum(m.delta), 0)::int AS on_hand
     FROM products p
@@ -62,16 +76,49 @@ export async function catalogueFor(
     LIMIT ${limit}
   `);
 
-  return [...rows].map((r) => ({
-    id: r.id,
-    name: r.name,
-    description: r.description,
-    unitPriceK: r.unit_price_k === null ? null : Number(r.unit_price_k),
-    unitCostK: r.unit_cost_k === null ? null : Number(r.unit_cost_k),
-    imageKey: r.image_key,
-    active: r.active === 1,
-    onHand: r.on_hand ?? 0,
-  }));
+  return [...rows].map(toItem);
+}
+
+/**
+ * Just the products an order actually names.
+ *
+ * Order pricing used to run over `catalogueFor`, which is a PAGE: three
+ * hundred rows ordered by name. A provisions shop with four hundred products
+ * had every product sorting past position three hundred come back as one the
+ * shop does not stock, and the merchant was asked to name a price for
+ * something Rekoda was holding stock of and had a price for. It failed safe
+ * (no invented figure ever reached a customer) and it was still wrong.
+ *
+ * Looking up the names asked for makes the cap stop mattering on the path
+ * where it mattered most: an order is already bounded, so this query is.
+ *
+ * The fold is `foldProductName`, the same one `priceOrder` uses on the other
+ * side of this boundary, so a product this finds is a product it can match.
+ */
+export async function catalogueByNames(
+  tx: TenantDb,
+  businessId: string,
+  names: readonly string[],
+): Promise<CatalogueItem[]> {
+  const wanted = [...new Set(names.map(foldProductName))].filter((n) => n.length > 0);
+  /* Postgres would reject `IN ()`, and an order that names nothing has
+   * nothing to price anyway. */
+  if (wanted.length === 0) return [];
+
+  const rows = await tx.execute<CatalogueRow>(sql`
+    SELECT p.id, p.name, p.description, p.unit_price_k, p.unit_cost_k, p.image_key, p.active,
+           coalesce(sum(m.delta), 0)::int AS on_hand
+    FROM products p
+    LEFT JOIN inventory_movements m ON m.product_id = p.id
+    WHERE p.business_id = ${businessId}::uuid
+      AND lower(regexp_replace(btrim(p.name), '[[:space:]]+', ' ', 'g')) IN (${sql.join(
+        wanted.map((n) => sql`${n}`),
+        sql`, `,
+      )})
+    GROUP BY p.id, p.name, p.description, p.unit_price_k, p.unit_cost_k, p.image_key, p.active
+    ORDER BY lower(p.name) ASC
+  `);
+  return [...rows].map(toItem);
 }
 
 export interface CatalogueEdit {

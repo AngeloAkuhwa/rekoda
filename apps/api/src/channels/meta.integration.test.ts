@@ -3608,6 +3608,39 @@ describe('a forwarded order', () => {
     expect(await invoiceCount(business.id)).toBe(0);
   });
 
+  /**
+   * The bug the message above would have told a lie about.
+   *
+   * Order pricing used to run over `catalogueFor`, which returns three
+   * hundred products ordered by name. A provisions shop with more than that
+   * had everything sorting past the cap answered with "I cannot find it in
+   * what you sell" about a product it stocks and has priced. It failed safe,
+   * in that no invented figure ever reached a customer, and it was still the
+   * assistant telling a merchant their own shop does not carry something.
+   */
+  it('prices a product the catalogue page would have cut off', async () => {
+    const business = await seedMerchant('+2348031234567');
+    await withBusiness(db, business.id, async (tx) => {
+      for (let i = 0; i < 320; i += 1) {
+        await stockRepo.findOrCreateProduct(tx, business.id, `Aaa filler ${i + 1}`);
+      }
+      const zobo = await stockRepo.findOrCreateProduct(tx, business.id, 'Zobo drink');
+      await catalogueRepo.editProduct(tx, business.id, zobo.id, { unitPriceK: 50_000 });
+    });
+    stubTransport.replyWith({ ...THE_ORDER, items: [{ name: 'Zobo drink', quantity: 4 }] });
+
+    await send('customer wants 4 zobo', 'wamid.PASTCAP');
+
+    expect(stubSender.lastText).toContain('4 × Zobo drink at ₦500');
+    expect(stubSender.lastText).toContain('Total: ₦2,000');
+    expect(stubSender.lastText).not.toContain('I cannot find');
+
+    // And the yes still raises the invoice, at the price the merchant set.
+    await send('yes', 'wamid.PASTCAPYES');
+    expect(await invoiceCount(business.id)).toBe(1);
+    expect(stubSender.lastText).toMatch(/for ₦2,000/);
+  });
+
   it('says so when the shop does not sell what they asked for', async () => {
     const business = await seedMerchant('+2348031234567');
     await seedCatalogue(business.id);

@@ -1024,7 +1024,14 @@ async function confirmOrder(
   command: StructuredBusinessCommand & { intent: 'RecordOrder' },
   refund: () => Promise<void>,
 ): Promise<Reply> {
-  const catalogue = await catalogueRepo.catalogueFor(tx, businessId);
+  /* By the names the order asks for, not the first three hundred products by
+   * name: a shop with more than that had everything past the cap priced as
+   * something it does not stock. */
+  const catalogue = await catalogueRepo.catalogueByNames(
+    tx,
+    businessId,
+    command.items.map((i) => i.name),
+  );
   const order = priceOrder(command.items, catalogue);
 
   const question = orderQuestion(order);
@@ -1597,7 +1604,11 @@ async function acknowledge(
    * customer that the merchant never agreed to.
    */
   if (command.intent === 'RecordOrder') {
-    const catalogue = await catalogueRepo.catalogueFor(tx, businessId);
+    const catalogue = await catalogueRepo.catalogueByNames(
+      tx,
+      businessId,
+      command.items.map((i) => i.name),
+    );
     const order = priceOrder(command.items, catalogue);
 
     const question = orderQuestion(order);

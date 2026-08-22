@@ -53,8 +53,22 @@ export interface PricedOrder {
   readonly totalK: number;
 }
 
-/** Case and spacing folded, exactly as `productByName` folds them in SQL. */
-function fold(name: string): string {
+/**
+ * The one way a product name is folded before it is matched.
+ *
+ * Exported because SQL has to fold it identically. `productByName` compares
+ * against this expression in Postgres, and the two agreeing is not a
+ * nicety: they disagreed for a while, over the internal spaces alone, and
+ * the consequence was `findOrCreateProduct` inserting a SECOND row for
+ * "Bags  of  rice" next to the shop's "Bags of rice". Two products a human
+ * cannot tell apart, and a stock history split between them from that
+ * moment on, permanently and silently.
+ *
+ * Deliberately not fuzzy beyond this. "rice" and "bags of rice" are
+ * different products in some shops and the same one in others, and a matcher
+ * that guessed would move stock the merchant did not mean.
+ */
+export function foldProductName(name: string): string {
   return name.trim().toLowerCase().replace(/\s+/g, ' ');
 }
 
@@ -80,14 +94,14 @@ export function priceOrder(
   catalogue: readonly PricedProduct[],
 ): PricedOrder {
   const byName = new Map<string, PricedProduct>();
-  for (const product of catalogue) byName.set(fold(product.name), product);
+  for (const product of catalogue) byName.set(foldProductName(product.name), product);
 
   const lines = new Map<string, PricedLine>();
   const unknown: string[] = [];
   const unpriced: string[] = [];
 
   for (const line of requested) {
-    const product = byName.get(fold(line.name));
+    const product = byName.get(foldProductName(line.name));
     if (!product) {
       if (!unknown.includes(line.name)) unknown.push(line.name);
       continue;

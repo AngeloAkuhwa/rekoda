@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { orderPreview, orderQuestion, priceOrder, type PricedProduct } from './orders.js';
+import {
+  foldProductName,
+  orderPreview,
+  orderQuestion,
+  priceOrder,
+  type PricedProduct,
+} from './orders.js';
 
 const CATALOGUE: PricedProduct[] = [
   { id: 'p1', name: 'Ankara bale', unitPriceK: 850_000, active: true },
@@ -182,5 +188,29 @@ describe('orderPreview', () => {
     const order = priceOrder([{ name: 'Head tie', quantity: 1 }], CATALOGUE);
     expect(orderPreview(order, 'deliver on Friday')).toContain('They also said: deliver on Friday');
     expect(orderPreview(order, null)).not.toContain('They also said');
+  });
+});
+
+/**
+ * The fold both sides of the database boundary have to agree on.
+ *
+ * `productByName` in @rekoda/db compares against this expression in SQL. When
+ * they disagreed, over the internal spaces alone, `findOrCreateProduct`
+ * inserted a second product row for "Bags  of  rice" beside the shop's "Bags
+ * of rice" and split the stock history between them. These pin what the SQL
+ * has to reproduce; the db integration suite pins that it does.
+ */
+describe('foldProductName', () => {
+  it('ignores case, surrounding space, and runs of space inside', () => {
+    expect(foldProductName('  Bags   OF  rice ')).toBe('bags of rice');
+    expect(foldProductName('Bags of rice')).toBe('bags of rice');
+    expect(foldProductName('bags\tof\nrice')).toBe('bags of rice');
+  });
+
+  it('keeps genuinely different names different', () => {
+    /* In some shops these are the same product and in others they are not,
+     * and only the merchant knows which. A matcher that guessed would move
+     * stock they did not mean to move. */
+    expect(foldProductName('Rice')).not.toBe(foldProductName('Bags of rice'));
   });
 });

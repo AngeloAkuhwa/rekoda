@@ -12,7 +12,7 @@
  * things instead of naira.
  */
 import { and, eq, sql } from 'drizzle-orm';
-import { costOfQuantityK, weightedAverageCostK } from '@rekoda/core';
+import { costOfQuantityK, foldProductName, weightedAverageCostK } from '@rekoda/core';
 import type { TenantDb } from '../client.js';
 import { inventoryMovements, products } from '../schema/commerce.js';
 
@@ -52,6 +52,19 @@ export interface StockMovement {
  * match either finds their product or does not, and "does not" is a question
  * the caller can ask out loud.
  *
+ * The fold is `foldProductName` in @rekoda/core, expressed in SQL: trimmed,
+ * lowered, and internal runs of whitespace collapsed to one space. The POSIX
+ * class rather than `\s`, because a backslash inside a tagged template
+ * literal never reaches Postgres: `'\s+'` arrives as `'s+'` and the pattern
+ * quietly replaces runs of the letter s instead. Every name in the shop is
+ * mangled and every match fails, which is at least loud. The last
+ * of those was missing here while the TypeScript side had it, and the
+ * consequence was not a missed match but a DUPLICATE: `findOrCreateProduct`
+ * looked for "Bags  of  rice", did not find the shop's "Bags of rice", and
+ * inserted a second row. Two products a human cannot tell apart, with the
+ * stock history split between them from that moment on. `foldProductName`
+ * carries the same warning from the other side.
+ *
  * `active` is deliberately NOT part of the match. It says whether a product
  * is listed in the shop, not whether it exists, and filtering on it here made
  * `findOrCreateProduct` build a SECOND row the next time a merchant mentioned
@@ -78,7 +91,7 @@ export async function productByName(
     FROM products p
     LEFT JOIN inventory_movements m ON m.product_id = p.id
     WHERE p.business_id = ${businessId}::uuid
-      AND lower(btrim(p.name)) = lower(btrim(${name}))
+      AND lower(regexp_replace(btrim(p.name), '[[:space:]]+', ' ', 'g')) = ${foldProductName(name)}
     GROUP BY p.id, p.name, p.unit_price_k, p.unit_cost_k, p.active
     LIMIT 1
   `);
