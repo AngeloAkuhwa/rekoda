@@ -23,6 +23,7 @@ import {
   stockCountResponse,
   closeBooksResponse,
   journalEntryResponse,
+  recordPaymentResponse,
   reopenBooksResponse,
   voidExpenseResponse,
   voidInvoiceResponse,
@@ -523,6 +524,195 @@ describe('the spend register', () => {
  * built from a real sale and a real withdrawal, comes out as sentences a
  * person can check and carries no token from the sale that produced it.
  */
+/**
+ * Recording money that came in, from the dashboard.
+ *
+ * This existed only on WhatsApp. What matters here is that the receipt is
+ * issued, the balance falls, the payment reads as RECORDED rather than
+ * VERIFIED (ADR 0014), and no customer token crosses the border.
+ */
+describe('recording a payment from the dashboard', () => {
+  async function unpaidSale(businessId: string, totalK = 15_000_000) {
+    return withBusiness(db, businessId, async (tx) => {
+      const sale = await issueRepo.issueSale(tx, {
+        businessId,
+        customerId: null,
+        customerToken: 'CUSTOMER_9M4',
+        items: [{ name: 'wig', quantity: 1, unitPriceK: totalK }],
+        subtotalK: totalK,
+        discountK: 0,
+        deliveryFeeK: 0,
+        vatK: 0,
+        totalK,
+        paidK: 0,
+        balanceDueK: totalK,
+        method: 'transfer',
+        sourceType: 'chat',
+        sourceId: `draft-pay-${totalK}`,
+        actor: 'system',
+      });
+      return sale.invoiceNumber;
+    });
+  }
+
+  it('issues a receipt, and takes it off what is owed', async () => {
+    const { auth, businessId } = await onboard('+2348177000101');
+    const invoiceNumber = await unpaidSale(businessId);
+
+    const res = await post(
+      '/v1/reports/payments/record',
+      { invoiceNumber, amountK: 6_000_000, method: 'cash' },
+      auth,
+    );
+    expect(res.statusCode).toBe(200);
+    const outcome = recordPaymentResponse.parse(res.json());
+    expect(outcome).toMatchObject({
+      outcome: 'recorded',
+      invoiceNumber,
+      amountK: 6_000_000,
+      balanceDueK: 9_000_000,
+    });
+    expect(outcome.outcome === 'recorded' && outcome.receiptNumber).toMatch(/^RCT-\d{4}-\d{6}$/);
+
+    const register = reportsInvoicesResponse.parse(
+      (await app.inject({ method: 'GET', url: '/v1/reports/invoices', headers: auth })).json(),
+    );
+    expect(register.invoices[0]).toMatchObject({ paidK: 6_000_000, balanceDueK: 9_000_000 });
+    expect(register.outstandingK).toBe(9_000_000);
+    /* The sale carried a token. It must not come back out here. */
+    expect(res.body).not.toContain('CUSTOMER_');
+  });
+
+  /**
+   * ADR 0014, at the border. Merchant testimony is RECORDED; only a provider
+   * makes a payment VERIFIED, and letting this one wear that badge would
+   * destroy the distinction the product sells.
+   */
+  it('marks it reported, never verified', async () => {
+    const { auth, businessId } = await onboard('+2348177000102');
+    const invoiceNumber = await unpaidSale(businessId);
+    await post(
+      '/v1/reports/payments/record',
+      { invoiceNumber, amountK: 15_000_000, method: 'transfer' },
+      auth,
+    );
+
+    const paid = await withBusiness(db, businessId, (tx) => settleRepo.paymentsFor(tx));
+    expect(paid).toHaveLength(1);
+    /* 0 is RECORDED. A provider payment would be 1, and it would carry a
+     * settlement status; this one has neither because nobody but the
+     * merchant says it happened. */
+    expect(paid[0]).toMatchObject({
+      verified: 0,
+      method: 'transfer',
+      amountK: 15_000_000,
+      settlementStatus: null,
+      rekodaReference: null,
+    });
+  });
+
+  it('refuses more than is owed without posting anything', async () => {
+    const { auth, businessId } = await onboard('+2348177000103');
+    const invoiceNumber = await unpaidSale(businessId);
+
+    const outcome = recordPaymentResponse.parse(
+      (
+        await post(
+          '/v1/reports/payments/record',
+          { invoiceNumber, amountK: 15_000_001, method: 'cash' },
+          auth,
+        )
+      ).json(),
+    );
+    /* The excess is named rather than clamped away: it is real money and it
+     * belongs somewhere. */
+    expect(outcome).toEqual({
+      outcome: 'balance_moved',
+      invoiceNumber,
+      balanceDueK: 15_000_000,
+      excessK: 1,
+    });
+
+    const register = reportsInvoicesResponse.parse(
+      (await app.inject({ method: 'GET', url: '/v1/reports/invoices', headers: auth })).json(),
+    );
+    expect(register.invoices[0]).toMatchObject({ paidK: 0, balanceDueK: 15_000_000 });
+  });
+
+  it('says when an invoice is already settled, and when there is none', async () => {
+    const { auth, businessId } = await onboard('+2348177000104');
+    const invoiceNumber = await unpaidSale(businessId);
+    await post(
+      '/v1/reports/payments/record',
+      { invoiceNumber, amountK: 15_000_000, method: 'cash' },
+      auth,
+    );
+
+    expect(
+      (
+        await post(
+          '/v1/reports/payments/record',
+          { invoiceNumber, amountK: 100_000, method: 'cash' },
+          auth,
+        )
+      ).json(),
+    ).toEqual({ outcome: 'already_settled', invoiceNumber });
+
+    expect(
+      (
+        await post(
+          '/v1/reports/payments/record',
+          { invoiceNumber: 'INV-2026-999999', amountK: 100_000, method: 'cash' },
+          auth,
+        )
+      ).json(),
+    ).toEqual({ outcome: 'not_found' });
+  });
+
+  it('refuses a stranger, and a body that is not a payment', async () => {
+    expect((await post('/v1/reports/payments/record', {})).statusCode).toBe(401);
+
+    const { auth } = await onboard('+2348177000105');
+    expect((await post('/v1/reports/payments/record', {}, auth)).statusCode).toBe(400);
+    expect(
+      (
+        await post(
+          '/v1/reports/payments/record',
+          { invoiceNumber: 'INV-1', amountK: 0, method: 'cash' },
+          auth,
+        )
+      ).statusCode,
+    ).toBe(400);
+    expect(
+      (
+        await post(
+          '/v1/reports/payments/record',
+          { invoiceNumber: 'INV-1', amountK: 100, method: 'cheque' },
+          auth,
+        )
+      ).statusCode,
+    ).toBe(400);
+  });
+
+  /* One tenant's invoice is not another's to settle. RLS is what refuses:
+   * the number simply does not resolve under the wrong session. */
+  it('is one tenant at a time', async () => {
+    const ada = await onboard('+2348177000106');
+    const bola = await onboard('+2348177000107');
+    const invoiceNumber = await unpaidSale(ada.businessId);
+
+    expect(
+      (
+        await post(
+          '/v1/reports/payments/record',
+          { invoiceNumber, amountK: 100_000, method: 'cash' },
+          bola.auth,
+        )
+      ).json(),
+    ).toEqual({ outcome: 'not_found' });
+  });
+});
+
 /**
  * The other half of the pair the void opens.
  *

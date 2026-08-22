@@ -95,6 +95,8 @@ import {
   closeBooksRequest,
   journalEntryRequest,
   paySupplierRequest,
+  recordPaymentRequest,
+  type RecordPaymentResponse,
   type PaySupplierResponse,
   reopenBooksRequest,
   creditInvoiceRequest,
@@ -105,6 +107,7 @@ import {
 import {
   identity,
   issueRepo,
+  jobsRepo,
   ordersRepo,
   openingRepo,
   stocktakeRepo,
@@ -112,6 +115,7 @@ import {
   journalRepo,
   recurringRepo,
   reportsRepo,
+  settleRepo,
   spendRepo,
   stockRepo,
   withBusiness,
@@ -447,6 +451,65 @@ export class ReportsController {
         actor: `user:${request.auth!.userId}`,
       }),
     );
+  }
+
+  /**
+   * A payment the merchant is reporting, from the dashboard.
+   *
+   * This existed only on WhatsApp: a merchant looking at their own bank
+   * statement on the Bank page, at a transfer their books do not explain,
+   * had to open WhatsApp and type a message to record it. The books were
+   * reachable from the dashboard in every direction except the one that
+   * mattered most.
+   *
+   * RECORDED, never VERIFIED (ADR 0014). Nobody confirmed this with a
+   * provider, and letting merchant testimony wear the verified badge would
+   * destroy the one distinction this product sells.
+   */
+  @Post('payments/record')
+  @HttpCode(200)
+  async recordPayment(
+    @Req() request: AuthedRequest,
+    @Body() body: unknown,
+  ): Promise<RecordPaymentResponse> {
+    const parsed = recordPaymentRequest.safeParse(body);
+    if (!parsed.success) {
+      throw new BadRequestException('invoiceNumber, a positive amount in kobo, and a method');
+    }
+    const businessId = request.auth!.businessId;
+    const outcome = await withBusiness(this.db, businessId, async (tx) => {
+      const done = await settleRepo.recordPaymentByNumber(tx, {
+        businessId,
+        invoiceNumber: parsed.data.invoiceNumber,
+        amountK: parsed.data.amountK,
+        method: parsed.data.method,
+        actor: `user:${request.auth!.userId}`,
+      });
+      /* The same render the chat path enqueues, in the same transaction, so
+       * paper and record commit together. A receipt a merchant can see in
+       * the register but never open is worse than no receipt at all. */
+      if (done.outcome === 'recorded') {
+        await jobsRepo.enqueue(tx, {
+          businessId,
+          kind: 'document.render',
+          payload: { receiptId: done.receiptId },
+          singletonKey: `receipt:${done.receiptId}`,
+        });
+      }
+      return done;
+    });
+
+    /* `receiptId` is an internal handle and stays here: the merchant is
+     * given the receipt NUMBER, which is what a receipt is known by. */
+    return outcome.outcome === 'recorded'
+      ? {
+          outcome: 'recorded',
+          receiptNumber: outcome.receiptNumber,
+          invoiceNumber: outcome.invoiceNumber,
+          amountK: outcome.amountK,
+          balanceDueK: outcome.balanceDueK,
+        }
+      : outcome;
   }
 
   @Get('invoices')

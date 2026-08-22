@@ -11,6 +11,7 @@ import {
   reportsDebtorsResponse,
   reportsExpensesResponse,
   paySupplierResponse,
+  recordPaymentResponse,
   reportsInvoicesResponse,
   teamResponse,
   reportsOverviewResponse,
@@ -95,6 +96,7 @@ import {
   type ReportsDebtorsResponse,
   type ReportsExpensesResponse,
   type PaySupplierResponse,
+  type RecordPaymentResponse,
   type ReportsInvoicesResponse,
   type TeamResponse,
   type ReportsOverviewResponse,
@@ -448,6 +450,21 @@ export async function reportsAudit(sessionToken: string): Promise<ReportsAuditRe
     expect: [200],
   });
   return reportsAuditResponse.parse(json);
+}
+
+/** A payment the merchant is reporting, against the invoice it settles. */
+export async function recordPayment(
+  sessionToken: string,
+  body: { invoiceNumber: string; amountK: number; method: 'cash' | 'transfer' },
+): Promise<RecordPaymentResponse | null> {
+  const { status, json } = await call({
+    method: 'POST',
+    path: '/v1/reports/payments/record',
+    body,
+    headers: { authorization: `Bearer ${sessionToken}` },
+    expect: [200, 400],
+  });
+  return status === 200 ? recordPaymentResponse.parse(json) : null;
 }
 
 /** Money going back to a supplier, against the purchase it settles. */

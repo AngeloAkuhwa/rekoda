@@ -2,7 +2,7 @@
 
 import { revalidatePath } from 'next/cache';
 import { formatKobo, parseAmountText, toKobo } from '@rekoda/core';
-import { creditInvoice, voidInvoice } from '@/server/api';
+import { creditInvoice, recordPayment, voidInvoice } from '@/server/api';
 import { readSessionToken } from '@/server/session-cookies';
 
 export interface VoidFormState {
@@ -126,4 +126,62 @@ export async function creditInvoiceAction(
 /** Naira in a sentence, where a <Money> element cannot go. */
 function formatNaira(kobo: number): string {
   return formatKobo(kobo);
+}
+
+/**
+ * A payment the merchant is reporting.
+ *
+ * This was only possible on WhatsApp. A merchant on the Bank page looking at
+ * a transfer their books do not explain had to leave the dashboard and type a
+ * message to record it, which is the one direction the books were not
+ * reachable from.
+ *
+ * `balance_moved` is the refusal worth writing carefully: a provider payment
+ * can land while the merchant is typing, so the figure they reported no
+ * longer fits. The reply names what the invoice actually owes now, because
+ * posting the difference away silently is the one thing this must not do.
+ */
+export async function recordPaymentAction(
+  _prev: VoidFormState,
+  formData: FormData,
+): Promise<VoidFormState> {
+  const token = await readSessionToken();
+  if (!token) return { error: 'Your session expired. Sign in again.' };
+
+  const invoiceNumber = String(formData.get('invoiceNumber') ?? '').trim();
+  if (!invoiceNumber) return { error: 'Pick the invoice this money was for.' };
+
+  const naira = parseAmountText(String(formData.get('amount') ?? ''));
+  if (naira === null || naira <= 0) {
+    return { error: 'Say how much came in, in naira. For example 40000, or 40k.' };
+  }
+  const method = String(formData.get('method') ?? 'cash') === 'transfer' ? 'transfer' : 'cash';
+
+  const outcome = await recordPayment(token, { invoiceNumber, amountK: toKobo(naira), method });
+  if (!outcome) return { error: 'That did not go through. Nothing was changed.' };
+
+  if (outcome.outcome === 'not_found') {
+    return { error: 'That invoice is no longer here. Reload the page and try again.' };
+  }
+  if (outcome.outcome === 'already_settled') {
+    return { error: `${outcome.invoiceNumber} is already paid in full. Nothing was recorded.` };
+  }
+  if (outcome.outcome === 'balance_moved') {
+    /* Never claim a cause. The same refusal covers a merchant typing more
+     * than the invoice owes and a provider payment landing while they were
+     * typing, and Rekoda cannot tell the two apart from here. Saying
+     * "something settled it while you were on this page" would be a
+     * fabrication in the ordinary case and the ordinary case is a typo. */
+    return {
+      error: `${outcome.invoiceNumber} owes ${formatKobo(outcome.balanceDueK)}, and you typed ${formatKobo(outcome.excessK)} more than that. Record ${formatKobo(outcome.balanceDueK)} against this invoice. If more money really came in, the rest was for something else and belongs on its own invoice.`,
+    };
+  }
+
+  revalidatePath('/app/invoices');
+  return {
+    done:
+      outcome.balanceDueK > 0
+        ? `Recorded. Receipt ${outcome.receiptNumber} for ${formatKobo(outcome.amountK)}, and ${formatKobo(outcome.balanceDueK)} still owing on ${outcome.invoiceNumber}.`
+        : `Recorded. Receipt ${outcome.receiptNumber} for ${formatKobo(outcome.amountK)}, and ${outcome.invoiceNumber} is paid in full.`,
+  };
 }

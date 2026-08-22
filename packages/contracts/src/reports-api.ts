@@ -537,6 +537,50 @@ export type ReportsAuditResponse = z.infer<typeof reportsAuditResponse>;
  * dense on purpose, and a gap an auditor cannot explain is what they read as
  * a deleted invoice. The reason is what explains it.
  */
+/**
+ * A payment the MERCHANT is reporting, from the dashboard.
+ *
+ * Named by invoice number, which is what a merchant reads and what the
+ * register shows. No customer is named on this surface at all.
+ */
+export const recordPaymentRequest = z.object({
+  invoiceNumber: z.string().trim().min(1),
+  amountK: z.number().int().finite().positive(),
+  method: z.enum(['cash', 'transfer']),
+});
+
+/**
+ * RECORDED, never VERIFIED (ADR 0014).
+ *
+ * Nobody confirmed this with a provider. Letting merchant testimony wear the
+ * verified badge would destroy the one distinction this product sells, so
+ * the receipt is issued and the payment reads as reported.
+ *
+ * `balance_moved` carries the excess rather than a bare failure: a provider
+ * payment can land while the merchant is typing, and posting the difference
+ * away silently is the one thing this must not do.
+ */
+export const recordPaymentResponse = z.discriminatedUnion('outcome', [
+  z.object({
+    outcome: z.literal('recorded'),
+    receiptNumber: z.string(),
+    invoiceNumber: z.string(),
+    amountK: kobo,
+    balanceDueK: kobo,
+  }),
+  z.object({ outcome: z.literal('not_found') }),
+  z.object({ outcome: z.literal('already_settled'), invoiceNumber: z.string() }),
+  z.object({
+    outcome: z.literal('balance_moved'),
+    invoiceNumber: z.string(),
+    balanceDueK: kobo,
+    excessK: kobo,
+  }),
+]);
+
+export type RecordPaymentRequest = z.infer<typeof recordPaymentRequest>;
+export type RecordPaymentResponse = z.infer<typeof recordPaymentResponse>;
+
 export const voidInvoiceRequest = z.object({
   invoiceNumber: z.string().min(1),
   reason: z.string().trim().min(4).max(200),
