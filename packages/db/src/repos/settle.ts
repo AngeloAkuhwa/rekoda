@@ -776,6 +776,84 @@ export async function recordMerchantPayment(
   };
 }
 
+/**
+ * A payment the merchant is reporting from the dashboard, named by number.
+ *
+ * `recordMerchantPayment` takes an invoice id; a merchant reads and types an
+ * invoice NUMBER, and the register never carries an id. Resolving it here
+ * rather than at the controller keeps the lookup inside the tenant's
+ * transaction, where RLS is what decides whether the invoice exists.
+ *
+ * Every refusal is an outcome rather than a thrown error, because each one is
+ * a sentence a merchant can act on and none of them is exceptional. Typing
+ * the wrong invoice number is an ordinary morning.
+ */
+export type RecordPaymentOutcome =
+  | {
+      outcome: 'recorded';
+      receiptNumber: string;
+      amountK: number;
+      invoiceNumber: string;
+      balanceDueK: number;
+      receiptId: string;
+    }
+  | { outcome: 'not_found' }
+  | { outcome: 'already_settled'; invoiceNumber: string }
+  | { outcome: 'balance_moved'; invoiceNumber: string; balanceDueK: number; excessK: number };
+
+export async function recordPaymentByNumber(
+  tx: TenantDb,
+  input: {
+    businessId: string;
+    invoiceNumber: string;
+    amountK: number;
+    method: 'cash' | 'transfer';
+    actor: string;
+  },
+): Promise<RecordPaymentOutcome> {
+  const rows = await tx.execute<{ id: string }>(sql`
+    SELECT id FROM invoices
+    WHERE business_id = ${input.businessId}::uuid
+      AND upper(invoice_number) = upper(${input.invoiceNumber})
+    LIMIT 1
+  `);
+  const found = [...rows][0];
+  if (!found) return { outcome: 'not_found' };
+
+  try {
+    const recorded = await recordMerchantPayment(tx, {
+      businessId: input.businessId,
+      invoiceId: found.id,
+      amountK: input.amountK,
+      method: input.method,
+      sourceType: 'dashboard',
+      sourceId: input.invoiceNumber,
+      actor: input.actor,
+    });
+    return {
+      outcome: 'recorded',
+      receiptNumber: recorded.receiptNumber,
+      amountK: recorded.amountK,
+      invoiceNumber: recorded.invoiceNumber,
+      balanceDueK: recorded.balanceDueK,
+      receiptId: recorded.receiptId,
+    };
+  } catch (error) {
+    if (error instanceof AlreadySettled) {
+      return { outcome: 'already_settled', invoiceNumber: input.invoiceNumber };
+    }
+    if (error instanceof BalanceMoved) {
+      return {
+        outcome: 'balance_moved',
+        invoiceNumber: error.invoiceNumber,
+        balanceDueK: error.balanceDueK,
+        excessK: error.excessK,
+      };
+    }
+    throw error;
+  }
+}
+
 /** The invoice was settled between the preview and the confirmation. */
 export class AlreadySettled extends Error {}
 

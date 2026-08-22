@@ -6,6 +6,7 @@ import { requireSessionWithToken } from '@/server/guards';
 import { AppNav } from '../AppNav';
 import { CreditForm, type CreditableInvoice } from './CreditForm';
 import { VoidForm } from './VoidForm';
+import { RecordPaymentForm, type PayableInvoice } from './RecordPaymentForm';
 import { SignOutButton } from '../SignOutButton';
 
 export const metadata: Metadata = {
@@ -29,6 +30,17 @@ export default async function InvoicesPage() {
   const voidable = invoices
     .filter((invoice) => invoice.paidK === 0 && invoice.status !== 'voided')
     .map((invoice) => invoice.invoiceNumber);
+
+  /* Anything still owed. A voided invoice owes nothing by definition, and one
+   * settled in full would be refused by the endpoint, so neither is offered:
+   * a merchant should never be able to pick an option that will be turned
+   * down. */
+  const payable: PayableInvoice[] = invoices
+    .filter((invoice) => invoice.balanceDueK > 0 && invoice.status !== 'voided')
+    .map((invoice) => ({
+      invoiceNumber: invoice.invoiceNumber,
+      balanceDueK: invoice.balanceDueK,
+    }));
 
   /* And the other half of the pair. A credit note reduces an invoice money HAS
    * arrived against, which is exactly the set the void refuses, so between the
@@ -106,6 +118,22 @@ export default async function InvoicesPage() {
           </div>
         </div>
       ) : null}
+
+      {/* Not behind a disclosure, unlike the void and the credit. Those are
+          rare and permanent and a control beside them invites the tap they
+          exist to prevent; recording money that came in is the most ordinary
+          thing on this page. It was also, until now, the one thing a merchant
+          could not do without leaving the dashboard for WhatsApp. */}
+      <div className="rk-card">
+        <h2>Money that came in</h2>
+        <p className="rk-fineprint">
+          Cash at the counter, a transfer you saw in your bank. Rekoda issues the receipt and takes
+          it off what you are owed. Payments that arrive through a payment link record themselves
+          and are marked verified; these are marked as reported by you, because nobody else
+          confirmed them.
+        </p>
+        <RecordPaymentForm invoices={payable} />
+      </div>
 
       <div className="rk-card">
         <h2>Invoice register</h2>
