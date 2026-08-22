@@ -70,8 +70,8 @@ async function buyMonthsAgo(
   );
 }
 
-const readBack = (businessId: string) =>
-  withBusiness(appDb, businessId, (tx) => assetsRepo.assetsFor(tx, businessId));
+const readBack = async (businessId: string) =>
+  (await withBusiness(appDb, businessId, (tx) => assetsRepo.assetsFor(tx, businessId))).rows;
 
 describe('charging equipment against the months it is used', () => {
   it('charges nothing on the day it was bought', async () => {
@@ -239,7 +239,9 @@ describe('charging equipment against the months it is used', () => {
 
     await sweepDepreciation({ workerDb, appDb });
     expect((await readBack(ada))[0]).toMatchObject({ monthsCharged: 2 });
-    expect(await withBusiness(appDb, bola, (tx) => assetsRepo.assetsFor(tx, bola))).toEqual([]);
+    expect((await withBusiness(appDb, bola, (tx) => assetsRepo.assetsFor(tx, bola))).rows).toEqual(
+      [],
+    );
   });
 });
 

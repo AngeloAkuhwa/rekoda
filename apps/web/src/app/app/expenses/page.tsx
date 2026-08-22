@@ -43,6 +43,7 @@ export default async function ExpensesPage() {
     recurring,
     outstanding,
     assets,
+    assetsTotal,
   } = await reportsExpenses(token);
 
   /* Only what can still be withdrawn is offered, and each option carries the
@@ -164,7 +165,7 @@ export default async function ExpensesPage() {
           than it was and every month after look better.
         </p>
 
-        {assets.length > 0 ? (
+        {assetsTotal > 0 ? (
           <div className="rk-table-scroll">
             <table className="rk-table">
               <thead>
@@ -213,6 +214,17 @@ export default async function ExpensesPage() {
               </tbody>
             </table>
           </div>
+        ) : null}
+
+        {/* The register is what the business has recorded; the table is a
+            page of it, still-held things first. Saying so matters more here
+            than on a list, because the controls below are built out of the
+            same rows: what is not in the table cannot be sold from it. */}
+        {assetsTotal > assets.length ? (
+          <p className="rk-fineprint">
+            Showing {assets.length} of {assetsTotal}. Everything you still hold is here; what is not
+            shown has already been sold or taken back out.
+          </p>
         ) : null}
 
         <details className="rk-void">

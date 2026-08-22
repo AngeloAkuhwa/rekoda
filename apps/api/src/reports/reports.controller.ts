@@ -659,7 +659,7 @@ export class ReportsController {
   async expenses(@Req() request: AuthedRequest): Promise<ReportsExpensesResponse> {
     const businessId = request.auth!.businessId;
     const now = new Date();
-    const { list, payableAgeing, recurring, outstanding, assets } = await withBusiness(
+    const { list, payableAgeing, recurring, outstanding, assetRegister } = await withBusiness(
       this.db,
       businessId,
       async (tx) => ({
@@ -670,7 +670,7 @@ export class ReportsController {
          * it belongs to: a page that fetched these apart could show a total
          * from one moment and a list from another. */
         outstanding: await spendRepo.outstandingPurchases(tx, businessId),
-        assets: await assetsRepo.assetsFor(tx, businessId),
+        assetRegister: await assetsRepo.assetsFor(tx, businessId),
       }),
     );
     return {
@@ -692,7 +692,11 @@ export class ReportsController {
       payableAgeing,
       recurring,
       outstanding,
-      assets,
+      assets: assetRegister.rows,
+      /* From SQL over the whole table. The pickers on this page are built out
+       * of `assets`, so counting that array would tell a merchant with more
+       * equipment than the cap that the register holds exactly what fitted. */
+      assetsTotal: assetRegister.count,
     };
   }
 
