@@ -115,7 +115,20 @@ export interface AssetReadback {
 }
 
 /**
- * What the business owns, newest first.
+ * The register, and how much of it the page does not show.
+ *
+ * `rows` is a page; `count` is every asset the business has ever recorded.
+ * The page footer and the pickers on it are built from `rows`, and reporting
+ * its length as the register would tell a merchant with more assets than the
+ * cap that they own exactly as many as fitted.
+ */
+export interface AssetRegister {
+  rows: AssetReadback[];
+  count: number;
+}
+
+/**
+ * What the business owns, still-held first and newest first within that.
  *
  * `chargedK` is derived from the ledger rather than from `monthsCharged`
  * multiplied out, because the last month's charge absorbs the rounding and
@@ -130,12 +143,19 @@ export interface AssetReadback {
  * make a generator that had ₦90,000 charged against it over a year report
  * "nothing yet" the moment it was sold, erasing a year of true history from
  * the merchant's own register.
+ *
+ * Still-held assets sort before disposed ones, which is both how an asset
+ * register reads and what makes the cap degrade in the right direction. By
+ * purchase date alone, the rows that fell off the end were the OLDEST, and
+ * the oldest asset is exactly the one a merchant is about to scrap: the
+ * pickers on the page are filtered out of these rows, so a generator bought
+ * eight years ago could not be sold, with nothing on the page saying why.
  */
 export async function assetsFor(
   tx: TenantDb,
   businessId: string,
   limit = 100,
-): Promise<AssetReadback[]> {
+): Promise<AssetRegister> {
   const rows = await tx.execute<{
     id: string;
     description: string;
@@ -147,6 +167,7 @@ export async function assetsFor(
     charged_k: string;
     proceeds_k: string | null;
     sold_on: string | null;
+    n: number;
   }>(sql`
     SELECT a.id, a.description, a.cost_k, a.useful_life_months, a.months_charged,
            a.bought_on::text AS bought_on, a.status,
@@ -158,13 +179,15 @@ export async function assetsFor(
               WHERE e.business_id = a.business_id
                 AND e.account = 'DEPRECIATION'
                 AND t.source_id = a.id::text
-           ), 0)::bigint AS charged_k
+           ), 0)::bigint AS charged_k,
+           count(*) OVER ()::int AS n
     FROM fixed_assets a
     WHERE a.business_id = ${businessId}::uuid
-    ORDER BY a.bought_on DESC, a.created_at DESC
+    ORDER BY (a.status = 'recorded') DESC, a.bought_on DESC, a.created_at DESC
     LIMIT ${limit}
   `);
-  return [...rows].map((r) => {
+  const list = [...rows];
+  const mapped = list.map((r) => {
     const costK = Number(r.cost_k);
     const chargedK = Number(r.charged_k);
     return {
@@ -182,6 +205,7 @@ export async function assetsFor(
       soldOn: r.sold_on,
     };
   });
+  return { rows: mapped, count: list[0]?.n ?? 0 };
 }
 
 export type WithdrawAssetOutcome =

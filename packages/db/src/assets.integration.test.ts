@@ -134,9 +134,10 @@ describe('buying something the business keeps', () => {
     const businessId = await seedBusiness();
     await buy(businessId);
 
-    const [asset] = await withBusiness(db, businessId, (tx) =>
+    const { rows } = await withBusiness(db, businessId, (tx) =>
       assetsRepo.assetsFor(tx, businessId),
     );
+    const asset = rows[0];
     expect(asset).toMatchObject({
       description: 'Generator, 5.5kVA',
       costK: 45_000_000,
@@ -154,7 +155,7 @@ describe('buying something the business keeps', () => {
     const bola = await seedBusiness('+2348130000002');
     await buy(ada);
 
-    expect(await withBusiness(db, bola, (tx) => assetsRepo.assetsFor(tx, bola))).toEqual([]);
+    expect((await withBusiness(db, bola, (tx) => assetsRepo.assetsFor(tx, bola))).rows).toEqual([]);
   });
 });
 
@@ -179,9 +180,10 @@ describe('taking one back out', () => {
     expect(sheet.assets.find((l) => l.account === 'BANK')?.amountK ?? 0).toBe(0);
 
     /* And it reads as withdrawn, worth nothing, rather than disappearing. */
-    const [asset] = await withBusiness(db, businessId, (tx) =>
+    const { rows } = await withBusiness(db, businessId, (tx) =>
       assetsRepo.assetsFor(tx, businessId),
     );
+    const asset = rows[0];
     expect(asset).toMatchObject({ status: 'withdrawn', bookValueK: 0 });
   });
 
@@ -346,7 +348,7 @@ describe('selling or scrapping one', () => {
     const recorded = await wornGenerator(businessId);
 
     const before = await withBusiness(db, businessId, (tx) => assetsRepo.assetsFor(tx, businessId));
-    expect(before[0]).toMatchObject({ chargedK: 9_000_000, bookValueK: 36_000_000 });
+    expect(before.rows[0]).toMatchObject({ chargedK: 9_000_000, bookValueK: 36_000_000 });
 
     await withBusiness(db, businessId, (tx) =>
       assetsRepo.disposeAsset(tx, {
@@ -360,7 +362,7 @@ describe('selling or scrapping one', () => {
 
     const after = await withBusiness(db, businessId, (tx) => assetsRepo.assetsFor(tx, businessId));
     /* Worth nothing now, and still honest about the year it was used. */
-    expect(after[0]).toMatchObject({ chargedK: 9_000_000, bookValueK: 0, status: 'sold' });
+    expect(after.rows[0]).toMatchObject({ chargedK: 9_000_000, bookValueK: 0, status: 'sold' });
   });
 
   it('reads back as sold, worth nothing, with what it fetched', async () => {
@@ -376,9 +378,10 @@ describe('selling or scrapping one', () => {
       }),
     );
 
-    const [asset] = await withBusiness(db, businessId, (tx) =>
+    const { rows } = await withBusiness(db, businessId, (tx) =>
       assetsRepo.assetsFor(tx, businessId),
     );
+    const asset = rows[0];
     expect(asset).toMatchObject({
       status: 'sold',
       bookValueK: 0,
@@ -430,5 +433,91 @@ describe('selling or scrapping one', () => {
         }),
       ),
     ).toMatchObject({ charged: false });
+  });
+});
+
+/**
+ * The register, and which rows survive a page.
+ *
+ * The list used to come back purchase-date-first and capped, which drops the
+ * OLDEST assets. The oldest asset is exactly the one about to be scrapped,
+ * and the page's sell and withdraw controls are built out of these rows: a
+ * generator bought eight years ago could not be disposed of, with nothing on
+ * the page saying why. Still-held first is both how an asset register reads
+ * and what makes the cap drop history rather than the things a merchant can
+ * still act on.
+ */
+describe('what the asset register shows first', () => {
+  const at = (iso: string) => new Date(`${iso}T09:00:00Z`);
+
+  it('puts what the business still holds ahead of what it has let go', async () => {
+    const businessId = await seedBusiness('+2348130000021');
+    /* The oldest thing they own, and the newest thing they have sold. By
+     * purchase date alone the sold one would come first. */
+    const old = await buy(businessId, {
+      description: 'Generator, eight years old',
+      boughtAt: at('2018-01-05'),
+    });
+    const recent = await buy(businessId, {
+      description: 'Delivery bike',
+      boughtAt: at('2026-01-05'),
+    });
+    await withBusiness(db, businessId, (tx) =>
+      assetsRepo.disposeAsset(tx, {
+        businessId,
+        assetId: recent.assetId,
+        proceedsK: 1_000_000,
+        method: 'transfer',
+        actor: 'user:1',
+      }),
+    );
+
+    const register = await withBusiness(db, businessId, (tx) =>
+      assetsRepo.assetsFor(tx, businessId),
+    );
+    expect(register.rows.map((r) => r.description)).toEqual([
+      'Generator, eight years old',
+      'Delivery bike',
+    ]);
+    expect(register.rows[0]!.id).toBe(old.assetId);
+  });
+
+  it('survives a page that cannot hold the history', async () => {
+    const businessId = await seedBusiness('+2348130000022');
+    const held = await buy(businessId, {
+      description: 'The one they still have',
+      boughtAt: at('2019-03-01'),
+    });
+    for (let i = 0; i < 4; i += 1) {
+      const gone = await buy(businessId, {
+        description: `Sold ${i + 1}`,
+        boughtAt: at(`202${i}-06-01`),
+      });
+      await withBusiness(db, businessId, (tx) =>
+        assetsRepo.disposeAsset(tx, {
+          businessId,
+          assetId: gone.assetId,
+          proceedsK: 100_000,
+          method: 'transfer',
+          actor: 'user:1',
+        }),
+      );
+    }
+
+    /* A page of two, from a register of five. What a merchant can still act
+     * on has to be in it. */
+    const page = await withBusiness(db, businessId, (tx) =>
+      assetsRepo.assetsFor(tx, businessId, 2),
+    );
+    expect(page.rows).toHaveLength(2);
+    expect(page.count).toBe(5);
+    expect(page.rows.map((r) => r.id)).toContain(held.assetId);
+  });
+
+  it('counts a register nobody has started', async () => {
+    const businessId = await seedBusiness('+2348130000023');
+    expect(
+      await withBusiness(db, businessId, (tx) => assetsRepo.assetsFor(tx, businessId)),
+    ).toEqual({ rows: [], count: 0 });
   });
 });

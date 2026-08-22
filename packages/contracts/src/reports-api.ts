@@ -437,6 +437,15 @@ export const reportsExpensesResponse = z.object({
     }),
   ),
   /**
+   * Every asset the business has recorded, which is not `assets.length`.
+   *
+   * `assets` is a page, and the controls on the page are built out of it: a
+   * merchant sells or withdraws by picking from those rows. Counting them as
+   * the register would be the same lie the stock footer used to tell, with a
+   * picker attached.
+   */
+  assetsTotal: z.number().int().nonnegative(),
+  /**
    * Purchases with something still standing against them, oldest first.
    *
    * The pool a merchant pays from. Nothing here identifies a supplier, because
