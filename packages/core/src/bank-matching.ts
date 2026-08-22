@@ -53,8 +53,19 @@ export interface MatchResult {
   readonly ambiguous: readonly Ambiguity[];
   /** Nothing in the books fits. Often the point: money nobody recorded. */
   readonly unmatchedLines: readonly string[];
-  /** Nothing on the statement fits. Money the books claim and the bank does not. */
+  /**
+   * Nothing on the statement fits. Money the books claim and the bank does
+   * not, which is the serious direction: a payment recorded that never came.
+   *
+   * A posting some line MIGHT be is not here. It is in `undecidedMovements`,
+   * and the difference is the difference between "the bank never saw this"
+   * and "one of these two is on the statement and nobody knows which". A
+   * screen that called the second one absent would report ₦300,000 missing
+   * from a bank that plainly shows ₦150,000 of it.
+   */
   readonly unmatchedMovements: readonly string[];
+  /** Candidates for a line that had more than one. Waiting on a person. */
+  readonly undecidedMovements: readonly string[];
 }
 
 /**
@@ -137,9 +148,20 @@ export function matchStatement(
     takenMovements.add(only);
   }
 
-  const unmatchedMovements = movements
-    .filter((m) => !takenMovements.has(m.transactionId))
-    .map((m) => m.transactionId);
+  /* A posting cannot be both: a matched one was wanted by exactly one line,
+   * so no other line has it as a candidate. */
+  const undecided = new Set(ambiguous.flatMap((a) => a.candidates));
+  const left = movements.filter((m) => !takenMovements.has(m.transactionId));
 
-  return { matched, ambiguous, unmatchedLines, unmatchedMovements };
+  return {
+    matched,
+    ambiguous,
+    unmatchedLines,
+    unmatchedMovements: left
+      .filter((m) => !undecided.has(m.transactionId))
+      .map((m) => m.transactionId),
+    undecidedMovements: left
+      .filter((m) => undecided.has(m.transactionId))
+      .map((m) => m.transactionId),
+  };
 }

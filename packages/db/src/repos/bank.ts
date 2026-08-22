@@ -6,9 +6,11 @@
  * putting the two side by side is the only way a merchant finds out that a
  * payment they were sure arrived never did.
  *
- * Nothing here matches anything yet. This slice gets the statement in and
- * shows the two figures apart; matching is its own problem and its own
- * mistake to make.
+ * Matching is the other half, and it is the half that can lie. A wrong
+ * pairing reports agreement between books and bank that does not exist, so
+ * the rule here refuses far more than it accepts and hands the rest to a
+ * person. What a person then decides is stored as their decision, not the
+ * rule's.
  */
 import { and, eq, sql } from 'drizzle-orm';
 import { fingerprintLines, matchStatement, type BankStatementLine } from '@rekoda/core';
@@ -221,8 +223,14 @@ export interface Reconciliation {
   ambiguous: number;
   /** Lines nothing in the books explains: money nobody recorded. */
   unmatchedLines: number;
-  /** Postings nothing on the statement explains: money the bank never saw. */
+  /**
+   * Postings nothing on the statement explains: money the bank never saw,
+   * which is the serious direction. A posting that one of the ambiguous
+   * lines might be is `undecidedMovements`, not this.
+   */
   unmatchedMovements: number;
+  /** Candidates for a line with more than one, waiting on a person. */
+  undecidedMovements: number;
   /** What the unexplained lines add up to, so the gap has a figure. */
   unmatchedLinesK: number;
   unmatchedMovementsK: number;
@@ -331,7 +339,214 @@ export async function reconcile(
     ambiguous: result.ambiguous.length,
     unmatchedLines: result.unmatchedLines.length,
     unmatchedMovements: result.unmatchedMovements.length,
+    undecidedMovements: result.undecidedMovements.length,
     unmatchedLinesK: sum(result.unmatchedLines, (id) => byId.get(id)?.amountK ?? 0),
     unmatchedMovementsK: sum(result.unmatchedMovements, (id) => movementById.get(id)?.amountK ?? 0),
   };
+}
+
+/** A posting on the bank account a merchant could point a line at. */
+export interface OpenMovement {
+  transactionId: string;
+  occurredOn: string;
+  amountK: number;
+  /**
+   * What the merchant called it. Invoice numbers, expense descriptions,
+   * payment references: the merchant's own words about their own books,
+   * behind their own session. No customer or supplier name reaches here,
+   * and none may be added to a memo later.
+   */
+  memo: string;
+}
+
+/**
+ * Postings on the bank the statement has not yet explained.
+ *
+ * The candidate pool a merchant picks from, so it excludes anything already
+ * matched. `bankMovements` is the shape of this query without the memo and
+ * without the exclusion; they are separate because the rule needs neither,
+ * and giving the rule a memo would invite somebody to match on it.
+ */
+export async function openMovements(
+  tx: TenantDb,
+  businessId: string,
+  limit = 200,
+): Promise<OpenMovement[]> {
+  const rows = await tx.execute<{
+    transaction_id: string;
+    occurred_on: string;
+    amount_k: string;
+    memo: string;
+  }>(sql`
+    SELECT e.transaction_id,
+           (e.created_at AT TIME ZONE 'Africa/Lagos')::date::text AS occurred_on,
+           (SUM(e.debit_k) - SUM(e.credit_k))::bigint AS amount_k,
+           MIN(t.memo) AS memo
+    FROM ledger_entries e
+    JOIN ledger_transactions t ON t.id = e.transaction_id
+    WHERE e.business_id = ${businessId}::uuid
+      AND e.account = 'BANK'
+      AND NOT EXISTS (
+        SELECT 1 FROM bank_line_matches m
+         WHERE m.business_id = ${businessId}::uuid
+           AND m.transaction_id = e.transaction_id
+      )
+    GROUP BY e.transaction_id, t.memo, (e.created_at AT TIME ZONE 'Africa/Lagos')::date
+    HAVING SUM(e.debit_k) - SUM(e.credit_k) <> 0
+    ORDER BY 2 DESC
+    LIMIT ${limit}
+  `);
+  return [...rows].map((r) => ({
+    transactionId: r.transaction_id,
+    occurredOn: r.occurred_on,
+    amountK: Number(r.amount_k),
+    memo: r.memo,
+  }));
+}
+
+/** Which line is already spoken for, and by what. */
+export async function matchesFor(
+  tx: TenantDb,
+  businessId: string,
+): Promise<{ lineId: string; transactionId: string; decidedBy: string; memo: string }[]> {
+  const rows = await tx.execute<{
+    line_id: string;
+    transaction_id: string;
+    decided_by: string;
+    memo: string;
+  }>(sql`
+    SELECT m.line_id, m.transaction_id, m.decided_by, t.memo
+    FROM bank_line_matches m
+    JOIN ledger_transactions t ON t.id = m.transaction_id
+    WHERE m.business_id = ${businessId}::uuid
+  `);
+  return [...rows].map((r) => ({
+    lineId: r.line_id,
+    transactionId: r.transaction_id,
+    decidedBy: r.decided_by,
+    memo: r.memo,
+  }));
+}
+
+/** Why a hand-made match was refused, in terms the page can explain. */
+export type MatchRefusal =
+  | 'no_such_line'
+  | 'no_such_movement'
+  | 'amounts_differ'
+  | 'line_already_matched'
+  | 'movement_already_matched';
+
+export type MatchByHandOutcome =
+  { outcome: 'matched' } | { outcome: 'refused'; reason: MatchRefusal };
+
+/**
+ * A merchant deciding what the rule would not.
+ *
+ * Two of the rule's three conditions are lifted here, because a person knows
+ * things the rule cannot: which of two identical transfers this one is, and
+ * that a payment recorded a month late is still the same payment. So the
+ * ambiguity refusal goes and the four-day window goes.
+ *
+ * The amount does not. Two figures a bank charge apart are two facts, and a
+ * match that spans them buries the charge inside a reconciliation reporting
+ * agreement that does not exist. A merchant with a charge to account for
+ * needs a second entry, not a looser match, and the refusal says so.
+ */
+export async function matchByHand(
+  tx: TenantDb,
+  input: { businessId: string; lineId: string; transactionId: string; actor: string },
+): Promise<MatchByHandOutcome> {
+  const [line] = await tx
+    .select({ id: bankStatementLines.id, amountK: bankStatementLines.amountK })
+    .from(bankStatementLines)
+    .where(
+      and(
+        eq(bankStatementLines.businessId, input.businessId),
+        eq(bankStatementLines.id, input.lineId),
+      ),
+    );
+  if (!line) return { outcome: 'refused', reason: 'no_such_line' };
+
+  const open = await openMovements(tx, input.businessId, 5_000);
+  const movement = open.find((m) => m.transactionId === input.transactionId);
+  if (!movement) {
+    /* Either it is not a bank movement of this business at all, or somebody
+     * already claimed it. The two read differently to a merchant. */
+    const claimed = await matchesFor(tx, input.businessId);
+    return {
+      outcome: 'refused',
+      reason: claimed.some((m) => m.transactionId === input.transactionId)
+        ? 'movement_already_matched'
+        : 'no_such_movement',
+    };
+  }
+  if (movement.amountK !== line.amountK) {
+    return { outcome: 'refused', reason: 'amounts_differ' };
+  }
+
+  /* ON CONFLICT rather than a read: the line's index is the only thing that
+   * can settle two merchants deciding at once, and a read here would be a
+   * check-then-act. */
+  const inserted = await tx
+    .insert(bankLineMatches)
+    .values({
+      businessId: input.businessId,
+      lineId: input.lineId,
+      transactionId: input.transactionId,
+      decidedBy: 'manual',
+    })
+    .onConflictDoNothing()
+    .returning({ id: bankLineMatches.id });
+
+  if (inserted.length === 0) {
+    return { outcome: 'refused', reason: 'line_already_matched' };
+  }
+
+  await tx.insert(auditEvents).values({
+    businessId: input.businessId,
+    actor: input.actor,
+    entity: 'bank_line_match',
+    entityId: input.lineId,
+    action: 'matched',
+    newValue: { transactionId: input.transactionId, decidedBy: 'manual' } as never,
+    sourceType: 'dashboard',
+  });
+  return { outcome: 'matched' };
+}
+
+/**
+ * Undo a pairing.
+ *
+ * A DELETE, never an UPDATE into a different match: the application holds no
+ * UPDATE on this table, and releasing then deciding again is two facts a
+ * merchant can follow in the audit trail rather than one that overwrote the
+ * other. The line and the posting are left exactly as they were, because
+ * neither was ever changed by being matched.
+ */
+export async function unmatchLine(
+  tx: TenantDb,
+  input: { businessId: string; lineId: string; actor: string },
+): Promise<number> {
+  const removed = await tx
+    .delete(bankLineMatches)
+    .where(
+      and(
+        eq(bankLineMatches.businessId, input.businessId),
+        eq(bankLineMatches.lineId, input.lineId),
+      ),
+    )
+    .returning({ transactionId: bankLineMatches.transactionId });
+
+  if (removed.length > 0) {
+    await tx.insert(auditEvents).values({
+      businessId: input.businessId,
+      actor: input.actor,
+      entity: 'bank_line_match',
+      entityId: input.lineId,
+      action: 'released',
+      oldValue: { transactionId: removed[0]!.transactionId } as never,
+      sourceType: 'dashboard',
+    });
+  }
+  return removed.length;
 }

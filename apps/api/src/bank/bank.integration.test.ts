@@ -13,6 +13,7 @@ import {
   bankPositionResponse,
   importStatementResponse,
   reconcileResponse,
+  matchLineResponse,
 } from '@rekoda/contracts';
 import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
@@ -219,6 +220,148 @@ describe('pairing the two sides, end to end', () => {
       /* 150,000 in less 20,000 out: money the books have never heard of. */
       unmatchedLinesK: 13_000_000,
     });
+  });
+
+  /**
+   * The page tells a merchant that when two entries both fit, Rekoda leaves
+   * the line for them. This is the merchant taking it, through the border.
+   */
+  it('lets a merchant decide, and records it as their decision', async () => {
+    const { auth } = await onboard('+2348177000085');
+    await post('/v1/bank/statement', { csv: AUG }, auth);
+    for (const memo of ['Transfer one', 'Transfer two']) {
+      await post(
+        '/v1/reports/journal',
+        {
+          memo,
+          amountK: 15_000_000,
+          intoAccount: 'BANK',
+          outOfAccount: 'OWNERS_EQUITY',
+          occurredOn: '2026-08-03',
+        },
+        auth,
+      );
+    }
+    /* The rule refuses to choose. */
+    expect((await post('/v1/bank/reconcile', {}, auth)).json()).toMatchObject({
+      matched: 0,
+      ambiguous: 1,
+    });
+
+    const before = bankPositionResponse.parse(
+      (await app.inject({ method: 'GET', url: '/v1/bank/position', headers: auth })).json(),
+    );
+    const line = before.lines.find((l) => l.amountK === 15_000_000)!;
+    expect(line.matchedTo).toBeNull();
+    /* Both candidates offered, each carrying the journal number an accountant
+     * writes down and the merchant's own words. Two identical transfers are
+     * only tellable apart by what the merchant called them. */
+    const options = before.openMovements.filter((m) => m.amountK === line.amountK);
+    expect(options.map((o) => o.memo).sort()).toEqual([
+      'JNL-2026-000001: Transfer one',
+      'JNL-2026-000002: Transfer two',
+    ]);
+
+    expect(
+      matchLineResponse.parse(
+        (
+          await post(
+            '/v1/bank/match',
+            { lineId: line.id, transactionId: options[0]!.transactionId },
+            auth,
+          )
+        ).json(),
+      ),
+    ).toEqual({ outcome: 'matched' });
+
+    const after = bankPositionResponse.parse(
+      (await app.inject({ method: 'GET', url: '/v1/bank/position', headers: auth })).json(),
+    );
+    expect(after.lines.find((l) => l.id === line.id)!.matchedTo).toMatchObject({
+      memo: options[0]!.memo,
+      decidedBy: 'manual',
+    });
+    /* And the posting they chose is no longer on offer for anything else. */
+    expect(after.openMovements.map((m) => m.transactionId)).not.toContain(
+      options[0]!.transactionId,
+    );
+  });
+
+  it('names why a hand-made match was refused', async () => {
+    const { auth } = await onboard('+2348177000086');
+    await post('/v1/bank/statement', { csv: AUG }, auth);
+    await post(
+      '/v1/reports/journal',
+      {
+        memo: 'Nearly right',
+        amountK: 14_995_000,
+        intoAccount: 'BANK',
+        outOfAccount: 'OWNERS_EQUITY',
+        occurredOn: '2026-08-03',
+      },
+      auth,
+    );
+    const seen = bankPositionResponse.parse(
+      (await app.inject({ method: 'GET', url: '/v1/bank/position', headers: auth })).json(),
+    );
+    const line = seen.lines.find((l) => l.amountK === 15_000_000)!;
+    const movement = seen.openMovements[0]!;
+
+    const res = await post(
+      '/v1/bank/match',
+      { lineId: line.id, transactionId: movement.transactionId },
+      auth,
+    );
+    expect(res.statusCode).toBe(200);
+    expect(matchLineResponse.parse(res.json())).toEqual({
+      outcome: 'refused',
+      reason: 'amounts_differ',
+    });
+  });
+
+  it('releases a match and leaves both sides as they were', async () => {
+    const { auth } = await onboard('+2348177000087');
+    await post('/v1/bank/statement', { csv: AUG }, auth);
+    await post(
+      '/v1/reports/journal',
+      {
+        memo: 'A transfer',
+        amountK: 15_000_000,
+        intoAccount: 'BANK',
+        outOfAccount: 'OWNERS_EQUITY',
+        occurredOn: '2026-08-03',
+      },
+      auth,
+    );
+    await post('/v1/bank/reconcile', {}, auth);
+
+    const matched = bankPositionResponse.parse(
+      (await app.inject({ method: 'GET', url: '/v1/bank/position', headers: auth })).json(),
+    );
+    const line = matched.lines.find((l) => l.matchedTo !== null)!;
+    expect(line.matchedTo).toMatchObject({ decidedBy: 'auto' });
+
+    expect((await post('/v1/bank/unmatch', { lineId: line.id }, auth)).json()).toEqual({
+      released: 1,
+    });
+
+    const released = bankPositionResponse.parse(
+      (await app.inject({ method: 'GET', url: '/v1/bank/position', headers: auth })).json(),
+    );
+    const same = released.lines.find((l) => l.id === line.id)!;
+    expect(same.matchedTo).toBeNull();
+    expect(same).toMatchObject({ amountK: line.amountK, narration: line.narration });
+    expect(released.reconciliation).toMatchObject({ matched: 0, pairable: 1 });
+  });
+
+  it('refuses a caller with no session, and a body that is not a pairing', async () => {
+    expect((await post('/v1/bank/match', {})).statusCode).toBe(401);
+    expect((await post('/v1/bank/unmatch', {})).statusCode).toBe(401);
+
+    const { auth } = await onboard('+2348177000088');
+    expect((await post('/v1/bank/match', {}, auth)).statusCode).toBe(400);
+    expect((await post('/v1/bank/match', { lineId: 'not-a-uuid' }, auth)).statusCode).toBe(400);
+    expect((await post('/v1/bank/unmatch', {}, auth)).statusCode).toBe(400);
   });
 
   it('is one tenant at a time', async () => {
