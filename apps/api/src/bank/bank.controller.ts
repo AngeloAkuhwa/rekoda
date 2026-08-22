@@ -51,15 +51,24 @@ export class BankController {
     const { position, lines, reconciliation, openMovements, matches } = await withBusiness(
       this.db,
       businessId,
-      async (tx) => ({
-        position: await bankRepo.bankPositionFor(tx, businessId),
-        lines: await bankRepo.bankLinesFor(tx, businessId),
-        /* Read without committing. Opening a page must not decide anything,
-         * and pairing is a decision the merchant asks for. */
-        reconciliation: await bankRepo.reconcile(tx, { businessId, commit: false }),
-        openMovements: await bankRepo.openMovements(tx, businessId),
-        matches: await bankRepo.matchesFor(tx, businessId),
-      }),
+      async (tx) => {
+        const statementLines = await bankRepo.bankLinesFor(tx, businessId);
+        return {
+          position: await bankRepo.bankPositionFor(tx, businessId),
+          lines: statementLines,
+          /* Read without committing. Opening a page must not decide anything,
+           * and pairing is a decision the merchant asks for. */
+          reconciliation: await bankRepo.reconcile(tx, { businessId, commit: false }),
+          /* Only the amounts these lines could pair with. The page narrows
+           * candidates to a line's exact amount, and asking for a page of
+           * movements and filtering it left a merchant with no candidate at
+           * all whenever the entry they wanted sat outside that page. */
+          openMovements: await bankRepo.openMovements(tx, businessId, {
+            amounts: statementLines.map((l) => l.amountK),
+          }),
+          matches: await bankRepo.matchesFor(tx, businessId),
+        };
+      },
     );
     const matchedBy = new Map(matches.map((m) => [m.lineId, m]));
     /* Parsed on the way out as well as on the way in. The narration is the

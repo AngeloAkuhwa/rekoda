@@ -596,3 +596,98 @@ describe('pairing the two sides', () => {
     });
   });
 });
+
+/**
+ * The candidate pool a merchant picks from when matching by hand.
+ *
+ * It used to be a page: two hundred open movements newest first, filtered to
+ * a line's amount on the way to the screen. A merchant reconciling for the
+ * first time after months has more open entries than that, and the ones the
+ * page dropped were the OLDEST, which is exactly where an unreconciled
+ * statement line points. Their line offered no candidate at all, for an
+ * entry sitting in their own books.
+ */
+describe('the entries offered against a statement line', () => {
+  async function post(businessId: string, memo: string, amountK: number, ref: string) {
+    await withBusiness(db, businessId, (tx) =>
+      issueRepo.writePosting(
+        tx,
+        businessId,
+        postJournal({ memo, amountK, intoAccount: 'BANK', outOfAccount: 'OWNERS_EQUITY' }),
+        'journal',
+        ref,
+      ),
+    );
+  }
+
+  it('finds ones a page of the same movements does not contain', async () => {
+    const businessId = await seedBusiness('+2348110000031');
+    const amounts = [4_242_000, 5_353_000, 6_464_000, 7_575_000, 8_686_000];
+    for (const [i, amountK] of amounts.entries()) {
+      await post(businessId, `Entry ${i + 1}`, amountK, `JNL-N${i}`);
+    }
+
+    /* A small page here rather than two hundred and thirty seeded rows: the
+     * property is that an amounts query is not bounded by the page, and the
+     * page size is not what makes that true. In production the page is two
+     * hundred and the merchant who reaches it is the one reconciling for the
+     * first time in months. */
+    const page = await withBusiness(db, businessId, (tx) =>
+      bankRepo.openMovements(tx, businessId, { limit: 2 }),
+    );
+    expect(page).toHaveLength(2);
+
+    /* Which two the page holds is not the claim, so the test does not assume
+     * it: every amount the page left out has to be reachable by asking. */
+    const leftOut = amounts.filter((a) => !page.some((m) => m.amountK === a));
+    expect(leftOut).toHaveLength(3);
+    for (const amountK of leftOut) {
+      const asked = await withBusiness(db, businessId, (tx) =>
+        bankRepo.openMovements(tx, businessId, { amounts: [amountK] }),
+      );
+      expect(asked.map((m) => m.amountK)).toEqual([amountK]);
+    }
+  });
+
+  it('finds one by id however many are open', async () => {
+    const businessId = await seedBusiness('+2348110000034');
+    await post(businessId, 'Wanted', 5_000_000, 'JNL-ID1');
+    await post(businessId, 'Another', 6_000_000, 'JNL-ID2');
+
+    const all = await withBusiness(db, businessId, (tx) => bankRepo.openMovements(tx, businessId));
+    const wanted = all.find((m) => m.memo === 'Wanted')!;
+
+    /* What `matchByHand` does: it has an id and wants to know whether that
+     * one movement is open. Reading a page to answer it is a wrong refusal
+     * waiting for the business whose page is full. */
+    const byId = await withBusiness(db, businessId, (tx) =>
+      bankRepo.openMovements(tx, businessId, { ids: [wanted.transactionId] }),
+    );
+    expect(byId).toHaveLength(1);
+    expect(byId[0]).toMatchObject({ transactionId: wanted.transactionId, memo: 'Wanted' });
+  });
+
+  it('offers nothing at all when the lines name no amounts', async () => {
+    const businessId = await seedBusiness('+2348110000032');
+    await post(businessId, 'Money in', 15_000_000, 'JNL-E1');
+    /* A statement with no lines has nothing to pair, and an empty IN list is
+     * a syntax error in Postgres. Returning everything would be worse than
+     * either. */
+    expect(
+      await withBusiness(db, businessId, (tx) =>
+        bankRepo.openMovements(tx, businessId, { amounts: [] }),
+      ),
+    ).toEqual([]);
+  });
+
+  it('leaves out amounts nobody asked about', async () => {
+    const businessId = await seedBusiness('+2348110000033');
+    await post(businessId, 'Wanted', 5_000_000, 'JNL-W');
+    await post(businessId, 'Not wanted', 7_000_000, 'JNL-X');
+
+    const asked = await withBusiness(db, businessId, (tx) =>
+      bankRepo.openMovements(tx, businessId, { amounts: [5_000_000] }),
+    );
+    expect(asked.map((m) => m.memo)).toEqual(['Wanted']);
+  });
+});

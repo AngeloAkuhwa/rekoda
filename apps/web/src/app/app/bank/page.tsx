@@ -168,9 +168,16 @@ export default async function BankPage() {
         <h2>What your bank reported</h2>
         {started ? (
           <>
+            {/* `position.lines` is every line imported; the table below is a
+                page of the newest hundred. Saying the first above the second
+                with nothing between them told a merchant with four hundred
+                lines that four hundred were on the screen. */}
             <p className="rk-fineprint">
               {position.lines === 1 ? 'One line' : `${position.lines} lines`}
               {position.latestOn ? `, up to ${position.latestOn}` : ''}. Newest first.
+              {position.lines > lines.length
+                ? ` Showing the ${lines.length} newest; the rest are in your books and still counted above.`
+                : ''}
             </p>
             <div className="rk-table-scroll">
               <table className="rk-table rk-table-tall">
