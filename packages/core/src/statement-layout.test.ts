@@ -13,8 +13,14 @@ const K = (naira: number) => naira * 100;
 
 const PROFIT: ProfitAndLoss = {
   income: [{ account: 'SALES_REVENUE', code: '4000', name: 'Sales', amountK: K(150_000) }],
-  expenses: [{ account: 'RENT', code: '6100', name: 'Rent', amountK: K(12_000) }],
-  operatingExpenses: [{ account: 'RENT', code: '6100', name: 'Rent', amountK: K(12_000) }],
+  /* A real account from the real chart. This fixture used to say `RENT` at
+   * code 6100: an account that has never existed, at a code that means
+   * DEPRECIATION since ADR 0026. It compiled only because core excluded its
+   * own tests from typechecking, which this PR fixes. */
+  expenses: [{ account: 'EXPENSES', code: '6000', name: 'Operating Expenses', amountK: K(12_000) }],
+  operatingExpenses: [
+    { account: 'EXPENSES', code: '6000', name: 'Operating Expenses', amountK: K(12_000) },
+  ],
   totalIncomeK: K(150_000),
   totalExpensesK: K(12_000),
   /* Nothing sold has a cost recorded, which is the state a business is in
