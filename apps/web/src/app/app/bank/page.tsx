@@ -8,6 +8,7 @@ import { SignOutButton } from '../SignOutButton';
 import { StatementForm } from './StatementForm';
 import { ForgetDayForm } from './ForgetDayForm';
 import { ReconcileForm } from './ReconcileForm';
+import { LineMatchCell } from './LineMatchCell';
 
 export const metadata: Metadata = {
   title: 'Bank',
@@ -31,7 +32,7 @@ export const metadata: Metadata = {
  */
 export default async function BankPage() {
   const { identity, token } = await requireSessionWithToken();
-  const { position, lines, reconciliation } = await bankPosition(token);
+  const { position, lines, reconciliation, openMovements } = await bankPosition(token);
   const today = lagosDay(new Date());
   const started = position.lines > 0;
 
@@ -172,26 +173,38 @@ export default async function BankPage() {
               {position.latestOn ? `, up to ${position.latestOn}` : ''}. Newest first.
             </p>
             <div className="rk-table-scroll">
-              <table className="rk-table">
+              <table className="rk-table rk-table-tall">
                 <thead>
                   <tr>
                     <th>Day</th>
                     <th>What the bank called it</th>
                     <th className="rk-num">Amount</th>
+                    <th>In your books</th>
                   </tr>
                 </thead>
                 <tbody>
                   {lines.map((line) => (
                     <tr key={line.id}>
-                      <td>{line.postedOn}</td>
+                      <td data-label="Day">{line.postedOn}</td>
                       {/* The bank's own words, shown to the merchant who
                             downloaded them and to nobody else. Never sent to a
                             model, never put in a WhatsApp message. */}
-                      <td>
+                      <td data-label="What the bank called it">
                         {line.narration || <span className="rk-fineprint">No description</span>}
                       </td>
-                      <td className="rk-num">
+                      <td className="rk-num" data-label="Amount">
                         <Money kobo={line.amountK} />
+                      </td>
+                      {/* Candidates narrowed to the same amount here, on the
+                            server, by the rule the endpoint enforces. Offering
+                            an option that will be refused teaches a merchant
+                            nothing about why. */}
+                      <td data-label="In your books">
+                        <LineMatchCell
+                          lineId={line.id}
+                          matchedTo={line.matchedTo}
+                          candidates={openMovements.filter((m) => m.amountK === line.amountK)}
+                        />
                       </td>
                     </tr>
                   ))}

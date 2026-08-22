@@ -1033,6 +1033,7 @@ button,
   border-collapse: collapse;
   font-size: var(--rk-text-sm);
 }
+
 .rk-table th {
   text-align: left;
   color: var(--rk-text-muted);
@@ -1080,6 +1081,86 @@ button,
      numbers, and the table already scrolls inside its own container when
      there is genuinely not enough room. */
   white-space: nowrap;
+}
+
+/* The reconciliation cell: what the books say about one statement line, and
+   the one control that changes it. Stacked rather than inline because the
+   memo it carries is a sentence ("Payment on INV-2026-000012") and putting a
+   button beside it pushed the amount column off a phone. `white-space:
+   normal` overrides the table's no-wrap rule for this cell alone — a memo is
+   prose, unlike the document numbers that rule exists to protect. */
+.rk-match {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--rk-space-1);
+  white-space: normal;
+}
+.rk-match-pick {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--rk-space-2);
+}
+/* Wide enough for a memo, because the memo is the whole point of the picker:
+   two identical transfers on the same day are told apart by nothing else.
+   A 14rem cap clipped "JNL-2026-000002: Deposit from Adeb…", which is the
+   half a merchant needs. */
+.rk-match-pick select {
+  min-width: 16rem;
+  max-width: 100%;
+}
+
+/* Top-aligned cells, for a table whose rows are no longer one line tall.
+   With the default middle alignment the day and the amount centred against a
+   three-line reconciliation cell, so the memo sat level with the row ABOVE
+   its own: a merchant could read the wrong entry against the wrong line,
+   which on this page is the exact mistake the feature exists to prevent. */
+.rk-table-tall td,
+.rk-table-tall th {
+  vertical-align: top;
+}
+
+/* One block per line on a phone, because four columns will not fit and the
+   fourth is a dropdown. Left as a table it scrolled sideways inside its own
+   container: a merchant saw three tall rows with the amount sliced down the
+   middle and nothing at all where the matching control lives, because the
+   control was pushing the row's height from off the right edge. The header
+   row goes and each cell carries its own label, which is what the header was
+   for. */
+@media (max-width: 720px) {
+  .rk-table-tall thead {
+    display: none;
+  }
+  .rk-table-tall tr {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--rk-space-2);
+    padding: var(--rk-space-3) 0;
+    border-bottom: 1px dashed var(--rk-border);
+  }
+  .rk-table-tall td {
+    display: block;
+    padding: 0;
+    border: 0;
+    white-space: normal;
+  }
+  .rk-table-tall td[data-label]::before {
+    content: attr(data-label);
+    display: block;
+    color: var(--rk-text-muted);
+    font-size: var(--rk-text-xs);
+  }
+  /* Right alignment is for a column of figures. There is no column here, so
+     the amount and its label would both hug the right edge of a card. */
+  .rk-table-tall td.rk-num,
+  .rk-table-tall th.rk-num {
+    text-align: left;
+  }
+  .rk-match-pick select {
+    min-width: 0;
+    width: 100%;
+  }
 }
 
 /* The dashboard's button. `.rk-review-btn` is the older name for the same

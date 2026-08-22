@@ -1,7 +1,13 @@
 'use server';
 
 import { revalidatePath } from 'next/cache';
-import { forgetStatementDay, importStatement, reconcileBank } from '@/server/api';
+import {
+  forgetStatementDay,
+  importStatement,
+  matchBankLine,
+  reconcileBank,
+  unmatchBankLine,
+} from '@/server/api';
 import { readSessionToken } from '@/server/session-cookies';
 
 export interface StatementState {
@@ -134,4 +140,72 @@ export async function reconcileAction(
     );
   }
   return { done: parts.join(' ') };
+}
+
+/**
+ * A merchant deciding what the rule would not.
+ *
+ * `amounts_differ` is the refusal worth writing carefully. It almost always
+ * means a bank charge, and the merchant's next step is a second entry for
+ * the charge, not a looser match. Saying only "that did not work" would send
+ * them looking for a bug instead.
+ */
+const REFUSED: Record<string, string> = {
+  no_such_line: 'That line is no longer here. Reload the page and try again.',
+  no_such_movement: 'That entry is no longer in your books. Reload the page and try again.',
+  amounts_differ:
+    'Those two are not the same amount, so pairing them would hide the difference. If your bank took a charge, record the charge as its own expense and the two will then agree.',
+  line_already_matched: 'That line is already matched. Release it first if you want to change it.',
+  movement_already_matched:
+    'That entry in your books is already matched to another line. Release that one first.',
+};
+
+export async function matchLineAction(
+  _prev: StatementState,
+  formData: FormData,
+): Promise<StatementState> {
+  const token = await readSessionToken();
+  if (!token) return { error: 'Your session expired. Sign in again.' };
+
+  const lineId = String(formData.get('lineId') ?? '');
+  const transactionId = String(formData.get('transactionId') ?? '');
+  if (!lineId || !transactionId) return { error: 'Pick the entry this line belongs to.' };
+
+  const outcome = await matchBankLine(token, { lineId, transactionId });
+  if (!outcome) return { error: 'That did not go through. Nothing was changed.' };
+  if (outcome.outcome === 'refused') {
+    return { error: REFUSED[outcome.reason] ?? 'That pairing was refused. Nothing was changed.' };
+  }
+
+  revalidatePath('/app/bank');
+  return { done: 'Matched. Your books and this line now agree about that money.' };
+}
+
+/**
+ * Release a pairing.
+ *
+ * The counterpart to matching by hand, and the reason an automatic match is
+ * safe to offer at all: a merchant who spots a wrong one can undo it without
+ * touching the statement or the posting.
+ */
+export async function unmatchLineAction(
+  _prev: StatementState,
+  formData: FormData,
+): Promise<StatementState> {
+  const token = await readSessionToken();
+  if (!token) return { error: 'Your session expired. Sign in again.' };
+
+  const lineId = String(formData.get('lineId') ?? '');
+  if (!lineId) return { error: 'Pick the line to release.' };
+
+  const outcome = await unmatchBankLine(token, lineId);
+  if (!outcome) return { error: 'That did not go through. Nothing was changed.' };
+
+  revalidatePath('/app/bank');
+  return {
+    done:
+      outcome.released > 0
+        ? 'Released. The line and the entry are back where they were, both unmatched.'
+        : 'That line was not matched to anything.',
+  };
 }

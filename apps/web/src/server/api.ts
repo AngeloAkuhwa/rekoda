@@ -33,6 +33,8 @@ import {
   importStatementResponse,
   forgetStatementDayResponse,
   reconcileResponse,
+  matchLineResponse,
+  unmatchLineResponse,
   reopenBooksResponse,
   publicShopIndexResponse,
   publicShopResponse,
@@ -61,6 +63,9 @@ import {
   type ImportStatementResponse,
   type ForgetStatementDayResponse,
   type ReconcileResponse,
+  type MatchLineRequest,
+  type MatchLineResponse,
+  type UnmatchLineResponse,
   type CloseBooksResponse,
   type ReopenBooksRequest,
   type ReopenBooksResponse,
@@ -734,6 +739,36 @@ export async function reconcileBank(sessionToken: string): Promise<ReconcileResp
     expect: [200, 400],
   });
   return status === 200 ? reconcileResponse.parse(json) : null;
+}
+
+/** A merchant deciding what the rule would not. */
+export async function matchBankLine(
+  sessionToken: string,
+  body: MatchLineRequest,
+): Promise<MatchLineResponse | null> {
+  const { status, json } = await call({
+    method: 'POST',
+    path: '/v1/bank/match',
+    body,
+    headers: { authorization: `Bearer ${sessionToken}` },
+    expect: [200, 400],
+  });
+  return status === 200 ? matchLineResponse.parse(json) : null;
+}
+
+/** Release a pairing, leaving the line and the posting as they were. */
+export async function unmatchBankLine(
+  sessionToken: string,
+  lineId: string,
+): Promise<UnmatchLineResponse | null> {
+  const { status, json } = await call({
+    method: 'POST',
+    path: '/v1/bank/unmatch',
+    body: { lineId },
+    headers: { authorization: `Bearer ${sessionToken}` },
+    expect: [200, 400],
+  });
+  return status === 200 ? unmatchLineResponse.parse(json) : null;
 }
 
 /** Take one day's imported lines back out. */

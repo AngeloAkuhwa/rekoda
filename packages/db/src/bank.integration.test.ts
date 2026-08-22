@@ -418,6 +418,170 @@ describe('pairing the two sides', () => {
     expect(Number([...rows][0]!.n)).toBe(0);
   });
 
+  /**
+   * The promise the page makes: when two entries both fit, Rekoda "leaves the
+   * line for you". This is the merchant taking it.
+   */
+  it('lets a merchant decide what the rule would not', async () => {
+    const businessId = await seedBusiness('+2348110000050');
+    await importIt(businessId, AUGUST);
+    const one = await bankPosting(businessId, '2026-08-02', 15_000_000, 'J1');
+    await bankPosting(businessId, '2026-08-04', 15_000_000, 'J2');
+    expect(await reconcile(businessId)).toMatchObject({ matched: 0, ambiguous: 1 });
+
+    const lines = await withBusiness(db, businessId, (tx) => bankRepo.bankLinesFor(tx, businessId));
+    const line = lines.find((l) => l.amountK === 15_000_000)!;
+    expect(
+      await withBusiness(db, businessId, (tx) =>
+        bankRepo.matchByHand(tx, {
+          businessId,
+          lineId: line.id,
+          transactionId: one,
+          actor: 'user:1',
+        }),
+      ),
+    ).toEqual({ outcome: 'matched' });
+
+    /* And the decision is recorded as the merchant's, not the rule's. */
+    const matches = await withBusiness(db, businessId, (tx) => bankRepo.matchesFor(tx, businessId));
+    expect(matches).toMatchObject([{ lineId: line.id, transactionId: one, decidedBy: 'manual' }]);
+    /* The other posting is now the only one left over, not both. */
+    expect(await reconcile(businessId)).toMatchObject({ matched: 1, unmatchedMovements: 1 });
+  });
+
+  /**
+   * The one condition a person does NOT get to lift. Two figures a bank
+   * charge apart are two facts, and a match spanning them buries the charge
+   * inside a reconciliation that reports agreement.
+   */
+  it('refuses a hand-made match between two different amounts', async () => {
+    const businessId = await seedBusiness('+2348110000051');
+    await importIt(businessId, AUGUST);
+    const posting = await bankPosting(businessId, '2026-08-03', 14_995_000, 'J1');
+    const lines = await withBusiness(db, businessId, (tx) => bankRepo.bankLinesFor(tx, businessId));
+    const line = lines.find((l) => l.amountK === 15_000_000)!;
+
+    expect(
+      await withBusiness(db, businessId, (tx) =>
+        bankRepo.matchByHand(tx, {
+          businessId,
+          lineId: line.id,
+          transactionId: posting,
+          actor: 'user:1',
+        }),
+      ),
+    ).toEqual({ outcome: 'refused', reason: 'amounts_differ' });
+    expect(await withBusiness(db, businessId, (tx) => bankRepo.matchesFor(tx, businessId))).toEqual(
+      [],
+    );
+  });
+
+  /* The date, by contrast, IS lifted: a transfer recorded a month late is
+   * still the same money, and only a person can know that. */
+  it('lets a merchant pair across a gap the rule would refuse', async () => {
+    const businessId = await seedBusiness('+2348110000052');
+    await importIt(businessId, AUGUST);
+    const posting = await bankPosting(businessId, '2026-06-01', 15_000_000, 'J1');
+    /* Two months apart: the rule found nothing. */
+    expect(await reconcile(businessId)).toMatchObject({ matched: 0, unmatchedLines: 2 });
+
+    const lines = await withBusiness(db, businessId, (tx) => bankRepo.bankLinesFor(tx, businessId));
+    const line = lines.find((l) => l.amountK === 15_000_000)!;
+    expect(
+      await withBusiness(db, businessId, (tx) =>
+        bankRepo.matchByHand(tx, {
+          businessId,
+          lineId: line.id,
+          transactionId: posting,
+          actor: 'user:1',
+        }),
+      ),
+    ).toEqual({ outcome: 'matched' });
+  });
+
+  it('refuses a second claim on a line, and on a posting', async () => {
+    const businessId = await seedBusiness('+2348110000053');
+    await importIt(businessId, AUGUST);
+    const posting = await bankPosting(businessId, '2026-08-03', 15_000_000, 'J1');
+    const other = await bankPosting(businessId, '2026-08-03', 15_000_000, 'J2');
+    const lines = await withBusiness(db, businessId, (tx) => bankRepo.bankLinesFor(tx, businessId));
+    const line = lines.find((l) => l.amountK === 15_000_000)!;
+    const by = (lineId: string, transactionId: string) =>
+      withBusiness(db, businessId, (tx) =>
+        bankRepo.matchByHand(tx, { businessId, lineId, transactionId, actor: 'user:1' }),
+      );
+
+    expect(await by(line.id, posting)).toEqual({ outcome: 'matched' });
+    /* Same line, different posting: the line is spoken for. */
+    expect(await by(line.id, other)).toEqual({
+      outcome: 'refused',
+      reason: 'line_already_matched',
+    });
+    /* Different line, same posting: the posting is spoken for. */
+    const otherLine = lines.find((l) => l.amountK !== 15_000_000)!;
+    expect(await by(otherLine.id, posting)).toEqual({
+      outcome: 'refused',
+      reason: 'movement_already_matched',
+    });
+  });
+
+  /**
+   * Releasing is what makes an automatic match safe to offer. Without it the
+   * rule's timidity is a merchant's only protection against a wrong pairing.
+   */
+  it('releases a match without touching either side', async () => {
+    const businessId = await seedBusiness('+2348110000054');
+    await importIt(businessId, AUGUST);
+    await bankPosting(businessId, '2026-08-03', 15_000_000, 'J1');
+    await reconcile(businessId);
+    const lines = await withBusiness(db, businessId, (tx) => bankRepo.bankLinesFor(tx, businessId));
+    const line = lines.find((l) => l.amountK === 15_000_000)!;
+
+    expect(
+      await withBusiness(db, businessId, (tx) =>
+        bankRepo.unmatchLine(tx, { businessId, lineId: line.id, actor: 'user:1' }),
+      ),
+    ).toBe(1);
+
+    /* The line is still exactly what the bank said, and the posting is still
+     * in the books: neither was ever altered by being matched. */
+    const after = await withBusiness(db, businessId, (tx) => bankRepo.bankLinesFor(tx, businessId));
+    expect(after.find((l) => l.id === line.id)).toMatchObject({
+      amountK: 15_000_000,
+      narration: line.narration,
+    });
+    expect(await reconcile(businessId, false)).toMatchObject({ matched: 0, pairable: 1 });
+
+    /* Releasing what is not matched is not an error, it is a no-op. */
+    expect(
+      await withBusiness(db, businessId, (tx) =>
+        bankRepo.unmatchLine(tx, { businessId, lineId: line.id, actor: 'user:1' }),
+      ),
+    ).toBe(0);
+  });
+
+  /* A merchant of one business must not be able to name another's posting,
+   * even with a valid uuid in hand. */
+  it('will not pair across businesses', async () => {
+    const ada = await seedBusiness('+2348110000055');
+    const bola = await seedBusiness('+2348110000056');
+    await importIt(ada, AUGUST);
+    const bolasPosting = await bankPosting(bola, '2026-08-03', 15_000_000, 'J1');
+    const lines = await withBusiness(db, ada, (tx) => bankRepo.bankLinesFor(tx, ada));
+    const line = lines.find((l) => l.amountK === 15_000_000)!;
+
+    expect(
+      await withBusiness(db, ada, (tx) =>
+        bankRepo.matchByHand(tx, {
+          businessId: ada,
+          lineId: line.id,
+          transactionId: bolasPosting,
+          actor: 'user:1',
+        }),
+      ),
+    ).toEqual({ outcome: 'refused', reason: 'no_such_movement' });
+  });
+
   it('is one business at a time', async () => {
     const ada = await seedBusiness('+2348110000047');
     const bola = await seedBusiness('+2348110000048');

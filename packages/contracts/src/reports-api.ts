@@ -828,6 +828,7 @@ export const bankPositionResponse = z.object({
     ambiguous: z.number().int().nonnegative(),
     unmatchedLines: z.number().int().nonnegative(),
     unmatchedMovements: z.number().int().nonnegative(),
+    undecidedMovements: z.number().int().nonnegative(),
     unmatchedLinesK: z.number().int().finite(),
     unmatchedMovementsK: z.number().int().finite(),
   }),
@@ -852,6 +853,34 @@ export const bankPositionResponse = z.object({
        */
       narration: z.string(),
       bankRef: z.string().nullable(),
+      /**
+       * What this line was paired with, if anything.
+       *
+       * The memo rather than the id, because a merchant checking a
+       * reconciliation reads "Sale INV-2026-000012", not a uuid. It is the
+       * merchant's own words about their own books; no counterparty name
+       * reaches a ledger memo, and none may be put in one.
+       */
+      matchedTo: z
+        .object({
+          transactionId: z.string(),
+          memo: z.string(),
+          /** Whether Rekoda decided this or the merchant did. */
+          decidedBy: z.enum(['auto', 'manual']),
+        })
+        .nullable(),
+    }),
+  ),
+  /**
+   * Postings the statement has not explained, offered as the pool a merchant
+   * picks from when the rule refused to choose.
+   */
+  openMovements: z.array(
+    z.object({
+      transactionId: z.string(),
+      occurredOn: z.string(),
+      amountK: z.number().int().finite(),
+      memo: z.string(),
     }),
   ),
 });
@@ -872,11 +901,47 @@ export const reconcileResponse = z.object({
   unmatchedLines: z.number().int().nonnegative(),
   /** Postings nothing on the statement explains: money the bank never saw. */
   unmatchedMovements: z.number().int().nonnegative(),
+  /** Candidates for a line with more than one, waiting on a person. */
+  undecidedMovements: z.number().int().nonnegative(),
   unmatchedLinesK: z.number().int().finite(),
   unmatchedMovementsK: z.number().int().finite(),
 });
 
 export type ReconcileResponse = z.infer<typeof reconcileResponse>;
+
+export const matchLineRequest = z.object({
+  lineId: z.string().uuid(),
+  transactionId: z.string().uuid(),
+});
+
+/**
+ * Five ways a hand-made match is refused, and a merchant needs to know
+ * which. `amounts_differ` is the one that carries a lesson: it means there
+ * is a second fact, usually a bank charge, that needs its own entry.
+ */
+export const matchLineResponse = z.discriminatedUnion('outcome', [
+  z.object({ outcome: z.literal('matched') }),
+  z.object({
+    outcome: z.literal('refused'),
+    reason: z.enum([
+      'no_such_line',
+      'no_such_movement',
+      'amounts_differ',
+      'line_already_matched',
+      'movement_already_matched',
+    ]),
+  }),
+]);
+
+export const unmatchLineRequest = z.object({ lineId: z.string().uuid() });
+export const unmatchLineResponse = z.object({
+  released: z.number().int().nonnegative(),
+});
+
+export type MatchLineRequest = z.infer<typeof matchLineRequest>;
+export type MatchLineResponse = z.infer<typeof matchLineResponse>;
+export type UnmatchLineRequest = z.infer<typeof unmatchLineRequest>;
+export type UnmatchLineResponse = z.infer<typeof unmatchLineResponse>;
 
 export const forgetStatementDayRequest = z.object({
   postedOn: z

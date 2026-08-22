@@ -71,8 +71,11 @@ describe('pairing a statement with the books', () => {
     );
     expect(result.matched).toEqual([]);
     expect(result.ambiguous).toEqual([{ lineId: 'L1', candidates: ['T1', 'T2'] }]);
-    /* Both postings stay outstanding: neither was claimed. */
-    expect(result.unmatchedMovements).toEqual(['T1', 'T2']);
+    /* Both postings stay outstanding, and outstanding is not the same as
+     * absent: the bank shows one of them, so neither may be reported as
+     * money the statement does not have. */
+    expect(result.unmatchedMovements).toEqual([]);
+    expect(result.undecidedMovements).toEqual(['T1', 'T2']);
   });
 
   /**
@@ -98,6 +101,36 @@ describe('pairing a statement with the books', () => {
     );
     expect(result.matched).toEqual([]);
     expect(result.ambiguous).toHaveLength(2);
+  });
+
+  /**
+   * The distinction a dashboard lives or dies on.
+   *
+   * Two postings of ₦150,000 and one statement line for ₦150,000: the bank
+   * plainly shows one of them. Calling both "money the bank never saw" would
+   * report ₦300,000 missing from a statement holding ₦150,000 of it, which
+   * is a scarier number than the truth and a wrong one.
+   */
+  it('does not call a posting absent when the statement may well show it', () => {
+    const result = matchStatement(
+      [line('L1', '2026-08-03', 15_000_000)],
+      [move('T1', '2026-08-03', 15_000_000), move('T2', '2026-08-04', 15_000_000)],
+    );
+    expect(result.ambiguous).toHaveLength(1);
+    expect(result.unmatchedMovements).toEqual([]);
+    expect([...result.undecidedMovements].sort()).toEqual(['T1', 'T2']);
+  });
+
+  /* And a posting no line could be IS absent, which is the serious case: a
+   * payment the books recorded that never reached the bank. */
+  it('still names a posting nothing on the statement can explain', () => {
+    const result = matchStatement(
+      [line('L1', '2026-08-03', 15_000_000)],
+      [move('T1', '2026-08-03', 15_000_000), move('T9', '2026-08-03', 7_000_000)],
+    );
+    expect(result.matched).toHaveLength(1);
+    expect(result.unmatchedMovements).toEqual(['T9']);
+    expect(result.undecidedMovements).toEqual([]);
   });
 
   /**
@@ -142,6 +175,7 @@ describe('pairing a statement with the books', () => {
       ambiguous: [],
       unmatchedLines: [],
       unmatchedMovements: [],
+      undecidedMovements: [],
     });
     expect(matchStatement([], [move('T1', '2026-08-03', 100)]).unmatchedMovements).toEqual(['T1']);
   });

@@ -30,6 +30,10 @@ import {
   type ForgetStatementDayResponse,
   type ImportStatementResponse,
   type ReconcileResponse,
+  matchLineRequest,
+  unmatchLineRequest,
+  type MatchLineResponse,
+  type UnmatchLineResponse,
 } from '@rekoda/contracts';
 import { bankRepo, withBusiness, type Db } from '@rekoda/db';
 import { SessionGuard, type AuthedRequest } from '../auth/session.guard.js';
@@ -44,7 +48,7 @@ export class BankController {
   @Get('position')
   async position(@Req() request: AuthedRequest): Promise<BankPositionResponse> {
     const businessId = request.auth!.businessId;
-    const { position, lines, reconciliation } = await withBusiness(
+    const { position, lines, reconciliation, openMovements, matches } = await withBusiness(
       this.db,
       businessId,
       async (tx) => ({
@@ -53,12 +57,32 @@ export class BankController {
         /* Read without committing. Opening a page must not decide anything,
          * and pairing is a decision the merchant asks for. */
         reconciliation: await bankRepo.reconcile(tx, { businessId, commit: false }),
+        openMovements: await bankRepo.openMovements(tx, businessId),
+        matches: await bankRepo.matchesFor(tx, businessId),
       }),
     );
+    const matchedBy = new Map(matches.map((m) => [m.lineId, m]));
     /* Parsed on the way out as well as on the way in. The narration is the
      * one field here that carries somebody's name, and the contract is the
      * border that says which fields may cross at all. */
-    return bankPositionResponse.parse({ position, lines, reconciliation });
+    return bankPositionResponse.parse({
+      position,
+      reconciliation,
+      openMovements,
+      lines: lines.map((line) => {
+        const match = matchedBy.get(line.id);
+        return {
+          ...line,
+          matchedTo: match
+            ? {
+                transactionId: match.transactionId,
+                memo: match.memo,
+                decidedBy: match.decidedBy,
+              }
+            : null,
+        };
+      }),
+    });
   }
 
   /**
@@ -116,6 +140,59 @@ export class BankController {
     return withBusiness(this.db, businessId, (tx) =>
       bankRepo.reconcile(tx, { businessId, commit: true }),
     );
+  }
+
+  /**
+   * A merchant deciding what the rule would not.
+   *
+   * Two of the rule's conditions are lifted: which of two identical
+   * transfers this one is, and how long ago it happened, are things a person
+   * knows and a rule cannot. The amount is not lifted. Two figures a bank
+   * charge apart are two facts, and the refusal says so rather than papering
+   * over the charge inside a match.
+   */
+  @Post('match')
+  @HttpCode(200)
+  async match(@Req() request: AuthedRequest, @Body() body: unknown): Promise<MatchLineResponse> {
+    const parsed = matchLineRequest.safeParse(body);
+    if (!parsed.success) throw new BadRequestException('a line and an entry to pair it with');
+
+    const businessId = request.auth!.businessId;
+    return withBusiness(this.db, businessId, (tx) =>
+      bankRepo.matchByHand(tx, {
+        businessId,
+        lineId: parsed.data.lineId,
+        transactionId: parsed.data.transactionId,
+        actor: `user:${request.auth!.userId}`,
+      }),
+    );
+  }
+
+  /**
+   * Release a pairing.
+   *
+   * An automatic match on the wrong posting has to be undoable, or the rule's
+   * timidity is the only protection a merchant has. Releasing changes neither
+   * the line nor the posting: neither was ever altered by being matched.
+   */
+  @Post('unmatch')
+  @HttpCode(200)
+  async unmatch(
+    @Req() request: AuthedRequest,
+    @Body() body: unknown,
+  ): Promise<UnmatchLineResponse> {
+    const parsed = unmatchLineRequest.safeParse(body);
+    if (!parsed.success) throw new BadRequestException('the line to release');
+
+    const businessId = request.auth!.businessId;
+    const released = await withBusiness(this.db, businessId, (tx) =>
+      bankRepo.unmatchLine(tx, {
+        businessId,
+        lineId: parsed.data.lineId,
+        actor: `user:${request.auth!.userId}`,
+      }),
+    );
+    return { released };
   }
 
   /**
