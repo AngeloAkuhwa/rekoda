@@ -4,6 +4,7 @@ import { revalidatePath } from 'next/cache';
 import { formatKobo, parseAmountText, toKobo } from '@rekoda/core';
 import {
   createRecurring,
+  disposeAsset,
   paySupplier,
   recordAsset,
   stopRecurring,
@@ -313,5 +314,50 @@ export async function withdrawAssetAction(
   revalidatePath('/app/expenses');
   return {
     done: `${outcome.description} is off your balance sheet, and the ${formatKobo(outcome.reversedK)} that bought it is back where it was.`,
+  };
+}
+
+/**
+ * Selling or scrapping something the business owned.
+ *
+ * The reply names the BOOK VALUE it was measured against, because that is the
+ * figure a merchant will not have in their head: they know what they paid and
+ * what they got, and the gap between those two is not the gain or the loss.
+ */
+export async function disposeAssetAction(
+  _prev: VoidSpendFormState,
+  formData: FormData,
+): Promise<VoidSpendFormState> {
+  const token = await readSessionToken();
+  if (!token) return { error: 'Your session expired. Sign in again.' };
+
+  const assetId = String(formData.get('assetId') ?? '').trim();
+  if (!assetId) return { error: 'Pick the item you sold.' };
+
+  const text = String(formData.get('proceeds') ?? '').trim();
+  /* Empty means scrapped: it went, and nothing came back. That is a real
+   * event with a real loss, not a missing answer. */
+  const naira = text === '' ? 0 : parseAmountText(text);
+  if (naira === null || naira < 0) {
+    return { error: 'Say what you got for it, or leave it empty if nothing came back.' };
+  }
+
+  const method = String(formData.get('method') ?? 'cash') === 'transfer' ? 'transfer' : 'cash';
+  const outcome = await disposeAsset(token, { assetId, proceedsK: toKobo(naira), method });
+  if (!outcome) return { error: 'That did not go through. Nothing was changed.' };
+  if (outcome.outcome === 'not_found') return { error: 'That item is no longer here.' };
+  if (outcome.outcome === 'not_owned') {
+    return { error: 'You no longer own that one: it has already been sold or taken back out.' };
+  }
+
+  revalidatePath('/app/expenses');
+  const worth = `It was still worth ${formatKobo(outcome.bookValueK)} on your books.`;
+  return {
+    done:
+      outcome.resultK === 0
+        ? `${outcome.description} is off your balance sheet. You sold it for exactly what it was worth, so nothing was gained or lost.`
+        : outcome.resultK > 0
+          ? `${outcome.description} is off your balance sheet. ${worth} You got ${formatKobo(outcome.resultK)} more than that, and it counts as a gain this month.`
+          : `${outcome.description} is off your balance sheet. ${worth} You got ${formatKobo(-outcome.resultK)} less than that, and it counts as a loss this month.`,
   };
 }

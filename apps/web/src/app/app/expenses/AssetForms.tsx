@@ -4,12 +4,18 @@ import { useActionState } from 'react';
 import { formatKobo } from '@rekoda/core';
 import { Button } from '@/components/ui/Button';
 import { Field } from '@/components/ui/Field';
-import { recordAssetAction, withdrawAssetAction, type VoidSpendFormState } from './actions';
+import {
+  disposeAssetAction,
+  recordAssetAction,
+  withdrawAssetAction,
+  type VoidSpendFormState,
+} from './actions';
 
 export interface OwnedAsset {
   id: string;
   description: string;
   costK: number;
+  /** What it is still worth. Zero once it has gone. */
   bookValueK: number;
   status: string;
 }
@@ -170,6 +176,88 @@ export function WithdrawAssetForm({ assets }: { assets: OwnedAsset[] }) {
 
       <Button type="submit" disabled={pending}>
         {pending ? 'Taking it out' : 'Take it back out'}
+      </Button>
+    </form>
+  );
+}
+
+/**
+ * Selling or scrapping something the business owned.
+ *
+ * Separate from the withdrawal above, because they are separate events and a
+ * merchant reaching for the wrong one gets a wrong answer that looks right. A
+ * withdrawal says the purchase never happened; this says the business owned
+ * it, used it, and has now parted with it.
+ *
+ * What it is still worth is shown against each option, because that is the
+ * figure the gain or loss is measured against and the one a merchant will not
+ * have in their head: they know what they paid and what they got, and the gap
+ * between those two is not the answer.
+ */
+export function DisposeAssetForm({ assets }: { assets: OwnedAsset[] }) {
+  const [state, action, pending] = useActionState<VoidSpendFormState, FormData>(
+    disposeAssetAction,
+    {},
+  );
+  const owned = assets.filter((a) => a.status === 'recorded');
+
+  if (owned.length === 0) {
+    return (
+      <>
+        {state.done ? (
+          <p className="rk-fineprint" role="status">
+            {state.done}
+          </p>
+        ) : null}
+        <p className="rk-fineprint">Nothing here to sell.</p>
+      </>
+    );
+  }
+
+  return (
+    <form action={action} className="rk-form" noValidate>
+      <Field id="disposeAssetId" label="What you sold" error={state.error}>
+        <select name="assetId" id="disposeAssetId" required className="rk-input" defaultValue="">
+          <option value="" disabled>
+            Choose an item
+          </option>
+          {owned.map((a) => (
+            <option key={a.id} value={a.id}>
+              {a.description} · still worth {formatKobo(a.bookValueK)}
+            </option>
+          ))}
+        </select>
+      </Field>
+
+      <Field
+        id="disposeProceeds"
+        label="What you got for it"
+        hint="Leave empty if it was scrapped or thrown away and nothing came back"
+      >
+        <input
+          name="proceeds"
+          id="disposeProceeds"
+          inputMode="decimal"
+          className="rk-input"
+          placeholder="200000"
+        />
+      </Field>
+
+      <Field id="disposeMethod" label="How the money came in">
+        <select name="method" id="disposeMethod" className="rk-input" defaultValue="cash">
+          <option value="cash">Cash</option>
+          <option value="transfer">Bank transfer</option>
+        </select>
+      </Field>
+
+      {state.done ? (
+        <p className="rk-fineprint" role="status">
+          {state.done}
+        </p>
+      ) : null}
+
+      <Button type="submit" disabled={pending}>
+        {pending ? 'Recording' : 'Record this sale'}
       </Button>
     </form>
   );

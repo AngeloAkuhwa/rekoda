@@ -219,3 +219,216 @@ describe('taking one back out', () => {
     expect(refused).toMatchObject({ code: '42501' });
   });
 });
+
+describe('selling or scrapping one', () => {
+  /* Enough wear on the books that book value and cost are plainly different,
+   * which is the whole point of what follows. */
+  async function wornGenerator(businessId: string) {
+    const recorded = await buy(businessId);
+    for (let m = 0; m < 12; m++) {
+      await withBusiness(db, businessId, (tx) =>
+        assetsRepo.chargeOneMonth(tx, {
+          businessId,
+          assetId: recorded.assetId,
+          expectMonthsCharged: m,
+          at: new Date(),
+        }),
+      );
+    }
+    return recorded;
+  }
+
+  /**
+   * The arithmetic that must not double-count. Bought for ₦450,000, worn to
+   * ₦360,000, sold for ₦200,000 is a ₦160,000 loss — not ₦250,000, because
+   * the other ₦90,000 already reached the profit and loss a month at a time.
+   */
+  it('measures the result against book value, never against the price paid', async () => {
+    const businessId = await seedBusiness();
+    const recorded = await wornGenerator(businessId);
+
+    expect(
+      await withBusiness(db, businessId, (tx) =>
+        assetsRepo.disposeAsset(tx, {
+          businessId,
+          assetId: recorded.assetId,
+          proceedsK: 20_000_000,
+          method: 'transfer',
+          actor: 'user:1',
+        }),
+      ),
+    ).toMatchObject({
+      outcome: 'sold',
+      bookValueK: 36_000_000,
+      resultK: -16_000_000,
+    });
+  });
+
+  /**
+   * The balance sheet must have nothing left of it: not the cost, and not the
+   * wear recorded against it. A stranded credit under equipment that no
+   * longer exists is a balance sheet nobody can explain.
+   */
+  it('leaves nothing of it on the balance sheet', async () => {
+    const businessId = await seedBusiness();
+    const recorded = await wornGenerator(businessId);
+    await withBusiness(db, businessId, (tx) =>
+      assetsRepo.disposeAsset(tx, {
+        businessId,
+        assetId: recorded.assetId,
+        proceedsK: 20_000_000,
+        method: 'transfer',
+        actor: 'user:1',
+      }),
+    );
+
+    const sums = await sumsOf(businessId);
+    const sheet = buildBalanceSheet(sums);
+    expect(sheet.assets.find((l) => l.account === 'EQUIPMENT')?.amountK ?? 0).toBe(0);
+    expect(sheet.assets.find((l) => l.account === 'ACCUMULATED_DEPRECIATION')?.amountK ?? 0).toBe(
+      0,
+    );
+    expect(sheet.balanced).toBe(true);
+
+    /* The loss is in the profit and loss, once, at its true size. */
+    const pnl = buildProfitAndLoss(sums);
+    expect(pnl.expenses.find((l) => l.account === 'DISPOSAL_RESULT')?.amountK).toBe(16_000_000);
+    /* And the depreciation charged over the year is still there, unerased. */
+    expect(pnl.expenses.find((l) => l.account === 'DEPRECIATION')?.amountK).toBe(9_000_000);
+  });
+
+  it('records a gain when it fetched more than it was worth', async () => {
+    const businessId = await seedBusiness();
+    const recorded = await wornGenerator(businessId);
+    expect(
+      await withBusiness(db, businessId, (tx) =>
+        assetsRepo.disposeAsset(tx, {
+          businessId,
+          assetId: recorded.assetId,
+          proceedsK: 40_000_000,
+          method: 'cash',
+          actor: 'user:1',
+        }),
+      ),
+    ).toMatchObject({ resultK: 4_000_000 });
+
+    const pnl = buildProfitAndLoss(await sumsOf(businessId));
+    /* A gain is a credit on an expense account, so it reads as negative. */
+    expect(pnl.expenses.find((l) => l.account === 'DISPOSAL_RESULT')?.amountK).toBe(-4_000_000);
+  });
+
+  /* Scrapped: it went and nothing came back, so the whole book value is lost. */
+  it('makes the whole remaining value the loss when nothing came back', async () => {
+    const businessId = await seedBusiness();
+    const recorded = await wornGenerator(businessId);
+    expect(
+      await withBusiness(db, businessId, (tx) =>
+        assetsRepo.disposeAsset(tx, {
+          businessId,
+          assetId: recorded.assetId,
+          proceedsK: 0,
+          method: 'cash',
+          actor: 'user:1',
+        }),
+      ),
+    ).toMatchObject({ resultK: -36_000_000 });
+  });
+
+  /**
+   * A year of true history must survive the sale. `chargedK` sums the
+   * DEPRECIATION debits rather than the accumulated-depreciation balance,
+   * because a disposal nets that account to zero when it takes the wear off
+   * with the equipment — and reading it would make a generator that had
+   * ₦90,000 charged against it report "nothing yet" the moment it was sold.
+   */
+  it('still says what was charged against it, after it has gone', async () => {
+    const businessId = await seedBusiness();
+    const recorded = await wornGenerator(businessId);
+
+    const before = await withBusiness(db, businessId, (tx) => assetsRepo.assetsFor(tx, businessId));
+    expect(before[0]).toMatchObject({ chargedK: 9_000_000, bookValueK: 36_000_000 });
+
+    await withBusiness(db, businessId, (tx) =>
+      assetsRepo.disposeAsset(tx, {
+        businessId,
+        assetId: recorded.assetId,
+        proceedsK: 20_000_000,
+        method: 'transfer',
+        actor: 'user:1',
+      }),
+    );
+
+    const after = await withBusiness(db, businessId, (tx) => assetsRepo.assetsFor(tx, businessId));
+    /* Worth nothing now, and still honest about the year it was used. */
+    expect(after[0]).toMatchObject({ chargedK: 9_000_000, bookValueK: 0, status: 'sold' });
+  });
+
+  it('reads back as sold, worth nothing, with what it fetched', async () => {
+    const businessId = await seedBusiness();
+    const recorded = await buy(businessId);
+    await withBusiness(db, businessId, (tx) =>
+      assetsRepo.disposeAsset(tx, {
+        businessId,
+        assetId: recorded.assetId,
+        proceedsK: 20_000_000,
+        method: 'transfer',
+        actor: 'user:1',
+      }),
+    );
+
+    const [asset] = await withBusiness(db, businessId, (tx) =>
+      assetsRepo.assetsFor(tx, businessId),
+    );
+    expect(asset).toMatchObject({
+      status: 'sold',
+      bookValueK: 0,
+      proceedsK: 20_000_000,
+    });
+    expect(asset?.soldOn).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  });
+
+  it('refuses one already gone, and one that was never here', async () => {
+    const businessId = await seedBusiness();
+    const recorded = await buy(businessId);
+    const sell = (assetId: string) =>
+      withBusiness(db, businessId, (tx) =>
+        assetsRepo.disposeAsset(tx, {
+          businessId,
+          assetId,
+          proceedsK: 1_000_000,
+          method: 'cash',
+          actor: 'user:1',
+        }),
+      );
+
+    expect(await sell(recorded.assetId)).toMatchObject({ outcome: 'sold' });
+    expect(await sell(recorded.assetId)).toEqual({ outcome: 'not_owned' });
+    expect(await sell('00000000-0000-4000-8000-000000000000')).toEqual({ outcome: 'not_found' });
+  });
+
+  /* Something sold is not being used, so it stops wearing out. */
+  it('stops the wear once it has gone', async () => {
+    const businessId = await seedBusiness();
+    const recorded = await buy(businessId);
+    await withBusiness(db, businessId, (tx) =>
+      assetsRepo.disposeAsset(tx, {
+        businessId,
+        assetId: recorded.assetId,
+        proceedsK: 45_000_000,
+        method: 'cash',
+        actor: 'user:1',
+      }),
+    );
+
+    expect(
+      await withBusiness(db, businessId, (tx) =>
+        assetsRepo.chargeOneMonth(tx, {
+          businessId,
+          assetId: recorded.assetId,
+          expectMonthsCharged: 0,
+          at: new Date(),
+        }),
+      ),
+    ).toMatchObject({ charged: false });
+  });
+});

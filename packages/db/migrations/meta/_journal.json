@@ -281,6 +281,13 @@
       "when": 1787187810134,
       "tag": "0039_fixed_assets",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1787187811134,
+      "tag": "0040_asset_disposal",
+      "breakpoints": true
     }
   ]
 }
