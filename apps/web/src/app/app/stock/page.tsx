@@ -25,7 +25,7 @@ export const metadata: Metadata = {
  */
 export default async function StockPage() {
   const { token } = await requireSessionWithToken();
-  const { products, outOfStock, withoutCost } = await reportsStock(token);
+  const { products, total, outOfStock, withoutCost } = await reportsStock(token);
 
   return (
     <section className="rk-container rk-dash">
@@ -41,7 +41,7 @@ export default async function StockPage() {
 
       <div className="rk-card">
         <h2>Stock register</h2>
-        {products.length === 0 ? (
+        {total === 0 ? (
           <p className="rk-fineprint">
             You are not counting any stock yet. Tell Rekoda on WhatsApp what you have, like{' '}
             <strong>add 20 bags of rice</strong>, and the count keeps itself from there. Stock you
@@ -89,8 +89,18 @@ export default async function StockPage() {
                 </tbody>
               </table>
             </div>
+            {/* The counts describe the shop, not the table above it. The
+                table is a page, and a footer that counted its own rows would
+                tell a merchant with more products than fit that they have
+                exactly as many as fit. */}
             <p className="rk-fineprint">
-              {products.length === 1 ? 'One product' : `${products.length} products`} counted
+              {total === 1 ? 'One product' : `${total} products`} counted
+              {total > products.length ? (
+                <>
+                  {' · '}
+                  showing the {products.length} lowest
+                </>
+              ) : null}
               {outOfStock > 0 ? (
                 <>
                   {' · '}

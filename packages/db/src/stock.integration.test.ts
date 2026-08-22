@@ -73,7 +73,7 @@ describe('finding a product', () => {
     );
     expect(second.id).toBe(first.id);
     expect(
-      await withBusiness(db, businessId, (tx) => stockRepo.stockList(tx, businessId)),
+      (await withBusiness(db, businessId, (tx) => stockRepo.stockList(tx, businessId))).rows,
     ).toHaveLength(1);
   });
 
@@ -194,9 +194,9 @@ describe('a sale taking stock off the shelf', () => {
     );
     /* Otherwise a shop that sold one of something it never stocked would be
      * told it holds minus one of them, forever. */
-    expect(await withBusiness(db, businessId, (tx) => stockRepo.stockList(tx, businessId))).toEqual(
-      [],
-    );
+    expect(
+      (await withBusiness(db, businessId, (tx) => stockRepo.stockList(tx, businessId))).rows,
+    ).toEqual([]);
   });
 
   it('matches a sale line however the merchant capitalised it', async () => {
@@ -288,7 +288,7 @@ describe('the stock list', () => {
     await adjust(businessId, wigs.id, 2);
 
     const list = await withBusiness(db, businessId, (tx) => stockRepo.stockList(tx, businessId));
-    expect(list.map((p) => p.name)).toEqual(['Wigs', 'Bags of rice']);
+    expect(list.rows.map((p) => p.name)).toEqual(['Wigs', 'Bags of rice']);
   });
 
   it('shows one tenant nothing of another', async () => {
@@ -299,7 +299,7 @@ describe('the stock list', () => {
     );
     await adjust(theirs, product.id, 99);
 
-    expect(await withBusiness(db, mine, (tx) => stockRepo.stockList(tx, mine))).toEqual([]);
+    expect((await withBusiness(db, mine, (tx) => stockRepo.stockList(tx, mine))).rows).toEqual([]);
     expect(
       await withBusiness(db, mine, (tx) =>
         stockRepo.productByName(tx, mine, 'Their secret product'),
@@ -562,5 +562,85 @@ describe('withdrawing a sale that cost something', () => {
         )
       )?.onHand,
     ).toBe(7);
+  });
+});
+
+/**
+ * The counts under the list, which are about the shop and not about the page.
+ *
+ * Both callers show a page: twenty rows in chat, two hundred on the
+ * dashboard. Both used to count the rows they were handed and report that as
+ * the shop, which reads to a merchant as "the rest stopped being counted".
+ */
+describe('what the register leaves out', () => {
+  it('counts every product even when it only returns a page of them', async () => {
+    const businessId = await seedBusiness('+2348050000030');
+    for (let i = 0; i < 7; i += 1) {
+      const p = await withBusiness(db, businessId, (tx) =>
+        stockRepo.findOrCreateProduct(tx, businessId, `Product ${i + 1}`),
+      );
+      await adjust(businessId, p.id, i);
+    }
+
+    const page = await withBusiness(db, businessId, (tx) => stockRepo.stockList(tx, businessId, 3));
+    expect(page.rows).toHaveLength(3);
+    expect(page.count).toBe(7);
+    /* Lowest first, so the page is the three emptiest shelves and the four
+     * it left out are the fullest. That is what lets a caller say a number
+     * and point at the dashboard. */
+    expect(page.rows.map((r) => r.name)).toEqual(['Product 1', 'Product 2', 'Product 3']);
+  });
+
+  it('counts empty shelves the page never showed', async () => {
+    const businessId = await seedBusiness('+2348050000031');
+    for (let i = 0; i < 5; i += 1) {
+      await withBusiness(db, businessId, (tx) =>
+        stockRepo.findOrCreateProduct(tx, businessId, `Empty ${i + 1}`),
+      );
+    }
+    const stocked = await withBusiness(db, businessId, (tx) =>
+      stockRepo.findOrCreateProduct(tx, businessId, 'Stocked'),
+    );
+    await adjust(businessId, stocked.id, 40);
+
+    const page = await withBusiness(db, businessId, (tx) => stockRepo.stockList(tx, businessId, 2));
+    expect(page.rows).toHaveLength(2);
+    expect(page.outOfStock).toBe(5);
+    expect(page.count).toBe(6);
+  });
+
+  it('counts products with no cost across all of them, not across the page', async () => {
+    const businessId = await seedBusiness('+2348050000032');
+    for (let i = 0; i < 4; i += 1) {
+      const p = await withBusiness(db, businessId, (tx) =>
+        stockRepo.findOrCreateProduct(tx, businessId, `Uncosted ${i + 1}`),
+      );
+      await adjust(businessId, p.id, i + 1);
+    }
+    /* One of the four has a cost, so three do not. A page of one would have
+     * reported one, and the profit and loss explanation on the dashboard
+     * would have been wrong by two products. A cost is set by a delivery,
+     * which is the only way one is ever recorded. */
+    await withBusiness(db, businessId, async (tx) => {
+      const costed = await stockRepo.findOrCreateProduct(tx, businessId, 'Uncosted 1');
+      await stockRepo.recordDelivery(tx, {
+        businessId,
+        product: costed,
+        quantity: 1,
+        costK: 12_000,
+        sourceType: 'test',
+      });
+    });
+
+    const page = await withBusiness(db, businessId, (tx) => stockRepo.stockList(tx, businessId, 1));
+    expect(page.rows).toHaveLength(1);
+    expect(page.withoutCost).toBe(3);
+    expect(page.count).toBe(4);
+  });
+
+  it('answers zero for a business counting nothing', async () => {
+    const businessId = await seedBusiness('+2348050000033');
+    const page = await withBusiness(db, businessId, (tx) => stockRepo.stockList(tx, businessId));
+    expect(page).toEqual({ rows: [], count: 0, outOfStock: 0, withoutCost: 0 });
   });
 });

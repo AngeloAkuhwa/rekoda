@@ -582,8 +582,12 @@ async function deterministicReply(
        * a day and paying for a model call to answer "what is left" would be
        * charging them for a SELECT. Lowest count first: the row that needs
        * them is the one about to run out. */
-      const rows = await stockRepo.stockList(tx, businessId, 20);
-      return replies.stockList(rows.map((p) => ({ name: p.name, onHand: p.onHand })));
+      const register = await stockRepo.stockList(tx, businessId, 20);
+      return replies.stockList(
+        register.rows.map((p) => ({ name: p.name, onHand: p.onHand })),
+        register.count,
+        register.outOfStock,
+      );
     }
     case 'resend':
       return resendReply(tx, businessId, ctx.eventId);

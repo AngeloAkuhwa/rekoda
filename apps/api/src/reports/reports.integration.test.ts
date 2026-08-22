@@ -1777,7 +1777,12 @@ describe('the stock register', () => {
 
   it('is empty for a shop that counts nothing', async () => {
     const { auth } = await onboard('+2348120000041');
-    expect((await get(auth)).json()).toEqual({ products: [], outOfStock: 0, withoutCost: 0 });
+    expect((await get(auth)).json()).toEqual({
+      products: [],
+      total: 0,
+      outOfStock: 0,
+      withoutCost: 0,
+    });
   });
 
   it('sums the movements and puts what is running out first', async () => {
@@ -1807,6 +1812,46 @@ describe('the stock register', () => {
      * row a merchant needs to see, and dropping it would hide the restock. */
     expect(body.products).toEqual([{ name: 'Wigs', onHand: 0, unitCostK: null }]);
     expect(body.outOfStock).toBe(1);
+  });
+
+  /**
+   * `total` and not `products.length`.
+   *
+   * The list is a page, capped at two hundred. A footer that counted its own
+   * rows would tell a merchant with more products than that they have
+   * exactly two hundred, in their own words, with nothing on the page to
+   * contradict it. Same for the two counts beside it, which is why all three
+   * are summed in SQL over the whole table.
+   *
+   * Two hundred and five products, because the cap is what has to be crossed
+   * for the two numbers to differ at all. Seeded in one transaction so the
+   * honesty costs a second rather than a minute.
+   */
+  it('counts the shop and not the page it returned', async () => {
+    const { auth, businessId } = await onboard('+2348120000047');
+    await withBusiness(db, businessId, async (tx) => {
+      for (let i = 0; i < 205; i += 1) {
+        const product = await stockRepo.findOrCreateProduct(tx, businessId, `Product ${i + 1}`);
+        await stockRepo.recordMovement(tx, {
+          businessId,
+          productId: product.id,
+          /* The first five shelves are empty, and lowest-first means they are
+           * the five the page does show. The other two hundred are not. */
+          delta: i < 5 ? 0 : i,
+          reason: 'adjustment',
+          sourceType: 'chat',
+          sourceId: null,
+        });
+      }
+    });
+
+    const body = (await get(auth)).json();
+    expect(body.products).toHaveLength(200);
+    expect(body.total).toBe(205);
+    expect(body.outOfStock).toBe(5);
+    /* Nothing here was ever bought through Rekoda, so nothing has a cost.
+     * Counting the page would say two hundred and understate it by five. */
+    expect(body.withoutCost).toBe(205);
   });
 
   it('shows one business nothing of another', async () => {

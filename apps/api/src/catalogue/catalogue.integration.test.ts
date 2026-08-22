@@ -440,7 +440,7 @@ describe('hiding a product', () => {
     await post('/v1/catalogue/product', { id: product.id, active: false }, auth);
 
     const onShelf = await withBusiness(db, businessId, (tx) => stockRepo.stockList(tx, businessId));
-    expect(onShelf).toHaveLength(1);
-    expect(onShelf[0]).toMatchObject({ onHand: 12, active: false });
+    expect(onShelf.rows).toHaveLength(1);
+    expect(onShelf.rows[0]).toMatchObject({ onHand: 12, active: false });
   });
 });

@@ -504,10 +504,18 @@ export const reportsStockResponse = z.object({
       unitCostK: kobo.nullable(),
     }),
   ),
-  /** How many are at or below zero. The number an operator acts on. */
+  /**
+   * Every product the business tracks, which is not `products.length`.
+   *
+   * The list is a page. A footer that counted the rows it was handed would
+   * tell a merchant with two hundred and forty products that they have two
+   * hundred, in their own words, and nothing on the page would contradict it.
+   */
+  total: z.number().int().nonnegative(),
+  /** How many are at or below zero, across all of them. The number an operator acts on. */
   outOfStock: z.number().int().nonnegative(),
   /**
-   * How many products have never had a cost recorded.
+   * How many products have never had a cost recorded, across all of them.
    *
    * The count that explains a profit and loss with no cost of sales on it.
    * Sales of these show revenue with nothing against them, which overstates
