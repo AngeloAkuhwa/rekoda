@@ -215,8 +215,29 @@ Connect) are revisited post-V1 for merchants who have no Paystack account.
 ## ADR 0004 — Double-entry ledger, integer kobo · **Accepted**
 
 Every financial mutation writes balanced debit/credit pairs inside one transaction.
-Fixed V1 chart of accounts: `CASH · BANK_PAYSTACK · ACCOUNTS_RECEIVABLE · ACCOUNTS_PAYABLE ·
-INVENTORY · SALES_REVENUE · COGS · EXPENSES · VAT_PAYABLE · OWNERS_EQUITY`.
+The V1 chart was ten accounts: `CASH · BANK_PAYSTACK · ACCOUNTS_RECEIVABLE ·
+ACCOUNTS_PAYABLE · INVENTORY · SALES_REVENUE · COGS · EXPENSES · VAT_PAYABLE ·
+OWNERS_EQUITY`.
+
+It is **fifteen** now, and still fixed: a merchant cannot add one. ADR 0004
+said the chart "stays fixed until real usage (not speculation) demands custom
+accounts", and it has been widened exactly twice, each time with the demand
+written down first:
+
+- **ADR 0025** split `BANK` (1020) from `BANK_PAYSTACK` (1010). One account
+  holding both a merchant's own bank and their provider settlements produced a
+  balance matching no statement anybody holds, which made reconciliation
+  incoherent before it was built.
+- **ADR 0026** added `EQUIPMENT` (1300), `ACCUMULATED_DEPRECIATION` (1310),
+  `DEPRECIATION` (6100) and `DISPOSAL_RESULT` (6200). A generator recorded as
+  an expense reported a loss the business did not make and hid an asset it
+  owned.
+
+`apps/api/src/reports/accounts.test.ts` pins the count, so the next addition is
+a decision somebody writes down rather than a diff. Where more DETAIL rather
+than more accounts is wanted, the pattern to reach for first is a supporting
+schedule tied to a ledger line: that is how `EXPENSES` and `SALES_REVENUE`
+break out by category and channel without the chart growing at all.
 
 _Why:_ reconciliation is incoherent without balancing entries; accountants (a named growth
 channel) need records they recognise; integer kobo eliminates float drift.

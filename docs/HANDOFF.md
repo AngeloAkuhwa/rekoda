@@ -6,11 +6,15 @@ points to. Keep it updated at the end of every working session — it is the
 project's memory, and it lives in the repo so it can never be lost with a
 chat.
 
-**Last updated:** 21 August 2026 · through PR #100. M4 complete; Doors 1 and
-2 shipped; the books now carry a cost of sales, an opening balance and both
-statement schedules. Not launched: see "What is still missing" below, which is
-still three WhatsApp templates, two deployments and a set of company facts
-rather than code.
+**Last updated:** 22 August 2026 · through PR #114. M4 complete; Doors 1 and
+2 shipped. Since #100 the books became auditable and reconcilable: a shelf can
+be counted, a month can be closed against a database trigger, a correction can
+be written by hand, the merchant's own bank is separate from provider
+settlements, a downloaded statement can be imported and matched against the
+ledger, both directions of payment can be recorded from the dashboard, and
+equipment is an asset that depreciates rather than a month's expense. The
+chart of accounts is fifteen and still fixed. Not launched, and still almost
+none of it code: see "What is still missing" below.
 
 ---
 
@@ -36,13 +40,13 @@ for M2/M3 (PDF templates, Meta/Twilio channel code, conversation gates).
 
 | Thing                 | Location                                                                                                                                                                                            |
 | --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Decisions and why     | [adr/](adr/) — 25 ADRs. Two superseded (0002 by 0011, 0009 by 0012) and one still Proposed: **0013**, deferred to Phase 2. 0003 is Accepted, not pending: it was reinstated as the default          |
+| Decisions and why     | [adr/](adr/) — 26 ADRs. Two superseded (0002 by 0011, 0009 by 0012) and one still Proposed: **0013**, deferred to Phase 2. 0003 is Accepted, not pending: it was reinstated as the default          |
 | Product & system spec | [architecture.md](architecture.md)                                                                                                                                                                  |
 | Commercial model      | [pricing-model.md](pricing-model.md) — incl. standing review triggers                                                                                                                               |
 | Milestones M0–M5      | [engineering-plan.md](engineering-plan.md) §11                                                                                                                                                      |
 | SEO/content plan      | [content-plan.md](content-plan.md)                                                                                                                                                                  |
 | Ops procedures        | [runbooks/](runbooks/)                                                                                                                                                                              |
-| Code                  | `packages/core` (money/ledger/costing/statements — most-tested), `packages/contracts` (AI border schemas), `packages/db` (schema + RLS, migrations through 0033), `packages/shared` (branded types) |
+| Code                  | `packages/core` (money/ledger/costing/statements — most-tested), `packages/contracts` (AI border schemas), `packages/db` (schema + RLS, migrations through 0040), `packages/shared` (branded types) |
 
 ## 3. Status at handoff
 
@@ -447,12 +451,109 @@ caught by re-reading the diff rather than by a test. The statement gained the
 shape an accountant reads: revenue, cost of sales, gross profit, running costs,
 net. A merchant can state a cost by hand for stock they counted or already had.
 
-**The chart of accounts is no longer untouched by reporting.** ADR 0004's ten
-accounts are unchanged, but four of them now carry something they never did:
-`OWNERS_EQUITY`, `COGS`, and the two schedules that break `EXPENSES` and
-`SALES_REVENUE` out by category and channel WITHOUT adding accounts. That is
-the pattern to keep if more detail is ever wanted: a supporting schedule tied
-to a ledger line, not a wider chart.
+**The chart of accounts started being touched by reporting.** At PR #100 ADR
+0004's ten accounts were still unchanged, but four of them carried something
+they never had: `OWNERS_EQUITY`, `COGS`, and the two schedules that break
+`EXPENSES` and `SALES_REVENUE` out by category and channel WITHOUT adding
+accounts. That remains the pattern to reach for first: a supporting schedule
+tied to a ledger line, not a wider chart. It has since been widened twice, and
+both times the reason was written down before the diff (ADR 0025, ADR 0026).
+
+### Since PR #100: the books become auditable, and reconcile against a bank
+
+**A shelf can be counted, and a month can be closed (PRs #101, #102).**
+Inventory drifted from the ledger the moment reality did, so a stock take
+posts the difference rather than overwriting a number. Then `closed_through`
+plus a trigger on BOTH `ledger_transactions` and `ledger_entries`: a filed
+month cannot silently change, and the refusal comes from the database rather
+than from a check a caller is trusted to make. It is invoker-rights on
+purpose, and the file says why. Reopening is the owner's to do, with an audit
+event, because pretending otherwise just teaches merchants never to close.
+
+**A correction a merchant can write by hand (PR #103).** Every other posting
+is derived; this is the one an accountant asks for and did not find. Two
+accounts and one amount, never a free line list, so there is no arrangement of
+inputs that fails to balance. What it cannot express is a genuine multi-line
+journal, which is a real limit and a deliberate one — and it is exactly the
+limit that later made equipment disposal impossible to fake (see #114).
+
+**The merchant's own bank, apart from settlements (PR #104, ADR 0025).**
+`cashOrBank()` sent every transfer to `BANK_PAYSTACK`, so a customer paying
+into a merchant's GTB account landed in an account labelled "Bank (Paystack)"
+— wrong for every merchant who could currently exist, since Paystack is gated
+on §47. Worse, one account holding both produced a balance matching no
+statement anybody holds, so reconciliation would have been incoherent before
+it was built.
+
+That PR also found something worth remembering: **FORCE RLS applies to the
+table owner**, so a data migration relabelling tenant rows updates ZERO rows
+in production while passing in dev and CI, both of which run as superuser.
+`applyMigrations` now refuses to run as a role without superuser or BYPASSRLS,
+which is why a production migration role is on Angelo's list.
+
+**Every statement was dropping the last days of the month (PR #105).** March
+lost three days, May and July one each, and it reached all four statements
+including the cumulative balance sheet. The period window added a month to a
+Lagos-shifted timestamp instead of adding it to the DATE and shifting after.
+Found by driving July, not by a test.
+
+**Bank reconciliation, in five slices (PRs #106 to #109, #112).** A statement
+is read from CSV or Excel with the date order inferred across the WHOLE file
+and `mixed_date_order` refused outright; lines are stored append-only, keyed
+by a fingerprint so re-uploading the same file changes nothing. The matching
+rule is deliberately timid: exact amounts, four days either side, and a
+pairing only when the line has one candidate AND that posting has one line
+wanting it. A wrong match reports agreement between books and bank that does
+not exist, which is the single failure the whole surface exists to catch.
+
+What the rule refuses, a merchant decides: they may lift the date window and
+the ambiguity, never the amount, because two figures a bank charge apart are
+two facts. Releasing is a DELETE, so an automatic match is safe to offer at
+all. `bank_line_matches` holds two unique indexes, one each way, so a
+reconciliation cannot explain the same money twice.
+
+#112 is the test that proves the SEAM: import a statement, record the payment
+from the dashboard, watch it become a pairable bank movement, pair it, read a
+difference of zero. Its mirror matters as much — a CASH payment must never
+reach the bank reconciliation.
+
+**Both directions of payment, from the dashboard (PRs #110, #111).** Paying a
+supplier did not exist at all, and the payable ageing joined only the
+purchase's OWN ledger transaction: settling a debt by journal dropped the
+register to zero while the ageing reported it standing, ageing past ninety
+days, forever. Two figures in one accounting product disagreeing. The ageing
+now nets attributed payments and returns whatever no purchase accounts for as
+`unlinkedK`, derived by subtraction, so buckets plus unlinked equal the balance
+by construction rather than by diligence.
+
+Recording money RECEIVED had existed since M1 and was reachable only from
+WhatsApp: a merchant on the Bank page looking at an unexplained transfer had
+to leave the dashboard to record it. It is RECORDED, never VERIFIED (ADR
+0014), and the receipt register shows it as "Payment recorded".
+
+**Equipment is not a month's expense (PRs #113, #114, ADR 0026).** A ₦450,000
+generator reached `EXPENSES`, so the month of purchase reported a loss the
+business did not make and every month after reported a profit it did not.
+Three accounts: `EQUIPMENT`, `ACCUMULATED_DEPRECIATION` (a contra-asset
+needing no special handling, because `naturalBalance` already nets debits
+against credits for assets) and `DEPRECIATION`. Straight line, monthly, no
+salvage; the last month absorbs the rounding so an asset depreciates to
+EXACTLY its cost.
+
+The monthly sweep shipped in the same PR deliberately: without it the feature
+would be a NEW misstatement in place of the old one, holding a generator at
+full price forever under a page promising a monthly charge that nothing made.
+
+#114 exists because #113's copy told merchants to record a sale as a journal
+entry, and that is impossible: `postJournal` is two accounts, a disposal needs
+four lines, and there was no gain-or-loss account. ADR 0026 is amended with
+the original claim STRUCK rather than rewritten. The result is measured against
+BOOK VALUE, not the price paid, so depreciation already charged is never
+counted twice.
+
+**The chart is fifteen accounts now**, and the guard test in
+`apps/api/src/reports/accounts.test.ts` pins the number on purpose: it is what
+makes the next addition a decision somebody writes down rather than a diff.
 
 **What is still missing before merchants.** Almost none of it is code:
 
@@ -469,15 +570,23 @@ to a ledger line, not a wider chart.
 3. **Credentials.** Meta WABA, Paystack test keys, and the four secrets
    (`REKODA_API_SECRET`, `REKODA_OPERATOR_SECRET`, `VAULT_KEY`, `MATCH_KEY`).
    Paystack stays in test mode until written confirmation (spec §47).
-4. **Company facts for the legal pages.** Registered entity, address and
+   `CONNECTION_KEY` is deliberately NOT `VAULT_KEY`: account numbers are
+   stored as cipher plus last4 and never echoed anywhere.
+4. **A production migration role with superuser or BYPASSRLS.** New at PR
+   #104 and easy to miss because nothing fails loudly: FORCE RLS applies to
+   the table owner, so a data migration touching tenant rows silently updates
+   ZERO of them under an ordinary role. Dev and CI both run as superuser, so
+   neither can demonstrate it. `applyMigrations` now refuses to start without
+   one, which turns a silent no-op into a startup error.
+5. **Company facts for the legal pages.** Registered entity, address and
    support address. `/terms`, `/refunds` and `/privacy` render a visible "not
    set yet" badge wherever one is missing, so nothing can go live naming the
    wrong body, but they mean little until the facts are real.
-5. **The voice benchmark** (ADR 0024, C11). 30 to 50 real Nigerian voice
+6. **The voice benchmark** (ADR 0024, C11). 30 to 50 real Nigerian voice
    notes spanning male and female voices, Lagos and non-Lagos accents, noisy
    shops, code-switching and spoken amounts. The metric is whether the
    financial instruction came out right, not word accuracy.
-6. **M5 Integrate** — the WhatsApp catalogue webhook (Door 3) is what remains,
+7. **M5 Integrate** — the WhatsApp catalogue webhook (Door 3) is what remains,
    and it waits on Meta approval rather than on us. The note that used to sit
    here said the priority was ingesting external orders rather than building a
    native catalogue; PRs #90 to #93 built the catalogue and the shop anyway,
@@ -592,6 +701,21 @@ to a ledger line, not a wider chart.
   merchants routinely buy without naming a product, the honest response is to
   make the stock page's "no cost recorded" line louder, not to start
   inferring costs from amounts.
+- **The first merchant whose bank statement will not parse** — the parser
+  names six distinct reasons and the page translates each into something a
+  person can act on. If one reason dominates real files, fix the parser for
+  that bank rather than widening the rules: `mixed_date_order` in particular
+  is refused on purpose, because guessing a date order across a file is how a
+  reconciliation quietly matches the wrong month.
+- **The first depreciation charge a merchant disputes** — straight line with
+  no salvage is ADR 0026's choice, and it is defensible rather than
+  universal. If merchants' accountants routinely expect reducing balance, that
+  is an ADR amendment with a rate somebody has an opinion about, not a
+  setting to expose.
+- **Any run where `assetsDue` returns more than a handful** — the
+  depreciation sweep bounds catch-up at twelve months per asset per pass, and
+  logs what it charged. A count that stays high across passes means the sweep
+  is not running often enough, not that the bound is wrong.
 
 ---
 

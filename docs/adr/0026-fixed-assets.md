@@ -32,11 +32,11 @@ of goods sold overstating profit (#68) and inventory drifting from the ledger
 **Three accounts, and the chart grows to fourteen** (fifteen after the
 amendment below).
 
-| Key | Code | Type | What it holds |
-|---|---|---|---|
-| `EQUIPMENT` | 1300 | asset | What the business paid for things it keeps and uses |
-| `ACCUMULATED_DEPRECIATION` | 1310 | asset | What has been charged against them so far, as a negative |
-| `DEPRECIATION` | 6100 | expense | This period's charge |
+| Key                        | Code | Type    | What it holds                                            |
+| -------------------------- | ---- | ------- | -------------------------------------------------------- |
+| `EQUIPMENT`                | 1300 | asset   | What the business paid for things it keeps and uses      |
+| `ACCUMULATED_DEPRECIATION` | 1310 | asset   | What has been charged against them so far, as a negative |
+| `DEPRECIATION`             | 6100 | expense | This period's charge                                     |
 
 `ACCUMULATED_DEPRECIATION` is a **contra-asset**: an asset-type account with a
 credit balance. It needs no special handling, because `naturalBalance` already
@@ -86,8 +86,8 @@ decides.
   page therefore pointed a merchant at a workaround the product could not
   perform. Disposal is now built, and the chart carries a fifteenth account:
 
-  | Key | Code | Type | What it holds |
-  |---|---|---|---|
+  | Key               | Code | Type    | What it holds                                             |
+  | ----------------- | ---- | ------- | --------------------------------------------------------- |
   | `DISPOSAL_RESULT` | 6200 | expense | What selling one left the business better or worse off by |
 
   Expense-typed, so a LOSS is a debit and reads as an ordinary cost, and a
@@ -108,6 +108,7 @@ decides.
   recorded; a sale says the business really did own the thing and really did
   use it, and reversing the purchase would erase months of depreciation that
   genuinely happened.
+
 - **Not tax depreciation.** Nigerian capital allowances follow their own
   rules and rates. These are management accounts (ADR 0015), and a merchant's
   accountant computes the tax position from them.
