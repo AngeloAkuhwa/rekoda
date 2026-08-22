@@ -1,13 +1,22 @@
 'use server';
 
 import { revalidatePath } from 'next/cache';
-import { parseAmountText, toKobo } from '@rekoda/core';
-import { createRecurring, stopRecurring, voidExpense } from '@/server/api';
+import { formatKobo, parseAmountText, toKobo } from '@rekoda/core';
+import { createRecurring, paySupplier, stopRecurring, voidExpense } from '@/server/api';
 import { readSessionToken } from '@/server/session-cookies';
 
 export interface VoidSpendFormState {
   error?: string;
   done?: string;
+  /**
+   * Which field the error belongs under.
+   *
+   * Absent means the form as a whole. It matters on the supplier payment:
+   * "that is more than this purchase owes" rendered under the PURCHASE
+   * picker reads as "you chose the wrong purchase", which is the one thing
+   * the merchant got right.
+   */
+  field?: 'amount' | 'purchase';
 }
 
 /**
@@ -154,4 +163,62 @@ function longDate(day: string): string {
     year: 'numeric',
     timeZone: 'Africa/Lagos',
   });
+}
+
+/**
+ * Money going back to a supplier.
+ *
+ * `more_than_owed` is the refusal worth writing carefully. Overpaying a
+ * supplier is a real thing, and it is a prepayment: money the supplier now
+ * holds for the merchant, an asset. Absorbing it into a liability would drive
+ * accounts payable below zero, so the reply names the figure and lets the
+ * merchant pay the right amount.
+ */
+const CANNOT_PAY: Record<string, string> = {
+  no_such_purchase: 'That purchase is no longer here. Reload the page and try again.',
+  withdrawn: 'That purchase was withdrawn, so there is nothing left owing on it.',
+  nothing_owed: 'That purchase is already settled in full.',
+  more_than_owed: '',
+};
+
+export async function paySupplierAction(
+  _prev: VoidSpendFormState,
+  formData: FormData,
+): Promise<VoidSpendFormState> {
+  const token = await readSessionToken();
+  if (!token) return { error: 'Your session expired. Sign in again.' };
+
+  const expenseId = String(formData.get('expenseId') ?? '').trim();
+  if (!expenseId) return { field: 'purchase', error: 'Pick the purchase you are paying.' };
+
+  const naira = parseAmountText(String(formData.get('amount') ?? ''));
+  if (naira === null || naira <= 0) {
+    return {
+      field: 'amount',
+      error: 'Say how much you paid, in naira. For example 40000, or 40k.',
+    };
+  }
+  const amountK = toKobo(naira);
+
+  const method = String(formData.get('method') ?? 'cash') === 'transfer' ? 'transfer' : 'cash';
+  const outcome = await paySupplier(token, { expenseId, amountK, method });
+  if (!outcome) return { error: 'That did not go through. Nothing was changed.' };
+
+  if (outcome.outcome === 'refused') {
+    if (outcome.reason === 'more_than_owed') {
+      return {
+        field: 'amount',
+        error: `That is more than this purchase still owes. ${formatKobo(outcome.owedK)} is outstanding. If you paid more than that, pay this off first and record the extra as its own entry, because money a supplier is holding for you is not a debt going down.`,
+      };
+    }
+    return { field: 'purchase', error: CANNOT_PAY[outcome.reason] ?? 'That payment was refused.' };
+  }
+
+  revalidatePath('/app/expenses');
+  return {
+    done:
+      outcome.owedK > 0
+        ? `Recorded. ${formatKobo(outcome.owedK)} still owing on ${outcome.description}.`
+        : `Recorded. ${outcome.description} is settled in full.`,
+  };
 }

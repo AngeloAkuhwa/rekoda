@@ -22,15 +22,18 @@ import { and, eq, sql } from 'drizzle-orm';
 import {
   categoriseExpense,
   isAccountKey,
+  lagosDay,
   postExpense,
+  postJournal,
   postPurchase,
   reversal,
+  type PaymentMethod,
   type LedgerLine,
   type Posting,
 } from '@rekoda/core';
 import type { TenantDb } from '../client.js';
 import { auditEvents } from '../schema/ops.js';
-import { expenses, ledgerEntries } from '../schema/finance.js';
+import { expenses, ledgerEntries, supplierPayments } from '../schema/finance.js';
 import { inventoryMovements } from '../schema/commerce.js';
 import { writePosting } from './issue.js';
 
@@ -469,7 +472,17 @@ export interface PayableAgeing {
   d31_60K: number;
   d61_90K: number;
   d90PlusK: number;
-  /** Everything owed, whatever its age. Equal to the buckets summed. */
+  /**
+   * Owed on a movement that names no purchase: a manual journal against
+   * ACCOUNTS_PAYABLE, which has no date a debt could be aged from.
+   *
+   * Its own figure rather than folded into a bucket, and rather than left out.
+   * Left out, the buckets stopped summing to the balance and the register and
+   * this report told a merchant two different things. Folded in, Rekoda would
+   * be claiming to know how old a debt is when nothing in the books says.
+   */
+  unlinkedK: number;
+  /** Everything owed, whatever its age. Equal to the buckets plus unlinked. */
   totalK: number;
 }
 
@@ -491,9 +504,24 @@ export interface PayableAgeing {
  *
  * The amount owed comes from the LEDGER rather than the row. `expenses` stores
  * what a purchase cost and never what was paid on it, so the only place the
- * remainder exists is the ACCOUNTS_PAYABLE credit its posting wrote. Withdrawn
- * entries are excluded by their status, which is why their reversals need no
- * special handling here.
+ * remainder exists is the ACCOUNTS_PAYABLE credit its posting wrote, less what
+ * `supplier_payments` says has since been paid against it. Withdrawn entries
+ * are excluded by their status, which is why their reversals need no special
+ * handling here.
+ *
+ * ── why `unlinkedK` exists ─────────────────────────────────────────────────
+ *
+ * This used to read ONLY the purchase's own ledger transaction, so a debt
+ * settled any other way stayed here at full value, ageing past ninety days
+ * forever, while the register read the whole account balance and reported it
+ * gone. Two figures in one accounting product disagreeing, with nothing on
+ * screen to say which was lying.
+ *
+ * The buckets now net off attributed payments, and whatever is left on the
+ * account that no purchase accounts for is reported as its own figure. The
+ * invariant that keeps the two honest is arithmetic, not diligence:
+ *
+ *     d0_30 + d31_60 + d61_90 + d90Plus + unlinked === the account balance
  */
 export async function payableAgeingFor(
   tx: TenantDb,
@@ -505,11 +533,13 @@ export async function payableAgeingFor(
     d31_60_k: string;
     d61_90_k: string;
     d90_plus_k: string;
-    total_k: string;
+    linked_k: string;
+    balance_k: string;
   }>(sql`
     WITH owed AS (
       SELECT
-        SUM(le.credit_k - le.debit_k) AS owed_k,
+        e.id,
+        SUM(le.credit_k - le.debit_k) AS raised_k,
         /* Lagos DATE on both sides, so this is integer day arithmetic: a
          * purchase made at 23:59 and read at 00:01 is one day old, not zero
          * point something. Same rule as the receivable ageing. */
@@ -527,21 +557,218 @@ export async function payableAgeingFor(
         AND le.account = 'ACCOUNTS_PAYABLE'
       GROUP BY e.id, e.created_at
       HAVING SUM(le.credit_k - le.debit_k) > 0
+    ),
+    settled AS (
+      SELECT
+        owed.days_owed,
+        /* Never below zero. A purchase cannot be owed a negative amount, and
+         * letting one go negative would silently subsidise another's bucket. */
+        GREATEST(
+          0,
+          owed.raised_k - COALESCE(
+            (SELECT SUM(sp.amount_k) FROM supplier_payments sp
+              WHERE sp.business_id = ${businessId}::uuid AND sp.expense_id = owed.id),
+            0
+          )
+        ) AS owed_k
+      FROM owed
     )
     SELECT
       COALESCE(SUM(owed_k) FILTER (WHERE days_owed <= 30), 0)::bigint             AS d0_30_k,
       COALESCE(SUM(owed_k) FILTER (WHERE days_owed BETWEEN 31 AND 60), 0)::bigint AS d31_60_k,
       COALESCE(SUM(owed_k) FILTER (WHERE days_owed BETWEEN 61 AND 90), 0)::bigint AS d61_90_k,
       COALESCE(SUM(owed_k) FILTER (WHERE days_owed > 90), 0)::bigint              AS d90_plus_k,
-      COALESCE(SUM(owed_k), 0)::bigint                                            AS total_k
-    FROM owed
+      COALESCE(SUM(owed_k), 0)::bigint                                            AS linked_k,
+      (SELECT COALESCE(SUM(credit_k) - SUM(debit_k), 0)
+         FROM ledger_entries
+        WHERE business_id = ${businessId}::uuid
+          AND account = 'ACCOUNTS_PAYABLE')::bigint                               AS balance_k
+    FROM settled
   `);
   const row = [...rows][0];
+  const linkedK = Number(row?.linked_k ?? 0);
+  const balanceK = Number(row?.balance_k ?? 0);
   return {
     d0_30K: Number(row?.d0_30_k ?? 0),
     d31_60K: Number(row?.d31_60_k ?? 0),
     d61_90K: Number(row?.d61_90_k ?? 0),
     d90PlusK: Number(row?.d90_plus_k ?? 0),
-    totalK: Number(row?.total_k ?? 0),
+    /* Whatever the account holds that no purchase accounts for. Derived by
+     * subtraction rather than queried, which is what makes the total equal
+     * the balance by construction instead of by coincidence. */
+    unlinkedK: balanceK - linkedK,
+    totalK: balanceK,
   };
+}
+
+/* ── paying a supplier back ──────────────────────────────────────────────── */
+
+/** Why a settlement was refused, in terms a merchant can act on. */
+export type PaySupplierRefusal =
+  'no_such_purchase' | 'withdrawn' | 'nothing_owed' | 'more_than_owed';
+
+export type PaySupplierOutcome =
+  | { outcome: 'paid'; owedK: number; description: string }
+  | { outcome: 'refused'; reason: PaySupplierRefusal; owedK: number };
+
+/** What a single purchase still owes: what it raised, less what has been paid. */
+async function owedOn(tx: TenantDb, businessId: string, expenseId: string): Promise<number | null> {
+  const rows = await tx.execute<{ owed_k: string; status: string; description: string }>(sql`
+    SELECT
+      (COALESCE(
+        (SELECT SUM(le.credit_k) - SUM(le.debit_k)
+           FROM ledger_entries le
+          WHERE le.business_id = e.business_id
+            AND le.transaction_id = e.ledger_transaction_id
+            AND le.account = 'ACCOUNTS_PAYABLE'), 0)
+       - COALESCE(
+        (SELECT SUM(sp.amount_k) FROM supplier_payments sp
+          WHERE sp.business_id = e.business_id AND sp.expense_id = e.id), 0)
+      )::bigint AS owed_k,
+      e.status,
+      e.description
+    FROM expenses e
+    WHERE e.business_id = ${businessId}::uuid AND e.id = ${expenseId}::uuid
+  `);
+  const row = [...rows][0];
+  if (!row) return null;
+  if (row.status !== 'recorded') return -1;
+  return Number(row.owed_k);
+}
+
+/**
+ * Money going back to a supplier.
+ *
+ * A purchase on credit could be raised and never settled: the only way to
+ * clear ACCOUNTS_PAYABLE was a manual journal, and a journal names no
+ * purchase, so the ageing went on reporting a debt the balance sheet said was
+ * gone. This is the settlement that knows what it settles.
+ *
+ * ── the refusals ───────────────────────────────────────────────────────────
+ *
+ * Paying MORE than is owed is refused rather than absorbed. Overpaying a
+ * supplier is a real thing that happens, and it is a prepayment: an asset,
+ * money the supplier now holds for you. Booking it against ACCOUNTS_PAYABLE
+ * would drive a liability negative, which reads on a balance sheet as a
+ * supplier owing the merchant money through an account that cannot mean that.
+ * The refusal names the figure so the merchant can pay the right amount and
+ * record the rest as what it is.
+ */
+export async function paySupplier(
+  tx: TenantDb,
+  input: {
+    businessId: string;
+    expenseId: string;
+    amountK: number;
+    method: PaymentMethod;
+    actor: string;
+    paidAt?: Date;
+  },
+): Promise<PaySupplierOutcome> {
+  const owed = await owedOn(tx, input.businessId, input.expenseId);
+  if (owed === null) return { outcome: 'refused', reason: 'no_such_purchase', owedK: 0 };
+  if (owed === -1) return { outcome: 'refused', reason: 'withdrawn', owedK: 0 };
+  if (owed <= 0) return { outcome: 'refused', reason: 'nothing_owed', owedK: 0 };
+  if (input.amountK > owed) {
+    return { outcome: 'refused', reason: 'more_than_owed', owedK: owed };
+  }
+
+  const at = input.paidAt ?? new Date();
+  /* The posting is a journal in shape and in truth: a liability goes down and
+   * cash or bank goes with it. Written through the same builder the manual
+   * entry uses, so there is one place that can get the direction wrong. */
+  const posting = postJournal({
+    memo: `Paid supplier on ${input.expenseId.slice(0, 8)}`,
+    amountK: input.amountK,
+    intoAccount: 'ACCOUNTS_PAYABLE',
+    outOfAccount: input.method === 'cash' ? 'CASH' : 'BANK',
+  });
+  const ledgerTransactionId = await writePosting(
+    tx,
+    input.businessId,
+    posting,
+    'supplier_payment',
+    input.expenseId,
+    { occurredAt: at },
+  );
+
+  await tx.insert(supplierPayments).values({
+    businessId: input.businessId,
+    expenseId: input.expenseId,
+    amountK: input.amountK,
+    method: input.method,
+    ledgerTransactionId,
+    paidOn: lagosDay(at),
+  });
+
+  await tx.insert(auditEvents).values({
+    businessId: input.businessId,
+    actor: input.actor,
+    entity: 'supplier_payment',
+    entityId: input.expenseId,
+    action: 'paid',
+    newValue: { amountK: input.amountK, method: input.method } as never,
+    sourceType: 'dashboard',
+  });
+
+  const after = await owedOn(tx, input.businessId, input.expenseId);
+  const rows = await tx
+    .select({ description: expenses.description })
+    .from(expenses)
+    .where(and(eq(expenses.businessId, input.businessId), eq(expenses.id, input.expenseId)));
+  return { outcome: 'paid', owedK: after ?? 0, description: rows[0]?.description ?? '' };
+}
+
+/** Purchases with something still standing against them, oldest first. */
+export interface OutstandingPurchase {
+  expenseId: string;
+  description: string;
+  purchasedOn: string;
+  amountK: number;
+  owedK: number;
+}
+
+export async function outstandingPurchases(
+  tx: TenantDb,
+  businessId: string,
+  limit = 100,
+): Promise<OutstandingPurchase[]> {
+  const rows = await tx.execute<{
+    id: string;
+    description: string;
+    purchased_on: string;
+    amount_k: string;
+    owed_k: string;
+  }>(sql`
+    SELECT e.id,
+           e.description,
+           (e.created_at AT TIME ZONE 'Africa/Lagos')::date::text AS purchased_on,
+           e.amount_k,
+           (COALESCE(SUM(le.credit_k) - SUM(le.debit_k), 0)
+             - COALESCE(
+                (SELECT SUM(sp.amount_k) FROM supplier_payments sp
+                  WHERE sp.business_id = e.business_id AND sp.expense_id = e.id), 0)
+           )::bigint AS owed_k
+    FROM expenses e
+    JOIN ledger_entries le
+      ON le.transaction_id = e.ledger_transaction_id
+     AND le.business_id = e.business_id
+    WHERE e.business_id = ${businessId}::uuid
+      AND e.status = 'recorded'
+      AND le.account = 'ACCOUNTS_PAYABLE'
+    GROUP BY e.id, e.description, e.created_at, e.amount_k
+    HAVING COALESCE(SUM(le.credit_k) - SUM(le.debit_k), 0)
+             - COALESCE(
+                (SELECT SUM(sp.amount_k) FROM supplier_payments sp
+                  WHERE sp.business_id = e.business_id AND sp.expense_id = e.id), 0) > 0
+    ORDER BY e.created_at ASC
+    LIMIT ${limit}
+  `);
+  return [...rows].map((r) => ({
+    expenseId: r.id,
+    description: r.description,
+    purchasedOn: r.purchased_on,
+    amountK: Number(r.amount_k),
+    owedK: Number(r.owed_k),
+  }));
 }

@@ -267,6 +267,13 @@
       "when": 1787187808134,
       "tag": "0037_bank_line_matches",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1787187809134,
+      "tag": "0038_supplier_payments",
+      "breakpoints": true
     }
   ]
 }

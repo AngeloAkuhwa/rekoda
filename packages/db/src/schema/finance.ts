@@ -370,6 +370,36 @@ export const bankLineMatches = pgTable(
   ],
 );
 
+/**
+ * Paying a supplier back.
+ *
+ * The row is what attributes a settlement to the purchase it settles. Without
+ * it a payment is a movement on a liability account and no arithmetic can say
+ * which debt it cleared, which is how the ageing came to report a debt the
+ * balance sheet said was gone.
+ *
+ * Append-only: a payment made is a fact, and correcting one is a second fact.
+ */
+export const supplierPayments = pgTable(
+  'supplier_payments',
+  {
+    id: id(),
+    businessId: businessId(),
+    expenseId: uuid('expense_id')
+      .notNull()
+      .references(() => expenses.id),
+    amountK: kobo('amount_k').notNull(),
+    /** `cash` or `transfer`, which decides whether CASH or BANK gave it up. */
+    method: text('method').notNull(),
+    ledgerTransactionId: uuid('ledger_transaction_id')
+      .notNull()
+      .references(() => ledgerTransactions.id),
+    paidOn: date('paid_on').notNull(),
+    recordedAt: timestamp('recorded_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('supplier_payments_expense_ix').on(t.businessId, t.expenseId)],
+);
+
 export const reconciliations = pgTable(
   'reconciliations',
   {

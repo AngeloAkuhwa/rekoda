@@ -391,15 +391,42 @@ export const reportsExpensesResponse = z.object({
    * Not by how late it is. An invoice carries a due date the merchant agreed;
    * a purchase carries no terms, because Rekoda stores nothing about
    * suppliers. Calling these buckets overdue would invent a deadline nobody
-   * set. The buckets sum to `payableK` exactly.
+   * set. The buckets plus `unlinkedK` sum to `payableK` exactly.
    */
   payableAgeing: z.object({
     d0_30K: kobo,
     d31_60K: kobo,
     d61_90K: kobo,
     d90PlusK: kobo,
+    /**
+     * On the account, but belonging to no purchase: a manual journal against
+     * ACCOUNTS_PAYABLE, which carries no date a debt could be aged from.
+     *
+     * SIGNED, and deliberately. Negative is the ordinary case and means a
+     * settlement made without naming what it settled; positive means a debt
+     * raised the same way. A nonnegative schema here would 500 the register
+     * the first time a merchant paid a supplier by journal, which is the one
+     * thing they could do before this shipped.
+     */
+    unlinkedK: z.number().int().finite(),
     totalK: kobo,
   }),
+  /**
+   * Purchases with something still standing against them, oldest first.
+   *
+   * The pool a merchant pays from. Nothing here identifies a supplier, because
+   * Rekoda stores nothing about suppliers: a purchase is known by what the
+   * merchant called it and the day it was made.
+   */
+  outstanding: z.array(
+    z.object({
+      expenseId: z.string(),
+      description: z.string(),
+      purchasedOn: z.string(),
+      amountK: kobo,
+      owedK: kobo,
+    }),
+  ),
   /**
    * Costs the merchant has told Rekoda to expect every month.
    *
@@ -739,6 +766,38 @@ export const LedgerAccount = z.enum([
  * that fails to balance and the merchant is never asked to make one. A
  * genuine multi-line journal is not expressible, deliberately.
  */
+/**
+ * Paying a supplier back.
+ *
+ * `method` decides which account gave the money up, and there are only two
+ * because there are only two the books model: the till and the bank.
+ */
+export const paySupplierRequest = z.object({
+  expenseId: z.string().uuid(),
+  amountK: z.number().int().finite().positive(),
+  method: z.enum(['cash', 'transfer']),
+});
+
+/**
+ * Four refusals, each one a different thing for a merchant to do next.
+ *
+ * `more_than_owed` carries the figure, because the useful reply to "you tried
+ * to pay ₦40,001 on a ₦40,000 debt" is the ₦40,000. Overpaying a supplier is
+ * a prepayment, an asset, and booking it against a liability would drive
+ * ACCOUNTS_PAYABLE below zero and read as the supplier owing the merchant.
+ */
+export const paySupplierResponse = z.discriminatedUnion('outcome', [
+  z.object({ outcome: z.literal('paid'), owedK: kobo, description: z.string() }),
+  z.object({
+    outcome: z.literal('refused'),
+    reason: z.enum(['no_such_purchase', 'withdrawn', 'nothing_owed', 'more_than_owed']),
+    owedK: kobo,
+  }),
+]);
+
+export type PaySupplierRequest = z.infer<typeof paySupplierRequest>;
+export type PaySupplierResponse = z.infer<typeof paySupplierResponse>;
+
 export const journalEntryRequest = z.object({
   /** Why. Required: an entry nobody can explain is the one that hurts. */
   memo: z.string().trim().min(3).max(200),

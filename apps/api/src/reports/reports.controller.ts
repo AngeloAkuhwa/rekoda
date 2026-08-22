@@ -94,6 +94,8 @@ import {
   stockCountRequest,
   closeBooksRequest,
   journalEntryRequest,
+  paySupplierRequest,
+  type PaySupplierResponse,
   reopenBooksRequest,
   creditInvoiceRequest,
   stopRecurringRequest,
@@ -587,13 +589,17 @@ export class ReportsController {
   async expenses(@Req() request: AuthedRequest): Promise<ReportsExpensesResponse> {
     const businessId = request.auth!.businessId;
     const now = new Date();
-    const { list, payableAgeing, recurring } = await withBusiness(
+    const { list, payableAgeing, recurring, outstanding } = await withBusiness(
       this.db,
       businessId,
       async (tx) => ({
         list: await spendRepo.spendFor(tx, businessId, REGISTER_ROWS),
         payableAgeing: await spendRepo.payableAgeingFor(tx, businessId, now),
         recurring: await recurringRepo.schedulesFor(tx, businessId),
+        /* What a merchant can actually pay, on the same response as the debt
+         * it belongs to: a page that fetched these apart could show a total
+         * from one moment and a list from another. */
+        outstanding: await spendRepo.outstandingPurchases(tx, businessId),
       }),
     );
     return {
@@ -614,7 +620,37 @@ export class ReportsController {
       payableK: list.payableK,
       payableAgeing,
       recurring,
+      outstanding,
     };
+  }
+
+  /**
+   * Money going back to a supplier.
+   *
+   * A purchase on credit could be raised and never settled: clearing
+   * ACCOUNTS_PAYABLE meant a manual journal, and a journal names no purchase,
+   * so the ageing went on reporting a debt the register said was gone. This
+   * settlement knows what it settles, which is what lets both figures move.
+   */
+  @Post('suppliers/pay')
+  @HttpCode(200)
+  async paySupplier(
+    @Req() request: AuthedRequest,
+    @Body() body: unknown,
+  ): Promise<PaySupplierResponse> {
+    const parsed = paySupplierRequest.safeParse(body);
+    if (!parsed.success) throw new BadRequestException('the purchase and what you paid on it');
+
+    const businessId = request.auth!.businessId;
+    return withBusiness(this.db, businessId, (tx) =>
+      spendRepo.paySupplier(tx, {
+        businessId,
+        expenseId: parsed.data.expenseId,
+        amountK: parsed.data.amountK,
+        method: parsed.data.method,
+        actor: `user:${request.auth!.userId}`,
+      }),
+    );
   }
 
   /**
