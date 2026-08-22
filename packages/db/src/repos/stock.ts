@@ -254,6 +254,24 @@ export async function recordSaleMovements(
 }
 
 /**
+ * What the register holds, and how much of it the page does not show.
+ *
+ * The counts are over the WHOLE table, never over the page. A caller that
+ * asked for twenty products and counted the twenty it got would report a
+ * shop of twenty products to a merchant who has forty five, and it would do
+ * it in the merchant's own words, which is the kind of wrong nobody catches.
+ */
+export interface StockRegister {
+  rows: Product[];
+  /** Every product the business tracks, listed or not. */
+  count: number;
+  /** How many are at or below zero. */
+  outOfStock: number;
+  /** How many have never had a cost recorded. */
+  withoutCost: number;
+}
+
+/**
  * Everything the shop tracks, most depleted first.
  *
  * The order is the point: a stock list sorted by name is a list somebody has
@@ -261,8 +279,17 @@ export async function recordSaleMovements(
  * out. Products with no movements at all sit at zero among them, which is
  * correct rather than a bug: something counted once and never restocked is
  * exactly as out of stock as something sold down to nothing.
+ *
+ * The three counts come back from SQL rather than from `rows.length` and
+ * friends, because `rows` is a page and the counts are about the shop. They
+ * are what lets a caller say what it left out instead of presenting its page
+ * as the whole list.
  */
-export async function stockList(tx: TenantDb, businessId: string, limit = 200): Promise<Product[]> {
+export async function stockList(
+  tx: TenantDb,
+  businessId: string,
+  limit = 200,
+): Promise<StockRegister> {
   const rows = await tx.execute<{
     id: string;
     name: string;
@@ -270,22 +297,38 @@ export async function stockList(tx: TenantDb, businessId: string, limit = 200): 
     unit_cost_k: string | number | null;
     on_hand: number | null;
     active: number;
+    n: number;
+    out_n: number;
+    nocost_n: number;
   }>(sql`
-    SELECT p.id, p.name, p.unit_price_k, p.unit_cost_k, p.active,
-           coalesce(sum(m.delta), 0)::int AS on_hand
-    FROM products p
-    LEFT JOIN inventory_movements m ON m.product_id = p.id
-    WHERE p.business_id = ${businessId}::uuid
-    GROUP BY p.id, p.name, p.unit_price_k, p.unit_cost_k, p.active
-    ORDER BY coalesce(sum(m.delta), 0) ASC, p.name ASC
+    WITH counted AS (
+      SELECT p.id, p.name, p.unit_price_k, p.unit_cost_k, p.active,
+             coalesce(sum(m.delta), 0)::int AS on_hand
+      FROM products p
+      LEFT JOIN inventory_movements m ON m.product_id = p.id
+      WHERE p.business_id = ${businessId}::uuid
+      GROUP BY p.id, p.name, p.unit_price_k, p.unit_cost_k, p.active
+    )
+    SELECT id, name, unit_price_k, unit_cost_k, active, on_hand,
+           count(*) OVER ()::int AS n,
+           count(*) FILTER (WHERE on_hand <= 0) OVER ()::int AS out_n,
+           count(*) FILTER (WHERE unit_cost_k IS NULL) OVER ()::int AS nocost_n
+    FROM counted
+    ORDER BY on_hand ASC, name ASC
     LIMIT ${limit}
   `);
-  return [...rows].map((r) => ({
-    id: r.id,
-    name: r.name,
-    unitPriceK: r.unit_price_k === null ? null : Number(r.unit_price_k),
-    unitCostK: r.unit_cost_k === null ? null : Number(r.unit_cost_k),
-    onHand: r.on_hand ?? 0,
-    active: r.active === 1,
-  }));
+  const list = [...rows];
+  return {
+    rows: list.map((r) => ({
+      id: r.id,
+      name: r.name,
+      unitPriceK: r.unit_price_k === null ? null : Number(r.unit_price_k),
+      unitCostK: r.unit_cost_k === null ? null : Number(r.unit_cost_k),
+      onHand: r.on_hand ?? 0,
+      active: r.active === 1,
+    })),
+    count: list[0]?.n ?? 0,
+    outOfStock: list[0]?.out_n ?? 0,
+    withoutCost: list[0]?.nocost_n ?? 0,
+  };
 }

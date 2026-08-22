@@ -1199,19 +1199,23 @@ export class ReportsController {
   @Get('stock')
   async stock(@Req() request: AuthedRequest): Promise<ReportsStockResponse> {
     const businessId = request.auth!.businessId;
-    const products = await withBusiness(this.db, businessId, (tx) =>
+    const register = await withBusiness(this.db, businessId, (tx) =>
       stockRepo.stockList(tx, businessId, STOCK_ROWS),
     );
     return {
-      products: products.map((p) => ({
+      products: register.rows.map((p) => ({
         name: p.name,
         onHand: p.onHand,
         unitCostK: p.unitCostK,
       })),
-      outOfStock: products.filter((p) => p.onHand <= 0).length,
+      /* All three counts come from SQL over the whole table, never from the
+       * page. Counting `rows` would report a shop the size of the cap to
+       * every merchant who has more products than that. */
+      total: register.count,
+      outOfStock: register.outOfStock,
       /* The count that explains a profit and loss with no cost of sales on
        * it, rather than leaving a merchant to work out why. */
-      withoutCost: products.filter((p) => p.unitCostK === null).length,
+      withoutCost: register.withoutCost,
     };
   }
 

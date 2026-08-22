@@ -938,24 +938,60 @@ export interface StockLine {
  * The order is the answer. A merchant checking stock is deciding what to buy
  * today, and an alphabetical list makes them read all of it to find the one
  * row that needed them. Nothing here is money, and nothing here is a customer.
+ *
+ * `rows` is a page; `count` and `outOfStock` are about the shop. They are
+ * separate arguments for that reason, and the reply says what the page left
+ * out rather than presenting itself as the whole list.
  */
-export function stockList(rows: StockLine[]): Reply {
-  if (rows.length === 0) {
+export function stockList(rows: StockLine[], count: number, outOfStock: number): Reply {
+  if (count === 0) {
     return reply(
       'You are not counting any stock yet. Tell me what you have, like ' +
         '*add 20 bags of rice*, and I will keep the count from there.',
     );
   }
 
-  const out = rows.filter((r) => r.onHand <= 0);
-  const lines = rows.map((r) => `${r.name}: ${r.onHand === 0 ? 'none left' : r.onHand}`);
+  const heading = 'What you have on hand:';
+  /* Empty shelves counted over the whole shop, not over the page. A merchant
+   * with three empty shelves and a list that only had room for one must not
+   * be told there is one. Rows arrive lowest first, so when exactly one has
+   * run out it is `rows[0]` and it is always on the page: naming it is safe. */
   const warning =
-    out.length === 0
+    outOfStock === 0
       ? ''
-      : out.length === 1
-        ? `\n\nYou have run out of ${out[0]!.name}.`
-        : `\n\n${out.length} of these have run out.`;
-  return reply(`What you have on hand:\n${lines.join('\n')}${warning}`);
+      : outOfStock === 1 && rows[0] !== undefined && rows[0].onHand <= 0
+        ? `\n\nYou have run out of ${rows[0].name}.`
+        : `\n\n${outOfStock} of them have run out.`;
+
+  /**
+   * Fit the list to the message rather than letting the message be cut.
+   *
+   * `truncateForSending` is a backstop that slices at a character, and on a
+   * list that means losing the last rows AND the two lines that say what was
+   * left out and what has run out. So the budget is worked out first and the
+   * rows fill what is left: fewer rows, but the count under them is still
+   * true and the warning still arrives.
+   *
+   * The overflow line is reserved at its longest — the whole shop, which no
+   * page ever leaves out — so the reservation can only be generous.
+   */
+  const overflowLine = (n: number) => `\n...and ${n} more on your dashboard.`;
+  const budget = MAX_REPLY_CHARS - heading.length - warning.length - overflowLine(count).length;
+
+  const lines: string[] = [];
+  let used = 0;
+  for (const r of rows) {
+    const line = `\n${r.name}: ${r.onHand === 0 ? 'none left' : r.onHand}`;
+    /* At least one row always, even a pathologically long name: a list with
+     * no rows in it is not a stock list, and the backstop is behind us. */
+    if (lines.length > 0 && used + line.length > budget) break;
+    lines.push(line);
+    used += line.length;
+  }
+
+  const hidden = count - lines.length;
+  const overflow = hidden > 0 ? overflowLine(hidden) : '';
+  return reply(`${heading}${lines.join('')}${overflow}${warning}`);
 }
 
 /** A stock change saved, with the figure that matters after it. */

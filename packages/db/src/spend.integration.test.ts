@@ -381,7 +381,7 @@ describe('withdrawing an entry', () => {
     const stock = await withBusiness(db, businessId, (tx) =>
       stockRepo.stockList(tx, businessId, 10),
     );
-    expect(stock[0]).toMatchObject({ name: 'lace', onHand: 12 });
+    expect(stock.rows[0]).toMatchObject({ name: 'lace', onHand: 12 });
   });
 
   /**

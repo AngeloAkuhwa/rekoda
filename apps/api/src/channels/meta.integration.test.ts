@@ -23,7 +23,7 @@ import {
   withBusiness,
   type Db,
 } from '@rekoda/db';
-import { PLAN_ALLOWANCES, usagePeriod } from '@rekoda/core';
+import { PLAN_ALLOWANCES, replies, usagePeriod } from '@rekoda/core';
 import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -3122,6 +3122,41 @@ describe('counting stock', () => {
     expect(stubSender.lastText).toContain('not counting any stock yet');
   });
 
+  /**
+   * The reply used to hand a merchant twenty rows and let them read it as
+   * their whole shop.
+   *
+   * A shop with forty five products got twenty of them, no count, and no
+   * line saying so. The merchant's reading is that twenty five products
+   * stopped being counted, and nothing in the message contradicts it.
+   */
+  it('says how many products the list left out', async () => {
+    const business = await seedMerchant('+2348031234567');
+    await withBusiness(db, business.id, async (tx) => {
+      for (let i = 0; i < 45; i += 1) {
+        const product = await stockRepo.findOrCreateProduct(tx, business.id, `Product ${i + 1}`);
+        await stockRepo.recordMovement(tx, {
+          businessId: business.id,
+          productId: product.id,
+          delta: i + 1,
+          reason: 'adjustment',
+          sourceType: 'chat',
+          sourceId: 'seed',
+        });
+      }
+    });
+
+    await plain('wamid.S17', 'stock');
+
+    const text = stubSender.lastText!;
+    expect(text).toMatch(/\.\.\.and \d+ more on your dashboard\./);
+    /* And the number is the truth: what the shop holds less what fitted. */
+    const shown = text.split('\n').filter((l) => /^Product \d+: /.test(l)).length;
+    expect(text).toContain(`...and ${45 - shown} more on your dashboard.`);
+    // Still a message a merchant reads rather than one WhatsApp folds away.
+    expect(text.length).toBeLessThanOrEqual(replies.MAX_REPLY_CHARS);
+  });
+
   it('takes stock off the shelf when a sale is confirmed', async () => {
     const business = await seedMerchant('+2348031234567');
     await say('wamid.S17', adjust('wig', 10), 'add 10 wigs');
@@ -3370,7 +3405,7 @@ describe('stock arriving with a purchase', () => {
     expect(stubSender.lastText).toContain('Saved');
     expect(stubSender.lastText).not.toContain('on hand');
     expect(
-      await withBusiness(db, business.id, (tx) => stockRepo.stockList(tx, business.id)),
+      (await withBusiness(db, business.id, (tx) => stockRepo.stockList(tx, business.id))).rows,
     ).toEqual([]);
   });
 
@@ -3548,7 +3583,7 @@ describe('a forwarded order', () => {
 
     /* And the shelf says so. Ten bales, two committed. */
     const stock = await withBusiness(db, business.id, (tx) => stockRepo.stockList(tx, business.id));
-    expect(stock.find((p) => p.name === 'Ankara bale')?.onHand).toBe(8);
+    expect(stock.rows.find((p) => p.name === 'Ankara bale')?.onHand).toBe(8);
   });
 
   /**
