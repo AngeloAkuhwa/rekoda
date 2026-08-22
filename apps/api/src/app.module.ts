@@ -13,6 +13,7 @@ import { BillingModule } from './billing/billing.module.js';
 import { PaymentsModule } from './payments/payments.module.js';
 import { RepliesModule } from './replies/replies.module.js';
 import { CatalogueModule } from './catalogue/catalogue.module.js';
+import { BankModule } from './bank/bank.module.js';
 import { ReportsModule } from './reports/reports.module.js';
 import { ShopModule } from './shop/shop.module.js';
 
@@ -25,6 +26,7 @@ import { ShopModule } from './shop/shop.module.js';
     PaymentsModule,
     RepliesModule,
     ReportsModule,
+    BankModule,
     ShopModule,
   ],
   controllers: [
