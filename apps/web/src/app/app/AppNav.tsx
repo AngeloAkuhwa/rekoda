@@ -10,6 +10,10 @@ const TABS = [
   { key: 'stock', href: '/app/stock', label: 'Stock' },
   { key: 'catalogue', href: '/app/catalogue', label: 'Catalogue' },
   { key: 'reports', href: '/app/reports', label: 'Reports' },
+  /* Beside Reports rather than last. Both answer "is this true", and a tab
+     added to the end of twelve is one a merchant scrolls past without ever
+     seeing it sit under their own cursor. */
+  { key: 'bank', href: '/app/bank', label: 'Bank' },
   { key: 'audit', href: '/app/audit', label: 'Audit' },
   { key: 'payments', href: '/app/payments', label: 'Payments' },
   { key: 'team', href: '/app/team', label: 'Team' },

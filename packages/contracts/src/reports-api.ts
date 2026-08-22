@@ -772,6 +772,92 @@ export type LedgerAccountKey = z.infer<typeof LedgerAccount>;
 export type JournalEntryRequest = z.infer<typeof journalEntryRequest>;
 export type JournalEntryResponse = z.infer<typeof journalEntryResponse>;
 
+/**
+ * A statement a merchant downloaded from their own bank.
+ *
+ * The file arrives as text rather than as a multipart upload. The web tier
+ * already has the bytes when a merchant picks a file, and converting them
+ * once there keeps the API a JSON surface: no multipart parser, no temporary
+ * files, and no second way for a body to reach this service.
+ *
+ * Capped because a statement is a statement. A year of a busy account is a
+ * few hundred kilobytes; anything past two megabytes is somebody uploading
+ * the wrong thing, and refusing early beats parsing it to find out.
+ */
+export const importStatementRequest = z.object({
+  csv: z.string().min(1).max(2_000_000),
+});
+
+export const importStatementResponse = z.discriminatedUnion('outcome', [
+  z.object({
+    outcome: z.literal('imported'),
+    /** Lines the merchant did not already have. */
+    imported: z.number().int().nonnegative(),
+    /** Already present. The ordinary result of a re-upload, not a failure. */
+    duplicates: z.number().int().nonnegative(),
+    /** Rows the file had that carried no movement, so a merchant can check. */
+    skipped: z.number().int().nonnegative(),
+  }),
+  /**
+   * The file could not be read. `reason` is the parser's own word for it, so
+   * the page can say which of the several different problems this was.
+   */
+  z.object({
+    outcome: z.literal('unreadable'),
+    reason: z.enum([
+      'empty',
+      'no_header',
+      'no_date_column',
+      'no_amount_column',
+      'mixed_date_order',
+      'no_rows',
+    ]),
+  }),
+]);
+
+/** What the books say against what the bank says. */
+export const bankPositionResponse = z.object({
+  position: z.object({
+    ledgerK: z.number().int().finite(),
+    statementK: z.number().int().finite(),
+    differenceK: z.number().int().finite(),
+    lines: z.number().int().nonnegative(),
+    latestOn: z.string().nullable(),
+  }),
+  lines: z.array(
+    z.object({
+      id: z.string(),
+      postedOn: z.string(),
+      amountK: z.number().int().finite(),
+      /**
+       * The bank's own words, which carry counterparty names.
+       *
+       * Crosses to the merchant who downloaded the statement and to nobody
+       * else. Never sent to a model, and never rendered into a WhatsApp
+       * message, which is plaintext on somebody's phone.
+       */
+      narration: z.string(),
+      bankRef: z.string().nullable(),
+    }),
+  ),
+});
+
+export const forgetStatementDayRequest = z.object({
+  postedOn: z
+    .string()
+    .regex(/^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/, 'a day like 2026-08-21'),
+});
+
+export const forgetStatementDayResponse = z.object({
+  removed: z.number().int().nonnegative(),
+});
+
+export type ImportStatementRequest = z.infer<typeof importStatementRequest>;
+export type ImportStatementResponse = z.infer<typeof importStatementResponse>;
+export type BankPositionResponse = z.infer<typeof bankPositionResponse>;
+export type ForgetStatementDayRequest = z.infer<typeof forgetStatementDayRequest>;
+export type ForgetStatementDayResponse = z.infer<typeof forgetStatementDayResponse>;
+
 export type CloseBooksRequest = z.infer<typeof closeBooksRequest>;
 export type CloseBooksResponse = z.infer<typeof closeBooksResponse>;
 export type ReopenBooksRequest = z.infer<typeof reopenBooksRequest>;

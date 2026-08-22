@@ -1076,6 +1076,10 @@ button,
 .rk-table th.rk-num,
 .rk-table td.rk-num {
   text-align: right;
+  /* Never wrapped. A money column that breaks mid-figure reads as two
+     numbers, and the table already scrolls inside its own container when
+     there is genuinely not enough room. */
+  white-space: nowrap;
 }
 
 /* The dashboard's button. `.rk-review-btn` is the older name for the same

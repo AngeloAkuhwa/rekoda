@@ -29,6 +29,9 @@ import {
   stockCountResponse,
   closeBooksResponse,
   journalEntryResponse,
+  bankPositionResponse,
+  importStatementResponse,
+  forgetStatementDayResponse,
   reopenBooksResponse,
   publicShopIndexResponse,
   publicShopResponse,
@@ -53,6 +56,9 @@ import {
   type CloseBooksRequest,
   type JournalEntryRequest,
   type JournalEntryResponse,
+  type BankPositionResponse,
+  type ImportStatementResponse,
+  type ForgetStatementDayResponse,
   type CloseBooksResponse,
   type ReopenBooksRequest,
   type ReopenBooksResponse,
@@ -681,6 +687,54 @@ export async function recordJournal(
     expect: [200, 400],
   });
   return status === 200 ? journalEntryResponse.parse(json) : null;
+}
+
+/** What the books say against what the bank says. */
+export async function bankPosition(sessionToken: string): Promise<BankPositionResponse> {
+  const { json } = await call({
+    method: 'GET',
+    path: '/v1/bank/position',
+    headers: { authorization: `Bearer ${sessionToken}` },
+    expect: [200],
+  });
+  return bankPositionResponse.parse(json);
+}
+
+/**
+ * Send a statement the merchant picked, as text.
+ *
+ * The bytes are already here by the time a server action runs, so they are
+ * converted once and the API stays a JSON surface. `expect` carries 200
+ * alone because an unreadable file is an outcome the page has to explain,
+ * not a status code.
+ */
+export async function importStatement(
+  sessionToken: string,
+  csv: string,
+): Promise<ImportStatementResponse | null> {
+  const { status, json } = await call({
+    method: 'POST',
+    path: '/v1/bank/statement',
+    body: { csv },
+    headers: { authorization: `Bearer ${sessionToken}` },
+    expect: [200, 400],
+  });
+  return status === 200 ? importStatementResponse.parse(json) : null;
+}
+
+/** Take one day's imported lines back out. */
+export async function forgetStatementDay(
+  sessionToken: string,
+  postedOn: string,
+): Promise<ForgetStatementDayResponse | null> {
+  const { status, json } = await call({
+    method: 'POST',
+    path: '/v1/bank/statement/forget',
+    body: { postedOn },
+    headers: { authorization: `Bearer ${sessionToken}` },
+    expect: [200, 400],
+  });
+  return status === 200 ? forgetStatementDayResponse.parse(json) : null;
 }
 
 /** Open a closed month, and every month after it. */
