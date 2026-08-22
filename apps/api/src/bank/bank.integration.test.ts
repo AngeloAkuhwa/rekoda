@@ -97,6 +97,57 @@ describe('the bank surface', () => {
     expect((await app.inject({ method: 'GET', url: '/v1/bank/position' })).statusCode).toBe(401);
   });
 
+  /**
+   * What the page offers against a line, and where it comes from.
+   *
+   * The candidates used to be a page of two hundred open movements, newest
+   * first, narrowed to a line's amount in the browser. A merchant with more
+   * open entries than that got no candidate at all for any line whose entry
+   * sat outside the page, and nothing on the screen said why. The endpoint
+   * now asks for the amounts its own lines carry, so the page it returns is
+   * bounded by the lines rather than by a number nobody chose.
+   */
+  it('offers only entries that could pair with a line it is showing', async () => {
+    const { auth } = await onboard('+2348177000079');
+    await post('/v1/bank/statement', { csv: AUGUST }, auth);
+    /* One entry at a statement amount and one at an amount no line carries.
+     * The second can never pair with anything on this page, and sending it
+     * to a browser to be filtered out there is work and exposure for
+     * nothing. */
+    await post(
+      '/v1/reports/journal',
+      {
+        memo: 'Matches a line',
+        amountK: 15_000_000,
+        intoAccount: 'BANK',
+        outOfAccount: 'OWNERS_EQUITY',
+        occurredOn: '2026-08-03',
+      },
+      auth,
+    );
+    await post(
+      '/v1/reports/journal',
+      {
+        memo: 'Matches nothing here',
+        amountK: 999_000,
+        intoAccount: 'BANK',
+        outOfAccount: 'OWNERS_EQUITY',
+        occurredOn: '2026-08-04',
+      },
+      auth,
+    );
+
+    const seen = bankPositionResponse.parse(
+      (await app.inject({ method: 'GET', url: '/v1/bank/position', headers: auth })).json(),
+    );
+    const offered = seen.openMovements.map((m) => m.amountK);
+    expect(offered).toContain(15_000_000);
+    expect(offered).not.toContain(999_000);
+    /* And the entry nobody was offered is still counted as unexplained: it is
+     * left out of the picker, not out of the books. */
+    expect(seen.reconciliation.unmatchedMovements).toBeGreaterThan(0);
+  });
+
   it('reads a statement and reports what it did with every row', async () => {
     const { auth } = await onboard('+2348177000071');
     const first = importStatementResponse.parse(
@@ -296,14 +347,26 @@ describe('pairing the two sides, end to end', () => {
   it('names why a hand-made match was refused', async () => {
     const { auth } = await onboard('+2348177000086');
     await post('/v1/bank/statement', { csv: AUG }, auth);
+    /**
+     * An entry that pairs with the OTHER line on this statement.
+     *
+     * It used to be an amount matching no line at all, taken straight off
+     * `openMovements`. That stopped working when the endpoint began asking
+     * only for the amounts its lines carry, and the test was the thing that
+     * was wrong: the browser had always dropped such an entry before the
+     * merchant saw it, so nobody could ever have clicked the refusal this
+     * was covering. An entry belonging to the wrong line is one they CAN
+     * click, from a stale page or a second tab, and it is the refusal that
+     * has to say something.
+     */
     await post(
       '/v1/reports/journal',
       {
-        memo: 'Nearly right',
-        amountK: 14_995_000,
-        intoAccount: 'BANK',
-        outOfAccount: 'OWNERS_EQUITY',
-        occurredOn: '2026-08-03',
+        memo: 'The card purchase',
+        amountK: 2_000_000,
+        intoAccount: 'OWNERS_EQUITY',
+        outOfAccount: 'BANK',
+        occurredOn: '2026-08-05',
       },
       auth,
     );
@@ -311,7 +374,7 @@ describe('pairing the two sides, end to end', () => {
       (await app.inject({ method: 'GET', url: '/v1/bank/position', headers: auth })).json(),
     );
     const line = seen.lines.find((l) => l.amountK === 15_000_000)!;
-    const movement = seen.openMovements[0]!;
+    const movement = seen.openMovements.find((m) => m.amountK === -2_000_000)!;
 
     const res = await post(
       '/v1/bank/match',

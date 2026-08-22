@@ -370,8 +370,44 @@ export interface OpenMovement {
 export async function openMovements(
   tx: TenantDb,
   businessId: string,
-  limit = 200,
+  options: { limit?: number; amounts?: readonly number[]; ids?: readonly string[] } = {},
 ): Promise<OpenMovement[]> {
+  const limit = options.limit ?? 200;
+  /**
+   * Narrowed to the amounts somebody is actually going to match against.
+   *
+   * The page filters candidates to a line's exact amount anyway, and it used
+   * to do that over a page of two hundred movements ordered by date. A
+   * merchant reconciling for the first time after six months has more open
+   * entries than that, and the ones outside the page are the oldest: their
+   * statement line showed NO candidate at all, for an entry sitting in their
+   * own books. Asking for the amounts on the lines being shown is bounded by
+   * the lines, and it puts the cap out of reach of the case that hit it.
+   */
+  const amounts = options.amounts ? [...new Set(options.amounts)] : null;
+  if (amounts !== null && amounts.length === 0) return [];
+  const onlyAmounts =
+    amounts === null
+      ? sql``
+      : sql` AND (SUM(e.debit_k) - SUM(e.credit_k)) IN (${sql.join(
+          amounts.map((a) => sql`${a}`),
+          sql`, `,
+        )})`;
+
+  /* And by id, for the caller that already knows which one it means.
+   * `matchByHand` used to read five thousand movements to look for a single
+   * transaction it had been handed, which is a wrong refusal waiting for the
+   * business that crosses that number: the entry is open, and the merchant
+   * is told it does not exist. */
+  const ids = options.ids ? [...new Set(options.ids)] : null;
+  if (ids !== null && ids.length === 0) return [];
+  const onlyIds =
+    ids === null
+      ? sql``
+      : sql` AND e.transaction_id IN (${sql.join(
+          ids.map((i) => sql`${i}::uuid`),
+          sql`, `,
+        )})`;
   const rows = await tx.execute<{
     transaction_id: string;
     occurred_on: string;
@@ -385,14 +421,14 @@ export async function openMovements(
     FROM ledger_entries e
     JOIN ledger_transactions t ON t.id = e.transaction_id
     WHERE e.business_id = ${businessId}::uuid
-      AND e.account = 'BANK'
+      AND e.account = 'BANK'${onlyIds}
       AND NOT EXISTS (
         SELECT 1 FROM bank_line_matches m
          WHERE m.business_id = ${businessId}::uuid
            AND m.transaction_id = e.transaction_id
       )
     GROUP BY e.transaction_id, t.memo, (e.created_at AT TIME ZONE 'Africa/Lagos')::date
-    HAVING SUM(e.debit_k) - SUM(e.credit_k) <> 0
+    HAVING SUM(e.debit_k) - SUM(e.credit_k) <> 0${onlyAmounts}
     ORDER BY 2 DESC
     LIMIT ${limit}
   `);
@@ -467,7 +503,7 @@ export async function matchByHand(
     );
   if (!line) return { outcome: 'refused', reason: 'no_such_line' };
 
-  const open = await openMovements(tx, input.businessId, 5_000);
+  const open = await openMovements(tx, input.businessId, { ids: [input.transactionId] });
   const movement = open.find((m) => m.transactionId === input.transactionId);
   if (!movement) {
     /* Either it is not a bank movement of this business at all, or somebody
