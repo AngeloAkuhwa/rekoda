@@ -566,6 +566,83 @@ describe('withdrawing a sale that cost something', () => {
 });
 
 /**
+ * The fold, on both sides of the boundary.
+ *
+ * `foldProductName` in @rekoda/core and the expression in `productByName`
+ * have to agree exactly. They did not: the TypeScript collapsed internal runs
+ * of whitespace and the SQL did not, and the damage was not a missed match
+ * but a duplicate row.
+ */
+describe('what counts as the same product name', () => {
+  it('does not split a shop in two over a double space', async () => {
+    const businessId = await seedBusiness('+2348050000034');
+    const first = await withBusiness(db, businessId, (tx) =>
+      stockRepo.findOrCreateProduct(tx, businessId, 'Bags of rice'),
+    );
+    await adjust(businessId, first.id, 40);
+
+    /* What a customer forwarding a message, or a merchant typing on a phone
+     * keyboard, produces without noticing. */
+    const again = await withBusiness(db, businessId, (tx) =>
+      stockRepo.findOrCreateProduct(tx, businessId, 'Bags  of   rice'),
+    );
+
+    expect(again.id).toBe(first.id);
+    /* The register is the place a merchant would have seen it: two rows they
+     * cannot tell apart, and forty bags on one of them. */
+    const register = await withBusiness(db, businessId, (tx) =>
+      stockRepo.stockList(tx, businessId),
+    );
+    expect(register.rows.map((r) => r.name)).toEqual(['Bags of rice']);
+    expect(register.count).toBe(1);
+    expect(register.rows[0]!.onHand).toBe(40);
+  });
+
+  it('still keeps genuinely different names apart', async () => {
+    const businessId = await seedBusiness('+2348050000035');
+    await withBusiness(db, businessId, (tx) =>
+      stockRepo.findOrCreateProduct(tx, businessId, 'Rice'),
+    );
+    await withBusiness(db, businessId, (tx) =>
+      stockRepo.findOrCreateProduct(tx, businessId, 'Bags of rice'),
+    );
+    /* Not fuzzy, on purpose: in some shops these are the same thing and in
+     * others they are not, and only the merchant knows which. */
+    const register = await withBusiness(db, businessId, (tx) =>
+      stockRepo.stockList(tx, businessId),
+    );
+    expect(register.count).toBe(2);
+  });
+
+  it('moves stock for a sale line spelled with stray spaces', async () => {
+    const businessId = await seedBusiness('+2348050000036');
+    const product = await withBusiness(db, businessId, (tx) =>
+      stockRepo.findOrCreateProduct(tx, businessId, 'Ankara bale'),
+    );
+    await adjust(businessId, product.id, 10);
+
+    /* Before the folds agreed this found nothing and returned `moved: 0`.
+     * The sale was invoiced and the shelf never moved, silently. */
+    const result = await withBusiness(db, businessId, (tx) =>
+      stockRepo.recordSaleMovements(
+        tx,
+        businessId,
+        [{ name: 'ankara  bale', quantity: 3 }],
+        'INV-9',
+      ),
+    );
+    expect(result.moved).toBe(1);
+    expect(
+      (
+        await withBusiness(db, businessId, (tx) =>
+          stockRepo.productByName(tx, businessId, 'Ankara bale'),
+        )
+      )?.onHand,
+    ).toBe(7);
+  });
+});
+
+/**
  * The counts under the list, which are about the shop and not about the page.
  *
  * Both callers show a page: twenty rows in chat, two hundred on the
