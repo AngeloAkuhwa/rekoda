@@ -11,7 +11,7 @@ import { requireSessionWithToken } from '@/server/guards';
 import { AppNav } from '../AppNav';
 import { VoidSpendForm, type VoidableEntry } from './VoidSpendForm';
 import { PaySupplierForm } from './PaySupplierForm';
-import { RecordAssetForm, WithdrawAssetForm } from './AssetForms';
+import { DisposeAssetForm, RecordAssetForm, WithdrawAssetForm } from './AssetForms';
 import { CreateRecurringForm, StopRecurringForm, type StoppableSchedule } from './RecurringForms';
 import { SignOutButton } from '../SignOutButton';
 
@@ -174,6 +174,7 @@ export default async function ExpensesPage() {
                   <th className="rk-num">What it cost</th>
                   <th className="rk-num">Charged so far</th>
                   <th className="rk-num">Still worth</th>
+                  <th className="rk-num">Sold for</th>
                 </tr>
               </thead>
               <tbody>
@@ -183,6 +184,9 @@ export default async function ExpensesPage() {
                       {asset.description}
                       {asset.status === 'withdrawn' ? (
                         <span className="rk-fineprint"> (taken back out)</span>
+                      ) : null}
+                      {asset.status === 'sold' ? (
+                        <span className="rk-fineprint"> (sold {asset.soldOn})</span>
                       ) : null}
                     </td>
                     <td>{asset.boughtOn}</td>
@@ -194,6 +198,15 @@ export default async function ExpensesPage() {
                     </td>
                     <td className="rk-num">
                       <Money kobo={asset.bookValueK} />
+                    </td>
+                    <td className="rk-num">
+                      {asset.proceedsK === null ? (
+                        ''
+                      ) : asset.proceedsK === 0 ? (
+                        <span className="rk-fineprint">scrapped</span>
+                      ) : (
+                        <Money kobo={asset.proceedsK} />
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -207,16 +220,34 @@ export default async function ExpensesPage() {
           <RecordAssetForm />
         </details>
 
-        {assets.some((a) => a.status === 'recorded') ? (
+        {/* Not guarded on "is there anything left". The guard used to live here
+            and unmounted the whole disclosure the moment the last item was
+            sold or withdrawn, taking the confirmation with it: a merchant
+            clicked, watched the control vanish, and was told nothing. Each
+            form renders its own empty state and keeps its own answer. */}
+        {assets.length > 0 ? (
           <details className="rk-void">
             <summary>Take one back out</summary>
             <p className="rk-fineprint">
               For when it should never have been recorded: the wrong figure, a duplicate, a thing
-              you did not actually buy. This is not for selling something. Selling equipment leaves
-              you better or worse off than what it was still worth, and Rekoda does not work that
-              out yet, so record a sale as a journal entry on the Reports page instead.
+              you did not actually buy. Your books go back to exactly where they were, as though you
+              had never bought it. If you did buy it and have now sold it, use the control below
+              instead: that is a different thing and gives a different answer.
             </p>
             <WithdrawAssetForm assets={assets} />
+          </details>
+        ) : null}
+
+        {assets.length > 0 ? (
+          <details className="rk-void">
+            <summary>Sell or scrap one</summary>
+            <p className="rk-fineprint">
+              You bought it, you used it, and now it has gone. Rekoda takes it off your balance
+              sheet along with the wear already charged against it, and works out whether you came
+              out ahead. That is measured against what it was still worth, not what you paid: the
+              months you already charged against profit are not counted twice.
+            </p>
+            <DisposeAssetForm assets={assets} />
           </details>
         ) : null}
       </div>

@@ -13,6 +13,7 @@ import { and, eq, sql } from 'drizzle-orm';
 import {
   lagosDay,
   monthlyDepreciationK,
+  postAssetDisposal,
   postAssetPurchase,
   postDepreciation,
   reversal,
@@ -108,6 +109,9 @@ export interface AssetReadback {
   /** Charged so far, and what is left on the balance sheet. */
   chargedK: number;
   bookValueK: number;
+  /** What came back when it was sold. Null unless it was. */
+  proceedsK: number | null;
+  soldOn: string | null;
 }
 
 /**
@@ -118,6 +122,14 @@ export interface AssetReadback {
  * multiplying would disagree with the balance sheet by a few kobo on most
  * assets. Two figures that disagree is the failure this codebase keeps
  * finding; deriving the visible one from the ledger is how it stops.
+ *
+ * It sums the DEPRECIATION debits, not the accumulated-depreciation balance.
+ * The two are identical for anything the business still owns, and differ for
+ * anything sold: a disposal debits accumulated depreciation to take the wear
+ * off with the equipment, which nets that account to zero. Reading it would
+ * make a generator that had ₦90,000 charged against it over a year report
+ * "nothing yet" the moment it was sold, erasing a year of true history from
+ * the merchant's own register.
  */
 export async function assetsFor(
   tx: TenantDb,
@@ -133,15 +145,18 @@ export async function assetsFor(
     bought_on: string;
     status: string;
     charged_k: string;
+    proceeds_k: string | null;
+    sold_on: string | null;
   }>(sql`
     SELECT a.id, a.description, a.cost_k, a.useful_life_months, a.months_charged,
            a.bought_on::text AS bought_on, a.status,
+           a.proceeds_k, a.sold_on::text AS sold_on,
            COALESCE((
-             SELECT SUM(e.credit_k) - SUM(e.debit_k)
+             SELECT SUM(e.debit_k) - SUM(e.credit_k)
                FROM ledger_entries e
                JOIN ledger_transactions t ON t.id = e.transaction_id
               WHERE e.business_id = a.business_id
-                AND e.account = 'ACCUMULATED_DEPRECIATION'
+                AND e.account = 'DEPRECIATION'
                 AND t.source_id = a.id::text
            ), 0)::bigint AS charged_k
     FROM fixed_assets a
@@ -161,7 +176,10 @@ export async function assetsFor(
       boughtOn: r.bought_on,
       status: r.status,
       chargedK,
-      bookValueK: r.status === 'withdrawn' ? 0 : costK - chargedK,
+      /* Withdrawn or sold, the business no longer holds it. */
+      bookValueK: r.status === 'recorded' ? costK - chargedK : 0,
+      proceedsK: r.proceeds_k === null ? null : Number(r.proceeds_k),
+      soldOn: r.sold_on,
     };
   });
 }
@@ -374,4 +392,109 @@ export async function chargeOneMonth(
   );
 
   return { charged: true, amountK };
+}
+
+export type DisposeAssetOutcome =
+  | {
+      outcome: 'sold';
+      description: string;
+      bookValueK: number;
+      /** Positive is better off than book value, negative is worse. */
+      resultK: number;
+    }
+  | { outcome: 'not_found' }
+  | { outcome: 'not_owned' };
+
+/**
+ * Selling or scrapping something the business owned (ADR 0026, amended).
+ *
+ * NOT a withdrawal. A withdrawal mirrors the purchase because it should never
+ * have been recorded; this does not, because the business really did own the
+ * thing and really did use it. Reversing the purchase would erase months of
+ * depreciation that genuinely reached the profit and loss.
+ *
+ * The accumulated wear is read from the LEDGER rather than reconstructed from
+ * `monthsCharged`, for the same reason `assetsFor` does it: the last month's
+ * charge absorbs the rounding, so multiplying a count out would disagree with
+ * the balance sheet by a few kobo and strand them under equipment that no
+ * longer exists.
+ */
+export async function disposeAsset(
+  tx: TenantDb,
+  input: {
+    businessId: string;
+    assetId: string;
+    proceedsK: number;
+    method: PaymentMethod;
+    actor: string;
+    soldAt?: Date;
+  },
+): Promise<DisposeAssetOutcome> {
+  const rows = await tx.execute<{
+    description: string;
+    cost_k: string;
+    status: string;
+    accumulated_k: string;
+  }>(sql`
+    SELECT a.description, a.cost_k, a.status,
+           COALESCE((
+             SELECT SUM(e.credit_k) - SUM(e.debit_k)
+               FROM ledger_entries e
+               JOIN ledger_transactions t ON t.id = e.transaction_id
+              WHERE e.business_id = a.business_id
+                AND e.account = 'ACCUMULATED_DEPRECIATION'
+                AND t.source_id = a.id::text
+           ), 0)::bigint AS accumulated_k
+    FROM fixed_assets a
+    WHERE a.business_id = ${input.businessId}::uuid AND a.id = ${input.assetId}::uuid
+  `);
+  const asset = [...rows][0];
+  if (!asset) return { outcome: 'not_found' };
+  /* Already sold, or withdrawn as never bought. Either way there is nothing
+   * left to sell, and the two read differently to a merchant only in the
+   * sentence the surface writes. */
+  if (asset.status !== 'recorded') return { outcome: 'not_owned' };
+
+  const costK = Number(asset.cost_k);
+  const accumulatedK = Number(asset.accumulated_k);
+  const at = input.soldAt ?? new Date();
+
+  const ledgerTransactionId = await writePosting(
+    tx,
+    input.businessId,
+    postAssetDisposal({
+      memo: `Sold: ${asset.description}`,
+      costK,
+      accumulatedK,
+      proceedsK: input.proceedsK,
+      method: input.method,
+    }),
+    'disposal',
+    input.assetId,
+    { occurredAt: at },
+  );
+
+  await tx
+    .update(fixedAssets)
+    .set({ status: 'sold', proceedsK: input.proceedsK, soldOn: lagosDay(at) })
+    .where(and(eq(fixedAssets.businessId, input.businessId), eq(fixedAssets.id, input.assetId)));
+
+  const bookValueK = costK - accumulatedK;
+  await tx.insert(auditEvents).values({
+    businessId: input.businessId,
+    actor: input.actor,
+    entity: 'fixed_asset',
+    entityId: input.assetId,
+    action: 'sold',
+    oldValue: { costK, accumulatedK, bookValueK } as never,
+    newValue: { proceedsK: input.proceedsK, ledgerTransactionId } as never,
+    sourceType: 'dashboard',
+  });
+
+  return {
+    outcome: 'sold',
+    description: asset.description,
+    bookValueK,
+    resultK: input.proceedsK - bookValueK,
+  };
 }

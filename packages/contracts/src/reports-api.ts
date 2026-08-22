@@ -429,8 +429,11 @@ export const reportsExpensesResponse = z.object({
       status: z.string(),
       /** Charged against profit so far, derived from the ledger. */
       chargedK: kobo,
-      /** What is left on the balance sheet. */
+      /** What is left on the balance sheet. Zero once it is gone. */
       bookValueK: kobo,
+      /** What came back when it was sold. Null unless it was. */
+      proceedsK: kobo.nullable(),
+      soldOn: z.string().nullable(),
     }),
   ),
   /**
@@ -826,6 +829,7 @@ export const LedgerAccount = z.enum([
   'COGS',
   'EXPENSES',
   'DEPRECIATION',
+  'DISPOSAL_RESULT',
 ]);
 
 /**
@@ -874,6 +878,35 @@ export const recordAssetResponse = z.object({
   /** What is still owed on it. Zero unless it was taken partly on credit. */
   owedK: kobo,
 });
+
+/**
+ * Selling or scrapping equipment (ADR 0026, amended).
+ *
+ * `proceedsK` may be zero: a generator that died is scrapped for nothing, and
+ * that is a real event with a real loss, not a missing field.
+ */
+export const disposeAssetRequest = z.object({
+  assetId: z.string().uuid(),
+  proceedsK: z.number().int().finite().nonnegative(),
+  method: z.enum(['cash', 'transfer']),
+});
+
+export const disposeAssetResponse = z.discriminatedUnion('outcome', [
+  z.object({
+    outcome: z.literal('sold'),
+    description: z.string(),
+    /** What it was still worth on the books the moment before it went. */
+    bookValueK: kobo,
+    /** SIGNED. Positive is better off than book value, negative is worse. */
+    resultK: z.number().int().finite(),
+  }),
+  z.object({ outcome: z.literal('not_found') }),
+  /** Already sold, or withdrawn as never bought. */
+  z.object({ outcome: z.literal('not_owned') }),
+]);
+
+export type DisposeAssetRequest = z.infer<typeof disposeAssetRequest>;
+export type DisposeAssetResponse = z.infer<typeof disposeAssetResponse>;
 
 export const withdrawAssetRequest = z.object({
   assetId: z.string().uuid(),

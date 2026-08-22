@@ -29,13 +29,14 @@ of goods sold overstating profit (#68) and inventory drifting from the ledger
 
 ## Decision
 
-**Three accounts, and the chart grows to fourteen.**
+**Three accounts, and the chart grows to fourteen** (fifteen after the
+amendment below).
 
-| Key | Code | Type | What it holds |
-|---|---|---|---|
-| `EQUIPMENT` | 1300 | asset | What the business paid for things it keeps and uses |
-| `ACCUMULATED_DEPRECIATION` | 1310 | asset | What has been charged against them so far, as a negative |
-| `DEPRECIATION` | 6100 | expense | This period's charge |
+| Key                        | Code | Type    | What it holds                                            |
+| -------------------------- | ---- | ------- | -------------------------------------------------------- |
+| `EQUIPMENT`                | 1300 | asset   | What the business paid for things it keeps and uses      |
+| `ACCUMULATED_DEPRECIATION` | 1310 | asset   | What has been charged against them so far, as a negative |
+| `DEPRECIATION`             | 6100 | expense | This period's charge                                     |
 
 `ACCUMULATED_DEPRECIATION` is a **contra-asset**: an asset-type account with a
 credit balance. It needs no special handling, because `naturalBalance` already
@@ -77,9 +78,37 @@ decides.
 
 - **Not a fixed asset register for auditors.** No serial numbers, locations,
   insurance values, or revaluation. Those are a different product.
-- **Not a disposal workflow.** Selling or scrapping equipment is a real event
-  with a gain or loss, and it is not in this slice. Until it exists, a
-  disposal is expressible as a manual journal (#73), which is why that exists.
+- ~~**Not a disposal workflow.**~~ **Amended, same day.** The original text
+  said selling equipment was out of scope and that a disposal was
+  "expressible as a manual journal (#73)". That was wrong on the facts:
+  `postJournal` is strictly two accounts and one amount, a disposal needs
+  four lines, and there was no gain or loss account in the chart at all. The
+  page therefore pointed a merchant at a workaround the product could not
+  perform. Disposal is now built, and the chart carries a fifteenth account:
+
+  | Key               | Code | Type    | What it holds                                             |
+  | ----------------- | ---- | ------- | --------------------------------------------------------- |
+  | `DISPOSAL_RESULT` | 6200 | expense | What selling one left the business better or worse off by |
+
+  Expense-typed, so a LOSS is a debit and reads as an ordinary cost, and a
+  GAIN is a credit showing as a negative — the same treatment accumulated
+  depreciation gets, handled by `naturalBalance` with nothing told about it.
+  One account rather than two, because a gain and a loss are the same fact
+  with opposite signs and splitting them would let a merchant with both in
+  one year read neither.
+
+  **The result is measured against BOOK VALUE, not the price paid.** A
+  generator bought for ₦450,000, worn to ₦360,000 and sold for ₦200,000 is a
+  ₦160,000 loss, not a ₦250,000 one: the other ₦90,000 already reached the
+  profit and loss a month at a time, and counting it twice would undo the
+  point of charging it monthly at all.
+
+  A sale does NOT mirror the purchase posting, which is what separates it
+  from a withdrawal. A withdrawal says the purchase should never have been
+  recorded; a sale says the business really did own the thing and really did
+  use it, and reversing the purchase would erase months of depreciation that
+  genuinely happened.
+
 - **Not tax depreciation.** Nigerian capital allowances follow their own
   rules and rates. These are management accounts (ADR 0015), and a merchant's
   accountant computes the tax position from them.

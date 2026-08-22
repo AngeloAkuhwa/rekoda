@@ -28,5 +28,9 @@ a new ADR that supersedes the old one.
 | [0020](0020-identity-persistence-and-the-setup-grant.md)  | Identity persistence: the setup grant, and a second pin for the bootstrap read  | Accepted                          |
 | [0021](0021-privacy-gateway-implementation.md)            | The privacy gateway: what leaves, what stays, and where the seams are           | Accepted                          |
 | [0022](0022-job-queue-in-our-own-schema.md)               | The job queue lives in our schema, and claiming it is a role                    | Accepted                          |
+| [0023](0023-haiku-reads-the-message.md)                   | Haiku reads the message                                                         | Accepted                          |
+| [0024](0024-the-commercial-terms.md)                      | The commercial terms                                                            | Accepted                          |
+| [0025](0025-bank-account-split.md)                        | The merchant's own bank account, separate from settlements                      | Accepted (amends 0004)            |
+| [0026](0026-fixed-assets.md)                              | A generator is an asset, not a month's expense                                  | Accepted (amends 0004)            |
 
 Template: [0000-template.md](0000-template.md)

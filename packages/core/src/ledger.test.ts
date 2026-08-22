@@ -4,6 +4,7 @@ import {
   UnbalancedPostingError,
   assertBalanced,
   monthlyDepreciationK,
+  postAssetDisposal,
   postAssetPurchase,
   postCreditNote,
   postDepreciation,
@@ -557,5 +558,99 @@ describe('what a month of wear costs', () => {
     const args = { costK: 100_000, monthsCharged: 0 };
     expect(() => monthlyDepreciationK({ ...args, usefulLifeMonths: 0 })).toThrow(RangeError);
     expect(() => monthlyDepreciationK({ ...args, usefulLifeMonths: 1.5 })).toThrow(RangeError);
+  });
+});
+
+describe('selling equipment', () => {
+  /**
+   * The arithmetic that must not double-count. A generator bought for
+   * ₦450,000, worn down to ₦360,000 and sold for ₦200,000 is a ₦160,000
+   * loss, not a ₦250,000 one: the other ₦90,000 already reached the profit
+   * and loss a month at a time.
+   */
+  it('measures the loss against book value, never against the price paid', () => {
+    const posting = postAssetDisposal({
+      memo: 'Sold the generator',
+      costK: 45_000_000,
+      accumulatedK: 9_000_000,
+      proceedsK: 20_000_000,
+      method: 'transfer',
+    });
+    expect(posting.lines).toEqual([
+      { account: 'BANK', debitK: 20_000_000, creditK: 0 },
+      { account: 'ACCUMULATED_DEPRECIATION', debitK: 9_000_000, creditK: 0 },
+      { account: 'EQUIPMENT', debitK: 0, creditK: 45_000_000 },
+      { account: 'DISPOSAL_RESULT', debitK: 16_000_000, creditK: 0 },
+    ]);
+  });
+
+  it('records a gain as a credit when it sold for more than it was worth', () => {
+    const posting = postAssetDisposal({
+      memo: 'Sold the freezer well',
+      costK: 45_000_000,
+      accumulatedK: 9_000_000,
+      proceedsK: 40_000_000,
+    });
+    /* Book value 36,000,000; sold for 40,000,000; 4,000,000 better off. */
+    expect(posting.lines).toContainEqual({
+      account: 'DISPOSAL_RESULT',
+      debitK: 0,
+      creditK: 4_000_000,
+    });
+  });
+
+  /* Scrapping is the same event with no proceeds: the whole book value goes. */
+  it('makes the whole remaining value the loss when nothing came back', () => {
+    const posting = postAssetDisposal({
+      memo: 'Generator died',
+      costK: 45_000_000,
+      accumulatedK: 9_000_000,
+      proceedsK: 0,
+    });
+    expect(posting.lines.some((l) => l.account === 'CASH' || l.account === 'BANK')).toBe(false);
+    expect(posting.lines).toContainEqual({
+      account: 'DISPOSAL_RESULT',
+      debitK: 36_000_000,
+      creditK: 0,
+    });
+  });
+
+  /* Sold for exactly what it was worth: nothing gained, nothing lost, and no
+   * line for a result that is zero. */
+  it('writes no result line when it sold for exactly its book value', () => {
+    const posting = postAssetDisposal({
+      memo: 'Sold at book value',
+      costK: 45_000_000,
+      accumulatedK: 9_000_000,
+      proceedsK: 36_000_000,
+    });
+    expect(posting.lines.some((l) => l.account === 'DISPOSAL_RESULT')).toBe(false);
+    assertBalanced(posting);
+  });
+
+  /**
+   * The wear must come off with the thing it was recorded against. Leaving it
+   * behind would strand a credit on the balance sheet under equipment that no
+   * longer exists, which is a balance sheet nobody can explain.
+   */
+  it('takes the accumulated wear off with the equipment', () => {
+    const posting = postAssetDisposal({
+      memo: 'Sold',
+      costK: 45_000_000,
+      accumulatedK: 45_000_000,
+      proceedsK: 0,
+    });
+    expect(posting.lines).toEqual([
+      { account: 'ACCUMULATED_DEPRECIATION', debitK: 45_000_000, creditK: 0 },
+      { account: 'EQUIPMENT', debitK: 0, creditK: 45_000_000 },
+    ]);
+  });
+
+  it('refuses figures the books could never have reached', () => {
+    const base = { memo: 'x', costK: 100, accumulatedK: 0, proceedsK: 0 };
+    expect(() => postAssetDisposal({ ...base, costK: 0 })).toThrow(RangeError);
+    expect(() => postAssetDisposal({ ...base, proceedsK: -1 })).toThrow(RangeError);
+    /* More wear than the thing cost. */
+    expect(() => postAssetDisposal({ ...base, accumulatedK: 101 })).toThrow(RangeError);
   });
 });

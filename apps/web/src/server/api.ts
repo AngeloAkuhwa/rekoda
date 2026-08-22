@@ -11,6 +11,7 @@ import {
   reportsDebtorsResponse,
   reportsExpensesResponse,
   paySupplierResponse,
+  disposeAssetResponse,
   recordAssetResponse,
   recordPaymentResponse,
   withdrawAssetResponse,
@@ -98,6 +99,7 @@ import {
   type ReportsDebtorsResponse,
   type ReportsExpensesResponse,
   type PaySupplierResponse,
+  type DisposeAssetResponse,
   type RecordAssetRequest,
   type RecordAssetResponse,
   type RecordPaymentResponse,
@@ -485,6 +487,21 @@ export async function recordAsset(
     expect: [200, 400],
   });
   return status === 200 ? recordAssetResponse.parse(json) : null;
+}
+
+/** Selling or scrapping something the business owned. */
+export async function disposeAsset(
+  sessionToken: string,
+  body: { assetId: string; proceedsK: number; method: 'cash' | 'transfer' },
+): Promise<DisposeAssetResponse | null> {
+  const { status, json } = await call({
+    method: 'POST',
+    path: '/v1/reports/assets/dispose',
+    body,
+    headers: { authorization: `Bearer ${sessionToken}` },
+    expect: [200, 400],
+  });
+  return status === 200 ? disposeAssetResponse.parse(json) : null;
 }
 
 /** Take one back out. Not a disposal. */

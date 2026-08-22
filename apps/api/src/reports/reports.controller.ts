@@ -95,8 +95,10 @@ import {
   closeBooksRequest,
   journalEntryRequest,
   paySupplierRequest,
+  disposeAssetRequest,
   recordAssetRequest,
   withdrawAssetRequest,
+  type DisposeAssetResponse,
   type RecordAssetResponse,
   type WithdrawAssetResponse,
   recordPaymentRequest,
@@ -729,6 +731,39 @@ export class ReportsController {
       }),
     );
     return { assetId: recorded.assetId, owedK: recorded.owedK };
+  }
+
+  /**
+   * Selling or scrapping something the business owned (ADR 0026, amended).
+   *
+   * Not a withdrawal. A withdrawal mirrors the purchase because it should
+   * never have been recorded; this does not, because the business really did
+   * own the thing and really did use it. Reversing the purchase would erase
+   * months of depreciation that genuinely reached the profit and loss.
+   *
+   * The gain or loss is measured against BOOK VALUE, not the price paid, so
+   * the depreciation already charged is never counted twice.
+   */
+  @Post('assets/dispose')
+  @HttpCode(200)
+  async disposeAsset(
+    @Req() request: AuthedRequest,
+    @Body() body: unknown,
+  ): Promise<DisposeAssetResponse> {
+    const parsed = disposeAssetRequest.safeParse(body);
+    if (!parsed.success) {
+      throw new BadRequestException('the item, what came back for it, and how it was paid');
+    }
+    const businessId = request.auth!.businessId;
+    return withBusiness(this.db, businessId, (tx) =>
+      assetsRepo.disposeAsset(tx, {
+        businessId,
+        assetId: parsed.data.assetId,
+        proceedsK: parsed.data.proceedsK,
+        method: parsed.data.method,
+        actor: `user:${request.auth!.userId}`,
+      }),
+    );
   }
 
   /**

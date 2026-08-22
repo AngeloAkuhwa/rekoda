@@ -56,6 +56,21 @@ export const ACCOUNTS = {
   EXPENSES: { code: '6000', name: 'Operating Expenses', type: 'expense' },
   /** This period's charge for using the equipment (ADR 0026). */
   DEPRECIATION: { code: '6100', name: 'Depreciation', type: 'expense' },
+  /**
+   * What selling equipment left the business better or worse off by.
+   *
+   * Expense-typed, so a LOSS is a debit and reads as an ordinary cost. A GAIN
+   * is a credit and shows as a negative, the same way accumulated
+   * depreciation shows as a negative asset: `naturalBalance` handles the sign
+   * and nothing needed telling. One account rather than two because a gain
+   * and a loss are the same fact with opposite signs, and splitting them
+   * would let a merchant with both in one year read neither.
+   */
+  DISPOSAL_RESULT: {
+    code: '6200',
+    name: 'Loss (or gain) on equipment sold',
+    type: 'expense',
+  },
 } as const satisfies Record<string, { code: string; name: string; type: AccountType }>;
 
 export type AccountKey = keyof typeof ACCOUNTS;
@@ -410,6 +425,7 @@ export const ACCOUNT_PICKER_LABELS: Record<AccountKey, string> = {
    * written by the monthly charge, not by a person, and pointing a journal at
    * it by mistake is how a balance sheet stops adding up. */
   ACCUMULATED_DEPRECIATION: 'Equipment wear recorded so far',
+  DISPOSAL_RESULT: 'Money made or lost selling equipment',
   /* Last, and deliberately. A merchant reaches for this list to say where
    * money went, and the settlement account is the one entry there they almost
    * never mean: it is written by the provider, not by them. Ordered by how
@@ -611,4 +627,57 @@ export function monthlyDepreciationK(args: {
   const perMonth = Math.floor(costK / usefulLifeMonths);
   const isLast = monthsCharged === usefulLifeMonths - 1;
   return isLast ? costK - perMonth * (usefulLifeMonths - 1) : perMonth;
+}
+
+/**
+ * Selling or scrapping equipment (ADR 0026, amended).
+ *
+ * Four lines, which is why it could not be expressed as a manual journal: the
+ * proceeds come in, the cost comes off, the wear recorded against it comes off
+ * with it, and whatever is left over is the gain or the loss.
+ *
+ * The gain or loss is measured against BOOK VALUE, not against the price
+ * paid. A generator bought for ₦450,000, worn down to ₦360,000 and sold for
+ * ₦200,000 is a ₦160,000 loss, not a ₦250,000 one: the other ₦90,000 already
+ * reached the profit and loss a month at a time, and counting it twice is the
+ * mistake this shape makes impossible.
+ *
+ * Scrapping is the same event with no proceeds, so it needs no separate path:
+ * the whole remaining book value becomes the loss.
+ */
+export function postAssetDisposal(args: {
+  memo: string;
+  /** What the business paid for it. */
+  costK: Kobo;
+  /** What has been charged against it so far. */
+  accumulatedK: Kobo;
+  /** What was received. Zero when it was scrapped rather than sold. */
+  proceedsK: Kobo;
+  method?: PaymentMethod;
+}): Posting {
+  if (args.costK <= 0 || args.accumulatedK < 0 || args.proceedsK < 0) {
+    throw new RangeError('a disposal needs a cost, and figures that are not negative');
+  }
+  if (args.accumulatedK > args.costK) {
+    throw new RangeError('more wear than the thing cost is not a state the books can reach');
+  }
+
+  const lines: LedgerLine[] = [];
+  if (args.proceedsK > 0) {
+    lines.push(line(cashOrBank(args.method ?? 'transfer'), args.proceedsK, 0));
+  }
+  /* The wear comes off with the thing it was recorded against. Leaving it
+   * behind would strand a credit on the balance sheet under equipment that no
+   * longer exists. */
+  if (args.accumulatedK > 0) lines.push(line('ACCUMULATED_DEPRECIATION', args.accumulatedK, 0));
+  lines.push(line('EQUIPMENT', 0, args.costK));
+
+  const bookValueK = args.costK - args.accumulatedK;
+  const resultK = args.proceedsK - bookValueK;
+  if (resultK < 0) lines.push(line('DISPOSAL_RESULT', -resultK, 0));
+  if (resultK > 0) lines.push(line('DISPOSAL_RESULT', 0, resultK));
+
+  const posting: Posting = { memo: args.memo, lines };
+  assertBalanced(posting);
+  return posting;
 }

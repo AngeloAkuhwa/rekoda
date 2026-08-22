@@ -23,6 +23,7 @@ import {
   stockCountResponse,
   closeBooksResponse,
   journalEntryResponse,
+  disposeAssetResponse,
   recordAssetResponse,
   recordPaymentResponse,
   withdrawAssetResponse,
@@ -462,6 +463,100 @@ describe('the spend register', () => {
         0,
       );
       expect(after.balanceSheet.balanced).toBe(true);
+    });
+
+    /**
+     * The event #113 could not record. Its copy pointed a merchant at a manual
+     * journal, which is strictly two accounts and one amount: a disposal needs
+     * four lines and a gain-or-loss account that did not exist. The page was
+     * offering a workaround the product could not perform.
+     */
+    it('sells one, and takes the wear off with it', async () => {
+      const { auth } = await onboard('+2348177000131');
+      const recorded = recordAssetResponse.parse(
+        (await post('/v1/reports/assets', GENERATOR, auth)).json(),
+      );
+
+      const sold = disposeAssetResponse.parse(
+        (
+          await post(
+            '/v1/reports/assets/dispose',
+            { assetId: recorded.assetId, proceedsK: 20_000_000, method: 'transfer' },
+            auth,
+          )
+        ).json(),
+      );
+      /* Nothing charged yet, so book value is still the cost and the loss is
+       * the whole gap. */
+      expect(sold).toMatchObject({
+        outcome: 'sold',
+        bookValueK: 45_000_000,
+        resultK: -25_000_000,
+      });
+
+      const after = await statementsOf(auth);
+      expect(after.balanceSheet.assets.find((l) => l.account === 'EQUIPMENT')?.amountK ?? 0).toBe(
+        0,
+      );
+      expect(
+        after.profitAndLoss.expenses.find((l) => l.account === 'DISPOSAL_RESULT')?.amountK,
+      ).toBe(25_000_000);
+      expect(after.balanceSheet.balanced).toBe(true);
+
+      const spend = reportsExpensesResponse.parse(
+        (await app.inject({ method: 'GET', url: '/v1/reports/expenses', headers: auth })).json(),
+      );
+      expect(spend.assets[0]).toMatchObject({
+        status: 'sold',
+        bookValueK: 0,
+        proceedsK: 20_000_000,
+      });
+    });
+
+    it('accepts nothing coming back, which is a scrapping', async () => {
+      const { auth } = await onboard('+2348177000132');
+      const recorded = recordAssetResponse.parse(
+        (await post('/v1/reports/assets', GENERATOR, auth)).json(),
+      );
+      expect(
+        disposeAssetResponse.parse(
+          (
+            await post(
+              '/v1/reports/assets/dispose',
+              { assetId: recorded.assetId, proceedsK: 0, method: 'cash' },
+              auth,
+            )
+          ).json(),
+        ),
+      ).toMatchObject({ resultK: -45_000_000 });
+    });
+
+    it('refuses one already gone, a bad body, and a stranger', async () => {
+      expect((await post('/v1/reports/assets/dispose', {})).statusCode).toBe(401);
+
+      const { auth } = await onboard('+2348177000133');
+      const recorded = recordAssetResponse.parse(
+        (await post('/v1/reports/assets', GENERATOR, auth)).json(),
+      );
+      const sell = () =>
+        post(
+          '/v1/reports/assets/dispose',
+          { assetId: recorded.assetId, proceedsK: 1_000_000, method: 'cash' },
+          auth,
+        );
+
+      expect((await sell()).json()).toMatchObject({ outcome: 'sold' });
+      expect((await sell()).json()).toEqual({ outcome: 'not_owned' });
+      expect((await post('/v1/reports/assets/dispose', {}, auth)).statusCode).toBe(400);
+      expect(
+        (
+          await post(
+            '/v1/reports/assets/dispose',
+            { assetId: recorded.assetId, proceedsK: -1, method: 'cash' },
+            auth,
+          )
+        ).statusCode,
+      ).toBe(400);
     });
 
     it('is one tenant at a time', async () => {

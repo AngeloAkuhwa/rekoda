@@ -419,8 +419,18 @@ export const fixedAssets = pgTable(
     monthsCharged: integer('months_charged').notNull().default(0),
     boughtOn: date('bought_on').notNull(),
     ledgerTransactionId: uuid('ledger_transaction_id').references(() => ledgerTransactions.id),
-    /** recorded | withdrawn. A withdrawal mirrors its posting. */
+    /**
+     * recorded | withdrawn | sold.
+     *
+     * A withdrawal MIRRORS the purchase posting: it should never have been
+     * recorded. A sale does not, because the business really did own the
+     * thing and really did use it, and reversing the purchase would erase
+     * months of depreciation that genuinely reached the profit and loss.
+     */
     status: text('status').notNull().default('recorded'),
+    /** What came back. Zero when it was scrapped; null when not sold. */
+    proceedsK: kobo('proceeds_k'),
+    soldOn: date('sold_on'),
     createdAt: createdAt(),
   },
   (t) => [index('fixed_assets_business_ix').on(t.businessId, t.status)],
