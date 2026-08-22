@@ -23,7 +23,9 @@ import {
   stockCountResponse,
   closeBooksResponse,
   journalEntryResponse,
+  recordAssetResponse,
   recordPaymentResponse,
+  withdrawAssetResponse,
   reopenBooksResponse,
   voidExpenseResponse,
   voidInvoiceResponse,
@@ -353,6 +355,138 @@ describe('the spend register', () => {
 
     const kinds = Object.fromEntries(spend.entries.map((e) => [e.description, e.kind]));
     expect(kinds).toEqual({ diesel: 'expense', 'ankara bales': 'purchase' });
+  });
+
+  /**
+   * Things the business keeps and uses (ADR 0026), across the border.
+   *
+   * The claim is not that a row was written. It is that the four statements a
+   * merchant reads change in the right direction: the balance sheet gains the
+   * equipment, and this month's profit and loss does not move at all.
+   */
+  describe('buying something the business keeps', () => {
+    const GENERATOR = {
+      description: 'Generator, 5.5kVA',
+      costK: 45_000_000,
+      paidK: 45_000_000,
+      usefulLifeMonths: 60,
+      method: 'transfer' as const,
+    };
+
+    const statementsOf = async (auth: Record<string, string>) =>
+      reportsStatementsResponse.parse(
+        (await app.inject({ method: 'GET', url: '/v1/reports/statements', headers: auth })).json(),
+      );
+
+    it('lands on the balance sheet, and not in this month`s profit', async () => {
+      const { auth } = await onboard('+2348177000121');
+      const before = await statementsOf(auth);
+
+      const res = await post('/v1/reports/assets', GENERATOR, auth);
+      expect(res.statusCode).toBe(200);
+      expect(recordAssetResponse.parse(res.json())).toMatchObject({ owedK: 0 });
+
+      const after = await statementsOf(auth);
+      const equipment = after.balanceSheet.assets.find((l) => l.account === 'EQUIPMENT');
+      expect(equipment?.amountK).toBe(45_000_000);
+      /* The whole reason ADR 0026 exists: profit does not move. */
+      expect(after.profitAndLoss.totalExpensesK).toBe(before.profitAndLoss.totalExpensesK);
+      expect(after.profitAndLoss.netProfitK).toBe(before.profitAndLoss.netProfitK);
+      /* And the identity still holds with two new accounts in the chart. */
+      expect(after.balanceSheet.balanced).toBe(true);
+    });
+
+    it('puts the unpaid part onto what is owed to suppliers', async () => {
+      const { auth } = await onboard('+2348177000122');
+      expect(
+        recordAssetResponse.parse(
+          (
+            await post(
+              '/v1/reports/assets',
+              { ...GENERATOR, costK: 30_000_000, paidK: 10_000_000 },
+              auth,
+            )
+          ).json(),
+        ),
+      ).toMatchObject({ owedK: 20_000_000 });
+
+      const spend = reportsExpensesResponse.parse(
+        (await app.inject({ method: 'GET', url: '/v1/reports/expenses', headers: auth })).json(),
+      );
+      expect(spend.payableK).toBe(20_000_000);
+      expect(spend.assets[0]).toMatchObject({
+        description: 'Generator, 5.5kVA',
+        costK: 30_000_000,
+        usefulLifeMonths: 60,
+        chargedK: 0,
+        bookValueK: 30_000_000,
+      });
+    });
+
+    it('refuses figures that make no sense, and a stranger', async () => {
+      expect((await post('/v1/reports/assets', GENERATOR)).statusCode).toBe(401);
+
+      const { auth } = await onboard('+2348177000123');
+      const bad = async (over: Record<string, unknown>) =>
+        (await post('/v1/reports/assets', { ...GENERATOR, ...over }, auth)).statusCode;
+
+      expect(await bad({ costK: 0 })).toBe(400);
+      /* Paying more than it cost. */
+      expect(await bad({ paidK: 45_000_001 })).toBe(400);
+      expect(await bad({ usefulLifeMonths: 0 })).toBe(400);
+      /* A century is a typo, not a generator. */
+      expect(await bad({ usefulLifeMonths: 1200 })).toBe(400);
+      expect(await bad({ description: 'x' })).toBe(400);
+    });
+
+    it('takes one back out, and the balance sheet returns to where it was', async () => {
+      const { auth } = await onboard('+2348177000124');
+      const recorded = recordAssetResponse.parse(
+        (await post('/v1/reports/assets', GENERATOR, auth)).json(),
+      );
+
+      expect(
+        withdrawAssetResponse.parse(
+          (
+            await post(
+              '/v1/reports/assets/withdraw',
+              { assetId: recorded.assetId, reason: 'recorded twice' },
+              auth,
+            )
+          ).json(),
+        ),
+      ).toMatchObject({ outcome: 'withdrawn', reversedK: 45_000_000 });
+
+      const after = await statementsOf(auth);
+      expect(after.balanceSheet.assets.find((l) => l.account === 'EQUIPMENT')?.amountK ?? 0).toBe(
+        0,
+      );
+      expect(after.balanceSheet.balanced).toBe(true);
+    });
+
+    it('is one tenant at a time', async () => {
+      const ada = await onboard('+2348177000125');
+      const bola = await onboard('+2348177000126');
+      const recorded = recordAssetResponse.parse(
+        (await post('/v1/reports/assets', GENERATOR, ada.auth)).json(),
+      );
+
+      const theirs = reportsExpensesResponse.parse(
+        (
+          await app.inject({ method: 'GET', url: '/v1/reports/expenses', headers: bola.auth })
+        ).json(),
+      );
+      expect(theirs.assets).toEqual([]);
+      expect(
+        (
+          await post(
+            '/v1/reports/assets/withdraw',
+            { assetId: recorded.assetId, reason: 'not mine' },
+            bola.auth,
+          )
+        ).json(),
+      ).toEqual({ outcome: 'not_found' });
+    });
   });
 
   describe('paying a supplier back', () => {

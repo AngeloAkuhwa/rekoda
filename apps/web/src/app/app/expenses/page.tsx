@@ -11,6 +11,7 @@ import { requireSessionWithToken } from '@/server/guards';
 import { AppNav } from '../AppNav';
 import { VoidSpendForm, type VoidableEntry } from './VoidSpendForm';
 import { PaySupplierForm } from './PaySupplierForm';
+import { RecordAssetForm, WithdrawAssetForm } from './AssetForms';
 import { CreateRecurringForm, StopRecurringForm, type StoppableSchedule } from './RecurringForms';
 import { SignOutButton } from '../SignOutButton';
 
@@ -32,8 +33,17 @@ export const metadata: Metadata = {
  */
 export default async function ExpensesPage() {
   const { token } = await requireSessionWithToken();
-  const { entries, count, expensesK, purchasesK, payableK, payableAgeing, recurring, outstanding } =
-    await reportsExpenses(token);
+  const {
+    entries,
+    count,
+    expensesK,
+    purchasesK,
+    payableK,
+    payableAgeing,
+    recurring,
+    outstanding,
+    assets,
+  } = await reportsExpenses(token);
 
   /* Only what can still be withdrawn is offered, and each option carries the
    * date and the figure: two "diesel" rows in one week is the normal case,
@@ -140,6 +150,76 @@ export default async function ExpensesPage() {
           <PaySupplierForm purchases={outstanding} />
         </div>
       ) : null}
+
+      {/* Its own card, and above the schedule, because the decision it asks
+          for is the one a merchant gets wrong: a generator is not a running
+          cost. Recording it as one reports a loss the business did not make
+          and hides a thing it owns (ADR 0026). */}
+      <div className="rk-card">
+        <h2>Things you bought and keep</h2>
+        <p className="rk-fineprint">
+          A generator, a freezer, a delivery bike. These are not running costs: you still own them,
+          so they sit on your balance sheet and only a slice of the cost is charged against profit
+          each month you use them. Recording one as an expense would make this month look far worse
+          than it was and every month after look better.
+        </p>
+
+        {assets.length > 0 ? (
+          <div className="rk-table-scroll">
+            <table className="rk-table">
+              <thead>
+                <tr>
+                  <th>What it is</th>
+                  <th>Bought</th>
+                  <th className="rk-num">What it cost</th>
+                  <th className="rk-num">Charged so far</th>
+                  <th className="rk-num">Still worth</th>
+                </tr>
+              </thead>
+              <tbody>
+                {assets.map((asset) => (
+                  <tr key={asset.id}>
+                    <td>
+                      {asset.description}
+                      {asset.status === 'withdrawn' ? (
+                        <span className="rk-fineprint"> (taken back out)</span>
+                      ) : null}
+                    </td>
+                    <td>{asset.boughtOn}</td>
+                    <td className="rk-num">
+                      <Money kobo={asset.costK} />
+                    </td>
+                    <td className="rk-num">
+                      {asset.chargedK === 0 ? 'nothing yet' : <Money kobo={asset.chargedK} />}
+                    </td>
+                    <td className="rk-num">
+                      <Money kobo={asset.bookValueK} />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : null}
+
+        <details className="rk-void">
+          <summary>Record something you bought and keep</summary>
+          <RecordAssetForm />
+        </details>
+
+        {assets.some((a) => a.status === 'recorded') ? (
+          <details className="rk-void">
+            <summary>Take one back out</summary>
+            <p className="rk-fineprint">
+              For when it should never have been recorded: the wrong figure, a duplicate, a thing
+              you did not actually buy. This is not for selling something. Selling equipment leaves
+              you better or worse off than what it was still worth, and Rekoda does not work that
+              out yet, so record a sale as a journal entry on the Reports page instead.
+            </p>
+            <WithdrawAssetForm assets={assets} />
+          </details>
+        ) : null}
+      </div>
 
       {/* Above the register, because a schedule EXPLAINS rows in it. A merchant
           reading an entry they do not remember dictating needs the answer on

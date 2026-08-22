@@ -2,7 +2,14 @@
 
 import { revalidatePath } from 'next/cache';
 import { formatKobo, parseAmountText, toKobo } from '@rekoda/core';
-import { createRecurring, paySupplier, stopRecurring, voidExpense } from '@/server/api';
+import {
+  createRecurring,
+  paySupplier,
+  recordAsset,
+  stopRecurring,
+  voidExpense,
+  withdrawAsset,
+} from '@/server/api';
 import { readSessionToken } from '@/server/session-cookies';
 
 export interface VoidSpendFormState {
@@ -220,5 +227,91 @@ export async function paySupplierAction(
       outcome.owedK > 0
         ? `Recorded. ${formatKobo(outcome.owedK)} still owing on ${outcome.description}.`
         : `Recorded. ${outcome.description} is settled in full.`,
+  };
+}
+
+/**
+ * Buying something the business keeps and uses (ADR 0026).
+ *
+ * The useful life is asked in YEARS here and stored in months, because a
+ * merchant thinks "about five years", not "sixty months", and asking for the
+ * number they already have in their head is the difference between a figure
+ * they checked and a figure they guessed to get past the form.
+ */
+export async function recordAssetAction(
+  _prev: VoidSpendFormState,
+  formData: FormData,
+): Promise<VoidSpendFormState> {
+  const token = await readSessionToken();
+  if (!token) return { error: 'Your session expired. Sign in again.' };
+
+  const description = String(formData.get('description') ?? '').trim();
+  if (description.length < 2) return { error: 'Say what it is, in a couple of words.' };
+
+  const cost = parseAmountText(String(formData.get('cost') ?? ''));
+  if (cost === null || cost <= 0) {
+    return { error: 'Say what it cost, in naira. For example 450000, or 450k.' };
+  }
+  const paidText = String(formData.get('paid') ?? '').trim();
+  const paid = paidText === '' ? cost : parseAmountText(paidText);
+  if (paid === null || paid < 0) return { error: 'Say what you paid, or leave it to pay in full.' };
+  if (paid > cost) return { error: 'You cannot have paid more than it cost.' };
+
+  const years = Number(formData.get('years') ?? 0);
+  if (!Number.isFinite(years) || years <= 0 || years > 12) {
+    return { error: 'How many years will you get out of it? Somewhere between 1 and 12.' };
+  }
+  const usefulLifeMonths = Math.round(years * 12);
+
+  const method = String(formData.get('method') ?? 'cash') === 'transfer' ? 'transfer' : 'cash';
+  const outcome = await recordAsset(token, {
+    description,
+    costK: toKobo(cost),
+    paidK: toKobo(paid),
+    usefulLifeMonths,
+    method,
+  });
+  if (!outcome) return { error: 'That did not go through. Nothing was recorded.' };
+
+  revalidatePath('/app/expenses');
+  const perMonth = formatKobo(Math.floor(toKobo(cost) / usefulLifeMonths));
+  return {
+    done:
+      outcome.owedK > 0
+        ? `Recorded. ${description} is on your balance sheet, and ${formatKobo(outcome.owedK)} is still owed on it.`
+        : `Recorded. ${description} is on your balance sheet, not in this month's costs. About ${perMonth} a month will be charged against profit as you use it.`,
+  };
+}
+
+/**
+ * Take back something that should not have been recorded.
+ *
+ * Not selling it. Selling equipment is a real event with a gain or a loss
+ * against what it is still worth, and Rekoda does not model that yet, so the
+ * copy says plainly what this is for rather than letting a merchant reach for
+ * it when they mean a sale.
+ */
+export async function withdrawAssetAction(
+  _prev: VoidSpendFormState,
+  formData: FormData,
+): Promise<VoidSpendFormState> {
+  const token = await readSessionToken();
+  if (!token) return { error: 'Your session expired. Sign in again.' };
+
+  const assetId = String(formData.get('assetId') ?? '').trim();
+  const reason = String(formData.get('reason') ?? '').trim();
+  if (!assetId) return { error: 'Pick the item to take back out.' };
+  if (reason.length < 4) return { error: 'Say why, in a few words. It goes on the record.' };
+
+  const outcome = await withdrawAsset(token, { assetId, reason });
+  if (!outcome) return { error: 'That did not go through. Nothing was changed.' };
+  if (outcome.outcome === 'not_found') return { error: 'That item is no longer here.' };
+  if (outcome.outcome === 'already_withdrawn') {
+    return { error: 'That item was already taken back out. Nothing changed.' };
+  }
+
+  revalidatePath('/app/expenses');
+  return {
+    done: `${outcome.description} is off your balance sheet, and the ${formatKobo(outcome.reversedK)} that bought it is back where it was.`,
   };
 }

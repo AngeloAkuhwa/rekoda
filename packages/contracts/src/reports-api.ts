@@ -412,6 +412,28 @@ export const reportsExpensesResponse = z.object({
     totalK: kobo,
   }),
   /**
+   * Things the business keeps and uses (ADR 0026).
+   *
+   * On the spend register's response because buying a generator is spending,
+   * and the merchant deciding whether a thing is equipment or a running cost
+   * is standing on this page when they decide.
+   */
+  assets: z.array(
+    z.object({
+      id: z.string(),
+      description: z.string(),
+      costK: kobo,
+      usefulLifeMonths: z.number().int().positive(),
+      monthsCharged: z.number().int().nonnegative(),
+      boughtOn: z.string(),
+      status: z.string(),
+      /** Charged against profit so far, derived from the ledger. */
+      chargedK: kobo,
+      /** What is left on the balance sheet. */
+      bookValueK: kobo,
+    }),
+  ),
+  /**
    * Purchases with something still standing against them, oldest first.
    *
    * The pool a merchant pays from. Nothing here identifies a supplier, because
@@ -795,12 +817,15 @@ export const LedgerAccount = z.enum([
   'BANK',
   'ACCOUNTS_RECEIVABLE',
   'INVENTORY',
+  'EQUIPMENT',
+  'ACCUMULATED_DEPRECIATION',
   'ACCOUNTS_PAYABLE',
   'VAT_PAYABLE',
   'OWNERS_EQUITY',
   'SALES_REVENUE',
   'COGS',
   'EXPENSES',
+  'DEPRECIATION',
 ]);
 
 /**
@@ -816,6 +841,61 @@ export const LedgerAccount = z.enum([
  * `method` decides which account gave the money up, and there are only two
  * because there are only two the books model: the till and the bank.
  */
+/**
+ * Buying something the business keeps and uses (ADR 0026).
+ *
+ * `usefulLifeMonths` is asked, never inferred. A model deciding how long a
+ * merchant's freezer lasts would be a model computing money, which the spec
+ * forbids, and it would be wrong often enough to matter.
+ *
+ * No minimum value. A ₦40,000 phone a trader uses for three years is as much
+ * a fixed asset as a ₦450,000 generator, and a threshold would only teach
+ * merchants to route things around it.
+ */
+export const recordAssetRequest = z
+  .object({
+    description: z.string().trim().min(2).max(120),
+    costK: z.number().int().finite().positive(),
+    /** What was handed over now. The rest is owed to the supplier. */
+    paidK: z.number().int().finite().nonnegative(),
+    /* Twelve years is longer than any equipment a merchant here will buy and
+     * short enough that a mistyped figure is refused rather than spreading a
+     * generator over a century. */
+    usefulLifeMonths: z.number().int().min(1).max(144),
+    method: z.enum(['cash', 'transfer']),
+  })
+  .refine((v) => v.paidK <= v.costK, {
+    message: 'you cannot pay more than it cost',
+    path: ['paidK'],
+  });
+
+export const recordAssetResponse = z.object({
+  assetId: z.string(),
+  /** What is still owed on it. Zero unless it was taken partly on credit. */
+  owedK: kobo,
+});
+
+export const withdrawAssetRequest = z.object({
+  assetId: z.string().uuid(),
+  reason: z.string().trim().min(4).max(200),
+});
+
+/**
+ * NOT a disposal. Selling or scrapping equipment is a real event with a gain
+ * or a loss against book value, and ADR 0026 says plainly it is not in this
+ * slice. This is the mistake path.
+ */
+export const withdrawAssetResponse = z.discriminatedUnion('outcome', [
+  z.object({ outcome: z.literal('withdrawn'), description: z.string(), reversedK: kobo }),
+  z.object({ outcome: z.literal('not_found') }),
+  z.object({ outcome: z.literal('already_withdrawn') }),
+]);
+
+export type RecordAssetRequest = z.infer<typeof recordAssetRequest>;
+export type RecordAssetResponse = z.infer<typeof recordAssetResponse>;
+export type WithdrawAssetRequest = z.infer<typeof withdrawAssetRequest>;
+export type WithdrawAssetResponse = z.infer<typeof withdrawAssetResponse>;
+
 export const paySupplierRequest = z.object({
   expenseId: z.string().uuid(),
   amountK: z.number().int().finite().positive(),
