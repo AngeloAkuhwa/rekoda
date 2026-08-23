@@ -43,7 +43,7 @@ export async function withBusiness<T>(
   businessId: string,
   fn: (tx: TenantDb) => Promise<T>,
 ): Promise<T> {
-  if (!/^[0-9a-f-]{36}$/i.test(businessId)) {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(businessId)) {
     throw new Error('withBusiness: businessId must be a UUID');
   }
   return db.transaction(async (tx) => {
@@ -68,7 +68,7 @@ export async function withUser<T>(
   userId: string,
   fn: (tx: TenantDb) => Promise<T>,
 ): Promise<T> {
-  if (!/^[0-9a-f-]{36}$/i.test(userId)) {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(userId)) {
     throw new Error('withUser: userId must be a UUID');
   }
   return db.transaction(async (tx) => {

@@ -79,7 +79,14 @@ export class PaymentConnectionsService {
         businessId,
         providerType: this.provider.providerType,
         settlementBankCode: input.bankCode,
-        settlementAccountCipher: encryptFacet(input.accountNumber, this.config.connectionKey),
+        /* Bound to this business and this column: a blob moved onto another
+         * row fails authentication rather than reading as that merchant's
+         * account. Any future payout path must decrypt with the same aad. */
+        settlementAccountCipher: encryptFacet(
+          input.accountNumber,
+          this.config.connectionKey,
+          `${businessId}:settlement_account`,
+        ),
         settlementAccountLast4: input.accountNumber.slice(-4),
         settlementAccountName: input.accountName,
       });

@@ -1,4 +1,5 @@
 import { Logger } from '@nestjs/common';
+import { redactForLog } from '@rekoda/core/privacy';
 import { billingPeriod, replies } from '@rekoda/core';
 import {
   conversationsRepo,
@@ -41,7 +42,7 @@ export function deliverDocumentHandler(deps: DeliverDocumentDeps): JobHandler {
     const documentId = typeof payload['documentId'] === 'string' ? payload['documentId'] : null;
     if (!documentId) throw new Error('document.deliver: payload is missing documentId');
 
-    const stored = (await issueRepo.documentsFor(tx, businessId)).find((d) => d.id === documentId);
+    const stored = await issueRepo.documentById(tx, businessId, documentId);
     if (!stored) {
       // Another tenant's id, or a truncated fixture. Nothing to retry.
       log.warn('document.deliver: no document for this tenant');
@@ -131,7 +132,7 @@ export function deliverDocumentHandler(deps: DeliverDocumentDeps): JobHandler {
          * PDF already exists in storage — so a retry is cheap, correct, and
          * the only way they ever get it.
          */
-        log.warn(`document not delivered, will retry: ${error.message}`);
+        log.warn(`document not delivered, will retry: ${redactForLog(error.message)}`);
       }
       throw error;
     }

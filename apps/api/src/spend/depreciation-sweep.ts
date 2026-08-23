@@ -56,47 +56,57 @@ export async function sweepDepreciation(
   now: Date = new Date(),
 ): Promise<DepreciationSweepResult> {
   const today = lagosDay(now);
-  const due = await assetsRepo.assetsDue(deps.workerDb, today);
   const result: DepreciationSweepResult = { charged: 0, chargedK: 0, skipped: 0 };
 
-  for (const asset of due) {
-    const elapsed = assetsRepo.monthsElapsed(asset.boughtOn, today);
-    const owed = Math.min(
-      elapsed - asset.monthsCharged,
-      asset.usefulLifeMonths - asset.monthsCharged,
-      MAX_CATCHUP,
-    );
-    if (owed <= 0) continue;
+  /* Charging an asset advances months_charged and, at the bound, out of the
+   * due set: repeat until a short page so the whole estate is covered every
+   * pass. Zero progress on a full page means every row is refusing (a closed
+   * period, say), and spinning on those helps nobody. */
+  const PAGE = 500;
+  for (;;) {
+    const before = result.charged + result.skipped;
+    const due = await assetsRepo.assetsDue(deps.workerDb, today, PAGE);
+    for (const asset of due) {
+      const elapsed = assetsRepo.monthsElapsed(asset.boughtOn, today);
+      const owed = Math.min(
+        elapsed - asset.monthsCharged,
+        asset.usefulLifeMonths - asset.monthsCharged,
+        MAX_CATCHUP,
+      );
+      if (owed <= 0) continue;
 
-    for (let i = 0; i < owed; i++) {
-      const expect = asset.monthsCharged + i;
-      try {
-        const outcome = await withBusiness(deps.appDb, asset.businessId, (tx) =>
-          assetsRepo.chargeOneMonth(tx, {
-            businessId: asset.businessId,
-            assetId: asset.assetId,
-            expectMonthsCharged: expect,
-            at: now,
-          }),
-        );
-        if (!outcome.charged) {
-          result.skipped += 1;
+      for (let i = 0; i < owed; i++) {
+        const expect = asset.monthsCharged + i;
+        try {
+          const outcome = await withBusiness(deps.appDb, asset.businessId, (tx) =>
+            assetsRepo.chargeOneMonth(tx, {
+              businessId: asset.businessId,
+              assetId: asset.assetId,
+              expectMonthsCharged: expect,
+              at: now,
+            }),
+          );
+          if (!outcome.charged) {
+            result.skipped += 1;
+            break;
+          }
+          result.charged += 1;
+          result.chargedK += outcome.amountK;
+        } catch (error) {
+          /* One asset failing must not stop the rest. A closed period refuses
+           * the posting (migration 0034), which is correct and not an outage:
+           * the month is filed and its figures may not change. */
+          log.warn(`depreciation for one asset failed: ${redactForLog(String(error))}`);
           break;
         }
-        result.charged += 1;
-        result.chargedK += outcome.amountK;
-      } catch (error) {
-        /* One asset failing must not stop the rest. A closed period refuses
-         * the posting (migration 0034), which is correct and not an outage:
-         * the month is filed and its figures may not change. */
-        log.warn(`depreciation for one asset failed: ${redactForLog(String(error))}`);
-        break;
       }
     }
+
+    if (due.length < PAGE || result.charged + result.skipped === before) break;
   }
 
   if (result.charged > 0) {
-    log.log(`charged ${result.charged} month(s) of wear across ${due.length} item(s)`);
+    log.log(`charged ${result.charged} month(s) of wear this pass`);
   }
   return result;
 }

@@ -101,19 +101,21 @@ export class PaymentsController {
   @Get('exceptions')
   async exceptions(@Req() request: AuthedRequest): Promise<PaymentExceptionsResponse> {
     const businessId = request.auth!.businessId;
-    const rows = await withBusiness(this.db, businessId, (tx) => settleRepo.reconciliationsFor(tx));
+    /* The queue's own filter runs in SQL: the table is append-only for the
+     * life of the tenant, and this used to read all of it to show a handful. */
+    const rows = await withBusiness(this.db, businessId, (tx) =>
+      settleRepo.reconciliationsFor(tx, { status: 'EXCEPTION', limit: 200 }),
+    );
     return {
-      exceptions: rows
-        .filter((r) => r.status === 'EXCEPTION')
-        .map((r) => ({
-          id: r.id,
-          status: r.status,
-          reason: r.reason,
-          amountK: r.amountK,
-          outstandingK: r.outstandingK,
-          createdAt: r.createdAt.toISOString(),
-          resolvedAt: r.resolvedAt ? r.resolvedAt.toISOString() : null,
-        })),
+      exceptions: rows.map((r) => ({
+        id: r.id,
+        status: r.status,
+        reason: r.reason,
+        amountK: r.amountK,
+        outstandingK: r.outstandingK,
+        createdAt: r.createdAt.toISOString(),
+        resolvedAt: r.resolvedAt ? r.resolvedAt.toISOString() : null,
+      })),
     };
   }
 
@@ -131,7 +133,8 @@ export class PaymentsController {
     @Req() request: AuthedRequest,
     @Param('id') id: string,
   ): Promise<{ resolved: true }> {
-    if (!/^[0-9a-f-]{36}$/i.test(id)) throw new BadRequestException('not an exception id');
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id))
+      throw new BadRequestException('not an exception id');
     const businessId = request.auth!.businessId;
     const actor = `user:${request.auth!.userId}`;
     const resolved = await withBusiness(this.db, businessId, (tx) =>

@@ -58,7 +58,7 @@ export function readSetupToken(token: string, now: Date, secret: string): SetupG
 
   const expiresAt = Number(expiry);
   if (!Number.isFinite(expiresAt) || now.getTime() >= expiresAt) return null;
-  if (!/^[0-9a-f-]{36}$/i.test(userId)) return null;
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(userId)) return null;
 
   return {
     userId,

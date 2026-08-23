@@ -13,7 +13,7 @@ import {
   Query,
   ServiceUnavailableException,
 } from '@nestjs/common';
-import { timingSafeEqual } from 'node:crypto';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { opsExceptionsResponse, opsRefundRequest, opsResolveEventRequest } from '@rekoda/contracts';
 import type { OpsExceptionsResponse } from '@rekoda/contracts';
 import {
@@ -56,7 +56,7 @@ import { DB, WORKER_DB } from '../db/db.module.js';
  * queue depth, and no session is the right credential for a question that
  * spans every tenant.
  */
-const UUID = /^[0-9a-f-]{36}$/i;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 @Controller('v1/ops')
 export class OpsController {
@@ -370,11 +370,18 @@ export class OpsController {
   }
 }
 
-/** Constant-time, and length-safe: `timingSafeEqual` throws on a mismatch. */
+/**
+ * Constant-time secret comparison with no length oracle.
+ *
+ * Comparing digests rather than the strings means the observable work is
+ * identical whatever the caller sent: a raw length pre-check answered
+ * faster for wrong-length guesses, which quietly told an attacker how long
+ * the secret is. Hashing first costs microseconds and says nothing.
+ */
 function matchesSecret(given: string, expected: string): boolean {
-  const a = Buffer.from(given);
-  const b = Buffer.from(expected);
-  return a.length === b.length && timingSafeEqual(a, b);
+  const a = createHash('sha256').update(given, 'utf8').digest();
+  const b = createHash('sha256').update(expected, 'utf8').digest();
+  return timingSafeEqual(a, b);
 }
 
 /** Row to wire. Nothing here that a payload or a name could reach. */

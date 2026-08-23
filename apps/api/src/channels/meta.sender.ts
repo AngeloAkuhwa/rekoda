@@ -29,6 +29,9 @@ import {
  * by definition not messaged the business number, and a merchant whose card
  * failed may not have messaged it in days. Both are template messages.
  */
+/** The most media one download may buffer: WhatsApp's own media cap, rounded. */
+const MAX_MEDIA_BYTES = 16 * 1024 * 1024;
+
 export class MetaSender implements MessageSender {
   private readonly log = new Logger(MetaSender.name);
 
@@ -203,8 +206,18 @@ export class MetaSender implements MessageSender {
         signal: controller.signal,
       });
       if (!response.ok) throw new SendFailed(`meta media download answered ${response.status}`);
+      /* Bounded BEFORE buffering: the upload path has MAX_IMAGE_BYTES and a
+       * voice note is capped by WhatsApp itself, so anything past this is
+       * not media we asked for, and an unbounded arrayBuffer would hand the
+       * worker's memory to whoever controls the response. */
+      const declared = Number(response.headers.get('content-length') ?? 0);
+      if (declared > MAX_MEDIA_BYTES) throw new SendFailed('meta media larger than accepted');
+      const bytes = Buffer.from(await response.arrayBuffer());
+      if (bytes.byteLength > MAX_MEDIA_BYTES) {
+        throw new SendFailed('meta media larger than accepted');
+      }
       return {
-        bytes: Buffer.from(await response.arrayBuffer()),
+        bytes,
         mimeType: meta.mime_type ?? response.headers.get('content-type') ?? 'audio/ogg',
       };
     } catch (error) {

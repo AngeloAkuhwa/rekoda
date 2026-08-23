@@ -720,8 +720,7 @@ async function recordConsent(db: Db, from: string, at: Date | null): Promise<voi
  * cannot queue the same resend twice while a fresh ask always can.
  */
 async function resendReply(tx: TenantDb, businessId: string, eventId: string): Promise<Reply> {
-  const stored = await issueRepo.documentsFor(tx, businessId);
-  const newest = stored.at(-1);
+  const newest = await issueRepo.latestDocumentFor(tx, businessId);
   if (!newest) return replies.nothingToResend();
 
   await jobsRepo.enqueue(tx, {

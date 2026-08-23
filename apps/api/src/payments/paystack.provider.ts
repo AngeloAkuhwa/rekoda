@@ -220,8 +220,9 @@ export class PaystackProvider implements PaymentProviderPort {
     if (!response.ok) {
       // The body may explain (bad subaccount, disabled channel) but may also
       // echo request fields — log the status, never the body.
-      this.log.warn(`Paystack ${path} answered HTTP ${response.status}`);
-      throw new PaystackApiError(`${path} failed with HTTP ${response.status}`);
+      /* The bare path only: a query string here can carry references. */
+      this.log.warn(`Paystack ${path.split('?')[0]} answered HTTP ${response.status}`);
+      throw new PaystackApiError(`${path.split('?')[0]} failed with HTTP ${response.status}`);
     }
     return response.json();
   }

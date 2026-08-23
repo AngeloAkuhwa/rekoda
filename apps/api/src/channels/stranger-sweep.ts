@@ -34,48 +34,61 @@ export interface StrangerSweepDeps {
  */
 export async function sweepUnknownSenders(deps: StrangerSweepDeps, limit = 25): Promise<number> {
   const log = new Logger('StrangerSweep');
-  const pending = await events.unattributedEvents(deps.workerDb, 'meta', limit);
   let answered = 0;
 
-  for (const event of pending) {
-    /* Status callbacks carry nobody to answer. Marked handled with NO reason:
-     * `error` is what the ops health surface counts as the exception queue,
-     * and an ordinary delivery receipt is not an exception. */
-    if (!event.eventType.startsWith('message.')) {
+  /* Pages until drained. Every handled event is marked processed and leaves
+   * the set; a page whose FIRST row is the same one as last time means
+   * something in it will not mark (an unopenable seal, say) and looping on
+   * it would spin, so the pass stops and the next tick tries again. */
+  let lastFirstId: string | null = null;
+  for (;;) {
+    const pending = await events.unattributedEvents(deps.workerDb, 'meta', limit);
+    if (pending.length === 0) break;
+    if (pending[0]!.id === lastFirstId) break;
+    lastFirstId = pending[0]!.id;
+
+    for (const event of pending) {
+      /* Status callbacks carry nobody to answer. Marked handled with NO reason:
+       * `error` is what the ops health surface counts as the exception queue,
+       * and an ordinary delivery receipt is not an exception. */
+      if (!event.eventType.startsWith('message.')) {
+        await events.markProcessed(deps.workerDb, event.id);
+        continue;
+      }
+
+      const from = senderOf(event.payload, deps.vaultKey);
+      if (!from) {
+        await events.markProcessed(deps.workerDb, event.id, 'no_sender');
+        continue;
+      }
+
+      /* Marked BEFORE the send: a Meta outage must not leave the event pending
+       * for the next pass to answer again. A stranger who hears nothing because
+       * we were down can message again; one who gets the same greeting every
+       * twenty seconds cannot make it stop.
+       *
+       * No reason recorded, again: somebody without an account messaging the
+       * number is the ordinary case this sweep exists for, and counting it as
+       * an exception would bury the real ones under it. */
       await events.markProcessed(deps.workerDb, event.id);
-      continue;
+
+      const claimed = await events.claimStrangerReply(
+        deps.workerDb,
+        contactKeyFor(from, deps.matchKey),
+      );
+      if (!claimed) continue;
+
+      try {
+        await deps.sender.send({ to: from, text: replies.noAccount().text });
+        answered += 1;
+      } catch {
+        // The number is not ours to retry against and the event is already
+        // marked. Logged without the number, like everything else here.
+        log.warn('could not answer an unknown sender');
+      }
     }
 
-    const from = senderOf(event.payload, deps.vaultKey);
-    if (!from) {
-      await events.markProcessed(deps.workerDb, event.id, 'no_sender');
-      continue;
-    }
-
-    /* Marked BEFORE the send: a Meta outage must not leave the event pending
-     * for the next pass to answer again. A stranger who hears nothing because
-     * we were down can message again; one who gets the same greeting every
-     * twenty seconds cannot make it stop.
-     *
-     * No reason recorded, again: somebody without an account messaging the
-     * number is the ordinary case this sweep exists for, and counting it as
-     * an exception would bury the real ones under it. */
-    await events.markProcessed(deps.workerDb, event.id);
-
-    const claimed = await events.claimStrangerReply(
-      deps.workerDb,
-      contactKeyFor(from, deps.matchKey),
-    );
-    if (!claimed) continue;
-
-    try {
-      await deps.sender.send({ to: from, text: replies.noAccount().text });
-      answered += 1;
-    } catch {
-      // The number is not ours to retry against and the event is already
-      // marked. Logged without the number, like everything else here.
-      log.warn('could not answer an unknown sender');
-    }
+    if (pending.length < limit) break;
   }
 
   return answered;

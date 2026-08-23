@@ -20,6 +20,7 @@
  * giving the product away by arithmetic accident.
  */
 import { Logger } from '@nestjs/common';
+import { redactForLog } from '@rekoda/core/privacy';
 import { judgeProviderPayment } from '@rekoda/core';
 import { paystackWebhookBody, summarisePaystackEvent } from '@rekoda/contracts';
 import { events, subscriptionsRepo } from '@rekoda/db';
@@ -106,7 +107,7 @@ export function processBillingChargeHandler(deps: ProcessBillingChargeDeps): Job
       /* Wrong currency, or a non-positive amount, CONFIRMED by verify. Not
        * this charge's money. Left pending rather than failed: the merchant
        * still owes the month, and somebody has to look at where this went. */
-      log.warn(`a subscription payment was rejected: ${judgement.reason}`);
+      log.warn(`a subscription payment was rejected: ${redactForLog(judgement.reason)}`);
       await events.markProcessed(tx, eventId, judgement.reason, businessId);
       return;
     }

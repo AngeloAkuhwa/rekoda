@@ -23,7 +23,7 @@
  * it becomes a refund or a credit. Books that quietly absorb an overpayment
  * are books that overstate what the merchant may keep.
  */
-import { and, desc, eq, inArray, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, sql, isNull } from 'drizzle-orm';
 import {
   postProviderPayment,
   postReceivablePayment,
@@ -535,7 +535,21 @@ export interface ReconciliationReadback {
 }
 
 /** The reconciliation trail — the admin exception queue's query. */
-export async function reconciliationsFor(tx: TenantDb): Promise<ReconciliationReadback[]> {
+export async function reconciliationsFor(
+  tx: TenantDb,
+  options: { status?: 'EXCEPTION' | 'MATCHED'; unresolvedOnly?: boolean; limit?: number } = {},
+): Promise<ReconciliationReadback[]> {
+  /**
+   * Filtered and bounded in SQL. This table is append-only for the life of
+   * the tenant, and the exception queue used to read ALL of it on every load
+   * of the payments page and filter in JavaScript. Newest first, because the
+   * exception a human needs to see is the one that just happened.
+   */
+  const limit = options.limit ?? 200;
+  const conditions = [
+    options.status ? eq(reconciliations.status, options.status) : undefined,
+    options.unresolvedOnly ? isNull(reconciliations.resolvedAt) : undefined,
+  ].filter((c): c is NonNullable<typeof c> => c !== undefined);
   const rows = await tx
     .select({
       id: reconciliations.id,
@@ -547,7 +561,9 @@ export async function reconciliationsFor(tx: TenantDb): Promise<ReconciliationRe
       resolvedAt: reconciliations.resolvedAt,
     })
     .from(reconciliations)
-    .orderBy(reconciliations.createdAt);
+    .where(conditions.length > 0 ? and(...conditions) : undefined)
+    .orderBy(desc(reconciliations.createdAt))
+    .limit(limit);
   return rows;
 }
 

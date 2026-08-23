@@ -323,6 +323,25 @@ export async function liveIntentForInvoice(
  * that role — and returns nothing at all on the API's connection, which is the
  * intended failure: silent and empty rather than cross-tenant.
  */
+/**
+ * The businesses behind a settlement batch, in ONE query.
+ *
+ * The settlement sweep used to resolve each reference with its own round
+ * trip, and a Paystack daily batch at scale carries thousands: a per-row
+ * loop made the ten-minute sweep scale with the platform's own success.
+ */
+export async function businessesForReferences(
+  workerDb: Db,
+  references: readonly string[],
+): Promise<Map<string, string>> {
+  if (references.length === 0) return new Map();
+  const rows = await workerDb
+    .select({ reference: paymentIntents.reference, businessId: paymentIntents.businessId })
+    .from(paymentIntents)
+    .where(inArray(paymentIntents.reference, [...references]));
+  return new Map(rows.map((r) => [r.reference, r.businessId]));
+}
+
 export async function resolveIntentByReference(
   workerDb: Db,
   reference: string,

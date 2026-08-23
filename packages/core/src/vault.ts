@@ -22,6 +22,8 @@ const ALGORITHM = 'aes-256-gcm';
 const IV_BYTES = 12;
 const KEY_BYTES = 32;
 const VERSION = 'v1';
+/** Blobs whose tag also authenticates caller-supplied associated data. */
+const AAD_VERSION = 'v2';
 
 export class VaultError extends Error {
   override readonly name = 'VaultError';
@@ -51,14 +53,23 @@ function keyBuffer(hexKey: string, label: string): Buffer {
  * and can expose the authentication subkey. There is no counter and no cache
  * here: the only safe IV is one nobody has planned.
  */
-export function encryptFacet(plaintext: string, hexKey: string): string {
+/**
+ * `aad` binds a ciphertext to its PLACE. Without it, anyone with write
+ * access to the database can move a valid blob between rows, facets or
+ * tenants and it still decrypts — a settlement account cipher pasted onto a
+ * different connection reads as that connection's account. With the row's
+ * identity as associated data, a moved blob fails authentication instead.
+ * Blobs written with aad carry the v2 prefix; v1 blobs stay readable.
+ */
+export function encryptFacet(plaintext: string, hexKey: string, aad?: string): string {
   const key = keyBuffer(hexKey, 'VAULT_KEY');
   const iv = randomBytes(IV_BYTES);
   const cipher = createCipheriv(ALGORITHM, key, iv);
+  if (aad) cipher.setAAD(Buffer.from(aad, 'utf8'));
   const ciphertext = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()]);
   const tag = cipher.getAuthTag();
   return [
-    VERSION,
+    aad ? AAD_VERSION : VERSION,
     iv.toString('base64url'),
     tag.toString('base64url'),
     ciphertext.toString('base64url'),
@@ -70,15 +81,21 @@ export function encryptFacet(plaintext: string, hexKey: string): string {
  * the ciphertext was altered, and returning anything at all in that case would
  * put attacker-chosen bytes onto an invoice.
  */
-export function decryptFacet(blob: string, hexKey: string): string {
+export function decryptFacet(blob: string, hexKey: string, aad?: string): string {
   const key = keyBuffer(hexKey, 'VAULT_KEY');
   const parts = blob.split('.');
-  if (parts.length !== 4 || parts[0] !== VERSION) {
+  if (parts.length !== 4 || (parts[0] !== VERSION && parts[0] !== AAD_VERSION)) {
     throw new VaultError('vault blob is malformed or of an unknown version');
   }
-  const [, ivB64, tagB64, dataB64] = parts as [string, string, string, string];
+  const [version, ivB64, tagB64, dataB64] = parts as [string, string, string, string];
   try {
     const decipher = createDecipheriv(ALGORITHM, key, Buffer.from(ivB64, 'base64url'));
+    /* Only a v2 blob demands the caller's aad: a v1 blob predates binding
+     * and must stay readable, and a v2 blob read WITHOUT its aad must fail,
+     * because "reads anywhere" is the property v2 exists to remove. */
+    if (version === AAD_VERSION) {
+      decipher.setAAD(Buffer.from(aad ?? '', 'utf8'));
+    }
     decipher.setAuthTag(Buffer.from(tagB64, 'base64url'));
     return Buffer.concat([
       decipher.update(Buffer.from(dataB64, 'base64url')),

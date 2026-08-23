@@ -196,8 +196,13 @@ describe('the vault is the only plaintext', () => {
     );
 
     expect(row!.ciphertext).not.toContain('08031234567');
-    expect(row!.ciphertext.startsWith('v1.')).toBe(true);
-    expect(decryptFacet(row!.ciphertext, config.vaultKey)).toBe('08031234567');
+    /* v2: the blob is bound to this business and facet as associated data,
+     * so a copy moved onto another row fails authentication. */
+    expect(row!.ciphertext.startsWith('v2.')).toBe(true);
+    expect(decryptFacet(row!.ciphertext, config.vaultKey, `${businessId}:phone`)).toBe(
+      '08031234567',
+    );
+    expect(() => decryptFacet(row!.ciphertext, config.vaultKey)).toThrow();
   });
 
   it('stores a match key that is NOT a bare hash of the number', async () => {

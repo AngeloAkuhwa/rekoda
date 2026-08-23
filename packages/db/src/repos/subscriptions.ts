@@ -468,7 +468,18 @@ export interface GraceBusiness extends DueBusiness {
  * one extra query per merchant in grace would be a sweep that gets slower
  * exactly when more merchants are having payment trouble.
  */
-export async function inGrace(db: Db, limit = 500): Promise<GraceBusiness[]> {
+export async function inGrace(
+  db: Db,
+  limit = 500,
+  /**
+   * Keyset cursor, so a pass can WALK the whole grace population in pages.
+   * Ordered by id rather than failure date: a business in grace stays in
+   * this set for the whole window, so an offset-free date ordering plus a
+   * cap silently starved everyone past the cap — the newest failures, the
+   * exact merchants a day-one reminder saves.
+   */
+  afterId: string | null = null,
+): Promise<GraceBusiness[]> {
   const rows = await db.execute<
     RawDue & {
       owner_phone: string;
@@ -484,7 +495,8 @@ export async function inGrace(db: Db, limit = 500): Promise<GraceBusiness[]> {
     WHERE b.payment_failed_at IS NOT NULL
       AND b.plan NOT IN ('trial', 'expired')
       AND b.plan_expires_at IS NOT NULL
-    ORDER BY b.payment_failed_at
+      ${afterId === null ? sql`` : sql`AND b.id > ${afterId}::uuid`}
+    ORDER BY b.id
     LIMIT ${limit}
   `);
   return [...rows].map((row) => ({

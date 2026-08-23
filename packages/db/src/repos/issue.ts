@@ -18,7 +18,7 @@
  * of its own, so "all of it or none of it" is the caller's transaction, not a
  * property this file has to remember to preserve.
  */
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, sql, desc } from 'drizzle-orm';
 import {
   formatDocumentNumber,
   isAccountKey,
@@ -628,6 +628,46 @@ export async function documentsFor(tx: TenantDb, businessId: string): Promise<St
     .from(documents)
     .where(eq(documents.businessId, businessId))
     .orderBy(documents.createdAt);
+}
+
+/** One document by id. The delivery job fetched the WHOLE table to find this. */
+export async function documentById(
+  tx: TenantDb,
+  businessId: string,
+  documentId: string,
+): Promise<StoredDocument | null> {
+  const rows = await tx
+    .select({
+      id: documents.id,
+      kind: documents.kind,
+      storageKey: documents.storageKey,
+      refNumber: documents.refNumber,
+      bytes: documents.bytes,
+    })
+    .from(documents)
+    .where(and(eq(documents.businessId, businessId), eq(documents.id, documentId)))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+/** The newest stored document — what "resend" sends back. */
+export async function latestDocumentFor(
+  tx: TenantDb,
+  businessId: string,
+): Promise<StoredDocument | null> {
+  const rows = await tx
+    .select({
+      id: documents.id,
+      kind: documents.kind,
+      storageKey: documents.storageKey,
+      refNumber: documents.refNumber,
+      bytes: documents.bytes,
+    })
+    .from(documents)
+    .where(eq(documents.businessId, businessId))
+    .orderBy(desc(documents.createdAt))
+    .limit(1);
+  return rows[0] ?? null;
 }
 
 /** The newest invoice still carrying a balance — what "payment details" collects for. */

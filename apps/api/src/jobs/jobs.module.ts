@@ -6,7 +6,7 @@ import {
   type OnApplicationShutdown,
   type OnModuleInit,
 } from '@nestjs/common';
-import { type Db } from '@rekoda/db';
+import { type Db, jobsRepo } from '@rekoda/db';
 import { CONFIG, type ApiConfig } from '../config.js';
 import { DB, WORKER_DB } from '../db/db.module.js';
 import { AiModule } from '../ai/ai.module.js';
@@ -175,7 +175,9 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
     this.pumpTimer = setInterval(() => {
       if (this.pumping) return;
       this.pumping = true;
-      pumpPaystackEvents({ workerDb, appDb: this.appDb, vaultKey: this.config.vaultKey })
+      this.exclusively('pump', () =>
+        pumpPaystackEvents({ workerDb, appDb: this.appDb, vaultKey: this.config.vaultKey }),
+      )
         .catch((error: unknown) => {
           // Same discipline as the runner: the reason, never the statement
           // or its bound values, and redacted like everything else logged.
@@ -196,7 +198,9 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
     this.sweepTimer = setInterval(() => {
       if (this.sweeping) return;
       this.sweeping = true;
-      sweepSettlements({ workerDb, appDb: this.appDb, provider: this.paymentProvider })
+      this.exclusively('settlement', () =>
+        sweepSettlements({ workerDb, appDb: this.appDb, provider: this.paymentProvider }),
+      )
         .catch((error: unknown) => {
           this.log.warn(`settlement sweep failed: ${redactForLog(describeFailure(error))}`);
         })
@@ -215,12 +219,14 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
     this.strangerTimer = setInterval(() => {
       if (this.greeting) return;
       this.greeting = true;
-      sweepUnknownSenders({
-        workerDb,
-        sender: this.sender,
-        vaultKey: this.config.vaultKey,
-        matchKey: this.config.matchKey,
-      })
+      this.exclusively('stranger', () =>
+        sweepUnknownSenders({
+          workerDb,
+          sender: this.sender,
+          vaultKey: this.config.vaultKey,
+          matchKey: this.config.matchKey,
+        }),
+      )
         .catch((error: unknown) => {
           this.log.warn(`stranger sweep failed: ${redactForLog(describeFailure(error))}`);
         })
@@ -239,7 +245,9 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
     this.graceTimer = setInterval(() => {
       if (this.sweepingGrace) return;
       this.sweepingGrace = true;
-      sweepGracePeriods({ workerDb, appDb: this.appDb, sender: this.sender })
+      this.exclusively('grace', () =>
+        sweepGracePeriods({ workerDb, appDb: this.appDb, sender: this.sender }),
+      )
         .catch((error: unknown) => {
           this.log.warn(`grace sweep failed: ${redactForLog(describeFailure(error))}`);
         })
@@ -257,7 +265,7 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
     this.renewalTimer = setInterval(() => {
       if (this.sweepingRenewals) return;
       this.sweepingRenewals = true;
-      sweepRenewals({ workerDb, appDb: this.appDb })
+      this.exclusively('renewal', () => sweepRenewals({ workerDb, appDb: this.appDb }))
         .catch((error: unknown) => {
           this.log.warn(`renewal sweep failed: ${redactForLog(describeFailure(error))}`);
         })
@@ -275,7 +283,9 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
     this.retentionTimer = setInterval(() => {
       if (this.sweepingRetention) return;
       this.sweepingRetention = true;
-      sweepRetention({ workerDb, appDb: this.appDb, sender: this.sender })
+      this.exclusively('retention', () =>
+        sweepRetention({ workerDb, appDb: this.appDb, sender: this.sender }),
+      )
         .catch((error: unknown) => {
           this.log.warn(`retention sweep failed: ${redactForLog(describeFailure(error))}`);
         })
@@ -295,7 +305,7 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
     this.recurringTimer = setInterval(() => {
       if (this.sweepingRecurring) return;
       this.sweepingRecurring = true;
-      sweepRecurring({ workerDb, appDb: this.appDb })
+      this.exclusively('recurring', () => sweepRecurring({ workerDb, appDb: this.appDb }))
         .catch((error: unknown) => {
           this.log.warn(`recurring sweep failed: ${redactForLog(describeFailure(error))}`);
         })
@@ -317,7 +327,7 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
     this.depreciationTimer = setInterval(() => {
       if (this.sweepingDepreciation) return;
       this.sweepingDepreciation = true;
-      sweepDepreciation({ workerDb, appDb: this.appDb })
+      this.exclusively('depreciation', () => sweepDepreciation({ workerDb, appDb: this.appDb }))
         .catch((error: unknown) => {
           this.log.warn(`depreciation sweep failed: ${redactForLog(describeFailure(error))}`);
         })
@@ -326,6 +336,23 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
         });
     }, 3_600_000);
     this.depreciationTimer.unref();
+  }
+
+  /**
+   * One replica runs a given sweep at a time.
+   *
+   * Every timer below fires on every worker replica, and while the claims
+   * inside each sweep are individually race-safe, N replicas doing identical
+   * passes is N times the database load for exactly one replica's worth of
+   * progress — and adding workers to speed the queue up multiplied the waste.
+   * A transaction-scoped advisory lock elects a leader per sweep per pass;
+   * the losers skip and try again next tick, so a dead leader is replaced by
+   * whoever fires next. No configuration and nothing to clean up.
+   */
+  private async exclusively(name: string, work: () => Promise<unknown>): Promise<void> {
+    const workerDb = this.workerDb;
+    if (!workerDb) return;
+    await jobsRepo.runExclusively(workerDb, name, work);
   }
 
   async onApplicationShutdown(): Promise<void> {

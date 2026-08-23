@@ -50,69 +50,81 @@ export async function sweepGracePeriods(
   deps: GraceSweepDeps,
   now: Date = new Date(),
 ): Promise<GraceSweepResult> {
-  const rows = await subscriptionsRepo.inGrace(deps.workerDb);
   const result: GraceSweepResult = { reminded: 0, expired: 0 };
 
-  for (const row of rows) {
-    if (!row.paymentFailedAt) continue;
-    const state = billingState({
-      renewsAt: row.renewsAt,
-      failedAt: row.paymentFailedAt,
-      now,
-    });
+  /* Pages until the whole grace population has been walked. One fixed bite
+   * per hour meant tenant 501 and beyond never heard from us at all. */
+  const PAGE = 500;
+  let after: string | null = null;
+  for (;;) {
+    const rows = await subscriptionsRepo.inGrace(deps.workerDb, PAGE, after);
+    if (rows.length === 0) break;
+    after = rows[rows.length - 1]!.businessId;
 
-    if (state.state === 'expired') {
-      const previous = await withBusiness(deps.appDb, row.businessId, (tx) =>
-        subscriptionsRepo.expireSubscription(tx, row.businessId, 'system:grace-sweep'),
+    for (const row of rows) {
+      if (!row.paymentFailedAt) continue;
+      const state = billingState({
+        renewsAt: row.renewsAt,
+        failedAt: row.paymentFailedAt,
+        now,
+      });
+
+      if (state.state === 'expired') {
+        const previous = await withBusiness(deps.appDb, row.businessId, (tx) =>
+          subscriptionsRepo.expireSubscription(tx, row.businessId, 'system:grace-sweep'),
+        );
+        if (previous) {
+          result.expired += 1;
+          log.log(
+            `business ${row.businessId}: ${previous} expired after ${GRACE_DAYS} days of grace`,
+          );
+        }
+        continue;
+      }
+
+      if (state.state !== 'grace' || !state.remindToday) continue;
+
+      /* The day number is what the claim is keyed on, and it comes from core
+       * rather than from a counter here: the sweep must not have its own
+       * opinion about which days carry a reminder. */
+      const day = GRACE_DAYS - state.daysLeft;
+      const claimed = await withBusiness(deps.appDb, row.businessId, (tx) =>
+        subscriptionsRepo.claimGraceReminder(tx, row.businessId, day),
       );
-      if (previous) {
-        result.expired += 1;
-        log.log(
-          `business ${row.businessId}: ${previous} expired after ${GRACE_DAYS} days of grace`,
+      if (!claimed) continue;
+
+      /* STOP is a fact and it is checked before every proactive send. The claim
+       * still stands: an opted-out merchant is not owed the same message
+       * tomorrow, and the dashboard tells them where they stand. */
+      if (row.ownerOptedOut) {
+        result.reminded += 1;
+        continue;
+      }
+
+      try {
+        await deps.sender.sendBillingNotice({
+          to: row.ownerPhone,
+          daysLeft: String(state.daysLeft),
+          endsOn: lagosDate(state.endsAt),
+        });
+        result.reminded += 1;
+      } catch (error) {
+        /* The claim goes BACK. Burning it on a failed send meant a Meta outage
+         * on day five silenced that day's warning forever, and the merchant's
+         * last memory of Rekoda before the day-seven cutoff was silence. The
+         * next hourly pass re-claims the day, so the reminder lands as soon as
+         * the channel recovers; a still-missing template costs one warn line
+         * per business per pass, which is the log doing its job. */
+        await withBusiness(deps.appDb, row.businessId, (tx) =>
+          subscriptionsRepo.releaseGraceReminder(tx, row.businessId, day),
+        );
+        const reason = error instanceof SendFailed ? error.message : String(error);
+        log.warn(
+          `business ${row.businessId}: grace reminder not delivered: ${redactForLog(reason)}`,
         );
       }
-      continue;
     }
-
-    if (state.state !== 'grace' || !state.remindToday) continue;
-
-    /* The day number is what the claim is keyed on, and it comes from core
-     * rather than from a counter here: the sweep must not have its own
-     * opinion about which days carry a reminder. */
-    const day = GRACE_DAYS - state.daysLeft;
-    const claimed = await withBusiness(deps.appDb, row.businessId, (tx) =>
-      subscriptionsRepo.claimGraceReminder(tx, row.businessId, day),
-    );
-    if (!claimed) continue;
-
-    /* STOP is a fact and it is checked before every proactive send. The claim
-     * still stands: an opted-out merchant is not owed the same message
-     * tomorrow, and the dashboard tells them where they stand. */
-    if (row.ownerOptedOut) {
-      result.reminded += 1;
-      continue;
-    }
-
-    try {
-      await deps.sender.sendBillingNotice({
-        to: row.ownerPhone,
-        daysLeft: String(state.daysLeft),
-        endsOn: lagosDate(state.endsAt),
-      });
-      result.reminded += 1;
-    } catch (error) {
-      /* The claim goes BACK. Burning it on a failed send meant a Meta outage
-       * on day five silenced that day's warning forever, and the merchant's
-       * last memory of Rekoda before the day-seven cutoff was silence. The
-       * next hourly pass re-claims the day, so the reminder lands as soon as
-       * the channel recovers; a still-missing template costs one warn line
-       * per business per pass, which is the log doing its job. */
-      await withBusiness(deps.appDb, row.businessId, (tx) =>
-        subscriptionsRepo.releaseGraceReminder(tx, row.businessId, day),
-      );
-      const reason = error instanceof SendFailed ? error.message : String(error);
-      log.warn(`business ${row.businessId}: grace reminder not delivered: ${redactForLog(reason)}`);
-    }
+    if (rows.length < PAGE) break;
   }
 
   return result;

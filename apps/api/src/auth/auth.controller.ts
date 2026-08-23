@@ -16,7 +16,7 @@ import {
   UnauthorizedException,
   UseGuards,
 } from '@nestjs/common';
-import { timingSafeEqual } from 'node:crypto';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { billingRepo, identity, withBusiness, type Db } from '@rekoda/db';
 import { CONFIG, type ApiConfig } from '../config.js';
 import { DB } from '../db/db.module.js';
@@ -290,11 +290,18 @@ export class BusinessController {
   }
 }
 
-/** Constant-time, and length-safe: `timingSafeEqual` throws on a mismatch. */
+/**
+ * Constant-time secret comparison with no length oracle.
+ *
+ * Comparing digests rather than the strings means the observable work is
+ * identical whatever the caller sent: a raw length pre-check answered
+ * faster for wrong-length guesses, which quietly told an attacker how long
+ * the secret is. Hashing first costs microseconds and says nothing.
+ */
 function matchesSecret(given: string, expected: string): boolean {
-  const a = Buffer.from(given);
-  const b = Buffer.from(expected);
-  return a.length === b.length && timingSafeEqual(a, b);
+  const a = createHash('sha256').update(given, 'utf8').digest();
+  const b = createHash('sha256').update(expected, 'utf8').digest();
+  return timingSafeEqual(a, b);
 }
 
 /** A member as the wire sees one. Phone included: it is the only handle an
