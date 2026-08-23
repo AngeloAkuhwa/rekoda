@@ -2683,7 +2683,9 @@ describe('a payment the merchant reports (RecordPayment)', () => {
     expect(stubSender.lastText).toContain('₦90,000 still owed');
     expect(stubSender.lastText).toContain('Receipt RCT-');
 
-    const payments = await withBusiness(db, business.id, (tx) => settleRepo.paymentsFor(tx));
+    const { rows: payments } = await withBusiness(db, business.id, (tx) =>
+      settleRepo.paymentsFor(tx),
+    );
     expect(payments).toHaveLength(1);
     // RECORDED, never verified: no provider confirmed this (ADR 0014).
     expect(payments[0]?.verified).toBe(0);
@@ -2975,7 +2977,9 @@ describe('a payment the merchant reports (RecordPayment)', () => {
     expect(stubSender.lastText).not.toContain('Reply *yes*');
 
     // Exactly the one payment that really landed, and no second receipt.
-    const payments = await withBusiness(db, business.id, (tx) => settleRepo.paymentsFor(tx));
+    const { rows: payments } = await withBusiness(db, business.id, (tx) =>
+      settleRepo.paymentsFor(tx),
+    );
     expect(payments).toHaveLength(1);
   });
 
@@ -3556,7 +3560,7 @@ describe('a forwarded order', () => {
     // Nothing issued yet, and no order recorded either: this is still a quote.
     expect(await invoiceCount(business.id)).toBe(0);
     expect(
-      await withBusiness(db, business.id, (tx) => ordersRepo.ordersFor(tx, business.id)),
+      (await withBusiness(db, business.id, (tx) => ordersRepo.ordersFor(tx, business.id))).rows,
     ).toEqual([]);
 
     await send('yes', 'wamid.ORDERYES');
@@ -3568,8 +3572,9 @@ describe('a forwarded order', () => {
     const orders = await withBusiness(db, business.id, (tx) =>
       ordersRepo.ordersFor(tx, business.id),
     );
-    expect(orders).toHaveLength(1);
-    expect(orders[0]).toMatchObject({ status: 'confirmed', totalK: 1_700_000, itemCount: 1 });
+    expect(orders.rows).toHaveLength(1);
+    expect(orders.count).toBe(1);
+    expect(orders.rows[0]).toMatchObject({ status: 'confirmed', totalK: 1_700_000, itemCount: 1 });
 
     /* The books balance, read back out of the database. An order confirmed is
      * a sale on credit: receivable up, revenue up, nothing paid. */
@@ -3744,9 +3749,9 @@ describe('a forwarded order', () => {
     await send('please I want 2 ankara bale', 'wamid.LINKED');
     await send('yes', 'wamid.LINKEDYES');
 
-    const [order] = await withBusiness(db, business.id, (tx) =>
-      ordersRepo.ordersFor(tx, business.id),
-    );
+    const [order] = (
+      await withBusiness(db, business.id, (tx) => ordersRepo.ordersFor(tx, business.id))
+    ).rows;
     expect(order!.invoiceNumber).toMatch(/^INV-\d{4}-000001$/);
   });
 

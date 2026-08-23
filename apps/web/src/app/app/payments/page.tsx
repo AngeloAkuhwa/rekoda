@@ -138,6 +138,12 @@ export default async function PaymentsPage() {
                 ))}
               </tbody>
             </table>
+            {payments.paymentsTotal > payments.payments.length ? (
+              <p className="rk-fineprint">
+                {payments.paymentsTotal} payments all time, showing the latest{' '}
+                {payments.payments.length}.
+              </p>
+            ) : null}
           </div>
         )}
       </div>

@@ -59,6 +59,7 @@ export class BillingService {
       const subscription = await subscriptionsRepo.subscriptionFor(tx, businessId);
       const counters = await usageRepo.usageFor(tx, businessId, period);
       const charges = await subscriptionsRepo.chargesFor(tx, businessId);
+      const chargeRows = charges.rows;
 
       const byUnit = new Map(counters.map((row) => [row.unit, row]));
       return {
@@ -80,7 +81,8 @@ export class BillingService {
           quantity: pack.quantity,
           priceK: pack.priceK,
         })),
-        charges: charges.map((charge) => ({
+        chargesTotal: charges.count,
+        charges: chargeRows.map((charge) => ({
           reference: charge.reference,
           kind: charge.kind as BillingOverviewResponse['charges'][number]['kind'],
           plan: charge.plan,

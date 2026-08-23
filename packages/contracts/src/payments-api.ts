@@ -29,6 +29,13 @@ export const paymentConnectionResponse = z.object({
 export type PaymentConnectionResponse = z.infer<typeof paymentConnectionResponse>;
 
 export const paymentsListResponse = z.object({
+  /**
+   * Every verified payment, which is not `payments.length`.
+   *
+   * The list is a page, newest first. Saying nothing about the rest left a
+   * merchant unable to tell a short list from a complete one.
+   */
+  paymentsTotal: z.number().int().nonnegative(),
   payments: z.array(
     z.object({
       rekodaReference: z.string().nullable(),

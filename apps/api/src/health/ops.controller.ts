@@ -227,7 +227,7 @@ export class OpsController {
         cycleStartedAt: subscription.cycleStartedAt?.toISOString() ?? null,
         pendingPlan: subscription.pendingPlan,
         paymentFailedAt: subscription.paymentFailedAt?.toISOString() ?? null,
-        charges: charges.map((charge) => ({
+        charges: charges.rows.map((charge) => ({
           reference: charge.reference,
           kind: charge.kind,
           plan: charge.plan,

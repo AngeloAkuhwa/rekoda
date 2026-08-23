@@ -202,11 +202,20 @@ export interface OrderSummary {
 }
 
 /** Every order this shop has taken, newest first. */
-export async function ordersFor(
-  tx: TenantDb,
-  businessId: string,
-  limit = 100,
-): Promise<OrderSummary[]> {
+/**
+ * The orders list, and how many there are.
+ *
+ * `count` is over the whole table. The invoice register beside this one has
+ * said "showing the latest N" since it was built; this list did not, so a
+ * merchant with more orders than the page carries was shown a page and given
+ * no reason to think there was more.
+ */
+export interface Orders {
+  rows: OrderSummary[];
+  count: number;
+}
+
+export async function ordersFor(tx: TenantDb, businessId: string, limit = 100): Promise<Orders> {
   const rows = await tx.execute<{
     id: string;
     order_number: string;
@@ -215,10 +224,12 @@ export async function ordersFor(
     invoice_number: string | null;
     placed_at: Date;
     item_count: number;
+    n: number;
   }>(sql`
     SELECT o.id, o.order_number, o.status, o.total_k::bigint AS total_k,
            inv.invoice_number, o.created_at AS placed_at,
-           count(i.id)::int AS item_count
+           count(i.id)::int AS item_count,
+           count(*) OVER ()::int AS n
     FROM orders o
     LEFT JOIN order_items i ON i.order_id = o.id AND i.business_id = o.business_id
     LEFT JOIN invoices inv ON inv.id = o.invoice_id AND inv.business_id = o.business_id
@@ -228,13 +239,17 @@ export async function ordersFor(
     LIMIT ${limit}
   `);
 
-  return [...rows].map((r) => ({
-    id: r.id,
-    orderNumber: r.order_number,
-    status: r.status,
-    totalK: Number(r.total_k),
-    invoiceNumber: r.invoice_number,
-    placedAt: new Date(r.placed_at),
-    itemCount: r.item_count,
-  }));
+  const list = [...rows];
+  return {
+    count: list[0]?.n ?? 0,
+    rows: list.map((r) => ({
+      id: r.id,
+      orderNumber: r.order_number,
+      status: r.status,
+      totalK: Number(r.total_k),
+      invoiceNumber: r.invoice_number,
+      placedAt: new Date(r.placed_at),
+      itemCount: r.item_count,
+    })),
+  };
 }

@@ -541,7 +541,10 @@ export class ReportsController {
       })),
       count: list.count,
       outstandingK: list.outstandingK,
-      orders: orders.map((order) => ({
+      /* From SQL over the whole table. The invoice register above says what
+       * it left out; this list said nothing at all. */
+      ordersTotal: orders.count,
+      orders: orders.rows.map((order) => ({
         orderNumber: order.orderNumber,
         status: order.status,
         totalK: order.totalK,

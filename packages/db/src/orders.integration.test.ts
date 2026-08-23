@@ -133,8 +133,9 @@ describe('placing an order', () => {
     await place(businessId, productId, 2, new Date('2026-06-02T10:00:00Z'));
 
     const list = await withBusiness(db, businessId, (tx) => ordersRepo.ordersFor(tx, businessId));
-    expect(list.map((o) => o.orderNumber)).toEqual(['ORD-2026-000002', 'ORD-2026-000001']);
-    expect(list[0]).toMatchObject({ itemCount: 1, totalK: 1_700_000, status: 'placed' });
+    expect(list.rows.map((o) => o.orderNumber)).toEqual(['ORD-2026-000002', 'ORD-2026-000001']);
+    expect(list.rows[0]).toMatchObject({ itemCount: 1, totalK: 1_700_000, status: 'placed' });
+    expect(list.count).toBe(2);
   });
 });
 
@@ -185,7 +186,13 @@ describe('tenant isolation', () => {
     const theirs = await seedBusiness('+2348120000062');
     const placed = await place(theirs, await seedProduct(theirs));
 
-    expect(await withBusiness(db, mine, (tx) => ordersRepo.ordersFor(tx, mine))).toEqual([]);
+    /* Not just an empty page: an empty REGISTER. A count of zero is the
+     * claim that the other merchant's orders are invisible, not merely
+     * absent from this page of them. */
+    expect(await withBusiness(db, mine, (tx) => ordersRepo.ordersFor(tx, mine))).toEqual({
+      rows: [],
+      count: 0,
+    });
     expect(
       await withBusiness(db, mine, (tx) => ordersRepo.orderByNumber(tx, mine, placed.orderNumber)),
     ).toBeNull();

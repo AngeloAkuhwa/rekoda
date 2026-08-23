@@ -326,19 +326,30 @@ export async function chargeByReference(
   return row ? shape(row) : null;
 }
 
-/** A merchant's own billing history, newest first. The receipts page. */
-export async function chargesFor(
-  tx: TenantDb,
-  businessId: string,
-  limit = 50,
-): Promise<ChargeRow[]> {
-  const rows = await tx.execute<RawCharge>(sql`
-    SELECT * FROM subscription_charges
+/**
+ * A merchant's own billing history, newest first, and how many there are.
+ *
+ * `count` matters more here than on most lists. The page's own empty state
+ * promises that every payment they make to Rekoda will be listed with its
+ * reference "so you can put it in your own books" — a completeness promise
+ * that a silent cap breaks. A merchant reconciling their books against these
+ * charges would come up short and have nothing on the page to explain why.
+ */
+export interface Charges {
+  rows: ChargeRow[];
+  count: number;
+}
+
+export async function chargesFor(tx: TenantDb, businessId: string, limit = 50): Promise<Charges> {
+  const rows = await tx.execute<RawCharge & { n: number }>(sql`
+    SELECT *, count(*) OVER ()::int AS n
+    FROM subscription_charges
     WHERE business_id = ${businessId}::uuid
     ORDER BY created_at DESC
     LIMIT ${limit}
   `);
-  return [...rows].map(shape);
+  const list = [...rows];
+  return { rows: list.map(shape), count: list[0]?.n ?? 0 };
 }
 
 /* ── the sweeps ───────────────────────────────────────────────────────────── */

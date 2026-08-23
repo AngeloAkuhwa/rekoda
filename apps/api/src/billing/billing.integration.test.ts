@@ -174,7 +174,7 @@ describe('paying, and the gate in front of it', () => {
     const charges = await withBusiness(db, businessId, (tx) =>
       subscriptionsRepo.chargesFor(tx, businessId),
     );
-    expect(charges).toEqual([]);
+    expect(charges).toEqual({ rows: [], count: 0 });
   });
 
   it('records an upgrade as a pending charge and does NOT move the plan', async () => {
@@ -201,7 +201,7 @@ describe('paying, and the gate in front of it', () => {
     const charges = await withBusiness(db, businessId, (tx) =>
       subscriptionsRepo.chargesFor(tx, businessId),
     );
-    expect(charges[0]?.status).toBe('pending');
+    expect(charges.rows[0]?.status).toBe('pending');
 
     // Opening a charge is not paying it. Complete stays locked until it is.
     const overview = await overviewOf(auth);
@@ -249,7 +249,7 @@ describe('paying, and the gate in front of it', () => {
     const charges = await withBusiness(db, businessId, (tx) =>
       subscriptionsRepo.chargesFor(tx, businessId),
     );
-    expect(charges).toEqual([]);
+    expect(charges).toEqual({ rows: [], count: 0 });
   });
 
   it('schedules a downgrade for the next renewal, free, keeping the plan meanwhile', async () => {
@@ -461,10 +461,10 @@ describe('the renewal sweep', () => {
     const charges = await withBusiness(db, businessId, (tx) =>
       subscriptionsRepo.chargesFor(tx, businessId),
     );
-    expect(charges[0]).toMatchObject({ kind: 'renewal', plan: 'chat', status: 'pending' });
-    expect(charges[0]?.amountK).toBe(PLAN_PRICES_K.chat);
+    expect(charges.rows[0]).toMatchObject({ kind: 'renewal', plan: 'chat', status: 'pending' });
+    expect(charges.rows[0]?.amountK).toBe(PLAN_PRICES_K.chat);
     // The month bought starts when the last one ended, not when the sweep ran.
-    expect(charges[0]?.periodStart?.toISOString()).toBe(renewsAt.toISOString());
+    expect(charges.rows[0]?.periodStart?.toISOString()).toBe(renewsAt.toISOString());
 
     /* A sweep two days late must not hand out two extra days of grace, so the
      * seven days run from the renewal date. */
@@ -492,7 +492,8 @@ describe('the renewal sweep', () => {
     const charges = await withBusiness(db, businessId, (tx) =>
       subscriptionsRepo.chargesFor(tx, businessId),
     );
-    expect(charges).toHaveLength(1);
+    expect(charges.rows).toHaveLength(1);
+    expect(charges.count).toBe(1);
   });
 
   it('renews onto a scheduled downgrade, which is when it takes effect', async () => {
@@ -512,8 +513,8 @@ describe('the renewal sweep', () => {
     const charges = await withBusiness(db, businessId, (tx) =>
       subscriptionsRepo.chargesFor(tx, businessId),
     );
-    expect(charges[0]?.plan).toBe('chat');
-    expect(charges[0]?.amountK).toBe(PLAN_PRICES_K.chat);
+    expect(charges.rows[0]?.plan).toBe('chat');
+    expect(charges.rows[0]?.amountK).toBe(PLAN_PRICES_K.chat);
   });
 
   it('never renews a trial, which ends rather than lapses', async () => {
@@ -530,9 +531,9 @@ describe('the renewal sweep', () => {
     await putOnPlan(businessId, 'chat', new Date(renewsAt.getTime() - 30 * 86_400_000), renewsAt);
     await raise(new Date());
 
-    const [charge] = await withBusiness(db, businessId, (tx) =>
-      subscriptionsRepo.chargesFor(tx, businessId),
-    );
+    const [charge] = (
+      await withBusiness(db, businessId, (tx) => subscriptionsRepo.chargesFor(tx, businessId))
+    ).rows;
     await withBusiness(db, businessId, (tx) =>
       applySettledCharge(tx, {
         businessId,

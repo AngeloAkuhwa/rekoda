@@ -826,7 +826,7 @@ describe('recording a payment from the dashboard', () => {
       auth,
     );
 
-    const paid = await withBusiness(db, businessId, (tx) => settleRepo.paymentsFor(tx));
+    const { rows: paid } = await withBusiness(db, businessId, (tx) => settleRepo.paymentsFor(tx));
     expect(paid).toHaveLength(1);
     /* 0 is RECORDED. A provider payment would be 1, and it would carry a
      * settlement status; this one has neither because nobody but the

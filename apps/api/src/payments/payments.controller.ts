@@ -76,7 +76,13 @@ export class PaymentsController {
     const businessId = request.auth!.businessId;
     const payments = await withBusiness(this.db, businessId, (tx) => settleRepo.paymentsFor(tx));
     return {
-      payments: payments.map((p) => ({
+      /* From SQL over the whole table, so the page can say what it left out.
+       * The rows are newest first now: this page answers "has my money
+       * arrived", which is a question about this week, and oldest-first with
+       * a cap showed a busy merchant only the payments they stopped caring
+       * about. */
+      paymentsTotal: payments.count,
+      payments: payments.rows.map((p) => ({
         rekodaReference: p.rekodaReference,
         status: p.status,
         verified: p.verified,
