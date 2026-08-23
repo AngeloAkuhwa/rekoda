@@ -129,6 +129,7 @@ import {
   type Db,
 } from '@rekoda/db';
 import { SessionGuard, type AuthedRequest } from '../auth/session.guard.js';
+import { Roles, RolesGuard } from '../auth/roles.guard.js';
 import { DB } from '../db/db.module.js';
 
 const CASHFLOW_MONTHS = 6;
@@ -151,7 +152,7 @@ const XLSX_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.s
 const EXPORT_ROWS = 10_000;
 
 @Controller('v1/reports')
-@UseGuards(SessionGuard)
+@UseGuards(SessionGuard, RolesGuard)
 export class ReportsController {
   constructor(@Inject(DB) private readonly db: Db) {}
 
@@ -406,7 +407,13 @@ export class ReportsController {
    * editing anything: this controller decides who may ask, as every other
    * method here does, and decides nothing else.
    */
+  /* The write matrix (spec §35): owners do everything; delegates record
+   day-to-day trade (payments, supplier settlements, stock counts);
+   accountants read and export only. Voids, credits, capital moves,
+   opening balances, journals, closes and standing orders are the
+   owner's alone, because each one rewrites the story the books tell. */
   @Post('invoices/void')
+  @Roles('owner')
   @HttpCode(200)
   async voidInvoice(
     @Req() request: AuthedRequest,
@@ -437,6 +444,7 @@ export class ReportsController {
    * dead end any more, which is the whole reason this exists.
    */
   @Post('invoices/credit')
+  @Roles('owner')
   @HttpCode(200)
   async creditInvoice(
     @Req() request: AuthedRequest,
@@ -474,6 +482,7 @@ export class ReportsController {
    * destroy the one distinction this product sells.
    */
   @Post('payments/record')
+  @Roles('owner', 'delegate')
   @HttpCode(200)
   async recordPayment(
     @Req() request: AuthedRequest,
@@ -637,6 +646,7 @@ export class ReportsController {
    * this controller decides who may ask and nothing else.
    */
   @Post('expenses/void')
+  @Roles('owner')
   @HttpCode(200)
   async voidExpense(
     @Req() request: AuthedRequest,
@@ -714,6 +724,7 @@ export class ReportsController {
    * deciding how long a freezer lasts would be a model computing money.
    */
   @Post('assets')
+  @Roles('owner')
   @HttpCode(200)
   async recordAsset(
     @Req() request: AuthedRequest,
@@ -752,6 +763,7 @@ export class ReportsController {
    * the depreciation already charged is never counted twice.
    */
   @Post('assets/dispose')
+  @Roles('owner')
   @HttpCode(200)
   async disposeAsset(
     @Req() request: AuthedRequest,
@@ -780,6 +792,7 @@ export class ReportsController {
    * against book value and ADR 0026 leaves it out of this slice deliberately.
    */
   @Post('assets/withdraw')
+  @Roles('owner')
   @HttpCode(200)
   async withdrawAsset(
     @Req() request: AuthedRequest,
@@ -809,6 +822,7 @@ export class ReportsController {
    * settlement knows what it settles, which is what lets both figures move.
    */
   @Post('suppliers/pay')
+  @Roles('owner', 'delegate')
   @HttpCode(200)
   async paySupplier(
     @Req() request: AuthedRequest,
@@ -846,6 +860,7 @@ export class ReportsController {
    * refusal rather than a check this method is trusted to make.
    */
   @Post('opening-balances')
+  @Roles('owner')
   @HttpCode(200)
   async openBooks(
     @Req() request: AuthedRequest,
@@ -909,6 +924,7 @@ export class ReportsController {
    * goods the business still has.
    */
   @Post('stock-count')
+  @Roles('owner', 'delegate')
   @HttpCode(200)
   async countStock(
     @Req() request: AuthedRequest,
@@ -953,6 +969,7 @@ export class ReportsController {
    * the one property this product sells.
    */
   @Post('journal')
+  @Roles('owner')
   @HttpCode(200)
   async recordJournal(
     @Req() request: AuthedRequest,
@@ -1008,6 +1025,7 @@ export class ReportsController {
    * watermark; nothing downstream has to remember it exists.
    */
   @Post('close')
+  @Roles('owner')
   @HttpCode(200)
   async closeBooks(
     @Req() request: AuthedRequest,
@@ -1035,6 +1053,7 @@ export class ReportsController {
    * it undoes, which is the honest version of the trade.
    */
   @Post('reopen')
+  @Roles('owner')
   @HttpCode(200)
   async reopenBooks(
     @Req() request: AuthedRequest,
@@ -1063,6 +1082,7 @@ export class ReportsController {
    * a second time.
    */
   @Post('expenses/recurring')
+  @Roles('owner')
   @HttpCode(200)
   async createRecurring(
     @Req() request: AuthedRequest,
@@ -1098,6 +1118,7 @@ export class ReportsController {
 
   /** Stop a schedule. Never a delete: what it already raised is real. */
   @Post('expenses/recurring/stop')
+  @Roles('owner')
   @HttpCode(200)
   async stopRecurring(
     @Req() request: AuthedRequest,

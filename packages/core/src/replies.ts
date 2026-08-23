@@ -111,6 +111,21 @@ export function erasureNotYours(): Reply {
 }
 
 /**
+ * A write refused by role, not by understanding.
+ *
+ * An accountant's access is view only across the whole product (spec §35):
+ * they read every page and download every export, and nothing they send can
+ * change the books. The sentence says whose decision that was, so the reply
+ * reads as the owner's policy rather than a malfunction.
+ */
+export function viewOnlyRole(): Reply {
+  return reply(
+    'Your access to this business is view only, so I cannot record that. ' +
+      'Ask the owner to send it, or to change your role.',
+  );
+}
+
+/**
  * Erasure, performed. The count makes the claim checkable: a merchant who
  * knows they had customers and reads "0 records" knows to ask questions.
  */

@@ -30,6 +30,7 @@ import {
 import { extensionFor, MAX_IMAGE_BYTES, sniffImageType } from '@rekoda/core';
 import { catalogueRepo, withBusiness, type Db } from '@rekoda/db';
 import { SessionGuard, type AuthedRequest } from '../auth/session.guard.js';
+import { Roles, RolesGuard } from '../auth/roles.guard.js';
 import { DB } from '../db/db.module.js';
 import { DOCUMENT_STORAGE } from '../documents/documents.module.js';
 import { StorageUnavailable, type DocumentStorage } from '../documents/storage.js';
@@ -56,7 +57,7 @@ interface MultipartRequest extends AuthedRequest {
 }
 
 @Controller('v1/catalogue')
-@UseGuards(SessionGuard)
+@UseGuards(SessionGuard, RolesGuard)
 export class CatalogueController {
   constructor(
     @Inject(DB) private readonly db: Db,
@@ -95,7 +96,10 @@ export class CatalogueController {
     });
   }
 
+  /* Delegates run the shop floor, so products and their photos are theirs to
+   * keep current; an accountant's access stays view only. */
   @Post('product')
+  @Roles('owner', 'delegate')
   @HttpCode(200)
   async edit(@Req() request: AuthedRequest, @Body() body: unknown): Promise<EditProductResponse> {
     const parsed = editProductRequest.safeParse(body);
@@ -131,6 +135,7 @@ export class CatalogueController {
    * and run in somebody's browser on our own origin. Only then the bucket.
    */
   @Post(':id/image')
+  @Roles('owner', 'delegate')
   @HttpCode(200)
   async uploadImage(
     @Req() request: MultipartRequest,

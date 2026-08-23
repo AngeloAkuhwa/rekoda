@@ -7,6 +7,7 @@ import {
   matchBankLine,
   reconcileBank,
   unmatchBankLine,
+  viewOnlyRefusal,
 } from '@/server/api';
 import { readSessionToken } from '@/server/session-cookies';
 
@@ -38,7 +39,7 @@ const UNREADABLE: Record<string, string> = {
 /** Anything a merchant could plausibly hand us that is not a CSV. */
 const MAX_BYTES = 2_000_000;
 
-export async function importStatementAction(
+async function importStatementActionUnguarded(
   _prev: StatementState,
   formData: FormData,
 ): Promise<StatementState> {
@@ -82,7 +83,7 @@ export async function importStatementAction(
   };
 }
 
-export async function forgetDayAction(
+async function forgetDayActionUnguarded(
   _prev: StatementState,
   formData: FormData,
 ): Promise<StatementState> {
@@ -110,7 +111,7 @@ export async function forgetDayAction(
  * leftovers are the answer: a line nothing explains is money nobody
  * recorded, and a posting nothing explains is money the bank has never seen.
  */
-export async function reconcileAction(
+async function reconcileActionUnguarded(
   _prev: StatementState,
   _formData: FormData,
 ): Promise<StatementState> {
@@ -160,7 +161,7 @@ const REFUSED: Record<string, string> = {
     'That entry in your books is already matched to another line. Release that one first.',
 };
 
-export async function matchLineAction(
+async function matchLineActionUnguarded(
   _prev: StatementState,
   formData: FormData,
 ): Promise<StatementState> {
@@ -188,7 +189,7 @@ export async function matchLineAction(
  * safe to offer at all: a merchant who spots a wrong one can undo it without
  * touching the statement or the posting.
  */
-export async function unmatchLineAction(
+async function unmatchLineActionUnguarded(
   _prev: StatementState,
   formData: FormData,
 ): Promise<StatementState> {
@@ -208,4 +209,57 @@ export async function unmatchLineAction(
         ? 'Released. The line and the entry are back where they were, both unmatched.'
         : 'That line was not matched to anything.',
   };
+}
+
+/* Role refusals (403) come back as a sentence in the form, not a crash.
+ * Everything else still throws to the error boundary. */
+
+export async function importStatementAction(
+  ...args: Parameters<typeof importStatementActionUnguarded>
+): ReturnType<typeof importStatementActionUnguarded> {
+  try {
+    return await importStatementActionUnguarded(...args);
+  } catch (error) {
+    return viewOnlyRefusal(error) as Awaited<ReturnType<typeof importStatementActionUnguarded>>;
+  }
+}
+
+export async function forgetDayAction(
+  ...args: Parameters<typeof forgetDayActionUnguarded>
+): ReturnType<typeof forgetDayActionUnguarded> {
+  try {
+    return await forgetDayActionUnguarded(...args);
+  } catch (error) {
+    return viewOnlyRefusal(error) as Awaited<ReturnType<typeof forgetDayActionUnguarded>>;
+  }
+}
+
+export async function reconcileAction(
+  ...args: Parameters<typeof reconcileActionUnguarded>
+): ReturnType<typeof reconcileActionUnguarded> {
+  try {
+    return await reconcileActionUnguarded(...args);
+  } catch (error) {
+    return viewOnlyRefusal(error) as Awaited<ReturnType<typeof reconcileActionUnguarded>>;
+  }
+}
+
+export async function matchLineAction(
+  ...args: Parameters<typeof matchLineActionUnguarded>
+): ReturnType<typeof matchLineActionUnguarded> {
+  try {
+    return await matchLineActionUnguarded(...args);
+  } catch (error) {
+    return viewOnlyRefusal(error) as Awaited<ReturnType<typeof matchLineActionUnguarded>>;
+  }
+}
+
+export async function unmatchLineAction(
+  ...args: Parameters<typeof unmatchLineActionUnguarded>
+): ReturnType<typeof unmatchLineActionUnguarded> {
+  try {
+    return await unmatchLineActionUnguarded(...args);
+  } catch (error) {
+    return viewOnlyRefusal(error) as Awaited<ReturnType<typeof unmatchLineActionUnguarded>>;
+  }
 }

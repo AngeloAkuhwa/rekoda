@@ -12,7 +12,15 @@
  */
 import { createHash, randomBytes } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { createDb, identity, jobsRepo, schema, withBusiness, type Db } from '@rekoda/db';
+import {
+  createDb,
+  events as eventsRepo,
+  identity,
+  jobsRepo,
+  schema,
+  withBusiness,
+  type Db,
+} from '@rekoda/db';
 import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -30,6 +38,7 @@ import { PaymentIntentsService } from '../payments/payment-intents.service.js';
 import { LocalStorage } from '../documents/r2.storage.js';
 import { ReplySender } from '../replies/reply.service.js';
 import { loadConfig, type ApiConfig } from '../config.js';
+import { sealPayload } from '../privacy/payload-vault.js';
 
 const RUN_SALT = randomBytes(16).toString('hex');
 
@@ -308,5 +317,106 @@ describe('the registry the application actually ships', () => {
   it('returns false rather than spinning when the queue is empty', async () => {
     const runner = buildRunner(workerDb, appDb, deps);
     expect(await runner.runOnce()).toBe(false);
+  });
+});
+
+describe('the chat surface enforces roles', () => {
+  /**
+   * The dashboard has RolesGuard; chat has only this handler. An accountant
+   * is inside the tenant, so RLS passes every row — the refusal below is the
+   * only thing standing between a view-only member and the books.
+   */
+  async function memberOf(
+    businessId: string,
+    phone: string,
+    role: 'accountant' | 'delegate',
+  ): Promise<void> {
+    await identity.inviteMember(appDb, businessId, phone, role);
+  }
+
+  async function saysOverChat(businessId: string, phone: string, text: string): Promise<string> {
+    const externalId = `wamid.${randomBytes(8).toString('hex')}`;
+    const waId = phone.replace('+', '');
+    const body = {
+      object: 'whatsapp_business_account',
+      entry: [
+        {
+          id: 'WABA',
+          changes: [
+            {
+              field: 'messages',
+              value: {
+                messaging_product: 'whatsapp',
+                metadata: { display_phone_number: '15550001', phone_number_id: 'PNID' },
+                contacts: [{ profile: { name: 'X' }, wa_id: waId }],
+                messages: [
+                  {
+                    id: externalId,
+                    from: waId,
+                    timestamp: '1700000000',
+                    type: 'text',
+                    text: { body: text },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+    };
+    const recorded = await eventsRepo.recordEvent(appDb, {
+      provider: 'meta',
+      eventType: 'message.text',
+      externalId,
+      payload: sealPayload(body, config.vaultKey),
+      businessId,
+    });
+    await enqueue(businessId, 'inbound.message', { eventId: recorded.id });
+    const runner = buildRunner(workerDb, appDb, deps);
+    await runner.runOnce();
+    return stubSender.sent[stubSender.sent.length - 1]?.text ?? '';
+  }
+
+  it('refuses a write command from an accountant, after the model names it one', async () => {
+    const businessId = await seedBusiness('Role Gate Ltd', '+2348140010001');
+    await memberOf(businessId, '+2348140010002', 'accountant');
+    stubTransport.replyWith({
+      intent: 'RecordExpense',
+      description: 'fuel',
+      amount: 5_000,
+      category: 'transport',
+      paymentMethod: 'cash',
+    });
+
+    const answer = await saysOverChat(businessId, '+2348140010002', 'spent 5k on fuel today');
+    expect(answer).toContain('view only');
+  });
+
+  it('answers a QUESTION from that same accountant, because reads are theirs', async () => {
+    const businessId = await seedBusiness('Role Gate Reads Ltd', '+2348140010003');
+    await memberOf(businessId, '+2348140010004', 'accountant');
+
+    // "who owes me" is deterministic: no model, no draft, just rows.
+    const answer = await saysOverChat(businessId, '+2348140010004', 'who owes me');
+    expect(answer).not.toContain('view only');
+    expect(answer.length).toBeGreaterThan(0);
+  });
+
+  it('refuses an accountant yes, so they cannot confirm the owner draft either', async () => {
+    const businessId = await seedBusiness('Role Gate Yes Ltd', '+2348140010005');
+    await memberOf(businessId, '+2348140010006', 'accountant');
+
+    const answer = await saysOverChat(businessId, '+2348140010006', 'yes');
+    expect(answer).toContain('view only');
+  });
+
+  it('lets a delegate through the same gate', async () => {
+    const businessId = await seedBusiness('Role Gate Delegate Ltd', '+2348140010007');
+    await memberOf(businessId, '+2348140010008', 'delegate');
+
+    // Nothing is pending, so the reply is about the missing draft, which
+    // means the role gate did not fire.
+    const answer = await saysOverChat(businessId, '+2348140010008', 'yes');
+    expect(answer).not.toContain('view only');
   });
 });

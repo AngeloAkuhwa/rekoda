@@ -1,7 +1,12 @@
 'use server';
 
 import { revalidatePath } from 'next/cache';
-import { resolvePaymentException, submitPaymentConnection } from '@/server/api';
+import {
+  ApiForbidden,
+  resolvePaymentException,
+  submitPaymentConnection,
+  viewOnlyRefusal,
+} from '@/server/api';
 import { readSessionToken } from '@/server/session-cookies';
 
 export interface ConnectFormState {
@@ -15,7 +20,7 @@ export interface ConnectFormState {
  * view. Validation mirrors the API contract so the merchant hears about a
  * 9-digit number here, in their language, not as a 400.
  */
-export async function submitConnection(
+async function submitConnectionUnguarded(
   _prev: ConnectFormState,
   formData: FormData,
 ): Promise<ConnectFormState> {
@@ -48,11 +53,37 @@ export async function submitConnection(
  * Mark an exception reviewed. A stale id (already reviewed in another tab)
  * lands on the refreshed list rather than an error page.
  */
-export async function markExceptionReviewed(formData: FormData): Promise<void> {
+async function markExceptionReviewedUnguarded(formData: FormData): Promise<void> {
   const id = formData.get('exceptionId');
   if (typeof id !== 'string' || id.length === 0) return;
   const token = await readSessionToken();
   if (!token) return;
   await resolvePaymentException(token, id);
   revalidatePath('/app/payments');
+}
+
+/* Role refusals (403) come back as a sentence in the form, not a crash.
+ * Everything else still throws to the error boundary. */
+
+export async function submitConnection(
+  ...args: Parameters<typeof submitConnectionUnguarded>
+): ReturnType<typeof submitConnectionUnguarded> {
+  try {
+    return await submitConnectionUnguarded(...args);
+  } catch (error) {
+    return viewOnlyRefusal(error) as Awaited<ReturnType<typeof submitConnectionUnguarded>>;
+  }
+}
+
+export async function markExceptionReviewed(
+  ...args: Parameters<typeof markExceptionReviewedUnguarded>
+): ReturnType<typeof markExceptionReviewedUnguarded> {
+  try {
+    return await markExceptionReviewedUnguarded(...args);
+  } catch (error) {
+    /* A view-only member clicking "reviewed" changes nothing, and this action
+     * has no form state to say so in; the refreshed list is the answer. */
+    if (error instanceof ApiForbidden) return;
+    throw error;
+  }
 }

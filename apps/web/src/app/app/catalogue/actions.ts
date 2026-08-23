@@ -2,7 +2,7 @@
 
 import { revalidatePath } from 'next/cache';
 import { parseAmountText, toKobo } from '@rekoda/core';
-import { editProduct, uploadProductImage } from '@/server/api';
+import { editProduct, uploadProductImage, viewOnlyRefusal } from '@/server/api';
 import { readSessionToken } from '@/server/session-cookies';
 
 export interface CatalogueFormState {
@@ -42,7 +42,7 @@ async function change(
  * `toKobo`, which asserts the result is a whole number of kobo. Nothing in
  * this file does arithmetic on money.
  */
-export async function setPriceAction(
+async function setPriceActionUnguarded(
   _prev: CatalogueFormState,
   formData: FormData,
 ): Promise<CatalogueFormState> {
@@ -69,7 +69,7 @@ export async function setPriceAction(
  * merchant is correcting or supplying the figure, and blending their answer
  * with the history they are correcting would give them neither.
  */
-export async function setCostAction(
+async function setCostActionUnguarded(
   _prev: CatalogueFormState,
   formData: FormData,
 ): Promise<CatalogueFormState> {
@@ -87,7 +87,7 @@ export async function setCostAction(
 }
 
 /** What the merchant would say about it. An empty box clears it. */
-export async function setDescriptionAction(
+async function setDescriptionActionUnguarded(
   _prev: CatalogueFormState,
   formData: FormData,
 ): Promise<CatalogueFormState> {
@@ -104,7 +104,7 @@ export async function setDescriptionAction(
 }
 
 /** List a product in the shop, or take it out of it. */
-export async function setProductListedAction(
+async function setProductListedActionUnguarded(
   _prev: CatalogueFormState,
   formData: FormData,
 ): Promise<CatalogueFormState> {
@@ -123,7 +123,7 @@ export async function setProductListedAction(
 }
 
 /** Attach a photo. Every refusal is a sentence, including the size one. */
-export async function uploadProductImageAction(
+async function uploadProductImageActionUnguarded(
   _prev: CatalogueFormState,
   formData: FormData,
 ): Promise<CatalogueFormState> {
@@ -165,4 +165,57 @@ export async function uploadProductImageAction(
 /** `2 MB`, from a byte count, so the sentence uses the number a phone shows. */
 function megabytes(bytes: number): string {
   return `${Math.round(bytes / (1024 * 1024))} MB`;
+}
+
+/* Role refusals (403) come back as a sentence in the form, not a crash.
+ * Everything else still throws to the error boundary. */
+
+export async function setPriceAction(
+  ...args: Parameters<typeof setPriceActionUnguarded>
+): ReturnType<typeof setPriceActionUnguarded> {
+  try {
+    return await setPriceActionUnguarded(...args);
+  } catch (error) {
+    return viewOnlyRefusal(error) as Awaited<ReturnType<typeof setPriceActionUnguarded>>;
+  }
+}
+
+export async function setCostAction(
+  ...args: Parameters<typeof setCostActionUnguarded>
+): ReturnType<typeof setCostActionUnguarded> {
+  try {
+    return await setCostActionUnguarded(...args);
+  } catch (error) {
+    return viewOnlyRefusal(error) as Awaited<ReturnType<typeof setCostActionUnguarded>>;
+  }
+}
+
+export async function setDescriptionAction(
+  ...args: Parameters<typeof setDescriptionActionUnguarded>
+): ReturnType<typeof setDescriptionActionUnguarded> {
+  try {
+    return await setDescriptionActionUnguarded(...args);
+  } catch (error) {
+    return viewOnlyRefusal(error) as Awaited<ReturnType<typeof setDescriptionActionUnguarded>>;
+  }
+}
+
+export async function setProductListedAction(
+  ...args: Parameters<typeof setProductListedActionUnguarded>
+): ReturnType<typeof setProductListedActionUnguarded> {
+  try {
+    return await setProductListedActionUnguarded(...args);
+  } catch (error) {
+    return viewOnlyRefusal(error) as Awaited<ReturnType<typeof setProductListedActionUnguarded>>;
+  }
+}
+
+export async function uploadProductImageAction(
+  ...args: Parameters<typeof uploadProductImageActionUnguarded>
+): ReturnType<typeof uploadProductImageActionUnguarded> {
+  try {
+    return await uploadProductImageActionUnguarded(...args);
+  } catch (error) {
+    return viewOnlyRefusal(error) as Awaited<ReturnType<typeof uploadProductImageActionUnguarded>>;
+  }
 }

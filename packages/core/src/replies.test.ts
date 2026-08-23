@@ -44,6 +44,7 @@ const ALL: Record<string, readonly replies.Reply[]> = {
   erasureNotYours: [replies.erasureNotYours()],
   erasureDone: [replies.erasureDone(0), replies.erasureDone(12)],
   erasureKept: [replies.erasureKept()],
+  viewOnlyRole: [replies.viewOnlyRole()],
   strayNumber: [replies.strayNumber()],
   clarification: [replies.clarification('Which invoice was that payment against?')],
   allowanceExhausted: [replies.allowanceExhausted(50), replies.allowanceExhausted(3, 'documents')],

@@ -246,6 +246,7 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
             message.id,
             retrying,
             tokenised!.link,
+            inbound.from,
           );
 
     if (answer) {
@@ -479,7 +480,13 @@ async function deterministicReply(
   intent: DeterministicIntent,
   ctx: CommandContext,
 ): Promise<Reply | null> {
-  if (intent.kind === 'affirm') return confirmPendingDraft(deps, tx, businessId, ctx.retrying);
+  /* The yes is the moment a draft becomes a document, so it carries the same
+   * role rule as making the draft: view-only members confirm nothing, not
+   * even a draft the owner parked. */
+  if (intent.kind === 'affirm') {
+    if (!(await mayTransact(tx, businessId, ctx.from))) return replies.viewOnlyRole();
+    return confirmPendingDraft(deps, tx, businessId, ctx.retrying);
+  }
   if (intent.kind === 'deny' || intent.kind === 'cancel') {
     // A refusal after a preview discards the draft rather than leaving it to
     // be confirmed by an accidental "yes" ten minutes later.
@@ -553,8 +560,13 @@ async function deterministicReply(
       );
     }
     case 'payment_details':
+      /* Sends a message to a customer in the business's name, which is a
+       * write in every way that matters. Same rule for reminders and
+       * resends below. */
+      if (!(await mayTransact(tx, businessId, ctx.from))) return replies.viewOnlyRole();
       return paymentDetailsReply(deps, tx, businessId);
     case 'remind':
+      if (!(await mayTransact(tx, businessId, ctx.from))) return replies.viewOnlyRole();
       return remindReply(deps, tx, businessId, ctx, intent.invoiceNumber);
     case 'dashboard': {
       /* The link belongs to the PERSON who asked, not to the business. A
@@ -590,6 +602,7 @@ async function deterministicReply(
       );
     }
     case 'resend':
+      if (!(await mayTransact(tx, businessId, ctx.from))) return replies.viewOnlyRole();
       return resendReply(tx, businessId, ctx.eventId);
     case 'upgrade': {
       // Free, and always answered: this is the one message from a merchant
@@ -618,6 +631,24 @@ async function deterministicReply(
 async function isOwner(tx: TenantDb, businessId: string, from: string): Promise<boolean> {
   try {
     return (await identity.roleOfPhone(tx, businessId, normalisePhone(from))) === 'owner';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * May this sender CHANGE the books?
+ *
+ * Owners and delegates can: recording trade from a phone is what a delegate
+ * is for. An accountant's access is view only everywhere (spec §35), and the
+ * chat surface has no guard layer, so the check lives here. False when the
+ * number cannot be read or holds no membership, for the same reason isOwner
+ * answers no: the safe reading of "may they write when we cannot tell" is no.
+ */
+async function mayTransact(tx: TenantDb, businessId: string, from: string): Promise<boolean> {
+  try {
+    const role = await identity.roleOfPhone(tx, businessId, normalisePhone(from));
+    return role === 'owner' || role === 'delegate';
   } catch {
     return false;
   }
@@ -1420,6 +1451,8 @@ async function interpretedReply(
   retrying: boolean,
   /** Two records this message may have made of one person. Usually null. */
   link: IdentityLinkProposal | null,
+  /** The sender's wa id, for the role check on write commands. */
+  from: string,
 ): Promise<Reply> {
   /**
    * The MONTHLY meter (docs/metering-v1.md), checked before the model is
@@ -1479,6 +1512,23 @@ async function interpretedReply(
   }
   if (interpreted.outcome === 'unavailable') return replies.busyRightNow();
   if (interpreted.outcome === 'unusable') return replies.couldNotRead();
+
+  /**
+   * The role rule, applied where the intent is first known.
+   *
+   * A question is a read and answers for every member; anything else changes
+   * the books, and a view-only member does not get a draft to say yes to.
+   * Checked after the model because only the model knows which of the two
+   * this message was; the message unit it spent is the ordinary price of
+   * finding out.
+   */
+  if (
+    interpreted.command.intent !== 'Query' &&
+    interpreted.command.intent !== 'Unclear' &&
+    !(await mayTransact(tx, businessId, from))
+  ) {
+    return replies.viewOnlyRole();
+  }
 
   /**
    * CG5 — a correction REPLACES the pending draft rather than sitting beside

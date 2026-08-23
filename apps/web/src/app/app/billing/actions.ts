@@ -2,7 +2,7 @@
 
 import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
-import { billingBuyPack, billingChangePlan } from '@/server/api';
+import { ApiForbidden, billingBuyPack, billingChangePlan } from '@/server/api';
 import { readSessionToken } from '@/server/session-cookies';
 
 /**
@@ -13,7 +13,7 @@ import { readSessionToken } from '@/server/session-cookies';
  * surprised by a bill, and it is the one surprise a bookkeeping product
  * cannot afford.
  */
-export async function confirmPlanChange(formData: FormData): Promise<void> {
+async function confirmPlanChangeUnguarded(formData: FormData): Promise<void> {
   const token = await readSessionToken();
   if (!token) redirect('/start');
 
@@ -29,7 +29,7 @@ export async function confirmPlanChange(formData: FormData): Promise<void> {
   redirect(`/app/billing?problem=${encodeURIComponent(answer.reason)}`);
 }
 
-export async function buyPack(formData: FormData): Promise<void> {
+async function buyPackUnguarded(formData: FormData): Promise<void> {
   const token = await readSessionToken();
   if (!token) redirect('/start');
 
@@ -42,4 +42,29 @@ export async function buyPack(formData: FormData): Promise<void> {
     redirect(`/app/billing?pay=${encodeURIComponent(answer.reference)}`);
   }
   redirect(`/app/billing?problem=${encodeURIComponent(answer.reason)}`);
+}
+
+/* Role refusals (403) come back as a sentence in the form, not a crash.
+ * Everything else still throws to the error boundary. */
+
+export async function confirmPlanChange(
+  ...args: Parameters<typeof confirmPlanChangeUnguarded>
+): ReturnType<typeof confirmPlanChangeUnguarded> {
+  try {
+    return await confirmPlanChangeUnguarded(...args);
+  } catch (error) {
+    if (error instanceof ApiForbidden) redirect('/app/billing?problem=view_only');
+    throw error;
+  }
+}
+
+export async function buyPack(
+  ...args: Parameters<typeof buyPackUnguarded>
+): ReturnType<typeof buyPackUnguarded> {
+  try {
+    return await buyPackUnguarded(...args);
+  } catch (error) {
+    if (error instanceof ApiForbidden) redirect('/app/billing?problem=view_only');
+    throw error;
+  }
 }
