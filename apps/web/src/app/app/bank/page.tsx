@@ -174,9 +174,10 @@ export default async function BankPage() {
                 lines that four hundred were on the screen. */}
             <p className="rk-fineprint">
               {position.lines === 1 ? 'One line' : `${position.lines} lines`}
-              {position.latestOn ? `, up to ${position.latestOn}` : ''}. Newest first.
+              {position.latestOn ? `, up to ${position.latestOn}` : ''}. Anything still to decide
+              comes first, then the newest.
               {position.lines > lines.length
-                ? ` Showing ${lines.length}, the ones still needing a decision first. The rest are settled or older, and all of them are counted above.`
+                ? ` Showing ${lines.length} of them; the rest are settled or older, and all of them are counted above.`
                 : ''}
             </p>
             <div className="rk-table-scroll">
