@@ -40,10 +40,16 @@ export default function AiPrivacyPage() {
           body: (
             <>
               <p>
-                Names, phone numbers, addresses and bank details are swapped for meaningless tokens
-                before a message reaches any AI provider. The model sees <code>CUSTOMER_7</code>,
-                not Ada, and not her number. The real values stay in an encrypted store that the
-                model layer cannot read.
+                Phone numbers, emails and bank details are swapped for meaningless tokens before a
+                message reaches any AI provider, and so is every customer name Rekoda already knows.
+                The model sees <code>CUSTOMER_7</code>, not Ada, and not her number. The real values
+                stay in an encrypted store that the model layer cannot read.
+              </p>
+              <p>
+                The first time you mention a new customer by name, the model reads that one message
+                to understand it. The name is then stored encrypted with its own token, nothing
+                keeps a readable copy, and every later message that names them is protected before
+                it leaves.
               </p>
               <p>
                 The substitution runs on the way out and is reversed on the way back, so your

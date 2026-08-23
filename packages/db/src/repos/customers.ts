@@ -9,7 +9,7 @@
  * Both tables are under row-level security, so every read and write here goes
  * through a tenant pin.
  */
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, sql, desc } from 'drizzle-orm';
 import type { Db, TenantDb } from '../client.js';
 import { withBusiness } from '../client.js';
 import { customerIdentities, customers } from '../schema/privacy.js';
@@ -51,6 +51,46 @@ export async function findCustomerByMatchKey(
       )
       .limit(1);
     return rows[0] ?? null;
+  });
+}
+
+/** A customer with a stored name, as the privacy gateway's matcher needs one. */
+export interface NamedCustomer {
+  customerId: string;
+  token: string;
+  /** The name, still encrypted. The gateway holds the key; this module never does. */
+  ciphertext: string;
+}
+
+/**
+ * Every customer this business knows BY NAME, newest first.
+ *
+ * This feeds the gateway's known-name pass: before a message reaches a model,
+ * any stored customer name found in it becomes that customer's token. The cap
+ * bounds one inbound message's work; it is a protection net over the names
+ * Rekoda has been TOLD, not a register, so the freshest names, the ones a
+ * merchant is most likely typing this week, are the right ones to keep inside
+ * the cap.
+ */
+export async function nameFacetsFor(
+  db: Db,
+  businessId: string,
+  limit = 2_000,
+): Promise<NamedCustomer[]> {
+  return withBusiness(db, businessId, async (tx) => {
+    return tx
+      .select({
+        customerId: customerIdentities.customerId,
+        token: customers.token,
+        ciphertext: customerIdentities.ciphertext,
+      })
+      .from(customerIdentities)
+      .innerJoin(customers, eq(customers.id, customerIdentities.customerId))
+      .where(
+        and(eq(customerIdentities.businessId, businessId), eq(customerIdentities.facet, 'name')),
+      )
+      .orderBy(desc(customerIdentities.createdAt))
+      .limit(limit);
   });
 }
 
