@@ -691,3 +691,85 @@ describe('the entries offered against a statement line', () => {
     expect(asked.map((m) => m.memo)).toEqual(['Wanted']);
   });
 });
+
+/**
+ * Which lines a page keeps when it cannot keep them all.
+ *
+ * The page is where a merchant pairs by hand, out of the rows in front of
+ * them. A line that is not on the page cannot be paired at all, so what the
+ * page drops has to be settled history rather than work. By date alone it
+ * dropped the OLDEST, which is exactly where an unreconciled line lives.
+ */
+describe('the statement page a merchant works from', () => {
+  it('keeps the lines still needing a decision when it has to choose', async () => {
+    const businessId = await seedBusiness('+2348110000041');
+    await importIt(
+      businessId,
+      `Date,Description,Amount
+02/01/2026,THE ONE STILL OPEN,111000.00
+03/06/2026,SETTLED A,222000.00
+04/06/2026,SETTLED B,333000.00
+`,
+    );
+    for (const [amountK, ref] of [
+      [22_200_000, 'JNL-SA'],
+      [33_300_000, 'JNL-SB'],
+    ] as const) {
+      await withBusiness(db, businessId, (tx) =>
+        issueRepo.writePosting(
+          tx,
+          businessId,
+          postJournal({
+            memo: `Explains ${ref}`,
+            amountK,
+            intoAccount: 'BANK',
+            outOfAccount: 'OWNERS_EQUITY',
+          }),
+          'journal',
+          ref,
+        ),
+      );
+    }
+    /* Settled by hand rather than by the rule: `matchStatement` is timid
+     * about dates on purpose, and a seed that posts its entries today would
+     * not pair them with June. What this test is about is which lines the
+     * page keeps, not what the rule agrees to. */
+    await withBusiness(db, businessId, async (tx) => {
+      const all = await bankRepo.bankLinesFor(tx, businessId, 5_000);
+      const open = await bankRepo.openMovements(tx, businessId);
+      for (const line of all.filter((l) => l.narration.startsWith('SETTLED'))) {
+        const movement = open.find((m) => m.amountK === line.amountK)!;
+        await bankRepo.matchByHand(tx, {
+          businessId,
+          lineId: line.id,
+          transactionId: movement.transactionId,
+          actor: 'user:1',
+        });
+      }
+    });
+
+    const page = await withBusiness(db, businessId, (tx) =>
+      bankRepo.bankLinesFor(tx, businessId, 1, { unmatchedFirst: true }),
+    );
+    expect(page).toHaveLength(1);
+    expect(page[0]!.narration).toBe('THE ONE STILL OPEN');
+  });
+
+  it('leaves the rule its own order', async () => {
+    const businessId = await seedBusiness('+2348110000042');
+    await importIt(
+      businessId,
+      `Date,Description,Amount
+02/01/2026,OLDEST,111000.00
+04/06/2026,NEWEST,333000.00
+`,
+    );
+    /* Without the flag it is the statement in statement order, which is what
+     * `matchStatement` is handed: reordering a list it pairs against another
+     * list changes which pairing wins when two are equally good. */
+    const plain = await withBusiness(db, businessId, (tx) =>
+      bankRepo.bankLinesFor(tx, businessId, 5_000),
+    );
+    expect(plain.map((l) => l.narration)).toEqual(['NEWEST', 'OLDEST']);
+  });
+});

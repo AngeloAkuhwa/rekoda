@@ -39,6 +39,19 @@ import { bankRepo, withBusiness, type Db } from '@rekoda/db';
 import { SessionGuard, type AuthedRequest } from '../auth/session.guard.js';
 import { DB } from '../db/db.module.js';
 
+/**
+ * How much of the statement the page carries.
+ *
+ * Not a display nicety: this page exists so a merchant can pair lines by
+ * hand, and a line that is not in this response cannot be paired at all. It
+ * was a hundred, which left a shop importing a hundred and thirty lines with
+ * thirty they could not reach, and ordering alone does not save them: on a
+ * first reconciliation every line is unmatched and there is nothing settled
+ * to drop. Five hundred covers a year of moderate trading, and the rule
+ * behind the automatic button already reads five thousand.
+ */
+const STATEMENT_ROWS = 500;
+
 @Controller('v1/bank')
 @UseGuards(SessionGuard)
 export class BankController {
@@ -52,7 +65,11 @@ export class BankController {
       this.db,
       businessId,
       async (tx) => {
-        const statementLines = await bankRepo.bankLinesFor(tx, businessId);
+        /* Unmatched first as well, which is what keeps the cap sane once a
+         * merchant HAS settled some: work ahead of history. */
+        const statementLines = await bankRepo.bankLinesFor(tx, businessId, STATEMENT_ROWS, {
+          unmatchedFirst: true,
+        });
         return {
           position: await bankRepo.bankPositionFor(tx, businessId),
           lines: statementLines,

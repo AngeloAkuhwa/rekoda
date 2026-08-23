@@ -176,7 +176,7 @@ export default async function BankPage() {
               {position.lines === 1 ? 'One line' : `${position.lines} lines`}
               {position.latestOn ? `, up to ${position.latestOn}` : ''}. Newest first.
               {position.lines > lines.length
-                ? ` Showing the ${lines.length} newest; the rest are in your books and still counted above.`
+                ? ` Showing ${lines.length}, the ones still needing a decision first. The rest are settled or older, and all of them are counted above.`
                 : ''}
             </p>
             <div className="rk-table-scroll">

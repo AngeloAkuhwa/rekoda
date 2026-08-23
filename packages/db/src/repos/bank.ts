@@ -144,12 +144,34 @@ export async function bankPositionFor(tx: TenantDb, businessId: string): Promise
   };
 }
 
-/** The most recent lines, newest first. */
+/**
+ * The statement, newest first, with the lines still needing a decision ahead
+ * of the ones already settled when the caller asks for that.
+ *
+ * The page is where that matters. A merchant pairs by hand out of the rows in
+ * front of them, so a line that is not on the page cannot be paired at all,
+ * and what the page drops has to be settled history rather than work. By date
+ * alone it dropped the OLDEST, which is exactly where an unreconciled line
+ * lives. Same principle as the asset register putting what is still owned
+ * ahead of what has been sold.
+ *
+ * Off by default, and the reconciliation rule leaves it off deliberately.
+ * `matchStatement` pairs a list against a list, and reordering its input
+ * changes which pairing wins when two are equally good. The rule reads five
+ * thousand lines and settles all of them; only the page needs this.
+ */
 export async function bankLinesFor(
   tx: TenantDb,
   businessId: string,
   limit = 100,
+  options: { unmatchedFirst?: boolean } = {},
 ): Promise<BankLine[]> {
+  const order = options.unmatchedFirst
+    ? sql`ORDER BY (NOT EXISTS (
+            SELECT 1 FROM bank_line_matches m
+             WHERE m.business_id = l.business_id AND m.line_id = l.id
+          )) DESC, l.posted_on DESC, l.imported_at DESC`
+    : sql`ORDER BY l.posted_on DESC, l.imported_at DESC`;
   const rows = await tx.execute<{
     id: string;
     posted_on: string;
@@ -157,10 +179,10 @@ export async function bankLinesFor(
     narration: string;
     bank_ref: string | null;
   }>(sql`
-    SELECT id, posted_on::text AS posted_on, amount_k, narration, bank_ref
-    FROM bank_statement_lines
-    WHERE business_id = ${businessId}::uuid
-    ORDER BY posted_on DESC, imported_at DESC
+    SELECT l.id, l.posted_on::text AS posted_on, l.amount_k, l.narration, l.bank_ref
+    FROM bank_statement_lines l
+    WHERE l.business_id = ${businessId}::uuid
+    ${order}
     LIMIT ${limit}
   `);
   return [...rows].map((r) => ({
