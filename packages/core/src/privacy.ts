@@ -1,11 +1,21 @@
 /**
- * The privacy gateway (ADR 0005, spec §5–8).
+ * The privacy gateway's STRUCTURAL pass (ADR 0005, spec §5–8).
  *
- * Everything a merchant says passes through here before any of it reaches a
- * model. What leaves is the shape of the sentence with the identities removed:
+ * Everything a merchant says passes through the gateway before any of it
+ * reaches a model, and protection comes in two layers. This file is the
+ * structural layer: it finds what has a recognisable shape — phone numbers,
+ * emails, account numbers in context — with no database and no key.
  *
- *   "Ada Obi bought 3 wigs for 150k, send receipt to ada@mail.com"
- *   → "CUSTOMER_7K2 bought 3 wigs for 150k, send receipt to EMAIL_1"
+ *   "Ada bought 3 wigs for 150k, send receipt to ada@mail.com"
+ *   → "Ada bought 3 wigs for 150k, send receipt to EMAIL_1"
+ *
+ * Names have no shape, so they are the second layer's job, in the gateway
+ * service that holds the vault: every customer name Rekoda has been TOLD
+ * (a confirmed sale, a resolved mention) is matched against the message and
+ * replaced with that customer's token. A brand-new name reaches the model
+ * exactly once — nothing knew it yet — comes back as a mention, is stored
+ * encrypted with a token from that moment, and is caught by the known-name
+ * pass ever after. No raw name is ever persisted along the way.
  *
  * Two rules govern every decision in this file.
  *

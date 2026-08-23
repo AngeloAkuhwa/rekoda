@@ -420,3 +420,112 @@ describe('the chat surface enforces roles', () => {
     expect(answer).not.toContain('view only');
   });
 });
+
+describe('a customer name never reaches the model twice', () => {
+  /**
+   * The two-layer privacy promise, end to end. The FIRST mention of a new
+   * name is the one message a model reads to understand it; from then on the
+   * name is a vault identity, every stored copy holds the token, and the
+   * known-name pass protects every later message.
+   */
+  const ADA_SALE = {
+    intent: 'RecordSale',
+    customer: { kind: 'mention', mention: 'Ada Obi' },
+    items: [{ name: 'wig', quantity: 3, unitPrice: 50_000 }],
+    statedTotal: 150_000,
+    reportedPayment: 150_000,
+    paymentMethod: 'cash',
+    discount: null,
+    deliveryFee: null,
+    dueDescription: null,
+  };
+
+  async function saleMention(
+    businessId: string,
+    ownerPhone: string,
+    text: string,
+    answer: unknown = ADA_SALE,
+  ) {
+    stubTransport.replyWith(answer);
+    const externalId = `wamid.${randomBytes(8).toString('hex')}`;
+    const waId = ownerPhone.replace('+', '');
+    const body = {
+      object: 'whatsapp_business_account',
+      entry: [
+        {
+          id: 'WABA',
+          changes: [
+            {
+              field: 'messages',
+              value: {
+                messaging_product: 'whatsapp',
+                metadata: { display_phone_number: '15550001', phone_number_id: 'PNID' },
+                contacts: [{ profile: { name: 'X' }, wa_id: waId }],
+                messages: [
+                  {
+                    id: externalId,
+                    from: waId,
+                    timestamp: '1700000000',
+                    type: 'text',
+                    text: { body: text },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+    };
+    const recorded = await eventsRepo.recordEvent(appDb, {
+      provider: 'meta',
+      eventType: 'message.text',
+      externalId,
+      payload: sealPayload(body, config.vaultKey),
+      businessId,
+    });
+    await enqueue(businessId, 'inbound.message', { eventId: recorded.id });
+    const runner = buildRunner(workerDb, appDb, deps);
+    await runner.runOnce();
+  }
+
+  it('stores the token everywhere and says the name only over the wire', async () => {
+    const businessId = await seedBusiness('Names Once Ltd', '+2348140020001');
+    await saleMention(businessId, '+2348140020001', 'sold 3 wigs to Ada Obi for 150k, paid');
+
+    /* The model saw the name this once: nothing knew it yet. */
+    const firstRequest = stubTransport.requests[stubTransport.requests.length - 1]!;
+    expect(firstRequest.userText).toContain('Ada Obi');
+
+    /* The draft holds a token, not the name. */
+    const draft = await withBusiness(appDb, businessId, (tx) =>
+      tx.select().from(schema.commandDrafts),
+    );
+    const command = draft[0]!.command as { customer: { kind: string; token?: string } };
+    expect(command.customer.kind).toBe('token');
+    expect(command.customer.token).toMatch(/^CUSTOMER_/);
+    expect(JSON.stringify(draft[0]!.command)).not.toContain('Ada Obi');
+
+    /* The stored conversation holds the token; the WIRE says the name. */
+    const messages = await withBusiness(appDb, businessId, (tx) =>
+      tx.select().from(schema.conversationMessages),
+    );
+    for (const m of messages) {
+      expect(m.body ?? '', m.body ?? '').not.toContain('Ada Obi');
+    }
+    expect(stubSender.sent[stubSender.sent.length - 1]?.text ?? '').toContain('Ada Obi');
+  });
+
+  it('tokenises the SECOND message before the model ever sees it', async () => {
+    const businessId = await seedBusiness('Names Twice Ltd', '+2348140020002');
+    await saleMention(businessId, '+2348140020002', 'sold 3 wigs to Ada Obi for 150k, paid');
+
+    await saleMention(businessId, '+2348140020002', 'Ada Obi wants 2 more wigs', {
+      intent: 'Unclear',
+      clarification: 'How many wigs this time?',
+    });
+
+    const request = stubTransport.requests[stubTransport.requests.length - 1]!;
+    expect(request.userText).not.toContain('Ada Obi');
+    expect(request.userText).toContain('CUSTOMER_');
+  });
+});

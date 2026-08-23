@@ -229,6 +229,10 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
       return;
     }
 
+    /* Mutable copy: a mention resolved during interpretation adds its token
+     * here so the SAME table serves the outbound rehydration below. */
+    const liveTokens = tokenised ? new Map(tokenised.tokens) : null;
+
     const answer =
       route.route === 'deterministic'
         ? await deterministicReply(deps, tx, businessId, route.intent, {
@@ -247,6 +251,7 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
             retrying,
             tokenised!.link,
             inbound.from,
+            liveTokens!,
           );
 
     if (answer) {
@@ -255,7 +260,7 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
         to: inbound.from,
         reply: answer,
         // Only the model path can produce a reply that names a customer.
-        ...(tokenised ? { tokens: tokenised.tokens } : {}),
+        ...(liveTokens ? { tokens: liveTokens } : {}),
       });
     }
 
@@ -1453,6 +1458,13 @@ async function interpretedReply(
   link: IdentityLinkProposal | null,
   /** The sender's wa id, for the role check on write commands. */
   from: string,
+  /**
+   * The gateway's token table for THIS message, shared with the reply send.
+   * A mention resolved below adds its token here, which is what lets the
+   * preview say the customer's name over the wire while every stored copy
+   * holds the token.
+   */
+  tokens: Map<string, string>,
 ): Promise<Reply> {
   /**
    * The MONTHLY meter (docs/metering-v1.md), checked before the model is
@@ -1531,6 +1543,38 @@ async function interpretedReply(
   }
 
   /**
+   * A mention becomes a vault identity before ANYTHING stores the command.
+   *
+   * The model saw the name once, because nothing knew it yet. From here the
+   * name lives encrypted as a customer facet, the command carries the token,
+   * and so do the draft and the preview the merchant reads back. The next
+   * message that types this name is caught by the gateway's known-name pass
+   * and the model never sees it again. This is the promise on /ai-privacy,
+   * made mechanical.
+   */
+  let command = interpreted.command;
+  if ('customer' in command && command.customer && command.customer.kind === 'mention') {
+    const mention = command.customer.mention;
+    const named = await deps.gateway.resolveMention(businessId, mention);
+    tokens.set(named.token, mention);
+    command = {
+      ...command,
+      customer: { kind: 'token', token: named.token },
+    } as StructuredBusinessCommand;
+
+    /* The inbound row was stored BEFORE the model named this customer, so it
+     * still carries the name. Scrubbed now, in the same transaction: the
+     * conversation history must not hold a customer's real name, and "we
+     * only learned it was a name a moment ago" is not an exemption. */
+    const escaped = mention.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const pattern = new RegExp(`(?<![\\p{L}\\p{N}])${escaped}(?![\\p{L}\\p{N}])`, 'giu');
+    const scrubbed = safeText.replace(pattern, named.token);
+    if (scrubbed !== safeText) {
+      await conversationsRepo.setInboundBody(tx, businessId, conversationMessageId, scrubbed);
+    }
+  }
+
+  /**
    * CG5 — a correction REPLACES the pending draft rather than sitting beside
    * it. Superseded, not deleted: what the merchant first said is part of the
    * record, and it is the only way to answer "why does this say 3 when I said
@@ -1550,13 +1594,19 @@ async function interpretedReply(
    * question, and storing the proposal anyway would mean a later `yes` joining
    * two customer records nobody was ever asked about.
    */
-  const answered = await acknowledge(tx, businessId, interpreted.command, correcting, link);
+  const answered = await acknowledge(tx, businessId, command, correcting, link);
+
+  /* Supplier names are never persisted (ADR 0005): the preview above already
+   * said "From: ..." and nothing after this point needs the name, so the
+   * stored draft does not get to keep it. */
+  const stored =
+    command.intent === 'RecordPurchase' ? { ...command, supplierMention: null } : command;
 
   await conversationsRepo.recordDraft(tx, {
     businessId,
     conversationMessageId,
-    intent: interpreted.command.intent,
-    command: interpreted.command,
+    intent: command.intent,
+    command: stored,
     model: deps.config.aiModelDefault,
     identityLink: answered.linkAsked ? link : null,
   });

@@ -7,7 +7,7 @@ import {
   type PiiSpan,
   type TokenisedMessage,
 } from '@rekoda/core/privacy';
-import { encryptFacet, matchKeyFor, normaliseFacet } from '@rekoda/core/vault';
+import { decryptFacet, encryptFacet, matchKeyFor, normaliseFacet } from '@rekoda/core/vault';
 import { customersRepo, type Db } from '@rekoda/db';
 import { CONFIG, type ApiConfig } from '../config.js';
 import { DB } from '../db/db.module.js';
@@ -26,7 +26,7 @@ import { DB } from '../db/db.module.js';
 interface ResolvedCustomer {
   token: string;
   customerId: string;
-  facet: 'phone' | 'email';
+  facet: 'phone' | 'email' | 'name';
   created: boolean;
 }
 
@@ -82,6 +82,24 @@ function proposeLink(seen: ResolvedCustomer[]): IdentityLinkProposal | null {
   };
 }
 
+/**
+ * How many stored names one message is checked against.
+ *
+ * A bound on the matcher's work, not on protection: names enter the vault
+ * newest-first below, and the freshest names are the ones a merchant is
+ * typing this week. A business with more named customers than this is far
+ * beyond a WhatsApp-first shop, and the structural pass still covers every
+ * phone and email regardless.
+ */
+const NAME_MATCH_CUSTOMERS = 2_000;
+
+/** Names shorter than this match too much prose to be safe to substitute. */
+const MIN_NAME_LENGTH = 3;
+
+function escapeForRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 @Injectable()
 export class PrivacyGateway {
   constructor(
@@ -135,7 +153,68 @@ export class PrivacyGateway {
       if (!seen.some((c) => c.customerId === resolved.customerId)) seen.push(resolved);
     }
 
+    /**
+     * The known-name pass. Structure finds phones and emails; it cannot find
+     * "Ada Obi". But once a name has entered the vault (a confirmed sale, a
+     * mention resolved below), it is a stored identity like any other, and a
+     * message naming that customer must not carry the name to a model.
+     *
+     * Longest names first, so "Ada Obi Junior" cannot be half-eaten by "Ada
+     * Obi". Word-bounded and case-insensitive, because a merchant types
+     * "ada" as readily as "Ada". A name that fails to decrypt is skipped
+     * rather than fatal: one damaged row must not stop the message.
+     */
+    const named = await customersRepo.nameFacetsFor(this.db, businessId, NAME_MATCH_CUSTOMERS);
+    const decrypted: Array<{ name: string; token: string; customerId: string }> = [];
+    for (const row of named) {
+      try {
+        const name = decryptFacet(row.ciphertext, this.config.vaultKey);
+        if (name.trim().length >= MIN_NAME_LENGTH) {
+          decrypted.push({ name: name.trim(), token: row.token, customerId: row.customerId });
+        }
+      } catch {
+        /* skipped, deliberately */
+      }
+    }
+    decrypted.sort((a, b) => b.name.length - a.name.length);
+    for (const known of decrypted) {
+      const pattern = new RegExp(
+        `(?<![\\p{L}\\p{N}])${escapeForRegex(known.name)}(?![\\p{L}\\p{N}])`,
+        'giu',
+      );
+      if (!pattern.test(out)) continue;
+      out = out.replace(pattern, known.token);
+      tokens.set(known.token, known.name);
+      if (!seen.some((c) => c.customerId === known.customerId)) {
+        seen.push({
+          token: known.token,
+          customerId: known.customerId,
+          facet: 'name',
+          created: false,
+        });
+      }
+    }
+
     return { text: out, tokens, link: proposeLink(seen) };
+  }
+
+  /**
+   * A NAME the model reported, turned into the customer it belongs to.
+   *
+   * Called when a command arrives with `{kind: 'mention'}`: the first time a
+   * merchant sells to "Ada Obi", the name reaches the model (nothing knew it
+   * yet), the model hands it back here, and from this moment the name is a
+   * vault identity with a token. The draft stores the token, the preview
+   * shows the token, and the next message that types this name never reaches
+   * a model carrying it. This is the minimisation layer the structural pass
+   * defers to.
+   */
+  async resolveMention(
+    businessId: string,
+    mention: string,
+  ): Promise<{ token: string; customerId: string }> {
+    const resolved = await this.customerTokenFor(businessId, 'name', mention);
+    return { token: resolved.token, customerId: resolved.customerId };
   }
 
   /**
@@ -147,7 +226,7 @@ export class PrivacyGateway {
    */
   private async customerTokenFor(
     businessId: string,
-    facet: 'phone' | 'email',
+    facet: 'phone' | 'email' | 'name',
     value: string,
   ): Promise<ResolvedCustomer> {
     const normalised = normaliseFacet(facet, value);
