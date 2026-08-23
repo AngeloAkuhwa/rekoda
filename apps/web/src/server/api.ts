@@ -677,10 +677,11 @@ export async function voidExpense(
  * is public. Null when there is no such published shop, which the route turns
  * into an ordinary 404 rather than an error.
  */
-export async function publicShop(slug: string): Promise<PublicShopResponse | null> {
+export async function publicShop(slug: string, page = 1): Promise<PublicShopResponse | null> {
+  const query = page > 1 ? `?page=${page}` : '';
   const { status, json } = await call({
     method: 'GET',
-    path: `/v1/shop/${encodeURIComponent(slug)}`,
+    path: `/v1/shop/${encodeURIComponent(slug)}${query}`,
     expect: [200, 404],
   });
   return status === 200 ? publicShopResponse.parse(json) : null;

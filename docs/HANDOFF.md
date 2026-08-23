@@ -639,12 +639,14 @@ Three shapes of fix, and which one applies is a real decision each time:
    whole table, never from `rows.length`, and the page says what it left out.
    All nine registers now do this; six already did.
 
-Two limits are recorded rather than fixed, both in the task list: the public
-shop still stops at 300 products with nothing saying so (neither remedy fits a
-customer-facing page: a "showing 300 of 400" caption is written for the
-merchant, and a browsing customer has named nothing to look up), and
-`reconcile` measures 5,000 lines while the card directly above it counts all
-of them.
+Both limits first recorded here as open tasks are now fixed. The public shop
+pages at sixty products per page (#55): sellable is filtered AND paged in SQL,
+each page is self-canonical, a page past the end is a 404 and a mangled page
+parameter opens page one. And `reconcile` reads the whole statement (#56):
+`allBankLinesFor` walks the table in bounded chunks by id keyset, the matching
+rule still runs once over the complete list (batching the RULE would let a
+pairing depend on chunk placement), and the chunk size is a documented test
+seam so a test can prove the walk crosses a boundary.
 
 **A fixture that drifted by 13% of dates (#120).** Two depreciation tests went
 red with no code change. `buyMonthsAgo` built its date as `monthsAgo * 30.5
@@ -819,18 +821,6 @@ points at the repo test that does the real work.
   in the controller; the word "all" is what makes it a promise rather than a
   page. Whoever gets there needs either a report of what was left out or a
   streamed export, not a bigger constant.
-- **The first merchant with more than 300 products on a published shop** —
-  the hosted shop stops there with nothing saying so, and it is the one
-  instance of the cap class (#116 to #122) that neither remedy fits: a
-  "showing 300 of 400" caption is written for the merchant, and a browsing
-  customer has named nothing to look up. It needs paging or search, and that
-  drags in the sitemap (#64) and link previews (#63). Task #55.
-- **The first merchant past 5,000 statement lines** — `reconcile` reads that
-  many while `bankPositionFor` counts all of them with an uncapped
-  `COUNT(*)`, so the "Matching the two" card would describe a subset sitting
-  directly above a card describing the whole. `matchStatement` pairs a whole
-  list against a whole list, so the fix is batching the rule, not a bigger
-  number. Roughly two years of daily banking away. Task #56.
 - **Any run where `assetsDue` returns more than a handful** — the
   depreciation sweep bounds catch-up at twelve months per asset per pass, and
   logs what it charged. A count that stays high across passes means the sweep

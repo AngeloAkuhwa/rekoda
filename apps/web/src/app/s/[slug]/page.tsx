@@ -23,11 +23,14 @@ import { publicShop } from '@/server/api';
  */
 export async function generateMetadata({
   params,
+  searchParams,
 }: {
   params: Promise<{ slug: string }>;
+  searchParams: Promise<{ page?: string }>;
 }): Promise<Metadata> {
   const slug = (await params).slug;
-  const shop = await publicShop(slug);
+  const page = pageFrom((await searchParams).page);
+  const shop = await publicShop(slug, page);
   if (!shop) return { title: 'Shop not found', robots: { index: false, follow: false } };
   const description = shop.tagline ?? `What ${shop.displayName} sells, and how to order.`;
   return {
@@ -44,7 +47,9 @@ export async function generateMetadata({
      * of "/", and a shop that declares the homepage as its canonical is a shop
      * telling Google not to index it: exactly the opposite of the line above,
      * and silently, since the page still renders perfectly. */
-    alternates: { canonical: canonical(`/s/${slug}`) },
+    /* Each page its own canonical. Page two declaring page one canonical is
+     * page two telling Google its products do not exist. */
+    alternates: { canonical: canonical(page > 1 ? `/s/${slug}?page=${page}` : `/s/${slug}`) },
     /* The shop's own name in the card, not Rekoda's. `opengraph-image.tsx`
      * beside this file draws it; this is what the words around it say. */
     openGraph: {
@@ -57,8 +62,21 @@ export async function generateMetadata({
   };
 }
 
-export default async function ShopPage({ params }: { params: Promise<{ slug: string }> }) {
-  const shop = await publicShop((await params).slug);
+/** Anything unparseable is page one: a mangled shared link should still open the shop. */
+function pageFrom(raw: string | undefined): number {
+  const parsed = Number.parseInt(raw ?? '1', 10);
+  return Number.isFinite(parsed) && parsed >= 1 ? parsed : 1;
+}
+
+export default async function ShopPage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ slug: string }>;
+  searchParams: Promise<{ page?: string }>;
+}) {
+  const page = pageFrom((await searchParams).page);
+  const shop = await publicShop((await params).slug, page);
   if (!shop) notFound();
 
   return (
@@ -102,6 +120,30 @@ export default async function ShopPage({ params }: { params: Promise<{ slug: str
           </li>
         ))}
       </ul>
+
+      {/* Plain links, no client code: a customer pages a shop the way they
+          page anything else, and a crawler follows the same links. Rendered
+          only when there is somewhere to go, so most shops never see it. */}
+      {shop.pageCount > 1 ? (
+        <nav className="rk-shop-pager" aria-label="Shop pages">
+          {shop.page > 1 ? (
+            <a
+              className="rk-btn"
+              href={shop.page === 2 ? `/s/${shop.slug}` : `/s/${shop.slug}?page=${shop.page - 1}`}
+            >
+              Newer items
+            </a>
+          ) : null}
+          <span className="rk-fineprint">
+            Page {shop.page} of {shop.pageCount} · {shop.productsTotal} items
+          </span>
+          {shop.page < shop.pageCount ? (
+            <a className="rk-btn" href={`/s/${shop.slug}?page=${shop.page + 1}`}>
+              More items
+            </a>
+          ) : null}
+        </nav>
+      ) : null}
 
       <footer className="rk-shop-foot">
         <p className="rk-fineprint">

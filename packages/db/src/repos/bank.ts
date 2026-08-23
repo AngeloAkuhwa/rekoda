@@ -155,12 +155,13 @@ export async function bankPositionFor(tx: TenantDb, businessId: string): Promise
  * lives. Same principle as the asset register putting what is still owned
  * ahead of what has been sold.
  *
- * Off by default, and the reconciliation rule leaves it off deliberately.
- * `matchStatement` pairs a list against a list, and reordering its input
- * changes which pairing wins when two are equally good. The rule also has no
- * use for it: it consumes its whole input rather than a visible prefix, so
- * which end the open lines sit at changes nothing. Only the page, which shows
- * a prefix and lets a merchant act on it, needs them at the front.
+ * Off by default. The reconciliation rule has no use for it: `matchStatement`
+ * is order-independent (it pairs only mutual one-to-one candidates, so no
+ * ordering changes which pairings win) and it consumes its whole input rather
+ * than a visible prefix. Only the page, which shows a prefix and lets a
+ * merchant act on it, needs the open lines at the front. An earlier version
+ * of this comment claimed reordering changes equally-good pairings; it does
+ * not — equally good means ambiguous, and ambiguous is never paired.
  *
  * The predicate is an index lookup, not a scan: `bank_match_line_ux` is
  * unique on exactly (business_id, line_id).
@@ -197,6 +198,62 @@ export async function bankLinesFor(
     narration: r.narration,
     bankRef: r.bank_ref,
   }));
+}
+
+/**
+ * EVERY statement line, read in bounded chunks.
+ *
+ * For the reconciliation rule, which has to see the whole statement or it
+ * measures the wrong thing: `bankPositionFor` counts all lines with an
+ * uncapped COUNT(*), and a rule fed a page would sit directly beneath a card
+ * describing the whole. The movements side was never capped, so a cap here
+ * protected nothing consistent.
+ *
+ * Chunked by id keyset rather than one unbounded SELECT so no single query
+ * grows with the business, and by id rather than by date because the rule is
+ * order-independent: it pairs only when a line has exactly one candidate AND
+ * that posting has exactly one line wanting it, so no ordering can change
+ * which pairings win. `chunkSize` is a test seam — a suite proves the loop
+ * crosses chunk boundaries with a small one rather than seeding thousands of
+ * rows.
+ */
+export async function allBankLinesFor(
+  tx: TenantDb,
+  businessId: string,
+  chunkSize = 1_000,
+): Promise<BankLine[]> {
+  type Row = {
+    id: string;
+    posted_on: string;
+    amount_k: string;
+    narration: string;
+    bank_ref: string | null;
+  };
+  const all: BankLine[] = [];
+  let after: string | null = null;
+  for (;;) {
+    const rows: Row[] = [
+      ...(await tx.execute<Row>(sql`
+      SELECT id, posted_on::text AS posted_on, amount_k, narration, bank_ref
+      FROM bank_statement_lines
+      WHERE business_id = ${businessId}::uuid
+        ${after === null ? sql`` : sql`AND id > ${after}::uuid`}
+      ORDER BY id
+      LIMIT ${chunkSize}
+    `)),
+    ];
+    for (const r of rows) {
+      all.push({
+        id: r.id,
+        postedOn: r.posted_on,
+        amountK: Number(r.amount_k),
+        narration: r.narration,
+        bankRef: r.bank_ref,
+      });
+    }
+    if (rows.length < chunkSize) return all;
+    after = rows[rows.length - 1]!.id;
+  }
 }
 
 /**
@@ -309,10 +366,15 @@ async function bankMovements(
  */
 export async function reconcile(
   tx: TenantDb,
-  input: { businessId: string; commit: boolean },
+  input: { businessId: string; commit: boolean; batchSize?: number },
 ): Promise<Reconciliation> {
   const [lines, movements, existing] = await Promise.all([
-    bankLinesFor(tx, input.businessId, 5_000),
+    /* The WHOLE statement, not a page of it: the counts this returns sit on
+     * the same screen as an uncapped COUNT(*), and a rule fed five thousand
+     * lines would quietly disagree with it past that. The rule itself still
+     * runs once over the full set — batching the rule would let a pairing
+     * depend on which chunk a line landed in. */
+    allBankLinesFor(tx, input.businessId, input.batchSize),
     bankMovements(tx, input.businessId),
     tx
       .select({

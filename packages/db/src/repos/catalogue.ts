@@ -162,6 +162,67 @@ export async function catalogueByNames(
   return [...rows].map(toItem);
 }
 
+/**
+ * One page of what a customer may actually buy, and how many pages there are.
+ *
+ * Sellable means listed AND priced, filtered in SQL rather than in a caller:
+ * the shop endpoint used to filter a capped page of the whole catalogue,
+ * which is how a big shop silently published a fraction of itself with
+ * nothing saying so. A customer-facing page cannot fix that with a caption —
+ * "showing 300 of 400" is written for the merchant, and a browsing customer
+ * has named nothing to look up — so the shop pages instead, and this is the
+ * query a page of it comes from.
+ *
+ * OFFSET rather than keyset, deliberately: pages are small, the order is
+ * stable (name, then id for ties), and a customer walking page links wants
+ * page numbers, which keysets cannot give them.
+ */
+export interface SellablePage {
+  rows: CatalogueItem[];
+  /** Every sellable product, not this page of them. */
+  count: number;
+}
+
+export async function sellableCatalogueFor(
+  tx: TenantDb,
+  businessId: string,
+  input: { page: number; pageSize: number },
+): Promise<SellablePage> {
+  const offset = (input.page - 1) * input.pageSize;
+  const rows = await tx.execute<CatalogueRow & { n: number }>(sql`
+    WITH counted AS (
+      SELECT p.id, p.name, p.description, p.unit_price_k, p.unit_cost_k, p.image_key, p.active,
+             coalesce(sum(m.delta), 0)::int AS on_hand
+      FROM products p
+      LEFT JOIN inventory_movements m ON m.product_id = p.id
+      WHERE p.business_id = ${businessId}::uuid
+        AND p.active = 1
+        AND p.unit_price_k IS NOT NULL
+      GROUP BY p.id, p.name, p.description, p.unit_price_k, p.unit_cost_k, p.image_key, p.active
+    )
+    SELECT id, name, description, unit_price_k, unit_cost_k, image_key, active, on_hand,
+           count(*) OVER ()::int AS n
+    FROM counted
+    ORDER BY lower(name) ASC, id ASC
+    LIMIT ${input.pageSize} OFFSET ${offset}
+  `);
+  const list = [...rows];
+  /* An out-of-range page returns zero rows AND zero count, because the
+   * window ran over nothing. The caller needs the real total to 404 the
+   * page rather than the shop, so fetch it when the page came back empty. */
+  if (list.length === 0) {
+    const counted = await tx.execute<{ n: number }>(sql`
+      SELECT count(*)::int AS n
+      FROM products p
+      WHERE p.business_id = ${businessId}::uuid
+        AND p.active = 1
+        AND p.unit_price_k IS NOT NULL
+    `);
+    return { rows: [], count: [...counted][0]?.n ?? 0 };
+  }
+  return { rows: list.map(toItem), count: list[0]?.n ?? 0 };
+}
+
 export interface CatalogueEdit {
   /** Absent means leave it. Present and null means clear it. */
   description?: string | null | undefined;
