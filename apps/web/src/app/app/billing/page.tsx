@@ -13,11 +13,14 @@ export const metadata: Metadata = {
   robots: { index: false, follow: false },
 };
 
+/* The overview's vocabulary, verbatim. Two pages naming the same meter two
+   different ways ("documents read" here, "document scans" there) makes a
+   merchant wonder if they are two meters. */
 const UNIT_LABELS: Record<string, string> = {
   messages: 'messages',
-  voice_seconds: 'voice seconds',
-  documents: 'documents',
-  documents_understood: 'documents read',
+  voice_seconds: 'seconds of voice notes',
+  documents: 'invoices and receipts',
+  documents_understood: 'document scans',
   orders: 'orders',
 };
 
