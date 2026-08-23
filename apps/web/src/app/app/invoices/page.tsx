@@ -1,4 +1,5 @@
 import type { Metadata } from 'next';
+import { exportCaption } from '@/lib/export-caption';
 import { formatKobo } from '@rekoda/core';
 import { Money } from '@/components/ui/Money';
 import { reportsInvoices } from '@/server/api';
@@ -241,7 +242,7 @@ export default async function InvoicesPage() {
                 asking for that is worse than earning it. */}
             <p className="rk-fineprint">
               <a href="/app/export/invoices" download>
-                Download all invoices as a spreadsheet (CSV)
+                {exportCaption('invoices', count)}
               </a>
             </p>
             <p className="rk-fineprint">

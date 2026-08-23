@@ -65,7 +65,7 @@ export function buildRunner(
   workerDb: Db,
   appDb: Db,
   deps: RunnerDeps,
-  options?: { idleMs?: number },
+  options?: { idleMs?: number; concurrency?: number },
 ): JobRunner {
   const runner = new JobRunner(workerDb, appDb, options);
   runner.register(JobKind.InboundMessage, inboundMessageHandler({ ...deps, db: appDb }));
@@ -152,18 +152,23 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
       return;
     }
     const workerDb = this.workerDb;
-    this.runner = buildRunner(workerDb, this.appDb, {
-      gateway: this.gateway,
-      interpreter: this.interpreter,
-      replySender: this.replySender,
-      storage: this.storage,
-      sender: this.sender,
-      config: this.config,
-      paymentProvider: this.paymentProvider,
-      paymentIntents: this.paymentIntents,
-      stt: this.stt,
-      ocr: this.ocr,
-    });
+    this.runner = buildRunner(
+      workerDb,
+      this.appDb,
+      {
+        gateway: this.gateway,
+        interpreter: this.interpreter,
+        replySender: this.replySender,
+        storage: this.storage,
+        sender: this.sender,
+        config: this.config,
+        paymentProvider: this.paymentProvider,
+        paymentIntents: this.paymentIntents,
+        stt: this.stt,
+        ocr: this.ocr,
+      },
+      { concurrency: this.config.workerConcurrency },
+    );
     this.runner.start();
 
     /**

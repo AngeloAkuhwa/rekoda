@@ -110,9 +110,17 @@ from task #57), empty state, error state, loading state, keyboard focus,
 360px layout, money formatting, sentence-level copy (no jargon, no em
 dashes), and role-appropriate rendering.
 
-**Phase C — scale leftovers.** The four recorded items above, each with its
-own mini-plan and test. Small, independent, sequenced after B because none
-of them bites before real load and B is what merchants see first.
+**Phase C — scale leftovers.** Each with its own mini-plan and test.
+Delivered: the job runner's concurrency lanes (REKODA_WORKER_CONCURRENCY,
+proven by an overlap test) and honest export captions past the 10,000-row
+ceiling; REKODA_TRUSTED_PROXIES and the per-replica limiter caveat are in
+.env.example. Deliberately DEFERRED behind their existing tripwires, with
+the reasoning here so nobody relitigates it: per-tenant fair-share on the
+platform AI cap waits for telemetry showing merchants actually approaching
+it (the mechanism depends on real usage shapes), and the sitemap index
+waits for growth toward 5,000 published shops (the response already
+reports `truncated`, so the moment is observable). Both remain in
+HANDOFF §7.
 
 **Phase D — launch.** Env vars into the deployment, migrations run with the
 privileged role, §47 confirmation recorded, legal facts on the pages,

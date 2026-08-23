@@ -58,6 +58,8 @@ export interface ApiConfig {
   workerDatabaseUrl: string | null;
   /** Whether this process polls the queue as well as serving requests. */
   workerEnabled: boolean;
+  /** Concurrent job lanes per worker process. SKIP LOCKED makes N lanes safe. */
+  workerConcurrency: number;
   /**
    * Which provider interprets a merchant's message.
    *
@@ -453,6 +455,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
      */
     workerDatabaseUrl: env['WORKER_DATABASE_URL'] ?? null,
     workerEnabled,
+    /**
+     * Four lanes by default: enough that one slow model call does not stall
+     * every document delivery behind it, and comfortably inside the worker
+     * connection pool since each in-flight job holds a claim connection and
+     * a handler transaction. Raise it with the pool, not instead of it.
+     */
+    workerConcurrency: Math.max(1, Number(env['REKODA_WORKER_CONCURRENCY'] ?? 4)),
     /**
      * Optional. The deterministic router answers most messages
      * without a model, so a missing key degrades the product rather than

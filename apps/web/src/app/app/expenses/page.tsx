@@ -1,4 +1,5 @@
 import type { Metadata } from 'next';
+import { exportCaption } from '@/lib/export-caption';
 import {
   EXPENSE_CATEGORY_LABELS,
   formatKobo,
@@ -396,7 +397,7 @@ export default async function ExpensesPage() {
 
             <p className="rk-fineprint">
               <a href="/app/export/expenses" download>
-                Download all spending as a spreadsheet (CSV)
+                {exportCaption('spending entries', count)}
               </a>
             </p>
             <p className="rk-fineprint">

@@ -529,3 +529,30 @@ describe('a customer name never reaches the model twice', () => {
     expect(request.userText).toContain('CUSTOMER_');
   });
 });
+
+describe('the polling loop with lanes', () => {
+  /**
+   * SKIP LOCKED makes N lanes take N different jobs by construction; this
+   * proves the lanes actually run side by side, because one twenty-second
+   * model call stalling every delivery behind it was the whole finding.
+   */
+  it('runs two jobs at the same time when built with two lanes', async () => {
+    const businessId = await seedBusiness('Lanes Ltd', '+2348140030001');
+    let inFlight = 0;
+    let peak = 0;
+    const runner = new JobRunner(workerDb, appDb, { idleMs: 20, concurrency: 2 });
+    runner.register('lane.test', async () => {
+      inFlight += 1;
+      peak = Math.max(peak, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      inFlight -= 1;
+    });
+    await enqueue(businessId, 'lane.test', { n: 1 });
+    await enqueue(businessId, 'lane.test', { n: 2 });
+
+    runner.start();
+    await waitFor(() => peak >= 2);
+    await runner.stop();
+    expect(peak).toBe(2);
+  });
+});
