@@ -10,6 +10,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createDb, assetsRepo, identity, issueRepo, withBusiness, type Db } from '@rekoda/db';
 import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
+import { lagosDay } from '@rekoda/core';
 import { sweepDepreciation } from './depreciation-sweep.js';
 
 let urls: Urls;
@@ -44,14 +45,43 @@ async function seedBusiness(phone = '+2348140000001'): Promise<string> {
   return business.id;
 }
 
-const DAY = 86_400_000;
+/**
+ * The Lagos day exactly `monthsAgo` calendar months before today.
+ *
+ * Not `monthsAgo * 30.5 days`, which is what this used to be and which does
+ * not mean what the tests below say. On 23 August that approximation put "one
+ * month ago" on 24 JULY, and an asset bought on the 24th genuinely has not
+ * completed a month by the 23rd, so `monthsElapsed` correctly returned zero
+ * and two tests failed. The rule was right and the fixture was lying, on
+ * whichever dates the drift happened to bite: green in CI one day, red the
+ * next, with nothing changed in between.
+ *
+ * Stepping whole months keeps the day of the month, so `monthsElapsed` gives
+ * back exactly the number these tests ask for, every day of the year. The
+ * clamp is for the 31st stepping into a month that has no 31st. Midday keeps
+ * the Lagos day the same whatever hour the suite runs at.
+ */
+function monthsAgoAt(monthsAgo: number): Date {
+  const [year, month, day] = lagosDay(new Date()).split('-').map(Number) as [
+    number,
+    number,
+    number,
+  ];
+  const target = new Date(Date.UTC(year, month - 1 - monthsAgo, 1));
+  const lastDayOfTarget = new Date(
+    Date.UTC(target.getUTCFullYear(), target.getUTCMonth() + 1, 0),
+  ).getUTCDate();
+  return new Date(
+    Date.UTC(target.getUTCFullYear(), target.getUTCMonth(), Math.min(day, lastDayOfTarget), 12),
+  );
+}
 
 async function buyMonthsAgo(
   businessId: string,
   monthsAgo: number,
   over: { costK?: number; usefulLifeMonths?: number } = {},
 ) {
-  const at = new Date(Date.now() - monthsAgo * 30.5 * DAY);
+  const at = monthsAgoAt(monthsAgo);
   const costK = over.costK ?? 45_000_000;
   return withBusiness(appDb, businessId, (tx) =>
     assetsRepo.recordAsset(tx, {
