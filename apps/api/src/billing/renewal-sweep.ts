@@ -86,7 +86,18 @@ export async function sweepRenewals(
          * hand out four. The seven days are counted from the moment the
          * cycle actually ended, whatever time anybody noticed.
          */
-        await subscriptionsRepo.markRenewalFailed(tx, business.businessId, business.renewsAt);
+        /**
+         * The grace clock starts at the renewal date, deliberately: a sweep
+         * two hours late must not gift two extra grace days. But floored at
+         * two days ago, because after a LONG outage the backdated clock
+         * would already be past day seven, and the very next grace pass
+         * would cut a paying merchant off with zero reminders delivered.
+         * The floor guarantees the dunning ladder gets at least five days.
+         */
+        const failedAt = new Date(
+          Math.max(business.renewsAt.getTime(), Date.now() - 2 * 86_400_000),
+        );
+        await subscriptionsRepo.markRenewalFailed(tx, business.businessId, failedAt);
         return true;
       });
 

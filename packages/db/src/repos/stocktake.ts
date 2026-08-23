@@ -116,6 +116,14 @@ export async function recordStockCount(
   tx: TenantDb,
   input: StockCountInput,
 ): Promise<StockCountOutcome> {
+  /* One count at a time per business. The valuation below is a read over
+   * every product, so no single row can carry the lock; two submissions
+   * racing through it would both see the same difference and post the
+   * adjustment twice. Serialised, the second run reads the corrected
+   * valuation and answers "agrees". */
+  await tx.execute(
+    sql`SELECT pg_advisory_xact_lock(hashtext(${input.businessId} || ':stockcount'))`,
+  );
   const valuation = await stockValuationFor(tx, input.businessId);
   if (valuation.uncosted > 0) {
     return { outcome: 'costs_missing', uncosted: valuation.uncosted };

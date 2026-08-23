@@ -29,6 +29,7 @@ import {
   postReceivablePayment,
   splitFees,
   type FeePolicy,
+  lagosYear,
 } from '@rekoda/core';
 import { documentHash } from '@rekoda/core/documents';
 import { applyPayment } from '@rekoda/core';
@@ -215,7 +216,7 @@ export async function bookVerifiedPayment(
     tx,
     input.businessId,
     'receipt',
-    bookedAt.getUTCFullYear(),
+    lagosYear(bookedAt),
   );
   const receiptSnapshot = {
     documentNumber: receiptNumber,
@@ -601,6 +602,14 @@ export interface RecordMerchantPaymentInput {
   sourceId: string;
   actor: string;
   recordedAt?: Date;
+  /**
+   * The form's one-shot idempotency key. Stored as the payment's
+   * rekoda_reference under a `manual:` prefix so the same unique index that
+   * stops a provider payment booking twice stops a re-submitted form: the
+   * merchant whose network dropped the response and pressed the button again
+   * must end up with ONE receipt, not two.
+   */
+  clientRef?: string | null;
 }
 
 export interface RecordedPayment {
@@ -691,6 +700,7 @@ export async function recordMerchantPayment(
       /* No provider, so no settlement to track — `not_applicable` in the
        * §26-28 vocabulary, which this column spells as NULL. */
       settlementStatus: null,
+      ...(input.clientRef ? { rekodaReference: `manual:${input.clientRef}` } : {}),
       sourceType: input.sourceType,
       sourceId: input.sourceId,
     })
@@ -716,12 +726,7 @@ export async function recordMerchantPayment(
     })
     .where(and(eq(invoices.id, invoice.id), eq(invoices.businessId, input.businessId)));
 
-  const receiptNumber = await nextDocumentNumber(
-    tx,
-    input.businessId,
-    'receipt',
-    at.getUTCFullYear(),
-  );
+  const receiptNumber = await nextDocumentNumber(tx, input.businessId, 'receipt', lagosYear(at));
   const snapshot = {
     documentNumber: receiptNumber,
     issuedAtIso: at.toISOString(),
@@ -822,6 +827,7 @@ export async function recordPaymentByNumber(
     amountK: number;
     method: 'cash' | 'transfer';
     actor: string;
+    clientRef?: string | null;
   },
 ): Promise<RecordPaymentOutcome> {
   const rows = await tx.execute<{ id: string }>(sql`
@@ -837,6 +843,7 @@ export async function recordPaymentByNumber(
     const recorded = await recordMerchantPayment(tx, {
       businessId: input.businessId,
       invoiceId: found.id,
+      clientRef: input.clientRef ?? null,
       amountK: input.amountK,
       method: input.method,
       sourceType: 'dashboard',

@@ -37,6 +37,12 @@ import { subscriptionsRepo, usageRepo, withBusiness, type Db, type TenantDb } fr
 import { CONFIG, type ApiConfig } from '../config.js';
 import { DB } from '../db/db.module.js';
 
+/** Midnight of the Lagos day (UTC+1, no DST) holding this moment. */
+function startOfLagosDay(when: Date): Date {
+  const shifted = when.getTime() + 3_600_000;
+  return new Date(Math.floor(shifted / 86_400_000) * 86_400_000 - 3_600_000);
+}
+
 @Injectable()
 export class BillingService {
   constructor(
@@ -168,6 +174,14 @@ export class BillingService {
         return { state: 'unavailable' as const, reason: 'awaiting_platform_confirmation' as const };
       }
 
+      /* Day-truncated so the cycle unique index has something to hold: two
+       * tabs confirming a first purchase used to mint two charges because
+       * `now` differed by milliseconds. Anchored to the Lagos day, the
+       * second INSERT conflicts and is handed the first one's reference. */
+      const periodStart =
+        charge.kind === 'first_purchase'
+          ? startOfLagosDay(now)
+          : (subscription?.cycleStartedAt ?? now);
       const reference = subscriptionReference(now, randomBytes);
       const opened = await subscriptionsRepo.openCharge(tx, {
         businessId,
@@ -175,10 +189,25 @@ export class BillingService {
         plan: to,
         amountK: charge.amountK,
         reference,
-        periodStart: charge.kind === 'first_purchase' ? now : (subscription?.cycleStartedAt ?? now),
+        periodStart,
         periodEnd: charge.renewsAt,
       });
       if (!opened) {
+        const pending = await subscriptionsRepo.pendingCharge(
+          tx,
+          businessId,
+          charge.kind === 'first_purchase'
+            ? { kind: 'first_purchase', periodStart }
+            : { kind: 'upgrade', plan: to },
+        );
+        if (pending) {
+          return {
+            state: 'payment_required' as const,
+            reference: pending.reference,
+            amountK: pending.amountK,
+            plan: to,
+          };
+        }
         return { state: 'unavailable' as const, reason: 'no_cycle' as const };
       }
       return {
@@ -218,13 +247,29 @@ export class BillingService {
       }
 
       const reference = addOnReference(now, randomBytes);
-      await subscriptionsRepo.openCharge(tx, {
+      const opened = await subscriptionsRepo.openCharge(tx, {
         businessId,
         kind: 'add_on',
         packId: pack.id,
         amountK: pack.priceK,
         reference,
       });
+      if (!opened) {
+        /* A pending charge for this very pack already exists; hand back its
+         * link rather than minting a second payable. */
+        const pending = await subscriptionsRepo.pendingCharge(tx, businessId, {
+          kind: 'add_on',
+          packId: pack.id,
+        });
+        if (pending) {
+          return {
+            state: 'payment_required' as const,
+            reference: pending.reference,
+            amountK: pending.amountK,
+          };
+        }
+        return { state: 'unavailable' as const, reason: 'pack' };
+      }
       return { state: 'payment_required' as const, reference, amountK: pack.priceK };
     });
   }

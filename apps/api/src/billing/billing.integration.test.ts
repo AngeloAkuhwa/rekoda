@@ -232,6 +232,48 @@ describe('paying, and the gate in front of it', () => {
     expect(overview.status).toEqual({ state: 'active', renewsAt: renewsAt.toISOString() });
   });
 
+  it('hands a double-clicked upgrade ONE reference, not two payable charges', async () => {
+    const { businessId } = await onboard('+2348177100028');
+    const now = new Date();
+    await putOnPlan(
+      businessId,
+      'chat',
+      new Date(now.getTime() - 11 * 86_400_000),
+      new Date(now.getTime() + 19 * 86_400_000),
+    );
+
+    const billing = confirmedBilling();
+    const first = await billing.changePlan(businessId, 'complete', now);
+    const second = await billing.changePlan(businessId, 'complete', now);
+    if (first.state !== 'payment_required' || second.state !== 'payment_required') {
+      throw new Error('expected two payment_required answers');
+    }
+    expect(second.reference).toBe(first.reference);
+
+    const charges = await withBusiness(db, businessId, (tx) =>
+      subscriptionsRepo.chargesFor(tx, businessId),
+    );
+    expect(charges.rows.filter((c) => c.status === 'pending')).toHaveLength(1);
+  });
+
+  it('hands a re-posted pack purchase the pending charge, not a second one', async () => {
+    const { businessId } = await onboard('+2348177100029');
+    await putOnPlan(businessId, 'complete', new Date(), new Date(Date.now() + 30 * 86_400_000));
+
+    const billing = confirmedBilling();
+    const first = await billing.buyPack(businessId, 'documents_50');
+    const second = await billing.buyPack(businessId, 'documents_50');
+    if (first.state !== 'payment_required' || second.state !== 'payment_required') {
+      throw new Error('expected two payment_required answers');
+    }
+    expect(second.reference).toBe(first.reference);
+
+    const charges = await withBusiness(db, businessId, (tx) =>
+      subscriptionsRepo.chargesFor(tx, businessId),
+    );
+    expect(charges.rows).toHaveLength(1);
+  });
+
   it('refuses a pack the plan cannot use, before taking any money', async () => {
     const { businessId } = await onboard('+2348177100018');
     await putOnPlan(businessId, 'chat', new Date(), new Date(Date.now() + 30 * 86_400_000));
@@ -453,7 +495,7 @@ describe('the renewal sweep', () => {
 
   it('raises a charge when the cycle ends and starts the clock AT the renewal date', async () => {
     const { businessId, auth } = await onboard('+2348177100023');
-    const renewsAt = new Date(Date.now() - 2 * 86_400_000);
+    const renewsAt = new Date(Date.now() - 86_400_000);
     await putOnPlan(businessId, 'chat', new Date(renewsAt.getTime() - 30 * 86_400_000), renewsAt);
 
     expect(await raise(new Date())).toEqual({ raised: 1, skipped: 0 });
@@ -466,8 +508,9 @@ describe('the renewal sweep', () => {
     // The month bought starts when the last one ended, not when the sweep ran.
     expect(charges.rows[0]?.periodStart?.toISOString()).toBe(renewsAt.toISOString());
 
-    /* A sweep two days late must not hand out two extra days of grace, so the
-     * seven days run from the renewal date. */
+    /* A sweep a day late must not hand out an extra day of grace, so the
+     * seven days run from the renewal date (floored at two days back: see
+     * the outage test below). */
     const sub = await withBusiness(db, businessId, (tx) =>
       subscriptionsRepo.subscriptionFor(tx, businessId),
     );
@@ -477,6 +520,25 @@ describe('the renewal sweep', () => {
     expect(overview.status.state).toBe('grace');
     // Paid features keep working while the merchant settles up.
     expect(overview.plan).toBe('chat');
+  });
+
+  it('floors the grace clock after a LONG outage so the ladder still runs', async () => {
+    /* Backdating to renewsAt is right for a sweep hours late and pathological
+     * after ten days down: the clock would already be past day seven and the
+     * next grace pass would expire a paying merchant with zero reminders
+     * delivered. The floor guarantees at least five days of dunning. */
+    const { businessId } = await onboard('+2348177100027');
+    const renewsAt = new Date(Date.now() - 10 * 86_400_000);
+    await putOnPlan(businessId, 'chat', new Date(renewsAt.getTime() - 30 * 86_400_000), renewsAt);
+
+    expect(await raise(new Date())).toEqual({ raised: 1, skipped: 0 });
+
+    const sub = await withBusiness(db, businessId, (tx) =>
+      subscriptionsRepo.subscriptionFor(tx, businessId),
+    );
+    const failedAt = sub?.paymentFailedAt?.getTime() ?? 0;
+    expect(failedAt).toBeGreaterThan(Date.now() - 2 * 86_400_000 - 60_000);
+    expect(failedAt).toBeLessThanOrEqual(Date.now());
   });
 
   it('raises ONE charge per cycle, however many times it runs', async () => {

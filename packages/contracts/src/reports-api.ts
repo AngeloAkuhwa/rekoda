@@ -598,6 +598,12 @@ export const recordPaymentRequest = z.object({
   invoiceNumber: z.string().trim().min(1),
   amountK: z.number().int().finite().positive(),
   method: z.enum(['cash', 'transfer']),
+  /**
+   * One-shot key the form mints when it renders. A resubmission of the same
+   * form carries the same key and books NOTHING twice; a fresh form is a
+   * fresh intention and gets its own.
+   */
+  clientRef: z.string().uuid().optional(),
 });
 
 /**
@@ -621,6 +627,8 @@ export const recordPaymentResponse = z.discriminatedUnion('outcome', [
   }),
   z.object({ outcome: z.literal('not_found') }),
   z.object({ outcome: z.literal('already_settled'), invoiceNumber: z.string() }),
+  /** The same clientRef arrived twice: the first submission already booked. */
+  z.object({ outcome: z.literal('duplicate') }),
   z.object({
     outcome: z.literal('balance_moved'),
     invoiceNumber: z.string(),

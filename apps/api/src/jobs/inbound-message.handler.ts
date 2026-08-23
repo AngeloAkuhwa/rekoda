@@ -22,7 +22,7 @@ import {
   type DeterministicIntent,
   type Reply,
 } from '@rekoda/core';
-import { normalisePhone } from '@rekoda/core/identity';
+import { normalisePhone, InvalidPhoneError } from '@rekoda/core/identity';
 import { extractInboundEvents, metaWebhookBody } from '@rekoda/contracts';
 import type { StructuredBusinessCommand } from '@rekoda/contracts';
 import {
@@ -703,9 +703,13 @@ async function remindReply(
 async function recordConsent(db: Db, from: string, at: Date | null): Promise<void> {
   try {
     await identity.setOptOut(db, normalisePhone(from), at);
-  } catch {
-    // InvalidPhoneError only: upstream attribution already accepted this
-    // sender, so anything else here would have failed there first.
+  } catch (error) {
+    /* Only the unparseable-number case is survivable: there is no consent
+     * row to keep for a person the system never verified. A DATABASE failure
+     * must throw, because the reply about to go out says "you will hear
+     * nothing more from us", and proactive sends keep consulting the row
+     * this write just failed to make. */
+    if (!(error instanceof InvalidPhoneError)) throw error;
   }
 }
 

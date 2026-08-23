@@ -27,6 +27,10 @@ export interface PayableInvoice {
 export function RecordPaymentForm({ invoices }: { invoices: PayableInvoice[] }) {
   const [state, action, pending] = useActionState<VoidFormState, FormData>(recordPaymentAction, {});
   const [chosen, setChosen] = useState(invoices[0]?.invoiceNumber ?? '');
+  /* Minted once per mounted form. A resubmission of THIS form (a dropped
+   * response, an impatient second press) carries the same key and the server
+   * books nothing twice; a freshly rendered form is a fresh intention. */
+  const [clientRef] = useState(() => crypto.randomUUID());
   const owed = invoices.find((i) => i.invoiceNumber === chosen)?.balanceDueK ?? 0;
 
   if (invoices.length === 0) {
@@ -52,6 +56,7 @@ export function RecordPaymentForm({ invoices }: { invoices: PayableInvoice[] }) 
 
   return (
     <form action={action} className="rk-form" noValidate>
+      <input type="hidden" name="clientRef" value={clientRef} />
       <Field id="payInvoiceNumber" label="What the money was for" error={state.error}>
         <select
           name="invoiceNumber"
