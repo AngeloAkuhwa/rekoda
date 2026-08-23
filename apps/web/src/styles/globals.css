@@ -654,7 +654,12 @@ button,
 }
 @media (min-width: 40rem) {
   .rk-stat-grid {
-    grid-template-columns: repeat(3, 1fr);
+    /* Auto-fit rather than a fixed three: the overview grew a fourth figure
+       (owed to suppliers), and a hard three-column grid dropped it onto a
+       row of its own at a third of the width - one card sitting alone like
+       a typo. Auto-fit keeps three wide at three cards and shares four
+       evenly, and the next figure somebody adds lays itself out. */
+    grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
   }
 }
 
@@ -695,6 +700,11 @@ button,
 .rk-stat-badge {
   display: inline-flex;
   align-items: center;
+  /* Wraps rather than clips: at four stats across, the verified line's
+     badge, figure and the word "confirmed" no longer always fit one line,
+     and a truncated "conf" reads as a broken page on the one line whose
+     whole job is to be trusted. */
+  flex-wrap: wrap;
   gap: var(--rk-space-2);
   font-size: var(--rk-text-xs);
   color: var(--rk-text-muted);
@@ -1015,6 +1025,14 @@ button,
 
 /* Wide money tables scroll inside themselves; the page never scrolls
    sideways (design-system responsive rule). */
+/* A section heading straight after a scrolled table used to sit on its
+   shoulder; the owing-age card reads as two instruments and needs the gap
+   to say so. */
+.rk-table-scroll + h3,
+.rk-table-scroll + .rk-fineprint + h3 {
+  margin-top: var(--rk-space-5);
+}
+
 .rk-table-scroll {
   overflow-x: auto;
   margin-top: var(--rk-space-3);
