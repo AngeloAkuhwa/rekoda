@@ -10,6 +10,7 @@ import { reportsExpenses } from '@/server/api';
 import { requireSessionWithToken } from '@/server/guards';
 import { AppNav } from '../AppNav';
 import { VoidSpendForm, type VoidableEntry } from './VoidSpendForm';
+import { canRecordTrade, isOwner } from '@/lib/permissions';
 import { PaySupplierForm } from './PaySupplierForm';
 import { DisposeAssetForm, RecordAssetForm, WithdrawAssetForm } from './AssetForms';
 import { CreateRecurringForm, StopRecurringForm, type StoppableSchedule } from './RecurringForms';
@@ -32,7 +33,7 @@ export const metadata: Metadata = {
  * figure would overstate the cost of trading by the value of the inventory.
  */
 export default async function ExpensesPage() {
-  const { token } = await requireSessionWithToken();
+  const { identity, token } = await requireSessionWithToken();
   const {
     entries,
     count,
@@ -142,13 +143,17 @@ export default async function ExpensesPage() {
                 : `A further ${formatKobo(payableAgeing.unlinkedK)} is owed through journal entries that name no purchase, so there is no date to age it from.`}
             </p>
           ) : null}
-          <h3>Pay a supplier</h3>
-          <p className="rk-fineprint">
-            Recorded against the purchase it settles, which is what lets both the figure above and
-            your balance sheet move together. Nothing is sent to anybody: this records that the
-            money went out. Oldest purchase first.
-          </p>
-          <PaySupplierForm purchases={outstanding} />
+          {canRecordTrade(identity.role) ? (
+            <>
+              <h3>Pay a supplier</h3>
+              <p className="rk-fineprint">
+                Recorded against the purchase it settles, which is what lets both the figure above
+                and your balance sheet move together. Nothing is sent to anybody: this records that
+                the money went out. Oldest purchase first.
+              </p>
+              <PaySupplierForm purchases={outstanding} />
+            </>
+          ) : null}
         </div>
       ) : null}
 
@@ -227,17 +232,19 @@ export default async function ExpensesPage() {
           </p>
         ) : null}
 
-        <details className="rk-void">
-          <summary>Record something you bought and keep</summary>
-          <RecordAssetForm />
-        </details>
+        {isOwner(identity.role) ? (
+          <details className="rk-void">
+            <summary>Record something you bought and keep</summary>
+            <RecordAssetForm />
+          </details>
+        ) : null}
 
         {/* Not guarded on "is there anything left". The guard used to live here
             and unmounted the whole disclosure the moment the last item was
             sold or withdrawn, taking the confirmation with it: a merchant
             clicked, watched the control vanish, and was told nothing. Each
             form renders its own empty state and keeps its own answer. */}
-        {assets.length > 0 ? (
+        {isOwner(identity.role) && assets.length > 0 ? (
           <details className="rk-void">
             <summary>Take one back out</summary>
             <p className="rk-fineprint">
@@ -250,7 +257,7 @@ export default async function ExpensesPage() {
           </details>
         ) : null}
 
-        {assets.length > 0 ? (
+        {isOwner(identity.role) && assets.length > 0 ? (
           <details className="rk-void">
             <summary>Sell or scrap one</summary>
             <p className="rk-fineprint">
@@ -310,12 +317,14 @@ export default async function ExpensesPage() {
           </div>
         ) : null}
 
-        <details className="rk-void">
-          <summary>Set up a repeating cost</summary>
-          <CreateRecurringForm />
-        </details>
+        {isOwner(identity.role) ? (
+          <details className="rk-void">
+            <summary>Set up a repeating cost</summary>
+            <CreateRecurringForm />
+          </details>
+        ) : null}
 
-        {running.length > 0 ? (
+        {isOwner(identity.role) && running.length > 0 ? (
           <details className="rk-void">
             <summary>Stop one</summary>
             <p className="rk-fineprint">
@@ -372,16 +381,18 @@ export default async function ExpensesPage() {
             {/* An accounting tool a merchant cannot correct is one they stop
                 trusting. Nothing is deleted: the entry stays, marked, and the
                 books carry it alongside its reversal. */}
-            <details className="rk-void">
-              <summary>Withdraw an entry</summary>
-              <p className="rk-fineprint">
-                Use this when something was recorded that should not have been: the wrong figure,
-                the same receipt twice, a purchase that fell through. The entry stays in your
-                records marked as withdrawn, and your books show it beside the reversal that
-                cancelled it. Nothing is deleted, and your stock count is left alone.
-              </p>
-              <VoidSpendForm entries={withdrawable} />
-            </details>
+            {isOwner(identity.role) ? (
+              <details className="rk-void">
+                <summary>Withdraw an entry</summary>
+                <p className="rk-fineprint">
+                  Use this when something was recorded that should not have been: the wrong figure,
+                  the same receipt twice, a purchase that fell through. The entry stays in your
+                  records marked as withdrawn, and your books show it beside the reversal that
+                  cancelled it. Nothing is deleted, and your stock count is left alone.
+                </p>
+                <VoidSpendForm entries={withdrawable} />
+              </details>
+            ) : null}
 
             <p className="rk-fineprint">
               <a href="/app/export/expenses" download>

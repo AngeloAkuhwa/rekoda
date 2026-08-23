@@ -1,4 +1,5 @@
 import type { Metadata } from 'next';
+import { isOwner } from '@/lib/permissions';
 import { Money } from '@/components/ui/Money';
 import { PLANS } from '@/lib/plans';
 import { billingOverview, billingQuote } from '@/server/api';
@@ -77,7 +78,7 @@ export default async function BillingPage({
 }: {
   searchParams: Promise<{ to?: string; done?: string; problem?: string; pay?: string }>;
 }) {
-  const { token } = await requireSessionWithToken();
+  const { identity, token } = await requireSessionWithToken();
   const params = await searchParams;
   const overview = await billingOverview(token);
   const proposed =
@@ -222,15 +223,19 @@ export default async function BillingPage({
                 : `. Renews ${lagosDate(proposed.renewsAt)}.`}
             </p>
           )}
-          <form action={confirmPlanChange}>
-            <input type="hidden" name="plan" value={proposed.to} />
-            <button type="submit" className="rk-btn">
-              {proposed.amountK === 0 ? 'Confirm the change' : 'Confirm and pay'}
-            </button>{' '}
-            <a href="/app/billing" className="rk-period-link">
-              Not now
-            </a>
-          </form>
+          {isOwner(identity.role) ? (
+            <form action={confirmPlanChange}>
+              <input type="hidden" name="plan" value={proposed.to} />
+              <button type="submit" className="rk-btn">
+                {proposed.amountK === 0 ? 'Confirm the change' : 'Confirm and pay'}
+              </button>{' '}
+              <a href="/app/billing" className="rk-period-link">
+                Not now
+              </a>
+            </form>
+          ) : (
+            <p className="rk-fineprint">Plan changes are the owner&rsquo;s to confirm.</p>
+          )}
         </div>
       ) : (
         <div className="rk-card">
@@ -295,12 +300,16 @@ export default async function BillingPage({
                       <Money kobo={pack.priceK} />
                     </td>
                     <td>
-                      <form action={buyPack}>
-                        <input type="hidden" name="packId" value={pack.id} />
-                        <button type="submit" className="rk-btn rk-btn-quiet">
-                          Buy
-                        </button>
-                      </form>
+                      {isOwner(identity.role) ? (
+                        <form action={buyPack}>
+                          <input type="hidden" name="packId" value={pack.id} />
+                          <button type="submit" className="rk-btn rk-btn-quiet">
+                            Buy
+                          </button>
+                        </form>
+                      ) : (
+                        <span className="rk-fineprint">Owner only</span>
+                      )}
                     </td>
                   </tr>
                 ))}

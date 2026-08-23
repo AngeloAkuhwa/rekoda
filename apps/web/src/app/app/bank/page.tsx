@@ -9,6 +9,7 @@ import { StatementForm } from './StatementForm';
 import { ForgetDayForm } from './ForgetDayForm';
 import { ReconcileForm } from './ReconcileForm';
 import { LineMatchCell } from './LineMatchCell';
+import { canReconcileBank, isOwner } from '@/lib/permissions';
 
 export const metadata: Metadata = {
   title: 'Bank',
@@ -151,14 +152,18 @@ export default async function BankPage() {
             line for you rather than guessing: a wrong match makes your books and your bank look
             like they agree when they do not.
           </p>
-          <ReconcileForm pairable={reconciliation.pairable} />
+          {canReconcileBank(identity.role) ? (
+            <ReconcileForm pairable={reconciliation.pairable} />
+          ) : null}
         </div>
       ) : null}
 
-      <div className="rk-card rk-dash-card">
-        <h2>Import a statement</h2>
-        <StatementForm />
-      </div>
+      {canReconcileBank(identity.role) ? (
+        <div className="rk-card rk-dash-card">
+          <h2>Import a statement</h2>
+          <StatementForm />
+        </div>
+      ) : null}
 
       {/* Full width, and not beside the form. A transaction table has three
           columns and one of them is money: squeezed into half a row it puts
@@ -212,6 +217,7 @@ export default async function BankPage() {
                           lineId={line.id}
                           matchedTo={line.matchedTo}
                           candidates={openMovements.filter((m) => m.amountK === line.amountK)}
+                          canPair={canReconcileBank(identity.role)}
                         />
                       </td>
                     </tr>
@@ -219,15 +225,17 @@ export default async function BankPage() {
                 </tbody>
               </table>
             </div>
-            <details className="rk-void">
-              <summary>Remove a day you imported by mistake</summary>
-              <p className="rk-fineprint">
-                For when you uploaded the wrong account&rsquo;s statement. Rekoda never edits what
-                your bank reported, so the only way to correct an import is to take it out and
-                import the right file.
-              </p>
-              <ForgetDayForm today={today} />
-            </details>
+            {isOwner(identity.role) ? (
+              <details className="rk-void">
+                <summary>Remove a day you imported by mistake</summary>
+                <p className="rk-fineprint">
+                  For when you uploaded the wrong account&rsquo;s statement. Rekoda never edits what
+                  your bank reported, so the only way to correct an import is to take it out and
+                  import the right file.
+                </p>
+                <ForgetDayForm today={today} />
+              </details>
+            ) : null}
           </>
         ) : (
           <p className="rk-fineprint">
