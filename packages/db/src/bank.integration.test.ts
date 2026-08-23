@@ -773,3 +773,65 @@ describe('the statement page a merchant works from', () => {
     expect(plain.map((l) => l.narration)).toEqual(['NEWEST', 'OLDEST']);
   });
 });
+
+/**
+ * The rule sees the whole statement, however it is chunked.
+ *
+ * `reconcile` used to read at most five thousand lines while
+ * `bankPositionFor` counted all of them with an uncapped COUNT(*), so past
+ * that a "Matching the two" card would describe a subset directly beneath a
+ * card describing the whole. It now reads everything in bounded chunks and
+ * runs the rule once over the full set. `batchSize` exists so this suite can
+ * prove the loop crosses chunk boundaries with twelve rows instead of five
+ * thousand and one.
+ */
+describe('reconciling a statement bigger than one chunk', () => {
+  it('measures every line, not the first chunk of them', async () => {
+    const businessId = await seedBusiness('+2348110000051');
+    /* Twelve lines. The matching entry is for the LAST by import order, so a
+     * reconcile that only read the first chunk would call it absent and
+     * miscount both sides. */
+    const rows = ['Date,Description,Amount'];
+    for (let i = 0; i < 12; i += 1) {
+      rows.push(`${String(i + 1).padStart(2, '0')}/03/2026,LINE ${i + 1},${1000 + i}.00`);
+    }
+    await importIt(businessId, rows.join('\n') + '\n');
+    await withBusiness(db, businessId, (tx) =>
+      issueRepo.writePosting(
+        tx,
+        businessId,
+        postJournal({
+          memo: 'Explains the twelfth line',
+          amountK: 101_100,
+          intoAccount: 'BANK',
+          outOfAccount: 'OWNERS_EQUITY',
+        }),
+        'journal',
+        'JNL-CHUNK',
+      ),
+    );
+    /* The posting is dated today and the lines are March, so the date-window
+     * rule will not pair them on its own; what is under test is COUNTING.
+     * Every line must be measured: none matched, all twelve unexplained. */
+    const seen = await withBusiness(db, businessId, (tx) =>
+      bankRepo.reconcile(tx, { businessId, commit: false, batchSize: 5 }),
+    );
+    expect(seen.matched).toBe(0);
+    expect(seen.unmatchedLines + seen.ambiguous + seen.pairable).toBe(12);
+  });
+
+  it('reads every line across chunk boundaries, exactly once', async () => {
+    const businessId = await seedBusiness('+2348110000052');
+    const rows = ['Date,Description,Amount'];
+    for (let i = 0; i < 12; i += 1) {
+      rows.push(`${String(i + 1).padStart(2, '0')}/04/2026,KEYSET ${i + 1},${2000 + i}.00`);
+    }
+    await importIt(businessId, rows.join('\n') + '\n');
+
+    const all = await withBusiness(db, businessId, (tx) =>
+      bankRepo.allBankLinesFor(tx, businessId, 5),
+    );
+    expect(all).toHaveLength(12);
+    expect(new Set(all.map((l) => l.id)).size).toBe(12);
+  });
+});

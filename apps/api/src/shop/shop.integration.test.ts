@@ -276,6 +276,86 @@ describe('the page a customer opens', () => {
  * `v1/shop` is a slug, so a listing route there would go dark the day a
  * merchant chose that word as their handle.
  */
+/**
+ * A shop bigger than one page (task #55).
+ *
+ * The endpoint used to serve a capped read of the catalogue, so a big shop
+ * silently published a fraction of itself with nothing saying so — and a
+ * customer, unlike a merchant, has named nothing to look up and reads no
+ * captions. The shop pages instead: sellable products are filtered AND paged
+ * in SQL, and every page names its place.
+ */
+describe('a shop bigger than one page', () => {
+  async function seedBigShop(businessId: string, auth: Record<string, string>, howMany: number) {
+    const ids = await withBusiness(db, businessId, async (tx) => {
+      const out: string[] = [];
+      for (let i = 0; i < howMany; i += 1) {
+        const product = await stockRepo.findOrCreateProduct(
+          tx,
+          businessId,
+          `Item ${String(i + 1).padStart(3, '0')}`,
+        );
+        out.push(product.id);
+      }
+      return out;
+    });
+    for (const id of ids) {
+      await post('/v1/catalogue/product', { id, unitPriceK: 50_000 }, auth);
+    }
+  }
+
+  it('serves every product across pages, each one exactly once', async () => {
+    const { businessId, auth } = await onboard('+2348177400021');
+    /* Sixty-five sellable products: one full page of sixty and a second of
+     * five. Every one must appear, on exactly one page. */
+    await seedBigShop(businessId, auth, 65);
+    await publish(auth, 'big-provisions');
+
+    const one = publicShopResponse.parse((await anonymous('/v1/shop/big-provisions')).json());
+    expect(one).toMatchObject({ page: 1, pageCount: 2, productsTotal: 65 });
+    expect(one.products).toHaveLength(60);
+
+    const two = publicShopResponse.parse(
+      (await anonymous('/v1/shop/big-provisions?page=2')).json(),
+    );
+    expect(two).toMatchObject({ page: 2, pageCount: 2, productsTotal: 65 });
+    expect(two.products).toHaveLength(5);
+
+    const seen = new Set([...one.products, ...two.products].map((p) => p.id));
+    expect(seen.size).toBe(65);
+  });
+
+  it('refuses a page past the end, and forgives a mangled one', async () => {
+    const { businessId, auth } = await onboard('+2348177400022');
+    await seedBigShop(businessId, auth, 3);
+    await publish(auth, 'small-shop');
+
+    /* Past the end is a 404: that URL is only ever constructed, and serving
+     * page one under it would hand crawlers duplicate pages. */
+    expect((await anonymous('/v1/shop/small-shop?page=2')).statusCode).toBe(404);
+    /* Mangled is page one: a shared link that lost its query should still
+     * open the shop. */
+    const forgiving = publicShopResponse.parse(
+      (await anonymous('/v1/shop/small-shop?page=banana')).json(),
+    );
+    expect(forgiving.page).toBe(1);
+    expect(forgiving.products).toHaveLength(3);
+  });
+
+  it('counts only what a customer could buy', async () => {
+    const { businessId, auth } = await onboard('+2348177400023');
+    await seedCatalogue(businessId, auth);
+    await publish(auth, 'ada-counted');
+
+    /* Three products exist; one is hidden, one unpriced. The total a page
+     * states is the SELLABLE total, because that is the shop the customer is
+     * actually in. */
+    const shop = publicShopResponse.parse((await anonymous('/v1/shop/ada-counted')).json());
+    expect(shop.productsTotal).toBe(1);
+    expect(shop.pageCount).toBe(1);
+  });
+});
+
 describe('the list of open shops', () => {
   it('needs no session, and carries slugs and dates only', async () => {
     const { businessId, auth } = await onboard('+2348177300010');

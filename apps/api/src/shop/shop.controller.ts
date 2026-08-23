@@ -28,6 +28,7 @@ import {
   NotFoundException,
   Param,
   Post,
+  Query,
   Req,
   Res,
   UseGuards,
@@ -99,6 +100,17 @@ export class PublicShopIndexController {
  * The global rate limit applies (it exempts only `/health`), so a public page
  * is no cheaper to scrape than any other route.
  */
+/**
+ * Products per shop page.
+ *
+ * Small enough that a phone scrolls one page comfortably, large enough that
+ * most shops never see a pager at all. The shop PAGES rather than capping,
+ * because its reader is a customer: task #55's cap silently published a
+ * fraction of a big shop with nothing saying so, and no caption fixes that
+ * for somebody who has named nothing to look up.
+ */
+const SHOP_PAGE_PRODUCTS = 60;
+
 @Controller('v1/shop')
 export class PublicShopController {
   constructor(
@@ -107,34 +119,51 @@ export class PublicShopController {
   ) {}
 
   @Get(':slug')
-  async shop(@Param('slug') slug: string): Promise<PublicShopResponse> {
+  async shop(
+    @Param('slug') slug: string,
+    @Query('page') pageParam?: string,
+  ): Promise<PublicShopResponse> {
     const shop = await shopsRepo.shopBySlug(this.db, String(slug ?? '').toLowerCase());
     /* The same answer for a slug nobody has and a shop nobody published, so
      * the URL cannot be used to find out that a business exists. */
     if (!shop) throw new NotFoundException('Not found');
 
-    const { rows: products } = await withBusiness(this.db, shop.businessId, (tx) =>
-      catalogueRepo.catalogueFor(tx, shop.businessId),
+    /* Anything unparseable is page one, because a mangled shared link should
+     * open the shop rather than a 404. A page past the end IS a 404: those
+     * links are only ever constructed, and a constructed wrong URL should say
+     * so to crawlers rather than serve duplicate pages. */
+    const parsed = Number.parseInt(String(pageParam ?? '1'), 10);
+    const page = Number.isFinite(parsed) && parsed >= 1 ? parsed : 1;
+
+    /* Sellable means listed AND priced, filtered and paged in SQL. Filtering
+     * a capped read here is the bug this replaced: a big shop silently
+     * published a fraction of itself. `onHand` never crosses this boundary:
+     * how many are left is the merchant's business and a competitor's
+     * homework. */
+    const sellable = await withBusiness(this.db, shop.businessId, (tx) =>
+      catalogueRepo.sellableCatalogueFor(tx, shop.businessId, {
+        page,
+        pageSize: SHOP_PAGE_PRODUCTS,
+      }),
     );
+    const pageCount = Math.max(1, Math.ceil(sellable.count / SHOP_PAGE_PRODUCTS));
+    if (page > pageCount) throw new NotFoundException('Not found');
 
     return publicShopResponse.parse({
       slug: shop.slug,
       displayName: shop.displayName,
       tagline: shop.tagline,
       whatsappE164: shop.whatsappE164,
-      /* Listed AND priced. A product with no price cannot be sold from a page
-       * that has no way to ask what it costs, and a hidden one is hidden.
-       * `onHand` never crosses this boundary: how many are left is the
-       * merchant's business and a competitor's homework. */
-      products: products
-        .filter((p) => p.active && p.unitPriceK !== null)
-        .map((p) => ({
-          id: p.id,
-          name: p.name,
-          description: p.description,
-          priceK: p.unitPriceK,
-          imagePath: p.imageKey ? `/v1/shop/${shop.slug}/photo/${p.id}` : null,
-        })),
+      products: sellable.rows.map((p) => ({
+        id: p.id,
+        name: p.name,
+        description: p.description,
+        priceK: p.unitPriceK,
+        imagePath: p.imageKey ? `/v1/shop/${shop.slug}/photo/${p.id}` : null,
+      })),
+      page,
+      pageCount,
+      productsTotal: sellable.count,
     });
   }
 

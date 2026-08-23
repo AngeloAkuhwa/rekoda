@@ -44,6 +44,18 @@ export const publicShopResponse = z.object({
       imagePath: z.string().nullable(),
     }),
   ),
+  /**
+   * Which page of the shop this is, and how many there are.
+   *
+   * The shop pages rather than capping, because it is the one list in the
+   * product whose reader is a CUSTOMER: a "showing 300 of 400" caption is
+   * written for the merchant, and a browsing customer has named nothing to
+   * look up. `productsTotal` is every sellable product, so a page can say
+   * what the whole shop holds without carrying it.
+   */
+  page: z.number().int().positive(),
+  pageCount: z.number().int().positive(),
+  productsTotal: z.number().int().nonnegative(),
 });
 export type PublicShopResponse = z.infer<typeof publicShopResponse>;
 
