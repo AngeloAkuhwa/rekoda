@@ -664,6 +664,56 @@ bug it was written for (twelve products under a thousand-row cap cannot
 diverge); rather than inflate the fixture it is named for what it proves and
 points at the repo test that does the real work.
 
+### The full-system audit and its five remediation PRs (23 Aug 2026)
+
+After the cap-class campaign closed, a three-lane adversarial audit
+(scalability, safety, correctness) produced roughly thirty verified findings.
+Five PRs closed all of them, in severity order:
+
+- **#124 role matrix** — RolesGuard existed on six routes; it now guards
+  every write on every controller AND the chat surface. Owners do
+  everything; delegates record trade; accountants read and export, plus bank
+  reconciliation (annotates, moves nothing). The web turns 403s into
+  sentences via ApiForbidden.
+- **#125 name tokenisation** — the gateway's known-name pass replaces every
+  stored customer name before a model sees it; a first mention becomes an
+  encrypted facet with a token in the same transaction, and no raw name is
+  persisted anywhere along the way (drafts, previews, the inbound row).
+- **#126 scale and lost work** — hash-indexed matcher; (business_id, id) on
+  bank lines; webhooks allow-listed past the per-IP limiter (Meta delivers
+  everyone's traffic from a handful of IPs); the Meta webhook answers non-200
+  on storage failure; record+enqueue in one transaction; the pump's stranded
+  lane; paySupplier FOR UPDATE.
+- **#127 idempotency** — clientRef on merchant payments; one pending charge
+  per upgrade/pack target; folded-name unique index behind
+  findOrCreateProduct; delivery lock on weighted average; stocktake advisory
+  lock; closeBooks compare-and-set; Lagos years in the last three UTC
+  numbering sites; the renewal backdate floor; released grace claims.
+- **#128 sweeps and hardening** — every sweep drains until a short page with
+  a progress guard; runExclusively elects one replica per sweep; documentById
+  for deliveries; SQL-bounded exception queue; v2 AAD-bound vault blobs;
+  hash-compared operator secret; strict UUID guards; a 16 MB media ceiling.
+
+Lessons that cost time, so they are written down:
+
+- **A batched IN over an RLS table returns nothing.** The sign-in
+  membership loop is one pinned read per membership BY DESIGN; "optimising"
+  it broke every invited-member test within minutes. RLS makes the pin per
+  business the price of the policy.
+- **The api integration suite runs against packages' BUILT dist.** After
+  editing packages/db or core, rebuild before running the api suite, or the
+  failures point at code that no longer exists.
+- **drizzle's sql template does not bind JS arrays as postgres arrays** in
+  raw execute: `= ANY(${ids})` sends a scalar. Use `IN (${sql.join(...)})`
+  like openMovements does.
+- **REKODA_TRUSTED_PROXIES must be set in any deployment behind a proxy**,
+  or the per-IP limiter trusts any X-Forwarded-For. Unset means trust-all,
+  which is only acceptable in development.
+
+The standing process from here is docs/SYSTEM-PLAN.md: plan first, a failing
+test per fix, the whole estate green serially before any push, one PR in
+flight at a time.
+
 ## 4. Operational facts a new session must know
 
 1. **Pushing:** the Claude GitHub App is installed on the `AngeloAkuhwa`
