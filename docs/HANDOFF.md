@@ -802,6 +802,23 @@ points at the repo test that does the real work.
   universal. If merchants' accountants routinely expect reducing balance, that
   is an ADR amendment with a rate somebody has an opinion about, not a
   setting to expose.
+- **Before anyone caps `reconciliationsFor`** — it is the one query on the
+  payments page with no limit, and that is load-bearing rather than an
+  oversight. The page says "Nothing. Every verified payment matched what was
+  expected" whenever the OPEN exceptions filtered out of it come to zero, and
+  that sentence is only true because the filter runs over the complete set.
+  Cap it the way `paymentsFor` was capped and the sentence becomes a lie the
+  first time fifty resolved rows crowd an unresolved one off the page: a
+  merchant told their money is fine while it is not. If it ever needs a cap
+  for load, it needs an open COUNT alongside it, and the page must read that
+  rather than the array. Checked and true as of PR #122; nothing enforces it.
+- **The first merchant past 10,000 invoices, receipts or expense entries** —
+  every export link says "Download ALL ... as a spreadsheet" and `EXPORT_ROWS`
+  stops at ten thousand with nothing reporting truncation. The number was
+  chosen deliberately as roughly a decade of a busy shop, and the reasoning is
+  in the controller; the word "all" is what makes it a promise rather than a
+  page. Whoever gets there needs either a report of what was left out or a
+  streamed export, not a bigger constant.
 - **The first merchant with more than 300 products on a published shop** —
   the hosted shop stops there with nothing saying so, and it is the one
   instance of the cap class (#116 to #122) that neither remedy fits: a
