@@ -18,16 +18,18 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import {
+  billingPackPurchaseRequest,
   billingPlanChangeRequest,
   type BillingOverviewResponse,
   type BillingPlanChangeResponse,
   type BillingQuoteResponse,
 } from '@rekoda/contracts';
 import { SessionGuard, type AuthedRequest } from '../auth/session.guard.js';
+import { Roles, RolesGuard } from '../auth/roles.guard.js';
 import { BillingService } from './billing.service.js';
 
 @Controller('v1/billing')
-@UseGuards(SessionGuard)
+@UseGuards(SessionGuard, RolesGuard)
 export class BillingController {
   constructor(@Inject(BillingService) private readonly billing: BillingService) {}
 
@@ -51,8 +53,14 @@ export class BillingController {
     return this.billing.quote(request.auth!.businessId, parsed.data.plan);
   }
 
+  /* Spending the owner's money is the owner's decision. An invited member
+   * upgrading the plan or buying packs raises a real charge against somebody
+   * else's account, which is the same reasoning that owner-gates settlement
+   * details on the payments controller. The quote stays open: seeing a price
+   * commits nobody to anything. */
   @Post('plan')
   @HttpCode(200)
+  @Roles('owner')
   async changePlan(
     @Req() request: AuthedRequest,
     @Body() body: unknown,
@@ -64,12 +72,13 @@ export class BillingController {
 
   @Post('packs')
   @HttpCode(200)
+  @Roles('owner')
   async buyPack(
     @Req() request: AuthedRequest,
     @Body() body: unknown,
   ): Promise<{ state: string; reference?: string; amountK?: number; reason?: string }> {
-    const packId = (body as { packId?: unknown } | null)?.packId;
-    if (typeof packId !== 'string' || !packId) throw new BadRequestException('packId is required');
-    return this.billing.buyPack(request.auth!.businessId, packId);
+    const parsed = billingPackPurchaseRequest.safeParse(body);
+    if (!parsed.success) throw new BadRequestException('packId is required');
+    return this.billing.buyPack(request.auth!.businessId, parsed.data.packId);
   }
 }

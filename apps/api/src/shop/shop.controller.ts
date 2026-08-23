@@ -46,6 +46,7 @@ import {
 import { sniffImageType } from '@rekoda/core';
 import { catalogueRepo, identity, shopsRepo, withBusiness, type Db } from '@rekoda/db';
 import { SessionGuard, type AuthedRequest } from '../auth/session.guard.js';
+import { Roles, RolesGuard } from '../auth/roles.guard.js';
 import { DB } from '../db/db.module.js';
 import { DOCUMENT_STORAGE } from '../documents/documents.module.js';
 import type { DocumentStorage } from '../documents/storage.js';
@@ -215,7 +216,7 @@ export class PublicShopController {
 
 /** The merchant's half: choosing the handle and switching the shop on. */
 @Controller('v1/shop-settings')
-@UseGuards(SessionGuard)
+@UseGuards(SessionGuard, RolesGuard)
 export class ShopSettingsController {
   constructor(@Inject(DB) private readonly db: Db) {}
 
@@ -243,8 +244,12 @@ export class ShopSettingsController {
     });
   }
 
+  /* Publishing puts the business's name and number on the open web, and
+   * taking it down removes the shop customers may be using. Both are the
+   * owner's call; every member may still read the settings page. */
   @Post()
   @HttpCode(200)
+  @Roles('owner')
   async save(@Req() request: AuthedRequest, @Body() body: unknown): Promise<SaveShopResponse> {
     const parsed = saveShopRequest.safeParse(body);
     if (!parsed.success) return { outcome: 'bad_slug' };

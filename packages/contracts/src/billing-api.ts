@@ -83,6 +83,12 @@ export const billingQuoteResponse = z.object({
   renewsAt: isoDate,
 });
 
+/** Buying an add-on pack. The id is validated against the price list server side. */
+export const billingPackPurchaseRequest = z.object({
+  packId: z.string().min(1).max(64),
+});
+export type BillingPackPurchaseRequest = z.infer<typeof billingPackPurchaseRequest>;
+
 export const billingPlanChangeRequest = z.object({
   plan: z.enum(['chat', 'integrate', 'complete']),
 });

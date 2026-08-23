@@ -2,7 +2,14 @@
 
 import { revalidatePath } from 'next/cache';
 import { formatKobo, lagosDay, periodLabel, parseAmountText, toKobo } from '@rekoda/core';
-import { closeBooks, countStock, openBooks, recordJournal, reopenBooks } from '@/server/api';
+import {
+  closeBooks,
+  countStock,
+  openBooks,
+  recordJournal,
+  reopenBooks,
+  viewOnlyRefusal,
+} from '@/server/api';
 import { readSessionToken } from '@/server/session-cookies';
 
 export interface OpeningFormState {
@@ -23,7 +30,7 @@ export interface OpeningFormState {
  * to declare should be able to leave that box alone, and refusing an empty
  * box would teach them to type 0 into every form they meet.
  */
-export async function openBooksAction(
+async function openBooksActionUnguarded(
   _prev: OpeningFormState,
   formData: FormData,
 ): Promise<OpeningFormState> {
@@ -92,7 +99,7 @@ export interface StockCountState {
  * hand the ledger a number that was true when the page rendered and is not
  * true now.
  */
-export async function countStockAction(
+async function countStockActionUnguarded(
   _prev: StockCountState,
   _formData: FormData,
 ): Promise<StockCountState> {
@@ -138,7 +145,7 @@ export interface CloseBooksState {
  * actions would mean two places for the same permission check and the same
  * revalidation to drift apart.
  */
-export async function closeBooksAction(
+async function closeBooksActionUnguarded(
   _prev: CloseBooksState,
   formData: FormData,
 ): Promise<CloseBooksState> {
@@ -195,7 +202,7 @@ export interface JournalState {
  * sides from the single figure, which is why an unbalanced correction is not
  * something this form can produce and not something it has to check for.
  */
-export async function journalAction(
+async function journalActionUnguarded(
   _prev: JournalState,
   formData: FormData,
 ): Promise<JournalState> {
@@ -249,4 +256,47 @@ export async function journalAction(
   return {
     done: `Recorded as ${outcome.journalNumber}. It is on your statements and in your audit trail.`,
   };
+}
+
+/* Role refusals (403) come back as a sentence in the form, not a crash.
+ * Everything else still throws to the error boundary. */
+
+export async function openBooksAction(
+  ...args: Parameters<typeof openBooksActionUnguarded>
+): ReturnType<typeof openBooksActionUnguarded> {
+  try {
+    return await openBooksActionUnguarded(...args);
+  } catch (error) {
+    return viewOnlyRefusal(error) as Awaited<ReturnType<typeof openBooksActionUnguarded>>;
+  }
+}
+
+export async function countStockAction(
+  ...args: Parameters<typeof countStockActionUnguarded>
+): ReturnType<typeof countStockActionUnguarded> {
+  try {
+    return await countStockActionUnguarded(...args);
+  } catch (error) {
+    return viewOnlyRefusal(error) as Awaited<ReturnType<typeof countStockActionUnguarded>>;
+  }
+}
+
+export async function closeBooksAction(
+  ...args: Parameters<typeof closeBooksActionUnguarded>
+): ReturnType<typeof closeBooksActionUnguarded> {
+  try {
+    return await closeBooksActionUnguarded(...args);
+  } catch (error) {
+    return viewOnlyRefusal(error) as Awaited<ReturnType<typeof closeBooksActionUnguarded>>;
+  }
+}
+
+export async function journalAction(
+  ...args: Parameters<typeof journalActionUnguarded>
+): ReturnType<typeof journalActionUnguarded> {
+  try {
+    return await journalActionUnguarded(...args);
+  } catch (error) {
+    return viewOnlyRefusal(error) as Awaited<ReturnType<typeof journalActionUnguarded>>;
+  }
 }

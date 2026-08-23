@@ -2,7 +2,7 @@
 
 import { revalidatePath } from 'next/cache';
 import { formatKobo, parseAmountText, toKobo } from '@rekoda/core';
-import { creditInvoice, recordPayment, voidInvoice } from '@/server/api';
+import { creditInvoice, recordPayment, voidInvoice, viewOnlyRefusal } from '@/server/api';
 import { readSessionToken } from '@/server/session-cookies';
 
 export interface VoidFormState {
@@ -21,7 +21,7 @@ export interface VoidFormState {
  * voiding the wrong number, or one a customer has already paid, is having an
  * ordinary moment and should be told what happened.
  */
-export async function voidInvoiceAction(
+async function voidInvoiceActionUnguarded(
   _prev: VoidFormState,
   formData: FormData,
 ): Promise<VoidFormState> {
@@ -68,7 +68,7 @@ export interface CreditFormState {
  * converted once by `toKobo` which asserts the result is a whole number of
  * kobo. Nothing in this file does arithmetic on money.
  */
-export async function creditInvoiceAction(
+async function creditInvoiceActionUnguarded(
   _prev: CreditFormState,
   formData: FormData,
 ): Promise<CreditFormState> {
@@ -141,7 +141,7 @@ function formatNaira(kobo: number): string {
  * longer fits. The reply names what the invoice actually owes now, because
  * posting the difference away silently is the one thing this must not do.
  */
-export async function recordPaymentAction(
+async function recordPaymentActionUnguarded(
   _prev: VoidFormState,
   formData: FormData,
 ): Promise<VoidFormState> {
@@ -184,4 +184,37 @@ export async function recordPaymentAction(
         ? `Recorded. Receipt ${outcome.receiptNumber} for ${formatKobo(outcome.amountK)}, and ${formatKobo(outcome.balanceDueK)} still owing on ${outcome.invoiceNumber}.`
         : `Recorded. Receipt ${outcome.receiptNumber} for ${formatKobo(outcome.amountK)}, and ${outcome.invoiceNumber} is paid in full.`,
   };
+}
+
+/* Role refusals (403) come back as a sentence in the form, not a crash.
+ * Everything else still throws to the error boundary. */
+
+export async function voidInvoiceAction(
+  ...args: Parameters<typeof voidInvoiceActionUnguarded>
+): ReturnType<typeof voidInvoiceActionUnguarded> {
+  try {
+    return await voidInvoiceActionUnguarded(...args);
+  } catch (error) {
+    return viewOnlyRefusal(error) as Awaited<ReturnType<typeof voidInvoiceActionUnguarded>>;
+  }
+}
+
+export async function creditInvoiceAction(
+  ...args: Parameters<typeof creditInvoiceActionUnguarded>
+): ReturnType<typeof creditInvoiceActionUnguarded> {
+  try {
+    return await creditInvoiceActionUnguarded(...args);
+  } catch (error) {
+    return viewOnlyRefusal(error) as Awaited<ReturnType<typeof creditInvoiceActionUnguarded>>;
+  }
+}
+
+export async function recordPaymentAction(
+  ...args: Parameters<typeof recordPaymentActionUnguarded>
+): ReturnType<typeof recordPaymentActionUnguarded> {
+  try {
+    return await recordPaymentActionUnguarded(...args);
+  } catch (error) {
+    return viewOnlyRefusal(error) as Awaited<ReturnType<typeof recordPaymentActionUnguarded>>;
+  }
 }

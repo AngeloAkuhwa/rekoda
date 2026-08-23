@@ -1,7 +1,7 @@
 'use server';
 
 import { revalidatePath } from 'next/cache';
-import { inviteBusinessMember, removeBusinessMember } from '@/server/api';
+import { inviteBusinessMember, removeBusinessMember, viewOnlyRefusal } from '@/server/api';
 import { readSessionToken } from '@/server/session-cookies';
 
 /**
@@ -17,7 +17,7 @@ export interface TeamActionState {
   invited?: string;
 }
 
-export async function inviteMemberAction(
+async function inviteMemberActionUnguarded(
   _previous: TeamActionState,
   form: FormData,
 ): Promise<TeamActionState> {
@@ -35,7 +35,7 @@ export async function inviteMemberAction(
   return { invited: phone };
 }
 
-export async function removeMemberAction(
+async function removeMemberActionUnguarded(
   _previous: TeamActionState,
   form: FormData,
 ): Promise<TeamActionState> {
@@ -48,4 +48,27 @@ export async function removeMemberAction(
   await removeBusinessMember(token, userId);
   revalidatePath('/app/team');
   return {};
+}
+
+/* Role refusals (403) come back as a sentence in the form, not a crash.
+ * Everything else still throws to the error boundary. */
+
+export async function inviteMemberAction(
+  ...args: Parameters<typeof inviteMemberActionUnguarded>
+): ReturnType<typeof inviteMemberActionUnguarded> {
+  try {
+    return await inviteMemberActionUnguarded(...args);
+  } catch (error) {
+    return viewOnlyRefusal(error) as Awaited<ReturnType<typeof inviteMemberActionUnguarded>>;
+  }
+}
+
+export async function removeMemberAction(
+  ...args: Parameters<typeof removeMemberActionUnguarded>
+): ReturnType<typeof removeMemberActionUnguarded> {
+  try {
+    return await removeMemberActionUnguarded(...args);
+  } catch (error) {
+    return viewOnlyRefusal(error) as Awaited<ReturnType<typeof removeMemberActionUnguarded>>;
+  }
 }

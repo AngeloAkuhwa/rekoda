@@ -143,6 +143,30 @@ export class ApiUnavailable extends Error {}
  * that logged nobody out, reported as success. Unexpected statuses are now
  * loud.
  */
+/**
+ * A 403 is a fact about the CALLER, not the request: the session is fine and
+ * the body was never read, the role just does not open this door. Form
+ * actions turn it into a sentence instead of a crashed page, so a view-only
+ * member who finds a button sees policy rather than an error screen.
+ */
+export class ApiForbidden extends Error {
+  constructor(path: string) {
+    super(`forbidden: ${path}`);
+  }
+}
+
+/** The uniform refusal for a role that cannot do this. Rethrows anything else. */
+export function viewOnlyRefusal(error: unknown): { error: string } {
+  if (error instanceof ApiForbidden) {
+    return {
+      error:
+        'Your access to this business is view only, so this action is not available. ' +
+        'Ask the owner if it should be.',
+    };
+  }
+  throw error;
+}
+
 export class ApiUnexpectedStatus extends Error {
   constructor(path: string, status: number) {
     super(`unexpected ${status} from ${path}`);
@@ -181,6 +205,7 @@ async function call(options: CallOptions): Promise<{ status: number; json: unkno
   }
 
   if (!options.expect.includes(response.status)) {
+    if (response.status === 403) throw new ApiForbidden(options.path);
     throw new ApiUnexpectedStatus(options.path, response.status);
   }
   if (response.status === 204) return { status: 204, json: null };

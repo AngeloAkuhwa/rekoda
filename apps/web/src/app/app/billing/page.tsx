@@ -54,6 +54,8 @@ const PROBLEMS: Record<string, string> = {
   no_cycle: 'That change did not go through. Nothing was charged.',
   plan: 'That change did not go through. Nothing was charged.',
   pack: 'That purchase did not go through. Nothing was charged.',
+  view_only:
+    "Plan changes are the owner's to make, and your access is view only. Nothing was charged.",
 };
 
 /**

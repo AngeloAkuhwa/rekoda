@@ -10,6 +10,7 @@ import {
   stopRecurring,
   voidExpense,
   withdrawAsset,
+  viewOnlyRefusal,
 } from '@/server/api';
 import { readSessionToken } from '@/server/session-cookies';
 
@@ -37,7 +38,7 @@ export interface VoidSpendFormState {
  * Every refusal comes back as a sentence rather than an error page. A merchant
  * withdrawing something already withdrawn is having an ordinary moment.
  */
-export async function voidExpenseAction(
+async function voidExpenseActionUnguarded(
   _prev: VoidSpendFormState,
   formData: FormData,
 ): Promise<VoidSpendFormState> {
@@ -91,7 +92,7 @@ export interface RecurringFormState {
  * converted once by `toKobo`, which asserts the result is a whole number of
  * kobo. Nothing in this file does arithmetic on money.
  */
-export async function createRecurringAction(
+async function createRecurringActionUnguarded(
   _prev: RecurringFormState,
   formData: FormData,
 ): Promise<RecurringFormState> {
@@ -140,7 +141,7 @@ export async function createRecurringAction(
 }
 
 /** Stop a schedule. Entries it already raised stay exactly where they are. */
-export async function stopRecurringAction(
+async function stopRecurringActionUnguarded(
   _prev: RecurringFormState,
   formData: FormData,
 ): Promise<RecurringFormState> {
@@ -189,7 +190,7 @@ const CANNOT_PAY: Record<string, string> = {
   more_than_owed: '',
 };
 
-export async function paySupplierAction(
+async function paySupplierActionUnguarded(
   _prev: VoidSpendFormState,
   formData: FormData,
 ): Promise<VoidSpendFormState> {
@@ -239,7 +240,7 @@ export async function paySupplierAction(
  * number they already have in their head is the difference between a figure
  * they checked and a figure they guessed to get past the form.
  */
-export async function recordAssetAction(
+async function recordAssetActionUnguarded(
   _prev: VoidSpendFormState,
   formData: FormData,
 ): Promise<VoidSpendFormState> {
@@ -292,7 +293,7 @@ export async function recordAssetAction(
  * copy says plainly what this is for rather than letting a merchant reach for
  * it when they mean a sale.
  */
-export async function withdrawAssetAction(
+async function withdrawAssetActionUnguarded(
   _prev: VoidSpendFormState,
   formData: FormData,
 ): Promise<VoidSpendFormState> {
@@ -324,7 +325,7 @@ export async function withdrawAssetAction(
  * figure a merchant will not have in their head: they know what they paid and
  * what they got, and the gap between those two is not the gain or the loss.
  */
-export async function disposeAssetAction(
+async function disposeAssetActionUnguarded(
   _prev: VoidSpendFormState,
   formData: FormData,
 ): Promise<VoidSpendFormState> {
@@ -360,4 +361,77 @@ export async function disposeAssetAction(
           ? `${outcome.description} is off your balance sheet. ${worth} You got ${formatKobo(outcome.resultK)} more than that, and it counts as a gain this month.`
           : `${outcome.description} is off your balance sheet. ${worth} You got ${formatKobo(-outcome.resultK)} less than that, and it counts as a loss this month.`,
   };
+}
+
+/* Role refusals (403) come back as a sentence in the form, not a crash.
+ * Everything else still throws to the error boundary. */
+
+export async function voidExpenseAction(
+  ...args: Parameters<typeof voidExpenseActionUnguarded>
+): ReturnType<typeof voidExpenseActionUnguarded> {
+  try {
+    return await voidExpenseActionUnguarded(...args);
+  } catch (error) {
+    return viewOnlyRefusal(error) as Awaited<ReturnType<typeof voidExpenseActionUnguarded>>;
+  }
+}
+
+export async function createRecurringAction(
+  ...args: Parameters<typeof createRecurringActionUnguarded>
+): ReturnType<typeof createRecurringActionUnguarded> {
+  try {
+    return await createRecurringActionUnguarded(...args);
+  } catch (error) {
+    return viewOnlyRefusal(error) as Awaited<ReturnType<typeof createRecurringActionUnguarded>>;
+  }
+}
+
+export async function stopRecurringAction(
+  ...args: Parameters<typeof stopRecurringActionUnguarded>
+): ReturnType<typeof stopRecurringActionUnguarded> {
+  try {
+    return await stopRecurringActionUnguarded(...args);
+  } catch (error) {
+    return viewOnlyRefusal(error) as Awaited<ReturnType<typeof stopRecurringActionUnguarded>>;
+  }
+}
+
+export async function paySupplierAction(
+  ...args: Parameters<typeof paySupplierActionUnguarded>
+): ReturnType<typeof paySupplierActionUnguarded> {
+  try {
+    return await paySupplierActionUnguarded(...args);
+  } catch (error) {
+    return viewOnlyRefusal(error) as Awaited<ReturnType<typeof paySupplierActionUnguarded>>;
+  }
+}
+
+export async function recordAssetAction(
+  ...args: Parameters<typeof recordAssetActionUnguarded>
+): ReturnType<typeof recordAssetActionUnguarded> {
+  try {
+    return await recordAssetActionUnguarded(...args);
+  } catch (error) {
+    return viewOnlyRefusal(error) as Awaited<ReturnType<typeof recordAssetActionUnguarded>>;
+  }
+}
+
+export async function withdrawAssetAction(
+  ...args: Parameters<typeof withdrawAssetActionUnguarded>
+): ReturnType<typeof withdrawAssetActionUnguarded> {
+  try {
+    return await withdrawAssetActionUnguarded(...args);
+  } catch (error) {
+    return viewOnlyRefusal(error) as Awaited<ReturnType<typeof withdrawAssetActionUnguarded>>;
+  }
+}
+
+export async function disposeAssetAction(
+  ...args: Parameters<typeof disposeAssetActionUnguarded>
+): ReturnType<typeof disposeAssetActionUnguarded> {
+  try {
+    return await disposeAssetActionUnguarded(...args);
+  } catch (error) {
+    return viewOnlyRefusal(error) as Awaited<ReturnType<typeof disposeAssetActionUnguarded>>;
+  }
 }

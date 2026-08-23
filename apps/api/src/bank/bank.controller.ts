@@ -37,6 +37,7 @@ import {
 } from '@rekoda/contracts';
 import { bankRepo, withBusiness, type Db } from '@rekoda/db';
 import { SessionGuard, type AuthedRequest } from '../auth/session.guard.js';
+import { Roles, RolesGuard } from '../auth/roles.guard.js';
 import { DB } from '../db/db.module.js';
 
 /**
@@ -53,7 +54,7 @@ import { DB } from '../db/db.module.js';
 const STATEMENT_ROWS = 500;
 
 @Controller('v1/bank')
-@UseGuards(SessionGuard)
+@UseGuards(SessionGuard, RolesGuard)
 export class BankController {
   constructor(@Inject(DB) private readonly db: Db) {}
 
@@ -122,7 +123,11 @@ export class BankController {
    * six different ways a statement can be unreadable and the merchant needs
    * to be told which, not handed a status code.
    */
+  /* Reconciliation is accountant work: importing, pairing and unpairing
+   annotate the statement without moving money, so both roles may do it.
+   Forgetting a day DELETES rows, and deletions are the owner's. */
   @Post('statement')
+  @Roles('owner', 'accountant')
   @HttpCode(200)
   async importStatement(
     @Req() request: AuthedRequest,
@@ -160,6 +165,7 @@ export class BankController {
    * surface was built to catch.
    */
   @Post('reconcile')
+  @Roles('owner', 'accountant')
   @HttpCode(200)
   async reconcile(@Req() request: AuthedRequest): Promise<ReconcileResponse> {
     const businessId = request.auth!.businessId;
@@ -178,6 +184,7 @@ export class BankController {
    * over the charge inside a match.
    */
   @Post('match')
+  @Roles('owner', 'accountant')
   @HttpCode(200)
   async match(@Req() request: AuthedRequest, @Body() body: unknown): Promise<MatchLineResponse> {
     const parsed = matchLineRequest.safeParse(body);
@@ -202,6 +209,7 @@ export class BankController {
    * the line nor the posting: neither was ever altered by being matched.
    */
   @Post('unmatch')
+  @Roles('owner', 'accountant')
   @HttpCode(200)
   async unmatch(
     @Req() request: AuthedRequest,
@@ -229,6 +237,7 @@ export class BankController {
    * statement line is what the bank said.
    */
   @Post('statement/forget')
+  @Roles('owner')
   @HttpCode(200)
   async forgetDay(
     @Req() request: AuthedRequest,
