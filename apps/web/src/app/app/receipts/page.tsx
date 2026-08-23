@@ -1,4 +1,5 @@
 import type { Metadata } from 'next';
+import { exportCaption } from '@/lib/export-caption';
 import { Money } from '@/components/ui/Money';
 import { MoneyBadge } from '@/components/ui/MoneyBadge';
 import { reportsReceipts } from '@/server/api';
@@ -79,7 +80,7 @@ export default async function ReceiptsPage() {
                 asking for that is worse than earning it. */}
             <p className="rk-fineprint">
               <a href="/app/export/receipts" download>
-                Download all receipts as a spreadsheet (CSV)
+                {exportCaption('receipts', count)}
               </a>
             </p>
             <p className="rk-fineprint">

@@ -36,6 +36,15 @@ export interface RunnerOptions {
   stalledAfterMs?: number;
   /** Identifies which process holds a claim, in `locked_by`. */
   workerId?: string;
+  /**
+   * Claim loops running side by side in this process. `claimNext` is
+   * `FOR UPDATE SKIP LOCKED`, so N loops take N different jobs by
+   * construction; what this buys is that one twenty-second model call no
+   * longer stalls every document delivery behind it. Bounded well under the
+   * worker connection pool, because each in-flight job holds a claim
+   * connection AND a pinned handler transaction.
+   */
+  concurrency?: number;
 }
 
 /**
@@ -58,8 +67,9 @@ export class JobRunner {
   private readonly idleMs: number;
   private readonly stalledAfterMs: number;
   private readonly workerId: string;
+  private readonly concurrency: number;
   private running = false;
-  private loop: Promise<void> | null = null;
+  private loops: Promise<void>[] = [];
 
   constructor(
     /** `rekoda_worker` — the claim connection. */
@@ -71,6 +81,7 @@ export class JobRunner {
     this.idleMs = options.idleMs ?? 1_000;
     this.stalledAfterMs = options.stalledAfterMs ?? 300_000;
     this.workerId = options.workerId ?? `worker-${process.pid}`;
+    this.concurrency = Math.max(1, options.concurrency ?? 1);
   }
 
   register(kind: string, handler: JobHandler): this {
@@ -144,17 +155,22 @@ export class JobRunner {
   start(): void {
     if (this.running) return;
     this.running = true;
-    this.loop = this.poll();
-    this.log.log(`job runner started as ${this.workerId}`);
+    /* Loop 0 is the only one that reclaims stalled jobs, so N loops do not
+     * multiply the reclaim sweeps. */
+    this.loops = Array.from({ length: this.concurrency }, (_, i) => this.poll(i === 0));
+    this.log.log(
+      `job runner started as ${this.workerId}` +
+        (this.concurrency > 1 ? ` with ${this.concurrency} lanes` : ''),
+    );
   }
 
   async stop(): Promise<void> {
     this.running = false;
-    await this.loop;
-    this.loop = null;
+    await Promise.all(this.loops);
+    this.loops = [];
   }
 
-  private async poll(): Promise<void> {
+  private async poll(reclaims = true): Promise<void> {
     let sinceReclaim = 0;
     while (this.running) {
       try {
@@ -163,7 +179,7 @@ export class JobRunner {
         const worked = await this.runOnce();
         if (!worked) {
           sinceReclaim += this.idleMs;
-          if (sinceReclaim >= this.stalledAfterMs) {
+          if (reclaims && sinceReclaim >= this.stalledAfterMs) {
             sinceReclaim = 0;
             await this.reclaim();
           }
