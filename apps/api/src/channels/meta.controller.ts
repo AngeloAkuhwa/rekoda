@@ -9,6 +9,7 @@ import {
   Query,
   Req,
   UnauthorizedException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { Logger } from '@nestjs/common';
 import { answerVerificationChallenge, verifyMetaSignature } from '@rekoda/core/webhooks';
@@ -102,18 +103,29 @@ export class MetaWebhookController {
     }
 
     const events = extractInboundEvents(parsed.data);
+    let failed = 0;
     for (const event of events) {
       try {
         await this.ingress.accept(event, parsed.data);
       } catch (error) {
-        // One bad event must not cost the acknowledgement for the rest of the
-        // batch, and must not earn a retry of the whole payload.
+        failed += 1;
         this.log.error(
           `failed to accept a Meta event: ${redactForLog(String((error as Error)?.message ?? error))}`,
         );
       }
     }
 
+    /**
+     * A failure here answers NON-200, deliberately. This used to swallow the
+     * error and acknowledge, which told Meta never to redeliver a message
+     * that was never stored — a merchant's sale, gone because the database
+     * blinked for one request. Meta retries the whole batch on a failure,
+     * and the events that DID land deduplicate to nothing on the way back
+     * in, so the only thing a retry can do is save the ones that did not.
+     */
+    if (failed > 0) {
+      throw new ServiceUnavailableException(`${failed} of ${events.length} events not stored`);
+    }
     return { received: true };
   }
 }

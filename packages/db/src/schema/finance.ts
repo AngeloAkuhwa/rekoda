@@ -296,6 +296,8 @@ export const ledgerEntries = pgTable(
   (t) => [
     index('ledger_entries_tx_ix').on(t.transactionId),
     index('ledger_entries_account_ix').on(t.businessId, t.account),
+    /* The statement schedules: business + account + a month of created_at. */
+    index('ledger_entries_business_account_created_ix').on(t.businessId, t.account, t.createdAt),
   ],
 );
 
@@ -335,6 +337,8 @@ export const bankStatementLines = pgTable(
   (t) => [
     uniqueIndex('bank_lines_fingerprint_ux').on(t.businessId, t.fingerprint),
     index('bank_lines_business_day_ix').on(t.businessId, t.postedOn),
+    /* The keyset walk in allBankLinesFor: WHERE business_id AND id > ? ORDER BY id. */
+    index('bank_lines_business_id_ix').on(t.businessId, t.id),
   ],
 );
 

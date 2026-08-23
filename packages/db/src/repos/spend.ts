@@ -665,6 +665,19 @@ export async function paySupplier(
     paidAt?: Date;
   },
 ): Promise<PaySupplierOutcome> {
+  /**
+   * The purchase row is taken FOR UPDATE before anything is read, for the
+   * same reason recordMerchantPayment locks the invoice: owedOn is a read,
+   * the guard below is a decision, and the insert is a write. Two
+   * settlements of the same payable racing through that gap would both see
+   * the full debt, both pass the guard, and drive ACCOUNTS_PAYABLE negative,
+   * which is the exact ledger state this function's own docblock forbids.
+   */
+  await tx.execute(sql`
+    SELECT id FROM expenses
+    WHERE business_id = ${input.businessId}::uuid AND id = ${input.expenseId}::uuid
+    FOR UPDATE
+  `);
   const owed = await owedOn(tx, input.businessId, input.expenseId);
   if (owed === null) return { outcome: 'refused', reason: 'no_such_purchase', owedK: 0 };
   if (owed === -1) return { outcome: 'refused', reason: 'withdrawn', owedK: 0 };

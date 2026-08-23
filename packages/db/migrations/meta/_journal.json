@@ -288,6 +288,13 @@
       "when": 1787187811134,
       "tag": "0040_asset_disposal",
       "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1787187811135,
+      "tag": "0041_bank_and_asset_indexes",
+      "breakpoints": true
     }
   ]
 }

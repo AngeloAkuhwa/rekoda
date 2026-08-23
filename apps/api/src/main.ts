@@ -8,10 +8,27 @@ import { AppModule } from './app.module.js';
 import { MAX_IMAGE_BYTES } from '@rekoda/core';
 import { CONFIG, loadConfig, type ApiConfig } from './config.js';
 
+function trustedProxies(): boolean | string[] {
+  const raw = process.env['REKODA_TRUSTED_PROXIES']?.trim();
+  if (!raw) return true;
+  return raw
+    .split(',')
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0);
+}
+
 export async function createApp(): Promise<NestFastifyApplication> {
   const app = await NestFactory.create<NestFastifyApplication>(
     AppModule,
-    new FastifyAdapter({ trustProxy: true }),
+    /**
+     * `trustProxy: true` believes ANY X-Forwarded-For, which lets a caller
+     * who can reach this process directly mint a fresh client address per
+     * request and reset every per-IP bucket. REKODA_TRUSTED_PROXIES narrows
+     * trust to the deployment's actual proxy addresses (comma-separated IPs
+     * or CIDRs); unset keeps the permissive default for development, and
+     * production deployments must set it.
+     */
+    new FastifyAdapter({ trustProxy: trustedProxies() }),
     /**
      * `rawBody` keeps the exact bytes of each request alongside the parsed
      * body, which the Meta webhook needs: `X-Hub-Signature-256` is an HMAC
@@ -76,8 +93,17 @@ export async function createApp(): Promise<NestFastifyApplication> {
     global: true,
     max: config.rateLimitMax,
     timeWindow: '1 minute',
-    // The health endpoint is polled by the platform, not by callers.
-    allowList: (request) => request.url === '/health',
+    /* The health endpoint is polled by the platform, not by callers. The
+     * webhooks are exempt for a harder reason: Meta and Paystack deliver
+     * EVERY merchant's traffic from a handful of source addresses, so a
+     * per-IP ceiling would start refusing the platform's own inbound at a
+     * few hundred active merchants — and a webhook Meta sees fail repeatedly
+     * is a webhook Meta disables. Both routes verify an HMAC signature
+     * before doing anything, which is a stronger gate than any counter. */
+    allowList: (request) =>
+      request.url === '/health' ||
+      request.url === '/webhooks/meta' ||
+      request.url === '/webhooks/paystack',
     keyGenerator: (request) => request.ip,
     errorResponseBuilder: () => ({
       statusCode: 429,

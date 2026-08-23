@@ -2,10 +2,10 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 import { InvalidPhoneError, normalisePhone } from '@rekoda/core/identity';
 import { redactForLog } from '@rekoda/core/privacy';
 import type { InboundEvent } from '@rekoda/contracts';
-import { events, identity, type Db } from '@rekoda/db';
+import { events, identity, jobsRepo, withBusiness, type Db } from '@rekoda/db';
 import { CONFIG, type ApiConfig } from '../config.js';
 import { DB } from '../db/db.module.js';
-import { JobKind, JobQueue } from '../jobs/queue.service.js';
+import { JobKind } from '../jobs/queue.service.js';
 import { sealPayload } from '../privacy/payload-vault.js';
 
 /**
@@ -22,12 +22,42 @@ export class MetaIngressService {
 
   constructor(
     @Inject(DB) private readonly db: Db,
-    @Inject(JobQueue) private readonly queue: JobQueue,
     @Inject(CONFIG) private readonly config: ApiConfig,
   ) {}
 
   async accept(event: InboundEvent, payload: unknown): Promise<{ isNew: boolean }> {
     const businessId = await this.resolveBusiness(event.from);
+
+    /**
+     * Stored and queued in ONE transaction when there is work to queue.
+     *
+     * These used to be two commits, and the gap between them was a message
+     * that could never be answered: recorded (so Meta's retry deduplicates
+     * to nothing) with no job (so no handler ever opens it). A crash between
+     * two statements in one transaction leaves nothing instead.
+     */
+    if (businessId && event.kind !== 'status') {
+      return withBusiness(this.db, businessId, async (tx) => {
+        const recorded = await events.recordEvent(tx, {
+          provider: 'meta',
+          eventType: `message.${event.messageType}`,
+          externalId: event.externalId,
+          payload: sealPayload(payload, this.config.vaultKey),
+          businessId,
+        });
+        if (!recorded.isNew) {
+          this.log.debug(`ignored a duplicate Meta event ${redactForLog(event.externalId)}`);
+          return { isNew: false };
+        }
+        await jobsRepo.enqueue(tx, {
+          businessId,
+          kind: JobKind.InboundMessage,
+          payload: { eventId: recorded.id },
+          singletonKey: recorded.id,
+        });
+        return { isNew: true };
+      });
+    }
 
     const recorded = await events.recordEvent(this.db, {
       provider: 'meta',
@@ -54,27 +84,11 @@ export class MetaIngressService {
       return { isNew: false };
     }
 
-    /**
-     * Queue the work, and only for a message we can attribute.
-     *
-     * Two silences here are deliberate. A delivery receipt has nothing to
-     * understand, and a message from a stranger has no tenant to run under —
+    /* Nothing to queue, deliberately. A delivery receipt has nothing to
+     * understand, and a message from a stranger has no tenant to run under:
      * `jobs.business_id` is NOT NULL precisely so that "run this for nobody"
-     * cannot be expressed. Both are already durably stored; the reply layer
-     * picks up the second when it exists.
-     *
-     * The singleton key is the event id, so a retry that races past the
-     * `external_events` unique index still cannot produce two jobs.
-     */
-    if (businessId && event.kind !== 'status') {
-      await this.queue.enqueue({
-        businessId,
-        kind: JobKind.InboundMessage,
-        payload: { eventId: recorded.id },
-        singletonKey: recorded.id,
-      });
-    }
-
+     * cannot be expressed. Both are durably stored; the reply layer picks up
+     * the second when it exists. */
     return { isNew: true };
   }
 
