@@ -101,10 +101,15 @@ export async function sweepGracePeriods(
       });
       result.reminded += 1;
     } catch (error) {
-      /* A missing template is the expected failure before one is approved,
-       * and it is not a reason to retry every pass for seven days. The claim
-       * is already taken, the dashboard already shows the state, and the log
-       * says which merchant did not hear from us. */
+      /* The claim goes BACK. Burning it on a failed send meant a Meta outage
+       * on day five silenced that day's warning forever, and the merchant's
+       * last memory of Rekoda before the day-seven cutoff was silence. The
+       * next hourly pass re-claims the day, so the reminder lands as soon as
+       * the channel recovers; a still-missing template costs one warn line
+       * per business per pass, which is the log doing its job. */
+      await withBusiness(deps.appDb, row.businessId, (tx) =>
+        subscriptionsRepo.releaseGraceReminder(tx, row.businessId, day),
+      );
       const reason = error instanceof SendFailed ? error.message : String(error);
       log.warn(`business ${row.businessId}: grace reminder not delivered: ${redactForLog(reason)}`);
     }

@@ -156,12 +156,24 @@ async function recordPaymentActionUnguarded(
     return { error: 'Say how much came in, in naira. For example 40000, or 40k.' };
   }
   const method = String(formData.get('method') ?? 'cash') === 'transfer' ? 'transfer' : 'cash';
+  const clientRefRaw = String(formData.get('clientRef') ?? '');
+  const clientRef = /^[0-9a-f-]{36}$/i.test(clientRefRaw) ? clientRefRaw : undefined;
 
-  const outcome = await recordPayment(token, { invoiceNumber, amountK: toKobo(naira), method });
+  const outcome = await recordPayment(token, {
+    invoiceNumber,
+    amountK: toKobo(naira),
+    method,
+    ...(clientRef ? { clientRef } : {}),
+  });
   if (!outcome) return { error: 'That did not go through. Nothing was changed.' };
 
   if (outcome.outcome === 'not_found') {
     return { error: 'That invoice is no longer here. Reload the page and try again.' };
+  }
+  if (outcome.outcome === 'duplicate') {
+    /* The same form reached us twice; the first submission booked. */
+    revalidatePath('/app/invoices');
+    return { done: 'Already recorded. Nothing was recorded twice.' };
   }
   if (outcome.outcome === 'already_settled') {
     return { error: `${outcome.invoiceNumber} is already paid in full. Nothing was recorded.` };

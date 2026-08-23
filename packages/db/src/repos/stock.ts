@@ -123,11 +123,22 @@ export async function findOrCreateProduct(
   const existing = await productByName(tx, businessId, name);
   if (existing) return existing;
 
+  /* Backed by products_business_folded_name_ux now: two messages naming a
+   * new product at the same moment used to both pass the read above and
+   * both insert, splitting the stock history between twins forever (the
+   * exact outcome the docblock above warns about). The index decides, and
+   * the loser reads the winner. */
   const inserted = await tx
     .insert(products)
     .values({ businessId, name: name.trim() })
+    .onConflictDoNothing()
     .returning({ id: products.id, name: products.name });
-  const row = inserted[0]!;
+  const row = inserted[0];
+  if (!row) {
+    const winner = await productByName(tx, businessId, name);
+    if (!winner) throw new Error('product insert conflicted but the winner is not readable');
+    return winner;
+  }
   return { id: row.id, name: row.name, unitPriceK: null, unitCostK: null, onHand: 0, active: true };
 }
 
@@ -165,9 +176,31 @@ export async function recordDelivery(
     sourceId?: string | null;
   },
 ): Promise<number> {
+  /**
+   * Locked and re-read before averaging. The caller's snapshot was taken by
+   * an earlier SELECT, and two deliveries racing on it would each average
+   * against the same pre-state; the second UPDATE then overwrites the first
+   * and the weighted cost forgets a delivery forever, which every later
+   * sale's COGS inherits. FOR UPDATE serialises the two, and the fresh sum
+   * is the state the average is truly joining.
+   */
+  const lockedRows = await tx.execute<{ unit_cost_k: string | number | null; on_hand: number }>(sql`
+    SELECT p.unit_cost_k,
+           (SELECT coalesce(sum(m.delta), 0)::int
+              FROM inventory_movements m WHERE m.product_id = p.id) AS on_hand
+    FROM products p
+    WHERE p.business_id = ${input.businessId}::uuid AND p.id = ${input.product.id}::uuid
+    FOR UPDATE OF p
+  `);
+  const locked = [...lockedRows][0];
   const averageCostK = weightedAverageCostK({
-    onHand: input.product.onHand,
-    averageCostK: input.product.unitCostK,
+    onHand: locked?.on_hand ?? input.product.onHand,
+    averageCostK:
+      locked === undefined
+        ? input.product.unitCostK
+        : locked.unit_cost_k === null
+          ? null
+          : Number(locked.unit_cost_k),
     arriving: input.quantity,
     costK: input.costK,
   });

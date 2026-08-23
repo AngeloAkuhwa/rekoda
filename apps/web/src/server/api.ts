@@ -487,7 +487,12 @@ export async function reportsAudit(sessionToken: string): Promise<ReportsAuditRe
 /** A payment the merchant is reporting, against the invoice it settles. */
 export async function recordPayment(
   sessionToken: string,
-  body: { invoiceNumber: string; amountK: number; method: 'cash' | 'transfer' },
+  body: {
+    invoiceNumber: string;
+    amountK: number;
+    method: 'cash' | 'transfer';
+    clientRef?: string;
+  },
 ): Promise<RecordPaymentResponse | null> {
   const { status, json } = await call({
     method: 'POST',

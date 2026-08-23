@@ -207,11 +207,18 @@ async function exception(
 }
 
 function referenceOf(payload: unknown, vaultKey: string): string | null {
+  let opened: unknown;
   try {
-    const parsed = paystackWebhookBody.safeParse(openPayload(payload, vaultKey));
-    if (!parsed.success) return null;
-    return summarisePaystackEvent(parsed.data).reference;
+    opened = openPayload(payload, vaultKey);
   } catch {
-    return null;
+    /* A seal that will not open is a KEY problem, not an event problem — the
+     * pump refuses to drain the queue on it and so does this handler.
+     * Throwing lets the job retry (and heal the moment VAULT_KEY is fixed)
+     * and, failing that, die VISIBLY in queue health, instead of quietly
+     * retiring a confirmed payment as "unreadable". */
+    throw new Error('sealed Paystack payload would not open at processing time; check VAULT_KEY');
   }
+  const parsed = paystackWebhookBody.safeParse(opened);
+  if (!parsed.success) return null;
+  return summarisePaystackEvent(parsed.data).reference;
 }

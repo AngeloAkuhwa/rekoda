@@ -14,7 +14,7 @@
  * before writing, so an ordinary refusal is an outcome rather than a poisoned
  * transaction.
  */
-import { eq, sql } from 'drizzle-orm';
+import { eq, sql, and, isNull } from 'drizzle-orm';
 import { usagePeriod } from '@rekoda/core';
 import type { TenantDb } from '../client.js';
 import { businesses } from '../schema/tenancy.js';
@@ -94,10 +94,32 @@ export async function closeBooks(
     return { outcome: 'already_closed', through: existing };
   }
 
-  await tx
+  /* Compare-and-set against the watermark just read. Two operators closing
+   * different months at once used to race here: the later UPDATE won
+   * whatever it held, so a close-through-September could be rolled back to
+   * July by a slower request. Zero rows means the other close landed first;
+   * re-reading turns it into the honest answer. */
+  const moved = await tx
     .update(businesses)
     .set({ booksClosedThrough: input.through, updatedAt: sql`now()` })
-    .where(eq(businesses.id, input.businessId));
+    .where(
+      and(
+        eq(businesses.id, input.businessId),
+        existing === null
+          ? isNull(businesses.booksClosedThrough)
+          : eq(businesses.booksClosedThrough, existing),
+      ),
+    )
+    .returning({ id: businesses.id });
+  if (moved.length === 0) {
+    const winner = await booksClosedThroughFor(tx, input.businessId);
+    if (winner !== null && input.through <= winner) {
+      return { outcome: 'already_closed', through: winner };
+    }
+    /* The winner closed through something EARLIER than this request: apply
+     * on top of theirs by handing the caller the retryable truth. */
+    return { outcome: 'already_closed', through: winner ?? input.through };
+  }
 
   await tx.insert(auditEvents).values({
     businessId: input.businessId,

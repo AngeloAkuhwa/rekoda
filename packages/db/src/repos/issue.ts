@@ -204,7 +204,7 @@ export async function issueSale(tx: TenantDb, input: IssueSaleInput): Promise<Is
     tx,
     input.businessId,
     'invoice',
-    issuedAt.getUTCFullYear(),
+    lagosYear(issuedAt),
   );
 
   const snapshot: DocumentSnapshot = {

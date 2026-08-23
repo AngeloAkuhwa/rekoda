@@ -146,7 +146,11 @@ function referenceOf(payload: unknown, vaultKey: string): string | null {
   try {
     opened = openPayload(payload, vaultKey);
   } catch {
-    return null;
+    /* A seal that will not open is a KEY problem, not an event problem — the
+     * pump refuses to drain the queue on it and so does this handler.
+     * Throwing lets the job retry (healing when VAULT_KEY is fixed) or die
+     * visibly, instead of retiring the platform's own revenue as unread. */
+    throw new Error('sealed Paystack payload would not open at processing time; check VAULT_KEY');
   }
   const parsed = paystackWebhookBody.safeParse(opened);
   if (!parsed.success) return null;

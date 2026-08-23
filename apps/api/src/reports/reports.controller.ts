@@ -151,6 +151,16 @@ const XLSX_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.s
  */
 const EXPORT_ROWS = 10_000;
 
+/** A 23505 on payments_rekoda_reference_ux: this clientRef already booked. */
+function isDuplicateClientRef(error: unknown): boolean {
+  const cause = (error as { cause?: unknown })?.cause ?? error;
+  const pg = cause as { code?: string; constraint_name?: string; constraint?: string };
+  return (
+    pg?.code === '23505' &&
+    (pg.constraint_name ?? pg.constraint ?? '').includes('payments_rekoda_reference')
+  );
+}
+
 @Controller('v1/reports')
 @UseGuards(SessionGuard, RolesGuard)
 export class ReportsController {
@@ -493,27 +503,37 @@ export class ReportsController {
       throw new BadRequestException('invoiceNumber, a positive amount in kobo, and a method');
     }
     const businessId = request.auth!.businessId;
-    const outcome = await withBusiness(this.db, businessId, async (tx) => {
-      const done = await settleRepo.recordPaymentByNumber(tx, {
-        businessId,
-        invoiceNumber: parsed.data.invoiceNumber,
-        amountK: parsed.data.amountK,
-        method: parsed.data.method,
-        actor: `user:${request.auth!.userId}`,
-      });
-      /* The same render the chat path enqueues, in the same transaction, so
-       * paper and record commit together. A receipt a merchant can see in
-       * the register but never open is worse than no receipt at all. */
-      if (done.outcome === 'recorded') {
-        await jobsRepo.enqueue(tx, {
+    let outcome: Awaited<ReturnType<typeof settleRepo.recordPaymentByNumber>>;
+    try {
+      outcome = await withBusiness(this.db, businessId, async (tx) => {
+        const done = await settleRepo.recordPaymentByNumber(tx, {
           businessId,
-          kind: 'document.render',
-          payload: { receiptId: done.receiptId },
-          singletonKey: `receipt:${done.receiptId}`,
+          invoiceNumber: parsed.data.invoiceNumber,
+          amountK: parsed.data.amountK,
+          method: parsed.data.method,
+          actor: `user:${request.auth!.userId}`,
+          clientRef: parsed.data.clientRef ?? null,
         });
-      }
-      return done;
-    });
+        /* The same render the chat path enqueues, in the same transaction, so
+         * paper and record commit together. A receipt a merchant can see in
+         * the register but never open is worse than no receipt at all. */
+        if (done.outcome === 'recorded') {
+          await jobsRepo.enqueue(tx, {
+            businessId,
+            kind: 'document.render',
+            payload: { receiptId: done.receiptId },
+            singletonKey: `receipt:${done.receiptId}`,
+          });
+        }
+        return done;
+      });
+    } catch (error) {
+      /* The clientRef met payments_rekoda_reference_ux: this exact form was
+       * submitted before and its payment is already booked. Caught OUT here
+       * because the unique violation aborted the transaction it happened in. */
+      if (isDuplicateClientRef(error)) return { outcome: 'duplicate' };
+      throw error;
+    }
 
     /* `receiptId` is an internal handle and stays here: the merchant is
      * given the receipt NUMBER, which is what a receipt is known by. */

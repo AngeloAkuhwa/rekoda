@@ -233,6 +233,42 @@ const shape = (row: RawCharge): ChargeRow => ({
  * twice, so the caller can apply the cycle inside the same transaction
  * knowing it is applying it for the first time.
  */
+/**
+ * The pending charge a conflicting open just collided with.
+ *
+ * When openCharge answers null, somebody already opened this exact charge
+ * and it has not settled: the right response is to hand the caller THAT
+ * charge's reference, so a double-clicked upgrade or a re-posted pack
+ * purchase resolves to one payment link instead of two payable charges.
+ */
+export async function pendingCharge(
+  tx: TenantDb,
+  businessId: string,
+  match:
+    | { kind: 'first_purchase'; periodStart: Date }
+    | { kind: 'upgrade'; plan: string }
+    | { kind: 'add_on'; packId: string },
+): Promise<{ reference: string; amountK: number } | null> {
+  const rows = await tx.execute<{ reference: string; amount_k: string }>(sql`
+    SELECT reference, amount_k::bigint AS amount_k
+    FROM subscription_charges
+    WHERE business_id = ${businessId}::uuid
+      AND status = 'pending'
+      AND kind = ${match.kind}
+      ${
+        match.kind === 'first_purchase'
+          ? sql`AND period_start = ${match.periodStart.toISOString()}::timestamptz`
+          : match.kind === 'upgrade'
+            ? sql`AND plan = ${match.plan}`
+            : sql`AND pack_id = ${match.packId}`
+      }
+    ORDER BY created_at DESC
+    LIMIT 1
+  `);
+  const row = [...rows][0];
+  return row ? { reference: row.reference, amountK: Number(row.amount_k) } : null;
+}
+
 export async function settleCharge(
   tx: TenantDb,
   settlement: {
@@ -497,6 +533,26 @@ export async function claimGraceReminder(
  * "resume your Complete plan" is answerable later. `payment_failed_at` stays
  * as it was: it is the record of why this happened.
  */
+/**
+ * Give a claimed reminder day back after a failed send.
+ *
+ * Set to day - 1 rather than NULL: NULL would reopen EARLIER days too, and
+ * the only thing being returned is the one day this pass claimed and then
+ * failed to deliver. The next hourly pass re-claims it, so a merchant in
+ * grace is warned as soon as the channel recovers instead of never.
+ */
+export async function releaseGraceReminder(
+  tx: TenantDb,
+  businessId: string,
+  day: number,
+): Promise<void> {
+  await tx.execute(sql`
+    UPDATE businesses
+    SET last_grace_reminder_day = ${day - 1}, updated_at = now()
+    WHERE id = ${businessId}::uuid AND last_grace_reminder_day = ${day}
+  `);
+}
+
 export async function expireSubscription(
   tx: TenantDb,
   businessId: string,

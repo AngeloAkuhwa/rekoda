@@ -40,6 +40,7 @@ import {
   stockRepo,
   withBusiness,
   type Db,
+  reportsRepo,
 } from '@rekoda/db';
 import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
@@ -783,6 +784,40 @@ describe('recording a payment from the dashboard', () => {
       return sale.invoiceNumber;
     });
   }
+
+  it('books ONE payment when the same form arrives twice (clientRef)', async () => {
+    const { auth, businessId } = await onboard('+2348177000109');
+    const invoiceNumber = await unpaidSale(businessId);
+    const clientRef = '2f9d3c34-6f5a-4b4e-9a89-27d5f0a01a55';
+
+    const first = recordPaymentResponse.parse(
+      (
+        await post(
+          '/v1/reports/payments/record',
+          { invoiceNumber, amountK: 6_000_000, method: 'cash', clientRef },
+          auth,
+        )
+      ).json(),
+    );
+    expect(first.outcome).toBe('recorded');
+
+    /* The dropped-response retry: same form, same key. */
+    const second = recordPaymentResponse.parse(
+      (
+        await post(
+          '/v1/reports/payments/record',
+          { invoiceNumber, amountK: 6_000_000, method: 'cash', clientRef },
+          auth,
+        )
+      ).json(),
+    );
+    expect(second.outcome).toBe('duplicate');
+
+    const receipts = await withBusiness(db, businessId, (tx) =>
+      reportsRepo.receiptsFor(tx, businessId, 10),
+    );
+    expect(receipts.rows).toHaveLength(1);
+  });
 
   it('issues a receipt, and takes it off what is owed', async () => {
     const { auth, businessId } = await onboard('+2348177000101');
