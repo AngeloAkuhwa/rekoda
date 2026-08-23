@@ -19,7 +19,7 @@ import { join } from 'node:path';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { catalogueResponse } from '@rekoda/contracts';
 import { MAX_IMAGE_BYTES } from '@rekoda/core';
-import { createDb, stockRepo, withBusiness, type Db } from '@rekoda/db';
+import { catalogueRepo, createDb, stockRepo, withBusiness, type Db } from '@rekoda/db';
 import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 
@@ -168,7 +168,13 @@ describe('the guardrail', () => {
 describe('the list', () => {
   it('is empty for a shop that has mentioned nothing', async () => {
     const { auth } = await onboard('+2348177300002');
-    expect(await catalogueOf(auth)).toEqual({ products: [], unpriced: 0 });
+    expect(await catalogueOf(auth)).toEqual({
+      products: [],
+      total: 0,
+      listed: 0,
+      hidden: 0,
+      unpriced: 0,
+    });
   });
 
   it('carries what a product knows about itself, and no photo path until there is one', async () => {
@@ -188,6 +194,47 @@ describe('the list', () => {
     });
     /* Listed with no price is the state that stops a shop selling. */
     expect(unpriced).toBe(1);
+  });
+
+  /**
+   * The four counts, carried out to the wire.
+   *
+   * Scoped deliberately, and named for what it actually proves. Twelve
+   * products sit well inside the page the endpoint returns, so counting the
+   * page and counting the table give the same four numbers here: this test
+   * cannot tell them apart and does not claim to. Mutating the controller to
+   * count its own rows leaves it green, which I checked rather than assumed.
+   *
+   * The divergence is proved in `catalogue.integration.test.ts` in
+   * @rekoda/db, where a limit can be passed and a page of five out of twelve
+   * makes the two answers differ. That is the layer that owns the counting.
+   * What is worth having here is that all four cross the border with the
+   * right values attached to the right names, which is its own way to be
+   * wrong.
+   */
+  it('carries all four shop counts to the wire', async () => {
+    const { businessId, auth } = await onboard('+2348177300009');
+    await withBusiness(db, businessId, async (tx) => {
+      for (let i = 0; i < 12; i += 1) {
+        const name = `Product ${String(i + 1).padStart(3, '0')}`;
+        const product = await stockRepo.findOrCreateProduct(tx, businessId, name);
+        /* The last four sort last by name, and are listed with no price. */
+        if (i < 8) {
+          await catalogueRepo.editProduct(tx, businessId, product.id, { unitPriceK: 50_000 });
+        }
+        if (i === 0) {
+          await catalogueRepo.editProduct(tx, businessId, product.id, { active: false });
+        }
+      }
+    });
+
+    const body = await catalogueOf(auth);
+    expect(body.total).toBe(12);
+    expect(body.listed).toBe(11);
+    expect(body.hidden).toBe(1);
+    /* The figure that matters most, and the one most easily transposed with
+     * `hidden` on the way out: eleven listed, four of them unsellable. */
+    expect(body.unpriced).toBe(4);
   });
 
   it('stops counting a hidden product as unpriced, because it is not for sale', async () => {
