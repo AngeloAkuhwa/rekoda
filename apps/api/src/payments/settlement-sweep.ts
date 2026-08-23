@@ -54,13 +54,14 @@ async function applySettlement(deps: SweepDeps, settlement: ProviderSettlement):
   /* Group references by the business that owns them. A reference that
    * resolves to no intent is somebody else's traffic on a shared account —
    * skipped, exactly as the pump skips it. */
+  const owners = await paymentsHub.businessesForReferences(deps.workerDb, ours);
   const byBusiness = new Map<string, string[]>();
   for (const reference of ours) {
-    const intent = await paymentsHub.resolveIntentByReference(deps.workerDb, reference);
-    if (!intent) continue;
-    const list = byBusiness.get(intent.businessId) ?? [];
+    const businessId = owners.get(reference);
+    if (!businessId) continue;
+    const list = byBusiness.get(businessId) ?? [];
     list.push(reference);
-    byBusiness.set(intent.businessId, list);
+    byBusiness.set(businessId, list);
   }
 
   let stamped = 0;

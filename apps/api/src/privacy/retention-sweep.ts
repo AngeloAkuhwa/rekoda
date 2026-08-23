@@ -69,44 +69,51 @@ async function warn(
   now: Date,
   result: RetentionSweepResult,
 ): Promise<void> {
-  const candidates = await retentionRepo.dueForNotice(
-    deps.workerDb,
-    retentionCutoff(now, RETENTION_NOTICE_DAYS),
-  );
-
-  for (const candidate of candidates) {
-    const deletesOn = new Date(
-      candidate.endedAt.getTime() + RETENTION.abandonedTrialDays * 86_400_000,
+  /* Pages until drained: claiming removes a row from the set, so a repeat
+   * with no progress (every candidate unreachable) is the stop signal. */
+  const PAGE = 200;
+  for (;;) {
+    const before = result.warned;
+    const candidates = await retentionRepo.dueForNotice(
+      deps.workerDb,
+      retentionCutoff(now, RETENTION_NOTICE_DAYS),
+      PAGE,
     );
-
-    /* No phone, or STOP. Both mean we cannot warn them, and neither is a
-     * reason to delete anyway: the claim is not taken, so the deletion stage
-     * never sees this business and their records stay. A merchant who asked
-     * for silence did not ask to be forgotten. */
-    if (!candidate.ownerPhone || candidate.ownerOptedOut) continue;
-
-    try {
-      await deps.sender.sendRetentionNotice({
-        to: candidate.ownerPhone,
-        daysLeft: String(
-          Math.max(0, Math.ceil((deletesOn.getTime() - now.getTime()) / 86_400_000)),
-        ),
-        deletesOn: lagosDate(deletesOn),
-      });
-    } catch (error) {
-      /* Unreached means not warned means not deleted. The claim below is
-       * skipped on purpose, so the next pass tries again. */
-      const reason = error instanceof SendFailed ? error.message : String(error);
-      log.warn(
-        `business ${candidate.businessId}: retention notice not delivered, not claiming: ${redactForLog(reason)}`,
+    for (const candidate of candidates) {
+      const deletesOn = new Date(
+        candidate.endedAt.getTime() + RETENTION.abandonedTrialDays * 86_400_000,
       );
-      continue;
-    }
 
-    const claimed = await withBusiness(deps.appDb, candidate.businessId, (tx) =>
-      retentionRepo.claimRetentionNotice(tx, candidate.businessId, now),
-    );
-    if (claimed) result.warned += 1;
+      /* No phone, or STOP. Both mean we cannot warn them, and neither is a
+       * reason to delete anyway: the claim is not taken, so the deletion stage
+       * never sees this business and their records stay. A merchant who asked
+       * for silence did not ask to be forgotten. */
+      if (!candidate.ownerPhone || candidate.ownerOptedOut) continue;
+
+      try {
+        await deps.sender.sendRetentionNotice({
+          to: candidate.ownerPhone,
+          daysLeft: String(
+            Math.max(0, Math.ceil((deletesOn.getTime() - now.getTime()) / 86_400_000)),
+          ),
+          deletesOn: lagosDate(deletesOn),
+        });
+      } catch (error) {
+        /* Unreached means not warned means not deleted. The claim below is
+         * skipped on purpose, so the next pass tries again. */
+        const reason = error instanceof SendFailed ? error.message : String(error);
+        log.warn(
+          `business ${candidate.businessId}: retention notice not delivered, not claiming: ${redactForLog(reason)}`,
+        );
+        continue;
+      }
+
+      const claimed = await withBusiness(deps.appDb, candidate.businessId, (tx) =>
+        retentionRepo.claimRetentionNotice(tx, candidate.businessId, now),
+      );
+      if (claimed) result.warned += 1;
+    }
+    if (candidates.length < PAGE || result.warned === before) break;
   }
 }
 
@@ -117,34 +124,46 @@ async function erase(
 ): Promise<void> {
   const endedBefore = retentionCutoff(now, RETENTION.abandonedTrialDays);
   const notifiedBefore = retentionCutoff(now, RETENTION.noticeDays);
-  const candidates = await retentionRepo.dueForDeletion(deps.workerDb, endedBefore, notifiedBefore);
 
-  for (const candidate of candidates) {
-    let removed: number;
-    try {
-      removed = await retentionRepo.deleteForRetention(
-        deps.workerDb,
-        candidate.businessId,
-        endedBefore,
-      );
-    } catch (error) {
-      /* A foreign key nobody expected. The whole deletion rolled back, so
-       * nothing is half-gone, and this is the one failure here worth waking
-       * somebody for: the schedule is now being missed. */
-      log.error(
-        `business ${candidate.businessId}: retention deletion failed and rolled back: ${redactForLog(String(error))}`,
-      );
-      continue;
-    }
+  /* 50 per BITE, not per six hours: the old single bite made 200 deletions
+   * a day the compliance ceiling, and a backlog past it simply grew. */
+  const PAGE = 50;
+  for (;;) {
+    const before = result.deleted;
+    const candidates = await retentionRepo.dueForDeletion(
+      deps.workerDb,
+      endedBefore,
+      notifiedBefore,
+      PAGE,
+    );
+    for (const candidate of candidates) {
+      let removed: number;
+      try {
+        removed = await retentionRepo.deleteForRetention(
+          deps.workerDb,
+          candidate.businessId,
+          endedBefore,
+        );
+      } catch (error) {
+        /* A foreign key nobody expected. The whole deletion rolled back, so
+         * nothing is half-gone, and this is the one failure here worth waking
+         * somebody for: the schedule is now being missed. */
+        log.error(
+          `business ${candidate.businessId}: retention deletion failed and rolled back: ${redactForLog(String(error))}`,
+        );
+        continue;
+      }
 
-    if (removed < 0) {
-      /* The function's own predicate refused. Somebody paid us between the
-       * query and the call, which is the best possible reason to stop. */
-      log.log(`business ${candidate.businessId}: no longer due for deletion, skipped`);
-      continue;
+      if (removed < 0) {
+        /* The function's own predicate refused. Somebody paid us between the
+         * query and the call, which is the best possible reason to stop. */
+        log.log(`business ${candidate.businessId}: no longer due for deletion, skipped`);
+        continue;
+      }
+      result.deleted += 1;
+      result.rowsRemoved += removed;
+      log.log(`business ${candidate.businessId}: deleted on schedule, ${removed} rows`);
     }
-    result.deleted += 1;
-    result.rowsRemoved += removed;
-    log.log(`business ${candidate.businessId}: deleted on schedule, ${removed} rows`);
+    if (candidates.length < PAGE || result.deleted === before) break;
   }
 }

@@ -69,6 +69,31 @@ export async function enqueue(q: Queryable, input: EnqueueInput): Promise<{ id: 
 }
 
 /**
+ * Run one pass of a named sweep on exactly one replica.
+ *
+ * Every worker replica fires every sweep timer, and while the claims inside
+ * each sweep are individually race-safe, N replicas doing identical passes
+ * is N times the database load for one replica's worth of progress. A
+ * transaction-scoped advisory lock elects a leader per sweep per pass; the
+ * losers return without working and try again next tick, so a dead leader
+ * is replaced by whoever fires next. Nothing to configure, nothing to clean
+ * up: the lock dies with the transaction.
+ */
+export async function runExclusively(
+  db: Db,
+  name: string,
+  work: () => Promise<unknown>,
+): Promise<void> {
+  await db.transaction(async (tx) => {
+    const rows = await tx.execute<{ locked: boolean }>(
+      sql`SELECT pg_try_advisory_xact_lock(hashtext(${`sweep:${name}`})) AS locked`,
+    );
+    if (![...rows][0]?.locked) return;
+    await work();
+  });
+}
+
+/**
  * Has a job EVER been queued under this singleton key, in any state?
  *
  * The enqueue's own dedupe only covers pending and running, which is right

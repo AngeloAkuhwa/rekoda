@@ -168,7 +168,7 @@ export class PrivacyGateway {
     const decrypted: Array<{ name: string; token: string; customerId: string }> = [];
     for (const row of named) {
       try {
-        const name = decryptFacet(row.ciphertext, this.config.vaultKey);
+        const name = decryptFacet(row.ciphertext, this.config.vaultKey, `${businessId}:name`);
         if (name.trim().length >= MIN_NAME_LENGTH) {
           decrypted.push({ name: name.trim(), token: row.token, customerId: row.customerId });
         }
@@ -258,7 +258,13 @@ export class PrivacyGateway {
           this.db,
           businessId,
           token,
-          [{ facet, ciphertext: encryptFacet(value, this.config.vaultKey), matchKey }],
+          [
+            {
+              facet,
+              ciphertext: encryptFacet(value, this.config.vaultKey, `${businessId}:${facet}`),
+              matchKey,
+            },
+          ],
         );
         return { token: created.token, customerId: created.id, facet, created: true };
       } catch (error) {

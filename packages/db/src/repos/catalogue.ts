@@ -12,7 +12,7 @@
  * record of anything: what a thing SOLD for is on the invoice, permanently,
  * and changing the list price never touches it.
  */
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, sql, isNotNull } from 'drizzle-orm';
 import { foldProductName } from '@rekoda/core';
 import type { TenantDb } from '../client.js';
 import { products } from '../schema/commerce.js';
@@ -191,14 +191,16 @@ export async function sellableCatalogueFor(
   const offset = (input.page - 1) * input.pageSize;
   const rows = await tx.execute<CatalogueRow & { n: number }>(sql`
     WITH counted AS (
+      /* No inventory join, deliberately: onHand never crosses the public
+       * boundary (how many are left is the merchant's business), and joining
+       * every movement just to discard the sum made each crawler-reachable
+       * page view aggregate the tenant's whole stock history. */
       SELECT p.id, p.name, p.description, p.unit_price_k, p.unit_cost_k, p.image_key, p.active,
-             coalesce(sum(m.delta), 0)::int AS on_hand
+             0::int AS on_hand
       FROM products p
-      LEFT JOIN inventory_movements m ON m.product_id = p.id
       WHERE p.business_id = ${businessId}::uuid
         AND p.active = 1
         AND p.unit_price_k IS NOT NULL
-      GROUP BY p.id, p.name, p.description, p.unit_price_k, p.unit_cost_k, p.image_key, p.active
     )
     SELECT id, name, description, unit_price_k, unit_cost_k, image_key, active, on_hand,
            count(*) OVER ()::int AS n
@@ -308,6 +310,34 @@ export async function setProductImage(
  * misconfigured is a repo that leaks silently. The unguessable storage key is
  * the third.
  */
+/**
+ * The image key ONLY when the product is still sellable.
+ *
+ * The public photo route serves whatever key comes back, and the plain
+ * lookup kept serving a product the merchant had de-listed: taken down from
+ * the shop but alive at a previously shared URL, with a public cache header
+ * keeping it warm. De-listed means gone, photos included.
+ */
+export async function sellableImageKeyFor(
+  tx: TenantDb,
+  businessId: string,
+  id: string,
+): Promise<string | null> {
+  const rows = await tx
+    .select({ imageKey: products.imageKey })
+    .from(products)
+    .where(
+      and(
+        eq(products.businessId, businessId),
+        eq(products.id, id),
+        eq(products.active, 1),
+        isNotNull(products.unitPriceK),
+      ),
+    )
+    .limit(1);
+  return rows[0]?.imageKey ?? null;
+}
+
 export async function imageKeyFor(
   tx: TenantDb,
   businessId: string,

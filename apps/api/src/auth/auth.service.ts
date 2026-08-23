@@ -368,6 +368,10 @@ export class AuthService {
 
   private async membershipSummaries(userId: string): Promise<MembershipSummary[]> {
     const rows = await identity.membershipsForUser(this.db, userId);
+    /* One pinned read per membership, deliberately: `businesses` is under
+     * row-level security, so a cross-tenant IN query returns nothing and the
+     * pin per business IS the price of the policy. Memberships per user are
+     * single digits, so this loop is bounded by people, not data. */
     const summaries: MembershipSummary[] = [];
     for (const row of rows) {
       const business = await identity.businessById(this.db, row.businessId);

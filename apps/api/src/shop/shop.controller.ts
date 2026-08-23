@@ -194,7 +194,7 @@ export class PublicShopController {
     }
 
     const key = await withBusiness(this.db, shop.businessId, (tx) =>
-      catalogueRepo.imageKeyFor(tx, shop.businessId, id),
+      catalogueRepo.sellableImageKeyFor(tx, shop.businessId, id),
     );
     const bytes = key ? await this.storage.get(key).catch(() => null) : null;
     const type = bytes ? sniffImageType(bytes) : null;

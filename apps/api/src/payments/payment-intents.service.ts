@@ -271,6 +271,6 @@ export class PaymentIntentsService {
     const facets = await customersRepo.identityFacetsFor(tx, businessId, customerId);
     const emailFacet = facets.find((f) => f.facet === 'email');
     if (!emailFacet) return null;
-    return decryptFacet(emailFacet.ciphertext, this.config.vaultKey);
+    return decryptFacet(emailFacet.ciphertext, this.config.vaultKey, `${businessId}:email`);
   }
 }
