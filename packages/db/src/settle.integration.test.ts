@@ -551,7 +551,9 @@ describe('recording a merchant-reported payment', () => {
 
     await record(businessId, sale.invoiceId, 6_000_000);
 
-    const payments = await withBusiness(db, businessId, (tx) => settleRepo.paymentsFor(tx));
+    const { rows: payments } = await withBusiness(db, businessId, (tx) =>
+      settleRepo.paymentsFor(tx),
+    );
     expect(payments).toHaveLength(1);
     expect(payments[0]?.verified).toBe(0);
     expect(payments[0]?.amountK).toBe(6_000_000);
@@ -600,7 +602,91 @@ describe('recording a merchant-reported payment', () => {
     });
 
     // And nothing moved: the refusal is a refusal, not a partial write.
-    const payments = await withBusiness(db, businessId, (tx) => settleRepo.paymentsFor(tx));
+    const { rows: payments } = await withBusiness(db, businessId, (tx) =>
+      settleRepo.paymentsFor(tx),
+    );
     expect(payments).toHaveLength(1);
+  });
+});
+
+/**
+ * The payments register, and who can count it.
+ *
+ * `paymentsFor` reads the pinned tenant's payments and then counts the table
+ * with NO business filter at all: `SELECT count(*) FROM payments`, relying
+ * entirely on row-level security to scope it. That is the codebase's normal
+ * bargain, but it is worth one test of its own, because the failure is quiet
+ * and it is not the rows that leak. A merchant would see their own five
+ * payments under a count of two hundred, which is a number about somebody
+ * else's business.
+ */
+describe('one merchant counting their payments', () => {
+  async function businessNamed(phone: string): Promise<string> {
+    const user = await identity.upsertUserByPhone(db, phone);
+    const business = await identity.createBusinessWithOwner(db, {
+      name: 'A shop',
+      businessType: null,
+      ownerUserId: user.id,
+    });
+    return business.id;
+  }
+
+  async function payOnce(businessId: string, amountK: number) {
+    const sale = await withBusiness(db, businessId, (tx) =>
+      issueRepo.issueSale(tx, {
+        businessId,
+        customerId: null,
+        customerToken: 'CUSTOMER_7K2',
+        items: [{ name: 'wig', quantity: 1, unitPriceK: amountK }],
+        subtotalK: amountK,
+        discountK: 0,
+        deliveryFeeK: 0,
+        vatK: 0,
+        totalK: amountK,
+        paidK: 0,
+        balanceDueK: amountK,
+        method: 'cash',
+        sourceType: 'chat',
+        sourceId: `draft-${amountK}`,
+        actor: 'system',
+      }),
+    );
+    await withBusiness(db, businessId, (tx) =>
+      settleRepo.recordMerchantPayment(tx, {
+        businessId,
+        invoiceId: sale.invoiceId,
+        amountK,
+        method: 'cash',
+        sourceType: 'chat',
+        sourceId: `draft-pay-${amountK}`,
+        actor: 'user:1',
+      }),
+    );
+  }
+
+  it('counts only its own, never the other tenant’s', async () => {
+    const mine = await businessNamed('+2348120000071');
+    const theirs = await businessNamed('+2348120000072');
+
+    await payOnce(mine, 1_000_000);
+    for (const amountK of [2_000_000, 3_000_000, 4_000_000]) await payOnce(theirs, amountK);
+
+    const seen = await withBusiness(db, mine, (tx) => settleRepo.paymentsFor(tx));
+    expect(seen.rows).toHaveLength(1);
+    /* The claim that matters: not three, and not four. */
+    expect(seen.count).toBe(1);
+    expect(seen.rows[0]?.amountK).toBe(1_000_000);
+  });
+
+  it('puts the newest payment first, which is the one being asked about', async () => {
+    const businessId = await businessNamed('+2348120000073');
+    await payOnce(businessId, 1_000_000);
+    await payOnce(businessId, 9_000_000);
+
+    /* Oldest-first with a cap meant a busy merchant opened "has my money
+     * arrived" and saw only payments they had stopped caring about. */
+    const seen = await withBusiness(db, businessId, (tx) => settleRepo.paymentsFor(tx));
+    expect(seen.rows[0]?.amountK).toBe(9_000_000);
+    expect(seen.count).toBe(2);
   });
 });

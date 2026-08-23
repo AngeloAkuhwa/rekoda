@@ -61,6 +61,15 @@ export const billingOverviewResponse = z.object({
   period: z.string().regex(/^\d{4}-\d{2}$/),
   units: z.array(billingUnitView),
   packs: z.array(billingPackView),
+  /**
+   * Every charge on this account, which is not `charges.length`.
+   *
+   * The page's empty state promises that every payment a merchant makes to
+   * Rekoda will be listed with its reference "so you can put it in your own
+   * books". A silent cap breaks that promise: somebody reconciling against
+   * this list comes up short with nothing on the page to explain why.
+   */
+  chargesTotal: z.number().int().nonnegative(),
   charges: z.array(billingChargeView),
 });
 

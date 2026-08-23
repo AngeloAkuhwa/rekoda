@@ -349,6 +349,15 @@ export default async function BillingPage({
                 ))}
               </tbody>
             </table>
+            {/* The empty state above promises every payment will be listed
+                here "so you can put it in your own books". A silent cap
+                breaks that promise for anybody reconciling against it. */}
+            {overview.chargesTotal > overview.charges.length ? (
+              <p className="rk-fineprint">
+                {overview.chargesTotal} charges all time, showing the latest{' '}
+                {overview.charges.length}.
+              </p>
+            ) : null}
           </div>
         )}
       </div>

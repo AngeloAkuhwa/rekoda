@@ -107,7 +107,7 @@ async function seedVerifiedPayment(phone: string) {
 }
 
 async function settlementState(businessId: string) {
-  const rows = await withBusiness(appDb, businessId, (tx) => settleRepo.paymentsFor(tx));
+  const { rows } = await withBusiness(appDb, businessId, (tx) => settleRepo.paymentsFor(tx));
   return rows[0];
 }
 

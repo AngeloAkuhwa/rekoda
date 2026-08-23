@@ -365,6 +365,6 @@ describe('a subscription payment', () => {
     const charges = await withBusiness(appDb, businessId, (tx) =>
       subscriptionsRepo.chargesFor(tx, businessId),
     );
-    expect(charges).toEqual([]);
+    expect(charges).toEqual({ rows: [], count: 0 });
   });
 });

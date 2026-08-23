@@ -202,7 +202,9 @@ describe('charges', () => {
     expect(await charge(businessId, 'RK-SUB-1')).not.toBeNull();
     expect(await charge(businessId, 'RK-SUB-1')).toBeNull();
 
-    const rows = await inTenant(businessId, (tx) => subscriptionsRepo.chargesFor(tx, businessId));
+    const { rows } = await inTenant(businessId, (tx) =>
+      subscriptionsRepo.chargesFor(tx, businessId),
+    );
     expect(rows).toHaveLength(1);
   });
 
@@ -215,7 +217,9 @@ describe('charges', () => {
     // being billed twice for one month.
     expect(await charge(businessId, 'RK-SUB-2')).toBeNull();
 
-    const rows = await inTenant(businessId, (tx) => subscriptionsRepo.chargesFor(tx, businessId));
+    const { rows } = await inTenant(businessId, (tx) =>
+      subscriptionsRepo.chargesFor(tx, businessId),
+    );
     expect(rows).toHaveLength(1);
   });
 
@@ -323,8 +327,10 @@ describe('charges', () => {
     const bola = await seedBusiness('Bola Stores');
     await charge(ada, 'RK-ADA-1');
 
+    /* Zero rows AND a count of zero: another merchant's billing history is
+     * invisible, not merely off this page of it. */
     const seen = await inTenant(bola, (tx) => subscriptionsRepo.chargesFor(tx, ada));
-    expect(seen).toHaveLength(0);
+    expect(seen).toEqual({ rows: [], count: 0 });
   });
 });
 

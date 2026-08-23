@@ -595,6 +595,73 @@ makes the next addition a decision somebody writes down rather than a diff.
    the merchant's own, every order still becomes an invoice through the same
    engine, and Rekoda still holds no money.
 
+### Since PR #114: one bug, found eight times
+
+PRs #115 to #122 are almost entirely one defect wearing different clothes: a
+page or a reply that describes ITS OWN PAGE and presents that as the business.
+Worth reading as a group, because the shape recurs and the next one will look
+new.
+
+**Where it was only a wrong number.** The stock reply handed a merchant twenty
+products as though that were the shop, and counted the empty shelves it could
+see rather than the ones they have (#116). The dashboard's stock footer told a
+205-product merchant they had 200. The bank page said "412 lines" above a table
+of 100 (#120). The asset register, the catalogue footer, the orders list, the
+billing history and the payments list all did some version of it (#119, #121,
+#122).
+
+**Where it stopped somebody working.** Order pricing scanned a 300-row page and
+answered "I cannot find it in what you sell" about a product the shop stocks
+and has priced (#117). Bank entries and asset disposals could not be reached at
+all from the only screens that offer them (#118, #119). The catalogue's pickers
+stopped at product 300, and the twelve unpriced products a merchant needed to
+fix were the twelve they could not reach (#121).
+
+**The worst one was a zero.** `unpriced` on the catalogue is what the contract
+calls the number that stops a shop selling. Counted off the page it came back
+as ZERO for a shop with twelve listed products nobody could buy, so the page
+rendered no warning at all. Not a count that was low: a warning that was
+absent.
+
+Three shapes of fix, and which one applies is a real decision each time:
+
+1. **Ask for what you need.** Order pricing looks products up by the names in
+   the order (`catalogueByNames`); the bank page asks for movements matching
+   the amounts on its own lines; `matchByHand` asks for the one id it was
+   handed. The cap stops mattering rather than getting bigger.
+2. **Sort so the cap drops history, not work.** The asset register puts what
+   is still owned ahead of what was sold; the statement page puts lines still
+   needing a decision ahead of settled ones. Only works where order is free —
+   the catalogue is name-ordered ON PURPOSE, because a list that reorders
+   itself when a sale lands is a list where the row you were about to change
+   moves.
+3. **Carry enough, and say what is missing.** Counts come from SQL over the
+   whole table, never from `rows.length`, and the page says what it left out.
+   All nine registers now do this; six already did.
+
+Two limits are recorded rather than fixed, both in the task list: the public
+shop still stops at 300 products with nothing saying so (neither remedy fits a
+customer-facing page: a "showing 300 of 400" caption is written for the
+merchant, and a browsing customer has named nothing to look up), and
+`reconcile` measures 5,000 lines while the card directly above it counts all
+of them.
+
+**A fixture that drifted by 13% of dates (#120).** Two depreciation tests went
+red with no code change. `buyMonthsAgo` built its date as `monthsAgo * 30.5
+days`, so on 23 August "one month ago" landed on 24 July, and an asset bought
+on the 24th has not completed a month by the 23rd. `monthsElapsed` was right
+and the fixture was lying. Swept across two years at three times of day it
+disagreed on 1,764 of 13,140 combinations. Anything that means "a month ago"
+in a test steps calendar months now.
+
+**And one test that read as coverage and was not.** The sweep named "every
+reply" ran over twelve of the sixty-two builders in `replies.ts`. It covers all
+sixty-two now, with a guard that fails when somebody adds one and forgets. The
+same trap caught the catalogue's api-level count test, which cannot detect the
+bug it was written for (twelve products under a thousand-row cap cannot
+diverge); rather than inflate the fixture it is named for what it proves and
+points at the repo test that does the real work.
+
 ## 4. Operational facts a new session must know
 
 1. **Pushing:** the Claude GitHub App is installed on the `AngeloAkuhwa`
@@ -630,6 +697,29 @@ makes the next addition a decision somebody writes down rather than a diff.
    must differ (config refuses to boot otherwise); `VAULT_KEY` seals payloads
    and `MATCH_KEY` derives match keys, and they are deliberately not the same
    as `CONNECTION_KEY`.
+9. **Never run the db and api integration suites at the same time.** They
+   share one PostgreSQL and each truncates the other's fixtures, so the
+   failures land in files nowhere near your change — a run once came back with
+   24 failures in `auth.integration.test.ts` for a bank-page edit. Run them
+   serially, and treat a surprising failure list as a scheduling question
+   before a code question.
+10. **A backslash inside a `sql` tagged template never reaches Postgres.**
+    `regexp_replace(x, '\s+', ' ', 'g')` arrives as `'s+'` and quietly
+    replaces runs of the letter s, mangling every value it touches. Use POSIX
+    classes — `'[[:space:]]+'` — which need no escape. The two name-folding
+    queries in `stock.ts` and `catalogue.ts` are the only regexes in any SQL
+    template; keep it that way.
+11. **A CI "all green" derived from an empty pending-list can be a lie.**
+    GitHub registers this repo's five checks over several seconds, so a poll
+    that asks "is anything pending" too early sees two registered checks, none
+    pending, and reports success while three jobs are still running. Require
+    the count as well as the state before merging on a poller's word, and
+    confirm against the API.
+12. **A page and a reply may only state numbers about the BUSINESS, never
+    about their own page.** Counts come from SQL over the whole table; a
+    caller that shows a page says what it left out. This is not a style
+    preference — it is eight merged bug fixes (#115 to #122), and §3 has the
+    three shapes of fix and when each applies.
 
 ## 5. Working agreements with Angelo (standing preferences)
 
@@ -712,6 +802,35 @@ makes the next addition a decision somebody writes down rather than a diff.
   universal. If merchants' accountants routinely expect reducing balance, that
   is an ADR amendment with a rate somebody has an opinion about, not a
   setting to expose.
+- **Before anyone caps `reconciliationsFor`** — it is the one query on the
+  payments page with no limit, and that is load-bearing rather than an
+  oversight. The page says "Nothing. Every verified payment matched what was
+  expected" whenever the OPEN exceptions filtered out of it come to zero, and
+  that sentence is only true because the filter runs over the complete set.
+  Cap it the way `paymentsFor` was capped and the sentence becomes a lie the
+  first time fifty resolved rows crowd an unresolved one off the page: a
+  merchant told their money is fine while it is not. If it ever needs a cap
+  for load, it needs an open COUNT alongside it, and the page must read that
+  rather than the array. Checked and true as of PR #122; nothing enforces it.
+- **The first merchant past 10,000 invoices, receipts or expense entries** —
+  every export link says "Download ALL ... as a spreadsheet" and `EXPORT_ROWS`
+  stops at ten thousand with nothing reporting truncation. The number was
+  chosen deliberately as roughly a decade of a busy shop, and the reasoning is
+  in the controller; the word "all" is what makes it a promise rather than a
+  page. Whoever gets there needs either a report of what was left out or a
+  streamed export, not a bigger constant.
+- **The first merchant with more than 300 products on a published shop** —
+  the hosted shop stops there with nothing saying so, and it is the one
+  instance of the cap class (#116 to #122) that neither remedy fits: a
+  "showing 300 of 400" caption is written for the merchant, and a browsing
+  customer has named nothing to look up. It needs paging or search, and that
+  drags in the sitemap (#64) and link previews (#63). Task #55.
+- **The first merchant past 5,000 statement lines** — `reconcile` reads that
+  many while `bankPositionFor` counts all of them with an uncapped
+  `COUNT(*)`, so the "Matching the two" card would describe a subset sitting
+  directly above a card describing the whole. `matchStatement` pairs a whole
+  list against a whole list, so the fix is batching the rule, not a bigger
+  number. Roughly two years of daily banking away. Task #56.
 - **Any run where `assetsDue` returns more than a handful** — the
   depreciation sweep bounds catch-up at twelve months per asset per pass, and
   logs what it charged. A count that stays high across passes means the sweep

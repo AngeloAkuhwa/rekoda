@@ -23,7 +23,7 @@
  * it becomes a refund or a credit. Books that quietly absorb an overpayment
  * are books that overstate what the merchant may keep.
  */
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import {
   postProviderPayment,
   postReceivablePayment,
@@ -452,12 +452,24 @@ export interface PaymentReadback {
 }
 
 /**
- * Payments for the pinned business, oldest first, CAPPED.
+ * Payments for the pinned business, NEWEST first, capped, with a count.
  *
  * It used to return every payment ever, which grows without bound for an
- * active merchant and eventually times out the page that needs it most.
+ * active merchant and eventually times out the page that needs it most. The
+ * cap fixed that and introduced a quieter problem: combined with oldest-first
+ * it meant a merchant past the cap saw the first hundred payments they ever
+ * took, all long settled, and never the recent one they opened the page to
+ * check. "Has my money arrived" is a question about this week.
+ *
+ * `count` is over the whole table, so the page can say what it left out
+ * rather than presenting its page as the lot.
  */
-export async function paymentsFor(tx: TenantDb, limit = 100): Promise<PaymentReadback[]> {
+export interface Payments {
+  rows: PaymentReadback[];
+  count: number;
+}
+
+export async function paymentsFor(tx: TenantDb, limit = 100): Promise<Payments> {
   const rows = await tx
     .select({
       verified: payments.verified,
@@ -472,9 +484,10 @@ export async function paymentsFor(tx: TenantDb, limit = 100): Promise<PaymentRea
       settledAt: payments.settledAt,
     })
     .from(payments)
-    .orderBy(payments.createdAt)
+    .orderBy(desc(payments.createdAt))
     .limit(limit);
-  return rows;
+  const counted = await tx.select({ n: sql<number>`count(*)::int` }).from(payments);
+  return { rows, count: counted[0]?.n ?? 0 };
 }
 
 /**

@@ -250,7 +250,8 @@ describe('the full payment (§37: "full payment")', () => {
     );
     expect(docs.map((d) => d.kind)).toContain('receipt_pdf');
 
-    const [payment] = await withBusiness(appDb, businessId, (tx) => settleRepo.paymentsFor(tx));
+    const [payment] = (await withBusiness(appDb, businessId, (tx) => settleRepo.paymentsFor(tx)))
+      .rows;
     expect(payment?.verified).toBe(1);
     expect(payment?.status).toBe('confirmed');
     expect(payment?.rekodaReference).toBe(intent.reference);
@@ -282,7 +283,8 @@ describe('the full payment (§37: "full payment")', () => {
     // §21's exact sentence: ₦90,000 does NOT mark a ₦150,000 invoice paid.
     expect(invoice?.status).toBe('partially_paid');
     expect(invoice?.balanceDueK).toBe(6_000_000);
-    const [payment] = await withBusiness(appDb, businessId, (tx) => settleRepo.paymentsFor(tx));
+    const [payment] = (await withBusiness(appDb, businessId, (tx) => settleRepo.paymentsFor(tx)))
+      .rows;
     expect(payment?.grossAmountK).toBe(9_000_000);
   });
 });

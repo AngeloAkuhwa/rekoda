@@ -310,6 +310,15 @@ export const reportsInvoicesResponse = z.object({
    * document: nothing is owed until the merchant agrees to it, which is why
    * it is a separate list rather than another row in the register.
    */
+  /**
+   * Every order this shop has taken, which is not `orders.length`.
+   *
+   * The invoice register on this same response has carried its own `count`
+   * since it was built, and the page says "showing the latest N". This list
+   * said nothing, so a merchant with more orders than the page carries was
+   * shown a page with no reason to think there was more.
+   */
+  ordersTotal: z.number().int().nonnegative(),
   orders: z.array(
     z.object({
       orderNumber: z.string(),
