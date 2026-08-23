@@ -6,6 +6,7 @@ import { requireSessionWithToken } from '@/server/guards';
 import { AppNav } from '../AppNav';
 import { CreditForm, type CreditableInvoice } from './CreditForm';
 import { VoidForm } from './VoidForm';
+import { canRecordTrade, isOwner } from '@/lib/permissions';
 import { RecordPaymentForm, type PayableInvoice } from './RecordPaymentForm';
 import { SignOutButton } from '../SignOutButton';
 
@@ -21,7 +22,7 @@ export const metadata: Metadata = {
  * because invoice records reach the dashboard tokenised and stay that way.
  */
 export default async function InvoicesPage() {
-  const { token } = await requireSessionWithToken();
+  const { identity, token } = await requireSessionWithToken();
   const { invoices, count, outstandingK, orders } = await reportsInvoices(token);
 
   /* Only what CAN be voided is offered. An invoice with money against it is
@@ -124,16 +125,21 @@ export default async function InvoicesPage() {
           exist to prevent; recording money that came in is the most ordinary
           thing on this page. It was also, until now, the one thing a merchant
           could not do without leaving the dashboard for WhatsApp. */}
-      <div className="rk-card">
-        <h2>Money that came in</h2>
-        <p className="rk-fineprint">
-          Cash at the counter, a transfer you saw in your bank. Rekoda issues the receipt and takes
-          it off what you are owed. Payments that arrive through a payment link record themselves
-          and are marked verified; these are marked as reported by you, because nobody else
-          confirmed them.
-        </p>
-        <RecordPaymentForm invoices={payable} />
-      </div>
+      {/* Role-aware, presentation only: the API refuses regardless, but an
+          accounting tool does not dangle actions a view-only member cannot
+          take. Same rule on every card below. */}
+      {canRecordTrade(identity.role) ? (
+        <div className="rk-card">
+          <h2>Money that came in</h2>
+          <p className="rk-fineprint">
+            Cash at the counter, a transfer you saw in your bank. Rekoda issues the receipt and
+            takes it off what you are owed. Payments that arrive through a payment link record
+            themselves and are marked verified; these are marked as reported by you, because nobody
+            else confirmed them.
+          </p>
+          <RecordPaymentForm invoices={payable} />
+        </div>
+      ) : null}
 
       <div className="rk-card">
         <h2>Invoice register</h2>
@@ -200,31 +206,35 @@ export default async function InvoicesPage() {
             {/* An accounting tool a merchant cannot correct is one they stop
                 trusting. Nothing is deleted: the invoice stays, marked, and
                 the books carry the sale and its reversal. */}
-            <details className="rk-void">
-              <summary>Void an invoice</summary>
-              <p className="rk-fineprint">
-                Use this when an invoice should never have gone out: the wrong customer, the wrong
-                figure, a duplicate. The invoice stays in your records marked as voided, and your
-                books show the sale and the reversal that cancelled it. Nothing is deleted.
-              </p>
-              <VoidForm voidable={voidable} />
-            </details>
+            {isOwner(identity.role) ? (
+              <details className="rk-void">
+                <summary>Void an invoice</summary>
+                <p className="rk-fineprint">
+                  Use this when an invoice should never have gone out: the wrong customer, the wrong
+                  figure, a duplicate. The invoice stays in your records marked as voided, and your
+                  books show the sale and the reversal that cancelled it. Nothing is deleted.
+                </p>
+                <VoidForm voidable={voidable} />
+              </details>
+            ) : null}
 
             {/* A separate control, because it is a separate instrument. The
                 void withdraws a sale that should never have happened; this
                 reduces one that did, and leaves the money the customer already
                 sent exactly where it is. */}
-            <details className="rk-void">
-              <summary>Credit an invoice</summary>
-              <p className="rk-fineprint">
-                Use this when a customer has paid and something has to come back: goods returned, an
-                overcharge, a dispute settled. The invoice stays, a numbered credit note is raised
-                against it, and your books show the sale and the credit side by side. The money
-                already in your account is not touched, so if you are giving cash back, record that
-                separately as a payment out.
-              </p>
-              <CreditForm invoices={creditable} />
-            </details>
+            {isOwner(identity.role) ? (
+              <details className="rk-void">
+                <summary>Credit an invoice</summary>
+                <p className="rk-fineprint">
+                  Use this when a customer has paid and something has to come back: goods returned,
+                  an overcharge, a dispute settled. The invoice stays, a numbered credit note is
+                  raised against it, and your books show the sale and the credit side by side. The
+                  money already in your account is not touched, so if you are giving cash back,
+                  record that separately as a payment out.
+                </p>
+                <CreditForm invoices={creditable} />
+              </details>
+            ) : null}
 
             {/* The answer to "what happens to my records if I leave". A
                 product that cannot be left has to be trusted blindly, and

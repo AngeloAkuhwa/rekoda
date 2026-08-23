@@ -1,4 +1,5 @@
 import type { Metadata } from 'next';
+import { isOwner } from '@/lib/permissions';
 import { MoneyBadge } from '@/components/ui/MoneyBadge';
 import { Money } from '@/components/ui/Money';
 import { bankName } from '@/lib/banks';
@@ -25,7 +26,7 @@ export const metadata: Metadata = {
  * this list, because this page's entire promise is "these ones are real".
  */
 export default async function PaymentsPage() {
-  const { token } = await requireSessionWithToken();
+  const { identity, token } = await requireSessionWithToken();
   const [connection, payments, exceptions] = await Promise.all([
     paymentConnection(token),
     paymentsList(token),
@@ -67,7 +68,11 @@ export default async function PaymentsPage() {
             Add your settlement account once. Every payment link Rekoda creates will settle there,
             verified, with the receipt and the books handled for you.
           </p>
-          <ConnectForm />
+          {isOwner(identity.role) ? (
+            <ConnectForm />
+          ) : (
+            <p className="rk-fineprint">Settlement details are the owner&rsquo;s to set.</p>
+          )}
         </div>
       ) : connection.status === 'failed' ? (
         <div className="rk-card rk-connection">
@@ -76,7 +81,11 @@ export default async function PaymentsPage() {
             Your payment provider could not confirm the account details. Check the number and bank,
             then submit them again.
           </p>
-          <ConnectForm />
+          {isOwner(identity.role) ? (
+            <ConnectForm />
+          ) : (
+            <p className="rk-fineprint">Settlement details are the owner&rsquo;s to set.</p>
+          )}
         </div>
       ) : (
         <div className="rk-card rk-connection">
@@ -169,12 +178,14 @@ export default async function PaymentsPage() {
                   {' · '}
                   {exceptionDate(e.createdAt)}
                 </span>
-                <form action={markExceptionReviewed}>
-                  <input type="hidden" name="exceptionId" value={e.id} />
-                  <button type="submit" className="rk-review-btn">
-                    Mark reviewed
-                  </button>
-                </form>
+                {isOwner(identity.role) ? (
+                  <form action={markExceptionReviewed}>
+                    <input type="hidden" name="exceptionId" value={e.id} />
+                    <button type="submit" className="rk-review-btn">
+                      Mark reviewed
+                    </button>
+                  </form>
+                ) : null}
               </li>
             ))}
           </ul>

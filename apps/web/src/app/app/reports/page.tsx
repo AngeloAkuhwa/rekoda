@@ -5,6 +5,7 @@ import { requireSessionWithToken } from '@/server/guards';
 import { reportsStatements } from '@/server/api';
 import { AppNav } from '../AppNav';
 import { OpeningForm } from './OpeningForm';
+import { canRecordTrade, isOwner } from '@/lib/permissions';
 import { StockCountForm } from './StockCountForm';
 import { CloseBooksForm } from './CloseBooksForm';
 import { JournalForm } from './JournalForm';
@@ -125,15 +126,17 @@ export default async function ReportsPage({
               at all: without this, a business could not open its books until
               after it had already posted something to them. */}
           {openingBalances === null ? (
-            <details className="rk-void">
-              <summary>Open your books with what you already had</summary>
-              <p className="rk-fineprint">
-                Rekoda only knows what you have told it since you joined. If you already had cash,
-                money in the bank or stock on the shelf, say so once and your balance sheet starts
-                from the truth instead of from zero.
-              </p>
-              <OpeningForm today={today} />
-            </details>
+            isOwner(identity.role) ? (
+              <details className="rk-void">
+                <summary>Open your books with what you already had</summary>
+                <p className="rk-fineprint">
+                  Rekoda only knows what you have told it since you joined. If you already had cash,
+                  money in the bank or stock on the shelf, say so once and your balance sheet starts
+                  from the truth instead of from zero.
+                </p>
+                <OpeningForm today={today} />
+              </details>
+            ) : null
           ) : null}
         </div>
       ) : (
@@ -474,7 +477,7 @@ export default async function ReportsPage({
                   <Money kobo={openingBalances.cashK + openingBalances.bankK} /> in money and{' '}
                   <Money kobo={openingBalances.stockK} /> of stock.
                 </p>
-              ) : (
+              ) : isOwner(identity.role) ? (
                 <details className="rk-void">
                   <summary>Open your books with what you already had</summary>
                   <p className="rk-fineprint">
@@ -484,7 +487,7 @@ export default async function ReportsPage({
                   </p>
                   <OpeningForm today={today} />
                 </details>
-              )}
+              ) : null}
               {/* Stock is the one asset on this sheet that can be counted, and
                   the only one that drifts in a direction nothing corrects. A
                   purchase dictated as prose debits stock against no product,
@@ -545,7 +548,9 @@ export default async function ReportsPage({
                           ? 'Your books claim stock you are not holding. Most often that is stock bought as a lump sum, which goes onto the shelf as money but never comes off as goods sold.'
                           : 'You are holding more stock than your books account for. Most often that is stock that arrived without a purchase being recorded.'}
                       </p>
-                      <StockCountForm short={stockValuation.differenceK < 0} />
+                      {canRecordTrade(identity.role) ? (
+                        <StockCountForm short={stockValuation.differenceK < 0} />
+                      ) : null}
                     </>
                   )}
                 </div>
@@ -600,7 +605,7 @@ export default async function ReportsPage({
               Only on the current month, because a correction dated into a
               past month is the rarer case and the date field covers it
               without putting the form on every page a merchant browses. */}
-          {period === current ? (
+          {isOwner(identity.role) && period === current ? (
             <details className="rk-void rk-journal">
               <summary>Move money, or fix an entry that went to the wrong place</summary>
               <p className="rk-fineprint">
@@ -625,7 +630,9 @@ export default async function ReportsPage({
                   ? 'Nothing new can be dated into this month, so the statements above will still say this next year. Reopen it if you have a correction to make.'
                   : 'Once you have sent these statements to anybody, close the month. Nothing dated in it can be recorded afterwards, so the copy they hold and the copy here cannot drift apart.'}
               </p>
-              <CloseBooksForm period={period} label={label} closed={periodClosed} />
+              {isOwner(identity.role) ? (
+                <CloseBooksForm period={period} label={label} closed={periodClosed} />
+              ) : null}
             </div>
           ) : null}
 

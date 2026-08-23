@@ -27,10 +27,17 @@ export function LineMatchCell({
   lineId,
   matchedTo,
   candidates,
+  canPair,
 }: {
   lineId: string;
   matchedTo: { memo: string; decidedBy: 'auto' | 'manual' } | null;
   candidates: readonly Candidate[];
+  /**
+   * Presentation of the role matrix: pairing is owner and accountant work.
+   * A member who cannot pair still READS the column, because what the books
+   * say about a line is information, not an action.
+   */
+  canPair: boolean;
 }) {
   const [matchState, match, matching] = useActionState<StatementState, FormData>(
     matchLineAction,
@@ -43,6 +50,16 @@ export function LineMatchCell({
   const state = matchState.error || matchState.done ? matchState : releaseState;
 
   if (matchedTo) {
+    if (!canPair) {
+      return (
+        <div className="rk-match">
+          <span>{matchedTo.memo}</span>
+          <span className="rk-fineprint">
+            {matchedTo.decidedBy === 'manual' ? 'Matched by hand' : 'Rekoda matched this'}
+          </span>
+        </div>
+      );
+    }
     return (
       <div className="rk-match">
         <span>{matchedTo.memo}</span>
@@ -62,6 +79,10 @@ export function LineMatchCell({
         </form>
       </div>
     );
+  }
+
+  if (!canPair) {
+    return <span className="rk-fineprint">Not matched yet.</span>;
   }
 
   if (candidates.length === 0) {

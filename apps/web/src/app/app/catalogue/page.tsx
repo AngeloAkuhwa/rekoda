@@ -14,6 +14,7 @@ import {
   type Choice,
 } from './CatalogueForms';
 import { ShopForm } from './ShopForm';
+import { canRecordTrade, isOwner } from '@/lib/permissions';
 
 export const metadata: Metadata = {
   title: 'Catalogue',
@@ -36,7 +37,7 @@ export const metadata: Metadata = {
  * cannot say.
  */
 export default async function CataloguePage() {
-  const { token } = await requireSessionWithToken();
+  const { identity, token } = await requireSessionWithToken();
   const [{ products, total, listed: listedCount, hidden: hiddenCount, unpriced }, settings] =
     await Promise.all([catalogue(token), shopSettings(token)]);
 
@@ -98,22 +99,24 @@ export default async function CataloguePage() {
             Nothing is public until you open it, and closing it again takes one change.
           </p>
         )}
-        <details className="rk-void">
-          <summary>{settings.shop ? 'Change your shop' : 'Set up your shop'}</summary>
-          <ShopForm
-            current={
-              settings.shop
-                ? {
-                    slug: settings.shop.slug,
-                    displayName: settings.shop.displayName,
-                    tagline: settings.shop.tagline,
-                    published: settings.shop.publishedAt !== null,
-                  }
-                : null
-            }
-            suggestedSlug={settings.suggestedSlug}
-          />
-        </details>
+        {isOwner(identity.role) ? (
+          <details className="rk-void">
+            <summary>{settings.shop ? 'Change your shop' : 'Set up your shop'}</summary>
+            <ShopForm
+              current={
+                settings.shop
+                  ? {
+                      slug: settings.shop.slug,
+                      displayName: settings.shop.displayName,
+                      tagline: settings.shop.tagline,
+                      published: settings.shop.publishedAt !== null,
+                    }
+                  : null
+              }
+              suggestedSlug={settings.suggestedSlug}
+            />
+          </details>
+        ) : null}
       </div>
 
       <div className="rk-card">
@@ -188,53 +191,63 @@ export default async function CataloguePage() {
               </table>
             </div>
 
-            <details className="rk-void">
-              <summary>Set a price</summary>
-              <p className="rk-fineprint">
-                What you offer it for today. Changing it never touches an invoice you have already
-                issued: what something sold for is a fact about that sale, and it stays.
-              </p>
-              <SetPriceForm choices={choices} />
-            </details>
+            {canRecordTrade(identity.role) ? (
+              <details className="rk-void">
+                <summary>Set a price</summary>
+                <p className="rk-fineprint">
+                  What you offer it for today. Changing it never touches an invoice you have already
+                  issued: what something sold for is a fact about that sale, and it stays.
+                </p>
+                <SetPriceForm choices={choices} />
+              </details>
+            ) : null}
 
-            <details className="rk-void">
-              <summary>Say what it costs you</summary>
-              <p className="rk-fineprint">
-                Recording a purchase sets this on its own, so most products never need this form. It
-                is here for stock you counted by hand or had before you joined: without a cost,
-                selling it shows income with nothing against it and every profit figure you read is
-                too high. What you type replaces the average rather than joining it.
-              </p>
-              <SetCostForm choices={choices} />
-            </details>
+            {canRecordTrade(identity.role) ? (
+              <details className="rk-void">
+                <summary>Say what it costs you</summary>
+                <p className="rk-fineprint">
+                  Recording a purchase sets this on its own, so most products never need this form.
+                  It is here for stock you counted by hand or had before you joined: without a cost,
+                  selling it shows income with nothing against it and every profit figure you read
+                  is too high. What you type replaces the average rather than joining it.
+                </p>
+                <SetCostForm choices={choices} />
+              </details>
+            ) : null}
 
-            <details className="rk-void">
-              <summary>Write a description</summary>
-              <p className="rk-fineprint">
-                Your words, not Rekoda&apos;s. Nothing here is generated, because a description
-                Rekoda invented would be Rekoda making a claim about goods it has never seen.
-              </p>
-              <SetDescriptionForm choices={choices} />
-            </details>
+            {canRecordTrade(identity.role) ? (
+              <details className="rk-void">
+                <summary>Write a description</summary>
+                <p className="rk-fineprint">
+                  Your words, not Rekoda&apos;s. Nothing here is generated, because a description
+                  Rekoda invented would be Rekoda making a claim about goods it has never seen.
+                </p>
+                <SetDescriptionForm choices={choices} />
+              </details>
+            ) : null}
 
-            <details className="rk-void">
-              <summary>Add a photo</summary>
-              <p className="rk-fineprint">
-                One photo per product, and a new one replaces the old. It is stored privately and
-                only shown to you until you connect a shop.
-              </p>
-              <UploadPhotoForm choices={choices} maxBytes={MAX_IMAGE_BYTES} />
-            </details>
+            {canRecordTrade(identity.role) ? (
+              <details className="rk-void">
+                <summary>Add a photo</summary>
+                <p className="rk-fineprint">
+                  One photo per product, and a new one replaces the old. It is stored privately and
+                  only shown to you until you connect a shop.
+                </p>
+                <UploadPhotoForm choices={choices} maxBytes={MAX_IMAGE_BYTES} />
+              </details>
+            ) : null}
 
-            <details className="rk-void">
-              <summary>Take something out of the shop, or put it back</summary>
-              <p className="rk-fineprint">
-                Hiding a product stops customers seeing it and changes nothing else. It stays in
-                your books, it stays on your stock count, and telling Rekoda you sold one still
-                works: a product you are not advertising is still a product you own.
-              </p>
-              <ListingForm choices={choices} />
-            </details>
+            {canRecordTrade(identity.role) ? (
+              <details className="rk-void">
+                <summary>Take something out of the shop, or put it back</summary>
+                <p className="rk-fineprint">
+                  Hiding a product stops customers seeing it and changes nothing else. It stays in
+                  your books, it stays on your stock count, and telling Rekoda you sold one still
+                  works: a product you are not advertising is still a product you own.
+                </p>
+                <ListingForm choices={choices} />
+              </details>
+            ) : null}
 
             {/* The shop's counts, not the table's. Counting the rows told a
                 merchant with three hundred and sixteen listed products that
