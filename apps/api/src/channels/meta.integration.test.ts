@@ -207,6 +207,29 @@ function post(payload: unknown, opts: { secret?: string; corrupt?: boolean } = {
   });
 }
 
+describe('webhook body ceiling', () => {
+  /**
+   * The webhooks are exempt from the per-IP limiter, so an oversized body
+   * must be refused before it is parsed or an HMAC is computed. A body past
+   * the 128 KB cap comes back 413, whatever it carries.
+   */
+  it('refuses a body larger than the cap with 413, before parsing', async () => {
+    const huge = 'x'.repeat(200 * 1024);
+    const res = await app.inject({
+      method: 'POST',
+      url: '/webhooks/meta',
+      payload: huge,
+      headers: { 'content-type': 'application/json', 'content-length': String(huge.length) },
+    });
+    expect(res.statusCode).toBe(413);
+  });
+
+  it('still accepts a normal signed payload', async () => {
+    const res = await post({ object: 'whatsapp_business_account', entry: [] });
+    expect(res.statusCode).toBe(200);
+  });
+});
+
 describe('the subscription handshake', () => {
   it('echoes the challenge for the right token', async () => {
     const res = await app.inject({

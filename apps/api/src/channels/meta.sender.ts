@@ -206,18 +206,30 @@ export class MetaSender implements MessageSender {
         signal: controller.signal,
       });
       if (!response.ok) throw new SendFailed(`meta media download answered ${response.status}`);
-      /* Bounded BEFORE buffering: the upload path has MAX_IMAGE_BYTES and a
-       * voice note is capped by WhatsApp itself, so anything past this is
-       * not media we asked for, and an unbounded arrayBuffer would hand the
-       * worker's memory to whoever controls the response. */
+      /**
+       * Bounded by COUNTING as it streams, not by trusting Content-Length.
+       * The header check alone let a chunked or lying response buffer its
+       * whole body into worker memory before the size was known; reading the
+       * stream chunk by chunk and aborting the moment the running total
+       * crosses the cap makes the ceiling real for any response shape. The
+       * cheap header check stays as an early-out for an honest large file.
+       */
       const declared = Number(response.headers.get('content-length') ?? 0);
       if (declared > MAX_MEDIA_BYTES) throw new SendFailed('meta media larger than accepted');
-      const bytes = Buffer.from(await response.arrayBuffer());
-      if (bytes.byteLength > MAX_MEDIA_BYTES) {
-        throw new SendFailed('meta media larger than accepted');
+      const body = response.body;
+      if (!body) throw new SendFailed('meta media download had no body');
+      const chunks: Buffer[] = [];
+      let total = 0;
+      for await (const chunk of body as AsyncIterable<Uint8Array>) {
+        total += chunk.byteLength;
+        if (total > MAX_MEDIA_BYTES) {
+          controller.abort();
+          throw new SendFailed('meta media larger than accepted');
+        }
+        chunks.push(Buffer.from(chunk));
       }
       return {
-        bytes,
+        bytes: Buffer.concat(chunks),
         mimeType: meta.mime_type ?? response.headers.get('content-type') ?? 'audio/ogg',
       };
     } catch (error) {
