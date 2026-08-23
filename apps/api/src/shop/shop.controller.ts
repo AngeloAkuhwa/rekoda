@@ -113,7 +113,7 @@ export class PublicShopController {
      * the URL cannot be used to find out that a business exists. */
     if (!shop) throw new NotFoundException('Not found');
 
-    const products = await withBusiness(this.db, shop.businessId, (tx) =>
+    const { rows: products } = await withBusiness(this.db, shop.businessId, (tx) =>
       catalogueRepo.catalogueFor(tx, shop.businessId),
     );
 
@@ -195,7 +195,7 @@ export class ShopSettingsController {
     const businessId = request.auth!.businessId;
     const { shop, catalogue } = await withBusiness(this.db, businessId, async (tx) => ({
       shop: await shopsRepo.shopFor(tx, businessId),
-      catalogue: await catalogueRepo.catalogueFor(tx, businessId),
+      catalogue: (await catalogueRepo.catalogueFor(tx, businessId)).rows,
     }));
     const business = await identity.businessById(this.db, businessId);
 
@@ -226,7 +226,7 @@ export class ShopSettingsController {
 
     const sellable = await withBusiness(this.db, businessId, async (tx) => {
       const catalogue = await catalogueRepo.catalogueFor(tx, businessId);
-      return catalogue.filter((p) => p.active && p.unitPriceK !== null).length;
+      return catalogue.rows.filter((p) => p.active && p.unitPriceK !== null).length;
     });
     /* Publishing an empty page is worse than not publishing: a customer opens
      * it once, finds nothing, and does not come back. Taking a shop DOWN is

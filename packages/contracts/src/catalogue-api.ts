@@ -43,7 +43,24 @@ export const catalogueResponse = z.object({
       onHand: z.number().int(),
     }),
   ),
-  /** Listed products with no price. The number that stops a shop selling. */
+  /**
+   * Every product the shop has, which is not `products.length`.
+   *
+   * `products` is a page. The footer used to count it and tell a merchant
+   * with three hundred and sixteen listed products that they had two hundred
+   * and ninety seven.
+   */
+  total: z.number().int().nonnegative(),
+  listed: z.number().int().nonnegative(),
+  hidden: z.number().int().nonnegative(),
+  /**
+   * Listed products with no price. The number that stops a shop selling.
+   *
+   * Counted across the whole catalogue, never the page. Derived from the page
+   * it came back as ZERO for a shop with twelve unsellable products, because
+   * all twelve sorted past the cap: no warning shown, nothing to act on, and
+   * the shop quietly selling none of them.
+   */
   unpriced: z.number().int().nonnegative(),
 });
 export type CatalogueResponse = z.infer<typeof catalogueResponse>;

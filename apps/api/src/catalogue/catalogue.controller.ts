@@ -66,11 +66,11 @@ export class CatalogueController {
   @Get()
   async list(@Req() request: AuthedRequest): Promise<CatalogueResponse> {
     const businessId = request.auth!.businessId;
-    const items = await withBusiness(this.db, businessId, (tx) =>
+    const catalogue = await withBusiness(this.db, businessId, (tx) =>
       catalogueRepo.catalogueFor(tx, businessId),
     );
     return catalogueResponse.parse({
-      products: items.map((item) => ({
+      products: catalogue.rows.map((item) => ({
         id: item.id,
         name: item.name,
         description: item.description,
@@ -83,10 +83,15 @@ export class CatalogueController {
         active: item.active,
         onHand: item.onHand,
       })),
-      /* Listed with no price is the state that stops a shop selling, and the
-       * one a merchant cannot see by scanning a long list. Hidden products
+      /* All four from SQL over the whole catalogue, never from the page.
+       * Listed with no price is the state that stops a shop selling and the
+       * one a merchant cannot see by scanning a long list; counted off the
+       * page it reported zero to a shop with twelve of them. Hidden products
        * are excluded: not being for sale is why they have no price. */
-      unpriced: items.filter((item) => item.active && item.unitPriceK === null).length,
+      total: catalogue.count,
+      listed: catalogue.listed,
+      hidden: catalogue.hidden,
+      unpriced: catalogue.unpriced,
     });
   }
 

@@ -49,19 +49,24 @@ async function price(businessId: string, name: string, unitPriceK: number): Prom
 describe('looking a product up by the name an order used', () => {
   it('finds one the catalogue page would have cut off', async () => {
     const businessId = await seedBusiness();
-    /* Past the three hundred `catalogueFor` returns, and named so it sorts
-     * last: exactly the product a four hundred SKU shop could not sell. */
+    /* Named so it sorts last, which is where a name-ordered page cuts. */
     await withBusiness(db, businessId, async (tx) => {
-      for (let i = 0; i < 320; i += 1) {
+      for (let i = 0; i < 6; i += 1) {
         await stockRepo.findOrCreateProduct(tx, businessId, `Aaa filler ${i + 1}`);
       }
     });
     await price(businessId, 'Zobo drink', 50_000);
 
+    /* An explicit small page rather than however many the production cap
+     * happens to be. The claim is that a lookup is not bounded by the page,
+     * and it is the cap MOVING that used to break this test: it seeded three
+     * hundred and twenty products to squeeze past a cap of three hundred, and
+     * went green-to-red the moment that number changed for a good reason. */
     const page = await withBusiness(db, businessId, (tx) =>
-      catalogueRepo.catalogueFor(tx, businessId),
+      catalogueRepo.catalogueFor(tx, businessId, 3),
     );
-    expect(page.some((p) => p.name === 'Zobo drink')).toBe(false);
+    expect(page.rows).toHaveLength(3);
+    expect(page.rows.some((p) => p.name === 'Zobo drink')).toBe(false);
 
     const found = await withBusiness(db, businessId, (tx) =>
       catalogueRepo.catalogueByNames(tx, businessId, ['zobo drink']),
@@ -107,5 +112,70 @@ describe('looking a product up by the name an order used', () => {
         catalogueRepo.catalogueByNames(tx, mine, ['their secret product']),
       ),
     ).toEqual([]);
+  });
+});
+
+/**
+ * The counts under the list, and the ones the page acts on.
+ *
+ * `catalogueFor` returns a page ordered by name, and everything the
+ * catalogue page says about the shop used to be derived from that page:
+ * "297 products in the shop" to a merchant with 316, and `unpriced` — which
+ * the contract calls the number that stops a shop selling — reported as ZERO
+ * to a shop with twelve listed products a customer cannot buy, because all
+ * twelve sorted past the cap.
+ *
+ * Worse than a wrong number: the pickers that set a price are built from the
+ * same page, so the twelve products that needed fixing were the twelve the
+ * page would not let anyone fix, and it never said they were there.
+ */
+describe('what the catalogue says about the whole shop', () => {
+  async function seedProducts(businessId: string, howMany: number) {
+    await withBusiness(db, businessId, async (tx) => {
+      for (let i = 0; i < howMany; i += 1) {
+        const name = `Product ${String(i + 1).padStart(3, '0')}`;
+        const product = await stockRepo.findOrCreateProduct(tx, businessId, name);
+        /* The last few sort last by name, which is where the cap bites. They
+         * are listed and unpriced: the state that stops a shop selling. */
+        if (i < howMany - 4) {
+          await catalogueRepo.editProduct(tx, businessId, product.id, { unitPriceK: 50_000 });
+        }
+        if (i === 0) await catalogueRepo.editProduct(tx, businessId, product.id, { active: false });
+      }
+    });
+  }
+
+  it('counts the shop, not the page it returned', async () => {
+    const businessId = await seedBusiness('+2348120000091');
+    await seedProducts(businessId, 12);
+
+    const page = await withBusiness(db, businessId, (tx) =>
+      catalogueRepo.catalogueFor(tx, businessId, 5),
+    );
+    expect(page.rows).toHaveLength(5);
+    expect(page.count).toBe(12);
+    expect(page.listed).toBe(11);
+    expect(page.hidden).toBe(1);
+  });
+
+  it('counts every listed product with no price, wherever it sorts', async () => {
+    const businessId = await seedBusiness('+2348120000092');
+    await seedProducts(businessId, 12);
+
+    /* A page of five holds none of the four unpriced ones, which sort last.
+     * Counting the page would report zero and the page would show no warning
+     * at all, which is how a shop sells nothing and is told nothing. */
+    const page = await withBusiness(db, businessId, (tx) =>
+      catalogueRepo.catalogueFor(tx, businessId, 5),
+    );
+    expect(page.rows.filter((r) => r.active && r.unitPriceK === null)).toHaveLength(0);
+    expect(page.unpriced).toBe(4);
+  });
+
+  it('answers zero for a shop with nothing in it', async () => {
+    const businessId = await seedBusiness('+2348120000093');
+    expect(
+      await withBusiness(db, businessId, (tx) => catalogueRepo.catalogueFor(tx, businessId)),
+    ).toEqual({ rows: [], count: 0, listed: 0, hidden: 0, unpriced: 0 });
   });
 });

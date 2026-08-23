@@ -37,10 +37,8 @@ export const metadata: Metadata = {
  */
 export default async function CataloguePage() {
   const { token } = await requireSessionWithToken();
-  const [{ products, unpriced }, settings] = await Promise.all([
-    catalogue(token),
-    shopSettings(token),
-  ]);
+  const [{ products, total, listed: listedCount, hidden: hiddenCount, unpriced }, settings] =
+    await Promise.all([catalogue(token), shopSettings(token)]);
 
   /* Every picker gets the price and the count as well as the name: two
    * similar products in one shop is the ordinary case, and a list of bare
@@ -52,9 +50,6 @@ export default async function CataloguePage() {
       `${product.unitPriceK === null ? 'no price' : formatKobo(product.unitPriceK)} · ` +
       `${product.onHand} on hand`,
   }));
-
-  const listed = products.filter((product) => product.active);
-  const hidden = products.filter((product) => !product.active);
 
   return (
     <section className="rk-container rk-dash">
@@ -241,9 +236,13 @@ export default async function CataloguePage() {
               <ListingForm choices={choices} />
             </details>
 
+            {/* The shop's counts, not the table's. Counting the rows told a
+                merchant with three hundred and sixteen listed products that
+                they had two hundred and ninety seven, in their own words. */}
             <p className="rk-fineprint">
-              {listed.length === 1 ? 'One product' : `${listed.length} products`} in the shop
-              {hidden.length > 0 ? ` · ${hidden.length} hidden` : ''}
+              {listedCount === 1 ? 'One product' : `${listedCount} products`} in the shop
+              {hiddenCount > 0 ? ` · ${hiddenCount} hidden` : ''}
+              {total > products.length ? ` · showing the first ${products.length} by name` : ''}
             </p>
           </>
         )}

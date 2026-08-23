@@ -3666,7 +3666,7 @@ describe('a forwarded order', () => {
     expect(stubSender.lastText).toContain('Total: ₦17,000');
 
     await withBusiness(db, business.id, async (tx) => {
-      const [bale] = (await catalogueRepo.catalogueFor(tx, business.id)).filter(
+      const [bale] = (await catalogueRepo.catalogueFor(tx, business.id)).rows.filter(
         (p) => p.name === 'Ankara bale',
       );
       await catalogueRepo.editProduct(tx, business.id, bale!.id, { unitPriceK: null });

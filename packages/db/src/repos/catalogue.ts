@@ -41,6 +41,8 @@ type CatalogueRow = {
   on_hand: number | null;
 };
 
+type Counts = { n: number; listed_n: number; hidden_n: number; unpriced_n: number };
+
 const toItem = (r: CatalogueRow): CatalogueItem => ({
   id: r.id,
   name: r.name,
@@ -53,6 +55,30 @@ const toItem = (r: CatalogueRow): CatalogueItem => ({
 });
 
 /**
+ * The catalogue page, and the four numbers that are about the shop.
+ *
+ * `rows` is a page; the counts are over the whole table. Deriving them from
+ * `rows` was the bug: a merchant with three hundred and sixteen listed
+ * products was told they had two hundred and ninety seven, and `unpriced`
+ * came back as ZERO for a shop with twelve listed products nobody could buy,
+ * because all twelve sorted past the cap.
+ */
+export interface Catalogue {
+  rows: CatalogueItem[];
+  /** Every product, listed and hidden alike. */
+  count: number;
+  listed: number;
+  hidden: number;
+  /**
+   * Listed with no price: the number that stops a shop selling.
+   *
+   * Hidden products are excluded, because not being for sale is why they
+   * have no price.
+   */
+  unpriced: number;
+}
+
+/**
  * Everything the shop could sell, listed and hidden alike, by name.
  *
  * By name rather than by depletion, which is the stock register's order and
@@ -63,20 +89,35 @@ const toItem = (r: CatalogueRow): CatalogueItem => ({
 export async function catalogueFor(
   tx: TenantDb,
   businessId: string,
-  limit = 300,
-): Promise<CatalogueItem[]> {
-  const rows = await tx.execute<CatalogueRow>(sql`
-    SELECT p.id, p.name, p.description, p.unit_price_k, p.unit_cost_k, p.image_key, p.active,
-           coalesce(sum(m.delta), 0)::int AS on_hand
-    FROM products p
-    LEFT JOIN inventory_movements m ON m.product_id = p.id
-    WHERE p.business_id = ${businessId}::uuid
-    GROUP BY p.id, p.name, p.description, p.unit_price_k, p.unit_cost_k, p.image_key, p.active
-    ORDER BY lower(p.name) ASC
+  limit = 1_000,
+): Promise<Catalogue> {
+  const rows = await tx.execute<CatalogueRow & Counts>(sql`
+    WITH counted AS (
+      SELECT p.id, p.name, p.description, p.unit_price_k, p.unit_cost_k, p.image_key, p.active,
+             coalesce(sum(m.delta), 0)::int AS on_hand
+      FROM products p
+      LEFT JOIN inventory_movements m ON m.product_id = p.id
+      WHERE p.business_id = ${businessId}::uuid
+      GROUP BY p.id, p.name, p.description, p.unit_price_k, p.unit_cost_k, p.image_key, p.active
+    )
+    SELECT id, name, description, unit_price_k, unit_cost_k, image_key, active, on_hand,
+           count(*) OVER ()::int AS n,
+           count(*) FILTER (WHERE active = 1) OVER ()::int AS listed_n,
+           count(*) FILTER (WHERE active = 0) OVER ()::int AS hidden_n,
+           count(*) FILTER (WHERE active = 1 AND unit_price_k IS NULL) OVER ()::int AS unpriced_n
+    FROM counted
+    ORDER BY lower(name) ASC
     LIMIT ${limit}
   `);
 
-  return [...rows].map(toItem);
+  const list = [...rows];
+  return {
+    rows: list.map(toItem),
+    count: list[0]?.n ?? 0,
+    listed: list[0]?.listed_n ?? 0,
+    hidden: list[0]?.hidden_n ?? 0,
+    unpriced: list[0]?.unpriced_n ?? 0,
+  };
 }
 
 /**
