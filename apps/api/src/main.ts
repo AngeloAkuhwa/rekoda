@@ -10,12 +10,36 @@ import { CONFIG, loadConfig, type ApiConfig } from './config.js';
 
 function trustedProxies(): boolean | string[] {
   const raw = process.env['REKODA_TRUSTED_PROXIES']?.trim();
-  if (!raw) return true;
+  if (!raw) {
+    /* Trust-all is a development-only default: it believes any
+     * X-Forwarded-For, which lets a direct caller reset every per-IP bucket
+     * with a spoofed header per request. Production must name its proxies. */
+    if (process.env['NODE_ENV'] === 'production') {
+      throw new Error(
+        'REKODA_TRUSTED_PROXIES is required in production: set it to your ' +
+          'proxy/load-balancer addresses or CIDRs, or the per-IP rate limit ' +
+          'is defeated by a forged X-Forwarded-For.',
+      );
+    }
+    return true;
+  }
   return raw
     .split(',')
     .map((part) => part.trim())
     .filter((part) => part.length > 0);
 }
+
+/**
+ * The most a webhook body may be, in bytes.
+ *
+ * Meta and Paystack payloads are a few kilobytes; nothing legitimate is
+ * close to this. The webhooks are exempt from the per-IP limiter (their
+ * traffic arrives from a handful of provider IPs), so this cap is what keeps
+ * an anonymous flood cheap: a body over it is refused at `onRequest`, before
+ * a byte is parsed or an HMAC computed.
+ */
+const WEBHOOK_MAX_BYTES = 128 * 1024;
+const WEBHOOK_PATHS = new Set(['/webhooks/meta', '/webhooks/paystack']);
 
 export async function createApp(): Promise<NestFastifyApplication> {
   const app = await NestFactory.create<NestFastifyApplication>(
@@ -28,7 +52,11 @@ export async function createApp(): Promise<NestFastifyApplication> {
      * or CIDRs); unset keeps the permissive default for development, and
      * production deployments must set it.
      */
-    new FastifyAdapter({ trustProxy: trustedProxies() }),
+    /* An explicit body limit, not the framework default: the statement CSV
+     * contract allows 2 MB (reports-api.ts), and the un-set Fastify default
+     * is 1 MB, so a year-long statement was already being rejected. Set it
+     * once, intentionally, a hair above the largest legitimate JSON body. */
+    new FastifyAdapter({ trustProxy: trustedProxies(), bodyLimit: 2 * 1024 * 1024 + 64 * 1024 }),
     /**
      * `rawBody` keeps the exact bytes of each request alongside the parsed
      * body, which the Meta webhook needs: `X-Hub-Signature-256` is an HMAC
@@ -88,6 +116,31 @@ export async function createApp(): Promise<NestFastifyApplication> {
      */
     throwFileSizeLimit: false,
   });
+
+  /**
+   * A hard ceiling on webhook bodies, enforced before anything reads them.
+   *
+   * The two webhook routes are exempt from the per-IP limiter above, so this
+   * `onRequest` guard is what keeps an anonymous flood from being free: a
+   * Content-Length over the cap is refused with 413 before the body is
+   * parsed or a signature computed. A caller who lies about Content-Length
+   * still hits the adapter's bodyLimit, so the actual read is bounded either
+   * way; this just makes the honest-header case cheap to reject.
+   */
+  app
+    .getHttpAdapter()
+    .getInstance()
+    .addHook('onRequest', (request, reply, done) => {
+      const url = (request.url ?? '').split('?')[0] ?? '';
+      if (WEBHOOK_PATHS.has(url)) {
+        const declared = Number(request.headers['content-length'] ?? 0);
+        if (declared > WEBHOOK_MAX_BYTES) {
+          void reply.code(413).send({ statusCode: 413, error: 'Payload Too Large' });
+          return;
+        }
+      }
+      done();
+    });
 
   await app.register(rateLimit, {
     global: true,
