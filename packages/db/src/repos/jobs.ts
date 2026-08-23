@@ -69,6 +69,35 @@ export async function enqueue(q: Queryable, input: EnqueueInput): Promise<{ id: 
 }
 
 /**
+ * Has a job EVER been queued under this singleton key, in any state?
+ *
+ * The enqueue's own dedupe only covers pending and running, which is right
+ * for its callers: a finished job should not block new work. The pump's
+ * stranded-event lane needs the opposite question — "was this event ever
+ * queued at all" — because re-queueing an event whose job already ran and
+ * died would turn one poison payload into a permanent retry loop.
+ */
+export async function hasJobForSingleton(
+  q: Queryable,
+  businessId: string,
+  kind: string,
+  singletonKey: string,
+): Promise<boolean> {
+  const rows = await q
+    .select({ id: jobs.id })
+    .from(jobs)
+    .where(
+      and(
+        eq(jobs.businessId, businessId),
+        eq(jobs.kind, kind),
+        eq(jobs.singletonKey, singletonKey),
+      ),
+    )
+    .limit(1);
+  return rows.length > 0;
+}
+
+/**
  * Take the next due job, exactly once across every worker.
  *
  * `FOR UPDATE SKIP LOCKED` inside the sub-select is the whole concurrency

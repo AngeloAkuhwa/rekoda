@@ -34,33 +34,50 @@ export interface ImportedStatement {
  * line twice. The index decides, which is the same reason opening balances
  * lean on one.
  */
+/** Rows per INSERT: comfortably under the wire protocol's 65,535 parameters. */
+const IMPORT_CHUNK_ROWS = 1_000;
+
 export async function importStatementLines(
   tx: TenantDb,
   input: {
     businessId: string;
     lines: readonly BankStatementLine[];
     actor: string;
+    /** Test seam: rows per INSERT, so a test can prove the chunk walk. */
+    chunkRows?: number;
   },
 ): Promise<ImportedStatement> {
   const keyed = fingerprintLines(input.lines);
   if (keyed.length === 0) return { imported: 0, duplicates: 0 };
 
-  const inserted = await tx
-    .insert(bankStatementLines)
-    .values(
-      keyed.map((line) => ({
-        businessId: input.businessId,
-        postedOn: line.postedOn,
-        amountK: line.amountK,
-        narration: line.narration,
-        bankRef: line.bankRef,
-        fingerprint: line.fingerprint,
-      })),
-    )
-    .onConflictDoNothing()
-    .returning({ id: bankStatementLines.id });
-
-  const imported = inserted.length;
+  /**
+   * Inserted in bounded chunks, because one statement can be a year of
+   * banking: the extended query protocol caps bind parameters at 65,535, and
+   * six columns a row puts a single INSERT's ceiling near 10,900 lines. A
+   * file the contract happily accepts (2 MB is roughly 25,000 lines) would
+   * hit the driver's wall with the whole import half-applied. Chunks inside
+   * the one transaction keep the import atomic and the count honest.
+   */
+  const chunkRows = input.chunkRows ?? IMPORT_CHUNK_ROWS;
+  let imported = 0;
+  for (let at = 0; at < keyed.length; at += chunkRows) {
+    const chunk = keyed.slice(at, at + chunkRows);
+    const inserted = await tx
+      .insert(bankStatementLines)
+      .values(
+        chunk.map((line) => ({
+          businessId: input.businessId,
+          postedOn: line.postedOn,
+          amountK: line.amountK,
+          narration: line.narration,
+          bankRef: line.bankRef,
+          fingerprint: line.fingerprint,
+        })),
+      )
+      .onConflictDoNothing()
+      .returning({ id: bankStatementLines.id });
+    imported += inserted.length;
+  }
   const duplicates = keyed.length - imported;
 
   /* Only when something actually landed. An audit trail that recorded every
@@ -533,7 +550,15 @@ export async function openMovements(
 export async function matchesFor(
   tx: TenantDb,
   businessId: string,
+  /**
+   * The lines the caller is actually decorating. Without this, the bank page
+   * read every match the business ever made to caption the five hundred
+   * lines it shows: a decoration query that grew with the tenant's history
+   * rather than with the page.
+   */
+  lineIds: readonly string[],
 ): Promise<{ lineId: string; transactionId: string; decidedBy: string; memo: string }[]> {
+  if (lineIds.length === 0) return [];
   const rows = await tx.execute<{
     line_id: string;
     transaction_id: string;
@@ -544,6 +569,10 @@ export async function matchesFor(
     FROM bank_line_matches m
     JOIN ledger_transactions t ON t.id = m.transaction_id
     WHERE m.business_id = ${businessId}::uuid
+      AND m.line_id IN (${sql.join(
+        lineIds.map((id) => sql`${id}::uuid`),
+        sql`, `,
+      )})
   `);
   return [...rows].map((r) => ({
     lineId: r.line_id,
@@ -597,12 +626,19 @@ export async function matchByHand(
   if (!movement) {
     /* Either it is not a bank movement of this business at all, or somebody
      * already claimed it. The two read differently to a merchant. */
-    const claimed = await matchesFor(tx, input.businessId);
+    const [claimed] = await tx
+      .select({ id: bankLineMatches.lineId })
+      .from(bankLineMatches)
+      .where(
+        and(
+          eq(bankLineMatches.businessId, input.businessId),
+          eq(bankLineMatches.transactionId, input.transactionId),
+        ),
+      )
+      .limit(1);
     return {
       outcome: 'refused',
-      reason: claimed.some((m) => m.transactionId === input.transactionId)
-        ? 'movement_already_matched'
-        : 'no_such_movement',
+      reason: claimed ? 'movement_already_matched' : 'no_such_movement',
     };
   }
   if (movement.amountK !== line.amountK) {

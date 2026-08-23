@@ -84,7 +84,11 @@ export class BankController {
           openMovements: await bankRepo.openMovements(tx, businessId, {
             amounts: statementLines.map((l) => l.amountK),
           }),
-          matches: await bankRepo.matchesFor(tx, businessId),
+          matches: await bankRepo.matchesFor(
+            tx,
+            businessId,
+            statementLines.map((l) => l.id),
+          ),
         };
       },
     );

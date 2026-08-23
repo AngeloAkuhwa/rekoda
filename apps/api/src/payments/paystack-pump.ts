@@ -127,6 +127,45 @@ export async function pumpPaystackEvents(deps: PumpDeps, limit = 50): Promise<nu
     enqueued += 1;
   }
 
+  /**
+   * The stranded lane: events ATTRIBUTED in an earlier pass whose enqueue
+   * never committed. Attribution is write-once and happens on the worker
+   * connection; the enqueue is a second transaction on the app connection,
+   * so a crash between the two leaves a confirmed payment that nothing will
+   * ever book — attributed, so the loop above skips it, and unprocessed, so
+   * it never goes away. This lane is the only way back in.
+   *
+   * A job that already exists under the event's singleton key, in ANY
+   * state, means the event was queued once and is the handler's story now:
+   * resurrecting a job that died five attempts ago would turn one poison
+   * payload into a permanent retry loop.
+   */
+  const unprocessed = await events.unprocessedEvents(deps.workerDb, 'paystack', limit);
+  for (const event of unprocessed) {
+    if (!event.businessId) continue;
+    const owner = event.businessId;
+    const opened = referenceOf(event.payload, deps.vaultKey);
+    if (opened.kind !== 'reference') continue;
+    const billing = SUBSCRIPTION_REFERENCE_PATTERN.test(opened.reference);
+    if (!billing && !PAYMENT_REFERENCE_PATTERN.test(opened.reference)) continue;
+    const kind = billing ? JobKind.ProcessBillingCharge : JobKind.ProcessPaymentEvent;
+    const singletonKey = `${billing ? 'billevent' : 'payevent'}:${event.id}`;
+    const revived = await withBusiness(deps.appDb, owner, async (tx) => {
+      if (await jobsRepo.hasJobForSingleton(tx, owner, kind, singletonKey)) return false;
+      await jobsRepo.enqueue(tx, {
+        businessId: owner,
+        kind,
+        payload: { eventId: event.id },
+        singletonKey,
+      });
+      return true;
+    });
+    if (revived) {
+      enqueued += 1;
+      log.warn('revived an attributed Paystack event that had no job');
+    }
+  }
+
   return enqueued;
 }
 

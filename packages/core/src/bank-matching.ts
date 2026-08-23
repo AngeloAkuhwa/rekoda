@@ -104,17 +104,36 @@ export function matchStatement(
   const candidatesFor = new Map<string, string[]>();
   const wantedBy = new Map<string, string[]>();
 
+  /**
+   * The amount predicate is exact equality, so it is hashable, and hashing it
+   * is what makes this function safe to run over a whole statement: scanning
+   * every movement for every line is quadratic, and a three-year statement
+   * against three years of postings is a page load that blocks the event
+   * loop for minutes. Bucketed by amount, the work is proportional to the
+   * lines plus the movements plus the genuine amount collisions, which is
+   * the part a human actually has to think about anyway.
+   */
+  const byAmount = new Map<number, MatchableMovement[]>();
+  const byTransactionId = new Map<string, MatchableMovement>();
+  for (const m of movements) {
+    const bucket = byAmount.get(m.amountK);
+    if (bucket) bucket.push(m);
+    else byAmount.set(m.amountK, [m]);
+    byTransactionId.set(m.transactionId, m);
+  }
+
   for (const line of lines) {
-    const fits = movements.filter(
-      (m) =>
-        m.amountK === line.amountK && daysBetween(line.postedOn, m.occurredOn) <= MATCH_WINDOW_DAYS,
+    const fits = (byAmount.get(line.amountK) ?? []).filter(
+      (m) => daysBetween(line.postedOn, m.occurredOn) <= MATCH_WINDOW_DAYS,
     );
     candidatesFor.set(
       line.id,
       fits.map((m) => m.transactionId),
     );
     for (const m of fits) {
-      wantedBy.set(m.transactionId, [...(wantedBy.get(m.transactionId) ?? []), line.id]);
+      const wanting = wantedBy.get(m.transactionId);
+      if (wanting) wanting.push(line.id);
+      else wantedBy.set(m.transactionId, [line.id]);
     }
   }
 
@@ -139,7 +158,7 @@ export function matchStatement(
       ambiguous.push({ lineId: line.id, candidates });
       continue;
     }
-    const movement = movements.find((m) => m.transactionId === only)!;
+    const movement = byTransactionId.get(only)!;
     matched.push({
       lineId: line.id,
       transactionId: only,

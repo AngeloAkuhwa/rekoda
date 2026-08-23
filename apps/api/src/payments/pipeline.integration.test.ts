@@ -373,6 +373,33 @@ describe('replay and duplicates (§37: "duplicate webhook", "replay")', () => {
   });
 });
 
+describe('a crash between attribution and enqueue', () => {
+  /**
+   * Attribution commits on the worker connection and the enqueue on the app
+   * connection, so a crash in the gap used to strand a CONFIRMED customer
+   * payment forever: attributed, so the pump skipped it; jobless, so nothing
+   * booked it. The stranded lane is the way back in.
+   */
+  it('revives the attributed, jobless event and books it once', async () => {
+    const businessId = await seedBusiness();
+    const { intent } = await seedObligation(businessId);
+    provider.willVerify(intent.reference, { amountK: 15_000_000 });
+    const eventId = await storeChargeSuccess(intent.reference, {});
+
+    /* The crash, simulated: attribution lands, the enqueue never does. */
+    expect(await events.attributeEvent(workerDb, eventId, businessId)).toBe(true);
+
+    await pump();
+    expect(await drainJobs()).toBeGreaterThan(0);
+    expect(await paymentCount(businessId)).toBe(1);
+    expect(await receiptCount(businessId)).toBe(1);
+
+    /* And a second pass finds nothing to revive: the job exists now. */
+    expect(await pump()).toBe(0);
+    expect(await paymentCount(businessId)).toBe(1);
+  });
+});
+
 describe('unmatched and late (§37: "unknown reference", "expired intent")', () => {
   it('an unknown-but-ours-shaped reference is marked for a human, and no job is queued', async () => {
     await seedBusiness();

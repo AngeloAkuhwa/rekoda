@@ -443,7 +443,9 @@ describe('pairing the two sides', () => {
     ).toEqual({ outcome: 'matched' });
 
     /* And the decision is recorded as the merchant's, not the rule's. */
-    const matches = await withBusiness(db, businessId, (tx) => bankRepo.matchesFor(tx, businessId));
+    const matches = await withBusiness(db, businessId, (tx) =>
+      bankRepo.matchesFor(tx, businessId, [line.id]),
+    );
     expect(matches).toMatchObject([{ lineId: line.id, transactionId: one, decidedBy: 'manual' }]);
     /* The other posting is now the only one left over, not both. */
     expect(await reconcile(businessId)).toMatchObject({ matched: 1, unmatchedMovements: 1 });
@@ -471,9 +473,9 @@ describe('pairing the two sides', () => {
         }),
       ),
     ).toEqual({ outcome: 'refused', reason: 'amounts_differ' });
-    expect(await withBusiness(db, businessId, (tx) => bankRepo.matchesFor(tx, businessId))).toEqual(
-      [],
-    );
+    expect(
+      await withBusiness(db, businessId, (tx) => bankRepo.matchesFor(tx, businessId, [line.id])),
+    ).toEqual([]);
   });
 
   /* The date, by contrast, IS lifted: a transfer recorded a month late is
@@ -833,5 +835,34 @@ describe('reconciling a statement bigger than one chunk', () => {
     );
     expect(all).toHaveLength(12);
     expect(new Set(all.map((l) => l.id)).size).toBe(12);
+  });
+});
+
+describe('a statement bigger than one INSERT', () => {
+  /**
+   * The wire protocol caps bind parameters at 65,535, which at six columns a
+   * row is a ceiling near 10,900 lines in one INSERT. The import walks in
+   * chunks inside one transaction; twelve lines through chunks of five prove
+   * the walk crosses boundaries without losing a line or a duplicate count.
+   */
+  it('imports across chunk boundaries and still counts duplicates honestly', async () => {
+    const businessId = await seedBusiness('+2348110000061');
+    const lines = Array.from({ length: 12 }, (_, i) => ({
+      postedOn: `2026-08-${String(i + 1).padStart(2, '0')}`,
+      amountK: (i + 1) * 100_000,
+      narration: `chunked line ${i + 1}`,
+      bankRef: null,
+      row: i + 1,
+    }));
+
+    const first = await withBusiness(db, businessId, (tx) =>
+      bankRepo.importStatementLines(tx, { businessId, lines, actor: 'user:1', chunkRows: 5 }),
+    );
+    expect(first).toEqual({ imported: 12, duplicates: 0 });
+
+    const again = await withBusiness(db, businessId, (tx) =>
+      bankRepo.importStatementLines(tx, { businessId, lines, actor: 'user:1', chunkRows: 5 }),
+    );
+    expect(again).toEqual({ imported: 0, duplicates: 12 });
   });
 });
