@@ -157,8 +157,13 @@ export async function bankPositionFor(tx: TenantDb, businessId: string): Promise
  *
  * Off by default, and the reconciliation rule leaves it off deliberately.
  * `matchStatement` pairs a list against a list, and reordering its input
- * changes which pairing wins when two are equally good. The rule reads five
- * thousand lines and settles all of them; only the page needs this.
+ * changes which pairing wins when two are equally good. The rule also has no
+ * use for it: it consumes its whole input rather than a visible prefix, so
+ * which end the open lines sit at changes nothing. Only the page, which shows
+ * a prefix and lets a merchant act on it, needs them at the front.
+ *
+ * The predicate is an index lookup, not a scan: `bank_match_line_ux` is
+ * unique on exactly (business_id, line_id).
  */
 export async function bankLinesFor(
   tx: TenantDb,
