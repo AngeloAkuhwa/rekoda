@@ -156,6 +156,7 @@ const ALL: Record<string, readonly replies.Reply[]> = {
     replies.stockList(shelf, 45, 6),
   ],
   stockSaved: [replies.stockSaved(LONG_NAME, 412, 412), replies.stockSaved(LONG_NAME, -412, 0)],
+  graduationNudge: [replies.graduationNudge(NAIRA_MILLIONS, 200_000_000)],
 };
 
 /* Exported, and deliberately not a reply builder. `isSendable` and

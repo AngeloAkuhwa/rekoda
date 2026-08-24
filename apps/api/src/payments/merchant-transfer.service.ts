@@ -20,7 +20,12 @@
  */
 import { randomBytes } from 'node:crypto';
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import { judgeProviderPayment, paymentReference, type FeePolicy } from '@rekoda/core';
+import {
+  GRADUATION_NUDGE_K,
+  judgeProviderPayment,
+  paymentReference,
+  type FeePolicy,
+} from '@rekoda/core';
 import { decryptFacet } from '@rekoda/core/vault';
 import {
   issueRepo,
@@ -426,6 +431,26 @@ async function verifyAndBook(
         singletonKey: `render:receipt:${booked.receiptId}`,
       });
     }
+
+    /* Graduation telemetry (ADR 0019, M5d): the moment lifetime collections
+     * cross the pre-cap threshold, tell the merchant ONCE — inside this
+     * transaction, so the claim, the booking that crossed the line and the
+     * queued message are one fact. The claim's NULL predicate picks one
+     * winner however many payments land in the same minute. */
+    const collectedK = await settleRepo.collectedToDate(tx, businessId);
+    if (
+      collectedK >= GRADUATION_NUDGE_K &&
+      (await paymentsHub.claimGraduationNudge(tx, businessId, PROVIDER))
+    ) {
+      await jobsRepo.enqueue(tx, {
+        businessId,
+        kind: 'graduation.nudge',
+        payload: { collectedK },
+        singletonKey: `graduation:${businessId}`,
+      });
+      log.log('a merchant crossed the graduation threshold; nudge queued');
+    }
+
     log.log(`booked ${intent.reference} from the transfer poll: ${booked.reconciliation}`);
     return { state: 'booked' as const, receiptNumber: booked.receiptNumber };
   });

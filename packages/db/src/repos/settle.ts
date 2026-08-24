@@ -33,7 +33,7 @@ import {
 } from '@rekoda/core';
 import { documentHash } from '@rekoda/core/documents';
 import { applyPayment } from '@rekoda/core';
-import type { TenantDb } from '../client.js';
+import type { Db, TenantDb } from '../client.js';
 import { auditEvents } from '../schema/ops.js';
 import {
   invoices,
@@ -914,4 +914,41 @@ export class BalanceMoved extends Error {
   ) {
     super(`${invoiceNumber} now owes ${balanceDueK}, which is ${excessK} less than reported`);
   }
+}
+
+/* ── graduation telemetry (ADR 0019, fix-plan 6 M5d) ─────────────────────── */
+
+/**
+ * Lifetime collections through Rekoda, for one business. Confirmed VERIFIED
+ * payments only: the number is compared against Paystack's Starter cap, and
+ * only money the provider itself confirmed counts toward that.
+ */
+export async function collectedToDate(tx: TenantDb, businessId: string): Promise<number> {
+  const rows = await tx.execute<{ total: string | number | null }>(sql`
+    SELECT COALESCE(SUM(amount_k), 0) AS total
+    FROM payments
+    WHERE business_id = ${businessId}::uuid AND verified = 1 AND status = 'confirmed'
+  `);
+  return Number([...rows][0]?.total ?? 0);
+}
+
+/**
+ * The same figure across every tenant, for the operator's graduation view.
+ * Worker connection only (`ops_read_payments`, migration 0048) — one query
+ * over the estate rather than a loop, same construction as the margin
+ * report. Ids and amounts, never names.
+ */
+export async function collectedByBusiness(
+  workerDb: Db,
+  limit = 200,
+): Promise<Array<{ businessId: string; collectedK: number }>> {
+  const rows = await workerDb.execute<{ business_id: string; total: string | number }>(sql`
+    SELECT business_id, SUM(amount_k) AS total
+    FROM payments
+    WHERE verified = 1 AND status = 'confirmed'
+    GROUP BY business_id
+    ORDER BY total DESC
+    LIMIT ${limit}
+  `);
+  return [...rows].map((r) => ({ businessId: r.business_id, collectedK: Number(r.total) }));
 }

@@ -69,6 +69,9 @@ export const paymentConnections = pgTable(
     merchantKeyCipher: text('merchant_key_cipher'),
     merchantKeyTail: text('merchant_key_tail'),
     keyMode: text('key_mode').notNull().default('platform_subaccount'),
+    /** When the one-time approaching-the-cap nudge went out (ADR 0019,
+     * migration 0048). Null until it has; never cleared. */
+    graduationNudgedAt: timestamp('graduation_nudged_at', { withTimezone: true }),
     /** Provider capabilities as data, so adapters can differ (§7). */
     capabilities: jsonb('capabilities')
       .notNull()

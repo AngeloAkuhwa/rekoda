@@ -14,7 +14,7 @@
  */
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { encryptFacet } from '@rekoda/core/vault';
-import { paymentsHub, withBusiness, type Db } from '@rekoda/db';
+import { paymentsHub, settleRepo, withBusiness, type Db } from '@rekoda/db';
 import type { SubmitConnectionRequest } from '@rekoda/contracts';
 import { CONFIG, type ApiConfig } from '../config.js';
 import { DB } from '../db/db.module.js';
@@ -30,6 +30,7 @@ export type ConnectionView = {
   accountName: string | null;
   keyMode: string | null;
   merchantKeyTail: string | null;
+  collectedToDateK: number | null;
 };
 
 const NOT_CONFIGURED: ConnectionView = {
@@ -41,6 +42,7 @@ const NOT_CONFIGURED: ConnectionView = {
   accountName: null,
   keyMode: null,
   merchantKeyTail: null,
+  collectedToDateK: null,
 };
 
 export type SubmitOutcome =
@@ -60,10 +62,21 @@ export class PaymentConnectionsService {
   ) {}
 
   async view(businessId: string): Promise<ConnectionView> {
-    const row = await withBusiness(this.db, businessId, (tx) =>
-      paymentsHub.connectionFor(tx, businessId, this.provider.providerType),
-    );
-    return row ? this.toView(row) : NOT_CONFIGURED;
+    /* Collected-to-date rides along only in merchant_key mode, because it is
+     * the figure Paystack's Starter cap measures (ADR 0019, M5d). One read,
+     * same transaction, so the card never shows a number older than the row. */
+    const { row, collectedK } = await withBusiness(this.db, businessId, async (tx) => {
+      const connection = await paymentsHub.connectionFor(
+        tx,
+        businessId,
+        this.provider.providerType,
+      );
+      if (!connection || connection.keyMode !== 'merchant_key') {
+        return { row: connection, collectedK: null };
+      }
+      return { row: connection, collectedK: await settleRepo.collectedToDate(tx, businessId) };
+    });
+    return row ? this.toView(row, collectedK) : NOT_CONFIGURED;
   }
 
   /**
@@ -192,15 +205,18 @@ export class PaymentConnectionsService {
     return { state: 'connected', merchantKeyTail };
   }
 
-  private toView(row: {
-    status: string;
-    kycStatus: string;
-    settlementBankCode: string | null;
-    settlementAccountLast4: string | null;
-    settlementAccountName: string | null;
-    keyMode: string;
-    merchantKeyTail: string | null;
-  }): ConnectionView {
+  private toView(
+    row: {
+      status: string;
+      kycStatus: string;
+      settlementBankCode: string | null;
+      settlementAccountLast4: string | null;
+      settlementAccountName: string | null;
+      keyMode: string;
+      merchantKeyTail: string | null;
+    },
+    collectedToDateK: number | null = null,
+  ): ConnectionView {
     return {
       status: row.status,
       kycStatus: row.kycStatus,
@@ -210,6 +226,7 @@ export class PaymentConnectionsService {
       accountName: row.settlementAccountName,
       keyMode: row.keyMode,
       merchantKeyTail: row.merchantKeyTail,
+      collectedToDateK,
     };
   }
 }

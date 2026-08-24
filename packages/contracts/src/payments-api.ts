@@ -29,6 +29,12 @@ export const paymentConnectionResponse = z.object({
   keyMode: z.string().nullable(),
   /** "key ending 4821" for the card; the key itself never leaves the vault. */
   merchantKeyTail: z.string().nullable(),
+  /**
+   * Lifetime collections through the shop, kobo (ADR 0019, fix-plan 6 M5d).
+   * Populated only in merchant_key mode, because that is the figure the
+   * Paystack Starter cap measures; null everywhere else.
+   */
+  collectedToDateK: z.number().int().nonnegative().nullable(),
 });
 export type PaymentConnectionResponse = z.infer<typeof paymentConnectionResponse>;
 

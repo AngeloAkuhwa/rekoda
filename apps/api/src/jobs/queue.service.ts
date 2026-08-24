@@ -28,6 +28,13 @@ export const JobKind = {
    * to a provider over HTTP. Same reason `document.render` is a job.
    */
   PaymentLink: 'payment.link',
+  /**
+   * Lifetime collections crossed the pre-cap threshold (ADR 0019, M5d).
+   * A job for the same reason payment.link is one: it sends a WhatsApp
+   * message, and a provider outage must never sit inside the transaction
+   * that booked real money.
+   */
+  GraduationNudge: 'graduation.nudge',
 } as const;
 
 export type JobKindName = (typeof JobKind)[keyof typeof JobKind];
