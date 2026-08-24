@@ -3,6 +3,7 @@ import { reportsStock } from '@/server/api';
 import { requireSessionWithToken } from '@/server/guards';
 import { Money } from '@/components/ui/Money';
 import { AppNav } from '../AppNav';
+import { exportCaption } from '@/lib/export-caption';
 import { SignOutButton } from '../SignOutButton';
 
 export const metadata: Metadata = {
@@ -89,6 +90,11 @@ export default async function StockPage() {
                 </tbody>
               </table>
             </div>
+            <p className="rk-fineprint">
+              <a href="/app/export/stock" download>
+                {exportCaption('products', total)}
+              </a>
+            </p>
             {/* The counts describe the shop, not the table above it. The
                 table is a page, and a footer that counted its own rows would
                 tell a merchant with more products than fit that they have

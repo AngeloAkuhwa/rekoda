@@ -3211,3 +3211,98 @@ describe('purchase orders, and what receiving one does', () => {
     expect(spend.payableK).toBe(0);
   });
 });
+
+describe('paging the registers, and the two exports the audit found missing', () => {
+  async function seedThreeInvoices(businessId: string) {
+    await withBusiness(db, businessId, async (tx) => {
+      for (let i = 0; i < 3; i++) {
+        await issueRepo.issueSale(tx, {
+          businessId,
+          customerId: null,
+          customerToken: null,
+          items: [{ name: `Ankara bale ${i}`, quantity: 1, unitPriceK: 100_000 * (i + 1) }],
+          subtotalK: 100_000 * (i + 1),
+          discountK: 0,
+          deliveryFeeK: 0,
+          vatK: 0,
+          totalK: 100_000 * (i + 1),
+          paidK: 0,
+          balanceDueK: 100_000 * (i + 1),
+          method: 'transfer',
+          sourceType: 'chat',
+          sourceId: `draft-page-${i}`,
+          actor: 'system',
+        });
+      }
+    });
+  }
+
+  it('walks a register in pages without losing the whole-table count', async () => {
+    const { auth, businessId } = await onboard('+2348177000230');
+    await seedThreeInvoices(businessId);
+
+    /* The repo is where the arithmetic lives; the endpoint adds one line of
+     * wiring. Both are pinned: offset against real rows here, and the wire
+     * below. */
+    const paged = await withBusiness(db, businessId, (tx) =>
+      reportsRepo.invoicesFor(tx, businessId, 2, 2),
+    );
+    expect(paged.rows).toHaveLength(1);
+    expect(paged.count).toBe(3);
+
+    const wire = reportsInvoicesResponse.parse(
+      (
+        await app.inject({ method: 'GET', url: '/v1/reports/invoices?page=2', headers: auth })
+      ).json(),
+    );
+    /* Three invoices fit on page one, so page two is honestly empty while
+     * the count still describes the whole book. */
+    expect(wire.invoices).toEqual([]);
+    expect(wire.count).toBe(3);
+
+    /* A mangled page is page one, never an error. */
+    const mangled = reportsInvoicesResponse.parse(
+      (
+        await app.inject({ method: 'GET', url: '/v1/reports/invoices?page=abc', headers: auth })
+      ).json(),
+    );
+    expect(mangled.invoices).toHaveLength(3);
+  });
+
+  it('exports the audit trail and the stock register as files', async () => {
+    const { auth, businessId } = await onboard('+2348177000231');
+    await seedThreeInvoices(businessId);
+    await withBusiness(db, businessId, async (tx) => {
+      const bale = await stockRepo.findOrCreateProduct(tx, businessId, 'Ankara bale');
+      await stockRepo.recordMovement(tx, {
+        businessId,
+        productId: bale.id,
+        delta: 4,
+        reason: 'adjustment',
+        sourceType: 'chat',
+        sourceId: 'seed',
+      });
+    });
+
+    const audit = await app.inject({ method: 'GET', url: '/v1/reports/audit.csv', headers: auth });
+    expect(audit.statusCode).toBe(200);
+    expect(audit.headers['content-type']).toContain('text/csv');
+    /* toCsv ends lines CRLF for spreadsheets; trim the carriage return. */
+    expect(audit.body.split('\n')[0]?.trim()).toBe('When,Who,What happened,Where,Why,Amount');
+    expect(audit.body).toContain('INV-');
+
+    const stock = await app.inject({ method: 'GET', url: '/v1/reports/stock.csv', headers: auth });
+    expect(stock.statusCode).toBe(200);
+    expect(stock.headers['content-type']).toContain('text/csv');
+    expect(stock.body.split('\n')[0]?.trim()).toBe('Product,On hand,Unit price,Unit cost,Listed');
+    expect(stock.body).toContain('Ankara bale,4');
+
+    /* A stranger gets neither file. */
+    expect((await app.inject({ method: 'GET', url: '/v1/reports/audit.csv' })).statusCode).toBe(
+      401,
+    );
+    expect((await app.inject({ method: 'GET', url: '/v1/reports/stock.csv' })).statusCode).toBe(
+      401,
+    );
+  });
+});

@@ -468,20 +468,26 @@ export async function removeBusinessMember(sessionToken: string, userId: string)
   return (json as { removed?: boolean })?.removed === true;
 }
 
-export async function reportsInvoices(sessionToken: string): Promise<ReportsInvoicesResponse> {
+export async function reportsInvoices(
+  sessionToken: string,
+  page = 1,
+): Promise<ReportsInvoicesResponse> {
   const { json } = await call({
     method: 'GET',
-    path: '/v1/reports/invoices',
+    path: page > 1 ? `/v1/reports/invoices?page=${page}` : '/v1/reports/invoices',
     headers: { authorization: `Bearer ${sessionToken}` },
     expect: [200],
   });
   return reportsInvoicesResponse.parse(json);
 }
 
-export async function reportsReceipts(sessionToken: string): Promise<ReportsReceiptsResponse> {
+export async function reportsReceipts(
+  sessionToken: string,
+  page = 1,
+): Promise<ReportsReceiptsResponse> {
   const { json } = await call({
     method: 'GET',
-    path: '/v1/reports/receipts',
+    path: page > 1 ? `/v1/reports/receipts?page=${page}` : '/v1/reports/receipts',
     headers: { authorization: `Bearer ${sessionToken}` },
     expect: [200],
   });
@@ -595,10 +601,13 @@ export async function paySupplier(
   return status === 200 ? paySupplierResponse.parse(json) : null;
 }
 
-export async function reportsExpenses(sessionToken: string): Promise<ReportsExpensesResponse> {
+export async function reportsExpenses(
+  sessionToken: string,
+  page = 1,
+): Promise<ReportsExpensesResponse> {
   const { json } = await call({
     method: 'GET',
-    path: '/v1/reports/expenses',
+    path: page > 1 ? `/v1/reports/expenses?page=${page}` : '/v1/reports/expenses',
     headers: { authorization: `Bearer ${sessionToken}` },
     expect: [200],
   });

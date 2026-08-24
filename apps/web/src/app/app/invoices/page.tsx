@@ -4,6 +4,7 @@ import { formatKobo } from '@rekoda/core';
 import { Money } from '@/components/ui/Money';
 import { reportsInvoices } from '@/server/api';
 import { requireSessionWithToken } from '@/server/guards';
+import { RegisterPager, pageParam } from '@/components/ui/RegisterPager';
 import { AppNav } from '../AppNav';
 import { CreditForm, type CreditableInvoice } from './CreditForm';
 import { VoidForm } from './VoidForm';
@@ -23,10 +24,17 @@ export const metadata: Metadata = {
  * owed. Numbers and figures only — a customer is never named on this page,
  * because invoice records reach the dashboard tokenised and stay that way.
  */
-export default async function InvoicesPage() {
+export default async function InvoicesPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ page?: string | string[] }>;
+}) {
+  const page = pageParam((await searchParams).page);
   const { identity, token } = await requireSessionWithToken();
-  const { invoices, count, outstandingK, orders, quotes, quotesTotal } =
-    await reportsInvoices(token);
+  const { invoices, count, outstandingK, orders, quotes, quotesTotal } = await reportsInvoices(
+    token,
+    page,
+  );
 
   /* Only what CAN be voided is offered. An invoice with money against it is
    * corrected by refunding rather than reversing, and one already voided has
@@ -338,8 +346,17 @@ export default async function InvoicesPage() {
               ) : (
                 ' · nothing outstanding'
               )}
-              {count > invoices.length ? ` · showing the latest ${invoices.length}` : ''}
+              {count > invoices.length && page === 1
+                ? ` · showing the latest ${invoices.length}`
+                : ''}
             </p>
+            <RegisterPager
+              page={page}
+              count={count}
+              pageSize={50}
+              basePath="/app/invoices"
+              label="invoices"
+            />
           </>
         )}
       </div>

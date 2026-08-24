@@ -20,6 +20,8 @@ const EXPORTS: Readonly<Record<string, string>> = {
   expenses: 'expenses.csv',
   statements: 'statements.pdf',
   workbook: 'statements.xlsx',
+  audit: 'audit.csv',
+  stock: 'stock.csv',
 };
 
 export async function GET(
