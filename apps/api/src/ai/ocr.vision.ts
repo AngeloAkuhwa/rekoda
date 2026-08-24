@@ -1,0 +1,96 @@
+import Anthropic from '@anthropic-ai/sdk';
+import { TextExtractionUnavailable, type ExtractedText, type TextExtraction } from './ocr.js';
+
+/**
+ * Hosted extraction: the vision model as the text reader (ADR 0027).
+ *
+ * The launch configuration. The pipeline ADR 0024 fixed is unchanged —
+ * photo → TEXT extraction → PII gateway → reasoning model — what changed is
+ * which engine performs the extraction step: the receipt image goes to
+ * Anthropic as a processor, under API terms that exclude training on
+ * inputs, with ONE job — transcribe what the paper says, verbatim. The
+ * transcript then walks the same gateway every typed sentence walks before
+ * any model is asked to reason about it. The self-hosted OCR sidecar
+ * remains a supported configuration behind `OCR_URL` for the hardening
+ * move; /ai-privacy describes whichever one a deployment runs.
+ */
+const TRANSCRIBE_SYSTEM =
+  'You transcribe documents. Output every piece of text visible in the image, ' +
+  'verbatim, preserving line breaks. Do not interpret, summarise, translate or ' +
+  'add anything that is not printed on the page. If the image contains no ' +
+  'legible text, output nothing at all.';
+
+/** The image types the vision API accepts; anything else is refused here. */
+const IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp']);
+
+/** A receipt is a page of short lines; this is headroom, not a target. */
+const MAX_TRANSCRIPT_TOKENS = 2_048;
+
+export class VisionTextExtraction implements TextExtraction {
+  private readonly client: Anthropic;
+
+  constructor(
+    apiKey: string,
+    private readonly model: string,
+    timeoutMs = 30_000,
+    baseUrl?: string,
+  ) {
+    this.client = new Anthropic({
+      apiKey,
+      timeout: timeoutMs,
+      maxRetries: 0,
+      ...(baseUrl ? { baseURL: baseUrl } : {}),
+    });
+  }
+
+  async extract(image: Buffer, mimeType: string): Promise<ExtractedText> {
+    if (!IMAGE_TYPES.has(mimeType)) {
+      throw new TextExtractionUnavailable(`cannot read ${mimeType}`);
+    }
+
+    let response: Anthropic.Message;
+    try {
+      response = await this.client.messages.create({
+        model: this.model,
+        max_tokens: MAX_TRANSCRIPT_TOKENS,
+        system: TRANSCRIBE_SYSTEM,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'image',
+                source: {
+                  type: 'base64',
+                  media_type: mimeType as 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp',
+                  data: image.toString('base64'),
+                },
+              },
+              { type: 'text', text: 'Transcribe this document.' },
+            ],
+          },
+        ],
+      });
+    } catch (error) {
+      throw new TextExtractionUnavailable(describe(error));
+    }
+
+    const text = response.content
+      .filter((block): block is Anthropic.TextBlock => block.type === 'text')
+      .map((block) => block.text)
+      .join('\n')
+      .trim();
+    if (!text) throw new TextExtractionUnavailable('the page had no legible text');
+
+    /* Null, honestly: a language model does not report a per-character
+     * confidence the way an OCR engine does, and inventing one would give
+     * the caller a number that means nothing. */
+    return { text, confidence: null };
+  }
+}
+
+/** The reason, never the image and never what was printed on it. */
+function describe(error: unknown): string {
+  if (error instanceof Anthropic.APIError) return `vision engine answered ${error.status}`;
+  return error instanceof Error ? error.name : 'unknown transport failure';
+}

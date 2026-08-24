@@ -272,10 +272,13 @@ const DEFAULT_MODEL: Record<'anthropic' | 'openai', string | null> = {
  * ROLE, and each role has its own model — nothing anywhere says "call
  * Sonnet", it says "call the classifier". The reasoning roles default to the
  * Claude family (vision + native PDF + strict tools is where extraction
- * lives); the transcriber defaults to the SELF-HOSTED AfriSpeech-tuned
- * Whisper sidecar (ADR 0005/0008) — "audio never leaves Rekoda" is a trust
- * claim, and generic hosted models mishear African-accented English badly.
- * A hosted transcriber id here is for the M3 benchmark comparator only.
+ * lives). The transcriber defaults to HOSTED whisper-1 (ADR 0027): the
+ * launch decision is hosted AI end to end, and whisper-1 is the
+ * transcription model that reports the audio DURATION, which the
+ * voice_seconds meter takes as the provider's number rather than an
+ * estimate. Setting `STT_URL` swaps in the self-hosted AfriSpeech sidecar
+ * (ADR 0008) unchanged — the hardening move stays one env var away, and
+ * /ai-privacy describes whichever engine a deployment runs.
  */
 const ROLE_DEFAULTS = {
   classifier: 'claude-haiku-4-5',
@@ -283,7 +286,7 @@ const ROLE_DEFAULTS = {
    * harder job than parsing a sentence somebody typed, and it is rare. */
   vision: 'claude-sonnet-5',
   escalation: 'claude-opus-5',
-  transcriber: 'afrispeech-whisper-medium-all',
+  transcriber: 'whisper-1',
 } as const;
 
 /**

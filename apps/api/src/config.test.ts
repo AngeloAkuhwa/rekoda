@@ -135,11 +135,12 @@ describe('the role ensemble (docs/ai-model-strategy.md)', () => {
     expect(config.aiModelClassifier).toMatch(/haiku/);
     expect(config.aiModelVision).toMatch(/claude/);
     expect(config.aiModelEscalation).toMatch(/opus/);
-    // ADR 0008: the transcriber defaults to the SELF-HOSTED AfriSpeech-tuned
-    // sidecar, never a hosted API — "audio never leaves Rekoda" is a trust
-    // claim, and this assertion is what keeps a convenience swap from
-    // sneaking in as a default.
-    expect(config.aiModelTranscriber).toMatch(/afrispeech/);
+    // ADR 0027 reversed ADR 0008's default: hosted transcription is the
+    // launch configuration, and whisper-1 specifically because it reports
+    // the audio DURATION the voice_seconds meter bills from. The sidecar
+    // stays one env var away (STT_URL); this assertion keeps the default
+    // and the privacy pages describing the same engine.
+    expect(config.aiModelTranscriber).toBe('whisper-1');
     // Dual-extraction threshold is configuration, defaulting to ₦500,000.
     expect(config.aiDualExtractThresholdK).toBe(50_000_000);
   });

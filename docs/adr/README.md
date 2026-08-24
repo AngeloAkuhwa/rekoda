@@ -32,5 +32,6 @@ a new ADR that supersedes the old one.
 | [0024](0024-the-commercial-terms.md)                      | The commercial terms                                                            | Accepted                          |
 | [0025](0025-bank-account-split.md)                        | The merchant's own bank account, separate from settlements                      | Accepted (amends 0004)            |
 | [0026](0026-fixed-assets.md)                              | A generator is an asset, not a month's expense                                  | Accepted (amends 0004)            |
+| [0027](0027-hosted-ai-at-launch.md)                       | Hosted AI at launch, and the privacy pages tell the truth about it              | Accepted (amends 0008, 0024)      |
 
 Template: [0000-template.md](0000-template.md)
