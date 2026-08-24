@@ -40,6 +40,7 @@ export const PLANS: Plan[] = [
     cta: 'Start with Chat',
     includes: [
       '400 messages processed each month',
+      'Voice-note bookkeeping, 60 minutes a month',
       '100 documents',
       'Invoices, receipts and customer balances',
       'Sales, expenses, purchases and stock',
@@ -47,11 +48,7 @@ export const PLANS: Plan[] = [
       'Full books: profit and loss, balance sheet, cash flow',
       'Dashboard with every register',
     ],
-    coming: [
-      'Voice-note bookkeeping (60 minutes a month)',
-      'Products and inventory',
-      'An accountant seat',
-    ],
+    coming: ['Products and inventory', 'An accountant seat'],
     excludes: ['No online shop'],
   },
   {
@@ -65,6 +62,7 @@ export const PLANS: Plan[] = [
     includes: [
       'Everything in Chat, with room to grow',
       '800 messages processed, 500 documents',
+      'Voice-note bookkeeping, 60 minutes a month',
       'Payments verified the moment they land',
       'Reconciliation with mismatch detection',
     ],
@@ -75,7 +73,6 @@ export const PLANS: Plan[] = [
       'Inventory and customer balances updated for you',
       'Two accountant seats',
     ],
-    excludes: ['No voice-note bookkeeping for cash sales'],
   },
   {
     id: 'complete',
@@ -84,10 +81,14 @@ export const PLANS: Plan[] = [
     monthlyK: m(29_900),
     annualK: m(299_000),
     cta: 'Run my business on Rekoda',
-    includes: ['Everything in Chat and Integrate', '1,200 messages processed, 750 documents'],
+    includes: [
+      'Everything in Chat and Integrate',
+      '1,200 messages processed, 750 documents',
+      '120 voice minutes a month',
+    ],
     coming: [
       'Online orders and cash sales in one set of books',
-      '120 voice minutes, 300 orders',
+      '300 orders captured automatically',
       'Daily, weekly and monthly summaries',
       'Priority support, plus 3 accountant seats',
     ],

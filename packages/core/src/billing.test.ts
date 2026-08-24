@@ -313,8 +313,13 @@ describe('which packs a plan may buy', () => {
     expect(packsFor('chat').map((p) => p.id)).not.toContain('orders_50');
   });
 
-  it('does not sell voice minutes to an Integrate merchant', () => {
-    expect(packsFor('integrate').map((p) => p.id)).not.toContain('voice_30min');
+  it('sells voice minutes to every paid plan, because every paid plan now carries voice', () => {
+    /* The old rule refused Integrate the voice pack because Integrate had no
+     * voice allowance. The ladder fix gave it one, and an allowance a
+     * merchant can exhaust must come with the overage path. */
+    for (const plan of ['chat', 'integrate', 'complete']) {
+      expect(packsFor(plan).map((p) => p.id)).toContain('voice_30min');
+    }
   });
 
   it('sells everything to Complete, which does everything', () => {

@@ -105,24 +105,27 @@ export interface ApiConfig {
    */
   aiModelPrices: string | null;
   /**
-   * The self-hosted transcription sidecar (ADR 0005/0008).
+   * The self-hosted transcription sidecar (ADR 0005/0008), now optional
+   * (ADR 0027).
    *
-   * `.env.example` has documented this since M0 and nothing read it, so voice
-   * notes were answered with "text only" no matter what was deployed. Null
-   * means no transcriber, and a voice note gets an honest sentence rather
-   * than being sent somewhere the privacy page does not mention. WHERE this
-   * points is the promise: "audio never leaves Rekoda" is true exactly while
-   * it names our own machine.
+   * Set, it selects the AfriSpeech sidecar and audio stays on our machine —
+   * the day a deployment runs it, /ai-privacy may say the stronger sentence
+   * again. Null selects the hosted transcriber when an OpenAI key exists
+   * (the launch configuration, named on /ai-privacy), and with neither a
+   * voice note gets an honest sentence rather than being sent somewhere the
+   * privacy page does not mention.
    */
   sttUrl: string | null;
   /**
-   * The self-hosted OCR sidecar (ADR 0024, C9).
+   * The self-hosted OCR sidecar (ADR 0024 C9), now optional (ADR 0027).
    *
-   * Null means photographs of receipts are answered honestly and read by
-   * nobody. It must NEVER mean "send the image to a vision model instead":
-   * the gateway tokenises text and cannot tokenise an image, so that
-   * fallback would put a customer's name and address in front of a third
-   * party intact.
+   * Set, it selects the sidecar and the image stays on our machine. Null
+   * selects the vision model as a transcription-only processor when an
+   * Anthropic key exists — the launch configuration, chosen at boot and
+   * named on /ai-privacy, never a fallback taken at request time. The
+   * REASONING model still only ever sees tokenised text either way, because
+   * the gateway tokenises text and cannot tokenise an image, and a request
+   * that cannot reach its configured engine is refused, not rerouted.
    */
   ocrUrl: string | null;
   /** Daily ceilings. The thing on the other side of these is a bill. */

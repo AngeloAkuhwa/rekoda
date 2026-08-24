@@ -23,13 +23,13 @@ configurable model; nothing anywhere says "call Sonnet", it says "call the
 interpreter". Defaults, chosen from current capability and price
 (Anthropic first-party rates, June 2026 cache):
 
-| Role          | Default model                                               | Price in/out per MTok                   | Job                                                                                                                                                                                                                                                                                                                                                                                       |
-| ------------- | ----------------------------------------------------------- | --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `transcriber` | self-hosted `afrispeech-whisper-medium-all` (ADR 0005/0008) | hosting only                            | Voice note → text. Self-hosted for two reasons that outrank ops convenience: "audio never leaves Rekoda" is a trust-page claim, and generic models run 30–45% WER on African-accented English (worse on names and amounts, which is all Rekoda's utterances are). OpenAI `gpt-4o-transcribe` exists in this role ONLY as the M3 benchmark comparator; it never becomes a silent fallback. |
-| `classifier`  | Claude Haiku 4.5                                            | $1 / $5                                 | Document-type detection ("is this a receipt, an invoice, a statement?"), routing, and formatting §16 answers from deterministic query results. High volume, low nuance.                                                                                                                                                                                                                   |
-| `interpreter` | Claude Sonnet 5                                             | $3 / $15 (intro $2/$10 ends 2026-08-31) | Text or transcript → StructuredBusinessCommand. The existing interpreter role.                                                                                                                                                                                                                                                                                                            |
-| `vision`      | Claude Sonnet 5                                             | $3 / $15                                | Receipts, handwritten bills, POS slips, photos (image blocks); supplier invoices and bank statements (native PDF document blocks, 32 MB / 600 pages) **with citations enabled**, so every extracted figure is pinned to the page that says it.                                                                                                                                            |
-| `escalation`  | Claude Opus 5                                               | $5 / $25                                | Fired ONLY by a confidence gate on high-value work: an unreadable scan worth re-trying, an ambiguous statement match, a large correction. Never a default path.                                                                                                                                                                                                                           |
+| Role          | Default model                                                                           | Price in/out per MTok                   | Job                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| ------------- | --------------------------------------------------------------------------------------- | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `transcriber` | hosted `whisper-1` (ADR 0027); `afrispeech-whisper-medium-all` sidecar behind `STT_URL` | per-minute, ceiling $0.006/min          | Voice note → text. ADR 0027 made hosted transcription the launch configuration — whisper-1 because it reports the DURATION the voice_seconds meter bills from — with the AfriSpeech sidecar retained one env var away for the accuracy + "audio never leaves Rekoda" hardening move (generic models run 30–45% WER on African-accented English; the M3 benchmark comparator exists to make that call with data). Selection is boot config, never a silent fallback. |
+| `classifier`  | Claude Haiku 4.5                                                                        | $1 / $5                                 | Document-type detection ("is this a receipt, an invoice, a statement?"), routing, and formatting §16 answers from deterministic query results. High volume, low nuance.                                                                                                                                                                                                                                                                                             |
+| `interpreter` | Claude Sonnet 5                                                                         | $3 / $15 (intro $2/$10 ends 2026-08-31) | Text or transcript → StructuredBusinessCommand. The existing interpreter role.                                                                                                                                                                                                                                                                                                                                                                                      |
+| `vision`      | Claude Sonnet 5                                                                         | $3 / $15                                | Receipts, handwritten bills, POS slips, photos (image blocks); supplier invoices and bank statements (native PDF document blocks, 32 MB / 600 pages) **with citations enabled**, so every extracted figure is pinned to the page that says it.                                                                                                                                                                                                                      |
+| `escalation`  | Claude Opus 5                                                                           | $5 / $25                                | Fired ONLY by a confidence gate on high-value work: an unreadable scan worth re-trying, an ambiguous statement match, a large correction. Never a default path.                                                                                                                                                                                                                                                                                                     |
 
 Env overrides: `AI_MODEL_TRANSCRIBER`, `AI_MODEL_CLASSIFIER`,
 `AI_MODEL_INTERPRETER`, `AI_MODEL_VISION`, `AI_MODEL_ESCALATION`. Unset roles
@@ -141,23 +141,30 @@ where two different models fail differently, so agreement carries signal:
 The shape to hold: **a validator model is an exception-finder on high-stakes
 documents, never a toll booth on every message.**
 
-## 7. STT: self-hosted stays the baseline — a correction on the record
+## 7. STT: the launch call, twice corrected on the record
 
-An earlier revision of this section proposed starting transcription on the
-OpenAI API for launch-ops simplicity. **That was wrong, and ADR 0008 explains
-why**: the self-host decision is anchored on privacy and accuracy, not cost.
-"Audio never leaves Rekoda" is the strongest sentence on the trust page, and
-generic hosted models measure 30–45% WER on African-accented English (above
-70% on entity-rich utterances, which is every Rekoda voice note). Cheap ops
-that break the trust claim and mishear the amounts is not cheap.
+This section has now swung both ways, and both swings are kept on the record
+because each was right about something.
 
-So the baseline holds: **self-hosted AfriSpeech-tuned Whisper in the
-faster-whisper sidecar** (ADR 0008), with the M3 benchmark deciding weights
-among the three self-hosted candidates on ADR 0008's gate metric —
-entity-level accuracy (amount, quantity, name-string closeness), not WER.
-The OpenAI transcriber config exists so the benchmark has a hosted
-comparator and so a future, explicitly-consented fallback is one env var
-away; it is never a silent default.
+An early revision proposed hosted transcription for launch-ops simplicity.
+ADR 0008 reversed it: the self-host case is anchored on privacy ("audio
+never leaves Rekoda" as the trust page's strongest sentence) and accuracy
+(generic models measure 30–45% WER on African-accented English, above 70% on
+entity-rich utterances, which is every Rekoda voice note).
+
+**ADR 0027 (24 Aug 2026) is the owner's launch decision, and it stands:**
+hosted `whisper-1` at launch, because a one-person operation should not
+carry sidecar ops for a scale it does not have — with three conditions that
+keep ADR 0008's substance alive rather than discarding it:
+
+1. the trust page changed FIRST, in the words it promised, and names the
+   processor — the strong sentence is retired until a deployment earns it;
+2. the AfriSpeech sidecar stays one env var away (`STT_URL`), selection at
+   boot, never a silent runtime fallback;
+3. the M3 benchmark comparator remains the instrument that decides WHEN the
+   sidecar's accuracy case justifies its ops cost, on ADR 0008's gate
+   metric — entity-level accuracy (amount, quantity, name-string
+   closeness), not WER.
 
 ## 8. What this changes in code, and when
 

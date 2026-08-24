@@ -41,7 +41,7 @@ Detecting that "Ada" in a raw sentence is a person **is itself a language task**
 3. **New, never-seen names: minimise, then vault.** A brand-new name reaches the LLM once, under Anthropic's no-training API terms; the result is vaulted and tokenised forever after.
 4. **Voice: Rekoda-controlled STT from day one** — see §5, and no, this does not mean buying hardware.
 
-Marketing must say what is true — _"customer identities are tokenised and audio never leaves our infrastructure; AI providers receive minimised, pseudonymised context under no-training terms"_ — not "AI never sees any name ever."
+Marketing must say what is true — as amended by ADR 0027: _identities are tokenised; voice notes and receipt photos go only to the processors named on /ai-privacy, under API terms that exclude training, solely to become text; that text is tokenised before any reasoning model sees it (ADR 0027)._ The stronger "audio never leaves our infrastructure" sentence returns only when a deployment actually runs the sidecars. Never "AI never sees any name ever."
 
 ### F4 — The ledger must be double-entry, and the spec doesn't say so
 
@@ -136,7 +136,7 @@ To be completely clear about what "self-hosted faster-whisper in a sidecar conta
 - **Whisper is a free, openly released speech-recognition model.** `faster-whisper` is an optimised program that runs it.
 - **It runs on the same rented cloud server from §3** — one more Docker container next to the API and the database. "Self-hosted" means _on our rented server_ instead of _sent to OpenAI's API_. There is no machine in your house, no GPU to buy, nothing to plug in — ever.
 - A typical 45-second voice note transcribes in a few seconds on the CPX31's ordinary CPU. No per-minute fee — the cost is already inside the ₦23k server rent.
-- **Why bother?** It is what makes the spec's promise real: _the audio recording of your merchant saying customer names never leaves Rekoda's infrastructure._ That is the single strongest privacy claim in the product, and it costs nothing extra.
+- **Why bother?** It is what makes the spec's strongest promise real: _the audio recording of your merchant saying customer names never leaves Rekoda's infrastructure._ **ADR 0027 (24 Aug 2026): this section describes the RETAINED option, not the launch configuration** — launch runs hosted transcription, named on /ai-privacy, and setting `STT_URL` brings this sidecar (and the stronger sentence) back with no code change.
 - **Safety net:** a config flag can route transcription to OpenAI's API (~₦7/minute) if the M3 accent benchmark shows self-hosted accuracy isn't good enough yet for pidgin/strong accents — with the privacy page updated honestly while we tune. Either way: no hardware, no capex, no ops beyond the server we already run.
 
 ---
@@ -152,7 +152,7 @@ To be completely clear about what "self-hosted faster-whisper in a sidecar conta
 | Jobs             | **pg-boss** (Postgres-backed)                                                                      | Transactional enqueue in the same commit as the business event; no Redis to operate. BullMQ later only if throughput demands                               |
 | Web              | **Next.js 15 (App Router)**                                                                        | One app: marketing + `/business/*` + `/admin/*` + legal; SSR for SEO and fast first paint on Nigerian mobile                                               |
 | Monorepo         | **pnpm + Turborepo**                                                                               | `packages/core` (pure domain, zero framework imports, most-tested code), `packages/db`, `packages/contracts` (zod), `apps/api`, `apps/web`, `services/stt` |
-| STT              | **faster-whisper sidecar** (§5)                                                                    | Audio never leaves our infra; no per-minute fees; provider fallback behind a flag                                                                          |
+| STT              | **hosted whisper-1 at launch (ADR 0027)**; faster-whisper sidecar retained (§5)                    | Sidecar restores "audio never leaves our infra" when volume justifies its ops; selection is boot config, never a runtime fallback                          |
 | AI               | **Anthropic SDK, Sonnet-default router** (§4)                                                      | Best affordable results; strict schemas; prompt caching                                                                                                    |
 | PDF / Excel      | **PDFKit (ported engine) + exceljs**                                                               | Templates, fonts, image pipeline already commercial-grade                                                                                                  |
 | Payments         | Paystack (Rekoda billing; merchant-key model for Integrate per F5)                                 |                                                                                                                                                            |
