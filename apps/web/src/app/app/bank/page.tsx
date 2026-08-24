@@ -1,11 +1,12 @@
 import type { Metadata } from 'next';
 import { lagosDay } from '@rekoda/core';
 import { Money } from '@/components/ui/Money';
-import { bankPosition } from '@/server/api';
+import { bankFeedState, bankPosition } from '@/server/api';
 import { requireSessionWithToken } from '@/server/guards';
 import { AppNav } from '../AppNav';
 import { SignOutButton } from '../SignOutButton';
 import { StatementForm } from './StatementForm';
+import { ConnectFeedForm, SyncFeedForm } from './FeedForms';
 import { ForgetDayForm } from './ForgetDayForm';
 import { ReconcileForm } from './ReconcileForm';
 import { LineMatchCell } from './LineMatchCell';
@@ -33,7 +34,10 @@ export const metadata: Metadata = {
  */
 export default async function BankPage() {
   const { identity, token } = await requireSessionWithToken();
-  const { position, lines, reconciliation, openMovements } = await bankPosition(token);
+  const [{ position, lines, reconciliation, openMovements }, feed] = await Promise.all([
+    bankPosition(token),
+    bankFeedState(token),
+  ]);
   const today = lagosDay(new Date());
   const started = position.lines > 0;
 
@@ -154,6 +158,53 @@ export default async function BankPage() {
           </p>
           {canReconcileBank(identity.role) ? (
             <ReconcileForm pairable={reconciliation.pairable} />
+          ) : null}
+        </div>
+      ) : null}
+
+      {/* The second door into the same statement: a feed the merchant
+          authorises at their own bank. Hidden entirely when the deployment
+          has no aggregator key, because a button that cannot work is worse
+          than no button. */}
+      {feed.state !== 'not_configured' && canReconcileBank(identity.role) ? (
+        <div className="rk-card rk-dash-card">
+          <h2>Your bank, connected</h2>
+          {feed.state === 'linked' ? (
+            <>
+              <p className="rk-fineprint">
+                Linked to your {feed.bankName}
+                {feed.accountLast4 ? ` account ending ${feed.accountLast4}` : ''}.{' '}
+                {feed.lastSyncedOn ? `Last pulled on ${feed.lastSyncedOn}.` : 'Nothing pulled yet.'}{' '}
+                Pulled movements land in the statement below exactly as an uploaded file does, and
+                nothing is ever counted twice.
+              </p>
+              <SyncFeedForm />
+            </>
+          ) : null}
+          {feed.state === 'lapsed' ? (
+            <>
+              <p className="rk-fineprint">
+                Your {feed.bankName}
+                {feed.accountLast4 ? ` account ending ${feed.accountLast4}` : ' account'} needs to
+                be authorised again. Banks ask for this from time to time; nothing you pulled is
+                lost.
+              </p>
+              {isOwner(identity.role) ? <ConnectFeedForm /> : null}
+            </>
+          ) : null}
+          {feed.state === 'not_linked' ? (
+            <>
+              <p className="rk-fineprint">
+                Instead of downloading and uploading statements, you can let Rekoda pull what moved
+                straight from your bank. You authorise it at your own bank and can withdraw that
+                permission there any time. Rekoda never sees your bank sign-in.
+              </p>
+              {isOwner(identity.role) ? (
+                <ConnectFeedForm />
+              ) : (
+                <p className="rk-fineprint">Only the owner can link a bank account.</p>
+              )}
+            </>
           ) : null}
         </div>
       ) : null}

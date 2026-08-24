@@ -1459,6 +1459,80 @@ export const forgetStatementDayResponse = z.object({
   removed: z.number().int().nonnegative(),
 });
 
+/**
+ * The live bank feed (fix-plan 4, G5; MASTER-PLAN B0, ADR 0012).
+ *
+ * The feed is a second door into the SAME `bank_statement_lines` the CSV
+ * upload fills: fetched transactions go through the same fingerprint, the
+ * same dedupe and the same reconciliation, so nothing downstream knows or
+ * cares which door a line used.
+ *
+ * `not_configured` is a deployment fact, not an error: a deployment without
+ * aggregator credentials simply does not have this door, and the page says
+ * so instead of showing a button that cannot work.
+ */
+export const bankFeedStateResponse = z.discriminatedUnion('state', [
+  z.object({ state: z.literal('not_configured') }),
+  z.object({ state: z.literal('not_linked') }),
+  /**
+   * Linked once, and access lapsed provider-side. Its own state because
+   * "authorise it again" is a different sentence from "link your bank",
+   * and the card should still name the account it is about.
+   */
+  z.object({
+    state: z.literal('lapsed'),
+    bankName: z.string(),
+    accountLast4: z.string(),
+  }),
+  z.object({
+    state: z.literal('linked'),
+    bankName: z.string(),
+    accountLast4: z.string(),
+    /** The last Lagos day a sync ran, or null before the first. */
+    lastSyncedOn: z.string().nullable(),
+  }),
+]);
+
+/**
+ * The one-time code the aggregator's consent widget hands the merchant
+ * after THEY authorise access to their own account. Rekoda never sees
+ * credentials: the code is exchanged server-side for an account reference.
+ */
+export const connectBankFeedRequest = z.object({
+  exchangeCode: z.string().trim().min(4).max(200),
+});
+
+export const connectBankFeedResponse = z.discriminatedUnion('outcome', [
+  z.object({
+    outcome: z.literal('linked'),
+    bankName: z.string(),
+    accountLast4: z.string(),
+  }),
+  /** The aggregator said no: a stale or already-used code, usually. */
+  z.object({ outcome: z.literal('rejected'), reason: z.string() }),
+  z.object({ outcome: z.literal('not_configured') }),
+]);
+
+export const syncBankFeedResponse = z.discriminatedUnion('outcome', [
+  z.object({
+    outcome: z.literal('synced'),
+    /** Lines the merchant did not already have. Same words as the upload. */
+    imported: z.number().int().nonnegative(),
+    duplicates: z.number().int().nonnegative(),
+    /** The first day the fetch covered, `YYYY-MM-DD`. */
+    since: z.string(),
+  }),
+  z.object({ outcome: z.literal('not_configured') }),
+  z.object({ outcome: z.literal('not_linked') }),
+  /** The aggregator no longer has access: the merchant must link again. */
+  z.object({ outcome: z.literal('unlinked') }),
+]);
+
+export type BankFeedStateResponse = z.infer<typeof bankFeedStateResponse>;
+export type ConnectBankFeedRequest = z.infer<typeof connectBankFeedRequest>;
+export type ConnectBankFeedResponse = z.infer<typeof connectBankFeedResponse>;
+export type SyncBankFeedResponse = z.infer<typeof syncBankFeedResponse>;
+
 export type ImportStatementRequest = z.infer<typeof importStatementRequest>;
 export type ImportStatementResponse = z.infer<typeof importStatementResponse>;
 export type BankPositionResponse = z.infer<typeof bankPositionResponse>;

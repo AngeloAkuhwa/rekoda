@@ -2,10 +2,12 @@
 
 import { revalidatePath } from 'next/cache';
 import {
+  connectBankFeed,
   forgetStatementDay,
   importStatement,
   matchBankLine,
   reconcileBank,
+  syncBankFeed,
   unmatchBankLine,
   viewOnlyRefusal,
 } from '@/server/api';
@@ -261,5 +263,94 @@ export async function unmatchLineAction(
     return await unmatchLineActionUnguarded(...args);
   } catch (error) {
     return viewOnlyRefusal(error) as Awaited<ReturnType<typeof unmatchLineActionUnguarded>>;
+  }
+}
+
+/* ── the live feed (fix-plan 4, G5) ──────────────────────────────────────── */
+
+export interface FeedFormState {
+  error?: string;
+  done?: string;
+}
+
+async function connectFeedActionUnguarded(
+  _prev: FeedFormState,
+  formData: FormData,
+): Promise<FeedFormState> {
+  const token = await readSessionToken();
+  if (!token) return { error: 'Your session expired. Sign in again.' };
+
+  const exchangeCode = String(formData.get('exchangeCode') ?? '').trim();
+  if (exchangeCode.length < 4) {
+    return { error: 'Paste the code the bank link window handed back.' };
+  }
+
+  const outcome = await connectBankFeed(token, exchangeCode);
+  if (!outcome) return { error: 'That did not go through. Nothing was linked.' };
+  if (outcome.outcome === 'not_configured') {
+    return { error: 'Bank linking is not switched on for this deployment yet.' };
+  }
+  if (outcome.outcome === 'rejected') {
+    return {
+      error: `The bank connection service refused that code: ${outcome.reason}. Run the link flow again and paste the fresh code.`,
+    };
+  }
+
+  revalidatePath('/app/bank');
+  const label = outcome.accountLast4
+    ? `${outcome.bankName} account ending ${outcome.accountLast4}`
+    : outcome.bankName;
+  return { done: `Linked to your ${label}. Pull transactions whenever you want them.` };
+}
+
+async function syncFeedActionUnguarded(
+  _prev: FeedFormState,
+  _formData: FormData,
+): Promise<FeedFormState> {
+  const token = await readSessionToken();
+  if (!token) return { error: 'Your session expired. Sign in again.' };
+
+  const outcome = await syncBankFeed(token);
+  if (!outcome) return { error: 'That did not go through. Nothing was pulled.' };
+  if (outcome.outcome === 'not_configured') {
+    return { error: 'Bank linking is not switched on for this deployment yet.' };
+  }
+  if (outcome.outcome === 'not_linked') {
+    return { error: 'No bank is linked yet. Link one first, then pull.' };
+  }
+  if (outcome.outcome === 'unlinked') {
+    return {
+      error:
+        'Your bank asked for the link to be authorised again, which happens from time to time. Run the link flow and paste the fresh code.',
+    };
+  }
+
+  revalidatePath('/app/bank');
+  if (outcome.imported === 0) {
+    return { done: 'Nothing new. Every movement since the last pull was already here.' };
+  }
+  const word = outcome.imported === 1 ? 'movement' : 'movements';
+  return {
+    done: `${outcome.imported} new ${word} pulled from your bank. They are in the statement below, ready to reconcile.`,
+  };
+}
+
+export async function connectFeedAction(
+  ...args: Parameters<typeof connectFeedActionUnguarded>
+): ReturnType<typeof connectFeedActionUnguarded> {
+  try {
+    return await connectFeedActionUnguarded(...args);
+  } catch (error) {
+    return viewOnlyRefusal(error) as Awaited<ReturnType<typeof connectFeedActionUnguarded>>;
+  }
+}
+
+export async function syncFeedAction(
+  ...args: Parameters<typeof syncFeedActionUnguarded>
+): ReturnType<typeof syncFeedActionUnguarded> {
+  try {
+    return await syncFeedActionUnguarded(...args);
+  } catch (error) {
+    return viewOnlyRefusal(error) as Awaited<ReturnType<typeof syncFeedActionUnguarded>>;
   }
 }

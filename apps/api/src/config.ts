@@ -178,6 +178,16 @@ export interface ApiConfig {
    */
   paystackPlatformConfirmed: boolean;
   /**
+   * Authenticates bank-feed calls to Mono (ADR 0012, fix-plan 4 G5). Empty
+   * means the feed door does not exist on this deployment: the bank page
+   * says so and the CSV upload carries reconciliation alone, which is how
+   * every deployment ran before the feed shipped. Same posture as the
+   * Paystack key: optional at boot, refused plainly at call time.
+   */
+  monoSecretKey: string;
+  /** Overridden only by tests and sandboxes; production uses the default. */
+  monoBaseUrl: string;
+  /**
    * Encrypts merchant settlement details (the full account number) at rest.
    * Deliberately NOT the vault key: customer identities and merchant banking
    * credentials are different blast radii, and holding one must not imply
@@ -509,6 +519,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     paystackSecretKey: env['PAYSTACK_SECRET_KEY'] ?? '',
     paystackBaseUrl: env['PAYSTACK_BASE_URL'] ?? 'https://api.paystack.co',
     paystackPlatformConfirmed: env['REKODA_PAYSTACK_PLATFORM_CONFIRMED'] === '1',
+    monoSecretKey: env['MONO_SECRET_KEY'] ?? '',
+    monoBaseUrl: env['MONO_BASE_URL'] ?? 'https://api.withmono.com',
     connectionKey: env['CONNECTION_KEY'] ?? '',
     metaAccessToken: env['META_ACCESS_TOKEN'] ?? '',
     metaPhoneNumberId: env['META_PHONE_NUMBER_ID'] ?? '',
