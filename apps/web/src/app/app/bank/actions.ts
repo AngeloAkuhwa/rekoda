@@ -354,3 +354,17 @@ export async function syncFeedAction(
     return viewOnlyRefusal(error) as Awaited<ReturnType<typeof syncFeedActionUnguarded>>;
   }
 }
+
+/**
+ * The widget's landing (fix-plan 4 G5 follow-through): Mono Connect hands
+ * `onSuccess` a one-time code in the browser, and this is the same exchange
+ * the paste-code form performs, through the same guarded action.
+ */
+export async function connectFeedWithCode(code: unknown): Promise<FeedFormState> {
+  if (typeof code !== 'string' || code.trim().length < 4 || code.length > 200) {
+    return { error: 'The bank window did not hand back a code. Run the link flow again.' };
+  }
+  const form = new FormData();
+  form.set('exchangeCode', code.trim());
+  return connectFeedAction({}, form);
+}

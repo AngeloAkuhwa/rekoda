@@ -32,5 +32,8 @@ import { MonoProvider } from './mono.provider.js';
     AuthService,
     SessionGuard,
   ],
+  /* The background sweep runs in JobsModule but must pull through the
+   * same adapter binding, not a second construction of it. */
+  exports: [BANK_FEED],
 })
 export class BankModule {}

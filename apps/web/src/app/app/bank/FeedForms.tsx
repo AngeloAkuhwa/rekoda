@@ -1,9 +1,100 @@
 'use client';
 
-import { useActionState } from 'react';
+import { useActionState, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/Button';
 import { Field } from '@/components/ui/Field';
-import { connectFeedAction, syncFeedAction, type FeedFormState } from './actions';
+import {
+  connectFeedAction,
+  connectFeedWithCode,
+  syncFeedAction,
+  type FeedFormState,
+} from './actions';
+
+/** What Mono's loader script hangs on `window`. Only what we call. */
+interface MonoConnectCtor {
+  new (options: {
+    key: string;
+    onSuccess: (data: { code: string }) => void;
+    onClose?: () => void;
+  }): { setup(): void; open(): void };
+}
+
+const MONO_SCRIPT = 'https://connect.withmono.com/connect.js';
+let monoLoader: Promise<MonoConnectCtor | null> | null = null;
+
+/** Load Mono's widget script once, on demand, never at page load. */
+function loadMonoConnect(): Promise<MonoConnectCtor | null> {
+  monoLoader ??= new Promise((resolve) => {
+    const done = () => {
+      const ctor = (window as unknown as { MonoConnect?: MonoConnectCtor }).MonoConnect;
+      resolve(ctor ?? null);
+    };
+    const script = document.createElement('script');
+    script.src = MONO_SCRIPT;
+    script.async = true;
+    script.onload = done;
+    script.onerror = () => resolve(null);
+    document.head.appendChild(script);
+  });
+  return monoLoader;
+}
+
+/**
+ * The proper front door: Mono's own window, opened from here. The merchant
+ * signs in at their bank inside it; `onSuccess` hands back the one-time
+ * code and the exchange happens server-side, same as the pasted one. Renders
+ * nothing when the deployment has no public key, so the paste-code form
+ * stays the whole story exactly as before.
+ */
+export function MonoConnectLauncher() {
+  const publicKey = process.env.NEXT_PUBLIC_MONO_PUBLIC_KEY;
+  const router = useRouter();
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+
+  if (!publicKey) return null;
+
+  async function openWidget() {
+    setBusy(true);
+    setMessage(null);
+    const Ctor = await loadMonoConnect();
+    if (!Ctor) {
+      setBusy(false);
+      setMessage(
+        'The bank link window could not load. Check your connection, or use the code option below.',
+      );
+      return;
+    }
+    const connect = new Ctor({
+      key: publicKey!,
+      onSuccess: ({ code }) => {
+        void (async () => {
+          const outcome = await connectFeedWithCode(code);
+          setMessage(outcome.error ?? outcome.done ?? null);
+          setBusy(false);
+          if (!outcome.error) router.refresh();
+        })();
+      },
+      onClose: () => setBusy(false),
+    });
+    connect.setup();
+    connect.open();
+  }
+
+  return (
+    <div className="rk-form">
+      <Button type="button" onClick={() => void openWidget()} disabled={busy}>
+        {busy ? 'Opening your bank…' : 'Link your bank account'}
+      </Button>
+      {message ? (
+        <p className="rk-fineprint" role="status">
+          {message}
+        </p>
+      ) : null}
+    </div>
+  );
+}
 
 /**
  * Linking the account (fix-plan 4, G5).
@@ -15,7 +106,8 @@ import { connectFeedAction, syncFeedAction, type FeedFormState } from './actions
  */
 export function ConnectFeedForm() {
   const [state, action, pending] = useActionState<FeedFormState, FormData>(connectFeedAction, {});
-  return (
+  const hasWidget = Boolean(process.env.NEXT_PUBLIC_MONO_PUBLIC_KEY);
+  const form = (
     <form action={action} className="rk-form" noValidate>
       <Field
         id="feedExchangeCode"
@@ -40,6 +132,18 @@ export function ConnectFeedForm() {
         {pending ? 'Linking…' : 'Link the account'}
       </Button>
     </form>
+  );
+  if (!hasWidget) return form;
+  /* With the widget available the pasted code is the fallback, kept for the
+   * merchant whose popup blocker or WebView will not open the window. */
+  return (
+    <>
+      <MonoConnectLauncher />
+      <details className="rk-void">
+        <summary>Paste a code instead</summary>
+        {form}
+      </details>
+    </>
   );
 }
 

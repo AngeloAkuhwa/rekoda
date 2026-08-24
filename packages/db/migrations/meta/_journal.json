@@ -344,6 +344,13 @@
       "when": 1787366400000,
       "tag": "0048_graduation_telemetry",
       "breakpoints": true
+    },
+    {
+      "idx": 49,
+      "version": "7",
+      "when": 1787371200000,
+      "tag": "0049_bank_feed_sweep",
+      "breakpoints": true
     }
   ]
 }

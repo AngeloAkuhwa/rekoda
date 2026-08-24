@@ -14,7 +14,7 @@
  */
 import { and, eq, sql } from 'drizzle-orm';
 import { fingerprintLines, matchStatement, type BankStatementLine } from '@rekoda/core';
-import type { TenantDb } from '../client.js';
+import type { Db, TenantDb } from '../client.js';
 import { bankFeedConnections, bankLineMatches, bankStatementLines } from '../schema/finance.js';
 import { auditEvents } from '../schema/ops.js';
 
@@ -836,4 +836,21 @@ export async function markFeedUnlinked(
       sourceType: 'dashboard',
     });
   }
+}
+
+/**
+ * Every business with a LINKED feed, across tenants — the background
+ * sweep's worklist (`sweep_read_bank_feeds`, migration 0049). Worker
+ * connection only; ids, nothing else.
+ */
+export async function linkedFeedBusinesses(
+  workerDb: Db,
+  limit = 500,
+): Promise<Array<{ businessId: string }>> {
+  return workerDb
+    .select({ businessId: bankFeedConnections.businessId })
+    .from(bankFeedConnections)
+    .where(eq(bankFeedConnections.status, 'linked'))
+    .orderBy(bankFeedConnections.updatedAt)
+    .limit(limit);
 }
