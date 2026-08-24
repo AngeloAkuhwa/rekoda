@@ -249,6 +249,42 @@ export class PrivacyGateway {
   }
 
   /**
+   * A storefront checkout's customer (fix-plan 6, M5b).
+   *
+   * Anchored on the PHONE, the fact that survives repeat orders, with the
+   * typed name attached as a second facet on the same person when the phone
+   * is new. Both go straight to the vault; neither ever reaches a model.
+   * Null when the phone does not survive normalisation, so the caller can
+   * answer with a sentence instead of vaulting seven stray digits.
+   */
+  async resolveStorefrontCustomer(
+    businessId: string,
+    name: string,
+    phone: string,
+  ): Promise<{ token: string; customerId: string } | null> {
+    if (normaliseFacet('phone', phone).length < 7) return null;
+    const byPhone = await this.customerTokenFor(businessId, 'phone', phone);
+    if (byPhone.created && name.trim().length > 0) {
+      try {
+        await customersRepo.addIdentityFacet(this.db, businessId, byPhone.customerId, {
+          facet: 'name',
+          ciphertext: encryptFacet(name, this.config.vaultKey, `${businessId}:name`),
+          matchKey: matchKeyFor(
+            businessId,
+            'name',
+            normaliseFacet('name', name),
+            this.config.matchKey,
+          ),
+        });
+      } catch {
+        /* The name already keys another customer. Attaching it is a courtesy;
+         * the phone-anchored identity stands either way. */
+      }
+    }
+    return { token: byPhone.token, customerId: byPhone.customerId };
+  }
+
+  /**
    * The token for a person, creating them if this business has not seen them.
    *
    * The match key is a keyed HMAC that mixes in `businessId`, so the same

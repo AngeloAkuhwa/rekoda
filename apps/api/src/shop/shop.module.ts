@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { AuthService } from '../auth/auth.service.js';
 import { SessionGuard } from '../auth/session.guard.js';
 import { DbModule } from '../db/db.module.js';
+import { PrivacyGateway } from '../privacy/gateway.service.js';
 import { DocumentsModule } from '../documents/documents.module.js';
 import { RepliesModule } from '../replies/replies.module.js';
 import {
@@ -19,6 +20,6 @@ import {
 @Module({
   imports: [DbModule, DocumentsModule, RepliesModule],
   controllers: [PublicShopIndexController, PublicShopController, ShopSettingsController],
-  providers: [AuthService, SessionGuard],
+  providers: [AuthService, SessionGuard, PrivacyGateway],
 })
 export class ShopModule {}

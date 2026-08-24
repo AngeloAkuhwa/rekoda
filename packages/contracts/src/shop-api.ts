@@ -128,3 +128,54 @@ export const saveShopResponse = z.discriminatedUnion('outcome', [
 
 export type SaveShopRequest = z.infer<typeof saveShopRequest>;
 export type SaveShopResponse = z.infer<typeof saveShopResponse>;
+
+/**
+ * A customer's order, from the public storefront (fix-plan 6, M5b).
+ *
+ * The request carries NO prices: what things cost is read from the
+ * merchant's catalogue on the server, because a checkout that trusted the
+ * browser's arithmetic would let anyone name their own price. The name and
+ * phone are Zone 1 vault data the moment they arrive; the delivery note is
+ * deliberately never stored — it rides the WhatsApp handoff the confirmation
+ * page offers, straight from customer to merchant.
+ */
+export const publicOrderRequest = z.object({
+  items: z
+    .array(
+      z.object({
+        productId: z.string().uuid(),
+        quantity: z.number().int().positive().max(100),
+      }),
+    )
+    .min(1)
+    .max(20),
+  customerName: z.string().trim().min(2).max(80),
+  customerPhone: z.string().trim().min(7).max(20),
+  /** One-shot key the checkout mints. A resubmission orders NOTHING twice. */
+  clientRef: z.string().uuid(),
+});
+
+export const publicOrderResponse = z.discriminatedUnion('outcome', [
+  z.object({
+    outcome: z.literal('placed'),
+    orderNumber: z.string(),
+    invoiceNumber: z.string(),
+    totalK: z.number().int().nonnegative(),
+    /** For the confirmation page's WhatsApp handoff. Published already. */
+    whatsappE164: z.string(),
+    displayName: z.string(),
+  }),
+  /** The same clientRef arrived twice: the first submission already ordered. */
+  z.object({ outcome: z.literal('duplicate') }),
+  /** The slug is not a published shop (taken down between page and order). */
+  z.object({ outcome: z.literal('shop_gone') }),
+  /** Something in the cart is no longer listed or priced. Reload the shop. */
+  z.object({ outcome: z.literal('items_changed') }),
+  /** The phone did not survive normalisation. A sentence, not a 400. */
+  z.object({ outcome: z.literal('bad_phone') }),
+  /** The shop cannot take orders right now: the merchant's monthly capacity
+   * is spent, or their plan has no automatic order capture. */
+  z.object({ outcome: z.literal('closed') }),
+]);
+export type PublicOrderRequest = z.infer<typeof publicOrderRequest>;
+export type PublicOrderResponse = z.infer<typeof publicOrderResponse>;
