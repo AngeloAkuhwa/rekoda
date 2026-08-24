@@ -31,7 +31,10 @@ const csp = [
   "default-src 'self'",
   // Next injects inline bootstrap scripts; 'unsafe-inline' is ignored by
   // browsers that honour hashes, so it is only a fallback for older ones.
-  `script-src 'self' 'unsafe-inline'${isProduction ? '' : " 'unsafe-eval'"}`,
+  // connect.withmono.com is Mono Connect's loader, opened on demand from
+  // the bank page. Its widget lives in ITS OWN iframe below; the loader is
+  // the only third-party script this origin runs.
+  `script-src 'self' 'unsafe-inline' https://connect.withmono.com${isProduction ? '' : " 'unsafe-eval'"}`,
   // Next emits inline <style> for CSS modules; no third-party stylesheet now.
   "style-src 'self' 'unsafe-inline'",
   // Fonts are self-hosted, so this closes to our own origin entirely.
@@ -45,6 +48,10 @@ const csp = [
   // Rekoda is never legitimately framed. This is the modern X-Frame-Options.
   "frame-ancestors 'none'",
   "object-src 'none'",
+  // The Mono Connect widget itself: an iframe on Mono's origin, where the
+  // merchant signs in at their bank. Its own networking is governed by that
+  // origin's CSP, not this one, which is exactly the containment we want.
+  "frame-src 'self' https://connect.withmono.com",
   ...(isProduction ? ['upgrade-insecure-requests'] : []),
 ].join('; ');
 

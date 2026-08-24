@@ -30,6 +30,9 @@ import { PAYMENT_PROVIDER, type PaymentProviderPort } from '../payments/provider
 import { pumpPaystackEvents } from '../payments/paystack-pump.js';
 import { sweepSettlements } from '../payments/settlement-sweep.js';
 import { sweepMerchantTransfers } from '../payments/merchant-transfer.service.js';
+import { BankModule } from '../bank/bank.module.js';
+import { BANK_FEED, type BankFeedPort } from '../bank/feed.port.js';
+import { sweepBankFeeds } from '../bank/feed-sync.js';
 import { sweepUnknownSenders } from '../channels/stranger-sweep.js';
 import { sweepGracePeriods } from '../billing/grace-sweep.js';
 import { sweepRenewals } from '../billing/renewal-sweep.js';
@@ -126,6 +129,8 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
   private sweeping = false;
   private transferTimer: NodeJS.Timeout | null = null;
   private sweepingTransfers = false;
+  private feedTimer: NodeJS.Timeout | null = null;
+  private sweepingFeeds = false;
   private strangerTimer: NodeJS.Timeout | null = null;
   private greeting = false;
   private graceTimer: NodeJS.Timeout | null = null;
@@ -150,6 +155,7 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
     @Inject(MESSAGE_SENDER) private readonly sender: MessageSender,
     @Inject(PAYMENT_PROVIDER) private readonly paymentProvider: PaymentProviderPort,
     @Inject(PaymentIntentsService) private readonly paymentIntents: PaymentIntentsService,
+    @Inject(BANK_FEED) private readonly bankFeed: BankFeedPort,
     @Inject(SPEECH_TO_TEXT) private readonly stt: SpeechToText,
     @Inject(TEXT_EXTRACTION) private readonly ocr: TextExtraction,
   ) {}
@@ -250,6 +256,28 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
         });
     }, 120_000);
     this.transferTimer.unref();
+
+    /**
+     * The bank-feed pull, every thirty minutes. Banks post in minutes but
+     * reconciliation is a daily habit, so half an hour keeps the bank
+     * column current without hammering the aggregator; the dashboard's
+     * "pull now" button stays for the merchant who cannot wait. Skipped
+     * entirely on a deployment with no aggregator key.
+     */
+    this.feedTimer = setInterval(() => {
+      if (this.sweepingFeeds) return;
+      this.sweepingFeeds = true;
+      this.exclusively('bank-feeds', () =>
+        sweepBankFeeds({ workerDb, appDb: this.appDb, feed: this.bankFeed }),
+      )
+        .catch((error: unknown) => {
+          this.log.warn(`bank feed sweep failed: ${redactForLog(describeFailure(error))}`);
+        })
+        .finally(() => {
+          this.sweepingFeeds = false;
+        });
+    }, 1_800_000);
+    this.feedTimer.unref();
 
     /**
      * Answering strangers rides the same worker on a middle clock: fast
@@ -405,13 +433,14 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
     if (this.retentionTimer) clearInterval(this.retentionTimer);
     if (this.sweepTimer) clearInterval(this.sweepTimer);
     if (this.transferTimer) clearInterval(this.transferTimer);
+    if (this.feedTimer) clearInterval(this.feedTimer);
     if (this.strangerTimer) clearInterval(this.strangerTimer);
     await this.runner?.stop();
   }
 }
 
 @Module({
-  imports: [AiModule, RepliesModule, DocumentsModule, PaymentsModule],
+  imports: [AiModule, RepliesModule, DocumentsModule, PaymentsModule, BankModule],
   providers: [JobQueue, JobRunnerLifecycle, PrivacyGateway],
   exports: [JobQueue, PrivacyGateway],
 })

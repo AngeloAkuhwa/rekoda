@@ -23,6 +23,8 @@ import {
   syncBankFeedResponse,
 } from '@rekoda/contracts';
 import { createDb, type Db } from '@rekoda/db';
+import { sweepBankFeeds } from './feed-sync.js';
+import { MonoProvider } from './mono.provider.js';
 import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 
@@ -252,6 +254,32 @@ describe('the live bank feed', () => {
     expect(
       syncBankFeedResponse.parse((await post('/v1/bank/feed/sync', {}, auth)).json()),
     ).toMatchObject({ outcome: 'synced' });
+  });
+
+  it('the sweep pulls for a linked feed with nobody pressing a button', async () => {
+    const { auth } = await onboard('+2348188000306');
+    monoWithTransactions(MOVEMENTS);
+    await post('/v1/bank/feed/connect', { exchangeCode: 'code_ok' }, auth);
+
+    /* The sweep's own credentials, exactly as jobs.module hands them: the
+     * worker lists linked feeds across tenants, the app pin does the work. */
+    const { db: workerDb, close: closeWorker } = createDb(urls.worker, { max: 2 });
+    try {
+      const feed = new MonoProvider(process.env['MONO_SECRET_KEY']!, process.env['MONO_BASE_URL']!);
+      expect(await sweepBankFeeds({ workerDb, appDb: db, feed })).toBe(2);
+      /* A second pass re-covers the overlap and imports nothing twice. */
+      expect(await sweepBankFeeds({ workerDb, appDb: db, feed })).toBe(0);
+    } finally {
+      await closeWorker();
+    }
+
+    /* Same register, same lines, and the cursor moved — all without a
+     * single call to the sync endpoint. */
+    const position = bankPositionResponse.parse((await getJson('/v1/bank/position', auth)).json());
+    expect(position.position.lines).toBe(2);
+    const state = bankFeedStateResponse.parse((await getJson('/v1/bank/feed', auth)).json());
+    expect(state.state).toBe('linked');
+    if (state.state === 'linked') expect(state.lastSyncedOn).not.toBeNull();
   });
 
   it('syncing before linking is a sentence, not an error', async () => {
