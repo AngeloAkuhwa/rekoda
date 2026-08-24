@@ -74,6 +74,14 @@ export type CatalogueResponse = z.infer<typeof catalogueResponse>;
  */
 export const editProductRequest = z.object({
   id: z.string().uuid(),
+  /**
+   * A rename (fix-plan 5, H2c). The one field on this form that was
+   * permanently unfixable from the web: the name a customer reads on the
+   * public shop could only ever be set by a WhatsApp mention. Guarded
+   * against folding into another product's name, because two products a
+   * human cannot tell apart split the stock history forever.
+   */
+  name: z.string().trim().min(2).max(80).optional(),
   /* An emptied box and "no description" are the same fact, so they get the
    * same representation. Storing "" would give a shop a product whose
    * description is present and says nothing. */
@@ -98,8 +106,35 @@ export const editProductRequest = z.object({
 });
 
 export const editProductResponse = z.object({
-  outcome: z.union([z.literal('updated'), z.literal('not_found'), z.literal('nothing_to_do')]),
+  outcome: z.union([
+    z.literal('updated'),
+    z.literal('not_found'),
+    z.literal('nothing_to_do'),
+    /** The new name folds into another product's. Nothing was changed. */
+    z.literal('name_taken'),
+  ]),
 });
+
+/**
+ * Creating a product from the dashboard (fix-plan 5, H2c).
+ *
+ * Chat has always been able to bring a product into being by mentioning it;
+ * the dashboard could only edit what chat had created. Same fold, same
+ * outcome when the name already exists: the existing product is the answer,
+ * never a twin.
+ */
+export const createProductRequest = z.object({
+  name: z.string().trim().min(2).max(80),
+  unitPriceK: kobo.optional(),
+});
+
+export const createProductResponse = z.discriminatedUnion('outcome', [
+  z.object({ outcome: z.literal('created'), id: z.string(), name: z.string() }),
+  /** A product already folds to this name; it is returned, not duplicated. */
+  z.object({ outcome: z.literal('already_exists'), id: z.string(), name: z.string() }),
+]);
+export type CreateProductRequest = z.infer<typeof createProductRequest>;
+export type CreateProductResponse = z.infer<typeof createProductResponse>;
 
 export const uploadImageResponse = z.discriminatedUnion('outcome', [
   z.object({ outcome: z.literal('stored'), imagePath: z.string() }),

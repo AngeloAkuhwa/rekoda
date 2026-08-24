@@ -22,8 +22,10 @@ import {
 } from '@nestjs/common';
 import {
   catalogueResponse,
+  createProductRequest,
   editProductRequest,
   type CatalogueResponse,
+  type CreateProductResponse,
   type EditProductResponse,
   type UploadImageResponse,
 } from '@rekoda/contracts';
@@ -117,10 +119,45 @@ export class CatalogueController {
     if ('active' in parsed.data) edit.active = parsed.data.active!;
 
     const businessId = request.auth!.businessId;
-    const outcome = await withBusiness(this.db, businessId, (tx) =>
-      catalogueRepo.editProduct(tx, businessId, parsed.data.id, edit),
-    );
+    const outcome = await withBusiness(this.db, businessId, async (tx) => {
+      /* The rename runs first and can refuse alone: a form that renames AND
+       * reprices should not half-apply the price under a refused name. */
+      if (parsed.data.name !== undefined) {
+        const renamed = await catalogueRepo.renameProduct(
+          tx,
+          businessId,
+          parsed.data.id,
+          parsed.data.name,
+        );
+        if (renamed !== 'renamed') return renamed;
+        if (Object.keys(edit).length === 0) return 'updated' as const;
+      }
+      return catalogueRepo.editProduct(tx, businessId, parsed.data.id, edit);
+    });
     return { outcome };
+  }
+
+  /**
+   * Create a product from the dashboard (fix-plan 5, H2c). Chat could always
+   * bring one into being by mentioning it; the dashboard could only edit
+   * what chat had made. Same fold, same never-a-twin rule.
+   */
+  @Post('products')
+  @Roles('owner', 'delegate')
+  @HttpCode(200)
+  async create(
+    @Req() request: AuthedRequest,
+    @Body() body: unknown,
+  ): Promise<CreateProductResponse> {
+    const parsed = createProductRequest.safeParse(body);
+    if (!parsed.success) throw new BadRequestException('a name of 2 to 80 characters');
+    const businessId = request.auth!.businessId;
+    return withBusiness(this.db, businessId, (tx) =>
+      catalogueRepo.createProduct(tx, businessId, {
+        name: parsed.data.name,
+        ...(parsed.data.unitPriceK === undefined ? {} : { unitPriceK: parsed.data.unitPriceK }),
+      }),
+    );
   }
 
   /**

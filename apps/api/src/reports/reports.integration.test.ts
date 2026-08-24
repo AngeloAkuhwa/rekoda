@@ -3306,3 +3306,45 @@ describe('paging the registers, and the two exports the audit found missing', ()
     );
   });
 });
+
+describe('the debtors page asks for the whole register', () => {
+  it('the strip stays six rows and full=1 lifts the cap, count untouched', async () => {
+    const { auth, businessId } = await onboard('+2348177000232');
+    await withBusiness(db, businessId, async (tx) => {
+      for (let i = 0; i < 8; i++) {
+        await issueRepo.issueSale(tx, {
+          businessId,
+          customerId: null,
+          customerToken: null,
+          items: [{ name: `Bale ${i}`, quantity: 1, unitPriceK: 50_000 }],
+          subtotalK: 50_000,
+          discountK: 0,
+          deliveryFeeK: 0,
+          vatK: 0,
+          totalK: 50_000,
+          paidK: 0,
+          balanceDueK: 50_000,
+          method: 'transfer',
+          sourceType: 'chat',
+          sourceId: `draft-debt-${i}`,
+          actor: 'system',
+        });
+      }
+    });
+
+    const strip = reportsDebtorsResponse.parse(
+      (await app.inject({ method: 'GET', url: '/v1/reports/debtors', headers: auth })).json(),
+    );
+    expect(strip.rows).toHaveLength(6);
+    expect(strip.count).toBe(8);
+
+    const full = reportsDebtorsResponse.parse(
+      (
+        await app.inject({ method: 'GET', url: '/v1/reports/debtors?full=1', headers: auth })
+      ).json(),
+    );
+    expect(full.rows).toHaveLength(8);
+    expect(full.count).toBe(8);
+    expect(full.totalK).toBe(8 * 50_000);
+  });
+});

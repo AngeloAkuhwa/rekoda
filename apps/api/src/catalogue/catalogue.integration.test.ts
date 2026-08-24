@@ -17,7 +17,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { catalogueResponse } from '@rekoda/contracts';
+import { catalogueResponse, createProductResponse } from '@rekoda/contracts';
 import { MAX_IMAGE_BYTES } from '@rekoda/core';
 import { catalogueRepo, createDb, stockRepo, withBusiness, type Db } from '@rekoda/db';
 import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
@@ -489,5 +489,71 @@ describe('hiding a product', () => {
     const onShelf = await withBusiness(db, businessId, (tx) => stockRepo.stockList(tx, businessId));
     expect(onShelf.rows).toHaveLength(1);
     expect(onShelf.rows[0]).toMatchObject({ onHand: 12, active: false });
+  });
+});
+
+describe('creating and renaming from the dashboard (fix-plan 5, H2c)', () => {
+  it('creates a product, and a matching name answers with the original', async () => {
+    const { auth } = await onboard('+2348177600020');
+    const created = createProductResponse.parse(
+      (
+        await post('/v1/catalogue/products', { name: 'Ankara bale', unitPriceK: 850_000 }, auth)
+      ).json(),
+    );
+    expect(created).toMatchObject({ outcome: 'created', name: 'Ankara bale' });
+    if (created.outcome !== 'created') return;
+
+    /* The fold, not the spelling, decides: extra spaces and case answer with
+     * the product that already exists rather than minting a twin. */
+    const again = createProductResponse.parse(
+      (await post('/v1/catalogue/products', { name: '  ankara   BALE ' }, auth)).json(),
+    );
+    expect(again).toEqual({ outcome: 'already_exists', id: created.id, name: 'Ankara bale' });
+
+    const list = await catalogueOf(auth);
+    expect(list.products.filter((p) => p.name === 'Ankara bale')).toHaveLength(1);
+    expect(list.products.find((p) => p.name === 'Ankara bale')?.unitPriceK).toBe(850_000);
+  });
+
+  it('renames without splitting history, and refuses a name another product answers to', async () => {
+    const { businessId, auth } = await onboard('+2348177600021');
+    const bale = await seedProduct(businessId, 'Ankara bale');
+    await seedProduct(businessId, 'Aso oke set');
+
+    const renamed = (
+      await post('/v1/catalogue/product', { id: bale.id, name: 'Ankara bale (premium)' }, auth)
+    ).json() as { outcome: string };
+    expect(renamed).toEqual({ outcome: 'updated' });
+
+    /* The count came along with the name: same row, same twelve on hand. */
+    const stock = await withBusiness(db, businessId, (tx) =>
+      stockRepo.productByName(tx, businessId, 'Ankara bale (premium)'),
+    );
+    expect(stock?.id).toBe(bale.id);
+    expect(stock?.onHand).toBe(12);
+
+    const clash = (
+      await post('/v1/catalogue/product', { id: bale.id, name: 'aso OKE set' }, auth)
+    ).json() as { outcome: string };
+    expect(clash).toEqual({ outcome: 'name_taken' });
+
+    /* A rename that also reprices is one form: both land, or neither. */
+    const both = (
+      await post(
+        '/v1/catalogue/product',
+        { id: bale.id, name: 'Ankara bale', unitPriceK: 900_000 },
+        auth,
+      )
+    ).json() as { outcome: string };
+    expect(both).toEqual({ outcome: 'updated' });
+    const list = await catalogueOf(auth);
+    expect(list.products.find((p) => p.id === bale.id)).toMatchObject({
+      name: 'Ankara bale',
+      unitPriceK: 900_000,
+    });
+  });
+
+  it('keeps creation behind the shop-floor roles', async () => {
+    expect((await post('/v1/catalogue/products', { name: 'Ankara bale' })).statusCode).toBe(401);
   });
 });

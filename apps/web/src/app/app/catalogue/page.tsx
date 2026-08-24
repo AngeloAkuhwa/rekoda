@@ -10,6 +10,8 @@ import {
   ListingForm,
   SetDescriptionForm,
   SetCostForm,
+  CreateProductForm,
+  RenameProductForm,
   SetPriceForm,
   UploadPhotoForm,
   type Choice,
@@ -198,6 +200,30 @@ export default async function CataloguePage() {
                 </tbody>
               </table>
             </div>
+
+            {canRecordTrade(identity.role) ? (
+              <details className="rk-void">
+                <summary>Add a product</summary>
+                <p className="rk-fineprint">
+                  Until now a product could only come into being by mentioning it on WhatsApp; this
+                  is the same act, typed. A name that matches something you already have answers
+                  with that product rather than making a twin.
+                </p>
+                <CreateProductForm />
+              </details>
+            ) : null}
+
+            {canRecordTrade(identity.role) ? (
+              <details className="rk-void">
+                <summary>Rename one</summary>
+                <p className="rk-fineprint">
+                  For the typo customers can see. The count, the cost and the whole history come
+                  along with the new name; a name another product already answers to is refused,
+                  because two products nobody can tell apart split your records.
+                </p>
+                <RenameProductForm choices={choices} />
+              </details>
+            ) : null}
 
             {canRecordTrade(identity.role) ? (
               <details className="rk-void">

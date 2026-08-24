@@ -46,6 +46,7 @@ import {
   billingQuoteResponse,
   usageMeterResponse,
   catalogueResponse,
+  createProductResponse,
   createRecurringResponse,
   openingBalancesResponse,
   stockCountResponse,
@@ -81,6 +82,8 @@ import {
   type BillingQuoteResponse,
   type MeResponse,
   type CatalogueResponse,
+  type CreateProductRequest,
+  type CreateProductResponse,
   type CreateRecurringRequest,
   type OpeningBalancesRequest,
   type StockCountRequest,
@@ -394,10 +397,13 @@ export async function reportsCashflow(sessionToken: string): Promise<ReportsCash
   return reportsCashflowResponse.parse(json);
 }
 
-export async function reportsDebtors(sessionToken: string): Promise<ReportsDebtorsResponse> {
+export async function reportsDebtors(
+  sessionToken: string,
+  full = false,
+): Promise<ReportsDebtorsResponse> {
   const { json } = await call({
     method: 'GET',
-    path: '/v1/reports/debtors',
+    path: full ? '/v1/reports/debtors?full=1' : '/v1/reports/debtors',
     headers: { authorization: `Bearer ${sessionToken}` },
     expect: [200],
   });
@@ -1081,6 +1087,21 @@ export async function editProduct(
     expect: [200, 400],
   });
   return status === 200 ? editProductResponse.parse(json) : null;
+}
+
+/** Create a product from the dashboard. Same fold as chat: never a twin. */
+export async function createProduct(
+  sessionToken: string,
+  body: CreateProductRequest,
+): Promise<CreateProductResponse | null> {
+  const { status, json } = await call({
+    method: 'POST',
+    path: '/v1/catalogue/products',
+    body,
+    headers: { authorization: `Bearer ${sessionToken}` },
+    expect: [200, 400],
+  });
+  return status === 200 ? createProductResponse.parse(json) : null;
 }
 
 /**
