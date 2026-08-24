@@ -21,6 +21,8 @@ import { redactForLog } from '@rekoda/core/privacy';
 export interface JobContext {
   /** Already pinned to this job's tenant. The only database handle a handler gets. */
   tx: TenantDb;
+  /** This job's queue row — what `JobDeferred` puts back. */
+  jobId: string;
   businessId: string;
   payload: Record<string, unknown>;
   /** 1 on the first run. Handlers that talk to a provider use it to decide how loud to be. */
@@ -28,6 +30,18 @@ export interface JobContext {
 }
 
 export type JobHandler = (ctx: JobContext) => Promise<void>;
+
+/**
+ * Thrown by a handler that found itself ahead of an older sibling it must not
+ * overtake (see `jobsRepo.hasEarlierLiveJob`). Not a failure: the runner rolls
+ * the transaction back, returns the job to the queue WITHOUT charging an
+ * attempt, and lets the older job go first.
+ */
+export class JobDeferred extends Error {
+  constructor(readonly delayMs = 500) {
+    super('deferred behind an earlier job for this business');
+  }
+}
 
 export interface RunnerOptions {
   /** Milliseconds to wait after finding an empty queue. */
@@ -124,6 +138,7 @@ export class JobRunner {
       await withBusiness(this.appDb, job.businessId, async (tx) => {
         await handler({
           tx,
+          jobId: job.id,
           businessId: job.businessId,
           payload: job.payload,
           attempt: job.attempts,
@@ -131,6 +146,11 @@ export class JobRunner {
         await jobsRepo.markDone(tx, job.id);
       });
     } catch (error) {
+      if (error instanceof JobDeferred) {
+        // Stepping aside, not failing: back in the queue, attempt refunded.
+        await jobsRepo.deferClaimed(this.workerDb, job.id, error.delayMs);
+        return true;
+      }
       // The transaction above rolled back, so nothing the handler wrote
       // survives. Recording the failure therefore has to happen on a
       // connection that is still usable — the worker's.

@@ -52,7 +52,7 @@ import type { ReplySender } from '../replies/reply.service.js';
 import type { PaymentIntentsService } from '../payments/payment-intents.service.js';
 import { openPayload } from '../privacy/payload-vault.js';
 import { redactForLog } from '@rekoda/core/privacy';
-import { describeFailure, type JobContext, type JobHandler } from './runner.js';
+import { describeFailure, JobDeferred, type JobContext, type JobHandler } from './runner.js';
 import type { SpeechToText, Transcript } from '../ai/stt.js';
 import type { TextExtraction } from '../ai/ocr.js';
 import type { MessageSender } from '../channels/sender.js';
@@ -97,7 +97,7 @@ export interface InboundMessageDeps {
 export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
   const log = new Logger('InboundMessageJob');
 
-  return async ({ tx, payload, businessId, attempt }: JobContext): Promise<void> => {
+  return async ({ tx, jobId, payload, businessId, attempt }: JobContext): Promise<void> => {
     /**
      * Metered units are taken in their own committed transactions, which is
      * the one thing this job's rollback cannot undo. So a retry must not take
@@ -124,6 +124,17 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
      * serializes the conversation while leaving OTHER businesses' lanes free.
      */
     await jobsRepo.serializeBusiness(tx, businessId, 'inbound');
+
+    /**
+     * The lock serializes, it does not order. A lane that claimed the LATER
+     * of two messages can still win the lock while the earlier one's lane is
+     * between claim and lock — and "yes" processed before the draft it
+     * confirms silently drops a record. So, under the lock: if an older
+     * inbound job for this business is still live, this one is jumping the
+     * queue. Step back and let it go first; the runner re-queues without
+     * charging an attempt.
+     */
+    if (await jobsRepo.hasEarlierLiveJob(tx, jobId)) throw new JobDeferred();
 
     const event = await events.eventForBusiness(tx, eventId, businessId);
     if (!event) {

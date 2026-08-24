@@ -654,6 +654,121 @@ describe('inbound messages for one business never overlap across lanes', () => {
     );
     expect(drafts.every((d) => d.state !== 'pending')).toBe(true);
   });
+
+  /**
+   * The lock alone guarantees exclusion, not order. Between claiming a job and
+   * taking the business lock there is a window, and a lane holding the LATER
+   * message can win the lock while the earlier message's lane is still on its
+   * way — "yes" then finds no draft and the conversation silently loses a
+   * record. This pins the window open: the draft's job is claimed by a lane
+   * that never reaches the lock, so the confirm's lane must notice it is
+   * jumping the queue and step back rather than run.
+   */
+  it('defers the confirm while the draft message is still claimed elsewhere', async () => {
+    const businessId = await seedBusiness('Stalled Lane Ltd', '+2348140040002');
+    const waId = '2348140040002';
+
+    function bodyFor(externalId: string, text: string) {
+      return {
+        object: 'whatsapp_business_account',
+        entry: [
+          {
+            id: 'WABA',
+            changes: [
+              {
+                field: 'messages',
+                value: {
+                  messaging_product: 'whatsapp',
+                  metadata: { display_phone_number: '15550002', phone_number_id: 'PNID' },
+                  contacts: [{ profile: { name: 'X' }, wa_id: waId }],
+                  messages: [
+                    {
+                      id: externalId,
+                      from: waId,
+                      timestamp: '1700000000',
+                      type: 'text',
+                      text: { body: text },
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        ],
+      };
+    }
+
+    stubTransport.replyWith({
+      intent: 'RecordExpense',
+      description: 'fuel',
+      amount: 5_000,
+      category: 'transport',
+      paymentMethod: 'cash',
+    });
+
+    const first = await eventsRepo.recordEvent(appDb, {
+      provider: 'meta',
+      eventType: 'message.text',
+      externalId: 'wamid.stall1',
+      payload: sealPayload(
+        bodyFor('wamid.stall1', 'spent 5k on fuel'),
+        config.vaultKey,
+        'meta',
+        'wamid.stall1',
+      ),
+      businessId,
+    });
+    const second = await eventsRepo.recordEvent(appDb, {
+      provider: 'meta',
+      eventType: 'message.text',
+      externalId: 'wamid.stall2',
+      payload: sealPayload(bodyFor('wamid.stall2', 'yes'), config.vaultKey, 'meta', 'wamid.stall2'),
+      businessId,
+    });
+    const draftJob = await enqueue(businessId, 'inbound.message', { eventId: first.id });
+    const confirmJob = await enqueue(businessId, 'inbound.message', { eventId: second.id });
+    if (!draftJob || !confirmJob) throw new Error('both jobs should have enqueued');
+
+    // A lane claims the draft's job — the oldest — and stalls before the lock.
+    const stalled = await jobsRepo.claimNext(workerDb, 'stalled-lane');
+    expect(stalled?.id).toBe(draftJob.id);
+
+    const runner = buildRunner(workerDb, appDb, deps, { idleMs: 20 });
+    runner.start();
+    try {
+      // The confirm's lane runs, but must NOT process "yes" ahead of the
+      // draft: give it long enough to have claimed, then look.
+      await new Promise((resolve) => setTimeout(resolve, 700));
+      const midway = await jobsOf(businessId);
+      const confirm = midway.find((j) => j.id === confirmJob.id);
+      expect(confirm?.state).toBe('pending');
+      // Stepping back is not failing: the wait costs no attempt.
+      expect(confirm?.attempts).toBe(0);
+      const expensesBefore = await withBusiness(appDb, businessId, (tx) =>
+        tx.select().from(schema.expenses),
+      );
+      expect(expensesBefore).toHaveLength(0);
+
+      // The stalled lane's claim is returned to the queue — the actual
+      // crashed-worker recovery, with no grace period — and NOW the pair
+      // drains in order.
+      await jobsRepo.reclaimStalled(workerDb, 0);
+      const deadline = Date.now() + 8_000;
+      for (;;) {
+        const jobs = await jobsOf(businessId);
+        if (jobs.length >= 2 && jobs.every((j) => j.state === 'done' || j.state === 'dead')) break;
+        if (Date.now() > deadline) throw new Error('timed out waiting for both inbound jobs');
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+    } finally {
+      await runner.stop();
+    }
+
+    const expenses = await withBusiness(appDb, businessId, (tx) =>
+      tx.select().from(schema.expenses),
+    );
+    expect(expenses).toHaveLength(1);
+  });
 });
 
 describe('a quote becomes paper', () => {

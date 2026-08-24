@@ -14,15 +14,17 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
-import { createDb, withBusiness, type Db } from './client.js';
+import { createDb, createLockClient, withBusiness, type Db, type LockClient } from './client.js';
 import { identity, jobsRepo } from './index.js';
 import { migrate, requireUrls, truncateAll, type Urls } from './testing.js';
 
 let urls: Urls;
 let appDb: Db;
 let workerDb: Db;
+let lock: LockClient;
 let closeApp: () => Promise<void>;
 let closeWorker: () => Promise<void>;
+let closeLock: () => Promise<void>;
 
 beforeAll(async () => {
   urls = requireUrls();
@@ -31,11 +33,13 @@ beforeAll(async () => {
   // Eight connections, because the point of the claim test is eight workers
   // colliding. On a pool of one they would queue politely and prove nothing.
   ({ db: workerDb, close: closeWorker } = createDb(urls.worker, { max: 8 }));
+  ({ client: lock, close: closeLock } = createLockClient(urls.worker, 8));
 });
 
 afterAll(async () => {
   await closeApp?.();
   await closeWorker?.();
+  await closeLock?.();
 });
 
 beforeEach(async () => {
@@ -264,5 +268,117 @@ describe('the queue is inside the tenancy perimeter, not beside it', () => {
         jobsRepo.enqueue(tx, { businessId: bola, kind: 'inbound.message' }),
       ),
     ).rejects.toThrow();
+  });
+});
+
+describe('runExclusively — a leader per name, and no pool deadlock (H7a)', () => {
+  it('serialises same-name work: one leader runs, the others skip', async () => {
+    let running = 0;
+    let maxConcurrent = 0;
+    let ran = 0;
+
+    const attempt = () =>
+      jobsRepo.runExclusively(lock, 'contended', async () => {
+        running += 1;
+        maxConcurrent = Math.max(maxConcurrent, running);
+        ran += 1;
+        // A real query on the SAME pool, mid-lock: proves the lock is not
+        // holding the only connection the body needs.
+        await workerDb.execute(sql`SELECT pg_sleep(0.05)`);
+        running -= 1;
+      });
+
+    await Promise.all(Array.from({ length: 6 }, attempt));
+
+    // The losers returned quietly rather than erroring or blocking.
+    expect(maxConcurrent).toBe(1);
+    expect(ran).toBeGreaterThanOrEqual(1);
+  });
+
+  it('runs many DISTINCT-name sweeps at once on a tiny pool without deadlocking', async () => {
+    // A pool of two is the shape that made the old transaction-wrapped lock
+    // deadlock: each holder pinned a connection while its body needed
+    // another. Four concurrent leaders, each doing a query inside the lock,
+    // must all finish.
+    // A working pool of two AND a lock pool of two: the old shape wrapped the
+    // body in a transaction on the working pool and deadlocked here. The
+    // separate lock pool means the four leaders' locks never touch the two
+    // connections their bodies run on.
+    const { db: tinyWork, close: closeWork } = createDb(urls.worker, { max: 2 });
+    const { client: tinyLock, close: closeTinyLock } = createLockClient(urls.worker, 2);
+    try {
+      const done: string[] = [];
+      const sweep = (name: string) =>
+        jobsRepo.runExclusively(tinyLock, name, async () => {
+          await tinyWork.execute(sql`SELECT pg_sleep(0.05)`);
+          done.push(name);
+        });
+
+      // Would hang (and fail the test timeout) under the old shape.
+      await Promise.all([sweep('a'), sweep('b'), sweep('c'), sweep('d')]);
+      expect(done.sort()).toEqual(['a', 'b', 'c', 'd']);
+    } finally {
+      await closeWork();
+      await closeTinyLock();
+    }
+  });
+});
+
+describe('queue order is a promise, not a hope (H7a)', () => {
+  it('sees an older live sibling ahead of a claimed job, and stops seeing it when it finishes', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348040000001');
+    const first = await enqueue(businessId);
+    const second = await enqueue(businessId);
+    if (!first || !second) throw new Error('both jobs should have enqueued');
+
+    // The older job is merely pending: still ahead.
+    await withBusiness(appDb, businessId, async (tx) => {
+      expect(await jobsRepo.hasEarlierLiveJob(tx, second.id)).toBe(true);
+      // The oldest job has nothing ahead of it.
+      expect(await jobsRepo.hasEarlierLiveJob(tx, first.id)).toBe(false);
+    });
+
+    // Claimed and running: STILL ahead — that is the racing-lanes case.
+    const claimed = await jobsRepo.claimNext(workerDb, 'lane-a');
+    expect(claimed?.id).toBe(first.id);
+    await withBusiness(appDb, businessId, async (tx) => {
+      expect(await jobsRepo.hasEarlierLiveJob(tx, second.id)).toBe(true);
+      await jobsRepo.markDone(tx, first.id);
+      // Done means out of the way.
+      expect(await jobsRepo.hasEarlierLiveJob(tx, second.id)).toBe(false);
+    });
+  });
+
+  it('ignores siblings of another kind and of another business', async () => {
+    const ada = await seedBusiness('Ada Fashion', '+2348040000001');
+    const bola = await seedBusiness('Bola Electronics', '+2348040000002');
+    await enqueue(ada, { kind: 'document.render' });
+    await enqueue(bola);
+    const mine = await enqueue(ada);
+    if (!mine) throw new Error('job should have enqueued');
+
+    await withBusiness(appDb, ada, async (tx) => {
+      expect(await jobsRepo.hasEarlierLiveJob(tx, mine.id)).toBe(false);
+    });
+  });
+
+  it('deferClaimed re-queues without charging the attempt', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348040000001');
+    await enqueue(businessId);
+    const claimed = await jobsRepo.claimNext(workerDb, 'lane-b');
+    if (!claimed) throw new Error('claim should have won');
+    expect(claimed.attempts).toBe(1);
+
+    await jobsRepo.deferClaimed(workerDb, claimed.id, 50);
+
+    // Back in the queue as if never touched: pending, attempt refunded, and
+    // claimable again once the short delay passes.
+    const rows = await withBusiness(appDb, businessId, (tx) => jobsRepo.jobsForBusiness(tx));
+    expect(rows[0]?.state).toBe('pending');
+    expect(rows[0]?.attempts).toBe(0);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const reclaimed = await jobsRepo.claimNext(workerDb, 'lane-c');
+    expect(reclaimed?.id).toBe(claimed.id);
+    expect(reclaimed?.attempts).toBe(1);
   });
 });
