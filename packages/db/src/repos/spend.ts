@@ -14,9 +14,9 @@
  *
  * What is deliberately NOT stored: the supplier's name. A supplier mention is
  * a person or shop name, and names live in the identity vault or nowhere.
- * Supplier records (with encrypted facets, like customers) are a later slice;
- * until then the mention appears in the CG2 preview the merchant confirms and
- * is dropped at this boundary.
+ * Since migration 0050 that vault exists for suppliers too: the gateway
+ * resolves the mention into a `suppliers` row (cipher + match-key fold) and
+ * what reaches this boundary is the row's id — a reference, never a name.
  */
 import { and, eq, sql } from 'drizzle-orm';
 import {
@@ -62,6 +62,9 @@ export interface RecordPurchaseInput {
   paidK: number;
   sourceType: string;
   sourceId: string;
+  /** The vaulted supplier this purchase came from (migration 0050), when
+   * the mention resolved to one. A reference, never a name. */
+  supplierId?: string | null;
 }
 
 export interface RecordedSpend {
@@ -152,6 +155,7 @@ export async function recordPurchase(
       method: 'cash',
       sourceType: input.sourceType,
       sourceId: input.sourceId,
+      supplierId: input.supplierId ?? null,
       ledgerTransactionId,
     })
     .returning({ id: expenses.id });
@@ -168,6 +172,8 @@ export interface ExpenseReadback {
   category: string | null;
   amountK: number;
   method: string;
+  /** A vault reference, never a name (migration 0050). */
+  supplierId: string | null;
 }
 
 export async function expensesFor(tx: TenantDb, businessId: string): Promise<ExpenseReadback[]> {
@@ -177,6 +183,8 @@ export async function expensesFor(tx: TenantDb, businessId: string): Promise<Exp
       category: expenses.category,
       amountK: expenses.amountK,
       method: expenses.method,
+      /** A vault reference, never a name (migration 0050). */
+      supplierId: expenses.supplierId,
     })
     .from(expenses)
     .where(eq(expenses.businessId, businessId))

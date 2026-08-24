@@ -88,10 +88,18 @@ export const suppliers = pgTable(
   {
     id: id(),
     businessId: businessId(),
-    name: text('name').notNull(),
+    /** The name as a vault blob (migration 0050). Only the authorised
+     * boundary can open it; this package never sees a plaintext name. */
+    nameCipher: text('name_cipher').notNull(),
+    /** HMAC fold, so the same supplier said twice is one row without the
+     * name ever being comparable at rest. */
+    matchKey: text('match_key').notNull(),
     createdAt: createdAt(),
   },
-  (t) => [index('suppliers_business_ix').on(t.businessId)],
+  (t) => [
+    index('suppliers_business_ix').on(t.businessId),
+    uniqueIndex('suppliers_match_ux').on(t.businessId, t.matchKey),
+  ],
 );
 
 export const orders = pgTable(

@@ -30,7 +30,7 @@ export class VaultError extends Error {
 }
 
 /** The facets a customer identity can be split into, so each can be erased alone. */
-export type IdentityFacet = 'name' | 'phone' | 'email' | 'address';
+export type IdentityFacet = 'name' | 'phone' | 'email' | 'address' | 'supplier_name';
 
 /**
  * Keys arrive as 64 hex characters — the output of `openssl rand -hex 32`,
@@ -190,6 +190,9 @@ export function normaliseFacet(facet: IdentityFacet, raw: string): string {
     case 'email':
       return value.toLowerCase();
     case 'name':
+    /* Suppliers fold exactly as customer names do; the separate facet
+     * label exists so their match keys live in a separate keyspace. */
+    case 'supplier_name':
       // Case and inner whitespace folded; punctuation kept, since "O'Neil"
       // and "ONeil" are plausibly different people.
       return value.toLowerCase().replace(/\s+/g, ' ');
