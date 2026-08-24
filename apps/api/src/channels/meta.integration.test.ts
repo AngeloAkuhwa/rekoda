@@ -22,6 +22,7 @@ import {
   stockRepo,
   withBusiness,
   type Db,
+  suppliersRepo,
 } from '@rekoda/db';
 import { PLAN_ALLOWANCES, replies, usagePeriod } from '@rekoda/core';
 import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
@@ -38,7 +39,7 @@ import {
   settleRepo,
   spendRepo,
 } from '@rekoda/db';
-import { encryptFacet, matchKeyFor } from '@rekoda/core/vault';
+import { decryptFacet, encryptFacet, matchKeyFor } from '@rekoda/core/vault';
 import { PrivacyGateway } from '../privacy/gateway.service.js';
 import { Interpreter } from '../ai/interpreter.service.js';
 import { StubTransport } from '../ai/transport.stub.js';
@@ -1026,13 +1027,45 @@ describe("the plan's own example, end to end", () => {
       expect.objectContaining({ account: 'ACCOUNTS_PAYABLE', creditK: 3_000_000 }),
     );
 
-    /* The supplier's NAME stops at the preview: the merchant confirmed it on
-     * WhatsApp, and the books keep the stock, not the person (spend.ts). */
+    /* The supplier's NAME still stops at the preview — what the books keep
+     * is a VAULT reference (migration 0050): the expense row points at a
+     * supplier whose name exists only as a cipher. */
     const rows = await withBusiness(db, business.id, (tx) =>
       spendRepo.expensesFor(tx, business.id),
     );
     expect(rows[0]?.description).toBe('ankara fabric');
     expect(JSON.stringify(rows)).not.toContain('Nkechi');
+    const supplierId = rows[0]?.supplierId;
+    expect(supplierId).toBeTruthy();
+
+    const ciphers = await withBusiness(db, business.id, (tx) =>
+      suppliersRepo.supplierCiphersFor(tx, business.id, [supplierId!]),
+    );
+    const cipher = ciphers.get(supplierId!);
+    expect(cipher).toBeTruthy();
+    /* At rest it is a blob; only the vault key opens it. */
+    expect(cipher).not.toContain('Nkechi');
+    expect(decryptFacet(cipher!, deps.config.vaultKey, `${business.id}:supplier_name`)).toBe(
+      'Mama Nkechi',
+    );
+
+    /* The same supplier, said sloppily, folds to the same row. */
+    stubTransport.replyWith({
+      intent: 'RecordPurchase',
+      supplierMention: 'MAMA   nkechi',
+      description: 'more ankara',
+      amount: 10_000,
+      reportedPayment: 10_000,
+      productMention: null,
+      quantity: null,
+    });
+    await send('bought more ankara from MAMA nkechi 10k paid', 'wamid.PUR2');
+    await send('yes', 'wamid.PUR2YES');
+    const after = await withBusiness(db, business.id, (tx) =>
+      spendRepo.expensesFor(tx, business.id),
+    );
+    expect(after).toHaveLength(2);
+    expect(new Set(after.map((r) => r.supplierId)).size).toBe(1);
   });
 });
 

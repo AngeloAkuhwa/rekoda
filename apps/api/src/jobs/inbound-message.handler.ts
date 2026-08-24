@@ -1272,10 +1272,11 @@ async function confirmExpense(
 }
 
 /**
- * A confirmed stock purchase. The supplier MENTION is deliberately dropped at
- * this boundary — names live in the identity vault or nowhere (see spend.ts).
- * What survives is what the books need: the stock, the cost, and what is
- * still owed.
+ * A confirmed stock purchase. The supplier MENTION never reaches this
+ * boundary — the draft resolved it into a vault row and kept only the id
+ * (migration 0050; see spend.ts). What survives is what the books need:
+ * the stock, the cost, what is still owed, and WHO it is owed to as a
+ * reference the vault can open, never as a name.
  */
 async function confirmPurchase(
   tx: TenantDb,
@@ -1286,6 +1287,7 @@ async function confirmPurchase(
   const gate = gatePurchase(command as never);
   if (gate.gate !== 'CG2') return replies.arithmeticQuestion(gate.question);
 
+  const supplierId = typeof command['supplierId'] === 'string' ? command['supplierId'] : null;
   const recorded = await spendRepo.recordPurchase(tx, {
     businessId,
     description: String(command['description'] ?? ''),
@@ -1293,6 +1295,7 @@ async function confirmPurchase(
     paidK: gate.paidK,
     sourceType: 'chat',
     sourceId: draftId,
+    supplierId,
   });
 
   /**
@@ -1644,11 +1647,19 @@ async function interpretedReply(
    */
   const answered = await acknowledge(tx, businessId, command, correcting, link);
 
-  /* Supplier names are never persisted (ADR 0005): the preview above already
-   * said "From: ..." and nothing after this point needs the name, so the
-   * stored draft does not get to keep it. */
-  const stored =
-    command.intent === 'RecordPurchase' ? { ...command, supplierMention: null } : command;
+  /* Supplier names are never persisted (ADR 0005): the preview above
+   * already said "From: ...". What the stored draft keeps instead is the
+   * VAULT ROW the mention resolved to (migration 0050) — an opaque id the
+   * confirm can stamp on the purchase, never the name itself. */
+  let stored: Record<string, unknown> = command;
+  if (command.intent === 'RecordPurchase') {
+    const mention = (command as { supplierMention?: unknown }).supplierMention;
+    const supplier =
+      typeof mention === 'string' && mention.trim().length > 0
+        ? await deps.gateway.resolveSupplierMention(businessId, mention)
+        : null;
+    stored = { ...command, supplierMention: null, supplierId: supplier?.supplierId ?? null };
+  }
 
   await conversationsRepo.recordDraft(tx, {
     businessId,

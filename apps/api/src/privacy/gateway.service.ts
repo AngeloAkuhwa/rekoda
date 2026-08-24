@@ -8,7 +8,7 @@ import {
   type TokenisedMessage,
 } from '@rekoda/core/privacy';
 import { encryptFacet, matchKeyFor, normaliseFacet } from '@rekoda/core/vault';
-import { customersRepo, type Db } from '@rekoda/db';
+import { customersRepo, suppliersRepo, withBusiness, type Db } from '@rekoda/db';
 import { CONFIG, type ApiConfig } from '../config.js';
 import { DB } from '../db/db.module.js';
 
@@ -246,6 +246,31 @@ export class PrivacyGateway {
   ): Promise<{ token: string; customerId: string }> {
     const resolved = await this.customerTokenFor(businessId, 'name', mention);
     return { token: resolved.token, customerId: resolved.customerId };
+  }
+
+  /**
+   * A supplier mention becomes a vaulted supplier row (migration 0050) —
+   * the "later slice" spend.ts promised. Same fold as a customer name, in
+   * its OWN match-key keyspace so a person who is both a customer and a
+   * supplier never links across the two by accident. Null for a mention
+   * too short to be anybody, which the caller records as "no supplier".
+   */
+  async resolveSupplierMention(
+    businessId: string,
+    mention: string,
+  ): Promise<{ supplierId: string } | null> {
+    const normalised = normaliseFacet('supplier_name', mention);
+    if (normalised.length < 2) return null;
+    const matchKey = matchKeyFor(businessId, 'supplier_name', normalised, this.config.matchKey);
+    const nameCipher = encryptFacet(
+      mention.trim(),
+      this.config.vaultKey,
+      `${businessId}:supplier_name`,
+    );
+    const found = await withBusiness(this.db, businessId, (tx) =>
+      suppliersRepo.findOrCreateSupplier(tx, businessId, { nameCipher, matchKey }),
+    );
+    return { supplierId: found.supplierId };
   }
 
   /**

@@ -1,6 +1,7 @@
 export * from './client.js';
 export * as schema from './schema/index.js';
 export * as identity from './repos/identity.js';
+export * as suppliersRepo from './repos/suppliers.js';
 export * as assetsRepo from './repos/assets.js';
 export * as billingRepo from './repos/billing.js';
 export * as customersRepo from './repos/customers.js';
