@@ -70,11 +70,15 @@ confirmed).
 
 _Connect your WhatsApp shop. Rekoda handles the money trail automatically._
 1 business · 1 WhatsApp Business number/WABA · 1 catalogue · 1 Paystack
-connection · owner + 2 delegates · **800 messages** · **200 catalogue
-orders** · **500 document generations** · 100 utility templates ·
-unlimited reports · automatic order capture → customer records → invoices → payment
-verification → receipts → inventory → reconciliation, with unmatched/
-short-payment/exception detection. **No** voice bookkeeping.
+connection · owner + 2 delegates · **800 messages** · **60 voice minutes** ·
+**300 catalogue orders** · **500 document generations** · 100 utility
+templates · unlimited reports · automatic order capture → customer records →
+invoices → payment verification → receipts → inventory → reconciliation, with
+unmatched/short-payment/exception detection. Voice carries the same hour Chat
+has: the ladder never walks backwards, so a Chat merchant who opens a shop
+keeps every habit they built. (Corrected 24 Aug 2026 — this section previously
+said "no voice bookkeeping" and "200 orders" while the enforced allowance was
+already 300; `packages/core/src/allowances.ts` is the single source of truth.)
 
 ### Rekoda Complete — ₦29,900/month
 
@@ -129,19 +133,39 @@ charging a merchant to look at their own accounts (ADR 0024).
 > **more** expensive from October, and the ₦9,900 tier lands at **39–60% margin**
 > rather than the "45–60%" originally estimated. The 1 September rate
 > publication is a release gate — see §"Standing review triggers".
+>
+> **Re-verification, 24 Aug 2026.** Rates checked against current published
+> figures; the planning rule stands: **model every cost at or above market**.
+>
+> - **FX:** CBN ₦1,346.49 (24 Aug) — the naira STRENGTHENED from ₦1,357 at
+>   research time. Planning FX **held at ₦1,450/$**, now a ~7.7% buffer.
+> - **Meta authentication (NG) was WRONG below:** the 2026 rate is
+>   **$0.0145** per conversation (not ~$0.0067) for a Nigeria-registered
+>   WABA, and **$0.0750 — eleven times more — when the WABA is registered
+>   outside Nigeria**. Corrected in the table; OTP cost roughly doubles
+>   against the original model and the margin band absorbs it. **Launch
+>   requirement: the WABA must be registered in Nigeria.**
+> - **Model rows now carry conservative ceilings:** Sonnet modelled at
+>   $3/$15 per MTok (published figures vary by generation; we cost the
+>   ceiling), Opus escalation added at $5/$25. Haiku $1/$5 confirmed.
+> - **Integrate voice corrected the same day:** the plan ladder walked
+>   backwards (Chat had 60 voice minutes, Integrate had none); Integrate now
+>   carries the same 3,600 seconds. Complete's "120 minutes = Chat +
+>   Integrate combined" framing is now arithmetically true.
 
-## External cost stack (research of 16 Aug 2026, at ₦1,450/$)
+## External cost stack (researched 16 Aug 2026, re-verified 24 Aug 2026, at planning FX ₦1,450/$)
 
 | Service                    | Underlying price        | ≈ Cost             | Note                                                                   |
 | -------------------------- | ----------------------- | ------------------ | ---------------------------------------------------------------------- |
 | Twilio WhatsApp            | $0.005/msg each way     | ₦7.25/msg          | Integrate path only — see ADR 0002                                     |
 | Meta utility template (NG) | ~$0.0067                | ₦9.72              | Only when required                                                     |
-| Meta authentication (NG)   | ~$0.0067                | ₦9.72              | OTP                                                                    |
+| Meta authentication (NG)   | $0.0145 (NG-registered) | ₦21.03             | OTP. **$0.0750 if the WABA is registered outside Nigeria — 11x trap**  |
 | Meta marketing (NG)        | ~$0.0516                | ₦74.82             | **Excluded from V1 entirely**                                          |
 | In-window service replies  | currently ₦0 Meta-side  | —                  | **Chargeable from 1 Oct 2026; re-run maths when rates publish ~1 Sep** |
 | OpenAI transcription       | $0.0045/min             | ~₦6.53/min         | Benchmark only — STT is self-hosted (ADR 0005)                         |
 | Claude Haiku 4.5           | $1/$5 per MTok          | ~₦2–4/call         | Trivial classification                                                 |
-| Claude Sonnet              | $2/$10 per MTok         | ~₦8/call           | **Runtime default** (ADR 0007)                                         |
+| Claude Sonnet              | $3/$15 per MTok ceiling | ~₦12/call          | **Runtime default** (ADR 0007); costed at ceiling per 24 Aug rule      |
+| Claude Opus 5              | $5/$25 per MTok         | ~₦20/call          | Escalation role only — rare by design                                  |
 | Claude Fable 5             | $10/$50 per MTok        | ~₦40/call          | Build-time & evals, escalation flag only                               |
 | Paystack local card        | 1.5% + ₦100, cap ₦2,000 | merchant-borne     | Never absorbed into subscription                                       |
 | Paystack DVA/transfer      | 1%, cap ₦300            | merchant-borne     | Encourage "pay by transfer"                                            |

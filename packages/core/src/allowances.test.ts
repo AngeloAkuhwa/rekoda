@@ -16,6 +16,23 @@ describe('plan allowances (docs/metering-v1.md)', () => {
     expect(allowanceFor('platinum-unlimited', 'messages')).toBe(PLAN_ALLOWANCES.trial.messages);
   });
 
+  it('the paid ladder never walks backwards — a bigger plan never carries less of anything', () => {
+    /* The bug this pins: Integrate once had ZERO voice while cheaper Chat
+     * had an hour, so a merchant who upgraded lost a feature they were
+     * using. Every unit must be monotonic up the paid ladder, so a plan
+     * change is only ever an addition. */
+    const ladder = ['chat', 'integrate', 'complete'] as const;
+    for (let i = 1; i < ladder.length; i++) {
+      const below = PLAN_ALLOWANCES[ladder[i - 1]!];
+      const here = PLAN_ALLOWANCES[ladder[i]!];
+      for (const unit of Object.keys(below) as (keyof typeof below)[]) {
+        expect(here[unit], `${ladder[i]} ${unit} >= ${ladder[i - 1]}`).toBeGreaterThanOrEqual(
+          below[unit],
+        );
+      }
+    }
+  });
+
   it('meters the month as Lagos experiences it', () => {
     // 23:30 UTC on 31 August is already 00:30 on 1 September in Lagos.
     expect(usagePeriod(new Date('2026-08-31T23:30:00Z'))).toBe('2026-09');

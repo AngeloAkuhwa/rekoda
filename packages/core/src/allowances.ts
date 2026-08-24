@@ -50,7 +50,10 @@ export const PLAN_ALLOWANCES: Record<PlanId, Record<UsageUnit, number>> = {
   },
   integrate: {
     messages: 800,
-    voice_seconds: 0,
+    /* The same hour Chat carries. Zero here made the ladder walk BACKWARDS:
+     * a Chat merchant who opened a shop upgraded, paid more, and lost their
+     * voice notes — the only place a bigger plan took something away. */
+    voice_seconds: 3_600,
     documents: 500,
     documents_understood: 100,
     orders: 300,

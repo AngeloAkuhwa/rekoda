@@ -63,7 +63,7 @@ describe('the atomic gate', () => {
     expect(row?.used).toBe(5);
   });
 
-  it('refuses the FIRST unit of a zero allowance — voice on Integrate is not "one free"', async () => {
+  it('refuses the FIRST unit of a zero allowance — orders on Chat is not "one free"', async () => {
     const businessId = await seedBusiness();
     expect(await consume(businessId, 0)).toBe(false);
     const rows = await withBusiness(db, businessId, (tx) =>

@@ -34,7 +34,7 @@ export async function consumeUnit(
 ): Promise<boolean> {
   /**
    * Both arms carry the ceiling. The SELECT's WHERE guards the FRESH-ROW
-   * case (an allowance of zero, like voice on Integrate, must refuse the
+   * case (an allowance of zero, like orders on Chat, must refuse the
    * very first unit); the EXISTS keeps existing rows flowing to the
    * conflict arm, whose WHERE re-checks against `allowance + bonus` so a
    * billing top-up raises the ceiling without new SQL. Two concurrent
