@@ -665,3 +665,55 @@ export async function orderByExternalRef(
     .limit(1);
   return rows[0] ?? null;
 }
+
+/**
+ * One quote and its lines, by id, for the renderer. Quotes carry no
+ * snapshot: the order row and its items are immutable once created (there
+ * is no edit path), so the rows themselves are the record a re-render
+ * reads.
+ */
+export async function quoteForRender(
+  tx: TenantDb,
+  businessId: string,
+  quoteId: string,
+): Promise<{
+  quoteNumber: string;
+  totalK: number;
+  validUntil: string | null;
+  createdAt: Date;
+  lines: { name: string; quantity: number; unitPriceK: number }[];
+} | null> {
+  const head = await tx
+    .select({
+      quoteNumber: orders.orderNumber,
+      totalK: orders.totalK,
+      validUntil: orders.validUntil,
+      createdAt: orders.createdAt,
+    })
+    .from(orders)
+    .where(and(eq(orders.businessId, businessId), eq(orders.id, quoteId)))
+    .limit(1);
+  const quote = head[0];
+  if (!quote || !quote.quoteNumber.startsWith('QUO-')) return null;
+
+  const lines = await tx
+    .select({
+      name: orderItems.name,
+      quantity: orderItems.quantity,
+      unitPriceK: orderItems.unitPriceK,
+    })
+    .from(orderItems)
+    .where(and(eq(orderItems.businessId, businessId), eq(orderItems.orderId, quoteId)));
+
+  return {
+    quoteNumber: quote.quoteNumber,
+    totalK: Number(quote.totalK),
+    validUntil: quote.validUntil,
+    createdAt: quote.createdAt,
+    lines: lines.map((line) => ({
+      name: line.name,
+      quantity: Number(line.quantity),
+      unitPriceK: line.unitPriceK,
+    })),
+  };
+}

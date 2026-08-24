@@ -158,6 +158,62 @@ export function layoutInvoice(doc: InvoiceDocument): LayoutBlock[] {
   return blocks;
 }
 
+export interface QuoteDocument {
+  readonly documentNumber: string;
+  readonly issuedAt: Date;
+  readonly businessName: string;
+  /** Token or mention. NEVER a raw identity — same rule as the invoice. */
+  readonly customerLabel: string | null;
+  readonly items: ReadonlyArray<{ name: string; quantity: number; unitPriceK: number }>;
+  readonly totalK: number;
+  /** The day the offer stops holding. Null when the merchant named none. */
+  readonly validUntil: Date | null;
+}
+
+/**
+ * A quotation, in the same block vocabulary as the invoice it may become.
+ *
+ * Two sentences do the legal work and both are deliberate: the validity
+ * line, because an offer with no stated end is an offer somebody will try
+ * to hold the merchant to in December; and the not-an-invoice line, because
+ * this paper looks exactly like the invoice (same engine, same fonts, and
+ * that is the point) and the ONE difference a customer must not miss is
+ * that nothing is owed yet.
+ */
+export function layoutQuote(doc: QuoteDocument): LayoutBlock[] {
+  const blocks: LayoutBlock[] = [
+    { kind: 'title', text: doc.businessName },
+    { kind: 'meta', text: 'Quotation', value: doc.documentNumber },
+    { kind: 'meta', text: 'Date', value: issuedLine(doc.issuedAt) },
+  ];
+
+  if (doc.customerLabel) {
+    blocks.push({ kind: 'party', text: 'Prepared for', value: doc.customerLabel });
+  }
+
+  for (const item of doc.items) {
+    blocks.push({
+      kind: 'item',
+      text: `${item.quantity} × ${item.name} @ ${formatKobo(item.unitPriceK)}`,
+      value: formatKobo(Math.round(item.quantity * item.unitPriceK)),
+    });
+  }
+
+  blocks.push({ kind: 'grand-total', text: 'Total', value: formatKobo(doc.totalK) });
+  if (doc.validUntil) {
+    blocks.push({ kind: 'memo', text: `Prices hold until ${issuedLine(doc.validUntil)}.` });
+  }
+  blocks.push({
+    kind: 'memo',
+    text: 'This is a quotation, not an invoice. Nothing is owed unless you confirm the order.',
+  });
+
+  blocks.push({ kind: 'words', text: nairaInWords(doc.totalK) });
+  blocks.push({ kind: 'footnote', text: 'E&OE' });
+
+  return blocks;
+}
+
 /** `Page 1 of 3`, or nothing at all when there is only one page. */
 export function pageLabel(page: number, total: number): string | null {
   return total > 1 ? `Page ${page} of ${total}` : null;

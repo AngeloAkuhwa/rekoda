@@ -40,6 +40,7 @@ import {
   voidInvoiceResponse,
 } from '@rekoda/contracts';
 import {
+  jobsRepo,
   ordersRepo,
   usageRepo,
   catalogueRepo,
@@ -2862,7 +2863,7 @@ describe('quotes, and what converting one does', () => {
   };
 
   it('creates an offer that posts nothing, and lists it apart from orders', async () => {
-    const { auth } = await onboard('+2348177000210');
+    const { auth, businessId } = await onboard('+2348177000210');
     const created = createQuoteResponse.parse(
       (await post('/v1/reports/quotes', { ...QUOTE, clientRef: randomUUID() }, auth)).json(),
     );
@@ -2878,6 +2879,16 @@ describe('quotes, and what converting one does', () => {
     /* An offer is not an order and not a sale: nothing anywhere else. */
     expect(register.orders).toEqual([]);
     expect(register.invoices).toEqual([]);
+
+    /* The paper is queued in the same breath, carrying the token the PDF
+     * prints as "Prepared for" — never the name itself. */
+    const renderQueued = await withBusiness(db, businessId, async (tx) => {
+      const quote = await ordersRepo.quoteByNumber(tx, businessId, created.quoteNumber);
+      return quote
+        ? jobsRepo.hasJobForSingleton(tx, businessId, 'document.render', `render:quote:${quote.id}`)
+        : false;
+    });
+    expect(renderQueued).toBe(true);
   });
 
   it('a resubmitted quote form creates once', async () => {

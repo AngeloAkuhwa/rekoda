@@ -4,12 +4,14 @@ import { fileURLToPath } from 'node:url';
 import PDFDocument from 'pdfkit';
 import {
   layoutInvoice,
+  layoutQuote,
   layoutReceipt,
   layoutStatements,
   pageLabel,
   periodLabel,
   type InvoiceDocument,
   type LayoutBlock,
+  type QuoteDocument,
   type ReceiptDocument,
   type StatementDocument,
 } from '@rekoda/core';
@@ -129,6 +131,18 @@ export async function renderReceiptPdf(
     `${doc.documentNumber} — ${doc.businessName}`,
     options,
   );
+}
+
+/**
+ * Render a quotation to PDF bytes — same engine, same fonts, same A5
+ * default as the invoice it may become. Looking identical is deliberate;
+ * the layout's own words carry the one difference that matters.
+ */
+export async function renderQuotePdf(
+  doc: QuoteDocument,
+  options: RenderOptions = {},
+): Promise<Buffer> {
+  return renderBlocksPdf(layoutQuote(doc), `${doc.documentNumber} — ${doc.businessName}`, options);
 }
 
 /**
