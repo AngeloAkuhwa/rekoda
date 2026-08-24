@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import { isOwner } from '@/lib/permissions';
 import { MoneyBadge } from '@/components/ui/MoneyBadge';
 import { Money } from '@/components/ui/Money';
+import { PendingButton } from '@/components/ui/PendingButton';
 import { bankName } from '@/lib/banks';
 import { paymentConnection, paymentExceptions, paymentsList } from '@/server/api';
 import { requireSessionWithToken } from '@/server/guards';
@@ -181,9 +182,9 @@ export default async function PaymentsPage() {
                 {isOwner(identity.role) ? (
                   <form action={markExceptionReviewed}>
                     <input type="hidden" name="exceptionId" value={e.id} />
-                    <button type="submit" className="rk-review-btn">
+                    <PendingButton pendingLabel="Marking…" className="rk-review-btn">
                       Mark reviewed
-                    </button>
+                    </PendingButton>
                   </form>
                 ) : null}
               </li>

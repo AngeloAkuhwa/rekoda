@@ -109,6 +109,27 @@ button,
   border: 0;
 }
 
+/* The skip link has to APPEAR when a keyboard reaches it, or it is a link
+ * that exists only in an audit. Without this rule the first Tab press on
+ * every page focused something invisible. */
+a.rk-sr-only:focus-visible {
+  position: fixed;
+  inset: auto;
+  top: var(--rk-space-3);
+  left: var(--rk-space-3);
+  z-index: 100;
+  width: auto;
+  height: auto;
+  margin: 0;
+  padding: var(--rk-space-2) var(--rk-space-4);
+  overflow: visible;
+  clip: auto;
+  background: var(--rk-surface);
+  color: var(--rk-text);
+  border: 1px solid var(--rk-border);
+  border-radius: var(--rk-radius-sm);
+}
+
 /* Wide content scrolls inside its own container — the page never does. */
 .rk-scroll-x {
   overflow-x: auto;
@@ -834,6 +855,17 @@ button,
 .rk-statement th:last-child,
 .rk-tbal td:nth-child(n + 2),
 .rk-tbal th:nth-child(n + 2) {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  padding-left: var(--rk-space-3);
+}
+/* `.rk-num` works inside statements too. It was scoped to `.rk-table` only,
+   so the money column of the revenue and expense schedules sat left-aligned
+   beside a right-aligned percentage: the exact misreading the class exists
+   to prevent, on the page an accountant reads most. */
+.rk-statement th.rk-num,
+.rk-statement td.rk-num {
   text-align: right;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;

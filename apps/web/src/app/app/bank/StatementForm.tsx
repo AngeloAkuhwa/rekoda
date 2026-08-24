@@ -48,7 +48,7 @@ export function StatementForm() {
       ) : null}
 
       <Button type="submit" disabled={pending}>
-        {pending ? 'Reading' : 'Read this statement'}
+        {pending ? 'Reading…' : 'Read this statement'}
       </Button>
     </form>
   );

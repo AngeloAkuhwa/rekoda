@@ -89,6 +89,19 @@ export default async function ShopPage({
         </p>
       </header>
 
+      {shop.products.length === 0 ? (
+        /* A published shop can empty out later: everything hidden, or every
+           price removed. The API refuses to PUBLISH an empty shop, but it
+           cannot stop one becoming empty, and "Tap any item" above nothing
+           reads as a broken page to the one audience that never saw a
+           dashboard. */
+        <p className="rk-fineprint">
+          {shop.displayName} is not listing anything right now. Message them on{' '}
+          <a href={`https://wa.me/${shop.whatsappE164.replace(/[^0-9]/g, '')}`}>WhatsApp</a> to ask
+          what is available.
+        </p>
+      ) : null}
+
       <ul className="rk-shop-grid">
         {shop.products.map((product) => (
           <li key={product.id} className="rk-shop-item">
@@ -113,7 +126,10 @@ export default async function ShopPage({
               <h2>{product.name}</h2>
               {product.description ? <p>{product.description}</p> : null}
               <p className="rk-shop-price">{formatKobo(product.priceK)}</p>
-              <a className="rk-btn rk-shop-ask" href={orderLink(shop.whatsappE164, product.name)}>
+              <a
+                className="rk-btn rk-shop-ask"
+                href={orderLink(shop.whatsappE164, product.name, product.priceK)}
+              >
                 Order on WhatsApp
               </a>
             </div>
@@ -163,8 +179,13 @@ export default async function ShopPage({
  * who wants two things sends two messages or edits one, and a basket would be
  * a cart by another name with none of a cart's guarantees.
  */
-function orderLink(whatsappE164: string, product: string): string {
+function orderLink(whatsappE164: string, product: string, priceK: number): string {
   const number = whatsappE164.replace(/[^0-9]/g, '');
-  const text = encodeURIComponent(`Hello, I want to order: ${product}`);
+  /* The price rides along and the quantity is asked for in the message
+   * itself: the merchant's order pipeline prices by name, and a message that
+   * already says "2x" is an order nobody has to come back and ask about. */
+  const text = encodeURIComponent(
+    `Hello, I want to order: ${product} (${formatKobo(priceK)} each). How many: `,
+  );
   return `https://wa.me/${number}?text=${text}`;
 }

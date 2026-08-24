@@ -41,6 +41,39 @@ export async function requestCode(_prev: FormState, formData: FormData): Promise
   redirect(`/verify?phone=${encodeURIComponent(result.phone)}`);
 }
 
+export interface ResendState {
+  error?: string;
+  done?: string;
+}
+
+/**
+ * A fresh code to the SAME number, without the walk back to /start.
+ *
+ * "Start again" was the only affordance, and it forgot the phone number on
+ * the way. A slow SMS is the single most ordinary failure at the top of the
+ * funnel; the answer to it has to be one tap.
+ */
+export async function resendCode(_prev: ResendState, formData: FormData): Promise<ResendState> {
+  const phone = String(formData.get('phone') ?? '');
+  if (!phone) return { error: 'Start again with your number.' };
+
+  let result;
+  try {
+    result = await requestOtp(phone);
+  } catch (error) {
+    if (error instanceof ApiUnavailable) return { error: UNAVAILABLE };
+    throw error;
+  }
+
+  if (result === 'invalid_phone') return { error: NOT_A_NUMBER };
+  if (result.status === 'locked_out') return { error: LOCKED_OUT };
+  if (result.status === 'resend_too_soon') {
+    return { done: 'Your last code is still live. Give it a minute to arrive, then check again.' };
+  }
+  await stashDevCode(result.devCode);
+  return { done: 'A new code is on its way to your WhatsApp.' };
+}
+
 export async function confirmCode(_prev: FormState, formData: FormData): Promise<FormState> {
   const phone = String(formData.get('phone') ?? '');
   const code = String(formData.get('code') ?? '').trim();

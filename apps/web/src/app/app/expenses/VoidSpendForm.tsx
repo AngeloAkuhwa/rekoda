@@ -65,7 +65,7 @@ export function VoidSpendForm({ entries }: { entries: VoidableEntry[] }) {
       ) : null}
 
       <Button type="submit" disabled={pending}>
-        {pending ? 'Withdrawing' : 'Withdraw this entry'}
+        {pending ? 'Withdrawing…' : 'Withdraw this entry'}
       </Button>
     </form>
   );

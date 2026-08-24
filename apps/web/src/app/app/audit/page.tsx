@@ -69,7 +69,7 @@ export default async function AuditPage() {
                     <tr key={event.id}>
                       <td>{stamp(event.at)}</td>
                       <td>{event.summary}</td>
-                      <td>{event.actor}</td>
+                      <td>{presentActor(event.actor)}</td>
                       <td>{sourceWord(event.source)}</td>
                       {/* Blank rather than "none": most actions do not require
                           a reason, and only the ones that do look bare. */}
@@ -94,6 +94,15 @@ export default async function AuditPage() {
 }
 
 /** Where the change came from, in the words a merchant would use. */
+/**
+ * The API resolves actors to "Owner 1234"; a member since removed comes back
+ * as the raw `user:<uuid>`, which is a support handle, not a name to print.
+ */
+function presentActor(actor: string): string {
+  if (actor.startsWith('user:')) return `Former member (${actor.slice(5, 13)})`;
+  return actor;
+}
+
 function sourceWord(source: string): string {
   if (source === 'chat') return 'WhatsApp';
   if (source === 'dashboard') return 'Dashboard';

@@ -70,7 +70,7 @@ export function SetPriceForm({ choices }: { choices: Choice[] }) {
       </Field>
       <Result state={state} />
       <Button type="submit" disabled={pending}>
-        {pending ? 'Saving' : 'Save this price'}
+        {pending ? 'Saving…' : 'Save this price'}
       </Button>
     </form>
   );
@@ -98,7 +98,7 @@ export function SetCostForm({ choices }: { choices: Choice[] }) {
       </Field>
       <Result state={state} />
       <Button type="submit" disabled={pending}>
-        {pending ? 'Saving' : 'Save this cost'}
+        {pending ? 'Saving…' : 'Save this cost'}
       </Button>
     </form>
   );
@@ -129,7 +129,7 @@ export function SetDescriptionForm({ choices }: { choices: Choice[] }) {
       </Field>
       <Result state={state} />
       <Button type="submit" disabled={pending}>
-        {pending ? 'Saving' : 'Save this description'}
+        {pending ? 'Saving…' : 'Save this description'}
       </Button>
     </form>
   );
@@ -162,7 +162,7 @@ export function UploadPhotoForm({ choices, maxBytes }: { choices: Choice[]; maxB
       </Field>
       <Result state={state} />
       <Button type="submit" disabled={pending}>
-        {pending ? 'Sending' : 'Save this photo'}
+        {pending ? 'Sending…' : 'Save this photo'}
       </Button>
     </form>
   );
@@ -185,7 +185,7 @@ export function ListingForm({ choices }: { choices: Choice[] }) {
       </Field>
       <Result state={state} />
       <Button type="submit" disabled={pending}>
-        {pending ? 'Saving' : 'Save this change'}
+        {pending ? 'Saving…' : 'Save this change'}
       </Button>
     </form>
   );

@@ -67,7 +67,7 @@ export default async function InvoicesPage() {
     .filter((quote) => quote.status === 'quoted')
     .map((quote) => ({
       quoteNumber: quote.quoteNumber,
-      label: `${quote.quoteNumber} · ${formatKobo(quote.totalK)}${quote.validUntil ? ` · until ${quote.validUntil}` : ''}`,
+      label: `${quote.quoteNumber} · ${formatKobo(quote.totalK)}${quote.validUntil ? ` · until ${presentDay(quote.validUntil)}` : ''}`,
     }));
 
   return (
@@ -161,7 +161,7 @@ export default async function InvoicesPage() {
                   <tr key={quote.quoteNumber}>
                     <td>{quote.quoteNumber}</td>
                     <td>{shortDate(quote.createdAt)}</td>
-                    <td>{quote.validUntil ?? 'No expiry'}</td>
+                    <td>{quote.validUntil ? presentDay(quote.validUntil) : 'No expiry'}</td>
                     <td>{describeQuoteStatus(quote.status)}</td>
                     <td>{quote.invoiceNumber ?? (quote.status === 'quoted' ? 'Not yet' : '·')}</td>
                     <td className="rk-num">{quote.itemCount}</td>
@@ -380,4 +380,14 @@ function describeQuoteStatus(status: string): string {
   if (status === 'confirmed') return 'Accepted';
   if (status === 'cancelled') return 'Withdrawn';
   return status;
+}
+
+/** `12 Aug 2026`, Lagos, from a plain calendar day. */
+function presentDay(day: string): string {
+  return new Date(`${day}T12:00:00Z`).toLocaleDateString('en-NG', {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+    timeZone: 'Africa/Lagos',
+  });
 }

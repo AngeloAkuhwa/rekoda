@@ -1,7 +1,8 @@
 import type { Metadata } from 'next';
 import { isOwner } from '@/lib/permissions';
 import { Money } from '@/components/ui/Money';
-import { PLANS } from '@/lib/plans';
+import { PendingButton } from '@/components/ui/PendingButton';
+import { PLANS, PLAN_NAMES } from '@/lib/plans';
 import { billingOverview, billingQuote } from '@/server/api';
 import { requireSessionWithToken } from '@/server/guards';
 import { AppNav } from '../AppNav';
@@ -24,20 +25,23 @@ const UNIT_LABELS: Record<string, string> = {
   orders: 'orders',
 };
 
-const PLAN_NAMES: Record<string, string> = {
-  trial: 'Free trial',
-  expired: 'Stopped',
-  chat: 'Rekoda Chat',
-  integrate: 'Rekoda Integrate',
-  complete: 'Rekoda Complete',
-};
-
 const CHARGE_LABELS: Record<string, string> = {
   first_purchase: 'Subscription',
   renewal: 'Renewal',
   upgrade: 'Plan upgrade',
   add_on: 'Add-on pack',
   seat: 'Extra seat',
+};
+
+/* The status column was the one cell on this table printing the database's
+ * own word: a merchant reconciling their bill read `succeeded` beside four
+ * columns of plain language. */
+const CHARGE_STATUS: Record<string, string> = {
+  pending: 'Awaiting payment',
+  succeeded: 'Paid',
+  failed: 'Failed',
+  abandoned: 'Not completed',
+  refunded: 'Refunded',
 };
 
 /** Lagos, so a merchant reads the date they would write on a form. */
@@ -229,9 +233,9 @@ export default async function BillingPage({
           {isOwner(identity.role) ? (
             <form action={confirmPlanChange}>
               <input type="hidden" name="plan" value={proposed.to} />
-              <button type="submit" className="rk-btn">
+              <PendingButton pendingLabel="Confirming…">
                 {proposed.amountK === 0 ? 'Confirm the change' : 'Confirm and pay'}
-              </button>{' '}
+              </PendingButton>{' '}
               <a href="/app/billing" className="rk-period-link">
                 Not now
               </a>
@@ -306,9 +310,9 @@ export default async function BillingPage({
                       {isOwner(identity.role) ? (
                         <form action={buyPack}>
                           <input type="hidden" name="packId" value={pack.id} />
-                          <button type="submit" className="rk-btn rk-btn-quiet">
+                          <PendingButton pendingLabel="Buying…" className="rk-btn rk-btn-quiet">
                             Buy
-                          </button>
+                          </PendingButton>
                         </form>
                       ) : (
                         <span className="rk-fineprint">Owner only</span>
@@ -355,7 +359,7 @@ export default async function BillingPage({
                       {charge.plan ? ` · ${PLAN_NAMES[charge.plan] ?? charge.plan}` : ''}
                     </td>
                     <td className="rk-mono">{charge.reference}</td>
-                    <td>{charge.status}</td>
+                    <td>{CHARGE_STATUS[charge.status] ?? charge.status}</td>
                     <td>
                       <Money kobo={charge.amountK} />
                     </td>

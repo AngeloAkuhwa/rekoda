@@ -37,7 +37,7 @@ export function CloseBooksForm({
         </p>
       ) : null}
       <Button type="submit" disabled={pending}>
-        {pending ? 'Saving' : closed ? `Reopen ${label}` : `Close ${label}`}
+        {pending ? 'Saving…' : closed ? `Reopen ${label}` : `Close ${label}`}
       </Button>
     </form>
   );

@@ -77,7 +77,7 @@ export function PaySupplierForm({ purchases }: { purchases: OutstandingPurchase[
         >
           {purchases.map((p) => (
             <option key={p.expenseId} value={p.expenseId}>
-              {p.purchasedOn} · {p.description} · {formatKobo(p.owedK)} owing
+              {presentDay(p.purchasedOn)} · {p.description} · {formatKobo(p.owedK)} owing
             </option>
           ))}
         </select>
@@ -117,8 +117,17 @@ export function PaySupplierForm({ purchases }: { purchases: OutstandingPurchase[
       ) : null}
 
       <Button type="submit" disabled={pending}>
-        {pending ? 'Recording' : 'Record this payment'}
+        {pending ? 'Recording…' : 'Record this payment'}
       </Button>
     </form>
   );
+}
+
+/** `12 Aug`, Lagos, from a plain calendar day: what a person says out loud. */
+function presentDay(day: string): string {
+  return new Date(`${day}T12:00:00Z`).toLocaleDateString('en-NG', {
+    day: 'numeric',
+    month: 'short',
+    timeZone: 'Africa/Lagos',
+  });
 }

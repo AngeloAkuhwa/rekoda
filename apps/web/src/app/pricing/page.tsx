@@ -56,7 +56,10 @@ export default function PricingPage() {
                 or <Money kobo={plan.annualK} /> a year (two months free)
               </p>
 
-              <Button href="/start" variant={plan.highlight ? 'primary' : 'secondary'}>
+              <Button
+                href={`/start?plan=${plan.id}`}
+                variant={plan.highlight ? 'primary' : 'secondary'}
+              >
                 {plan.cta}
               </Button>
 

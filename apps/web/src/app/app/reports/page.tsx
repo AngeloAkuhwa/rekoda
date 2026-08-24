@@ -292,28 +292,30 @@ export default async function ReportsPage({
                   Sales in {label} by channel. Rekoda records a channel only when you name one, so
                   anything you did not say stays as not recorded.
                 </p>
-                <table className="rk-statement">
-                  <tbody>
-                    {revenueSchedule.lines.map((line) => (
-                      <tr key={line.source ?? 'unattributed'}>
-                        <td>{line.label}</td>
+                <div className="rk-table-scroll">
+                  <table className="rk-statement">
+                    <tbody>
+                      {revenueSchedule.lines.map((line) => (
+                        <tr key={line.source ?? 'unattributed'}>
+                          <td>{line.label}</td>
+                          <td className="rk-num">
+                            <Money kobo={line.amountK} />
+                          </td>
+                          <td className="rk-num rk-fineprint">
+                            {share(line.amountK, revenueSchedule.totalK)}
+                          </td>
+                        </tr>
+                      ))}
+                      <tr className="rk-statement-total">
+                        <td>Total sales</td>
                         <td className="rk-num">
-                          <Money kobo={line.amountK} />
+                          <Money kobo={revenueSchedule.totalK} />
                         </td>
-                        <td className="rk-num rk-fineprint">
-                          {share(line.amountK, revenueSchedule.totalK)}
-                        </td>
+                        <td />
                       </tr>
-                    ))}
-                    <tr className="rk-statement-total">
-                      <td>Total sales</td>
-                      <td className="rk-num">
-                        <Money kobo={revenueSchedule.totalK} />
-                      </td>
-                      <td />
-                    </tr>
-                  </tbody>
-                </table>
+                    </tbody>
+                  </table>
+                </div>
               </div>
             ) : null}
 
@@ -328,64 +330,68 @@ export default async function ReportsPage({
                   Operating expenses in {label}, broken down. Stock bought for resale is not here:
                   it reaches the books as cost of goods sold when it sells.
                 </p>
-                <table className="rk-statement">
-                  <tbody>
-                    {expenseSchedule.lines.map((line) => (
-                      <tr key={line.category}>
-                        <td>{line.label}</td>
+                <div className="rk-table-scroll">
+                  <table className="rk-statement">
+                    <tbody>
+                      {expenseSchedule.lines.map((line) => (
+                        <tr key={line.category}>
+                          <td>{line.label}</td>
+                          <td className="rk-num">
+                            <Money kobo={line.amountK} />
+                          </td>
+                          {/* Share of the month, because ₦80,000 means nothing
+                              without knowing it is a fifth of everything spent. */}
+                          <td className="rk-num rk-fineprint">
+                            {share(line.amountK, expenseSchedule.totalK)}
+                          </td>
+                        </tr>
+                      ))}
+                      <tr className="rk-statement-total">
+                        <td>Total operating expenses</td>
                         <td className="rk-num">
-                          <Money kobo={line.amountK} />
+                          <Money kobo={expenseSchedule.totalK} />
                         </td>
-                        {/* Share of the month, because ₦80,000 means nothing
-                            without knowing it is a fifth of everything spent. */}
-                        <td className="rk-num rk-fineprint">
-                          {share(line.amountK, expenseSchedule.totalK)}
-                        </td>
+                        <td />
                       </tr>
-                    ))}
-                    <tr className="rk-statement-total">
-                      <td>Total operating expenses</td>
-                      <td className="rk-num">
-                        <Money kobo={expenseSchedule.totalK} />
-                      </td>
-                      <td />
-                    </tr>
-                  </tbody>
-                </table>
+                    </tbody>
+                  </table>
+                </div>
               </div>
             ) : null}
 
             <div className="rk-card rk-dash-card">
               <h2>Cash flow</h2>
               <p className="rk-fineprint">Money that actually moved in {label}.</p>
-              <table className="rk-statement">
-                <tbody>
-                  <tr>
-                    <td>Opening balance</td>
-                    <td>
-                      <Money kobo={cashflow.openingK} />
-                    </td>
-                  </tr>
-                  <tr>
-                    <td>Money in</td>
-                    <td>
-                      <Money kobo={cashflow.inK} />
-                    </td>
-                  </tr>
-                  <tr>
-                    <td>Money out</td>
-                    <td>
-                      <Money kobo={cashflow.outK} />
-                    </td>
-                  </tr>
-                  <tr className="rk-statement-grand">
-                    <td>Closing balance</td>
-                    <td>
-                      <Money kobo={cashflow.closingK} />
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
+              <div className="rk-table-scroll">
+                <table className="rk-statement">
+                  <tbody>
+                    <tr>
+                      <td>Opening balance</td>
+                      <td>
+                        <Money kobo={cashflow.openingK} />
+                      </td>
+                    </tr>
+                    <tr>
+                      <td>Money in</td>
+                      <td>
+                        <Money kobo={cashflow.inK} />
+                      </td>
+                    </tr>
+                    <tr>
+                      <td>Money out</td>
+                      <td>
+                        <Money kobo={cashflow.outK} />
+                      </td>
+                    </tr>
+                    <tr className="rk-statement-grand">
+                      <td>Closing balance</td>
+                      <td>
+                        <Money kobo={cashflow.closingK} />
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
             </div>
           </div>
 
@@ -393,61 +399,63 @@ export default async function ReportsPage({
             <div className="rk-card rk-dash-card">
               <h2>Balance sheet</h2>
               <p className="rk-fineprint">What the business owns and owes, as at end of {label}.</p>
-              <table className="rk-statement">
-                <tbody>
-                  <tr className="rk-statement-section">
-                    <th colSpan={2}>Assets</th>
-                  </tr>
-                  {balanceSheet.assets.map((line) => (
-                    <tr key={line.account}>
-                      <td>{line.name}</td>
+              <div className="rk-table-scroll">
+                <table className="rk-statement">
+                  <tbody>
+                    <tr className="rk-statement-section">
+                      <th colSpan={2}>Assets</th>
+                    </tr>
+                    {balanceSheet.assets.map((line) => (
+                      <tr key={line.account}>
+                        <td>{line.name}</td>
+                        <td>
+                          <Money kobo={line.amountK} />
+                        </td>
+                      </tr>
+                    ))}
+                    <tr className="rk-statement-total">
+                      <td>Total assets</td>
                       <td>
-                        <Money kobo={line.amountK} />
+                        <Money kobo={balanceSheet.totalAssetsK} />
                       </td>
                     </tr>
-                  ))}
-                  <tr className="rk-statement-total">
-                    <td>Total assets</td>
-                    <td>
-                      <Money kobo={balanceSheet.totalAssetsK} />
-                    </td>
-                  </tr>
-                  <tr className="rk-statement-section">
-                    <th colSpan={2}>Liabilities</th>
-                  </tr>
-                  {balanceSheet.liabilities.map((line) => (
-                    <tr key={line.account}>
-                      <td>{line.name}</td>
+                    <tr className="rk-statement-section">
+                      <th colSpan={2}>Liabilities</th>
+                    </tr>
+                    {balanceSheet.liabilities.map((line) => (
+                      <tr key={line.account}>
+                        <td>{line.name}</td>
+                        <td>
+                          <Money kobo={line.amountK} />
+                        </td>
+                      </tr>
+                    ))}
+                    <tr className="rk-statement-total">
+                      <td>Total liabilities</td>
                       <td>
-                        <Money kobo={line.amountK} />
+                        <Money kobo={balanceSheet.totalLiabilitiesK} />
                       </td>
                     </tr>
-                  ))}
-                  <tr className="rk-statement-total">
-                    <td>Total liabilities</td>
-                    <td>
-                      <Money kobo={balanceSheet.totalLiabilitiesK} />
-                    </td>
-                  </tr>
-                  <tr className="rk-statement-section">
-                    <th colSpan={2}>Equity</th>
-                  </tr>
-                  {balanceSheet.equity.map((line) => (
-                    <tr key={`${line.account}-${line.name}`}>
-                      <td>{line.name}</td>
+                    <tr className="rk-statement-section">
+                      <th colSpan={2}>Equity</th>
+                    </tr>
+                    {balanceSheet.equity.map((line) => (
+                      <tr key={`${line.account}-${line.name}`}>
+                        <td>{line.name}</td>
+                        <td>
+                          <Money kobo={line.amountK} />
+                        </td>
+                      </tr>
+                    ))}
+                    <tr className="rk-statement-grand">
+                      <td>Liabilities + equity</td>
                       <td>
-                        <Money kobo={line.amountK} />
+                        <Money kobo={balanceSheet.totalLiabilitiesK + balanceSheet.totalEquityK} />
                       </td>
                     </tr>
-                  ))}
-                  <tr className="rk-statement-grand">
-                    <td>Liabilities + equity</td>
-                    <td>
-                      <Money kobo={balanceSheet.totalLiabilitiesK + balanceSheet.totalEquityK} />
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
+                  </tbody>
+                </table>
+              </div>
               <p className={balanceSheet.balanced ? 'rk-balanced' : 'rk-unbalanced'}>
                 {balanceSheet.balanced
                   ? 'Assets equal liabilities plus equity.'
@@ -505,28 +513,30 @@ export default async function ReportsPage({
               (stockValuation.ledgerK !== 0 || stockValuation.countedK !== 0) ? (
                 <div className="rk-stocktake">
                   <h3 className="rk-substack">Stock on the shelf</h3>
-                  <table className="rk-statement">
-                    <tbody>
-                      <tr>
-                        <td>What your books say</td>
-                        <td>
-                          <Money kobo={stockValuation.ledgerK} />
-                        </td>
-                      </tr>
-                      <tr>
-                        <td>What you are holding, at cost</td>
-                        <td>
-                          <Money kobo={stockValuation.countedK} />
-                        </td>
-                      </tr>
-                      <tr className="rk-statement-total">
-                        <td>Difference</td>
-                        <td>
-                          <Money kobo={stockValuation.differenceK} />
-                        </td>
-                      </tr>
-                    </tbody>
-                  </table>
+                  <div className="rk-table-scroll">
+                    <table className="rk-statement">
+                      <tbody>
+                        <tr>
+                          <td>What your books say</td>
+                          <td>
+                            <Money kobo={stockValuation.ledgerK} />
+                          </td>
+                        </tr>
+                        <tr>
+                          <td>What you are holding, at cost</td>
+                          <td>
+                            <Money kobo={stockValuation.countedK} />
+                          </td>
+                        </tr>
+                        <tr className="rk-statement-total">
+                          <td>Difference</td>
+                          <td>
+                            <Money kobo={stockValuation.differenceK} />
+                          </td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
                   {stockValuation.uncosted > 0 ? (
                     <p className="rk-fineprint">
                       {stockValuation.uncosted === 1

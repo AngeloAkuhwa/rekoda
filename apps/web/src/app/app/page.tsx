@@ -11,6 +11,7 @@ import {
   usageMeter,
 } from '@/server/api';
 import { AppNav } from './AppNav';
+import { PLAN_NAMES } from '@/lib/plans';
 import { CashflowChart } from './CashflowChart';
 import { SignOutButton } from './SignOutButton';
 
@@ -71,7 +72,7 @@ export default async function DashboardPage() {
     <section className="rk-container rk-dash">
       <header className="rk-dash-head">
         <div>
-          <p className="rk-eyebrow">{identity.plan === 'trial' ? 'Free trial' : identity.plan}</p>
+          <p className="rk-eyebrow">{PLAN_NAMES[identity.plan] ?? identity.plan}</p>
           <h1>{identity.businessName}</h1>
           <p className="rk-fineprint">
             Signed in as {identity.phone} · {identity.role} · {monthName}

@@ -169,7 +169,16 @@ export function CancelPurchaseOrderForm({ orders }: { orders: OpenPurchaseOrder[
     cancelPurchaseOrderAction,
     {},
   );
-  if (orders.length === 0) return null;
+  /* Withdrawing the LAST open order empties this list on the refresh; the
+   * confirmation must survive that or the click that caused it looks like
+   * it did nothing. Same lesson the payment and asset forms already carry. */
+  if (orders.length === 0) {
+    return state.done ? (
+      <p className="rk-fineprint" role="status">
+        {state.done}
+      </p>
+    ) : null;
+  }
   return (
     <form action={action} className="rk-form" noValidate>
       <Field id="cancelPoNumber" label="The order to withdraw" error={state.error}>

@@ -120,7 +120,7 @@ export function RecordPaymentForm({ invoices }: { invoices: PayableInvoice[] }) 
       ) : null}
 
       <Button type="submit" disabled={pending}>
-        {pending ? 'Recording' : 'Record this payment'}
+        {pending ? 'Recording…' : 'Record this payment'}
       </Button>
     </form>
   );

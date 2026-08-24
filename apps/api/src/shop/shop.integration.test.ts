@@ -17,7 +17,7 @@ import {
   publicShopResponse,
   shopSettingsResponse,
 } from '@rekoda/contracts';
-import { createDb, stockRepo, withBusiness, type Db } from '@rekoda/db';
+import { billingRepo, createDb, stockRepo, withBusiness, type Db } from '@rekoda/db';
 import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 
@@ -174,6 +174,40 @@ describe('the settings a merchant sees first', () => {
     await seedCatalogue(businessId, auth);
     expect((await publish(auth, 'Ada Fashion')).json()).toEqual({ outcome: 'bad_slug' });
     expect((await publish(auth, 'ad')).json()).toEqual({ outcome: 'bad_slug' });
+  });
+
+  it('keeps publishing behind Integrate, and keeps drafts open to every plan', async () => {
+    const { businessId, auth } = await onboard('+2348177400008');
+    await seedCatalogue(businessId, auth);
+    /* The pricing page sells the shop link under Integrate; a Chat merchant
+     * publishing anyway made the card and the door disagree. */
+    await billingRepo.setPlan(db, {
+      businessId,
+      plan: 'chat',
+      expiresAt: null,
+      actor: 'operator:test',
+    });
+
+    expect((await publish(auth, 'ada-chat-shop')).json()).toEqual({ outcome: 'needs_integrate' });
+    /* A draft is not public and is always allowed: the gate is on going
+     * public, never on keeping what was written. */
+    expect(
+      (
+        await post(
+          '/v1/shop-settings',
+          { slug: 'ada-chat-shop', displayName: 'Ada Fashion', tagline: null, published: false },
+          auth,
+        )
+      ).json(),
+    ).toMatchObject({ outcome: 'saved', published: false });
+
+    await billingRepo.setPlan(db, {
+      businessId,
+      plan: 'integrate',
+      expiresAt: null,
+      actor: 'operator:test',
+    });
+    expect((await publish(auth, 'ada-chat-shop')).json()).toMatchObject({ outcome: 'saved' });
   });
 
   it('tells the second merchant a handle is taken', async () => {

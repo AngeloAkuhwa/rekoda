@@ -3,6 +3,7 @@
 import { useActionState } from 'react';
 import { Button } from '@/components/ui/Button';
 import { Field } from '@/components/ui/Field';
+import { SITE_HOST } from '@/lib/site';
 import { saveShopAction, type ShopFormState } from './shop-actions';
 
 export interface ShopState {
@@ -40,7 +41,7 @@ export function ShopForm({
       <Field
         id="slug"
         label="Your shop link"
-        hint="rekoda.app/s/your-handle. Lowercase letters, numbers and hyphens"
+        hint={`${SITE_HOST}/s/your-handle. Lowercase letters, numbers and hyphens`}
         error={state.error}
       >
         <input
@@ -81,7 +82,7 @@ export function ShopForm({
       <Field
         id="published"
         label="Open to customers"
-        hint="An open shop can be found by search engines, and is listed on rekoda.app"
+        hint={`An open shop can be found by search engines, and is listed on ${SITE_HOST}`}
       >
         <select
           name="published"
@@ -101,7 +102,7 @@ export function ShopForm({
       ) : null}
 
       <Button type="submit" disabled={pending}>
-        {pending ? 'Saving' : 'Save shop'}
+        {pending ? 'Saving…' : 'Save shop'}
       </Button>
     </form>
   );
