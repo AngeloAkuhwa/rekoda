@@ -651,16 +651,36 @@ describe('the grace period', () => {
     expect(overview.status.state).toBe('grace');
   });
 
-  it('says nothing on the days between reminders', async () => {
+  it('says nothing between reminders once each has been sent', async () => {
     await failedMerchant('+2348177100011');
     const sender = new StubSender();
     const deps = { workerDb, appDb: db, sender };
 
-    for (const day of [0, 2, 3, 4]) {
+    expect((await sweepGracePeriods(deps, dayAfterFailure(0))).reminded).toBe(0);
+    expect((await sweepGracePeriods(deps, dayAfterFailure(1))).reminded).toBe(1);
+    for (const day of [2, 3, 4]) {
       expect((await sweepGracePeriods(deps, dayAfterFailure(day))).reminded).toBe(0);
     }
     expect((await sweepGracePeriods(deps, dayAfterFailure(5))).reminded).toBe(1);
-    expect(sender.billingNotices).toHaveLength(1);
+    expect((await sweepGracePeriods(deps, dayAfterFailure(6))).reminded).toBe(0);
+    expect(sender.billingNotices).toHaveLength(2);
+  });
+
+  it('sends a missed day-one warning late instead of staying silent until day five', async () => {
+    await failedMerchant('+2348177100015');
+    const sender = new StubSender();
+    const deps = { workerDb, appDb: db, sender };
+
+    /* The sweep was down through all of day one. Its first pass lands on day
+     * two: the merchant still gets the first warning, once, with the days
+     * that are actually left, and day five arrives on its own schedule. */
+    const late = await sweepGracePeriods(deps, dayAfterFailure(2));
+    expect(late).toEqual({ reminded: 1, expired: 0 });
+    expect(sender.billingNotices[0]?.daysLeft).toBe('5');
+
+    expect((await sweepGracePeriods(deps, dayAfterFailure(2))).reminded).toBe(0);
+    expect((await sweepGracePeriods(deps, dayAfterFailure(5))).reminded).toBe(1);
+    expect(sender.billingNotices).toHaveLength(2);
   });
 
   it('honours STOP: the day is claimed, the message is not sent', async () => {

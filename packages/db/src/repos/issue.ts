@@ -151,6 +151,12 @@ export async function writePosting(
      * of its own, only the meaning of what it undoes.
      */
     reversesId?: string;
+    /**
+     * One-shot key the caller's form brought. Only the dashboard journal
+     * passes one; `ledger_tx_client_ref_ux` turns a resubmission into a
+     * unique violation the endpoint classifies instead of a second posting.
+     */
+    clientRef?: string | null;
   } = {},
 ): Promise<string> {
   /* Refused here as well as by the trigger behind it (migration 0034), and
@@ -170,6 +176,7 @@ export async function writePosting(
       sourceId,
       ...(opts.occurredAt ? { createdAt: opts.occurredAt } : {}),
       ...(opts.reversesId ? { reversesId: opts.reversesId } : {}),
+      ...(opts.clientRef ? { clientRef: opts.clientRef } : {}),
     })
     .returning({ id: ledgerTransactions.id });
 
@@ -957,6 +964,8 @@ export async function issueCreditNote(
     reason: string;
     actor: string;
     issuedAt?: Date;
+    /** One-shot key from the credit form. Null when chat or a job credits. */
+    clientRef?: string | null;
   },
 ): Promise<CreditOutcome> {
   const issuedAt = input.issuedAt ?? new Date();
@@ -1061,6 +1070,7 @@ export async function issueCreditNote(
     ledgerTransactionId,
     snapshotJson: snapshot as never,
     docHash,
+    ...(input.clientRef ? { clientRef: input.clientRef } : {}),
     createdAt: issuedAt,
   });
 

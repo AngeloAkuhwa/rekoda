@@ -227,15 +227,23 @@ async function journalActionUnguarded(
   }
 
   const occurredOn = String(formData.get('occurredOn') ?? '').trim();
+  const clientRefRaw = String(formData.get('clientRef') ?? '');
+  const clientRef = /^[0-9a-f-]{36}$/i.test(clientRefRaw) ? clientRefRaw : undefined;
   const outcome = await recordJournal(token, {
     memo,
     amountK: toKobo(naira),
     intoAccount: intoAccount as never,
     outOfAccount: outOfAccount as never,
     ...(occurredOn === '' ? {} : { occurredOn }),
+    ...(clientRef ? { clientRef } : {}),
   });
   if (!outcome) return { error: 'That did not go through. Nothing was changed.' };
 
+  if (outcome.outcome === 'duplicate') {
+    /* The same form reached us twice; the first submission posted. */
+    revalidatePath('/app/reports');
+    return { done: 'Already recorded. Nothing was posted twice.' };
+  }
   if (outcome.outcome === 'same_account') {
     return {
       error: 'Pick two different places. Moving money to where it already is changes nothing.',

@@ -114,14 +114,23 @@ async function createRecurringActionUnguarded(
     return { error: 'Pick the day of the month it lands on, 1 to 31.' };
   }
 
+  const clientRefRaw = String(formData.get('clientRef') ?? '');
+  const clientRef = /^[0-9a-f-]{36}$/i.test(clientRefRaw) ? clientRefRaw : undefined;
   const outcome = await createRecurring(token, {
     description,
     category: category === '' ? null : category,
     amountK: toKobo(naira),
     method,
     anchorDay,
+    ...(clientRef ? { clientRef } : {}),
   });
   if (!outcome) return { error: 'That did not go through. Nothing was saved.' };
+
+  if (outcome.outcome === 'duplicate') {
+    /* The same form reached us twice; the first submission created it. */
+    revalidatePath('/app/expenses');
+    return { done: 'Already saved. Nothing was created twice.' };
+  }
 
   /* Stock is the one category a schedule cannot wear: a delivery is something
    * somebody took, and a monthly figure with no delivery behind it would put
@@ -210,9 +219,21 @@ async function paySupplierActionUnguarded(
   const amountK = toKobo(naira);
 
   const method = String(formData.get('method') ?? 'cash') === 'transfer' ? 'transfer' : 'cash';
-  const outcome = await paySupplier(token, { expenseId, amountK, method });
+  const clientRefRaw = String(formData.get('clientRef') ?? '');
+  const clientRef = /^[0-9a-f-]{36}$/i.test(clientRefRaw) ? clientRefRaw : undefined;
+  const outcome = await paySupplier(token, {
+    expenseId,
+    amountK,
+    method,
+    ...(clientRef ? { clientRef } : {}),
+  });
   if (!outcome) return { error: 'That did not go through. Nothing was changed.' };
 
+  if (outcome.outcome === 'duplicate') {
+    /* The same form reached us twice; the first submission paid. */
+    revalidatePath('/app/expenses');
+    return { done: 'Already recorded. Nothing was paid twice.' };
+  }
   if (outcome.outcome === 'refused') {
     if (outcome.reason === 'more_than_owed') {
       return {
@@ -266,14 +287,23 @@ async function recordAssetActionUnguarded(
   const usefulLifeMonths = Math.round(years * 12);
 
   const method = String(formData.get('method') ?? 'cash') === 'transfer' ? 'transfer' : 'cash';
+  const clientRefRaw = String(formData.get('clientRef') ?? '');
+  const clientRef = /^[0-9a-f-]{36}$/i.test(clientRefRaw) ? clientRefRaw : undefined;
   const outcome = await recordAsset(token, {
     description,
     costK: toKobo(cost),
     paidK: toKobo(paid),
     usefulLifeMonths,
     method,
+    ...(clientRef ? { clientRef } : {}),
   });
   if (!outcome) return { error: 'That did not go through. Nothing was recorded.' };
+
+  if (outcome.outcome === 'duplicate') {
+    /* The same form reached us twice; the first submission recorded it. */
+    revalidatePath('/app/expenses');
+    return { done: 'Already recorded. Nothing was recorded twice.' };
+  }
 
   revalidatePath('/app/expenses');
   const perMonth = formatKobo(Math.floor(toKobo(cost) / usefulLifeMonths));

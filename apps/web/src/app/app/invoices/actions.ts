@@ -85,9 +85,17 @@ async function creditInvoiceActionUnguarded(
   }
   if (reason.length < 4) return { error: 'Say why, in a few words. It goes on the credit note.' };
 
-  const outcome = await creditInvoice(token, invoiceNumber, toKobo(naira), reason);
+  const clientRefRaw = String(formData.get('clientRef') ?? '');
+  const clientRef = /^[0-9a-f-]{36}$/i.test(clientRefRaw) ? clientRefRaw : undefined;
+
+  const outcome = await creditInvoice(token, invoiceNumber, toKobo(naira), reason, clientRef);
   if (!outcome) return { error: 'That did not go through. Nothing was changed.' };
 
+  if (outcome.outcome === 'duplicate') {
+    /* The same form reached us twice; the first submission credited. */
+    revalidatePath('/app/invoices');
+    return { done: 'Already credited. Nothing was credited twice.' };
+  }
   if (outcome.outcome === 'not_found') return { error: 'No invoice with that number.' };
   if (outcome.outcome === 'voided') {
     return { error: `${invoiceNumber} was withdrawn, so there is nothing left to credit.` };

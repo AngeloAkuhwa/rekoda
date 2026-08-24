@@ -1,6 +1,6 @@
 'use client';
 
-import { useActionState, useState } from 'react';
+import { useActionState, useEffect, useMemo, useState } from 'react';
 import { formatKobo } from '@rekoda/core';
 import { Button } from '@/components/ui/Button';
 import { Field } from '@/components/ui/Field';
@@ -30,6 +30,13 @@ export function PaySupplierForm({ purchases }: { purchases: OutstandingPurchase[
     paySupplierAction,
     {},
   );
+  /* One key per intention, bumped when a submission settles, so a retried
+   * form books once and the NEXT genuine one is never mistaken for it. */
+  const [generation, setGeneration] = useState(0);
+  const clientRef = useMemo(() => crypto.randomUUID(), [generation]);
+  useEffect(() => {
+    if (state.done) setGeneration((g) => g + 1);
+  }, [state]);
   const [chosen, setChosen] = useState(purchases[0]?.expenseId ?? '');
   const owed = purchases.find((p) => p.expenseId === chosen)?.owedK ?? 0;
 
@@ -54,6 +61,7 @@ export function PaySupplierForm({ purchases }: { purchases: OutstandingPurchase[
 
   return (
     <form action={action} className="rk-form" noValidate>
+      <input type="hidden" name="clientRef" value={clientRef} />
       <Field
         id="expenseId"
         label="What you are paying for"

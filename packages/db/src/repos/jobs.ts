@@ -121,6 +121,14 @@ export async function serializeBusiness(
   await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`${businessId}:${scope}`}))`);
 }
 
+/**
+ * Whether a job has EVER been enqueued under this singleton key, in ANY
+ * state — deliberately, not an oversight. The one caller is the pump's
+ * stranded-event lane, where "a job exists, even failed" means the event
+ * was queued once and is the handler's story now: filtering to live states
+ * would resurrect a job that already died five attempts, turning one poison
+ * payload into a permanent retry loop.
+ */
 export async function hasJobForSingleton(
   q: Queryable,
   businessId: string,

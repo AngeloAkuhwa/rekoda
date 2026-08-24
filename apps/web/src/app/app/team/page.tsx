@@ -1,5 +1,5 @@
 import type { Metadata } from 'next';
-import { businessMembers } from '@/server/api';
+import { ApiForbidden, businessMembers } from '@/server/api';
 import { requireSessionWithToken } from '@/server/guards';
 import { AppNav } from '../AppNav';
 import { SignOutButton } from '../SignOutButton';
@@ -26,9 +26,11 @@ export default async function TeamPage() {
   let members;
   try {
     members = (await businessMembers(token)).members;
-  } catch {
-    /* A 403: they are signed in and this is not theirs to see. Says which,
-     * because "you cannot" and "there is nobody" are different answers. */
+  } catch (error) {
+    /* Only a 403 means "not yours to see". Anything else — the API down,
+     * a bad gateway — must reach the error boundary: telling the OWNER they
+     * are not the owner because a request failed is the one wrong answer. */
+    if (!(error instanceof ApiForbidden)) throw error;
     return (
       <section className="rk-container rk-dash">
         <header className="rk-dash-head">
