@@ -6,9 +6,9 @@ import {
   type OnApplicationShutdown,
   type OnModuleInit,
 } from '@nestjs/common';
-import { type Db, jobsRepo } from '@rekoda/db';
+import { type Db, type LockClient, jobsRepo } from '@rekoda/db';
 import { CONFIG, type ApiConfig } from '../config.js';
-import { DB, WORKER_DB } from '../db/db.module.js';
+import { DB, WORKER_DB, WORKER_LOCK } from '../db/db.module.js';
 import { AiModule } from '../ai/ai.module.js';
 import { RepliesModule } from '../replies/replies.module.js';
 import { ReplySender } from '../replies/reply.service.js';
@@ -148,6 +148,7 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
     @Inject(CONFIG) private readonly config: ApiConfig,
     @Inject(DB) private readonly appDb: Db,
     @Inject(WORKER_DB) private readonly workerDb: Db | null,
+    @Inject(WORKER_LOCK) private readonly workerLock: LockClient | null,
     @Inject(PrivacyGateway) private readonly gateway: PrivacyGateway,
     @Inject(Interpreter) private readonly interpreter: Interpreter,
     @Inject(ReplySender) private readonly replySender: ReplySender,
@@ -419,9 +420,9 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
    * whoever fires next. No configuration and nothing to clean up.
    */
   private async exclusively(name: string, work: () => Promise<unknown>): Promise<void> {
-    const workerDb = this.workerDb;
-    if (!workerDb) return;
-    await jobsRepo.runExclusively(workerDb, name, work);
+    const lock = this.workerLock;
+    if (!lock) return;
+    await jobsRepo.runExclusively(lock, name, work);
   }
 
   async onApplicationShutdown(): Promise<void> {

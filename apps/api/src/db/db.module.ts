@@ -1,5 +1,5 @@
 import { Global, Inject, Injectable, Module, type OnApplicationShutdown } from '@nestjs/common';
-import { createDb, type Db } from '@rekoda/db';
+import { createDb, createLockClient, type Db, type LockClient } from '@rekoda/db';
 import { CONFIG, loadConfig, type ApiConfig } from '../config.js';
 
 export const DB = Symbol('Db');
@@ -8,11 +8,24 @@ export const DB = Symbol('Db');
  * credential. Cross-tenant reads live here and nowhere else.
  */
 export const WORKER_DB = Symbol('WorkerDb');
+/**
+ * A dedicated pool that holds background-sweep advisory locks and nothing
+ * else, on the worker credential. Kept apart from WORKER_DB so a held lock
+ * never competes with the query it guards for a connection (see
+ * `withAdvisoryLock`). Null without a worker credential.
+ */
+export const WORKER_LOCK = Symbol('WorkerLock');
 const DB_HANDLE = Symbol('DbHandle');
 const WORKER_DB_HANDLE = Symbol('WorkerDbHandle');
+const WORKER_LOCK_HANDLE = Symbol('WorkerLockHandle');
 
 interface DbHandle {
   db: Db;
+  close: () => Promise<void>;
+}
+
+interface LockHandle {
+  client: LockClient;
   close: () => Promise<void>;
 }
 
@@ -22,11 +35,13 @@ class DbLifecycle implements OnApplicationShutdown {
   constructor(
     @Inject(DB_HANDLE) private readonly handle: DbHandle,
     @Inject(WORKER_DB_HANDLE) private readonly worker: DbHandle | null,
+    @Inject(WORKER_LOCK_HANDLE) private readonly lock: LockHandle | null,
   ) {}
 
   async onApplicationShutdown(): Promise<void> {
     await this.handle.close();
     await this.worker?.close();
+    await this.lock?.close();
   }
 }
 
@@ -58,22 +73,44 @@ class DbLifecycle implements OnApplicationShutdown {
      * jobs: reading the queue and answering "is anything stuck" needs the
      * cross-tenant role even in a process that never claims a job.
      *
-     * Small on purpose. The runner claims with one statement and does the
-     * work on the application connection; everything else here is a poll.
+     * The runner claims with one statement and does the work on the
+     * application connection; most of what runs here is a poll. But each
+     * live sweep now reserves ONE connection to hold its session-level
+     * advisory lock (see `withAdvisoryLock`) while its body reads on other
+     * connections from this same pool, and several sweeps share the hourly
+     * clock. Sized above that concurrency so the leader-elected passes run
+     * in parallel instead of queueing on `reserve()`; still small enough to
+     * stay well within a managed Postgres connection budget per replica.
      */
     {
       provide: WORKER_DB_HANDLE,
       inject: [CONFIG],
       useFactory: (config: ApiConfig): DbHandle | null =>
-        config.workerDatabaseUrl ? createDb(config.workerDatabaseUrl, { max: 3 }) : null,
+        config.workerDatabaseUrl ? createDb(config.workerDatabaseUrl, { max: 8 }) : null,
     },
     {
       provide: WORKER_DB,
       inject: [WORKER_DB_HANDLE],
       useFactory: (handle: DbHandle | null): Db | null => handle?.db ?? null,
     },
+    {
+      /**
+       * A small pool: it only ever holds sweep locks, one connection per
+       * concurrently-running sweep, and there are a handful of sweeps. Kept
+       * off the working pool so a lock can never starve the query it guards.
+       */
+      provide: WORKER_LOCK_HANDLE,
+      inject: [CONFIG],
+      useFactory: (config: ApiConfig): LockHandle | null =>
+        config.workerDatabaseUrl ? createLockClient(config.workerDatabaseUrl, 4) : null,
+    },
+    {
+      provide: WORKER_LOCK,
+      inject: [WORKER_LOCK_HANDLE],
+      useFactory: (handle: LockHandle | null): LockClient | null => handle?.client ?? null,
+    },
     DbLifecycle,
   ],
-  exports: [CONFIG, DB, WORKER_DB],
+  exports: [CONFIG, DB, WORKER_DB, WORKER_LOCK],
 })
 export class DbModule {}

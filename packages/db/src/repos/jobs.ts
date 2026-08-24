@@ -8,7 +8,13 @@
  * happens under the same policy as the work it completes.
  */
 import { and, eq, sql } from 'drizzle-orm';
-import type { Db, TenantDb } from '../client.js';
+import {
+  LOCK_CLASS,
+  withAdvisoryLock,
+  type Db,
+  type LockClient,
+  type TenantDb,
+} from '../client.js';
 import { jobs } from '../schema/ops.js';
 
 export type Queryable = Db | TenantDb;
@@ -80,15 +86,21 @@ export async function enqueue(q: Queryable, input: EnqueueInput): Promise<{ id: 
  * up: the lock dies with the transaction.
  */
 export async function runExclusively(
-  db: Db,
+  lock: LockClient,
   name: string,
   work: () => Promise<unknown>,
 ): Promise<void> {
-  await db.transaction(async (tx) => {
-    const rows = await tx.execute<{ locked: boolean }>(
-      sql`SELECT pg_try_advisory_xact_lock(hashtext(${`sweep:${name}`})) AS locked`,
-    );
-    if (![...rows][0]?.locked) return;
+  /**
+   * Session-level lock on the DEDICATED lock pool, NOT a transaction wrapping
+   * the whole body. The old shape held one working-pool connection idle inside
+   * a transaction for the entire sweep while the sweep's own queries fought for
+   * the remaining connections; four hourly sweeps firing in one tick against a
+   * three-connection worker pool deadlocked silently about an hour after boot.
+   * `withAdvisoryLock` keeps the lock on its own pool, so it never competes
+   * with the work. The `sweep` class id keeps these keys from colliding with
+   * the per-business locks below.
+   */
+  await withAdvisoryLock(lock, LOCK_CLASS.sweep, `sweep:${name}`, async () => {
     await work();
   });
 }
@@ -118,7 +130,9 @@ export async function serializeBusiness(
   businessId: string,
   scope: string,
 ): Promise<void> {
-  await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`${businessId}:${scope}`}))`);
+  await tx.execute(
+    sql`SELECT pg_advisory_xact_lock(${LOCK_CLASS.business}, hashtext(${`${businessId}:${scope}`}))`,
+  );
 }
 
 /**
