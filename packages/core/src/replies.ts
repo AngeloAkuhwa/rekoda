@@ -1031,3 +1031,18 @@ export function stockSaved(name: string, delta: number, onHand: number): Reply {
   const left = onHand === 0 ? `You have none left.` : `You now have ${onHand}.`;
   return reply(`${moved} ${left}`);
 }
+
+/**
+ * The graduation nudge (ADR 0019, fix-plan 6 M5d): sent ONCE, when lifetime
+ * collections cross the pre-cap threshold. Framed as the success it is, with
+ * the cap stated plainly and the next step named, because the alternative is
+ * a merchant discovering the cap by having a customer's transfer refused.
+ */
+export function graduationNudge(collectedK: number, capK: number): Reply {
+  return reply(
+    `Milestone 🎉 Your shop has now collected ${formatKobo(collectedK)} by bank transfer.\n\n` +
+      `One thing to plan for: Paystack Starter accounts stop collecting at ${formatKobo(capK)} lifetime. ` +
+      `Registering your business with CAC removes that cap, and Paystack can help with the registration itself.\n\n` +
+      `Nothing changes today. This is just early notice so it never interrupts a sale.`,
+  );
+}

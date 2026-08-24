@@ -113,6 +113,15 @@ export function mintReference(prefix: string, at: Date, random: RandomBytes): st
 
 export const PAYMENT_REFERENCE_PATTERN = /^RKD-PAY-\d{8}-[0-9A-HJKMNP-TV-Z]{6}$/;
 
+/**
+ * The graduation gate (ADR 0019, fix-plan 6 M5d). A Paystack Starter
+ * account carries a N2,000,000 LIFETIME collection cap; crossing N1,500,000
+ * is the moment to say so, while there is still room to register before
+ * collections stop mid-sale. Kobo, like every other amount.
+ */
+export const GRADUATION_NUDGE_K = 150_000_000;
+export const STARTER_CAP_K = 200_000_000;
+
 /* ── judging a provider's claim (payments-v1 §21) ─────────────────────────── */
 
 export interface ExpectedPayment {

@@ -13,13 +13,23 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { randomBytes, randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import {
+  paymentConnectionResponse,
   payWithTransferResponse,
   publicOrderResponse,
   reportsInvoicesResponse,
   transferStatusResponse,
 } from '@rekoda/contracts';
 import { PAYMENT_REFERENCE_PATTERN } from '@rekoda/core';
-import { createDb, issueRepo, settleRepo, stockRepo, withBusiness, type Db } from '@rekoda/db';
+import {
+  createDb,
+  issueRepo,
+  jobsRepo,
+  paymentsHub,
+  settleRepo,
+  stockRepo,
+  withBusiness,
+  type Db,
+} from '@rekoda/db';
 import {
   lapseTransferIntents,
   migrate,
@@ -78,6 +88,9 @@ beforeAll(async () => {
   process.env['MATCH_KEY'] = randomBytes(32).toString('hex');
   process.env['CONNECTION_KEY'] = randomBytes(32).toString('hex');
   process.env['PAYSTACK_BASE_URL'] = `http://127.0.0.1:${address.port}`;
+  /* The graduation view is cross-tenant and operator-gated (M5d). */
+  process.env['WORKER_DATABASE_URL'] = urls.worker;
+  process.env['REKODA_OPERATOR_SECRET'] = `operator-${randomBytes(24).toString('hex')}`;
   process.env['REKODA_REVEAL_OTP'] = '1';
   process.env['REKODA_RATE_LIMIT_MAX'] = '100000';
   delete process.env['NODE_ENV'];
@@ -94,6 +107,8 @@ afterAll(async () => {
   await new Promise((resolve) => paystack.close(resolve));
   delete process.env['CONNECTION_KEY'];
   delete process.env['PAYSTACK_BASE_URL'];
+  delete process.env['WORKER_DATABASE_URL'];
+  delete process.env['REKODA_OPERATOR_SECRET'];
 });
 
 beforeEach(async () => {
@@ -149,7 +164,9 @@ function verifiedSuccess(reference: string, amountK: number) {
     body: {
       status: true,
       data: {
-        id: 424_242,
+        /* Unique per transaction, as Paystack's real ids are: provider_ref
+         * carries a per-business unique index and the test pays twice. */
+        id: `tx-${reference}`,
         status: 'success',
         reference,
         amount: amountK,
@@ -190,7 +207,7 @@ async function onboard(phone: string) {
 }
 
 /** A published shop with one priced product and, optionally, a merchant key. */
-async function openShop(phone: string, slug: string, withKey = true) {
+async function openShop(phone: string, slug: string, withKey = true, priceK = 850_000) {
   const { businessId, auth } = await onboard(phone);
   const productId = await withBusiness(db, businessId, async (tx) => {
     const product = await stockRepo.findOrCreateProduct(tx, businessId, 'Ankara bale');
@@ -204,7 +221,7 @@ async function openShop(phone: string, slug: string, withKey = true) {
     });
     return product.id;
   });
-  await post('/v1/catalogue/product', { id: productId, unitPriceK: 850_000 }, auth);
+  await post('/v1/catalogue/product', { id: productId, unitPriceK: priceK }, auth);
   expect(
     (
       await post(
@@ -325,6 +342,70 @@ describe('paying a storefront order by transfer (fix-plan 6, M5c)', () => {
     expect(
       payWithTransferResponse.parse((await askTransfer('ada-strays', randomUUID())).json()),
     ).toEqual({ outcome: 'order_gone' });
+  });
+
+  it('crossing the graduation threshold nudges the merchant once, and the operator sees it', async () => {
+    /* Two bales of N800,000: one order carries lifetime collections past the
+     * N1.5M nudge line, and a second past the N2M Starter cap itself. */
+    const { businessId, auth, productId } = await openShop(
+      '+2348199300005',
+      'ada-milestone',
+      true,
+      80_000_000,
+    );
+    verifyAnswer = (reference) => verifiedSuccess(reference, 160_000_000);
+
+    const firstRef = await placeOrder('ada-milestone', productId);
+    expect((await askTransfer('ada-milestone', firstRef)).statusCode).toBe(200);
+    expect(
+      transferStatusResponse.parse((await askStatus('ada-milestone', firstRef)).json()),
+    ).toMatchObject({ state: 'paid' });
+
+    /* The card now carries the figure the cap measures, and the one-time
+     * nudge is claimed and queued in the same transaction that booked. */
+    const connection = paymentConnectionResponse.parse(
+      (await app.inject({ method: 'GET', url: '/v1/payments/connection', headers: auth })).json(),
+    );
+    expect(connection.collectedToDateK).toBe(160_000_000);
+    const nudged = await withBusiness(db, businessId, async (tx) => ({
+      queued: await jobsRepo.hasJobForSingleton(
+        tx,
+        businessId,
+        'graduation.nudge',
+        `graduation:${businessId}`,
+      ),
+      row: await paymentsHub.connectionFor(tx, businessId, 'paystack'),
+      claimAgain: await paymentsHub.claimGraduationNudge(tx, businessId, 'paystack'),
+    }));
+    expect(nudged.queued).toBe(true);
+    expect(nudged.row?.graduationNudgedAt).not.toBeNull();
+    /* Already claimed: a second crossing can never mint a second milestone. */
+    expect(nudged.claimAgain).toBe(false);
+
+    /* A second big sale books normally and nudges nobody twice. */
+    const secondRef = await placeOrder('ada-milestone', productId);
+    expect((await askTransfer('ada-milestone', secondRef)).statusCode).toBe(200);
+    expect(
+      transferStatusResponse.parse((await askStatus('ada-milestone', secondRef)).json()),
+    ).toMatchObject({ state: 'paid' });
+
+    /* The operator's graduation view: id, lifetime figure, and the state
+     * that says a human should be ready to help with registration. */
+    const report = (
+      await app.inject({
+        method: 'GET',
+        url: '/v1/ops/graduation',
+        headers: { 'x-rekoda-operator-secret': process.env['REKODA_OPERATOR_SECRET']! },
+      })
+    ).json() as {
+      capK: number;
+      businesses: Array<{ businessId: string; collectedK: number; state: string }>;
+    };
+    const mine = report.businesses.find((b) => b.businessId === businessId);
+    expect(mine).toMatchObject({ collectedK: 320_000_000, state: 'capped_risk' });
+
+    /* And never without the secret. */
+    expect((await app.inject({ method: 'GET', url: '/v1/ops/graduation' })).statusCode).toBe(403);
   });
 
   it('a lapsed number leaves the invoice open, and the next ask mints a fresh one', async () => {

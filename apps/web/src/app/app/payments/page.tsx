@@ -1,4 +1,5 @@
 import type { Metadata } from 'next';
+import { formatKobo, GRADUATION_NUDGE_K, STARTER_CAP_K } from '@rekoda/core';
 import { isOwner } from '@/lib/permissions';
 import { MoneyBadge } from '@/components/ui/MoneyBadge';
 import { Money } from '@/components/ui/Money';
@@ -111,6 +112,24 @@ export default async function PaymentsPage() {
             Paystack account and settle to your own bank; Rekoda reads what happened and keeps the
             books. Paste a new key any time to replace it.
           </p>
+          {connection.collectedToDateK !== null && connection.collectedToDateK > 0 ? (
+            <p className="rk-fineprint">
+              Collected through your shop so far: <Money kobo={connection.collectedToDateK} />.
+            </p>
+          ) : null}
+          {connection.collectedToDateK !== null &&
+          connection.collectedToDateK >= GRADUATION_NUDGE_K ? (
+            /* ADR 0019: the cap is a graduation gate, and this card is where
+               it must never be a surprise. Shown from the nudge threshold on,
+               every visit, because a WhatsApp message scrolls away. */
+            <p className="rk-fineprint" role="status">
+              Worth planning for: Paystack Starter accounts stop collecting at{' '}
+              {formatKobo(STARTER_CAP_K)} lifetime, and you have collected{' '}
+              {formatKobo(connection.collectedToDateK)}. Registering your business with CAC removes
+              the cap; Paystack can help with the registration itself, and your records here make
+              the paperwork easier.
+            </p>
+          ) : null}
           {isOwner(identity.role) ? (
             <details className="rk-void">
               <summary>Replace the key</summary>

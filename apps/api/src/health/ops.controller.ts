@@ -21,6 +21,7 @@ import {
   events,
   jobsRepo,
   marginRepo,
+  settleRepo,
   subscriptionsRepo,
   withBusiness,
   type Db,
@@ -28,8 +29,10 @@ import {
 import {
   estateCount,
   estateMargin,
+  GRADUATION_NUDGE_K,
   margin,
   payingCount,
+  STARTER_CAP_K,
   usagePeriod,
   type Margin,
 } from '@rekoda/core';
@@ -111,6 +114,50 @@ export class OpsController {
    * quietly wrong: it would keep looking plausible the whole time it was
    * shrinking.
    */
+  /**
+   * Who is approaching Paystack's Starter cap (ADR 0019, fix-plan 6 M5d).
+   *
+   * The graduation table made this a day-one requirement: "a merchant who
+   * discovers the cap by having collections stop mid-sale is a merchant
+   * Rekoda failed". Lifetime VERIFIED collections per business, ids and
+   * amounts only, with the two thresholds stated so the operator reading it
+   * does not have to remember them. `approaching_cap` is the alert: it means
+   * the one-time WhatsApp nudge has fired (or is about to on the next
+   * booking) and a human should be ready to help with registration.
+   */
+  @Get('graduation')
+  async graduation(@Headers('x-rekoda-operator-secret') secret: string | undefined): Promise<{
+    nudgeAtK: number;
+    capK: number;
+    businesses: Array<{
+      businessId: string;
+      collectedK: number;
+      state: 'collecting' | 'approaching_cap' | 'capped_risk';
+    }>;
+  }> {
+    this.assertOperator(secret);
+    if (!this.workerDb) {
+      throw new ServiceUnavailableException(
+        'graduation needs the worker credential (WORKER_DATABASE_URL); poll a process that holds one',
+      );
+    }
+    const rows = await settleRepo.collectedByBusiness(this.workerDb);
+    return {
+      nudgeAtK: GRADUATION_NUDGE_K,
+      capK: STARTER_CAP_K,
+      businesses: rows.map((row) => ({
+        businessId: row.businessId,
+        collectedK: row.collectedK,
+        state:
+          row.collectedK >= STARTER_CAP_K
+            ? ('capped_risk' as const)
+            : row.collectedK >= GRADUATION_NUDGE_K
+              ? ('approaching_cap' as const)
+              : ('collecting' as const),
+      })),
+    };
+  }
+
   @Get('margin')
   async marginReport(
     @Headers('x-rekoda-operator-secret') secret: string | undefined,

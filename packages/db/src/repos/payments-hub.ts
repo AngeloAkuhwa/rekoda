@@ -43,6 +43,8 @@ export interface ConnectionRow {
   keyMode: string;
   /** "key ending 4821" for the card. The key itself never leaves the vault. */
   merchantKeyTail: string | null;
+  /** When the one-time approaching-the-cap nudge went out (M5d). */
+  graduationNudgedAt: Date | null;
 }
 
 /**
@@ -90,6 +92,7 @@ export async function upsertConnection(
       feePolicy: paymentConnections.feePolicy,
       keyMode: paymentConnections.keyMode,
       merchantKeyTail: paymentConnections.merchantKeyTail,
+      graduationNudgedAt: paymentConnections.graduationNudgedAt,
     });
 
   const row = rows[0];
@@ -115,6 +118,7 @@ export async function connectionFor(
       feePolicy: paymentConnections.feePolicy,
       keyMode: paymentConnections.keyMode,
       merchantKeyTail: paymentConnections.merchantKeyTail,
+      graduationNudgedAt: paymentConnections.graduationNudgedAt,
     })
     .from(paymentConnections)
     .where(
@@ -590,4 +594,29 @@ export async function liveTransferIntents(
     )
     .orderBy(paymentIntents.createdAt)
     .limit(limit);
+}
+
+/**
+ * Claim the one-time graduation nudge (ADR 0019, fix-plan 6 M5d). The NULL
+ * predicate makes the database pick one winner, exactly like draft claims:
+ * two payments crossing the threshold in the same minute produce one
+ * message, not two.
+ */
+export async function claimGraduationNudge(
+  tx: TenantDb,
+  businessId: string,
+  providerType: string,
+): Promise<boolean> {
+  const rows = await tx
+    .update(paymentConnections)
+    .set({ graduationNudgedAt: new Date(), updatedAt: new Date() })
+    .where(
+      and(
+        eq(paymentConnections.businessId, businessId),
+        eq(paymentConnections.providerType, providerType),
+        sql`${paymentConnections.graduationNudgedAt} IS NULL`,
+      ),
+    )
+    .returning({ id: paymentConnections.id });
+  return rows.length === 1;
 }
