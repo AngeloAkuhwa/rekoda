@@ -294,20 +294,23 @@ function isReceiptPhoto(inbound: { messageType: string; imageId: string | null }
 }
 
 /**
- * A photograph, turned into text by our own OCR, or an honest answer.
+ * A photograph, turned into text by the configured reader, or an honest answer.
  *
  * Returns null when there is nothing to interpret, having already replied:
  * somebody who photographed a receipt is holding their phone waiting.
  *
- * THE IMAGE IS NEVER STORED and never leaves infrastructure we control. ADR
- * 0024 fixed the pipeline - photo, self-hosted OCR, PII tokenisation, then a
- * model - because the privacy gateway tokenises TEXT and cannot tokenise an
- * image. A photograph handed to a model provider carries a customer's name,
- * phone and address intact.
+ * THE IMAGE IS NEVER STORED. ADR 0024 fixed the pipeline - photo, text
+ * extraction, PII tokenisation, then a reasoning model - and ADR 0027 chose
+ * which engine performs the extraction step at launch: the vision model as
+ * a transcription-only processor, named on /ai-privacy, with the OCR
+ * sidecar one env var away. Either way the REASONING model only ever sees
+ * tokenised text, because the gateway tokenises text and cannot tokenise an
+ * image.
  *
- * There is no branch below that sends the image anywhere when extraction
- * fails. That is the whole design, and it is why the failure path answers
- * with a sentence rather than a second attempt somewhere else.
+ * There is no branch below that retries the image somewhere else when the
+ * configured engine fails. That is the whole design, and it is why the
+ * failure path answers with a sentence rather than a second attempt at an
+ * engine the privacy page never named.
  */
 async function readReceiptPhoto(
   deps: InboundMessageDeps,
@@ -397,11 +400,12 @@ async function readReceiptPhoto(
  * sentence. Somebody who recorded a voice note is holding their phone
  * waiting.
  *
- * THE AUDIO IS NEVER STORED. It is fetched, passed to the sidecar, and left
- * to the garbage collector. A merchant's voice is the most identifying thing
- * they can send us, "audio never leaves Rekoda" is a promise we make out
- * loud, and the only way that stays true is if there is nowhere for it to
- * leave from.
+ * THE AUDIO IS NEVER STORED. It is fetched, passed to the configured
+ * transcriber, and left to the garbage collector. A merchant's voice is the
+ * most identifying thing they can send us; ADR 0027 names the launch
+ * transcriber (a hosted processor, on /ai-privacy in those words) and keeps
+ * the sidecar one env var away, and the transcript walks the same gateway
+ * every typed sentence walks before any reasoning model sees it.
  */
 async function transcribeVoiceNote(
   deps: InboundMessageDeps,

@@ -112,7 +112,7 @@ receipts, PDF reports and Excel exports.
                           ▼
                    BUSINESS EVENT
                           ▼
-                  PRIVACY GATEWAY        ← PII tokenised; audio never leaves Rekoda
+                  PRIVACY GATEWAY        ← PII tokenised; senses per ADR 0027
                           ▼
              DETERMINISTIC FINANCIAL CORE ← AI never computes money
                           ▼
@@ -255,9 +255,11 @@ Four layers, strongest first:
    leaves Rekoda.
 
 _The honesty constraint:_ detecting that "Ada" is a person _is itself a language task_.
-Public copy says **"identities are tokenised and audio never leaves our infrastructure; AI
-providers receive minimised, pseudonymised context under no-training terms"** — never
-"AI never sees any name."
+Public copy says what ADR 0027 amended it to: **"identities are tokenised; voice notes and
+receipt photos go only to the processors named on /ai-privacy, under no-training API terms,
+solely to become text, which is tokenised before any reasoning model sees it"** — never
+"AI never sees any name." The stronger "audio never leaves our infrastructure" sentence
+returns only when a deployment actually runs the sidecars.
 
 ## ADR 0006 — Hosting: Hetzner + Cloudflare + R2 (no Azure) · **Accepted**
 
@@ -1435,6 +1437,8 @@ Rekoda needs the amount and a name close enough to fuzzy-match, and CG2 shows a
 preview before anything is issued.
 
 - Self-hosted acceptable → ship it and the _"audio never leaves Rekoda"_ claim goes live.
+  (Per ADR 0027, launch runs hosted transcription; this gate now governs the LATER
+  sidecar upgrade, not launch.)
 - Not acceptable → enable `STT_FALLBACK=openai` **and update the privacy copy honestly**
   while tuning. Never let marketing outrun the implementation.
 

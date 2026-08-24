@@ -263,14 +263,15 @@ export function addOnPack(id: string): AddOnPack | null {
  * cannot take money for something a merchant cannot use.
  *
  * Beyond that, a Chat merchant cannot buy Integrate orders, because Chat does
- * not capture catalogue orders at all. Voice is the same in reverse for
- * Integrate, which has no voice bookkeeping.
+ * not capture catalogue orders at all. Voice packs sell to every paid plan:
+ * since the ladder fix every paid plan carries a voice allowance, and a
+ * merchant with an allowance to exhaust must have the overage path that
+ * goes with it.
  */
 export function packsFor(plan: string): AddOnPack[] {
   if ((PLAN_PRICES_K[plan as PlanId] ?? 0) === 0) return [];
   return ADD_ON_PACKS.filter((pack) => {
     if (pack.unit === 'orders') return plan === 'integrate' || plan === 'complete';
-    if (pack.unit === 'voice_seconds') return plan === 'chat' || plan === 'complete';
     return true;
   });
 }
