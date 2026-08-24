@@ -16,7 +16,9 @@ import {
   createDb,
   events as eventsRepo,
   identity,
+  issueRepo,
   jobsRepo,
+  ordersRepo,
   schema,
   withBusiness,
   type Db,
@@ -651,5 +653,68 @@ describe('inbound messages for one business never overlap across lanes', () => {
       tx.select().from(schema.commandDrafts),
     );
     expect(drafts.every((d) => d.state !== 'pending')).toBe(true);
+  });
+});
+
+describe('a quote becomes paper', () => {
+  beforeEach(() => stubSender.reset());
+
+  /**
+   * The gap this closes: invoices and receipts rendered from the day they
+   * shipped, quotes never did — the one document whose whole job is being
+   * forwarded to somebody deciding whether to buy.
+   */
+  it('renders the quote PDF, records the document, and delivers it', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348177000501');
+    const quote = await withBusiness(appDb, businessId, (tx) =>
+      ordersRepo.createQuote(tx, {
+        businessId,
+        customerId: null,
+        lines: [
+          {
+            productId: null,
+            name: 'Ankara bale',
+            quantity: 2,
+            unitPriceK: 850_000,
+            lineTotalK: 1_700_000,
+          },
+        ],
+        totalK: 1_700_000,
+        validUntil: '2026-09-30',
+        clientRef: null,
+        sourceId: 'test',
+      }),
+    );
+    /* The payload the controller enqueues: the id, and the label the PDF
+     * prints — a token, never a name, exactly like the invoice's snapshot. */
+    await enqueue(businessId, 'document.render', {
+      quoteId: quote.id,
+      customerToken: 'CUSTOMER_7K2',
+    });
+
+    const runner = buildRunner(workerDb, appDb, deps);
+    expect(await runner.runOnce()).toBe(true); // render
+
+    const docs = await withBusiness(appDb, businessId, (tx) =>
+      issueRepo.documentsFor(tx, businessId),
+    );
+    expect(docs).toHaveLength(1);
+    expect(docs[0]).toMatchObject({ kind: 'quote_pdf', refNumber: quote.orderNumber });
+
+    expect(await runner.runOnce()).toBe(true); // deliver
+    const delivered = stubSender.documents[stubSender.documents.length - 1];
+    expect(delivered?.filename).toBe(`${quote.orderNumber}.pdf`);
+    /* Real bytes, really a PDF — not a row pointing at nothing. */
+    expect(delivered?.bytes.subarray(0, 5).toString()).toBe('%PDF-');
+  });
+
+  it('an unknown quote id retires quietly instead of poisoning the queue', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348177000502');
+    await enqueue(businessId, 'document.render', {
+      quoteId: '00000000-0000-4000-8000-000000000000',
+    });
+    const runner = buildRunner(workerDb, appDb, deps);
+    expect(await runner.runOnce()).toBe(true);
+    expect(stubSender.documents).toHaveLength(0);
   });
 });

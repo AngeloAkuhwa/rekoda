@@ -1,7 +1,15 @@
 import { Logger } from '@nestjs/common';
-import type { InvoiceDocument, ReceiptDocument } from '@rekoda/core';
-import { identity, issueRepo, jobsRepo, settleRepo, type Db, type TenantDb } from '@rekoda/db';
-import { renderInvoicePdf, renderReceiptPdf } from '../documents/pdf.js';
+import type { InvoiceDocument, QuoteDocument, ReceiptDocument } from '@rekoda/core';
+import {
+  identity,
+  issueRepo,
+  jobsRepo,
+  ordersRepo,
+  settleRepo,
+  type Db,
+  type TenantDb,
+} from '@rekoda/db';
+import { renderInvoicePdf, renderQuotePdf, renderReceiptPdf } from '../documents/pdf.js';
 import { documentKey, type DocumentStorage } from '../documents/storage.js';
 import type { JobContext, JobHandler } from './runner.js';
 
@@ -36,6 +44,9 @@ export function renderDocumentHandler(deps: RenderDocumentDeps): JobHandler {
   return async ({ tx, payload, businessId }: JobContext): Promise<void> => {
     const receiptId = typeof payload['receiptId'] === 'string' ? payload['receiptId'] : null;
     if (receiptId) return renderReceipt(deps, log, tx, businessId, receiptId);
+
+    const quoteId = typeof payload['quoteId'] === 'string' ? payload['quoteId'] : null;
+    if (quoteId) return renderQuote(deps, log, tx, businessId, quoteId, payload);
 
     const invoiceId = typeof payload['invoiceId'] === 'string' ? payload['invoiceId'] : null;
     if (!invoiceId) throw new Error('document.render: payload names no invoiceId or receiptId');
@@ -163,4 +174,59 @@ async function renderReceipt(
   });
 
   log.debug(`rendered ${receipt.receiptNumber} (${stored.bytes} bytes)`);
+}
+
+/**
+ * The quote path. Quotes carry no snapshot — the rows are immutable once
+ * created, so they ARE the record — and no customer column carries a token,
+ * so the label travels in the job payload from the transaction that had it.
+ * Otherwise field for field the invoice path: store, record, deliver.
+ */
+async function renderQuote(
+  deps: RenderDocumentDeps,
+  log: Logger,
+  tx: TenantDb,
+  businessId: string,
+  quoteId: string,
+  payload: Record<string, unknown>,
+): Promise<void> {
+  const quote = await ordersRepo.quoteForRender(tx, businessId, quoteId);
+  if (!quote) {
+    log.warn('document.render: no quote for this tenant');
+    return;
+  }
+
+  const business = await identity.businessById(deps.db, businessId);
+  const doc: QuoteDocument = {
+    documentNumber: quote.quoteNumber,
+    issuedAt: quote.createdAt,
+    businessName: business?.name ?? 'Rekoda',
+    customerLabel: typeof payload['customerToken'] === 'string' ? payload['customerToken'] : null,
+    items: quote.lines,
+    totalK: quote.totalK,
+    validUntil: quote.validUntil ? new Date(quote.validUntil) : null,
+  };
+
+  const bytes = await renderQuotePdf(doc);
+
+  // Stored before recorded — same order, same reasoning as the invoice path.
+  const key = documentKey(businessId, 'quote_pdf');
+  const stored = await deps.storage.put(key, bytes, 'application/pdf');
+
+  const record = await issueRepo.recordDocument(tx, {
+    businessId,
+    kind: 'quote_pdf',
+    storageKey: stored.key,
+    refNumber: quote.quoteNumber,
+    bytes: stored.bytes,
+  });
+
+  await jobsRepo.enqueue(tx, {
+    businessId,
+    kind: 'document.deliver',
+    payload: { documentId: record.id },
+    singletonKey: `deliver:${record.id}`,
+  });
+
+  log.debug(`rendered ${quote.quoteNumber} (${stored.bytes} bytes)`);
 }

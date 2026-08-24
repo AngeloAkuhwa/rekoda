@@ -675,9 +675,13 @@ export class ReportsController {
     }
     const businessId = request.auth!.businessId;
 
-    const customerId = parsed.data.customerName
-      ? (await this.gateway.resolveMention(businessId, parsed.data.customerName)).customerId
+    /* Token AND id: the id anchors the quote row, the token becomes the
+     * "Prepared for" line on the PDF — the same non-identity label invoices
+     * print, carried in the render payload because quotes keep no snapshot. */
+    const mention = parsed.data.customerName
+      ? await this.gateway.resolveMention(businessId, parsed.data.customerName)
       : null;
+    const customerId = mention?.customerId ?? null;
 
     const lines = parsed.data.items.map((item) => ({
       productId: null,
@@ -689,8 +693,8 @@ export class ReportsController {
     const totalK = lines.reduce((n, line) => n + line.lineTotalK, 0);
 
     try {
-      const created = await withBusiness(this.db, businessId, (tx) =>
-        ordersRepo.createQuote(tx, {
+      const created = await withBusiness(this.db, businessId, async (tx) => {
+        const quote = await ordersRepo.createQuote(tx, {
           businessId,
           customerId,
           lines,
@@ -698,8 +702,19 @@ export class ReportsController {
           validUntil: parsed.data.validUntil ?? null,
           clientRef: parsed.data.clientRef ?? null,
           sourceId: `user:${request.auth!.userId}`,
-        }),
-      );
+        });
+        /* The paper, on the same render → deliver chain invoices ride, and
+         * enqueued INSIDE this transaction so a quote and "someone will send
+         * its PDF" are one fact. Free like the quote itself: an offer costs
+         * no document unit (ADR 0024). */
+        await jobsRepo.enqueue(tx, {
+          businessId,
+          kind: 'document.render',
+          payload: { quoteId: quote.id, ...(mention ? { customerToken: mention.token } : {}) },
+          singletonKey: `render:quote:${quote.id}`,
+        });
+        return quote;
+      });
       return {
         outcome: 'created',
         quoteNumber: created.orderNumber,
