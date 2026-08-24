@@ -556,3 +556,95 @@ describe('the polling loop with lanes', () => {
     expect(peak).toBe(2);
   });
 });
+
+describe('inbound messages for one business never overlap across lanes', () => {
+  /**
+   * The per-business advisory lock is what keeps the pending-draft
+   * read-then-write single-runner. Two messages enqueued together — a sale
+   * mention that creates a draft, then "yes" — must serialize so the second
+   * sees the first's committed draft and confirms it, even with two lanes.
+   * Without the lock the "yes" can run first and find nothing to confirm.
+   */
+  it('processes a draft then its confirmation in order under two lanes', async () => {
+    const businessId = await seedBusiness('Lane Order Ltd', '+2348140040001');
+    const waId = '2348140040001';
+
+    function bodyFor(externalId: string, text: string) {
+      return {
+        object: 'whatsapp_business_account',
+        entry: [
+          {
+            id: 'WABA',
+            changes: [
+              {
+                field: 'messages',
+                value: {
+                  messaging_product: 'whatsapp',
+                  metadata: { display_phone_number: '15550001', phone_number_id: 'PNID' },
+                  contacts: [{ profile: { name: 'X' }, wa_id: waId }],
+                  messages: [
+                    {
+                      id: externalId,
+                      from: waId,
+                      timestamp: '1700000000',
+                      type: 'text',
+                      text: { body: text },
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        ],
+      };
+    }
+
+    stubTransport.replyWith({
+      intent: 'RecordExpense',
+      description: 'fuel',
+      amount: 5_000,
+      category: 'transport',
+      paymentMethod: 'cash',
+    });
+
+    const first = await eventsRepo.recordEvent(appDb, {
+      provider: 'meta',
+      eventType: 'message.text',
+      externalId: 'wamid.order1',
+      payload: sealPayload(bodyFor('wamid.order1', 'spent 5k on fuel'), config.vaultKey),
+      businessId,
+    });
+    const second = await eventsRepo.recordEvent(appDb, {
+      provider: 'meta',
+      eventType: 'message.text',
+      externalId: 'wamid.order2',
+      payload: sealPayload(bodyFor('wamid.order2', 'yes'), config.vaultKey),
+      businessId,
+    });
+    await enqueue(businessId, 'inbound.message', { eventId: first.id });
+    await enqueue(businessId, 'inbound.message', { eventId: second.id });
+
+    // Two lanes, both draining; the lock is what keeps them in order.
+    const runner = buildRunner(workerDb, appDb, deps, { idleMs: 20, concurrency: 2 });
+    runner.start();
+    const deadline = Date.now() + 8_000;
+    for (;;) {
+      const jobs = await jobsOf(businessId);
+      if (jobs.length >= 2 && jobs.every((j) => j.state === 'done' || j.state === 'dead')) break;
+      if (Date.now() > deadline) throw new Error('timed out waiting for both inbound jobs');
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    await runner.stop();
+
+    // The "yes" confirmed the expense the first message drafted: exactly one
+    // expense recorded, and no draft left pending.
+    const expenses = await withBusiness(appDb, businessId, (tx) =>
+      tx.select().from(schema.expenses),
+    );
+    expect(expenses).toHaveLength(1);
+    const drafts = await withBusiness(appDb, businessId, (tx) =>
+      tx.select().from(schema.commandDrafts),
+    );
+    expect(drafts.every((d) => d.state !== 'pending')).toBe(true);
+  });
+});

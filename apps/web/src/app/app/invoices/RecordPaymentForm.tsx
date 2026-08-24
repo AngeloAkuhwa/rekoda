@@ -1,6 +1,6 @@
 'use client';
 
-import { useActionState, useState } from 'react';
+import { useActionState, useEffect, useMemo, useState } from 'react';
 import { formatKobo } from '@rekoda/core';
 import { Button } from '@/components/ui/Button';
 import { Field } from '@/components/ui/Field';
@@ -27,10 +27,23 @@ export interface PayableInvoice {
 export function RecordPaymentForm({ invoices }: { invoices: PayableInvoice[] }) {
   const [state, action, pending] = useActionState<VoidFormState, FormData>(recordPaymentAction, {});
   const [chosen, setChosen] = useState(invoices[0]?.invoiceNumber ?? '');
-  /* Minted once per mounted form. A resubmission of THIS form (a dropped
-   * response, an impatient second press) carries the same key and the server
-   * books nothing twice; a freshly rendered form is a fresh intention. */
-  const [clientRef] = useState(() => crypto.randomUUID());
+  /**
+   * One key per PAYMENT, not per mounted form.
+   *
+   * A resubmission of the same payment (a dropped response, an impatient
+   * second press) must carry the same key so the server books nothing twice.
+   * But after a payment COMMITS, the page revalidates in place without
+   * remounting, so a stable-per-mount key made the merchant's NEXT, genuine
+   * payment reuse it — the server saw the same rekoda_reference and answered
+   * "already recorded", silently dropping real cash. The key is bumped the
+   * moment a submission settles (recorded OR duplicate), so the next payment
+   * is a fresh intention; an error leaves it, so a corrected retry keeps it.
+   */
+  const [generation, setGeneration] = useState(0);
+  const clientRef = useMemo(() => crypto.randomUUID(), [generation]);
+  useEffect(() => {
+    if (state.done) setGeneration((g) => g + 1);
+  }, [state]);
   const owed = invoices.find((i) => i.invoiceNumber === chosen)?.balanceDueK ?? 0;
 
   if (invoices.length === 0) {
