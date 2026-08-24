@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { AuthService } from '../auth/auth.service.js';
 import { SessionGuard } from '../auth/session.guard.js';
 import { DbModule } from '../db/db.module.js';
+import { PrivacyGateway } from '../privacy/gateway.service.js';
 import { RepliesModule } from '../replies/replies.module.js';
 import { ReportsController } from './reports.controller.js';
 
@@ -13,6 +14,6 @@ import { ReportsController } from './reports.controller.js';
 @Module({
   imports: [DbModule, RepliesModule],
   controllers: [ReportsController],
-  providers: [AuthService, SessionGuard],
+  providers: [AuthService, SessionGuard, PrivacyGateway],
 })
 export class ReportsModule {}

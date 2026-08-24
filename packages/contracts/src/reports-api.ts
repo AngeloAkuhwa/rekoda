@@ -336,8 +336,117 @@ export const reportsInvoicesResponse = z.object({
       placedAt: z.string(),
     }),
   ),
+  /**
+   * Quotes: order-shaped OFFERS, on their own QUO counter (fix-plan 4, G3).
+   *
+   * On this response for the same reason orders are: a quote is what an
+   * invoice comes from when the merchant, not the customer, opened the
+   * conversation, and "did Ada ever take that quote" is asked while looking
+   * at this page.
+   */
+  quotesTotal: z.number().int().nonnegative(),
+  quotes: z.array(
+    z.object({
+      quoteNumber: z.string(),
+      /** quoted | confirmed | cancelled */
+      status: z.string(),
+      totalK: kobo,
+      itemCount: z.number().int().nonnegative(),
+      /** The last Lagos day the offer stands, or null for no expiry. */
+      validUntil: z.string().nullable(),
+      /** The invoice it converted into, or null while it is still an offer. */
+      invoiceNumber: z.string().nullable(),
+      createdAt: z.string(),
+    }),
+  ),
 });
 export type ReportsInvoicesResponse = z.infer<typeof reportsInvoicesResponse>;
+
+/**
+ * Creating a quote from the dashboard.
+ *
+ * Prices are INTEGER KOBO from the client, like every money figure on this
+ * surface. The customer is a NAME the merchant typed; it takes the same
+ * road a chat mention takes (vault + token), so a quote never becomes the
+ * place customer names leak around the gateway.
+ */
+export const createQuoteRequest = z.object({
+  customerName: z.string().trim().min(2).max(80).optional(),
+  items: z
+    .array(
+      z.object({
+        name: z.string().trim().min(1).max(80),
+        quantity: z.number().int().positive().max(10_000),
+        unitPriceK: z.number().int().finite().positive(),
+      }),
+    )
+    .min(1)
+    .max(20),
+  /** `YYYY-MM-DD`, the last Lagos day the offer stands. */
+  validUntil: z
+    .string()
+    .regex(/^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/, 'a day like 2026-09-30')
+    .optional(),
+  /**
+   * One-shot key the form mints when it renders. A resubmission of the same
+   * form carries the same key and creates NOTHING twice.
+   */
+  clientRef: z.string().uuid().optional(),
+});
+
+export const createQuoteResponse = z.discriminatedUnion('outcome', [
+  z.object({
+    outcome: z.literal('created'),
+    quoteNumber: z.string(),
+    totalK: kobo,
+    validUntil: z.string().nullable(),
+  }),
+  /** The same clientRef arrived twice: the first submission already created. */
+  z.object({ outcome: z.literal('duplicate') }),
+]);
+
+export const convertQuoteRequest = z.object({
+  quoteNumber: z.string().trim().min(1),
+});
+
+/**
+ * Converting is issuing the invoice the quote promised. Double-converts are
+ * impossible by construction — the status machine, not a client key, is the
+ * guard — so `already_converted` carries the invoice the first click made.
+ */
+export const convertQuoteResponse = z.discriminatedUnion('outcome', [
+  z.object({
+    outcome: z.literal('converted'),
+    quoteNumber: z.string(),
+    invoiceNumber: z.string(),
+    totalK: kobo,
+  }),
+  z.object({ outcome: z.literal('not_found') }),
+  z.object({ outcome: z.literal('already_converted'), invoiceNumber: z.string().nullable() }),
+  z.object({ outcome: z.literal('cancelled') }),
+  /** Past its own validUntil: honour it or issue a fresh quote. */
+  z.object({ outcome: z.literal('expired'), validUntil: z.string() }),
+  /** The month's document allowance is spent; nothing was issued. */
+  z.object({ outcome: z.literal('exhausted'), allowance: z.number().int().nonnegative() }),
+]);
+
+export const cancelQuoteRequest = z.object({
+  quoteNumber: z.string().trim().min(1),
+});
+
+export const cancelQuoteResponse = z.discriminatedUnion('outcome', [
+  z.object({ outcome: z.literal('cancelled') }),
+  z.object({ outcome: z.literal('not_found') }),
+  /** Converted or already withdrawn: nothing left to cancel. */
+  z.object({ outcome: z.literal('already'), status: z.string() }),
+]);
+
+export type CreateQuoteRequest = z.infer<typeof createQuoteRequest>;
+export type CreateQuoteResponse = z.infer<typeof createQuoteResponse>;
+export type ConvertQuoteRequest = z.infer<typeof convertQuoteRequest>;
+export type ConvertQuoteResponse = z.infer<typeof convertQuoteResponse>;
+export type CancelQuoteRequest = z.infer<typeof cancelQuoteRequest>;
+export type CancelQuoteResponse = z.infer<typeof cancelQuoteResponse>;
 
 export const reportsReceiptsResponse = z.object({
   receipts: z.array(

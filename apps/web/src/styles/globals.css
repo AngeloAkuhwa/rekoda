@@ -505,6 +505,37 @@ button,
   margin-top: var(--rk-space-6);
 }
 
+/* A line of related inputs (quote items: what / how many / price). One
+ * column on a phone, because three 48px inputs across 360px is how digits
+ * end up in the wrong field. */
+.rk-form-row {
+  display: grid;
+  gap: var(--rk-space-3);
+}
+@media (min-width: 640px) {
+  .rk-form-row {
+    grid-template-columns: 2fr 1fr 1fr;
+    align-items: end;
+  }
+}
+
+/* An action that reads as text ("Add another line"): a real button for the
+ * keyboard, styled as the link it visually is. */
+.rk-link-button {
+  justify-self: start;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--rk-accent);
+  font-size: var(--rk-text-sm);
+  cursor: pointer;
+  text-decoration: underline;
+}
+.rk-link-button:focus-visible {
+  outline: 2px solid var(--rk-accent);
+  outline-offset: 2px;
+}
+
 .rk-input {
   /* 44px minimum, and 16px font so iOS does not zoom the viewport on focus. */
   min-height: 48px;

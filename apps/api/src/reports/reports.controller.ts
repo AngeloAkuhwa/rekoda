@@ -40,6 +40,8 @@ interface FileReply {
   send(payload: Buffer): unknown;
 }
 import {
+  postCostOfSale,
+  allowanceFor,
   buildBalanceSheet,
   buildCashflowStatement,
   buildProfitAndLoss,
@@ -89,6 +91,12 @@ import type {
   VoidInvoiceResponse,
 } from '@rekoda/contracts';
 import {
+  type CancelQuoteResponse,
+  type ConvertQuoteResponse,
+  type CreateQuoteResponse,
+  cancelQuoteRequest,
+  convertQuoteRequest,
+  createQuoteRequest,
   createRecurringRequest,
   openingBalancesRequest,
   stockCountRequest,
@@ -111,6 +119,7 @@ import {
   voidInvoiceRequest,
 } from '@rekoda/contracts';
 import {
+  usageRepo,
   identity,
   assetsRepo,
   issueRepo,
@@ -131,6 +140,7 @@ import {
 import { SessionGuard, type AuthedRequest } from '../auth/session.guard.js';
 import { Roles, RolesGuard } from '../auth/roles.guard.js';
 import { DB } from '../db/db.module.js';
+import { PrivacyGateway } from '../privacy/gateway.service.js';
 
 const CASHFLOW_MONTHS = 6;
 const DEBTOR_ROWS = 6;
@@ -162,6 +172,11 @@ function isDuplicateOn(error: unknown, constraint: string): boolean {
   return pg?.code === '23505' && (pg.constraint_name ?? pg.constraint ?? '').includes(constraint);
 }
 
+/** The quoted->confirmed transition was already taken by a racing convert. */
+class QuoteAlreadyTaken extends Error {
+  override readonly name = 'QuoteAlreadyTaken';
+}
+
 function isDuplicateClientRef(error: unknown): boolean {
   return isDuplicateOn(error, 'payments_rekoda_reference');
 }
@@ -169,7 +184,10 @@ function isDuplicateClientRef(error: unknown): boolean {
 @Controller('v1/reports')
 @UseGuards(SessionGuard, RolesGuard)
 export class ReportsController {
-  constructor(@Inject(DB) private readonly db: Db) {}
+  constructor(
+    @Inject(DB) private readonly db: Db,
+    private readonly gateway: PrivacyGateway,
+  ) {}
 
   @Get('overview')
   async overview(@Req() request: AuthedRequest): Promise<ReportsOverviewResponse> {
@@ -565,9 +583,10 @@ export class ReportsController {
   async invoices(@Req() request: AuthedRequest): Promise<ReportsInvoicesResponse> {
     const businessId = request.auth!.businessId;
     const now = new Date();
-    const { list, orders } = await withBusiness(this.db, businessId, async (tx) => ({
+    const { list, orders, quotes } = await withBusiness(this.db, businessId, async (tx) => ({
       list: await reportsRepo.invoicesFor(tx, businessId, REGISTER_ROWS),
       orders: await ordersRepo.ordersFor(tx, businessId, REGISTER_ROWS),
+      quotes: await ordersRepo.quotesFor(tx, businessId, REGISTER_ROWS),
     }));
     return {
       invoices: list.rows.map((r) => ({
@@ -594,7 +613,231 @@ export class ReportsController {
         invoiceNumber: order.invoiceNumber,
         placedAt: order.placedAt.toISOString(),
       })),
+      quotesTotal: quotes.count,
+      quotes: quotes.rows.map((q) => ({
+        quoteNumber: q.quoteNumber,
+        status: q.status,
+        totalK: q.totalK,
+        itemCount: q.itemCount,
+        validUntil: q.validUntil,
+        invoiceNumber: q.invoiceNumber,
+        createdAt: q.createdAt.toISOString(),
+      })),
     };
+  }
+
+  /**
+   * A quote: an order-shaped OFFER the merchant sends first (fix-plan 4, G3).
+   *
+   * Nothing posts and no stock moves — an offer is not an obligation, which
+   * is why creating one costs no document unit either. The customer name,
+   * when given, takes the same road a chat mention takes (vault + token), so
+   * quotes never become the door around the privacy gateway.
+   */
+  @Post('quotes')
+  @Roles('owner', 'delegate')
+  @HttpCode(200)
+  async createQuote(
+    @Req() request: AuthedRequest,
+    @Body() body: unknown,
+  ): Promise<CreateQuoteResponse> {
+    const parsed = createQuoteRequest.safeParse(body);
+    if (!parsed.success) {
+      throw new BadRequestException('one to twenty lines, each with a name, quantity and price');
+    }
+    const businessId = request.auth!.businessId;
+
+    const customerId = parsed.data.customerName
+      ? (await this.gateway.resolveMention(businessId, parsed.data.customerName)).customerId
+      : null;
+
+    const lines = parsed.data.items.map((item) => ({
+      productId: null,
+      name: item.name,
+      quantity: item.quantity,
+      unitPriceK: item.unitPriceK,
+      lineTotalK: item.quantity * item.unitPriceK,
+    }));
+    const totalK = lines.reduce((n, line) => n + line.lineTotalK, 0);
+
+    try {
+      const created = await withBusiness(this.db, businessId, (tx) =>
+        ordersRepo.createQuote(tx, {
+          businessId,
+          customerId,
+          lines,
+          totalK,
+          validUntil: parsed.data.validUntil ?? null,
+          clientRef: parsed.data.clientRef ?? null,
+          sourceId: `user:${request.auth!.userId}`,
+        }),
+      );
+      return {
+        outcome: 'created',
+        quoteNumber: created.orderNumber,
+        totalK,
+        validUntil: parsed.data.validUntil ?? null,
+      };
+    } catch (error) {
+      if (isDuplicateOn(error, 'orders_external')) return { outcome: 'duplicate' };
+      throw error;
+    }
+  }
+
+  /**
+   * Accepting a quote is issuing the invoice it promised, on the exact path
+   * a confirmed chat order takes: invoice, stock movements, cost of goods,
+   * render, payable link. The status machine is the idempotency: a second
+   * click meets `quoted -> confirmed` already taken and is handed the
+   * invoice the first click made.
+   */
+  @Post('quotes/convert')
+  @Roles('owner', 'delegate')
+  @HttpCode(200)
+  async convertQuote(
+    @Req() request: AuthedRequest,
+    @Body() body: unknown,
+  ): Promise<ConvertQuoteResponse> {
+    const parsed = convertQuoteRequest.safeParse(body);
+    if (!parsed.success) throw new BadRequestException('the quote number');
+    const businessId = request.auth!.businessId;
+    const quoteNumber = parsed.data.quoteNumber.toUpperCase();
+
+    const quote = await withBusiness(this.db, businessId, (tx) =>
+      ordersRepo.quoteByNumber(tx, businessId, quoteNumber),
+    );
+    if (!quote || !quoteNumber.startsWith('QUO-')) return { outcome: 'not_found' };
+    if (quote.status === 'confirmed') {
+      return { outcome: 'already_converted', invoiceNumber: quote.invoiceNumber };
+    }
+    if (quote.status !== 'quoted') return { outcome: 'cancelled' };
+    if (quote.validUntil && quote.validUntil < lagosDay(new Date())) {
+      return { outcome: 'expired', validUntil: quote.validUntil };
+    }
+
+    /* The invoice costs a document unit, exactly as the chat "yes" pays it.
+     * Its own short transaction, refunded on every path that issues nothing. */
+    const period = usagePeriod(new Date());
+    const plan = await withBusiness(this.db, businessId, (tx) => usageRepo.planFor(tx, businessId));
+    const allowance = allowanceFor(plan, 'documents');
+    const granted = await withBusiness(this.db, businessId, (own) =>
+      usageRepo.consumeUnit(own, businessId, period, 'documents', allowance),
+    );
+    if (!granted) return { outcome: 'exhausted', allowance };
+
+    try {
+      return await withBusiness(this.db, businessId, async (tx) => {
+        const items = quote.lines.map((line) => ({
+          name: line.name,
+          quantity: line.quantity,
+          unitPriceK: line.unitPriceK,
+        }));
+        const issued = await issueRepo.issueSale(tx, {
+          businessId,
+          customerId: quote.customerId,
+          customerToken: null,
+          items,
+          subtotalK: quote.totalK,
+          discountK: 0,
+          deliveryFeeK: 0,
+          vatK: 0,
+          totalK: quote.totalK,
+          paidK: 0,
+          balanceDueK: quote.totalK,
+          method: 'transfer',
+          sourceType: 'quote',
+          sourceId: quote.id,
+          saleSource: null,
+          dueDate: quote.validUntil ? lagosNoon(quote.validUntil) : null,
+          actor: `user:${request.auth!.userId}`,
+        });
+
+        /* The same statement that confirms attaches the invoice; a loser in
+         * this race rolls the whole issue back and answers with the winner's
+         * invoice instead of minting a second one. */
+        const marked = await ordersRepo.markOrder(
+          tx,
+          businessId,
+          quote.id,
+          'quoted',
+          'confirmed',
+          issued.invoiceId,
+        );
+        if (marked !== 'marked') throw new QuoteAlreadyTaken();
+
+        await jobsRepo.enqueue(tx, {
+          businessId,
+          kind: 'document.render',
+          payload: { invoiceId: issued.invoiceId },
+          singletonKey: issued.invoiceId,
+        });
+        await jobsRepo.enqueue(tx, {
+          businessId,
+          kind: 'payment.link',
+          payload: { invoiceId: issued.invoiceId },
+          singletonKey: `link:${issued.invoiceId}`,
+        });
+
+        const moved = await stockRepo.recordSaleMovements(
+          tx,
+          businessId,
+          items,
+          issued.invoiceNumber,
+        );
+        if (moved.costK > 0) {
+          await issueRepo.writePosting(
+            tx,
+            businessId,
+            postCostOfSale({
+              memo: `Cost of goods on ${issued.invoiceNumber}`,
+              costK: moved.costK,
+            }),
+            'invoice',
+            issued.invoiceNumber,
+          );
+        }
+
+        return {
+          outcome: 'converted' as const,
+          quoteNumber,
+          invoiceNumber: issued.invoiceNumber,
+          totalK: quote.totalK,
+        };
+      });
+    } catch (error) {
+      await withBusiness(this.db, businessId, (own) =>
+        usageRepo.refundUnit(own, businessId, period, 'documents'),
+      );
+      if (error instanceof QuoteAlreadyTaken) {
+        const taken = await withBusiness(this.db, businessId, (tx) =>
+          ordersRepo.quoteByNumber(tx, businessId, quoteNumber),
+        );
+        return { outcome: 'already_converted', invoiceNumber: taken?.invoiceNumber ?? null };
+      }
+      throw error;
+    }
+  }
+
+  /** Withdraw an open quote. Never a delete: an offer made is a fact. */
+  @Post('quotes/cancel')
+  @Roles('owner', 'delegate')
+  @HttpCode(200)
+  async cancelQuote(
+    @Req() request: AuthedRequest,
+    @Body() body: unknown,
+  ): Promise<CancelQuoteResponse> {
+    const parsed = cancelQuoteRequest.safeParse(body);
+    if (!parsed.success) throw new BadRequestException('the quote number');
+    const businessId = request.auth!.businessId;
+    const quoteNumber = parsed.data.quoteNumber.toUpperCase();
+
+    return withBusiness(this.db, businessId, async (tx) => {
+      const quote = await ordersRepo.quoteByNumber(tx, businessId, quoteNumber);
+      if (!quote || !quoteNumber.startsWith('QUO-')) return { outcome: 'not_found' };
+      if (quote.status !== 'quoted') return { outcome: 'already', status: quote.status };
+      await ordersRepo.markOrder(tx, businessId, quote.id, 'quoted', 'cancelled');
+      return { outcome: 'cancelled' };
+    });
   }
 
   /** The receipt register. Every row exists because real money was recorded. */
