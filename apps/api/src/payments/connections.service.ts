@@ -19,6 +19,7 @@ import type { SubmitConnectionRequest } from '@rekoda/contracts';
 import { CONFIG, type ApiConfig } from '../config.js';
 import { DB } from '../db/db.module.js';
 import { PAYMENT_PROVIDER, type PaymentProviderPort } from './provider.port.js';
+import { verifyPaystackKey } from './paystack.provider.js';
 
 export type ConnectionView = {
   status: string;
@@ -27,6 +28,8 @@ export type ConnectionView = {
   bankCode: string | null;
   accountLast4: string | null;
   accountName: string | null;
+  keyMode: string | null;
+  merchantKeyTail: string | null;
 };
 
 const NOT_CONFIGURED: ConnectionView = {
@@ -36,6 +39,8 @@ const NOT_CONFIGURED: ConnectionView = {
   bankCode: null,
   accountLast4: null,
   accountName: null,
+  keyMode: null,
+  merchantKeyTail: null,
 };
 
 export type SubmitOutcome =
@@ -145,12 +150,56 @@ export class PaymentConnectionsService {
     };
   }
 
+  /**
+   * Connect the merchant's OWN Paystack account (ADR 0019, fix-plan 6 M5a).
+   *
+   * Verified BEFORE anything is stored: a key Paystack refuses is never
+   * vaulted. No §47 hold on this path, because Rekoda is never in the
+   * money's way — the charge runs on the merchant's own integration and
+   * settles to their own bank. The key lives as a CONNECTION_KEY cipher
+   * bound to this business and this column, exactly like the settlement
+   * account number.
+   */
+  async submitMerchantKey(
+    businessId: string,
+    secretKey: string,
+  ): Promise<
+    | { state: 'connected'; merchantKeyTail: string }
+    | { state: 'rejected' }
+    | { state: 'unavailable'; reason: 'connection_key_missing' }
+  > {
+    if (!this.config.connectionKey) {
+      return { state: 'unavailable', reason: 'connection_key_missing' };
+    }
+
+    const verdict = await verifyPaystackKey(secretKey, this.config.paystackBaseUrl);
+    if (verdict === 'invalid') return { state: 'rejected' };
+
+    const merchantKeyTail = secretKey.slice(-4);
+    await withBusiness(this.db, businessId, (tx) =>
+      paymentsHub.storeMerchantKey(tx, {
+        businessId,
+        providerType: this.provider.providerType,
+        merchantKeyCipher: encryptFacet(
+          secretKey,
+          this.config.connectionKey,
+          `${businessId}:merchant_key`,
+        ),
+        merchantKeyTail,
+      }),
+    );
+    this.log.log(`business ${businessId}: merchant key connected (ADR 0019)`);
+    return { state: 'connected', merchantKeyTail };
+  }
+
   private toView(row: {
     status: string;
     kycStatus: string;
     settlementBankCode: string | null;
     settlementAccountLast4: string | null;
     settlementAccountName: string | null;
+    keyMode: string;
+    merchantKeyTail: string | null;
   }): ConnectionView {
     return {
       status: row.status,
@@ -159,6 +208,8 @@ export class PaymentConnectionsService {
       bankCode: row.settlementBankCode,
       accountLast4: row.settlementAccountLast4,
       accountName: row.settlementAccountName,
+      keyMode: row.keyMode,
+      merchantKeyTail: row.merchantKeyTail,
     };
   }
 }

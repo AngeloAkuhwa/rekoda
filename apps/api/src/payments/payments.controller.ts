@@ -22,7 +22,11 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { usagePeriod } from '@rekoda/core';
-import { submitConnectionRequest } from '@rekoda/contracts';
+import {
+  submitMerchantKeyRequest,
+  type SubmitMerchantKeyResponse,
+  submitConnectionRequest,
+} from '@rekoda/contracts';
 import type {
   PaymentConnectionResponse,
   PaymentExceptionsResponse,
@@ -69,6 +73,24 @@ export class PaymentsController {
       throw new ServiceUnavailableException('payment onboarding is not configured yet');
     }
     return outcome.held ? { ...outcome.connection, held: outcome.held } : outcome.connection;
+  }
+
+  /**
+   * The merchant's OWN Paystack key (ADR 0019, fix-plan 6 M5a). Owner-only
+   * like the settlement details, and the key comes back only as a tail: no
+   * response, log or page ever carries it whole again.
+   */
+  @Post('merchant-key')
+  @HttpCode(200)
+  @UseGuards(RolesGuard)
+  @Roles('owner')
+  async submitMerchantKey(
+    @Req() request: AuthedRequest,
+    @Body() body: unknown,
+  ): Promise<SubmitMerchantKeyResponse> {
+    const parsed = submitMerchantKeyRequest.safeParse(body);
+    if (!parsed.success) throw new BadRequestException('your Paystack secret key');
+    return this.connections.submitMerchantKey(request.auth!.businessId, parsed.data.secretKey);
   }
 
   @Get('list')

@@ -263,3 +263,25 @@ export class PaystackProvider implements PaymentProviderPort {
     return { authorization: `Bearer ${this.secretKey}` };
   }
 }
+
+/**
+ * Does Paystack accept this secret key? (ADR 0019, fix-plan 6 M5a.)
+ *
+ * A free function rather than a port method, because the key under test is
+ * the MERCHANT's, not the one the singleton adapter was built with. /balance
+ * is the cheapest authenticated read: 200 means the key is live, 401 means
+ * Paystack said no, and anything else is an outage to surface, not a verdict
+ * on the key.
+ */
+export async function verifyPaystackKey(
+  secretKey: string,
+  baseUrl: string,
+): Promise<'ok' | 'invalid'> {
+  const response = await fetch(`${baseUrl}/balance`, {
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    headers: { authorization: `Bearer ${secretKey}` },
+  });
+  if (response.ok) return 'ok';
+  if (response.status === 401 || response.status === 403) return 'invalid';
+  throw new PaystackApiError(`/balance failed with HTTP ${response.status}`);
+}

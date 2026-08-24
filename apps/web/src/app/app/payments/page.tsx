@@ -9,6 +9,7 @@ import { requireSessionWithToken } from '@/server/guards';
 import { AppNav } from '../AppNav';
 import { SignOutButton } from '../SignOutButton';
 import { ConnectForm } from './ConnectForm';
+import { MerchantKeyForm } from './MerchantKeyForm';
 import { markExceptionReviewed } from './actions';
 
 export const metadata: Metadata = {
@@ -98,6 +99,39 @@ export default async function PaymentsPage() {
             Details saved. Activation finishes as soon as payment collection goes live, and you will
             not need to enter anything again.
           </p>
+        </div>
+      )}
+
+      {/* ── the merchant's own Paystack (ADR 0019) ── */}
+      {connection.keyMode === 'merchant_key' ? (
+        <div className="rk-card rk-connection">
+          <h2>Running on your own Paystack</h2>
+          <p className="rk-fineprint">
+            Connected with your key ending {connection.merchantKeyTail}. Charges run on your own
+            Paystack account and settle to your own bank; Rekoda reads what happened and keeps the
+            books. Paste a new key any time to replace it.
+          </p>
+          {isOwner(identity.role) ? (
+            <details className="rk-void">
+              <summary>Replace the key</summary>
+              <MerchantKeyForm />
+            </details>
+          ) : null}
+        </div>
+      ) : (
+        <div className="rk-card rk-connection">
+          <h2>Use your own Paystack account</h2>
+          <p className="rk-fineprint">
+            If you already have a Paystack account, connect it with your own secret key: payments
+            run on your integration, settle to your bank on Paystack&rsquo;s normal schedule, and
+            Rekoda is never a stop the money makes. The key is checked with Paystack before it is
+            stored, kept encrypted, and never shown again.
+          </p>
+          {isOwner(identity.role) ? (
+            <MerchantKeyForm />
+          ) : (
+            <p className="rk-fineprint">The Paystack key is the owner&rsquo;s to connect.</p>
+          )}
         </div>
       )}
 

@@ -16,6 +16,7 @@ import {
   receivePurchaseOrderResponse,
   meResponse,
   paymentConnectionResponse,
+  submitMerchantKeyResponse,
   paymentExceptionsResponse,
   paymentsListResponse,
   magicRedeemResponse,
@@ -119,6 +120,7 @@ import {
   type VoidExpenseResponse,
   type VoidInvoiceResponse,
   type PaymentConnectionResponse,
+  type SubmitMerchantKeyResponse,
   type PaymentExceptionsResponse,
   type PaymentsListResponse,
   type MagicRedeemResponse,
@@ -353,6 +355,21 @@ export async function submitPaymentConnection(
   const parsed = paymentConnectionResponse.parse(json);
   const held = typeof json === 'object' && json !== null && 'held' in json;
   return { state: 'submitted', connection: parsed, held };
+}
+
+/** Connect the merchant's own Paystack key (ADR 0019). Verified before stored. */
+export async function submitMerchantKey(
+  sessionToken: string,
+  secretKey: string,
+): Promise<SubmitMerchantKeyResponse | null> {
+  const { status, json } = await call({
+    method: 'POST',
+    path: '/v1/payments/merchant-key',
+    body: { secretKey },
+    headers: { authorization: `Bearer ${sessionToken}` },
+    expect: [200, 400],
+  });
+  return status === 200 ? submitMerchantKeyResponse.parse(json) : null;
 }
 
 export async function paymentsList(sessionToken: string): Promise<PaymentsListResponse> {
