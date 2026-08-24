@@ -63,6 +63,9 @@ import {
   matchLineResponse,
   unmatchLineResponse,
   reopenBooksResponse,
+  publicOrderResponse,
+  type PublicOrderRequest,
+  type PublicOrderResponse,
   publicShopIndexResponse,
   publicShopResponse,
   saveShopResponse,
@@ -814,6 +817,26 @@ export async function publicShop(slug: string, page = 1): Promise<PublicShopResp
     expect: [200, 404],
   });
   return status === 200 ? publicShopResponse.parse(json) : null;
+}
+
+/**
+ * Place a storefront order (fix-plan 6, M5b). No token: the caller is a
+ * customer, not a merchant. Every refusal the API can name comes back as an
+ * outcome in the 200; the only 400 is a payload this tier itself built
+ * wrong, which the checkout turns into "check your details" rather than a
+ * crash page, because the customer can fix a phone number but not our code.
+ */
+export async function placePublicOrder(
+  slug: string,
+  order: PublicOrderRequest,
+): Promise<PublicOrderResponse | null> {
+  const { status, json } = await call({
+    method: 'POST',
+    path: `/v1/shop/${encodeURIComponent(slug)}/orders`,
+    body: order,
+    expect: [200, 400],
+  });
+  return status === 200 ? publicOrderResponse.parse(json) : null;
 }
 
 /**

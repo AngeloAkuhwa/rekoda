@@ -7,17 +7,28 @@
  * no stock counts, no hidden products, no unpriced ones, and nothing at all
  * about the business behind it.
  */
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import {
+  publicOrderResponse,
   publicShopIndexResponse,
   publicShopResponse,
+  reportsInvoicesResponse,
   shopSettingsResponse,
 } from '@rekoda/contracts';
-import { billingRepo, createDb, stockRepo, withBusiness, type Db } from '@rekoda/db';
+import { usagePeriod } from '@rekoda/core';
+import {
+  billingRepo,
+  createDb,
+  issueRepo,
+  stockRepo,
+  usageRepo,
+  withBusiness,
+  type Db,
+} from '@rekoda/db';
 import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 
@@ -492,5 +503,170 @@ describe('a photo on a public page', () => {
     expect((await anonymous(`/v1/shop/ada-fashion/photo/${ids['Ankara bale']}`)).statusCode).toBe(
       404,
     );
+  });
+});
+
+describe('a customer orders from the shop (fix-plan 6, M5b)', () => {
+  async function openShop(phone: string, slug: string) {
+    const { businessId, auth } = await onboard(phone);
+    const ids = await seedCatalogue(businessId, auth);
+    expect((await publish(auth, slug)).json()).toMatchObject({ outcome: 'saved' });
+    return { businessId, auth, ids };
+  }
+
+  const order = (slug: string, payload: Record<string, unknown>) =>
+    post(`/v1/shop/${slug}/orders`, payload);
+
+  it('books the whole sale at the SERVER price, once, and meters the merchant', async () => {
+    const { businessId, auth, ids } = await openShop('+2348177400030', 'ada-orders');
+    const clientRef = randomUUID();
+
+    const placed = publicOrderResponse.parse(
+      (
+        await order('ada-orders', {
+          items: [{ productId: ids['Ankara bale'], quantity: 2 }],
+          customerName: 'Chidi Okafor',
+          customerPhone: '0803 555 1234',
+          clientRef,
+        })
+      ).json(),
+    );
+    expect(placed).toMatchObject({
+      outcome: 'placed',
+      totalK: 1_700_000,
+      displayName: 'Ada Fashion',
+    });
+    if (placed.outcome !== 'placed') return;
+    expect(placed.orderNumber).toMatch(/^ORD-/);
+    expect(placed.invoiceNumber).toMatch(/^INV-/);
+
+    /* The merchant sees a confirmed order attached to its invoice. */
+    const register = reportsInvoicesResponse.parse(
+      (await app.inject({ method: 'GET', url: '/v1/reports/invoices', headers: auth })).json(),
+    );
+    expect(register.orders[0]).toMatchObject({
+      orderNumber: placed.orderNumber,
+      status: 'confirmed',
+      invoiceNumber: placed.invoiceNumber,
+      totalK: 1_700_000,
+    });
+    expect(register.invoices[0]).toMatchObject({ totalK: 1_700_000, balanceDueK: 1_700_000 });
+
+    /* Stock moved and the books balance. */
+    const stock = await withBusiness(db, businessId, (tx) => stockRepo.stockList(tx, businessId));
+    expect(stock.rows.find((p) => p.name === 'Ankara bale')?.onHand).toBe(8);
+    const entries = await withBusiness(db, businessId, (tx) =>
+      issueRepo.ledgerEntriesFor(tx, businessId),
+    );
+    expect(entries.reduce((n, e) => n + e.debitK, 0)).toBe(
+      entries.reduce((n, e) => n + e.creditK, 0),
+    );
+
+    /* One order and one document spent, exactly like a chat capture. */
+    const usage = await withBusiness(db, businessId, (tx) =>
+      usageRepo.usageFor(tx, businessId, usagePeriod(new Date())),
+    );
+    expect(usage.find((r) => r.unit === 'orders')?.used).toBe(1);
+    expect(usage.find((r) => r.unit === 'documents')?.used).toBe(1);
+
+    /* A resubmitted checkout books nothing twice. */
+    const again = publicOrderResponse.parse(
+      (
+        await order('ada-orders', {
+          items: [{ productId: ids['Ankara bale'], quantity: 2 }],
+          customerName: 'Chidi Okafor',
+          customerPhone: '0803 555 1234',
+          clientRef,
+        })
+      ).json(),
+    );
+    expect(again).toEqual({ outcome: 'duplicate' });
+    const usageAfter = await withBusiness(db, businessId, (tx) =>
+      usageRepo.usageFor(tx, businessId, usagePeriod(new Date())),
+    );
+    expect(usageAfter.find((r) => r.unit === 'orders')?.used).toBe(1);
+    expect(usageAfter.find((r) => r.unit === 'documents')?.used).toBe(1);
+  });
+
+  it('a de-listed item, a bad phone and a dead slug each get a sentence, and book nothing', async () => {
+    const { businessId, ids } = await openShop('+2348177400031', 'ada-refusals');
+
+    /* Hidden between the shop page and the checkout. */
+    expect(
+      publicOrderResponse.parse(
+        (
+          await order('ada-refusals', {
+            items: [{ productId: ids['Aso oke set'], quantity: 1 }],
+            customerName: 'Chidi Okafor',
+            customerPhone: '08035551234',
+            clientRef: randomUUID(),
+          })
+        ).json(),
+      ),
+    ).toEqual({ outcome: 'items_changed' });
+
+    expect(
+      publicOrderResponse.parse(
+        (
+          await order('ada-refusals', {
+            items: [{ productId: ids['Ankara bale'], quantity: 1 }],
+            customerName: 'Chidi Okafor',
+            customerPhone: 'no digits',
+            clientRef: randomUUID(),
+          })
+        ).json(),
+      ),
+    ).toEqual({ outcome: 'bad_phone' });
+
+    expect(
+      publicOrderResponse.parse(
+        (
+          await order('no-such-shop', {
+            items: [{ productId: ids['Ankara bale'], quantity: 1 }],
+            customerName: 'Chidi Okafor',
+            customerPhone: '08035551234',
+            clientRef: randomUUID(),
+          })
+        ).json(),
+      ),
+    ).toEqual({ outcome: 'shop_gone' });
+
+    /* Nothing was booked and nothing was spent by any refusal. */
+    const usage = await withBusiness(db, businessId, (tx) =>
+      usageRepo.usageFor(tx, businessId, usagePeriod(new Date())),
+    );
+    expect(usage.find((r) => r.unit === 'orders')?.used ?? 0).toBe(0);
+    expect(usage.find((r) => r.unit === 'documents')?.used ?? 0).toBe(0);
+  });
+
+  it('a plan with no order capture answers closed, and spends nothing', async () => {
+    const { businessId, ids } = await openShop('+2348177400032', 'ada-closed');
+    /* Chat has no automatic order capture; the trial does. The shop stayed
+     * published from the trial, and the honest answer at the counter is a
+     * sentence, not an error. */
+    await billingRepo.setPlan(db, {
+      businessId,
+      plan: 'chat',
+      expiresAt: null,
+      actor: 'operator:test',
+    });
+
+    expect(
+      publicOrderResponse.parse(
+        (
+          await order('ada-closed', {
+            items: [{ productId: ids['Ankara bale'], quantity: 1 }],
+            customerName: 'Chidi Okafor',
+            customerPhone: '08035551234',
+            clientRef: randomUUID(),
+          })
+        ).json(),
+      ),
+    ).toEqual({ outcome: 'closed' });
+
+    const usage = await withBusiness(db, businessId, (tx) =>
+      usageRepo.usageFor(tx, businessId, usagePeriod(new Date())),
+    );
+    expect(usage.find((r) => r.unit === 'orders')?.used ?? 0).toBe(0);
   });
 });

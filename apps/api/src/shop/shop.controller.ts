@@ -35,6 +35,8 @@ import {
 } from '@nestjs/common';
 import {
   publicShopResponse,
+  publicOrderRequest,
+  type PublicOrderResponse,
   saveShopRequest,
   shopSettingsResponse,
   type PublicShopResponse,
@@ -43,18 +45,39 @@ import {
   type SaveShopResponse,
   type ShopSettingsResponse,
 } from '@rekoda/contracts';
-import { sniffImageType } from '@rekoda/core';
-import { catalogueRepo, identity, shopsRepo, usageRepo, withBusiness, type Db } from '@rekoda/db';
+import { allowanceFor, postCostOfSale, sniffImageType, usagePeriod } from '@rekoda/core';
+import {
+  catalogueRepo,
+  identity,
+  issueRepo,
+  jobsRepo,
+  ordersRepo,
+  shopsRepo,
+  stockRepo,
+  usageRepo,
+  withBusiness,
+  type Db,
+} from '@rekoda/db';
 import { SessionGuard, type AuthedRequest } from '../auth/session.guard.js';
 import { Roles, RolesGuard } from '../auth/roles.guard.js';
 import { DB } from '../db/db.module.js';
 import { DOCUMENT_STORAGE } from '../documents/documents.module.js';
+import { PrivacyGateway } from '../privacy/gateway.service.js';
 import type { DocumentStorage } from '../documents/storage.js';
 
 interface ImageReply {
   header(name: string, value: string): ImageReply;
   code(status: number): ImageReply;
   send(body: Buffer | string): void;
+}
+
+/** A 23505 on the orders external-ref index: this clientRef already ordered. */
+function isDuplicateOnOrders(error: unknown): boolean {
+  const cause = (error as { cause?: unknown })?.cause ?? error;
+  const pg = cause as { code?: string; constraint_name?: string; constraint?: string };
+  return (
+    pg?.code === '23505' && (pg.constraint_name ?? pg.constraint ?? '').includes('orders_external')
+  );
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -112,12 +135,202 @@ export class PublicShopIndexController {
  */
 const SHOP_PAGE_PRODUCTS = 60;
 
+/** Thrown inside the order transaction when the cart no longer matches the
+ * shop, so the whole booking rolls back to nothing and the customer is told
+ * to refresh rather than sold a product the merchant took down. */
+class CartChanged extends Error {
+  override readonly name = 'CartChanged';
+}
+
 @Controller('v1/shop')
 export class PublicShopController {
   constructor(
     @Inject(DB) private readonly db: Db,
     @Inject(DOCUMENT_STORAGE) private readonly storage: DocumentStorage,
+    private readonly gateway: PrivacyGateway,
   ) {}
+
+  /**
+   * A customer's order, from the shop page (fix-plan 6, M5b; MASTER-PLAN
+   * 5.6.2). The second door into the orders engine, and the first write a
+   * stranger can cause — which is why every figure is the server's:
+   *
+   *  - PRICES come from the catalogue, never from the request. A cart that
+   *    carried prices would let anyone name their own.
+   *  - The customer's name and phone go straight into the vault through the
+   *    same gateway chat mentions use; the invoice carries the customerId
+   *    and never the words.
+   *  - The merchant's METER is the shop's capacity: an order spends one
+   *    orders unit and one documents unit exactly as a captured WhatsApp
+   *    order does, refunded on every path that books nothing. A plan with
+   *    no order capture answers "closed", not an error, because a customer
+   *    standing at a counter deserves a sentence.
+   *  - From there it IS the chat confirm path: order, invoice, stock,
+   *    cost of goods, render and payment link, in one transaction.
+   */
+  @Post(':slug/orders')
+  @HttpCode(200)
+  async placeOrder(
+    @Param('slug') slug: string,
+    @Body() body: unknown,
+  ): Promise<PublicOrderResponse> {
+    const parsed = publicOrderRequest.safeParse(body);
+    if (!parsed.success) {
+      throw new BadRequestException('items, your name, your phone number and a client reference');
+    }
+
+    const shop = await shopsRepo.shopBySlug(this.db, slug);
+    if (!shop) return { outcome: 'shop_gone' };
+    const businessId = shop.businessId;
+
+    const customer = await this.gateway.resolveStorefrontCustomer(
+      businessId,
+      parsed.data.customerName,
+      parsed.data.customerPhone,
+    );
+    if (!customer) return { outcome: 'bad_phone' };
+
+    /* The meter, exactly as the chat capture pays it: own short
+     * transactions, refunded on every path that delivers nothing. */
+    const period = usagePeriod(new Date());
+    const plan = await withBusiness(this.db, businessId, (tx) => usageRepo.planFor(tx, businessId));
+    const orderGranted = await withBusiness(this.db, businessId, (own) =>
+      usageRepo.consumeUnit(own, businessId, period, 'orders', allowanceFor(plan, 'orders')),
+    );
+    if (!orderGranted) return { outcome: 'closed' };
+    const documentGranted = await withBusiness(this.db, businessId, (own) =>
+      usageRepo.consumeUnit(own, businessId, period, 'documents', allowanceFor(plan, 'documents')),
+    );
+    if (!documentGranted) {
+      await withBusiness(this.db, businessId, (own) =>
+        usageRepo.refundUnit(own, businessId, period, 'orders'),
+      );
+      return { outcome: 'closed' };
+    }
+
+    const refundBoth = async () => {
+      await withBusiness(this.db, businessId, (own) =>
+        usageRepo.refundUnit(own, businessId, period, 'orders'),
+      );
+      await withBusiness(this.db, businessId, (own) =>
+        usageRepo.refundUnit(own, businessId, period, 'documents'),
+      );
+    };
+
+    try {
+      return await withBusiness(this.db, businessId, async (tx) => {
+        const wanted = parsed.data.items;
+        const sellable = await catalogueRepo.sellableByIds(
+          tx,
+          businessId,
+          wanted.map((i) => i.productId),
+        );
+        const byId = new Map(sellable.map((p) => [p.id, p]));
+        if (wanted.some((i) => !byId.has(i.productId))) throw new CartChanged();
+
+        const lines = wanted.map((item) => {
+          const product = byId.get(item.productId)!;
+          return {
+            productId: product.id,
+            name: product.name,
+            quantity: item.quantity,
+            unitPriceK: product.unitPriceK,
+            lineTotalK: item.quantity * product.unitPriceK,
+          };
+        });
+        const totalK = lines.reduce((n, line) => n + line.lineTotalK, 0);
+
+        const placed = await ordersRepo.placeOrder(tx, {
+          businessId,
+          customerId: customer.customerId,
+          lines,
+          totalK,
+          sourceType: 'storefront',
+          sourceId: `shop:${slug}`,
+          externalRef: `shop:${parsed.data.clientRef}`,
+        });
+
+        const items = lines.map((line) => ({
+          name: line.name,
+          quantity: line.quantity,
+          unitPriceK: line.unitPriceK,
+        }));
+        const issued = await issueRepo.issueSale(tx, {
+          businessId,
+          customerId: customer.customerId,
+          customerToken: null,
+          items,
+          subtotalK: totalK,
+          discountK: 0,
+          deliveryFeeK: 0,
+          vatK: 0,
+          totalK,
+          paidK: 0,
+          balanceDueK: totalK,
+          method: 'transfer',
+          sourceType: 'storefront',
+          sourceId: placed.id,
+          saleSource: 'website',
+          dueDate: null,
+          actor: 'customer:storefront',
+        });
+        await ordersRepo.markOrder(
+          tx,
+          businessId,
+          placed.id,
+          'placed',
+          'confirmed',
+          issued.invoiceId,
+        );
+
+        await jobsRepo.enqueue(tx, {
+          businessId,
+          kind: 'document.render',
+          payload: { invoiceId: issued.invoiceId },
+          singletonKey: issued.invoiceId,
+        });
+        await jobsRepo.enqueue(tx, {
+          businessId,
+          kind: 'payment.link',
+          payload: { invoiceId: issued.invoiceId },
+          singletonKey: `link:${issued.invoiceId}`,
+        });
+
+        const moved = await stockRepo.recordSaleMovements(
+          tx,
+          businessId,
+          items,
+          issued.invoiceNumber,
+        );
+        if (moved.costK > 0) {
+          await issueRepo.writePosting(
+            tx,
+            businessId,
+            postCostOfSale({
+              memo: `Cost of goods on ${issued.invoiceNumber}`,
+              costK: moved.costK,
+            }),
+            'invoice',
+            issued.invoiceNumber,
+          );
+        }
+
+        return {
+          outcome: 'placed' as const,
+          orderNumber: placed.orderNumber,
+          invoiceNumber: issued.invoiceNumber,
+          totalK,
+          whatsappE164: shop.whatsappE164,
+          displayName: shop.displayName,
+        };
+      });
+    } catch (error) {
+      await refundBoth();
+      if (error instanceof CartChanged) return { outcome: 'items_changed' };
+      if (isDuplicateOnOrders(error)) return { outcome: 'duplicate' };
+      throw error;
+    }
+  }
 
   @Get(':slug')
   async shop(

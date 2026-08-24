@@ -3,6 +3,7 @@ import { notFound } from 'next/navigation';
 import { formatKobo } from '@rekoda/core';
 import { canonical } from '@/lib/site';
 import { publicShop } from '@/server/api';
+import { AddToCart, CartBar } from './CartControls';
 
 /**
  * A merchant's shop, open to anybody (MASTER-PLAN §5.3.5, "Door 1").
@@ -85,7 +86,8 @@ export default async function ShopPage({
         <h1>{shop.displayName}</h1>
         {shop.tagline ? <p className="rk-shop-tagline">{shop.tagline}</p> : null}
         <p className="rk-fineprint">
-          Tap any item to message {shop.displayName} on WhatsApp with your order already written.
+          Add items and order right here, or tap any item to message {shop.displayName} on WhatsApp
+          with your order already written.
         </p>
       </header>
 
@@ -126,12 +128,20 @@ export default async function ShopPage({
               <h2>{product.name}</h2>
               {product.description ? <p>{product.description}</p> : null}
               <p className="rk-shop-price">{formatKobo(product.priceK)}</p>
-              <a
-                className="rk-btn rk-shop-ask"
-                href={orderLink(shop.whatsappE164, product.name, product.priceK)}
-              >
-                Order on WhatsApp
-              </a>
+              <div className="rk-shop-actions">
+                <AddToCart
+                  slug={shop.slug}
+                  productId={product.id}
+                  name={product.name}
+                  priceK={product.priceK}
+                />
+                <a
+                  className="rk-btn rk-shop-ask"
+                  href={orderLink(shop.whatsappE164, product.name, product.priceK)}
+                >
+                  Order on WhatsApp
+                </a>
+              </div>
             </div>
           </li>
         ))}
@@ -163,10 +173,12 @@ export default async function ShopPage({
 
       <footer className="rk-shop-foot">
         <p className="rk-fineprint">
-          Prices are what {shop.displayName} charges today and may change. Ordering happens on
+          Prices are what {shop.displayName} charges today and may change. Order here or on
           WhatsApp, directly with them.
         </p>
       </footer>
+
+      <CartBar slug={shop.slug} />
     </section>
   );
 }

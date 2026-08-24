@@ -12,7 +12,7 @@
  * record of anything: what a thing SOLD for is on the invoice, permanently,
  * and changing the list price never touches it.
  */
-import { and, eq, sql, isNotNull } from 'drizzle-orm';
+import { and, eq, inArray, sql, isNotNull } from 'drizzle-orm';
 import { foldProductName } from '@rekoda/core';
 import type { TenantDb } from '../client.js';
 import { products } from '../schema/commerce.js';
@@ -417,4 +417,33 @@ export async function createProduct(
   const row = rows[0];
   if (!row) throw new Error('createProduct: insert returned no row');
   return { outcome: 'created', id: row.id, name: row.name };
+}
+
+/**
+ * The sellable rows a storefront order names, by id (fix-plan 6, M5b).
+ *
+ * Only active, priced products come back: the price is read HERE, on the
+ * server, never from the request, and a product de-listed between the shop
+ * page and the checkout simply fails to appear, which the caller reports as
+ * the cart having changed.
+ */
+export async function sellableByIds(
+  tx: TenantDb,
+  businessId: string,
+  ids: readonly string[],
+): Promise<Array<{ id: string; name: string; unitPriceK: number }>> {
+  if (ids.length === 0) return [];
+  const rows = await tx
+    .select({ id: products.id, name: products.name, unitPriceK: products.unitPriceK })
+    .from(products)
+    .where(
+      and(
+        eq(products.businessId, businessId),
+        eq(products.active, 1),
+        inArray(products.id, [...ids]),
+      ),
+    );
+  return rows
+    .filter((r) => r.unitPriceK !== null)
+    .map((r) => ({ id: r.id, name: r.name, unitPriceK: Number(r.unitPriceK) }));
 }
