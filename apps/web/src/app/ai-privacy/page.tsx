@@ -60,30 +60,40 @@ export default function AiPrivacyPage() {
         },
         {
           id: 'voice',
-          heading: 'Voice notes are transcribed by us',
+          heading: 'How a voice note becomes text',
           body: (
-            <p>
-              Speech becomes text on infrastructure we run, not by shipping your audio to a
-              third-party provider. If that ever has to change for accuracy reasons, this page
-              changes first, and it will say which provider and what they receive.
-            </p>
+            <>
+              <p>
+                Your audio is sent to OpenAI, a transcription processor, for one purpose only: to
+                come back as the sentence you spoke. Under the API terms we use, what we send is not
+                used to train their models. The sentence is then treated exactly like a typed
+                message: names, phone numbers and addresses are replaced by tokens before any AI
+                reasons about it, and we do not keep the audio.
+              </p>
+              <p>
+                An earlier version of this page said transcription ran only on infrastructure we
+                run, and promised that if that changed, this page would change first and name the
+                provider. This is that change, kept in those words.
+              </p>
+            </>
           ),
         },
         {
           id: 'receipts',
-          heading: 'A photo of a receipt is read by us, not sent onward',
+          heading: 'How a photographed receipt is read',
           body: (
             <>
               <p>
-                When you photograph a receipt, the picture goes to our own text reader and to
-                nowhere else. What the AI sees is the text that came out of it, with names, phone
+                The picture is sent to Anthropic with a single instruction: transcribe what the
+                paper says, word for word, and nothing else. Under the API terms we use, what we
+                send is not used to train their models, and we do not keep the picture. The AI that
+                does your bookkeeping never sees it: it sees the transcribed text, with names, phone
                 numbers and addresses already replaced by tokens, exactly as a typed message is.
               </p>
               <p>
-                There is no fallback. If our reader is busy or cannot make out the page, we tell you
-                and ask you to type the amount. We do not send the picture to an AI provider
-                instead, because a photograph cannot be tokenised: everything on it would arrive
-                intact.
+                There is no quiet rerouting. If the reader is busy or cannot make out the page, we
+                tell you and ask you to type the amount, rather than trying somewhere else you were
+                never told about.
               </p>
             </>
           ),

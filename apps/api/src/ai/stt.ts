@@ -1,17 +1,16 @@
 /**
- * Turning a voice note into a sentence (ADR 0005, ADR 0008).
+ * Turning a voice note into a sentence (ADR 0005, ADR 0008, ADR 0027).
  *
  * A port, like the model and the sender, and for a sharper reason than
- * either: the transcriber is the one dependency whose LOCATION is a promise
- * we make in marketing. "Audio never leaves Rekoda" is only true while this
- * points at our own sidecar, so the seam that makes it swappable is also the
- * seam where that promise could be quietly broken. It is written down here
- * rather than left to whoever edits the config.
- *
- * ADR 0008: the sidecar runs `intronhealth/afrispeech-whisper-medium-all`,
- * because stock `large-v3` is 30 to 45% WER on African-accented English and a
- * bookkeeper that mishears "fifty" as "fifteen" is worse than no bookkeeper.
- * A hosted transcriber is for the M3 benchmark comparator only.
+ * either: the transcriber is the one dependency whose LOCATION decides what
+ * /ai-privacy may claim. ADR 0027 made hosted transcription the launch
+ * configuration — audio goes to a processor under API terms that exclude
+ * training, comes back as text, and that text is tokenised before any
+ * reasoning model sees it. The privacy pages say exactly that; the day a
+ * deployment sets `STT_URL` and runs the AfriSpeech sidecar (ADR 0008 —
+ * tuned for African-accented English, where stock models run 30-45% WER),
+ * they may say the stronger sentence again. The seam is written down here
+ * so neither claim can drift from what the config actually does.
  */
 export interface Transcript {
   /** What was said. Raw merchant text: tokenise before it reaches a model. */

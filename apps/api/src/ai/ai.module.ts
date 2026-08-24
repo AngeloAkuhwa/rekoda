@@ -8,7 +8,9 @@ import { assertModelIsPriced, registerRuntimeModelPrices } from './model-prices.
 import { SPEECH_TO_TEXT, type SpeechToText } from './stt.js';
 import { TEXT_EXTRACTION, type TextExtraction } from './ocr.js';
 import { HttpTextExtraction, NoTextExtractionConfigured } from './ocr.http.js';
+import { VisionTextExtraction } from './ocr.vision.js';
 import { HttpSpeechToText, NoSpeechToTextConfigured } from './stt.http.js';
+import { OpenAiSpeechToText } from './stt.openai.js';
 
 // Re-exported for convenience; the token itself is defined in transport.ts so
 // that this module and the service it provides do not import each other.
@@ -69,33 +71,52 @@ class NoTransportConfigured implements ModelTransport {
       },
     },
     /**
-     * The transcriber, and WHERE it points is the promise.
+     * The transcriber, and WHERE it points decides what /ai-privacy may say.
      *
-     * "Audio never leaves Rekoda" is true exactly while `STT_URL` names our
-     * own sidecar (ADR 0005/0008). Without one, voice notes are answered
-     * honestly rather than sent somewhere else by default.
+     * Three explicit configurations, never a silent fallback between them
+     * (ADR 0027): `STT_URL` names the self-hosted AfriSpeech sidecar and
+     * audio stays on infrastructure we run; otherwise an OpenAI key selects
+     * hosted transcription — audio to a processor, back as text, tokenised
+     * before any reasoning model sees it — which is the launch
+     * configuration; and with neither, voice notes are answered honestly
+     * rather than sent anywhere by default.
      */
     {
       provide: SPEECH_TO_TEXT,
       inject: [CONFIG],
-      useFactory: (config: ApiConfig): SpeechToText =>
-        config.sttUrl ? new HttpSpeechToText(config.sttUrl) : new NoSpeechToTextConfigured(),
+      useFactory: (config: ApiConfig): SpeechToText => {
+        if (config.sttUrl) return new HttpSpeechToText(config.sttUrl);
+        if (config.openaiApiKey) {
+          return new OpenAiSpeechToText(config.openaiApiKey, config.aiModelTranscriber);
+        }
+        return new NoSpeechToTextConfigured();
+      },
     },
     /**
-     * The OCR engine, and WHERE it points is the privacy boundary itself.
+     * The text reader, and WHERE it points decides what /ai-privacy may say.
      *
-     * ADR 0024 decided the pipeline: photo, then self-hosted OCR, then the
-     * PII gateway, then a model. Without `OCR_URL` a photograph is answered
-     * honestly and goes nowhere. There is deliberately NO branch here that
-     * sends the image to a vision model instead: a boundary with a fallback
-     * is not a boundary, and this factory is where such a fallback would be
-     * written.
+     * ADR 0024 fixed the PIPELINE — photo, then text extraction, then the
+     * PII gateway, then a reasoning model — and that shape is untouched.
+     * What ADR 0027 changed is which engine may perform the extraction
+     * step: `OCR_URL` selects the self-hosted sidecar; otherwise an
+     * Anthropic key selects the vision model as a transcription-only
+     * processor, which is the launch configuration. These are CONFIGURED
+     * engines chosen at boot, never a fallback taken at request time — a
+     * request that cannot reach its configured engine is refused, not
+     * rerouted, because a boundary with a runtime fallback is not a
+     * boundary. With neither, a photograph is answered honestly and goes
+     * nowhere.
      */
     {
       provide: TEXT_EXTRACTION,
       inject: [CONFIG],
-      useFactory: (config: ApiConfig): TextExtraction =>
-        config.ocrUrl ? new HttpTextExtraction(config.ocrUrl) : new NoTextExtractionConfigured(),
+      useFactory: (config: ApiConfig): TextExtraction => {
+        if (config.ocrUrl) return new HttpTextExtraction(config.ocrUrl);
+        if (config.anthropicApiKey) {
+          return new VisionTextExtraction(config.anthropicApiKey, config.aiModelVision);
+        }
+        return new NoTextExtractionConfigured();
+      },
     },
     Interpreter,
   ],
