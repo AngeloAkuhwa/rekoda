@@ -409,6 +409,30 @@ export async function advanceIntent(
   return rows.length === 1;
 }
 
+/**
+ * Claim the right to verify this intent with the provider (fix-plan 7, H7b).
+ *
+ * Every storefront status poll costs one verify on the merchant's own
+ * Paystack key, and a page left open — or a bot — could spend the merchant's
+ * provider rate limit by tapping. This is the same conditional-update shape
+ * as `advanceIntent`: whoever moves `updated_at` first owns the window, and
+ * everyone else inside it answers from what is already known. In the
+ * database rather than memory, so replicas share one window.
+ */
+export async function claimVerifySlot(
+  tx: TenantDb,
+  intentId: string,
+  minIntervalSeconds: number,
+): Promise<boolean> {
+  const rows = await tx.execute<{ id: string }>(sql`
+    UPDATE payment_intents SET updated_at = now()
+    WHERE id = ${intentId}::uuid
+      AND updated_at <= now() - make_interval(secs => ${minIntervalSeconds})
+    RETURNING id
+  `);
+  return [...rows].length === 1;
+}
+
 /** Expire every overdue live intent for this business. Returns how many. */
 export async function expireOverdueIntents(tx: TenantDb, businessId: string): Promise<number> {
   const rows = await tx.execute<{ id: string }>(sql`

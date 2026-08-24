@@ -116,6 +116,11 @@ export function CheckoutForm({
           setShopClosed(true);
           setRefusal(`${displayName} is not taking website orders right now.`);
           return;
+        case 'busy':
+          setRefusal(
+            `${displayName} is taking a lot of orders right now. Give it a minute and try again.`,
+          );
+          return;
       }
     } catch {
       setRefusal('That did not go through. Check your connection and try again.');

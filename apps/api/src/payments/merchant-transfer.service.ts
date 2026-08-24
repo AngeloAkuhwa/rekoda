@@ -255,10 +255,24 @@ export class MerchantTransferService {
 
       const cipher = await paymentsHub.merchantKeyCipherFor(tx, businessId, PROVIDER);
       if (!cipher) return { state: 'expired' as const };
+
+      /**
+       * The verify window (fix-plan 7, H7b): each poll costs one Paystack
+       * call on the MERCHANT's key, so taps beyond the first inside the
+       * window answer pending without asking the provider again. Claimed in
+       * the database — one verify per window across every replica. Money is
+       * never hidden by this: a webhook that already booked answers `paid`
+       * above before the window is even consulted.
+       */
+      const window = Math.max(0, this.config.transferVerifyMinSeconds);
+      if (!(await paymentsHub.claimVerifySlot(tx, live.id, window))) {
+        return { state: 'throttled' as const };
+      }
       return { state: 'check' as const, reference: live.reference, cipher };
     });
 
     if (read.state === 'paid') return { state: 'paid', receiptNumber: null };
+    if (read.state === 'throttled') return { state: 'pending' };
     if (read.state !== 'check') return read;
 
     const secretKey = decryptFacet(
