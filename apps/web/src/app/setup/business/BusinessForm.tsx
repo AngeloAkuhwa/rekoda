@@ -63,7 +63,7 @@ export function BusinessForm({ phone }: { phone: string }) {
 
       <p className="rk-fineprint">
         Signing up as <strong>{phone}</strong>. No CAC or TIN needed. You can add them later to
-        unlock extra features.
+        unlock extra features. Wrong number? <a href="/start">Start again</a>.
       </p>
     </section>
   );

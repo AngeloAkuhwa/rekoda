@@ -66,7 +66,7 @@ export function VoidForm({ voidable }: { voidable: string[] }) {
       ) : null}
 
       <Button type="submit" disabled={pending}>
-        {pending ? 'Voiding' : 'Void this invoice'}
+        {pending ? 'Voiding…' : 'Void this invoice'}
       </Button>
     </form>
   );

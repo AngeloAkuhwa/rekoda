@@ -118,6 +118,12 @@ export const saveShopResponse = z.discriminatedUnion('outcome', [
   z.object({ outcome: z.literal('bad_slug') }),
   /** No products with prices, so publishing would put an empty page online. */
   z.object({ outcome: z.literal('nothing_to_sell') }),
+  /**
+   * Publishing is an Integrate feature and the plan is not there. Saving a
+   * DRAFT and taking a shop down are always allowed: the gate is on going
+   * public, never on keeping what was written.
+   */
+  z.object({ outcome: z.literal('needs_integrate') }),
 ]);
 
 export type SaveShopRequest = z.infer<typeof saveShopRequest>;

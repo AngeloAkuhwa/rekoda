@@ -94,7 +94,7 @@ export function JournalForm({ today }: { today: string }) {
       ) : null}
 
       <Button type="submit" disabled={pending}>
-        {pending ? 'Recording' : 'Record this correction'}
+        {pending ? 'Recording…' : 'Record this correction'}
       </Button>
     </form>
   );

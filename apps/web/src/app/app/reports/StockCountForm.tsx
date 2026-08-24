@@ -28,7 +28,7 @@ export function StockCountForm({ short }: { short: boolean }) {
         </p>
       ) : null}
       <Button type="submit" disabled={pending}>
-        {pending ? 'Posting' : short ? 'Write the difference off' : 'Bring the books to the count'}
+        {pending ? 'Posting…' : short ? 'Write the difference off' : 'Bring the books to the count'}
       </Button>
     </form>
   );

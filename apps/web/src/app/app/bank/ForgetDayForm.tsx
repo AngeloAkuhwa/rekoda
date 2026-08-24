@@ -31,7 +31,7 @@ export function ForgetDayForm({ today }: { today: string }) {
         <input type="date" name="postedOn" id="postedOn" max={today} className="rk-input" />
       </label>
       <Button type="submit" disabled={pending}>
-        {pending ? 'Removing' : 'Remove that day'}
+        {pending ? 'Removing…' : 'Remove that day'}
       </Button>
     </form>
   );

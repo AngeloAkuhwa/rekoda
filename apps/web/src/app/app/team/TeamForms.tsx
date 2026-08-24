@@ -53,11 +53,13 @@ export function InviteForm() {
       </Field>
 
       {state.invited ? (
-        <p className="rk-fineprint">Added. {state.invited} can sign in on their own phone now.</p>
+        <p className="rk-fineprint" role="status">
+          Added. {state.invited} can sign in on their own phone now.
+        </p>
       ) : null}
 
       <Button type="submit" disabled={pending}>
-        {pending ? 'Adding' : 'Add them'}
+        {pending ? 'Adding…' : 'Add them'}
       </Button>
     </form>
   );
@@ -75,9 +77,13 @@ export function RemoveMemberForm({ userId, phone }: { userId: string; phone: str
       {/* Named in the label rather than only in the row, so the button says
           what it does when a screen reader reads it on its own. */}
       <Button type="submit" variant="ghost" disabled={pending} aria-label={`Remove ${phone}`}>
-        {pending ? 'Removing' : 'Remove'}
+        {pending ? 'Removing…' : 'Remove'}
       </Button>
-      {state.error ? <span className="rk-fineprint">{state.error}</span> : null}
+      {state.error ? (
+        <span className="rk-fineprint" role="alert">
+          {state.error}
+        </span>
+      ) : null}
     </form>
   );
 }

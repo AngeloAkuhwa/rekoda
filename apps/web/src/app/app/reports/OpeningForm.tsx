@@ -23,11 +23,18 @@ export function OpeningForm({ today }: { today: string }) {
 
   return (
     <form action={action} className="rk-form" noValidate>
+      {/* The form's own alert, not the date field's: a refusal here is as
+          often about an amount, and rendering it under the date blamed the
+          one answer the merchant got right. */}
+      {state.error ? (
+        <p className="rk-fineprint" role="alert">
+          {state.error}
+        </p>
+      ) : null}
       <Field
         id="asAt"
         label="The day these figures were true"
         hint="Usually the day before you started using Rekoda"
-        error={state.error}
       >
         <input type="date" name="asAt" id="asAt" required max={today} className="rk-input" />
       </Field>
@@ -82,7 +89,7 @@ export function OpeningForm({ today }: { today: string }) {
       ) : null}
 
       <Button type="submit" disabled={pending}>
-        {pending ? 'Opening' : 'Open my books'}
+        {pending ? 'Opening…' : 'Open my books'}
       </Button>
     </form>
   );

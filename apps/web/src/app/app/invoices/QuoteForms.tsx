@@ -40,7 +40,15 @@ export function CreateQuoteForm() {
   return (
     <form action={action} className="rk-form" noValidate>
       <input type="hidden" name="clientRef" value={clientRef} />
-      <Field id="quoteCustomer" label="Who it is for (optional)" error={state.error}>
+      {/* The form's own alert, not the customer field's: most refusals here
+          are about a line item, and rendering them under an optional name
+          field blamed the one answer the merchant got right. */}
+      {state.error ? (
+        <p className="rk-fineprint" role="alert">
+          {state.error}
+        </p>
+      ) : null}
+      <Field id="quoteCustomer" label="Who it is for (optional)">
         <input
           id="quoteCustomer"
           name="customerName"
@@ -151,7 +159,16 @@ export function ConvertQuoteForm({ quotes }: { quotes: OpenQuote[] }) {
 /** Withdraw an offer. Never a delete: what was offered stays on the record. */
 export function CancelQuoteForm({ quotes }: { quotes: OpenQuote[] }) {
   const [state, action, pending] = useActionState<QuoteFormState, FormData>(cancelQuoteAction, {});
-  if (quotes.length === 0) return null;
+  /* Withdrawing the LAST open quote empties this list on the refresh; the
+   * confirmation must survive that or the click that caused it looks like
+   * it did nothing. Same lesson the payment and asset forms already carry. */
+  if (quotes.length === 0) {
+    return state.done ? (
+      <p className="rk-fineprint" role="status">
+        {state.done}
+      </p>
+    ) : null;
+  }
   return (
     <form action={action} className="rk-form" noValidate>
       <Field id="cancelQuoteNumber" label="The quote to withdraw" error={state.error}>

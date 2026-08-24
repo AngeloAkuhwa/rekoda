@@ -4,6 +4,7 @@ import { Money } from '@/components/ui/Money';
 import { catalogue, shopSettings } from '@/server/api';
 import { requireSessionWithToken } from '@/server/guards';
 import { AppNav } from '../AppNav';
+import { SITE_HOST, SITE_URL } from '@/lib/site';
 import { SignOutButton } from '../SignOutButton';
 import {
   ListingForm,
@@ -80,7 +81,8 @@ export default async function CataloguePage() {
         </div>
       ) : null}
 
-      {/* Below the products, because a shop is what a priced catalogue turns
+      {/* Above the products, because opening the shop is the decision this page
+          exists for; the catalogue below is what the shop is made of. It turns
           into. A merchant who has not set a price yet cannot open one, and
           the form says so rather than failing when they try. */}
       <div className="rk-card">
@@ -92,7 +94,13 @@ export default async function CataloguePage() {
         </p>
         {settings.shop?.publishedAt ? (
           <p className="rk-fineprint">
-            Open at <strong>rekoda.app/s/{settings.shop.slug}</strong>. Share that link anywhere.
+            Open at{' '}
+            <a href={`${SITE_URL}/s/${settings.shop.slug}`} target="_blank" rel="noreferrer">
+              <strong>
+                {SITE_HOST}/s/{settings.shop.slug}
+              </strong>
+            </a>
+            . Share that link anywhere.
           </p>
         ) : (
           <p className="rk-fineprint">

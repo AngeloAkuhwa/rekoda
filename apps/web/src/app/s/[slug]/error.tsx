@@ -8,7 +8,7 @@
  */
 export default function ShopError({ reset }: { error: Error; reset: () => void }) {
   return (
-    <main className="rk-container" style={{ padding: '4rem 0', textAlign: 'center' }}>
+    <div className="rk-container" style={{ padding: '4rem 0', textAlign: 'center' }}>
       <h1>This shop is briefly unavailable</h1>
       <p>Nothing is wrong with the shop itself. Give it a moment and try again.</p>
       <p>
@@ -16,6 +16,6 @@ export default function ShopError({ reset }: { error: Error; reset: () => void }
           Try again
         </button>
       </p>
-    </main>
+    </div>
   );
 }

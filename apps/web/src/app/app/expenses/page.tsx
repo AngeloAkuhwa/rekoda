@@ -286,10 +286,13 @@ export default async function ExpensesPage() {
                         <span className="rk-fineprint"> (taken back out)</span>
                       ) : null}
                       {asset.status === 'sold' ? (
-                        <span className="rk-fineprint"> (sold {asset.soldOn})</span>
+                        <span className="rk-fineprint">
+                          {' '}
+                          (sold {asset.soldOn ? longDate(asset.soldOn) : ''})
+                        </span>
                       ) : null}
                     </td>
-                    <td>{asset.boughtOn}</td>
+                    <td>{longDate(asset.boughtOn)}</td>
                     <td className="rk-num">
                       <Money kobo={asset.costK} />
                     </td>

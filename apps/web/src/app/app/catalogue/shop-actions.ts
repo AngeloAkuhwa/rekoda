@@ -3,6 +3,7 @@
 import { revalidatePath } from 'next/cache';
 import { saveShop } from '@/server/api';
 import { readSessionToken } from '@/server/session-cookies';
+import { SITE_HOST } from '@/lib/site';
 
 export interface ShopFormState {
   error?: string;
@@ -59,11 +60,18 @@ export async function saveShopAction(
         'on at least one product first.',
     };
   }
+  if (outcome.outcome === 'needs_integrate') {
+    return {
+      error:
+        'Opening a shop page is part of Rekoda Integrate. Your draft is saved; upgrade on the ' +
+        'billing page and open it from here.',
+    };
+  }
 
   revalidatePath('/app/catalogue');
   return {
     done: outcome.published
-      ? `Open. Share rekoda.app/s/${outcome.slug} and customers can order from it.`
+      ? `Open. Share ${SITE_HOST}/s/${outcome.slug} and customers can order from it.`
       : 'Saved and closed. Nobody can see it until you open the shop.',
   };
 }

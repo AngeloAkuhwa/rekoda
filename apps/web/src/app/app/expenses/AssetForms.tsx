@@ -115,7 +115,7 @@ export function RecordAssetForm() {
       ) : null}
 
       <Button type="submit" disabled={pending}>
-        {pending ? 'Recording' : 'Record this equipment'}
+        {pending ? 'Recording…' : 'Record this equipment'}
       </Button>
     </form>
   );
@@ -183,7 +183,7 @@ export function WithdrawAssetForm({ assets }: { assets: OwnedAsset[] }) {
       ) : null}
 
       <Button type="submit" disabled={pending}>
-        {pending ? 'Taking it out' : 'Take it back out'}
+        {pending ? 'Taking it out…' : 'Take it back out'}
       </Button>
     </form>
   );
@@ -265,7 +265,7 @@ export function DisposeAssetForm({ assets }: { assets: OwnedAsset[] }) {
       ) : null}
 
       <Button type="submit" disabled={pending}>
-        {pending ? 'Recording' : 'Record this sale'}
+        {pending ? 'Recording…' : 'Record this sale'}
       </Button>
     </form>
   );

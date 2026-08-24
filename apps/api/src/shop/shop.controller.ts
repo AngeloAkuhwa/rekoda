@@ -44,7 +44,7 @@ import {
   type ShopSettingsResponse,
 } from '@rekoda/contracts';
 import { sniffImageType } from '@rekoda/core';
-import { catalogueRepo, identity, shopsRepo, withBusiness, type Db } from '@rekoda/db';
+import { catalogueRepo, identity, shopsRepo, usageRepo, withBusiness, type Db } from '@rekoda/db';
 import { SessionGuard, type AuthedRequest } from '../auth/session.guard.js';
 import { Roles, RolesGuard } from '../auth/roles.guard.js';
 import { DB } from '../db/db.module.js';
@@ -258,10 +258,21 @@ export class ShopSettingsController {
     const owner = await identity.ownerPhoneFor(this.db, businessId);
     if (!owner) throw new BadRequestException('this business has no owner to contact');
 
-    const sellable = await withBusiness(this.db, businessId, async (tx) => {
+    const { sellable, plan } = await withBusiness(this.db, businessId, async (tx) => {
       const catalogue = await catalogueRepo.catalogueFor(tx, businessId);
-      return catalogue.rows.filter((p) => p.active && p.unitPriceK !== null).length;
+      return {
+        sellable: catalogue.rows.filter((p) => p.active && p.unitPriceK !== null).length,
+        plan: await usageRepo.planFor(tx, businessId),
+      };
     });
+    /* The shop link is what the Integrate card sells, and the trial includes
+     * Integrate so a merchant can feel it before paying. Chat publishing was
+     * an accident of role-only gating: the pricing page said one thing and
+     * this door said another. Drafts and take-downs stay open to every plan,
+     * because the gate is on going public, never on keeping what was written. */
+    if (parsed.data.published && plan !== 'trial' && plan !== 'integrate' && plan !== 'complete') {
+      return { outcome: 'needs_integrate' };
+    }
     /* Publishing an empty page is worse than not publishing: a customer opens
      * it once, finds nothing, and does not come back. Taking a shop DOWN is
      * always allowed, whatever is in it. */

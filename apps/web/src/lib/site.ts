@@ -30,4 +30,7 @@ export const MARKETING_ROUTES: MarketingRoute[] = [
 ];
 
 /** Absolute canonical URL for a path — relative canonicals are ambiguous. */
+/** The bare host ('rekoda.app'), for copy that shows a link as words. */
+export const SITE_HOST = SITE_URL.replace(/^https?:\/\//, '');
+
 export const canonical = (path: string): string => `${SITE_URL}${path}`;

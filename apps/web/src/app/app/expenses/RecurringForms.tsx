@@ -91,7 +91,7 @@ export function CreateRecurringForm() {
       ) : null}
 
       <Button type="submit" disabled={pending}>
-        {pending ? 'Setting it up' : 'Set up this cost'}
+        {pending ? 'Setting it up…' : 'Set up this cost'}
       </Button>
     </form>
   );
@@ -130,7 +130,7 @@ export function StopRecurringForm({ schedules }: { schedules: StoppableSchedule[
       ) : null}
 
       <Button type="submit" disabled={pending}>
-        {pending ? 'Stopping' : 'Stop this schedule'}
+        {pending ? 'Stopping…' : 'Stop this schedule'}
       </Button>
     </form>
   );

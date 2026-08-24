@@ -28,14 +28,24 @@ export function ThemeToggle() {
     }
   }
 
+  /* Until the effect has read the real theme, the server-rendered button
+   * claimed ☀ and "switch to dark" to EVERY visitor, including one the
+   * no-flash script had already painted dark. Neutral until known: wrong is
+   * worse than momentarily unspecific. */
   return (
     <button
       type="button"
       onClick={toggle}
       className="rk-theme-toggle"
-      aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
+      aria-label={
+        theme === null
+          ? 'Switch theme'
+          : theme === 'dark'
+            ? 'Switch to light theme'
+            : 'Switch to dark theme'
+      }
     >
-      <span aria-hidden="true">{theme === 'dark' ? '☾' : '☀'}</span>
+      <span aria-hidden="true">{theme === null ? '◐' : theme === 'dark' ? '☾' : '☀'}</span>
     </button>
   );
 }

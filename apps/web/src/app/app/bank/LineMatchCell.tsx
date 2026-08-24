@@ -25,11 +25,15 @@ export interface Candidate {
  */
 export function LineMatchCell({
   lineId,
+  lineLabel,
   matchedTo,
   candidates,
   canPair,
 }: {
   lineId: string;
+  /** The line in a person's words ("12 Aug, TRF FROM ADA"), so the buttons in
+   * this cell can say WHICH line they act on when read out of the table. */
+  lineLabel: string;
   matchedTo: { memo: string; decidedBy: 'auto' | 'manual' } | null;
   candidates: readonly Candidate[];
   /**
@@ -73,8 +77,13 @@ export function LineMatchCell({
         ) : null}
         <form action={release}>
           <input type="hidden" name="lineId" value={lineId} />
-          <Button type="submit" variant="ghost" disabled={releasing}>
-            {releasing ? 'Releasing' : 'Release'}
+          <Button
+            type="submit"
+            variant="ghost"
+            disabled={releasing}
+            aria-label={`Release the match on ${lineLabel}`}
+          >
+            {releasing ? 'Releasing…' : 'Release'}
           </Button>
         </form>
       </div>
@@ -108,14 +117,28 @@ export function LineMatchCell({
         <select id={`m-${lineId}`} name="transactionId" defaultValue={candidates[0]!.transactionId}>
           {candidates.map((c) => (
             <option key={c.transactionId} value={c.transactionId}>
-              {c.occurredOn} · {c.memo}
+              {presentDay(c.occurredOn)} · {c.memo}
             </option>
           ))}
         </select>
-        <Button type="submit" variant="ghost" disabled={matching}>
-          {matching ? 'Matching' : 'This one'}
+        <Button
+          type="submit"
+          variant="ghost"
+          disabled={matching}
+          aria-label={`Match ${lineLabel} to the chosen entry`}
+        >
+          {matching ? 'Matching…' : 'This one'}
         </Button>
       </form>
     </div>
   );
+}
+
+/** `12 Aug`, Lagos, from a plain calendar day. */
+function presentDay(day: string): string {
+  return new Date(`${day}T12:00:00Z`).toLocaleDateString('en-NG', {
+    day: 'numeric',
+    month: 'short',
+    timeZone: 'Africa/Lagos',
+  });
 }

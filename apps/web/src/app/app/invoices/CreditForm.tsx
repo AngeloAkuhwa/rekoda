@@ -100,7 +100,7 @@ export function CreditForm({ invoices }: { invoices: CreditableInvoice[] }) {
       ) : null}
 
       <Button type="submit" disabled={pending}>
-        {pending ? 'Issuing' : 'Issue credit note'}
+        {pending ? 'Issuing…' : 'Issue credit note'}
       </Button>
     </form>
   );

@@ -29,6 +29,19 @@ export interface Plan {
 
 const m = (naira: number): Kobo => toKobo(naira);
 
+/**
+ * Every plan enum, in the words a merchant reads. Shared so no page prints
+ * the database's own word: an eyebrow reading `integrate` and a bill reading
+ * `Rekoda Integrate` were describing the same subscription.
+ */
+export const PLAN_NAMES: Record<string, string> = {
+  trial: 'Free trial',
+  expired: 'Stopped',
+  chat: 'Rekoda Chat',
+  integrate: 'Rekoda Integrate',
+  complete: 'Rekoda Complete',
+};
+
 export const PLANS: Plan[] = [
   {
     id: 'chat',
@@ -44,12 +57,12 @@ export const PLANS: Plan[] = [
       '100 documents',
       'Invoices, receipts and customer balances',
       'Sales, expenses, purchases and stock',
-      'Payment links, verified the moment money lands',
       'Full books: profit and loss, balance sheet, cash flow',
       'Products, inventory and stock counts',
       'One accountant or delegate seat',
       'Dashboard with every register',
     ],
+    coming: ['Payment links, verified the moment money lands'],
     excludes: ['Automatic order capture needs Integrate'],
   },
   {
@@ -66,11 +79,11 @@ export const PLANS: Plan[] = [
       'Voice-note bookkeeping, 60 minutes a month',
       'Your own shop link, shared on WhatsApp',
       '300 orders captured automatically, nothing retyped',
-      'A payment link for every order, verified when it lands',
       'Inventory and customer balances updated for you',
       'Reconciliation with mismatch detection',
       'Two accountant or delegate seats',
     ],
+    coming: ['A payment link for every order, verified when it lands'],
   },
   {
     id: 'complete',
