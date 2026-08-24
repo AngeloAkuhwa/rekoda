@@ -253,4 +253,70 @@ describe('listing settlements (§26–28)', () => {
       PaystackApiError,
     );
   });
+
+  it('follows the pager past the first hundred settlements instead of dropping the rest', async () => {
+    respond = (req, res) => {
+      const page = Number(new URL(req.url ?? '', 'http://x').searchParams.get('page') ?? '1');
+      const data =
+        page === 1
+          ? Array.from({ length: 100 }, (_, i) => ({
+              id: i + 1,
+              status: 'success',
+              settlement_date: '2026-08-19T04:00:00.000Z',
+            }))
+          : [{ id: 999, status: 'success', settlement_date: '2026-08-20T04:00:00.000Z' }];
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ status: true, data, meta: { page, pageCount: 2, perPage: 100 } }));
+    };
+
+    const settlements = await provider().listSettlements('2026-08-13T00:00:00.000Z');
+    expect(settlements).toHaveLength(101);
+    expect(settlements.at(-1)?.settlementId).toBe('999');
+    expect(requests.map((r) => r.url)).toEqual([
+      expect.stringContaining('page=1'),
+      expect.stringContaining('page=2'),
+    ]);
+  });
+
+  it('stops the moment a page comes back short, so it never over-asks the provider', async () => {
+    respond = (req, res) => {
+      const page = Number(new URL(req.url ?? '', 'http://x').searchParams.get('page') ?? '1');
+      /* The pager claims three pages, but page two is short: a lying count
+       * must not make the sweep hammer pages that will never fill. */
+      const data =
+        page === 1
+          ? Array.from({ length: 100 }, (_, i) => ({
+              id: i + 1,
+              status: 'success',
+              settlement_date: '2026-08-19T04:00:00.000Z',
+            }))
+          : [{ id: 500, status: 'success', settlement_date: '2026-08-20T04:00:00.000Z' }];
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ status: true, data, meta: { page, pageCount: 9, perPage: 100 } }));
+    };
+
+    const settlements = await provider().listSettlements('2026-08-13T00:00:00.000Z');
+    expect(settlements).toHaveLength(101);
+    expect(requests).toHaveLength(2);
+  });
+
+  it('collects settlement references across every page, not just the first', async () => {
+    respond = (req, res) => {
+      const page = Number(new URL(req.url ?? '', 'http://x').searchParams.get('page') ?? '1');
+      const data =
+        page === 1
+          ? Array.from({ length: 200 }, (_, i) => ({ reference: `RKD-PAY-P1-${i}` }))
+          : [{ reference: 'RKD-PAY-P2-LAST' }];
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ status: true, data, meta: { page, pageCount: 2, perPage: 200 } }));
+    };
+
+    const references = await provider().listSettlementTransactions('91');
+    expect(references).toHaveLength(201);
+    expect(references).toContain('RKD-PAY-P2-LAST');
+    expect(requests.map((r) => r.url)).toEqual([
+      expect.stringContaining('page=1'),
+      expect.stringContaining('page=2'),
+    ]);
+  });
 });

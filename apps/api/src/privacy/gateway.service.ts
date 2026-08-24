@@ -7,7 +7,7 @@ import {
   type PiiSpan,
   type TokenisedMessage,
 } from '@rekoda/core/privacy';
-import { decryptFacet, encryptFacet, matchKeyFor, normaliseFacet } from '@rekoda/core/vault';
+import { encryptFacet, matchKeyFor, normaliseFacet } from '@rekoda/core/vault';
 import { customersRepo, type Db } from '@rekoda/db';
 import { CONFIG, type ApiConfig } from '../config.js';
 import { DB } from '../db/db.module.js';
@@ -82,23 +82,25 @@ function proposeLink(seen: ResolvedCustomer[]): IdentityLinkProposal | null {
   };
 }
 
-/**
- * How many stored names one message is checked against.
- *
- * A bound on the matcher's work, not on protection: names enter the vault
- * newest-first below, and the freshest names are the ones a merchant is
- * typing this week. A business with more named customers than this is far
- * beyond a WhatsApp-first shop, and the structural pass still covers every
- * phone and email regardless.
- */
-const NAME_MATCH_CUSTOMERS = 2_000;
-
 /** Names shorter than this match too much prose to be safe to substitute. */
 const MIN_NAME_LENGTH = 3;
 
-function escapeForRegex(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
+/**
+ * The longest run of words the known-name pass will treat as one name.
+ *
+ * The message is scanned as overlapping word-groups of one to this many
+ * words, and each group is hashed and looked up. Six covers a long Nigerian
+ * name with titles ("Alhaji Ibrahim Musa Abubakar Sani") while keeping the
+ * candidate count linear in the message length.
+ */
+const MAX_NAME_WORDS = 6;
+
+/**
+ * A word for the purpose of name-matching: letters or digits, with an inner
+ * apostrophe or hyphen kept ("O'Neil", "Adaeze-Ann") so a hyphenated name is
+ * one word rather than two.
+ */
+const NAME_WORD = /[\p{L}\p{N}]+(?:['\u2019-][\p{L}\p{N}]+)*/gu;
 
 @Injectable()
 export class PrivacyGateway {
@@ -159,39 +161,68 @@ export class PrivacyGateway {
      * mention resolved below), it is a stored identity like any other, and a
      * message naming that customer must not carry the name to a model.
      *
-     * Longest names first, so "Ada Obi Junior" cannot be half-eaten by "Ada
-     * Obi". Word-bounded and case-insensitive, because a merchant types
-     * "ada" as readily as "Ada". A name that fails to decrypt is skipped
-     * rather than fatal: one damaged row must not stop the message.
+     * The match is by keyed hash, not by decrypting names. Every run of one
+     * to MAX_NAME_WORDS words in the message is folded and hashed the same
+     * way a stored name was, and the whole set is looked up in one query. So
+     * the pass is complete for any customer count and costs the message's
+     * length, not the customer table: it never reads a name that was not
+     * typed, and there is no cap above which a real customer stops being
+     * recognised.
      */
-    const named = await customersRepo.nameFacetsFor(this.db, businessId, NAME_MATCH_CUSTOMERS);
-    const decrypted: Array<{ name: string; token: string; customerId: string }> = [];
-    for (const row of named) {
-      try {
-        const name = decryptFacet(row.ciphertext, this.config.vaultKey, `${businessId}:name`);
-        if (name.trim().length >= MIN_NAME_LENGTH) {
-          decrypted.push({ name: name.trim(), token: row.token, customerId: row.customerId });
-        }
-      } catch {
-        /* skipped, deliberately */
+    const words = [...out.matchAll(NAME_WORD)].map((m) => {
+      const start = m.index ?? 0;
+      return { start, end: start + m[0].length };
+    });
+    const candidates: Array<{ start: number; end: number; matchKey: string }> = [];
+    const keys = new Set<string>();
+    for (let i = 0; i < words.length; i++) {
+      const from = words[i];
+      if (!from) continue;
+      for (let n = 1; n <= MAX_NAME_WORDS && i + n <= words.length; n++) {
+        const to = words[i + n - 1];
+        if (!to) continue;
+        const start = from.start;
+        const end = to.end;
+        const normalised = normaliseFacet('name', out.slice(start, end));
+        if (normalised.length < MIN_NAME_LENGTH) continue;
+        const matchKey = matchKeyFor(businessId, 'name', normalised, this.config.matchKey);
+        candidates.push({ start, end, matchKey });
+        keys.add(matchKey);
       }
     }
-    decrypted.sort((a, b) => b.name.length - a.name.length);
-    for (const known of decrypted) {
-      const pattern = new RegExp(
-        `(?<![\\p{L}\\p{N}])${escapeForRegex(known.name)}(?![\\p{L}\\p{N}])`,
-        'giu',
-      );
-      if (!pattern.test(out)) continue;
-      out = out.replace(pattern, known.token);
-      tokens.set(known.token, known.name);
-      if (!seen.some((c) => c.customerId === known.customerId)) {
-        seen.push({
-          token: known.token,
-          customerId: known.customerId,
-          facet: 'name',
-          created: false,
-        });
+
+    const found = await customersRepo.namesByMatchKeys(this.db, businessId, [...keys]);
+    const byKey = new Map<string, { token: string; customerId: string }>();
+    for (const row of found) {
+      if (!byKey.has(row.matchKey)) byKey.set(row.matchKey, row);
+    }
+
+    /* Longest span first so "Ada Obi Junior" beats "Ada Obi", then leftmost;
+     * an already-claimed span blocks any overlap, so a name is tokenised once
+     * and its words are never re-consumed by a shorter match. */
+    const hits = candidates
+      .filter((c) => byKey.has(c.matchKey))
+      .sort((a, b) => b.end - b.start - (a.end - a.start) || a.start - b.start);
+    const claimed: Array<{ start: number; end: number; token: string; customerId: string }> = [];
+    for (const hit of hits) {
+      if (claimed.some((c) => hit.start < c.end && c.start < hit.end)) continue;
+      const match = byKey.get(hit.matchKey);
+      if (!match) continue;
+      claimed.push({
+        start: hit.start,
+        end: hit.end,
+        token: match.token,
+        customerId: match.customerId,
+      });
+    }
+
+    /* Rewrite right to left so an earlier span's offsets survive a later
+     * substitution that changes the string's length. */
+    for (const c of [...claimed].sort((a, b) => b.start - a.start)) {
+      tokens.set(c.token, out.slice(c.start, c.end));
+      out = out.slice(0, c.start) + c.token + out.slice(c.end);
+      if (!seen.some((s) => s.customerId === c.customerId)) {
+        seen.push({ token: c.token, customerId: c.customerId, facet: 'name', created: false });
       }
     }
 

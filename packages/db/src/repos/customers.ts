@@ -9,7 +9,7 @@
  * Both tables are under row-level security, so every read and write here goes
  * through a tenant pin.
  */
-import { and, eq, sql, desc } from 'drizzle-orm';
+import { and, eq, sql, inArray } from 'drizzle-orm';
 import type { Db, TenantDb } from '../client.js';
 import { withBusiness } from '../client.js';
 import { customerIdentities, customers } from '../schema/privacy.js';
@@ -54,43 +54,50 @@ export async function findCustomerByMatchKey(
   });
 }
 
-/** A customer with a stored name, as the privacy gateway's matcher needs one. */
-export interface NamedCustomer {
-  customerId: string;
+/** A customer name found by its keyed hash, for the gateway's known-name pass. */
+export interface NameByKey {
+  matchKey: string;
   token: string;
-  /** The name, still encrypted. The gateway holds the key; this module never does. */
-  ciphertext: string;
+  customerId: string;
 }
 
 /**
- * Every customer this business knows BY NAME, newest first.
+ * The customers whose stored NAME hashes to one of these keys.
  *
- * This feeds the gateway's known-name pass: before a message reaches a model,
- * any stored customer name found in it becomes that customer's token. The cap
- * bounds one inbound message's work; it is a protection net over the names
- * Rekoda has been TOLD, not a register, so the freshest names, the ones a
- * merchant is most likely typing this week, are the right ones to keep inside
- * the cap.
+ * The privacy gateway extracts candidate word-groups from an inbound message,
+ * folds and hashes each with the business's match key, and asks this in ONE
+ * query. That makes the known-name pass complete for any customer count and
+ * bounded by the message length, not the customer table: it reads only the
+ * few names actually mentioned, straight off `identities_match_ix`
+ * (business_id, facet, match_key), and never decrypts a name to find it.
  */
-export async function nameFacetsFor(
+export async function namesByMatchKeys(
   db: Db,
   businessId: string,
-  limit = 2_000,
-): Promise<NamedCustomer[]> {
+  matchKeys: readonly string[],
+): Promise<NameByKey[]> {
+  if (matchKeys.length === 0) return [];
   return withBusiness(db, businessId, async (tx) => {
-    return tx
+    const rows = await tx
       .select({
-        customerId: customerIdentities.customerId,
+        matchKey: customerIdentities.matchKey,
         token: customers.token,
-        ciphertext: customerIdentities.ciphertext,
+        customerId: customers.id,
       })
       .from(customerIdentities)
       .innerJoin(customers, eq(customers.id, customerIdentities.customerId))
       .where(
-        and(eq(customerIdentities.businessId, businessId), eq(customerIdentities.facet, 'name')),
+        and(
+          eq(customerIdentities.businessId, businessId),
+          eq(customerIdentities.facet, 'name'),
+          inArray(customerIdentities.matchKey, [...matchKeys]),
+        ),
+      );
+    return rows
+      .filter(
+        (r): r is { matchKey: string; token: string; customerId: string } => r.matchKey !== null,
       )
-      .orderBy(desc(customerIdentities.createdAt))
-      .limit(limit);
+      .map((r) => ({ matchKey: r.matchKey, token: r.token, customerId: r.customerId }));
   });
 }
 

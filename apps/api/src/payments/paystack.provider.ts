@@ -31,6 +31,8 @@ import type {
 } from './provider.port.js';
 
 /** A hung provider must never hold a worker (or its transaction) open. */
+/** A runaway guard: 200 pages is 40,000 settlements or transactions. */
+const SETTLEMENT_MAX_PAGES = 200;
 const REQUEST_TIMEOUT_MS = 15_000;
 
 export class PaystackApiError extends Error {}
@@ -170,32 +172,62 @@ export class PaystackProvider implements PaymentProviderPort {
   }
 
   async listSettlements(fromIso: string): Promise<ProviderSettlement[]> {
-    const query = `?from=${encodeURIComponent(fromIso)}&perPage=100`;
-    const parsed = paystackSettlementListResponse.safeParse(await this.get(`/settlement${query}`));
-    if (!parsed.success || !parsed.data.status) {
-      throw new PaystackApiError('settlement list returned an unreadable response');
+    const out: ProviderSettlement[] = [];
+    for (let page = 1; page <= SETTLEMENT_MAX_PAGES; page++) {
+      const query = `?from=${encodeURIComponent(fromIso)}&perPage=100&page=${page}`;
+      const parsed = paystackSettlementListResponse.safeParse(
+        await this.get(`/settlement${query}`),
+      );
+      if (!parsed.success || !parsed.data.status) {
+        throw new PaystackApiError('settlement list returned an unreadable response');
+      }
+      const rows = parsed.data.data ?? [];
+      for (const s of rows) {
+        out.push({
+          settlementId: String(s.id),
+          status: SETTLEMENT_STATUS[s.status] ?? 'held',
+          providerStatus: s.status,
+          settledAtIso:
+            SETTLEMENT_STATUS[s.status] === 'settled'
+              ? (s.settlement_date ?? s.effective_date ?? null)
+              : null,
+        });
+      }
+      /* Stop when the pager says this was the last page, or the page came
+       * back short. Reading only page one silently dropped every settlement
+       * batch past the first hundred in a busy window. */
+      const pageCount = parsed.data.meta?.pageCount ?? page;
+      if (page >= pageCount || rows.length < 100) break;
+      if (page === SETTLEMENT_MAX_PAGES) {
+        this.log.warn(`settlement list exceeded ${SETTLEMENT_MAX_PAGES} pages; stopping`);
+      }
     }
-    return (parsed.data.data ?? []).map((s) => ({
-      settlementId: String(s.id),
-      status: SETTLEMENT_STATUS[s.status] ?? 'held',
-      providerStatus: s.status,
-      settledAtIso:
-        SETTLEMENT_STATUS[s.status] === 'settled'
-          ? (s.settlement_date ?? s.effective_date ?? null)
-          : null,
-    }));
+    return out;
   }
 
   async listSettlementTransactions(settlementId: string): Promise<string[]> {
-    const parsed = paystackSettlementTransactionsResponse.safeParse(
-      await this.get(`/settlement/${encodeURIComponent(settlementId)}/transactions?perPage=200`),
-    );
-    if (!parsed.success || !parsed.data.status) {
-      throw new PaystackApiError('settlement transactions returned an unreadable response');
+    const refs: string[] = [];
+    const id = encodeURIComponent(settlementId);
+    for (let page = 1; page <= SETTLEMENT_MAX_PAGES; page++) {
+      const parsed = paystackSettlementTransactionsResponse.safeParse(
+        await this.get(`/settlement/${id}/transactions?perPage=200&page=${page}`),
+      );
+      if (!parsed.success || !parsed.data.status) {
+        throw new PaystackApiError('settlement transactions returned an unreadable response');
+      }
+      const rows = parsed.data.data ?? [];
+      for (const t of rows) {
+        if (typeof t.reference === 'string' && t.reference.length > 0) refs.push(t.reference);
+      }
+      /* Every reference past the first page used to be dropped, so a busy
+       * merchant's payments reconciled as exceptions forever. */
+      const pageCount = parsed.data.meta?.pageCount ?? page;
+      if (page >= pageCount || rows.length < 200) break;
+      if (page === SETTLEMENT_MAX_PAGES) {
+        this.log.warn(`settlement ${id} exceeded ${SETTLEMENT_MAX_PAGES} pages; stopping`);
+      }
     }
-    return (parsed.data.data ?? [])
-      .map((t) => t.reference)
-      .filter((r): r is string => typeof r === 'string' && r.length > 0);
+    return refs;
   }
 
   private async get(path: string): Promise<unknown> {
