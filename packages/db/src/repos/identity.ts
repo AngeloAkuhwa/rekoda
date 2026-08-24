@@ -22,6 +22,7 @@ import {
   sessions,
   users,
 } from '../schema/tenancy.js';
+import { auditEvents } from '../schema/ops.js';
 
 /** Either a pool handle or a transaction — every read below accepts both. */
 export type Queryable = Db | TenantDb;
@@ -197,6 +198,8 @@ export interface BusinessRow {
   name: string;
   businessType: string | null;
   plan: string;
+  rcNumber: string | null;
+  tin: string | null;
 }
 
 /**
@@ -234,6 +237,8 @@ export async function createBusinessWithOwner(db: Db, input: NewBusiness): Promi
       name: row.name,
       businessType: row.businessType,
       plan: row.plan,
+      rcNumber: row.rcNumber,
+      tin: row.tin,
     };
   });
 }
@@ -290,9 +295,74 @@ export async function businessById(db: Db, businessId: string): Promise<Business
     const rows = await tx.select().from(businesses).where(eq(businesses.id, businessId)).limit(1);
     const row = rows[0];
     return row
-      ? { id: row.id, name: row.name, businessType: row.businessType, plan: row.plan }
+      ? {
+          id: row.id,
+          name: row.name,
+          businessType: row.businessType,
+          plan: row.plan,
+          rcNumber: row.rcNumber,
+          tin: row.tin,
+        }
       : null;
   });
+}
+
+export interface BusinessSettingsPatch {
+  name?: string | undefined;
+  /** Empty string clears the number: "not registered" is a valid answer. */
+  rcNumber?: string | undefined;
+  tin?: string | undefined;
+}
+
+export interface BusinessSettings {
+  name: string;
+  rcNumber: string | null;
+  tin: string | null;
+}
+
+/**
+ * The facts a business may correct about itself (fix-plan 5, H2a).
+ *
+ * The columns have existed since M0 and nothing could ever write them after
+ * onboarding, which made "you can change it later" a promise with no door.
+ * Audited like every deliberate change: a renamed business is a fact an
+ * accountant may need explained.
+ */
+export async function updateBusinessSettings(
+  tx: TenantDb,
+  businessId: string,
+  patch: BusinessSettingsPatch,
+  actor: string,
+): Promise<BusinessSettings> {
+  const before = await tx
+    .select({ name: businesses.name, rcNumber: businesses.rcNumber, tin: businesses.tin })
+    .from(businesses)
+    .where(eq(businesses.id, businessId))
+    .limit(1);
+  const previous = before[0];
+  if (!previous) throw new Error('updateBusinessSettings: no such business');
+
+  const next: BusinessSettings = {
+    name: patch.name ?? previous.name,
+    rcNumber: patch.rcNumber === undefined ? previous.rcNumber : patch.rcNumber || null,
+    tin: patch.tin === undefined ? previous.tin : patch.tin || null,
+  };
+  await tx
+    .update(businesses)
+    .set({ name: next.name, rcNumber: next.rcNumber, tin: next.tin, updatedAt: new Date() })
+    .where(eq(businesses.id, businessId));
+
+  await tx.insert(auditEvents).values({
+    businessId,
+    actor,
+    entity: 'business',
+    entityId: businessId,
+    action: 'settings_changed',
+    oldValue: previous as never,
+    newValue: next as never,
+    sourceType: 'dashboard',
+  });
+  return next;
 }
 
 /* ─────────────────────────── magic links ─────────────────────────── */

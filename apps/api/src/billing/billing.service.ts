@@ -28,6 +28,7 @@ import {
   USAGE_UNITS,
 } from '@rekoda/core';
 import type {
+  BillingCancelResponse,
   BillingOverviewResponse,
   BillingPlanChangeResponse,
   BillingQuoteResponse,
@@ -126,6 +127,40 @@ export class BillingService {
         effectiveFrom: charge.effectiveFrom,
         renewsAt: charge.renewsAt.toISOString(),
       };
+    });
+  }
+
+  /**
+   * Cancel the subscription (fix-plan 5, H2a).
+   *
+   * A cancellation is a downgrade whose destination is nothing: the merchant
+   * keeps every day they paid for, and at renewal the plan ends instead of
+   * charging. It rides `pending_plan` exactly as a downgrade does, so the
+   * renewal sweep is the single place plans move, and picking the current
+   * plan again on the change table undoes it the same way it undoes a
+   * downgrade. Trials are answered, not cancelled: a trial charges nothing
+   * and ends by itself, and "cancelled" would imply a charge was averted.
+   */
+  async cancelPlan(businessId: string): Promise<BillingCancelResponse> {
+    return withBusiness(this.db, businessId, async (tx) => {
+      const subscription = await subscriptionsRepo.subscriptionFor(tx, businessId);
+      const plan = subscription?.plan ?? 'trial';
+      if (plan === 'expired') return { state: 'already_stopped' as const };
+      if (plan === 'trial') {
+        return {
+          state: 'trial' as const,
+          endsAt: subscription?.planExpiresAt?.toISOString() ?? null,
+        };
+      }
+      /* A paid plan always carries an expiry; guard anyway rather than
+       * promise a date that does not exist. */
+      const endsAt = subscription?.planExpiresAt?.toISOString();
+      if (!endsAt) return { state: 'already_stopped' as const };
+      if (subscription?.pendingPlan === 'expired') {
+        return { state: 'already_scheduled' as const, endsAt };
+      }
+      await subscriptionsRepo.schedulePlanChange(tx, businessId, 'expired');
+      return { state: 'scheduled' as const, endsAt };
     });
   }
 

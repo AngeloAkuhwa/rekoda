@@ -38,7 +38,10 @@ import {
   requestOtpResponse,
   sessionResponse,
   setupStateResponse,
+  billingCancelResponse,
   billingOverviewResponse,
+  businessSettingsResponse,
+  businessSettingsView,
   billingPlanChangeResponse,
   billingQuoteResponse,
   usageMeterResponse,
@@ -69,7 +72,11 @@ import {
   voidExpenseResponse,
   voidInvoiceResponse,
   verifyOtpResponse,
+  type BillingCancelResponse,
   type BillingOverviewResponse,
+  type BusinessSettingsRequest,
+  type BusinessSettingsResponse,
+  type BusinessSettingsView,
   type BillingPlanChangeResponse,
   type BillingQuoteResponse,
   type MeResponse,
@@ -705,6 +712,42 @@ export async function billingBuyPack(
   return status === 200 ? (json as BuyPackOutcome) : null;
 }
 
+/** Cancel the subscription: a scheduled stop on the day already paid to. */
+export async function billingCancel(sessionToken: string): Promise<BillingCancelResponse | null> {
+  const { status, json } = await call({
+    method: 'POST',
+    path: '/v1/billing/cancel',
+    body: {},
+    headers: { authorization: `Bearer ${sessionToken}` },
+    expect: [200, 400],
+  });
+  return status === 200 ? billingCancelResponse.parse(json) : null;
+}
+
+/** The facts the settings page edits. Owner-only, like the write. */
+export async function businessSettings(sessionToken: string): Promise<BusinessSettingsView> {
+  const { json } = await call({
+    method: 'GET',
+    path: '/v1/businesses/settings',
+    headers: { authorization: `Bearer ${sessionToken}` },
+    expect: [200],
+  });
+  return businessSettingsView.parse(json);
+}
+
+export async function updateBusinessSettings(
+  sessionToken: string,
+  body: BusinessSettingsRequest,
+): Promise<BusinessSettingsResponse | null> {
+  const { status, json } = await call({
+    method: 'POST',
+    path: '/v1/businesses/settings',
+    body,
+    headers: { authorization: `Bearer ${sessionToken}` },
+    expect: [200, 400],
+  });
+  return status === 200 ? businessSettingsResponse.parse(json) : null;
+}
 /**
  * Withdraw an invoice. Returns null on a request the API refused outright,
  * which the caller reports as a sentence rather than an error page.

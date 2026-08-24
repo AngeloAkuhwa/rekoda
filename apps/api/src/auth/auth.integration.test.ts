@@ -426,19 +426,60 @@ describe('roles', () => {
     expect(signedIn.status).toBe('signed_in');
 
     expect(
-      (await post('/v1/businesses/settings', {}, { authorization: `Bearer ${owner.sessionToken}` }))
-        .statusCode,
+      (
+        await post(
+          '/v1/businesses/settings',
+          { name: 'Ada & Co' },
+          { authorization: `Bearer ${owner.sessionToken}` },
+        )
+      ).statusCode,
     ).toBe(200);
 
     expect(
       (
         await post(
           '/v1/businesses/settings',
-          {},
+          { name: 'Ada & Co' },
           { authorization: `Bearer ${signedIn.sessionToken}` },
         )
       ).statusCode,
     ).toBe(403);
+  });
+
+  it('settings actually change the facts, and an empty save is refused', async () => {
+    const owner = await onboard('08031234576');
+    const auth = { authorization: `Bearer ${owner.sessionToken}` };
+
+    /* The endpoint spent four milestones as a stub while onboarding said
+     * "you can change it later". This pins that the door is real now. */
+    expect((await post('/v1/businesses/settings', {}, auth)).statusCode).toBe(400);
+
+    const saved = (
+      await post(
+        '/v1/businesses/settings',
+        { name: 'Ada & Daughters', rcNumber: 'RC1234567', tin: '01234567-0001' },
+        auth,
+      )
+    ).json() as { outcome: string; name: string; rcNumber: string | null; tin: string | null };
+    expect(saved).toEqual({
+      outcome: 'saved',
+      name: 'Ada & Daughters',
+      rcNumber: 'RC1234567',
+      tin: '01234567-0001',
+    });
+
+    const business = await identity.businessById(db, owner.businessId);
+    expect(business?.name).toBe('Ada & Daughters');
+
+    /* Clearing a number is a valid answer; an untouched field stays put. */
+    const cleared = (await post('/v1/businesses/settings', { rcNumber: '' }, auth)).json() as {
+      rcNumber: string | null;
+      tin: string | null;
+      name: string;
+    };
+    expect(cleared.rcNumber).toBeNull();
+    expect(cleared.tin).toBe('01234567-0001');
+    expect(cleared.name).toBe('Ada & Daughters');
   });
 });
 

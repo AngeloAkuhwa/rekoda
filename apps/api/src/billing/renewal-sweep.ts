@@ -63,6 +63,28 @@ export async function sweepRenewals(
       /* The plan the NEXT cycle is on: a scheduled downgrade takes effect here,
        * which is exactly what ADR 0024 promised the merchant. */
       const plan = business.nextPlan;
+
+      /* A cancellation is a downgrade whose destination is nothing (fix-plan
+       * 5, H2a). No charge is raised and no grace clock starts: the merchant
+       * asked for exactly this, and dunning somebody for a month they
+       * declined would be the bill the cancel button promised away. The
+       * expiry is race-safe in the repo: a payment landing between the read
+       * and the write keeps its plan. */
+      if (plan === 'expired') {
+        try {
+          await withBusiness(deps.appDb, business.businessId, (tx) =>
+            subscriptionsRepo.expireSubscription(tx, business.businessId, 'system:renewal_sweep'),
+          );
+          result.skipped += 1;
+        } catch (error) {
+          log.error(
+            `cancel apply failed for ${business.businessId}: ${redactForLog(String(error))}`,
+          );
+          result.skipped += 1;
+        }
+        continue;
+      }
+
       const amountK = planPriceK(plan);
       const anchorDay =
         business.renewalAnchorDay ?? new Date(business.renewsAt.getTime() + 3_600_000).getUTCDate();

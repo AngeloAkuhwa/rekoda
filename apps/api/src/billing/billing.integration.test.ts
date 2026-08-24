@@ -16,7 +16,11 @@
 import { randomBytes } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { addMonth, GRACE_DAYS, PLAN_PRICES_K } from '@rekoda/core';
-import { billingOverviewResponse, billingQuoteResponse } from '@rekoda/contracts';
+import {
+  billingCancelResponse,
+  billingOverviewResponse,
+  billingQuoteResponse,
+} from '@rekoda/contracts';
 import {
   createDb,
   identity,
@@ -476,6 +480,64 @@ describe('the cycle a payment starts', () => {
     /* And the cycle STARTED when the last one ended, not when the money
      * arrived: a later upgrade prorates against a whole month. */
     expect(sub?.cycleStartedAt?.toISOString()).toBe(cycleEnd.toISOString());
+  });
+});
+
+describe('cancelling the subscription', () => {
+  const cancel = async (auth: Record<string, string>) =>
+    billingCancelResponse.parse((await post('/v1/billing/cancel', {}, auth)).json());
+
+  it('schedules the stop for the day already paid to, and can be undone', async () => {
+    const { businessId, auth } = await onboard('+2348177100031');
+    const renewsAt = new Date(Date.now() + 20 * 86_400_000);
+    await putOnPlan(businessId, 'chat', new Date(Date.now() - 10 * 86_400_000), renewsAt);
+
+    const scheduled = await cancel(auth);
+    expect(scheduled).toEqual({ state: 'scheduled', endsAt: renewsAt.toISOString() });
+    /* Idempotent: a second click is told what the first one did. */
+    expect(await cancel(auth)).toEqual({
+      state: 'already_scheduled',
+      endsAt: renewsAt.toISOString(),
+    });
+    expect((await overviewOf(auth)).pendingPlan).toBe('expired');
+
+    /* Changing back to the current plan clears it, the same road that
+     * clears a scheduled downgrade. */
+    const kept = (await post('/v1/billing/plan', { plan: 'chat' }, auth)).json() as {
+      state: string;
+    };
+    expect(kept.state).toBe('scheduled');
+    expect((await overviewOf(auth)).pendingPlan).toBeNull();
+  });
+
+  it('ends the cycle with no charge and no grace clock', async () => {
+    const { businessId, auth } = await onboard('+2348177100032');
+    const renewsAt = new Date(Date.now() - 86_400_000);
+    await putOnPlan(businessId, 'chat', new Date(renewsAt.getTime() - 30 * 86_400_000), renewsAt);
+    expect(await cancel(auth)).toEqual({ state: 'scheduled', endsAt: renewsAt.toISOString() });
+
+    /* The sweep applies the cancellation instead of raising a renewal. */
+    expect(await sweepRenewals({ workerDb, appDb: db }, new Date())).toEqual({
+      raised: 0,
+      skipped: 1,
+    });
+
+    const charges = await withBusiness(db, businessId, (tx) =>
+      subscriptionsRepo.chargesFor(tx, businessId),
+    );
+    expect(charges.rows.filter((c) => c.kind === 'renewal')).toEqual([]);
+    const sub = await withBusiness(db, businessId, (tx) =>
+      subscriptionsRepo.subscriptionFor(tx, businessId),
+    );
+    expect(sub?.plan).toBe('expired');
+    expect(sub?.paymentFailedAt).toBeNull();
+    expect((await overviewOf(auth)).plan).toBe('expired');
+  });
+
+  it('a trial is answered, not cancelled: it charges nothing and ends by itself', async () => {
+    const { auth } = await onboard('+2348177100033');
+    const answer = await cancel(auth);
+    expect(answer.state).toBe('trial');
   });
 });
 

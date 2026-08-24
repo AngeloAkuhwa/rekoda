@@ -20,6 +20,7 @@ import {
 import {
   billingPackPurchaseRequest,
   billingPlanChangeRequest,
+  type BillingCancelResponse,
   type BillingOverviewResponse,
   type BillingPlanChangeResponse,
   type BillingQuoteResponse,
@@ -68,6 +69,18 @@ export class BillingController {
     const parsed = billingPlanChangeRequest.safeParse(body);
     if (!parsed.success) throw new BadRequestException('plan must be chat, integrate or complete');
     return this.billing.changePlan(request.auth!.businessId, parsed.data.plan);
+  }
+
+  /**
+   * The cancel button the terms have promised since they were written.
+   * Owner-only like every plan decision; the answer names the exact day the
+   * plan ends, because "cancelled" without a date reads as "cut off now".
+   */
+  @Post('cancel')
+  @HttpCode(200)
+  @Roles('owner')
+  async cancelPlan(@Req() request: AuthedRequest): Promise<BillingCancelResponse> {
+    return this.billing.cancelPlan(request.auth!.businessId);
   }
 
   @Post('packs')
