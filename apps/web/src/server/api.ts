@@ -1,12 +1,19 @@
 import 'server-only';
 import {
+  type CancelPurchaseOrderResponse,
   type CancelQuoteResponse,
   type ConvertQuoteResponse,
+  type CreatePurchaseOrderRequest,
+  type CreatePurchaseOrderResponse,
   type CreateQuoteResponse,
   type CreateQuoteRequest,
+  type ReceivePurchaseOrderResponse,
+  cancelPurchaseOrderResponse,
   cancelQuoteResponse,
   convertQuoteResponse,
+  createPurchaseOrderResponse,
   createQuoteResponse,
+  receivePurchaseOrderResponse,
   meResponse,
   paymentConnectionResponse,
   paymentExceptionsResponse,
@@ -1085,6 +1092,49 @@ export async function cancelQuote(
     expect: [200, 400],
   });
   return status === 200 ? cancelQuoteResponse.parse(json) : null;
+}
+
+export async function createPurchaseOrder(
+  sessionToken: string,
+  body: CreatePurchaseOrderRequest,
+): Promise<CreatePurchaseOrderResponse | null> {
+  const { status, json } = await call({
+    method: 'POST',
+    path: '/v1/reports/purchase-orders',
+    body,
+    headers: { authorization: `Bearer ${sessionToken}` },
+    expect: [200, 400],
+  });
+  return status === 200 ? createPurchaseOrderResponse.parse(json) : null;
+}
+
+export async function receivePurchaseOrder(
+  sessionToken: string,
+  poNumber: string,
+  paidK: number,
+): Promise<ReceivePurchaseOrderResponse | null> {
+  const { status, json } = await call({
+    method: 'POST',
+    path: '/v1/reports/purchase-orders/receive',
+    body: { poNumber, paidK },
+    headers: { authorization: `Bearer ${sessionToken}` },
+    expect: [200, 400],
+  });
+  return status === 200 ? receivePurchaseOrderResponse.parse(json) : null;
+}
+
+export async function cancelPurchaseOrder(
+  sessionToken: string,
+  poNumber: string,
+): Promise<CancelPurchaseOrderResponse | null> {
+  const { status, json } = await call({
+    method: 'POST',
+    path: '/v1/reports/purchase-orders/cancel',
+    body: { poNumber },
+    headers: { authorization: `Bearer ${sessionToken}` },
+    expect: [200, 400],
+  });
+  return status === 200 ? cancelPurchaseOrderResponse.parse(json) : null;
 }
 
 export async function creditInvoice(

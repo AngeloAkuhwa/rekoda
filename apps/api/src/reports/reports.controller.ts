@@ -91,12 +91,18 @@ import type {
   VoidInvoiceResponse,
 } from '@rekoda/contracts';
 import {
+  type CancelPurchaseOrderResponse,
   type CancelQuoteResponse,
   type ConvertQuoteResponse,
+  type CreatePurchaseOrderResponse,
   type CreateQuoteResponse,
+  type ReceivePurchaseOrderResponse,
+  cancelPurchaseOrderRequest,
   cancelQuoteRequest,
   convertQuoteRequest,
+  createPurchaseOrderRequest,
   createQuoteRequest,
+  receivePurchaseOrderRequest,
   createRecurringRequest,
   openingBalancesRequest,
   stockCountRequest,
@@ -840,6 +846,161 @@ export class ReportsController {
     });
   }
 
+  /**
+   * A purchase order: the quote's mirror, pointing at a supplier (fix-plan
+   * 4, G4). Creating one posts nothing, moves nothing and costs no unit: a
+   * request for goods is not the goods. No supplier field anywhere on this
+   * road, because Rekoda stores nothing about suppliers; the merchant's own
+   * message carries the name, Rekoda carries the goods and the money.
+   */
+  @Post('purchase-orders')
+  @Roles('owner', 'delegate')
+  @HttpCode(200)
+  async createPurchaseOrder(
+    @Req() request: AuthedRequest,
+    @Body() body: unknown,
+  ): Promise<CreatePurchaseOrderResponse> {
+    const parsed = createPurchaseOrderRequest.safeParse(body);
+    if (!parsed.success) {
+      throw new BadRequestException('one to twenty lines, each with a name, quantity and cost');
+    }
+    const businessId = request.auth!.businessId;
+
+    const lines = parsed.data.items.map((item) => ({
+      productId: null,
+      name: item.name,
+      quantity: item.quantity,
+      unitPriceK: item.unitPriceK,
+      lineTotalK: item.quantity * item.unitPriceK,
+    }));
+    const totalK = lines.reduce((n, line) => n + line.lineTotalK, 0);
+
+    try {
+      const created = await withBusiness(this.db, businessId, (tx) =>
+        ordersRepo.createPurchaseOrder(tx, {
+          businessId,
+          lines,
+          totalK,
+          expectedOn: parsed.data.expectedOn ?? null,
+          clientRef: parsed.data.clientRef ?? null,
+          sourceId: `user:${request.auth!.userId}`,
+        }),
+      );
+      return {
+        outcome: 'created',
+        poNumber: created.orderNumber,
+        totalK,
+        expectedOn: parsed.data.expectedOn ?? null,
+      };
+    } catch (error) {
+      if (isDuplicateOn(error, 'orders_external')) return { outcome: 'duplicate' };
+      throw error;
+    }
+  }
+
+  /**
+   * The delivery landed: the money posts through the exact road a chat
+   * purchase takes (stock in, cash out for what was handed over, the rest
+   * onto ACCOUNTS_PAYABLE), and every line becomes counted stock at its line
+   * cost, moving each product's weighted average the way any delivery does.
+   *
+   * The status machine is the idempotency: the `open -> received` claim is
+   * taken FIRST, so a second click writes nothing and is told what happened.
+   * A line naming something the shop has never counted creates the product,
+   * which is what the chat flow does when a merchant buys something new —
+   * a thing deliberately ordered by the crate is a thing the shop counts.
+   */
+  @Post('purchase-orders/receive')
+  @Roles('owner', 'delegate')
+  @HttpCode(200)
+  async receivePurchaseOrder(
+    @Req() request: AuthedRequest,
+    @Body() body: unknown,
+  ): Promise<ReceivePurchaseOrderResponse> {
+    const parsed = receivePurchaseOrderRequest.safeParse(body);
+    if (!parsed.success) throw new BadRequestException('the PO number and what was paid');
+    const businessId = request.auth!.businessId;
+    const poNumber = parsed.data.poNumber.toUpperCase();
+
+    const po = await withBusiness(this.db, businessId, (tx) =>
+      ordersRepo.purchaseOrderByNumber(tx, businessId, poNumber),
+    );
+    if (!po || !poNumber.startsWith('PO-')) return { outcome: 'not_found' };
+    if (po.status === 'received') return { outcome: 'already_received' };
+    if (po.status !== 'open') return { outcome: 'cancelled' };
+    /* More than the order costs is a prepayment, and this posting cannot say
+     * that: it would drive ACCOUNTS_PAYABLE negative. Same refusal as the
+     * supplier settlement, with the figure to pay instead. */
+    if (parsed.data.paidK > po.totalK) {
+      return { outcome: 'more_than_total', totalK: po.totalK };
+    }
+
+    return withBusiness(this.db, businessId, async (tx) => {
+      const marked = await ordersRepo.markOrder(tx, businessId, po.id, 'open', 'received');
+      if (marked !== 'marked') {
+        /* A racing receive or cancel got here first; nothing was written.
+         * Re-read so the answer says which of the two it was. */
+        const taken = await ordersRepo.purchaseOrderByNumber(tx, businessId, poNumber);
+        return taken?.status === 'cancelled'
+          ? { outcome: 'cancelled' as const }
+          : { outcome: 'already_received' as const };
+      }
+
+      const recorded = await spendRepo.recordPurchase(tx, {
+        businessId,
+        description: `Purchase order ${poNumber}`,
+        amountK: po.totalK,
+        paidK: parsed.data.paidK,
+        sourceType: 'purchase_order',
+        sourceId: po.id,
+      });
+
+      let linesArrived = 0;
+      for (const line of po.lines) {
+        const product = await stockRepo.findOrCreateProduct(tx, businessId, line.name);
+        await stockRepo.recordDelivery(tx, {
+          businessId,
+          product,
+          quantity: line.quantity,
+          costK: line.lineTotalK,
+          sourceType: 'purchase_order',
+          sourceId: po.id,
+        });
+        linesArrived += 1;
+      }
+
+      return {
+        outcome: 'received' as const,
+        poNumber,
+        totalK: po.totalK,
+        owedK: recorded.owedK,
+        linesArrived,
+      };
+    });
+  }
+
+  /** Withdraw an open purchase order. Never a delete: an ask made is a fact. */
+  @Post('purchase-orders/cancel')
+  @Roles('owner', 'delegate')
+  @HttpCode(200)
+  async cancelPurchaseOrder(
+    @Req() request: AuthedRequest,
+    @Body() body: unknown,
+  ): Promise<CancelPurchaseOrderResponse> {
+    const parsed = cancelPurchaseOrderRequest.safeParse(body);
+    if (!parsed.success) throw new BadRequestException('the PO number');
+    const businessId = request.auth!.businessId;
+    const poNumber = parsed.data.poNumber.toUpperCase();
+
+    return withBusiness(this.db, businessId, async (tx) => {
+      const po = await ordersRepo.purchaseOrderByNumber(tx, businessId, poNumber);
+      if (!po || !poNumber.startsWith('PO-')) return { outcome: 'not_found' };
+      if (po.status !== 'open') return { outcome: 'already', status: po.status };
+      await ordersRepo.markOrder(tx, businessId, po.id, 'open', 'cancelled');
+      return { outcome: 'cancelled' };
+    });
+  }
+
   /** The receipt register. Every row exists because real money was recorded. */
   @Get('receipts')
   async receipts(@Req() request: AuthedRequest): Promise<ReportsReceiptsResponse> {
@@ -948,10 +1109,8 @@ export class ReportsController {
   async expenses(@Req() request: AuthedRequest): Promise<ReportsExpensesResponse> {
     const businessId = request.auth!.businessId;
     const now = new Date();
-    const { list, payableAgeing, recurringList, outstanding, assetRegister } = await withBusiness(
-      this.db,
-      businessId,
-      async (tx) => ({
+    const { list, payableAgeing, recurringList, outstanding, assetRegister, purchaseOrderList } =
+      await withBusiness(this.db, businessId, async (tx) => ({
         list: await spendRepo.spendFor(tx, businessId, REGISTER_ROWS),
         payableAgeing: await spendRepo.payableAgeingFor(tx, businessId, now),
         recurringList: await recurringRepo.schedulesFor(tx, businessId),
@@ -960,8 +1119,8 @@ export class ReportsController {
          * from one moment and a list from another. */
         outstanding: await spendRepo.outstandingPurchases(tx, businessId),
         assetRegister: await assetsRepo.assetsFor(tx, businessId),
-      }),
-    );
+        purchaseOrderList: await ordersRepo.purchaseOrdersFor(tx, businessId, REGISTER_ROWS),
+      }));
     return {
       entries: list.rows.map((r) => ({
         description: r.description,
@@ -987,6 +1146,15 @@ export class ReportsController {
        * of `assets`, so counting that array would tell a merchant with more
        * equipment than the cap that the register holds exactly what fitted. */
       assetsTotal: assetRegister.count,
+      purchaseOrdersTotal: purchaseOrderList.count,
+      purchaseOrders: purchaseOrderList.rows.map((po) => ({
+        poNumber: po.poNumber,
+        status: po.status,
+        totalK: po.totalK,
+        itemCount: po.itemCount,
+        expectedOn: po.expectedOn,
+        createdAt: po.createdAt.toISOString(),
+      })),
     };
   }
 

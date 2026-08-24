@@ -3,9 +3,12 @@
 import { revalidatePath } from 'next/cache';
 import { formatKobo, parseAmountText, toKobo } from '@rekoda/core';
 import {
+  cancelPurchaseOrder,
+  createPurchaseOrder,
   createRecurring,
   disposeAsset,
   paySupplier,
+  receivePurchaseOrder,
   recordAsset,
   stopRecurring,
   voidExpense,
@@ -463,5 +466,153 @@ export async function disposeAssetAction(
     return await disposeAssetActionUnguarded(...args);
   } catch (error) {
     return viewOnlyRefusal(error) as Awaited<ReturnType<typeof disposeAssetActionUnguarded>>;
+  }
+}
+
+/* ── purchase orders: asking a supplier for goods (fix-plan 4, G4) ───────── */
+
+export interface PurchaseOrderFormState {
+  error?: string;
+  done?: string;
+}
+
+async function createPurchaseOrderActionUnguarded(
+  _prev: PurchaseOrderFormState,
+  formData: FormData,
+): Promise<PurchaseOrderFormState> {
+  const token = await readSessionToken();
+  if (!token) return { error: 'Your session expired. Sign in again.' };
+
+  const expectedOn = String(formData.get('expectedOn') ?? '').trim();
+  const items: Array<{ name: string; quantity: number; unitPriceK: number }> = [];
+  for (let i = 0; i < 20; i++) {
+    const name = String(formData.get(`itemName${i}`) ?? '').trim();
+    if (!name) continue;
+    const quantity = Number(formData.get(`itemQty${i}`) ?? 0);
+    const naira = parseAmountText(String(formData.get(`itemPrice${i}`) ?? ''));
+    if (!Number.isInteger(quantity) || quantity <= 0) {
+      return { error: `Give ${name} a whole-number quantity.` };
+    }
+    if (naira === null || naira <= 0) {
+      return { error: `Give ${name} a cost each in naira. For example 8500, or 8.5k.` };
+    }
+    items.push({ name, quantity, unitPriceK: toKobo(naira) });
+  }
+  if (items.length === 0) return { error: 'Add at least one line: what, how many, at what cost.' };
+
+  const clientRefRaw = String(formData.get('clientRef') ?? '');
+  const clientRef = /^[0-9a-f-]{36}$/i.test(clientRefRaw) ? clientRefRaw : undefined;
+
+  const outcome = await createPurchaseOrder(token, {
+    items,
+    ...(expectedOn ? { expectedOn } : {}),
+    ...(clientRef ? { clientRef } : {}),
+  });
+  if (!outcome) return { error: 'That did not go through. Nothing was saved.' };
+  if (outcome.outcome === 'duplicate') {
+    revalidatePath('/app/expenses');
+    return { done: 'Already saved. Nothing was created twice.' };
+  }
+
+  revalidatePath('/app/expenses');
+  return {
+    done: `${outcome.poNumber} saved for ${formatKobo(outcome.totalK)}. Mark it received when the goods land.`,
+  };
+}
+
+async function receivePurchaseOrderActionUnguarded(
+  _prev: PurchaseOrderFormState,
+  formData: FormData,
+): Promise<PurchaseOrderFormState> {
+  const token = await readSessionToken();
+  if (!token) return { error: 'Your session expired. Sign in again.' };
+  const poNumber = String(formData.get('poNumber') ?? '').trim();
+  if (!poNumber) return { error: 'Pick the order that arrived.' };
+
+  /* Blank means nothing paid yet: a delivery wholly on credit is ordinary. */
+  const paidText = String(formData.get('paid') ?? '').trim();
+  const paidNaira = paidText === '' ? 0 : parseAmountText(paidText);
+  if (paidNaira === null || paidNaira < 0) {
+    return { error: 'Say what you paid in naira, or leave it empty for nothing yet.' };
+  }
+
+  const outcome = await receivePurchaseOrder(token, poNumber, toKobo(paidNaira));
+  if (!outcome) return { error: 'That did not go through. Nothing was recorded.' };
+
+  if (outcome.outcome === 'not_found') return { error: 'No purchase order with that number.' };
+  if (outcome.outcome === 'cancelled') {
+    return { error: `${poNumber} was withdrawn, so there is nothing to receive.` };
+  }
+  if (outcome.outcome === 'more_than_total') {
+    return {
+      error: `That is more than the ${formatKobo(outcome.totalK)} this order costs. Pay up to the total here and record the rest as its own entry.`,
+    };
+  }
+  if (outcome.outcome === 'already_received') {
+    revalidatePath('/app/expenses');
+    return { done: 'Already received. Nothing was recorded twice.' };
+  }
+
+  revalidatePath('/app/expenses');
+  const owed =
+    outcome.owedK > 0
+      ? ` You still owe ${formatKobo(outcome.owedK)} on it.`
+      : ' Nothing is owed on it.';
+  return {
+    done: `${outcome.poNumber} received: ${formatKobo(outcome.totalK)} of stock is on your shelf.${owed}`,
+  };
+}
+
+async function cancelPurchaseOrderActionUnguarded(
+  _prev: PurchaseOrderFormState,
+  formData: FormData,
+): Promise<PurchaseOrderFormState> {
+  const token = await readSessionToken();
+  if (!token) return { error: 'Your session expired. Sign in again.' };
+  const poNumber = String(formData.get('poNumber') ?? '').trim();
+  if (!poNumber) return { error: 'Pick the order to withdraw.' };
+
+  const outcome = await cancelPurchaseOrder(token, poNumber);
+  if (!outcome) return { error: 'That did not go through. Nothing was changed.' };
+  if (outcome.outcome === 'not_found') return { error: 'No purchase order with that number.' };
+  if (outcome.outcome === 'already') {
+    return {
+      error: `${poNumber} is already ${outcome.status === 'received' ? 'received' : 'withdrawn'}.`,
+    };
+  }
+
+  revalidatePath('/app/expenses');
+  return { done: `${poNumber} withdrawn. It stays on the list as a record of the ask.` };
+}
+
+export async function createPurchaseOrderAction(
+  ...args: Parameters<typeof createPurchaseOrderActionUnguarded>
+): ReturnType<typeof createPurchaseOrderActionUnguarded> {
+  try {
+    return await createPurchaseOrderActionUnguarded(...args);
+  } catch (error) {
+    return viewOnlyRefusal(error) as Awaited<ReturnType<typeof createPurchaseOrderActionUnguarded>>;
+  }
+}
+
+export async function receivePurchaseOrderAction(
+  ...args: Parameters<typeof receivePurchaseOrderActionUnguarded>
+): ReturnType<typeof receivePurchaseOrderActionUnguarded> {
+  try {
+    return await receivePurchaseOrderActionUnguarded(...args);
+  } catch (error) {
+    return viewOnlyRefusal(error) as Awaited<
+      ReturnType<typeof receivePurchaseOrderActionUnguarded>
+    >;
+  }
+}
+
+export async function cancelPurchaseOrderAction(
+  ...args: Parameters<typeof cancelPurchaseOrderActionUnguarded>
+): ReturnType<typeof cancelPurchaseOrderActionUnguarded> {
+  try {
+    return await cancelPurchaseOrderActionUnguarded(...args);
+  } catch (error) {
+    return viewOnlyRefusal(error) as Awaited<ReturnType<typeof cancelPurchaseOrderActionUnguarded>>;
   }
 }
