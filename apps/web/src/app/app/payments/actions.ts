@@ -6,6 +6,7 @@ import {
   resolvePaymentException,
   submitPaymentConnection,
   viewOnlyRefusal,
+  submitMerchantKey,
 } from '@/server/api';
 import { readSessionToken } from '@/server/session-cookies';
 
@@ -85,5 +86,51 @@ export async function markExceptionReviewed(
      * has no form state to say so in; the refreshed list is the answer. */
     if (error instanceof ApiForbidden) return;
     throw error;
+  }
+}
+
+export interface MerchantKeyFormState {
+  error?: string;
+  done?: string;
+}
+
+async function submitMerchantKeyActionUnguarded(
+  _prev: MerchantKeyFormState,
+  formData: FormData,
+): Promise<MerchantKeyFormState> {
+  const token = await readSessionToken();
+  if (!token) return { error: 'Your session expired. Sign in again.' };
+
+  const secretKey = String(formData.get('secretKey') ?? '').trim();
+  if (secretKey.length < 10) {
+    return { error: 'Paste the whole key. It starts with sk_test_ or sk_live_.' };
+  }
+
+  const outcome = await submitMerchantKey(token, secretKey);
+  if (!outcome) return { error: 'That did not go through. Nothing was stored.' };
+  if (outcome.state === 'rejected') {
+    return {
+      error:
+        'Paystack did not accept that key. Copy it again from your Paystack dashboard under ' +
+        'Settings, then API Keys; a revoked or truncated key reads the same as a wrong one.',
+    };
+  }
+  if (outcome.state === 'unavailable') {
+    return { error: 'Key storage is not switched on for this deployment yet. Nothing was stored.' };
+  }
+
+  revalidatePath('/app/payments');
+  return {
+    done: `Connected: key ending ${outcome.merchantKeyTail}. Payments now run on your own Paystack account, and the key never appears anywhere again.`,
+  };
+}
+
+export async function submitMerchantKeyAction(
+  ...args: Parameters<typeof submitMerchantKeyActionUnguarded>
+): ReturnType<typeof submitMerchantKeyActionUnguarded> {
+  try {
+    return await submitMerchantKeyActionUnguarded(...args);
+  } catch (error) {
+    return viewOnlyRefusal(error) as Awaited<ReturnType<typeof submitMerchantKeyActionUnguarded>>;
   }
 }

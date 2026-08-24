@@ -59,6 +59,16 @@ export const paymentConnections = pgTable(
     kycStatus: text('kyc_status').notNull().default('pending'),
     /** Who bears the provider's fee (§14) — commercial choice, never code. */
     feePolicy: text('fee_policy').notNull().default('merchant_bearing'),
+    /**
+     * The merchant's OWN provider secret key (ADR 0019, migration 0046),
+     * vaulted like the account number beside it. `merchant_key` mode is what
+     * the storefront charges against; `platform_subaccount` stays gated on
+     * the written §47 confirmation. The tail exists so the card can say
+     * "key ending 4821" without a decrypt.
+     */
+    merchantKeyCipher: text('merchant_key_cipher'),
+    merchantKeyTail: text('merchant_key_tail'),
+    keyMode: text('key_mode').notNull().default('platform_subaccount'),
     /** Provider capabilities as data, so adapters can differ (§7). */
     capabilities: jsonb('capabilities')
       .notNull()

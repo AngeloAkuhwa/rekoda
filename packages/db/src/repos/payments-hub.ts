@@ -39,6 +39,10 @@ export interface ConnectionRow {
   settlementAccountName: string | null;
   /** Who bears the provider's fee (§14). The booking honours this. */
   feePolicy: string;
+  /** platform_subaccount | merchant_key (ADR 0019, migration 0046). */
+  keyMode: string;
+  /** "key ending 4821" for the card. The key itself never leaves the vault. */
+  merchantKeyTail: string | null;
 }
 
 /**
@@ -84,6 +88,8 @@ export async function upsertConnection(
       settlementAccountLast4: paymentConnections.settlementAccountLast4,
       settlementAccountName: paymentConnections.settlementAccountName,
       feePolicy: paymentConnections.feePolicy,
+      keyMode: paymentConnections.keyMode,
+      merchantKeyTail: paymentConnections.merchantKeyTail,
     });
 
   const row = rows[0];
@@ -107,6 +113,8 @@ export async function connectionFor(
       settlementAccountLast4: paymentConnections.settlementAccountLast4,
       settlementAccountName: paymentConnections.settlementAccountName,
       feePolicy: paymentConnections.feePolicy,
+      keyMode: paymentConnections.keyMode,
+      merchantKeyTail: paymentConnections.merchantKeyTail,
     })
     .from(paymentConnections)
     .where(
@@ -433,4 +441,68 @@ function pgError(error: unknown): { code: string; constraint_name?: string } | n
     e = (e as { cause?: unknown }).cause;
   }
   return null;
+}
+
+/**
+ * Store the merchant's own provider key (ADR 0019, fix-plan 6 M5a).
+ *
+ * Verified by the caller BEFORE this write: a key Paystack refused is never
+ * stored. The row flips to merchant_key mode and becomes active in the same
+ * statement, because on this model there is nothing further to wait for: no
+ * subaccount to create, no platform confirmation to hold on. Upserted so a
+ * business with no platform-model row can connect straight onto its own key.
+ */
+export async function storeMerchantKey(
+  tx: TenantDb,
+  input: {
+    businessId: string;
+    providerType: string;
+    merchantKeyCipher: string;
+    merchantKeyTail: string;
+  },
+): Promise<void> {
+  await tx
+    .insert(paymentConnections)
+    .values({
+      businessId: input.businessId,
+      providerType: input.providerType,
+      merchantKeyCipher: input.merchantKeyCipher,
+      merchantKeyTail: input.merchantKeyTail,
+      keyMode: 'merchant_key',
+      status: 'active',
+      kycStatus: 'not_required',
+    })
+    .onConflictDoUpdate({
+      target: [paymentConnections.businessId, paymentConnections.providerType],
+      set: {
+        merchantKeyCipher: input.merchantKeyCipher,
+        merchantKeyTail: input.merchantKeyTail,
+        keyMode: 'merchant_key',
+        status: 'active',
+        updatedAt: new Date(),
+      },
+    });
+}
+
+/** The vault blob of the merchant's key, for the adapter factory. */
+export async function merchantKeyCipherFor(
+  tx: TenantDb,
+  businessId: string,
+  providerType: string,
+): Promise<string | null> {
+  const rows = await tx
+    .select({
+      cipher: paymentConnections.merchantKeyCipher,
+      keyMode: paymentConnections.keyMode,
+    })
+    .from(paymentConnections)
+    .where(
+      and(
+        eq(paymentConnections.businessId, businessId),
+        eq(paymentConnections.providerType, providerType),
+      ),
+    )
+    .limit(1);
+  const row = rows[0];
+  return row && row.keyMode === 'merchant_key' ? row.cipher : null;
 }

@@ -25,8 +25,36 @@ export const paymentConnectionResponse = z.object({
   bankCode: z.string().nullable(),
   accountLast4: z.string().nullable(),
   accountName: z.string().nullable(),
+  /** platform_subaccount | merchant_key (ADR 0019). Null before any row. */
+  keyMode: z.string().nullable(),
+  /** "key ending 4821" for the card; the key itself never leaves the vault. */
+  merchantKeyTail: z.string().nullable(),
 });
 export type PaymentConnectionResponse = z.infer<typeof paymentConnectionResponse>;
+
+/**
+ * Connecting the merchant's OWN Paystack account (ADR 0019, fix-plan 6 M5a).
+ *
+ * The key is verified against Paystack before anything is stored: a key the
+ * provider refuses is never vaulted. This model needs no platform
+ * confirmation, because Rekoda is never in the money's path — the storefront
+ * charges against the merchant's own integration and settles to their own
+ * bank.
+ */
+export const submitMerchantKeyRequest = z.object({
+  /** sk_test_… or sk_live_…; Paystack, not Rekoda, judges it. */
+  secretKey: z.string().trim().min(10).max(200),
+});
+
+export const submitMerchantKeyResponse = z.discriminatedUnion('state', [
+  z.object({ state: z.literal('connected'), merchantKeyTail: z.string() }),
+  /** Paystack refused the key: mistyped, revoked, or the wrong mode. */
+  z.object({ state: z.literal('rejected') }),
+  /** The deployment cannot hold the key safely (no CONNECTION_KEY). */
+  z.object({ state: z.literal('unavailable'), reason: z.literal('connection_key_missing') }),
+]);
+export type SubmitMerchantKeyRequest = z.infer<typeof submitMerchantKeyRequest>;
+export type SubmitMerchantKeyResponse = z.infer<typeof submitMerchantKeyResponse>;
 
 export const paymentsListResponse = z.object({
   /**
