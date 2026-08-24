@@ -109,6 +109,17 @@ export class PaymentIntentsService {
           connectionStatus: connection?.status ?? 'not_configured',
         };
       }
+      if (connection.keyMode === 'merchant_key') {
+        /* ADR 0019: this business collects on its OWN Paystack key, and this
+         * service charges the PLATFORM's. Initialising here would raise a
+         * checkout on the wrong integration — money on Rekoda's account that
+         * belongs to the merchant. Their storefront collects through the
+         * merchant-transfer path instead. */
+        return {
+          state: 'connection_not_active' as const,
+          connectionStatus: 'merchant_key_mode',
+        };
+      }
 
       const email = await this.customerEmail(tx, businessId, invoice.customerId);
       if (!email) {

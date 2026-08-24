@@ -5,6 +5,7 @@ import { formatKobo } from '@rekoda/core';
 import { Field } from '@/components/ui/Field';
 import { cartTotalK, clearCart, readCart, setQuantity, type Cart } from '@/lib/cart';
 import { submitStorefrontOrder } from './actions';
+import { TransferPanel } from './TransferPanel';
 
 /**
  * The whole checkout in one client component (fix-plan 6, M5b), because the
@@ -35,7 +36,9 @@ export function CheckoutForm({
   const [refusal, setRefusal] = useState<string | null>(null);
   const [shopClosed, setShopClosed] = useState(false);
   const [placed, setPlaced] = useState<
-    { orderNumber: string; totalK: number } | 'duplicate' | null
+    | { kind: 'placed'; orderNumber: string; totalK: number; clientRef: string }
+    | { kind: 'duplicate'; clientRef: string }
+    | null
   >(null);
 
   /* After mount, never during render: the server rendered this component
@@ -79,13 +82,20 @@ export function CheckoutForm({
       }
       switch (outcome.outcome) {
         case 'placed':
+          /* The ref outlives the cart: it is how the confirmation asks for a
+           * transfer account for THIS order after the cart is gone. */
           clearCart(slug);
-          setPlaced({ orderNumber: outcome.orderNumber, totalK: outcome.totalK });
+          setPlaced({
+            kind: 'placed',
+            orderNumber: outcome.orderNumber,
+            totalK: outcome.totalK,
+            clientRef: cart.ref,
+          });
           return;
         case 'duplicate':
           /* The first submission already ordered; this tap changed nothing. */
           clearCart(slug);
-          setPlaced('duplicate');
+          setPlaced({ kind: 'duplicate', clientRef: cart.ref });
           return;
         case 'items_changed':
           /* The shop moved under the cart. A stale cart resubmitted forever
@@ -116,13 +126,13 @@ export function CheckoutForm({
 
   if (placed) {
     const handoff =
-      placed === 'duplicate'
+      placed.kind === 'duplicate'
         ? `Hello ${displayName}, I am ${customerName.trim() || 'a customer'}, checking on the order I just placed on your shop.`
         : `Hello ${displayName}, I just placed order ${placed.orderNumber} on your shop for ${formatKobo(placed.totalK)}. I am ${customerName.trim()}.${note.trim() ? ` Note: ${note.trim()}` : ''}`;
     return (
       <div className="rk-checkout-done" role="status">
-        <h2>{placed === 'duplicate' ? 'We already have this order' : 'Order placed'}</h2>
-        {placed === 'duplicate' ? (
+        <h2>{placed.kind === 'duplicate' ? 'We already have this order' : 'Order placed'}</h2>
+        {placed.kind === 'duplicate' ? (
           <p>Your earlier tap went through, so nothing was ordered twice.</p>
         ) : (
           <p>
@@ -130,6 +140,7 @@ export function CheckoutForm({
             <strong>{formatKobo(placed.totalK)}</strong> is with {displayName}.
           </p>
         )}
+        <TransferPanel slug={slug} clientRef={placed.clientRef} displayName={displayName} />
         <a
           className="rk-btn rk-checkout-wa"
           href={`https://wa.me/${digits}?text=${encodeURIComponent(handoff)}`}

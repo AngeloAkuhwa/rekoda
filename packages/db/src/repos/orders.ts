@@ -632,3 +632,36 @@ export async function ordersFor(tx: TenantDb, businessId: string, limit = 100): 
     })),
   };
 }
+
+/**
+ * The order a storefront clientRef placed (fix-plan 6, M5c). The checkout
+ * holds no id, only the one-shot key it minted; the unique external-ref
+ * index makes this an exact lookup, and the tenant pin keeps a guessed key
+ * inside the shop it was guessed against.
+ */
+export async function orderByExternalRef(
+  tx: TenantDb,
+  businessId: string,
+  externalRef: string,
+): Promise<{
+  id: string;
+  orderNumber: string;
+  status: string;
+  totalK: number;
+  invoiceId: string | null;
+  customerId: string | null;
+} | null> {
+  const rows = await tx
+    .select({
+      id: orders.id,
+      orderNumber: orders.orderNumber,
+      status: orders.status,
+      totalK: orders.totalK,
+      invoiceId: orders.invoiceId,
+      customerId: orders.customerId,
+    })
+    .from(orders)
+    .where(and(eq(orders.businessId, businessId), eq(orders.externalRef, externalRef)))
+    .limit(1);
+  return rows[0] ?? null;
+}

@@ -88,3 +88,24 @@ export async function truncateAll(urls: Urls): Promise<void> {
     await sql.end();
   }
 }
+
+/**
+ * Time-travel for Pay-with-Transfer tests: age every live intent of one
+ * business past its expiry, as the owner. The suites cannot reach the tables
+ * directly (apps/api deliberately owns no SQL), and "the account lapsed" is
+ * a state only the clock normally produces.
+ */
+export async function lapseTransferIntents(urls: Urls, businessId: string): Promise<void> {
+  const sql = postgres(urls.owner, { max: 1, onnotice: () => {} });
+  try {
+    await sql`
+      UPDATE payment_intents
+      SET expires_at = now() - interval '1 minute',
+          transfer_expires_at = now() - interval '1 minute'
+      WHERE business_id = ${businessId}::uuid
+        AND status NOT IN ('succeeded', 'failed', 'expired', 'cancelled')
+    `;
+  } finally {
+    await sql.end();
+  }
+}

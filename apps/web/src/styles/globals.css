@@ -1864,3 +1864,23 @@ a.rk-sr-only:focus-visible {
 .rk-checkout-done p {
   margin: 0;
 }
+/* Pay-with-Transfer, inside the confirmation card (fix-plan 6, M5c). */
+.rk-transfer {
+  display: grid;
+  gap: var(--rk-space-2);
+  border: 1px solid var(--rk-border);
+  border-radius: var(--rk-radius-md);
+  background: var(--rk-surface-sunk, var(--rk-surface));
+  padding: var(--rk-space-4);
+}
+.rk-transfer h3 {
+  margin: 0;
+  font-size: var(--rk-text-base);
+}
+.rk-transfer p {
+  margin: 0;
+}
+.rk-transfer-account {
+  font-size: var(--rk-text-lg);
+  font-variant-numeric: tabular-nums;
+}

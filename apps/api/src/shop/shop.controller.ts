@@ -37,6 +37,9 @@ import {
   publicShopResponse,
   publicOrderRequest,
   type PublicOrderResponse,
+  payWithTransferRequest,
+  type PayWithTransferResponse,
+  type TransferStatusResponse,
   saveShopRequest,
   shopSettingsResponse,
   type PublicShopResponse,
@@ -63,6 +66,7 @@ import { Roles, RolesGuard } from '../auth/roles.guard.js';
 import { DB } from '../db/db.module.js';
 import { DOCUMENT_STORAGE } from '../documents/documents.module.js';
 import { PrivacyGateway } from '../privacy/gateway.service.js';
+import { MerchantTransferService } from '../payments/merchant-transfer.service.js';
 import type { DocumentStorage } from '../documents/storage.js';
 
 interface ImageReply {
@@ -148,7 +152,68 @@ export class PublicShopController {
     @Inject(DB) private readonly db: Db,
     @Inject(DOCUMENT_STORAGE) private readonly storage: DocumentStorage,
     private readonly gateway: PrivacyGateway,
+    private readonly transfers: MerchantTransferService,
   ) {}
+
+  /**
+   * A temporary account for the order this clientRef placed (fix-plan 6,
+   * M5c). Public like the order itself: the caller proves nothing but the
+   * one-shot key only their browser holds, and everything the answer
+   * reveals — amount, account to pay into — is what a payer must be told.
+   */
+  @Post(':slug/pay-with-transfer')
+  @HttpCode(200)
+  async payWithTransfer(
+    @Param('slug') slug: string,
+    @Body() body: unknown,
+  ): Promise<PayWithTransferResponse> {
+    const parsed = payWithTransferRequest.safeParse(body);
+    if (!parsed.success) {
+      throw new BadRequestException('your order reference and an email address');
+    }
+    const shop = await shopsRepo.shopBySlug(this.db, slug);
+    if (!shop) return { outcome: 'order_gone' };
+
+    const outcome = await this.transfers.accountFor(
+      shop.businessId,
+      parsed.data.clientRef,
+      parsed.data.email,
+    );
+    if (outcome.state === 'account') {
+      return {
+        outcome: 'account',
+        bankName: outcome.bankName,
+        accountNumber: outcome.accountNumber,
+        accountName: outcome.accountName,
+        amountK: outcome.amountK,
+        expiresAt: outcome.expiresAtIso,
+        reference: outcome.reference,
+      };
+    }
+    return { outcome: outcome.state };
+  }
+
+  /**
+   * Has the transfer landed? The customer's tap starts a server-side verify
+   * on the merchant's own key; `paid` is only ever Paystack's answer.
+   */
+  @Get(':slug/transfer-status')
+  async transferStatus(
+    @Param('slug') slug: string,
+    @Query('clientRef') clientRef: string | undefined,
+  ): Promise<TransferStatusResponse> {
+    if (!clientRef || !UUID.test(clientRef)) {
+      throw new BadRequestException('your order reference');
+    }
+    const shop = await shopsRepo.shopBySlug(this.db, slug);
+    if (!shop) return { state: 'order_gone' };
+
+    const outcome = await this.transfers.statusFor(shop.businessId, clientRef);
+    if (outcome.state === 'paid') {
+      return { state: 'paid', receiptNumber: outcome.receiptNumber };
+    }
+    return { state: outcome.state };
+  }
 
   /**
    * A customer's order, from the shop page (fix-plan 6, M5b; MASTER-PLAN

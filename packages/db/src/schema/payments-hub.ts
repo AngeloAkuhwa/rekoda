@@ -104,6 +104,16 @@ export const paymentIntents = pgTable(
     providerReference: text('provider_reference'),
     /** Opaque checkout handle (a URL, a code) — adapter-owned, never parsed. */
     providerCheckoutRef: text('provider_checkout_ref'),
+    /**
+     * The Pay-with-Transfer temporary account for THIS transaction (ADR
+     * 0016, migration 0047). On the intent because it must be re-shown, not
+     * re-minted, while the intent lives — and forgotten with it. Not a
+     * secret: its whole job is to be shown to the paying customer.
+     */
+    transferBank: text('transfer_bank'),
+    transferAccountNumber: text('transfer_account_number'),
+    transferAccountName: text('transfer_account_name'),
+    transferExpiresAt: timestamp('transfer_expires_at', { withTimezone: true }),
     status: text('status').notNull().default('created'),
     expiresAt: timestamp('expires_at', { withTimezone: true }),
     createdAt: createdAt(),
