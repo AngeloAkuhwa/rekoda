@@ -13,6 +13,12 @@ import { AppNav } from '../AppNav';
 import { VoidSpendForm, type VoidableEntry } from './VoidSpendForm';
 import { canRecordTrade, isOwner } from '@/lib/permissions';
 import { PaySupplierForm } from './PaySupplierForm';
+import {
+  CancelPurchaseOrderForm,
+  CreatePurchaseOrderForm,
+  ReceivePurchaseOrderForm,
+  type OpenPurchaseOrder,
+} from './PurchaseOrderForms';
 import { DisposeAssetForm, RecordAssetForm, WithdrawAssetForm } from './AssetForms';
 import { CreateRecurringForm, StopRecurringForm, type StoppableSchedule } from './RecurringForms';
 import { SignOutButton } from '../SignOutButton';
@@ -47,6 +53,8 @@ export default async function ExpensesPage() {
     outstanding,
     assets,
     assetsTotal,
+    purchaseOrders,
+    purchaseOrdersTotal,
   } = await reportsExpenses(token);
 
   /* Only what can still be withdrawn is offered, and each option carries the
@@ -57,6 +65,13 @@ export default async function ExpensesPage() {
     .map((entry) => ({
       id: entry.id,
       label: `${shortDate(entry.recordedAt)} · ${entry.description} · ${formatKobo(entry.amountK)}`,
+    }));
+
+  const openPurchaseOrders: OpenPurchaseOrder[] = purchaseOrders
+    .filter((po) => po.status === 'open')
+    .map((po) => ({
+      poNumber: po.poNumber,
+      label: `${po.poNumber} · ${formatKobo(po.totalK)}${po.expectedOn ? ` · by ${longDate(po.expectedOn)}` : ''}`,
     }));
 
   const running = recurring.filter((schedule) => schedule.active);
@@ -158,6 +173,83 @@ export default async function ExpensesPage() {
           ) : null}
         </div>
       ) : null}
+
+      {/* Between the debt and the assets, because that is its lifecycle: an
+          open order is stock on the way, and receiving it is what creates the
+          purchase and the debt the cards around it describe. */}
+      <div className="rk-card">
+        <h2>Orders to suppliers</h2>
+        <p className="rk-fineprint">
+          Write down what you asked a supplier for before it lands. Nothing touches your books until
+          you mark it received: then the stock is counted onto your shelf, what you paid leaves
+          cash, and the rest joins what you owe suppliers. No supplier name is kept, here or
+          anywhere in Rekoda.
+        </p>
+
+        {purchaseOrders.length > 0 ? (
+          <div className="rk-table-scroll">
+            <table className="rk-table">
+              <thead>
+                <tr>
+                  <th>Order</th>
+                  <th>Sent</th>
+                  <th>Expected</th>
+                  <th>Status</th>
+                  <th className="rk-num">Items</th>
+                  <th className="rk-num">Total</th>
+                </tr>
+              </thead>
+              <tbody>
+                {purchaseOrders.map((po) => (
+                  <tr key={po.poNumber}>
+                    <td>{po.poNumber}</td>
+                    <td>{shortDate(po.createdAt)}</td>
+                    <td>{po.expectedOn ? longDate(po.expectedOn) : ''}</td>
+                    <td>{describePoStatus(po.status)}</td>
+                    <td className="rk-num">{po.itemCount}</td>
+                    <td className="rk-num">
+                      <Money kobo={po.totalK} />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <p className="rk-fineprint">
+            Nothing ordered yet. The first one you save appears here with its own PO number.
+          </p>
+        )}
+        {purchaseOrdersTotal > purchaseOrders.length ? (
+          <p className="rk-fineprint">
+            Showing {purchaseOrders.length} of {purchaseOrdersTotal}. The newest are here.
+          </p>
+        ) : null}
+
+        {canRecordTrade(identity.role) ? (
+          <>
+            <details className="rk-void">
+              <summary>Send a new purchase order</summary>
+              <CreatePurchaseOrderForm />
+            </details>
+            <details className="rk-void">
+              <summary>The goods landed: mark one received</summary>
+              <p className="rk-fineprint">
+                This is the moment the money and the stock become real: every line is counted onto
+                your shelf at its line cost, and whatever you have not paid joins what you owe
+                suppliers above.
+              </p>
+              <ReceivePurchaseOrderForm orders={openPurchaseOrders} />
+            </details>
+            {openPurchaseOrders.length > 0 ? (
+              <details className="rk-void">
+                <summary>Withdraw one</summary>
+                <CancelPurchaseOrderForm orders={openPurchaseOrders} />
+              </details>
+            ) : null}
+          </>
+        ) : null}
+      </div>
 
       {/* Its own card, and above the schedule, because the decision it asks
           for is the one a merchant gets wrong: a generator is not a running
@@ -469,7 +561,20 @@ function describeSource(sourceType: string): string {
   if (sourceType === 'recurring') return 'Repeating';
   if (sourceType === 'chat') return 'WhatsApp';
   if (sourceType === 'dashboard') return 'Dashboard';
+  if (sourceType === 'purchase_order') return 'Purchase order';
   return 'Recorded';
+}
+
+/**
+ * A purchase order's status, in the merchant's words. `cancelled` reads as
+ * Withdrawn for the same reason a quote's does: the merchant did it, it was
+ * not done to them.
+ */
+function describePoStatus(status: string): string {
+  if (status === 'open') return 'Open';
+  if (status === 'received') return 'Received';
+  if (status === 'cancelled') return 'Withdrawn';
+  return status;
 }
 
 /** `1st`, `2nd`, `31st`. The day a merchant would say out loud. */

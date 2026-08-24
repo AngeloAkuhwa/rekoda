@@ -287,6 +287,193 @@ export async function quoteByNumber(
   };
 }
 
+/**
+ * A purchase order: the quote's mirror, pointing at a supplier (fix-plan 4,
+ * G4).
+ *
+ * Same table and same race-proof status machine, for the same reason quotes
+ * took them: receiving one IS the purchase the spend engine already knows,
+ * so a parallel table would duplicate the rows to encode a prefix. What
+ * separates it is its own PO counter (what a supplier is chased with must
+ * never name a customer's document), the `open` status, and the expected
+ * delivery day riding the same date column a quote's expiry rides.
+ *
+ * No supplier reference, deliberately: Rekoda stores nothing about
+ * suppliers. `customerId` stays null, which is also what keeps these rows
+ * out of every customer-scoped read.
+ */
+export interface CreatePurchaseOrderInput {
+  businessId: string;
+  lines: PlaceOrderLine[];
+  totalK: number;
+  /** `YYYY-MM-DD`, or null when nobody said when the goods should land. */
+  expectedOn: string | null;
+  /** One-shot key from the form, deduped by `orders_external_ux`. */
+  clientRef: string | null;
+  sourceId: string;
+}
+
+export async function createPurchaseOrder(
+  tx: TenantDb,
+  input: CreatePurchaseOrderInput,
+): Promise<PlacedOrder> {
+  const at = new Date();
+  const poNumber = await nextDocumentNumber(tx, input.businessId, 'purchase_order', lagosYear(at));
+
+  const rows = await tx
+    .insert(orders)
+    .values({
+      businessId: input.businessId,
+      customerId: null,
+      orderNumber: poNumber,
+      status: 'open',
+      totalK: input.totalK,
+      externalRef: input.clientRef ? `dash:${input.clientRef}` : null,
+      validUntil: input.expectedOn,
+      sourceType: 'dashboard',
+      sourceId: input.sourceId,
+      createdAt: at,
+    })
+    .returning({ id: orders.id });
+  const po = rows[0];
+  if (!po) throw new Error('createPurchaseOrder: insert returned no row');
+
+  await tx.insert(orderItems).values(
+    input.lines.map((line) => ({
+      businessId: input.businessId,
+      orderId: po.id,
+      productId: line.productId,
+      name: line.name,
+      quantity: line.quantity,
+      unitPriceK: line.unitPriceK,
+      lineTotalK: line.lineTotalK,
+    })),
+  );
+
+  return { id: po.id, orderNumber: poNumber };
+}
+
+export interface PurchaseOrderRow {
+  id: string;
+  poNumber: string;
+  status: string;
+  totalK: number;
+  expectedOn: string | null;
+  createdAt: Date;
+  itemCount: number;
+}
+
+export interface PurchaseOrders {
+  rows: PurchaseOrderRow[];
+  count: number;
+}
+
+/** The supplier-side register: PO- rows only, newest first. */
+export async function purchaseOrdersFor(
+  tx: TenantDb,
+  businessId: string,
+  limit = 100,
+): Promise<PurchaseOrders> {
+  const rows = await tx.execute<{
+    id: string;
+    order_number: string;
+    status: string;
+    total_k: string;
+    expected_on: string | null;
+    created_at: Date;
+    item_count: number;
+    n: number;
+  }>(sql`
+    SELECT o.id, o.order_number, o.status, o.total_k::bigint AS total_k,
+           o.valid_until::text AS expected_on,
+           o.created_at, count(i.id)::int AS item_count,
+           count(*) OVER ()::int AS n
+    FROM orders o
+    LEFT JOIN order_items i ON i.order_id = o.id AND i.business_id = o.business_id
+    WHERE o.business_id = ${businessId}::uuid
+      AND o.order_number LIKE 'PO-%'
+    GROUP BY o.id, o.order_number, o.status, o.total_k, o.valid_until, o.created_at
+    ORDER BY o.created_at DESC
+    LIMIT ${limit}
+  `);
+  const list = [...rows];
+  return {
+    count: list[0]?.n ?? 0,
+    rows: list.map((r) => ({
+      id: r.id,
+      poNumber: r.order_number,
+      status: r.status,
+      totalK: Number(r.total_k),
+      expectedOn: r.expected_on,
+      /* Raw execute hands timestamps back as strings; same defence as the
+       * registers above. */
+      createdAt: new Date(r.created_at),
+      itemCount: r.item_count,
+    })),
+  };
+}
+
+export interface PurchaseOrderWithLines {
+  id: string;
+  poNumber: string;
+  status: string;
+  totalK: number;
+  expectedOn: string | null;
+  lines: Array<{
+    productId: string | null;
+    name: string;
+    quantity: number;
+    unitPriceK: number;
+    lineTotalK: number;
+  }>;
+}
+
+/** One purchase order with its lines — what receiving needs, in one read. */
+export async function purchaseOrderByNumber(
+  tx: TenantDb,
+  businessId: string,
+  poNumber: string,
+): Promise<PurchaseOrderWithLines | null> {
+  const head = await tx
+    .select({
+      id: orders.id,
+      status: orders.status,
+      totalK: orders.totalK,
+      expectedOn: orders.validUntil,
+    })
+    .from(orders)
+    .where(and(eq(orders.businessId, businessId), eq(orders.orderNumber, poNumber)))
+    .limit(1);
+  const po = head[0];
+  if (!po) return null;
+
+  const lines = await tx
+    .select({
+      productId: orderItems.productId,
+      name: orderItems.name,
+      quantity: orderItems.quantity,
+      unitPriceK: orderItems.unitPriceK,
+      lineTotalK: orderItems.lineTotalK,
+    })
+    .from(orderItems)
+    .where(and(eq(orderItems.businessId, businessId), eq(orderItems.orderId, po.id)));
+
+  return {
+    id: po.id,
+    poNumber,
+    status: po.status,
+    totalK: Number(po.totalK),
+    expectedOn: po.expectedOn,
+    lines: lines.map((l) => ({
+      productId: l.productId,
+      name: l.name,
+      quantity: l.quantity,
+      unitPriceK: Number(l.unitPriceK),
+      lineTotalK: Number(l.lineTotalK),
+    })),
+  };
+}
+
 export type MarkOutcome = 'marked' | 'already' | 'not_found';
 
 /**
@@ -425,6 +612,7 @@ export async function ordersFor(tx: TenantDb, businessId: string, limit = 100): 
     LEFT JOIN invoices inv ON inv.id = o.invoice_id AND inv.business_id = o.business_id
     WHERE o.business_id = ${businessId}::uuid
       AND o.order_number NOT LIKE 'QUO-%'
+      AND o.order_number NOT LIKE 'PO-%'
     GROUP BY o.id, o.order_number, o.status, o.total_k, inv.invoice_number, o.created_at
     ORDER BY o.created_at DESC
     LIMIT ${limit}

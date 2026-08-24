@@ -6,7 +6,8 @@
  * same DB transaction that issues the document).
  */
 
-export type DocType = 'invoice' | 'receipt' | 'credit_note' | 'order' | 'quote' | 'journal';
+export type DocType =
+  'invoice' | 'receipt' | 'credit_note' | 'order' | 'quote' | 'purchase_order' | 'journal';
 
 const PREFIX: Record<DocType, string> = {
   invoice: 'INV',
@@ -21,6 +22,11 @@ const PREFIX: Record<DocType, string> = {
    * Its own prefix and counter, because "send me quote QUO-2026-000003"
    * must never be answerable with an invoice number. */
   quote: 'QUO',
+  /* The mirror of a quote, pointing the other way: what the merchant asks a
+   * supplier for. Nothing posts until the goods land, and its own counter,
+   * because "PO-2026-000002 never arrived" is a sentence said to a supplier
+   * and it must never name a customer's document. */
+  purchase_order: 'PO',
   /* Numbered because an accountant asks "which entry", and the answer has to
    * be something they can write down. On its own counter, so a business that
    * makes two corrections all year has JNL-2026-000001 and JNL-2026-000002

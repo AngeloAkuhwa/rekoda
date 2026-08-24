@@ -113,7 +113,11 @@ export const orders = pgTable(
     currency: text('currency').notNull().default('NGN'),
     /** WhatsApp order reference (Integrate) for idempotent capture. */
     externalRef: text('external_ref'),
-    /** Quotes only: the last Lagos day the offer stands. Null = no expiry. */
+    /**
+     * The Lagos day the paper carries, when it carries one. For a quote, the
+     * last day the offer stands; for a purchase order, the day the goods are
+     * expected. Null on plain orders and on either when nobody said.
+     */
     validUntil: date('valid_until'),
     sourceType: text('source_type').notNull(),
     sourceId: text('source_id'),

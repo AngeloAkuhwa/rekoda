@@ -607,8 +607,118 @@ export const reportsExpensesResponse = z.object({
   ),
   /** Every schedule that exists, so a cut list can say it was cut. */
   recurringTotal: z.number().int().nonnegative(),
+  /**
+   * Purchase orders: order-shaped stock requests to a supplier (fix-plan 4,
+   * G4). On this response because they live where the money they will cost
+   * lives: a merchant asking "did that delivery ever land" is standing on the
+   * spend page when they ask.
+   *
+   * No supplier column here either, and for the same reason as everywhere
+   * else on this response: Rekoda stores nothing about suppliers. A purchase
+   * order is known by its number and by what it asks for.
+   */
+  purchaseOrdersTotal: z.number().int().nonnegative(),
+  purchaseOrders: z.array(
+    z.object({
+      poNumber: z.string(),
+      /** open | received | cancelled */
+      status: z.string(),
+      totalK: kobo,
+      itemCount: z.number().int().nonnegative(),
+      /** The day the goods are expected, or null when nobody said. */
+      expectedOn: z.string().nullable(),
+      createdAt: z.string(),
+    }),
+  ),
 });
 export type ReportsExpensesResponse = z.infer<typeof reportsExpensesResponse>;
+
+/**
+ * Creating a purchase order from the dashboard.
+ *
+ * Lines are free-typed names with quantities and unit costs in INTEGER KOBO.
+ * No supplier field, deliberately: supplier names live in the identity vault
+ * or nowhere, and the vault has no supplier slice yet. The merchant's own
+ * message to the supplier carries the name; Rekoda carries the goods and the
+ * money.
+ */
+export const createPurchaseOrderRequest = z.object({
+  items: z
+    .array(
+      z.object({
+        name: z.string().trim().min(1).max(80),
+        quantity: z.number().int().positive().max(10_000),
+        unitPriceK: z.number().int().finite().positive(),
+      }),
+    )
+    .min(1)
+    .max(20),
+  /** `YYYY-MM-DD`, the Lagos day the goods are expected. */
+  expectedOn: z
+    .string()
+    .regex(/^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/, 'a day like 2026-09-30')
+    .optional(),
+  /** One-shot key from the form. A resubmission orders NOTHING twice. */
+  clientRef: z.string().uuid().optional(),
+});
+
+export const createPurchaseOrderResponse = z.discriminatedUnion('outcome', [
+  z.object({
+    outcome: z.literal('created'),
+    poNumber: z.string(),
+    totalK: kobo,
+    expectedOn: z.string().nullable(),
+  }),
+  /** The same clientRef arrived twice: the first submission already created. */
+  z.object({ outcome: z.literal('duplicate') }),
+]);
+
+/**
+ * Receiving is the delivery landing: the money posts through the same road a
+ * chat purchase takes (stock in, cash out for what was paid, the rest owed to
+ * the supplier) and every line becomes counted stock at its line cost.
+ */
+export const receivePurchaseOrderRequest = z.object({
+  poNumber: z.string().trim().min(1),
+  /** What was handed over on delivery. Zero is a delivery wholly on credit. */
+  paidK: z.number().int().finite().nonnegative(),
+});
+
+export const receivePurchaseOrderResponse = z.discriminatedUnion('outcome', [
+  z.object({
+    outcome: z.literal('received'),
+    poNumber: z.string(),
+    totalK: kobo,
+    /** What remains owed to the supplier after what was paid. */
+    owedK: kobo,
+    /** How many lines came onto the shelf as counted stock. */
+    linesArrived: z.number().int().nonnegative(),
+  }),
+  z.object({ outcome: z.literal('not_found') }),
+  /** The status machine, not a client key, is the double-receive guard. */
+  z.object({ outcome: z.literal('already_received') }),
+  z.object({ outcome: z.literal('cancelled') }),
+  /** Paying more than the order costs is a prepayment, and this is not that. */
+  z.object({ outcome: z.literal('more_than_total'), totalK: kobo }),
+]);
+
+export const cancelPurchaseOrderRequest = z.object({
+  poNumber: z.string().trim().min(1),
+});
+
+export const cancelPurchaseOrderResponse = z.discriminatedUnion('outcome', [
+  z.object({ outcome: z.literal('cancelled') }),
+  z.object({ outcome: z.literal('not_found') }),
+  /** Received or already withdrawn: nothing left to cancel. */
+  z.object({ outcome: z.literal('already'), status: z.string() }),
+]);
+
+export type CreatePurchaseOrderRequest = z.infer<typeof createPurchaseOrderRequest>;
+export type CreatePurchaseOrderResponse = z.infer<typeof createPurchaseOrderResponse>;
+export type ReceivePurchaseOrderRequest = z.infer<typeof receivePurchaseOrderRequest>;
+export type ReceivePurchaseOrderResponse = z.infer<typeof receivePurchaseOrderResponse>;
+export type CancelPurchaseOrderRequest = z.infer<typeof cancelPurchaseOrderRequest>;
+export type CancelPurchaseOrderResponse = z.infer<typeof cancelPurchaseOrderResponse>;
 
 /**
  * What is on the shelf, and what it cost.
