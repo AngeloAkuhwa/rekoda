@@ -8,7 +8,7 @@
  */
 import { randomBytes } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { createDb, identity, withBusiness, type Db } from '@rekoda/db';
+import { billingRepo, createDb, identity, withBusiness, type Db } from '@rekoda/db';
 import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { MAX_FAILURES_PER_WINDOW, AuthService } from './auth.service.js';
@@ -633,6 +633,69 @@ describe('the team an owner can build', () => {
 
     const members = (await team(owner.auth)).json() as { members: Array<{ role: string }> };
     expect(members.members.map((m) => m.role).sort()).toEqual(['accountant', 'owner']);
+  });
+
+  it('refuses a second seat on trial, names the way out, and frees the seat on removal', async () => {
+    const owner = await ownerOf('+2348140000010');
+    await post(
+      '/v1/businesses/members',
+      { phone: '+2348149990010', role: 'accountant' },
+      owner.auth,
+    );
+
+    /* Trial includes ONE seat besides the owner: the second invite meets the
+     * table, not a silent success the pricing page never sold. */
+    const refused = await post(
+      '/v1/businesses/members',
+      { phone: '+2348149990011', role: 'delegate' },
+      owner.auth,
+    );
+    expect(refused.statusCode).toBe(409);
+    expect((refused.json() as { message: string }).message).toContain('Upgrade to add more');
+
+    /* Removing the accountant frees the seat: the limit counts people, not
+     * history. */
+    const members = (await team(owner.auth)).json() as {
+      members: Array<{ userId: string; role: string }>;
+    };
+    const accountant = members.members.find((m) => m.role === 'accountant');
+    await app.inject({
+      method: 'DELETE',
+      url: `/v1/businesses/members/${accountant!.userId}`,
+      headers: owner.auth,
+    });
+    const second = await post(
+      '/v1/businesses/members',
+      { phone: '+2348149990011', role: 'delegate' },
+      owner.auth,
+    );
+    expect(second.statusCode).toBe(201);
+  });
+
+  it('gives Complete its three seats, and the fourth the honest refusal', async () => {
+    const owner = await ownerOf('+2348140000011');
+    await billingRepo.setPlan(db, {
+      businessId: owner.businessId,
+      plan: 'complete',
+      expiresAt: new Date(Date.now() + 30 * 86_400_000),
+      actor: 'operator:test',
+    });
+
+    for (const tail of ['20', '21', '22']) {
+      const seated = await post(
+        '/v1/businesses/members',
+        { phone: `+23481499900${tail}`, role: 'delegate' },
+        owner.auth,
+      );
+      expect(seated.statusCode).toBe(201);
+    }
+    const fourth = await post(
+      '/v1/businesses/members',
+      { phone: '+2348149990023', role: 'delegate' },
+      owner.auth,
+    );
+    expect(fourth.statusCode).toBe(409);
+    expect((fourth.json() as { message: string }).message).toContain('3 team members');
   });
 
   it('that accountant can then sign in on their own phone and reach the books', async () => {

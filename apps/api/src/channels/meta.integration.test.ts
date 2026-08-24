@@ -3614,6 +3614,53 @@ describe('a forwarded order', () => {
     expect(stock.rows.find((p) => p.name === 'Ankara bale')?.onHand).toBe(8);
   });
 
+  it('meters the order: a confirmed order consumes one orders unit on top of the document', async () => {
+    const business = await seedMerchant('+2348031234567');
+    await seedCatalogue(business.id);
+    stubTransport.replyWith(THE_ORDER);
+
+    await send('please I want 2 ankara bale', 'wamid.METER');
+    await send('yes', 'wamid.METERYES');
+
+    const rows = await withBusiness(db, business.id, (tx) =>
+      usageRepo.usageFor(tx, business.id, usagePeriod(new Date())),
+    );
+    expect(rows.find((r) => r.unit === 'orders')?.used).toBe(1);
+    expect(rows.find((r) => r.unit === 'documents')?.used).toBe(1);
+  });
+
+  it('refuses capture on a plan without orders, keeps the quote, and gives the document back', async () => {
+    const business = await seedMerchant('+2348031234567');
+    await billingRepo.setPlan(db, {
+      businessId: business.id,
+      plan: 'chat',
+      expiresAt: new Date(Date.now() + 30 * 86_400_000),
+      actor: 'operator:test',
+    });
+    await seedCatalogue(business.id);
+    stubTransport.replyWith(THE_ORDER);
+
+    /* The quote itself is free and still works: refusing to PRICE would
+     * punish the merchant before they even hit the gate. */
+    await send('please I want 2 ankara bale', 'wamid.CHATORDER');
+    expect(stubSender.lastText).toContain('Total: ₦17,000');
+
+    await send('yes', 'wamid.CHATORDERYES');
+    expect(stubSender.lastText).toContain('Automatic order capture is part of the Integrate plan');
+
+    /* Nothing booked, and the document unit the yes reserved went back:
+     * a refused capture must not cost a document nobody received. */
+    expect(await invoiceCount(business.id)).toBe(0);
+    expect(
+      (await withBusiness(db, business.id, (tx) => ordersRepo.ordersFor(tx, business.id))).rows,
+    ).toEqual([]);
+    const rows = await withBusiness(db, business.id, (tx) =>
+      usageRepo.usageFor(tx, business.id, usagePeriod(new Date())),
+    );
+    expect(rows.find((r) => r.unit === 'documents')?.used ?? 0).toBe(0);
+    expect(rows.find((r) => r.unit === 'orders')?.used ?? 0).toBe(0);
+  });
+
   /**
    * The refusal that matters. Inventing a price would put a number in front
    * of a customer that the merchant never agreed to, so it asks instead.

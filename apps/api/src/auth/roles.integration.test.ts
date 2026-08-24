@@ -16,16 +16,20 @@
 import { randomBytes } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
+import { billingRepo, createDb, type Db } from '@rekoda/db';
 import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
 
 const SECRET = 'roles-secret-at-least-32-characters-long';
 
 let urls: Urls;
 let app: NestFastifyApplication;
+let db: Db;
+let closeDb: () => Promise<void>;
 
 beforeAll(async () => {
   urls = requireUrls();
   await migrate(urls);
+  ({ db, close: closeDb } = createDb(urls.app, { max: 4 }));
 
   process.env['DATABASE_URL'] = urls.app;
   process.env['OTP_PEPPER'] = 'roles-pepper-at-least-32-characters-long';
@@ -45,6 +49,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await app?.close();
+  await closeDb?.();
 });
 
 beforeEach(async () => {
@@ -84,8 +89,18 @@ async function team(seed: string): Promise<{
   const setup = await signIn(ownerPhone);
   const created = (
     await post('/v1/businesses', { name: 'Matrix Ltd', businessType: null }, setup)
-  ).json() as { sessionToken: string };
+  ).json() as { sessionToken: string; businessId: string };
   const owner = { authorization: `Bearer ${created.sessionToken}` };
+
+  /* A business running all three roles is a Complete-shaped business: the
+   * seat table (SEATS_PER_PLAN) now refuses a trial's second invite, which
+   * is the product working, not this suite's subject. */
+  await billingRepo.setPlan(db, {
+    businessId: created.businessId,
+    plan: 'complete',
+    expiresAt: new Date(Date.now() + 30 * 86_400_000),
+    actor: 'operator:roles-suite',
+  });
 
   await post('/v1/businesses/members', { phone: accountantPhone, role: 'accountant' }, owner);
   await post('/v1/businesses/members', { phone: delegatePhone, role: 'delegate' }, owner);

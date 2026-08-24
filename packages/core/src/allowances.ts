@@ -33,7 +33,10 @@ export function trialExpiry(startedAt: Date): Date {
 }
 
 export const PLAN_ALLOWANCES: Record<PlanId, Record<UsageUnit, number>> = {
-  trial: { messages: 50, voice_seconds: 600, documents: 25, documents_understood: 10, orders: 0 },
+  /* Ten orders on trial, not zero: MASTER-PLAN allows the Integrate
+   * connection during trial, and a trialist who never tastes automatic
+   * order capture never learns why Integrate is worth paying for. */
+  trial: { messages: 50, voice_seconds: 600, documents: 25, documents_understood: 10, orders: 10 },
   expired: {
     messages: 0,
     voice_seconds: 0,
@@ -66,6 +69,27 @@ export const PLAN_ALLOWANCES: Record<PlanId, Record<UsageUnit, number>> = {
     orders: 300,
   },
 };
+
+/**
+ * Team seats beyond the owner, per plan (pricing-model.md's "owner + N").
+ *
+ * Enforced at the invite endpoint the same way allowances are enforced at
+ * the meter: the pricing page and the refusal quote one table, so they can
+ * never disagree. `expired` is zero for the same reason its allowances are:
+ * a lapsed business keeps its books readable and grows nothing.
+ */
+export const SEATS_PER_PLAN: Record<PlanId, number> = {
+  trial: 1,
+  expired: 0,
+  chat: 1,
+  integrate: 2,
+  complete: 3,
+};
+
+/** An unknown plan gets the TRIAL seat count: the safe direction is stingy. */
+export function seatsFor(plan: string): number {
+  return (SEATS_PER_PLAN as Record<string, number>)[plan] ?? SEATS_PER_PLAN.trial;
+}
 
 /** An unknown plan gets the TRIAL allowance: the safe direction is stingy. */
 export function allowanceFor(plan: string, unit: UsageUnit): number {
