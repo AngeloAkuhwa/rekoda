@@ -3,6 +3,7 @@ import { Money } from '@/components/ui/Money';
 import { reportsAudit } from '@/server/api';
 import { requireSessionWithToken } from '@/server/guards';
 import { AppNav } from '../AppNav';
+import { exportCaption } from '@/lib/export-caption';
 import { SignOutButton } from '../SignOutButton';
 
 export const metadata: Metadata = {
@@ -82,6 +83,11 @@ export default async function AuditPage() {
                 </tbody>
               </table>
             </div>
+            <p className="rk-fineprint">
+              <a href="/app/export/audit" download>
+                {exportCaption('changes', count)}
+              </a>
+            </p>
             <p className="rk-fineprint">
               {count === 1 ? 'One change' : `${count} changes`} all time
               {count > events.length ? ` · showing the latest ${events.length}` : ''}

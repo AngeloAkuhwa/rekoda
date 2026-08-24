@@ -665,6 +665,10 @@ export async function invoicesFor(
   tx: TenantDb,
   businessId: string,
   limit: number,
+  /* A page offset, so a merchant with more invoices than the page can reach
+   * invoice fifty-one without a CSV. Zero is the first page and the default,
+   * which is why nothing that ever called this changes. */
+  offset = 0,
 ): Promise<InvoiceList> {
   const rows = await tx.execute<{
     invoice_number: string;
@@ -682,7 +686,7 @@ export async function invoicesFor(
     FROM invoices
     WHERE business_id = ${businessId}::uuid
     ORDER BY created_at DESC
-    LIMIT ${limit}
+    LIMIT ${limit} OFFSET ${offset}
   `);
   const totals = await tx.execute<{ n: number; outstanding_k: string }>(sql`
     SELECT count(*)::int AS n,
@@ -728,6 +732,7 @@ export async function receiptsFor(
   tx: TenantDb,
   businessId: string,
   limit: number,
+  offset = 0,
 ): Promise<ReceiptList> {
   const rows = await tx.execute<{
     receipt_number: string;
@@ -743,7 +748,7 @@ export async function receiptsFor(
     LEFT JOIN invoices i ON i.id = r.invoice_id AND i.business_id = r.business_id
     WHERE r.business_id = ${businessId}::uuid
     ORDER BY r.created_at DESC
-    LIMIT ${limit}
+    LIMIT ${limit} OFFSET ${offset}
   `);
   const totals = await tx.execute<{ n: number }>(sql`
     SELECT count(*)::int AS n FROM receipts WHERE business_id = ${businessId}::uuid

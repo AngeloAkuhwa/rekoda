@@ -9,6 +9,7 @@ import {
 import { Money } from '@/components/ui/Money';
 import { reportsExpenses } from '@/server/api';
 import { requireSessionWithToken } from '@/server/guards';
+import { RegisterPager, pageParam } from '@/components/ui/RegisterPager';
 import { AppNav } from '../AppNav';
 import { VoidSpendForm, type VoidableEntry } from './VoidSpendForm';
 import { canRecordTrade, isOwner } from '@/lib/permissions';
@@ -39,7 +40,12 @@ export const metadata: Metadata = {
  * expense is spent and a purchase is still on the shelf, and one combined
  * figure would overstate the cost of trading by the value of the inventory.
  */
-export default async function ExpensesPage() {
+export default async function ExpensesPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ page?: string | string[] }>;
+}) {
+  const page = pageParam((await searchParams).page);
   const { identity, token } = await requireSessionWithToken();
   const {
     entries,
@@ -55,7 +61,7 @@ export default async function ExpensesPage() {
     assetsTotal,
     purchaseOrders,
     purchaseOrdersTotal,
-  } = await reportsExpenses(token);
+  } = await reportsExpenses(token, page);
 
   /* Only what can still be withdrawn is offered, and each option carries the
    * date and the figure: two "diesel" rows in one week is the normal case,
@@ -504,8 +510,17 @@ export default async function ExpensesPage() {
             </p>
             <p className="rk-fineprint">
               {count === 1 ? 'One entry' : `${count} entries`} all time
-              {count > entries.length ? ` · showing the latest ${entries.length}` : ''}
+              {count > entries.length && page === 1
+                ? ` · showing the latest ${entries.length}`
+                : ''}
             </p>
+            <RegisterPager
+              page={page}
+              count={count}
+              pageSize={50}
+              basePath="/app/expenses"
+              label="entries"
+            />
           </>
         )}
       </div>

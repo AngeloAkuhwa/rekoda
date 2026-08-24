@@ -240,6 +240,7 @@ export async function spendFor(
   tx: TenantDb,
   businessId: string,
   limit: number,
+  offset = 0,
 ): Promise<SpendList> {
   const rows = await tx.execute<{
     id: string;
@@ -256,7 +257,7 @@ export async function spendFor(
     FROM expenses
     WHERE business_id = ${businessId}::uuid
     ORDER BY created_at DESC
-    LIMIT ${limit}
+    LIMIT ${limit} OFFSET ${offset}
   `);
   /* Withdrawn entries stay on the page and stop counting. Both halves matter:
    * dropping the row would leave a merchant wondering where their entry went,

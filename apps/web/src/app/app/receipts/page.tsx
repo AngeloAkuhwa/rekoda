@@ -4,6 +4,7 @@ import { Money } from '@/components/ui/Money';
 import { MoneyBadge } from '@/components/ui/MoneyBadge';
 import { reportsReceipts } from '@/server/api';
 import { requireSessionWithToken } from '@/server/guards';
+import { RegisterPager, pageParam } from '@/components/ui/RegisterPager';
 import { AppNav } from '../AppNav';
 import { SignOutButton } from '../SignOutButton';
 
@@ -18,9 +19,14 @@ export const metadata: Metadata = {
  * mints one otherwise (spec rule 12), which is what makes this page worth
  * showing a tax officer.
  */
-export default async function ReceiptsPage() {
+export default async function ReceiptsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ page?: string | string[] }>;
+}) {
+  const page = pageParam((await searchParams).page);
   const { token } = await requireSessionWithToken();
-  const { receipts, count } = await reportsReceipts(token);
+  const { receipts, count } = await reportsReceipts(token, page);
 
   return (
     <section className="rk-container rk-dash">
@@ -85,8 +91,17 @@ export default async function ReceiptsPage() {
             </p>
             <p className="rk-fineprint">
               {count === 1 ? 'One receipt' : `${count} receipts`} all time
-              {count > receipts.length ? ` · showing the latest ${receipts.length}` : ''}
+              {count > receipts.length && page === 1
+                ? ` · showing the latest ${receipts.length}`
+                : ''}
             </p>
+            <RegisterPager
+              page={page}
+              count={count}
+              pageSize={50}
+              basePath="/app/receipts"
+              label="receipts"
+            />
           </>
         )}
       </div>

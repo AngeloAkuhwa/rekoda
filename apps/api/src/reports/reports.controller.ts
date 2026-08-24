@@ -168,6 +168,17 @@ const XLSX_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.s
 const EXPORT_ROWS = 10_000;
 
 /**
+ * A page number from a query string. One-based because merchants count from
+ * one; anything unparseable is page one, because a mangled link should show
+ * the register, not an error.
+ */
+function pageOffset(raw: string | undefined): { page: number; offset: number } {
+  const parsed = Number.parseInt(raw ?? '1', 10);
+  const page = Number.isFinite(parsed) && parsed >= 1 ? Math.min(parsed, 10_000) : 1;
+  return { page, offset: (page - 1) * REGISTER_ROWS };
+}
+
+/**
  * A 23505 on the named one-shot-key constraint: this clientRef already
  * booked. Every write a dashboard form can repeat carries such a key, and
  * the database is the only judge; this merely classifies its refusal.
@@ -586,11 +597,17 @@ export class ReportsController {
   }
 
   @Get('invoices')
-  async invoices(@Req() request: AuthedRequest): Promise<ReportsInvoicesResponse> {
+  async invoices(
+    @Req() request: AuthedRequest,
+    @Query('page') pageParam?: string,
+  ): Promise<ReportsInvoicesResponse> {
     const businessId = request.auth!.businessId;
     const now = new Date();
+    /* Only the invoice register pages; the orders and quotes beside it are
+     * small and stay whole. */
+    const { offset } = pageOffset(pageParam);
     const { list, orders, quotes } = await withBusiness(this.db, businessId, async (tx) => ({
-      list: await reportsRepo.invoicesFor(tx, businessId, REGISTER_ROWS),
+      list: await reportsRepo.invoicesFor(tx, businessId, REGISTER_ROWS, offset),
       orders: await ordersRepo.ordersFor(tx, businessId, REGISTER_ROWS),
       quotes: await ordersRepo.quotesFor(tx, businessId, REGISTER_ROWS),
     }));
@@ -1003,10 +1020,14 @@ export class ReportsController {
 
   /** The receipt register. Every row exists because real money was recorded. */
   @Get('receipts')
-  async receipts(@Req() request: AuthedRequest): Promise<ReportsReceiptsResponse> {
+  async receipts(
+    @Req() request: AuthedRequest,
+    @Query('page') pageParam?: string,
+  ): Promise<ReportsReceiptsResponse> {
     const businessId = request.auth!.businessId;
+    const { offset } = pageOffset(pageParam);
     const list = await withBusiness(this.db, businessId, (tx) =>
-      reportsRepo.receiptsFor(tx, businessId, REGISTER_ROWS),
+      reportsRepo.receiptsFor(tx, businessId, REGISTER_ROWS, offset),
     );
     return {
       receipts: list.rows.map((r) => ({
@@ -1106,12 +1127,16 @@ export class ReportsController {
   }
 
   @Get('expenses')
-  async expenses(@Req() request: AuthedRequest): Promise<ReportsExpensesResponse> {
+  async expenses(
+    @Req() request: AuthedRequest,
+    @Query('page') pageParam?: string,
+  ): Promise<ReportsExpensesResponse> {
     const businessId = request.auth!.businessId;
     const now = new Date();
+    const { offset } = pageOffset(pageParam);
     const { list, payableAgeing, recurringList, outstanding, assetRegister, purchaseOrderList } =
       await withBusiness(this.db, businessId, async (tx) => ({
-        list: await spendRepo.spendFor(tx, businessId, REGISTER_ROWS),
+        list: await spendRepo.spendFor(tx, businessId, REGISTER_ROWS, offset),
         payableAgeing: await spendRepo.payableAgeingFor(tx, businessId, now),
         recurringList: await recurringRepo.schedulesFor(tx, businessId),
         /* What a merchant can actually pay, on the same response as the debt
@@ -1680,6 +1705,64 @@ export class ReportsController {
       ]),
     );
     sendCsv(reply, `rekoda-receipts-${csvDate(new Date())}.csv`, csv);
+  }
+
+  /**
+   * The audit trail as a file (fix-plan 5, H2b). The page calls itself "the
+   * record an accountant or a tax officer asks for", and a record that can
+   * only be read a hundred rows at a time on a screen is not one they can
+   * take away. Actors resolve exactly as the page resolves them.
+   */
+  @Get('audit.csv')
+  async auditCsv(@Req() request: AuthedRequest, @Res() reply: CsvReply): Promise<void> {
+    const businessId = request.auth!.businessId;
+    const { list, members } = await withBusiness(this.db, businessId, async (tx) => ({
+      list: await reportsRepo.auditFor(tx, businessId, EXPORT_ROWS),
+      members: await identity.membersOf(tx, businessId),
+    }));
+    const label = new Map(
+      members.map((m) => [m.userId, `${roleWord(m.role)} ${m.phone.slice(-4)}`]),
+    );
+    const csv = toCsv(
+      ['When', 'Who', 'What happened', 'Where', 'Why', 'Amount'],
+      list.rows.map((row) => {
+        const { summary, amountK } = describeAuditEvent(row);
+        return [
+          row.at.toISOString(),
+          describeActor(row.actor, (userId) => label.get(userId)),
+          summary,
+          row.sourceType,
+          row.reason ?? '',
+          amountK === null ? '' : csvKobo(amountK),
+        ];
+      }),
+    );
+    sendCsv(reply, `rekoda-audit-${csvDate(new Date())}.csv`, csv);
+  }
+
+  /**
+   * The stock register as a file (fix-plan 5, H2b): what is counted, what it
+   * costs and what it sells for, which is a stock take's starting sheet.
+   */
+  @Get('stock.csv')
+  async stockCsv(@Req() request: AuthedRequest, @Res() reply: CsvReply): Promise<void> {
+    const businessId = request.auth!.businessId;
+    const list = await withBusiness(this.db, businessId, (tx) =>
+      stockRepo.stockList(tx, businessId, EXPORT_ROWS),
+    );
+    const csv = toCsv(
+      ['Product', 'On hand', 'Unit price', 'Unit cost', 'Listed'],
+      list.rows.map((r) => [
+        r.name,
+        r.onHand,
+        r.unitPriceK === null ? '' : csvKobo(r.unitPriceK),
+        /* Blank, not zero: a cost nobody has recorded is unknown, and a
+         * spreadsheet totalling zeros would value the shelf at nothing. */
+        r.unitCostK === null ? '' : csvKobo(r.unitCostK),
+        r.active ? 'yes' : 'no',
+      ]),
+    );
+    sendCsv(reply, `rekoda-stock-${csvDate(new Date())}.csv`, csv);
   }
 
   /**
