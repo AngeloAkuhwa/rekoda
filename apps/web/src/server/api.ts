@@ -48,7 +48,10 @@ import {
   stockCountResponse,
   closeBooksResponse,
   journalEntryResponse,
+  bankFeedStateResponse,
   bankPositionResponse,
+  connectBankFeedResponse,
+  syncBankFeedResponse,
   importStatementResponse,
   forgetStatementDayResponse,
   reconcileResponse,
@@ -78,7 +81,10 @@ import {
   type CloseBooksRequest,
   type JournalEntryRequest,
   type JournalEntryResponse,
+  type BankFeedStateResponse,
   type BankPositionResponse,
+  type ConnectBankFeedResponse,
+  type SyncBankFeedResponse,
   type ImportStatementResponse,
   type ForgetStatementDayResponse,
   type ReconcileResponse,
@@ -862,6 +868,44 @@ export async function importStatement(
     expect: [200, 400],
   });
   return status === 200 ? importStatementResponse.parse(json) : null;
+}
+
+/** The live feed's standing state, for the card the bank page renders. */
+export async function bankFeedState(sessionToken: string): Promise<BankFeedStateResponse> {
+  const { json } = await call({
+    method: 'GET',
+    path: '/v1/bank/feed',
+    headers: { authorization: `Bearer ${sessionToken}` },
+    expect: [200],
+  });
+  return bankFeedStateResponse.parse(json);
+}
+
+/** Exchange the consent widget's one-time code for a standing link. */
+export async function connectBankFeed(
+  sessionToken: string,
+  exchangeCode: string,
+): Promise<ConnectBankFeedResponse | null> {
+  const { status, json } = await call({
+    method: 'POST',
+    path: '/v1/bank/feed/connect',
+    body: { exchangeCode },
+    headers: { authorization: `Bearer ${sessionToken}` },
+    expect: [200, 400],
+  });
+  return status === 200 ? connectBankFeedResponse.parse(json) : null;
+}
+
+/** Pull what moved since the last sync, through the same import as the CSV. */
+export async function syncBankFeed(sessionToken: string): Promise<SyncBankFeedResponse | null> {
+  const { status, json } = await call({
+    method: 'POST',
+    path: '/v1/bank/feed/sync',
+    body: {},
+    headers: { authorization: `Bearer ${sessionToken}` },
+    expect: [200, 400],
+  });
+  return status === 200 ? syncBankFeedResponse.parse(json) : null;
 }
 
 /** Pair what can only be paired one way. A write, so it is asked for. */

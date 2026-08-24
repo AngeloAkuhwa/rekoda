@@ -37,6 +37,9 @@ beforeAll(async () => {
   process.env['MATCH_KEY'] = randomBytes(32).toString('hex');
   process.env['REKODA_REVEAL_OTP'] = '1';
   process.env['REKODA_RATE_LIMIT_MAX'] = '100000';
+  /* This file pins the UNCONFIGURED feed posture; the configured one boots
+   * its own app in feed.integration.test.ts. */
+  delete process.env['MONO_SECRET_KEY'];
   delete process.env['NODE_ENV'];
 
   const { createApp } = await import('../main.js');
@@ -590,5 +593,20 @@ ${D}/${M}/${Y},TRF FROM ADEBAYO O,150000.00
     /* The same amount, the same day, and still nothing to pair it with. */
     expect(seen.openMovements).toEqual([]);
     expect(seen.reconciliation).toMatchObject({ pairable: 0, unmatchedLines: 1 });
+  });
+});
+
+describe('the feed door on a deployment with no aggregator key', () => {
+  it('answers not_configured everywhere instead of pretending', async () => {
+    const { auth } = await onboard('+2348177000083');
+    expect(
+      (await app.inject({ method: 'GET', url: '/v1/bank/feed', headers: auth })).json(),
+    ).toEqual({ state: 'not_configured' });
+    expect((await post('/v1/bank/feed/connect', { exchangeCode: 'code_x' }, auth)).json()).toEqual({
+      outcome: 'not_configured',
+    });
+    expect((await post('/v1/bank/feed/sync', {}, auth)).json()).toEqual({
+      outcome: 'not_configured',
+    });
   });
 });

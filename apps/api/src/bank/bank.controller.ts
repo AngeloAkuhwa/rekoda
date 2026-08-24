@@ -19,17 +19,22 @@ import {
   Inject,
   Post,
   Req,
+  ServiceUnavailableException,
   UseGuards,
 } from '@nestjs/common';
-import { parseBankStatement } from '@rekoda/core';
+import { lagosDay, parseBankStatement } from '@rekoda/core';
 import {
   bankPositionResponse,
+  connectBankFeedRequest,
   forgetStatementDayRequest,
   importStatementRequest,
+  type BankFeedStateResponse,
   type BankPositionResponse,
+  type ConnectBankFeedResponse,
   type ForgetStatementDayResponse,
   type ImportStatementResponse,
   type ReconcileResponse,
+  type SyncBankFeedResponse,
   matchLineRequest,
   unmatchLineRequest,
   type MatchLineResponse,
@@ -39,6 +44,8 @@ import { bankRepo, withBusiness, type Db } from '@rekoda/db';
 import { SessionGuard, type AuthedRequest } from '../auth/session.guard.js';
 import { Roles, RolesGuard } from '../auth/roles.guard.js';
 import { DB } from '../db/db.module.js';
+import { BANK_FEED, type BankFeedPort } from './feed.port.js';
+import { MonoApiError } from './mono.provider.js';
 
 /**
  * How much of the statement the page carries.
@@ -53,10 +60,26 @@ import { DB } from '../db/db.module.js';
  */
 const STATEMENT_ROWS = 500;
 
+/**
+ * How far back the FIRST sync reaches. Ninety days is what aggregators
+ * reliably hold and what a merchant starting to reconcile actually wants;
+ * further history arrives the way it always has, by statement upload.
+ */
+const FIRST_SYNC_DAYS = 90;
+/**
+ * How far behind the cursor each later sync re-covers. Banks post late and
+ * clocks disagree; the fingerprint dedupe makes the overlap free, so the
+ * safe direction costs nothing.
+ */
+const SYNC_OVERLAP_DAYS = 5;
+
 @Controller('v1/bank')
 @UseGuards(SessionGuard, RolesGuard)
 export class BankController {
-  constructor(@Inject(DB) private readonly db: Db) {}
+  constructor(
+    @Inject(DB) private readonly db: Db,
+    @Inject(BANK_FEED) private readonly feed: BankFeedPort,
+  ) {}
 
   /** What the books say against what the bank says, and the lines behind it. */
   @Get('position')
@@ -231,6 +254,143 @@ export class BankController {
       }),
     );
     return { released };
+  }
+
+  /**
+   * The live feed's standing state, for the card the bank page renders
+   * (fix-plan 4, G5). A read that decides nothing, like `position`.
+   */
+  @Get('feed')
+  async feedState(@Req() request: AuthedRequest): Promise<BankFeedStateResponse> {
+    if (!this.feed.configured) return { state: 'not_configured' };
+    const businessId = request.auth!.businessId;
+    const connection = await withBusiness(this.db, businessId, (tx) =>
+      bankRepo.feedConnectionFor(tx, businessId),
+    );
+    if (!connection) return { state: 'not_linked' };
+    if (connection.status !== 'linked') {
+      return {
+        state: 'lapsed',
+        bankName: connection.bankName,
+        accountLast4: connection.accountLast4,
+      };
+    }
+    return {
+      state: 'linked',
+      bankName: connection.bankName,
+      accountLast4: connection.accountLast4,
+      lastSyncedOn: connection.lastSyncedOn,
+    };
+  }
+
+  /**
+   * Exchange the aggregator's one-time code for a standing link.
+   *
+   * The owner's act, like every connection to an outside service: the code
+   * came out of a consent flow the MERCHANT completed at their own bank, and
+   * Rekoda never saw credentials. Re-linking after a lapse is the same call.
+   */
+  @Post('feed/connect')
+  @Roles('owner')
+  @HttpCode(200)
+  async connectFeed(
+    @Req() request: AuthedRequest,
+    @Body() body: unknown,
+  ): Promise<ConnectBankFeedResponse> {
+    const parsed = connectBankFeedRequest.safeParse(body);
+    if (!parsed.success) throw new BadRequestException('the code the bank widget handed back');
+    if (!this.feed.configured) return { outcome: 'not_configured' };
+
+    let linked;
+    try {
+      linked = await this.feed.linkAccount(parsed.data.exchangeCode);
+    } catch (error) {
+      if (error instanceof MonoApiError) {
+        throw new ServiceUnavailableException(
+          'The bank connection service did not answer. Try again shortly.',
+        );
+      }
+      throw error;
+    }
+    if (linked.state === 'rejected') return { outcome: 'rejected', reason: linked.reason };
+
+    const businessId = request.auth!.businessId;
+    await withBusiness(this.db, businessId, (tx) =>
+      bankRepo.linkFeed(tx, {
+        businessId,
+        provider: this.feed.providerType,
+        accountRef: linked.accountRef,
+        bankName: linked.bankName,
+        accountLast4: linked.accountLast4,
+        actor: `user:${request.auth!.userId}`,
+      }),
+    );
+    return { outcome: 'linked', bankName: linked.bankName, accountLast4: linked.accountLast4 };
+  }
+
+  /**
+   * Pull what moved since the cursor, through the SAME import the CSV upload
+   * uses: same fingerprint, same dedupe, same reconciliation afterwards.
+   * Nothing downstream knows which door a line came through, which is the
+   * whole design.
+   *
+   * The fetch runs BEFORE the transaction opens: a slow aggregator must
+   * never hold a database transaction hostage. The overlap between syncs is
+   * deliberate and free — see SYNC_OVERLAP_DAYS.
+   */
+  @Post('feed/sync')
+  @Roles('owner', 'accountant')
+  @HttpCode(200)
+  async syncFeed(@Req() request: AuthedRequest): Promise<SyncBankFeedResponse> {
+    if (!this.feed.configured) return { outcome: 'not_configured' };
+    const businessId = request.auth!.businessId;
+
+    const connection = await withBusiness(this.db, businessId, (tx) =>
+      bankRepo.feedConnectionFor(tx, businessId),
+    );
+    if (!connection || connection.status !== 'linked') return { outcome: 'not_linked' };
+
+    const today = lagosDay(new Date());
+    const since = connection.lastSyncedOn
+      ? lagosDay(new Date(Date.parse(connection.lastSyncedOn) - SYNC_OVERLAP_DAYS * 86_400_000))
+      : lagosDay(new Date(Date.now() - FIRST_SYNC_DAYS * 86_400_000));
+
+    let fetched;
+    try {
+      fetched = await this.feed.fetchTransactions(connection.accountRef, since);
+    } catch (error) {
+      if (error instanceof MonoApiError) {
+        throw new ServiceUnavailableException(
+          'The bank connection service did not answer. Try again shortly.',
+        );
+      }
+      throw error;
+    }
+    if (fetched.state === 'unlinked') {
+      await withBusiness(this.db, businessId, (tx) =>
+        bankRepo.markFeedUnlinked(tx, businessId, `user:${request.auth!.userId}`),
+      );
+      return { outcome: 'unlinked' };
+    }
+
+    const stored = await withBusiness(this.db, businessId, async (tx) => {
+      const result = await bankRepo.importStatementLines(tx, {
+        businessId,
+        /* `row` exists so a CSV's skipped row can be named; a feed has no
+         * rows, so the position in the fetch stands in. It is not part of
+         * the fingerprint, so it can never split a duplicate. */
+        lines: fetched.transactions.map((t, i) => ({ ...t, row: i + 1 })),
+        actor: `user:${request.auth!.userId}`,
+      });
+      await bankRepo.markFeedSynced(tx, businessId, today);
+      return result;
+    });
+    return {
+      outcome: 'synced',
+      imported: stored.imported,
+      duplicates: stored.duplicates,
+      since,
+    };
   }
 
   /**

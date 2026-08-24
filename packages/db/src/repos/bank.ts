@@ -15,7 +15,7 @@
 import { and, eq, sql } from 'drizzle-orm';
 import { fingerprintLines, matchStatement, type BankStatementLine } from '@rekoda/core';
 import type { TenantDb } from '../client.js';
-import { bankLineMatches, bankStatementLines } from '../schema/finance.js';
+import { bankFeedConnections, bankLineMatches, bankStatementLines } from '../schema/finance.js';
 import { auditEvents } from '../schema/ops.js';
 
 export interface ImportedStatement {
@@ -710,4 +710,130 @@ export async function unmatchLine(
     });
   }
   return removed.length;
+}
+
+/* ── the live feed's standing link (fix-plan 4, G5) ──────────────────────── */
+
+export interface FeedConnection {
+  id: string;
+  provider: string;
+  accountRef: string;
+  bankName: string;
+  accountLast4: string;
+  /** linked | unlinked. Unlinked keeps the row: lapsed is not never-was. */
+  status: string;
+  /** `YYYY-MM-DD`, or null before the first sync. */
+  lastSyncedOn: string | null;
+}
+
+export async function feedConnectionFor(
+  tx: TenantDb,
+  businessId: string,
+): Promise<FeedConnection | null> {
+  const rows = await tx
+    .select({
+      id: bankFeedConnections.id,
+      provider: bankFeedConnections.provider,
+      accountRef: bankFeedConnections.accountRef,
+      bankName: bankFeedConnections.bankName,
+      accountLast4: bankFeedConnections.accountLast4,
+      status: bankFeedConnections.status,
+      lastSyncedOn: bankFeedConnections.lastSyncedOn,
+    })
+    .from(bankFeedConnections)
+    .where(eq(bankFeedConnections.businessId, businessId))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+/**
+ * Record that the merchant authorised the aggregator.
+ *
+ * An upsert on the one-per-business index rather than an insert, because
+ * re-linking is the ordinary repair for a lapsed consent: the new account
+ * reference replaces the old, the status comes back to `linked`, and the
+ * sync cursor resets so the next pull re-covers the gap. The fingerprint
+ * dedupe makes the re-covered overlap free.
+ */
+export async function linkFeed(
+  tx: TenantDb,
+  input: {
+    businessId: string;
+    provider: string;
+    accountRef: string;
+    bankName: string;
+    accountLast4: string;
+    actor: string;
+  },
+): Promise<void> {
+  await tx
+    .insert(bankFeedConnections)
+    .values({
+      businessId: input.businessId,
+      provider: input.provider,
+      accountRef: input.accountRef,
+      bankName: input.bankName,
+      accountLast4: input.accountLast4,
+      status: 'linked',
+    })
+    .onConflictDoUpdate({
+      target: [bankFeedConnections.businessId],
+      set: {
+        provider: input.provider,
+        accountRef: input.accountRef,
+        bankName: input.bankName,
+        accountLast4: input.accountLast4,
+        status: 'linked',
+        lastSyncedOn: null,
+        updatedAt: new Date(),
+      },
+    });
+
+  await tx.insert(auditEvents).values({
+    businessId: input.businessId,
+    actor: input.actor,
+    entity: 'bank_feed',
+    entityId: input.accountRef,
+    action: 'linked',
+    newValue: { provider: input.provider, bankName: input.bankName } as never,
+    sourceType: 'dashboard',
+  });
+}
+
+/** A sync ran and covered up to this Lagos day. */
+export async function markFeedSynced(tx: TenantDb, businessId: string, day: string): Promise<void> {
+  await tx
+    .update(bankFeedConnections)
+    .set({ lastSyncedOn: day, updatedAt: new Date() })
+    .where(eq(bankFeedConnections.businessId, businessId));
+}
+
+/**
+ * The aggregator answered that its access lapsed. The row stays, marked, so
+ * the page can say "link it again" instead of pretending nothing was ever
+ * linked.
+ */
+export async function markFeedUnlinked(
+  tx: TenantDb,
+  businessId: string,
+  actor: string,
+): Promise<void> {
+  const marked = await tx
+    .update(bankFeedConnections)
+    .set({ status: 'unlinked', updatedAt: new Date() })
+    .where(
+      and(eq(bankFeedConnections.businessId, businessId), eq(bankFeedConnections.status, 'linked')),
+    )
+    .returning({ accountRef: bankFeedConnections.accountRef });
+
+  if (marked.length > 0) {
+    await tx.insert(auditEvents).values({
+      businessId,
+      actor,
+      entity: 'bank_feed',
+      entityId: marked[0]!.accountRef,
+      action: 'unlinked',
+      sourceType: 'dashboard',
+    });
+  }
 }
