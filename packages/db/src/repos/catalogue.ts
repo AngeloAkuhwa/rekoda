@@ -350,3 +350,71 @@ export async function imageKeyFor(
     .limit(1);
   return rows[0]?.imageKey ?? null;
 }
+
+/**
+ * Rename a product (fix-plan 5, H2c).
+ *
+ * Refused when the new name FOLDS into a different product's, because the
+ * fold is how every mention finds its product: two rows a human cannot tell
+ * apart would split the stock history from that moment on, which is the
+ * exact bug `findOrCreateProduct`'s whitespace lesson exists to prevent.
+ */
+export async function renameProduct(
+  tx: TenantDb,
+  businessId: string,
+  id: string,
+  name: string,
+): Promise<'renamed' | 'not_found' | 'name_taken'> {
+  const folded = foldProductName(name);
+  const clash = await tx.execute<{ id: string }>(sql`
+    SELECT id FROM products
+    WHERE business_id = ${businessId}::uuid
+      AND lower(regexp_replace(btrim(name), '[[:space:]]+', ' ', 'g')) = ${folded}
+      AND id <> ${id}::uuid
+    LIMIT 1
+  `);
+  if ([...clash].length > 0) return 'name_taken';
+
+  const updated = await tx
+    .update(products)
+    .set({ name: name.trim(), updatedAt: new Date() })
+    .where(and(eq(products.businessId, businessId), eq(products.id, id)))
+    .returning({ id: products.id });
+  return updated.length === 1 ? 'renamed' : 'not_found';
+}
+
+/**
+ * Create a product from the dashboard (fix-plan 5, H2c).
+ *
+ * The same fold-first discipline as the chat path: a name that already folds
+ * to an existing product answers with THAT product rather than minting a
+ * twin. The read-then-insert window matches `findOrCreateProduct`'s, and a
+ * form resubmission lands in the read branch.
+ */
+export async function createProduct(
+  tx: TenantDb,
+  businessId: string,
+  input: { name: string; unitPriceK?: number | undefined },
+): Promise<{ outcome: 'created' | 'already_exists'; id: string; name: string }> {
+  const folded = foldProductName(input.name);
+  const existing = await tx.execute<{ id: string; name: string }>(sql`
+    SELECT id, name FROM products
+    WHERE business_id = ${businessId}::uuid
+      AND lower(regexp_replace(btrim(name), '[[:space:]]+', ' ', 'g')) = ${folded}
+    LIMIT 1
+  `);
+  const found = [...existing][0];
+  if (found) return { outcome: 'already_exists', id: found.id, name: found.name };
+
+  const rows = await tx
+    .insert(products)
+    .values({
+      businessId,
+      name: input.name.trim(),
+      ...(input.unitPriceK === undefined ? {} : { unitPriceK: input.unitPriceK }),
+    })
+    .returning({ id: products.id, name: products.name });
+  const row = rows[0];
+  if (!row) throw new Error('createProduct: insert returned no row');
+  return { outcome: 'created', id: row.id, name: row.name };
+}

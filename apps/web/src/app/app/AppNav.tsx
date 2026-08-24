@@ -6,6 +6,9 @@ const TABS = [
   { key: 'overview', href: '/app', label: 'Overview' },
   { key: 'invoices', href: '/app/invoices', label: 'Invoices' },
   { key: 'receipts', href: '/app/receipts', label: 'Receipts' },
+  /* Beside the money-in pages: who still owes is the question a merchant
+     asks right after "what came in". */
+  { key: 'debtors', href: '/app/debtors', label: 'Debtors' },
   { key: 'expenses', href: '/app/expenses', label: 'Expenses' },
   { key: 'stock', href: '/app/stock', label: 'Stock' },
   { key: 'catalogue', href: '/app/catalogue', label: 'Catalogue' },

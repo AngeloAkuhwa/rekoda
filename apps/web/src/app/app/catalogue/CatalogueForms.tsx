@@ -4,6 +4,8 @@ import { useActionState } from 'react';
 import { Button } from '@/components/ui/Button';
 import { Field } from '@/components/ui/Field';
 import {
+  createProductAction,
+  renameProductAction,
   setDescriptionAction,
   setCostAction,
   setPriceAction,
@@ -186,6 +188,76 @@ export function ListingForm({ choices }: { choices: Choice[] }) {
       <Result state={state} />
       <Button type="submit" disabled={pending}>
         {pending ? 'Saving…' : 'Save this change'}
+      </Button>
+    </form>
+  );
+}
+
+/** A new product, typed rather than mentioned (fix-plan 5, H2c). */
+export function CreateProductForm() {
+  const [state, action, pending] = useActionState<CatalogueFormState, FormData>(
+    createProductAction,
+    {},
+  );
+  return (
+    <form action={action} className="rk-form" noValidate>
+      <Field id="newProductName" label="What it is" error={state.error}>
+        <input
+          id="newProductName"
+          name="name"
+          className="rk-input"
+          placeholder="Ankara bale"
+          maxLength={80}
+          required
+        />
+      </Field>
+      <Field
+        id="newProductPrice"
+        label="Price each (₦, optional)"
+        hint="Leave empty to price it later. Only priced, listed products appear in your shop."
+      >
+        <input
+          id="newProductPrice"
+          name="price"
+          className="rk-input"
+          inputMode="decimal"
+          placeholder="8500"
+        />
+      </Field>
+      <Result state={state} />
+      <Button type="submit" disabled={pending}>
+        {pending ? 'Adding…' : 'Add product'}
+      </Button>
+    </form>
+  );
+}
+
+/** Fix a typo without splitting the product's history. */
+export function RenameProductForm({ choices }: { choices: Choice[] }) {
+  const [state, action, pending] = useActionState<CatalogueFormState, FormData>(
+    renameProductAction,
+    {},
+  );
+  return (
+    <form action={action} className="rk-form" noValidate>
+      <ProductPicker id="renameProduct" choices={choices} error={state.error} />
+      <Field
+        id="renameName"
+        label="Its new name"
+        hint="The count, the cost and the history come along with it."
+      >
+        <input
+          id="renameName"
+          name="name"
+          className="rk-input"
+          maxLength={80}
+          required
+          autoComplete="off"
+        />
+      </Field>
+      <Result state={state} />
+      <Button type="submit" disabled={pending}>
+        {pending ? 'Renaming…' : 'Rename'}
       </Button>
     </form>
   );

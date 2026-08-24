@@ -209,7 +209,9 @@ export default async function DashboardPage() {
               </ul>
               {debtors.count > debtors.rows.length ? (
                 <p className="rk-fineprint">
-                  And {debtors.count - debtors.rows.length} more. Ask on WhatsApp: *who owes me*
+                  And {debtors.count - debtors.rows.length} more.{' '}
+                  <a href="/app/debtors">See everyone who owes you</a>, or ask on WhatsApp: *who
+                  owes me*
                 </p>
               ) : null}
             </>

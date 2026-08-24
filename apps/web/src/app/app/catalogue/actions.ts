@@ -2,7 +2,7 @@
 
 import { revalidatePath } from 'next/cache';
 import { parseAmountText, toKobo } from '@rekoda/core';
-import { editProduct, uploadProductImage, viewOnlyRefusal } from '@/server/api';
+import { createProduct, editProduct, uploadProductImage, viewOnlyRefusal } from '@/server/api';
 import { readSessionToken } from '@/server/session-cookies';
 
 export interface CatalogueFormState {
@@ -217,5 +217,88 @@ export async function uploadProductImageAction(
     return await uploadProductImageActionUnguarded(...args);
   } catch (error) {
     return viewOnlyRefusal(error) as Awaited<ReturnType<typeof uploadProductImageActionUnguarded>>;
+  }
+}
+
+/** A new product, from the page that sells them (fix-plan 5, H2c). */
+async function createProductActionUnguarded(
+  _prev: CatalogueFormState,
+  formData: FormData,
+): Promise<CatalogueFormState> {
+  const token = await readSessionToken();
+  if (!token) return { error: 'Your session expired. Sign in again.' };
+
+  const name = String(formData.get('name') ?? '').trim();
+  if (name.length < 2 || name.length > 80) {
+    return { error: 'Give it a name of 2 to 80 characters.' };
+  }
+  const priceText = String(formData.get('price') ?? '').trim();
+  const naira = priceText === '' ? undefined : parseAmountText(priceText);
+  if (naira === null || (naira !== undefined && naira <= 0)) {
+    return { error: 'Say the price in naira, or leave it empty to price it later.' };
+  }
+
+  const outcome = await createProduct(token, {
+    name,
+    ...(naira === undefined ? {} : { unitPriceK: toKobo(naira) }),
+  });
+  if (!outcome) return { error: 'That did not go through. Nothing was created.' };
+  if (outcome.outcome === 'already_exists') {
+    return {
+      error: `You already have ${outcome.name}. Edit it below rather than keeping two of it.`,
+    };
+  }
+
+  revalidatePath('/app/catalogue');
+  return { done: `${outcome.name} is in your catalogue. Set a cost when you know one.` };
+}
+
+/** Fix a typo in a name without splitting the product's history. */
+async function renameProductActionUnguarded(
+  _prev: CatalogueFormState,
+  formData: FormData,
+): Promise<CatalogueFormState> {
+  const token = await readSessionToken();
+  if (!token) return { error: 'Your session expired. Sign in again.' };
+
+  const id = String(formData.get('id') ?? '').trim();
+  if (!id) return { error: 'Pick a product.' };
+  const name = String(formData.get('name') ?? '').trim();
+  if (name.length < 2 || name.length > 80) {
+    return { error: 'Give it a name of 2 to 80 characters.' };
+  }
+
+  const outcome = await editProduct(token, { id, name });
+  if (!outcome) return { error: 'That did not go through. Nothing was changed.' };
+  if (outcome.outcome === 'not_found') return { error: 'That product is no longer here.' };
+  if (outcome.outcome === 'name_taken') {
+    return {
+      error:
+        'Another product already answers to that name. Two products a customer cannot tell ' +
+        'apart would split your stock history, so nothing was changed.',
+    };
+  }
+
+  revalidatePath('/app/catalogue');
+  return { done: `Renamed to ${name}. Its history and count come along with it.` };
+}
+
+export async function createProductAction(
+  ...args: Parameters<typeof createProductActionUnguarded>
+): ReturnType<typeof createProductActionUnguarded> {
+  try {
+    return await createProductActionUnguarded(...args);
+  } catch (error) {
+    return viewOnlyRefusal(error) as Awaited<ReturnType<typeof createProductActionUnguarded>>;
+  }
+}
+
+export async function renameProductAction(
+  ...args: Parameters<typeof renameProductActionUnguarded>
+): ReturnType<typeof renameProductActionUnguarded> {
+  try {
+    return await renameProductActionUnguarded(...args);
+  } catch (error) {
+    return viewOnlyRefusal(error) as Awaited<ReturnType<typeof renameProductActionUnguarded>>;
   }
 }

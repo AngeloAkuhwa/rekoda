@@ -226,11 +226,16 @@ export class ReportsController {
   }
 
   @Get('debtors')
-  async debtors(@Req() request: AuthedRequest): Promise<ReportsDebtorsResponse> {
+  async debtors(
+    @Req() request: AuthedRequest,
+    @Query('full') full?: string,
+  ): Promise<ReportsDebtorsResponse> {
     const businessId = request.auth!.businessId;
     const now = new Date();
+    /* Six rows is the overview's strip; the debtors PAGE asks for the whole
+     * register, capped where the contract caps it. */
     const debtors = await withBusiness(this.db, businessId, (tx) =>
-      reportsRepo.debtorsFor(tx, businessId, DEBTOR_ROWS),
+      reportsRepo.debtorsFor(tx, businessId, full === '1' ? REGISTER_ROWS : DEBTOR_ROWS),
     );
     return {
       rows: debtors.rows.map((r) => ({
