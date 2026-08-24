@@ -18,6 +18,10 @@ const TABS = [
   { key: 'payments', href: '/app/payments', label: 'Payments' },
   { key: 'team', href: '/app/team', label: 'Team' },
   { key: 'billing', href: '/app/billing', label: 'Billing' },
+  /* Last on purpose: settings is where a merchant goes ON PURPOSE, not a
+     place they work in, and everything they reach for daily stays where
+     their thumb already knows it is. */
+  { key: 'settings', href: '/app/settings', label: 'Settings' },
 ] as const;
 
 export type AppTab = (typeof TABS)[number]['key'];

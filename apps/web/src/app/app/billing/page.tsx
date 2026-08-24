@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import { isOwner } from '@/lib/permissions';
 import { Money } from '@/components/ui/Money';
 import { PendingButton } from '@/components/ui/PendingButton';
+import { CancelForm } from './CancelForm';
 import { PLANS, PLAN_NAMES } from '@/lib/plans';
 import { billingOverview, billingQuote } from '@/server/api';
 import { requireSessionWithToken } from '@/server/guards';
@@ -166,7 +167,12 @@ export default async function BillingPage({
                 ? `Grace period ends ${lagosDate(overview.status.endsAt)}.`
                 : `Stopped ${lagosDate(overview.status.since)}.`}
         </p>
-        {overview.pendingPlan ? (
+        {overview.pendingPlan === 'expired' ? (
+          <p className="rk-fineprint">
+            Cancelled: your plan runs to the end of what you paid for, then stops without charging.
+            Changed your mind? Pick your current plan on the change table below and it carries on.
+          </p>
+        ) : overview.pendingPlan ? (
           <p className="rk-fineprint">
             Changing to {PLAN_NAMES[overview.pendingPlan] ?? overview.pendingPlan} at your next
             renewal. You keep what you paid for until then.
@@ -379,6 +385,24 @@ export default async function BillingPage({
           </div>
         )}
       </div>
+
+      {/* ── leaving ── */}
+      {isOwner(identity.role) &&
+      overview.plan !== 'expired' &&
+      overview.pendingPlan !== 'expired' ? (
+        <div className="rk-card">
+          <h2>Leaving Rekoda</h2>
+          <p className="rk-fineprint">
+            Cancelling stops the next charge and nothing else: your plan runs to the last day you
+            paid for, and your records stay yours afterwards, readable and exportable, exactly as
+            the terms say. Nothing is deleted by cancelling.
+          </p>
+          <details className="rk-void">
+            <summary>Cancel my subscription</summary>
+            <CancelForm />
+          </details>
+        </div>
+      ) : null}
     </section>
   );
 }

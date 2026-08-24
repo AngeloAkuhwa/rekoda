@@ -125,6 +125,63 @@ export type BillingPlanChangeRequest = z.infer<typeof billingPlanChangeRequest>;
 export type BillingPlanChangeResponse = z.infer<typeof billingPlanChangeResponse>;
 
 /**
+ * Cancelling the subscription (fix-plan 5, H2a).
+ *
+ * The terms and the refunds page have promised this since they were written;
+ * this is the control they promised. Cancelling is a SCHEDULED stop, never
+ * an immediate one: the merchant paid for the month, so they keep the month,
+ * and at renewal the plan ends instead of charging. Records stay readable
+ * and exportable afterwards, which the copy on the button says out loud.
+ */
+export const billingCancelResponse = z.discriminatedUnion('state', [
+  /** The plan runs to the date shown, then stops. Nothing more is charged. */
+  z.object({ state: z.literal('scheduled'), endsAt: isoDate }),
+  /** Picking the current plan again on the change-plan table undoes this. */
+  z.object({ state: z.literal('already_scheduled'), endsAt: isoDate }),
+  /** A trial has nothing to cancel: it ends by itself and charges nothing. */
+  z.object({ state: z.literal('trial'), endsAt: isoDate.nullable() }),
+  z.object({ state: z.literal('already_stopped') }),
+]);
+export type BillingCancelResponse = z.infer<typeof billingCancelResponse>;
+
+/**
+ * The facts a business can correct about itself (fix-plan 5, H2a).
+ *
+ * Onboarding promised "you can change it" about the name and "later from
+ * settings" about CAC and TIN; this is that request. Every field optional,
+ * at least one required: an empty save is a click, not an instruction.
+ */
+export const businessSettingsRequest = z
+  .object({
+    name: z.string().trim().min(2).max(80).optional(),
+    /** CAC registration number. Empty string clears it: not registered yet. */
+    rcNumber: z.string().trim().max(20).optional(),
+    tin: z.string().trim().max(20).optional(),
+  })
+  .refine((v) => v.name !== undefined || v.rcNumber !== undefined || v.tin !== undefined, {
+    message: 'change at least one thing',
+  });
+
+export const businessSettingsView = z.object({
+  name: z.string(),
+  rcNumber: z.string().nullable(),
+  tin: z.string().nullable(),
+  /** E.164 of the owner: shown, never editable, because it IS the identity. */
+  phone: z.string(),
+  businessType: z.string().nullable(),
+});
+export type BusinessSettingsView = z.infer<typeof businessSettingsView>;
+
+export const businessSettingsResponse = z.object({
+  outcome: z.literal('saved'),
+  name: z.string(),
+  rcNumber: z.string().nullable(),
+  tin: z.string().nullable(),
+});
+export type BusinessSettingsRequest = z.infer<typeof businessSettingsRequest>;
+export type BusinessSettingsResponse = z.infer<typeof businessSettingsResponse>;
+
+/**
  * What an operator must say to refund (ADR 0024's matrix).
  *
  * `reason` is one of the published rows rather than free text: a refund

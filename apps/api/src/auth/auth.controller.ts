@@ -37,6 +37,9 @@ import {
   type TeamMember,
   type TeamResponse,
   type VerifyOtpResponse,
+  type BusinessSettingsResponse,
+  type BusinessSettingsView,
+  businessSettingsRequest,
 } from '@rekoda/contracts';
 import { AuthService, SetupTokenInvalid } from './auth.service.js';
 import { SessionGuard, type AuthedRequest } from './session.guard.js';
@@ -164,16 +167,48 @@ export class BusinessController {
   }
 
   /**
-   * Exists to prove the role boundary is real (M1 exit criterion): an
-   * accountant is inside the tenant and passes every RLS policy, so only the
-   * guard keeps them out of settings.
+   * The facts a business may correct about itself (fix-plan 5, H2a).
+   *
+   * This endpoint spent four milestones as a stub proving the role boundary
+   * (M1 exit criterion) while onboarding told every merchant "you can change
+   * it later". Owner-only for the same reason it always was: an accountant
+   * is inside the tenant and passes every RLS policy, so only the guard
+   * keeps them out of renaming the business on the papers they sign.
    */
+  /** What the settings page shows before anyone types. Owner-only, like the write. */
+  @Get('settings')
+  @UseGuards(SessionGuard, RolesGuard)
+  @Roles('owner')
+  async settings(@Req() request: AuthedRequest): Promise<BusinessSettingsView> {
+    const businessId = request.auth!.businessId;
+    const business = await identity.businessById(this.db, businessId);
+    if (!business) throw new BadRequestException('this business no longer exists');
+    return {
+      name: business.name,
+      rcNumber: business.rcNumber,
+      tin: business.tin,
+      phone: request.auth!.phone,
+      businessType: business.businessType,
+    };
+  }
+
   @Post('settings')
   @HttpCode(200)
   @UseGuards(SessionGuard, RolesGuard)
   @Roles('owner')
-  updateSettings(@Req() request: AuthedRequest): { businessId: string } {
-    return { businessId: request.auth!.businessId };
+  async updateSettings(
+    @Req() request: AuthedRequest,
+    @Body() body: unknown,
+  ): Promise<BusinessSettingsResponse> {
+    const parsed = businessSettingsRequest.safeParse(body);
+    if (!parsed.success) {
+      throw new BadRequestException('a name of 2 to 80 characters, or a CAC number or TIN');
+    }
+    const businessId = request.auth!.businessId;
+    const saved = await withBusiness(this.db, businessId, (tx) =>
+      identity.updateBusinessSettings(tx, businessId, parsed.data, `user:${request.auth!.userId}`),
+    );
+    return { outcome: 'saved', name: saved.name, rcNumber: saved.rcNumber, tin: saved.tin };
   }
 
   /**
