@@ -254,11 +254,16 @@ export const creditNotes = pgTable(
     ledgerTransactionId: uuid('ledger_transaction_id'),
     snapshotJson: jsonb('snapshot_json'),
     docHash: text('doc_hash'),
+    /** One-shot key the credit form brings, so a resubmission credits once. */
+    clientRef: text('client_ref'),
     createdAt: createdAt(),
   },
   (t) => [
     uniqueIndex('credit_notes_number_ux').on(t.businessId, t.creditNoteNumber),
     index('credit_notes_invoice_ix').on(t.businessId, t.invoiceId),
+    uniqueIndex('credit_notes_client_ref_ux')
+      .on(t.businessId, t.clientRef)
+      .where(sql`${t.clientRef} IS NOT NULL`),
   ],
 );
 
@@ -274,9 +279,16 @@ export const ledgerTransactions = pgTable(
     reversesId: uuid('reverses_id'),
     sourceType: text('source_type').notNull(),
     sourceId: text('source_id'),
+    /** One-shot key a dashboard journal brings. Null on every other posting. */
+    clientRef: text('client_ref'),
     createdAt: createdAt(),
   },
-  (t) => [index('ledger_tx_business_ix').on(t.businessId)],
+  (t) => [
+    index('ledger_tx_business_ix').on(t.businessId),
+    uniqueIndex('ledger_tx_client_ref_ux')
+      .on(t.businessId, t.clientRef)
+      .where(sql`${t.clientRef} IS NOT NULL`),
+  ],
 );
 
 export const ledgerEntries = pgTable(
@@ -298,6 +310,9 @@ export const ledgerEntries = pgTable(
     index('ledger_entries_account_ix').on(t.businessId, t.account),
     /* The statement schedules: business + account + a month of created_at. */
     index('ledger_entries_business_account_created_ix').on(t.businessId, t.account, t.createdAt),
+    /* The overview cards and cashflow chart: a created_at window with the
+     * account only in FILTER clauses, which no account-pinned index serves. */
+    index('ledger_entries_business_created_ix').on(t.businessId, t.createdAt),
   ],
 );
 
@@ -399,9 +414,16 @@ export const supplierPayments = pgTable(
       .notNull()
       .references(() => ledgerTransactions.id),
     paidOn: date('paid_on').notNull(),
+    /** One-shot key the pay form brings, so a resubmission pays once. */
+    clientRef: text('client_ref'),
     recordedAt: timestamp('recorded_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [index('supplier_payments_expense_ix').on(t.businessId, t.expenseId)],
+  (t) => [
+    index('supplier_payments_expense_ix').on(t.businessId, t.expenseId),
+    uniqueIndex('supplier_payments_client_ref_ux')
+      .on(t.businessId, t.clientRef)
+      .where(sql`${t.clientRef} IS NOT NULL`),
+  ],
 );
 
 /**
@@ -435,9 +457,16 @@ export const fixedAssets = pgTable(
     /** What came back. Zero when it was scrapped; null when not sold. */
     proceedsK: kobo('proceeds_k'),
     soldOn: date('sold_on'),
+    /** One-shot key the record form brings, so a resubmission records once. */
+    clientRef: text('client_ref'),
     createdAt: createdAt(),
   },
-  (t) => [index('fixed_assets_business_ix').on(t.businessId, t.status)],
+  (t) => [
+    index('fixed_assets_business_ix').on(t.businessId, t.status),
+    uniqueIndex('fixed_assets_client_ref_ux')
+      .on(t.businessId, t.clientRef)
+      .where(sql`${t.clientRef} IS NOT NULL`),
+  ],
 );
 
 export const reconciliations = pgTable(
@@ -482,8 +511,15 @@ export const recurringEntries = pgTable(
     /** The sweep's claim. Null until the schedule has raised anything. */
     lastRaisedOn: date('last_raised_on'),
     active: boolean('active').notNull().default(true),
+    /** One-shot key the schedule form brings, so a resubmission creates once. */
+    clientRef: text('client_ref'),
     createdAt: createdAt(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [index('recurring_business_ix').on(t.businessId, t.createdAt)],
+  (t) => [
+    index('recurring_business_ix').on(t.businessId, t.createdAt),
+    uniqueIndex('recurring_client_ref_ux')
+      .on(t.businessId, t.clientRef)
+      .where(sql`${t.clientRef} IS NOT NULL`),
+  ],
 );

@@ -42,6 +42,8 @@ export async function recordAsset(
     method: PaymentMethod;
     actor: string;
     boughtAt?: Date;
+    /** One-shot key from the record form. A resubmission records nothing twice. */
+    clientRef?: string | null;
   },
 ): Promise<RecordedAsset> {
   const at = input.boughtAt ?? new Date();
@@ -72,6 +74,7 @@ export async function recordAsset(
       usefulLifeMonths: input.usefulLifeMonths,
       boughtOn: lagosDay(at),
       ledgerTransactionId,
+      ...(input.clientRef ? { clientRef: input.clientRef } : {}),
     })
     .returning({ id: fixedAssets.id });
   const row = rows[0];

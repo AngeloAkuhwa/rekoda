@@ -62,9 +62,9 @@ describe('a schedule', () => {
     const businessId = await seedBusiness();
     await schedule(businessId, '2026-09-01', 1);
 
-    const [row] = await withBusiness(db, businessId, (tx) =>
-      recurringRepo.schedulesFor(tx, businessId),
-    );
+    const {
+      rows: [row],
+    } = await withBusiness(db, businessId, (tx) => recurringRepo.schedulesFor(tx, businessId));
     expect(row).toMatchObject({
       description: 'Shop rent',
       /* 'Rent' as the merchant capitalised it, folded to the key the
@@ -78,6 +78,19 @@ describe('a schedule', () => {
       lastRaisedOn: null,
       active: true,
     });
+  });
+
+  it('cuts the list at the limit and still counts everything', async () => {
+    const businessId = await seedBusiness();
+    await schedule(businessId, '2026-09-01', 1);
+    await schedule(businessId, '2026-09-02', 2);
+    await schedule(businessId, '2026-09-03', 3);
+
+    const cut = await withBusiness(db, businessId, (tx) =>
+      recurringRepo.schedulesFor(tx, businessId, 2),
+    );
+    expect(cut.rows).toHaveLength(2);
+    expect(cut.total).toBe(3);
   });
 
   it('refuses an amount of nothing and a day that is not a day', async () => {
@@ -148,7 +161,7 @@ describe('what is due', () => {
     const id = await schedule(businessId, '2026-09-01', 1);
     await withBusiness(db, businessId, (tx) => recurringRepo.stopSchedule(tx, businessId, id));
 
-    const rows = await withBusiness(db, businessId, (tx) =>
+    const { rows } = await withBusiness(db, businessId, (tx) =>
       recurringRepo.schedulesFor(tx, businessId),
     );
     expect(rows).toHaveLength(1);
@@ -178,9 +191,9 @@ describe('the claim', () => {
     const results = await Promise.all([claim(), claim(), claim(), claim()]);
 
     expect(results.filter(Boolean)).toHaveLength(1);
-    const [row] = await withBusiness(db, businessId, (tx) =>
-      recurringRepo.schedulesFor(tx, businessId),
-    );
+    const {
+      rows: [row],
+    } = await withBusiness(db, businessId, (tx) => recurringRepo.schedulesFor(tx, businessId));
     expect(row!.nextDueOn).toBe('2026-10-01');
     expect(row!.lastRaisedOn).toBe('2026-09-01');
   });
@@ -218,7 +231,10 @@ describe('tenant isolation', () => {
     const theirs = await seedBusiness('+2348120000042');
     await schedule(theirs, '2026-09-01', 1);
 
-    expect(await withBusiness(db, mine, (tx) => recurringRepo.schedulesFor(tx, mine))).toEqual([]);
+    expect(await withBusiness(db, mine, (tx) => recurringRepo.schedulesFor(tx, mine))).toEqual({
+      rows: [],
+      total: 0,
+    });
   });
 
   /**

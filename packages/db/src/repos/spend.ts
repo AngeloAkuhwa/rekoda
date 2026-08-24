@@ -663,6 +663,8 @@ export async function paySupplier(
     method: PaymentMethod;
     actor: string;
     paidAt?: Date;
+    /** One-shot key from the pay form. A resubmission pays nothing twice. */
+    clientRef?: string | null;
   },
 ): Promise<PaySupplierOutcome> {
   /**
@@ -712,6 +714,7 @@ export async function paySupplier(
     method: input.method,
     ledgerTransactionId,
     paidOn: lagosDay(at),
+    ...(input.clientRef ? { clientRef: input.clientRef } : {}),
   });
 
   await tx.insert(auditEvents).values({

@@ -222,24 +222,20 @@ describe('after a failed renewal', () => {
     expect(state.daysLeft).toBe(4);
   });
 
-  it('reminds on day 1 and day 5 and no other day', () => {
-    const remind = (day: number) => {
+  it('names the reminder day reached, so an outage delays a warning instead of cancelling it', () => {
+    const due = (day: number) => {
       const state = billingState({
         renewsAt,
         failedAt: at('2026-08-31T00:00:00Z'),
         now: new Date(at('2026-08-31T00:00:00Z').getTime() + day * 86_400_000),
       });
-      return state.state === 'grace' ? state.remindToday : false;
+      return state.state === 'grace' ? state.reminderDue : 'expired';
     };
-    expect([0, 1, 2, 3, 4, 5, 6].map(remind)).toEqual([
-      false,
-      true,
-      false,
-      false,
-      false,
-      true,
-      false,
-    ]);
+    /* Day 0 owes nothing; days 1-4 all answer "day one", which is what lets
+     * a sweep that slept through day one still send that warning once; day
+     * 5 onward answers "day five". The claim, keyed on the day named here,
+     * is what keeps a late answer from becoming a second message. */
+    expect([0, 1, 2, 3, 4, 5, 6].map(due)).toEqual([null, 1, 1, 1, 1, 5, 5]);
   });
 
   it('expires on day seven, not before', () => {

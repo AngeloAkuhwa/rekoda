@@ -149,7 +149,7 @@ export const GRACE_REMINDER_DAYS = [1, 5] as const;
 export type BillingState =
   | { state: 'active'; renewsAt: Date }
   /** Paid features still work; the merchant is being reminded. */
-  | { state: 'grace'; endsAt: Date; daysLeft: number; remindToday: boolean }
+  | { state: 'grace'; endsAt: Date; daysLeft: number; reminderDue: number | null }
   /** Paid features stop. Nothing is deleted and the books stay readable. */
   | { state: 'expired'; since: Date };
 
@@ -162,8 +162,12 @@ export type BillingState =
  * a merchant who leaves because the product punished them for a bank's
  * problem.
  *
- * `remindToday` is true on exactly the reminder days, so the sweep that calls
- * this can send one message rather than deciding for itself when to send.
+ * `reminderDue` names the reminder day that is due as of now — the LATEST
+ * reminder day already reached — rather than answering only on the day
+ * itself. The sweep claims that day before sending, so the answer is stable
+ * across passes: a sweep that was down through all of day one still sends
+ * the day-one warning on day two, once, instead of staying silent until day
+ * five of a seven-day grace.
  */
 export function billingState(input: {
   renewsAt: Date;
@@ -177,11 +181,12 @@ export function billingState(input: {
   if (input.now >= endsAt) return { state: 'expired', since: endsAt };
 
   const elapsed = wholeDaysBetween(input.failedAt, input.now);
+  const due = [...GRACE_REMINDER_DAYS].filter((day) => day <= elapsed).pop() ?? null;
   return {
     state: 'grace',
     endsAt,
     daysLeft: Math.max(0, GRACE_DAYS - elapsed),
-    remindToday: (GRACE_REMINDER_DAYS as readonly number[]).includes(elapsed),
+    reminderDue: due,
   };
 }
 

@@ -23,6 +23,8 @@ export interface CreateScheduleInput {
   anchorDay: number;
   /** The first day it should raise, `YYYY-MM-DD` in Lagos. */
   firstDueOn: string;
+  /** One-shot key from the schedule form. A resubmission creates nothing twice. */
+  clientRef?: string | null;
 }
 
 export interface Schedule {
@@ -55,6 +57,7 @@ export async function createSchedule(tx: TenantDb, input: CreateScheduleInput): 
       method: input.method,
       anchorDay: input.anchorDay,
       nextDueOn: input.firstDueOn,
+      ...(input.clientRef ? { clientRef: input.clientRef } : {}),
     })
     .returning({ id: recurringEntries.id });
   const row = rows[0];
@@ -62,8 +65,25 @@ export async function createSchedule(tx: TenantDb, input: CreateScheduleInput): 
   return row.id;
 }
 
-/** Every schedule this business has, running or stopped, newest first. */
-export async function schedulesFor(tx: TenantDb, businessId: string): Promise<Schedule[]> {
+export interface ScheduleList {
+  rows: Schedule[];
+  /** Every schedule that exists, so a cut list can say it was cut. */
+  total: number;
+}
+
+/**
+ * This business's schedules, running or stopped, newest first.
+ *
+ * Bounded like every register read: nobody standing tends hundreds of
+ * standing orders, but an unbounded read is a habit that only ever breaks at
+ * the worst tenant, and the total lets the page say "showing N of M" rather
+ * than silently ending.
+ */
+export async function schedulesFor(
+  tx: TenantDb,
+  businessId: string,
+  limit = 200,
+): Promise<ScheduleList> {
   const rows = await tx
     .select({
       id: recurringEntries.id,
@@ -75,12 +95,17 @@ export async function schedulesFor(tx: TenantDb, businessId: string): Promise<Sc
       nextDueOn: recurringEntries.nextDueOn,
       lastRaisedOn: recurringEntries.lastRaisedOn,
       active: recurringEntries.active,
+      total: sql<number>`count(*) OVER ()::int`,
     })
     .from(recurringEntries)
     .where(eq(recurringEntries.businessId, businessId))
-    .orderBy(desc(recurringEntries.createdAt));
+    .orderBy(desc(recurringEntries.createdAt))
+    .limit(limit);
 
-  return rows.map((r) => ({ ...r, amountK: Number(r.amountK) }));
+  return {
+    rows: rows.map(({ total: _total, ...r }) => ({ ...r, amountK: Number(r.amountK) })),
+    total: rows[0]?.total ?? 0,
+  };
 }
 
 export type StopOutcome = 'stopped' | 'already_stopped' | 'not_found';

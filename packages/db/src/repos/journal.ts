@@ -47,6 +47,8 @@ export interface JournalInput {
    */
   occurredAt?: Date;
   actor: string;
+  /** One-shot key from the journal form. A resubmission posts nothing twice. */
+  clientRef?: string | null;
 }
 
 export interface JournalRecorded {
@@ -72,7 +74,7 @@ export async function recordJournal(tx: TenantDb, input: JournalInput): Promise<
     { ...posting, memo: `${journalNumber}: ${input.memo}` },
     JOURNAL_SOURCE,
     journalNumber,
-    { occurredAt: at },
+    { occurredAt: at, clientRef: input.clientRef ?? null },
   );
 
   await tx.insert(auditEvents).values({

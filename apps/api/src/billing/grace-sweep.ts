@@ -82,12 +82,15 @@ export async function sweepGracePeriods(
         continue;
       }
 
-      if (state.state !== 'grace' || !state.remindToday) continue;
+      if (state.state !== 'grace' || state.reminderDue === null) continue;
 
       /* The day number is what the claim is keyed on, and it comes from core
        * rather than from a counter here: the sweep must not have its own
-       * opinion about which days carry a reminder. */
-      const day = GRACE_DAYS - state.daysLeft;
+       * opinion about which days carry a reminder. Core answers with the
+       * latest reminder day REACHED, not just the day itself, so an outage
+       * across a reminder day delays that warning to the next pass instead
+       * of cancelling it; the claim keeps it to one send. */
+      const day = state.reminderDue;
       const claimed = await withBusiness(deps.appDb, row.businessId, (tx) =>
         subscriptionsRepo.claimGraceReminder(tx, row.businessId, day),
       );

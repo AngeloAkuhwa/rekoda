@@ -43,6 +43,7 @@ export default async function ExpensesPage() {
     payableK,
     payableAgeing,
     recurring,
+    recurringTotal,
     outstanding,
     assets,
     assetsTotal,
@@ -316,6 +317,12 @@ export default async function ExpensesPage() {
               </tbody>
             </table>
           </div>
+        ) : null}
+        {recurringTotal > recurring.length ? (
+          <p className="rk-fineprint">
+            Showing {recurring.length} of {recurringTotal}. The newest are here; the rest still
+            raise their entries on schedule.
+          </p>
         ) : null}
 
         {isOwner(identity.role) ? (

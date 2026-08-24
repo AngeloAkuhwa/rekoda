@@ -151,14 +151,19 @@ const XLSX_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.s
  */
 const EXPORT_ROWS = 10_000;
 
-/** A 23505 on payments_rekoda_reference_ux: this clientRef already booked. */
-function isDuplicateClientRef(error: unknown): boolean {
+/**
+ * A 23505 on the named one-shot-key constraint: this clientRef already
+ * booked. Every write a dashboard form can repeat carries such a key, and
+ * the database is the only judge; this merely classifies its refusal.
+ */
+function isDuplicateOn(error: unknown, constraint: string): boolean {
   const cause = (error as { cause?: unknown })?.cause ?? error;
   const pg = cause as { code?: string; constraint_name?: string; constraint?: string };
-  return (
-    pg?.code === '23505' &&
-    (pg.constraint_name ?? pg.constraint ?? '').includes('payments_rekoda_reference')
-  );
+  return pg?.code === '23505' && (pg.constraint_name ?? pg.constraint ?? '').includes(constraint);
+}
+
+function isDuplicateClientRef(error: unknown): boolean {
+  return isDuplicateOn(error, 'payments_rekoda_reference');
 }
 
 @Controller('v1/reports')
@@ -467,15 +472,23 @@ export class ReportsController {
       );
     }
     const businessId = request.auth!.businessId;
-    return withBusiness(this.db, businessId, (tx) =>
-      issueRepo.issueCreditNote(tx, {
-        businessId,
-        invoiceNumber: parsed.data.invoiceNumber,
-        amountK: parsed.data.amountK,
-        reason: parsed.data.reason,
-        actor: `user:${request.auth!.userId}`,
-      }),
-    );
+    try {
+      return await withBusiness(this.db, businessId, (tx) =>
+        issueRepo.issueCreditNote(tx, {
+          businessId,
+          invoiceNumber: parsed.data.invoiceNumber,
+          amountK: parsed.data.amountK,
+          reason: parsed.data.reason,
+          actor: `user:${request.auth!.userId}`,
+          clientRef: parsed.data.clientRef ?? null,
+        }),
+      );
+    } catch (error) {
+      /* Caught OUT here because the unique violation aborted the transaction
+       * it happened in — same shape as every one-shot key on this surface. */
+      if (isDuplicateOn(error, 'credit_notes_client_ref')) return { outcome: 'duplicate' };
+      throw error;
+    }
   }
 
   /**
@@ -692,13 +705,13 @@ export class ReportsController {
   async expenses(@Req() request: AuthedRequest): Promise<ReportsExpensesResponse> {
     const businessId = request.auth!.businessId;
     const now = new Date();
-    const { list, payableAgeing, recurring, outstanding, assetRegister } = await withBusiness(
+    const { list, payableAgeing, recurringList, outstanding, assetRegister } = await withBusiness(
       this.db,
       businessId,
       async (tx) => ({
         list: await spendRepo.spendFor(tx, businessId, REGISTER_ROWS),
         payableAgeing: await spendRepo.payableAgeingFor(tx, businessId, now),
-        recurring: await recurringRepo.schedulesFor(tx, businessId),
+        recurringList: await recurringRepo.schedulesFor(tx, businessId),
         /* What a merchant can actually pay, on the same response as the debt
          * it belongs to: a page that fetched these apart could show a total
          * from one moment and a list from another. */
@@ -723,7 +736,8 @@ export class ReportsController {
       purchasesK: list.purchasesK,
       payableK: list.payableK,
       payableAgeing,
-      recurring,
+      recurring: recurringList.rows,
+      recurringTotal: recurringList.total,
       outstanding,
       assets: assetRegister.rows,
       /* From SQL over the whole table. The pickers on this page are built out
@@ -757,18 +771,24 @@ export class ReportsController {
       );
     }
     const businessId = request.auth!.businessId;
-    const recorded = await withBusiness(this.db, businessId, (tx) =>
-      assetsRepo.recordAsset(tx, {
-        businessId,
-        description: parsed.data.description,
-        costK: parsed.data.costK,
-        paidK: parsed.data.paidK,
-        usefulLifeMonths: parsed.data.usefulLifeMonths,
-        method: parsed.data.method,
-        actor: `user:${request.auth!.userId}`,
-      }),
-    );
-    return { assetId: recorded.assetId, owedK: recorded.owedK };
+    try {
+      const recorded = await withBusiness(this.db, businessId, (tx) =>
+        assetsRepo.recordAsset(tx, {
+          businessId,
+          description: parsed.data.description,
+          costK: parsed.data.costK,
+          paidK: parsed.data.paidK,
+          usefulLifeMonths: parsed.data.usefulLifeMonths,
+          method: parsed.data.method,
+          actor: `user:${request.auth!.userId}`,
+          clientRef: parsed.data.clientRef ?? null,
+        }),
+      );
+      return { outcome: 'recorded', assetId: recorded.assetId, owedK: recorded.owedK };
+    } catch (error) {
+      if (isDuplicateOn(error, 'fixed_assets_client_ref')) return { outcome: 'duplicate' };
+      throw error;
+    }
   }
 
   /**
@@ -852,15 +872,21 @@ export class ReportsController {
     if (!parsed.success) throw new BadRequestException('the purchase and what you paid on it');
 
     const businessId = request.auth!.businessId;
-    return withBusiness(this.db, businessId, (tx) =>
-      spendRepo.paySupplier(tx, {
-        businessId,
-        expenseId: parsed.data.expenseId,
-        amountK: parsed.data.amountK,
-        method: parsed.data.method,
-        actor: `user:${request.auth!.userId}`,
-      }),
-    );
+    try {
+      return await withBusiness(this.db, businessId, (tx) =>
+        spendRepo.paySupplier(tx, {
+          businessId,
+          expenseId: parsed.data.expenseId,
+          amountK: parsed.data.amountK,
+          method: parsed.data.method,
+          actor: `user:${request.auth!.userId}`,
+          clientRef: parsed.data.clientRef ?? null,
+        }),
+      );
+    } catch (error) {
+      if (isDuplicateOn(error, 'supplier_payments_client_ref')) return { outcome: 'duplicate' };
+      throw error;
+    }
   }
 
   /**
@@ -1018,6 +1044,7 @@ export class ReportsController {
           outOfAccount,
           ...(occurredOn === undefined ? {} : { occurredAt: lagosNoon(occurredOn) }),
           actor: `user:${request.auth!.userId}`,
+          clientRef: parsed.data.clientRef ?? null,
         }),
       );
       return { outcome: 'recorded', journalNumber: recorded.journalNumber };
@@ -1027,6 +1054,7 @@ export class ReportsController {
       if (error instanceof closeRepo.PeriodClosed) {
         return { outcome: 'period_closed', closedThrough: error.closedThrough };
       }
+      if (isDuplicateOn(error, 'ledger_tx_client_ref')) return { outcome: 'duplicate' };
       throw error;
     }
   }
@@ -1122,18 +1150,24 @@ export class ReportsController {
 
     const businessId = request.auth!.businessId;
     const firstDueOn = nextDueAfter(lagosDay(new Date()), parsed.data.anchorDay);
-    const id = await withBusiness(this.db, businessId, (tx) =>
-      recurringRepo.createSchedule(tx, {
-        businessId,
-        description: parsed.data.description,
-        category: parsed.data.category,
-        amountK: parsed.data.amountK,
-        method: parsed.data.method,
-        anchorDay: parsed.data.anchorDay,
-        firstDueOn,
-      }),
-    );
-    return { outcome: 'created', id, firstDueOn };
+    try {
+      const id = await withBusiness(this.db, businessId, (tx) =>
+        recurringRepo.createSchedule(tx, {
+          businessId,
+          description: parsed.data.description,
+          category: parsed.data.category,
+          amountK: parsed.data.amountK,
+          method: parsed.data.method,
+          anchorDay: parsed.data.anchorDay,
+          firstDueOn,
+          clientRef: parsed.data.clientRef ?? null,
+        }),
+      );
+      return { outcome: 'created', id, firstDueOn };
+    } catch (error) {
+      if (isDuplicateOn(error, 'recurring_client_ref')) return { outcome: 'duplicate' };
+      throw error;
+    }
   }
 
   /** Stop a schedule. Never a delete: what it already raised is real. */

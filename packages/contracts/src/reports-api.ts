@@ -496,6 +496,8 @@ export const reportsExpensesResponse = z.object({
       active: z.boolean(),
     }),
   ),
+  /** Every schedule that exists, so a cut list can say it was cut. */
+  recurringTotal: z.number().int().nonnegative(),
 });
 export type ReportsExpensesResponse = z.infer<typeof reportsExpensesResponse>;
 
@@ -705,6 +707,12 @@ export const createRecurringRequest = z.object({
   amountK: kobo.refine((k) => k > 0, 'an amount above zero'),
   method: z.union([z.literal('cash'), z.literal('transfer')]),
   anchorDay: z.number().int().min(1).max(31),
+  /**
+   * One-shot key the form mints when it renders. A resubmission of the same
+   * form carries the same key and books NOTHING twice; a fresh form is a
+   * fresh intention and gets its own.
+   */
+  clientRef: z.string().uuid().optional(),
 });
 
 export const createRecurringResponse = z.discriminatedUnion('outcome', [
@@ -716,6 +724,8 @@ export const createRecurringResponse = z.discriminatedUnion('outcome', [
   }),
   /** A stock purchase is a delivery somebody took, not a standing cost. */
   z.object({ outcome: z.literal('not_stock') }),
+  /** The same clientRef arrived twice: the first submission already created. */
+  z.object({ outcome: z.literal('duplicate') }),
 ]);
 
 /**
@@ -901,17 +911,28 @@ export const recordAssetRequest = z
      * generator over a century. */
     usefulLifeMonths: z.number().int().min(1).max(144),
     method: z.enum(['cash', 'transfer']),
+    /**
+     * One-shot key the form mints when it renders. A resubmission of the
+     * same form carries the same key and books NOTHING twice; a fresh form
+     * is a fresh intention and gets its own.
+     */
+    clientRef: z.string().uuid().optional(),
   })
   .refine((v) => v.paidK <= v.costK, {
     message: 'you cannot pay more than it cost',
     path: ['paidK'],
   });
 
-export const recordAssetResponse = z.object({
-  assetId: z.string(),
-  /** What is still owed on it. Zero unless it was taken partly on credit. */
-  owedK: kobo,
-});
+export const recordAssetResponse = z.discriminatedUnion('outcome', [
+  z.object({
+    outcome: z.literal('recorded'),
+    assetId: z.string(),
+    /** What is still owed on it. Zero unless it was taken partly on credit. */
+    owedK: kobo,
+  }),
+  /** The same clientRef arrived twice: the first submission already recorded. */
+  z.object({ outcome: z.literal('duplicate') }),
+]);
 
 /**
  * Selling or scrapping equipment (ADR 0026, amended).
@@ -967,6 +988,12 @@ export const paySupplierRequest = z.object({
   expenseId: z.string().uuid(),
   amountK: z.number().int().finite().positive(),
   method: z.enum(['cash', 'transfer']),
+  /**
+   * One-shot key the form mints when it renders. A resubmission of the same
+   * form carries the same key and books NOTHING twice; a fresh form is a
+   * fresh intention and gets its own.
+   */
+  clientRef: z.string().uuid().optional(),
 });
 
 /**
@@ -984,6 +1011,8 @@ export const paySupplierResponse = z.discriminatedUnion('outcome', [
     reason: z.enum(['no_such_purchase', 'withdrawn', 'nothing_owed', 'more_than_owed']),
     owedK: kobo,
   }),
+  /** The same clientRef arrived twice: the first submission already paid. */
+  z.object({ outcome: z.literal('duplicate') }),
 ]);
 
 export type PaySupplierRequest = z.infer<typeof paySupplierRequest>;
@@ -1002,6 +1031,12 @@ export const journalEntryRequest = z.object({
     .string()
     .regex(/^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/, 'a day like 2026-08-21')
     .optional(),
+  /**
+   * One-shot key the form mints when it renders. A resubmission of the same
+   * form carries the same key and books NOTHING twice; a fresh form is a
+   * fresh intention and gets its own.
+   */
+  clientRef: z.string().uuid().optional(),
 });
 
 export const journalEntryResponse = z.discriminatedUnion('outcome', [
@@ -1016,6 +1051,8 @@ export const journalEntryResponse = z.discriminatedUnion('outcome', [
   z.object({ outcome: z.literal('not_yet') }),
   /** Dated into a month the merchant closed. */
   z.object({ outcome: z.literal('period_closed'), closedThrough: z.string() }),
+  /** The same clientRef arrived twice: the first submission already posted. */
+  z.object({ outcome: z.literal('duplicate') }),
 ]);
 
 export type LedgerAccountKey = z.infer<typeof LedgerAccount>;
@@ -1238,6 +1275,12 @@ export const creditInvoiceRequest = z.object({
   /** Integer kobo, positive. A credit of nothing is not a credit. */
   amountK: z.number().int().positive(),
   reason: z.string().trim().min(4).max(200),
+  /**
+   * One-shot key the form mints when it renders. A resubmission of the same
+   * form carries the same key and books NOTHING twice; a fresh form is a
+   * fresh intention and gets its own.
+   */
+  clientRef: z.string().uuid().optional(),
 });
 
 export const creditInvoiceResponse = z.discriminatedUnion('outcome', [
@@ -1256,6 +1299,8 @@ export const creditInvoiceResponse = z.discriminatedUnion('outcome', [
   /** Nothing was ever paid, so the void is the right instrument. */
   z.object({ outcome: z.literal('unpaid') }),
   z.object({ outcome: z.literal('exceeds_invoice'), creditableK: kobo }),
+  /** The same clientRef arrived twice: the first submission already credited. */
+  z.object({ outcome: z.literal('duplicate') }),
 ]);
 
 export type CreditInvoiceRequest = z.infer<typeof creditInvoiceRequest>;

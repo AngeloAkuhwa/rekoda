@@ -1,6 +1,6 @@
 'use client';
 
-import { useActionState } from 'react';
+import { useActionState, useEffect, useMemo, useState } from 'react';
 import { ACCOUNT_PICKER_LABELS, type AccountKey } from '@rekoda/core';
 import { Button } from '@/components/ui/Button';
 import { Field } from '@/components/ui/Field';
@@ -22,9 +22,17 @@ const OPTIONS = Object.entries(ACCOUNT_PICKER_LABELS) as [AccountKey, string][];
 
 export function JournalForm({ today }: { today: string }) {
   const [state, action, pending] = useActionState<JournalState, FormData>(journalAction, {});
+  /* One key per intention, bumped when a submission settles, so a retried
+   * form books once and the NEXT genuine one is never mistaken for it. */
+  const [generation, setGeneration] = useState(0);
+  const clientRef = useMemo(() => crypto.randomUUID(), [generation]);
+  useEffect(() => {
+    if (state.done) setGeneration((g) => g + 1);
+  }, [state]);
 
   return (
     <form action={action} className="rk-form" noValidate>
+      <input type="hidden" name="clientRef" value={clientRef} />
       <Field
         id="amount"
         label="How much"

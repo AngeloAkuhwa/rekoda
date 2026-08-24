@@ -1,6 +1,6 @@
 'use client';
 
-import { useActionState } from 'react';
+import { useActionState, useEffect, useMemo, useState } from 'react';
 import { Button } from '@/components/ui/Button';
 import { Field } from '@/components/ui/Field';
 import { creditInvoiceAction, type CreditFormState } from './actions';
@@ -26,6 +26,13 @@ export function CreditForm({ invoices }: { invoices: CreditableInvoice[] }) {
     creditInvoiceAction,
     {},
   );
+  /* One key per intention, bumped when a submission settles, so a retried
+   * form books once and the NEXT genuine one is never mistaken for it. */
+  const [generation, setGeneration] = useState(0);
+  const clientRef = useMemo(() => crypto.randomUUID(), [generation]);
+  useEffect(() => {
+    if (state.done) setGeneration((g) => g + 1);
+  }, [state]);
 
   if (invoices.length === 0) {
     return (
@@ -38,6 +45,7 @@ export function CreditForm({ invoices }: { invoices: CreditableInvoice[] }) {
 
   return (
     <form action={action} className="rk-form" noValidate>
+      <input type="hidden" name="clientRef" value={clientRef} />
       <Field id="creditInvoiceNumber" label="Invoice to credit" error={state.error}>
         <select
           name="invoiceNumber"

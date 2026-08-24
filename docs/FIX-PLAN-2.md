@@ -68,8 +68,21 @@ ARE built.
   settlement reads; add `(business_id, facet, created_at)` index and close the
   oldest-names privacy cliff.
 - **B4 Idempotency + small correctness**: client keys on journal / credit /
-  asset / paySupplier / recurring; team page distinguishes ApiForbidden from
-  ApiUnavailable; grace day-1 after outage; bound `schedulesFor` + count;
-  `hasJobForSingleton` state predicate; the two aggregate index mismatches.
+  asset / paySupplier / recurring (migration 0043: nullable `client_ref` +
+  partial unique per table, same contract as the payment form's key); team
+  page rethrows anything that is not ApiForbidden, so an outage reaches the
+  error boundary instead of telling the owner they are not the owner; core
+  `billingState` answers `reminderDue` (the latest reminder day REACHED)
+  instead of exact-day `remindToday`, so a sweep outage across day one delays
+  that warning to the next pass instead of cancelling it; `schedulesFor`
+  bounded at 200 with a window count and a "showing N of M" caption;
+  `ledger_entries (business_id, created_at)` added for the overview cards and
+  cashflow chart, whose month-window reads no account-pinned index served.
+  FINDING REJECTED after verification: `hasJobForSingleton`'s missing state
+  predicate is deliberate — its one caller, the pump's stranded-event lane,
+  documents ANY-state as the contract, because filtering to live states would
+  resurrect a five-times-failed job and turn one poison payload into a
+  permanent retry loop. The helper's doc now says so, so the next audit does
+  not reflag it.
 - **B5 (optional, defense-in-depth)**: re-seal legacy v1 vault blobs, reject
   v1 on read.

@@ -552,7 +552,7 @@ export async function withdrawAsset(
 /** Money going back to a supplier, against the purchase it settles. */
 export async function paySupplier(
   sessionToken: string,
-  body: { expenseId: string; amountK: number; method: 'cash' | 'transfer' },
+  body: { expenseId: string; amountK: number; method: 'cash' | 'transfer'; clientRef?: string },
 ): Promise<PaySupplierResponse | null> {
   const { status, json } = await call({
     method: 'POST',
@@ -1039,11 +1039,12 @@ export async function creditInvoice(
   invoiceNumber: string,
   amountK: number,
   reason: string,
+  clientRef?: string,
 ): Promise<CreditInvoiceResponse | null> {
   const { status, json } = await call({
     method: 'POST',
     path: '/v1/reports/invoices/credit',
-    body: { invoiceNumber, amountK, reason },
+    body: { invoiceNumber, amountK, reason, ...(clientRef ? { clientRef } : {}) },
     headers: { authorization: `Bearer ${sessionToken}` },
     expect: [200, 400],
   });
