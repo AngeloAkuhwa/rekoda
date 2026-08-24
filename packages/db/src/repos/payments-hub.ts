@@ -506,3 +506,88 @@ export async function merchantKeyCipherFor(
   const row = rows[0];
   return row && row.keyMode === 'merchant_key' ? row.cipher : null;
 }
+
+/* ── Pay with Transfer (ADR 0016, fix-plan 6 M5c) ────────────────────────── */
+
+export interface TransferAccount {
+  bank: string;
+  accountNumber: string;
+  accountName: string | null;
+  expiresAt: Date | null;
+}
+
+/**
+ * Attach the provider's temporary account to the intent it was minted for.
+ * Guarded like `advanceIntent`: a terminal intent never grows an account,
+ * because a number recorded on a dead intent is a number nobody is watching.
+ */
+export async function recordTransferAccount(
+  tx: TenantDb,
+  intentId: string,
+  account: TransferAccount,
+): Promise<boolean> {
+  const rows = await tx
+    .update(paymentIntents)
+    .set({
+      transferBank: account.bank,
+      transferAccountNumber: account.accountNumber,
+      transferAccountName: account.accountName,
+      transferExpiresAt: account.expiresAt,
+      updatedAt: new Date(),
+    })
+    .where(and(eq(paymentIntents.id, intentId), not(inArray(paymentIntents.status, [...TERMINAL]))))
+    .returning({ id: paymentIntents.id });
+  return rows.length === 1;
+}
+
+/** The account stored on one intent, for re-showing rather than re-minting. */
+export async function transferAccountFor(
+  tx: TenantDb,
+  businessId: string,
+  intentId: string,
+): Promise<TransferAccount | null> {
+  const rows = await tx
+    .select({
+      bank: paymentIntents.transferBank,
+      accountNumber: paymentIntents.transferAccountNumber,
+      accountName: paymentIntents.transferAccountName,
+      expiresAt: paymentIntents.transferExpiresAt,
+    })
+    .from(paymentIntents)
+    .where(and(eq(paymentIntents.businessId, businessId), eq(paymentIntents.id, intentId)))
+    .limit(1);
+  const row = rows[0];
+  if (!row || !row.bank || !row.accountNumber) return null;
+  return {
+    bank: row.bank,
+    accountNumber: row.accountNumber,
+    accountName: row.accountName,
+    expiresAt: row.expiresAt,
+  };
+}
+
+/**
+ * Every live intent that carries a transfer account, across tenants — the
+ * reconciliation sweep's worklist (ADR 0019: never rely on webhooks alone).
+ * Worker connection only, same `worker_resolve` read as reference
+ * resolution; every write the sweep makes goes back through `withBusiness`.
+ */
+export async function liveTransferIntents(
+  workerDb: Db,
+  limit = 200,
+): Promise<Array<{ businessId: string; reference: string }>> {
+  return workerDb
+    .select({
+      businessId: paymentIntents.businessId,
+      reference: paymentIntents.reference,
+    })
+    .from(paymentIntents)
+    .where(
+      and(
+        sql`${paymentIntents.transferAccountNumber} IS NOT NULL`,
+        not(inArray(paymentIntents.status, [...TERMINAL])),
+      ),
+    )
+    .orderBy(paymentIntents.createdAt)
+    .limit(limit);
+}

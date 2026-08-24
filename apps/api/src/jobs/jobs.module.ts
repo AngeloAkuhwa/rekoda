@@ -28,6 +28,7 @@ import { PaymentIntentsService } from '../payments/payment-intents.service.js';
 import { PAYMENT_PROVIDER, type PaymentProviderPort } from '../payments/provider.port.js';
 import { pumpPaystackEvents } from '../payments/paystack-pump.js';
 import { sweepSettlements } from '../payments/settlement-sweep.js';
+import { sweepMerchantTransfers } from '../payments/merchant-transfer.service.js';
 import { sweepUnknownSenders } from '../channels/stranger-sweep.js';
 import { sweepGracePeriods } from '../billing/grace-sweep.js';
 import { sweepRenewals } from '../billing/renewal-sweep.js';
@@ -118,6 +119,8 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
   private pumping = false;
   private sweepTimer: NodeJS.Timeout | null = null;
   private sweeping = false;
+  private transferTimer: NodeJS.Timeout | null = null;
+  private sweepingTransfers = false;
   private strangerTimer: NodeJS.Timeout | null = null;
   private greeting = false;
   private graceTimer: NodeJS.Timeout | null = null;
@@ -214,6 +217,34 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
         });
     }, 600_000);
     this.sweepTimer.unref();
+
+    /**
+     * The Pay-with-Transfer reconciliation poll (ADR 0019: never rely on
+     * webhooks alone). Two minutes, because the person waiting on it is a
+     * customer standing at a checkout, not a ledger: the on-demand status
+     * check answers them in seconds and this sweep is the net underneath.
+     * Live transfer intents are rare and short-lived, so most passes read
+     * one worker query and stop.
+     */
+    this.transferTimer = setInterval(() => {
+      if (this.sweepingTransfers) return;
+      this.sweepingTransfers = true;
+      this.exclusively('merchant-transfers', () =>
+        sweepMerchantTransfers({
+          workerDb,
+          appDb: this.appDb,
+          connectionKey: this.config.connectionKey,
+          paystackBaseUrl: this.config.paystackBaseUrl,
+        }),
+      )
+        .catch((error: unknown) => {
+          this.log.warn(`transfer sweep failed: ${redactForLog(describeFailure(error))}`);
+        })
+        .finally(() => {
+          this.sweepingTransfers = false;
+        });
+    }, 120_000);
+    this.transferTimer.unref();
 
     /**
      * Answering strangers rides the same worker on a middle clock: fast
@@ -368,6 +399,7 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
     if (this.depreciationTimer) clearInterval(this.depreciationTimer);
     if (this.retentionTimer) clearInterval(this.retentionTimer);
     if (this.sweepTimer) clearInterval(this.sweepTimer);
+    if (this.transferTimer) clearInterval(this.transferTimer);
     if (this.strangerTimer) clearInterval(this.strangerTimer);
     await this.runner?.stop();
   }

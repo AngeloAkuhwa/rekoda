@@ -132,3 +132,36 @@ export const paystackSettlementTransactionsResponse = z
 export type PaystackSettlementTransactionsResponse = z.infer<
   typeof paystackSettlementTransactionsResponse
 >;
+
+/**
+ * POST /charge with a `bank_transfer` object (ADR 0016, fix-plan 6 M5c):
+ * Paystack answers with a temporary account for THIS transaction. Only the
+ * fields the storefront shows a customer are read; everything else rides
+ * `.loose()`. A response with no account number is treated as a refusal,
+ * whatever the envelope's `status` claims.
+ */
+export const paystackChargeResponse = z
+  .object({
+    status: z.boolean(),
+    message: z.string().optional(),
+    data: z
+      .object({
+        reference: z.string().optional(),
+        /** e.g. `pending_bank_transfer` — stored verbatim, never trusted. */
+        status: z.string().optional(),
+        bank_transfer: z
+          .object({
+            account_number: z.string().optional(),
+            account_name: z.string().nullish(),
+            account_expires_at: z.string().nullish(),
+            bank: z.object({ name: z.string().optional() }).loose().nullish(),
+          })
+          .loose()
+          .nullish(),
+      })
+      .loose()
+      .optional(),
+  })
+  .loose();
+
+export type PaystackChargeResponse = z.infer<typeof paystackChargeResponse>;

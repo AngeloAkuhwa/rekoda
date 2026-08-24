@@ -72,8 +72,13 @@ export interface BookVerifiedPaymentInput {
   /** cash | transfer | pos | unknown — already normalised by the adapter. */
   method: string;
   actor: string;
-  /** The external event that carried the confirmation, for the audit trail. */
+  /** The external event that carried the confirmation, for the audit trail.
+   * For a polled confirmation there is no event: the provider's own
+   * transaction id stands in, under sourceType 'reconciliation'. */
   eventId: string;
+  /** Where the confirmation came from. Webhook unless the caller says the
+   * reconciliation poll found it first (ADR 0019: never webhooks alone). */
+  sourceType?: 'webhook' | 'reconciliation';
   bookedAt?: Date;
 }
 
@@ -124,7 +129,7 @@ export async function bookVerifiedPayment(
         providerStatus: input.providerStatus,
         status: 'confirmed',
         settlementStatus: 'pending',
-        sourceType: 'webhook',
+        sourceType: input.sourceType ?? 'webhook',
         sourceId: input.eventId,
       })
       .returning({ id: payments.id });
@@ -262,7 +267,7 @@ export async function bookVerifiedPayment(
     .values({
       businessId: input.businessId,
       memo: posting.memo,
-      sourceType: 'webhook',
+      sourceType: input.sourceType ?? 'webhook',
       sourceId: input.eventId,
     })
     .returning({ id: ledgerTransactions.id });
@@ -376,7 +381,7 @@ async function audit(
       providerType: input.providerType,
       at: at.toISOString(),
     } as never,
-    sourceType: 'webhook',
+    sourceType: input.sourceType ?? 'webhook',
   });
 }
 

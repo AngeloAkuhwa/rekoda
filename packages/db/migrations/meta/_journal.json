@@ -330,6 +330,13 @@
       "when": 1787360611142,
       "tag": "0046_merchant_provider_keys",
       "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1787361600000,
+      "tag": "0047_transfer_accounts_on_intents",
+      "breakpoints": true
     }
   ]
 }

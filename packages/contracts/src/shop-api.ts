@@ -179,3 +179,52 @@ export const publicOrderResponse = z.discriminatedUnion('outcome', [
 ]);
 export type PublicOrderRequest = z.infer<typeof publicOrderRequest>;
 export type PublicOrderResponse = z.infer<typeof publicOrderResponse>;
+
+/**
+ * Pay with Transfer at the storefront checkout (ADR 0016/0019, fix-plan 6
+ * M5c). The customer asks for a temporary account for the order they just
+ * placed. `clientRef` is the same one-shot key the order was placed under;
+ * the email exists because Paystack's charge requires one, travels to the
+ * provider, and is not stored by Rekoda.
+ */
+export const payWithTransferRequest = z.object({
+  clientRef: z.string().uuid(),
+  email: z.string().trim().email().max(120),
+});
+
+export const payWithTransferResponse = z.discriminatedUnion('outcome', [
+  z.object({
+    outcome: z.literal('account'),
+    bankName: z.string(),
+    accountNumber: z.string(),
+    accountName: z.string().nullable(),
+    amountK: z.number().int().positive(),
+    /** ISO instant the number stops working. The invoice stays open past it. */
+    expiresAt: z.string().nullable(),
+    reference: z.string(),
+  }),
+  /** The merchant has not connected their own Paystack key. */
+  z.object({ outcome: z.literal('not_available') }),
+  /** No such order under this shop and clientRef. */
+  z.object({ outcome: z.literal('order_gone') }),
+  /** The invoice already carries no balance. */
+  z.object({ outcome: z.literal('nothing_to_pay') }),
+  /** Paystack itself would not answer. Try again shortly. */
+  z.object({ outcome: z.literal('provider_down') }),
+]);
+export type PayWithTransferRequest = z.infer<typeof payWithTransferRequest>;
+export type PayWithTransferResponse = z.infer<typeof payWithTransferResponse>;
+
+/**
+ * "Has my transfer landed?" — asked by the checkout after the customer says
+ * they have sent it. Answering `paid` is backed by a server-side verify
+ * against the merchant's own key, never by the customer's word.
+ */
+export const transferStatusResponse = z.discriminatedUnion('state', [
+  z.object({ state: z.literal('paid'), receiptNumber: z.string().nullable() }),
+  z.object({ state: z.literal('pending') }),
+  /** The temporary account lapsed unpaid. Ask for a fresh one. */
+  z.object({ state: z.literal('expired') }),
+  z.object({ state: z.literal('order_gone') }),
+]);
+export type TransferStatusResponse = z.infer<typeof transferStatusResponse>;

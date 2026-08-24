@@ -14,6 +14,7 @@
  */
 import { Logger } from '@nestjs/common';
 import {
+  paystackChargeResponse,
   paystackInitializeResponse,
   paystackSettlementListResponse,
   paystackSettlementTransactionsResponse,
@@ -140,35 +141,7 @@ export class PaystackProvider implements PaymentProviderPort {
   }
 
   async verifyTransaction(reference: string): Promise<VerifyTransactionResult> {
-    const response = await fetch(
-      `${this.baseUrl}/transaction/verify/${encodeURIComponent(reference)}`,
-      { headers: this.headers(), signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) },
-    );
-    if (response.status === 404) return { found: false };
-    if (!response.ok) {
-      throw new PaystackApiError(`verify failed with HTTP ${response.status}`);
-    }
-
-    const parsed = paystackVerifyResponse.safeParse(await response.json());
-    if (!parsed.success) throw new PaystackApiError('verify returned an unreadable response');
-    // status:false with a readable envelope is Paystack's own "not found".
-    if (!parsed.data.status || !parsed.data.data) return { found: false };
-
-    const d = parsed.data.data;
-    return {
-      found: true,
-      transaction: {
-        succeeded: d.status === 'success',
-        reference: d.reference,
-        amountK: d.amount,
-        currency: d.currency,
-        providerStatus: d.status,
-        providerTransactionId: String(d.id),
-        providerFeeK: d.fees ?? 0,
-        method: CHANNEL_TO_METHOD[d.channel ?? ''] ?? 'unknown',
-        paidAtIso: d.paid_at ?? null,
-      },
-    };
+    return verifyPaystackTransaction(this.secretKey, this.baseUrl, reference);
   }
 
   async listSettlements(fromIso: string): Promise<ProviderSettlement[]> {
@@ -284,4 +257,127 @@ export async function verifyPaystackKey(
   if (response.ok) return 'ok';
   if (response.status === 401 || response.status === 403) return 'invalid';
   throw new PaystackApiError(`/balance failed with HTTP ${response.status}`);
+}
+
+/**
+ * Server-side verify under a CALLER-SUPPLIED key (fix-plan 6, M5c).
+ *
+ * The class method above delegates here with the platform key it was built
+ * with; the merchant-key paths call this directly, because on ADR 0019's
+ * model the authoritative answer about a merchant's money lives behind the
+ * merchant's own key. Same normalisation, same "404 is a routine miss".
+ */
+export async function verifyPaystackTransaction(
+  secretKey: string,
+  baseUrl: string,
+  reference: string,
+): Promise<VerifyTransactionResult> {
+  const response = await fetch(`${baseUrl}/transaction/verify/${encodeURIComponent(reference)}`, {
+    headers: { authorization: `Bearer ${secretKey}` },
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  });
+  if (response.status === 404) return { found: false };
+  if (!response.ok) {
+    throw new PaystackApiError(`verify failed with HTTP ${response.status}`);
+  }
+
+  const parsed = paystackVerifyResponse.safeParse(await response.json());
+  if (!parsed.success) throw new PaystackApiError('verify returned an unreadable response');
+  // status:false with a readable envelope is Paystack's own "not found".
+  if (!parsed.data.status || !parsed.data.data) return { found: false };
+
+  const d = parsed.data.data;
+  return {
+    found: true,
+    transaction: {
+      succeeded: d.status === 'success',
+      reference: d.reference,
+      amountK: d.amount,
+      currency: d.currency,
+      providerStatus: d.status,
+      providerTransactionId: String(d.id),
+      providerFeeK: d.fees ?? 0,
+      method: CHANNEL_TO_METHOD[d.channel ?? ''] ?? 'unknown',
+      paidAtIso: d.paid_at ?? null,
+    },
+  };
+}
+
+export interface TransferChargeInput {
+  /** RKD-PAY-… — minted before this call, always ours. */
+  reference: string;
+  /** Integer kobo, passed through untouched. */
+  amountK: number;
+  currency: string;
+  /** The paying customer's own address — Paystack requires one. Travels
+   * here and is not stored by Rekoda. */
+  email: string;
+  /** When the temporary account should stop working (ADR 0016: generous). */
+  expiresAtIso: string;
+}
+
+export type TransferChargeResult =
+  | {
+      state: 'account';
+      bankName: string;
+      accountNumber: string;
+      accountName: string | null;
+      expiresAtIso: string | null;
+    }
+  /** Paystack answered and said no — a product state, not an outage. */
+  | { state: 'refused'; reason: string };
+
+/**
+ * Pay with Transfer (ADR 0016): one charge, one temporary account. Runs on
+ * the MERCHANT's own key — this is their charge on their integration, which
+ * is the whole of ADR 0019. An envelope that claims success but carries no
+ * account number is treated as a refusal: a customer cannot transfer to a
+ * status flag.
+ */
+export async function createTransferCharge(
+  secretKey: string,
+  baseUrl: string,
+  input: TransferChargeInput,
+): Promise<TransferChargeResult> {
+  const log = new Logger('PaystackTransferCharge');
+  const response = await fetch(`${baseUrl}/charge`, {
+    method: 'POST',
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    headers: { authorization: `Bearer ${secretKey}`, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      email: input.email,
+      amount: input.amountK,
+      currency: input.currency,
+      reference: input.reference,
+      bank_transfer: { account_expires_at: input.expiresAtIso },
+    }),
+  });
+
+  const parsed = paystackChargeResponse.safeParse(
+    await response.json().catch(() => ({ status: false })),
+  );
+  if (response.status === 400 || (response.ok && parsed.success && !parsed.data.status)) {
+    return {
+      state: 'refused',
+      reason: parsed.success
+        ? (parsed.data.message ?? 'provider refused the charge')
+        : 'provider refused the charge',
+    };
+  }
+  if (!response.ok || !parsed.success) {
+    log.warn(`Paystack /charge answered HTTP ${response.status}`);
+    throw new PaystackApiError(`/charge failed with HTTP ${response.status}`);
+  }
+
+  const transfer = parsed.data.data?.bank_transfer;
+  if (!transfer?.account_number) {
+    return { state: 'refused', reason: 'provider returned no transfer account' };
+  }
+  return {
+    state: 'account',
+    bankName: transfer.bank?.name ?? 'your bank app',
+    accountNumber: transfer.account_number,
+    accountName: transfer.account_name ?? null,
+    expiresAtIso: transfer.account_expires_at ?? input.expiresAtIso,
+  };
 }

@@ -66,6 +66,11 @@ import {
   publicOrderResponse,
   type PublicOrderRequest,
   type PublicOrderResponse,
+  payWithTransferResponse,
+  type PayWithTransferRequest,
+  type PayWithTransferResponse,
+  transferStatusResponse,
+  type TransferStatusResponse,
   publicShopIndexResponse,
   publicShopResponse,
   saveShopResponse,
@@ -837,6 +842,37 @@ export async function placePublicOrder(
     expect: [200, 400],
   });
   return status === 200 ? publicOrderResponse.parse(json) : null;
+}
+
+/**
+ * A temporary transfer account for a placed storefront order (fix-plan 6,
+ * M5c). Public like the order call above it; the 400 is this tier's own
+ * malformed payload and reads as "check your details".
+ */
+export async function payWithTransfer(
+  slug: string,
+  body: PayWithTransferRequest,
+): Promise<PayWithTransferResponse | null> {
+  const { status, json } = await call({
+    method: 'POST',
+    path: `/v1/shop/${encodeURIComponent(slug)}/pay-with-transfer`,
+    body,
+    expect: [200, 400],
+  });
+  return status === 200 ? payWithTransferResponse.parse(json) : null;
+}
+
+/** Has the transfer landed? Server-verified; never the customer's word. */
+export async function transferStatus(
+  slug: string,
+  clientRef: string,
+): Promise<TransferStatusResponse | null> {
+  const { status, json } = await call({
+    method: 'GET',
+    path: `/v1/shop/${encodeURIComponent(slug)}/transfer-status?clientRef=${encodeURIComponent(clientRef)}`,
+    expect: [200, 400],
+  });
+  return status === 200 ? transferStatusResponse.parse(json) : null;
 }
 
 /**
