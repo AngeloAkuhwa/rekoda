@@ -88,11 +88,19 @@ export function decryptFacet(blob: string, hexKey: string, aad?: string): string
     throw new VaultError('vault blob is malformed or of an unknown version');
   }
   const [version, ivB64, tagB64, dataB64] = parts as [string, string, string, string];
+  /* A caller that binds demands a bound blob. Accepting a v1 blob on a read
+   * that supplied aad would let anyone with database write access DOWNGRADE:
+   * swap a bound cipher for an unbound one and the binding silently stops
+   * checking. Refused OUTSIDE the try, so it says what it means: every
+   * writer has produced v2 since binding shipped and no production data
+   * predates it, so a v1 blob on a bound read is an alarm, not history. */
+  if (aad !== undefined && version === VERSION) {
+    throw new VaultError('a bound read refuses an unbound (v1) vault blob');
+  }
   try {
     const decipher = createDecipheriv(ALGORITHM, key, Buffer.from(ivB64, 'base64url'));
-    /* Only a v2 blob demands the caller's aad: a v1 blob predates binding
-     * and must stay readable, and a v2 blob read WITHOUT its aad must fail,
-     * because "reads anywhere" is the property v2 exists to remove. */
+    /* A v2 blob read WITHOUT its aad must equally fail, because "reads
+     * anywhere" is the property v2 exists to remove. */
     if (version === AAD_VERSION) {
       decipher.setAAD(Buffer.from(aad ?? '', 'utf8'));
     }

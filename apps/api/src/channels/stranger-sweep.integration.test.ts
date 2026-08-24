@@ -69,7 +69,7 @@ async function arrive(from: string, wamid: string, eventType = 'message.text') {
     provider: 'meta',
     eventType,
     externalId: wamid,
-    payload: sealPayload(messageBody(from, wamid), vaultKey),
+    payload: sealPayload(messageBody(from, wamid), vaultKey, 'meta', wamid),
     businessId: null,
   });
 }
@@ -138,7 +138,12 @@ describe('sweeping unknown senders', () => {
       provider: 'meta',
       eventType: 'message.status',
       externalId: 'wamid.status.1',
-      payload: sealPayload({ object: 'whatsapp_business_account', entry: [] }, vaultKey),
+      payload: sealPayload(
+        { object: 'whatsapp_business_account', entry: [] },
+        vaultKey,
+        'meta',
+        'wamid.status.1',
+      ),
       businessId: null,
     });
 

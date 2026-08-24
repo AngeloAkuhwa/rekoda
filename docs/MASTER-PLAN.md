@@ -1283,10 +1283,12 @@ gracefully with an honest message" is closed by it — a ceiling refusal, a busy
 platform and unreadable output now say three different things, because they ask
 three different things of the merchant.
 
-`records`, `who owes me` and `resend` answer honestly that they are not built
-rather than inventing a summary. A bookkeeping assistant that makes up a debtor
-list has destroyed the only thing it sells. A bare "yes" is answered with
-silence until the gates give it something to mean.
+`records`, `who owes me` and `resend` are built: each answers from the same
+repositories the dashboard reads, so chat and screen can never disagree about
+a debtor. While they were pending they said so honestly rather than inventing
+a summary — a bookkeeping assistant that makes up a debtor list has destroyed
+the only thing it sells. A bare "yes" is answered with silence until the
+gates give it something to mean.
 
 ### 5.3.5 Transaction engine
 

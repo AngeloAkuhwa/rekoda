@@ -368,7 +368,7 @@ describe('the chat surface enforces roles', () => {
       provider: 'meta',
       eventType: 'message.text',
       externalId,
-      payload: sealPayload(body, config.vaultKey),
+      payload: sealPayload(body, config.vaultKey, 'meta', externalId),
       businessId,
     });
     await enqueue(businessId, 'inbound.message', { eventId: recorded.id });
@@ -480,7 +480,7 @@ describe('a customer name never reaches the model twice', () => {
       provider: 'meta',
       eventType: 'message.text',
       externalId,
-      payload: sealPayload(body, config.vaultKey),
+      payload: sealPayload(body, config.vaultKey, 'meta', externalId),
       businessId,
     });
     await enqueue(businessId, 'inbound.message', { eventId: recorded.id });
@@ -611,14 +611,19 @@ describe('inbound messages for one business never overlap across lanes', () => {
       provider: 'meta',
       eventType: 'message.text',
       externalId: 'wamid.order1',
-      payload: sealPayload(bodyFor('wamid.order1', 'spent 5k on fuel'), config.vaultKey),
+      payload: sealPayload(
+        bodyFor('wamid.order1', 'spent 5k on fuel'),
+        config.vaultKey,
+        'meta',
+        'wamid.order1',
+      ),
       businessId,
     });
     const second = await eventsRepo.recordEvent(appDb, {
       provider: 'meta',
       eventType: 'message.text',
       externalId: 'wamid.order2',
-      payload: sealPayload(bodyFor('wamid.order2', 'yes'), config.vaultKey),
+      payload: sealPayload(bodyFor('wamid.order2', 'yes'), config.vaultKey, 'meta', 'wamid.order2'),
       businessId,
     });
     await enqueue(businessId, 'inbound.message', { eventId: first.id });

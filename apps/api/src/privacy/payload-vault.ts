@@ -25,8 +25,28 @@ export interface SealedPayload {
   readonly blob: string;
 }
 
-export function sealPayload(payload: unknown, vaultKey: string): SealedPayload {
-  return { sealed: 1, blob: encryptFacet(JSON.stringify(payload ?? null), vaultKey) };
+/**
+ * The binding: a sealed blob belongs to ONE event. `external_events` is the
+ * one table outside row-level security, so "copy a valid blob onto another
+ * row" is exactly the move its threat model owes an answer to; with the
+ * event's own identity as associated data, a moved blob fails
+ * authentication instead of reading as the other event's body. The format
+ * is built here and nowhere else, so seal and open cannot drift.
+ */
+function eventAad(provider: string, externalId: string): string {
+  return `event:${provider}:${externalId}`;
+}
+
+export function sealPayload(
+  payload: unknown,
+  vaultKey: string,
+  provider: string,
+  externalId: string,
+): SealedPayload {
+  return {
+    sealed: 1,
+    blob: encryptFacet(JSON.stringify(payload ?? null), vaultKey, eventAad(provider, externalId)),
+  };
 }
 
 export function isSealed(stored: unknown): stored is SealedPayload {
@@ -39,14 +59,20 @@ export function isSealed(stored: unknown): stored is SealedPayload {
 }
 
 /**
- * Open a sealed payload.
+ * Open a sealed payload, under the event identity it was sealed for.
  *
- * Anything not sealed is returned as-is: rows written before this existed are
- * still readable, and a status event carrying nothing sensitive does not have
- * to be. Refusing them would turn a privacy improvement into an outage on the
- * events already in the table.
+ * Anything not sealed is returned as-is: a plain row predating sealing is
+ * still readable, and a status event carrying nothing sensitive does not
+ * have to be. A SEALED blob, though, must authenticate against this exact
+ * event: one that will not is either moved or tampered with, and either way
+ * it is not this event's body.
  */
-export function openPayload(stored: unknown, vaultKey: string): unknown {
+export function openPayload(
+  stored: unknown,
+  vaultKey: string,
+  provider: string,
+  externalId: string,
+): unknown {
   if (!isSealed(stored)) return stored;
-  return JSON.parse(decryptFacet(stored.blob, vaultKey));
+  return JSON.parse(decryptFacet(stored.blob, vaultKey, eventAad(provider, externalId)));
 }

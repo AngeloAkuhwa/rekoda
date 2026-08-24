@@ -157,11 +157,12 @@ export async function unattributedEvents(
   q: Queryable,
   provider: IncomingEvent['provider'],
   limit = 50,
-): Promise<Array<{ id: string; eventType: string; payload: unknown }>> {
+): Promise<Array<{ id: string; eventType: string; externalId: string; payload: unknown }>> {
   return q
     .select({
       id: externalEvents.id,
       eventType: externalEvents.eventType,
+      externalId: externalEvents.externalId,
       payload: externalEvents.payload,
     })
     .from(externalEvents)

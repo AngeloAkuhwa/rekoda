@@ -84,5 +84,16 @@ ARE built.
   resurrect a five-times-failed job and turn one poison payload into a
   permanent retry loop. The helper's doc now says so, so the next audit does
   not reflag it.
-- **B5 (optional, defense-in-depth)**: re-seal legacy v1 vault blobs, reject
-  v1 on read.
+- **B5 (defense-in-depth, built)**: sealed provider payloads are now BOUND to
+  their event — `sealPayload`/`openPayload` take the event's provider and
+  external id and build `event:{provider}:{externalId}` as associated data,
+  so a sealed webhook body copied onto another `external_events` row (the one
+  table outside row-level security) fails authentication instead of reading
+  as that event's body. `decryptFacet` now refuses a v1 (unbound) blob on any
+  read that supplied aad, closing the downgrade where swapping a bound cipher
+  for an unbound one silently stopped the binding from checking. NO re-seal
+  sweep exists, deliberately: the system is pre-production with zero legacy
+  rows, so enforcing v2-on-bound-reads now IS the whole job — a sweep would
+  be dead code for a population that cannot exist, and any v1 blob a bound
+  read ever meets is an alarm, not history. Unbound (aad-less) reads still
+  accept v1, which after this change no production caller performs.
