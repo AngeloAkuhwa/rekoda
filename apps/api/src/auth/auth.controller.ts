@@ -1,3 +1,4 @@
+import { seatsFor } from '@rekoda/core';
 import {
   BadRequestException,
   Body,
@@ -17,7 +18,7 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { createHash, timingSafeEqual } from 'node:crypto';
-import { billingRepo, identity, withBusiness, type Db } from '@rekoda/db';
+import { usageRepo, billingRepo, identity, withBusiness, type Db } from '@rekoda/db';
 import { CONFIG, type ApiConfig } from '../config.js';
 import { DB } from '../db/db.module.js';
 import { InvalidPhoneError, normalisePhone } from '@rekoda/core/identity';
@@ -217,13 +218,30 @@ export class BusinessController {
       throw new BadRequestException('that does not look like a Nigerian phone number');
     }
 
+    const businessId = request.auth!.businessId;
+    /* The plan's seat table, from the same core table the pricing page
+     * quotes. Enforced here and not in the repo's SQL, so the refusal can
+     * name the plan and the way out. */
+    const plan = await withBusiness(this.db, businessId, (tx) => usageRepo.planFor(tx, businessId));
+    const seatLimit = seatsFor(plan);
+
     try {
       return toWire(
-        await identity.inviteMember(this.db, request.auth!.businessId, phone, parsed.data.role),
+        await identity.inviteMember(this.db, businessId, phone, parsed.data.role, seatLimit),
       );
     } catch (error) {
       if (error instanceof identity.AlreadyAMember) {
-        throw new ConflictException(error.message);
+        /* The merchant-grade sentence, here at the source: the form shows
+         * whatever this says, and "already a accountant of this business"
+         * is a log line, not an answer. */
+        throw new ConflictException('That number already has access to this business.');
+      }
+      if (error instanceof identity.SeatLimitReached) {
+        throw new ConflictException(
+          plan === 'expired'
+            ? 'Your subscription has ended, so the team cannot grow. Renew to add people.'
+            : `Your plan includes ${error.limit} team member${error.limit === 1 ? '' : 's'} besides you. Upgrade to add more.`,
+        );
       }
       throw error;
     }

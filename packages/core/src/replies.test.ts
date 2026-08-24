@@ -48,6 +48,7 @@ const ALL: Record<string, readonly replies.Reply[]> = {
   strayNumber: [replies.strayNumber()],
   clarification: [replies.clarification('Which invoice was that payment against?')],
   allowanceExhausted: [replies.allowanceExhausted(50), replies.allowanceExhausted(3, 'documents')],
+  ordersNotInPlan: [replies.ordersNotInPlan()],
   trialEnded: [replies.trialEnded()],
   upgradeRequested: [replies.upgradeRequested()],
   quotaReachedForBusiness: [replies.quotaReachedForBusiness()],

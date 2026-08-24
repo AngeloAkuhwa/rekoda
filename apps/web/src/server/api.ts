@@ -417,13 +417,17 @@ export async function inviteBusinessMember(
     expect: [201, 400, 409],
   });
   if (status === 201) return { ok: true };
+  /* The server's sentence, whichever refusal this was: a 409 is "already a
+   * member" OR "your plan's seats are full", and hardcoding the first turned
+   * the second into a lie on the form. */
   const message = (json as { message?: string })?.message;
   return {
     ok: false,
     reason:
-      status === 409
+      message ??
+      (status === 409
         ? 'That number already has access to this business.'
-        : (message ?? 'That does not look like a Nigerian phone number.'),
+        : 'That does not look like a Nigerian phone number.'),
   };
 }
 

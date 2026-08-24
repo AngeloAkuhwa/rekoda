@@ -548,14 +548,34 @@ export class AlreadyAMember extends Error {}
  * one person is not a worse kind of access, it is a person whose role
  * depends on which row a query happens to read first.
  */
+/** The plan's seat table is full. Carries the limit so the refusal can quote it. */
+export class SeatLimitReached extends Error {
+  constructor(readonly limit: number) {
+    super(`this plan includes ${limit} team member${limit === 1 ? '' : 's'}`);
+  }
+}
+
 export async function inviteMember(
   db: Db,
   businessId: string,
   phone: string,
   role: 'accountant' | 'delegate',
+  /**
+   * Seats beyond the owner this plan includes, from `@rekoda/core`'s table.
+   * An argument for the same reason `consumeUnit` takes the allowance: the
+   * decision lives in core, and this file stays SQL.
+   */
+  seatLimit: number,
 ): Promise<TeamMember> {
   const user = await upsertUserByPhone(db, phone);
   return withBusiness(db, businessId, async (tx) => {
+    /* Serialized per business, or two simultaneous invites both count the
+     * same table and both fit under the last seat. Transaction-scoped, the
+     * same shape as every claim here: the database picks the winner. */
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`${businessId}:members`}))`);
+
+    /* Membership first: somebody already seated takes no new seat, and
+     * "already a member" is the truthful answer even when the table is full. */
     const existing = await tx
       .select({ role: memberships.role })
       .from(memberships)
@@ -564,6 +584,12 @@ export async function inviteMember(
     if (existing.length > 0) {
       throw new AlreadyAMember(`already a ${existing[0]!.role} of this business`);
     }
+
+    const seated = await tx
+      .select({ n: sql<number>`count(*)::int` })
+      .from(memberships)
+      .where(and(eq(memberships.businessId, businessId), ne(memberships.role, 'owner')));
+    if ((seated[0]?.n ?? 0) >= seatLimit) throw new SeatLimitReached(seatLimit);
 
     const inserted = await tx
       .insert(memberships)

@@ -171,6 +171,22 @@ export function clarification(question: string): Reply {
  * named rather than implied. The merchant who hits this is the product
  * working, and the message must feel that way.
  */
+/**
+ * An order arrived on a plan whose orders allowance is ZERO.
+ *
+ * Not the same sentence as a used-up allowance: "you have used all 0
+ * orders" is true of the number and useless about the reason. Automatic
+ * order capture is what Integrate is FOR, and the merchant who just
+ * forwarded an order is the merchant most ready to hear that.
+ */
+export function ordersNotInPlan(): Reply {
+  return reply(
+    'Automatic order capture is part of the Integrate plan. Your message is safe and ' +
+      'nothing was lost. Record it as a sale with a message like *sold 2 ankara 15k to Ada*, ' +
+      'or reply *upgrade* and orders will book themselves.',
+  );
+}
+
 export function allowanceExhausted(allowance: number, unit: UsageUnit = 'messages'): Reply {
   return reply(
     `You have used all ${allowance} ${UNIT_WORDS[unit]} in your plan this month. ` +

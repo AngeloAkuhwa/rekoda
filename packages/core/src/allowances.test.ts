@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { PLAN_ALLOWANCES, allowanceFor, usagePeriod } from './allowances.js';
+import {
+  PLAN_ALLOWANCES,
+  SEATS_PER_PLAN,
+  allowanceFor,
+  seatsFor,
+  usagePeriod,
+} from './allowances.js';
 
 describe('plan allowances (docs/metering-v1.md)', () => {
   it('gives every plan a number for every unit — no unit escapes the meter', () => {
@@ -31,6 +37,13 @@ describe('plan allowances (docs/metering-v1.md)', () => {
         );
       }
     }
+  });
+
+  it('seats climb the paid ladder, expire to zero, and treat the unknown as trial', () => {
+    expect(SEATS_PER_PLAN.chat).toBeLessThanOrEqual(SEATS_PER_PLAN.integrate);
+    expect(SEATS_PER_PLAN.integrate).toBeLessThanOrEqual(SEATS_PER_PLAN.complete);
+    expect(SEATS_PER_PLAN.expired).toBe(0);
+    expect(seatsFor('platinum-unlimited')).toBe(SEATS_PER_PLAN.trial);
   });
 
   it('meters the month as Lagos experiences it', () => {

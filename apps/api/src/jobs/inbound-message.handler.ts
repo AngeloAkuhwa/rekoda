@@ -870,6 +870,7 @@ async function confirmPendingDraft(
     command.intent === 'RecordOrder';
   const period = usagePeriod(new Date());
   let documentTaken = false;
+  let orderTaken = false;
   if (issuesDocument && !retrying) {
     const plan = await usageRepo.planFor(tx, businessId);
     /* A trial that lapsed between the preview and the yes is its own
@@ -883,6 +884,28 @@ async function confirmPendingDraft(
     );
     if (!granted) return replies.allowanceExhausted(allowance, 'documents');
     documentTaken = true;
+
+    /* An order costs its own unit ON TOP of the document, because automatic
+     * order capture is the thing Integrate sells: the allowance table said
+     * so from the start, but nothing ever consumed it, so a Chat plan's
+     * zero was a differentiator that existed only on the pricing page and
+     * the ₦5,000 orders pack sold capacity nothing metered. Refused HERE,
+     * before the draft is claimed, so the same "yes" works the moment they
+     * upgrade — and a zero allowance gets the sentence about the plan, not
+     * "you have used all 0 orders". */
+    if (command.intent === 'RecordOrder') {
+      const orderAllowance = allowanceFor(plan, 'orders');
+      const orderGranted = await withBusiness(deps.db, businessId, (own) =>
+        usageRepo.consumeUnit(own, businessId, period, 'orders', orderAllowance),
+      );
+      if (!orderGranted) {
+        await refundDocument(deps, businessId, period);
+        return orderAllowance === 0
+          ? replies.ordersNotInPlan()
+          : replies.allowanceExhausted(orderAllowance, 'orders');
+      }
+      orderTaken = true;
+    }
   }
 
   if (!(await conversationsRepo.claimDraft(tx, draft.id))) {
@@ -890,6 +913,7 @@ async function confirmPendingDraft(
      * unit, so this one goes back: two rapid confirmations must cost one
      * document, which is how many the merchant ends up with. */
     if (documentTaken) await refundDocument(deps, businessId, period);
+    if (orderTaken) await refundOrder(deps, businessId, period);
     return replies.alreadyConfirmed();
   }
   /**
@@ -931,9 +955,12 @@ async function confirmPendingDraft(
     return confirmStockChange(tx, businessId, command as never);
   }
   if (command.intent === 'RecordOrder') {
-    return confirmOrder(tx, businessId, draft.id, command as never, () =>
-      documentTaken ? refundDocument(deps, businessId, period) : Promise.resolve(),
-    );
+    return confirmOrder(tx, businessId, draft.id, command as never, async () => {
+      /* Every no-order path gives BOTH units back: no invoice came out, so
+       * neither the document nor the order capture was delivered. */
+      if (documentTaken) await refundDocument(deps, businessId, period);
+      if (orderTaken) await refundOrder(deps, businessId, period);
+    });
   }
   if (command.intent !== 'RecordSale') {
     // Anything else is not actionable yet. The draft is claimed either way,
@@ -1813,6 +1840,13 @@ function consumeMessage(
 ): Promise<boolean> {
   return withBusiness(deps.db, businessId, (tx) =>
     usageRepo.consumeUnit(tx, businessId, period, 'messages', allowance),
+  );
+}
+
+/** Put an order unit back. Same standalone transaction as taking one. */
+function refundOrder(deps: InboundMessageDeps, businessId: string, period: string): Promise<void> {
+  return withBusiness(deps.db, businessId, (tx) =>
+    usageRepo.refundUnit(tx, businessId, period, 'orders'),
   );
 }
 

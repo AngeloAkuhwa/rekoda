@@ -46,10 +46,11 @@ export const PLANS: Plan[] = [
       'Sales, expenses, purchases and stock',
       'Payment links, verified the moment money lands',
       'Full books: profit and loss, balance sheet, cash flow',
+      'Products, inventory and stock counts',
+      'One accountant or delegate seat',
       'Dashboard with every register',
     ],
-    coming: ['Products and inventory', 'An accountant seat'],
-    excludes: ['No online shop'],
+    excludes: ['Automatic order capture needs Integrate'],
   },
   {
     id: 'integrate',
@@ -63,15 +64,12 @@ export const PLANS: Plan[] = [
       'Everything in Chat, with room to grow',
       '800 messages processed, 500 documents',
       'Voice-note bookkeeping, 60 minutes a month',
-      'Payments verified the moment they land',
-      'Reconciliation with mismatch detection',
-    ],
-    coming: [
       'Your own shop link, shared on WhatsApp',
-      'Orders captured automatically, nothing retyped',
-      'A payment account created for every order',
+      '300 orders captured automatically, nothing retyped',
+      'A payment link for every order, verified when it lands',
       'Inventory and customer balances updated for you',
-      'Two accountant seats',
+      'Reconciliation with mismatch detection',
+      'Two accountant or delegate seats',
     ],
   },
   {
@@ -84,14 +82,11 @@ export const PLANS: Plan[] = [
     includes: [
       'Everything in Chat and Integrate',
       '1,200 messages processed, 750 documents',
-      '120 voice minutes a month',
-    ],
-    coming: [
+      '120 voice minutes, 300 orders a month',
       'Online orders and cash sales in one set of books',
-      '300 orders captured automatically',
-      'Daily, weekly and monthly summaries',
-      'Priority support, plus 3 accountant seats',
+      'Three accountant or delegate seats',
     ],
+    coming: ['Daily, weekly and monthly summaries', 'Priority support'],
   },
 ];
 
