@@ -136,6 +136,56 @@ export async function serializeBusiness(
 }
 
 /**
+ * Is an older live job of the same kind still ahead of this one?
+ *
+ * The advisory lock above guarantees exclusion, not order: between claiming a
+ * job and taking the lock there is a window, and a lane holding the LATER of
+ * two messages can win the lock while the earlier message's lane is still on
+ * its way. "Sold 3 wigs" then "yes" processed in the wrong order confirms
+ * nothing and drops a record. So a handler that needs order calls this AFTER
+ * taking the lock: an older sibling still `pending` or `running` means this
+ * job is jumping the queue and should step back (see `deferClaimed`). Ordered
+ * by the same (run_at, created_at) the claim query uses, with id as the
+ * tiebreak.
+ */
+export async function hasEarlierLiveJob(tx: TenantDb, jobId: string): Promise<boolean> {
+  const rows = await tx.execute(sql`
+    SELECT 1
+    FROM jobs j, jobs me
+    WHERE me.id = ${jobId}::uuid
+      AND j.business_id = me.business_id
+      AND j.kind = me.kind
+      AND j.id <> me.id
+      AND j.state IN ('pending', 'running')
+      AND (j.run_at, j.created_at, j.id) < (me.run_at, me.created_at, me.id)
+    LIMIT 1
+  `);
+  return [...rows].length > 0;
+}
+
+/**
+ * Put a claimed job back in the queue without charging it an attempt.
+ *
+ * Stepping aside for an older sibling is not a failure: `markFailed` would
+ * count it, and a message stuck behind a genuinely slow predecessor could
+ * burn all five attempts waiting politely and die having done nothing wrong.
+ * The claim already incremented `attempts`, so this hands the increment back.
+ * The short delay keeps the retry from racing the very job it deferred to.
+ */
+export async function deferClaimed(db: Db, jobId: string, delayMs = 500): Promise<void> {
+  await db.execute(sql`
+    UPDATE jobs SET
+      state      = 'pending',
+      attempts   = greatest(attempts - 1, 0),
+      run_at     = now() + make_interval(secs => ${delayMs / 1000}),
+      locked_at  = NULL,
+      locked_by  = NULL,
+      updated_at = now()
+    WHERE id = ${jobId}::uuid AND state = 'running'
+  `);
+}
+
+/**
  * Whether a job has EVER been enqueued under this singleton key, in ANY
  * state — deliberately, not an oversight. The one caller is the pump's
  * stranded-event lane, where "a job exists, even failed" means the event

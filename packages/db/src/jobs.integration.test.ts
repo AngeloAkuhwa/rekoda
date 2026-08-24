@@ -323,3 +323,62 @@ describe('runExclusively — a leader per name, and no pool deadlock (H7a)', () 
     }
   });
 });
+
+describe('queue order is a promise, not a hope (H7a)', () => {
+  it('sees an older live sibling ahead of a claimed job, and stops seeing it when it finishes', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348040000001');
+    const first = await enqueue(businessId);
+    const second = await enqueue(businessId);
+    if (!first || !second) throw new Error('both jobs should have enqueued');
+
+    // The older job is merely pending: still ahead.
+    await withBusiness(appDb, businessId, async (tx) => {
+      expect(await jobsRepo.hasEarlierLiveJob(tx, second.id)).toBe(true);
+      // The oldest job has nothing ahead of it.
+      expect(await jobsRepo.hasEarlierLiveJob(tx, first.id)).toBe(false);
+    });
+
+    // Claimed and running: STILL ahead — that is the racing-lanes case.
+    const claimed = await jobsRepo.claimNext(workerDb, 'lane-a');
+    expect(claimed?.id).toBe(first.id);
+    await withBusiness(appDb, businessId, async (tx) => {
+      expect(await jobsRepo.hasEarlierLiveJob(tx, second.id)).toBe(true);
+      await jobsRepo.markDone(tx, first.id);
+      // Done means out of the way.
+      expect(await jobsRepo.hasEarlierLiveJob(tx, second.id)).toBe(false);
+    });
+  });
+
+  it('ignores siblings of another kind and of another business', async () => {
+    const ada = await seedBusiness('Ada Fashion', '+2348040000001');
+    const bola = await seedBusiness('Bola Electronics', '+2348040000002');
+    await enqueue(ada, { kind: 'document.render' });
+    await enqueue(bola);
+    const mine = await enqueue(ada);
+    if (!mine) throw new Error('job should have enqueued');
+
+    await withBusiness(appDb, ada, async (tx) => {
+      expect(await jobsRepo.hasEarlierLiveJob(tx, mine.id)).toBe(false);
+    });
+  });
+
+  it('deferClaimed re-queues without charging the attempt', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348040000001');
+    await enqueue(businessId);
+    const claimed = await jobsRepo.claimNext(workerDb, 'lane-b');
+    if (!claimed) throw new Error('claim should have won');
+    expect(claimed.attempts).toBe(1);
+
+    await jobsRepo.deferClaimed(workerDb, claimed.id, 50);
+
+    // Back in the queue as if never touched: pending, attempt refunded, and
+    // claimable again once the short delay passes.
+    const rows = await withBusiness(appDb, businessId, (tx) => jobsRepo.jobsForBusiness(tx));
+    expect(rows[0]?.state).toBe('pending');
+    expect(rows[0]?.attempts).toBe(0);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const reclaimed = await jobsRepo.claimNext(workerDb, 'lane-c');
+    expect(reclaimed?.id).toBe(claimed.id);
+    expect(reclaimed?.attempts).toBe(1);
+  });
+});
