@@ -250,3 +250,61 @@ describe('the vault is the only plaintext', () => {
     expect(rows).toHaveLength(0);
   });
 });
+
+describe('a known customer name never reaches a model', () => {
+  it('replaces a stored name, case-folded, and leaves an unknown name alone', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348060000001');
+    const { token } = await gateway.resolveMention(businessId, 'Ada Obi');
+
+    const { text, tokens } = await gateway.tokenise(businessId, 'sold 3 wigs to ada obi today');
+    expect(text).not.toContain('ada obi');
+    expect(text).toContain(token);
+    expect(tokens.get(token)).toBe('ada obi');
+
+    const untouched = await gateway.tokenise(businessId, 'sold 3 wigs to Chidi Nwosu today');
+    expect(untouched.text).toContain('Chidi Nwosu');
+  });
+
+  it('prefers the longer name so a first name cannot half-eat a full name', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348060000001');
+    const first = await gateway.resolveMention(businessId, 'Ada');
+    const full = await gateway.resolveMention(businessId, 'Ada Obi');
+
+    const { text } = await gateway.tokenise(businessId, 'paid: Ada Obi');
+    expect(text).toContain(full.token);
+    expect(text).not.toContain(first.token);
+    expect(text).not.toContain('Ada Obi');
+  });
+
+  it('recognises a name stored long ago even past the old 2,000-name ceiling', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348060000001');
+    /* Stored FIRST, so under the retired "newest 2,000 names" cap this
+     * customer fell off the end and her name leaked. */
+    const { token } = await gateway.resolveMention(businessId, 'Ada Obi');
+
+    /* 2,500 newer named customers. The lookup is by keyed hash now, so their
+     * number cannot push Ada out of reach; under the old cap it did. */
+    const bulk = 2_500;
+    const inserted = await withBusiness(db, businessId, (tx) =>
+      tx
+        .insert(schema.customers)
+        .values(Array.from({ length: bulk }, (_, i) => ({ businessId, token: `BULK_${i}` })))
+        .returning({ id: schema.customers.id }),
+    );
+    await withBusiness(db, businessId, (tx) =>
+      tx.insert(schema.customerIdentities).values(
+        inserted.map((row, i) => ({
+          businessId,
+          customerId: row.id,
+          facet: 'name',
+          ciphertext: 'x',
+          matchKey: `bulk-key-${i}`,
+        })),
+      ),
+    );
+
+    const { text } = await gateway.tokenise(businessId, 'balance due from Ada Obi');
+    expect(text).not.toContain('Ada Obi');
+    expect(text).toContain(token);
+  });
+});

@@ -88,6 +88,16 @@ export const paystackSettlementListResponse = z
           .loose(),
       )
       .optional(),
+    /** Paystack's pager: page/pageCount let the caller follow every page. */
+    meta: z
+      .object({
+        page: z.number().nullish(),
+        pageCount: z.number().nullish(),
+        perPage: z.union([z.number(), z.string()]).nullish(),
+        total: z.number().nullish(),
+      })
+      .loose()
+      .nullish(),
   })
   .loose();
 
@@ -106,6 +116,16 @@ export const paystackSettlementTransactionsResponse = z
           .loose(),
       )
       .optional(),
+    /** Paystack's pager: page/pageCount let the caller follow every page. */
+    meta: z
+      .object({
+        page: z.number().nullish(),
+        pageCount: z.number().nullish(),
+        perPage: z.union([z.number(), z.string()]).nullish(),
+        total: z.number().nullish(),
+      })
+      .loose()
+      .nullish(),
   })
   .loose();
 
