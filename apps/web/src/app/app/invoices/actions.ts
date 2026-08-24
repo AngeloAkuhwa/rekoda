@@ -2,7 +2,15 @@
 
 import { revalidatePath } from 'next/cache';
 import { formatKobo, parseAmountText, toKobo } from '@rekoda/core';
-import { creditInvoice, recordPayment, voidInvoice, viewOnlyRefusal } from '@/server/api';
+import {
+  cancelQuote,
+  convertQuote,
+  createQuote,
+  creditInvoice,
+  recordPayment,
+  voidInvoice,
+  viewOnlyRefusal,
+} from '@/server/api';
 import { readSessionToken } from '@/server/session-cookies';
 
 export interface VoidFormState {
@@ -236,5 +244,150 @@ export async function recordPaymentAction(
     return await recordPaymentActionUnguarded(...args);
   } catch (error) {
     return viewOnlyRefusal(error) as Awaited<ReturnType<typeof recordPaymentActionUnguarded>>;
+  }
+}
+
+export interface QuoteFormState {
+  error?: string;
+  done?: string;
+}
+
+async function createQuoteActionUnguarded(
+  _prev: QuoteFormState,
+  formData: FormData,
+): Promise<QuoteFormState> {
+  const token = await readSessionToken();
+  if (!token) return { error: 'Your session expired. Sign in again.' };
+
+  const customerName = String(formData.get('customerName') ?? '').trim();
+  const validUntil = String(formData.get('validUntil') ?? '').trim();
+
+  const items: Array<{ name: string; quantity: number; unitPriceK: number }> = [];
+  for (let i = 0; i < 20; i++) {
+    const name = String(formData.get(`itemName${i}`) ?? '').trim();
+    if (!name) continue;
+    const quantity = Number(formData.get(`itemQty${i}`) ?? 0);
+    const naira = parseAmountText(String(formData.get(`itemPrice${i}`) ?? ''));
+    if (!Number.isInteger(quantity) || quantity <= 0) {
+      return { error: `Give ${name} a whole-number quantity.` };
+    }
+    if (naira === null || naira <= 0) {
+      return { error: `Give ${name} a price in naira. For example 8500, or 8.5k.` };
+    }
+    items.push({ name, quantity, unitPriceK: toKobo(naira) });
+  }
+  if (items.length === 0) return { error: 'Add at least one line: what, how many, at what price.' };
+
+  const clientRefRaw = String(formData.get('clientRef') ?? '');
+  const clientRef = /^[0-9a-f-]{36}$/i.test(clientRefRaw) ? clientRefRaw : undefined;
+
+  const outcome = await createQuote(token, {
+    items,
+    ...(customerName ? { customerName } : {}),
+    ...(validUntil ? { validUntil } : {}),
+    ...(clientRef ? { clientRef } : {}),
+  });
+  if (!outcome) return { error: 'That did not go through. Nothing was saved.' };
+  if (outcome.outcome === 'duplicate') {
+    revalidatePath('/app/invoices');
+    return { done: 'Already saved. Nothing was created twice.' };
+  }
+
+  revalidatePath('/app/invoices');
+  return {
+    done: `${outcome.quoteNumber} saved for ${formatNaira(outcome.totalK)}. Convert it to an invoice when they say yes.`,
+  };
+}
+
+async function convertQuoteActionUnguarded(
+  _prev: QuoteFormState,
+  formData: FormData,
+): Promise<QuoteFormState> {
+  const token = await readSessionToken();
+  if (!token) return { error: 'Your session expired. Sign in again.' };
+  const quoteNumber = String(formData.get('quoteNumber') ?? '').trim();
+  if (!quoteNumber) return { error: 'Pick the quote they accepted.' };
+
+  const outcome = await convertQuote(token, quoteNumber);
+  if (!outcome) return { error: 'That did not go through. Nothing was issued.' };
+
+  if (outcome.outcome === 'not_found') return { error: 'No quote with that number.' };
+  if (outcome.outcome === 'cancelled') {
+    return { error: `${quoteNumber} was withdrawn, so there is nothing to convert.` };
+  }
+  if (outcome.outcome === 'expired') {
+    return {
+      error: `${quoteNumber} expired on ${outcome.validUntil}. Send a fresh quote instead of billing a dead offer.`,
+    };
+  }
+  if (outcome.outcome === 'exhausted') {
+    return {
+      error: `You have used all ${outcome.allowance} invoices and receipts in your plan this month. Upgrade on the billing page and convert again.`,
+    };
+  }
+  if (outcome.outcome === 'already_converted') {
+    revalidatePath('/app/invoices');
+    return {
+      done: outcome.invoiceNumber
+        ? `Already converted: it is ${outcome.invoiceNumber}. Nothing was issued twice.`
+        : 'Already converted. Nothing was issued twice.',
+    };
+  }
+
+  revalidatePath('/app/invoices');
+  return {
+    done: `${outcome.quoteNumber} is now ${outcome.invoiceNumber} for ${formatNaira(outcome.totalK)}. Nothing has been paid yet.`,
+  };
+}
+
+async function cancelQuoteActionUnguarded(
+  _prev: QuoteFormState,
+  formData: FormData,
+): Promise<QuoteFormState> {
+  const token = await readSessionToken();
+  if (!token) return { error: 'Your session expired. Sign in again.' };
+  const quoteNumber = String(formData.get('quoteNumber') ?? '').trim();
+  if (!quoteNumber) return { error: 'Pick the quote to withdraw.' };
+
+  const outcome = await cancelQuote(token, quoteNumber);
+  if (!outcome) return { error: 'That did not go through. Nothing was changed.' };
+  if (outcome.outcome === 'not_found') return { error: 'No quote with that number.' };
+  if (outcome.outcome === 'already') {
+    return {
+      error: `${quoteNumber} is already ${outcome.status === 'confirmed' ? 'converted' : 'withdrawn'}.`,
+    };
+  }
+
+  revalidatePath('/app/invoices');
+  return { done: `${quoteNumber} withdrawn. It stays on the list as a record of the offer.` };
+}
+
+export async function createQuoteAction(
+  ...args: Parameters<typeof createQuoteActionUnguarded>
+): ReturnType<typeof createQuoteActionUnguarded> {
+  try {
+    return await createQuoteActionUnguarded(...args);
+  } catch (error) {
+    return viewOnlyRefusal(error) as Awaited<ReturnType<typeof createQuoteActionUnguarded>>;
+  }
+}
+
+export async function convertQuoteAction(
+  ...args: Parameters<typeof convertQuoteActionUnguarded>
+): ReturnType<typeof convertQuoteActionUnguarded> {
+  try {
+    return await convertQuoteActionUnguarded(...args);
+  } catch (error) {
+    return viewOnlyRefusal(error) as Awaited<ReturnType<typeof convertQuoteActionUnguarded>>;
+  }
+}
+
+export async function cancelQuoteAction(
+  ...args: Parameters<typeof cancelQuoteActionUnguarded>
+): ReturnType<typeof cancelQuoteActionUnguarded> {
+  try {
+    return await cancelQuoteActionUnguarded(...args);
+  } catch (error) {
+    return viewOnlyRefusal(error) as Awaited<ReturnType<typeof cancelQuoteActionUnguarded>>;
   }
 }

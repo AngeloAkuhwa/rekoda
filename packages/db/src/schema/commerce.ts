@@ -4,6 +4,7 @@
  */
 import { sql } from 'drizzle-orm';
 import {
+  date,
   bigint,
   index,
   integer,
@@ -112,6 +113,8 @@ export const orders = pgTable(
     currency: text('currency').notNull().default('NGN'),
     /** WhatsApp order reference (Integrate) for idempotent capture. */
     externalRef: text('external_ref'),
+    /** Quotes only: the last Lagos day the offer stands. Null = no expiry. */
+    validUntil: date('valid_until'),
     sourceType: text('source_type').notNull(),
     sourceId: text('source_id'),
     createdAt: createdAt(),

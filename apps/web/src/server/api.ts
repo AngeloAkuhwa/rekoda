@@ -1,5 +1,12 @@
 import 'server-only';
 import {
+  type CancelQuoteResponse,
+  type ConvertQuoteResponse,
+  type CreateQuoteResponse,
+  type CreateQuoteRequest,
+  cancelQuoteResponse,
+  convertQuoteResponse,
+  createQuoteResponse,
   meResponse,
   paymentConnectionResponse,
   paymentExceptionsResponse,
@@ -1036,6 +1043,48 @@ export async function stopRecurring(
     expect: [200, 400],
   });
   return status === 200 ? stopRecurringResponse.parse(json) : null;
+}
+
+export async function createQuote(
+  sessionToken: string,
+  body: CreateQuoteRequest,
+): Promise<CreateQuoteResponse | null> {
+  const { status, json } = await call({
+    method: 'POST',
+    path: '/v1/reports/quotes',
+    body,
+    headers: { authorization: `Bearer ${sessionToken}` },
+    expect: [200, 400],
+  });
+  return status === 200 ? createQuoteResponse.parse(json) : null;
+}
+
+export async function convertQuote(
+  sessionToken: string,
+  quoteNumber: string,
+): Promise<ConvertQuoteResponse | null> {
+  const { status, json } = await call({
+    method: 'POST',
+    path: '/v1/reports/quotes/convert',
+    body: { quoteNumber },
+    headers: { authorization: `Bearer ${sessionToken}` },
+    expect: [200, 400],
+  });
+  return status === 200 ? convertQuoteResponse.parse(json) : null;
+}
+
+export async function cancelQuote(
+  sessionToken: string,
+  quoteNumber: string,
+): Promise<CancelQuoteResponse | null> {
+  const { status, json } = await call({
+    method: 'POST',
+    path: '/v1/reports/quotes/cancel',
+    body: { quoteNumber },
+    headers: { authorization: `Bearer ${sessionToken}` },
+    expect: [200, 400],
+  });
+  return status === 200 ? cancelQuoteResponse.parse(json) : null;
 }
 
 export async function creditInvoice(

@@ -8,6 +8,7 @@ import { AppNav } from '../AppNav';
 import { CreditForm, type CreditableInvoice } from './CreditForm';
 import { VoidForm } from './VoidForm';
 import { canRecordTrade, isOwner } from '@/lib/permissions';
+import { CancelQuoteForm, ConvertQuoteForm, CreateQuoteForm, type OpenQuote } from './QuoteForms';
 import { RecordPaymentForm, type PayableInvoice } from './RecordPaymentForm';
 import { SignOutButton } from '../SignOutButton';
 
@@ -24,7 +25,8 @@ export const metadata: Metadata = {
  */
 export default async function InvoicesPage() {
   const { identity, token } = await requireSessionWithToken();
-  const { invoices, count, outstandingK, orders } = await reportsInvoices(token);
+  const { invoices, count, outstandingK, orders, quotes, quotesTotal } =
+    await reportsInvoices(token);
 
   /* Only what CAN be voided is offered. An invoice with money against it is
    * corrected by refunding rather than reversing, and one already voided has
@@ -56,6 +58,16 @@ export default async function InvoicesPage() {
       invoiceNumber: invoice.invoiceNumber,
       creditableK: invoice.totalK - invoice.creditedK,
       label: `${invoice.invoiceNumber} · ${formatKobo(invoice.totalK - invoice.creditedK)} left to credit`,
+    }));
+
+  /* Only offers still standing are offered for conversion or withdrawal:
+   * a converted quote is corrected through its invoice, a withdrawn one is
+   * already history. */
+  const openQuotes: OpenQuote[] = quotes
+    .filter((quote) => quote.status === 'quoted')
+    .map((quote) => ({
+      quoteNumber: quote.quoteNumber,
+      label: `${quote.quoteNumber} · ${formatKobo(quote.totalK)}${quote.validUntil ? ` · until ${quote.validUntil}` : ''}`,
     }));
 
   return (
@@ -120,6 +132,77 @@ export default async function InvoicesPage() {
           </div>
         </div>
       ) : null}
+
+      {/* Quotes: the offer BEFORE the sale, which orders answer after it.
+          Sits beside orders because both are what an invoice comes from. */}
+      <div className="rk-card">
+        <h2>Quotes you sent</h2>
+        <p className="rk-fineprint">
+          A quote is a price on the record, not a sale: nothing posts and no stock moves until they
+          say yes and you convert it. Converting issues the invoice, moves the stock and offers a
+          payment link, exactly as a WhatsApp order does.
+        </p>
+        {quotes.length > 0 ? (
+          <div className="rk-table-scroll">
+            <table className="rk-table">
+              <thead>
+                <tr>
+                  <th>Quote</th>
+                  <th>Sent</th>
+                  <th>Valid until</th>
+                  <th>Status</th>
+                  <th>Became</th>
+                  <th className="rk-num">Items</th>
+                  <th className="rk-num">Total</th>
+                </tr>
+              </thead>
+              <tbody>
+                {quotes.map((quote) => (
+                  <tr key={quote.quoteNumber}>
+                    <td>{quote.quoteNumber}</td>
+                    <td>{shortDate(quote.createdAt)}</td>
+                    <td>{quote.validUntil ?? 'No expiry'}</td>
+                    <td>{describeQuoteStatus(quote.status)}</td>
+                    <td>{quote.invoiceNumber ?? (quote.status === 'quoted' ? 'Not yet' : '·')}</td>
+                    <td className="rk-num">{quote.itemCount}</td>
+                    <td className="rk-num">
+                      <Money kobo={quote.totalK} />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <p className="rk-dash-empty-line">
+            Nothing yet. Send a price before the sale and it lives here until they say yes.
+          </p>
+        )}
+        {quotesTotal > quotes.length ? (
+          <p className="rk-fineprint">
+            Showing {quotes.length} of {quotesTotal}.
+          </p>
+        ) : null}
+
+        {canRecordTrade(identity.role) ? (
+          <>
+            <details className="rk-void">
+              <summary>Send a new quote</summary>
+              <CreateQuoteForm />
+            </details>
+            <details className="rk-void">
+              <summary>They said yes: convert one</summary>
+              <ConvertQuoteForm quotes={openQuotes} />
+            </details>
+            {openQuotes.length > 0 ? (
+              <details className="rk-void">
+                <summary>Withdraw one</summary>
+                <CancelQuoteForm quotes={openQuotes} />
+              </details>
+            ) : null}
+          </>
+        ) : null}
+      </div>
 
       {/* Not behind a disclosure, unlike the void and the credit. Those are
           rare and permanent and a control beside them invites the tap they
@@ -289,4 +372,12 @@ function shortDate(iso: string): string {
     month: 'short',
     timeZone: 'Africa/Lagos',
   });
+}
+
+/** quoted | confirmed | cancelled, in a merchant's words. */
+function describeQuoteStatus(status: string): string {
+  if (status === 'quoted') return 'Open';
+  if (status === 'confirmed') return 'Accepted';
+  if (status === 'cancelled') return 'Withdrawn';
+  return status;
 }

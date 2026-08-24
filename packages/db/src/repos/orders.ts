@@ -24,10 +24,12 @@ import { and, eq, sql } from 'drizzle-orm';
 import { lagosYear } from '@rekoda/core';
 import type { TenantDb } from '../client.js';
 import { orders, orderItems } from '../schema/commerce.js';
+import { invoices } from '../schema/finance.js';
 import { nextDocumentNumber } from './issue.js';
 
 export interface PlaceOrderLine {
-  productId: string;
+  /** Null for a free-typed quote line naming nothing the shop counts. */
+  productId: string | null;
   name: string;
   quantity: number;
   unitPriceK: number;
@@ -95,6 +97,194 @@ export async function placeOrder(tx: TenantDb, input: PlaceOrderInput): Promise<
   }
 
   return { id: order.id, orderNumber };
+}
+
+/**
+ * A quote: an order-shaped OFFER (fix-plan 4, G3).
+ *
+ * Same table, same lines, same race-proof status machine — because a quote
+ * that converts becomes exactly the order→invoice the engine already knows.
+ * What separates it is everything a register needs: its own QUO counter (an
+ * offer is not an obligation and must never be quoted by an invoice-shaped
+ * number), the `quoted` status, and an optional last-valid Lagos day.
+ */
+export interface CreateQuoteInput {
+  businessId: string;
+  customerId: string | null;
+  lines: PlaceOrderLine[];
+  totalK: number;
+  /** `YYYY-MM-DD`, or null for an offer with no expiry. */
+  validUntil: string | null;
+  /** One-shot key from the form, deduped by `orders_external_ux`. */
+  clientRef: string | null;
+  sourceId: string;
+}
+
+export async function createQuote(tx: TenantDb, input: CreateQuoteInput): Promise<PlacedOrder> {
+  const at = new Date();
+  const quoteNumber = await nextDocumentNumber(tx, input.businessId, 'quote', lagosYear(at));
+
+  const rows = await tx
+    .insert(orders)
+    .values({
+      businessId: input.businessId,
+      customerId: input.customerId,
+      orderNumber: quoteNumber,
+      status: 'quoted',
+      totalK: input.totalK,
+      externalRef: input.clientRef ? `dash:${input.clientRef}` : null,
+      validUntil: input.validUntil,
+      sourceType: 'dashboard',
+      sourceId: input.sourceId,
+      createdAt: at,
+    })
+    .returning({ id: orders.id });
+  const quote = rows[0];
+  if (!quote) throw new Error('createQuote: insert returned no row');
+
+  await tx.insert(orderItems).values(
+    input.lines.map((line) => ({
+      businessId: input.businessId,
+      orderId: quote.id,
+      productId: line.productId,
+      name: line.name,
+      quantity: line.quantity,
+      unitPriceK: line.unitPriceK,
+      lineTotalK: line.lineTotalK,
+    })),
+  );
+
+  return { id: quote.id, orderNumber: quoteNumber };
+}
+
+export interface QuoteRow {
+  id: string;
+  quoteNumber: string;
+  status: string;
+  totalK: number;
+  validUntil: string | null;
+  invoiceNumber: string | null;
+  createdAt: Date;
+  itemCount: number;
+}
+
+export interface Quotes {
+  rows: QuoteRow[];
+  count: number;
+}
+
+/** The quote register: every QUO-numbered row, whatever became of it. */
+export async function quotesFor(tx: TenantDb, businessId: string, limit = 100): Promise<Quotes> {
+  const rows = await tx.execute<{
+    id: string;
+    order_number: string;
+    status: string;
+    total_k: string;
+    valid_until: string | null;
+    invoice_number: string | null;
+    created_at: Date;
+    item_count: number;
+    n: number;
+  }>(sql`
+    SELECT o.id, o.order_number, o.status, o.total_k::bigint AS total_k,
+           o.valid_until::text AS valid_until, inv.invoice_number,
+           o.created_at, count(i.id)::int AS item_count,
+           count(*) OVER ()::int AS n
+    FROM orders o
+    LEFT JOIN order_items i ON i.order_id = o.id AND i.business_id = o.business_id
+    LEFT JOIN invoices inv ON inv.id = o.invoice_id AND inv.business_id = o.business_id
+    WHERE o.business_id = ${businessId}::uuid
+      AND o.order_number LIKE 'QUO-%'
+    GROUP BY o.id, o.order_number, o.status, o.total_k, o.valid_until,
+             inv.invoice_number, o.created_at
+    ORDER BY o.created_at DESC
+    LIMIT ${limit}
+  `);
+  const list = [...rows];
+  return {
+    count: list[0]?.n ?? 0,
+    rows: list.map((r) => ({
+      id: r.id,
+      quoteNumber: r.order_number,
+      status: r.status,
+      totalK: Number(r.total_k),
+      validUntil: r.valid_until,
+      invoiceNumber: r.invoice_number,
+      createdAt: new Date(r.created_at),
+      itemCount: r.item_count,
+    })),
+  };
+}
+
+export interface QuoteWithLines {
+  id: string;
+  quoteNumber: string;
+  status: string;
+  totalK: number;
+  validUntil: string | null;
+  customerId: string | null;
+  invoiceId: string | null;
+  invoiceNumber: string | null;
+  lines: Array<{
+    productId: string | null;
+    name: string;
+    quantity: number;
+    unitPriceK: number;
+    lineTotalK: number;
+  }>;
+}
+
+/** One quote with its lines — what a conversion needs, in one read. */
+export async function quoteByNumber(
+  tx: TenantDb,
+  businessId: string,
+  quoteNumber: string,
+): Promise<QuoteWithLines | null> {
+  const head = await tx
+    .select({
+      id: orders.id,
+      status: orders.status,
+      totalK: orders.totalK,
+      validUntil: orders.validUntil,
+      customerId: orders.customerId,
+      invoiceId: orders.invoiceId,
+      invoiceNumber: invoices.invoiceNumber,
+    })
+    .from(orders)
+    .leftJoin(invoices, eq(invoices.id, orders.invoiceId))
+    .where(and(eq(orders.businessId, businessId), eq(orders.orderNumber, quoteNumber)))
+    .limit(1);
+  const quote = head[0];
+  if (!quote) return null;
+
+  const lines = await tx
+    .select({
+      productId: orderItems.productId,
+      name: orderItems.name,
+      quantity: orderItems.quantity,
+      unitPriceK: orderItems.unitPriceK,
+      lineTotalK: orderItems.lineTotalK,
+    })
+    .from(orderItems)
+    .where(and(eq(orderItems.businessId, businessId), eq(orderItems.orderId, quote.id)));
+
+  return {
+    id: quote.id,
+    quoteNumber,
+    status: quote.status,
+    totalK: Number(quote.totalK),
+    validUntil: quote.validUntil,
+    customerId: quote.customerId,
+    invoiceId: quote.invoiceId,
+    invoiceNumber: quote.invoiceNumber,
+    lines: lines.map((l) => ({
+      productId: l.productId,
+      name: l.name,
+      quantity: l.quantity,
+      unitPriceK: Number(l.unitPriceK),
+      lineTotalK: Number(l.lineTotalK),
+    })),
+  };
 }
 
 export type MarkOutcome = 'marked' | 'already' | 'not_found';
@@ -234,6 +424,7 @@ export async function ordersFor(tx: TenantDb, businessId: string, limit = 100): 
     LEFT JOIN order_items i ON i.order_id = o.id AND i.business_id = o.business_id
     LEFT JOIN invoices inv ON inv.id = o.invoice_id AND inv.business_id = o.business_id
     WHERE o.business_id = ${businessId}::uuid
+      AND o.order_number NOT LIKE 'QUO-%'
     GROUP BY o.id, o.order_number, o.status, o.total_k, inv.invoice_number, o.created_at
     ORDER BY o.created_at DESC
     LIMIT ${limit}
