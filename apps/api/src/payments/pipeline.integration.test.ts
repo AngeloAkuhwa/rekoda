@@ -174,7 +174,7 @@ async function storeChargeSuccess(
     provider: 'paystack',
     eventType: body.event,
     externalId: `${transactionId}:${body.event}`,
-    payload: sealPayload(body, config.vaultKey),
+    payload: sealPayload(body, config.vaultKey, 'paystack', `${transactionId}:${body.event}`),
     businessId: null,
   });
   return recorded.id;
@@ -477,14 +477,14 @@ describe('minting intents (§8–13, §37: "inactive connection")', () => {
     const identities: customersRepo.IdentityInput[] = [
       {
         facet: 'phone',
-        ciphertext: encryptFacet('+2348039998888', config.vaultKey),
+        ciphertext: encryptFacet('+2348039998888', config.vaultKey, `${businessId}:phone`),
         matchKey: matchKeyFor(businessId, 'phone', '+2348039998888', config.matchKey),
       },
     ];
     if (facets === 'with_email') {
       identities.push({
         facet: 'email',
-        ciphertext: encryptFacet('adaeze@example.com', config.vaultKey),
+        ciphertext: encryptFacet('adaeze@example.com', config.vaultKey, `${businessId}:email`),
         matchKey: null,
       });
     }

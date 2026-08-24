@@ -160,7 +160,7 @@ async function storeChargeSuccess(reference: string, amountK = CHAT_K): Promise<
     provider: 'paystack',
     eventType: body.event,
     externalId: `${transactionId}:${body.event}`,
-    payload: sealPayload(body, config.vaultKey),
+    payload: sealPayload(body, config.vaultKey, 'paystack', `${transactionId}:${body.event}`),
     businessId: null,
   });
   return recorded.id;

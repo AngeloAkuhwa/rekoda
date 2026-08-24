@@ -56,7 +56,7 @@ export async function sweepUnknownSenders(deps: StrangerSweepDeps, limit = 25): 
         continue;
       }
 
-      const from = senderOf(event.payload, deps.vaultKey);
+      const from = senderOf(event.payload, deps.vaultKey, event.externalId);
       if (!from) {
         await events.markProcessed(deps.workerDb, event.id, 'no_sender');
         continue;
@@ -95,10 +95,10 @@ export async function sweepUnknownSenders(deps: StrangerSweepDeps, limit = 25): 
 }
 
 /** The sender's number from a sealed payload, or null if it will not open. */
-function senderOf(payload: unknown, vaultKey: string): string | null {
+function senderOf(payload: unknown, vaultKey: string, externalId: string): string | null {
   let opened: unknown;
   try {
-    opened = openPayload(payload, vaultKey);
+    opened = openPayload(payload, vaultKey, 'meta', externalId);
   } catch {
     return null;
   }

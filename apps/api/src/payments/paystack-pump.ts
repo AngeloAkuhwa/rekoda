@@ -47,7 +47,7 @@ export async function pumpPaystackEvents(deps: PumpDeps, limit = 50): Promise<nu
   let enqueued = 0;
 
   for (const event of pending) {
-    const opened = referenceOf(event.payload, deps.vaultKey);
+    const opened = referenceOf(event.payload, deps.vaultKey, event.externalId);
 
     if (opened.kind === 'unreadable') {
       /**
@@ -144,7 +144,7 @@ export async function pumpPaystackEvents(deps: PumpDeps, limit = 50): Promise<nu
   for (const event of unprocessed) {
     if (!event.businessId) continue;
     const owner = event.businessId;
-    const opened = referenceOf(event.payload, deps.vaultKey);
+    const opened = referenceOf(event.payload, deps.vaultKey, event.externalId);
     if (opened.kind !== 'reference') continue;
     const billing = SUBSCRIPTION_REFERENCE_PATTERN.test(opened.reference);
     if (!billing && !PAYMENT_REFERENCE_PATTERN.test(opened.reference)) continue;
@@ -172,10 +172,10 @@ export async function pumpPaystackEvents(deps: PumpDeps, limit = 50): Promise<nu
 type OpenedReference =
   { kind: 'reference'; reference: string } | { kind: 'no_reference' } | { kind: 'unreadable' };
 
-function referenceOf(payload: unknown, vaultKey: string): OpenedReference {
+function referenceOf(payload: unknown, vaultKey: string, externalId: string): OpenedReference {
   let opened: unknown;
   try {
-    opened = openPayload(payload, vaultKey);
+    opened = openPayload(payload, vaultKey, 'paystack', externalId);
   } catch {
     return { kind: 'unreadable' };
   }

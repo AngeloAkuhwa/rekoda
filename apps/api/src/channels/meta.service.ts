@@ -42,7 +42,7 @@ export class MetaIngressService {
           provider: 'meta',
           eventType: `message.${event.messageType}`,
           externalId: event.externalId,
-          payload: sealPayload(payload, this.config.vaultKey),
+          payload: sealPayload(payload, this.config.vaultKey, 'meta', event.externalId),
           businessId,
         });
         if (!recorded.isNew) {
@@ -74,7 +74,7 @@ export class MetaIngressService {
        * least protected table we have. One AES-256-GCM encrypt costs
        * microseconds on a path that owes Meta an answer in seconds.
        */
-      payload: sealPayload(payload, this.config.vaultKey),
+      payload: sealPayload(payload, this.config.vaultKey, 'meta', event.externalId),
       businessId,
     });
 

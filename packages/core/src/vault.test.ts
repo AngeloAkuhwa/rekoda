@@ -15,10 +15,18 @@ describe('associated data binds a blob to its place', () => {
     expect(() => decryptFacet(blob, key)).toThrow(VaultError);
   });
 
-  it('a v1 blob stays readable, aad or not', () => {
+  it('a v1 blob opens only on an unbound read', () => {
     const blob = encryptFacet('ada@mail.test', key);
     expect(blob.startsWith('v1.')).toBe(true);
     expect(decryptFacet(blob, key)).toBe('ada@mail.test');
-    expect(decryptFacet(blob, key, 'ignored:aad')).toBe('ada@mail.test');
+  });
+
+  it('a bound read refuses a v1 blob, so a binding cannot be downgraded away', () => {
+    /* The hole this closes: swap a bound cipher for an unbound one in the
+     * database and a reader that "binds" would have silently stopped
+     * checking. Every writer has produced v2 since binding shipped, so an
+     * unbound blob arriving at a bound read is an alarm, not history. */
+    const blob = encryptFacet('0123456789', key);
+    expect(() => decryptFacet(blob, key, 'biz-1:settlement_account')).toThrow(VaultError);
   });
 });

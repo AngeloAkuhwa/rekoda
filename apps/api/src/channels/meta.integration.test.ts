@@ -1069,12 +1069,12 @@ describe('collecting money from chat (payments-v1 §160)', () => {
     const customer = await customersRepo.createCustomerWithIdentities(db, businessId, 'X81', [
       {
         facet: 'phone',
-        ciphertext: encryptFacet('+2348039998888', config.vaultKey),
+        ciphertext: encryptFacet('+2348039998888', config.vaultKey, `${businessId}:phone`),
         matchKey: matchKeyFor(businessId, 'phone', '+2348039998888', config.matchKey),
       },
       {
         facet: 'email',
-        ciphertext: encryptFacet('adaeze@example.com', config.vaultKey),
+        ciphertext: encryptFacet('adaeze@example.com', config.vaultKey, `${businessId}:email`),
         matchKey: null,
       },
     ]);
@@ -3735,7 +3735,11 @@ describe('a forwarded order', () => {
     await customersRepo.createCustomerWithIdentities(db, business.id, 'CUSTOMER_7K2', [
       {
         facet: 'email',
-        ciphertext: encryptFacet('adaeze@example.com', deps.config.vaultKey),
+        ciphertext: encryptFacet(
+          'adaeze@example.com',
+          deps.config.vaultKey,
+          `${business.id}:email`,
+        ),
         matchKey: null,
       },
     ]);

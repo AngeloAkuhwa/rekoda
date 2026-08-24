@@ -98,7 +98,7 @@ export class PaystackWebhookController {
       externalId,
       // Sealed like every provider payload: Paystack bodies carry the payer's
       // email and name, and this is the one table outside row-level security.
-      payload: sealPayload(parsed.data, this.config.vaultKey),
+      payload: sealPayload(parsed.data, this.config.vaultKey, 'paystack', externalId),
       businessId: null,
     });
 

@@ -133,7 +133,9 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
       return;
     }
 
-    const body = metaWebhookBody.safeParse(openPayload(event.payload, deps.config.vaultKey));
+    const body = metaWebhookBody.safeParse(
+      openPayload(event.payload, deps.config.vaultKey, 'meta', event.externalId),
+    );
     if (!body.success) {
       await events.markProcessed(tx, eventId, 'unreadable payload', businessId);
       return;

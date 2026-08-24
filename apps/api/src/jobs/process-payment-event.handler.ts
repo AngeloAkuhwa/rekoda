@@ -52,7 +52,7 @@ export function processPaymentEventHandler(deps: ProcessPaymentEventDeps): JobHa
       return;
     }
 
-    const reference = referenceOf(event.payload, deps.config.vaultKey);
+    const reference = referenceOf(event.payload, deps.config.vaultKey, event.externalId);
     if (!reference) {
       await events.markProcessed(tx, eventId, 'unreadable_at_processing', businessId);
       return;
@@ -206,10 +206,10 @@ async function exception(
   });
 }
 
-function referenceOf(payload: unknown, vaultKey: string): string | null {
+function referenceOf(payload: unknown, vaultKey: string, externalId: string): string | null {
   let opened: unknown;
   try {
-    opened = openPayload(payload, vaultKey);
+    opened = openPayload(payload, vaultKey, 'paystack', externalId);
   } catch {
     /* A seal that will not open is a KEY problem, not an event problem — the
      * pump refuses to drain the queue on it and so does this handler.
