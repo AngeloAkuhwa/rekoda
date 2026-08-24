@@ -102,6 +102,25 @@ export async function runExclusively(
  * queued at all" — because re-queueing an event whose job already ran and
  * died would turn one poison payload into a permanent retry loop.
  */
+/**
+ * Serialize a body of work per business, held to the end of `tx`.
+ *
+ * A transaction-scoped advisory lock keyed on the business plus a scope
+ * string: two transactions that take the same (business, scope) lock run one
+ * after another, while different businesses never contend. The inbound
+ * message handler takes `('inbound')` so the concurrency lanes cannot process
+ * two messages for one conversation at once — the pending-draft read-then-
+ * write assumes a single runner per business. Different businesses still run
+ * in parallel across lanes.
+ */
+export async function serializeBusiness(
+  tx: TenantDb,
+  businessId: string,
+  scope: string,
+): Promise<void> {
+  await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`${businessId}:${scope}`}))`);
+}
+
 export async function hasJobForSingleton(
   q: Queryable,
   businessId: string,

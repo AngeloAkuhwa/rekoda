@@ -113,6 +113,18 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
       throw new Error('inbound.message: payload is missing eventId');
     }
 
+    /**
+     * One inbound message per business at a time.
+     *
+     * The worker runs several concurrency lanes, and this handler reads then
+     * writes the pending draft (supersede, record, confirm) assuming it is
+     * the only runner for the business. Without this, a burst — "sold 3 wigs"
+     * then "make it 4" — could have two lanes racing that state and produce
+     * two drafts or no reply. A per-business advisory lock, held to commit,
+     * serializes the conversation while leaving OTHER businesses' lanes free.
+     */
+    await jobsRepo.serializeBusiness(tx, businessId, 'inbound');
+
     const event = await events.eventForBusiness(tx, eventId, businessId);
     if (!event) {
       // Attributed to a different tenant, or truncated between enqueue and
