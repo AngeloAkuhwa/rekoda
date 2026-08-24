@@ -176,6 +176,9 @@ export const publicOrderResponse = z.discriminatedUnion('outcome', [
   /** The shop cannot take orders right now: the merchant's monthly capacity
    * is spent, or their plan has no automatic order capture. */
   z.object({ outcome: z.literal('closed') }),
+  /** More orders in the past hour than one shop plausibly takes (fix-plan 7,
+   * H7b). A flood answer, not a capacity one: try again shortly. */
+  z.object({ outcome: z.literal('busy') }),
 ]);
 export type PublicOrderRequest = z.infer<typeof publicOrderRequest>;
 export type PublicOrderResponse = z.infer<typeof publicOrderResponse>;

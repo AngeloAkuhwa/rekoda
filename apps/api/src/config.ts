@@ -42,6 +42,20 @@ export interface ApiConfig {
   corsOrigins: string[];
   /** Requests per IP per minute. See the note in main.ts. */
   rateLimitMax: number;
+  /**
+   * Storefront orders one shop takes per hour before answering `busy`
+   * (fix-plan 7, H7b). Counted in the database, so every replica shares one
+   * ceiling — unlike the per-IP limiter above. The flood answer, not the
+   * capacity one: the monthly plan meter still governs capacity.
+   */
+  shopOrdersPerHour: number;
+  /**
+   * Seconds between provider verifies for one Pay-with-Transfer intent
+   * (fix-plan 7, H7b). Each status poll used to cost a Paystack call on the
+   * merchant's key; the window is claimed in the database so taps beyond the
+   * first inside it answer from what is already known.
+   */
+  transferVerifyMinSeconds: number;
   /** AES-256-GCM key for the identity vault and for sealed event payloads. */
   vaultKey: string;
   /** Keyed HMAC for deterministic identity matching. NOT the vault key. */
@@ -449,6 +463,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     // Raised by the integration suite, which legitimately makes a few hundred
     // requests from one address in well under a minute.
     rateLimitMax: Number(env['REKODA_RATE_LIMIT_MAX'] ?? 60),
+    /* Two orders a minute, sustained for an hour, from ONE shop page is a
+     * very good day for a small merchant; a flood is something else. */
+    shopOrdersPerHour: Number(env['REKODA_SHOP_ORDERS_PER_HOUR'] ?? 120),
+    transferVerifyMinSeconds: Number(env['REKODA_TRANSFER_VERIFY_MIN_SECONDS'] ?? 5),
     /**
      * Required in production, optional elsewhere. An empty secret makes
      * `verifyMetaSignature` return false for everything, so a misconfigured

@@ -24,6 +24,7 @@ import {
   billingRepo,
   createDb,
   issueRepo,
+  schema,
   stockRepo,
   usageRepo,
   withBusiness,
@@ -51,6 +52,8 @@ beforeAll(async () => {
   process.env['REKODA_REVEAL_OTP'] = '1';
   process.env['REKODA_RATE_LIMIT_MAX'] = '100000';
   process.env['REKODA_LOCAL_STORAGE'] = storageRoot;
+  /* Low enough to reach in a test; the production default is far higher. */
+  process.env['REKODA_SHOP_ORDERS_PER_HOUR'] = '3';
   delete process.env['NODE_ENV'];
 
   const { createApp } = await import('../main.js');
@@ -65,6 +68,7 @@ afterAll(async () => {
   await app?.close();
   await closeDb?.();
   delete process.env['REKODA_LOCAL_STORAGE'];
+  delete process.env['REKODA_SHOP_ORDERS_PER_HOUR'];
   if (storageRoot) await rm(storageRoot, { recursive: true, force: true });
 });
 
@@ -668,5 +672,147 @@ describe('a customer orders from the shop (fix-plan 6, M5b)', () => {
       usageRepo.usageFor(tx, businessId, usagePeriod(new Date())),
     );
     expect(usage.find((r) => r.unit === 'orders')?.used ?? 0).toBe(0);
+  });
+});
+
+describe('the storefront cannot be farmed (fix-plan 7, H7b)', () => {
+  async function openShop(phone: string, slug: string) {
+    const { businessId, auth } = await onboard(phone);
+    const ids = await seedCatalogue(businessId, auth);
+    expect((await publish(auth, slug)).json()).toMatchObject({ outcome: 'saved' });
+    return { businessId, auth, ids };
+  }
+
+  const order = (slug: string, payload: Record<string, unknown>) =>
+    post(`/v1/shop/${slug}/orders`, payload);
+
+  const customersOf = (businessId: string) =>
+    withBusiness(db, businessId, (tx) => tx.select().from(schema.customers));
+
+  /**
+   * Every refused order used to write the stranger's name and phone into the
+   * vault BEFORE deciding to refuse — so a bot cycling random identities
+   * against a closed shop filled a merchant's customer vault for free. The
+   * identity is resolved only once the order has cleared every gate.
+   */
+  it('a refused order writes nothing into the vault', async () => {
+    const { businessId, ids } = await openShop('+2348177400040', 'ada-novault');
+
+    /* A de-listed item: refused before any identity work. */
+    expect(
+      publicOrderResponse.parse(
+        (
+          await order('ada-novault', {
+            items: [{ productId: ids['Aso oke set'], quantity: 1 }],
+            customerName: 'Bot Farm',
+            customerPhone: '08031110001',
+            clientRef: randomUUID(),
+          })
+        ).json(),
+      ),
+    ).toEqual({ outcome: 'items_changed' });
+    expect(await customersOf(businessId)).toHaveLength(0);
+
+    /* A plan with no order capture: closed, and still no vault rows. */
+    await billingRepo.setPlan(db, {
+      businessId,
+      plan: 'chat',
+      expiresAt: null,
+      actor: 'operator:test',
+    });
+    expect(
+      publicOrderResponse.parse(
+        (
+          await order('ada-novault', {
+            items: [{ productId: ids['Ankara bale'], quantity: 1 }],
+            customerName: 'Bot Farm',
+            customerPhone: '08031110002',
+            clientRef: randomUUID(),
+          })
+        ).json(),
+      ),
+    ).toEqual({ outcome: 'closed' });
+    expect(await customersOf(businessId)).toHaveLength(0);
+
+    /* A real order books and records ONE customer; resubmitting its ref with
+     * a fresh identity is answered duplicate without a second vault row. */
+    await billingRepo.setPlan(db, {
+      businessId,
+      plan: 'integrate',
+      expiresAt: null,
+      actor: 'operator:test',
+    });
+    const clientRef = randomUUID();
+    expect(
+      publicOrderResponse.parse(
+        (
+          await order('ada-novault', {
+            items: [{ productId: ids['Ankara bale'], quantity: 1 }],
+            customerName: 'Chidi Okafor',
+            customerPhone: '08035551234',
+            clientRef,
+          })
+        ).json(),
+      ),
+    ).toMatchObject({ outcome: 'placed' });
+    expect(await customersOf(businessId)).toHaveLength(1);
+    expect(
+      publicOrderResponse.parse(
+        (
+          await order('ada-novault', {
+            items: [{ productId: ids['Ankara bale'], quantity: 1 }],
+            customerName: 'Somebody Else',
+            customerPhone: '08039999999',
+            clientRef,
+          })
+        ).json(),
+      ),
+    ).toEqual({ outcome: 'duplicate' });
+    expect(await customersOf(businessId)).toHaveLength(1);
+  });
+
+  /**
+   * The plan meter is monthly and generous; a flood spends it in minutes and
+   * fills the order book with junk. The hourly ceiling (3 in this suite, via
+   * REKODA_SHOP_ORDERS_PER_HOUR) is the flood answer: DB-backed, so every
+   * replica shares one count.
+   */
+  it('a flood of orders hits the hourly ceiling and gets an honest sentence', async () => {
+    const { businessId, ids } = await openShop('+2348177400041', 'ada-flood');
+
+    for (let i = 1; i <= 3; i++) {
+      expect(
+        publicOrderResponse.parse(
+          (
+            await order('ada-flood', {
+              items: [{ productId: ids['Ankara bale'], quantity: 1 }],
+              customerName: `Customer ${i}`,
+              customerPhone: `0803555${String(1000 + i)}`,
+              clientRef: randomUUID(),
+            })
+          ).json(),
+        ),
+      ).toMatchObject({ outcome: 'placed' });
+    }
+
+    expect(
+      publicOrderResponse.parse(
+        (
+          await order('ada-flood', {
+            items: [{ productId: ids['Ankara bale'], quantity: 1 }],
+            customerName: 'Customer 4',
+            customerPhone: '08035551004',
+            clientRef: randomUUID(),
+          })
+        ).json(),
+      ),
+    ).toEqual({ outcome: 'busy' });
+
+    /* The refusal spent nothing and vaulted nobody new. */
+    const usage = await withBusiness(db, businessId, (tx) =>
+      usageRepo.usageFor(tx, businessId, usagePeriod(new Date())),
+    );
+    expect(usage.find((r) => r.unit === 'orders')?.used).toBe(3);
+    expect(await customersOf(businessId)).toHaveLength(3);
   });
 });

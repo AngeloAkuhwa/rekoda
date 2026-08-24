@@ -109,3 +109,25 @@ export async function lapseTransferIntents(urls: Urls, businessId: string): Prom
     await sql.end();
   }
 }
+
+/**
+ * More time-travel: make a business's intents look untouched for `seconds`,
+ * so a verify-throttle window (fix-plan 7, H7b) that gates on `updated_at`
+ * can be tested without sleeping through it.
+ */
+export async function agePaymentIntents(
+  urls: Urls,
+  businessId: string,
+  seconds: number,
+): Promise<void> {
+  const sql = postgres(urls.owner, { max: 1, onnotice: () => {} });
+  try {
+    await sql`
+      UPDATE payment_intents
+      SET updated_at = now() - make_interval(secs => ${seconds})
+      WHERE business_id = ${businessId}::uuid
+    `;
+  } finally {
+    await sql.end();
+  }
+}

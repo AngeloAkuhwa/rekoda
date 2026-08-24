@@ -31,6 +31,7 @@ import {
   type Db,
 } from '@rekoda/db';
 import {
+  agePaymentIntents,
   lapseTransferIntents,
   migrate,
   requireUrls,
@@ -38,6 +39,8 @@ import {
   type Urls,
 } from '@rekoda/db/testing';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
+import { CONFIG, type ApiConfig } from '../config.js';
+import { MerchantTransferService } from './merchant-transfer.service.js';
 
 let urls: Urls;
 let app: NestFastifyApplication;
@@ -93,6 +96,9 @@ beforeAll(async () => {
   process.env['REKODA_OPERATOR_SECRET'] = `operator-${randomBytes(24).toString('hex')}`;
   process.env['REKODA_REVEAL_OTP'] = '1';
   process.env['REKODA_RATE_LIMIT_MAX'] = '100000';
+  /* The suites below tap the status poll far faster than a person can; the
+   * verify window under test gets its own service instance. */
+  process.env['REKODA_TRANSFER_VERIFY_MIN_SECONDS'] = '0';
   delete process.env['NODE_ENV'];
 
   const { createApp } = await import('../main.js');
@@ -109,6 +115,7 @@ afterAll(async () => {
   delete process.env['PAYSTACK_BASE_URL'];
   delete process.env['WORKER_DATABASE_URL'];
   delete process.env['REKODA_OPERATOR_SECRET'];
+  delete process.env['REKODA_TRANSFER_VERIFY_MIN_SECONDS'];
 });
 
 beforeEach(async () => {
@@ -431,5 +438,43 @@ describe('paying a storefront order by transfer (fix-plan 6, M5c)', () => {
     if (second.outcome !== 'account') return;
     expect(second.reference).not.toBe(first.reference);
     expect(seen.filter((c) => c.url.startsWith('/charge'))).toHaveLength(2);
+  });
+
+  /**
+   * Every status poll used to cost one verify on the merchant's Paystack
+   * key, so a page left open (or a bot) could spend the merchant's provider
+   * rate limit by tapping. The window is claimed in the database — one
+   * verify per window across every replica — and it only ever delays the
+   * POLL path: a webhook that already booked still answers paid instantly.
+   */
+  it('verifies with the provider at most once per window, however fast the taps come (fix-plan 7, H7b)', async () => {
+    const { businessId, productId } = await openShop('+2348199300005', 'ada-throttle');
+    const clientRef = await placeOrder('ada-throttle', productId);
+    payWithTransferResponse.parse((await askTransfer('ada-throttle', clientRef)).json());
+
+    const throttled = new MerchantTransferService(
+      { ...app.get<ApiConfig>(CONFIG), transferVerifyMinSeconds: 300 },
+      db,
+    );
+    const verifies = () => seen.filter((c) => c.url.startsWith('/transaction/verify')).length;
+
+    /* The mint just touched the intent, so the window is still closed. */
+    const before = verifies();
+    expect(await throttled.statusFor(businessId, clientRef)).toEqual({ state: 'pending' });
+    expect(verifies()).toBe(before);
+
+    /* Five minutes on (time-travelled): one verify serves every tap. */
+    await agePaymentIntents(urls, businessId, 301);
+    expect(await throttled.statusFor(businessId, clientRef)).toEqual({ state: 'pending' });
+    expect(await throttled.statusFor(businessId, clientRef)).toEqual({ state: 'pending' });
+    expect(await throttled.statusFor(businessId, clientRef)).toEqual({ state: 'pending' });
+    expect(verifies()).toBe(before + 1);
+
+    /* The gate delays the poll, never the money: once Paystack confirms,
+     * the next open window books and answers paid. */
+    verifyAnswer = (reference) => verifiedSuccess(reference, 1_700_000);
+    await agePaymentIntents(urls, businessId, 301);
+    const paid = await throttled.statusFor(businessId, clientRef);
+    expect(paid.state).toBe('paid');
   });
 });

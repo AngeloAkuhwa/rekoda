@@ -63,6 +63,7 @@ import {
 } from '@rekoda/db';
 import { SessionGuard, type AuthedRequest } from '../auth/session.guard.js';
 import { Roles, RolesGuard } from '../auth/roles.guard.js';
+import { CONFIG, type ApiConfig } from '../config.js';
 import { DB } from '../db/db.module.js';
 import { DOCUMENT_STORAGE } from '../documents/documents.module.js';
 import { PrivacyGateway } from '../privacy/gateway.service.js';
@@ -151,6 +152,7 @@ export class PublicShopController {
   constructor(
     @Inject(DB) private readonly db: Db,
     @Inject(DOCUMENT_STORAGE) private readonly storage: DocumentStorage,
+    @Inject(CONFIG) private readonly config: ApiConfig,
     private readonly gateway: PrivacyGateway,
     private readonly transfers: MerchantTransferService,
   ) {}
@@ -248,12 +250,41 @@ export class PublicShopController {
     if (!shop) return { outcome: 'shop_gone' };
     const businessId = shop.businessId;
 
-    const customer = await this.gateway.resolveStorefrontCustomer(
-      businessId,
-      parsed.data.customerName,
-      parsed.data.customerPhone,
-    );
-    if (!customer) return { outcome: 'bad_phone' };
+    /**
+     * Every refusable condition is checked BEFORE the customer's name and
+     * phone touch the vault (fix-plan 7, H7b). The old order resolved the
+     * identity first, so a bot cycling random identities against a closed
+     * shop, a stale cart or a spent ref filled the merchant's customer vault
+     * for free — every row a real ciphertext, indistinguishable from a
+     * person. Now nothing is vaulted unless the order has cleared the
+     * duplicate check, the cart check, the flood ceiling and the meter. The
+     * transaction below re-checks the racy ones; these are the cheap doors.
+     */
+    const refused = await withBusiness(this.db, businessId, async (tx) => {
+      const existing = await ordersRepo.orderByExternalRef(
+        tx,
+        businessId,
+        `shop:${parsed.data.clientRef}`,
+      );
+      if (existing) return { outcome: 'duplicate' as const };
+
+      const sellable = await catalogueRepo.sellableByIds(
+        tx,
+        businessId,
+        parsed.data.items.map((i) => i.productId),
+      );
+      const listed = new Set(sellable.map((p) => p.id));
+      if (parsed.data.items.some((i) => !listed.has(i.productId))) {
+        return { outcome: 'items_changed' as const };
+      }
+
+      /* The flood ceiling: DB-counted, so every replica shares it. The plan
+       * meter below is monthly capacity; this is orders-per-hour sanity. */
+      const recent = await ordersRepo.countRecentStorefrontOrders(tx, businessId, 60 * 60 * 1000);
+      if (recent >= this.config.shopOrdersPerHour) return { outcome: 'busy' as const };
+      return null;
+    });
+    if (refused) return refused;
 
     /* The meter, exactly as the chat capture pays it: own short
      * transactions, refunded on every path that delivers nothing. */
@@ -281,6 +312,18 @@ export class PublicShopController {
         usageRepo.refundUnit(own, businessId, period, 'documents'),
       );
     };
+
+    /* Only now — with the gates cleared and the units paid — does the
+     * customer's identity enter the vault. A refused phone refunds both. */
+    const customer = await this.gateway.resolveStorefrontCustomer(
+      businessId,
+      parsed.data.customerName,
+      parsed.data.customerPhone,
+    );
+    if (!customer) {
+      await refundBoth();
+      return { outcome: 'bad_phone' };
+    }
 
     try {
       return await withBusiness(this.db, businessId, async (tx) => {

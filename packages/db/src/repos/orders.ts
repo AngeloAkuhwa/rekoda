@@ -667,6 +667,27 @@ export async function orderByExternalRef(
 }
 
 /**
+ * How many storefront orders this business took in the trailing window
+ * (fix-plan 7, H7b). The hourly flood ceiling counts here, in the database,
+ * so however many API replicas are running they share one number — the
+ * in-memory per-IP limiter cannot promise that.
+ */
+export async function countRecentStorefrontOrders(
+  tx: TenantDb,
+  businessId: string,
+  windowMs: number,
+): Promise<number> {
+  const rows = await tx.execute<{ n: number }>(sql`
+    SELECT count(*)::int AS n
+    FROM orders
+    WHERE business_id = ${businessId}::uuid
+      AND source_type = 'storefront'
+      AND created_at > now() - make_interval(secs => ${windowMs / 1000})
+  `);
+  return [...rows][0]?.n ?? 0;
+}
+
+/**
  * One quote and its lines, by id, for the renderer. Quotes carry no
  * snapshot: the order row and its items are immutable once created (there
  * is no edit path), so the rows themselves are the record a re-render
