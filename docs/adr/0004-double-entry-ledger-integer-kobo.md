@@ -28,6 +28,18 @@ with an invariant test suite.
 - The ledger is append-only: corrections are reversing entries, never
   UPDATEs — matching the spec's audit rules (§42).
 
+  **Amended by PR-010 (migration 0051).** Append-only is now enforced by
+  PostgreSQL rather than by convention: `UPDATE` and `DELETE` on both
+  `ledger_transactions` and `ledger_entries` are revoked from `rekoda_app`
+  and `rekoda_worker`, and integration tests prove the refusal through those
+  roles rather than through the owner. `ledger_entries` had been protected
+  since 0001 and 0004; the transaction row that owns the lines had not, so a
+  writer that could not touch a figure could still rewrite the memo, the
+  source, the reversal link or the timestamp the figure is read under.
+
+  **The chart of accounts fixed here is SUPERSEDED** by canonical spec §11:
+  business-scoped `Account` rows with scoped system roles, landing in F1.
+
 ## Consequences
 
 Reports, reconciliation states and balances become derivations of one
