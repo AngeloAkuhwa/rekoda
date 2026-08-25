@@ -5,6 +5,7 @@
 | Bundle generated | 25 August 2026 |
 | **Canonical baseline commit** | `80322ec` (spec v1.6.2, named in the consolidation instruction) |
 | **Current canonical head** | `77ff16c` (spec v1.6.4, build plan v1.5) |
+| **Bundle consolidation commit** | `2aee7ef` |
 | Branch | `claude/session-task-plan-review-likv0v` |
 
 > **Note on the baseline.** The instruction named `80322ec` as the foundation. That commit is spec **v1.6.2**; two approved correction rounds have landed since — v1.6.3 (`7530c7f`) and v1.6.4 (`77ff16c`). This bundle is generated from the **current head**, because generating from `80322ec` would reintroduce defects those rounds fixed, including the impossible partial indexes and the unscoped participant hash. Both are recorded in the amendment log.
