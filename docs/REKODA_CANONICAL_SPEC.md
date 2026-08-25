@@ -5,9 +5,9 @@
 | Field | Value |
 |---|---|
 | Status | **APPROVED — FROZEN FOR IMPLEMENTATION** |
-| Canonical version | 1.6.1 |
+| Canonical version | 1.6.2 |
 | Effective date | 25 August 2026 |
-| Supersedes | Canonical Product Architecture v2.0; Chat & Integrate Journey v1.0; corrections v1.1 through v1.6; ADR 0004 (chart of accounts), ADR 0014 (Recorded vs Verified) in part |
+| Supersedes | Canonical Product Architecture v2.0; Chat & Integrate Journey v1.0; corrections v1.1 through v1.6.1; ADR 0004 (chart of accounts), ADR 0014 (Recorded vs Verified) in part |
 | Owners | Product and engineering, jointly. Accounting sections additionally require finance sign-off. |
 | Companion | `docs/REKODA_END_TO_END_BUILD_PLAN.md` |
 
@@ -367,30 +367,59 @@ PAY-001  no active verification. history intact: somebody matched it,
 PAY-002  externally verified.
 ```
 
-A revocation may itself be revoked only by being superseded; a revocation is never deleted.
-
-### 6.5 Source idempotency
-
-Without these, a retried webhook verifies twice and one bank line verifies two payments. Both are silent, and both corrupt trust rather than merely duplicating a row.
+**A revocation is itself immutable.** There is no revoking a revocation, because nothing in the model gives that a meaning. If the revocation was the mistake, the correction is an ordinary one: **append a fresh `PaymentVerification` against the same evidence**, carrying a reason that says so.
 
 ```
-BANK_FEED_MATCH / MANUAL_RECONCILIATION
-  one ACTIVE verification per financialTransactionId, estate-wide within the business
-  UNIQUE (businessId, financialTransactionId) WHERE not revoked
-  → one bank line cannot externally verify two payments
-
-PROVIDER_VERIFIED
-  UNIQUE (businessId, paymentAttemptId) WHERE not revoked
-  → a retried webhook is a no-op, not a second verification
-
-MERCHANT_ATTESTED
-  UNIQUE (businessId, confirmationEventId) WHERE not revoked
-  where confirmationEventId is the command draft for chat,
-  or the audit event id for a dashboard action
-  → a retried job cannot attest twice for one confirmation
+verification #1     TX-123 → PAY-001
+revocation          "not this payment"                 ← wrong; PAY-001 was right
+verification #2     TX-123 → PAY-001, reason = "revocation was incorrect"
 ```
 
-"Active" means *not revoked*, which is why the uniqueness is partial rather than absolute: an incorrect match must be revocable and the line must then be free to verify the right payment.
+Three events, a legible history, and no second-order mechanism to specify. The active-claim projection (§6.5) makes this work: revoking released the claim on `TX-123`, so the fresh verification can take it again.
+
+### 6.5 Source idempotency, and the active-claim projection
+
+Without idempotency a retried webhook verifies twice and one bank line verifies two payments. Both are silent, and both corrupt trust rather than merely duplicating a row.
+
+> **SUPERSEDED — this was the sibling of the generated-column defect.** An earlier draft specified partial unique indexes predicated on `WHERE revoked_at IS NULL`. `PaymentVerification` has no `revoked_at`, because revocation is a separate event table, and a PostgreSQL partial-index predicate may reference only columns of the table being indexed. It cannot see another table and cannot use a subquery. The indexes could not have been created.
+
+The events stay genuinely immutable. Uniqueness moves to a small mutable projection that exists for exactly one purpose.
+
+```
+PaymentVerificationClaim         MUTABLE. Not audit truth. Not financial truth.
+  id · businessId · verificationId
+  financialTransactionId?
+  paymentAttemptId?
+  confirmationEventId?
+  CHECK: exactly one claim key is populated
+
+  UNIQUE (businessId, financialTransactionId) WHERE financialTransactionId IS NOT NULL
+  UNIQUE (businessId, paymentAttemptId)       WHERE paymentAttemptId IS NOT NULL
+  UNIQUE (businessId, confirmationEventId)    WHERE confirmationEventId IS NOT NULL
+```
+
+Every predicate now reads a column of the table it indexes, which is the only thing PostgreSQL will accept.
+
+```
+verifying     append PaymentVerification
+              insert the claim
+              ONE transaction. The unique violation is the idempotency check.
+
+revoking      append PaymentVerificationRevocation
+              delete the claim, releasing the evidence
+              ONE transaction.
+```
+
+What each claim key means:
+
+```
+financialTransactionId   one bank line cannot actively verify two payments
+paymentAttemptId         a retried webhook is a no-op, not a second verification
+confirmationEventId      the command draft for chat, the audit event for dashboard;
+                         a retried job cannot attest twice for one confirmation
+```
+
+> **The claim table is a concurrency projection and nothing else.** It says which evidence is currently spoken for. **Derived trust is computed from the immutable events and revocations, never from the claims**, so a projection that was rebuilt, corrupted or dropped could be reconstructed from the events without any loss of financial truth. That directionality is what keeps the model honest: append-only remains literally true of the tables that matter.
 
 ### 6.6 Derived trust
 
@@ -1497,6 +1526,14 @@ ExchangeRateSnapshot              immutable, once written
 
 **A stale rate is refused, never guessed.** The freshness window is configuration; outside it, the posting fails with a named error and the operation is queued rather than completed at an invented rate. Refusing to post is recoverable. Posting at a wrong rate is a wrong set of books that balances, and nobody notices.
 
+> **Staleness is measured against the requested accounting timestamp, not against today's date.** A transaction dated 15 June asks for a 15 June rate. That rate is fresh for that request in August, in December, and in five years. Measuring against wall-clock time would make every historical import and every opening-balance migration impossible the moment it aged past the window, which is the opposite of what the rule is for.
+
+```
+request      rateFor(USD, NGN, at = 2026-06-15T00:00Z)
+freshness    |snapshot.effectiveAt − requested at|  ≤ window
+             NOT  |now − snapshot.effectiveAt|
+```
+
 Rates are cached by `(base, quote, effectiveAt)`, which is what makes the cache safe: two postings for the same moment get the same snapshot by construction rather than by luck.
 
 ### A.3 Manual override
@@ -1544,10 +1581,13 @@ receipt of stock          new average = (existing value + received value)
 issue of stock (sale)     COGS = qty issued × average cost at issue
                           the average is UNCHANGED by an issue
 
-customer return           stock returns at the ORIGINAL issue cost carried on
-                          the movement, not at today's average
-                          → returning goods cannot move the average, and a return
-                            in a falling market cannot manufacture a gross profit
+customer return           1. restore the returned quantity at the ORIGINAL issue
+                             cost carried on the outbound movement
+                          2. reverse COGS at that same historical cost
+                          3. add that quantity and value to current inventory
+                          4. RECALCULATE the moving average from the resulting
+                             quantity and value
+                          → the average moves, and it must
 
 supplier return           reverses the receipt at the receipt's own cost, and the
                           average is recomputed as at that moment
@@ -1556,6 +1596,23 @@ negative stock            REFUSED. An issue that would take a line below zero is
                           rejected, because a negative average cost is not a number
                           any statement can survive.
 ```
+
+> **SUPERSEDED — an earlier draft said a customer return "cannot move the average". That is arithmetically impossible.** Worked through:
+
+```
+buy 10 @ 100          10 units · 1,000 · avg 100
+sell 5 @ cost 100      5 units ·   500 · avg 100
+buy 5 @ 200           10 units · 1,500 · avg 150
+
+return 1 unit, restored at its original issue cost of 100
+                      11 units · 1,600 · avg 145.4545…
+
+if the average did not move:   11 × 150 = 1,650 ≠ 1,600
+```
+
+Quantity times average must equal inventory value. Holding the average fixed breaks that identity on the first return, and a broken identity there propagates into COGS on every subsequent sale. Returning goods at their **original** cost is the part that protects gross profit from a price swing; recalculating the average afterwards is what keeps the books internally consistent. Both are required, and they are not in tension.
+
+**Non-resalable returns.** A damaged or expired return must not silently rejoin sellable stock. It enters a damaged or returns holding location, and leaving it there is a decision: either it is refurbished back into sellable stock at an assessed cost, or it is written off. The write-off is a posting, not a disappearance.
 
 Every movement carries the unit cost applied to it, so gross profit reconstructs from the movements and definition-of-done invariant 6 holds without a second calculation.
 
@@ -1673,14 +1730,32 @@ PaymentAttempt      INITIATED · PENDING · SUCCEEDED · FAILED · ABANDONED
 
 ### E.3 Invoice
 
+> **SUPERSEDED.** An earlier draft listed `PARTIALLY_PAID` and `PAID` as *lifecycle* states. They are not. An invoice is simultaneously `ISSUED`, `PARTIALLY_PAID` and `OVERDUE`, and a single column cannot say that. Three independent dimensions, as previously agreed:
+
 ```
-lifecycle           DRAFT · ISSUED · PARTIALLY_PAID · PAID · VOID · WRITTEN_OFF
-collection          CURRENT · DUE · OVERDUE · IN_DISPUTE · IN_COLLECTION
-aging               0-30 · 31-60 · 61-90 · 90+          from the DUE date, never
-                                                        from the issue date
+InvoiceLifecycle          DRAFT · ISSUED · VOID
+                          what the document IS
+
+InvoicePaymentStatus      UNPAID · PARTIALLY_PAID · PAID
+                          derived from allocations and applied credits, never stored
+
+InvoiceCollectionStatus   CURRENT · DUE · OVERDUE · IN_DISPUTE
+                          · IN_COLLECTION · WRITTEN_OFF
+                          what is being done about getting paid
+
+AgingBucket               0-30 · 31-60 · 61-90 · 90+
+                          derived from the DUE date, never from the issue date
 ```
 
-Lifecycle and collection are independent. An invoice can be `PARTIALLY_PAID` and `OVERDUE` at the same time, and collapsing them into one column is how a partly paid overdue invoice becomes invisible.
+The three are independent by design. `ISSUED` + `PARTIALLY_PAID` + `OVERDUE` is an ordinary Tuesday and must be representable; collapsing them is how a partly paid overdue invoice becomes invisible to whoever is chasing it. `WRITTEN_OFF` is a collection outcome rather than a lifecycle state, because the invoice still exists and the receivable still has a history.
+
+**Supplier bills mirror this exactly:**
+
+```
+BillLifecycle             DRAFT · RECEIVED · VOID
+BillPaymentStatus         UNPAID · PARTIALLY_PAID · PAID
+BillSettlementStatus      CURRENT · DUE · OVERDUE · IN_DISPUTE · WRITTEN_BACK
+```
 
 ### E.4 Order and fulfilment
 
