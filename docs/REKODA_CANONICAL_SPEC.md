@@ -5,9 +5,9 @@
 | Field | Value |
 |---|---|
 | Status | **APPROVED — FROZEN FOR IMPLEMENTATION** |
-| Canonical version | 1.6.4 |
+| Canonical version | 1.6.5 |
 | Effective date | 25 August 2026 |
-| Supersedes | Canonical Product Architecture v2.0; Chat & Integrate Journey v1.0; corrections v1.1 through v1.6.3; ADR 0004 (chart of accounts), ADR 0014 (Recorded vs Verified) in part |
+| Supersedes | Canonical Product Architecture v2.0; Chat & Integrate Journey v1.0; corrections v1.1 through v1.6.4; ADR 0004 (chart of accounts), ADR 0014 (Recorded vs Verified) in part |
 | Owners | Product and engineering, jointly. Accounting sections additionally require finance sign-off. |
 | Companion | `docs/REKODA_END_TO_END_BUILD_PLAN.md` |
 
@@ -436,16 +436,65 @@ LEGACY_PROVENANCE_UNKNOWN
                         Never an active verification source. CHECK-enforced.
 ```
 
+**These are persisted normalised source identities, not derived at query time.** The claim's uniqueness operates over the identity, never over the bare source type, because a source type is not an identity and two provider verifications are only the same verification if they name the same attempt.
+
+> **One externally authoritative source verifies one Payment.** A bank transaction that settles several invoices is **one Payment with several `PaymentAllocation` rows** — never several Payments consuming the same bank line. The latter shape double-counts the money on any report that sums payments, and it is the reason the claim is unique on the source identity rather than on the pair.
+>
+> An explicitly modelled split or aggregation case may relax this. None exists in V1, and adding one is a canonical decision, not an implementation convenience.
+
 > **The claim table is a concurrency projection and nothing else.** It says which evidence is currently spoken for. **Derived trust is computed from the immutable events and revocations, never from the claims**, so a projection that was rebuilt, corrupted or dropped could be reconstructed from the events without any loss of financial truth. That directionality is what keeps the model honest: append-only remains literally true of the tables that matter.
 
-**Atomicity is a rule, not an implementation preference.** Under normal application operation the estate must never hold a verification without its claim, or a claim without its verification. Both pairs commit together or neither does:
+> **Correction to an earlier and too-comfortable statement.** A previous draft said that losing the claim table "costs concurrency safety and no financial truth". That understates it. Losing concurrency protection does not corrupt existing truth, but it permits **new duplicate financial truth to be created** afterwards, and a duplicate verification is exactly as damaging as a corrupted one.
+>
+> **`PaymentVerificationClaim` is non-authoritative but financially safety-critical.** Non-authoritative because trust never reads it. Safety-critical because without it, two writers can both believe they hold the same bank line.
+
+Six properties, all required:
 
 ```
-verify   INSERT PaymentVerification + INSERT PaymentVerificationClaim     one tx
-revoke   INSERT PaymentVerificationRevocation + DELETE the claim          one tx
+transactionally acquired      never a separate earlier commit
+tied to the verification      the same transaction creates both
+idempotent                    a retry hits the unique violation, not a second row
+reconstructable               derivable from verifications minus revocations
+monitored                     see the integrity job below
+FAIL-CLOSED                   if claim integrity cannot be established,
+                              REFUSE the verification. Never proceed hopefully.
 ```
 
-A partial failure that left a claim behind would silently block the correct payment from ever being verified, and nothing would report it.
+**The permitted write order:**
+
+```
+BEGIN
+  acquire or validate the source claim
+  validate that no conflicting ACTIVE verification exists
+  INSERT PaymentVerification
+  commit the claim state
+COMMIT
+```
+
+**The forbidden one**, because it is the shape that produces the duplicate:
+
+```
+claim → COMMIT → external work → INSERT verification later      ✗
+```
+
+That order is permitted only behind a deliberate lease-and-expiry state machine, and V1 has none.
+
+```
+claim state    ACTIVE      the evidence is currently spoken for
+               RELEASED    freed by a revocation, and re-acquirable
+
+revoking a verification RELEASES its claim, which is what makes the §6.4
+correction path work: a fresh verification acquires a new claim
+```
+
+**Integrity job.** Runs on a schedule and raises a **HIGH severity operational alert** — not a log line — on any of:
+
+```
+an active verification with no corresponding ACTIVE claim
+two ACTIVE claims over one source identity
+a claim whose source identity is not valid
+two payments actively verified by one externally authoritative source
+```
 
 ### 6.6 Evidence and money are different axes
 
@@ -902,9 +951,14 @@ V1 behaviour: REFUSE ATOMICALLY
   AND no unconditional right to the remainder exists
     → POST NOTHING
     → state = REQUIRES_REVIEW
-    → create a review item carrying the reason
+    → reviewReason = UNSUPPORTED_CONTRACT_ASSET     machine-readable, not prose
+    → create a review item carrying the full source context
     → the human either establishes the right or corrects the fulfilment record
 ```
+
+`REQUIRES_REVIEW` must not become one undifferentiated bucket. `reviewReason` is an enum, and `UNSUPPORTED_CONTRACT_ASSET` is its first member. The review item retains the order, the fulfilment event, the computed `recogniseDelta` and the balances at the moment of refusal.
+
+**The refusal is replayable.** When a later version implements contract assets, the backlog must be clearable deterministically by re-running the same events against the new engine — which is only possible because nothing was posted and nothing was lost. Refusing is not discarding.
 
 > **The command is atomic. There is no half-posted transaction.** It must never post revenue while omitting the receivable or contract asset, and it must never post part of a transaction and then flag it for review. A journal that balances only because one leg was left out is worse than no journal, because it balances.
 
@@ -1643,6 +1697,33 @@ freshness    |snapshot.effectiveAt − requested at|  ≤ window
              NOT  |now − snapshot.effectiveAt|
 ```
 
+### A.2a Selection policy: a calendar, not a date match
+
+Requiring a rate stamped the same calendar date would refuse every weekend, every public holiday and every transaction dated before a source's daily publication time. That is not conservatism, it is a system that stops working on Saturdays.
+
+```
+ExchangeRateSelectionPolicy
+  source                       which provider or reference authority
+  currencyPair
+  requestedEffectiveAt         the ACCOUNTING timestamp, always
+  latestPermittedPriorRateAge  how far back a prior rate may legitimately reach
+  marketCalendar               which days that source publishes at all
+  publicationTimePolicy        when the day's rate becomes available
+  fallbackSourcePolicy         and in what order
+```
+
+```
+transaction dated Sunday
+  the reference source last published on Friday
+  → Friday's rate is CORRECT under the configured policy, not stale
+  → the snapshot records that Friday's rate was the one used
+
+no valid rate within the policy
+  → RATE_UNAVAILABLE → refuse the posting → REQUIRES_REVIEW
+```
+
+> **A future rate is never substituted for a past one.** Reaching backwards within a stated policy is a calendar working as intended. Reaching forwards is using information the transaction could not have had, and it is forbidden regardless of how much closer the rate looks.
+
 Rates are cached by `(base, quote, effectiveAt)`, which is what makes the cache safe: two postings for the same moment get the same snapshot by construction rather than by luck.
 
 ### A.3 Manual override
@@ -1721,7 +1802,32 @@ if the average did not move:   11 × 150 = 1,650 ≠ 1,600
 
 Quantity times average must equal inventory value. Holding the average fixed breaks that identity on the first return, and a broken identity there propagates into COGS on every subsequent sale. Returning goods at their **original** cost is the part that protects gross profit from a price swing; recalculating the average afterwards is what keeps the books internally consistent. Both are required, and they are not in tension.
 
-**Non-resalable returns.** A damaged or expired return must not silently rejoin sellable stock. It enters a damaged or returns holding location, and leaving it there is a decision: either it is refurbished back into sellable stock at an assessed cost, or it is written off. The write-off is a posting, not a disappearance.
+### B.2a Disposition: physical quantity is not financial value
+
+Every return carries a disposition, and it decides the accounting rather than being decided by it.
+
+```
+RESALABLE     rejoins sellable stock
+              DR Inventory Asset / CR COGS, at the ORIGINAL ISSUE COST
+              then the weighted average recalculates (B.2)
+
+DAMAGED       enters a damaged holding location. NOT sellable stock.
+QUARANTINED   awaiting assessment. NOT sellable stock.
+SCRAPPED      gone. No inventory value remains.
+```
+
+> **A zero-value return must never be put back into sellable inventory just to make the quantity balance.** Quantity accounting and value accounting are different books, and forcing the second to serve the first is how a warehouse full of broken goods comes to be worth its full average cost.
+
+```
+no recoverable value    the economic loss stays where the return policy puts it.
+                        Inventory does not absorb it.
+
+salvage value exists    record the SUPPORTED value, and the difference between
+                        that and the original issue cost is an inventory loss
+                        or adjustment posting, named as such
+```
+
+Physical disposition and financial valuation are tracked separately, so a quarantined item has a location and a quantity while its value is still an open question.
 
 Every movement carries the unit cost applied to it, so gross profit reconstructs from the movements and definition-of-done invariant 6 holds without a second calculation.
 
@@ -1827,6 +1933,29 @@ reasoning calls      reach a model only through the approved AI abstraction
 
 One direction stops a model reaching money. The other stops money reaching a model — which is the leak that would otherwise happen quietly, the first time somebody adds a helpful summary to an accounting service. **A violation fails CI**, so the boundary is architecture rather than convention.
 
+### C.5 The adapter fails closed
+
+A boundary that only holds when every caller remembers it is a convention. The reasoning-model adapter itself refuses:
+
+```
+the adapter INSPECTS its outgoing request and REFUSES when it carries a
+known raw protected field — phone number, email, full name, account
+number, address — rather than trusting that an upstream layer tokenised it
+
+refusal is an ERROR, not a warning and not a silent redaction:
+a silently redacted prompt produces a confidently wrong answer
+```
+
+**Observability, without ever logging the content:**
+
+```
+recorded    processor · model · purpose · tokenisationStatus · policyVersion
+            requestId · businessId · duration · outcome
+never       the prompt · the completion · any protected field
+```
+
+`policyVersion` is what makes an incident answerable later: it says which rules were in force when a given request went out, which is a question that cannot be reconstructed from code that has since changed.
+
 ---
 
 ## Appendix D — Risk tiers and confirmation policy
@@ -1914,7 +2043,23 @@ AgingBucket               0-30 · 31-60 · 61-90 · 90+
                           derived from the DUE date, never from the issue date
 ```
 
-**Payment status, collection status and aging are DERIVED**, computed from invoice totals, allocations, applied credits, the due date and the void state. None of them is independently mutable financial truth, because a stored status is a second copy of a fact that can disagree with the first.
+**The storage rule, stated explicitly:**
+
+```
+lifecycle     MAY be persisted. DRAFT → ISSUED → VOID are real business
+              transitions somebody performed, and there is no other record of them.
+
+payment       DERIVED, always. From totals, allocations and applied credits.
+collection    DERIVED, always. From the above plus the due date.
+aging         DERIVED, always. From the due date, the outstanding amount and
+              the current accounting date.
+```
+
+> **Never three independently mutable columns that can disagree.** A stored collection status is a second copy of a fact, and the day it diverges from the allocations is the day nobody can say which one the business is actually owed.
+
+Where query performance demands a denormalised projection, it is **named as a projection** — `*_projection`, `*_cache` or an equivalent explicit suffix — carries the timestamp it was computed at, and has a rebuild path that a test exercises. A cache that cannot be rebuilt is not a cache, it is a second source of truth wearing a disguise.
+
+The same rule applies to Bills and AP without exception.
 
 The three are independent by design. `ISSUED` + `PARTIALLY_PAID` + `OVERDUE` is an ordinary Tuesday and must be representable; collapsing them is how a partly paid overdue invoice becomes invisible to whoever is chasing it. `WRITTEN_OFF` is a collection outcome rather than a lifecycle state, because the invoice still exists and the receivable still has a history.
 
@@ -1971,10 +2116,13 @@ Conversation
   id · businessId
   channel                        WHATSAPP · SIMULATOR · …
   channelAccountId               which merchant channel asset (phoneNumberId / WABA)
-  externalConversationId?        the provider's own thread identity, where it has one
-  externalParticipantIdHash?     keyed lookup token. NEVER a raw identifier.
-  participantHashVersion?        which key produced the hash. See F.3.
-  externalParticipantVaultRef?   the vaulted raw identifier, where retention is needed
+  externalConversationId?        the provider's own thread id, where one exists
+                                 ADVISORY ONLY. See F.7.
+  participantBlindIndex?         business-scoped keyed lookup token.
+                                 NEVER a raw identifier.
+  participantIndexKeyVersion?    which key produced it. See F.3.
+  vaultedIdentityReference?      the vaulted raw identifier, ONLY where Rekoda
+                                 genuinely needs to rehydrate it
   conversationKind               MERCHANT · CUSTOMER
   customerId?                    resolved through the privacy gateway
   status
@@ -1990,9 +2138,9 @@ MERCHANT     the merchant talking to Rekoda. Exactly one per business per
 CUSTOMER     a customer talking to the merchant on the merchant's own channel
              asset.
   UNIQUE (businessId, channel, channelAccountId,
-          externalParticipantIdHash, participantHashVersion)
+          participantBlindIndex, participantIndexKeyVersion)
     WHERE conversationKind = 'CUSTOMER'
-      AND externalParticipantIdHash IS NOT NULL
+      AND participantBlindIndex IS NOT NULL
 ```
 
 > **PostgreSQL treats NULLs as distinct in a unique index**, so a nullable identity column silently permits unlimited duplicates. Every constraint above is therefore partial and explicitly excludes the NULL case. A constraint that quietly stops applying is worse than no constraint, because the schema still looks like it has one.
@@ -2007,27 +2155,43 @@ businessId + channel=WHATSAPP + channelAccountId + externalParticipantIdHash
 
 A keyed hash is only as good as the ability to change the key. Routing must never become permanently dependent on one secret.
 
+An index that cannot survive a key rotation is permanent cryptographic debt, so the rotation path is designed now rather than when the key is already compromised.
+
 ```
-participantHashVersion    V1, V2, …   stored beside every hash
+participantIndexKeyVersion    V1, V2, …   stored beside every index value
 
 rotation
-  1  introduce V2 alongside V1
-  2  reads resolve EITHER version
-  3  backfill V2 hashes
-  4  new writes use V2
-  5  cut over
-  6  retire V1 only after validation
+  1  introduce K2 alongside K1
+  2  lookup resolves EITHER version
+  3  new writes use K2
+  4  background re-index of existing rows
+  5  PROVE COMPLETENESS — zero remaining V1 rows, counted
+  6  retire K1
 ```
 
-The raw identifier, where it must be retained at all, lives in the vault and never in the conversation index. **The raw participant identifier is never logged during lookup or routing** — not at debug level, not in an error message, not in a trace.
+> **Conversation identity is never mutated during rotation.** Rekoda's internal `Conversation.id` does not change, so every message-to-conversation relationship survives untouched. Only the lookup index is re-derived.
+
+The raw identifier, where it must be retained at all, lives in the vault and never in the conversation index.
+
+**The raw participant identifier never appears in:**
+
+```
+logs · traces · exception messages · analytics dimensions
+URLs · idempotency keys · error reports · support tooling output
+```
+
+Not at debug level, not "temporarily", not behind a flag. An idempotency key in particular looks harmless and ends up in retry logs, dead-letter queues and support screenshots.
 
 ### F.4 The hash is scoped, so it cannot correlate across merchants
 
 A single global HMAC of a phone number would make one customer's identity **the same value in every merchant's data**, turning the conversation index into a cross-business correlation table nobody asked for. The key material is therefore scoped:
 
 ```
-externalParticipantIdHash = HMAC(key(businessId, channelAccountId, version),
-                                 raw participant identifier)
+participantBlindIndex = HMAC(tenant- and channel-scoped lookup key
+                               (businessId, channelAccountId, keyVersion),
+                             normalised provider participant id)
+
+FORBIDDEN:  HMAC(globalKey, phoneNumber)
 ```
 
 The same person messaging two merchants produces two unrelated hashes. Rekoda cannot join them, and neither can anyone who obtains one merchant's rows.
@@ -2046,3 +2210,29 @@ externalParticipantIdHash      WHO IS WRITING. A customer of that merchant.
 Legacy conversations are merchant threads. The backfill sets `conversationKind = MERCHANT` and stops there.
 
 > **Do not fabricate a customer participant for a legacy merchant-only Chat thread.** There was no customer on the other end; there was Rekoda. Inventing a participant hash to make a column non-null would put a fictional person in the identity index, and every later query would treat that fiction as a fact.
+
+### F.7 A provider's conversation id is advisory, never the identity
+
+Meta exposes conversation and billing identifiers. They are useful and they are recorded. They are **not** Rekoda's thread identity.
+
+```
+externalConversationId    stored for correlation, support and provider debugging
+                          MAY be null, MAY change, MAY be reused
+                          NEVER the routing key
+                          NEVER part of a uniqueness constraint
+
+routing key               businessId + channel + channelAccountId
+                          + participantBlindIndex
+```
+
+Meta's conversation identifiers exist to serve Meta's billing windows, and a billing window is not a relationship. Adopting one as a durable thread identity would tie Rekoda's conversation model to a pricing mechanism that can be redefined without notice. If Meta later publishes an identifier with stable relationship semantics that Rekoda deliberately wants, adopting it is a canonical decision recorded here, not an inference drawn from a field that happened to be present.
+
+### F.8 Legacy threads are classified, never invented
+
+```
+conversationKind    MERCHANT · CUSTOMER · LEGACY_THREAD
+```
+
+`LEGACY_THREAD` exists for migrated rows whose participant cannot be established from the evidence. It is an honest third answer, and it is preferable to either fabricating a participant or forcing a row into `MERCHANT` that may not have been one.
+
+> **Do not derive a customer identity where the legacy data does not establish one.** A blind index computed from a guess is indistinguishable from one computed from a fact, and every later query treats both the same way.
