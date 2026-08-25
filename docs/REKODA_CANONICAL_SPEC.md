@@ -5,9 +5,9 @@
 | Field | Value |
 |---|---|
 | Status | **APPROVED — FROZEN FOR IMPLEMENTATION** |
-| Canonical version | 1.6.3 |
+| Canonical version | 1.6.4 |
 | Effective date | 25 August 2026 |
-| Supersedes | Canonical Product Architecture v2.0; Chat & Integrate Journey v1.0; corrections v1.1 through v1.6.2; ADR 0004 (chart of accounts), ADR 0014 (Recorded vs Verified) in part |
+| Supersedes | Canonical Product Architecture v2.0; Chat & Integrate Journey v1.0; corrections v1.1 through v1.6.3; ADR 0004 (chart of accounts), ADR 0014 (Recorded vs Verified) in part |
 | Owners | Product and engineering, jointly. Accounting sections additionally require finance sign-off. |
 | Companion | `docs/REKODA_END_TO_END_BUILD_PLAN.md` |
 
@@ -484,7 +484,20 @@ confirmationIntegrity            derived, never stored
   NEEDS_REVIEW    the active verification set is EMPTY
 ```
 
-`NEEDS_REVIEW` is a queue item and a question, not an accounting event. It asks a human one thing: *is this payment still valid on new evidence, or does it need reversing?* Their answer is either a fresh `PaymentVerification` or a real `PaymentReversal`.
+`NEEDS_REVIEW` is a queue item and a question, not an accounting event. It asks a human one thing: *is this payment still valid on new evidence, or does it need reversing?*
+
+**Resolving it has exactly two permitted outcomes, and no third:**
+
+```
+new evidence exists      → append a PaymentVerification
+                           confirmationIntegrity returns to CONFIRMED
+                           the books never moved
+
+the payment was wrong    → post an explicit PaymentReversal
+                           THAT is what reverses the accounting
+```
+
+There is no path where clearing the review item changes the books by itself.
 
 > **Only `PaymentReversal`, `Refund` and `Chargeback` change the books.** Verification events change evidential confidence. Financial events change financial truth. A system that let the first do the second would be one where deleting a screenshot unposts a journal.
 
@@ -1716,7 +1729,9 @@ Every movement carries the unit cost applied to it, so gross profit reconstructs
 
 ```
 quantity                 ≥ 0
+inventoryValue           ≥ 0
 inventoryValue           consistent with the movement history
+movement values          reconcile to the resulting balance
 if quantity > 0          averageCost = inventoryValue / quantity
 cumulative COGS          reconstructable from the outbound movements alone
 ```
@@ -1800,7 +1815,17 @@ ingress
   → persistence
 ```
 
-**Enforcement.** `scripts/check-boundaries.mjs` already bans raw `db` imports outside `packages/db`; it gains a rule that AI adapters may not import financial repositories or the accounting engine at all. A model's output reaches money only by becoming a structured intent that a deterministic command then validates. The check runs in CI, so the boundary fails a build rather than a review.
+**Enforcement, in both directions.** `scripts/check-boundaries.mjs` already bans raw `db` imports outside `packages/db`. It gains two rules, and they are deliberately mirrored:
+
+```
+AI adapters          may NOT import financial repositories or the accounting engine
+domain / accounting  may NOT import Anthropic, OpenAI or any provider SDK directly
+provider adapters    stay isolated behind their ports
+reasoning calls      reach a model only through the approved AI abstraction
+                     and the privacy gateway
+```
+
+One direction stops a model reaching money. The other stops money reaching a model — which is the leak that would otherwise happen quietly, the first time somebody adds a helpful summary to an accounting service. **A violation fails CI**, so the boundary is architecture rather than convention.
 
 ---
 
@@ -1834,7 +1859,11 @@ ReopenAccountingPeriod             reported figures become movable again
 Account deactivation, mandatory role  the chart of accounts loses a required part
 EraseData                          exact-phrase confirmation, never "yes"
 PostingAccountPolicy change        where the engine posts from now on
+Destructive inventory adjustment   stock written off or forced to a count
+PaymentConnection disconnect       collection stops
 ```
+
+**The away assistant may perform none of these autonomously.** Not one, not ever, under the current canon. A later decision may introduce a specifically bounded approval mechanism; until it exists, the list is absolute and the assistant hands off.
 
 ### D.3 The rules
 
@@ -1946,7 +1975,7 @@ Conversation
   externalParticipantIdHash?     keyed lookup token. NEVER a raw identifier.
   participantHashVersion?        which key produced the hash. See F.3.
   externalParticipantVaultRef?   the vaulted raw identifier, where retention is needed
-  actorType                      MERCHANT_CHAT · CUSTOMER_COMMERCE
+  conversationKind               MERCHANT · CUSTOMER
   customerId?                    resolved through the privacy gateway
   status
 ```
@@ -1954,15 +1983,15 @@ Conversation
 ### F.2 Two identities, two constraints
 
 ```
-MERCHANT_CHAT        the merchant talking to Rekoda. Exactly one per business
-                     per channel, which was the correct part of the old rule.
-  UNIQUE (businessId, channel) WHERE actorType = 'MERCHANT_CHAT'
+MERCHANT     the merchant talking to Rekoda. Exactly one per business per
+             channel, which was the correct part of the old rule.
+  UNIQUE (businessId, channel) WHERE conversationKind = 'MERCHANT'
 
-CUSTOMER_COMMERCE    a customer talking to the merchant on the merchant's own
-                     channel asset.
-  UNIQUE (businessId, channelAccountId, externalParticipantIdHash,
-          participantHashVersion)
-    WHERE actorType = 'CUSTOMER_COMMERCE'
+CUSTOMER     a customer talking to the merchant on the merchant's own channel
+             asset.
+  UNIQUE (businessId, channel, channelAccountId,
+          externalParticipantIdHash, participantHashVersion)
+    WHERE conversationKind = 'CUSTOMER'
       AND externalParticipantIdHash IS NOT NULL
 ```
 
@@ -1991,3 +2020,29 @@ rotation
 ```
 
 The raw identifier, where it must be retained at all, lives in the vault and never in the conversation index. **The raw participant identifier is never logged during lookup or routing** — not at debug level, not in an error message, not in a trace.
+
+### F.4 The hash is scoped, so it cannot correlate across merchants
+
+A single global HMAC of a phone number would make one customer's identity **the same value in every merchant's data**, turning the conversation index into a cross-business correlation table nobody asked for. The key material is therefore scoped:
+
+```
+externalParticipantIdHash = HMAC(key(businessId, channelAccountId, version),
+                                 raw participant identifier)
+```
+
+The same person messaging two merchants produces two unrelated hashes. Rekoda cannot join them, and neither can anyone who obtains one merchant's rows.
+
+### F.5 Two identities that must not merge
+
+```
+channelAccountId               WHICH MERCHANT this is. Routed from phoneNumberId.
+externalParticipantIdHash      WHO IS WRITING. A customer of that merchant.
+```
+
+`phoneNumberId → BusinessId` continues to route the merchant's WABA and nothing else. **Customer identity and WABA identity stay separate concepts**, and no constraint, index or resolver may quietly conflate them.
+
+### F.6 Backfill honesty
+
+Legacy conversations are merchant threads. The backfill sets `conversationKind = MERCHANT` and stops there.
+
+> **Do not fabricate a customer participant for a legacy merchant-only Chat thread.** There was no customer on the other end; there was Rekoda. Inventing a participant hash to make a column non-null would put a fictional person in the identity index, and every later query would treat that fiction as a fact.
