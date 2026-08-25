@@ -5,9 +5,9 @@
 | Field | Value |
 |---|---|
 | Status | **APPROVED — FROZEN FOR IMPLEMENTATION** |
-| Canonical version | 1.5 |
+| Canonical version | 1.6 |
 | Effective date | 25 August 2026 |
-| Supersedes | Canonical Product Architecture v2.0; Chat & Integrate Journey v1.0; corrections v1.1, v1.2, v1.3, v1.4; ADR 0004 (chart of accounts), ADR 0014 (Recorded vs Verified) in part |
+| Supersedes | Canonical Product Architecture v2.0; Chat & Integrate Journey v1.0; corrections v1.1 through v1.5; ADR 0004 (chart of accounts), ADR 0014 (Recorded vs Verified) in part |
 | Owners | Product and engineering, jointly. Accounting sections additionally require finance sign-off. |
 | Companion | `docs/REKODA_END_TO_END_BUILD_PLAN.md` |
 
@@ -193,8 +193,8 @@ The journey specification remains a reference document. The invariants that cons
 | Cash sale | Sale, payment and fulfilment may post together. One event, one journal. |
 | Credit sale | Creates a receivable under the configured policy (§12). Never revenue on invoice issue unless fulfilled. |
 | Partial payment | Allocates against a specific invoice. Never silently spreads across invoices. |
-| Merchant-attested cash | Provenance `MERCHANT_ATTESTED_CASH`. Requires the confirmation transition (§6). |
-| Merchant-attested transfer | Provenance `MERCHANT_ATTESTED_TRANSFER`. Same requirement. |
+| Merchant-attested cash | `MERCHANT_ATTESTED` + `paymentMethod = CASH`. Requires the confirmation transition (§6.6). |
+| Merchant-attested transfer or POS | `MERCHANT_ATTESTED` + `BANK_TRANSFER` or `POS`. Same requirement. The instrument never changes the source. |
 | Proof-of-payment screenshot | **Creates `PaymentEvidence`, never a `Payment`.** A screenshot is never proof. |
 | Invoice | A projection of order and line state, not an independently editable record. |
 | Payment request | Mints an intent against the merchant's own connection. Never against Rekoda's. |
@@ -219,7 +219,7 @@ The journey specification remains a reference document. The invariants that cons
 | Order validation | Server-side, against real catalogue and real stock, before any figure is shown. |
 | Charge breakdown | Every line is a record (`PaymentCharge`, §19), never arithmetic in a controller. |
 | Invoice | Same projection rules as Chat. |
-| Payment choice / verification | Provenance is `PROVIDER_VERIFIED` only after a server-side verify (§6). |
+| Payment choice / verification | A `PROVIDER_VERIFIED` verification is written only after a server-side verify (§6.3). |
 | Receipt | Acknowledges a payment (§15). Delivered in the merchant's own thread. |
 | Inventory / COGS | Recognised on fulfilment, proportionally (§12). |
 | Settlement / reconciliation | §20 and §22. |
@@ -253,31 +253,95 @@ Chargeback           money taken back after settlement.
 
 **A screenshot never proves payment.** It is `PaymentEvidence`, and the only thing it establishes is that a customer sent an image.
 
-### 6.2 Provenance
+### 6.2 Confirmation source and payment method
+
+Two independent dimensions. Multiplying source enums to cover every combination of instrument and origin is how the earlier model ran out of room the moment POS appeared.
 
 ```
-PROVIDER_VERIFIED             a server-side verify against the provider succeeded
-BANK_FEED_MATCH               an imported bank line was matched to the posting
-MERCHANT_ATTESTED_CASH        the merchant confirmed receiving cash
-MERCHANT_ATTESTED_TRANSFER    the merchant confirmed receiving an electronic payment
-MANUAL_RECONCILIATION         a person resolved it deliberately, with a reason
-LEGACY_PROVENANCE_UNKNOWN     the estate cannot establish it. Remediation, not a default.
+confirmationSource                 how the truth was established
+  PROVIDER_VERIFIED                a server-side verify against the provider succeeded
+  BANK_FEED_MATCH                  an imported bank line was matched to this payment
+  MERCHANT_ATTESTED                the merchant confirmed it, with recorded semantics
+  MANUAL_RECONCILIATION            a person linked an ACTUAL external financial
+                                   transaction to this payment (see 6.5)
+  LEGACY_PROVENANCE_UNKNOWN        the estate cannot establish it
+
+paymentMethod                      what instrument the money moved on
+  CASH · BANK_TRANSFER · POS · CARD · USSD · WALLET · OTHER
 ```
 
-Derived trust levels, computed and never stored as an independent flag:
+`MERCHANT_ATTESTED + POS` is now representable, which it was not while the source enum carried the instrument. A method never implies a source and a source never implies a method.
+
+### 6.3 Verification is append-only, and history is never overwritten
+
+A payment's confirmation can be **strengthened later**. It is never rewritten.
 
 ```
-ATTESTED               MERCHANT_ATTESTED_* and MANUAL_RECONCILIATION
-EXTERNALLY_VERIFIED    PROVIDER_VERIFIED and BANK_FEED_MATCH
+Payment
+  initialConfirmationSource     set once, at creation. Immutable.
+  paymentMethod
+  (no mutable "current provenance" column)
+
+PaymentVerification             APPEND-ONLY
+  id · businessId · paymentId
+  source                        a confirmationSource value
+  paymentEvidenceId?            the screenshot, where one exists
+  financialTransactionId?       the bank line, for BANK_FEED_MATCH / MANUAL_RECONCILIATION
+  paymentAttemptId?             for PROVIDER_VERIFIED
+  providerReference?
+  actorId?                      who, for MERCHANT_ATTESTED and MANUAL_RECONCILIATION
+  verifiedAt · reason? · metadata?
 ```
 
-### 6.3 Medium is never proof
+The case a single mutable column could not express:
+
+```
+Monday   the merchant confirms a transfer
+         Payment.initialConfirmationSource = MERCHANT_ATTESTED
+         PaymentVerification #1   source = MERCHANT_ATTESTED, actorId = the merchant
+
+Tuesday  the bank feed finds the actual transaction
+         PaymentVerification #2   source = BANK_FEED_MATCH
+                                  financialTransactionId = the line
+         no second Payment. no overwrite. Monday's attestation stands.
+
+derived trust today          = EXTERNALLY_VERIFIED
+what the merchant said Monday = still on the record, forever
+```
+
+### 6.4 Derived trust
+
+Trust is computed from **the full set of verification events**, never from one column.
+
+```
+EXTERNALLY_VERIFIED    any verification with source PROVIDER_VERIFIED,
+                       BANK_FEED_MATCH or MANUAL_RECONCILIATION
+ATTESTED               at least one MERCHANT_ATTESTED and nothing stronger
+UNESTABLISHED          no verification events, or only LEGACY_PROVENANCE_UNKNOWN
+```
+
+Trust is never stored as an independent flag. Storing it would let it disagree with the events that produced it, which is the failure this whole model exists to prevent.
+
+### 6.5 `MANUAL_RECONCILIATION` means one specific thing
+
+> **A human linked an actual external financial transaction to a Rekoda payment or invoice.**
+
+It does **not** mean a human looked at an old record and formed an opinion about it. That distinction is the difference between evidence and assertion, and collapsing it would let legacy remediation manufacture external verification out of nothing.
+
+```
+a real bank line exists, and a person links it     → MANUAL_RECONCILIATION
+the merchant now attests they received it          → MERCHANT_ATTESTED
+```
+
+In both cases `initialConfirmationSource` remains whatever it was, including `LEGACY_PROVENANCE_UNKNOWN`. **Remediation adds evidence. It never rewrites history.**
+
+### 6.6 Medium is never proof
 
 > **Input medium must never be treated as proof of attestation.**
 
 "Ada says she transferred sixty thousand" and "I checked my bank and Ada's sixty thousand is there" are both text. One is a relayed customer claim; the other is the merchant asserting a fact about their own account. Classifying on message kind reads a trust level out of a keyboard.
 
-What does establish attestation is an explicit confirmation with recorded semantics: the merchant was shown a preview naming the amount and the invoice, and answered it, and that answer persisted. `method` (cash, transfer, POS, unknown) is a third and independent dimension. **POS is not a bank transfer merely because both are electronic.**
+What does establish attestation is an explicit confirmation with recorded semantics: the merchant was shown a preview naming the amount and the invoice, and answered it, and that answer persisted. `paymentMethod` is an independent dimension (6.2). **POS is not a bank transfer merely because both are electronic.**
 
 ---
 
@@ -286,6 +350,8 @@ What does establish attestation is an explicit confirmation with recorded semant
 ### 7.1 The classification ladder
 
 Evidence only. The legacy `payments.verified` boolean is not consulted in either direction, because it records that some code path once set it, not who claimed the money arrived.
+
+The ladder emits a `confirmationSource` (§6.2) and never an instrument. It has never emitted `MERCHANT_ATTESTED_CASH` or `MERCHANT_ATTESTED_TRANSFER`; the instrument travels in `paymentMethod`, which is read straight from the existing `payments.method` column and normalised.
 
 ```
 1  payment_intent_id IS NOT NULL AND provider_ref IS NOT NULL   → PROVIDER_VERIFIED
@@ -313,6 +379,7 @@ text or voice           = attested          ✗  forbidden
 verified=false+transfer = attested          ✗  forbidden
 verified=true           = provider verified  ✗  forbidden without the anchors
 POS                     = transfer           ✗  forbidden
+overwriting an earlier confirmation source   ✗  forbidden (§6.3)
 ```
 
 ### 7.4 Reporting dimensions
@@ -321,9 +388,9 @@ Three independent columns. Never fused.
 
 | Column | Values |
 |---|---|
-| `provenance` | the six values of §6.2 |
+| `confirmationSource` | the five values of §6.2 |
 | `evidence_basis` | `TYPED` · `SPOKEN` · `SAW_AN_IMAGE` · `NOT_A_MESSAGE` · `NO_MESSAGE_ON_FILE` — context for a human, never a trust grade |
-| `method` | `cash` · `transfer` · `pos` · `unknown` |
+| `paymentMethod` | `CASH` · `BANK_TRANSFER` · `POS` · `CARD` · `USSD` · `WALLET` · `OTHER` |
 
 Attestations made while looking at an image are still attestations. They are reported separately **for review, not remediation**; whether to re-check them is the merchant's decision.
 
@@ -331,7 +398,9 @@ Attestations made while looking at an image are still attestations. They are rep
 
 The production report must produce: provenance distribution, naira totals, the remediation queue, receipt and allocation exposure, and the unknown-provenance population.
 
-> **R0A-ii may not write a migration until that production report has been run and its remediation queue explicitly approved.** No historical trust may be manufactured. The local database is not production data and produces no counts.
+The backfill writes `initialConfirmationSource` and, for every row it can establish, one `PaymentVerification` recording how. A row it cannot establish keeps `LEGACY_PROVENANCE_UNKNOWN` **permanently visible**; later remediation adds a verification event beside it and never replaces it (§6.5).
+
+> **R0A-ii may not write a historical provenance assignment, backfill, remediation cutover or destructive cleanup until that production report has been run and its remediation queue explicitly approved.** No historical trust may be manufactured. Additive schema and correct sources on *new* payments are not covered by this block, because empty tables manufacture nothing and getting new payments right shrinks the problem while history is being investigated. The local database is not production data and produces no counts.
 
 ---
 
@@ -353,6 +422,8 @@ fixed assets                          inventory valuation
 cost of goods sold                    recurring transactions
 opening balances                      dimensions
 ```
+
+`JournalLine.orderId` is a required dimension on any line touching `CONTRACT_LIABILITY` or `ACCOUNTS_RECEIVABLE`, because the recognition engine reads per-order balances from the ledger rather than from a shadow copy of it (§12.2).
 
 Roadmap, architected for but not built in V1: project and job costing, budgets.
 
@@ -455,20 +526,50 @@ Typed scope columns rather than one polymorphic `systemScopeId`, because a polym
 
 ### 11.2 The canonical role-to-scope mapping
 
+Every account the deterministic engine posts to has a role. **The engine must never resolve an account by name.** A lookup for the string `"Sales Revenue"` breaks the first time a merchant renames it, and renaming an account is something merchants do.
+
 ```
+BALANCES AND SUBLEDGERS
 ACCOUNTS_RECEIVABLE          → BUSINESS
 ACCOUNTS_PAYABLE             → BUSINESS
 RETAINED_EARNINGS            → BUSINESS
-VAT_PAYABLE                  → BUSINESS
 CONTRACT_LIABILITY           → BUSINESS
 CUSTOMER_CREDIT              → BUSINESS
+
+EQUITY
+OWNER_EQUITY                 → BUSINESS
+OPENING_BALANCE_EQUITY       → BUSINESS
+
+TRADING
+SALES_REVENUE                → BUSINESS
+SALES_RETURNS                → BUSINESS
+INVENTORY_ASSET              → BUSINESS
+COGS                         → BUSINESS
+
+COSTS
+PAYMENT_PROCESSING_FEES      → BUSINESS
+OPERATING_EXPENSES           → BUSINESS
+DEPRECIATION                 → BUSINESS
+
+TAX  (F2 extends this set as the tax model lands)
+VAT_PAYABLE                  → BUSINESS      output VAT owed
+INPUT_VAT_RECOVERABLE        → BUSINESS      recoverable VAT, including on provider fees
+WITHHOLDING_RECEIVABLE       → BUSINESS      tax withheld at source, recoverable
+
+PROVIDER
 PAYMENT_PROVIDER_CLEARING    → PAYMENT_CONNECTION
 PROVIDER_CHARGEBACK_PAYABLE  → PAYMENT_CONNECTION
+
+MONEY
 BANK                         → FINANCIAL_ACCOUNT
 CASH                         → FINANCIAL_ACCOUNT / TILL
 ```
 
-Enforced as a `CHECK` on the pair, which makes `ACCOUNTS_RECEIVABLE` scoped to a payment connection unrepresentable rather than merely wrong.
+Enforced as a `CHECK` on the `(systemRole, systemScopeType)` pair, which makes `ACCOUNTS_RECEIVABLE` scoped to a payment connection unrepresentable rather than merely wrong.
+
+**`PostingAccountPolicy`.** Where a business needs a posting to land somewhere other than the default role account — a second revenue account per channel, a separate fee account per provider — the resolution is a configured policy row, `(businessId, postingPurpose, dimension) → accountId`, resolved deterministically at posting time and audited when changed. The engine asks the policy; the policy answers with an account id. It is never a string.
+
+The golden bank-feed test of §22.2 depends on `OWNER_EQUITY` existing as a role, which is why it is in the list rather than assumed.
 
 ### 11.3 Constraints
 
@@ -509,28 +610,73 @@ Order  ·  Invoice  ·  Payment  ·  ReceivableRecognition
 
 IFRS for SMEs is explicit that a receivable is an unconditional right to consideration, and that billing alone does not establish one. That is why receivable recognition is a policy and not an assumption about invoice issuance.
 
-### 12.2 An engine, not three shapes
+### 12.2 An engine driven by events and ledger state
 
-**Do not hardcode accounting shapes as implementation logic.** The engine holds cumulative state per order, and per order line where lines fulfil independently, and derives every posting as a delta.
+**Do not hardcode accounting shapes as implementation logic.** And do not maintain a parallel set of mutable balance columns beside the ledger: **the ledger is the authoritative balance**, and a second copy of it is a second thing that can be wrong.
 
-```
-earnedMinor            value of performance obligations satisfied to date
-recognisedMinor        revenue already posted to date
-receivedMinor          cash received against this order to date
-receivableRaisedMinor  unconditional right to consideration raised to date
-collectedOnARMinor     cash applied against that receivable to date
-```
+> **SUPERSEDED — this was a real arithmetic error.** An earlier draft of this section stated
+> `contractLiability = (receivedMinor + receivableRaisedMinor) − earnedMinor`.
+> That double-counts consideration. Raise an unconditional receivable of 100,000 against a contract liability, then collect it: `receivedMinor = 100,000` and `receivableRaisedMinor = 100,000` while `earnedMinor = 0`, so the formula reports a contract liability of 200,000 where the ledger correctly holds 100,000. The error is that collecting a receivable moves an asset; it does not create a second obligation. The formula is replaced by the event rules below and must not be implemented.
 
-Invariants the engine asserts after every posting:
+#### What the engine reads
+
+Per order, at posting time, from the ledger:
 
 ```
-revenueBalance          = earnedMinor
-contractLiability       = (receivedMinor + receivableRaisedMinor) − earnedMinor , floored at 0
-accountsReceivable      = receivableRaisedMinor − collectedOnARMinor
-uncollectedNotYetBilled = earnedMinor − receivableRaisedMinor , where positive
+contractLiabilityBalanceForOrder     the CONTRACT_LIABILITY balance carried on this order
+accountsReceivableBalanceForOrder    the ACCOUNTS_RECEIVABLE balance carried on this order
+revenueRecognisedToDate              the sum of this order's RevenueRecognitionEvents
 ```
 
-The single rule: `recogniseDelta = earnedMinor − recognisedMinor`; a contract liability is drawn down first and only the remainder raises a receivable.
+and from order state:
+
+```
+earnedToDate                         the value of performance obligations satisfied
+```
+
+Reading a per-order balance requires journal lines to carry the order they belong to. `JournalLine.orderId` is therefore a required dimension on any line touching `CONTRACT_LIABILITY` or `ACCOUNTS_RECEIVABLE`, and it is what makes the engine possible without a shadow ledger.
+
+#### The event rules
+
+```
+unconditional receivable raised, before performance
+    DR Accounts Receivable
+    CR Contract Liability
+
+payment collected against an existing receivable
+    DR Bank / Clearing
+    CR Accounts Receivable
+    contract liability UNCHANGED           ← the rule the old formula broke
+
+advance payment where no receivable exists
+    DR Bank / Clearing
+    CR Contract Liability
+
+fulfilment
+    recogniseDelta = earnedToDate − revenueRecognisedToDate
+    release        = min(recogniseDelta, contractLiabilityBalanceForOrder)
+    remaining      = recogniseDelta − release
+
+    DR Contract Liability     release
+    DR Accounts Receivable    remaining, where a right to collect now exists
+    CR Sales Revenue          recogniseDelta
+    DR COGS / CR Inventory    at costed value
+```
+
+Cash and carry is not a special case: sale, payment and fulfilment occur in one transaction, `contractLiabilityBalanceForOrder` is zero, `release` is zero, and the whole `recogniseDelta` posts against the cash side directly.
+
+#### The invariants the engine asserts after every posting
+
+Stated as checks against the ledger, not as definitions of it:
+
+```
+sum of this order's revenue lines            = earnedToDate
+contract liability balance                   ≥ 0
+accounts receivable balance for the order     ≥ 0
+revenueRecognisedToDate                       ≤ earnedToDate
+```
+
+A violation is a defect in the engine, not a number to be recomputed.
 
 ### 12.3 Policy
 
@@ -807,15 +953,22 @@ PaymentCharge
   providerCostScheduleId  nullable; what the estimate came from
 ```
 
-Producing a breakdown where every line is a record:
+Producing a breakdown where every line is a record, and where the taxable base is **stated rather than inferred from the arithmetic**:
 
 ```
-Items                 100,000
-Delivery                3,000
-Payment charge          1,500
-VAT                     7,725
+Items                 100,000     taxCode = STANDARD_RATE
+Delivery                3,000     taxCode = STANDARD_RATE
+Payment charge          1,500     taxCode = NOT_IN_BASE   (example configuration only)
+                      -------
+Taxable base          103,000
+VAT at 7.5%             7,725
+                      -------
 Total                 112,225
 ```
+
+`PaymentCharge.taxCode` is nullable, so whether a charge sits in the base is a configuration decision and not a property of the concept. A different configuration that taxed the charge would give a base of 104,500 and VAT of 7,837.50, and both are correct under their own configuration.
+
+> **A canonical example must never contain arithmetic whose tax basis has to be guessed.**
 
 > A customer surcharge is **configuration-gated**, never derived. In several markets it is regulated or prohibited. Rekoda must never add a charge a merchant did not choose to add.
 

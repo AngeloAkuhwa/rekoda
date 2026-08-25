@@ -3,11 +3,11 @@
 | Field | Value |
 |---|---|
 | Status | **APPROVED — EXECUTION PLAN** |
-| Version | 1.0 |
+| Version | 1.1 (v1.6 patch) |
 | Effective date | 25 August 2026 |
-| Governs | `docs/REKODA_CANONICAL_SPEC.md` v1.5 |
+| Governs | `docs/REKODA_CANONICAL_SPEC.md` v1.6 |
 | Total slices | 20 |
-| Recommended PR count | **114** |
+| Baseline PR plan | **115**, target range 105&ndash;130 |
 
 This is the dependency-safe route from the repository as it exists today to a production-ready Rekoda. It is not a wish list and it is not a backlog. Every entry has a completion gate, and a slice is finished when its gate passes and not before.
 
@@ -86,7 +86,29 @@ API-D     Developer platform
 EMBED     Later, separate approval
 ```
 
-**No dependency changed.** One clarification is added, and it matters for throughput: R0A-ii being blocked does **not** block R0B, E1 or A1. None of them reads payment provenance. Freezing safe engineering behind an external review would cost weeks for no integrity benefit, and spec §7.5 blocks a *migration*, not the whole programme.
+**No dependency changed.** What did change is the *scope* of the R0A block, because the earlier wording contradicted the PR graph: PR-022 depends on PR-003, and PR-011 depends on PR-003, so "A1 and R0B continue in full" could not have been true while PR-003 was blocked.
+
+The block is therefore stated precisely, and narrowly:
+
+```
+BLOCKED until the R0A-i production report is approved
+  PR-006   historical provenance backfill
+  PR-007   remediation
+  PR-008   readers cutover
+  PR-009   verified retirement
+  PR-115   verified column drop
+
+NOT BLOCKED
+  PR-003   additive PaymentEvidence / PaymentVerification schema   (empty tables)
+  PR-004   nullable source columns, no writers                     (no data)
+  PR-005   correct confirmation source on NEW payments             (no history)
+```
+
+The rule, in one sentence:
+
+> **No historical provenance assignment, backfill, remediation cutover or destructive cleanup until R0A-i is approved.** Not: no additive schema whatsoever.
+
+PR-005 is the one worth arguing for rather than merely permitting. Every day it is not deployed, the unknown population grows. It does not manufacture historical trust; it stops the problem getting larger while history is being investigated.
 
 ---
 
@@ -141,7 +163,7 @@ Each slice states what the build plan requires of it. PR-level detail for the fi
 | **Canonical sections** | §6, §7, §23 |
 | **Current state** | `payments.verified` integer. No evidence table. A screenshot that produced a payment produced a `Payment` row. |
 | **Target state** | `PaymentEvidence` and `PaymentVerification` exist; every payment carries a provenance value; trust level is derived, never stored independently; `verified` is retired. |
-| **Dependencies** | **R0A-i approval.** Hard block. |
+| **Dependencies** | **R0A-i approval blocks PR-006 onward.** PR-003, PR-004 and PR-005 are not blocked; see §2. |
 | **Schema** | `payment_evidence`, `payment_verification`, `payments.provenance`, `payments.evidence_basis`; evidence retention columns per §23. |
 | **Commands** | `RecordPaymentEvidence`, `ConfirmPayment` extended. |
 | **Endpoints** | Remediation queue read and resolve. |
@@ -165,8 +187,8 @@ Each slice states what the build plan requires of it. PR-level detail for the fi
 | **Canonical sections** | §9, §10, §23 |
 | **Current state** | The ledger is append-only because nothing updates it. Grants are not proven by test. Retention sweeps exist (task 52). |
 | **Target state** | `UPDATE` and `DELETE` on `ledger_transactions` and `ledger_entries` are revoked from `rekoda_app` and `rekoda_worker`, and a test proves the revocation. Retention claims on `/privacy` match what the sweep does. |
-| **Dependencies** | None. **Safe to start now.** |
-| **Schema** | Grant changes only. |
+| **Dependencies** | PR-010 has none and is safe to start now. **PR-011 depends on PR-003**, because evidence retention needs somewhere to retain evidence; it is unblocked by the narrow reading in §2. |
+| **Schema** | Grant changes only for PR-010; retention columns for PR-011. |
 | **Tests** | A test that attempts an UPDATE as `rekoda_app` and asserts it is refused. A test that asserts every published retention period has a sweep that enforces it. |
 | **Completion gate** | Both tests green in CI. |
 | **PRs** | PR-010, PR-011 |
@@ -202,7 +224,7 @@ Each slice states what the build plan requires of it. PR-level detail for the fi
 | **Canonical sections** | §25, §26 |
 | **Current state** | Logic in `inbound-message.handler.ts` (1,500+ lines), `shop.controller.ts`, `reports.controller.ts`, calling repos directly. |
 | **Target state** | Fourteen named commands; `IdempotencyRecord`; `OutboxEvent` written in the same transaction as the state change; every ingress a thin adapter. |
-| **Dependencies** | E1 for the entitlement guard. Payment commands touch `PaymentEvidence` (PR-003). |
+| **Dependencies** | E1 for the entitlement guard. **PR-022, and therefore PR-027 and PR-028, depend on PR-003.** Under the narrow block of §2 that is not a wait; under a strict block A1 could start but not finish, and the plan says so rather than claiming A1 continues "in full". |
 | **Schema** | `idempotency_records`, `outbox_events`. |
 | **Jobs** | Outbox dispatcher. |
 | **Tests** | Replaying any command with the same idempotency key returns the first response and writes nothing. An outbox event and its state change commit or roll back together. |
@@ -331,7 +353,8 @@ The largest slice. Twenty-two PRs, because it replaces the foundation everything
 | | |
 |---|---|
 | **Objective** | The Integrate journey of §3.2, on the merchant's own WABA. |
-| **Dependencies** | W1/W2, P1, F1, E1. |
+| **Dependencies** | W1/W2, P1, F1, E1, **and P2 for the transactional payment path**. |
+| **Payment-path rule** | W3's transactional flow requires **at least one production-ready `PaymentProvider` path on the canonical `PaymentConnection` architecture, with authoritative verification and settlement accounting.** For V1 that is Paystack, which is P2. Native WhatsApp commerce must not be born on the old merchant-key path. |
 | **Tests** | The customer's message never sets a price. Stock is validated server-side before any figure is shown. |
 | **Completion gate** | An end-to-end order from catalogue to receipt in the merchant thread, with correct accounting. |
 | **PRs** | PR-086 … PR-089 |
@@ -380,24 +403,33 @@ The largest slice. Twenty-two PRs, because it replaces the foundation everything
 | Measure | Value |
 |---|---|
 | Total slices | 20 (plus EMBED, deferred) |
-| **Minimum safe PR count** | **72** |
-| **Recommended PR count** | **114** |
-| **Maximum sensible PR count** | **165** |
+| Minimum safe PR count | 72 |
+| **Baseline PR plan** | **115** |
+| **Working range** | **105 – 130** |
+| Maximum sensible PR count | 165 |
 | Likely serial PRs | 78 |
-| Likely parallelisable PRs | 36 |
-| PRs currently externally blocked | 21 |
-| PRs safe to start now | 21 |
-| Migration-heavy PRs | 16 |
+| Likely parallelisable PRs | 37 |
+| PRs blocked pending the R0A-i report | 5 |
+| PRs externally blocked | 18 |
+| PRs safe to start now | 24 |
+| Migration-heavy PRs | 17 |
 
-### 4.1 The three numbers, explained
+### 4.1 The count is a baseline, not a completion requirement
 
-**Minimum safe: 72.** Achievable by combining additive schema with its first writer where the writer is provably inert, merging the three P3 adapters into one PR, and collapsing UI PRs into their feature PRs. It is safe. It is harder to review and considerably harder to bisect when something goes wrong six weeks later.
+**115 is the plan, not the target.** During implementation an L PR will occasionally prove to need two, two S PRs will occasionally prove safely mergeable, and a provider may invalidate a planned adapter outright. None of those is a deviation from the plan; they are the plan meeting reality.
 
-**Recommended: 114.** Migration steps stay separate, every cutover is its own revert point, adapters are independently reviewable, and no PR exceeds size L.
+```
+FROZEN                          NOT FROZEN
+canonical behaviour             the arithmetic count of pull requests
+financial invariants            whether PR-069 is one PR or two
+slice gates                     whether two S PRs merge together
+migration safety
+dependency correctness
+```
 
-**Maximum sensible: 165.** Splitting each command extraction per command and each statement per report. Beyond this the review overhead exceeds the benefit and context is lost between PRs that should have been read together.
+Splits keep the parent identifier and gain a suffix — `PR-069a`, `PR-069b` — so a reference made today still resolves in six months. Merges keep the lower identifier and the higher one is recorded as merged rather than reused. **Every split or merge is recorded in this document**, which is what keeps the index a map rather than a memory.
 
-> **Recommendation: 114.** The deciding factor is not review comfort. It is that sixteen PRs touch historical financial data, and each of those needs a revert point that does not also revert a feature.
+Seventy-two is genuinely safe: group additive schema with its first inert writer, merge the three provider adapters, fold interface work into its feature. The argument against it is not review comfort. It is that **seventeen pull requests touch historical financial data**, and each needs a revert point that does not also revert a feature. Beyond 165 the review overhead exceeds the benefit and context is lost between PRs that should have been read together.
 
 ### 4.2 Highest-risk five
 
@@ -418,11 +450,13 @@ Each of the five requires a dry run against a production clone before merge. Tha
 ### 5.1 Strictly serial
 
 ```
-R0A-i ──▶ R0A-ii ──▶ (payment provenance readers)
+R0A-i ──▶ PR-006 ──▶ PR-007 ──▶ PR-008 ──▶ PR-009 ──▶ PR-115
+          (PR-003, PR-004, PR-005 are NOT behind this gate — §7)
 A1 ──▶ F1 ──▶ P1 ──▶ P2 ──▶ P3
 F1 ──▶ F2 ──▶ D1
 F1 ──▶ B1
 W1/W2 ──▶ W3 ──▶ W4
+W1/W2 + P2 ──▶ W3            the transactional payment path, not merely P1
 W3 + F1 + P1 ──▶ X1
 E1 + F1 ──▶ BL2
 everything ──▶ S1
@@ -434,6 +468,19 @@ Inside F1 the account cutover is strictly serial and must not be parallelised:
 PR-029 ──▶ PR-030 ──▶ PR-031 ──▶ PR-032 ──▶ PR-033 ──▶ PR-034
 ```
 
+And two F1 convergence points that the earlier index understated:
+
+```
+PR-035 ┐
+PR-036 ├──▶ PR-039      every invariant the trigger enforces needs its schema first:
+PR-037 │                account lifecycle, periods, currency, FX
+PR-038 ┘
+
+PR-034, PR-035, PR-036, PR-038, PR-039, PR-040, PR-042, PR-046…049 ──▶ PR-050
+                        PR-050 is the F1 GATE. It certifies the kernel, so it
+                        cannot merge before the kernel it certifies exists.
+```
+
 ### 5.2 Parallel
 
 ```
@@ -442,6 +489,7 @@ R0B                    alongside E1
 E1 ∥ A1                after their first two PRs each
 W1/W2 ∥ F1 ∥ P1        after E1 and A1 complete
 PR-069 ∥ PR-070 ∥ PR-071    the three adapters
+PR-003 ∥ PR-010            both safe to start immediately
 D1 ∥ BL2               after F2
 ```
 
@@ -470,13 +518,13 @@ D1 ∥ BL2               after F2
 | **Kuda regulatory and commercial approval** | PR-071 enablement | The adapter and its tests |
 | **Tax review** | Any statutory-compliance claim | The full tax model, calculator and `TaxEvent` (PR-078, PR-079) |
 | **Fiscalisation review** | `FiscalisationProvider` enablement | The port definition |
-| **R0A-i report approval** | All of R0A-ii | R0B, E1, A1 in full; F1 planning |
+| **R0A-i report approval** | PR-006 through PR-009 and PR-115 only (§7) | PR-003, PR-004, PR-005; all of R0B, E1 and A1; F1 planning. 24 PRs of work that does not wait. |
 
 > **An external blocker never freezes safe engineering.** Every blocked capability is built behind a disabled flag and enabled when the blocker lifts. What a blocker prevents is *enabling*, not *building*.
 
 ---
 
-## 7. R0A-ii remains explicitly blocked
+## 7. What R0A-i blocks, precisely
 
 The static investigation is complete and its semantics are corrected. That is not the same as having the answer.
 
@@ -487,16 +535,27 @@ local database  ≠  production data
 The local database is the truncated integration-test database. It is empty by construction and has produced no counts. The corrected report must be run against production and must produce:
 
 ```
-provenance distribution        naira totals
-remediation queue              receipt and allocation exposure
-unknown-provenance population
+distribution by confirmation source     naira totals
+remediation queue                       receipt and allocation exposure
+unknown-source population
 ```
 
-> **R0A-ii may not write migrations until that report is explicitly approved.**
+### 7.1 The block, stated once and precisely
 
-One decision is owed by the owner and is worth making deliberately: PR-003 and PR-004 are **additive DDL with no data writes and no readers**. Under the strictest reading of the block they wait. Under a narrower reading — the block exists to prevent manufactured trust, and empty tables manufacture nothing — they could land and shorten the critical path by roughly a week. The plan assumes the strict reading until told otherwise.
+> **No historical provenance assignment, backfill, remediation cutover or destructive cleanup until the R0A-i production report is approved.**
 
----
+| PR | Status |
+|---|---|
+| PR-003 additive evidence and verification schema | **not blocked** — empty tables manufacture nothing |
+| PR-004 nullable source columns, no writers | **not blocked** — no row changes |
+| PR-005 correct source on new payments | **not blocked** — no history is touched |
+| PR-006 historical backfill | **BLOCKED** |
+| PR-007 remediation | **BLOCKED** |
+| PR-008 readers cutover | **BLOCKED** |
+| PR-009 `verified` retirement | **BLOCKED** |
+| PR-115 `verified` column drop | **BLOCKED** |
+
+An earlier draft of this plan blocked all additive schema and then separately claimed that A1 and R0B could continue in full. Both could not be true: PR-022 depends on PR-003 and so does PR-011. The narrow block above resolves the contradiction in the direction that also happens to be correct on the merits — **PR-005 shrinks the unknown population every day it is deployed**, so delaying it makes the problem this block exists to contain strictly larger.
 
 ## 8. Release gates
 
@@ -529,13 +588,13 @@ Size: **S** narrow and reviewable · **M** normal · **L** large but acceptable 
 |---|---|---|---|---|---|---|
 | PR-001 | docs | Canonical spec and end-to-end build plan | no | low | — | M |
 | PR-002 | R0A-i | Provenance classifier corrected to evidence-only | no | low | — | S |
-| PR-003 | R0A-ii | `PaymentEvidence` and `PaymentVerification` additive schema | **yes** | med | PR-002 | M |
-| PR-004 | R0A-ii | Provenance columns on `payments`, nullable, no writers | **yes** | med | PR-003 | S |
-| PR-005 | R0A-ii | Provenance writers on new payments, dual with `verified` | no | med | PR-004 | M |
+| PR-003 | R0A-ii | `PaymentEvidence` and append-only `PaymentVerification` schema | **yes** | med | — | M |
+| PR-004 | R0A-ii | `initialConfirmationSource` and `paymentMethod`, nullable, no writers | **yes** | med | PR-003 | S |
+| PR-005 | R0A-ii | Confirmation source and verification on new payments | no | med | PR-004 | M |
 | PR-006 | R0A-ii | Historical provenance backfill from the approved report | **yes** | **high** | PR-005 | L |
-| PR-007 | R0A-ii | Remediation queue surface and resolve command | no | med | PR-006 | M |
+| PR-007 | R0A-ii | Remediation queue: add verifications, never rewrite | no | med | PR-006 | M |
 | PR-008 | R0A-ii | Readers cutover: trust level derived from provenance | no | **high** | PR-007 | M |
-| PR-009 | R0A-ii | Cleanup: retire `verified` writers | **yes** | med | PR-008 | S |
+| PR-009 | R0A-ii | Retire `verified` writers; column becomes generated | **yes** | med | PR-008 | S |
 | PR-010 | R0B | Revoke UPDATE and DELETE on ledger tables, with proof tests | **yes** | med | — | S |
 | PR-011 | R0B | Evidence retention TTL, expiry sweep and legal holds | **yes** | med | PR-003 | M |
 | PR-012 | E1 | Entitlement schema, additive | **yes** | low | — | M |
@@ -565,7 +624,7 @@ Size: **S** narrow and reviewable · **M** normal · **L** large but acceptable 
 | PR-036 | F1 | `accounting_periods` table, migrate `books_closed_through` | **yes** | med | PR-029 | M |
 | PR-037 | F1 | Journal currency columns, additive | **yes** | med | PR-031 | M |
 | PR-038 | F1 | `ExchangeRateSnapshot` and the FX requirement | **yes** | med | PR-037 | M |
-| PR-039 | F1 | Journal invariant triggers | **yes** | **high** | PR-037 | L |
+| PR-039 | F1 | Journal invariant triggers | **yes** | **high** | PR-035, PR-036, PR-037, PR-038 | L |
 | PR-040 | F1 | `postingKey`, `postingPurpose`, reversal uniqueness | **yes** | med | PR-039 | M |
 | PR-041 | F1 | `JournalDraft` pair and the `PostJournal` command | **yes** | med | PR-040 | L |
 | PR-042 | F1 | Posted-draft lock trigger | **yes** | low | PR-041 | S |
@@ -576,7 +635,7 @@ Size: **S** narrow and reviewable · **M** normal · **L** large but acceptable 
 | PR-047 | F1 | Proportional recognition on partial fulfilment | no | med | PR-046 | M |
 | PR-048 | F1 | `CustomerCredit` subledger | **yes** | med | PR-044 | M |
 | PR-049 | F1 | Append-only allocations with the full-reversal constraint | **yes** | med | PR-048 | M |
-| PR-050 | F1 | Golden business fixture, version 1 | no | low | PR-046…049 | L |
+| PR-050 | F1 | Golden business fixture v1 — **the F1 convergence gate** | no | low | PR-034, PR-035, PR-036, PR-038, PR-039, PR-040, PR-042, PR-046…049 | L |
 | PR-051 | P1 | `PaymentConnection` four statuses, additive and backfilled | **yes** | **high** | PR-029 | L |
 | PR-052 | P1 | Provider-neutral connection attributes | **yes** | med | PR-051 | M |
 | PR-053 | P1 | Connection-scoped clearing account provisioning | no | med | PR-052, PR-035 | M |
@@ -615,7 +674,7 @@ Size: **S** narrow and reviewable · **M** normal · **L** large but acceptable 
 | PR-086 | W3 | Catalogue synchronisation to the WABA | **yes** | med | PR-061 | L |
 | PR-087 | W3 | Cart and order ingestion from WhatsApp | no | **high** | PR-086, PR-025 | L |
 | PR-088 | W3 | Server-side order validation and breakdown | no | **high** | PR-087, PR-057 | L |
-| PR-089 | W3 | Payment and receipt in the merchant thread | no | med | PR-088, PR-055 | L |
+| PR-089 | W3 | Payment and receipt in the merchant thread | no | med | PR-088, PR-055, **PR-065, PR-066** | L |
 | PR-090 | W4 | Away assistant within configured limits | **yes** | med | PR-089 | L |
 | PR-091 | W4 | Human handoff | no | low | PR-090 | M |
 | PR-092 | X1 | Cross-product routing with single-record proof | no | **high** | PR-089, PR-050 | L |
@@ -641,6 +700,7 @@ Size: **S** narrow and reviewable · **M** normal · **L** large but acceptable 
 | PR-112 | API-D | Webhooks | **yes** | med | PR-110, PR-020 | L |
 | PR-113 | API-D | API entitlement and metering | no | med | PR-111, PR-014 | M |
 | PR-114 | API-D | Developer documentation and sandbox | no | low | PR-111 | M |
+| PR-115 | S1 | Drop the `verified` compatibility column, after soak | **yes** | low | PR-009 + 2 releases | S |
 
 ---
 
@@ -750,15 +810,15 @@ These are the immediate execution queue on approval.
 
 - **Objective.** Give evidence somewhere to live that is not a payment.
 - **Repository areas.** `packages/db/migrations/0052_payment_evidence.sql`, `packages/db/src/schema/finance.ts`, `packages/db/src/repos/payments-hub.ts`.
-- **Schema.** `payment_evidence` (business, customer, source, media reference, `resolutionState`, `resolutionDeadline`, `resolvedAt`, `rawPurgedAt`); `payment_verification` (payment, method, provider reference, verified-at, actor). RLS on both, matching every existing tenant table. No foreign key from `payments` yet.
+- **Schema.** `payment_evidence` (business, customer, source, media reference, `resolutionState`, `resolutionDeadline`, `resolvedAt`, `rawPurgedAt`); `payment_verifications`, **append-only**, with the full column set of spec §6.3 including `financialTransactionId`, `paymentAttemptId`, `actorId`, `reason` and `sourceMigration`; and `migration_manifests`, which PR-006 needs to record its affected-row set. RLS on all three, matching every existing tenant table. No foreign key from `payments` yet.
 - **Commands.** None. No writers in this PR, deliberately.
 - **Migrations.** Additive DDL only. No data writes.
-- **Tests.** RLS isolation on both tables, proven as `rekoda_app`. Migration applies from zero and is idempotent.
+- **Tests.** RLS isolation on all three tables, proven as `rekoda_app`. `UPDATE` and `DELETE` on `payment_verifications` are revoked from `rekoda_app` and `rekoda_worker`, and a test proves the refusal — append-only in the database, not by convention. Migration applies from zero and is idempotent.
 - **Feature flags.** None needed; nothing reads or writes these tables.
 - **Deployment sequence.** Migrate, deploy. No behaviour change.
 - **Rollback.** Drop both tables. They are empty.
 - **Documentation.** Spec §6.1, §23.
-- **Approval gate.** **PR-002's production report reviewed and approved.**
+- **Approval gate.** None. Additive DDL with no writers and no readers manufactures no trust, so §2's narrow block does not cover it. **This is the change that unblocks PR-011 and A1's PR-022.**
 - **Size.** M.
 
 ---
@@ -775,7 +835,7 @@ These are the immediate execution queue on approval.
 - **Deployment sequence.** Migrate, deploy.
 - **Rollback.** Drop the three columns.
 - **Documentation.** Spec §6.2.
-- **Approval gate.** PR-003 merged.
+- **Approval gate.** PR-003 merged. Not covered by the R0A block: nullable columns with no writers change no row.
 - **Size.** S.
 
 ---
@@ -785,9 +845,9 @@ These are the immediate execution queue on approval.
 - **Objective.** Stop creating new payments whose provenance is unknowable, before backfilling the old ones.
 - **Repository areas.** `packages/db/src/repos/settle.ts` (`bookVerifiedPayment`, `recordMerchantPayment`), `packages/db/src/repos/issue.ts` (`issueSale`), `apps/api/src/jobs/inbound-message.handler.ts`.
 - **Schema.** None.
-- **Commands.** Each writer sets `provenance` at write time: `bookVerifiedPayment` writes `PROVIDER_VERIFIED`; the chat confirmation path writes `MERCHANT_ATTESTED_CASH` or `MERCHANT_ATTESTED_TRANSFER` from `method`; the dashboard path writes the same from its authenticated action. `verified` continues to be written unchanged.
+- **Commands.** Each writer sets `initialConfirmationSource` and writes one `PaymentVerification`: `bookVerifiedPayment` writes `PROVIDER_VERIFIED` with its attempt and provider reference; the chat confirmation path and the dashboard path both write `MERCHANT_ATTESTED` with the actor. **The instrument does not affect the source** — `paymentMethod` is normalised from the existing `method` column to `CASH`, `BANK_TRANSFER`, `POS` or `OTHER` and travels separately, so a POS payment no longer has to pretend to be a transfer. `verified` continues to be written unchanged.
 - **Migrations.** None.
-- **Tests.** Every writer sets a non-null provenance. **No path can write `MERCHANT_ATTESTED_*` without a confirmed draft or an authenticated actor** — this is the test that keeps §6.3 true. Existing behaviour is otherwise unchanged.
+- **Tests.** Every writer sets a non-null provenance. **No path can write `MERCHANT_ATTESTED` without a confirmed draft or an authenticated actor** — this is the test that keeps §6.3 true. Existing behaviour is otherwise unchanged.
 - **Feature flags.** None. Writing a new column that nothing reads is inert.
 - **Deployment sequence.** Deploy. New payments carry provenance from that moment.
 - **Rollback.** Revert. Rows written meanwhile keep a harmless extra column value.
@@ -802,11 +862,34 @@ These are the immediate execution queue on approval.
 - **Objective.** Assign honest provenance to every payment written before PR-005, and name the ones that cannot be assigned.
 - **Repository areas.** `packages/db/migrations/0054_provenance_backfill.sql`, plus a validation script.
 - **Schema.** None new. Data only.
-- **Migrations.** The classifier of spec §7.1, applied as an UPDATE. Rows failing every rung receive `LEGACY_PROVENANCE_UNKNOWN`. **The migration never invents a value.**
+- **Migrations.** The classifier of spec §7.1, applied as an UPDATE **scoped to the historical population and nothing else**. Rows failing every rung receive `LEGACY_PROVENANCE_UNKNOWN`. **The migration never invents a value.**
+- **The cutoff, and why it is mandatory.** PR-005 is already writing correct sources on new payments by the time this runs. An unscoped statement would treat those rows as history.
+  ```sql
+  -- the cutoff is materialised, not passed as a parameter:
+  INSERT INTO migration_manifests (name, cutoff_at, affected_ids)
+  SELECT '0054_provenance_backfill', :pr005_deployed_at, array_agg(id)
+    FROM payments
+   WHERE created_at < :pr005_deployed_at
+     AND initial_confirmation_source IS NULL;
+
+  UPDATE payments SET initial_confirmation_source = ...
+   WHERE id = ANY (SELECT unnest(affected_ids) FROM migration_manifests
+                    WHERE name = '0054_provenance_backfill');
+  ```
+  The manifest is the affected-row set, recorded permanently. It is what makes the rollback exact rather than approximate, and it is also the audit record of what this migration touched.
+- **Verifications.** For every row it can establish, the migration writes one `PaymentVerification` alongside the source, so the append-only history starts populated rather than empty. Rows it cannot establish get `LEGACY_PROVENANCE_UNKNOWN` and **no** verification event, which is the honest representation of knowing nothing.
 - **Tests.** The backfilled distribution matches the approved production report exactly, row count by row count. Re-running the migration changes nothing. No row moves from a stronger provenance to a weaker one or the reverse.
 - **Feature flags.** None. Readers still use `verified`.
 - **Deployment sequence.** **Dry run against a production clone first, with output compared to the approved report.** Then migrate in a maintenance window. Then deploy nothing.
-- **Rollback.** `UPDATE payments SET provenance = NULL` restores the prior state exactly, because nothing reads the column yet. This is why the readers cutover is a separate PR.
+- **Rollback.** Scoped to the manifest, never global:
+  ```sql
+  UPDATE payments SET initial_confirmation_source = NULL
+   WHERE id = ANY (SELECT unnest(affected_ids) FROM migration_manifests
+                    WHERE name = '0054_provenance_backfill');
+  DELETE FROM payment_verifications
+   WHERE source_migration = '0054_provenance_backfill';
+  ```
+  > **`UPDATE payments SET initial_confirmation_source = NULL` without a WHERE clause is forbidden.** It would erase the correct sources PR-005 has been writing since deployment, and it would do so silently. The unscoped form appeared in an earlier draft of this plan and is the reason the manifest exists.
 - **Documentation.** Spec §7.5.
 - **Approval gate.** The dry-run output matches the approved report, and the owner has signed off on the remediation decision for the unknown population.
 - **Size.** L. **Highest risk in the programme after PR-032.**
@@ -818,10 +901,15 @@ These are the immediate execution queue on approval.
 - **Objective.** Let somebody act on the unknown-provenance population rather than leaving it as a number in a report.
 - **Repository areas.** `apps/api/src/payments/`, `apps/web/src/app/app/payments/`, `packages/db/src/repos/payments-hub.ts`.
 - **Schema.** None.
-- **Commands.** `ResolvePaymentProvenance` — a person records what a payment actually was, with a reason, producing `MANUAL_RECONCILIATION`.
+- **Commands.** `AddPaymentVerification` — a person adds a verification event. Which source it carries depends on what they actually have, and the command refuses the wrong one:
+  ```
+  they link a real bank line          → MANUAL_RECONCILIATION, financialTransactionId REQUIRED
+  the merchant now attests receipt    → MERCHANT_ATTESTED, actorId REQUIRED
+  ```
+  **`initialConfirmationSource` is never touched.** A remediated payment keeps `LEGACY_PROVENANCE_UNKNOWN` as its origin forever, with the new verification beside it. Remediation adds evidence; it does not rewrite history (spec §6.5).
 - **Endpoints.** Queue read; resolve.
 - **Frontend.** A queue view, ordered by exposure: payments with receipts or allocations first, because those are the ones a merchant has already been told about.
-- **Tests.** Resolution requires a reason. Resolution writes an audit row naming the actor. A resolved payment leaves the queue and never re-enters.
+- **Tests.** `MANUAL_RECONCILIATION` is refused without a `financialTransactionId` — this is the test that stops legacy remediation manufacturing external verification out of an opinion. `MERCHANT_ATTESTED` is refused without an actor. `initialConfirmationSource` is unchanged on every path. A resolved payment leaves the queue and never re-enters.
 - **Feature flags.** `provenance_remediation`, default off until the queue is populated.
 - **Deployment sequence.** Deploy, enable, work the queue.
 - **Rollback.** Disable the flag. Resolutions already made are correct and stay.
@@ -836,8 +924,8 @@ These are the immediate execution queue on approval.
 - **Objective.** Make provenance the truth that surfaces, and reduce `verified` to a legacy column.
 - **Repository areas.** `packages/core/src/payments.ts`, `packages/db/src/repos/reports.ts`, `apps/api/src/reports/`, `apps/web/src/app/app/payments/`, receipt and statement rendering.
 - **Schema.** None.
-- **Commands.** Trust level (`ATTESTED` / `EXTERNALLY_VERIFIED`) is derived from provenance at read time, never stored.
-- **Tests.** Every surface that said "verified" now says what was actually established. **A payment whose provenance is `LEGACY_PROVENANCE_UNKNOWN` must not be presented as verified anywhere.** Receipt rendering for historical receipts is byte-identical, because a re-rendered receipt must not change what it said about a month already reported.
+- **Commands.** Trust level (`EXTERNALLY_VERIFIED` / `ATTESTED` / `UNESTABLISHED`) is derived at read time from **the full set of verification events**, never from one column and never stored (spec §6.4).
+- **Tests.** Every surface that said "verified" now says what was actually established. **A payment with no verification events must not be presented as verified anywhere.** A payment whose origin is `LEGACY_PROVENANCE_UNKNOWN` but which now carries a `BANK_FEED_MATCH` verification reads as externally verified, and its origin is still visible on the record. Receipt rendering for historical receipts is byte-identical, because a re-rendered receipt must not change what it said about a month already reported.
 - **Feature flags.** `provenance_reads`, default off; enabled after the byte-identity check passes against production data.
 - **Deployment sequence.** Deploy with the flag off; run the byte-identity comparison; enable.
 - **Rollback.** Disable the flag. Readers return to `verified` instantly.
@@ -851,9 +939,10 @@ These are the immediate execution queue on approval.
 
 - **Objective.** Remove the column whose ambiguity started this.
 - **Repository areas.** `packages/db/migrations/0055_retire_verified.sql`, the three payment writers, `packages/db/src/schema/finance.ts`.
-- **Schema.** `payments.verified` writers removed. The column itself is kept for one release as a generated column derived from provenance, then dropped in a later cleanup, so any straggling reader fails loudly rather than silently reading a stale zero.
+- **Schema.** `payments.verified` writers removed. The column itself is kept as a generated column derived from the verification events, and is dropped by **PR-115** after a soak of at least two releases.
 - **Migrations.** Drop the default; convert to generated; no data change.
 - **Tests.** No code path writes `verified`. The generated value agrees with the derived trust level on every row.
+- **What a generated column actually does.** It keeps legacy *readers* working, which is the point of the soak, and it makes any straggling *writer* fail loudly, because PostgreSQL refuses an INSERT or UPDATE that supplies a value for a generated column. An earlier draft of this plan had that backwards.
 - **Feature flags.** None. `provenance_reads` is on by now.
 - **Deployment sequence.** Deploy writers-removed first, then migrate.
 - **Rollback.** Restore the writers. The generated column reverts to a plain column.
@@ -882,10 +971,26 @@ These are the immediate execution queue on approval.
 
 ## 14. What happens on approval
 
-1. PR-001 and PR-002 merge.
-2. The corrected classifier runs against production. Its output is reviewed.
-3. In parallel and without waiting: PR-010, PR-011, and the E1 and A1 queues begin.
-4. R0A-ii unblocks on the owner's remediation decision.
-5. F1 begins once A1's command layer carries `PostJournal`.
+1. **PR-001** merges, carrying spec v1.6 and this plan.
+2. **PR-002** merges. The corrected classifier runs against production; its output is reviewed.
+3. *Immediately, in parallel, not waiting on step 2:*
+   - **PR-010** ledger permission hardening — the best value-to-effort ratio in the plan
+   - **PR-003**, **PR-004** additive evidence and source schema
+   - **PR-005** correct confirmation source on new payments, which shrinks the unknown population daily
+   - **PR-011** evidence retention, once PR-003 lands
+   - **PR-012**, **PR-013** the entitlement foundation
+4. **PR-006** unblocks on the owner's remediation decision, and not before.
+5. **F1** begins once A1's command layer carries `PostJournal`. **PR-050 gates it closed.**
 
 Failing tests first. One PR per slice step. A twenty-point impact map in, a twenty-point report out. Whole estate serially green before every merge.
+
+---
+
+## 15. Amendment log
+
+| Version | Change |
+|---|---|
+| 1.0 | Initial plan, 114 PRs, canonical spec v1.5 |
+| 1.1 | v1.6 patch. Recognition formula replaced (spec §12.2). Verification made append-only with sources preserved. POS normalised out of the source enum. `MANUAL_RECONCILIATION` narrowed to external evidence. PR-006 scoped to a migration manifest with an exact rollback. Posting roles completed. R0A block narrowed and the A1/R0B contradiction removed. W3 given its P2 payment-path dependency. PR-039 and PR-050 dependencies corrected. **PR-115 added** for the `verified` drop. Count reframed as a baseline of 115 within a 105–130 range. |
+
+Record every approved split, merge or scope change here. An index nobody amends stops being a map.
