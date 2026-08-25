@@ -45,8 +45,24 @@
 
 ## Reading order for a new engineer
 
-
+```
+1  REKODA_CANONICAL_SPEC.md 1-3        what Rekoda is, and its boundaries
+2  REKODA_USER_JOURNEYS.md Part 4      the fourteen journey invariants
+3  REKODA_CANONICAL_SPEC.md 6-7        payment truth. The heart of it.
+4  REKODA_CANONICAL_SPEC.md 8-16       the accounting kernel
+5  REKODA_END_TO_END_BUILD_PLAN.md 1   what the repository actually is today
+6  REKODA_END_TO_END_BUILD_PLAN.md 9   the PR index, and where you are in it
+7  REKODA_DESIGN_SYSTEM.md 3           what a screen may claim about money
+```
 
 ## Verification at generation time
+
+```
+spec dangling section references        0
+appendix references unresolved          0
+PR index entries                        120     matches the stated baseline
+superseded rules presented as current   0       all inside SUPERSEDED blocks
+PR-006 status                           BLOCKED
+```
 
 
