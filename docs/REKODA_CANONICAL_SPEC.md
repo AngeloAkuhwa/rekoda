@@ -1,0 +1,1181 @@
+# Rekoda Canonical Specification
+
+## 1. Document control
+
+| Field | Value |
+|---|---|
+| Status | **APPROVED — FROZEN FOR IMPLEMENTATION** |
+| Canonical version | 1.5 |
+| Effective date | 25 August 2026 |
+| Supersedes | Canonical Product Architecture v2.0; Chat & Integrate Journey v1.0; corrections v1.1, v1.2, v1.3, v1.4; ADR 0004 (chart of accounts), ADR 0014 (Recorded vs Verified) in part |
+| Owners | Product and engineering, jointly. Accounting sections additionally require finance sign-off. |
+| Companion | `docs/REKODA_END_TO_END_BUILD_PLAN.md` |
+
+> **This document is the authoritative Rekoda product and architecture specification. Older plans, ADRs, comments and implementations do not override it. A conflict must be surfaced and resolved rather than silently preserved.**
+
+### 1.1 Change policy
+
+A section here changes only through an approved correction. When implementation discovers a genuine conflict with reality, the sequence is fixed and is not negotiable:
+
+```
+stop  →  document the evidence  →  propose a correction
+      →  receive approval       →  update this document  →  continue
+```
+
+Code never becomes the source of truth by accident. A merged PR that contradicts this document is a defect in one of the two, and which one is a decision somebody makes deliberately.
+
+### 1.2 Status vocabulary
+
+Every architectural statement in this document carries one of these, either explicitly or by section default.
+
+| Status | Meaning |
+|---|---|
+| **CORRECT** | Built, and it matches this specification. Do not rework it. |
+| **DRIFTED** | Built, but it diverges from this specification. Named in the build plan with the slice that repairs it. |
+| **SUPERSEDED** | An older decision that a later approved correction replaced. Kept visible so nobody re-derives it. |
+| **DEPRECATED** | Still running, still relied upon, scheduled for removal after a named cutover. |
+| **OPEN COMMERCIAL** | Blocked on a commercial decision or a provider agreement, not on engineering. |
+| **OPEN COMPLIANCE** | Blocked on legal, tax, regulatory or provider compliance review. |
+
+### 1.3 Technology, frozen
+
+Rekoda is TypeScript, NestJS, Drizzle ORM, the existing PostgreSQL database, the existing Next.js frontend, the existing in-schema job queue, and the existing deployment conventions. **There is no .NET migration and there never was one.**
+
+Earlier canonical material used .NET vocabulary. It is translated once, here, and the original wording must not survive anywhere:
+
+| Old wording | Canonical meaning |
+|---|---|
+| "deterministic .NET engine" | deterministic server-side application, domain and accounting engine, implemented in the existing NestJS/TypeScript architecture |
+| "EF entities" | persisted, Drizzle-backed domain and data models |
+| "EF migrations" | SQL migrations under `packages/db/migrations` |
+
+### 1.4 Canonical name to physical table mapping
+
+The canonical vocabulary below is deliberately not identical to the physical schema. Renaming fifty-one migrations' worth of tables buys nothing and risks a great deal, so the mapping is stated once and treated as authoritative.
+
+| Canonical name | Physical table | Note |
+|---|---|---|
+| `JournalEntry` | `ledger_transactions` | Same rows. Gains `postingKey`, `postingPurpose`, currency columns. |
+| `JournalLine` | `ledger_entries` | Same rows. Gains `accountId`, functional/transaction currency columns. |
+| `JournalDraft` / `JournalDraftLine` | new tables | Do not exist today. |
+| `Account` | new table | Does not exist today. The chart of accounts is currently a TypeScript constant. |
+| `FinancialTransaction` | `bank_statement_lines` | Same rows. |
+| `Reconciliation` | `reconciliations` | Present, but its `MATCHED` status is an internal expectation match, not a bank match. |
+
+---
+
+## 2. North star
+
+> **You run the business. Rekoda builds the records.**
+
+A Nigerian trader already runs their business in WhatsApp. They already know what they sold and who owes them. What they do not have, and cannot produce when a bank or a buyer or the tax authority asks, is a set of records that holds up.
+
+Rekoda is seven things fused into one product:
+
+```
+accounting-grade financial truth
++ conversational operations
++ connected commerce
++ Nigerian payment and banking infrastructure
++ reconciliation
++ inventory
++ developer APIs
+```
+
+Any one of them alone is a commodity. The combination is the moat, and the accounting is the part that makes the rest defensible: a chatbot that cannot produce a trial balance is a chatbot.
+
+### 2.1 What Rekoda is not
+
+| Category | What they do | What they cannot do |
+|---|---|---|
+| Invoice apps | Produce a PDF | No ledger, no reconciliation, no proof a payment happened |
+| WhatsApp chatbots | Reply, route, collect | No financial truth; nothing survives the conversation |
+| Payment-link products | Collect money | No books, no receivables, no cost of goods, no statements |
+| Ordinary accounting packages | Produce statements | Demand double entry from someone who is selling from a phone |
+
+Rekoda's specific claim is that the merchant never has to be an accountant, and the books are still real. Every design decision in this document is downstream of that claim, and the ones that look expensive are the ones that protect it.
+
+---
+
+## 3. The three products
+
+Product boundaries are **exclusive**. This is enforced server-side and is not a UI convention.
+
+### 3.1 Rekoda Chat — the merchant talks to Rekoda
+
+Merchant-facing conversational business operations. The merchant messages Rekoda; Rekoda keeps the records.
+
+- **MUST**: record sales, payments, expenses, purchases, stock movements and corrections from merchant messages; answer questions about the merchant's own books; issue invoices and receipts; send payment details to a named customer.
+- **MUST NOT**: expose any customer-facing commerce surface, accept an order placed by the merchant's customer, or run a catalogue for the merchant's buyers.
+
+### 3.2 Rekoda Integrate — the merchant's customers transact
+
+Customer-facing, merchant-owned commerce automation. **WhatsApp-native first.** The storefront is an additional surface, not the primary one.
+
+```
+merchant WABA
+  → catalogue
+  → cart
+  → order
+  → server-side validation
+  → invoice / charge breakdown
+  → payment
+  → verified payment
+  → accounting
+  → receipt, delivered in the merchant's own thread
+```
+
+- **MUST**: run on the merchant's own WABA and their own payment connection; validate every order server-side against real catalogue state and real stock; produce the same accounting a Chat sale produces.
+- **MUST NOT**: let a customer's message reach the merchant-operations command set; price an order from anything the customer sent; create financial records the merchant did not authorise.
+
+### 3.3 Rekoda Complete
+
+`REKODA_CHAT + REKODA_INTEGRATE` over the same `BusinessId` and the same accounting truth. Not a third product with its own data: an entitlement pair.
+
+- **MUST**: share one customer identity space, one ledger, one inventory and one set of statements.
+- **MUST NOT**: produce two financial records for one economic event because it arrived through two surfaces.
+
+---
+
+## 4. Entitlements and usage
+
+### 4.1 Entitlements
+
+```
+REKODA_CHAT
+REKODA_INTEGRATE
+REKODA_API              separate commercial entitlement, see §27
+```
+
+`Complete` is the pair, not a value. Entitlements are checked in the application command layer, never in a controller and never in the frontend. The frontend hides what the merchant cannot use; the server refuses it.
+
+### 4.2 Metered units
+
+The current implementation meters five units. The canonical set is:
+
+```
+VOICE_MINUTES                DOCUMENT_GENERATION           DOCUMENTS_UNDERSTOOD
+AI_ACTIONS                   SERVICE_MESSAGE               UTILITY_TEMPLATE
+AUTH_TEMPLATE                AUTH_INTL_TEMPLATE            MARKETING_TEMPLATE
+CATALOGUE_ORDERS             PAYMENT_CONNECTIONS           FINANCIAL_ACCOUNT_CONNECTIONS
+REPORT_EXPORTS               ACCOUNTANT_USERS              API_REQUEST_UNITS
+API_APPLICATIONS             WEBHOOK_DELIVERIES
+```
+
+Message categories are separated because their costs differ by nearly eightfold. Metering them as one unit hides the only variable cost large enough to change plan economics.
+
+### 4.3 The four ordering rules
+
+These are invariants, not guidance.
+
+1. **Entitlement before meter.** An unentitled capability is refused before any allowance is consumed.
+2. **Entitlement before avoidable provider cost.** Nothing that costs money at Meta, an AI provider, an OCR provider or a payment provider is dispatched before authorisation.
+3. **No paid external processing before authorisation.** Including transcription, document understanding and template sends.
+4. **A refused request consumes nothing.** No allowance, no provider call, no charge. Where a unit is reserved before a failure becomes visible, it is refunded on every path that does not deliver.
+
+### 4.4 Downgrade and lapse
+
+Downgrade never destroys records. Losing `REKODA_INTEGRATE` stops new customer-side commerce; existing orders remain visible, existing invoices remain collectible, existing statements remain correct and exportable. A lapsed trial is modelled as a plan whose every allowance is zero, so the gate needs no separate branch.
+
+**Grandfathering.** Where a live customer relies on Integrate behaviour that a later plan version withdraws, their entitlement is pinned to the plan version they hold. Pricing and allowances are versioned and effective-dated precisely so this is a data decision, not a code branch (§30).
+
+---
+
+## 5. User journey invariants
+
+The journey specification remains a reference document. The invariants that constrain the architecture are stated here, because a journey that contradicts this section is the journey that is wrong.
+
+### 5.1 Chat
+
+| Journey | Invariant |
+|---|---|
+| Onboarding | A business exists before any financial record does. Identity is vaulted before it is used. |
+| Cash sale | Sale, payment and fulfilment may post together. One event, one journal. |
+| Credit sale | Creates a receivable under the configured policy (§12). Never revenue on invoice issue unless fulfilled. |
+| Partial payment | Allocates against a specific invoice. Never silently spreads across invoices. |
+| Merchant-attested cash | Provenance `MERCHANT_ATTESTED_CASH`. Requires the confirmation transition (§6). |
+| Merchant-attested transfer | Provenance `MERCHANT_ATTESTED_TRANSFER`. Same requirement. |
+| Proof-of-payment screenshot | **Creates `PaymentEvidence`, never a `Payment`.** A screenshot is never proof. |
+| Invoice | A projection of order and line state, not an independently editable record. |
+| Payment request | Mints an intent against the merchant's own connection. Never against Rekoda's. |
+| Expense / purchase / supplier payable | Post to the same kernel as sales. No parallel bookkeeping. |
+| Inventory | Movements drive valuation and COGS. Stock is never inferred from sales alone. |
+| Customer / supplier balances | Derived from the subledgers, never stored as a mutable total. |
+| Reconciliation | See §22. AI explains; deterministic logic or a human decides. |
+| Reports / financial Q&A | Read the ledger. Never recompute from source events. |
+| Correction | A reversing journal. Never an edit. |
+| Refund | Distinct from credit note, return, reversal and chargeback (§14). |
+| Document upload | Metered as `DOCUMENTS_UNDERSTOOD` after entitlement, before OCR spend. |
+| Voice | Metered as `VOICE_MINUTES` after entitlement, before transcription spend. |
+
+### 5.2 Integrate
+
+| Journey | Invariant |
+|---|---|
+| Merchant onboarding | Embedded Signup. Rekoda is a Tech Provider; the WABA belongs to the merchant. |
+| WABA connection | `phoneNumberId → BusinessId` routing is the only routing. An unknown id is never guessed at. |
+| Catalogue | Server-side state. The customer's message never sets a price. |
+| Cart / place order | An order is a request. It is not a sale and not a receivable until validated. |
+| Order validation | Server-side, against real catalogue and real stock, before any figure is shown. |
+| Charge breakdown | Every line is a record (`PaymentCharge`, §19), never arithmetic in a controller. |
+| Invoice | Same projection rules as Chat. |
+| Payment choice / verification | Provenance is `PROVIDER_VERIFIED` only after a server-side verify (§6). |
+| Receipt | Acknowledges a payment (§15). Delivered in the merchant's own thread. |
+| Inventory / COGS | Recognised on fulfilment, proportionally (§12). |
+| Settlement / reconciliation | §20 and §22. |
+| Fulfilment | Partial fulfilment recognises only the fulfilled proportion. |
+| Away assistant / human handoff | The assistant never transacts on the merchant's behalf beyond configured limits. |
+| Cancellation / refund | Distinct records, distinct postings. |
+| Storefront / Instagram entry | Additional ingresses to the same commands. No separate financial logic. |
+
+### 5.3 Complete
+
+Cross-product journeys must not double-record. "Send Chidi the payment details" originates in Chat, mints an intent on the merchant's connection, and when Chidi pays through Integrate's rails it produces **one** payment, **one** allocation and **one** receipt. The rule that makes this hold is §25: every ingress converges on the same command.
+
+---
+
+## 6. Payment evidence and payment truth
+
+### 6.1 Separate records for separate facts
+
+```
+PaymentEvidence      something somebody showed us. Proves nothing.
+Payment              money the business accepts as received.
+PaymentVerification  the act of establishing that, and by what means.
+PaymentAllocation    which invoice it was applied to. Append-only.
+PaymentIntent        an expectation of money, on a specific connection.
+PaymentAttempt       one try against that intent.
+Settlement           what the provider actually paid out.
+Refund               money returned deliberately.
+PaymentReversal      a payment undone before settlement.
+Chargeback           money taken back after settlement.
+```
+
+**A screenshot never proves payment.** It is `PaymentEvidence`, and the only thing it establishes is that a customer sent an image.
+
+### 6.2 Provenance
+
+```
+PROVIDER_VERIFIED             a server-side verify against the provider succeeded
+BANK_FEED_MATCH               an imported bank line was matched to the posting
+MERCHANT_ATTESTED_CASH        the merchant confirmed receiving cash
+MERCHANT_ATTESTED_TRANSFER    the merchant confirmed receiving an electronic payment
+MANUAL_RECONCILIATION         a person resolved it deliberately, with a reason
+LEGACY_PROVENANCE_UNKNOWN     the estate cannot establish it. Remediation, not a default.
+```
+
+Derived trust levels, computed and never stored as an independent flag:
+
+```
+ATTESTED               MERCHANT_ATTESTED_* and MANUAL_RECONCILIATION
+EXTERNALLY_VERIFIED    PROVIDER_VERIFIED and BANK_FEED_MATCH
+```
+
+### 6.3 Medium is never proof
+
+> **Input medium must never be treated as proof of attestation.**
+
+"Ada says she transferred sixty thousand" and "I checked my bank and Ada's sixty thousand is there" are both text. One is a relayed customer claim; the other is the merchant asserting a fact about their own account. Classifying on message kind reads a trust level out of a keyboard.
+
+What does establish attestation is an explicit confirmation with recorded semantics: the merchant was shown a preview naming the amount and the invoice, and answered it, and that answer persisted. `method` (cash, transfer, POS, unknown) is a third and independent dimension. **POS is not a bank transfer merely because both are electronic.**
+
+---
+
+## 7. R0A-i provenance rules
+
+### 7.1 The classification ladder
+
+Evidence only. The legacy `payments.verified` boolean is not consulted in either direction, because it records that some code path once set it, not who claimed the money arrived.
+
+```
+1  payment_intent_id IS NOT NULL AND provider_ref IS NOT NULL   → PROVIDER_VERIFIED
+2  an imported bank line matched this payment's posting         → BANK_FEED_MATCH
+3  source_type='chat' AND draft.state='confirmed'
+     AND draft.intent IN ('RecordPayment','RecordSale')         → MERCHANT_ATTESTED
+4  source_type='dashboard' AND an audit row names a user actor  → MERCHANT_ATTESTED
+5  anything else                                                → LEGACY_PROVENANCE_UNKNOWN
+```
+
+### 7.2 Why rungs 3 and 4 are proofs and not guesses
+
+Established by inspection of the repository, not assumed:
+
+- Every merchant-recorded payment reaches its writer through `confirmPendingDraft`, whose `claimDraft` is a conditional `UPDATE command_drafts SET state='confirmed' WHERE state='pending'`. The row survives, so the proof survives.
+- `issueSale` has four callers. Three hardcode `paidK: 0` (storefront, forwarded order, quote acceptance). Only the chat `RecordSale` confirmation can book money through it.
+- `recordMerchantPayment` has two callers: the chat confirmation, and `recordPaymentByNumber`, the dashboard entry point, whose `sourceId` is an invoice number and joins to no draft. That path is attested by its audit row, which names the user.
+- Both callers of `bookVerifiedPayment` perform a server-side verify before booking and both attach an intent and a provider reference.
+- **No migration has ever written or updated a `payments` row.** The code trail is the whole trail.
+
+### 7.3 Forbidden inferences
+
+```
+text or voice           = attested          ✗  forbidden
+verified=false+transfer = attested          ✗  forbidden
+verified=true           = provider verified  ✗  forbidden without the anchors
+POS                     = transfer           ✗  forbidden
+```
+
+### 7.4 Reporting dimensions
+
+Three independent columns. Never fused.
+
+| Column | Values |
+|---|---|
+| `provenance` | the six values of §6.2 |
+| `evidence_basis` | `TYPED` · `SPOKEN` · `SAW_AN_IMAGE` · `NOT_A_MESSAGE` · `NO_MESSAGE_ON_FILE` — context for a human, never a trust grade |
+| `method` | `cash` · `transfer` · `pos` · `unknown` |
+
+Attestations made while looking at an image are still attestations. They are reported separately **for review, not remediation**; whether to re-check them is the merchant's decision.
+
+### 7.5 The block
+
+The production report must produce: provenance distribution, naira totals, the remediation queue, receipt and allocation exposure, and the unknown-provenance population.
+
+> **R0A-ii may not write a migration until that production report has been run and its remediation queue explicitly approved.** No historical trust may be manufactured. The local database is not production data and produces no counts.
+
+---
+
+## 8. Accounting kernel
+
+The kernel is the part of Rekoda that cannot be approximately right.
+
+```
+business-scoped Chart of Accounts     scoped system roles
+journal drafts                        immutable posted journals
+journal lines                         accounting periods
+general ledger                        trial balance
+profit and loss                       balance sheet
+cash flow                             accounts receivable
+accounts payable                      customer credits
+bills                                 credit notes
+tax                                   multi-currency and FX
+fixed assets                          inventory valuation
+cost of goods sold                    recurring transactions
+opening balances                      dimensions
+```
+
+Roadmap, architected for but not built in V1: project and job costing, budgets.
+
+**Repository reality (DRIFTED).** Today there is no `accounts` table. The chart of accounts is a seventeen-key TypeScript constant and `ledger_entries.account` is a text key into it. There is no accounting-period table; `businesses.books_closed_through` is the entire period model. There is no currency on any ledger row. Repairing this is slice F1 and it is the largest slice in the plan.
+
+---
+
+## 9. Journal model
+
+### 9.1 Two table pairs
+
+```
+EDITABLE                          AUTHORITATIVE
+JournalDraft                      JournalEntry
+JournalDraftLine                  JournalLine
+```
+
+`JournalEntry` and `JournalLine` **have no mutable lifecycle state**. There is no `state` column and there must never be one. Existence in the authoritative table *is* posted. A row cannot be promoted from draft to posted once `UPDATE` is revoked, which is precisely why the two are separate tables rather than one table with a flag.
+
+### 9.2 Posting
+
+```
+validate  →  atomic INSERT  →  immutable forever
+```
+
+### 9.3 Reversal
+
+A reversal is a new posted journal with `reversesJournalId` set to the original. Never an edit, never a delete.
+
+```
+UNIQUE (businessId, reversesJournalId) WHERE reversesJournalId IS NOT NULL
+```
+
+A full reversal may occur only once. Multiple partial reversals are not modelled in V1; a partial change of mind is a full reversal followed by a fresh correct posting.
+
+### 9.4 Financial-event idempotency
+
+Application idempotency protects the command. It does not protect the ledger from a writer that bypasses the command layer, and defence in depth is the same argument that justifies the balance trigger.
+
+```
+JournalEntry
+  sourceType · sourceId · postingPurpose
+  UNIQUE (businessId, sourceType, sourceId, postingPurpose)
+
+postingPurpose ∈ PAYMENT_CONFIRMATION · REVENUE_RECOGNITION · SETTLEMENT
+                 CHARGEBACK · REFUND · TAX_POINT · REVERSAL · CORRECTION
+```
+
+A retried webhook cannot produce a second balanced journal even if every layer above it fails.
+
+### 9.5 Posted drafts lock
+
+```
+JournalDraft.postedJournalId   UNIQUE, nullable
+
+once postedJournalId IS NOT NULL:
+  the draft and every one of its lines become read-only, enforced by trigger
+```
+
+The ledger stays correct without this, which is what makes the omission dangerous: the approval trail silently stops describing what was approved. Post `DR Rent / CR Bank`, then edit the draft to say `DR Advertising`, and nobody can tell what anyone approved.
+
+---
+
+## 10. Database accounting invariants
+
+The application layer validates first, because a good error message reaches the caller as something they can act on. PostgreSQL enforces the same rules again, because the trigger catches the writer nobody has thought of yet.
+
+| Invariant | Enforced by |
+|---|---|
+| At least two lines per entry | trigger, deferred to statement end |
+| Exactly one of debit or credit is non-zero per line | CHECK |
+| Debit total equals credit total, in functional currency | trigger |
+| Every line shares the entry's `businessId` | CHECK + composite FK |
+| The account is active | trigger |
+| The accounting period is open | trigger |
+| The currency is valid for the business | CHECK |
+| Functional amounts are coherent with transaction amounts | trigger |
+| An FX snapshot exists when transaction currency differs from functional | CHECK |
+
+The balance trigger sums **functional** amounts only and must never see a transaction amount (§16).
+
+---
+
+## 11. Chart of accounts
+
+### 11.1 Scoped system roles, not a global key
+
+A single globally unique `systemKey` cannot express per-connection clearing accounts, which is why it is replaced.
+
+```
+Account
+  systemRole              nullable
+  systemScopeType         nullable
+  scopeBusinessId           → businesses(id)              real FK
+  scopePaymentConnectionId  → payment_connections(id)     real FK
+  scopeFinancialAccountId   → financial_accounts(id)      real FK
+```
+
+Typed scope columns rather than one polymorphic `systemScopeId`, because a polymorphic id cannot be a foreign key at all, and a trigger that checks existence is a foreign key somebody has to remember to write. Each FK is composite on `(businessId, id)`, so a scope belonging to another tenant cannot be referenced.
+
+### 11.2 The canonical role-to-scope mapping
+
+```
+ACCOUNTS_RECEIVABLE          → BUSINESS
+ACCOUNTS_PAYABLE             → BUSINESS
+RETAINED_EARNINGS            → BUSINESS
+VAT_PAYABLE                  → BUSINESS
+CONTRACT_LIABILITY           → BUSINESS
+CUSTOMER_CREDIT              → BUSINESS
+PAYMENT_PROVIDER_CLEARING    → PAYMENT_CONNECTION
+PROVIDER_CHARGEBACK_PAYABLE  → PAYMENT_CONNECTION
+BANK                         → FINANCIAL_ACCOUNT
+CASH                         → FINANCIAL_ACCOUNT / TILL
+```
+
+Enforced as a `CHECK` on the pair, which makes `ACCOUNTS_RECEIVABLE` scoped to a payment connection unrepresentable rather than merely wrong.
+
+### 11.3 Constraints
+
+```
+all-or-none      systemRole, systemScopeType and exactly one scope column
+                 are set together, or none of them is
+uniqueness       partial unique index on (businessId, systemRole, scope column)
+                 WHERE systemRole IS NOT NULL
+compatibility    the (role, scopeType) pair is in §11.2
+integrity        the referenced scope exists, is of the expected type,
+                 and belongs to the same business
+```
+
+### 11.4 Lifecycle
+
+| Action | Account with postings | Account without postings |
+|---|---|---|
+| DELETE | refused, always | permitted |
+| Change `systemRole` or scope | refused, always | refused, always |
+| Deactivate | **allowed** where policy permits | allowed |
+| Post into it once inactive | refused | refused |
+| Appear in historical reports | yes, forever | n/a |
+
+Historical postings are the reason deactivation exists instead of deletion. A rule that forbade deactivation because postings exist would make every used account permanent, and a merchant who changes banks would be stuck with a chart of accounts they can never tidy.
+
+A **mandatory** role (AR, AP, retained earnings, VAT payable) may be deactivated only when a replacement account of the same role and scope is configured first.
+
+---
+
+## 12. Revenue and receivable recognition
+
+### 12.1 Separate concepts, separate records
+
+```
+Order  ·  Invoice  ·  Payment  ·  ReceivableRecognition
+       ·  Fulfilment  ·  RevenueRecognition  ·  TaxPoint
+```
+
+IFRS for SMEs is explicit that a receivable is an unconditional right to consideration, and that billing alone does not establish one. That is why receivable recognition is a policy and not an assumption about invoice issuance.
+
+### 12.2 An engine, not three shapes
+
+**Do not hardcode accounting shapes as implementation logic.** The engine holds cumulative state per order, and per order line where lines fulfil independently, and derives every posting as a delta.
+
+```
+earnedMinor            value of performance obligations satisfied to date
+recognisedMinor        revenue already posted to date
+receivedMinor          cash received against this order to date
+receivableRaisedMinor  unconditional right to consideration raised to date
+collectedOnARMinor     cash applied against that receivable to date
+```
+
+Invariants the engine asserts after every posting:
+
+```
+revenueBalance          = earnedMinor
+contractLiability       = (receivedMinor + receivableRaisedMinor) − earnedMinor , floored at 0
+accountsReceivable      = receivableRaisedMinor − collectedOnARMinor
+uncollectedNotYetBilled = earnedMinor − receivableRaisedMinor , where positive
+```
+
+The single rule: `recogniseDelta = earnedMinor − recognisedMinor`; a contract liability is drawn down first and only the remainder raises a receivable.
+
+### 12.3 Policy
+
+```
+ReceivableRecognitionPolicy
+  ON_ISSUE_UNCONDITIONAL   the invoice itself creates the right
+  ON_FULFILMENT            the right arises when the obligation is satisfied
+  NONE                     no receivable is ever raised (cash and carry)
+
+RevenueRecognitionPolicy
+  AT_POINT_IN_TIME_ON_FULFILMENT    the only V1 value
+```
+
+### 12.4 The five cases, as tests
+
+**(a) Unconditional receivable before fulfilment**
+```
+invoice      DR Accounts Receivable   100,000    CR Contract Liability  100,000
+payment      DR Clearing / Bank       100,000    CR Accounts Receivable 100,000
+fulfilment   DR Contract Liability    100,000    CR Sales Revenue       100,000
+                                                 DR COGS / CR Inventory
+```
+
+**(b) Advance payment, no receivable**
+```
+payment      DR Clearing / Bank       100,000    CR Contract Liability  100,000
+fulfilment   DR Contract Liability    100,000    CR Sales Revenue       100,000
+```
+
+**(c) Fulfilment before payment (conditional invoice, trade credit)**
+```
+invoice      nothing posts
+fulfilment   DR Accounts Receivable   100,000    CR Sales Revenue       100,000
+                                                 DR COGS / CR Inventory
+payment      DR Bank                  100,000    CR Accounts Receivable 100,000
+```
+
+**(d) Partial deposit**
+```
+deposit      DR Clearing               30,000    CR Contract Liability   30,000
+fulfilment   DR Contract Liability     30,000
+             DR Accounts Receivable    70,000    CR Sales Revenue       100,000
+                                                 DR COGS / CR Inventory
+balance      DR Bank                   70,000    CR Accounts Receivable  70,000
+```
+
+**(e) Immediate cash and carry**
+```
+sale+pay+fulfil   DR Clearing / Bank   100,000   CR Sales Revenue       100,000
+                                                 DR COGS / CR Inventory
+```
+
+The engine is never told which case it is in. The same arithmetic produces all five.
+
+### 12.5 Rules
+
+- **Partial fulfilment recognises only the fulfilled proportion.** Never more.
+- Revenue-recognition events are **idempotent by fulfilment and line**:
+  ```
+  RevenueRecognitionEvent
+    UNIQUE (businessId, sourceType, sourceId, orderLineId)
+    amountMinor    REVENUE only. Never gross. Never VAT-inclusive.
+  ```
+- Accounting policy changes are **versioned, forward-looking, privileged and audited**.
+- **Historical accounting never changes because a policy changed later.**
+
+---
+
+## 13. Tax timing is separate
+
+The tax point is not automatically the revenue-recognition point. They coincide under Nigerian VAT for most of what Rekoda will see, and that coincidence is exactly what would let them be fused by accident.
+
+```
+TaxCode  ·  TaxRate  ·  TaxTreatment  ·  TaxPointPolicy
+         ·  TaxLiability  ·  FiscalisationProvider
+
+TaxPointPolicy ∈ ON_INVOICE_ISSUE · ON_PAYMENT_RECEIPT · ON_FULFILMENT
+
+TaxEvent
+  businessId · taxCode · basisMinor · taxMinor · currency
+  sourceType · sourceId · occurredAt (the TAX POINT) · journalId
+  UNIQUE (businessId, taxCode, sourceType, sourceId)
+```
+
+`RevenueRecognitionEvent` and `TaxEvent` are written by separate calculators reading the same order state. No hardcoded tax assumptions. Nigeria-first configuration.
+
+> **OPEN COMPLIANCE:** no statutory-compliance claim may appear in marketing or in product copy without approved review.
+
+---
+
+## 14. Customer credit, returns and refunds
+
+### 14.1 One subledger
+
+```
+CustomerCredit               a balance the business owes a customer
+CustomerCreditApplication    that balance, applied to an invoice. Append-only.
+```
+
+Credit notes create customer credits. Overpayments create customer credits. **An unapplied credit reduces no invoice until it is explicitly applied.**
+
+### 14.2 Append-only with one full reversal
+
+Payment allocations and credit applications are append-only. V1 uses **one full reversal row**, not mutable or deleted allocations.
+
+```
+reversal.businessId    = original.businessId
+reversal.paymentId     = original.paymentId       (or customerCreditId)
+reversal.invoiceId     = original.invoiceId
+reversal.currency      = original.currency
+reversal.amountMinor   = −original.amountMinor    exactly
+reversal.reason        required
+reversal.sourceType/Id required
+original.reversalOfId IS NULL                     cannot reverse a reversal
+UNIQUE (businessId, reversalOfId) WHERE reversalOfId IS NOT NULL
+```
+
+"At most one reversal" combined with partial amounts would strand the remainder permanently and silently. A partial change of mind is a full reversal followed by a fresh allocation of the correct amount.
+
+### 14.3 Six distinct concepts
+
+```
+CreditNote          the business agrees it owes value back
+GoodsReturn         goods physically came back; stock and COGS move
+Refund              money deliberately returned to a customer
+OverpaymentRefund   money returned because too much arrived
+PaymentReversal     a payment undone before settlement
+Chargeback          money taken back after settlement, by the provider
+```
+
+**Never collapse these into one generic refund concept.** They have different postings, different inventory effects and different evidence requirements.
+
+### 14.4 A reconciling worked example
+
+Sale: net 100,000 + VAT 7,500 = 107,500. Return of net 20,000 + VAT 1,500 = **21,500 credited, 21,500 refunded.** The credit note and the refund agree because both are computed from the same returned lines.
+
+---
+
+## 15. Receipts
+
+> **A receipt is an acknowledgement that a specific payment has been accepted by the business.** It is not the authoritative statement of how that payment was applied.
+
+One payment may settle multiple invoices. The receipt snapshot records the allocations **known at issuance**.
+
+```
+Receipt              immutable. One per confirmed payment.
+ReceiptAllocation    the allocations as at issuance
+ReceiptVoid          only when the ORIGINAL receipt was itself wrong. Carries lineage.
+```
+
+A later allocation does not mutate the original receipt. It appears in the customer statement, the payment allocation view and the invoice balances. `ReceiptVoid` is for errors, never for allocation changes, which are not errors.
+
+Original rendered documents remain immutable and byte-stable. A re-rendered statement must say the same thing about a month already reported.
+
+---
+
+## 16. Multi-currency
+
+Journal currency semantics are explicit, because a column called `debitMinor` next to a column called `transactionCurrency` invites exactly one bug and it is a bug that balances.
+
+```
+JournalEntry
+  functionalCurrency        INVARIANT: = Business.functionalCurrency
+JournalLine
+  debitFunctionalMinor      always the entry's functional currency
+  creditFunctionalMinor
+  transactionCurrency       what the money actually was
+  transactionAmountMinor
+  exchangeRateSnapshotId    REQUIRED when transactionCurrency ≠ functionalCurrency
+                            NULL when equal; the rate is 1 by definition
+```
+
+Statements sum functional values. **Historical transactions never use today's rate.**
+
+Four FX concepts, kept distinct and never shared:
+
+```
+Accounting FX          what the books used at the transaction date
+Settlement FX          what the provider actually converted at
+Cost-model FX          what Rekoda's own costs converted at
+Commercial pricing FX  what a price list is denominated in
+```
+
+---
+
+## 17. Payment hub
+
+```
+PaymentConnection  ·  PaymentIntent  ·  PaymentAttempt  ·  Payment
+PaymentVerification ·  PaymentAllocation ·  Refund  ·  PaymentReversal
+Chargeback  ·  Settlement  ·  SettlementItem  ·  SettlementComponent
+ProviderCapability  ·  ProviderCostSchedule  ·  PaymentProviderResolver
+```
+
+### 17.1 PaymentConnection: four independent statuses
+
+Today one blended `status` with nine values plus a separate `kyc_status` (DRIFTED). Canonically:
+
+```
+operationalStatus    can it technically transact right now
+kycStatus            has the merchant been verified by the provider
+commercialStatus     is there an agreed commercial arrangement
+complianceStatus     is it permitted under Rekoda's own policy
+productionEnabled    derived; all four must permit it
+```
+
+They are independent because they fail independently. A connection can be operationally healthy and commercially suspended, and blending them makes that state unrepresentable.
+
+### 17.2 Provider-neutral attributes
+
+```
+accountOwnership   MERCHANT_OWNED · PLATFORM_OWNED
+representation     SUB_MERCHANT · DIRECT_MERCHANT · PLATFORM_ONLY
+credentialSource   MERCHANT_SUPPLIED · PLATFORM_ISSUED · OAUTH_DELEGATED
+```
+
+`PLATFORM_ONLY` is not a degenerate case. It is the correct description of an aggregator arrangement, and naming it stops that arrangement being mislabelled as a direct merchant relationship it is not.
+
+---
+
+## 18. Provider interfaces
+
+Three separate ports. A provider that does two things implements two.
+
+```
+PaymentProvider         collect money
+FinancialFeedProvider   read account movement
+PayoutProvider          send money
+```
+
+Initial architecture:
+
+```
+PaystackPaymentProvider     MonoDirectPayProvider
+OPayPaymentProvider         KudaPaymentProvider
+
+MonoFinancialFeedProvider   KudaFinancialFeedProvider
+OPayFinancialFeedProvider   (where applicable)
+```
+
+Production availability is **capability and compliance gated** per connection, per business. An adapter existing in the codebase is not the same as it being available to a merchant.
+
+> **OPEN COMMERCIAL / OPEN COMPLIANCE:** Paystack commercial confirmation, Mono production terms, OPay production access, Kuda regulatory and commercial approval. See build plan §external blockers.
+
+---
+
+## 19. Economic fee bearer vs provider fee payer
+
+These are two different things and conflating them produces an adapter that cannot be written.
+
+```
+EconomicFeeBearer     who ends up out of pocket. Rekoda's concept.
+  MERCHANT · CUSTOMER · REKODA · SHARED
+
+ProviderFeePayer      what we send to the provider. Adapter-specific, opaque to the core.
+  paystack:  account | subaccount | all | all-proportional
+  others:    whatever that provider actually accepts
+```
+
+Paystack's fee bearer is `account` or `subaccount`, with `all` and `all-proportional` for splits. **There is no customer value, because the provider has no concept of one.** A customer bears a fee only if somebody adds a visible line to the order total.
+
+### 19.1 PaymentCharge
+
+```
+PaymentCharge
+  id · businessId · orderId
+  type                    PAYMENT_PROCESSING · DELIVERY · SERVICE · SURCHARGE
+  label                   what the customer reads. Honest, not "convenience fee".
+  amountMinor · currency
+  beneficiary             MERCHANT · REKODA · PROVIDER
+  economicBearer          EconomicFeeBearer
+  taxCode                 nullable; a surcharge may itself be taxable
+  actualOrEstimated       ESTIMATED at checkout · ACTUAL once settled
+  providerCostScheduleId  nullable; what the estimate came from
+```
+
+Producing a breakdown where every line is a record:
+
+```
+Items                 100,000
+Delivery                3,000
+Payment charge          1,500
+VAT                     7,725
+Total                 112,225
+```
+
+> A customer surcharge is **configuration-gated**, never derived. In several markets it is regulated or prohibited. Rekoda must never add a charge a merchant did not choose to add.
+
+---
+
+## 20. Provider settlement
+
+```
+Settlement           what the provider paid out, and when
+SettlementItem       which payments it covered
+SettlementComponent  signed adjustments
+```
+
+Components are signed `DEDUCTION` or `ADDITION` and may represent:
+
+```
+processing fee · VAT on provider fee · withholding · levy
+reserve held · reserve released · rebate · adjustment · chargeback
+```
+
+**Actual provider settlement data drives the books.** Where provider data exists, do not estimate final settlement postings from a rate card. Rate cards produce estimates for checkout display (§19) and for the cost model (§29), never for authoritative postings.
+
+---
+
+## 21. Chargeback accounting
+
+### 21.1 Pre-settlement reversal
+
+Nothing has left the provider, so the clearing account reverses.
+
+```
+DR Accounts Receivable
+CR Provider Clearing
+```
+
+### 21.2 Post-settlement chargeback
+
+The money is gone and the merchant now owes the provider. That is a **liability**, not a second receivable.
+
+```
+DR Accounts Receivable            the customer owes it again
+CR Provider Chargeback Payable    and the merchant owes the provider
+```
+
+Recovery from a future settlement is not a new event type. It is a `DEDUCTION` component on that settlement, clearing the payable:
+
+```
+DR Provider Chargeback Payable
+```
+
+If the provider debits the bank account directly instead:
+
+```
+DR Accounts Receivable
+CR Bank
+```
+
+> **SUPERSEDED:** `CHARGEBACK_RECEIVABLE`. Crediting a receivable asserts that a second party owes the merchant money, which is the opposite of what a chargeback creates.
+
+---
+
+## 22. Financial feeds and reconciliation
+
+> **A bank credit proves account movement, not business purpose.**
+
+```
+bank transaction  ≠  customer payment
+```
+
+Money moving through an account is a fact. What that money *was* is a judgement, and the judgement belongs to the merchant.
+
+### 22.1 Tiers
+
+```
+1  exact reference           deterministic, auto-matched
+2  strong deterministic      amount + date + counterparty, auto-matched
+3  suggested                 proposed to a human, never applied
+4  manual review             a person decides, with a reason recorded
+```
+
+**AI can explain. Deterministic logic or an authorised human decides.** An AI-proposed match is never applied without one of the two.
+
+### 22.2 The required golden test
+
+```
+GIVEN   a bank feed line arrives
+          +5,000,000 · narration "DIRECT CREDIT"
+          no invoice reference · no expected payment · no known payer
+
+THEN    FinancialTransaction   created
+        Payment                NOT created
+        revenue journal        NOT posted
+        reconciliation state   UNMATCHED, queued for review
+
+WHEN    the merchant classifies it as owner capital
+
+THEN    DR Bank          5,000,000
+        CR Owner Equity  5,000,000
+
+AND     Sales Revenue is unchanged
+AND     no Payment row exists for this money at any point
+```
+
+The merchant may classify a line as owner capital, a loan, a supplier refund, an internal transfer, or anything else. Rekoda never makes that judgement silently.
+
+### 22.3 Connection-scoped identity
+
+An identifier is scoped to the connection that produced it unless the provider's documentation explicitly guarantees global uniqueness, and the guarantee is cited where the constraint is defined.
+
+```
+FinancialTransaction   UNIQUE (businessId, provider, financialAccountConnectionId, externalTransactionId)
+Settlement             UNIQUE (businessId, paymentConnectionId, providerSettlementId)
+PaymentAttempt         UNIQUE (businessId, paymentConnectionId, providerAttemptId)
+ProviderEvent          UNIQUE (businessId, paymentConnectionId, providerEventId)
+```
+
+---
+
+## 23. Payment evidence retention
+
+Raw evidence retention is separate from financial-record retention. A screenshot of somebody's bank app is personal data; the fact that a claim was made is a financial record.
+
+```
+PaymentEvidence
+  resolutionState      UNRESOLVED · RESOLVED · EXPIRED
+  resolutionDeadline   set when the claim is raised, from business configuration
+  resolvedAt           set on RESOLVED, and also on EXPIRED
+  rawPurgedAt
+  retentionPolicyId
+```
+
+```
+REPORTED
+  → nobody responds by resolutionDeadline
+EXPIRED  (resolvedAt := now)
+  → the ordinary raw-retention countdown begins
+  → raw media deleted; the claim, its amount and its outcome survive
+
+unless EvidenceLegalHold is active — dispute, investigation or tax audit —
+which suspends the countdown and is the only thing that can
+```
+
+> **An unresolved claim must not live forever automatically.** An abandoned dispute is the most likely state for a claim to be in, not the least. Derived safe facts, hashes and audit records survive under financial-record retention.
+
+---
+
+## 24. Meta and WhatsApp
+
+**WhatsApp-native Integrate first. Storefront second.** This ordering is a product decision, not a sequencing convenience.
+
+```
+Tech Provider status              App Review
+Advanced Access:                  Embedded Signup
+  business_management
+  whatsapp_business_management
+  whatsapp_business_messaging
+phoneNumberId → BusinessId routing
+per-WABA templates                service window management
+connection health                 billing mode
+```
+
+Meta billing mode, once confirmed:
+
+```
+MERCHANT_DIRECT        the merchant is billed by Meta directly
+REKODA_CREDIT_LINE     Rekoda fronts the cost and recovers it
+PARTNER_BILLED         Meta bills Rekoda as partner
+```
+
+> **OPEN COMMERCIAL:** billing mode is unconfirmed. It changes unit economics materially and is a W0 deliverable.
+
+Message categories are metered separately (§4.2) because utility and marketing differ by roughly eightfold in cost, and that difference is the largest variable in plan margin.
+
+---
+
+## 25. Application layer
+
+Every ingress converges on the same commands. This is the rule that makes cross-product journeys safe and makes the public API possible without a second implementation.
+
+```
+RecordSale              PlaceOrder              IssueInvoice
+CreatePaymentIntent     ConfirmPayment          AllocatePayment
+RecordPaymentEvidence   RecordExpense           RecordPurchase
+PostJournal             RefundPayment           ClosePeriod
+IngestFinancialTransaction                      ConfirmReconciliation
+```
+
+> **Chat, Dashboard, Storefront, WABA, the future public API and the future Embed must not implement separate financial logic.**
+
+An ingress is responsible for authentication, shape validation and reply rendering. It is responsible for nothing financial. **Repository reality (DRIFTED):** logic currently lives in controllers and job handlers calling repositories directly. Slice A1 extracts it.
+
+---
+
+## 26. Idempotency and the transactional outbox
+
+```
+IdempotencyRecord    businessId · key · commandName · requestHash
+                     · responseSnapshot · createdAt
+                     UNIQUE (businessId, key)
+
+OutboxEvent          businessId · type · payload · occurredAt
+                     · dispatchedAt · attempts
+                     written in the SAME transaction as the state change
+```
+
+Plus financial-domain idempotency at the ledger itself (§9.4), so a retry cannot create duplicate financial truth even if every upstream protection fails.
+
+---
+
+## 27. Public API
+
+Every major capability is architected for eventual API commercialisation from the start, because retrofitting an API onto controller-resident logic means writing the logic twice.
+
+> **The public API is a separate commercial entitlement.** It is not automatically included with Chat, Integrate or Complete.
+
+```
+Merchant API          Partner API            Enterprise API
+Accounting API        Reconciliation API     Reporting API
+Documents API         AI Business Actions API
+Payment orchestration API   (where legally permitted)
+Webhooks
+```
+
+Rules:
+
+- APIs call the **same application commands** as every other ingress.
+- Public contracts **must not expose Drizzle table shapes**. Contracts live in `packages/contracts` and are versioned independently of the schema.
+- API usage is metered (`API_REQUEST_UNITS`, `API_APPLICATIONS`, `WEBHOOK_DELIVERIES`) and gated by entitlement like everything else.
+
+---
+
+## 28. Rekoda Embed
+
+**Do not build now.** Architecture is preserved so that it remains possible without a second backend:
+
+```
+JS SDK  ·  React SDK  ·  embeddable widget
+headless conversational API  ·  white-label assistant
+```
+
+The constraint that keeps this open is §25 and §27: one command layer, one contract layer, no ingress-resident financial logic.
+
+---
+
+## 29. COST-1 — Rekoda's own provider costs
+
+> **Decision COST-1.** Not `D1`, which is the Dashboard and Accountant build slice.
+
+**V1: no second corporate general ledger inside the merchant product.** Instead, an immutable platform-cost subledger feeding a margin model.
+
+```
+PlatformCostEvent            append-only. No UPDATE, no DELETE.
+  id · provider · providerProduct
+  businessId?                nullable; some costs are not attributable to one merchant
+  paymentConnectionId? · paymentId? · settlementId?
+  costType                   MESSAGING · AI_INFERENCE · OCR · PAYMENT_FEE
+                             BANK_FEED · STORAGE · TELEPHONY
+  amountMinor · currency · taxMinor?
+  externalReference          the provider's own id for the charge
+  incurredAt
+  source                     PROVIDER_INVOICE · PROVIDER_API · DERIVED_FROM_RATE_CARD
+  costScheduleId?
+  actualOrEstimated          ACTUAL · ESTIMATED
+```
+
+`usage_events` is telemetry. It is mutable in practice and was never designed as a financial record. Real money Rekoda spends gets an immutable fact.
+
+BL2 consumes these for unit economics: revenue less Meta messaging, AI inference, OCR, payment fees, bank feeds and storage, per merchant, per plan, per cohort. Exportable later into Rekoda Commerce Technologies Limited's own statutory books. **Rekoda's corporate statutory accounting stays outside the merchant product for V1.**
+
+---
+
+## 30. Pricing and billing
+
+Launch **candidates** only, and explicitly not frozen:
+
+```
+₦9,900   Rekoda Chat
+₦19,900  Rekoda Integrate
+₦29,900  Rekoda Complete
+```
+
+Pricing is versioned, effective-dated, configurable, grandfatherable, usage-aware and FX-aware.
+
+```
+PlanVersion       a named set of entitlements and allowances, effective-dated
+PlanPrice         a price for a plan version, in a currency, effective-dated
+AllowanceVersion  the allowance table for a plan version
+AddOn             a recurring capability purchased alongside a plan
+UsagePack         a one-off block of units
+```
+
+> **Commercial prices must not be hardcoded in application logic.** Today's allowance table is a TypeScript constant with five units and five plan ids (DRIFTED); BL2 replaces it with data.
+
+Current modelled economics, for reference and not as a commitment: variable cost per merchant per month of roughly ₦892 (Chat), ₦957 (Integrate) and ₦1,453 (Complete) at 1,000 merchants, giving 91–95% gross margin, with break-even near 761 merchants. These figures depend on the Meta billing mode (§24) and on tiered bank-feed pricing, both of which are open.
+
+---
+
+## 31. Accounting definition of done
+
+Fourteen invariants. A release that violates any of them is not shippable, regardless of what else it does.
+
+1. Every statement figure traces to account → journal → business event → origin.
+2. Every posted journal balances.
+3. No paid invoice exists without authoritative allocations or applied credits.
+4. No receipt exists without accepted confirmation provenance.
+5. Provider settlement reconciles to gross payment.
+6. Inventory gross profit reconstructs from costing movements.
+7. Statements tie to the ledger.
+8. Revenue is recognised only according to the configured recognition policy.
+9. Credits, returns, refunds, reversals and chargebacks preserve history.
+10. Clearing, bank and customer-credit balances are explainable.
+11. A bank credit is never assumed to be customer revenue or a customer payment merely because money arrived.
+12. Receivable recognition and revenue recognition can happen at different times.
+13. Partial fulfilment cannot recognise more revenue than has been fulfilled.
+14. Financial-event retries cannot produce duplicate journals.
+
+---
+
+## 32. The golden business fixture
+
+One fictional business, one permanent integration test, run end to end. This becomes among the strongest regression protections Rekoda has, because it is the only test that can catch an error that is individually plausible everywhere and collectively wrong.
+
+**The scenario, in order:**
+
+```
+opening balances            purchase inventory          supplier bill
+partial supplier payment    cash sale                   credit sale
+WhatsApp Integrate order    customer deposit            partial fulfilment
+final fulfilment            payment                     provider settlement
+provider fee                bank feed import            reconciliation
+customer overpayment        customer credit             refund
+sale return                 payment reversal            chargeback
+operating expense           fixed asset                 depreciation
+FX transaction              accounting close
+```
+
+**What it must prove ties:**
+
+```
+General Ledger  ·  Trial Balance  ·  Profit and Loss  ·  Balance Sheet
+Cash Flow  ·  AR  ·  AP  ·  Inventory
+Customer Statement  ·  Supplier Statement  ·  Reconciliation
+```
+
+The fixture lands incrementally: a first version when F1 completes, extended by each subsequent slice, complete after F2. A slice that cannot extend the fixture has not finished.
+
+---
+
+## 33. Freeze
+
+On approval of this document and the build plan, **the architecture is frozen for implementation**.
+
+Reopen a canonical decision only when:
+
+```
+repository evidence makes it impossible
+financial integrity would be violated
+legal or compliance evidence invalidates it
+provider capability makes it impossible
+material production evidence proves the design incorrect
+```
+
+**Refactoring preference alone is not sufficient.** A nicer-looking implementation of a settled decision is not a reason to reopen it.
