@@ -5,9 +5,9 @@
 | Field | Value |
 |---|---|
 | Status | **APPROVED — FROZEN FOR IMPLEMENTATION** |
-| Canonical version | 1.6 |
+| Canonical version | 1.6.1 |
 | Effective date | 25 August 2026 |
-| Supersedes | Canonical Product Architecture v2.0; Chat & Integrate Journey v1.0; corrections v1.1 through v1.5; ADR 0004 (chart of accounts), ADR 0014 (Recorded vs Verified) in part |
+| Supersedes | Canonical Product Architecture v2.0; Chat & Integrate Journey v1.0; corrections v1.1 through v1.6; ADR 0004 (chart of accounts), ADR 0014 (Recorded vs Verified) in part |
 | Owners | Product and engineering, jointly. Accounting sections additionally require finance sign-off. |
 | Companion | `docs/REKODA_END_TO_END_BUILD_PLAN.md` |
 
@@ -105,8 +105,24 @@ Product boundaries are **exclusive**. This is enforced server-side and is not a 
 
 Merchant-facing conversational business operations. The merchant messages Rekoda; Rekoda keeps the records.
 
-- **MUST**: record sales, payments, expenses, purchases, stock movements and corrections from merchant messages; answer questions about the merchant's own books; issue invoices and receipts; send payment details to a named customer.
-- **MUST NOT**: expose any customer-facing commerce surface, accept an order placed by the merchant's customer, or run a catalogue for the merchant's buyers.
+- **MUST**: record sales, payments, expenses, purchases, stock movements and corrections from merchant messages; answer questions about the merchant's own books; issue invoices and receipts; **create** payment details for a named customer and return them to the merchant.
+- **MUST NOT**: expose any customer-facing commerce surface, accept an order placed by the merchant's customer, run a catalogue for the merchant's buyers, or **deliver anything into a customer's thread on the merchant's WABA**.
+
+The last clause is the one that is easy to get wrong, so it is drawn explicitly:
+
+```
+CHAT ONLY            "Create payment details for Chidi"
+                     ✓ mint the link, account or details
+                     ✓ return them to the merchant, who shares them however they like
+                     ✗ message Chidi's thread on the merchant's WABA
+
+COMPLETE             "Send payment details to Chidi"
+                     ✓ mint the payment details
+                     ✓ resolve Chidi's customer thread
+                     ✓ deliver through the merchant's WABA
+```
+
+Delivering into a customer thread is a customer-facing act on the merchant's own channel, which is the definition of Integrate. A Chat-only business gets the details in their own hands; a Complete business gets them delivered.
 
 ### 3.2 Rekoda Integrate — the merchant's customers transact
 
@@ -173,7 +189,11 @@ These are invariants, not guidance.
 3. **No paid external processing before authorisation.** Including transcription, document understanding and template sends.
 4. **A refused request consumes nothing.** No allowance, no provider call, no charge. Where a unit is reserved before a failure becomes visible, it is refunded on every path that does not deliver.
 
-### 4.4 Downgrade and lapse
+### 4.4 Risk tiers
+
+Risk tier is part of E1 and is specified in **Appendix D**. Entitlement decides whether a capability exists for this business; risk tier decides what confirmation a capability demands before it acts.
+
+### 4.5 Downgrade and lapse
 
 Downgrade never destroys records. Losing `REKODA_INTEGRATE` stops new customer-side commerce; existing orders remain visible, existing invoices remain collectible, existing statements remain correct and exportable. A lapsed trial is modelled as a plan whose every allowance is zero, so the gate needs no separate branch.
 
@@ -193,7 +213,7 @@ The journey specification remains a reference document. The invariants that cons
 | Cash sale | Sale, payment and fulfilment may post together. One event, one journal. |
 | Credit sale | Creates a receivable under the configured policy (§12). Never revenue on invoice issue unless fulfilled. |
 | Partial payment | Allocates against a specific invoice. Never silently spreads across invoices. |
-| Merchant-attested cash | `MERCHANT_ATTESTED` + `paymentMethod = CASH`. Requires the confirmation transition (§6.6). |
+| Merchant-attested cash | `MERCHANT_ATTESTED` + `paymentMethod = CASH`. Requires the confirmation transition (§6.8). |
 | Merchant-attested transfer or POS | `MERCHANT_ATTESTED` + `BANK_TRANSFER` or `POS`. Same requirement. The instrument never changes the source. |
 | Proof-of-payment screenshot | **Creates `PaymentEvidence`, never a `Payment`.** A screenshot is never proof. |
 | Invoice | A projection of order and line state, not an independently editable record. |
@@ -230,7 +250,7 @@ The journey specification remains a reference document. The invariants that cons
 
 ### 5.3 Complete
 
-Cross-product journeys must not double-record. "Send Chidi the payment details" originates in Chat, mints an intent on the merchant's connection, and when Chidi pays through Integrate's rails it produces **one** payment, **one** allocation and **one** receipt. The rule that makes this hold is §25: every ingress converges on the same command.
+Cross-product journeys must not double-record. "Send Chidi the payment details" is a Complete journey, not a Chat one (§3.1). It originates in Chat, mints an intent on the merchant's connection, delivers into Chidi's thread through Integrate, and when Chidi pays it produces **one** payment, **one** allocation and **one** receipt. The rule that makes this hold is §25: every ingress converges on the same command.
 
 ---
 
@@ -263,12 +283,25 @@ confirmationSource                 how the truth was established
   BANK_FEED_MATCH                  an imported bank line was matched to this payment
   MERCHANT_ATTESTED                the merchant confirmed it, with recorded semantics
   MANUAL_RECONCILIATION            a person linked an ACTUAL external financial
-                                   transaction to this payment (see 6.5)
+                                   transaction to this payment (see 6.7)
   LEGACY_PROVENANCE_UNKNOWN        the estate cannot establish it
 
 paymentMethod                      what instrument the money moved on
-  CASH · BANK_TRANSFER · POS · CARD · USSD · WALLET · OTHER
+  CASH · BANK_TRANSFER · POS · CARD · USSD · WALLET · OTHER · UNKNOWN
 ```
+
+`UNKNOWN` is kept deliberately. Historical rows exist whose instrument cannot be established, and forcing them into `OTHER` would claim knowledge the estate does not have. `OTHER` means *something we can name but have not enumerated*; `UNKNOWN` means *we do not know*.
+
+**`LEGACY_PROVENANCE_UNKNOWN` is not a verification source.** It is an initial historical state and nothing else:
+
+```
+allowed as initialConfirmationSource     all five values
+allowed as PaymentVerification.source    PROVIDER_VERIFIED · BANK_FEED_MATCH
+                                         MERCHANT_ATTESTED · MANUAL_RECONCILIATION
+                                         ← enforced by CHECK
+```
+
+A verification event means some evidence or assertion actually occurred. An event recording that nothing is known is a contradiction in terms, and permitting it would let the remediation queue look worked when it was not.
 
 `MERCHANT_ATTESTED + POS` is now representable, which it was not while the source enum carried the instrument. A method never implies a source and a source never implies a method.
 
@@ -291,7 +324,10 @@ PaymentVerification             APPEND-ONLY
   providerReference?
   actorId?                      who, for MERCHANT_ATTESTED and MANUAL_RECONCILIATION
   verifiedAt · reason? · metadata?
+  sourceMigration?              set only by a backfill, for exact rollback
 ```
+
+**Set-once, enforced by the database.** `initialConfirmationSource` is immutable in fact, not by convention: a `BEFORE UPDATE` trigger permits `NULL → value` exactly once and refuses `value → different value` unconditionally. Remediation cannot reach it, a repair script cannot reach it, and a future writer nobody has thought of cannot reach it.
 
 The case a single mutable column could not express:
 
@@ -309,20 +345,69 @@ derived trust today          = EXTERNALLY_VERIFIED
 what the merchant said Monday = still on the record, forever
 ```
 
-### 6.4 Derived trust
+### 6.4 Revocation: append-only needs a compensating event
+
+Append-only without a correction mechanism is not integrity, it is a trap. A human matches bank line `TX-123` to `PAY-001`, then discovers it belonged to `PAY-002`. `UPDATE` and `DELETE` are revoked, correctly. Without a compensating event, `PAY-001` is externally verified forever on evidence that was never its own.
+
+The ledger solved this with reversing journals. Verification solves it the same way.
+
+```
+PaymentVerificationRevocation        APPEND-ONLY
+  id · businessId · verificationId
+  reason                             REQUIRED
+  actorId                            REQUIRED
+  occurredAt
+
+TX-123 → PAY-001    PaymentVerification #1
+                    PaymentVerificationRevocation  reason = incorrect match
+TX-123 → PAY-002    PaymentVerification #2
+
+PAY-001  no active verification. history intact: somebody matched it,
+         somebody unmatched it, and both are on the record.
+PAY-002  externally verified.
+```
+
+A revocation may itself be revoked only by being superseded; a revocation is never deleted.
+
+### 6.5 Source idempotency
+
+Without these, a retried webhook verifies twice and one bank line verifies two payments. Both are silent, and both corrupt trust rather than merely duplicating a row.
+
+```
+BANK_FEED_MATCH / MANUAL_RECONCILIATION
+  one ACTIVE verification per financialTransactionId, estate-wide within the business
+  UNIQUE (businessId, financialTransactionId) WHERE not revoked
+  → one bank line cannot externally verify two payments
+
+PROVIDER_VERIFIED
+  UNIQUE (businessId, paymentAttemptId) WHERE not revoked
+  → a retried webhook is a no-op, not a second verification
+
+MERCHANT_ATTESTED
+  UNIQUE (businessId, confirmationEventId) WHERE not revoked
+  where confirmationEventId is the command draft for chat,
+  or the audit event id for a dashboard action
+  → a retried job cannot attest twice for one confirmation
+```
+
+"Active" means *not revoked*, which is why the uniqueness is partial rather than absolute: an incorrect match must be revocable and the line must then be free to verify the right payment.
+
+### 6.6 Derived trust
 
 Trust is computed from **the full set of verification events**, never from one column.
 
 ```
-EXTERNALLY_VERIFIED    any verification with source PROVIDER_VERIFIED,
+EXTERNALLY_VERIFIED    an ACTIVE verification with source PROVIDER_VERIFIED,
                        BANK_FEED_MATCH or MANUAL_RECONCILIATION
-ATTESTED               at least one MERCHANT_ATTESTED and nothing stronger
-UNESTABLISHED          no verification events, or only LEGACY_PROVENANCE_UNKNOWN
+ATTESTED               at least one ACTIVE MERCHANT_ATTESTED and nothing stronger
+UNESTABLISHED          no active verification events
 ```
+
+**Revoked verifications are ignored by the derivation and erased by nothing.** A payment can move from `EXTERNALLY_VERIFIED` back to `UNESTABLISHED` when a bad match is revoked, and the history explains exactly why.
 
 Trust is never stored as an independent flag. Storing it would let it disagree with the events that produced it, which is the failure this whole model exists to prevent.
 
-### 6.5 `MANUAL_RECONCILIATION` means one specific thing
+### 6.7 `MANUAL_RECONCILIATION` means one specific thing
 
 > **A human linked an actual external financial transaction to a Rekoda payment or invoice.**
 
@@ -335,7 +420,7 @@ the merchant now attests they received it          → MERCHANT_ATTESTED
 
 In both cases `initialConfirmationSource` remains whatever it was, including `LEGACY_PROVENANCE_UNKNOWN`. **Remediation adds evidence. It never rewrites history.**
 
-### 6.6 Medium is never proof
+### 6.8 Medium is never proof
 
 > **Input medium must never be treated as proof of attestation.**
 
@@ -423,9 +508,9 @@ cost of goods sold                    recurring transactions
 opening balances                      dimensions
 ```
 
-`JournalLine.orderId` is a required dimension on any line touching `CONTRACT_LIABILITY` or `ACCOUNTS_RECEIVABLE`, because the recognition engine reads per-order balances from the ledger rather than from a shadow copy of it (§12.2).
+Journal lines carry **source-appropriate subledger dimensions** rather than a blanket order requirement, because the recognition engine reads per-order balances from the ledger rather than from a shadow copy of it (§12.2). See §12.3.
 
-Roadmap, architected for but not built in V1: project and job costing, budgets.
+Inventory costing policy is in **Appendix B**. Roadmap, architected for but not built in V1: project and job costing, budgets.
 
 **Repository reality (DRIFTED).** Today there is no `accounts` table. The chart of accounts is a seventeen-key TypeScript constant and `ledger_entries.account` is a text key into it. There is no accounting-period table; `businesses.books_closed_through` is the entire period model. There is no currency on any ledger row. Repairing this is slice F1 and it is the largest slice in the plan.
 
@@ -634,7 +719,26 @@ and from order state:
 earnedToDate                         the value of performance obligations satisfied
 ```
 
-Reading a per-order balance requires journal lines to carry the order they belong to. `JournalLine.orderId` is therefore a required dimension on any line touching `CONTRACT_LIABILITY` or `ACCOUNTS_RECEIVABLE`, and it is what makes the engine possible without a shadow ledger.
+Reading a per-order balance requires journal lines to carry what they belong to. The dimension rule is stated in §12.3; a blanket `orderId` requirement would be too strong, because plenty of legitimate receivables never had an order.
+
+#### Dimensions: subledger always, order where an order exists
+
+> **SUPERSEDED.** An earlier draft required `JournalLine.orderId` on every line touching `ACCOUNTS_RECEIVABLE` or `CONTRACT_LIABILITY`. That is too strong. Migration-day opening receivables, a receivable inherited from a previous system, and a standalone manually entered invoice are all legitimate and none of them has an order. Requiring one would force the engine to fabricate commerce objects that never existed, which is a worse lie than a nullable column.
+
+```
+ACCOUNTS_RECEIVABLE line
+  receivableId or invoiceId      REQUIRED, always. The AR subledger reference.
+  orderId                        REQUIRED where the posting's source is order
+                                 recognition or fulfilment. NULL otherwise, and
+                                 legitimately so.
+
+CONTRACT_LIABILITY line
+  orderId or contractId          REQUIRED, always. A contract liability without a
+                                 contract is not a contract liability, and there is
+                                 no opening-balance case for one.
+```
+
+So AR is always traceable to something in the subledger, an order-recognition posting is always traceable to its order, and opening balances post without inventing anything.
 
 #### The event rules
 
@@ -664,6 +768,25 @@ fulfilment
 ```
 
 Cash and carry is not a special case: sale, payment and fulfilment occur in one transaction, `contractLiabilityBalanceForOrder` is zero, `release` is zero, and the whole `recogniseDelta` posts against the cash side directly.
+
+#### Earned, but no unconditional right yet
+
+The fulfilment rule says `DR Accounts Receivable remaining, where a right to collect now exists`. That clause hides a case, and it should not.
+
+Revenue can be earned while the right to consideration is still conditional — the obligation is satisfied but something else must happen before the customer owes anything. Under IFRS 15 that balance is a **contract asset**, not a receivable, because it is conditional on something other than the passage of time.
+
+```
+V1 behaviour: REJECT, LOUDLY
+
+  recogniseDelta > 0
+  AND contractLiabilityBalanceForOrder < recogniseDelta
+  AND no unconditional right to the remainder exists
+    → the engine refuses the posting and raises REQUIRES_REVIEW
+    → the order is queued for a human, who either establishes the right
+      or corrects the fulfilment record
+```
+
+Rekoda does not model contract assets in V1 and **must not silently post one as a receivable**, which is what the unqualified rule would have done. Calling a conditional balance a receivable overstates collectability on the balance sheet, and it is exactly the error the receivable-recognition policy exists to prevent. `CONTRACT_ASSET` is reserved as a role name for the version that models it.
 
 #### The invariants the engine asserts after every posting
 
@@ -851,7 +974,7 @@ JournalLine
 
 Statements sum functional values. **Historical transactions never use today's rate.**
 
-Four FX concepts, kept distinct and never shared:
+See **Appendix A** for the rate source, fallback, staleness and override rules. Four FX concepts, kept distinct and never shared:
 
 ```
 Accounting FX          what the books used at the transaction date
@@ -1332,3 +1455,261 @@ material production evidence proves the design incorrect
 ```
 
 **Refactoring preference alone is not sufficient.** A nicer-looking implementation of a settled decision is not a reason to reopen it.
+
+
+---
+
+# Appendices
+
+The appendices are canonical. They exist as appendices because they are reference material rather than narrative, not because they are optional.
+
+---
+
+## Appendix A — Dynamic FX
+
+§16 defines what the ledger stores. This defines where a rate comes from and what happens when it cannot be got.
+
+### A.1 The port
+
+```
+ExchangeRateProvider              provider-neutral, like every other port
+  rateFor(base, quote, at) → ExchangeRateSnapshot | Unavailable
+
+ExchangeRateSnapshot              immutable, once written
+  id · baseCurrency · quoteCurrency
+  rate                            stored at full provider precision, never rounded
+  effectiveAt                     the moment the rate applies to, not fetch time
+  fetchedAt
+  source                          PROVIDER · MANUAL_OVERRIDE · INHERITED
+  providerName · providerReference?
+  actorId?                        required for MANUAL_OVERRIDE
+  reason?                         required for MANUAL_OVERRIDE
+```
+
+### A.2 Primary, fallback and staleness
+
+```
+1  primary provider          the configured rate source
+2  fallback provider         a different provider, on primary failure
+3  cached snapshot           reused when its effectiveAt is inside the freshness window
+4  REFUSE                    all three exhausted
+```
+
+**A stale rate is refused, never guessed.** The freshness window is configuration; outside it, the posting fails with a named error and the operation is queued rather than completed at an invented rate. Refusing to post is recoverable. Posting at a wrong rate is a wrong set of books that balances, and nobody notices.
+
+Rates are cached by `(base, quote, effectiveAt)`, which is what makes the cache safe: two postings for the same moment get the same snapshot by construction rather than by luck.
+
+### A.3 Manual override
+
+A merchant may pin a rate — a contractual rate, a bank's actual fill. It is a first-class snapshot with `source = MANUAL_OVERRIDE`, an actor, a reason, and an audit event. It is never silent and never inferred.
+
+### A.4 Historical rates are permanent
+
+> **A historical transaction always uses its own snapshot.** Re-rendering a statement for a closed month must produce the same figures it produced then. Nothing recomputes a past posting at today's rate, for any reason, including a corrected rate: a corrected rate produces a reversing journal at the new snapshot, never a mutation of the old one.
+
+### A.5 Commercial FX is a different thing entirely
+
+Accounting FX records what happened. Commercial FX decides what to charge, and it is a pricing decision with a margin in it.
+
+```
+CommercialFxPolicy
+  sourceSnapshot            the accounting-grade mid rate it starts from
+  bufferBps                 the spread applied, in basis points
+  roundingRule              UP · NEAREST · TO_MAJOR_UNIT
+  minMarginBps              the floor below which a quote is refused
+  quoteValidityWindow       how long a quoted rate is honoured
+```
+
+**A commercial rate is never posted to the ledger and an accounting rate is never quoted to a customer.** Mixing them is how a business discovers it has been absorbing a spread for a year.
+
+---
+
+## Appendix B — Inventory costing
+
+### B.1 The V1 policy
+
+```
+InventoryCostingPolicy = WEIGHTED_AVERAGE
+```
+
+Fixed for V1. FIFO and specific identification are reserved enum values and are not implemented. Two engineers implementing "inventory" without a stated policy produce two sets of books that each look right, and the golden fixture in §32 covers inventory and COGS, so it would certify whichever one shipped.
+
+### B.2 The rules
+
+```
+receipt of stock          new average = (existing value + received value)
+                                        ÷ (existing qty + received qty)
+                          recomputed at the moment of receipt, never retroactively
+
+issue of stock (sale)     COGS = qty issued × average cost at issue
+                          the average is UNCHANGED by an issue
+
+customer return           stock returns at the ORIGINAL issue cost carried on
+                          the movement, not at today's average
+                          → returning goods cannot move the average, and a return
+                            in a falling market cannot manufacture a gross profit
+
+supplier return           reverses the receipt at the receipt's own cost, and the
+                          average is recomputed as at that moment
+
+negative stock            REFUSED. An issue that would take a line below zero is
+                          rejected, because a negative average cost is not a number
+                          any statement can survive.
+```
+
+Every movement carries the unit cost applied to it, so gross profit reconstructs from the movements and definition-of-done invariant 6 holds without a second calculation.
+
+### B.3 Roadmap
+
+Net realisable value impairment — writing stock down to what it will actually fetch — is architected for and not built in V1. The seam is a nullable `impairedValueMinor` on the stock line and an `InventoryImpairment` posting purpose.
+
+---
+
+## Appendix C — Privacy and the AI processor boundary
+
+The privacy gateway exists so that no model reasoning about a merchant's business ever sees who their customers are. One step in the pipeline is a deliberate, narrow exception, and a permanent specification must state it rather than leave a future engineer to infer a rule.
+
+### C.1 The pipeline
+
+```
+typed or spoken message
+  → PII gateway: tokenise names, phone numbers, addresses
+  → reasoning model receives TOKENS only
+
+photographed document
+  → APPROVED SPECIALIST PROCESSOR: raw image, transcription only
+  → PII gateway: tokenise the transcript
+  → reasoning model receives TOKENS only
+```
+
+### C.2 The exception, stated precisely
+
+A PII gateway tokenises text. It cannot tokenise an image, because the personal data in a photograph is pixels. Something must read the paper before anything can be tokenised.
+
+```
+APPROVED SPECIALIST PROCESSOR
+
+  purpose        transcription ONLY. Transcribe what is on the page, verbatim.
+                 No interpretation, no summarising, no inference.
+  input          the raw image
+  output         text, and nothing else
+  terms          API terms that exclude training on inputs. A DPA is required
+                 before a processor is approved.
+  retention      the processor must not retain the image
+  storage        Rekoda does not store the raw image beyond the evidence
+                 retention rules of §23
+  registry       approved processors are named in configuration and are
+                 auditable. Adding one is a decision, not a deployment.
+```
+
+The self-hosted OCR sidecar remains a supported configuration and is the hardening move. `/ai-privacy` describes whichever configuration a deployment actually runs, and that page is generated from configuration rather than written by hand, so it cannot drift from the truth.
+
+### C.3 The invariant that does not bend
+
+> **The reasoning model receives tokenised context. Always.** The specialist-processor exception covers transcription and covers nothing else. A model asked to reason, decide, classify or advise never receives untokenised personal data, whatever surface the request came from and whatever the merchant asked for.
+
+---
+
+## Appendix D — Risk tiers and confirmation policy
+
+Entitlement decides whether a capability exists for a business. Risk tier decides what a capability demands before it acts. Without this, every command is equally easy, and reversing a period close is as cheap as asking for a sales figure.
+
+### D.1 The tiers
+
+```
+READ_ONLY        no confirmation. Questions, reports, balances, statements.
+
+STANDARD         a preview and a confirmation, which is the existing draft
+                 mechanism. Sales, payments, expenses, purchases, stock counts.
+
+HIGH_RISK        explicit confirmation naming the specific consequence,
+                 an authenticated actor, and an audit event carrying the reason.
+                 Never available to an unattended assistant.
+```
+
+### D.2 What is HIGH_RISK
+
+```
+RefundPayment                      money leaves the business
+ReceiptVoid                        a document already given to a customer
+PaymentVerificationRevocation      unpicking established trust
+ConfirmReconciliation override     overruling a deterministic match
+PaymentConnection credential change  where money will land
+PaymentConnection provider change    which rails money runs on
+ReopenAccountingPeriod             reported figures become movable again
+Account deactivation, mandatory role  the chart of accounts loses a required part
+EraseData                          exact-phrase confirmation, never "yes"
+PostingAccountPolicy change        where the engine posts from now on
+```
+
+### D.3 The rules
+
+- **The away assistant (W4) may never execute a `HIGH_RISK` command.** It hands off to a human, every time, without exception.
+- A `HIGH_RISK` confirmation names the consequence in the merchant's own terms. "Refund ₦20,000 to Ada. The money leaves your account." Not "confirm?".
+- Every `HIGH_RISK` execution writes an audit event with the actor and the reason. A missing reason is a refusal, not a blank field.
+- Risk tier is a property of the **command**, declared in the command layer (§25), so no ingress can lower it. A tier that a controller could soften would not be a tier.
+
+---
+
+## Appendix E — Lifecycle status reference
+
+Superseding the older specifications means their status vocabularies come with, or they are lost and reinvented at implementation time. This is that vocabulary, consolidated.
+
+### E.1 Payment
+
+```
+status              PENDING · PROCESSING · CONFIRMED · FAILED
+                    REVERSED · REFUNDED · PARTIALLY_REFUNDED
+trust               derived, never stored (§6.6)
+```
+
+### E.2 PaymentIntent and PaymentAttempt
+
+```
+PaymentIntent       CREATED · AWAITING_PAYMENT · PARTIALLY_PAID · PAID
+                    EXPIRED · CANCELLED · FAILED
+PaymentAttempt      INITIATED · PENDING · SUCCEEDED · FAILED · ABANDONED
+```
+
+### E.3 Invoice
+
+```
+lifecycle           DRAFT · ISSUED · PARTIALLY_PAID · PAID · VOID · WRITTEN_OFF
+collection          CURRENT · DUE · OVERDUE · IN_DISPUTE · IN_COLLECTION
+aging               0-30 · 31-60 · 61-90 · 90+          from the DUE date, never
+                                                        from the issue date
+```
+
+Lifecycle and collection are independent. An invoice can be `PARTIALLY_PAID` and `OVERDUE` at the same time, and collapsing them into one column is how a partly paid overdue invoice becomes invisible.
+
+### E.4 Order and fulfilment
+
+```
+Order               DRAFT · PLACED · VALIDATED · CONFIRMED
+                    PARTIALLY_FULFILLED · FULFILLED · CANCELLED
+Fulfilment          PENDING · PARTIAL · COMPLETE · RETURNED
+```
+
+`VALIDATED` is a distinct state from `PLACED` on purpose: the gap between them is the server-side validation that Integrate depends on (§5.2), and a model that skipped it could not represent an order that was placed and refused.
+
+### E.5 Settlement
+
+```
+Settlement          EXPECTED · IN_TRANSIT · SETTLED · FAILED · REVERSED
+SettlementComponent DEDUCTION · ADDITION            signed (§20)
+```
+
+### E.6 Reconciliation
+
+```
+FinancialTransaction   IMPORTED · MATCHED · PARTIALLY_MATCHED
+                       UNMATCHED · IGNORED · IN_REVIEW
+match confidence       EXACT_REFERENCE · STRONG_DETERMINISTIC
+                       SUGGESTED · MANUAL                (§22.1)
+```
+
+### E.7 Payment evidence
+
+```
+resolutionState     UNRESOLVED · RESOLVED · EXPIRED      (§23)
+```

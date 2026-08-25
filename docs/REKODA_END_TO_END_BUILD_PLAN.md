@@ -3,9 +3,9 @@
 | Field | Value |
 |---|---|
 | Status | **APPROVED — EXECUTION PLAN** |
-| Version | 1.1 (v1.6 patch) |
+| Version | 1.2 (v1.6.1 hardening) |
 | Effective date | 25 August 2026 |
-| Governs | `docs/REKODA_CANONICAL_SPEC.md` v1.6 |
+| Governs | `docs/REKODA_CANONICAL_SPEC.md` v1.6.1 |
 | Total slices | 20 |
 | Baseline PR plan | **115**, target range 105&ndash;130 |
 
@@ -50,6 +50,7 @@ Established by inspection, not from memory. This is the baseline the plan is wri
 | Fee bearer | A `fee_policy` column on the connection | `EconomicFeeBearer` split from `ProviderFeePayer` | P1 |
 | Settlement | Amounts on the payment row; a polling sweep | `Settlement` / `SettlementItem` / `SettlementComponent` | P2 |
 | Reconciliation | `reconciliations` matches internal expectations only | Four tiers, with the bank feed as an independent source | B1 |
+| **Conversations** | **`UNIQUE (businessId, channel)` — literally one thread per business per channel** (`ops.ts:41`, migration 0006) | One thread per external participant on a channel account | **PR-058a** |
 | Public API | Contracts exist for internal use only | Separately entitled, versioned public surface | API-D |
 
 ### 1.3 Open work carried forward
@@ -161,19 +162,19 @@ Each slice states what the build plan requires of it. PR-level detail for the fi
 |---|---|
 | **Objective** | Give every payment an honest provenance, and give evidence somewhere to live that is not a payment. |
 | **Canonical sections** | §6, §7, §23 |
-| **Current state** | `payments.verified` integer. No evidence table. A screenshot that produced a payment produced a `Payment` row. |
-| **Target state** | `PaymentEvidence` and `PaymentVerification` exist; every payment carries a provenance value; trust level is derived, never stored independently; `verified` is retired. |
+| **Current state** | `payments.verified` integer and `payments.method` text. No evidence table, no verification table. A screenshot that produced a payment produced a `Payment` row. |
+| **Target state** | `PaymentEvidence`, append-only `PaymentVerification` and its revocation event exist; every payment carries an immutable `initialConfirmationSource` and a `paymentMethod`; trust is derived from active verification events and never stored; `verified` is retired. |
 | **Dependencies** | **R0A-i approval blocks PR-006 onward.** PR-003, PR-004 and PR-005 are not blocked; see §2. |
-| **Schema** | `payment_evidence`, `payment_verification`, `payments.provenance`, `payments.evidence_basis`; evidence retention columns per §23. |
-| **Commands** | `RecordPaymentEvidence`, `ConfirmPayment` extended. |
+| **Schema** | `payment_evidence`, `payment_verifications`, `payment_verification_revocations`, `migration_manifests`, `migration_manifest_items`; `payments.initial_confirmation_source`, `payments.payment_method`, `payments.evidence_basis`; evidence retention columns per §23. |
+| **Commands** | `RecordPaymentEvidence`, `AddPaymentVerification`, `RevokePaymentVerification` (HIGH_RISK, spec Appendix D), `ConfirmPayment` extended. |
 | **Endpoints** | Remediation queue read and resolve. |
 | **Jobs** | Evidence retention sweep; unresolved-TTL expiry. |
 | **Frontend** | Remediation queue; evidence viewer with retention state. |
-| **Tests** | Every provenance value round-trips; no code path can write `MERCHANT_ATTESTED_*` without a recorded confirmation; expired evidence purges raw media and keeps the fact. |
+| **Tests** | Every source round-trips; no code path writes `MERCHANT_ATTESTED` without a recorded confirmation; a bank line cannot actively verify two payments; a revoked verification frees its line; `initialConfirmationSource` cannot be changed once set; expired evidence purges raw media and keeps the fact. |
 | **Migration** | Additive → writers → backfill → cutover → cleanup. Five PRs, deliberately. |
 | **Rollout** | Flag `provenance_reads` defaults off; readers dual-source until cutover. |
 | **Rollback** | Every step before cutover is reversible by disabling the flag. After cleanup, rollback is a restore. |
-| **Completion gate** | Zero payments with null provenance; remediation queue empty or explicitly accepted; `verified` has no writers. |
+| **Completion gate** | Zero payments with a null `initialConfirmationSource`; remediation queue empty or explicitly accepted; `verified` has no writers and is trigger-maintained only. |
 | **PRs** | PR-003 … PR-009 |
 | **Complexity** | High. Historical data, live money. |
 
@@ -282,10 +283,11 @@ The largest slice. Twenty-two PRs, because it replaces the foundation everything
 | **Objective** | The merchant's own WABA, connected by them, routed by us. |
 | **Canonical sections** | §24 |
 | **Dependencies** | E1 and A1 for gating and commands. **W0 for Meta approvals.** Runs in parallel with F1 and P1. |
-| **Schema** | `waba_connections`, `waba_templates`, service-window state. |
+| **Schema** | `waba_connections`, `waba_templates`, service-window state, **and the conversation model migration of PR-058a**. |
+| **The blocker PR-058a removes** | The repository has `uniqueIndex('conversations_business_channel_ux').on(t.businessId, t.channel)` with the comment "One thread per business per channel". That was correct for merchant ↔ Rekoda Chat, where there is exactly one thread. It **cannot represent** a merchant WABA carrying Ada, Chidi, Bola and fifty thousand others, so Integrate is structurally impossible until it changes. Target shape: <br><br>`Conversation` gains `channelAccountId`, `externalConversationId`, `externalParticipantId`, `actorType` (`MERCHANT` / `CUSTOMER`) and a nullable `customerId`; uniqueness moves to the external channel account and thread or participant identity. Existing rows migrate as the merchant's own Chat thread with `actorType = MERCHANT`. **This must land before W3**, and it is high risk because every existing conversation row and every message reader depends on the old shape. |
 | **Tests** | An unknown `phoneNumberId` is refused, never guessed. Template category is chosen at send time and metered to the right unit. |
 | **Completion gate** | A merchant completes Embedded Signup and receives a message on their own WABA, metered correctly. |
-| **PRs** | PR-058 … PR-062 |
+| **PRs** | PR-058, **PR-058a**, PR-059 … PR-062 |
 | **Complexity** | Medium, gated by W0. |
 
 ---
@@ -404,7 +406,7 @@ The largest slice. Twenty-two PRs, because it replaces the foundation everything
 |---|---|
 | Total slices | 20 (plus EMBED, deferred) |
 | Minimum safe PR count | 72 |
-| **Baseline PR plan** | **115** |
+| **Baseline PR plan** | **116** (115 + PR-058a) |
 | **Working range** | **105 – 130** |
 | Maximum sensible PR count | 165 |
 | Likely serial PRs | 78 |
@@ -412,7 +414,7 @@ The largest slice. Twenty-two PRs, because it replaces the foundation everything
 | PRs blocked pending the R0A-i report | 5 |
 | PRs externally blocked | 18 |
 | PRs safe to start now | 24 |
-| Migration-heavy PRs | 17 |
+| Migration-heavy PRs | 18 |
 
 ### 4.1 The count is a baseline, not a completion requirement
 
@@ -440,8 +442,9 @@ Seventy-two is genuinely safe: group additive schema with its first inert writer
 | 3 | **PR-033** Readers cutover to `account_id` | Every statement, export and report at once. A regression here is visible to every merchant simultaneously. |
 | 4 | **PR-039** Journal invariant triggers | A trigger that is even slightly too strict rejects legitimate writes on live paths and stops the business. |
 | 5 | **PR-051** `PaymentConnection` status backfill | Derives four statuses from one blended value on live money paths. A wrong derivation disables collection for a real merchant. |
+| 6 | **PR-058a** Conversation model migration | Every conversation row and every message reader depends on the current one-thread-per-channel shape. Getting it wrong breaks Chat while building Integrate. |
 
-Each of the five requires a dry run against a production clone before merge. That requirement is part of their completion contract and is not optional.
+Each of these requires a dry run against a production clone before merge. That requirement is part of their completion contract and is not optional.
 
 ---
 
@@ -644,6 +647,7 @@ Size: **S** narrow and reviewable · **M** normal · **L** large but acceptable 
 | PR-056 | P1 | `EconomicFeeBearer` split from `ProviderFeePayer` | **yes** | med | PR-052 | M |
 | PR-057 | P1 | `PaymentCharge` and the checkout breakdown | **yes** | med | PR-056 | M |
 | PR-058 | W1/W2 | Embedded Signup and the WABA connection model | **yes** | med | PR-013 | L |
+| PR-058a | W1/W2 | **Channel-neutral multi-party conversation model** | **yes** | **high** | PR-058 | L |
 | PR-059 | W1/W2 | `phoneNumberId` to `BusinessId` routing | no | **high** | PR-058 | M |
 | PR-060 | W1/W2 | Per-WABA template registry | **yes** | med | PR-058 | M |
 | PR-061 | W1/W2 | Service window and send-time category selection | no | med | PR-060, PR-016 | M |
@@ -672,7 +676,7 @@ Size: **S** narrow and reviewable · **M** normal · **L** large but acceptable 
 | PR-084 | F2 | Document projections on the kernel | no | med | PR-081 | L |
 | PR-085 | F2 | Golden business fixture, complete | no | low | PR-077…084 | L |
 | PR-086 | W3 | Catalogue synchronisation to the WABA | **yes** | med | PR-061 | L |
-| PR-087 | W3 | Cart and order ingestion from WhatsApp | no | **high** | PR-086, PR-025 | L |
+| PR-087 | W3 | Cart and order ingestion from WhatsApp | no | **high** | PR-086, PR-025, **PR-058a** | L |
 | PR-088 | W3 | Server-side order validation and breakdown | no | **high** | PR-087, PR-057 | L |
 | PR-089 | W3 | Payment and receipt in the merchant thread | no | med | PR-088, PR-055, **PR-065, PR-066** | L |
 | PR-090 | W4 | Away assistant within configured limits | **yes** | med | PR-089 | L |
@@ -810,10 +814,32 @@ These are the immediate execution queue on approval.
 
 - **Objective.** Give evidence somewhere to live that is not a payment.
 - **Repository areas.** `packages/db/migrations/0052_payment_evidence.sql`, `packages/db/src/schema/finance.ts`, `packages/db/src/repos/payments-hub.ts`.
-- **Schema.** `payment_evidence` (business, customer, source, media reference, `resolutionState`, `resolutionDeadline`, `resolvedAt`, `rawPurgedAt`); `payment_verifications`, **append-only**, with the full column set of spec §6.3 including `financialTransactionId`, `paymentAttemptId`, `actorId`, `reason` and `sourceMigration`; and `migration_manifests`, which PR-006 needs to record its affected-row set. RLS on all three, matching every existing tenant table. No foreign key from `payments` yet.
+- **Schema.** `payment_evidence` (business, customer, source, media reference, `resolutionState`, `resolutionDeadline`, `resolvedAt`, `rawPurgedAt`); five tables, and this is the PR where the permanent decisions get made:
+
+  ```
+  payment_evidence                    §6.1, §23, with the retention columns
+  payment_verifications               §6.3, APPEND-ONLY, full column set
+  payment_verification_revocations    §6.4, the compensating event
+  migration_manifests                 name · cutoff_at · created_at · actor
+  migration_manifest_items            manifest_id · payment_id   ← one row per payment
+  ```
+
+  The manifest is **normalised, not an array**. A single `affected_ids` column would carry one row holding potentially hundreds of thousands of uuids, which is awkward to index, awkward to join, awkward to page and awkward to reason about in a rollback under pressure. Row-per-item scales, joins, and gives exact audit semantics at any historical volume.
+
+  Source idempotency, per spec §6.5, as partial unique indexes over active verifications:
+
+  ```
+  UNIQUE (business_id, financial_transaction_id) WHERE revoked_at IS NULL
+  UNIQUE (business_id, payment_attempt_id)       WHERE revoked_at IS NULL
+  UNIQUE (business_id, confirmation_event_id)    WHERE revoked_at IS NULL
+  CHECK  (source <> 'LEGACY_PROVENANCE_UNKNOWN')
+  ```
+
+  RLS on all five, matching every existing tenant table. No foreign key from `payments` yet.
 - **Commands.** None. No writers in this PR, deliberately.
 - **Migrations.** Additive DDL only. No data writes.
-- **Tests.** RLS isolation on all three tables, proven as `rekoda_app`. `UPDATE` and `DELETE` on `payment_verifications` are revoked from `rekoda_app` and `rekoda_worker`, and a test proves the refusal — append-only in the database, not by convention. Migration applies from zero and is idempotent.
+- **Tests.** RLS isolation on all five tables, proven as `rekoda_app`. `UPDATE` and `DELETE` on `payment_verifications` and `payment_verification_revocations` are revoked from both application roles, with tests proving the refusal — append-only in the database, not by convention. One bank line cannot actively verify two payments. A revoked verification frees its bank line to verify the correct payment. A verification with source `LEGACY_PROVENANCE_UNKNOWN` is refused by the CHECK. Migration applies from zero and is idempotent.
+- **Why this is where it belongs.** PR-003 defines permanent, hard-to-change schema on a table that will hold financial trust. Adding revocation and idempotency later means migrating a populated append-only table, which is exactly the situation append-only makes expensive.
 - **Feature flags.** None needed; nothing reads or writes these tables.
 - **Deployment sequence.** Migrate, deploy. No behaviour change.
 - **Rollback.** Drop both tables. They are empty.
@@ -827,13 +853,14 @@ These are the immediate execution queue on approval.
 
 - **Objective.** Give every payment somewhere to record how its truth was established.
 - **Repository areas.** `packages/db/migrations/0053_payment_provenance.sql`, `packages/db/src/schema/finance.ts`.
-- **Schema.** `payments.provenance` (nullable text, CHECK against the six values of spec §6.2), `payments.evidence_basis` (nullable), `payments.payment_evidence_id` (nullable FK). `verified` untouched.
+- **Schema.** `payments.initial_confirmation_source` (nullable, CHECK against the five values of spec §6.2), `payments.payment_method` (nullable, CHECK against the eight values including `UNKNOWN`), `payments.evidence_basis` (nullable), `payments.payment_evidence_id` (nullable FK). `verified` untouched.
+- **Set-once trigger.** A `BEFORE UPDATE` trigger enforces the immutability spec §6.3 claims: `NULL → value` is permitted exactly once; `value → different value` is refused unconditionally, including from a migration and including from the owner role's own repair scripts. Immutable in the database, not in a comment.
 - **Commands.** None.
 - **Migrations.** Additive. Every existing row keeps `provenance = NULL`, which is honest: nothing has been established yet.
-- **Tests.** The CHECK refuses an unknown provenance value. Existing payment tests unaffected.
+- **Tests.** The CHECK refuses an unknown source and an unknown method. The trigger permits the first assignment and refuses the second, and a test proves remediation cannot reach the column. Existing payment tests unaffected.
 - **Feature flags.** None.
 - **Deployment sequence.** Migrate, deploy.
-- **Rollback.** Drop the three columns.
+- **Rollback.** Drop the trigger and the four columns.
 - **Documentation.** Spec §6.2.
 - **Approval gate.** PR-003 merged. Not covered by the R0A block: nullable columns with no writers change no row.
 - **Size.** S.
@@ -865,16 +892,18 @@ These are the immediate execution queue on approval.
 - **Migrations.** The classifier of spec §7.1, applied as an UPDATE **scoped to the historical population and nothing else**. Rows failing every rung receive `LEGACY_PROVENANCE_UNKNOWN`. **The migration never invents a value.**
 - **The cutoff, and why it is mandatory.** PR-005 is already writing correct sources on new payments by the time this runs. An unscoped statement would treat those rows as history.
   ```sql
-  -- the cutoff is materialised, not passed as a parameter:
-  INSERT INTO migration_manifests (name, cutoff_at, affected_ids)
-  SELECT '0054_provenance_backfill', :pr005_deployed_at, array_agg(id)
-    FROM payments
+  INSERT INTO migration_manifests (name, cutoff_at, actor)
+  VALUES ('0054_provenance_backfill', :pr005_deployed_at, :actor)
+  RETURNING id INTO :manifest;
+
+  INSERT INTO migration_manifest_items (manifest_id, payment_id)
+  SELECT :manifest, id FROM payments
    WHERE created_at < :pr005_deployed_at
      AND initial_confirmation_source IS NULL;
 
-  UPDATE payments SET initial_confirmation_source = ...
-   WHERE id = ANY (SELECT unnest(affected_ids) FROM migration_manifests
-                    WHERE name = '0054_provenance_backfill');
+  UPDATE payments p SET initial_confirmation_source = ...
+    FROM migration_manifest_items i
+   WHERE i.manifest_id = :manifest AND i.payment_id = p.id;
   ```
   The manifest is the affected-row set, recorded permanently. It is what makes the rollback exact rather than approximate, and it is also the audit record of what this migration touched.
 - **Verifications.** For every row it can establish, the migration writes one `PaymentVerification` alongside the source, so the append-only history starts populated rather than empty. Rows it cannot establish get `LEGACY_PROVENANCE_UNKNOWN` and **no** verification event, which is the honest representation of knowing nothing.
@@ -883,12 +912,21 @@ These are the immediate execution queue on approval.
 - **Deployment sequence.** **Dry run against a production clone first, with output compared to the approved report.** Then migrate in a maintenance window. Then deploy nothing.
 - **Rollback.** Scoped to the manifest, never global:
   ```sql
-  UPDATE payments SET initial_confirmation_source = NULL
-   WHERE id = ANY (SELECT unnest(affected_ids) FROM migration_manifests
-                    WHERE name = '0054_provenance_backfill');
+  -- 1. the sources, joined through the manifest, never table-wide
+  UPDATE payments p SET initial_confirmation_source = NULL
+    FROM migration_manifest_items i
+    JOIN migration_manifests m ON m.id = i.manifest_id
+   WHERE m.name = '0054_provenance_backfill' AND i.payment_id = p.id;
+
+  -- 2. the verifications this migration wrote, and only those
   DELETE FROM payment_verifications
    WHERE source_migration = '0054_provenance_backfill';
+
+  -- 3. the manifest itself, last, so steps 1 and 2 stay repeatable until then
+  DELETE FROM migration_manifests WHERE name = '0054_provenance_backfill';
   ```
+
+  Three statements in that order, and the set-once trigger of PR-004 must permit a migration-scoped reset — the one exemption, granted to the owner role inside a named rollback function and to nothing else.
   > **`UPDATE payments SET initial_confirmation_source = NULL` without a WHERE clause is forbidden.** It would erase the correct sources PR-005 has been writing since deployment, and it would do so silently. The unscoped form appeared in an earlier draft of this plan and is the reason the manifest exists.
 - **Documentation.** Spec §7.5.
 - **Approval gate.** The dry-run output matches the approved report, and the owner has signed off on the remediation decision for the unknown population.
@@ -939,13 +977,32 @@ These are the immediate execution queue on approval.
 
 - **Objective.** Remove the column whose ambiguity started this.
 - **Repository areas.** `packages/db/migrations/0055_retire_verified.sql`, the three payment writers, `packages/db/src/schema/finance.ts`.
-- **Schema.** `payments.verified` writers removed. The column itself is kept as a generated column derived from the verification events, and is dropped by **PR-115** after a soak of at least two releases.
-- **Migrations.** Drop the default; convert to generated; no data change.
+- **Schema.** `payments.verified` writers removed; the trigger above installed; column privileges narrowed to SELECT. The column is kept for compatibility and dropped by **PR-115** after a soak of at least two releases. **It is not a generated column.**
+
+> **SUPERSEDED — this design was impossible.** An earlier draft made `verified` a generated column derived from `payment_verifications`. PostgreSQL generation expressions may not use subqueries and may not reference any row but the current one, so a generated column cannot inspect another table at all. The migration would have failed at `ALTER TABLE`.
+
+The valid mechanism is an ordinary column maintained by a controlled trigger:
+
+```
+payments.verified        ordinary integer column, no writers in application code
+    ↑
+AFTER INSERT OR UPDATE ON payment_verifications
+AFTER INSERT ON payment_verification_revocations
+    → recompute derived trust for the affected paymentId
+    → set verified = 1 when EXTERNALLY_VERIFIED, else 0
+
+legacy readers keep working, unchanged
+application code cannot write the column: UPDATE on it is revoked
+PR-115 drops it
+```
+
+A `payments_with_trust` view is the alternative where a reader can consume one without significant migration work. Either is valid; the trigger is chosen because it requires no change at the call sites, which is the whole purpose of a compatibility period.
+- **Migrations.** Install the trigger, backfill `verified` once from the verification events, revoke the column's UPDATE privilege. No schema-shape change.
 - **Tests.** No code path writes `verified`. The generated value agrees with the derived trust level on every row.
-- **What a generated column actually does.** It keeps legacy *readers* working, which is the point of the soak, and it makes any straggling *writer* fail loudly, because PostgreSQL refuses an INSERT or UPDATE that supplies a value for a generated column. An earlier draft of this plan had that backwards.
+- **Straggling writers.** `UPDATE (verified)` is revoked from `rekoda_app` and `rekoda_worker`, so a writer nobody removed fails loudly while every reader carries on. That is what the generated-column design was reaching for and could not deliver.
 - **Feature flags.** None. `provenance_reads` is on by now.
 - **Deployment sequence.** Deploy writers-removed first, then migrate.
-- **Rollback.** Restore the writers. The generated column reverts to a plain column.
+- **Rollback.** Drop the trigger, restore the privilege, restore the writers. The column was never anything other than an ordinary column, which is part of why this design is the safe one.
 - **Documentation.** Spec §6; **ADR 0014 marked SUPERSEDED**, with a pointer to spec §6 rather than a silent overwrite.
 - **Approval gate.** PR-008 enabled in production for one full week without a provenance-related incident.
 - **Size.** S.
@@ -992,5 +1049,20 @@ Failing tests first. One PR per slice step. A twenty-point impact map in, a twen
 |---|---|
 | 1.0 | Initial plan, 114 PRs, canonical spec v1.5 |
 | 1.1 | v1.6 patch. Recognition formula replaced (spec §12.2). Verification made append-only with sources preserved. POS normalised out of the source enum. `MANUAL_RECONCILIATION` narrowed to external evidence. PR-006 scoped to a migration manifest with an exact rollback. Posting roles completed. R0A block narrowed and the A1/R0B contradiction removed. W3 given its P2 payment-path dependency. PR-039 and PR-050 dependencies corrected. **PR-115 added** for the `verified` drop. Count reframed as a baseline of 115 within a 105–130 range. |
+| 1.2 | v1.6.1 freeze hardening. **PR-009's generated-column design was impossible** and is replaced by a trigger-maintained compatibility column. PR-003 gains `PaymentVerificationRevocation`, source idempotency indexes and normalised `migration_manifests` + `migration_manifest_items`. PR-004 gains the set-once trigger. PR-006's rollback becomes three ordered statements joined through the manifest. **PR-058a added** for the channel-neutral conversation model, which the repository's `UNIQUE (businessId, channel)` made a structural Integrate blocker. Spec gains Appendices A–E: dynamic FX, weighted-average inventory costing, the AI processor boundary, risk tiers, lifecycle statuses. AR/contract-liability dimensions narrowed to source-appropriate. Contract-asset case explicitly rejected as `REQUIRES_REVIEW`. Chat/Complete payment-details boundary clarified. Stale v1.5 provenance terminology cleaned from the slice summaries. Baseline 116. |
 
 Record every approved split, merge or scope change here. An index nobody amends stops being a map.
+
+---
+
+## 16. Pre-slice gates carried by v1.6.1
+
+Three corrections land in a slice rather than immediately, and are recorded here so they cannot be forgotten at the moment they matter.
+
+| Before | What must be in place |
+|---|---|
+| **PR-003** | The v1.6.1 hardening itself: revocation, idempotency, set-once, normalised manifests. This is why PR-003 waits for this patch and for nothing else. |
+| **F1** | Spec §12.3 dimensions, Appendix A dynamic FX, Appendix B weighted-average costing. All three are canonical now; F1 implements them rather than inventing them. |
+| **W1/W2** | **PR-058a.** Integrate is structurally impossible before it. |
+| **PR-009** | The trigger-maintained compatibility column, never a generated column. |
+| **Any AI or OCR expansion** | Appendix C. The specialist-processor exception is bounded and must stay bounded. |
