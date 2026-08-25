@@ -131,7 +131,7 @@ Each slice states what the build plan requires of it. PR-level detail for the fi
 | **Schema / commands / endpoints / jobs / frontend** | None. This slice ships no code. |
 | **Tests** | None. |
 | **Rollout / flags / rollback** | n/a |
-| **Doc updates** | Spec spec §24 billing mode becomes CORRECT rather than OPEN COMMERCIAL. |
+| **Doc updates** | Spec §24 billing mode becomes CORRECT rather than OPEN COMMERCIAL. |
 | **Completion gate** | Written Meta confirmation of Advanced Access for all three scopes, and a recorded billing-mode decision. |
 | **PRs** | 0 engineering PRs. Owner action. |
 | **Complexity** | Low engineering, high calendar risk. |
@@ -973,7 +973,7 @@ These are the immediate execution queue on approval.
 - **Feature flags.** None needed; nothing reads or writes these tables.
 - **Deployment sequence.** Migrate, deploy. No behaviour change.
 - **Rollback.** Drop all six tables. They are empty.
-- **Documentation.** Spec spec §6.1, spec §23.
+- **Documentation.** Spec §6.1, spec §23.
 - **Approval gate.** None. Additive DDL with no writers and no readers manufactures no trust, so §2's narrow block does not cover it. **This is the change that unblocks PR-011 and A1's PR-022.**
 - **Size.** M.
 
@@ -1032,7 +1032,7 @@ These are the immediate execution queue on approval.
 - **Feature flags.** None.
 - **Deployment sequence.** Migrate, deploy.
 - **Rollback.** Drop the trigger and the four columns.
-- **Documentation.** Spec spec §6.2.
+- **Documentation.** Spec §6.2.
 - **Approval gate.** PR-003 merged. Not covered by the R0A block: nullable columns with no writers change no row.
 - **Size.** S.
 
@@ -1117,7 +1117,7 @@ These are the immediate execution queue on approval.
   >
   > The step-3 guard matters as much as the scoping. If a merchant has since remediated a payment, its current value is no longer what the migration assigned, and the rollback leaves it alone.
   > **`UPDATE payments SET initial_confirmation_source = NULL` without a WHERE clause is forbidden.** It would erase the correct sources PR-005 has been writing since deployment, and it would do so silently. The unscoped form appeared in an earlier draft of this plan and is the reason the manifest exists.
-- **Documentation.** Spec spec §7.5.
+- **Documentation.** Spec §7.5.
 - **Approval gate.** The dry-run output matches the approved report, and the owner has signed off on the remediation decision for the unknown population.
 - **Size.** L. **Highest risk in the programme after PR-032.**
 
@@ -1140,7 +1140,7 @@ These are the immediate execution queue on approval.
 - **Feature flags.** `provenance_remediation`, default off until the queue is populated.
 - **Deployment sequence.** Deploy, enable, work the queue.
 - **Rollback.** Disable the flag. Resolutions already made are correct and stay.
-- **Documentation.** Spec spec §6.2, spec §7.5.
+- **Documentation.** Spec §6.2, spec §7.5.
 - **Approval gate.** PR-006 merged and its distribution accepted.
 - **Size.** M.
 
@@ -1156,7 +1156,7 @@ These are the immediate execution queue on approval.
 - **Feature flags.** `provenance_reads`, default off; enabled after the byte-identity check passes against production data.
 - **Deployment sequence.** Deploy with the flag off; run the byte-identity comparison; enable.
 - **Rollback.** Disable the flag. Readers return to `verified` instantly.
-- **Documentation.** Spec spec §6.2, §15.
+- **Documentation.** Spec §6.2, §15.
 - **Approval gate.** Byte-identity confirmed on a sample of historical receipts and statements.
 - **Size.** M. **Third-highest risk.**
 
