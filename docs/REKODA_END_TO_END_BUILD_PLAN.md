@@ -3,9 +3,9 @@
 | Field | Value |
 |---|---|
 | Status | **APPROVED — EXECUTION PLAN** |
-| Version | 1.3 (v1.6.2 pre-slice patch) |
+| Version | 1.4 (v1.6.3 implementation hardening) |
 | Effective date | 25 August 2026 |
-| Governs | `docs/REKODA_CANONICAL_SPEC.md` v1.6.2 |
+| Governs | `docs/REKODA_CANONICAL_SPEC.md` v1.6.3 |
 | Total slices | 20 |
 | Baseline PR plan | **120**, target range 105&ndash;130 |
 
@@ -209,7 +209,7 @@ Each slice states what the build plan requires of it. PR-level detail for the fi
 | **Schema** | `entitlements`, `business_entitlements`, expanded `usage_counters` units. |
 | **Commands** | An entitlement guard in the command dispatcher. |
 | **Frontend** | Visibility rules; downgrade messaging. |
-| **Tests** | **A Chat-only business cannot reach any Integrate capability through any ingress.** A refused request consumes no allowance and dispatches no provider call. |
+| **Tests** | **A Chat-only business cannot reach any Integrate capability through any ingress.** A refused request consumes no allowance and dispatches no provider call. **Every ingress enforces the same risk tier for the same command — Chat, Dashboard, Storefront and background automation are asserted individually, so no front door gets a cheaper path. The away assistant is refused every `HIGH_RISK` command, including ones the merchant has performed manually before.** |
 | **Rollout** | Additive; entitlements derived from existing plan id until BL2 makes them data. |
 | **Completion gate** | The cross-product refusal suite passes for every command, from every ingress. |
 | **PRs** | PR-012 … PR-018 |
@@ -228,7 +228,7 @@ Each slice states what the build plan requires of it. PR-level detail for the fi
 | **Dependencies** | E1 for the entitlement guard. **PR-022, and therefore PR-027 and PR-028, depend on PR-003.** Under the narrow block of §2 that is not a wait; under a strict block A1 could start but not finish, and the plan says so rather than claiming A1 continues "in full". |
 | **Schema** | `idempotency_records`, `outbox_events`. |
 | **Jobs** | Outbox dispatcher. |
-| **Tests** | Replaying any command with the same idempotency key returns the first response and writes nothing. An outbox event and its state change commit or roll back together. |
+| **Tests** | Replaying any command with the same idempotency key returns the first response and writes nothing. An outbox event and its state change commit or roll back together. **`scripts/check-boundaries.mjs` gains a rule: AI adapters may not import financial repositories or the accounting engine, so the boundary of spec Appendix C.4 fails a build rather than a review.** |
 | **Rollout** | Command by command, each behind a flag, old path retained until its command is proven. |
 | **Rollback** | Flag flip returns to the old path, per command. |
 | **Completion gate** | No financial write occurs outside the command layer, proven by a boundary check in CI. |
@@ -250,7 +250,7 @@ The largest slice. Twenty-two PRs, because it replaces the foundation everything
 | **Dependencies** | A1 (`PostJournal` needs the command layer). |
 | **Schema** | `accounts`, `journal_drafts`, `journal_draft_lines`, `accounting_periods`, `exchange_rate_snapshots`, `customer_credits`, `customer_credit_applications`, `revenue_recognition_events`; columns on `ledger_transactions` and `ledger_entries`. |
 | **Migration** | The account cutover is the single riskiest sequence in the plan: additive column → dual write → backfill → validate → readers cutover → drop text column. Five PRs, and they must not be combined. |
-| **Tests** | Every invariant of §10 has a test that proves the trigger refuses. All five recognition cases post exactly the journals of §12.4. The golden fixture v1 ties. |
+| **Tests** | Every invariant of §10 has a test that proves the trigger refuses. All five recognition cases post exactly the journals of §12.4. **A refused contract-asset case leaves NO journal at all, proven by asserting zero rows, and produces a review item instead.** Inventory invariants hold after every movement and the costing path uses exact arithmetic throughout. A stale or unavailable FX rate refuses the posting rather than falling back to today's rate. The golden fixture v1 ties. |
 | **Rollout** | Flag `kernel_v2_reads`. Statements dual-computed and compared in CI before cutover. |
 | **Rollback** | Reversible until PR-034 drops the text column. |
 | **Completion gate** | Golden fixture v1 ties across GL, trial balance, P&L, balance sheet and AR. Historical statements are byte-identical before and after cutover. |
@@ -733,42 +733,67 @@ Four sequences in this plan follow the pattern in full: R0A-ii provenance (PR-00
 
 Set out here because it is the one sequence a reader will reach for while Chat is live and every message path depends on the table being changed.
 
+Expand, migrate, contract. The old constraint comes out **last**, after the new identity has been proven and soaked, and Chat stays operational at every step.
+
 ```
-PR-058a-1   additive columns, no behaviour change
-              channelAccountId          which WABA or number
-              externalConversationId    the provider's thread identity
-              externalParticipantId     opaque. see the identity rule below.
-              actorType                 MERCHANT_CHAT | CUSTOMER_COMMERCE
-              customerId?               resolved through the privacy gateway
-            all nullable. old unique constraint untouched. nothing reads them.
+PR-058a-1   A. additive columns, all nullable (spec Appendix F.1)
+            B. DUAL-WRITE the new identity on newly created conversations
+               old unique untouched · nothing reads the new columns yet
 
-PR-058a-2   backfill every existing row as MERCHANT_CHAT
-            validate: row count unchanged · every conversation id preserved
-                      every message still owned by the same conversation
-            byte-for-byte, against a production clone, before merge
+PR-058a-2   C. backfill every existing conversation as MERCHANT_CHAT
+            D. VALIDATE, against a production clone, before merge:
+                 zero unresolved rows
+                 zero unexpected duplicates
+                 every message still points at exactly one valid conversation
+                 row count and conversation ids unchanged
 
-PR-058a-3   Chat readers and writers move to the resolver, behind a flag
-            old broad unique still in place, so a rollback is a flag flip
+PR-058a-3   E. install the replacement constraints ALONGSIDE the old one
+            F. cut readers and writers to the new identity, behind a flag
+               rollback is a flag flip; the old constraint still guards
 
-PR-058a-4   install the two replacement constraints, THEN drop the old one,
-            THEN enable CUSTOMER_COMMERCE threads
+PR-058a-4   G. soak
+            H. drop UNIQUE (businessId, channel) LAST
+               then enable CUSTOMER_COMMERCE threads
 
 PR-058a-5   NOT NULL on what is now always populated, drop dead code
 ```
 
-**The replacement is two constraints, not zero.** Dropping `UNIQUE (businessId, channel)` and leaving nothing would trade a wrong constraint for no constraint:
+> **Do not drop the old constraint before the new identity is proven.** Between E and H the table carries both, which is deliberate: the old constraint is the safety net during cutover, and customer threads cannot be enabled until it is gone, so the ordering enforces itself.
+
+Every stage has a rollback: 1 and 2 are additive, 3 is a flag flip, 4 is the only irreversible step and it runs after a soak.
+
+**The replacement is two constraints, not zero**, and both are partial. The full model, including the `participantHashVersion` rotation path and the PostgreSQL NULL caveat, is canonical in **spec Appendix F**; PR-058a implements it rather than deciding it.
 
 ```
 MERCHANT_CHAT       UNIQUE (businessId, channel) WHERE actorType = 'MERCHANT_CHAT'
-                    → still exactly one merchant thread per business per channel,
-                      which was the correct part of the old rule
-
-CUSTOMER_COMMERCE   UNIQUE (businessId, channelAccountId, externalParticipantId)
+CUSTOMER_COMMERCE   UNIQUE (businessId, channelAccountId,
+                            externalParticipantIdHash, participantHashVersion)
                       WHERE actorType = 'CUSTOMER_COMMERCE'
-                    → one thread per customer per merchant channel account
+                        AND externalParticipantIdHash IS NOT NULL
 ```
 
-**Customer identity is opaque.** `externalParticipantId` is a vaulted reference or an HMAC lookup key under `MATCH_KEY`, exactly as `stranger_contacts` and the privacy gateway already do it. **A customer's raw WhatsApp number must never become a permanent identity column on a table this size**, indexed and joined across the estate: that is the single largest concentration of personal data Integrate could accidentally create, and the vault exists precisely so it does not.
+**Customer identity is opaque and versioned.** A keyed HMAC under `MATCH_KEY`, exactly as `stranger_contacts` already does it, carrying `participantHashVersion` so the key can be rotated without stranding every thread. **A raw WhatsApp number must never become a permanent identity column on a table this size**, and it is never logged during lookup or routing.
+
+### 10.2 Blocking tests for the conversation migration
+
+These are merge gates on PR-058a-2 through PR-058a-4, not a wish list. The migration changes infrastructure Chat depends on while enabling Integrate, so the Chat side is tested as hard as the new side.
+
+```
+REGRESSION, Chat must not move
+  an existing Chat conversation still resolves
+  its messages retain ordering and ownership
+  no duplicate legacy rows appear
+
+ISOLATION, tested through RLS as rekoda_app, not through application filters
+  merchant A can never resolve merchant B's participant
+  unknown phoneNumberId is refused, never guessed
+
+SCALE AND IDENTITY, the shapes the old constraint made impossible
+  one merchant holds 100+ customer conversations on one channel account
+  the same customer reaches two different merchants, no identity collision
+  the same customer reaches one merchant through two channel accounts,
+    resolving to the correct thread each time
+```
 
 ---
 
@@ -880,7 +905,11 @@ These are the immediate execution queue on approval.
 
   The manifest is **normalised, not an array**. One row holding hundreds of thousands of uuids is awkward to index, join, page and reason about during a rollback under pressure, which is exactly when it would be needed. Row-per-item scales at any historical volume, and each item carries its `business_id` so the audit record is tenant-attributable even though the manifest itself is not a tenant table.
 
-  **The manifests are operator infrastructure, not merchant data.** A migration spans every tenant, so `migration_manifests` has no `business_id` and cannot honestly wear tenant RLS. It is owned by the migration role; `rekoda_app` and `rekoda_worker` are granted nothing on either table. An earlier draft put all five behind tenant RLS, which was incoherent for a cross-tenant table with no tenant column.
+  **The manifests are operator infrastructure, not merchant data.** A migration spans every tenant, so `migration_manifests` has no `business_id` and cannot honestly wear tenant RLS. It is owned by the migration role; `rekoda_app` and `rekoda_worker` are granted nothing at all — no `INSERT`, no `UPDATE`, no `DELETE`, and no `SELECT` unless a specific operational need is later argued and recorded. An earlier draft put all five behind tenant RLS, which was incoherent for a cross-tenant table with no tenant column.
+
+  **The manifest is evidence, so it carries enough to prove what happened**: which migration, which version of the code, expected against actual row counts, when it started and finished, who ran it, and a checksum where one is practical. `expected_row_count` beside `affected_row_count` is what turns "the migration ran" into "the migration did what the approved report said it would". `prior_value` beside `assigned_value` on every item is what makes the rollback exact and the audit answerable.
+
+  > **A historical migration audit record must survive its own rollback.** Rollback appends state; it never deletes the manifest or its items.
 
   Source idempotency, per spec §6.5, on the **claims** table, where every predicate reads a column of the table it indexes:
 
@@ -902,7 +931,7 @@ These are the immediate execution queue on approval.
   No foreign key from `payments` yet.
 - **Commands.** None. No writers in this PR, deliberately.
 - **Migrations.** Additive DDL only. No data writes.
-- **Tests.** RLS isolation on the four tenant tables, proven as `rekoda_app`. `rekoda_app` and `rekoda_worker` have **no privileges at all** on either manifest table, proven by a refused SELECT. `UPDATE` and `DELETE` on both event tables are revoked from both application roles, with tests proving the refusal — append-only in the database, not by convention. Verification and claim are written in one transaction, and the unique violation on the claim is what makes a retry a no-op. One bank line cannot actively verify two payments. Revoking releases the claim, so the same line can then verify the correct payment. Appending a fresh verification after an incorrect revocation succeeds, which is the correction path of spec §6.4. A verification with source `LEGACY_PROVENANCE_UNKNOWN` is refused by the CHECK. Migration applies from zero and is idempotent.
+- **Tests.** RLS isolation on the four tenant tables, proven as `rekoda_app`. `rekoda_app` and `rekoda_worker` have **no privileges at all** on either manifest table, proven by a refused SELECT. `UPDATE` and `DELETE` on both event tables are revoked from both application roles, with tests proving the refusal — append-only in the database, not by convention. Verification and claim are written in one transaction, and the unique violation on the claim is what makes a retry a no-op. **Concurrency: two simultaneous attempts to claim the same `FinancialTransaction`, the same provider attempt reference, and the same confirmation event — exactly one succeeds in each pair, three separate tests.** A rolled-back transaction leaves neither a verification without its claim nor a claim without its verification. One bank line cannot actively verify two payments. Revoking releases the claim, so the same line can then verify the correct payment. Appending a fresh verification after an incorrect revocation succeeds, which is the correction path of spec §6.4. **Separation: revoking a verification changes trust and `confirmationIntegrity` and posts no journal, withdraws no receipt and removes no allocation (spec §6.6); a payment whose last active verification is revoked reads `NEEDS_REVIEW` rather than remaining silently trusted (spec §6.7).** A verification with source `LEGACY_PROVENANCE_UNKNOWN` is refused by the CHECK. Migration applies from zero and is idempotent.
 - **Why this is where it belongs.** PR-003 defines permanent, hard-to-change schema on a table that will hold financial trust. Adding revocation and idempotency later means migrating a populated append-only table, which is exactly the situation append-only makes expensive.
 - **Feature flags.** None needed; nothing reads or writes these tables.
 - **Deployment sequence.** Migrate, deploy. No behaviour change.
@@ -923,16 +952,31 @@ These are the immediate execution queue on approval.
   ```
   rollback_provenance_manifest(manifest_id)   SECURITY DEFINER
 
-    EXECUTE granted to the migration owner ONLY
+  PRIVILEGE
+    REVOKE EXECUTE ON FUNCTION ... FROM PUBLIC          explicitly, first
+    GRANT  EXECUTE TO the migration/operator role ONLY
     never granted to rekoda_app or rekoda_worker
-    touches only rows listed in that manifest's items
-    resets only where the current value equals the value that manifest assigned
-    writes an audit event naming the manifest and the actor
+
+  INJECTION SURFACE
+    SET search_path = pg_catalog, rekoda      fixed, on the function
+    every table and function reference schema-qualified
+    no dependence on the caller's search_path at any point
+
+  SCOPE, validated by the function itself
+    the manifest exists and its status is APPLIED
+    rows touched are exactly this manifest's items
+    a row changes ONLY where
+        current value IS NOT DISTINCT FROM item.assigned_value
+    otherwise SKIP the row and REPORT it
   ```
+
+  The skip is the part that matters. An owner may legitimately have remediated a payment after the migration ran, and a rollback that overwrote their correction would be a second incident caused by fixing the first. Skipped rows are returned, counted and logged, never passed over in silence.
+
+  > This is a **named, scoped exemption**, not a privileged bypass of the set-once trigger. There is no general-purpose function that can reset a confirmation source, and none may be added.
   Stated this way the exemption is a mechanism with a name, a grant and a scope, rather than "the owner can bypass the trigger". A superuser bypassing a trigger is not an exemption anybody designed; a function whose whole body is auditable is.
 - **Commands.** None.
 - **Migrations.** Additive. Every existing row keeps `provenance = NULL`, which is honest: nothing has been established yet.
-- **Tests.** The CHECK refuses an unknown source and an unknown method. The trigger permits the first assignment and refuses the second, and a test proves remediation cannot reach the column. Existing payment tests unaffected.
+- **Tests.** The CHECK refuses an unknown source and an unknown method. The trigger permits the first assignment and refuses the second, and a test proves remediation cannot reach the column. **Privilege test: `rekoda_app` executing `rollback_provenance_manifest` is DENIED; the migration role is allowed.** A row whose current value differs from the manifest's assigned value is skipped and reported rather than overwritten. Existing payment tests unaffected.
 - **Feature flags.** None.
 - **Deployment sequence.** Migrate, deploy.
 - **Rollback.** Drop the trigger and the four columns.
@@ -1143,18 +1187,68 @@ Failing tests first. One PR per slice step. A twenty-point impact map in, a twen
 | 1.0 | Initial plan, 114 PRs, canonical spec v1.5 |
 | 1.1 | v1.6 patch. Recognition formula replaced (spec §12.2). Verification made append-only with sources preserved. POS normalised out of the source enum. `MANUAL_RECONCILIATION` narrowed to external evidence. PR-006 scoped to a migration manifest with an exact rollback. Posting roles completed. R0A block narrowed and the A1/R0B contradiction removed. W3 given its P2 payment-path dependency. PR-039 and PR-050 dependencies corrected. **PR-115 added** for the `verified` drop. Count reframed as a baseline of 115 within a 105–130 range. |
 | 1.2 | v1.6.1 freeze hardening. **PR-009's generated-column design was impossible** and is replaced by a trigger-maintained compatibility column. PR-003 gains `PaymentVerificationRevocation`, source idempotency and normalised manifests. PR-004 gains the set-once trigger. PR-006's rollback becomes manifest-scoped. **PR-058a added** for the conversation model. Spec gains Appendices A–E. AR/contract-liability dimensions narrowed. Contract-asset case rejected as `REQUIRES_REVIEW`. Chat/Complete boundary clarified. Baseline 116. |
+| 1.4 | v1.6.3 implementation hardening. Verification revocation separated from payment reversal, with derived `confirmationIntegrity` (spec §6.6–6.7). Claim atomicity and per-source verification identity formalised, with concurrency tests. `rollback_provenance_manifest` hardened: fixed `search_path`, schema-qualified references, `REVOKE ... FROM PUBLIC`, value-guarded row skipping, privilege test. Manifests carry full migration evidence and survive rollback. Conversation migration resequenced as expand/migrate/contract with the old constraint dropped last, plus blocking Chat regression and RLS tests. Spec gains **Appendix F**: conversation identity, partial-index NULL caveat, `participantHashVersion` rotation. `orderId` demoted to a contextual dimension beneath generic `sourceType`/`sourceId`/`postingPurpose`. Contract-asset refusal made atomic. FX resolver returns named states. Inventory invariants and exact-arithmetic rule. AI boundary enforced by `check-boundaries.mjs`. Risk tiers bind every ingress. Invoice statuses marked derived. Readiness split into ARCHITECTURE_APPROVED / ENGINEERING_READY / PRODUCTION_ENABLEMENT_READY. **No new PRs; baseline stays 120.** |
 | 1.3 | v1.6.2 pre-slice patch. **The idempotency indexes could not have been created** — a partial-index predicate cannot read another table — so uniqueness moves to a `PaymentVerificationClaim` projection and the event tables stay literally append-only. Revocation-of-revocation removed; an incorrect revocation is corrected by appending a fresh verification. Manifests reclassified as operator infrastructure with no tenant RLS, kept after rollback with `status = ROLLED_BACK`, and the rollback revokes rather than deletes. The set-once exemption becomes the named `rollback_provenance_manifest` SECURITY DEFINER function. **PR-058a split into five sub-PRs**, with two replacement uniqueness rules and opaque customer identity. **Weighted-average returns corrected** — a return does move the average, and holding it fixed breaks quantity × average = value. Invoice status split into lifecycle, payment and collection. FX staleness measured against the requested accounting timestamp. Documentation drift cleaned. Baseline 120. |
 
 Record every approved split, merge or scope change here. An index nobody amends stops being a map.
 
-## 16. Pre-slice gates carried by v1.6.1
+## 16. Readiness vocabulary
 
-Three corrections land in a slice rather than immediately, and are recorded here so they cannot be forgotten at the moment they matter.
+"Unblocked" was doing three jobs at once and is retired. Three separate statuses, and a PR needs all three that apply to it.
+
+```
+ARCHITECTURE_APPROVED          the canonical spec settles it. Review is closed.
+ENGINEERING_READY              its prerequisite PRs are MERGED, not merely planned.
+PRODUCTION_ENABLEMENT_READY    the external gate has lifted: Meta approval,
+                               provider terms, an approved data report.
+```
+
+> **Architecture approval is not permission to start.** F1's hold is released, and F1 still waits on A1's command layer carrying `PostJournal` because that is an engineering dependency and no review can dissolve it. W1/W2 may build additive onboarding infrastructure against test numbers, and production enablement still waits on W0.
+
+| Work | Architecture | Engineering | Production |
+|---|---|---|---|
+| W0 | n/a | n/a | owner action |
+| PR-002 | approved | **ready** | ready |
+| PR-010 | approved | **ready** | ready |
+| PR-012 | approved | **ready** | ready |
+| PR-013 | approved | after PR-012 | ready |
+| PR-003 | approved | **ready** | ready |
+| PR-004, PR-005 | approved | after PR-003 | ready |
+| PR-006 | approved | after PR-005 | **BLOCKED — production provenance report** |
+| A1 | approved | after E1 begins | ready |
+| F1 | approved | **after A1 carries `PostJournal`** | ready |
+| P1 | approved | after F1 | ready |
+| W1/W2 | approved | after E1 and A1 | **blocked — Meta Advanced Access** |
+| W3 | approved | after PR-058a-4, P2 | blocked — Meta |
+| P3 adapters | approved | after PR-068 | blocked — provider terms |
+| F2 tax | approved | after F1 | blocked — tax review |
+
+---
+
+## 17. Pre-slice gates
 
 | Before | What must be in place |
 |---|---|
-| **PR-003** | The v1.6.1 hardening itself: revocation, idempotency, set-once, normalised manifests. This is why PR-003 waits for this patch and for nothing else. |
-| **F1** | Spec §12.3 dimensions, Appendix A dynamic FX (including the timestamp-relative staleness rule), Appendix B weighted-average costing (including the corrected returns arithmetic), Appendix E invoice status separation. All canonical now; F1 implements them rather than inventing them. |
-| **W1/W2** | **PR-058a-1 … -5.** Integrate is structurally impossible before PR-058a-4. |
-| **PR-009** | The trigger-maintained compatibility column, never a generated column. |
-| **Any AI or OCR expansion** | Appendix C. The specialist-processor exception is bounded and must stay bounded. |
+| **PR-003** | v1.6.2's claim projection and operator manifests, and v1.6.3's SECURITY DEFINER hardening, source-specific identity, atomicity and concurrency tests. |
+| **F1** | Spec §12.3 dimensions, §12 atomic contract-asset refusal, Appendix A FX states, Appendix B costing invariants and exact arithmetic, Appendix E derived statuses. |
+| **A1** | Spec Appendix C.4, enforced by the boundary check rather than by review. |
+| **E1** | Spec Appendix D, applied identically to every ingress. |
+| **W1/W2** | Spec Appendix F. PR-058a implements the identity model; it does not decide it. |
+| **PR-009** | The trigger-maintained compatibility column, never a generated one. |
+| **PR-006** | **The production provenance report: run, reviewed, reconciled against its expected row counts and totals, remediation population understood, explicitly owner-approved.** None of the four is optional and application progress elsewhere is not a substitute for any of them. |
+
+---
+
+## 18. Implementation mode
+
+Architecture review is closed. The loop from here:
+
+```
+IMPLEMENT → TEST → REVIEW PR AGAINST THE CANONICAL SPEC
+          → MIGRATION DRY RUN WHERE REQUIRED
+          → MERGE → UPDATE BUILD PLAN STATUS → NEXT PR
+```
+
+Reopen the architecture only for a demonstrated financial-integrity defect, a database or platform impossibility, a provider capability contradiction, legal or compliance evidence, a security defect, or production evidence invalidating an invariant.
+
+**Not because another structure looks cleaner.**

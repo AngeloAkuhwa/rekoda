@@ -5,9 +5,9 @@
 | Field | Value |
 |---|---|
 | Status | **APPROVED — FROZEN FOR IMPLEMENTATION** |
-| Canonical version | 1.6.2 |
+| Canonical version | 1.6.3 |
 | Effective date | 25 August 2026 |
-| Supersedes | Canonical Product Architecture v2.0; Chat & Integrate Journey v1.0; corrections v1.1 through v1.6.1; ADR 0004 (chart of accounts), ADR 0014 (Recorded vs Verified) in part |
+| Supersedes | Canonical Product Architecture v2.0; Chat & Integrate Journey v1.0; corrections v1.1 through v1.6.2; ADR 0004 (chart of accounts), ADR 0014 (Recorded vs Verified) in part |
 | Owners | Product and engineering, jointly. Accounting sections additionally require finance sign-off. |
 | Companion | `docs/REKODA_END_TO_END_BUILD_PLAN.md` |
 
@@ -213,7 +213,7 @@ The journey specification remains a reference document. The invariants that cons
 | Cash sale | Sale, payment and fulfilment may post together. One event, one journal. |
 | Credit sale | Creates a receivable under the configured policy (§12). Never revenue on invoice issue unless fulfilled. |
 | Partial payment | Allocates against a specific invoice. Never silently spreads across invoices. |
-| Merchant-attested cash | `MERCHANT_ATTESTED` + `paymentMethod = CASH`. Requires the confirmation transition (§6.8). |
+| Merchant-attested cash | `MERCHANT_ATTESTED` + `paymentMethod = CASH`. Requires the confirmation transition (§6.10). |
 | Merchant-attested transfer or POS | `MERCHANT_ATTESTED` + `BANK_TRANSFER` or `POS`. Same requirement. The instrument never changes the source. |
 | Proof-of-payment screenshot | **Creates `PaymentEvidence`, never a `Payment`.** A screenshot is never proof. |
 | Invoice | A projection of order and line state, not an independently editable record. |
@@ -283,7 +283,7 @@ confirmationSource                 how the truth was established
   BANK_FEED_MATCH                  an imported bank line was matched to this payment
   MERCHANT_ATTESTED                the merchant confirmed it, with recorded semantics
   MANUAL_RECONCILIATION            a person linked an ACTUAL external financial
-                                   transaction to this payment (see 6.7)
+                                   transaction to this payment (see 6.9)
   LEGACY_PROVENANCE_UNKNOWN        the estate cannot establish it
 
 paymentMethod                      what instrument the money moved on
@@ -410,18 +410,85 @@ revoking      append PaymentVerificationRevocation
               ONE transaction.
 ```
 
-What each claim key means:
+Each source has its **own** identity. There is no single global uniqueness rule, because the four sources do not share a notion of sameness.
 
 ```
-financialTransactionId   one bank line cannot actively verify two payments
-paymentAttemptId         a retried webhook is a no-op, not a second verification
-confirmationEventId      the command draft for chat, the audit event for dashboard;
-                         a retried job cannot attest twice for one confirmation
+PROVIDER_VERIFIED       identity = paymentConnectionId + provider attempt or
+                                   transaction reference
+                        → a retried webhook is a no-op, not a second verification
+
+BANK_FEED_MATCH         identity = financialAccountConnectionId + financialTransactionId
+                        → one bank line cannot actively verify two payments,
+                          unless a deliberately supported split-payment
+                          relationship says otherwise
+
+MERCHANT_ATTESTED       identity = the explicit confirmation action:
+                                   the command draft for chat,
+                                   the audit event for a dashboard action
+                        → a retried job cannot attest twice for one confirmation
+
+MANUAL_RECONCILIATION   identity = financialTransactionId
+                        REQUIRES an actual external FinancialTransaction,
+                                 an authorised actor, and a reason
+
+LEGACY_PROVENANCE_UNKNOWN
+                        historical provenance metadata ONLY.
+                        Never an active verification source. CHECK-enforced.
 ```
 
 > **The claim table is a concurrency projection and nothing else.** It says which evidence is currently spoken for. **Derived trust is computed from the immutable events and revocations, never from the claims**, so a projection that was rebuilt, corrupted or dropped could be reconstructed from the events without any loss of financial truth. That directionality is what keeps the model honest: append-only remains literally true of the tables that matter.
 
-### 6.6 Derived trust
+**Atomicity is a rule, not an implementation preference.** Under normal application operation the estate must never hold a verification without its claim, or a claim without its verification. Both pairs commit together or neither does:
+
+```
+verify   INSERT PaymentVerification + INSERT PaymentVerificationClaim     one tx
+revoke   INSERT PaymentVerificationRevocation + DELETE the claim          one tx
+```
+
+A partial failure that left a claim behind would silently block the correct payment from ever being verified, and nothing would report it.
+
+### 6.6 Evidence and money are different axes
+
+> **A revocation invalidates evidence. It does not move money.** Nothing about revoking a verification reverses a journal, withdraws a receipt or removes an allocation.
+
+```
+Verification revoked   ≠   Payment reversed   ≠   Refund   ≠   Chargeback
+```
+
+Worked through, because this is the case most likely to be got wrong under pressure:
+
+```
+PAY-001, ₦60,000
+  Verification A   MERCHANT_ATTESTED
+  Verification B   BANK_FEED_MATCH
+
+B turns out to have matched the wrong bank line
+  PaymentVerificationRevocation  verificationId = B, reason = INCORRECT_MATCH
+
+Payment status        CONFIRMED, unchanged
+trust                 EXTERNALLY_VERIFIED → ATTESTED
+journals              untouched
+receipt               untouched
+allocations           untouched
+```
+
+The merchant still says they received the money. That claim never depended on the bank line.
+
+### 6.7 `confirmationIntegrity`
+
+When the last active verification goes, the payment must not quietly keep reading as fully trusted.
+
+```
+confirmationIntegrity            derived, never stored
+  CONFIRMED       at least one active verification supports the payment
+  NEEDS_REVIEW    the active verification set is EMPTY
+```
+
+`NEEDS_REVIEW` is a queue item and a question, not an accounting event. It asks a human one thing: *is this payment still valid on new evidence, or does it need reversing?* Their answer is either a fresh `PaymentVerification` or a real `PaymentReversal`.
+
+> **Only `PaymentReversal`, `Refund` and `Chargeback` change the books.** Verification events change evidential confidence. Financial events change financial truth. A system that let the first do the second would be one where deleting a screenshot unposts a journal.
+
+### 6.8 Derived trust
 
 Trust is computed from **the full set of verification events**, never from one column.
 
@@ -436,7 +503,7 @@ UNESTABLISHED          no active verification events
 
 Trust is never stored as an independent flag. Storing it would let it disagree with the events that produced it, which is the failure this whole model exists to prevent.
 
-### 6.7 `MANUAL_RECONCILIATION` means one specific thing
+### 6.9 `MANUAL_RECONCILIATION` means one specific thing
 
 > **A human linked an actual external financial transaction to a Rekoda payment or invoice.**
 
@@ -449,7 +516,7 @@ the merchant now attests they received it          → MERCHANT_ATTESTED
 
 In both cases `initialConfirmationSource` remains whatever it was, including `LEGACY_PROVENANCE_UNKNOWN`. **Remediation adds evidence. It never rewrites history.**
 
-### 6.8 Medium is never proof
+### 6.10 Medium is never proof
 
 > **Input medium must never be treated as proof of attestation.**
 
@@ -754,18 +821,28 @@ Reading a per-order balance requires journal lines to carry what they belong to.
 
 > **SUPERSEDED.** An earlier draft required `JournalLine.orderId` on every line touching `ACCOUNTS_RECEIVABLE` or `CONTRACT_LIABILITY`. That is too strong. Migration-day opening receivables, a receivable inherited from a previous system, and a standalone manually entered invoice are all legitimate and none of them has an order. Requiring one would force the engine to fabricate commerce objects that never existed, which is a worse lie than a nullable column.
 
+Traceability rests on the **generic** dimensions every journal already carries. The specific ones are additional context, never the only route:
+
 ```
+ALWAYS, on every JournalEntry
+  sourceType · sourceId · postingPurpose        the universal trace
+
+OPTIONAL, on JournalLine, where they apply
+  orderId? · orderLineId? · invoiceId?
+  receivableId? · paymentId? · fulfilmentId?
+
 ACCOUNTS_RECEIVABLE line
-  receivableId or invoiceId      REQUIRED, always. The AR subledger reference.
+  receivableId or invoiceId      REQUIRED. The AR subledger reference.
   orderId                        REQUIRED where the posting's source is order
                                  recognition or fulfilment. NULL otherwise, and
                                  legitimately so.
 
 CONTRACT_LIABILITY line
-  orderId or contractId          REQUIRED, always. A contract liability without a
-                                 contract is not a contract liability, and there is
-                                 no opening-balance case for one.
+  orderId or contractId          REQUIRED. A contract liability without a contract
+                                 is not one, and there is no opening-balance case.
 ```
+
+`orderId` must never become the only way to determine a contract-liability balance. It is not available at all for opening receivables, manual journals, historical imports, supplier transactions, tax adjustments, owner capital or bank reclassifications, and forcing it would make the engine fabricate orders for every one of them.
 
 So AR is always traceable to something in the subledger, an order-recognition posting is always traceable to its order, and opening balances post without inventing anything.
 
@@ -805,15 +882,18 @@ The fulfilment rule says `DR Accounts Receivable remaining, where a right to col
 Revenue can be earned while the right to consideration is still conditional — the obligation is satisfied but something else must happen before the customer owes anything. Under IFRS 15 that balance is a **contract asset**, not a receivable, because it is conditional on something other than the passage of time.
 
 ```
-V1 behaviour: REJECT, LOUDLY
+V1 behaviour: REFUSE ATOMICALLY
 
   recogniseDelta > 0
   AND contractLiabilityBalanceForOrder < recogniseDelta
   AND no unconditional right to the remainder exists
-    → the engine refuses the posting and raises REQUIRES_REVIEW
-    → the order is queued for a human, who either establishes the right
-      or corrects the fulfilment record
+    → POST NOTHING
+    → state = REQUIRES_REVIEW
+    → create a review item carrying the reason
+    → the human either establishes the right or corrects the fulfilment record
 ```
+
+> **The command is atomic. There is no half-posted transaction.** It must never post revenue while omitting the receivable or contract asset, and it must never post part of a transaction and then flag it for review. A journal that balances only because one leg was left out is worse than no journal, because it balances.
 
 Rekoda does not model contract assets in V1 and **must not silently post one as a receivable**, which is what the unqualified rule would have done. Calling a conditional balance a receivable overstates collectability on the balance sheet, and it is exactly the error the receivable-recognition policy exists to prevent. `CONTRACT_ASSET` is reserved as a role name for the version that models it.
 
@@ -1524,6 +1604,22 @@ ExchangeRateSnapshot              immutable, once written
 4  REFUSE                    all three exhausted
 ```
 
+The resolver returns a named state, never a bare rate or a null:
+
+```
+RATE_AVAILABLE              proceed
+RATE_STALE                  a rate exists, outside the window for this request
+RATE_UNAVAILABLE            no source could answer
+MANUAL_OVERRIDE_REQUIRED    policy demands a human decision for this case
+
+for a financial posting:
+  RATE_STALE or RATE_UNAVAILABLE beyond configured policy
+    → REFUSE the posting
+    → REQUIRES_REVIEW
+```
+
+> **Never silently fall back to the latest current rate for a historical transaction.** That is the single most likely way a wrong rate enters the books, because it always succeeds and always looks reasonable.
+
 **A stale rate is refused, never guessed.** The freshness window is configuration; outside it, the posting fails with a named error and the operation is queued rather than completed at an invented rate. Refusing to post is recoverable. Posting at a wrong rate is a wrong set of books that balances, and nobody notices.
 
 > **Staleness is measured against the requested accounting timestamp, not against today's date.** A transaction dated 15 June asks for a 15 June rate. That rate is fresh for that request in August, in December, and in five years. Measuring against wall-clock time would make every historical import and every opening-balance migration impossible the moment it aged past the window, which is the opposite of what the rule is for.
@@ -1616,6 +1712,17 @@ Quantity times average must equal inventory value. Holding the average fixed bre
 
 Every movement carries the unit cost applied to it, so gross profit reconstructs from the movements and definition-of-done invariant 6 holds without a second calculation.
 
+**Invariants asserted after every inventory movement:**
+
+```
+quantity                 ≥ 0
+inventoryValue           consistent with the movement history
+if quantity > 0          averageCost = inventoryValue / quantity
+cumulative COGS          reconstructable from the outbound movements alone
+```
+
+> **Exact arithmetic only.** Money in integer minor units, quantities and unit costs at a defined decimal precision, division rounded by a stated rule with the residual carried, never dropped. **No floating-point money arithmetic anywhere in the costing path.** A moving average is a repeated division; float error there does not stay small, it accumulates into every subsequent COGS figure.
+
 ### B.3 Roadmap
 
 Net realisable value impairment — writing stock down to what it will actually fetch — is architected for and not built in V1. The seam is a nullable `impairedValueMinor` on the stock line and an `InventoryImpairment` posting purpose.
@@ -1665,6 +1772,36 @@ The self-hosted OCR sidecar remains a supported configuration and is the hardeni
 
 > **The reasoning model receives tokenised context. Always.** The specialist-processor exception covers transcription and covers nothing else. A model asked to reason, decide, classify or advise never receives untokenised personal data, whatever surface the request came from and whatever the merchant asked for.
 
+### C.4 What a model may and may not do
+
+An appendix nobody can violate is worth more than one nobody reads, so this is enforced by module boundaries rather than by convention.
+
+```
+MAY        interpret · extract intent · explain · propose · draft
+
+MAY NOT    write a financial table
+           mark a payment confirmed
+           select an authoritative reconciliation match
+           calculate a final ledger posting
+           override an entitlement
+           override a risk tier
+           bypass a confirmation
+```
+
+The flow is one-directional and has no shortcut:
+
+```
+ingress
+  → privacy gateway or approved specialist processing
+  → AI-safe structured intent
+  → deterministic application command
+  → validation
+  → accounting and payment engine
+  → persistence
+```
+
+**Enforcement.** `scripts/check-boundaries.mjs` already bans raw `db` imports outside `packages/db`; it gains a rule that AI adapters may not import financial repositories or the accounting engine at all. A model's output reaches money only by becoming a structured intent that a deterministic command then validates. The check runs in CI, so the boundary fails a build rather than a review.
+
 ---
 
 ## Appendix D — Risk tiers and confirmation policy
@@ -1701,7 +1838,8 @@ PostingAccountPolicy change        where the engine posts from now on
 
 ### D.3 The rules
 
-- **The away assistant (W4) may never execute a `HIGH_RISK` command.** It hands off to a human, every time, without exception.
+- **Every front door obeys the same tiers.** Chat, Dashboard, Integrate, Storefront, the future public API, the future Embed and every background automation. **No alternate ingress gets a cheaper safety path**, which is the entire reason the tier lives on the command rather than on the controller.
+- **The away assistant (W4) may never autonomously execute a `HIGH_RISK` command.** It hands off to a human, every time, without exception, **including when the merchant has performed that same action manually before**. Past manual use is not standing consent for an unattended agent.
 - A `HIGH_RISK` confirmation names the consequence in the merchant's own terms. "Refund ₦20,000 to Ada. The money leaves your account." Not "confirm?".
 - Every `HIGH_RISK` execution writes an audit event with the actor and the reason. A missing reason is a refusal, not a blank field.
 - Risk tier is a property of the **command**, declared in the command layer (§25), so no ingress can lower it. A tier that a controller could soften would not be a tier.
@@ -1717,7 +1855,7 @@ Superseding the older specifications means their status vocabularies come with, 
 ```
 status              PENDING · PROCESSING · CONFIRMED · FAILED
                     REVERSED · REFUNDED · PARTIALLY_REFUNDED
-trust               derived, never stored (§6.6)
+trust               derived, never stored (§6.8)
 ```
 
 ### E.2 PaymentIntent and PaymentAttempt
@@ -1746,6 +1884,8 @@ InvoiceCollectionStatus   CURRENT · DUE · OVERDUE · IN_DISPUTE
 AgingBucket               0-30 · 31-60 · 61-90 · 90+
                           derived from the DUE date, never from the issue date
 ```
+
+**Payment status, collection status and aging are DERIVED**, computed from invoice totals, allocations, applied credits, the due date and the void state. None of them is independently mutable financial truth, because a stored status is a second copy of a fact that can disagree with the first.
 
 The three are independent by design. `ISSUED` + `PARTIALLY_PAID` + `OVERDUE` is an ordinary Tuesday and must be representable; collapsing them is how a partly paid overdue invoice becomes invisible to whoever is chasing it. `WRITTEN_OFF` is a collection outcome rather than a lifecycle state, because the invoice still exists and the receivable still has a history.
 
@@ -1788,3 +1928,66 @@ match confidence       EXACT_REFERENCE · STRONG_DETERMINISTIC
 ```
 resolutionState     UNRESOLVED · RESOLVED · EXPIRED      (§23)
 ```
+
+---
+
+## Appendix F — Conversation identity
+
+Chat and Integrate must not be forced into one identity model by one constraint. They are different shapes of conversation and the model says so.
+
+### F.1 The model
+
+```
+Conversation
+  id · businessId
+  channel                        WHATSAPP · SIMULATOR · …
+  channelAccountId               which merchant channel asset (phoneNumberId / WABA)
+  externalConversationId?        the provider's own thread identity, where it has one
+  externalParticipantIdHash?     keyed lookup token. NEVER a raw identifier.
+  participantHashVersion?        which key produced the hash. See F.3.
+  externalParticipantVaultRef?   the vaulted raw identifier, where retention is needed
+  actorType                      MERCHANT_CHAT · CUSTOMER_COMMERCE
+  customerId?                    resolved through the privacy gateway
+  status
+```
+
+### F.2 Two identities, two constraints
+
+```
+MERCHANT_CHAT        the merchant talking to Rekoda. Exactly one per business
+                     per channel, which was the correct part of the old rule.
+  UNIQUE (businessId, channel) WHERE actorType = 'MERCHANT_CHAT'
+
+CUSTOMER_COMMERCE    a customer talking to the merchant on the merchant's own
+                     channel asset.
+  UNIQUE (businessId, channelAccountId, externalParticipantIdHash,
+          participantHashVersion)
+    WHERE actorType = 'CUSTOMER_COMMERCE'
+      AND externalParticipantIdHash IS NOT NULL
+```
+
+> **PostgreSQL treats NULLs as distinct in a unique index**, so a nullable identity column silently permits unlimited duplicates. Every constraint above is therefore partial and explicitly excludes the NULL case. A constraint that quietly stops applying is worse than no constraint, because the schema still looks like it has one.
+
+Which thread a WhatsApp Integrate message belongs to:
+
+```
+businessId + channel=WHATSAPP + channelAccountId + externalParticipantIdHash
+```
+
+### F.3 Hash key versioning and rotation
+
+A keyed hash is only as good as the ability to change the key. Routing must never become permanently dependent on one secret.
+
+```
+participantHashVersion    V1, V2, …   stored beside every hash
+
+rotation
+  1  introduce V2 alongside V1
+  2  reads resolve EITHER version
+  3  backfill V2 hashes
+  4  new writes use V2
+  5  cut over
+  6  retire V1 only after validation
+```
+
+The raw identifier, where it must be retained at all, lives in the vault and never in the conversation index. **The raw participant identifier is never logged during lookup or routing** — not at debug level, not in an error message, not in a trace.
