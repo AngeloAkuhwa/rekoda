@@ -2,11 +2,11 @@
 
 | Field | Value |
 |---|---|
-| Status | **CANONICAL — consolidates the existing system, extends it to spec v1.6.4** |
+| Status | **CANONICAL — consolidates the existing system, extends it to spec v1.6.6** |
 | Version | 1.0 |
 | Effective date | 25 August 2026 |
 | Token source of truth | `design-system/rekoda/MASTER.md` → generates `apps/web/src/styles/tokens.css` |
-| Governed by | `docs/REKODA_CANONICAL_SPEC.md` v1.6.4 |
+| Governed by | `docs/REKODA_CANONICAL_SPEC.md` v1.6.6 |
 
 > **This document does not replace the existing design system. It consolidates it and extends it.** Rekoda already has a working system with real tokens, a stated brief and non-negotiable rules. The design direction below is that system, not a new one.
 
@@ -146,7 +146,7 @@ This is not copy preference. It is the anti-fake-alert defence the entire produc
 
 **Specified in MASTER.md, to build as slices need them:** `Input` · `Select` · `Textarea` · `Card` · `Table` · `Badge` · `StatTile` · `Toast` · `Dialog` · `Tabs` · `Skeleton` · `EmptyState`
 
-**Added by spec v1.6.4, owned by the slice that needs them:**
+**Added by the canonical spec, owned by the slice that needs them:**
 
 | Component | Slice | What it must express |
 |---|---|---|

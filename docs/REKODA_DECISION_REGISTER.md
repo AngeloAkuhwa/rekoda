@@ -6,7 +6,7 @@
 | Field | Value |
 |---|---|
 | Status | Generated index |
-| Generated against | spec v1.6.4, build plan v1.5, commit `77ff16c` |
+| Generated against | spec v1.6.6, build plan v1.7 |
 | Authority | `docs/REKODA_CANONICAL_SPEC.md` and `docs/REKODA_END_TO_END_BUILD_PLAN.md` |
 
 ## Product and commercial
@@ -27,7 +27,7 @@
 |---|---|---|
 | FIN-1 | A screenshot creates `PaymentEvidence`, never a `Payment` | spec §6.1, journeys C8 |
 | FIN-2 | `initialConfirmationSource` is set once and never overwritten | spec §6.3 |
-| FIN-3 | `PaymentVerification` and its revocation are append-only; uniqueness lives in a mutable claim projection | spec §6.5 |
+| FIN-3 | `PaymentVerification` and its revocation are append-only; uniqueness lives in a claim projection where row existence is the state | spec §6.5 |
 | FIN-4 | Revocation invalidates evidence and **never** moves money | spec §6.6 |
 | FIN-5 | `confirmationIntegrity = NEEDS_REVIEW` when no active verification remains; it resolves two ways and no third | spec §6.7 |
 | FIN-6 | Trust is derived from events minus valid revocations, never stored | spec §6.8 |

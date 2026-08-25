@@ -4,7 +4,7 @@
 |---|---|
 | Bundle generated | 25 August 2026 |
 | **Canonical baseline commit** | `80322ec` (spec v1.6.2, named in the consolidation instruction) |
-| **Current canonical head** | `77ff16c` (spec v1.6.4, build plan v1.5) |
+| **Current canonical head** | spec v1.6.6, build plan v1.7 |
 | **Bundle consolidation commit** | `2aee7ef` |
 | Branch | `claude/session-task-plan-review-likv0v` |
 
@@ -14,8 +14,8 @@
 
 | Document | Version | Status | Governs | Supersedes |
 |---|---|---|---|---|
-| `REKODA_CANONICAL_SPEC.md` | 1.6.4 | **AUTHORITATIVE** | Product, architecture, accounting, payments, privacy, entitlements, API, lifecycle | Canonical Product Architecture v2.0; corrections v1.1–v1.6.3; ADR 0004 and ADR 0014 in part |
-| `REKODA_END_TO_END_BUILD_PLAN.md` | 1.5 | **AUTHORITATIVE** | Slices, 120-PR index, dependencies, gates, migration safety, completion contracts | Prior build plans |
+| `REKODA_CANONICAL_SPEC.md` | 1.6.6 | **AUTHORITATIVE** | Product, architecture, accounting, payments, privacy, entitlements, API, lifecycle | Canonical Product Architecture v2.0; corrections v1.1–v1.6.5; ADR 0004 and ADR 0014 in part |
+| `REKODA_END_TO_END_BUILD_PLAN.md` | 1.7 | **AUTHORITATIVE** | Slices, 120-PR index, dependencies, gates, migration safety, completion contracts | Prior build plans |
 | `REKODA_USER_JOURNEYS.md` | 1.0 | **AUTHORITATIVE** for journeys, subordinate to the spec | Chat, Integrate and Complete journeys end to end | Chat & Integrate Journey Spec v1.0; `rekoda-chat-v1.md` and `integrate-explained.md` where they conflict |
 | `REKODA_DESIGN_SYSTEM.md` | 1.0 | **AUTHORITATIVE** for patterns; token values live elsewhere | Which patterns exist and what a screen may claim | Nothing. It consolidates `design-system/rekoda/MASTER.md` |
 | `REKODA_DECISION_REGISTER.md` | 1.0 | **GENERATED VIEW** | Nothing. An index into the two authoritative documents | — |

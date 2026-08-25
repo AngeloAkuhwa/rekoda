@@ -5,9 +5,9 @@
 | Field | Value |
 |---|---|
 | Status | **APPROVED — FROZEN FOR IMPLEMENTATION** |
-| Canonical version | 1.6.5 |
+| Canonical version | 1.6.6 |
 | Effective date | 25 August 2026 |
-| Supersedes | Canonical Product Architecture v2.0; Chat & Integrate Journey v1.0; corrections v1.1 through v1.6.4; ADR 0004 (chart of accounts), ADR 0014 (Recorded vs Verified) in part |
+| Supersedes | Canonical Product Architecture v2.0; Chat & Integrate Journey v1.0; corrections v1.1 through v1.6.5; ADR 0004 (chart of accounts), ADR 0014 (Recorded vs Verified) in part |
 | Owners | Product and engineering, jointly. Accounting sections additionally require finance sign-off. |
 | Companion | `docs/REKODA_END_TO_END_BUILD_PLAN.md` |
 
@@ -320,7 +320,8 @@ PaymentVerification             APPEND-ONLY
   source                        a confirmationSource value
   paymentEvidenceId?            the screenshot, where one exists
   financialTransactionId?       the bank line, for BANK_FEED_MATCH / MANUAL_RECONCILIATION
-  paymentAttemptId?             for PROVIDER_VERIFIED
+  providerSourceIdentity?       for PROVIDER_VERIFIED. See 6.5.
+  paymentAttemptId?             LINKED LATER, when P1 introduces PaymentAttempt
   providerReference?
   actorId?                      who, for MERCHANT_ATTESTED and MANUAL_RECONCILIATION
   verifiedAt · reason? · metadata?
@@ -389,12 +390,13 @@ The events stay genuinely immutable. Uniqueness moves to a small mutable project
 PaymentVerificationClaim         MUTABLE. Not audit truth. Not financial truth.
   id · businessId · verificationId
   financialTransactionId?
-  paymentAttemptId?
+  providerSourceIdentity?       paymentConnectionId + provider reference,
+                                normalised. Available from PR-003 onward.
   confirmationEventId?
   CHECK: exactly one claim key is populated
 
   UNIQUE (businessId, financialTransactionId) WHERE financialTransactionId IS NOT NULL
-  UNIQUE (businessId, paymentAttemptId)       WHERE paymentAttemptId IS NOT NULL
+  UNIQUE (businessId, providerSourceIdentity) WHERE providerSourceIdentity IS NOT NULL
   UNIQUE (businessId, confirmationEventId)    WHERE confirmationEventId IS NOT NULL
 ```
 
@@ -413,8 +415,15 @@ revoking      append PaymentVerificationRevocation
 Each source has its **own** identity. There is no single global uniqueness rule, because the four sources do not share a notion of sameness.
 
 ```
-PROVIDER_VERIFIED       identity = paymentConnectionId + provider attempt or
-                                   transaction reference
+PROVIDER_VERIFIED       identity = businessId + paymentConnectionId
+                                   + providerTransactionReference
+                        derived from data the estate holds TODAY: the
+                        connection and the provider's own reference. It does
+                        NOT depend on PaymentAttempt, which arrives in P1
+                        (PR-054) while PR-005 must already record
+                        provider-verified payments correctly.
+                        paymentAttemptId is linked later, additively, and
+                        never becomes the identity retrospectively.
                         → a retried webhook is a no-op, not a second verification
 
 BANK_FEED_MATCH         identity = financialAccountConnectionId + financialTransactionId
@@ -460,40 +469,50 @@ FAIL-CLOSED                   if claim integrity cannot be established,
                               REFUSE the verification. Never proceed hopefully.
 ```
 
-**The permitted write order:**
+**Row existence is the state.** There is no `status` column and no `RELEASED` row. A claim exists while the evidence is spoken for, and revoking deletes it.
+
+```
+verify   INSERT PaymentVerification
+         INSERT its PaymentVerificationClaim          same transaction
+revoke   INSERT PaymentVerificationRevocation
+         DELETE the claim row                          same transaction
+```
+
+A retained `RELEASED` row would be a mutable record of something the immutable events already say, and the two could disagree. The events remain the source from which the claim table can be rebuilt at any time.
+
+**The canonical atomic write order:**
 
 ```
 BEGIN
-  acquire or validate the source claim
-  validate that no conflicting ACTIVE verification exists
   INSERT PaymentVerification
-  commit the claim state
+  INSERT its unique PaymentVerificationClaim
+  → on unique violation: ROLLBACK THE WHOLE TRANSACTION, then resolve
+
+      same paymentId          an idempotent retry. Return the existing
+                              verification. Write nothing.
+      different paymentId     a genuine conflict. Refuse, and surface it:
+                              this evidence already verifies another payment.
 COMMIT
 ```
 
-**The forbidden one**, because it is the shape that produces the duplicate:
+> **No external work may occur between those two writes.** No provider call, no queue publish, no outbox flush, no read of anything outside the transaction. The window between them is the only place a duplicate can be born, and the only safe width for it is zero.
+
+**The forbidden order**, because it is the shape that produces the duplicate:
 
 ```
 claim → COMMIT → external work → INSERT verification later      ✗
 ```
 
-That order is permitted only behind a deliberate lease-and-expiry state machine, and V1 has none.
-
-```
-claim state    ACTIVE      the evidence is currently spoken for
-               RELEASED    freed by a revocation, and re-acquirable
-
-revoking a verification RELEASES its claim, which is what makes the §6.4
-correction path work: a fresh verification acquires a new claim
-```
+Permitted only behind a deliberate lease-and-expiry state machine, and V1 has none.
 
 **Integrity job.** Runs on a schedule and raises a **HIGH severity operational alert** — not a log line — on any of:
 
 ```
-an active verification with no corresponding ACTIVE claim
-two ACTIVE claims over one source identity
-a claim whose source identity is not valid
+an active verification with no claim row
+two claim rows over one source identity
+a claim row whose source identity is not valid
 two payments actively verified by one externally authoritative source
+a claim row whose verification is revoked
 ```
 
 ### 6.6 Evidence and money are different axes

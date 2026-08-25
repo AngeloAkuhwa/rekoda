@@ -2,10 +2,10 @@
 
 | Field | Value |
 |---|---|
-| Status | **CANONICAL — aligned to spec v1.6.4** |
+| Status | **CANONICAL — aligned to spec v1.6.6** |
 | Version | 1.0 |
 | Effective date | 25 August 2026 |
-| Governed by | `docs/REKODA_CANONICAL_SPEC.md` v1.6.4 |
+| Governed by | `docs/REKODA_CANONICAL_SPEC.md` v1.6.6 |
 | Supersedes | Chat & Integrate Canonical User Journey Specification v1.0; `docs/rekoda-chat-v1.md` and `docs/integrate-explained.md` where they conflict |
 | Audience | Engineering, design, QA, product, support, and future sessions |
 
