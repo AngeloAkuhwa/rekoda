@@ -157,6 +157,10 @@ export function buildOutboxDispatcher(): OutboxDispatcher {
   dispatcher.register('financial_transactions.ingested', async () => {});
   dispatcher.register('reconciliation.confirmed', async () => {});
 
+  /* PR-027's facts. */
+  dispatcher.register('inventory.adjusted', async () => {});
+  dispatcher.register('data.erased', async () => {});
+
   return dispatcher;
 }
 

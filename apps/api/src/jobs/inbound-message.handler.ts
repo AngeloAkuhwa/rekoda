@@ -40,6 +40,7 @@ import {
   reportsRepo,
   settleRepo,
   spendRepo,
+  riskRepo,
   stockRepo,
   usageRepo,
   type Db,
@@ -72,6 +73,8 @@ import {
   type RecordPurchaseCmdInput,
 } from '../commands/spend-commands.js';
 import { placeOrderWork, type PlaceOrderCmdInput } from '../commands/order-commands.js';
+import { adjustInventoryWork, type AdjustInventoryInput } from '../commands/stock-commands.js';
+import { eraseDataWork } from '../commands/privacy-commands.js';
 import type { MessageSender } from '../channels/sender.js';
 
 const paymentLog = new Logger('InboundMessageJob');
@@ -669,17 +672,71 @@ async function deterministicReply(
         if (!(await conversationsRepo.claimDraft(tx, pending.id))) {
           return replies.alreadyConfirmed();
         }
-        const erased = await customersRepo.eraseAllIdentities(tx, businessId, 'chat');
-        return replies.erasureDone(erased);
+        /* The A1 rollout seam (spec §25, Appendix D). The exact phrase was
+         * typed twice — the router IS the phrase check — and the pending
+         * confirmation opened at the first ask records what the merchant was
+         * told. If it lapsed (or the flag flipped between asks), one is
+         * opened now recording the same consequence, claimed in the same
+         * transaction: the two-message phrase mechanism already did the
+         * waiting. */
+        if (deps.config.commandEraseData) {
+          const subject = `draft:${pending.id}`;
+          const open = (await riskRepo.openConfirmationsFor(tx, businessId)).find(
+            (c) => c.command === 'EraseData' && c.subject === subject,
+          );
+          const confirmation =
+            open ??
+            (await deps.commandBus.riskPolicy.ask(tx, {
+              businessId,
+              command: 'EraseData',
+              subject,
+              actor: 'system',
+              ingress: 'CHAT',
+              consequence:
+                'Every customer contact detail for this business will be permanently deleted.',
+              reason: 'merchant asked by exact phrase, twice',
+            }));
+          const run = await deps.commandBus.run(
+            tx,
+            {
+              businessId,
+              command: 'EraseData',
+              payload: { sourceType: 'chat' },
+              subject,
+              confirmationId: confirmation.id,
+              actor: 'system',
+              ingress: 'CHAT',
+            },
+            () => eraseDataWork(tx, { businessId, sourceType: 'chat' }),
+          );
+          if (run.outcome !== 'done') return replies.erasureKept();
+          return replies.erasureDone(run.result.erased);
+        }
+        const erased = await eraseDataWork(tx, { businessId, sourceType: 'chat' });
+        return replies.erasureDone(erased.erased);
       }
       const discarded = await conversationsRepo.supersedePendingDrafts(tx, businessId);
-      await conversationsRepo.recordDraft(tx, {
+      const parked = await conversationsRepo.recordDraft(tx, {
         businessId,
         conversationMessageId: ctx.messageId,
         intent: 'EraseData',
         command: { intent: 'EraseData' },
         model: null,
       });
+      /* Appendix D: the confirmation is opened when the merchant is SHOWN
+       * the consequence, so the record says what they agreed to. */
+      if (deps.config.commandEraseData && parked.isNew) {
+        await deps.commandBus.riskPolicy.ask(tx, {
+          businessId,
+          command: 'EraseData',
+          subject: `draft:${parked.id}`,
+          actor: 'system',
+          ingress: 'CHAT',
+          consequence:
+            'Every customer contact detail for this business will be permanently deleted.',
+          reason: 'merchant asked by exact phrase',
+        });
+      }
       return replies.confirmErasure(discarded);
     }
     case 'number':
@@ -1079,7 +1136,7 @@ async function confirmPendingDraft(
      * count produces nothing to send and must not cost the merchant one of
      * the documents they are allowed to generate. */
     if (documentTaken) await refundDocument(deps, businessId, period);
-    return confirmStockChange(tx, businessId, command as never);
+    return confirmStockChange(deps, tx, businessId, draft.id, command as never);
   }
   if (command.intent === 'RecordOrder') {
     return confirmOrder(deps, tx, businessId, draft.id, command as never, async () => {
@@ -1321,8 +1378,10 @@ async function confirmOrder(
  * disagrees with.
  */
 async function confirmStockChange(
+  deps: InboundMessageDeps,
   tx: TenantDb,
   businessId: string,
+  draftId: string,
   command: StructuredBusinessCommand & { intent: 'AdjustInventory' },
 ): Promise<Reply> {
   const product = await stockRepo.findOrCreateProduct(tx, businessId, command.productMention);
@@ -1331,14 +1390,56 @@ async function confirmStockChange(
    * gate says why in the merchant's own terms; nothing is written. */
   if (gate.gate === 'CG1') return replies.arithmeticQuestion(gate.question);
 
-  await stockRepo.recordMovement(tx, {
+  const destructive = gate.quantityDelta < 0;
+  const input: AdjustInventoryInput = {
     businessId,
     productId: product.id,
     delta: gate.quantityDelta,
-    reason: 'adjustment',
     sourceType: 'chat',
-    sourceId: null,
-  });
+    sourceId: draftId,
+  };
+
+  /* The A1 rollout seam (spec §25, Appendix D). Adding stock is STANDARD;
+   * writing it OFF is D.2's destructive adjustment and must claim the
+   * confirmation the preview opened. A lapsed one gets a fresh preview, not
+   * a shrug: five minutes is the window a decision about disappearing stock
+   * stays warm. */
+  if (deps.config.commandAdjustInventory) {
+    let confirmationId: string | null = null;
+    if (destructive) {
+      const open = (await riskRepo.openConfirmationsFor(tx, businessId)).find(
+        (c) => c.command === 'AdjustInventory' && c.subject === `draft:${draftId}`,
+      );
+      if (!open) return replies.confirmationLapsed('that stock change');
+      confirmationId = open.id;
+    }
+    const run = await deps.commandBus.run(
+      tx,
+      {
+        businessId,
+        command: 'AdjustInventory',
+        payload: input,
+        subject: `draft:${draftId}`,
+        ...(destructive ? { context: { destructive: true } } : {}),
+        confirmationId,
+        actor: 'system',
+        ingress: 'CHAT',
+        idempotencyKey: `draft:${draftId}`,
+      },
+      () => adjustInventoryWork(tx, input),
+    );
+    if (
+      run.outcome === 'confirm_first' ||
+      run.outcome === 'confirmation_expired' ||
+      run.outcome === 'confirmation_already_used' ||
+      run.outcome === 'confirmation_invalid'
+    ) {
+      return replies.confirmationLapsed('that stock change');
+    }
+    if (run.outcome !== 'done') return replies.notYet('Updating that stock count');
+  } else {
+    await adjustInventoryWork(tx, input);
+  }
   return replies.stockSaved(product.name, gate.quantityDelta, gate.onHandAfter);
 }
 
@@ -1868,7 +1969,7 @@ async function interpretedReply(
     stored = { ...command, supplierMention: null, supplierId: supplier?.supplierId ?? null };
   }
 
-  await conversationsRepo.recordDraft(tx, {
+  const draft = await conversationsRepo.recordDraft(tx, {
     businessId,
     conversationMessageId,
     intent: command.intent,
@@ -1876,6 +1977,26 @@ async function interpretedReply(
     model: deps.config.aiModelDefault,
     identityLink: answered.linkAsked ? link : null,
   });
+
+  /* Appendix D: a preview that shows stock DISAPPEARING opens the
+   * confirmation the yes will claim, recording the exact consequence the
+   * merchant read. Additions stay STANDARD and open nothing. */
+  if (deps.config.commandAdjustInventory && command.intent === 'AdjustInventory' && draft.isNew) {
+    const product = await stockRepo.productByName(tx, businessId, command.productMention);
+    const gate = gateStockChange(command, product?.onHand ?? 0);
+    if (gate.gate === 'CG2' && gate.quantityDelta < 0) {
+      await deps.commandBus.riskPolicy.ask(tx, {
+        businessId,
+        command: 'AdjustInventory',
+        subject: `draft:${draft.id}`,
+        actor: 'system',
+        ingress: 'CHAT',
+        consequence: gate.preview,
+        reason: 'stock written off by merchant count',
+        context: { destructive: true },
+      });
+    }
+  }
 
   return answered.reply;
 }

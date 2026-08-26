@@ -10,9 +10,10 @@
  */
 import { randomBytes } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { createDb, identity, quotaRepo, withBusiness, type Db } from '@rekoda/db';
+import { createDb, identity, quotaRepo, sql, withBusiness, type Db } from '@rekoda/db';
 import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
-import { Interpreter } from './interpreter.service.js';
+import { Interpreter, RawProtectedFieldError } from './interpreter.service.js';
+import { PRIVACY_POLICY_VERSION } from '@rekoda/core/privacy';
 import { StubTransport } from './transport.stub.js';
 import { ProviderUnreachable } from './transport.js';
 import { SYSTEM_PROMPT } from './prompt.js';
@@ -267,5 +268,51 @@ describe('costs stay inside the tenant', () => {
 
     expect((await usageRows(ada)).calls).toBe(1);
     expect((await usageRows(bola)).calls).toBe(0);
+  });
+});
+
+describe('the adapter boundary (spec Appendix C.4)', () => {
+  it('REFUSES an outgoing request carrying a raw protected field, spending nothing', async () => {
+    const businessId = await seedBusiness();
+    const transport = StubTransport.answering(A_SALE);
+    const interpreter = new Interpreter(db, config, transport);
+
+    /* An error, never a silent redaction: a silently redacted prompt returns
+     * a confidently wrong answer about a sentence the model never read. */
+    await expect(
+      interpreter.interpret(businessId, 'send it to 08031234567 please'),
+    ).rejects.toThrow(RawProtectedFieldError);
+
+    /* Nothing left the building and nothing was spent: no request reached
+     * the transport, no usage row, and the daily slot untouched. */
+    expect(transport.requests).toHaveLength(0);
+    expect((await usageRows(businessId)).calls).toBe(0);
+  });
+
+  it('records processor, model, purpose, tokenisation and policy version, never the prompt', async () => {
+    const businessId = await seedBusiness();
+    await new Interpreter(db, config, StubTransport.answering(A_SALE)).interpret(
+      businessId,
+      'CUSTOMER_7K2 bought wigs',
+    );
+
+    const rows = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ provider: string; meta: Record<string, unknown> }>(
+        sql`SELECT provider, meta FROM usage_events WHERE business_id = ${businessId}::uuid`,
+      ),
+    );
+    const row = [...rows][0]!;
+    expect(row.provider).toBe(config.aiProvider);
+    expect(row.meta).toMatchObject({
+      model: config.aiModelDefault,
+      purpose: 'interpret_message',
+      tokenised: true,
+      policyVersion: PRIVACY_POLICY_VERSION,
+    });
+
+    /* The prompt, the completion and every protected field stay OUT. */
+    const serialised = JSON.stringify(row.meta);
+    expect(serialised).not.toContain('bought wigs');
+    expect(serialised).not.toContain('CUSTOMER_7K2');
   });
 });

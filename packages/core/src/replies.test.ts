@@ -41,6 +41,7 @@ const ALL: Record<string, readonly replies.Reply[]> = {
   optedIn: [replies.optedIn()],
   cancelled: [replies.cancelled()],
   confirmErasure: [replies.confirmErasure(), replies.confirmErasure(4)],
+  confirmationLapsed: [replies.confirmationLapsed('that stock change')],
   erasureNotYours: [replies.erasureNotYours()],
   erasureDone: [replies.erasureDone(0), replies.erasureDone(12)],
   erasureKept: [replies.erasureKept()],

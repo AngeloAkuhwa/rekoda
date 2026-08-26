@@ -1446,6 +1446,38 @@ describe('consent (STOP/START) and erasure, as facts not sentences', () => {
   });
 
   /**
+   * The same two asks with the EraseData flag ON (PR-027): identical
+   * deletion, and the Appendix D machinery underneath — the first ask opened
+   * a pending confirmation recording the consequence, the second claimed it
+   * through the command bus.
+   */
+  it('erasure under the flag opens a confirmation the second ask claims', async () => {
+    const business = await seedMerchant('+2348031234567', 'Ada Fashion');
+    await customersRepo.createCustomerWithIdentities(db, business.id, 'CUSTOMER_T9', [
+      { facet: 'phone', ciphertext: 'sealed-phone', matchKey: 'mk-phone-9' },
+    ]);
+    const flagged = { ...deps, config: { ...deps.config, commandEraseData: true } };
+
+    await post(messagePayload('2348031234567', 'wamid.DELF1', 'delete my data'));
+    expect(await buildRunner(workerDb, db, flagged).runOnce()).toBe(true);
+    expect(stubSender.lastText).toContain('Reply *DELETE MY DATA* again');
+
+    await post(messagePayload('2348031234567', 'wamid.DELF2', 'delete my data'));
+    expect(await buildRunner(workerDb, db, flagged).runOnce()).toBe(true);
+    expect(stubSender.lastText).toContain('deleted (1 record)');
+
+    const confirmations = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ command: string; claimed_at: Date | null }>(
+        sql`SELECT command, claimed_at FROM pending_confirmations
+            WHERE business_id = ${business.id}::uuid`,
+      ),
+    );
+    expect([...confirmations]).toHaveLength(1);
+    expect([...confirmations][0]?.command).toBe('EraseData');
+    expect([...confirmations][0]?.claimed_at).not.toBeNull();
+  });
+
+  /**
    * Owner only. This deletes every customer's contact details for the whole
    * business in one irreversible statement, which is not a thing an
    * accountant or a delegate should be able to do from a phone.
@@ -3452,6 +3484,62 @@ describe('counting stock', () => {
     expect(stubSender.lastText).toContain('Added 20 bags of rice');
     expect(stubSender.lastText).toContain('You now have 20');
     expect((await onHand(business.id, 'bags of rice'))?.onHand).toBe(20);
+  });
+
+  /**
+   * The destructive half under the flag (PR-027, Appendix D.2): a preview
+   * that shows stock DISAPPEARING opens a pending confirmation recording the
+   * exact consequence, and the yes claims it through the command bus. The
+   * addition before it opens nothing, because adding stock is STANDARD.
+   */
+  it('a write-off under the flag opens a confirmation the yes then claims', async () => {
+    const business = await seedMerchant('+2348031234567');
+    const flagged = { ...deps, config: { ...deps.config, commandAdjustInventory: true } };
+    async function sayFlagged(wamid: string, command: Record<string, unknown>, text: string) {
+      stubTransport.replyWith(command);
+      await post(messagePayload('2348031234567', wamid, text));
+      const runner = buildRunner(workerDb, db, flagged);
+      let worked = await runner.runOnce();
+      while (worked) worked = await runner.runOnce();
+    }
+    async function plainFlagged(wamid: string, text: string) {
+      await post(messagePayload('2348031234567', wamid, text));
+      const runner = buildRunner(workerDb, db, flagged);
+      let worked = await runner.runOnce();
+      while (worked) worked = await runner.runOnce();
+    }
+
+    await sayFlagged('wamid.SD1', adjust('bags of rice', 20), 'add 20 bags of rice');
+    await plainFlagged('wamid.SD2', 'yes');
+    /* Adding stock opened NO confirmation: STANDARD stays cheap. */
+    const afterAdd = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ n: string }>(
+        sql`SELECT count(*)::text AS n FROM pending_confirmations
+            WHERE business_id = ${business.id}::uuid`,
+      ),
+    );
+    expect(Number([...afterAdd][0]?.n)).toBe(0);
+
+    await sayFlagged('wamid.SD3', adjust('bags of rice', -15), '15 bags got water damage');
+    expect(stubSender.lastText).toContain('Removing 15 bags of rice');
+    await plainFlagged('wamid.SD4', 'yes');
+
+    expect(stubSender.lastText).toContain('Removed 15 bags of rice');
+    expect((await onHand(business.id, 'bags of rice'))?.onHand).toBe(5);
+
+    /* The confirmation exists, was CLAIMED by the yes, and recorded the
+     * consequence the merchant read. */
+    const confirmations = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ command: string; consequence: string; claimed_at: Date | null }>(
+        sql`SELECT command, consequence, claimed_at FROM pending_confirmations
+            WHERE business_id = ${business.id}::uuid`,
+      ),
+    );
+    const row = [...confirmations][0];
+    expect([...confirmations]).toHaveLength(1);
+    expect(row?.command).toBe('AdjustInventory');
+    expect(row?.consequence).toContain('Removing 15 bags of rice');
+    expect(row?.claimed_at).not.toBeNull();
   });
 
   it('adds onto a count that is already there', async () => {

@@ -1,6 +1,6 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { billingPeriod, costOfCall } from '@rekoda/core';
-import { redactForLog } from '@rekoda/core/privacy';
+import { PRIVACY_POLICY_VERSION, detectStructuralPii, redactForLog } from '@rekoda/core/privacy';
 import {
   businessCommandToolSchema,
   parseBusinessCommand,
@@ -11,6 +11,21 @@ import { CONFIG, type ApiConfig } from '../config.js';
 import { DB } from '../db/db.module.js';
 import { SYSTEM_PROMPT, TOOL_DESCRIPTION, TOOL_NAME } from './prompt.js';
 import { MODEL_TRANSPORT, ProviderUnreachable, type ModelTransport } from './transport.js';
+
+/**
+ * A raw protected field reached the adapter (spec Appendix C.4).
+ *
+ * Thrown, never silently redacted: a silently redacted prompt returns a
+ * confidently wrong answer about a sentence the model never actually read,
+ * and the merchant acts on it. The error names the KINDS found and never
+ * the values, because this message goes to logs.
+ */
+export class RawProtectedFieldError extends Error {
+  override readonly name = 'RawProtectedFieldError';
+  constructor(readonly kinds: readonly string[]) {
+    super(`refusing to send: raw ${kinds.join(', ')} in text bound for the model`);
+  }
+}
 
 export type Interpretation =
   | { outcome: 'command'; command: StructuredBusinessCommand }
@@ -49,6 +64,17 @@ export class Interpreter {
    * is why the gateway runs in the handler rather than here.
    */
   async interpret(businessId: string, safeText: string): Promise<Interpretation> {
+    /* FAIL CLOSED, before anything is reserved or spent (Appendix C.4): the
+     * gateway's contract is that `safeText` is tokenised, and a contract the
+     * adapter does not verify is a comment. Structural PII still present
+     * means the gateway was bypassed or broken, and the only honest move is
+     * an error a human sees — not a quiet redaction that sends the model a
+     * sentence nobody wrote. */
+    const rawSpans = detectStructuralPii(safeText);
+    if (rawSpans.length > 0) {
+      throw new RawProtectedFieldError([...new Set(rawSpans.map((span) => span.kind))]);
+    }
+
     const reservation = await quotaRepo.reserveAiCall(this.db, businessId, {
       perBusinessPerDay: this.config.aiCallsPerBusinessPerDay,
       globalPerDay: this.config.aiCallsGlobalPerDay,
@@ -134,7 +160,18 @@ export class Interpreter {
         providerCostMicros: cost.usdMicros,
         nairaEquivalentK: cost.nairaKobo,
         billingPeriod: billingPeriod(new Date()),
-        meta: { model, priced: cost.priced, stopReason, ...usage },
+        /* The observability contract (Appendix C.4): processor, model,
+         * purpose, tokenisation status and policy version — and NEVER the
+         * prompt, the completion or a protected field. */
+        meta: {
+          model,
+          purpose: 'interpret_message',
+          tokenised: true,
+          policyVersion: PRIVACY_POLICY_VERSION,
+          priced: cost.priced,
+          stopReason,
+          ...usage,
+        },
       }),
     );
   }

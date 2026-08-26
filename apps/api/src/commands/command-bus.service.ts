@@ -68,6 +68,12 @@ export type CommandOutcome<R> =
 export class CommandBus {
   constructor(private readonly risk: RiskPolicyService) {}
 
+  /** The same policy instance the gates run — for an ingress that must OPEN
+   * a confirmation (Appendix D) before its merchant can say yes to it. */
+  get riskPolicy(): RiskPolicyService {
+    return this.risk;
+  }
+
   /**
    * Run a command, or say precisely why not.
    *

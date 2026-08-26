@@ -1094,6 +1094,20 @@ export function stockList(rows: StockLine[], count: number, outOfStock: number):
 }
 
 /** A stock change saved, with the figure that matters after it. */
+/**
+ * A high-risk confirmation went stale between the preview and the yes.
+ *
+ * Five minutes is the window a decision about disappearing stock or money
+ * stays warm (Appendix D). Asking again is the safety working, and the copy
+ * says what to do rather than what went wrong internally.
+ */
+export function confirmationLapsed(what: string): Reply {
+  return reply(
+    `That took a little too long, so I did not save ${what}. ` +
+      'Send it again and I will show you a fresh preview.',
+  );
+}
+
 export function stockSaved(name: string, delta: number, onHand: number): Reply {
   const moved = delta > 0 ? `Added ${delta} ${name}.` : `Removed ${Math.abs(delta)} ${name}.`;
   const left = onHand === 0 ? `You have none left.` : `You now have ${onHand}.`;
