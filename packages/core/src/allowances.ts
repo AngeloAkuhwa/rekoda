@@ -8,13 +8,67 @@
  */
 
 export const USAGE_UNITS = [
-  'messages',
-  'voice_seconds',
-  'documents',
-  'documents_understood',
-  'orders',
+  /* Chat: what a merchant spends recording their own books. */
+  'AI_ACTIONS',
+  'VOICE_MINUTES',
+  'DOCUMENT_GENERATION',
+  'DOCUMENTS_UNDERSTOOD',
+  /* WhatsApp message categories. Meta prices these apart, and the spread
+   * between utility and marketing is roughly eightfold, which makes it the
+   * largest single variable in plan margin. Metering them as one number
+   * hides the only figure worth watching (spec 4.2). */
+  'SERVICE_MESSAGE',
+  'UTILITY_TEMPLATE',
+  'AUTH_TEMPLATE',
+  'AUTH_INTL_TEMPLATE',
+  'MARKETING_TEMPLATE',
+  /* Integrate: what a customer's shopping spends. */
+  'CATALOGUE_ORDERS',
+  /* Standing capacity rather than monthly consumption: connections held,
+   * people admitted, files taken away. */
+  'PAYMENT_CONNECTIONS',
+  'FINANCIAL_ACCOUNT_CONNECTIONS',
+  'ACCOUNTANT_USERS',
+  'REPORT_EXPORTS',
+  /* The API product (spec 27). */
+  'API_REQUEST_UNITS',
+  'API_APPLICATIONS',
+  'WEBHOOK_DELIVERIES',
 ] as const;
 export type UsageUnit = (typeof USAGE_UNITS)[number];
+
+/**
+ * How many counts the meter stores for one merchant-facing unit.
+ *
+ * Voice is the only unit whose merchant word and countable increment differ.
+ * A voice note is not a whole number of minutes, and rounding each one up to
+ * the next minute would cost a merchant sending twenty-second notes three
+ * times the capacity they were sold. So `usage_counters.used` holds seconds
+ * and the plan table below holds minutes, which is also the figure the
+ * pricing page quotes.
+ *
+ * Every unit is named rather than defaulted, so adding an eighteenth forces
+ * a decision about how it is counted instead of inheriting one.
+ */
+export const UNIT_SCALE: Record<UsageUnit, number> = {
+  AI_ACTIONS: 1,
+  VOICE_MINUTES: 60,
+  DOCUMENT_GENERATION: 1,
+  DOCUMENTS_UNDERSTOOD: 1,
+  SERVICE_MESSAGE: 1,
+  UTILITY_TEMPLATE: 1,
+  AUTH_TEMPLATE: 1,
+  AUTH_INTL_TEMPLATE: 1,
+  MARKETING_TEMPLATE: 1,
+  CATALOGUE_ORDERS: 1,
+  PAYMENT_CONNECTIONS: 1,
+  FINANCIAL_ACCOUNT_CONNECTIONS: 1,
+  ACCOUNTANT_USERS: 1,
+  REPORT_EXPORTS: 1,
+  API_REQUEST_UNITS: 1,
+  API_APPLICATIONS: 1,
+  WEBHOOK_DELIVERIES: 1,
+};
 
 /**
  * `expired` is not sold — it is where a trial lands when its 30 days are up.
@@ -32,35 +86,61 @@ export function trialExpiry(startedAt: Date): Date {
   return new Date(startedAt.getTime() + TRIAL_DAYS * 86_400_000);
 }
 
+/**
+ * What one plan sells, unit by unit.
+ *
+ * A unit left out of the object is not sold on that plan, which the meter
+ * enforces as an allowance of zero: the atomic consume refuses the first
+ * unit exactly as it refuses the 401st. Naming only what a plan sells keeps
+ * the table readable against the pricing page, and means a new unit arrives
+ * unsold everywhere until somebody decides its number.
+ */
+function sells(sold: Partial<Record<UsageUnit, number>>): Record<UsageUnit, number> {
+  return Object.fromEntries(USAGE_UNITS.map((unit) => [unit, sold[unit] ?? 0])) as Record<
+    UsageUnit,
+    number
+  >;
+}
+
+/**
+ * The plan table, in the units a merchant is sold: minutes of voice, not
+ * seconds. `allowanceFor` converts to the counts the meter stores.
+ *
+ * Twelve of the seventeen canonical units are zero on every plan today.
+ * That is not an oversight and not a placeholder price of nothing: no code
+ * consumes them yet, so there is no capability behind them to sell. Message
+ * categories get their numbers in the PR that starts metering categories;
+ * the API units get theirs with the API product. Inventing a figure here
+ * would put capacity on the pricing page that nothing can spend.
+ */
 export const PLAN_ALLOWANCES: Record<PlanId, Record<UsageUnit, number>> = {
   /* Ten orders on trial, not zero: MASTER-PLAN allows the Integrate
    * connection during trial, and a trialist who never tastes automatic
    * order capture never learns why Integrate is worth paying for. */
-  trial: { messages: 50, voice_seconds: 600, documents: 25, documents_understood: 10, orders: 10 },
-  expired: {
-    messages: 0,
-    voice_seconds: 0,
-    documents: 0,
-    documents_understood: 0,
-    orders: 0,
-  },
-  chat: {
-    messages: 400,
-    voice_seconds: 3_600,
-    documents: 100,
-    documents_understood: 50,
-    orders: 0,
-  },
+  trial: sells({
+    AI_ACTIONS: 50,
+    VOICE_MINUTES: 10,
+    DOCUMENT_GENERATION: 25,
+    DOCUMENTS_UNDERSTOOD: 10,
+    CATALOGUE_ORDERS: 10,
+  }),
+  expired: sells({}),
+  chat: sells({
+    AI_ACTIONS: 400,
+    VOICE_MINUTES: 60,
+    DOCUMENT_GENERATION: 100,
+    DOCUMENTS_UNDERSTOOD: 50,
+  }),
   /**
    * Integrate holds REKODA_INTEGRATE and not REKODA_CHAT (owner decision,
-   * 26 Aug 2026, spec §3.3). The merchant-side units therefore go to zero:
+   * 26 Aug 2026, spec 3.3). The merchant-side units are therefore absent:
    * the gate refuses those capabilities, so capacity for them would be
    * capacity the product cannot spend, and the pricing page must not promise
    * it.
    *
-   * `documents` stays, and is the reason this is not simply "zero the Chat
-   * units": document GENERATION is what turns a customer order into an
-   * invoice and a receipt, so it is Integrate's own consumable.
+   * `DOCUMENT_GENERATION` stays, and is the reason this is not simply "zero
+   * the Chat units": generating a document is what turns a customer order
+   * into an invoice and a receipt, so it is Integrate's own consumable.
    *
    * This does mean the ladder walks backwards for a Chat merchant who moves
    * to Integrate: they lose merchant-side messaging, voice and document
@@ -68,20 +148,14 @@ export const PLAN_ALLOWANCES: Record<PlanId, Record<UsageUnit, number>> = {
    * capability tier rather than a volume tier. Complete is the plan for a
    * merchant who wants both.
    */
-  integrate: {
-    messages: 0,
-    voice_seconds: 0,
-    documents: 500,
-    documents_understood: 0,
-    orders: 300,
-  },
-  complete: {
-    messages: 1_200,
-    voice_seconds: 7_200,
-    documents: 750,
-    documents_understood: 200,
-    orders: 300,
-  },
+  integrate: sells({ DOCUMENT_GENERATION: 500, CATALOGUE_ORDERS: 300 }),
+  complete: sells({
+    AI_ACTIONS: 1_200,
+    VOICE_MINUTES: 120,
+    DOCUMENT_GENERATION: 750,
+    DOCUMENTS_UNDERSTOOD: 200,
+    CATALOGUE_ORDERS: 300,
+  }),
 };
 
 /**
@@ -105,10 +179,16 @@ export function seatsFor(plan: string): number {
   return (SEATS_PER_PLAN as Record<string, number>)[plan] ?? SEATS_PER_PLAN.trial;
 }
 
-/** An unknown plan gets the TRIAL allowance: the safe direction is stingy. */
+/**
+ * The allowance in the counts the meter stores, which is what every consume
+ * site and every meter reading needs.
+ *
+ * An unknown plan gets the TRIAL allowance: the safe direction is stingy, and
+ * a corrupted or future plan value must never mean unlimited.
+ */
 export function allowanceFor(plan: string, unit: UsageUnit): number {
   const known = (PLAN_ALLOWANCES as Record<string, Record<UsageUnit, number>>)[plan];
-  return known ? known[unit] : PLAN_ALLOWANCES.trial[unit];
+  return (known ? known[unit] : PLAN_ALLOWANCES.trial[unit]) * UNIT_SCALE[unit];
 }
 
 /**

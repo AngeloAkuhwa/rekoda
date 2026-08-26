@@ -204,7 +204,7 @@ export function chatNotInPlan(): Reply {
   );
 }
 
-export function allowanceExhausted(allowance: number, unit: UsageUnit = 'messages'): Reply {
+export function allowanceExhausted(allowance: number, unit: UsageUnit = 'AI_ACTIONS'): Reply {
   return reply(
     `You have used all ${allowance} ${UNIT_WORDS[unit]} in your plan this month. ` +
       'Nothing is lost. Your records are safe, and *who owes me*, *payment details* and ' +
@@ -222,11 +222,23 @@ export function allowanceExhausted(allowance: number, unit: UsageUnit = 'message
  * which plan would fix it.
  */
 const UNIT_WORDS: Record<UsageUnit, string> = {
-  messages: 'messages',
-  voice_seconds: 'seconds of voice notes',
-  documents: 'invoices and receipts',
-  documents_understood: 'document scans',
-  orders: 'orders',
+  AI_ACTIONS: 'messages',
+  VOICE_MINUTES: 'seconds of voice notes',
+  DOCUMENT_GENERATION: 'invoices and receipts',
+  DOCUMENTS_UNDERSTOOD: 'document scans',
+  SERVICE_MESSAGE: 'replies inside the 24-hour window',
+  UTILITY_TEMPLATE: 'order and payment updates',
+  AUTH_TEMPLATE: 'login codes',
+  AUTH_INTL_TEMPLATE: 'international login codes',
+  MARKETING_TEMPLATE: 'marketing messages',
+  CATALOGUE_ORDERS: 'orders',
+  PAYMENT_CONNECTIONS: 'payment connections',
+  FINANCIAL_ACCOUNT_CONNECTIONS: 'bank connections',
+  ACCOUNTANT_USERS: 'accountant logins',
+  REPORT_EXPORTS: 'report downloads',
+  API_REQUEST_UNITS: 'API requests',
+  API_APPLICATIONS: 'API applications',
+  WEBHOOK_DELIVERIES: 'webhook deliveries',
 };
 
 /**

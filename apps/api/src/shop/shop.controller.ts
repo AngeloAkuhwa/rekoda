@@ -302,25 +302,37 @@ export class PublicShopController {
     const period = usagePeriod(new Date());
     const plan = await withBusiness(this.db, businessId, (tx) => usageRepo.planFor(tx, businessId));
     const orderGranted = await withBusiness(this.db, businessId, (own) =>
-      usageRepo.consumeUnit(own, businessId, period, 'orders', allowanceFor(plan, 'orders')),
+      usageRepo.consumeUnit(
+        own,
+        businessId,
+        period,
+        'CATALOGUE_ORDERS',
+        allowanceFor(plan, 'CATALOGUE_ORDERS'),
+      ),
     );
     if (!orderGranted) return { outcome: 'closed' };
     const documentGranted = await withBusiness(this.db, businessId, (own) =>
-      usageRepo.consumeUnit(own, businessId, period, 'documents', allowanceFor(plan, 'documents')),
+      usageRepo.consumeUnit(
+        own,
+        businessId,
+        period,
+        'DOCUMENT_GENERATION',
+        allowanceFor(plan, 'DOCUMENT_GENERATION'),
+      ),
     );
     if (!documentGranted) {
       await withBusiness(this.db, businessId, (own) =>
-        usageRepo.refundUnit(own, businessId, period, 'orders'),
+        usageRepo.refundUnit(own, businessId, period, 'CATALOGUE_ORDERS'),
       );
       return { outcome: 'closed' };
     }
 
     const refundBoth = async () => {
       await withBusiness(this.db, businessId, (own) =>
-        usageRepo.refundUnit(own, businessId, period, 'orders'),
+        usageRepo.refundUnit(own, businessId, period, 'CATALOGUE_ORDERS'),
       );
       await withBusiness(this.db, businessId, (own) =>
-        usageRepo.refundUnit(own, businessId, period, 'documents'),
+        usageRepo.refundUnit(own, businessId, period, 'DOCUMENT_GENERATION'),
       );
     };
 

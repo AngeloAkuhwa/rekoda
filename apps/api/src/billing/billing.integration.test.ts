@@ -399,7 +399,7 @@ describe('a charge the provider confirmed', () => {
 
     const overview = await overviewOf(auth);
     expect(overview.plan).toBe('chat');
-    const messages = overview.units.find((unit) => unit.unit === 'messages');
+    const messages = overview.units.find((unit) => unit.unit === 'AI_ACTIONS');
     expect(messages?.bonus).toBe(100);
     expect(messages?.used).toBe(0); // bought capacity is not consumption
   });

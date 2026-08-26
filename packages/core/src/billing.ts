@@ -216,28 +216,28 @@ export const ADD_ON_PACKS: readonly AddOnPack[] = [
   {
     id: 'messages_100',
     label: '100 extra WhatsApp messages',
-    unit: 'messages',
+    unit: 'AI_ACTIONS',
     quantity: 100,
     priceK: 250_000,
   },
   {
     id: 'voice_30min',
     label: '30 extra voice minutes',
-    unit: 'voice_seconds',
+    unit: 'VOICE_MINUTES',
     quantity: 1_800,
     priceK: 150_000,
   },
   {
     id: 'documents_50',
     label: '50 extra document generations',
-    unit: 'documents',
+    unit: 'DOCUMENT_GENERATION',
     quantity: 50,
     priceK: 200_000,
   },
   {
     id: 'orders_50',
     label: '50 extra Integrate orders',
-    unit: 'orders',
+    unit: 'CATALOGUE_ORDERS',
     quantity: 50,
     priceK: 500_000,
   },
@@ -271,7 +271,7 @@ export function addOnPack(id: string): AddOnPack | null {
 export function packsFor(plan: string): AddOnPack[] {
   if ((PLAN_PRICES_K[plan as PlanId] ?? 0) === 0) return [];
   return ADD_ON_PACKS.filter((pack) => {
-    if (pack.unit === 'orders') return plan === 'integrate' || plan === 'complete';
+    if (pack.unit === 'CATALOGUE_ORDERS') return plan === 'integrate' || plan === 'complete';
     return true;
   });
 }

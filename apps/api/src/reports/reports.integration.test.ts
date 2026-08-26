@@ -2942,7 +2942,7 @@ describe('quotes, and what converting one does', () => {
     const usage = await withBusiness(db, businessId, (tx) =>
       usageRepo.usageFor(tx, businessId, usagePeriod(new Date())),
     );
-    expect(usage.find((r) => r.unit === 'documents')?.used).toBe(1);
+    expect(usage.find((r) => r.unit === 'DOCUMENT_GENERATION')?.used).toBe(1);
   });
 
   it('a second convert is handed the first one`s invoice, and pays nothing', async () => {
@@ -2967,7 +2967,7 @@ describe('quotes, and what converting one does', () => {
     const usage = await withBusiness(db, businessId, (tx) =>
       usageRepo.usageFor(tx, businessId, usagePeriod(new Date())),
     );
-    expect(usage.find((r) => r.unit === 'documents')?.used).toBe(1);
+    expect(usage.find((r) => r.unit === 'DOCUMENT_GENERATION')?.used).toBe(1);
   });
 
   it('refuses a dead offer: expired converts nothing, withdrawn converts nothing', async () => {
@@ -3001,7 +3001,7 @@ describe('quotes, and what converting one does', () => {
     const usage = await withBusiness(db, businessId, (tx) =>
       usageRepo.usageFor(tx, businessId, usagePeriod(new Date())),
     );
-    expect(usage.find((r) => r.unit === 'documents')?.used ?? 0).toBe(0);
+    expect(usage.find((r) => r.unit === 'DOCUMENT_GENERATION')?.used ?? 0).toBe(0);
   });
 });
 
@@ -3115,7 +3115,7 @@ describe('purchase orders, and what receiving one does', () => {
     const usage = await withBusiness(db, businessId, (tx) =>
       usageRepo.usageFor(tx, businessId, usagePeriod(new Date())),
     );
-    expect(usage.find((r) => r.unit === 'documents')?.used ?? 0).toBe(0);
+    expect(usage.find((r) => r.unit === 'DOCUMENT_GENERATION')?.used ?? 0).toBe(0);
   });
 
   it('a second receive books nothing twice', async () => {

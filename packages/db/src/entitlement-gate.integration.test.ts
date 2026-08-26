@@ -56,13 +56,13 @@ const gate = (businessId: string, key: Parameters<typeof entitlementsRepo.requir
 
 describe('what each plan grants', () => {
   it.each([
-    { plan: 'trial', expected: ['REKODA_CHAT', 'REKODA_INTEGRATE'] },
-    { plan: 'chat', expected: ['REKODA_CHAT'] },
-    { plan: 'integrate', expected: ['REKODA_INTEGRATE'] },
-    { plan: 'complete', expected: ['REKODA_CHAT', 'REKODA_INTEGRATE'] },
-    { plan: 'expired', expected: [] },
-  ])('$plan holds $expected', async ({ plan, expected }, index) => {
-    const businessId = await seedOn(plan, `+23480903000${10 + index}`);
+    { plan: 'trial', phone: '+2348090300010', expected: ['REKODA_CHAT', 'REKODA_INTEGRATE'] },
+    { plan: 'chat', phone: '+2348090300011', expected: ['REKODA_CHAT'] },
+    { plan: 'integrate', phone: '+2348090300012', expected: ['REKODA_INTEGRATE'] },
+    { plan: 'complete', phone: '+2348090300013', expected: ['REKODA_CHAT', 'REKODA_INTEGRATE'] },
+    { plan: 'expired', phone: '+2348090300014', expected: [] },
+  ])('$plan holds $expected', async ({ plan, phone, expected }) => {
+    const businessId = await seedOn(plan, phone);
     expect(await resolve(businessId)).toEqual(expected);
   });
 
@@ -187,7 +187,7 @@ describe('entitlement comes before the meter', () => {
     /* And the entitled path still meters normally, so the gate has not simply
      * disabled the meter for everybody. */
     const granted = await withBusiness(db, businessId, (own) =>
-      usageRepo.consumeUnit(own, businessId, period, 'documents', 100),
+      usageRepo.consumeUnit(own, businessId, period, 'DOCUMENT_GENERATION', 100),
     );
     expect(granted).toBe(true);
   });

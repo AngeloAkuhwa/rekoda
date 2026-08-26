@@ -330,7 +330,7 @@ async function seedTradingHistory(businessId: string): Promise<void> {
       sourceId: 'draft-3',
     });
 
-    await usageRepo.consumeUnit(tx, businessId, '2026-08', 'messages', 50);
-    await usageRepo.creditBonus(tx, businessId, '2026-08', 'messages', 10);
+    await usageRepo.consumeUnit(tx, businessId, '2026-08', 'AI_ACTIONS', 50);
+    await usageRepo.creditBonus(tx, businessId, '2026-08', 'AI_ACTIONS', 10);
   });
 }

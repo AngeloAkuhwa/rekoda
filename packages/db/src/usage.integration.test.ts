@@ -12,6 +12,7 @@ import { sql } from 'drizzle-orm';
 import { createDb, withBusiness, type Db } from './client.js';
 import { billingRepo, identity, usageRepo } from './index.js';
 import { migrate, requireUrls, truncateAll, type Urls } from './testing.js';
+import { USAGE_UNITS, allowanceFor } from '@rekoda/core';
 
 let urls: Urls;
 let db: Db;
@@ -45,7 +46,7 @@ const PERIOD = '2026-08';
 
 const consume = (businessId: string, allowance: number, n = 1) =>
   withBusiness(db, businessId, (tx) =>
-    usageRepo.consumeUnit(tx, businessId, PERIOD, 'messages', allowance, n),
+    usageRepo.consumeUnit(tx, businessId, PERIOD, 'AI_ACTIONS', allowance, n),
   );
 
 describe('the atomic gate', () => {
@@ -82,7 +83,7 @@ describe('the atomic gate', () => {
     await withBusiness(db, businessId, (tx) =>
       tx.execute(sql`
         UPDATE usage_counters SET bonus = 3
-        WHERE business_id = ${businessId}::uuid AND period = ${PERIOD} AND unit = 'messages'
+        WHERE business_id = ${businessId}::uuid AND period = ${PERIOD} AND unit = 'AI_ACTIONS'
       `),
     );
 
@@ -98,7 +99,7 @@ describe('the atomic gate', () => {
     await consume(businessId, 5);
 
     await withBusiness(db, businessId, (tx) =>
-      usageRepo.refundUnit(tx, businessId, PERIOD, 'messages'),
+      usageRepo.refundUnit(tx, businessId, PERIOD, 'AI_ACTIONS'),
     );
     const [row] = await withBusiness(db, businessId, (tx) =>
       usageRepo.usageFor(tx, businessId, PERIOD),
@@ -107,7 +108,7 @@ describe('the atomic gate', () => {
 
     // Refunding more than was ever taken cannot mint credit.
     await withBusiness(db, businessId, (tx) =>
-      usageRepo.refundUnit(tx, businessId, PERIOD, 'messages', 99),
+      usageRepo.refundUnit(tx, businessId, PERIOD, 'AI_ACTIONS', 99),
     );
     const [floored] = await withBusiness(db, businessId, (tx) =>
       usageRepo.usageFor(tx, businessId, PERIOD),
@@ -121,7 +122,7 @@ describe('the atomic gate', () => {
     expect(await consume(businessId, 1)).toBe(false);
 
     const nextMonth = await withBusiness(db, businessId, (tx) =>
-      usageRepo.consumeUnit(tx, businessId, '2026-09', 'messages', 1),
+      usageRepo.consumeUnit(tx, businessId, '2026-09', 'AI_ACTIONS', 1),
     );
     expect(nextMonth).toBe(true);
   });
@@ -180,7 +181,7 @@ describe('the trial clock (docs/pricing-model.md)', () => {
     const businessId = await seedBusiness();
     await setPlanRow(businessId, 'trial', new Date(Date.now() - 1_000));
     expect(await planOf(businessId)).toBe('expired');
-    // allowanceFor('expired', 'messages') is 0, and a zero allowance refuses.
+    // allowanceFor('expired', 'AI_ACTIONS') is 0, and a zero allowance refuses.
     expect(await consume(businessId, 0)).toBe(false);
   });
 });
@@ -238,5 +239,78 @@ describe('plan changes and upgrade requests', () => {
     // Two asks are two rows: a merchant who repeats themselves is information.
     expect(requests).toHaveLength(2);
     expect(requests[0]?.fromPlan).toBe('expired');
+  });
+});
+
+/**
+ * The vocabulary, enforced by the column rather than by the type system.
+ *
+ * `usage_counters.unit` is text with a CHECK, so TypeScript's UsageUnit is
+ * only half the guard: a job written in SQL, a fixture, or a hand-run
+ * correction can put anything in this column. The CHECK is what makes the
+ * canonical seventeen the whole set the meter can hold, and the retired five
+ * unwritable, so a half-applied deployment cannot leave a business metered
+ * under two names for the same thing.
+ */
+describe('the metered vocabulary (spec 4.2)', () => {
+  let businessId: string;
+
+  beforeEach(async () => {
+    businessId = await seedBusiness();
+  });
+
+  const write = (unit: string) =>
+    withBusiness(db, businessId, (tx) =>
+      tx.execute(sql`
+        INSERT INTO usage_counters (business_id, period, unit, used)
+        VALUES (${businessId}::uuid, ${PERIOD}, ${unit}, 1)
+      `),
+    );
+
+  it('holds every one of the canonical seventeen', async () => {
+    expect(USAGE_UNITS).toHaveLength(17);
+    for (const unit of USAGE_UNITS) {
+      await expect(write(unit), `${unit} is writable`).resolves.toBeDefined();
+    }
+    const rows = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ n: number }>(
+        sql`SELECT count(*)::int AS n FROM usage_counters WHERE business_id = ${businessId}::uuid`,
+      ),
+    );
+    expect([...rows][0]?.n).toBe(17);
+  });
+
+  it.each(['messages', 'voice_seconds', 'documents', 'documents_understood', 'orders'])(
+    'refuses the retired name %s',
+    async (retired) => {
+      await expect(write(retired)).rejects.toThrow();
+    },
+  );
+
+  it('refuses a name nobody has ever metered', async () => {
+    await expect(write('TOKENS')).rejects.toThrow();
+  });
+
+  /**
+   * Voice is counted in seconds under a name that says minutes, so the two
+   * halves have to be checked together: the plan sells sixty minutes, the
+   * meter is handed three thousand six hundred, and a one hundred and
+   * thirty-seven second voice note spends one hundred and thirty-seven of
+   * them. Dividing at any point in that chain would either give a merchant
+   * sixty times the voice they bought or a sixtieth of it.
+   */
+  it('spends voice a second at a time against a minute allowance', async () => {
+    const allowance = allowanceFor('chat', 'VOICE_MINUTES');
+    expect(allowance).toBe(3_600);
+
+    const granted = await withBusiness(db, businessId, (tx) =>
+      usageRepo.consumeUnit(tx, businessId, PERIOD, 'VOICE_MINUTES', allowance, 137),
+    );
+    expect(granted).toBe(true);
+
+    const rows = await withBusiness(db, businessId, (tx) =>
+      usageRepo.usageFor(tx, businessId, PERIOD),
+    );
+    expect(rows.find((row) => row.unit === 'VOICE_MINUTES')?.used).toBe(137);
   });
 });

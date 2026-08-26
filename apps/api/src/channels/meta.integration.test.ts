@@ -920,14 +920,14 @@ describe("the plan's own example, end to end", () => {
 
   it('closes an exhausted month with a doorway, not a wall (metering-v1 §3)', async () => {
     const business = await seedMerchant('+2348031234567', 'Ada Fashion');
-    const allowance = PLAN_ALLOWANCES.trial.messages;
+    const allowance = PLAN_ALLOWANCES.trial.AI_ACTIONS;
     // The whole trial allowance, spent the atomic way fifty messages would.
     await withBusiness(db, business.id, (tx) =>
       usageRepo.consumeUnit(
         tx,
         business.id,
         usagePeriod(new Date()),
-        'messages',
+        'AI_ACTIONS',
         allowance,
         allowance,
       ),
@@ -1583,7 +1583,7 @@ describe('metering the things that cost money', () => {
     // Burn the trial's 25 documents, leaving the allowance exactly spent.
     const period = usagePeriod(new Date());
     await withBusiness(db, business.id, (tx) =>
-      usageRepo.consumeUnit(tx, business.id, period, 'documents', 25, 25),
+      usageRepo.consumeUnit(tx, business.id, period, 'DOCUMENT_GENERATION', 25, 25),
     );
 
     stubTransport.replyWith(A_SALE);
@@ -2050,7 +2050,7 @@ describe('a voice note', () => {
     const rows = await withBusiness(db, business.id, (tx) =>
       usageRepo.usageFor(tx, business.id, period),
     );
-    expect(rows.find((r) => r.unit === 'voice_seconds')?.used).toBe(17);
+    expect(rows.find((r) => r.unit === 'VOICE_MINUTES')?.used).toBe(17);
   });
 
   /* Our failure, so it costs the merchant nothing and says what to do. */
@@ -2067,7 +2067,7 @@ describe('a voice note', () => {
     const rows = await withBusiness(db, business.id, (tx) =>
       usageRepo.usageFor(tx, business.id, period),
     );
-    expect(rows.find((r) => r.unit === 'voice_seconds')?.used ?? 0).toBe(0);
+    expect(rows.find((r) => r.unit === 'VOICE_MINUTES')?.used ?? 0).toBe(0);
   });
 
   it('answers honestly when the audio cannot be fetched', async () => {
@@ -2098,7 +2098,7 @@ describe('a voice note', () => {
     const rows = await withBusiness(db, business.id, (tx) =>
       usageRepo.usageFor(tx, business.id, period),
     );
-    expect(rows.find((r) => r.unit === 'voice_seconds')?.used).toBe(5);
+    expect(rows.find((r) => r.unit === 'VOICE_MINUTES')?.used).toBe(5);
   });
 
   /* A photo with no media id is not a receipt anybody can read. */
@@ -2407,7 +2407,7 @@ describe('a receipt photo', () => {
     const rows = await withBusiness(db, business.id, (tx) =>
       usageRepo.usageFor(tx, business.id, period),
     );
-    expect(rows.find((r) => r.unit === 'documents_understood')?.used ?? 0).toBe(0);
+    expect(rows.find((r) => r.unit === 'DOCUMENTS_UNDERSTOOD')?.used ?? 0).toBe(0);
   });
 
   it('answers honestly when the image cannot be fetched, and reads nothing', async () => {
@@ -2435,7 +2435,7 @@ describe('a receipt photo', () => {
     const rows = await withBusiness(db, business.id, (tx) =>
       usageRepo.usageFor(tx, business.id, period),
     );
-    expect(rows.find((r) => r.unit === 'documents_understood')?.used).toBe(1);
+    expect(rows.find((r) => r.unit === 'DOCUMENTS_UNDERSTOOD')?.used).toBe(1);
   });
 
   it('puts the caption in front of the page, because it says what the page is for', async () => {
@@ -2468,7 +2468,7 @@ describe('a receipt photo', () => {
     const rows = await withBusiness(db, business.id, (tx) =>
       usageRepo.usageFor(tx, business.id, period),
     );
-    expect(rows.find((r) => r.unit === 'documents_understood')?.used).toBe(1);
+    expect(rows.find((r) => r.unit === 'DOCUMENTS_UNDERSTOOD')?.used).toBe(1);
   });
 });
 
@@ -2946,7 +2946,7 @@ describe('a payment the merchant reports (RecordPayment)', () => {
     const after = await withBusiness(db, business.id, (tx) =>
       usageRepo.usageFor(tx, business.id, period),
     );
-    expect(usedOf(after, 'documents') - usedOf(before, 'documents')).toBe(1);
+    expect(usedOf(after, 'DOCUMENT_GENERATION') - usedOf(before, 'DOCUMENT_GENERATION')).toBe(1);
   });
 
   it('gives the unit back when the payment could not be placed', async () => {
@@ -2985,7 +2985,7 @@ describe('a payment the merchant reports (RecordPayment)', () => {
     const after = await withBusiness(db, business.id, (tx) =>
       usageRepo.usageFor(tx, business.id, period),
     );
-    expect(usedOf(after, 'documents')).toBe(usedOf(before, 'documents'));
+    expect(usedOf(after, 'DOCUMENT_GENERATION')).toBe(usedOf(before, 'DOCUMENT_GENERATION'));
   });
 
   /**
@@ -3275,7 +3275,7 @@ describe('counting stock', () => {
     const rows = await withBusiness(db, business.id, (tx) =>
       usageRepo.usageFor(tx, business.id, usagePeriod(new Date())),
     );
-    const documents = rows.find((r) => r.unit === 'documents');
+    const documents = rows.find((r) => r.unit === 'DOCUMENT_GENERATION');
     expect(documents?.used ?? 0).toBe(0);
   });
 });
@@ -3658,8 +3658,8 @@ describe('a forwarded order', () => {
     const rows = await withBusiness(db, business.id, (tx) =>
       usageRepo.usageFor(tx, business.id, usagePeriod(new Date())),
     );
-    expect(rows.find((r) => r.unit === 'orders')?.used).toBe(1);
-    expect(rows.find((r) => r.unit === 'documents')?.used).toBe(1);
+    expect(rows.find((r) => r.unit === 'CATALOGUE_ORDERS')?.used).toBe(1);
+    expect(rows.find((r) => r.unit === 'DOCUMENT_GENERATION')?.used).toBe(1);
   });
 
   it('refuses capture on a plan without orders, keeps the quote, and gives the document back', async () => {
@@ -3690,8 +3690,8 @@ describe('a forwarded order', () => {
     const rows = await withBusiness(db, business.id, (tx) =>
       usageRepo.usageFor(tx, business.id, usagePeriod(new Date())),
     );
-    expect(rows.find((r) => r.unit === 'documents')?.used ?? 0).toBe(0);
-    expect(rows.find((r) => r.unit === 'orders')?.used ?? 0).toBe(0);
+    expect(rows.find((r) => r.unit === 'DOCUMENT_GENERATION')?.used ?? 0).toBe(0);
+    expect(rows.find((r) => r.unit === 'CATALOGUE_ORDERS')?.used ?? 0).toBe(0);
   });
 
   /**

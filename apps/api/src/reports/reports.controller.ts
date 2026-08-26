@@ -762,9 +762,9 @@ export class ReportsController {
      * Its own short transaction, refunded on every path that issues nothing. */
     const period = usagePeriod(new Date());
     const plan = await withBusiness(this.db, businessId, (tx) => usageRepo.planFor(tx, businessId));
-    const allowance = allowanceFor(plan, 'documents');
+    const allowance = allowanceFor(plan, 'DOCUMENT_GENERATION');
     const granted = await withBusiness(this.db, businessId, (own) =>
-      usageRepo.consumeUnit(own, businessId, period, 'documents', allowance),
+      usageRepo.consumeUnit(own, businessId, period, 'DOCUMENT_GENERATION', allowance),
     );
     if (!granted) return { outcome: 'exhausted', allowance };
 
@@ -849,7 +849,7 @@ export class ReportsController {
       });
     } catch (error) {
       await withBusiness(this.db, businessId, (own) =>
-        usageRepo.refundUnit(own, businessId, period, 'documents'),
+        usageRepo.refundUnit(own, businessId, period, 'DOCUMENT_GENERATION'),
       );
       if (error instanceof QuoteAlreadyTaken) {
         const taken = await withBusiness(this.db, businessId, (tx) =>

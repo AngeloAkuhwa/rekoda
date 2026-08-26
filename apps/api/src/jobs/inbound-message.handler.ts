@@ -383,15 +383,15 @@ async function readReceiptPhoto(
    * nobody should pay for.
    */
   const period = usagePeriod(new Date());
-  const allowance = allowanceFor(plan, 'documents_understood');
+  const allowance = allowanceFor(plan, 'DOCUMENTS_UNDERSTOOD');
   const granted = await withBusiness(deps.db, businessId, (own) =>
-    usageRepo.consumeUnit(own, businessId, period, 'documents_understood', allowance),
+    usageRepo.consumeUnit(own, businessId, period, 'DOCUMENTS_UNDERSTOOD', allowance),
   );
   if (!granted) {
     await deps.replySender.send(tx, {
       businessId,
       to: inbound.from,
-      reply: replies.allowanceExhausted(allowance, 'documents_understood'),
+      reply: replies.allowanceExhausted(allowance, 'DOCUMENTS_UNDERSTOOD'),
     });
     return null;
   }
@@ -478,15 +478,15 @@ async function transcribeVoiceNote(
    * must not be held across a network call.
    */
   const period = usagePeriod(new Date());
-  const allowance = allowanceFor(plan, 'voice_seconds');
+  const allowance = allowanceFor(plan, 'VOICE_MINUTES');
   const granted = await withBusiness(deps.db, businessId, (own) =>
-    usageRepo.consumeUnit(own, businessId, period, 'voice_seconds', allowance, transcript.seconds),
+    usageRepo.consumeUnit(own, businessId, period, 'VOICE_MINUTES', allowance, transcript.seconds),
   );
   if (!granted) {
     await deps.replySender.send(tx, {
       businessId,
       to: inbound.from,
-      reply: replies.allowanceExhausted(allowance, 'voice_seconds'),
+      reply: replies.allowanceExhausted(allowance, 'VOICE_MINUTES'),
     });
     return null;
   }
@@ -890,11 +890,11 @@ async function confirmPendingDraft(
      * used all 0 invoices this month", which is true of the number and
      * useless about the reason. */
     if (plan === 'expired') return replies.trialEnded();
-    const allowance = allowanceFor(plan, 'documents');
+    const allowance = allowanceFor(plan, 'DOCUMENT_GENERATION');
     const granted = await withBusiness(deps.db, businessId, (own) =>
-      usageRepo.consumeUnit(own, businessId, period, 'documents', allowance),
+      usageRepo.consumeUnit(own, businessId, period, 'DOCUMENT_GENERATION', allowance),
     );
-    if (!granted) return replies.allowanceExhausted(allowance, 'documents');
+    if (!granted) return replies.allowanceExhausted(allowance, 'DOCUMENT_GENERATION');
     documentTaken = true;
 
     /* An order costs its own unit ON TOP of the document, because automatic
@@ -914,13 +914,13 @@ async function confirmPendingDraft(
         await refundDocument(deps, businessId, period);
         return replies.ordersNotInPlan();
       }
-      const orderAllowance = allowanceFor(plan, 'orders');
+      const orderAllowance = allowanceFor(plan, 'CATALOGUE_ORDERS');
       const orderGranted = await withBusiness(deps.db, businessId, (own) =>
-        usageRepo.consumeUnit(own, businessId, period, 'orders', orderAllowance),
+        usageRepo.consumeUnit(own, businessId, period, 'CATALOGUE_ORDERS', orderAllowance),
       );
       if (!orderGranted) {
         await refundDocument(deps, businessId, period);
-        return replies.allowanceExhausted(orderAllowance, 'orders');
+        return replies.allowanceExhausted(orderAllowance, 'CATALOGUE_ORDERS');
       }
       orderTaken = true;
     }
@@ -1558,7 +1558,7 @@ async function interpretedReply(
     return replies.chatNotInPlan();
   }
 
-  const monthlyMessages = allowanceFor(plan, 'messages');
+  const monthlyMessages = allowanceFor(plan, 'AI_ACTIONS');
   const period = usagePeriod(new Date());
 
   /**
@@ -1877,14 +1877,14 @@ function consumeMessage(
   allowance: number,
 ): Promise<boolean> {
   return withBusiness(deps.db, businessId, (tx) =>
-    usageRepo.consumeUnit(tx, businessId, period, 'messages', allowance),
+    usageRepo.consumeUnit(tx, businessId, period, 'AI_ACTIONS', allowance),
   );
 }
 
 /** Put an order unit back. Same standalone transaction as taking one. */
 function refundOrder(deps: InboundMessageDeps, businessId: string, period: string): Promise<void> {
   return withBusiness(deps.db, businessId, (tx) =>
-    usageRepo.refundUnit(tx, businessId, period, 'orders'),
+    usageRepo.refundUnit(tx, businessId, period, 'CATALOGUE_ORDERS'),
   );
 }
 
@@ -1895,7 +1895,7 @@ function refundDocument(
   period: string,
 ): Promise<void> {
   return withBusiness(deps.db, businessId, (tx) =>
-    usageRepo.refundUnit(tx, businessId, period, 'documents'),
+    usageRepo.refundUnit(tx, businessId, period, 'DOCUMENT_GENERATION'),
   );
 }
 
@@ -1905,7 +1905,7 @@ function refundMessage(
   period: string,
 ): Promise<void> {
   return withBusiness(deps.db, businessId, (tx) =>
-    usageRepo.refundUnit(tx, businessId, period, 'messages'),
+    usageRepo.refundUnit(tx, businessId, period, 'AI_ACTIONS'),
   );
 }
 

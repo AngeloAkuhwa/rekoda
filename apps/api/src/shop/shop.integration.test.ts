@@ -570,8 +570,8 @@ describe('a customer orders from the shop (fix-plan 6, M5b)', () => {
     const usage = await withBusiness(db, businessId, (tx) =>
       usageRepo.usageFor(tx, businessId, usagePeriod(new Date())),
     );
-    expect(usage.find((r) => r.unit === 'orders')?.used).toBe(1);
-    expect(usage.find((r) => r.unit === 'documents')?.used).toBe(1);
+    expect(usage.find((r) => r.unit === 'CATALOGUE_ORDERS')?.used).toBe(1);
+    expect(usage.find((r) => r.unit === 'DOCUMENT_GENERATION')?.used).toBe(1);
 
     /* A resubmitted checkout books nothing twice. */
     const again = publicOrderResponse.parse(
@@ -588,8 +588,8 @@ describe('a customer orders from the shop (fix-plan 6, M5b)', () => {
     const usageAfter = await withBusiness(db, businessId, (tx) =>
       usageRepo.usageFor(tx, businessId, usagePeriod(new Date())),
     );
-    expect(usageAfter.find((r) => r.unit === 'orders')?.used).toBe(1);
-    expect(usageAfter.find((r) => r.unit === 'documents')?.used).toBe(1);
+    expect(usageAfter.find((r) => r.unit === 'CATALOGUE_ORDERS')?.used).toBe(1);
+    expect(usageAfter.find((r) => r.unit === 'DOCUMENT_GENERATION')?.used).toBe(1);
   });
 
   it('a de-listed item, a bad phone and a dead slug each get a sentence, and book nothing', async () => {
@@ -639,8 +639,8 @@ describe('a customer orders from the shop (fix-plan 6, M5b)', () => {
     const usage = await withBusiness(db, businessId, (tx) =>
       usageRepo.usageFor(tx, businessId, usagePeriod(new Date())),
     );
-    expect(usage.find((r) => r.unit === 'orders')?.used ?? 0).toBe(0);
-    expect(usage.find((r) => r.unit === 'documents')?.used ?? 0).toBe(0);
+    expect(usage.find((r) => r.unit === 'CATALOGUE_ORDERS')?.used ?? 0).toBe(0);
+    expect(usage.find((r) => r.unit === 'DOCUMENT_GENERATION')?.used ?? 0).toBe(0);
   });
 
   it('a plan with no order capture answers closed, and spends nothing', async () => {
@@ -671,7 +671,7 @@ describe('a customer orders from the shop (fix-plan 6, M5b)', () => {
     const usage = await withBusiness(db, businessId, (tx) =>
       usageRepo.usageFor(tx, businessId, usagePeriod(new Date())),
     );
-    expect(usage.find((r) => r.unit === 'orders')?.used ?? 0).toBe(0);
+    expect(usage.find((r) => r.unit === 'CATALOGUE_ORDERS')?.used ?? 0).toBe(0);
   });
 });
 
@@ -812,7 +812,7 @@ describe('the storefront cannot be farmed (fix-plan 7, H7b)', () => {
     const usage = await withBusiness(db, businessId, (tx) =>
       usageRepo.usageFor(tx, businessId, usagePeriod(new Date())),
     );
-    expect(usage.find((r) => r.unit === 'orders')?.used).toBe(3);
+    expect(usage.find((r) => r.unit === 'CATALOGUE_ORDERS')?.used).toBe(3);
     expect(await customersOf(businessId)).toHaveLength(3);
   });
 });

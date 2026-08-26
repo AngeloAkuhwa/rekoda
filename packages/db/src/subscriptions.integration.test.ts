@@ -524,14 +524,14 @@ describe('an add-on pack', () => {
     const businessId = await seedBusiness();
     const consume = (allowance: number) =>
       inTenant(businessId, (tx) =>
-        usageRepo.consumeUnit(tx, businessId, PERIOD, 'messages', allowance),
+        usageRepo.consumeUnit(tx, businessId, PERIOD, 'AI_ACTIONS', allowance),
       );
 
     expect(await consume(1)).toBe(true);
     expect(await consume(1)).toBe(false);
 
     await inTenant(businessId, (tx) =>
-      usageRepo.creditBonus(tx, businessId, PERIOD, 'messages', 2),
+      usageRepo.creditBonus(tx, businessId, PERIOD, 'AI_ACTIONS', 2),
     );
     expect(await consume(1)).toBe(true);
     expect(await consume(1)).toBe(true);
@@ -539,7 +539,7 @@ describe('an add-on pack', () => {
 
     // A second pack adds to the first rather than replacing it.
     await inTenant(businessId, (tx) =>
-      usageRepo.creditBonus(tx, businessId, PERIOD, 'messages', 2),
+      usageRepo.creditBonus(tx, businessId, PERIOD, 'AI_ACTIONS', 2),
     );
     const [row] = await inTenant(businessId, (tx) => usageRepo.usageFor(tx, businessId, PERIOD));
     expect(row?.bonus).toBe(4);
@@ -549,13 +549,13 @@ describe('an add-on pack', () => {
   it('does not roll over into the next month', async () => {
     const businessId = await seedBusiness();
     await inTenant(businessId, (tx) =>
-      usageRepo.creditBonus(tx, businessId, PERIOD, 'messages', 5),
+      usageRepo.creditBonus(tx, businessId, PERIOD, 'AI_ACTIONS', 5),
     );
 
     // September is a fresh meter with a fresh ceiling: the pack was bought for
     // August and August is where it stays (ADR 0024).
     const september = await inTenant(businessId, (tx) =>
-      usageRepo.consumeUnit(tx, businessId, '2026-09', 'messages', 0),
+      usageRepo.consumeUnit(tx, businessId, '2026-09', 'AI_ACTIONS', 0),
     );
     expect(september).toBe(false);
   });

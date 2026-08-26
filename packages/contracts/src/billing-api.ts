@@ -36,7 +36,30 @@ export const billingChargeView = z.object({
 });
 
 export const billingUnitView = z.object({
-  unit: z.enum(['messages', 'voice_seconds', 'documents', 'documents_understood', 'orders']),
+  /**
+   * The canonical seventeen (spec 4.2). Written out rather than imported so
+   * the wire contract stays a literal that any client can read without
+   * depending on the pricing engine.
+   */
+  unit: z.enum([
+    'AI_ACTIONS',
+    'VOICE_MINUTES',
+    'DOCUMENT_GENERATION',
+    'DOCUMENTS_UNDERSTOOD',
+    'SERVICE_MESSAGE',
+    'UTILITY_TEMPLATE',
+    'AUTH_TEMPLATE',
+    'AUTH_INTL_TEMPLATE',
+    'MARKETING_TEMPLATE',
+    'CATALOGUE_ORDERS',
+    'PAYMENT_CONNECTIONS',
+    'FINANCIAL_ACCOUNT_CONNECTIONS',
+    'ACCOUNTANT_USERS',
+    'REPORT_EXPORTS',
+    'API_REQUEST_UNITS',
+    'API_APPLICATIONS',
+    'WEBHOOK_DELIVERIES',
+  ]),
   used: z.number().int().nonnegative(),
   /** The plan's own allowance, before anything bought. */
   allowance: z.number().int().nonnegative(),

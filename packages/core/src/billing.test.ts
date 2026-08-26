@@ -275,7 +275,7 @@ describe('add-on packs', () => {
   it('count voice in seconds, because that is what the meter counts', () => {
     /* 30 minutes. A pack measured in minutes against a meter measured in
      * seconds is a sixtyfold error waiting for somebody to make it. */
-    expect(addOnPack('voice_30min')?.unit).toBe('voice_seconds');
+    expect(addOnPack('voice_30min')?.unit).toBe('VOICE_MINUTES');
     expect(addOnPack('voice_30min')?.quantity).toBe(30 * 60);
   });
 
@@ -290,7 +290,9 @@ describe('add-on packs', () => {
 
   it('every pack names a real usage unit', () => {
     for (const pack of ADD_ON_PACKS) {
-      expect(['messages', 'voice_seconds', 'documents', 'orders']).toContain(pack.unit);
+      expect(['AI_ACTIONS', 'VOICE_MINUTES', 'DOCUMENT_GENERATION', 'CATALOGUE_ORDERS']).toContain(
+        pack.unit,
+      );
       expect(pack.quantity).toBeGreaterThan(0);
       expect(pack.priceK).toBeGreaterThan(0);
     }
