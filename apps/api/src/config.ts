@@ -75,6 +75,16 @@ export interface ApiConfig {
   /** Concurrent job lanes per worker process. SKIP LOCKED makes N lanes safe. */
   workerConcurrency: number;
   /**
+   * A1 rollout flags (spec §25), one per command, default OFF.
+   *
+   * The flag decides which path an ingress takes to the SAME work function:
+   * on, the command bus (entitlement → risk → idempotency → work); off, the
+   * work called directly, which is exactly what the ingress did before the
+   * command existed. Rollback is a flag flip, per command, with no deploy.
+   */
+  commandRecordSale: boolean;
+  commandIssueInvoice: boolean;
+  /**
    * Which provider interprets a merchant's message.
    *
    * Not a failover pair: extraction quality IS the product experience
@@ -536,6 +546,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
      * a handler transaction. Raise it with the pool, not instead of it.
      */
     workerConcurrency: Math.max(1, Number(env['REKODA_WORKER_CONCURRENCY'] ?? 4)),
+    commandRecordSale: env['REKODA_COMMAND_RECORD_SALE'] === '1',
+    commandIssueInvoice: env['REKODA_COMMAND_ISSUE_INVOICE'] === '1',
     /**
      * Optional. The deterministic router answers most messages
      * without a model, so a missing key degrades the product rather than

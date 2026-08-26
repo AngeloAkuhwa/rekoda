@@ -21,6 +21,7 @@ import {
   usageRepo,
   stockRepo,
   withBusiness,
+  sql,
   type Db,
   suppliersRepo,
 } from '@rekoda/db';
@@ -53,6 +54,8 @@ import { ReplySender } from '../replies/reply.service.js';
 import { loadConfig, type ApiConfig } from '../config.js';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { ContainerAudioProbe } from '../ai/audio-duration.js';
+import { CommandBus } from '../commands/command-bus.service.js';
+import { RiskPolicyService } from '../risk/risk-policy.service.js';
 
 const APP_SECRET = 'meta-app-secret-for-tests';
 const VERIFY_TOKEN = 'meta-verify-token-for-tests';
@@ -118,6 +121,7 @@ beforeAll(async () => {
     stt: stubStt,
     ocr: stubOcr,
     audioProbe: new ContainerAudioProbe(),
+    commandBus: new CommandBus(new RiskPolicyService()),
   };
 });
 
@@ -742,6 +746,45 @@ describe("the plan's own example, end to end", () => {
     const credits = entries.reduce((n, e) => n + e.creditK, 0);
     expect(debits).toBe(credits);
     expect(debits).toBe(15_000_000);
+  });
+
+  /**
+   * The same yes, with the RecordSale rollout flag ON (PR-021): the identical
+   * record comes out, because the flag changes which gates run around the
+   * work and never the work. What the bus adds is visible in the database —
+   * the idempotency claim it took for the draft, snapshot completed in the
+   * same transaction as the sale it answers for.
+   */
+  it('the RecordSale flag routes the same yes through the command bus', async () => {
+    const business = await seedMerchant('+2348031234567', 'Ada Fashion');
+    stubTransport.replyWith(THE_SALE);
+
+    const flagged = { ...deps, config: { ...deps.config, commandRecordSale: true } };
+    async function sendFlagged(text: string, wamid: string) {
+      await post(messagePayload('2348031234567', wamid, text));
+      const runner = buildRunner(workerDb, db, flagged);
+      let worked = await runner.runOnce();
+      expect(worked).toBe(true);
+      while (worked) worked = await runner.runOnce();
+    }
+
+    await sendFlagged('Ada bought 3 wigs for 150k, paid 100k', 'wamid.SALE');
+    await sendFlagged('yes', 'wamid.YES');
+
+    expect(stubSender.lastText).toMatch(/Saved ✅ INV-\d{4}-000001 for ₦150,000/);
+    expect(await invoiceCount(business.id)).toBe(1);
+
+    const claims = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ key: string; command_name: string; response_snapshot: unknown }>(
+        sql`SELECT key, command_name, response_snapshot FROM idempotency_records
+            WHERE business_id = ${business.id}::uuid`,
+      ),
+    );
+    const claim = [...claims][0];
+    expect([...claims]).toHaveLength(1);
+    expect(claim?.command_name).toBe('RecordSale');
+    expect(claim?.key).toMatch(/^draft:/);
+    expect(claim?.response_snapshot).toMatchObject({ invoiceNumber: 'INV-2026-000001' });
   });
 
   it('renders and stores the PDF, and it opens', async () => {

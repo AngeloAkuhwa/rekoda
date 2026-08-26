@@ -42,6 +42,8 @@ import { ReplySender } from '../replies/reply.service.js';
 import { loadConfig, type ApiConfig } from '../config.js';
 import { sealPayload } from '../privacy/payload-vault.js';
 import { ContainerAudioProbe } from '../ai/audio-duration.js';
+import { CommandBus } from '../commands/command-bus.service.js';
+import { RiskPolicyService } from '../risk/risk-policy.service.js';
 
 const RUN_SALT = randomBytes(16).toString('hex');
 
@@ -94,6 +96,7 @@ beforeAll(async () => {
     stt: stubStt,
     ocr: stubOcr,
     audioProbe: new ContainerAudioProbe(),
+    commandBus: new CommandBus(new RiskPolicyService()),
   };
 });
 

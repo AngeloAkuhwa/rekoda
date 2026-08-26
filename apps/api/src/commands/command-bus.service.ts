@@ -150,6 +150,10 @@ export function requestHash(payload: unknown): string {
 
 function stable(value: unknown): string {
   if (value === null || typeof value !== 'object') return JSON.stringify(value ?? null);
+  /* A Date's enumerable keys are {}, so without this two payloads differing
+   * only in a date would hash identically — a "same request" verdict about
+   * two different requests. */
+  if (value instanceof Date) return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(stable).join(',')}]`;
   const entries = Object.entries(value as Record<string, unknown>)
     .filter(([, v]) => v !== undefined)

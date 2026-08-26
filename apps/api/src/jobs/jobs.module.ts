@@ -41,6 +41,8 @@ import { sweepEvidence, sweepRetention } from '../privacy/retention-sweep.js';
 import { sweepRecurring } from '../spend/recurring-sweep.js';
 import { sweepDepreciation } from '../spend/depreciation-sweep.js';
 import { OutboxDispatcher } from '../commands/outbox-dispatcher.js';
+import { CommandsModule } from '../commands/commands.module.js';
+import { CommandBus } from '../commands/command-bus.service.js';
 import { MESSAGE_SENDER } from '../channels/sender.tokens.js';
 import { SPEECH_TO_TEXT, type SpeechToText } from '../ai/stt.js';
 import { TEXT_EXTRACTION, type TextExtraction } from '../ai/ocr.js';
@@ -118,12 +120,21 @@ export function buildRunner(
  *
  * Exported for the same reason as `buildRunner`: the integration test runs
  * this function, not a parallel registry, so a handler present in one and
- * missing from the other cannot happen. The registry is EMPTY today by
- * design — event types arrive with the commands that emit them (PR-021
- * onward), and each of those PRs adds its `register` call here.
+ * missing from the other cannot happen. Event types arrive with the commands
+ * that emit them, each PR adding its `register` call here.
  */
 export function buildOutboxDispatcher(): OutboxDispatcher {
-  return new OutboxDispatcher();
+  const dispatcher = new OutboxDispatcher();
+
+  /* PR-021's facts. Delivery today is to ZERO subscribers, and delivering to
+   * nobody succeeds — the handler exists so the event is a delivered fact
+   * rather than a dead alarm. PR-112 (webhooks) replaces these bodies with
+   * fan-out to whatever the merchant subscribed; the type names are already
+   * the contract. */
+  dispatcher.register('sale.recorded', async () => {});
+  dispatcher.register('invoice.issued', async () => {});
+
+  return dispatcher;
 }
 
 /**
@@ -177,6 +188,7 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
     @Inject(SPEECH_TO_TEXT) private readonly stt: SpeechToText,
     @Inject(TEXT_EXTRACTION) private readonly ocr: TextExtraction,
     @Inject(AUDIO_METADATA_PROBE) private readonly audioProbe: AudioMetadataProbe,
+    @Inject(CommandBus) private readonly commandBus: CommandBus,
   ) {}
 
   onModuleInit(): void {
@@ -200,6 +212,7 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
         stt: this.stt,
         ocr: this.ocr,
         audioProbe: this.audioProbe,
+        commandBus: this.commandBus,
       },
       { concurrency: this.config.workerConcurrency },
     );
@@ -501,7 +514,7 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
 }
 
 @Module({
-  imports: [AiModule, RepliesModule, DocumentsModule, PaymentsModule, BankModule],
+  imports: [AiModule, RepliesModule, DocumentsModule, PaymentsModule, BankModule, CommandsModule],
   providers: [JobQueue, JobRunnerLifecycle, PrivacyGateway],
   exports: [JobQueue, PrivacyGateway],
 })

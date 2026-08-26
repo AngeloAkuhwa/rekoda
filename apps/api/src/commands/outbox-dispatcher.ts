@@ -33,6 +33,11 @@ export class OutboxDispatcher {
     this.handlers.set(type, handler);
   }
 
+  /** The registered types, for tests that pin the production registry. */
+  types(): string[] {
+    return [...this.handlers.keys()];
+  }
+
   /**
    * One pass: reclaim what a dead dispatcher held, claim a batch, deliver.
    * Failures are per event — one poisoned payload must not dam the queue

@@ -57,6 +57,8 @@ import { describeFailure, JobDeferred, type JobContext, type JobHandler } from '
 import type { SpeechToText, Transcript } from '../ai/stt.js';
 import type { AudioMetadataProbe } from '../ai/audio-duration.js';
 import type { TextExtraction } from '../ai/ocr.js';
+import type { CommandBus } from '../commands/command-bus.service.js';
+import { recordSaleWork, type RecordSaleInput } from '../commands/sale-commands.js';
 import type { MessageSender } from '../channels/sender.js';
 
 const paymentLog = new Logger('InboundMessageJob');
@@ -86,6 +88,8 @@ export interface InboundMessageDeps {
   ocr: TextExtraction;
   /** The app pool, for the rows that live ABOVE tenancy: users' consent state. */
   db: Db;
+  /** The one bus every ingress converges on (spec §25). */
+  commandBus: CommandBus;
 }
 
 /**
@@ -1094,7 +1098,7 @@ async function confirmPendingDraft(
     quantity: item.quantity,
     unitPriceK: Math.round(item.unitPrice * 100),
   }));
-  const issued = await issueRepo.issueSale(tx, {
+  const input: RecordSaleInput = {
     businessId,
     /* The person, not just their pseudonym. The gateway resolved a customer
      * row before the model ever saw this message and the sale used to throw
@@ -1126,42 +1130,43 @@ async function confirmPendingDraft(
       new Date(),
     ),
     actor: 'system',
-  });
+  };
 
-  /**
-   * Enqueued INSIDE the same transaction as the sale (MASTER-PLAN §5.3.5 step
-   * 9). The invoice and "render its PDF" commit together, so there is no
-   * window where a document exists that nothing will ever produce paper for —
-   * and a rollback takes the job with it rather than leaving one pointing at
-   * an invoice that was never issued.
-   *
-   * The singleton key is the invoice id: a re-enqueue cannot produce two PDFs
-   * with two storage keys for one sale.
-   */
-  await jobsRepo.enqueue(tx, {
-    businessId,
-    kind: 'document.render',
-    payload: { invoiceId: issued.invoiceId },
-    singletonKey: issued.invoiceId,
-  });
+  /* The A1 rollout seam (spec §25). Same work function either way — the flag
+   * decides whether the command bus's gates run around it. Off is exactly
+   * the path this handler always took, which is what makes the flag a
+   * rollback and not a second implementation. */
+  if (deps.config.commandRecordSale) {
+    const run = await deps.commandBus.run(
+      tx,
+      {
+        businessId,
+        command: 'RecordSale',
+        payload: input,
+        actor: 'system',
+        ingress: 'CHAT',
+        /* The claimed draft: one draft, one yes, one sale. The claim above
+         * already guarantees single execution; this key is the second net,
+         * and it makes the replay answer the same reply. */
+        idempotencyKey: `draft:${draft.id}`,
+      },
+      () => recordSaleWork(tx, input),
+    );
+    if (run.outcome !== 'done') {
+      /* Unreachable by construction — RecordSale is STANDARD and ungated —
+       * so reaching it is a bug. The unit goes back and the merchant hears
+       * "not yet" rather than silence. */
+      if (documentTaken) await refundDocument(deps, businessId, period);
+      return replies.notYet('Recording that sale');
+    }
+    if (run.replayed && documentTaken) {
+      /* The first run already paid for this invoice. */
+      await refundDocument(deps, businessId, period);
+    }
+    return replies.issued(run.result.invoiceNumber, run.result.totalK, run.result.balanceDueK);
+  }
 
-  /**
-   * Stock comes off the shelf in the same transaction as the invoice.
-   *
-   * Only for lines naming something the shop ALREADY counts. A sale of
-   * something never counted must not create a product and then report it as
-   * minus three: a merchant who has not told Rekoda they stock something has
-   * not asked Rekoda to count it, and a stock figure that appears uninvited
-   * is a stock figure nobody trusts.
-   */
-  const movements = await stockRepo.recordSaleMovements(
-    tx,
-    businessId,
-    items,
-    issued.invoiceNumber,
-  );
-  await postCostOfGoods(tx, businessId, issued.invoiceNumber, movements);
-
+  const issued = await recordSaleWork(tx, input);
   return replies.issued(issued.invoiceNumber, money.totalK, money.balanceDueK);
 }
 

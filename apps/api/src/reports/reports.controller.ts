@@ -144,6 +144,14 @@ import {
   type Db,
 } from '@rekoda/db';
 import { SessionGuard, type AuthedRequest } from '../auth/session.guard.js';
+import { CONFIG, type ApiConfig } from '../config.js';
+import { CommandBus } from '../commands/command-bus.service.js';
+import {
+  issueInvoiceWork,
+  QuoteAlreadyTaken,
+  type IssueInvoiceInput,
+  type IssuedInvoice,
+} from '../commands/sale-commands.js';
 import { Roles, RolesGuard } from '../auth/roles.guard.js';
 import { DB } from '../db/db.module.js';
 import { PrivacyGateway } from '../privacy/gateway.service.js';
@@ -189,11 +197,6 @@ function isDuplicateOn(error: unknown, constraint: string): boolean {
   return pg?.code === '23505' && (pg.constraint_name ?? pg.constraint ?? '').includes(constraint);
 }
 
-/** The quoted->confirmed transition was already taken by a racing convert. */
-class QuoteAlreadyTaken extends Error {
-  override readonly name = 'QuoteAlreadyTaken';
-}
-
 function isDuplicateClientRef(error: unknown): boolean {
   return isDuplicateOn(error, 'payments_rekoda_reference');
 }
@@ -203,7 +206,9 @@ function isDuplicateClientRef(error: unknown): boolean {
 export class ReportsController {
   constructor(
     @Inject(DB) private readonly db: Db,
+    @Inject(CONFIG) private readonly config: ApiConfig,
     private readonly gateway: PrivacyGateway,
+    private readonly commandBus: CommandBus,
   ) {}
 
   @Get('overview')
@@ -770,74 +775,48 @@ export class ReportsController {
 
     try {
       return await withBusiness(this.db, businessId, async (tx) => {
-        const items = quote.lines.map((line) => ({
-          name: line.name,
-          quantity: line.quantity,
-          unitPriceK: line.unitPriceK,
-        }));
-        const issued = await issueRepo.issueSale(tx, {
+        const input: IssueInvoiceInput = {
           businessId,
+          quoteId: quote.id,
           customerId: quote.customerId,
-          customerToken: null,
-          items,
-          subtotalK: quote.totalK,
-          discountK: 0,
-          deliveryFeeK: 0,
-          vatK: 0,
+          items: quote.lines.map((line) => ({
+            name: line.name,
+            quantity: line.quantity,
+            unitPriceK: line.unitPriceK,
+          })),
           totalK: quote.totalK,
-          paidK: 0,
-          balanceDueK: quote.totalK,
-          method: 'transfer',
-          sourceType: 'quote',
-          sourceId: quote.id,
-          saleSource: null,
           dueDate: quote.validUntil ? lagosNoon(quote.validUntil) : null,
           actor: `user:${request.auth!.userId}`,
-        });
+        };
 
-        /* The same statement that confirms attaches the invoice; a loser in
-         * this race rolls the whole issue back and answers with the winner's
-         * invoice instead of minting a second one. */
-        const marked = await ordersRepo.markOrder(
-          tx,
-          businessId,
-          quote.id,
-          'quoted',
-          'confirmed',
-          issued.invoiceId,
-        );
-        if (marked !== 'marked') throw new QuoteAlreadyTaken();
-
-        await jobsRepo.enqueue(tx, {
-          businessId,
-          kind: 'document.render',
-          payload: { invoiceId: issued.invoiceId },
-          singletonKey: issued.invoiceId,
-        });
-        await jobsRepo.enqueue(tx, {
-          businessId,
-          kind: 'payment.link',
-          payload: { invoiceId: issued.invoiceId },
-          singletonKey: `link:${issued.invoiceId}`,
-        });
-
-        const moved = await stockRepo.recordSaleMovements(
-          tx,
-          businessId,
-          items,
-          issued.invoiceNumber,
-        );
-        if (moved.costK > 0) {
-          await issueRepo.writePosting(
+        /* The A1 rollout seam (spec §25). Same work function either way —
+         * the flag decides whether the command bus's gates run around it,
+         * and off is exactly the path this endpoint always took. */
+        let issued: IssuedInvoice;
+        if (this.config.commandIssueInvoice) {
+          const run = await this.commandBus.run(
             tx,
-            businessId,
-            postCostOfSale({
-              memo: `Cost of goods on ${issued.invoiceNumber}`,
-              costK: moved.costK,
-            }),
-            'invoice',
-            issued.invoiceNumber,
+            {
+              businessId,
+              command: 'IssueInvoice',
+              payload: input,
+              actor: input.actor,
+              ingress: 'DASHBOARD',
+              /* One quote, one invoice: a retry that lost its response is
+               * handed the first answer instead of a second conversion. */
+              idempotencyKey: `quote-convert:${quote.id}`,
+            },
+            () => issueInvoiceWork(tx, input),
           );
+          if (run.outcome !== 'done') {
+            /* Unreachable by construction — IssueInvoice is STANDARD and
+             * ungated — so reaching it is a bug worth a loud error rather
+             * than a quiet wrong answer. */
+            throw new Error(`IssueInvoice refused unexpectedly: ${run.outcome}`);
+          }
+          issued = run.result;
+        } else {
+          issued = await issueInvoiceWork(tx, input);
         }
 
         return {

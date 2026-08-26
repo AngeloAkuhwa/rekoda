@@ -60,11 +60,13 @@ async function appendEvent(
 }
 
 describe('the production wiring', () => {
-  it('builds the dispatcher production runs, with the registry empty until PR-021', () => {
-    /* When the first command PR registers its event type, this assertion is
-     * the one it updates: the count and the types become the contract. */
+  it('builds the dispatcher production runs, with every command event handled', () => {
+    /* The registry IS the contract: each command PR that adds an event type
+     * adds its type here, and a type emitted anywhere but registered nowhere
+     * would go dead in production — this list is what keeps that impossible. */
     const dispatcher = buildOutboxDispatcher();
     expect(dispatcher).toBeInstanceOf(OutboxDispatcher);
+    expect(dispatcher.types().sort()).toEqual(['invoice.issued', 'sale.recorded']);
   });
 
   it('refuses a second handler for the same type at wiring time', () => {
