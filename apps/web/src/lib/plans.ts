@@ -47,7 +47,7 @@ export const PLANS: Plan[] = [
     id: 'chat',
     name: 'Rekoda Chat',
     /** §31: WhatsApp is the interface, never the sales-channel restriction. */
-    tagline: 'Sell anywhere. Tell Rekoda what happened.',
+    tagline: 'Run your business by talking to Rekoda.',
     monthlyK: m(9_900),
     annualK: m(99_000),
     cta: 'Start with Chat',
@@ -68,32 +68,35 @@ export const PLANS: Plan[] = [
   {
     id: 'integrate',
     name: 'Rekoda Integrate',
-    tagline: 'Connect your WhatsApp shop. Rekoda handles the money trail.',
+    tagline: 'Connect your customer commerce to Rekoda.',
     monthlyK: m(19_900),
     annualK: m(199_000),
     highlight: true,
     cta: 'Connect my shop',
     includes: [
-      'Everything in Chat, with room to grow',
-      '800 messages processed, 500 documents',
-      'Voice-note bookkeeping, 60 minutes a month',
       'Your own shop link, shared on WhatsApp',
       '300 orders captured automatically, nothing retyped',
+      '500 invoices and receipts a month',
       'Inventory and customer balances updated for you',
       'Reconciliation with mismatch detection',
       'Two accountant or delegate seats',
+      'The full dashboard, and your books to keep by hand',
     ],
     coming: ['A payment link for every order, verified when it lands'],
+    /* Named rather than discovered on the day they send a voice note. The
+     * server refuses these for an Integrate plan, so the page must not sell
+     * them: that gap between copy and gate is what this list closes. */
+    excludes: ['Talking to Rekoda by message, voice or document needs Chat'],
   },
   {
     id: 'complete',
     name: 'Rekoda Complete',
-    tagline: 'However you sell, Rekoda keeps everything together.',
+    tagline: 'Both ways of working, one set of books.',
     monthlyK: m(29_900),
     annualK: m(299_000),
     cta: 'Run my business on Rekoda',
     includes: [
-      'Everything in Chat and Integrate',
+      'Rekoda Chat and Rekoda Integrate together',
       '1,200 messages processed, 750 documents',
       '120 voice minutes, 300 orders a month',
       'Online orders and cash sales in one set of books',
@@ -102,6 +105,23 @@ export const PLANS: Plan[] = [
     coming: ['Daily, weekly and monthly summaries', 'Priority support'],
   },
 ];
+
+/**
+ * What every paid plan carries, said once rather than repeated three times.
+ *
+ * The dashboard is a SHARED merchant control plane (owner decision, 26 Aug
+ * 2026): it is not owned by Chat and it is not a fourth product. Saying so on
+ * the page matters, because the alternative reading — that an Integrate
+ * merchant cannot record their own electricity bill without buying a second
+ * product — is the one a reader assumes when nothing says otherwise.
+ */
+export const SHARED_ACROSS_PLANS = [
+  'The business dashboard: your records, customers, suppliers and stock',
+  'Invoices, receipts, customer and supplier balances',
+  'Full books: profit and loss, balance sheet, cash flow',
+  'Recording sales, expenses, purchases and stock by hand',
+  'Payment and bank connections, and reconciliation',
+] as const;
 
 export const TRIAL = {
   name: 'Free trial',

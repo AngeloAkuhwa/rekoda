@@ -14,6 +14,7 @@ import { AppNav } from './AppNav';
 import { PLAN_NAMES } from '@/lib/plans';
 import { CashflowChart } from './CashflowChart';
 import { SignOutButton } from './SignOutButton';
+import { heldBy } from '@/lib/capabilities';
 
 export const metadata: Metadata = {
   title: 'Your dashboard',
@@ -81,7 +82,7 @@ export default async function DashboardPage() {
         <SignOutButton />
       </header>
 
-      <AppNav active="overview" />
+      <AppNav active="overview" held={heldBy(identity)} />
 
       {overview.exceptionsOpen > 0 ? (
         <a href="/app/payments" className="rk-attention-strip">

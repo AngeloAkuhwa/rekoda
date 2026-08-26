@@ -4,6 +4,7 @@ import { requireSessionWithToken } from '@/server/guards';
 import { AppNav } from '../AppNav';
 import { SignOutButton } from '../SignOutButton';
 import { InviteForm, RemoveMemberForm } from './TeamForms';
+import { heldBy } from '@/lib/capabilities';
 
 export const metadata: Metadata = {
   title: 'Who can see your books',
@@ -21,7 +22,7 @@ export const metadata: Metadata = {
  * link would be decoration. Reaching the endpoint is what gets refused.
  */
 export default async function TeamPage() {
-  const { token } = await requireSessionWithToken();
+  const { identity, token } = await requireSessionWithToken();
 
   let members;
   try {
@@ -40,7 +41,7 @@ export default async function TeamPage() {
           </div>
           <SignOutButton />
         </header>
-        <AppNav active="team" />
+        <AppNav active="team" held={heldBy(identity)} />
         <div className="rk-card">
           <p className="rk-dash-empty-line">
             Only the business owner can see and change who has access. Ask them if you need somebody
@@ -64,7 +65,7 @@ export default async function TeamPage() {
         <SignOutButton />
       </header>
 
-      <AppNav active="team" />
+      <AppNav active="team" held={heldBy(identity)} />
 
       <div className="rk-card">
         <h2>People with access</h2>

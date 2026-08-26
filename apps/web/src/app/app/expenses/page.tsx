@@ -23,6 +23,7 @@ import {
 import { DisposeAssetForm, RecordAssetForm, WithdrawAssetForm } from './AssetForms';
 import { CreateRecurringForm, StopRecurringForm, type StoppableSchedule } from './RecurringForms';
 import { SignOutButton } from '../SignOutButton';
+import { heldBy } from '@/lib/capabilities';
 
 export const metadata: Metadata = {
   title: 'Expenses',
@@ -96,7 +97,7 @@ export default async function ExpensesPage({
         <SignOutButton />
       </header>
 
-      <AppNav active="expenses" />
+      <AppNav active="expenses" held={heldBy(identity)} />
 
       <div className="rk-stat-grid">
         <SpendStat

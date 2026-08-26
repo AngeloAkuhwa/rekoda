@@ -12,6 +12,7 @@ import { SignOutButton } from '../SignOutButton';
 import { ConnectForm } from './ConnectForm';
 import { MerchantKeyForm } from './MerchantKeyForm';
 import { markExceptionReviewed } from './actions';
+import { heldBy } from '@/lib/capabilities';
 
 export const metadata: Metadata = {
   title: 'Payments',
@@ -50,7 +51,7 @@ export default async function PaymentsPage() {
         <SignOutButton />
       </header>
 
-      <AppNav active="payments" />
+      <AppNav active="payments" held={heldBy(identity)} />
 
       {/* ── the settlement connection (§3–5) ── */}
       {connection.status === 'active' ? (

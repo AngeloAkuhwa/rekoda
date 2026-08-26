@@ -1,0 +1,19 @@
+/* A boundary, not an alarm. The accent bar says "this is about your plan"
+   without the red a failure would earn. */
+.refusal {
+  border-left: 3px solid var(--rk-accent, #0f766e);
+}
+
+.title {
+  margin-bottom: 0.5rem;
+}
+
+.why {
+  margin-bottom: 0.75rem;
+}
+
+.where {
+  color: var(--rk-ink-soft, #6b6862);
+  font-size: 0.9375rem;
+  margin: 0;
+}

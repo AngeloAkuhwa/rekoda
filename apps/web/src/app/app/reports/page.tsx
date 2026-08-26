@@ -10,6 +10,7 @@ import { StockCountForm } from './StockCountForm';
 import { CloseBooksForm } from './CloseBooksForm';
 import { JournalForm } from './JournalForm';
 import { SignOutButton } from '../SignOutButton';
+import { heldBy } from '@/lib/capabilities';
 
 export const metadata: Metadata = {
   title: 'Reports',
@@ -89,7 +90,7 @@ export default async function ReportsPage({
         <SignOutButton />
       </header>
 
-      <AppNav active="reports" />
+      <AppNav active="reports" held={heldBy(identity)} />
 
       <div className="rk-period-row">
         <a

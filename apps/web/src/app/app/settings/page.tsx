@@ -5,6 +5,7 @@ import { isOwner } from '@/lib/permissions';
 import { AppNav } from '../AppNav';
 import { SignOutButton } from '../SignOutButton';
 import { SettingsForm } from './SettingsForm';
+import { heldBy } from '@/lib/capabilities';
 
 export const metadata: Metadata = {
   title: 'Settings',
@@ -34,7 +35,7 @@ export default async function SettingsPage() {
         <SignOutButton />
       </header>
 
-      <AppNav active="settings" />
+      <AppNav active="settings" held={heldBy(identity)} />
 
       <div className="rk-card">
         <h2>Your business</h2>

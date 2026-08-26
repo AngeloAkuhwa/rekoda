@@ -20,7 +20,7 @@ import {
   type RandomSource,
 } from '@rekoda/core/identity';
 import { authTemplateCategory, MESSAGE_COST_MICROS, replies } from '@rekoda/core';
-import { identity, type Db } from '@rekoda/db';
+import { entitlementsRepo, identity, withBusiness, type Db } from '@rekoda/db';
 import type {
   MeResponse,
   MembershipSummary,
@@ -316,6 +316,14 @@ export class AuthService {
     const user = await identity.findUserById(this.db, row.userId);
     if (!user) throw new SessionInvalid('session points at a user that no longer exists');
 
+    /* Resolved rather than derived. The dashboard hides what the merchant
+     * cannot use (spec §4.1) and it must hide it against the same answer the
+     * gate refuses on, or a support-issued grant becomes invisible to the
+     * person it was issued for. */
+    const held = await withBusiness(this.db, business.id, (tx) =>
+      entitlementsRepo.resolve(tx, business.id),
+    );
+
     return {
       userId: row.userId,
       phone: user.phone,
@@ -324,6 +332,7 @@ export class AuthService {
       businessType: business.businessType,
       plan: business.plan,
       role: membership.role,
+      entitlements: held,
     };
   }
 

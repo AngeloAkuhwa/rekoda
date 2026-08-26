@@ -12,6 +12,7 @@ import { canRecordTrade, isOwner } from '@/lib/permissions';
 import { CancelQuoteForm, ConvertQuoteForm, CreateQuoteForm, type OpenQuote } from './QuoteForms';
 import { RecordPaymentForm, type PayableInvoice } from './RecordPaymentForm';
 import { SignOutButton } from '../SignOutButton';
+import { heldBy } from '@/lib/capabilities';
 
 export const metadata: Metadata = {
   title: 'Invoices',
@@ -88,7 +89,7 @@ export default async function InvoicesPage({
         <SignOutButton />
       </header>
 
-      <AppNav active="invoices" />
+      <AppNav active="invoices" held={heldBy(identity)} />
 
       {/* Above the register, because an order is what an invoice comes FROM.
           A merchant looking for "did that order ever get billed" is looking

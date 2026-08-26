@@ -144,6 +144,29 @@ merchant WABA
 - **MUST**: run on the merchant's own WABA and their own payment connection; validate every order server-side against real catalogue state and real stock; produce the same accounting a Chat sale produces.
 - **MUST NOT**: let a customer's message reach the merchant-operations command set; price an order from anything the customer sent; create financial records the merchant did not authorise.
 
+### 3.2a The dashboard is shared
+
+**Owner decision, 26 August 2026.** The Rekoda dashboard is a shared merchant control plane. It is not owned by Chat, it is not owned by Integrate, and it is not a fourth product.
+
+Chat and Integrate are two front doors over one `BusinessId`, one ledger, one inventory, one customer space and one set of statements. The dashboard is where a merchant sees and maintains that shared truth, whichever door they came through.
+
+The product line is **how a business event enters Rekoda**, never whether a merchant may see or maintain their own financial records:
+
+```
+clicking "Add expense" in a form    →  shared. Every paid plan.
+"record 35k fuel" in a message      →  REKODA_CHAT.
+```
+
+Both post the same command through the same accounting engine. One of them needed a model to understand it and the other did not, and that difference is what Chat sells.
+
+An Integrate-only merchant therefore keeps: customers, suppliers, products, inventory and manual stock maintenance, the sales register, expenses, purchases and bills, invoices and receipts, customer and supplier balances, payments, bank connections where entitled, reconciliation, reports, the general ledger and statements, generated documents, exports within allowance, and accounting and business settings. **An automated accounting system a merchant cannot correct by hand is one they cannot operate.**
+
+A Chat-only merchant keeps the same dashboard and does **not** receive Integrate-specific surfaces: WABA connection, catalogue management and publishing, customer WhatsApp order automation, Integrate conversation operations, Embedded Signup, template automation or the away assistant.
+
+**Entitlements protect capabilities, never whole pages.** `plan === 'integrate'` in a component is the shape that rots: it names a product, in a layout, about a route. Capabilities are checked; routes are a consequence.
+
+---
+
 ### 3.3 Rekoda Complete
 
 `REKODA_CHAT + REKODA_INTEGRATE` over the same `BusinessId` and the same accounting truth. Not a third product with its own data: an entitlement pair.

@@ -7,6 +7,7 @@ import { requireSessionWithToken } from '@/server/guards';
 import { RegisterPager, pageParam } from '@/components/ui/RegisterPager';
 import { AppNav } from '../AppNav';
 import { SignOutButton } from '../SignOutButton';
+import { heldBy } from '@/lib/capabilities';
 
 export const metadata: Metadata = {
   title: 'Receipts',
@@ -25,7 +26,7 @@ export default async function ReceiptsPage({
   searchParams: Promise<{ page?: string | string[] }>;
 }) {
   const page = pageParam((await searchParams).page);
-  const { token } = await requireSessionWithToken();
+  const { identity, token } = await requireSessionWithToken();
   const { receipts, count } = await reportsReceipts(token, page);
 
   return (
@@ -38,7 +39,7 @@ export default async function ReceiptsPage({
         <SignOutButton />
       </header>
 
-      <AppNav active="receipts" />
+      <AppNav active="receipts" held={heldBy(identity)} />
 
       <div className="rk-card">
         <h2>Receipt register</h2>

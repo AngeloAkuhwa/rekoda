@@ -11,6 +11,7 @@ import { ForgetDayForm } from './ForgetDayForm';
 import { ReconcileForm } from './ReconcileForm';
 import { LineMatchCell } from './LineMatchCell';
 import { canReconcileBank, isOwner } from '@/lib/permissions';
+import { heldBy } from '@/lib/capabilities';
 
 export const metadata: Metadata = {
   title: 'Bank',
@@ -51,7 +52,7 @@ export default async function BankPage() {
         <SignOutButton />
       </header>
 
-      <AppNav active="bank" />
+      <AppNav active="bank" held={heldBy(identity)} />
 
       {started ? (
         <div className="rk-card rk-dash-card">
