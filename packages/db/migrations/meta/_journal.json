@@ -393,6 +393,13 @@
       "when": 1787392800000,
       "tag": "0055_pending_confirmations",
       "breakpoints": true
+    },
+    {
+      "idx": 56,
+      "version": "7",
+      "when": 1787396400000,
+      "tag": "0056_idempotency_records",
+      "breakpoints": true
     }
   ]
 }

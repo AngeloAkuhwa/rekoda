@@ -17,6 +17,7 @@ import { BankModule } from './bank/bank.module.js';
 import { ReportsModule } from './reports/reports.module.js';
 import { ShopModule } from './shop/shop.module.js';
 import { RiskModule } from './risk/risk.module.js';
+import { CommandsModule } from './commands/commands.module.js';
 
 @Module({
   imports: [
@@ -28,6 +29,7 @@ import { RiskModule } from './risk/risk.module.js';
     RepliesModule,
     ReportsModule,
     RiskModule,
+    CommandsModule,
     BankModule,
     ShopModule,
   ],
