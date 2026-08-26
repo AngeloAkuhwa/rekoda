@@ -40,6 +40,7 @@ import { sweepRenewals } from '../billing/renewal-sweep.js';
 import { sweepEvidence, sweepRetention } from '../privacy/retention-sweep.js';
 import { sweepRecurring } from '../spend/recurring-sweep.js';
 import { sweepDepreciation } from '../spend/depreciation-sweep.js';
+import { OutboxDispatcher } from '../commands/outbox-dispatcher.js';
 import { MESSAGE_SENDER } from '../channels/sender.tokens.js';
 import { SPEECH_TO_TEXT, type SpeechToText } from '../ai/stt.js';
 import { TEXT_EXTRACTION, type TextExtraction } from '../ai/ocr.js';
@@ -113,6 +114,19 @@ export function buildRunner(
 }
 
 /**
+ * Builds the outbox dispatcher with every handler production registers.
+ *
+ * Exported for the same reason as `buildRunner`: the integration test runs
+ * this function, not a parallel registry, so a handler present in one and
+ * missing from the other cannot happen. The registry is EMPTY today by
+ * design — event types arrive with the commands that emit them (PR-021
+ * onward), and each of those PRs adds its `register` call here.
+ */
+export function buildOutboxDispatcher(): OutboxDispatcher {
+  return new OutboxDispatcher();
+}
+
+/**
  * Starts the runner only when this process is meant to be a worker.
  *
  * One image, two roles, chosen by environment: the API and the worker deploy
@@ -144,6 +158,8 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
   private sweepingDepreciation = false;
   private retentionTimer: NodeJS.Timeout | null = null;
   private sweepingRetention = false;
+  private outboxTimer: NodeJS.Timeout | null = null;
+  private dispatchingOutbox = false;
 
   constructor(
     @Inject(CONFIG) private readonly config: ApiConfig,
@@ -425,6 +441,30 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
         });
     }, 3_600_000);
     this.depreciationTimer.unref();
+
+    /**
+     * The outbox rides the pump's fast clock, because what it carries is a
+     * consequence somebody committed and is now waiting on. The lease
+     * (`FOR UPDATE SKIP LOCKED` plus `reclaimStalled`) already makes
+     * concurrent dispatchers safe, so no advisory lock here: every replica
+     * drains, and adding workers speeds delivery instead of wasting passes —
+     * the batch claim is one query when the table is empty, which is almost
+     * always.
+     */
+    const dispatcher = buildOutboxDispatcher();
+    this.outboxTimer = setInterval(() => {
+      if (this.dispatchingOutbox) return;
+      this.dispatchingOutbox = true;
+      dispatcher
+        .runOnce(workerDb)
+        .catch((error: unknown) => {
+          this.log.warn(`outbox pass failed: ${redactForLog(describeFailure(error))}`);
+        })
+        .finally(() => {
+          this.dispatchingOutbox = false;
+        });
+    }, 2_000);
+    this.outboxTimer.unref();
   }
 
   /**
@@ -455,6 +495,7 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
     if (this.transferTimer) clearInterval(this.transferTimer);
     if (this.feedTimer) clearInterval(this.feedTimer);
     if (this.strangerTimer) clearInterval(this.strangerTimer);
+    if (this.outboxTimer) clearInterval(this.outboxTimer);
     await this.runner?.stop();
   }
 }
