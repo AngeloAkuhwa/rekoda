@@ -9,6 +9,7 @@ export * as entitlementsRepo from './repos/entitlements.js';
 export * as riskRepo from './repos/risk.js';
 export * as idempotencyRepo from './repos/idempotency.js';
 export * as provenanceRepo from './repos/provenance.js';
+export * as evidenceRetentionRepo from './repos/evidence-retention.js';
 export * as events from './repos/events.js';
 export * as jobsRepo from './repos/jobs.js';
 export * as marginRepo from './repos/margin.js';
@@ -33,3 +34,5 @@ export * as shopsRepo from './repos/shops.js';
 export * as spendRepo from './repos/spend.js';
 export * as usageRepo from './repos/usage.js';
 export { applyMigrations } from './migrate.js';
+/** Re-exported so consumers of this package never import drizzle directly. */
+export { sql } from 'drizzle-orm';

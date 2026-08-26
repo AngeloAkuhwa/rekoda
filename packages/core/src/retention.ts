@@ -24,7 +24,30 @@ export const RETENTION = {
   conversationDays: 90,
   /** Warning before anything is deleted on this schedule. */
   noticeDays: 30,
+  /**
+   * A payment-evidence claim nobody responds to, before it EXPIRES (spec
+   * §23: "an unresolved claim must not live forever automatically" — an
+   * abandoned dispute is the MOST likely state for a claim to be in).
+   * The deadline is stamped when the claim is raised; this is the default a
+   * business starts with, and §23 makes it business configuration, so BL2
+   * may later move it to data. Implementation default, recorded in the
+   * amendment log rather than invented silently.
+   */
+  evidenceResolutionDays: 14,
+  /**
+   * Raw evidence media (the screenshot itself), after the claim resolves or
+   * expires. The claim, its amount and its outcome survive under
+   * financial-record retention; what dies is the picture of somebody's bank
+   * app, which is personal data with no reason to outlive the dispute it
+   * belonged to. Suspended only by an EvidenceLegalHold.
+   */
+  evidenceRawDays: 90,
 } as const;
+
+/** When a claim raised at this moment expires if nobody responds. */
+export function evidenceResolutionDeadline(raisedAt: Date): Date {
+  return new Date(raisedAt.getTime() + RETENTION.evidenceResolutionDays * DAY_MS);
+}
 
 /**
  * When the warning goes out: far enough before deletion that the merchant has

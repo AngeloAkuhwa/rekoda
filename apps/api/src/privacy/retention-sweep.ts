@@ -26,7 +26,7 @@
 import { Logger } from '@nestjs/common';
 import { RETENTION, RETENTION_NOTICE_DAYS, retentionCutoff } from '@rekoda/core';
 import { redactForLog } from '@rekoda/core/privacy';
-import { retentionRepo, withBusiness, type Db } from '@rekoda/db';
+import { evidenceRetentionRepo, retentionRepo, withBusiness, type Db } from '@rekoda/db';
 import { SendFailed, type MessageSender } from '../channels/sender.js';
 import { recordMessageCost } from '../channels/message-cost.js';
 
@@ -179,4 +179,61 @@ async function erase(
     }
     if (candidates.length < PAGE || result.deleted === before) break;
   }
+}
+
+/* ── the evidence clocks (spec §23; PR-011) ─────────────────────────────── */
+
+export interface EvidenceSweepResult {
+  expired: number;
+  purged: number;
+  /** Raw refs whose objects the storage port should now delete. */
+  purgedRefs: string[];
+}
+
+/**
+ * Expire the abandoned claims and purge the raw media that outlived its
+ * countdown. The worker discovers, the app credential mutates under a tenant
+ * pin, and every pinned WHERE re-checks what discovery saw — so a legal hold
+ * placed between the two is honoured.
+ *
+ * Returns the purged media refs rather than deleting objects itself: today no
+ * writer stores evidence media yet (the writers arrive with PR-022), so the
+ * pointer is the whole of the truth; the day objects exist, the caller hands
+ * these refs to the storage port AFTER this commits. An orphaned object is
+ * re-findable; a pointer to a deleted object is a claim that lies.
+ */
+export async function sweepEvidence(
+  deps: { workerDb: Db; appDb: Db },
+  now = new Date(),
+): Promise<EvidenceSweepResult> {
+  const result: EvidenceSweepResult = { expired: 0, purged: 0, purgedRefs: [] };
+
+  const byBusiness = (rows: { businessId: string; evidenceId: string }[]) => {
+    const groups = new Map<string, string[]>();
+    for (const row of rows) {
+      groups.set(row.businessId, [...(groups.get(row.businessId) ?? []), row.evidenceId]);
+    }
+    return groups;
+  };
+
+  for (const [businessId, ids] of byBusiness(
+    await evidenceRetentionRepo.dueForExpiry(deps.workerDb, now),
+  )) {
+    result.expired += await withBusiness(deps.appDb, businessId, (tx) =>
+      evidenceRetentionRepo.expireEvidence(tx, businessId, ids, now),
+    );
+  }
+
+  const cutoff = retentionCutoff(now, RETENTION.evidenceRawDays);
+  for (const [businessId, ids] of byBusiness(
+    await evidenceRetentionRepo.dueForPurge(deps.workerDb, cutoff),
+  )) {
+    const refs = await withBusiness(deps.appDb, businessId, (tx) =>
+      evidenceRetentionRepo.purgeRaw(tx, businessId, ids, cutoff, now),
+    );
+    result.purged += refs.length;
+    result.purgedRefs.push(...refs);
+  }
+
+  return result;
 }

@@ -142,6 +142,17 @@ export default function PrivacyPage() {
                       <td>Long enough to come back or export. Not forever.</td>
                     </tr>
                     <tr>
+                      <td>Payment screenshots customers send</td>
+                      <td>
+                        Until the claim is settled or {RETENTION.evidenceResolutionDays} days pass
+                        unanswered, then the image is deleted {RETENTION.evidenceRawDays} days later
+                      </td>
+                      <td>
+                        A screenshot proves a claim was made, never a payment. The claim and its
+                        outcome stay with your books; the picture does not need to.
+                      </td>
+                    </tr>
+                    <tr>
                       <td>Customer names, phones and addresses</td>
                       <td>While you need them, or until you ask us to erase them</td>
                       <td>Encrypted separately from the books throughout.</td>

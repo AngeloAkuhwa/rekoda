@@ -37,7 +37,7 @@ import { sweepUnknownSenders } from '../channels/stranger-sweep.js';
 import { sweepGracePeriods } from '../billing/grace-sweep.js';
 import { AUDIO_METADATA_PROBE, type AudioMetadataProbe } from '../ai/audio-duration.js';
 import { sweepRenewals } from '../billing/renewal-sweep.js';
-import { sweepRetention } from '../privacy/retention-sweep.js';
+import { sweepEvidence, sweepRetention } from '../privacy/retention-sweep.js';
 import { sweepRecurring } from '../spend/recurring-sweep.js';
 import { sweepDepreciation } from '../spend/depreciation-sweep.js';
 import { MESSAGE_SENDER } from '../channels/sender.tokens.js';
@@ -367,6 +367,12 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
           appDb: this.appDb,
           sender: this.sender,
           fxNairaPerUsd: this.config.planningFxNairaPerUsd,
+        }).then(async (swept) => {
+          /* The evidence clocks ride the same timer: one schedule, one
+           * heartbeat, and the page that publishes both periods is describing
+           * one sweep pass rather than two that can drift apart. */
+          await sweepEvidence({ workerDb, appDb: this.appDb });
+          return swept;
         }),
       )
         .catch((error: unknown) => {
