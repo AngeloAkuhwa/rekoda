@@ -68,6 +68,7 @@ describe('the production wiring', () => {
     expect(dispatcher).toBeInstanceOf(OutboxDispatcher);
     expect(dispatcher.types().sort()).toEqual([
       'expense.recorded',
+      'financial_transactions.ingested',
       'invoice.issued',
       'journal.posted',
       'order.placed',
@@ -75,6 +76,7 @@ describe('the production wiring', () => {
       'payment.recorded',
       'period.closed',
       'purchase.recorded',
+      'reconciliation.confirmed',
       'sale.recorded',
     ]);
   });

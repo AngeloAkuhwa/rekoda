@@ -153,6 +153,10 @@ export function buildOutboxDispatcher(): OutboxDispatcher {
   /* PR-025's fact. */
   dispatcher.register('order.placed', async () => {});
 
+  /* PR-026's facts. */
+  dispatcher.register('financial_transactions.ingested', async () => {});
+  dispatcher.register('reconciliation.confirmed', async () => {});
+
   return dispatcher;
 }
 
@@ -322,7 +326,13 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
       if (this.sweepingFeeds) return;
       this.sweepingFeeds = true;
       this.exclusively('bank-feeds', () =>
-        sweepBankFeeds({ workerDb, appDb: this.appDb, feed: this.bankFeed }),
+        sweepBankFeeds({
+          workerDb,
+          appDb: this.appDb,
+          feed: this.bankFeed,
+          commandBus: this.commandBus,
+          commandIngestFinancialTransaction: this.config.commandIngestFinancialTransaction,
+        }),
       )
         .catch((error: unknown) => {
           this.log.warn(`bank feed sweep failed: ${redactForLog(describeFailure(error))}`);

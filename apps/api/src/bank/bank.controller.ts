@@ -44,9 +44,17 @@ import { bankRepo, withBusiness, type Db } from '@rekoda/db';
 import { SessionGuard, type AuthedRequest } from '../auth/session.guard.js';
 import { Roles, RolesGuard } from '../auth/roles.guard.js';
 import { DB } from '../db/db.module.js';
+import { CONFIG, type ApiConfig } from '../config.js';
 import { BANK_FEED, type BankFeedPort } from './feed.port.js';
 import { MonoApiError } from './mono.provider.js';
 import { syncFeedOnce } from './feed-sync.js';
+import { CommandBus } from '../commands/command-bus.service.js';
+import {
+  confirmReconciliationWork,
+  ingestFinancialTransactionsWork,
+  type ConfirmReconciliationInput,
+  type IngestFinancialTransactionsInput,
+} from '../commands/bank-commands.js';
 
 /**
  * How much of the statement the page carries.
@@ -67,6 +75,8 @@ export class BankController {
   constructor(
     @Inject(DB) private readonly db: Db,
     @Inject(BANK_FEED) private readonly feed: BankFeedPort,
+    @Inject(CONFIG) private readonly config: ApiConfig,
+    private readonly commandBus: CommandBus,
   ) {}
 
   /** What the books say against what the bank says, and the lines behind it. */
@@ -155,13 +165,34 @@ export class BankController {
     if (!statement.ok) return { outcome: 'unreadable', reason: statement.reason };
 
     const businessId = request.auth!.businessId;
-    const stored = await withBusiness(this.db, businessId, (tx) =>
-      bankRepo.importStatementLines(tx, {
-        businessId,
-        lines: statement.lines,
-        actor: `user:${request.auth!.userId}`,
-      }),
-    );
+    const input: IngestFinancialTransactionsInput = {
+      businessId,
+      lines: statement.lines,
+      actor: `user:${request.auth!.userId}`,
+      source: 'csv_upload',
+    };
+    /* The A1 rollout seam (spec §25). No idempotency key — the fingerprint
+     * dedupe IS the import's identity, and a re-upload counts duplicates. */
+    const stored = await withBusiness(this.db, businessId, async (tx) => {
+      if (this.config.commandIngestFinancialTransaction) {
+        const run = await this.commandBus.run(
+          tx,
+          {
+            businessId,
+            command: 'IngestFinancialTransaction',
+            payload: { source: input.source, count: input.lines.length },
+            actor: input.actor,
+            ingress: 'DASHBOARD',
+          },
+          () => ingestFinancialTransactionsWork(tx, input),
+        );
+        if (run.outcome !== 'done') {
+          throw new Error(`IngestFinancialTransaction refused unexpectedly: ${run.outcome}`);
+        }
+        return run.result;
+      }
+      return ingestFinancialTransactionsWork(tx, input);
+    });
     return {
       outcome: 'imported',
       imported: stored.imported,
@@ -206,14 +237,38 @@ export class BankController {
     if (!parsed.success) throw new BadRequestException('a line and an entry to pair it with');
 
     const businessId = request.auth!.businessId;
-    return withBusiness(this.db, businessId, (tx) =>
-      bankRepo.matchByHand(tx, {
-        businessId,
-        lineId: parsed.data.lineId,
-        transactionId: parsed.data.transactionId,
-        actor: `user:${request.auth!.userId}`,
-      }),
-    );
+    const input: ConfirmReconciliationInput = {
+      businessId,
+      lineId: parsed.data.lineId,
+      transactionId: parsed.data.transactionId,
+      actor: `user:${request.auth!.userId}`,
+    };
+    /* The A1 rollout seam (spec §25). STANDARD, and stays STANDARD: this
+     * door only pairs what the rule left open — `matchByHand` refuses any
+     * line or movement a match already claims, so nothing deterministic is
+     * ever overruled here (Appendix D.2's override row has no ingress until
+     * PR-028's confirmation UI). Refusals are outcomes that write nothing. */
+    return withBusiness(this.db, businessId, async (tx) => {
+      if (this.config.commandConfirmReconciliation) {
+        const run = await this.commandBus.run(
+          tx,
+          {
+            businessId,
+            command: 'ConfirmReconciliation',
+            payload: input,
+            actor: input.actor,
+            ingress: 'DASHBOARD',
+            idempotencyKey: `match:${input.lineId}:${input.transactionId}`,
+          },
+          () => confirmReconciliationWork(tx, input),
+        );
+        if (run.outcome !== 'done') {
+          throw new Error(`ConfirmReconciliation refused unexpectedly: ${run.outcome}`);
+        }
+        return run.result;
+      }
+      return confirmReconciliationWork(tx, input);
+    });
   }
 
   /**
@@ -331,9 +386,15 @@ export class BankController {
   @HttpCode(200)
   async syncFeed(@Req() request: AuthedRequest): Promise<SyncBankFeedResponse> {
     const outcome = await syncFeedOnce(
-      { db: this.db, feed: this.feed },
+      {
+        db: this.db,
+        feed: this.feed,
+        commandBus: this.commandBus,
+        commandIngestFinancialTransaction: this.config.commandIngestFinancialTransaction,
+      },
       request.auth!.businessId,
       `user:${request.auth!.userId}`,
+      'DASHBOARD',
     );
     if (outcome.outcome === 'provider_down') {
       throw new ServiceUnavailableException(
