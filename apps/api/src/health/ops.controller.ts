@@ -172,6 +172,14 @@ export class OpsController {
      */
     total: Margin & { businesses: number; paying: number; spending: number; events: number };
     byProvider: Awaited<ReturnType<typeof marginRepo.costByProvider>>;
+    /**
+     * The same period split by what was actually bought: which message
+     * category, which model role. Spec §24 separates the message categories
+     * because utility and marketing differ by roughly eightfold, and grouped
+     * by provider alone that shift is invisible - the Meta total moves and
+     * nothing says which way the mix went.
+     */
+    byUsageType: Awaited<ReturnType<typeof marginRepo.costByUsageType>>;
     /** The costliest merchants, capped. `total` covers the ones not here. */
     businesses: Array<
       Margin & { businessId: string; plan: string; events: number; createdAt: string }
@@ -196,9 +204,10 @@ export class OpsController {
       throw new BadRequestException('period must be YYYY-MM');
     }
 
-    const [rows, byProvider, availablePeriods, census, totals] = await Promise.all([
+    const [rows, byProvider, byUsageType, availablePeriods, census, totals] = await Promise.all([
       marginRepo.costByBusiness(this.workerDb, wanted),
       marginRepo.costByProvider(this.workerDb, wanted),
+      marginRepo.costByUsageType(this.workerDb, wanted),
       marginRepo.meteredPeriods(this.workerDb),
       marginRepo.planCensus(this.workerDb),
       marginRepo.periodTotals(this.workerDb, wanted),
@@ -215,6 +224,7 @@ export class OpsController {
         events: totals.events,
       },
       byProvider,
+      byUsageType,
       businesses: rows.map((row) => ({
         businessId: row.businessId,
         plan: row.plan,

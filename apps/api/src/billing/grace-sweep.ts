@@ -24,6 +24,7 @@ import { billingState, GRACE_DAYS } from '@rekoda/core';
 import { redactForLog } from '@rekoda/core/privacy';
 import { subscriptionsRepo, withBusiness, type Db } from '@rekoda/db';
 import { SendFailed, type MessageSender } from '../channels/sender.js';
+import { recordMessageCost } from '../channels/message-cost.js';
 
 export interface GraceSweepDeps {
   /** `rekoda_worker` — "who is in grace" names no tenant, which is the point. */
@@ -31,6 +32,8 @@ export interface GraceSweepDeps {
   /** `rekoda_app` — every write below runs under a tenant pin. */
   appDb: Db;
   sender: MessageSender;
+  /** Planning FX, for pricing the utility template this sweep sends. */
+  fxNairaPerUsd: number;
 }
 
 export interface GraceSweepResult {
@@ -110,6 +113,18 @@ export async function sweepGracePeriods(
           daysLeft: String(state.daysLeft),
           endsOn: lagosDate(state.endsAt),
         });
+        /* A UTILITY template, and one Rekoda pays Meta for. It was
+         * invisible to the margin view until now: the sweep sent it and
+         * recorded nothing. */
+        await recordMessageCost(
+          deps.appDb,
+          row.businessId,
+          'UTILITY_TEMPLATE',
+          deps.fxNairaPerUsd,
+          {
+            template: 'billing',
+          },
+        );
         result.reminded += 1;
       } catch (error) {
         /* The claim goes BACK. Burning it on a failed send meant a Meta outage

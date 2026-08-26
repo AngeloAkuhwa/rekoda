@@ -24,12 +24,42 @@ pricing page must not promise.
 | `DOCUMENTS_UNDERSTOOD` | Uploaded documents READ by the vision role (the new cost class; pricing-model "Known gap")                                              | 10    | 50   | 0         | 200      |
 | `CATALOGUE_ORDERS`     | Catalogue orders captured (Integrate/Complete)                                                                                          | 10    | 0    | 300       | 300      |
 
-The twelve not yet metered: `SERVICE_MESSAGE`, `UTILITY_TEMPLATE`,
-`AUTH_TEMPLATE`, `AUTH_INTL_TEMPLATE`, `MARKETING_TEMPLATE`,
-`PAYMENT_CONNECTIONS`, `FINANCIAL_ACCOUNT_CONNECTIONS`, `ACCOUNTANT_USERS`,
-`REPORT_EXPORTS`, `API_REQUEST_UNITS`, `API_APPLICATIONS`,
-`WEBHOOK_DELIVERIES`. Each gets its plan figure in the PR that wires its
-consumer, not before.
+The twelve with no plan allowance yet: `SERVICE_MESSAGE`,
+`UTILITY_TEMPLATE`, `AUTH_TEMPLATE`, `AUTH_INTL_TEMPLATE`,
+`MARKETING_TEMPLATE`, `PAYMENT_CONNECTIONS`,
+`FINANCIAL_ACCOUNT_CONNECTIONS`, `ACCOUNTANT_USERS`, `REPORT_EXPORTS`,
+`API_REQUEST_UNITS`, `API_APPLICATIONS`, `WEBHOOK_DELIVERIES`. Each gets its
+plan figure in the PR that wires its consumer, not before.
+
+### The five message categories are Rekoda's cost, not the merchant's
+
+The five WhatsApp categories are metered, just not against an allowance. They
+name what Rekoda pays Meta, they are written to `usage_events`, and the
+margin view totals them by category (ADR 0029).
+
+Every outbound message today is Rekoda talking to the merchant on Rekoda's
+own number: a reply to something they said, a sign-in code, a notice that
+their card failed. Charging a merchant's allowance for a billing reminder
+would bill them for being told their payment failed, and the reply to their
+own message was already paid for as an `AI_ACTION`. Commercial rule 3 of
+`pricing-model.md` says the same thing in the other direction: template fees
+are "tracked internally per business".
+
+The allowance side is early rather than absent. When a merchant's own WABA
+lands in W1/W2 they message their OWN customer, the category is chosen at
+send time, and metering it against their plan is right, because then it is
+their message.
+
+| Category | Rekoda's cost | What sends it |
+|---|---|---|
+| `SERVICE_MESSAGE` | ₦0 today, chargeable 1 Oct 2026 | Every reply and document, inside the 24-hour window |
+| `UTILITY_TEMPLATE` | ₦9.72 | Grace-period and retention notices |
+| `AUTH_TEMPLATE` | ₦21.03 | Sign-in codes, Nigeria-registered WABA |
+| `AUTH_INTL_TEMPLATE` | ₦108.75 | The same code, WABA registered elsewhere |
+| `MARKETING_TEMPLATE` | ₦74.82 | Nothing. Commercial rule 2 excludes it from V1 |
+
+The rate card lives in `@rekoda/core`'s `messaging.ts`, sourced from the
+external cost stack in `pricing-model.md`.
 
 Integrate carries no merchant-side capacity because it holds
 `REKODA_INTEGRATE` and not `REKODA_CHAT` (owner decision, 26 August 2026):

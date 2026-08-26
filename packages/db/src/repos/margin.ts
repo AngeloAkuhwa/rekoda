@@ -47,6 +47,15 @@ export interface ProviderCost {
 }
 
 /** How many businesses sit on each plan, over the whole estate. */
+export interface UsageTypeCost {
+  provider: string;
+  /** A message category, a model role, or whatever else was metered. */
+  usageType: string;
+  costK: number;
+  quantity: number;
+  events: number;
+}
+
 export interface PlanCount {
   plan: string;
   businesses: number;
@@ -178,6 +187,47 @@ export async function costByProvider(db: Db, period: string): Promise<ProviderCo
   `);
   return [...rows].map((r) => ({
     provider: r.provider,
+    costK: Number(r.cost_k ?? 0),
+    quantity: Number(r.quantity ?? 0),
+    events: r.events ?? 0,
+  }));
+}
+
+/**
+ * The period's cost broken down by what was bought, not who sold it.
+ *
+ * `costByProvider` answers "how much did Meta charge us", which was enough
+ * while every outbound message was one bucket. It is not enough now: spec
+ * §24 separates the message categories precisely because a utility template
+ * and a marketing template differ by roughly eightfold, and "that difference
+ * is the largest variable in plan margin". Grouped by provider, an eightfold
+ * shift in the mix is invisible — the total moves and nothing says why.
+ *
+ * Generic over `usage_type` rather than special-cased to messages, because
+ * the same question is worth asking of model calls, transcription seconds
+ * and document renders, and BL2 will ask it of all of them.
+ */
+export async function costByUsageType(db: Db, period: string): Promise<UsageTypeCost[]> {
+  const rows = await db.execute<{
+    provider: string;
+    usage_type: string;
+    cost_k: string | number | null;
+    quantity: string | number | null;
+    events: number | null;
+  }>(sql`
+    SELECT provider,
+           usage_type,
+           sum(naira_equivalent_k) AS cost_k,
+           sum(quantity)           AS quantity,
+           count(*)::int           AS events
+    FROM usage_events
+    WHERE billing_period = ${period}
+    GROUP BY provider, usage_type
+    ORDER BY sum(naira_equivalent_k) DESC, count(*) DESC, usage_type ASC
+  `);
+  return [...rows].map((r) => ({
+    provider: r.provider,
+    usageType: r.usage_type,
     costK: Number(r.cost_k ?? 0),
     quantity: Number(r.quantity ?? 0),
     events: r.events ?? 0,

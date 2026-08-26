@@ -256,6 +256,23 @@ export interface ApiConfig {
    * the one number that needs changing.
    */
   metaServiceReplyCostMicros: number;
+  /**
+   * Where Rekoda's own WABA is registered, which decides the authentication
+   * rate every sign-in code is billed at.
+   *
+   * A Nigeria-registered WABA pays $0.0145 per authentication conversation
+   * and one registered anywhere else pays $0.0750 for the identical message
+   * (docs/pricing-model.md). That is over five times the cost of the single
+   * most expensive message Rekoda sends, on the busiest path it has, and the
+   * same document carries it as a launch requirement.
+   *
+   * Defaults to true because that is the launch requirement, not because it
+   * is the safe direction: a deployment that moved the WABA and did not set
+   * this would under-report its own OTP bill by a factor of five, so the
+   * default is the state the business is required to be in and the flag is
+   * how an operator admits it is not.
+   */
+  metaWabaRegisteredInNigeria: boolean;
   /** R2. All four empty means documents are rendered but not stored. */
   r2AccountId: string;
   r2AccessKeyId: string;
@@ -575,6 +592,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     metaRetentionTemplate: env['META_RETENTION_TEMPLATE'] || null,
     metaRetentionTemplateLocale: env['META_RETENTION_TEMPLATE_LOCALE'] ?? 'en',
     metaServiceReplyCostMicros: Number(env['META_SERVICE_REPLY_COST_MICROS'] ?? 0),
+    metaWabaRegisteredInNigeria: env['META_WABA_REGISTERED_IN_NIGERIA'] !== 'false',
     r2AccountId: env['R2_ACCOUNT_ID'] ?? '',
     r2AccessKeyId: env['R2_ACCESS_KEY_ID'] ?? '',
     r2SecretAccessKey: env['R2_SECRET_ACCESS_KEY'] ?? '',

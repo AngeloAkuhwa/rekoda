@@ -154,8 +154,12 @@ charging a merchant to look at their own accounts (ADR 0024).
 >   research time. Planning FX **held at ₦1,450/$**, now a ~7.7% buffer.
 > - **Meta authentication (NG) was WRONG below:** the 2026 rate is
 >   **$0.0145** per conversation (not ~$0.0067) for a Nigeria-registered
->   WABA, and **$0.0750 — eleven times more — when the WABA is registered
->   outside Nigeria**. Corrected in the table; OTP cost roughly doubles
+>   WABA, and **$0.0750 when the WABA is registered outside Nigeria** —
+>   **5.2 times** the corrected domestic rate. (An earlier draft of this note
+>   said "eleven times more", which was the ratio against the superseded
+>   ~$0.0067 estimate on the line above it, not against the $0.0145 it now
+>   sits beside. Corrected 26 Aug 2026 while wiring the rate card into
+>   `@rekoda/core`.) Corrected in the table; OTP cost roughly doubles
 >   against the original model and the margin band absorbs it. **Launch
 >   requirement: the WABA must be registered in Nigeria.**
 > - **Model rows now carry conservative ceilings:** Sonnet modelled at
@@ -172,7 +176,7 @@ charging a merchant to look at their own accounts (ADR 0024).
 | -------------------------- | ----------------------- | ------------------ | ---------------------------------------------------------------------- |
 | Twilio WhatsApp            | $0.005/msg each way     | ₦7.25/msg          | Integrate path only — see ADR 0002                                     |
 | Meta utility template (NG) | ~$0.0067                | ₦9.72              | Only when required                                                     |
-| Meta authentication (NG)   | $0.0145 (NG-registered) | ₦21.03             | OTP. **$0.0750 if the WABA is registered outside Nigeria — 11x trap**  |
+| Meta authentication (NG)   | $0.0145 (NG-registered) | ₦21.03             | OTP. **$0.0750 if the WABA is registered outside Nigeria — 5.2x trap** |
 | Meta marketing (NG)        | ~$0.0516                | ₦74.82             | **Excluded from V1 entirely**                                          |
 | In-window service replies  | currently ₦0 Meta-side  | —                  | **Chargeable from 1 Oct 2026; re-run maths when rates publish ~1 Sep** |
 | OpenAI transcription       | $0.0045/min             | ~₦6.53/min         | Benchmark only — STT is self-hosted (ADR 0005)                         |

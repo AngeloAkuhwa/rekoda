@@ -19,7 +19,7 @@ import {
   verifyOtp,
   type RandomSource,
 } from '@rekoda/core/identity';
-import { replies } from '@rekoda/core';
+import { authTemplateCategory, MESSAGE_COST_MICROS, replies } from '@rekoda/core';
 import { identity, type Db } from '@rekoda/db';
 import type {
   MeResponse,
@@ -117,6 +117,28 @@ export class AuthService {
        * the business number, so there is no service window to reply inside
        * and Meta rejects free-form text to it (131047). */
       await this.sender.sendAuthCode({ to: phone, code });
+
+      /**
+       * The most expensive message Rekoda sends, and the one its cost
+       * telemetry cannot hold.
+       *
+       * `usage_events.business_id` is NOT NULL with a foreign key, and a
+       * phone asking for a sign-in code has no business yet: that is what
+       * signing in is for. Spec §29 anticipated exactly this shape and put
+       * it in `PlatformCostEvent`, whose `businessId` is nullable because
+       * "some costs are not attributable to one merchant". Until BL2 builds
+       * that, inventing a business to hang the row on would be a lie in a
+       * financial baseline, so the cost is logged and left unattributed.
+       *
+       * The category is logged with it because the difference between the
+       * two authentication rates is fivefold, and an operator reading a
+       * spike needs to know which one they are paying.
+       */
+      const category = authTemplateCategory(this.config.metaWabaRegisteredInNigeria);
+      this.log.log(
+        `sign-in code delivered as ${category}, ` +
+          `${MESSAGE_COST_MICROS[category]} USD micros, unattributed until PlatformCostEvent`,
+      );
     } catch {
       // The reason is logged without the code — the one string that must
       // never reach a log store beside the phone number it unlocks.

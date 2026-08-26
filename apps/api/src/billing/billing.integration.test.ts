@@ -15,7 +15,7 @@
  */
 import { randomBytes } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { addMonth, GRACE_DAYS, PLAN_PRICES_K } from '@rekoda/core';
+import { addMonth, GRACE_DAYS, PLAN_PRICES_K, usagePeriod } from '@rekoda/core';
 import {
   billingCancelResponse,
   billingOverviewResponse,
@@ -24,6 +24,8 @@ import {
 import {
   createDb,
   identity,
+  marginRepo,
+  quotaRepo,
   subscriptionsRepo,
   usageRepo,
   withBusiness,
@@ -692,10 +694,49 @@ describe('the grace period', () => {
 
   const dayAfterFailure = (days: number) => new Date(FAILED_AT.getTime() + days * 86_400_000);
 
+  /**
+   * The sweep sent a chargeable Meta template and recorded nothing, so the
+   * margin view saw a merchant who cost nothing in the month Rekoda paid to
+   * warn them seven times. Spec §24 separates the categories precisely so
+   * this class of cost is visible.
+   */
+  it('records the billing reminder as the utility template Rekoda paid for', async () => {
+    const { businessId } = await failedMerchant('+2348177100030');
+    const sender = new StubSender();
+    const deps = { workerDb, appDb: db, sender, fxNairaPerUsd: 1_450 };
+
+    await sweepGracePeriods(deps, dayAfterFailure(1));
+    expect(sender.billingNotices).toHaveLength(1);
+
+    const rows = await marginRepo.costByUsageType(workerDb, usagePeriod(new Date()));
+    const utility = rows.find(
+      (row) => row.provider === 'meta' && row.usageType === 'UTILITY_TEMPLATE',
+    );
+    expect(utility?.events).toBe(1);
+    /* ₦9.72 at planning FX, from the external cost stack in pricing-model.md. */
+    expect(utility?.costK).toBe(972);
+
+    const own = await withBusiness(db, businessId, (tx) => quotaRepo.usageTotals(tx, 'meta'));
+    expect(own.calls).toBeGreaterThanOrEqual(1);
+  });
+
+  /* A reminder that never left costs nothing, so nothing is recorded. */
+  it('records no cost when the template is missing and the notice never sends', async () => {
+    await failedMerchant('+2348177100031');
+    const sender = new StubSender();
+    sender.failWith();
+    const deps = { workerDb, appDb: db, sender, fxNairaPerUsd: 1_450 };
+
+    await sweepGracePeriods(deps, dayAfterFailure(1));
+
+    const rows = await marginRepo.costByUsageType(workerDb, usagePeriod(new Date()));
+    expect(rows.find((row) => row.usageType === 'UTILITY_TEMPLATE')).toBeUndefined();
+  });
+
   it('sends one reminder on day 1 and none the same day twice', async () => {
     const { auth } = await failedMerchant('+2348177100010');
     const sender = new StubSender();
-    const deps = { workerDb, appDb: db, sender };
+    const deps = { workerDb, appDb: db, sender, fxNairaPerUsd: 1_450 };
 
     const first = await sweepGracePeriods(deps, dayAfterFailure(1));
     expect(first).toEqual({ reminded: 1, expired: 0 });
@@ -716,7 +757,7 @@ describe('the grace period', () => {
   it('says nothing between reminders once each has been sent', async () => {
     await failedMerchant('+2348177100011');
     const sender = new StubSender();
-    const deps = { workerDb, appDb: db, sender };
+    const deps = { workerDb, appDb: db, sender, fxNairaPerUsd: 1_450 };
 
     expect((await sweepGracePeriods(deps, dayAfterFailure(0))).reminded).toBe(0);
     expect((await sweepGracePeriods(deps, dayAfterFailure(1))).reminded).toBe(1);
@@ -731,7 +772,7 @@ describe('the grace period', () => {
   it('sends a missed day-one warning late instead of staying silent until day five', async () => {
     await failedMerchant('+2348177100015');
     const sender = new StubSender();
-    const deps = { workerDb, appDb: db, sender };
+    const deps = { workerDb, appDb: db, sender, fxNairaPerUsd: 1_450 };
 
     /* The sweep was down through all of day one. Its first pass lands on day
      * two: the merchant still gets the first warning, once, with the days
@@ -750,7 +791,10 @@ describe('the grace period', () => {
     await identity.setOptOut(db, '+2348177100012', new Date());
 
     const sender = new StubSender();
-    const swept = await sweepGracePeriods({ workerDb, appDb: db, sender }, dayAfterFailure(1));
+    const swept = await sweepGracePeriods(
+      { workerDb, appDb: db, sender, fxNairaPerUsd: 1_450 },
+      dayAfterFailure(1),
+    );
     expect(swept.reminded).toBe(1);
     expect(sender.billingNotices).toEqual([]);
   });
@@ -758,7 +802,7 @@ describe('the grace period', () => {
   it('expires on day SEVEN, not day six', async () => {
     const { auth } = await failedMerchant('+2348177100013');
     const sender = new StubSender();
-    const deps = { workerDb, appDb: db, sender };
+    const deps = { workerDb, appDb: db, sender, fxNairaPerUsd: 1_450 };
 
     expect((await sweepGracePeriods(deps, dayAfterFailure(GRACE_DAYS - 1))).expired).toBe(0);
     expect((await overviewOf(auth)).plan).toBe('chat');
@@ -780,7 +824,7 @@ describe('the grace period', () => {
   it('leaves the books readable after expiry', async () => {
     const { auth } = await failedMerchant('+2348177100014');
     await sweepGracePeriods(
-      { workerDb, appDb: db, sender: new StubSender() },
+      { workerDb, appDb: db, sender: new StubSender(), fxNairaPerUsd: 1_450 },
       dayAfterFailure(GRACE_DAYS),
     );
 
@@ -796,7 +840,7 @@ describe('the grace period', () => {
   it('stops reminding the moment a cycle is paid for', async () => {
     const { businessId } = await failedMerchant('+2348177100015');
     const sender = new StubSender();
-    const deps = { workerDb, appDb: db, sender };
+    const deps = { workerDb, appDb: db, sender, fxNairaPerUsd: 1_450 };
 
     await sweepGracePeriods(deps, dayAfterFailure(1));
     expect(sender.billingNotices).toHaveLength(1);
@@ -815,7 +859,7 @@ describe('the grace period', () => {
   it('an allowance a merchant no longer has is refused after expiry', async () => {
     const { businessId } = await failedMerchant('+2348177100016');
     await sweepGracePeriods(
-      { workerDb, appDb: db, sender: new StubSender() },
+      { workerDb, appDb: db, sender: new StubSender(), fxNairaPerUsd: 1_450 },
       dayAfterFailure(GRACE_DAYS),
     );
 

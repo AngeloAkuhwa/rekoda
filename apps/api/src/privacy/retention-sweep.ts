@@ -28,6 +28,7 @@ import { RETENTION, RETENTION_NOTICE_DAYS, retentionCutoff } from '@rekoda/core'
 import { redactForLog } from '@rekoda/core/privacy';
 import { retentionRepo, withBusiness, type Db } from '@rekoda/db';
 import { SendFailed, type MessageSender } from '../channels/sender.js';
+import { recordMessageCost } from '../channels/message-cost.js';
 
 export interface RetentionSweepDeps {
   /** `rekoda_worker` - "who is due" names no tenant, and the delete function
@@ -36,6 +37,8 @@ export interface RetentionSweepDeps {
   /** `rekoda_app` - the warning claim runs under a tenant pin. */
   appDb: Db;
   sender: MessageSender;
+  /** Planning FX, for pricing the utility template this sweep sends. */
+  fxNairaPerUsd: number;
 }
 
 export interface RetentionSweepResult {
@@ -98,6 +101,16 @@ async function warn(
           ),
           deletesOn: lagosDate(deletesOn),
         });
+        /* A UTILITY template, and one Rekoda pays Meta for. Recorded after
+         * the send, never before: a warning that did not arrive is a warning
+         * nobody was billed for. */
+        await recordMessageCost(
+          deps.appDb,
+          candidate.businessId,
+          'UTILITY_TEMPLATE',
+          deps.fxNairaPerUsd,
+          { template: 'retention' },
+        );
       } catch (error) {
         /* Unreached means not warned means not deleted. The claim below is
          * skipped on purpose, so the next pass tries again. */

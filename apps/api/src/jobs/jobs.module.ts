@@ -316,7 +316,12 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
       if (this.sweepingGrace) return;
       this.sweepingGrace = true;
       this.exclusively('grace', () =>
-        sweepGracePeriods({ workerDb, appDb: this.appDb, sender: this.sender }),
+        sweepGracePeriods({
+          workerDb,
+          appDb: this.appDb,
+          sender: this.sender,
+          fxNairaPerUsd: this.config.planningFxNairaPerUsd,
+        }),
       )
         .catch((error: unknown) => {
           this.log.warn(`grace sweep failed: ${redactForLog(describeFailure(error))}`);
@@ -354,7 +359,12 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
       if (this.sweepingRetention) return;
       this.sweepingRetention = true;
       this.exclusively('retention', () =>
-        sweepRetention({ workerDb, appDb: this.appDb, sender: this.sender }),
+        sweepRetention({
+          workerDb,
+          appDb: this.appDb,
+          sender: this.sender,
+          fxNairaPerUsd: this.config.planningFxNairaPerUsd,
+        }),
       )
         .catch((error: unknown) => {
           this.log.warn(`retention sweep failed: ${redactForLog(describeFailure(error))}`);

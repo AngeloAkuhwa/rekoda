@@ -606,7 +606,7 @@ Size: **S** narrow and reviewable · **M** normal · **L** large but acceptable 
 | PR-013 | E1 | Entitlement resolver and single server-side gate | no | med | PR-012 | M | ✅ **MERGED** |
 | PR-014 | E1 | Metered units expanded to the canonical seventeen | **yes** | med | PR-012 | M | ✅ **MERGED** |
 | PR-015 | E1 | Pre-cost gating for AI, OCR and transcription | no | med | PR-013 | M | ✅ **MERGED** |
-| PR-016 | E1 | Message-category metering: utility, marketing, auth, service | no | med | PR-014 | M |
+| PR-016 | E1 | Message-category metering: utility, marketing, auth, service | **yes** | med | PR-014 | M | ✅ **MERGED** |
 | PR-017 | E1 | UI visibility rules and downgrade behaviour | no | low | PR-013 | M |
 | PR-018 | E1 | Cross-product refusal suite: no plan reaches another's capability | no | low | PR-013 | S |
 | PR-019 | A1 | Command layer skeleton and `IdempotencyRecord` | **yes** | med | PR-013 | L |

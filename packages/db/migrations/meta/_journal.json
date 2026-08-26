@@ -379,6 +379,13 @@
       "when": 1787385600000,
       "tag": "0053_metered_units_canonical",
       "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "7",
+      "when": 1787389200000,
+      "tag": "0054_message_categories",
+      "breakpoints": true
     }
   ]
 }

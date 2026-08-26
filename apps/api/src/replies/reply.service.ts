@@ -1,5 +1,5 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import { billingPeriod, replies, type Reply } from '@rekoda/core';
+import { billingPeriod, messageCostK, replies, type Reply } from '@rekoda/core';
 import { redactForLog, rehydrate } from '@rekoda/core/privacy';
 import { conversationsRepo, quotaRepo, type TenantDb } from '@rekoda/db';
 import { CONFIG, type ApiConfig } from '../config.js';
@@ -97,7 +97,12 @@ export class ReplySender {
   }
 
   /**
-   * One `usage_events` row per message sent.
+   * One `usage_events` row per message sent, under its Meta category.
+   *
+   * The category used to be `message_out` for every outbound message, which
+   * put a ₦0 service reply and a ₦21 sign-in code in one bucket and made the
+   * eightfold utility-to-marketing spread spec §24 calls the largest variable
+   * in plan margin the one thing the margin view could not see.
    *
    * Zero cost today: a service reply inside the 24-hour window is currently
    * free Meta-side. It becomes chargeable on 1 October 2026, and the row that
@@ -108,11 +113,12 @@ export class ReplySender {
     await quotaRepo.recordUsage(tx, {
       businessId,
       provider: 'meta',
-      usageType: 'message_out',
+      usageType: 'SERVICE_MESSAGE',
       quantity: 1,
       providerCostMicros: this.config.metaServiceReplyCostMicros,
-      nairaEquivalentK: Math.round(
-        (this.config.metaServiceReplyCostMicros * this.config.planningFxNairaPerUsd) / 10_000,
+      nairaEquivalentK: messageCostK(
+        this.config.metaServiceReplyCostMicros,
+        this.config.planningFxNairaPerUsd,
       ),
       billingPeriod: billingPeriod(new Date()),
       meta: { window: 'service' },

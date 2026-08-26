@@ -161,7 +161,15 @@ export const usageEvents = pgTable(
     id: id(),
     businessId: businessId(),
     provider: text('provider').notNull(), // meta | twilio | anthropic | openai | stt | storage | paystack
-    usageType: text('usage_type').notNull(), // message_in | message_out | template | llm_call | stt_seconds | pdf | excel …
+    /**
+     * What was bought. Outbound messages carry their Meta CATEGORY here
+     * (SERVICE_MESSAGE, UTILITY_TEMPLATE, AUTH_TEMPLATE, AUTH_INTL_TEMPLATE,
+     * MARKETING_TEMPLATE) rather than a single `message_out`, because spec
+     * §24 separates them: utility and marketing differ by roughly eightfold
+     * and one bucket hides the largest variable in plan margin. Everything
+     * else keeps its own word: llm_call | stt_seconds | pdf | excel …
+     */
+    usageType: text('usage_type').notNull(),
     quantity: bigint('quantity', { mode: 'number' }).notNull(),
     /** Provider cost in micro-units of `costCurrency` (USD micros for AI). */
     providerCostMicros: bigint('provider_cost_micros', { mode: 'number' }).notNull().default(0),

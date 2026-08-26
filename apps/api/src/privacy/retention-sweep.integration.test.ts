@@ -12,11 +12,12 @@
  * the notice does not go out, nothing goes.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { RETENTION, RETENTION_NOTICE_DAYS } from '@rekoda/core';
+import { RETENTION, RETENTION_NOTICE_DAYS, usagePeriod } from '@rekoda/core';
 import {
   billingRepo,
   createDb,
   identity,
+  marginRepo,
   retentionRepo,
   subscriptionsRepo,
   withBusiness,
@@ -73,7 +74,7 @@ async function abandonedTrial(
   return { businessId: business.id, phone };
 }
 
-const deps = (sender: StubSender) => ({ workerDb, appDb, sender });
+const deps = (sender: StubSender) => ({ workerDb, appDb, sender, fxNairaPerUsd: 1_450 });
 
 const exists = async (businessId: string): Promise<boolean> =>
   (await withBusiness(appDb, businessId, (tx) =>
@@ -109,6 +110,39 @@ describe('the warning', () => {
     expect((await sweepRetention(deps(sender), new Date())).warned).toBe(0);
     expect(sender.retentionNotices).toHaveLength(1);
     expect(await exists(businessId)).toBe(true);
+  });
+
+  /**
+   * The warning is a chargeable Meta utility template, and the sweep recorded
+   * nothing for it. A month of retention warnings was a month of Meta invoice
+   * with no line in Rekoda's own cost telemetry to match it against.
+   */
+  it('records the warning as the utility template Rekoda paid for', async () => {
+    await abandonedTrial(RETENTION_NOTICE_DAYS + 5);
+    const sender = new StubSender();
+
+    await sweepRetention(deps(sender), new Date());
+    expect(sender.retentionNotices).toHaveLength(1);
+
+    const rows = await marginRepo.costByUsageType(workerDb, usagePeriod(new Date()));
+    const utility = rows.find(
+      (row) => row.provider === 'meta' && row.usageType === 'UTILITY_TEMPLATE',
+    );
+    expect(utility?.events).toBe(1);
+    /* ₦9.72 at planning FX, from the external cost stack in pricing-model.md. */
+    expect(utility?.costK).toBe(972);
+  });
+
+  /* Unreached means not warned means nothing was paid for. */
+  it('records no cost when the warning cannot be delivered', async () => {
+    await abandonedTrial(RETENTION_NOTICE_DAYS + 5);
+    const sender = new StubSender();
+    sender.failWith();
+
+    await sweepRetention(deps(sender), new Date());
+
+    const rows = await marginRepo.costByUsageType(workerDb, usagePeriod(new Date()));
+    expect(rows.find((row) => row.usageType === 'UTILITY_TEMPLATE')).toBeUndefined();
   });
 
   it('does not warn, or claim, a merchant who has ever paid us', async () => {
