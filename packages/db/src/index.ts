@@ -8,6 +8,7 @@ export * as customersRepo from './repos/customers.js';
 export * as entitlementsRepo from './repos/entitlements.js';
 export * as riskRepo from './repos/risk.js';
 export * as idempotencyRepo from './repos/idempotency.js';
+export * as provenanceRepo from './repos/provenance.js';
 export * as events from './repos/events.js';
 export * as jobsRepo from './repos/jobs.js';
 export * as marginRepo from './repos/margin.js';

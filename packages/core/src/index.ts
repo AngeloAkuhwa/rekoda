@@ -13,6 +13,7 @@ export * from './messaging.js';
 export * from './risk.js';
 export * from './entitlements.js';
 export * from './capabilities.js';
+export * from './provenance.js';
 export * from './invoice-layout.js';
 export * from './receipt-layout.js';
 export * from './statements.js';

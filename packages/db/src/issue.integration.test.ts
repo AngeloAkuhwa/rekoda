@@ -44,7 +44,12 @@ async function seedBusiness(name = 'Ada Fashion', phone = '+2348100000001'): Pro
 }
 
 /** "Ada bought 3 wigs for 150k, paid 100k" — the plan's own example. */
+/* Each call is its own confirmation, so each carries its own draft id, as
+ * the product does: one draft confirms once, and PR-005's claim on the
+ * confirmation action refuses a second attestation from the same draft. */
+let draftSeq = 0;
 function theSale(businessId: string): issueRepo.IssueSaleInput {
+  draftSeq += 1;
   return {
     businessId,
     customerId: null,
@@ -59,7 +64,7 @@ function theSale(businessId: string): issueRepo.IssueSaleInput {
     balanceDueK: 5_000_000,
     method: 'transfer',
     sourceType: 'chat',
-    sourceId: 'draft-1',
+    sourceId: `draft-${draftSeq}`,
     actor: 'system',
   };
 }

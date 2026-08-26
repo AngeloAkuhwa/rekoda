@@ -489,6 +489,9 @@ describe('recording a merchant-reported payment', () => {
     );
   }
 
+  /* Each recorded payment is its own confirmation and carries its own draft
+   * id, as the chat flow does: one draft, one yes, one attestation. */
+  let paySeq = 0;
   const record = (businessId: string, invoiceId: string, amountK: number) =>
     withBusiness(db, businessId, (tx) =>
       settleRepo.recordMerchantPayment(tx, {
@@ -497,7 +500,7 @@ describe('recording a merchant-reported payment', () => {
         amountK,
         method: 'cash',
         sourceType: 'chat',
-        sourceId: 'draft-pay',
+        sourceId: `draft-pay-${++paySeq}`,
         actor: 'system',
       }),
     );

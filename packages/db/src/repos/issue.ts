@@ -30,6 +30,7 @@ import {
   type Posting,
 } from '@rekoda/core';
 import { snapshotHash, type DocumentSnapshot } from '@rekoda/core/documents';
+import { normalisePaymentMethod } from '@rekoda/core';
 import type { TenantDb } from '../client.js';
 import { auditEvents, documents } from '../schema/ops.js';
 import {
@@ -42,6 +43,7 @@ import {
   payments,
 } from '../schema/finance.js';
 import { assertPeriodOpen } from './close.js';
+import { appendVerification } from './provenance.js';
 
 export interface IssueItem {
   name: string;
@@ -297,12 +299,27 @@ export async function issueSale(tx: TenantDb, input: IssueSaleInput): Promise<Is
         verified: 0,
         sourceType: input.sourceType,
         sourceId: input.sourceId,
+        /* Provenance at birth (spec §6.2–6.3). The merchant said money
+         * arrived with the sale; that is attestation, whatever the
+         * instrument was. */
+        initialConfirmationSource: 'MERCHANT_ATTESTED',
+        paymentMethod: normalisePaymentMethod(input.method),
       })
       .returning({ id: payments.id });
 
     const payment = paymentRows[0];
     if (!payment) throw new Error('issueSale: payment insert returned no row');
     paymentId = payment.id;
+
+    /* The confirmed draft is the confirmation action, and its claim stops a
+     * retried job attesting twice for one yes (spec §6.5). */
+    await appendVerification(tx, {
+      businessId: input.businessId,
+      paymentId,
+      source: 'MERCHANT_ATTESTED',
+      confirmationEventId: `${input.sourceType}:${input.sourceId}`,
+      actorId: input.actor,
+    });
 
     await tx.insert(paymentAllocations).values({
       businessId: input.businessId,

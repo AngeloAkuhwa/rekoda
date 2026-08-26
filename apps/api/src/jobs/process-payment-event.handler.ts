@@ -157,6 +157,7 @@ export function processPaymentEventHandler(deps: ProcessPaymentEventDeps): JobHa
       providerFeeK: t.providerFeeK,
       feePolicy: (connection?.feePolicy ?? 'merchant_bearing') as FeePolicy,
       method: t.method,
+      paymentConnectionId: connection?.id ?? null,
       actor: 'system:payments',
       eventId,
     });

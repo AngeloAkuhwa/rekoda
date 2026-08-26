@@ -32,7 +32,7 @@ import {
   lagosYear,
 } from '@rekoda/core';
 import { documentHash } from '@rekoda/core/documents';
-import { applyPayment } from '@rekoda/core';
+import { applyPayment, normalisePaymentMethod } from '@rekoda/core';
 import type { Db, TenantDb } from '../client.js';
 import { auditEvents } from '../schema/ops.js';
 import {
@@ -45,6 +45,7 @@ import {
   reconciliations,
 } from '../schema/finance.js';
 import { nextDocumentNumber, writePosting } from './issue.js';
+import { appendVerification } from './provenance.js';
 
 /** The same rekoda_reference booked twice — the terminal-intent gate's job,
  * and this error firing means that gate was bypassed. Callers treat it as
@@ -71,6 +72,13 @@ export interface BookVerifiedPaymentInput {
   feePolicy: FeePolicy;
   /** cash | transfer | pos | unknown — already normalised by the adapter. */
   method: string;
+  /**
+   * The connection the money arrived on, for the provider claim identity of
+   * spec §6.5: businessId + paymentConnectionId + providerTransactionReference.
+   * Optional because a connection row can be missing in degraded states; the
+   * identity then falls back to providerType, which still names the rail.
+   */
+  paymentConnectionId?: string | null;
   actor: string;
   /** The external event that carried the confirmation, for the audit trail.
    * For a polled confirmation there is no event: the provider's own
@@ -131,6 +139,11 @@ export async function bookVerifiedPayment(
         settlementStatus: 'pending',
         sourceType: input.sourceType ?? 'webhook',
         sourceId: input.eventId,
+        /* Provenance at birth (spec §6.2–6.3): the provider confirmed this
+         * server-side, and the instrument travels separately so a POS payment
+         * no longer has to pretend to be a transfer. */
+        initialConfirmationSource: 'PROVIDER_VERIFIED',
+        paymentMethod: normalisePaymentMethod(input.method),
       })
       .returning({ id: payments.id });
     const payment = paymentRows[0];
@@ -142,6 +155,20 @@ export async function bookVerifiedPayment(
     }
     throw error;
   }
+
+  /* The verification and its claim, canonical order, same transaction, no
+   * external work between them (spec §6.5). The claim's identity is the
+   * provider's own transaction on this connection, so a second intent
+   * carrying the same provider transaction aborts here rather than booking
+   * the same money twice. */
+  await appendVerification(tx, {
+    businessId: input.businessId,
+    paymentId,
+    source: 'PROVIDER_VERIFIED',
+    providerSourceIdentity: `${input.paymentConnectionId ?? input.providerType}:${input.providerRef}`,
+    providerReference: input.providerRef,
+    actorId: input.actor,
+  });
 
   /* No invoice — an intent minted without an obligation to settle. The money
    * is real and recorded; what it MEANS is a human's question. */
@@ -724,10 +751,36 @@ export async function recordMerchantPayment(
       ...(input.clientRef ? { rekodaReference: `manual:${input.clientRef}` } : {}),
       sourceType: input.sourceType,
       sourceId: input.sourceId,
+      /* The merchant confirmed it, with recorded semantics. The instrument
+       * never changes the source (journeys §5.1): MERCHANT_ATTESTED + POS is
+       * representable now, which it was not while the source carried it. */
+      initialConfirmationSource: 'MERCHANT_ATTESTED',
+      paymentMethod: normalisePaymentMethod(input.method),
     })
     .returning({ id: payments.id });
   const paymentId = paymentRows[0]?.id;
   if (!paymentId) throw new Error('recordMerchantPayment: payment insert returned no row');
+
+  /* The explicit confirmation action is the claim identity (spec §6.5):
+   * the confirmed draft for chat, the form's one-shot key for the dashboard.
+   * A dashboard submission with no client key gets the payment row itself as
+   * its action, which is honest — no external confirmation identity existed
+   * — and keeps the claims-mirror-verifications reconstruction a bijection.
+   * The invoice number is deliberately NOT the identity: a second partial
+   * payment against the same invoice is a second confirmation, not a retry
+   * of the first. */
+  await appendVerification(tx, {
+    businessId: input.businessId,
+    paymentId,
+    source: 'MERCHANT_ATTESTED',
+    confirmationEventId:
+      input.sourceType === 'chat'
+        ? `chat:${input.sourceId}`
+        : input.clientRef
+          ? `${input.sourceType}:ref:${input.clientRef}`
+          : `payment:${paymentId}`,
+    actorId: input.actor,
+  });
 
   await tx.insert(paymentAllocations).values({
     businessId: input.businessId,

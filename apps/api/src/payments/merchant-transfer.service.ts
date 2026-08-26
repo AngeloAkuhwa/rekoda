@@ -431,6 +431,7 @@ async function verifyAndBook(
       providerFeeK: t.providerFeeK,
       feePolicy: (connection?.feePolicy ?? 'merchant_bearing') as FeePolicy,
       method: t.method,
+      paymentConnectionId: connection?.id ?? null,
       actor: 'system:payments',
       /* No webhook carried this: the poll found it. The provider's own
        * transaction id is the audit anchor. */
