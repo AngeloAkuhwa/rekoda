@@ -10,6 +10,7 @@ export * from './words.js';
 export * from './sources.js';
 export * from './allowances.js';
 export * from './messaging.js';
+export * from './risk.js';
 export * from './entitlements.js';
 export * from './invoice-layout.js';
 export * from './receipt-layout.js';

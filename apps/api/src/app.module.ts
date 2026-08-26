@@ -16,6 +16,7 @@ import { CatalogueModule } from './catalogue/catalogue.module.js';
 import { BankModule } from './bank/bank.module.js';
 import { ReportsModule } from './reports/reports.module.js';
 import { ShopModule } from './shop/shop.module.js';
+import { RiskModule } from './risk/risk.module.js';
 
 @Module({
   imports: [
@@ -26,6 +27,7 @@ import { ShopModule } from './shop/shop.module.js';
     PaymentsModule,
     RepliesModule,
     ReportsModule,
+    RiskModule,
     BankModule,
     ShopModule,
   ],
