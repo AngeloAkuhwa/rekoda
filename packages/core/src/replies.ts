@@ -187,6 +187,23 @@ export function ordersNotInPlan(): Reply {
   );
 }
 
+/**
+ * A merchant on the Integrate plan messaged Rekoda to record something.
+ *
+ * Their plan is the customer-facing half: orders arriving from their shop
+ * book themselves. Talking to Rekoda about the rest of the business is the
+ * Chat half, and Complete is both. Same shape as `ordersNotInPlan` and for
+ * the same reason: "you have used all 0 messages" is true of the number and
+ * useless about the reason.
+ */
+export function chatNotInPlan(): Reply {
+  return reply(
+    'Recording by message is part of the Chat plan. Your Integrate shop is still working ' +
+      'and orders are still booking themselves. Nothing here was lost.\n\n' +
+      'Reply *upgrade* to add Chat and keep one set of books for both.',
+  );
+}
+
 export function allowanceExhausted(allowance: number, unit: UsageUnit = 'messages'): Reply {
   return reply(
     `You have used all ${allowance} ${UNIT_WORDS[unit]} in your plan this month. ` +

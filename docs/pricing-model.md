@@ -70,15 +70,28 @@ confirmed).
 
 _Connect your WhatsApp shop. Rekoda handles the money trail automatically._
 1 business · 1 WhatsApp Business number/WABA · 1 catalogue · 1 Paystack
-connection · owner + 2 delegates · **800 messages** · **60 voice minutes** ·
-**300 catalogue orders** · **500 document generations** · 100 utility
-templates · unlimited reports · automatic order capture → customer records →
-invoices → payment verification → receipts → inventory → reconciliation, with
-unmatched/short-payment/exception detection. Voice carries the same hour Chat
-has: the ladder never walks backwards, so a Chat merchant who opens a shop
-keeps every habit they built. (Corrected 24 Aug 2026 — this section previously
-said "no voice bookkeeping" and "200 orders" while the enforced allowance was
-already 300; `packages/core/src/allowances.ts` is the single source of truth.)
+connection · owner + 2 delegates · **300 catalogue orders** · **500 document
+generations** · 100 utility templates · unlimited reports · automatic order
+capture → customer records → invoices → payment verification → receipts →
+inventory → reconciliation, with unmatched/short-payment/exception detection.
+
+**Integrate is the customer-facing half.** It does not include recording by
+message: no merchant messaging, no voice notes, no photographed receipts.
+Those are Chat, and **Complete is both** — which is the point of Complete
+existing. A merchant who wants to run their shop automatically *and* tell
+Rekoda about the rest of the business buys Complete.
+
+> **Corrected 26 Aug 2026 (owner decision).** This plan previously carried
+> 800 messages, 60 voice minutes and 100 documents understood — a full
+> merchant-side allowance set larger than Chat's. That made Integrate a
+> superset of Chat and left Complete selling nothing but volume, which
+> contradicts the canonical rule that Complete is the entitlement PAIR
+> (spec §3.3). The merchant-side allowances are now zero and the entitlement
+> gate refuses those capabilities, so the page and the product agree.
+>
+> The accepted cost: a Chat merchant moving to Integrate loses merchant-side
+> recording. The ladder walks backwards for that one move, deliberately.
+> `packages/core/src/allowances.ts` remains the single source of truth.
 
 ### Rekoda Complete — ₦29,900/month
 

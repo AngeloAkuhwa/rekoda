@@ -12,15 +12,13 @@
  * it, are PR-013. This module is the record they will read.
  */
 import { sql } from 'drizzle-orm';
+import { effectiveEntitlements, type EntitlementKey } from '@rekoda/core';
 import type { Db, TenantDb } from '../client.js';
+import { planFor } from './usage.js';
 
-/**
- * Complete is the PAIR, never a value (spec §3.3). A `REKODA_COMPLETE` key
- * would make it possible to hold Complete while holding neither half, and
- * every downgrade would then be an edit rather than a removal.
- */
-export const ENTITLEMENT_KEYS = ['REKODA_CHAT', 'REKODA_INTEGRATE', 'REKODA_API'] as const;
-export type EntitlementKey = (typeof ENTITLEMENT_KEYS)[number];
+/* The key set and the plan map are pure, so they live in core. Re-exported
+ * here because every caller that needs one needs the other. */
+export { ENTITLEMENT_KEYS, type EntitlementKey } from '@rekoda/core';
 
 /**
  * Where a grant came from, because a downgrade must treat them differently: a
@@ -143,4 +141,59 @@ export async function holds(
     LIMIT 1
   `);
   return [...rows].length > 0;
+}
+
+/* ── the resolver and the gate ─────────────────────────────────────────── */
+
+/**
+ * What this business can actually do: what its plan implies, plus whatever
+ * was granted explicitly (spec §4.1).
+ *
+ * One place. Every ingress asks this and none of them derives it, which is
+ * the whole point: before PR-013 the Chat handler inferred the boundary from
+ * an orders allowance of zero and the storefront could not tell "not in your
+ * plan" from "you have used all 300", so the same rule had two
+ * implementations and one of them could not express the answer.
+ */
+export async function resolve(tx: TenantDb, businessId: string): Promise<EntitlementKey[]> {
+  const plan = await planFor(tx, businessId);
+  const granted = await heldBy(tx, businessId);
+  return effectiveEntitlements(
+    plan,
+    granted.map((g) => g.entitlementKey),
+  );
+}
+
+/** Why a capability was refused. Never a bare boolean: the caller has to say something. */
+export interface EntitlementRefusal {
+  missing: EntitlementKey;
+  /** The plan at the moment of refusal, so the reply can name the upgrade. */
+  plan: string;
+}
+
+/**
+ * The gate. Returns null when the business may proceed, or the refusal.
+ *
+ * **Call this BEFORE the meter and before any chargeable provider work**
+ * (spec §4.3, rules 1 to 3). The ordering is the invariant, not a preference:
+ * an unentitled request that consumed a unit first would have to be refunded,
+ * and every refund path is a place the meter can drift. A refused request
+ * consumes nothing because nothing was taken.
+ *
+ * Until A1 lands the command layer this is called from the ingress. That is
+ * the one place spec §4.1 says the check must NOT live permanently, so every
+ * call site here is a line A1 deletes rather than a pattern it copies.
+ */
+export async function requireEntitlement(
+  tx: TenantDb,
+  businessId: string,
+  required: EntitlementKey,
+): Promise<EntitlementRefusal | null> {
+  const plan = await planFor(tx, businessId);
+  const granted = await heldBy(tx, businessId);
+  const held = effectiveEntitlements(
+    plan,
+    granted.map((g) => g.entitlementKey),
+  );
+  return held.includes(required) ? null : { missing: required, plan };
 }

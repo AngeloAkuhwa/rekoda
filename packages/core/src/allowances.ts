@@ -51,14 +51,28 @@ export const PLAN_ALLOWANCES: Record<PlanId, Record<UsageUnit, number>> = {
     documents_understood: 50,
     orders: 0,
   },
+  /**
+   * Integrate holds REKODA_INTEGRATE and not REKODA_CHAT (owner decision,
+   * 26 Aug 2026, spec §3.3). The merchant-side units therefore go to zero:
+   * the gate refuses those capabilities, so capacity for them would be
+   * capacity the product cannot spend, and the pricing page must not promise
+   * it.
+   *
+   * `documents` stays, and is the reason this is not simply "zero the Chat
+   * units": document GENERATION is what turns a customer order into an
+   * invoice and a receipt, so it is Integrate's own consumable.
+   *
+   * This does mean the ladder walks backwards for a Chat merchant who moves
+   * to Integrate: they lose merchant-side messaging, voice and document
+   * understanding. That was the accepted cost of keeping Complete a
+   * capability tier rather than a volume tier. Complete is the plan for a
+   * merchant who wants both.
+   */
   integrate: {
-    messages: 800,
-    /* The same hour Chat carries. Zero here made the ladder walk BACKWARDS:
-     * a Chat merchant who opened a shop upgraded, paid more, and lost their
-     * voice notes — the only place a bigger plan took something away. */
-    voice_seconds: 3_600,
+    messages: 0,
+    voice_seconds: 0,
     documents: 500,
-    documents_understood: 100,
+    documents_understood: 0,
     orders: 300,
   },
   complete: {

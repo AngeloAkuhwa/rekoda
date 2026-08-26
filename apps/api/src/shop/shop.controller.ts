@@ -51,6 +51,7 @@ import {
 import { allowanceFor, postCostOfSale, sniffImageType, usagePeriod } from '@rekoda/core';
 import {
   catalogueRepo,
+  entitlementsRepo,
   identity,
   issueRepo,
   jobsRepo,
@@ -285,6 +286,16 @@ export class PublicShopController {
       return null;
     });
     if (refused) return refused;
+
+    /* ENTITLEMENT BEFORE METER (spec §4.3 rule 1). Before PR-013 this path
+     * consumed the orders unit and read a refusal as `outcome: 'closed'`,
+     * which could not tell "this shop is not on a plan that sells" from "this
+     * shop has used all 300 orders this month" — and took a unit either way.
+     * The gate answers first, and a refusal takes nothing. */
+    const entitled = await withBusiness(this.db, businessId, (tx) =>
+      entitlementsRepo.requireEntitlement(tx, businessId, 'REKODA_INTEGRATE'),
+    );
+    if (entitled) return { outcome: 'closed' };
 
     /* The meter, exactly as the chat capture pays it: own short
      * transactions, refunded on every path that delivers nothing. */

@@ -22,21 +22,64 @@ describe('plan allowances (docs/metering-v1.md)', () => {
     expect(allowanceFor('platinum-unlimited', 'messages')).toBe(PLAN_ALLOWANCES.trial.messages);
   });
 
-  it('the paid ladder never walks backwards — a bigger plan never carries less of anything', () => {
-    /* The bug this pins: Integrate once had ZERO voice while cheaper Chat
-     * had an hour, so a merchant who upgraded lost a feature they were
-     * using. Every unit must be monotonic up the paid ladder, so a plan
-     * change is only ever an addition. */
-    const ladder = ['chat', 'integrate', 'complete'] as const;
-    for (let i = 1; i < ladder.length; i++) {
-      const below = PLAN_ALLOWANCES[ladder[i - 1]!];
-      const here = PLAN_ALLOWANCES[ladder[i]!];
-      for (const unit of Object.keys(below) as (keyof typeof below)[]) {
-        expect(here[unit], `${ladder[i]} ${unit} >= ${ladder[i - 1]}`).toBeGreaterThanOrEqual(
-          below[unit],
-        );
-      }
+  /**
+   * SUPERSEDED as a single monotonic ladder by the owner decision of 26 Aug
+   * 2026: `integrate` holds REKODA_INTEGRATE and not REKODA_CHAT, so the
+   * merchant-side units it used to carry are capacity for a capability the
+   * gate now refuses. Chat and Integrate are two ladders that meet at
+   * Complete, not one line through three plans.
+   *
+   * The invariant that survives, and matters more: WITHIN a capability, a
+   * bigger plan never carries less. A merchant who buys up never loses
+   * something they were using inside the half they keep.
+   */
+  it('never walks backwards within a capability', () => {
+    const chatUnits = ['messages', 'voice_seconds', 'documents_understood'] as const;
+    const integrateUnits = ['orders'] as const;
+
+    for (const unit of chatUnits) {
+      expect(PLAN_ALLOWANCES.complete[unit], `complete ${unit} >= chat`).toBeGreaterThanOrEqual(
+        PLAN_ALLOWANCES.chat[unit],
+      );
     }
+    for (const unit of integrateUnits) {
+      expect(
+        PLAN_ALLOWANCES.complete[unit],
+        `complete ${unit} >= integrate`,
+      ).toBeGreaterThanOrEqual(PLAN_ALLOWANCES.integrate[unit]);
+    }
+    /* Document GENERATION is neither half's alone: it is what turns a sale
+     * into an invoice, whoever made the sale. It climbs the whole ladder. */
+    for (const [below, here] of [
+      ['chat', 'integrate'],
+      ['integrate', 'complete'],
+    ] as const) {
+      expect(
+        PLAN_ALLOWANCES[here].documents,
+        `${here} documents >= ${below}`,
+      ).toBeGreaterThanOrEqual(PLAN_ALLOWANCES[below].documents);
+    }
+  });
+
+  /**
+   * The consequence of the same decision, pinned so it cannot drift back by
+   * accident: an Integrate plan carries no capacity for the half it does not
+   * hold. Capacity the gate refuses is capacity the pricing page must not
+   * promise.
+   */
+  it('gives the Integrate plan no merchant-side capacity', () => {
+    expect(PLAN_ALLOWANCES.integrate.messages).toBe(0);
+    expect(PLAN_ALLOWANCES.integrate.voice_seconds).toBe(0);
+    expect(PLAN_ALLOWANCES.integrate.documents_understood).toBe(0);
+    /* But it must still be able to issue the invoice and receipt a customer
+     * order produces, or Integrate cannot do its own job. */
+    expect(PLAN_ALLOWANCES.integrate.documents).toBeGreaterThan(0);
+    expect(PLAN_ALLOWANCES.integrate.orders).toBeGreaterThan(0);
+  });
+
+  /** And the Chat plan holds no customer-side capacity, for the same reason. */
+  it('gives the Chat plan no order capacity', () => {
+    expect(PLAN_ALLOWANCES.chat.orders).toBe(0);
   });
 
   it('seats climb the paid ladder, expire to zero, and treat the unknown as trial', () => {

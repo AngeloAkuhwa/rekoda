@@ -31,6 +31,7 @@ import {
   conversationsRepo,
   withBusiness,
   customersRepo,
+  entitlementsRepo,
   events,
   identity,
   issueRepo,
@@ -905,15 +906,21 @@ async function confirmPendingDraft(
      * upgrade — and a zero allowance gets the sentence about the plan, not
      * "you have used all 0 orders". */
     if (command.intent === 'RecordOrder') {
+      /* The entitlement decides, not the allowance. Before PR-013 this read
+       * `orderAllowance === 0` and inferred the product boundary from a
+       * quantity, which only works for capabilities that happen to be
+       * counted. Asked BEFORE the consume so a refusal takes nothing. */
+      if (await entitlementsRepo.requireEntitlement(tx, businessId, 'REKODA_INTEGRATE')) {
+        await refundDocument(deps, businessId, period);
+        return replies.ordersNotInPlan();
+      }
       const orderAllowance = allowanceFor(plan, 'orders');
       const orderGranted = await withBusiness(deps.db, businessId, (own) =>
         usageRepo.consumeUnit(own, businessId, period, 'orders', orderAllowance),
       );
       if (!orderGranted) {
         await refundDocument(deps, businessId, period);
-        return orderAllowance === 0
-          ? replies.ordersNotInPlan()
-          : replies.allowanceExhausted(orderAllowance, 'orders');
+        return replies.allowanceExhausted(orderAllowance, 'orders');
       }
       orderTaken = true;
     }
@@ -1541,6 +1548,15 @@ async function interpretedReply(
    * plan carries the fact (allowances are all zero), so the gate below still
    * refuses; what changes is what the merchant is told. */
   if (plan === 'expired') return replies.trialEnded();
+
+  /* ENTITLEMENT BEFORE METER, and before the model is paid for (spec §4.3,
+   * rules 1 to 3). An Integrate-only merchant holds the customer-facing half
+   * and not this one, and refusing here means no unit is taken and no
+   * provider is called — so there is nothing to refund and no path where the
+   * meter can drift. */
+  if (await entitlementsRepo.requireEntitlement(tx, businessId, 'REKODA_CHAT')) {
+    return replies.chatNotInPlan();
+  }
 
   const monthlyMessages = allowanceFor(plan, 'messages');
   const period = usagePeriod(new Date());
