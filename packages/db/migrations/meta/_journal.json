@@ -407,6 +407,13 @@
       "when": 1787400000000,
       "tag": "0057_payment_evidence",
       "breakpoints": true
+    },
+    {
+      "idx": 58,
+      "version": "7",
+      "when": 1787403600000,
+      "tag": "0058_payment_provenance",
+      "breakpoints": true
     }
   ]
 }

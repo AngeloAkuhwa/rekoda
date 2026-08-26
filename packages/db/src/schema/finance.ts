@@ -146,6 +146,21 @@ export const payments = pgTable(
     settlementStatus: text('settlement_status'),
     /** The provider's effective settlement date, stamped by the polling sweep. */
     settledAt: timestamp('settled_at', { withTimezone: true }),
+    /* ── provenance (spec §6.2–6.3, migration 0058) ──────────────────────
+     * How this payment's truth was established, and on what instrument.
+     * Nullable on every historical row, which is honest: nothing has been
+     * established about them yet, and PR-006's approved backfill is the
+     * only thing allowed to say otherwise.
+     *
+     * `initialConfirmationSource` is SET ONCE, enforced by a BEFORE UPDATE
+     * trigger in the database rather than by this comment. Correction is a
+     * PaymentVerification, never a rewrite; the single exemption is the
+     * named rollback function in rekoda_private, reachable by no
+     * application role. */
+    initialConfirmationSource: text('initial_confirmation_source'),
+    paymentMethod: text('payment_method'),
+    evidenceBasis: text('evidence_basis'),
+    paymentEvidenceId: uuid('payment_evidence_id'),
     createdAt: createdAt(),
   },
   (t) => [
