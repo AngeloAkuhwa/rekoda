@@ -154,6 +154,12 @@ import {
 } from '../commands/sale-commands.js';
 import { recordPaymentWork, type RecordPaymentInput } from '../commands/payment-commands.js';
 import { recordPurchaseWork, type RecordPurchaseCmdInput } from '../commands/spend-commands.js';
+import {
+  closePeriodWork,
+  postJournalWork,
+  type ClosePeriodInput,
+  type PostJournalInput,
+} from '../commands/ledger-commands.js';
 import { Roles, RolesGuard } from '../auth/roles.guard.js';
 import { DB } from '../db/db.module.js';
 import { PrivacyGateway } from '../privacy/gateway.service.js';
@@ -1506,19 +1512,41 @@ export class ReportsController {
     }
 
     const businessId = request.auth!.businessId;
+    const input: PostJournalInput = {
+      businessId,
+      memo,
+      amountK,
+      intoAccount,
+      outOfAccount,
+      ...(occurredOn === undefined ? {} : { occurredAt: lagosNoon(occurredOn) }),
+      actor: `user:${request.auth!.userId}`,
+      clientRef: parsed.data.clientRef ?? null,
+    };
     try {
-      const recorded = await withBusiness(this.db, businessId, (tx) =>
-        journalRepo.recordJournal(tx, {
-          businessId,
-          memo,
-          amountK,
-          intoAccount,
-          outOfAccount,
-          ...(occurredOn === undefined ? {} : { occurredAt: lagosNoon(occurredOn) }),
-          actor: `user:${request.auth!.userId}`,
-          clientRef: parsed.data.clientRef ?? null,
-        }),
-      );
+      /* The A1 rollout seam (spec §25). A `PeriodClosed` throw rolls the
+       * whole transaction back — claim, counter and all — and is mapped to
+       * its outcome out here, exactly as before. */
+      const recorded = await withBusiness(this.db, businessId, async (tx) => {
+        if (this.config.commandPostJournal) {
+          const run = await this.commandBus.run(
+            tx,
+            {
+              businessId,
+              command: 'PostJournal',
+              payload: input,
+              actor: input.actor,
+              ingress: 'DASHBOARD',
+              idempotencyKey: input.clientRef ? `journal:${input.clientRef}` : null,
+            },
+            () => postJournalWork(tx, input),
+          );
+          if (run.outcome !== 'done') {
+            throw new Error(`PostJournal refused unexpectedly: ${run.outcome}`);
+          }
+          return run.result;
+        }
+        return postJournalWork(tx, input);
+      });
       return { outcome: 'recorded', journalNumber: recorded.journalNumber };
     } catch (error) {
       /* Nothing was written before this threw, so the transaction rolled back
@@ -1555,13 +1583,34 @@ export class ReportsController {
     if (!parsed.success) throw new BadRequestException('the month to close through');
 
     const businessId = request.auth!.businessId;
-    return withBusiness(this.db, businessId, (tx) =>
-      closeRepo.closeBooks(tx, {
-        businessId,
-        through: parsed.data.through,
-        actor: `user:${request.auth!.userId}`,
-      }),
-    );
+    const input: ClosePeriodInput = {
+      businessId,
+      through: parsed.data.through,
+      actor: `user:${request.auth!.userId}`,
+    };
+    return withBusiness(this.db, businessId, async (tx) => {
+      /* The A1 rollout seam (spec §25). Refusals here are outcomes that
+       * write nothing, so no key is needed: a retried close simply answers
+       * `already_closed`, which is the truthful replay. */
+      if (this.config.commandClosePeriod) {
+        const run = await this.commandBus.run(
+          tx,
+          {
+            businessId,
+            command: 'ClosePeriod',
+            payload: input,
+            actor: input.actor,
+            ingress: 'DASHBOARD',
+          },
+          () => closePeriodWork(tx, input),
+        );
+        if (run.outcome !== 'done') {
+          throw new Error(`ClosePeriod refused unexpectedly: ${run.outcome}`);
+        }
+        return run.result;
+      }
+      return closePeriodWork(tx, input);
+    });
   }
 
   /**

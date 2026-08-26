@@ -69,8 +69,10 @@ describe('the production wiring', () => {
     expect(dispatcher.types().sort()).toEqual([
       'expense.recorded',
       'invoice.issued',
+      'journal.posted',
       'payment.confirmed',
       'payment.recorded',
+      'period.closed',
       'purchase.recorded',
       'sale.recorded',
     ]);

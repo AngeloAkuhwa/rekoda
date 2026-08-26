@@ -146,6 +146,10 @@ export function buildOutboxDispatcher(): OutboxDispatcher {
   dispatcher.register('expense.recorded', async () => {});
   dispatcher.register('purchase.recorded', async () => {});
 
+  /* PR-024's facts. */
+  dispatcher.register('journal.posted', async () => {});
+  dispatcher.register('period.closed', async () => {});
+
   return dispatcher;
 }
 
