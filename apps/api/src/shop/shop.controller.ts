@@ -69,6 +69,8 @@ import { DB } from '../db/db.module.js';
 import { DOCUMENT_STORAGE } from '../documents/documents.module.js';
 import { PrivacyGateway } from '../privacy/gateway.service.js';
 import { MerchantTransferService } from '../payments/merchant-transfer.service.js';
+import { CommandBus } from '../commands/command-bus.service.js';
+import { placeOrderWork, type PlaceOrderCmdInput } from '../commands/order-commands.js';
 import type { DocumentStorage } from '../documents/storage.js';
 
 interface ImageReply {
@@ -156,6 +158,7 @@ export class PublicShopController {
     @Inject(CONFIG) private readonly config: ApiConfig,
     private readonly gateway: PrivacyGateway,
     private readonly transfers: MerchantTransferService,
+    private readonly commandBus: CommandBus,
   ) {}
 
   /**
@@ -371,7 +374,7 @@ export class PublicShopController {
         });
         const totalK = lines.reduce((n, line) => n + line.lineTotalK, 0);
 
-        const placed = await ordersRepo.placeOrder(tx, {
+        const input: PlaceOrderCmdInput = {
           businessId,
           customerId: customer.customerId,
           lines,
@@ -379,77 +382,46 @@ export class PublicShopController {
           sourceType: 'storefront',
           sourceId: `shop:${slug}`,
           externalRef: `shop:${parsed.data.clientRef}`,
-        });
-
-        const items = lines.map((line) => ({
-          name: line.name,
-          quantity: line.quantity,
-          unitPriceK: line.unitPriceK,
-        }));
-        const issued = await issueRepo.issueSale(tx, {
-          businessId,
-          customerId: customer.customerId,
-          customerToken: null,
-          items,
-          subtotalK: totalK,
-          discountK: 0,
-          deliveryFeeK: 0,
-          vatK: 0,
-          totalK,
-          paidK: 0,
-          balanceDueK: totalK,
-          method: 'transfer',
-          sourceType: 'storefront',
-          sourceId: placed.id,
           saleSource: 'website',
-          dueDate: null,
           actor: 'customer:storefront',
-        });
-        await ordersRepo.markOrder(
-          tx,
-          businessId,
-          placed.id,
-          'placed',
-          'confirmed',
-          issued.invoiceId,
-        );
+        };
 
-        await jobsRepo.enqueue(tx, {
-          businessId,
-          kind: 'document.render',
-          payload: { invoiceId: issued.invoiceId },
-          singletonKey: issued.invoiceId,
-        });
-        await jobsRepo.enqueue(tx, {
-          businessId,
-          kind: 'payment.link',
-          payload: { invoiceId: issued.invoiceId },
-          singletonKey: `link:${issued.invoiceId}`,
-        });
-
-        const moved = await stockRepo.recordSaleMovements(
-          tx,
-          businessId,
-          items,
-          issued.invoiceNumber,
-        );
-        if (moved.costK > 0) {
-          await issueRepo.writePosting(
+        /* The A1 rollout seam (spec §25): the work places the order, issues
+         * the invoice, attaches it, enqueues paper and link, and commits the
+         * stock; the flag decides whether the bus's gates wrap the call. */
+        let placed: Awaited<ReturnType<typeof placeOrderWork>>;
+        if (this.config.commandPlaceOrder) {
+          const run = await this.commandBus.run(
             tx,
-            businessId,
-            postCostOfSale({
-              memo: `Cost of goods on ${issued.invoiceNumber}`,
-              costK: moved.costK,
-            }),
-            'invoice',
-            issued.invoiceNumber,
+            {
+              businessId,
+              command: 'PlaceOrder',
+              payload: input,
+              actor: input.actor,
+              ingress: 'STOREFRONT',
+              /* The form's one-shot key: the same identity the orders unique
+               * index dedupes, so a replay answers the first order. */
+              idempotencyKey: `shop-order:${parsed.data.clientRef}`,
+            },
+            () => placeOrderWork(tx, input),
           );
+          if (run.outcome === 'not_entitled') {
+            /* Pre-gated above, so reaching this means the plan changed mid
+             * request. The shop reads as closed, which is the truth. */
+            return { outcome: 'closed' as const };
+          }
+          if (run.outcome !== 'done') {
+            throw new Error(`PlaceOrder refused unexpectedly: ${run.outcome}`);
+          }
+          placed = run.result;
+        } else {
+          placed = await placeOrderWork(tx, input);
         }
 
         return {
           outcome: 'placed' as const,
           orderNumber: placed.orderNumber,
-          invoiceNumber: issued.invoiceNumber,
+          invoiceNumber: placed.invoiceNumber,
           totalK,
           whatsappE164: shop.whatsappE164,
           displayName: shop.displayName,

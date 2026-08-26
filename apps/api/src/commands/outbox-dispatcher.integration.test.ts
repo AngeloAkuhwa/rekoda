@@ -70,6 +70,7 @@ describe('the production wiring', () => {
       'expense.recorded',
       'invoice.issued',
       'journal.posted',
+      'order.placed',
       'payment.confirmed',
       'payment.recorded',
       'period.closed',

@@ -71,6 +71,7 @@ import {
   type RecordExpenseCmdInput,
   type RecordPurchaseCmdInput,
 } from '../commands/spend-commands.js';
+import { placeOrderWork, type PlaceOrderCmdInput } from '../commands/order-commands.js';
 import type { MessageSender } from '../channels/sender.js';
 
 const paymentLog = new Logger('InboundMessageJob');
@@ -1081,7 +1082,7 @@ async function confirmPendingDraft(
     return confirmStockChange(tx, businessId, command as never);
   }
   if (command.intent === 'RecordOrder') {
-    return confirmOrder(tx, businessId, draft.id, command as never, async () => {
+    return confirmOrder(deps, tx, businessId, draft.id, command as never, async () => {
       /* Every no-order path gives BOTH units back: no invoice came out, so
        * neither the document nor the order capture was delivered. */
       if (documentTaken) await refundDocument(deps, businessId, period);
@@ -1229,6 +1230,7 @@ async function postCostOfGoods(
  * customer is quoted for bales that are already spoken for.
  */
 async function confirmOrder(
+  deps: InboundMessageDeps,
   tx: TenantDb,
   businessId: string,
   draftId: string,
@@ -1252,9 +1254,10 @@ async function confirmOrder(
     return replies.arithmeticQuestion(question);
   }
 
-  const placed = await ordersRepo.placeOrder(tx, {
+  const input: PlaceOrderCmdInput = {
     businessId,
     customerId: await customerIdFor(tx, businessId, customerTokenOf(command as never)),
+    customerToken: customerTokenOf(command as never),
     lines: order.lines.map((line) => ({
       productId: line.productId,
       name: line.name,
@@ -1265,78 +1268,46 @@ async function confirmOrder(
     totalK: order.totalK,
     sourceType: 'chat',
     sourceId: draftId,
-  });
-
-  const items = order.lines.map((line) => ({
-    name: line.name,
-    quantity: line.quantity,
-    unitPriceK: line.unitPriceK,
-  }));
-  const issued = await issueRepo.issueSale(tx, {
-    businessId,
-    customerId: await customerIdFor(tx, businessId, customerTokenOf(command as never)),
-    customerToken: customerTokenOf(command as never),
-    items,
-    subtotalK: order.totalK,
-    discountK: 0,
-    deliveryFeeK: 0,
-    vatK: 0,
-    totalK: order.totalK,
-    /* Nothing is paid. A customer asked and the merchant agreed to supply;
-     * the money is the next event, not this one. */
-    paidK: 0,
-    balanceDueK: order.totalK,
-    method: 'transfer',
-    sourceType: 'chat',
-    sourceId: draftId,
     /* Where the sale happened is not knowable from a forwarded message: the
      * customer wrote it somewhere, and guessing which app would be Rekoda
      * inventing a channel the merchant never named. */
     saleSource: null,
-    /* A forwarded order carries no agreed due date. What the customer said
-     * about timing is about DELIVERY, not payment, and reading it as a
-     * payment date would put somebody on the debtors list on a day nobody
-     * agreed. */
-    dueDate: null,
+    /* The invoice cites the confirmed draft, as it always has. */
+    invoiceSourceId: draftId,
     actor: 'system',
-  });
+  };
 
-  /* The invoice id goes on the order in the same statement that confirms it.
-   * A confirmed order with nothing attached would be a row claiming a
-   * document exists with no way to find it, and the register would be back to
-   * matching orders and invoices by eye. */
-  await ordersRepo.markOrder(tx, businessId, placed.id, 'placed', 'confirmed', issued.invoiceId);
+  /* The A1 rollout seam (spec §25). The bus enforces REKODA_INTEGRATE too —
+   * the ingress already refused before taking units, and a second door
+   * refusing is the matrix holding, not a duplicate. */
+  let placed: Awaited<ReturnType<typeof placeOrderWork>>;
+  if (deps.config.commandRecordOrder) {
+    const run = await deps.commandBus.run(
+      tx,
+      {
+        businessId,
+        command: 'RecordOrder',
+        payload: input,
+        actor: 'system',
+        ingress: 'CHAT',
+        idempotencyKey: `draft:${draftId}`,
+      },
+      () => placeOrderWork(tx, input),
+    );
+    if (run.outcome === 'not_entitled') {
+      await refund();
+      return replies.ordersNotInPlan();
+    }
+    if (run.outcome !== 'done') {
+      await refund();
+      return replies.notYet('Recording that order');
+    }
+    placed = run.result;
+  } else {
+    placed = await placeOrderWork(tx, input);
+  }
 
-  await jobsRepo.enqueue(tx, {
-    businessId,
-    kind: 'document.render',
-    payload: { invoiceId: issued.invoiceId },
-    singletonKey: issued.invoiceId,
-  });
-
-  /**
-   * And a payable link, if this shop can take one.
-   *
-   * Enqueued unconditionally rather than gated on a connection read here: the
-   * job decides, and it stays silent when there is nothing to offer. That
-   * keeps one place deciding what a merchant hears about payment links, and
-   * it means the day a shop connects Paystack their next order carries a URL
-   * with no code change anywhere.
-   *
-   * The singleton key is the invoice: a re-enqueue cannot mint two intents
-   * for one obligation.
-   */
-  await jobsRepo.enqueue(tx, {
-    businessId,
-    kind: 'payment.link',
-    payload: { invoiceId: issued.invoiceId },
-    singletonKey: `link:${issued.invoiceId}`,
-  });
-
-  const moved = await stockRepo.recordSaleMovements(tx, businessId, items, issued.invoiceNumber);
-  await postCostOfGoods(tx, businessId, issued.invoiceNumber, moved);
-
-  return replies.orderRaised(placed.orderNumber, issued.invoiceNumber, order.totalK);
+  return replies.orderRaised(placed.orderNumber, placed.invoiceNumber, order.totalK);
 }
 
 /**
