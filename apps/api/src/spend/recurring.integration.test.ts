@@ -19,6 +19,10 @@ import { createDb, type Db } from '@rekoda/db';
 import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { sweepRecurring } from './recurring-sweep.js';
+import { CommandBus } from '../commands/command-bus.service.js';
+import { RiskPolicyService } from '../risk/risk-policy.service.js';
+
+const testBus = new CommandBus(new RiskPolicyService());
 
 let urls: Urls;
 let app: NestFastifyApplication;
@@ -90,7 +94,8 @@ const registerOf = async (auth: Record<string, string>) =>
     (await app.inject({ method: 'GET', url: '/v1/reports/expenses', headers: auth })).json(),
   );
 
-const sweep = (now: Date) => sweepRecurring({ workerDb, appDb: db }, now);
+const sweep = (now: Date) =>
+  sweepRecurring({ workerDb, appDb: db, commandBus: testBus, commandRecordExpense: false }, now);
 
 /** Noon Lagos on a given day, so no test result turns on the hour. */
 const at = (day: string) => new Date(`${day}T11:00:00Z`);

@@ -153,6 +153,7 @@ import {
   type IssuedInvoice,
 } from '../commands/sale-commands.js';
 import { recordPaymentWork, type RecordPaymentInput } from '../commands/payment-commands.js';
+import { recordPurchaseWork, type RecordPurchaseCmdInput } from '../commands/spend-commands.js';
 import { Roles, RolesGuard } from '../auth/roles.guard.js';
 import { DB } from '../db/db.module.js';
 import { PrivacyGateway } from '../privacy/gateway.service.js';
@@ -980,27 +981,45 @@ export class ReportsController {
           : { outcome: 'already_received' as const };
       }
 
-      const recorded = await spendRepo.recordPurchase(tx, {
+      const input: RecordPurchaseCmdInput = {
         businessId,
         description: `Purchase order ${poNumber}`,
         amountK: po.totalK,
         paidK: parsed.data.paidK,
         sourceType: 'purchase_order',
         sourceId: po.id,
-      });
-
-      let linesArrived = 0;
-      for (const line of po.lines) {
-        const product = await stockRepo.findOrCreateProduct(tx, businessId, line.name);
-        await stockRepo.recordDelivery(tx, {
-          businessId,
-          product,
+        /* Every line arrives with the money: receiving a PO is exactly the
+         * counted delivery the chat purchase describes, line by line. */
+        arrivals: po.lines.map((line) => ({
+          product: line.name,
           quantity: line.quantity,
           costK: line.lineTotalK,
-          sourceType: 'purchase_order',
-          sourceId: po.id,
-        });
-        linesArrived += 1;
+        })),
+      };
+
+      /* The A1 rollout seam (spec §25). */
+      let recorded: Awaited<ReturnType<typeof recordPurchaseWork>>;
+      if (this.config.commandRecordPurchase) {
+        const run = await this.commandBus.run(
+          tx,
+          {
+            businessId,
+            command: 'RecordPurchase',
+            payload: input,
+            actor: `user:${request.auth!.userId}`,
+            ingress: 'DASHBOARD',
+            /* One PO, one receipt of goods: the status machine above is the
+             * first net, this key is the second. */
+            idempotencyKey: `po-receive:${po.id}`,
+          },
+          () => recordPurchaseWork(tx, input),
+        );
+        if (run.outcome !== 'done') {
+          throw new Error(`RecordPurchase refused unexpectedly: ${run.outcome}`);
+        }
+        recorded = run.result;
+      } else {
+        recorded = await recordPurchaseWork(tx, input);
       }
 
       return {
@@ -1008,7 +1027,7 @@ export class ReportsController {
         poNumber,
         totalK: po.totalK,
         owedK: recorded.owedK,
-        linesArrived,
+        linesArrived: recorded.arrived.length,
       };
     });
   }

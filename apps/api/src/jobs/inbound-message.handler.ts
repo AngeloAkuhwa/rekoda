@@ -65,6 +65,12 @@ import {
   type RecordPaymentInput,
   type RecordPaymentResult,
 } from '../commands/payment-commands.js';
+import {
+  recordExpenseWork,
+  recordPurchaseWork,
+  type RecordExpenseCmdInput,
+  type RecordPurchaseCmdInput,
+} from '../commands/spend-commands.js';
 import type { MessageSender } from '../channels/sender.js';
 
 const paymentLog = new Logger('InboundMessageJob');
@@ -1050,9 +1056,10 @@ async function confirmPendingDraft(
     await customersRepo.linkCustomers(tx, businessId, proposal.survivorId, proposal.orphanId);
   }
 
-  if (command.intent === 'RecordExpense') return confirmExpense(tx, businessId, draft.id, command);
+  if (command.intent === 'RecordExpense')
+    return confirmExpense(deps, tx, businessId, draft.id, command);
   if (command.intent === 'RecordPurchase')
-    return confirmPurchase(tx, businessId, draft.id, command);
+    return confirmPurchase(deps, tx, businessId, draft.id, command);
   if (command.intent === 'EraseData') {
     // Erasure confirms ONLY with the exact phrase. A "yes" is "anything
     // else" in the confirmation copy's terms, and anything else keeps the data.
@@ -1370,6 +1377,7 @@ async function confirmStockChange(
  * No render job follows — there is no paper to make.
  */
 async function confirmExpense(
+  deps: InboundMessageDeps,
   tx: TenantDb,
   businessId: string,
   draftId: string,
@@ -1379,7 +1387,7 @@ async function confirmExpense(
   if (gate.gate !== 'CG2') return replies.arithmeticQuestion(gate.question);
 
   const description = String(command['description'] ?? '');
-  await spendRepo.recordExpense(tx, {
+  const input: RecordExpenseCmdInput = {
     businessId,
     description,
     category: typeof command['category'] === 'string' ? command['category'] : null,
@@ -1387,7 +1395,27 @@ async function confirmExpense(
     method: command['paymentMethod'] === 'transfer' ? 'transfer' : 'cash',
     sourceType: 'chat',
     sourceId: draftId,
-  });
+  };
+
+  /* The A1 rollout seam (spec §25): same work either way; the flag decides
+   * whether the bus's gates wrap the call. */
+  if (deps.config.commandRecordExpense) {
+    const run = await deps.commandBus.run(
+      tx,
+      {
+        businessId,
+        command: 'RecordExpense',
+        payload: input,
+        actor: 'system',
+        ingress: 'CHAT',
+        idempotencyKey: `draft:${draftId}`,
+      },
+      () => recordExpenseWork(tx, input),
+    );
+    if (run.outcome !== 'done') return replies.notYet('Recording that expense');
+  } else {
+    await recordExpenseWork(tx, input);
+  }
   return replies.expenseSaved(gate.amountK, description);
 }
 
@@ -1399,6 +1427,7 @@ async function confirmExpense(
  * reference the vault can open, never as a name.
  */
 async function confirmPurchase(
+  deps: InboundMessageDeps,
   tx: TenantDb,
   businessId: string,
   draftId: string,
@@ -1408,7 +1437,18 @@ async function confirmPurchase(
   if (gate.gate !== 'CG2') return replies.arithmeticQuestion(gate.question);
 
   const supplierId = typeof command['supplierId'] === 'string' ? command['supplierId'] : null;
-  const recorded = await spendRepo.recordPurchase(tx, {
+
+  /**
+   * A purchase is a delivery too, when the merchant counted one. Carried on
+   * the command input so the goods land in the SAME transaction as the
+   * money. Only when they named a countable thing AND a number: inferring a
+   * quantity from an amount would put a stock count in their books that
+   * nobody took. The arrival's cost is the gate's amount — the merchant
+   * named a thing, a number of it and an amount; that is a unit cost, and
+   * it is the only one they have given us.
+   */
+  const arriving = purchaseArrival(command as never);
+  const input: RecordPurchaseCmdInput = {
     businessId,
     description: String(command['description'] ?? ''),
     amountK: gate.amountK,
@@ -1416,37 +1456,36 @@ async function confirmPurchase(
     sourceType: 'chat',
     sourceId: draftId,
     supplierId,
-  });
+    arrivals: arriving
+      ? [{ product: arriving.productMention, quantity: arriving.quantity, costK: gate.amountK }]
+      : [],
+  };
 
-  /**
-   * A purchase is a delivery too, when the merchant counted one.
-   *
-   * Same transaction as the money, so a shop can never hold the payment
-   * without the goods. Only when they named a countable thing AND a number:
-   * inferring a quantity from an amount would put a stock count in their
-   * books that nobody took.
-   */
-  const arriving = purchaseArrival(command as never);
-  if (arriving) {
-    const product = await stockRepo.findOrCreateProduct(tx, businessId, arriving.productMention);
-    /* And it moves what this product is reckoned to cost. The merchant named
-     * a thing, a number of it and an amount; that is a unit cost, and it is
-     * the only one they have given us. */
-    await stockRepo.recordDelivery(tx, {
-      businessId,
-      product,
-      quantity: arriving.quantity,
-      costK: gate.amountK,
-      sourceType: 'chat',
-      sourceId: draftId,
-    });
-    return replies.purchaseSaved(gate.amountK, recorded.owedK, {
-      name: product.name,
-      onHand: product.onHand + arriving.quantity,
-    });
+  /* The A1 rollout seam (spec §25). */
+  let recorded: Awaited<ReturnType<typeof recordPurchaseWork>>;
+  if (deps.config.commandRecordPurchase) {
+    const run = await deps.commandBus.run(
+      tx,
+      {
+        businessId,
+        command: 'RecordPurchase',
+        payload: input,
+        actor: 'system',
+        ingress: 'CHAT',
+        idempotencyKey: `draft:${draftId}`,
+      },
+      () => recordPurchaseWork(tx, input),
+    );
+    if (run.outcome !== 'done') return replies.notYet('Recording that purchase');
+    recorded = run.result;
+  } else {
+    recorded = await recordPurchaseWork(tx, input);
   }
 
-  return replies.purchaseSaved(gate.amountK, recorded.owedK);
+  const landed = recorded.arrived[0];
+  return landed
+    ? replies.purchaseSaved(gate.amountK, recorded.owedK, landed)
+    : replies.purchaseSaved(gate.amountK, recorded.owedK);
 }
 
 /**

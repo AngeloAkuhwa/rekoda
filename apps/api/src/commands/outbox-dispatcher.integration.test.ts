@@ -67,9 +67,11 @@ describe('the production wiring', () => {
     const dispatcher = buildOutboxDispatcher();
     expect(dispatcher).toBeInstanceOf(OutboxDispatcher);
     expect(dispatcher.types().sort()).toEqual([
+      'expense.recorded',
       'invoice.issued',
       'payment.confirmed',
       'payment.recorded',
+      'purchase.recorded',
       'sale.recorded',
     ]);
   });

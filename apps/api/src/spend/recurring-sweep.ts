@@ -26,12 +26,18 @@ import { Logger } from '@nestjs/common';
 import { lagosDay, lagosNoon, nextDueAfter } from '@rekoda/core';
 import { redactForLog } from '@rekoda/core/privacy';
 import { recurringRepo, spendRepo, withBusiness, type Db } from '@rekoda/db';
+import type { CommandBus } from '../commands/command-bus.service.js';
+import { recordExpenseWork, type RecordExpenseCmdInput } from '../commands/spend-commands.js';
 
 export interface RecurringSweepDeps {
   /** `rekoda_worker` - "whose rent is due" names no tenant. SELECT only. */
   workerDb: Db;
   /** `rekoda_app` - the claim and the expense are written under a tenant pin. */
   appDb: Db;
+  /** The one bus every ingress converges on (spec §25). */
+  commandBus: CommandBus;
+  /** The A1 rollout flag for `RecordExpense`. */
+  commandRecordExpense: boolean;
 }
 
 export interface RecurringSweepResult {
@@ -82,7 +88,7 @@ export async function sweepRecurring(
             );
             if (!claimed) return false;
 
-            await spendRepo.recordExpense(tx, {
+            const input: RecordExpenseCmdInput = {
               businessId: schedule.businessId,
               description: schedule.description,
               category: schedule.category,
@@ -98,7 +104,28 @@ export async function sweepRecurring(
                * was raised in, and a catch-up that stamped today would put a
                * quarter of rent into one month and none into the two before. */
               recordedAt: lagosNoon(dueOn),
-            });
+            };
+            /* A standing order is an ingress too (spec §25, AUTOMATION): the
+             * same command a sentence reaches, behind the same flag. */
+            if (deps.commandRecordExpense) {
+              const run = await deps.commandBus.run(
+                tx,
+                {
+                  businessId: schedule.businessId,
+                  command: 'RecordExpense',
+                  payload: input,
+                  actor: 'system:recurring',
+                  ingress: 'AUTOMATION',
+                  idempotencyKey: `recurring:${schedule.id}:${dueOn}`,
+                },
+                () => recordExpenseWork(tx, input),
+              );
+              if (run.outcome !== 'done') {
+                throw new Error(`RecordExpense refused unexpectedly: ${run.outcome}`);
+              }
+            } else {
+              await recordExpenseWork(tx, input);
+            }
             return true;
           });
 

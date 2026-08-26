@@ -142,6 +142,10 @@ export function buildOutboxDispatcher(): OutboxDispatcher {
   dispatcher.register('payment.recorded', async () => {});
   dispatcher.register('payment.confirmed', async () => {});
 
+  /* PR-023's facts. */
+  dispatcher.register('expense.recorded', async () => {});
+  dispatcher.register('purchase.recorded', async () => {});
+
   return dispatcher;
 }
 
@@ -433,7 +437,14 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
     this.recurringTimer = setInterval(() => {
       if (this.sweepingRecurring) return;
       this.sweepingRecurring = true;
-      this.exclusively('recurring', () => sweepRecurring({ workerDb, appDb: this.appDb }))
+      this.exclusively('recurring', () =>
+        sweepRecurring({
+          workerDb,
+          appDb: this.appDb,
+          commandBus: this.commandBus,
+          commandRecordExpense: this.config.commandRecordExpense,
+        }),
+      )
         .catch((error: unknown) => {
           this.log.warn(`recurring sweep failed: ${redactForLog(describeFailure(error))}`);
         })
