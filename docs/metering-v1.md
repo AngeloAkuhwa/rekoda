@@ -16,13 +16,13 @@ hold them the day a consumer does. A unit nothing consumes sells zero on
 every plan, because capacity the product cannot spend is capacity the
 pricing page must not promise.
 
-| Unit                   | What counts                                                                                                                             | Trial | Chat  | Integrate | Complete |
-| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------- | ----- | ----- | --------- | -------- |
-| `AI_ACTIONS`           | A message the model had to interpret. Router-served turns (greetings, _help_, _who owes me_, confirmations) are FREE and never metered. | 50    | 400   | 0         | 1,200    |
-| `VOICE_MINUTES`        | Minutes of voice notes transcribed. Sold in minutes, counted in seconds (see below).                                                     | 10    | 60    | 0         | 120      |
-| `DOCUMENT_GENERATION`  | Financial documents GENERATED (invoices, receipts)                                                                                      | 25    | 100   | 500       | 750      |
-| `DOCUMENTS_UNDERSTOOD` | Uploaded documents READ by the vision role (the new cost class; pricing-model "Known gap")                                              | 10    | 50    | 0         | 200      |
-| `CATALOGUE_ORDERS`     | Catalogue orders captured (Integrate/Complete)                                                                                          | 10    | 0     | 300       | 300      |
+| Unit                   | What counts                                                                                                                             | Trial | Chat | Integrate | Complete |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------- | ----- | ---- | --------- | -------- |
+| `AI_ACTIONS`           | A message the model had to interpret. Router-served turns (greetings, _help_, _who owes me_, confirmations) are FREE and never metered. | 50    | 400  | 0         | 1,200    |
+| `VOICE_MINUTES`        | Minutes of voice notes transcribed. Sold in minutes, counted in seconds (see below).                                                    | 10    | 60   | 0         | 120      |
+| `DOCUMENT_GENERATION`  | Financial documents GENERATED (invoices, receipts)                                                                                      | 25    | 100  | 500       | 750      |
+| `DOCUMENTS_UNDERSTOOD` | Uploaded documents READ by the vision role (the new cost class; pricing-model "Known gap")                                              | 10    | 50   | 0         | 200      |
+| `CATALOGUE_ORDERS`     | Catalogue orders captured (Integrate/Complete)                                                                                          | 10    | 0    | 300       | 300      |
 
 The twelve not yet metered: `SERVICE_MESSAGE`, `UTILITY_TEMPLATE`,
 `AUTH_TEMPLATE`, `AUTH_INTL_TEMPLATE`, `MARKETING_TEMPLATE`,
@@ -66,6 +66,55 @@ The database decides; a loser learns it was refused. Two simultaneous
 messages cannot both take the last unit, the same way two "yes" taps cannot
 issue two invoices. There is no code path that increments without checking
 and no path that checks without incrementing.
+
+### 2.1 Order: authorisation before the bill
+
+Spec §4.3 fixes the order and this is where it is enforced:
+
+```
+entitlement  →  allowance  →  THEN the provider that costs money
+```
+
+A capability the plan does not hold is refused before the media is even
+fetched, so an Integrate-only merchant's voice note never reaches the
+transcriber and their photograph never reaches the OCR engine. A capability
+the plan holds but the allowance no longer covers is refused before the same
+call, for the same reason: metering after the work is done means an exhausted
+merchant spends Rekoda's provider budget one message at a time and only
+learns afterwards.
+
+Where the work fails, the unit goes back. That part never changed: a page
+nobody could read is still a page nobody pays for. What changed is that the
+refund is now a compensation for a unit already taken, rather than a decision
+not to take one.
+
+### 2.2 Reservation, for the unit whose size is unknown in advance
+
+Everything the meter counts is known before it is spent except one thing:
+nobody knows how many seconds a voice note runs until the transcriber says
+so. Neither the WhatsApp webhook nor the media API reports a duration, so
+"check the length first" is not available.
+
+Spec §4.3 rule 4 names the way out, and `reserveUpTo` is its shape:
+
+```
+reserve up to VOICE_NOTE_MAX_DURATION_SECONDS, take whatever is left
+  → zero back means refuse, and the transcriber is never called
+  → transcribe
+  → give back the difference between the window and the real seconds
+```
+
+The reservation takes what it can rather than all or nothing on purpose. A
+merchant with eighty seconds left, sending a twenty-second note, would
+otherwise be refused against capacity their own dashboard shows them. The
+clamp is recomputed inside a locked row, so ten simultaneous notes against
+the last six hundred seconds share six hundred rather than taking six hundred
+each.
+
+A note that runs PAST its reservation is answered rather than thrown away.
+The transcription is paid for by the time anyone knows, and refusing then
+would waste the spend and the merchant's time both. The exposure is one note
+beyond the window, which is what the window bounds.
 
 **Layered backstops stay layered.** Monthly allowances sit ON TOP of the
 existing daily AI ceilings (per business and global) and per-IP rate limits.

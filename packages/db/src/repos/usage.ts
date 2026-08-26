@@ -59,6 +59,62 @@ export async function consumeUnit(
 }
 
 /**
+ * Take as much of `want` as the allowance still has, and report how much.
+ *
+ * The meter's other operation is all-or-nothing, because almost everything
+ * it counts is known before it is spent: one message, one invoice, one
+ * order. Transcription is not. Nobody knows how many seconds a voice note
+ * runs until the transcriber says so, and spec §4.3 rule 3 forbids paying a
+ * provider before the merchant is authorised. Rule 4 names the way out:
+ * reserve, then refund what was not used.
+ *
+ * A reservation that could only be all-or-nothing would have to ask for the
+ * whole cap and refuse a merchant with less than a cap left. They would see
+ * capacity on their dashboard and a refusal on their phone, which is a lie
+ * the meter should not tell. So this takes what it can and returns the
+ * number, and zero means genuinely nothing left.
+ *
+ * `FOR UPDATE` inside the CTE is what makes the clamp safe: two concurrent
+ * reservations against the same last hundred seconds serialise on the row,
+ * and the second one recomputes against what the first actually left. The
+ * database decides, as everywhere else in this file.
+ */
+export async function reserveUpTo(
+  tx: TenantDb,
+  businessId: string,
+  period: string,
+  unit: UsageUnit,
+  allowance: number,
+  want: number,
+): Promise<number> {
+  if (want <= 0) return 0;
+
+  /* The lock needs a row to hold. A fresh counter starts at zero used, which
+   * is what an absent row already means, so this changes nothing on its own. */
+  await tx.execute(sql`
+    INSERT INTO usage_counters (business_id, period, unit, used)
+    VALUES (${businessId}::uuid, ${period}, ${unit}, 0)
+    ON CONFLICT (business_id, period, unit) DO NOTHING
+  `);
+
+  const rows = await tx.execute<{ granted: number }>(sql`
+    WITH locked AS (
+      SELECT used, bonus FROM usage_counters
+      WHERE business_id = ${businessId}::uuid AND period = ${period} AND unit = ${unit}
+      FOR UPDATE
+    ),
+    reservation AS (
+      SELECT GREATEST(0, LEAST(${want}, ${allowance} + bonus - used))::int AS n FROM locked
+    )
+    UPDATE usage_counters
+    SET used = usage_counters.used + (SELECT n FROM reservation), updated_at = now()
+    WHERE business_id = ${businessId}::uuid AND period = ${period} AND unit = ${unit}
+    RETURNING (SELECT n FROM reservation) AS granted
+  `);
+  return [...rows][0]?.granted ?? 0;
+}
+
+/**
  * Give a unit back, same transaction. For the paths where the consume
  * happened but no value was delivered (the daily ceiling refused the model,
  * the provider was down, the answer was unusable): the merchant's meter

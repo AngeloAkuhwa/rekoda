@@ -243,6 +243,86 @@ describe('plan changes and upgrade requests', () => {
 });
 
 /**
+ * Reservation, for the one unit whose size is not known before it is spent.
+ *
+ * Spec §4.3 rule 3 forbids paying a transcriber before the merchant is
+ * authorised, and rule 4 names the way out: reserve, then refund what was
+ * not used. Everything below is about the reservation never handing out more
+ * than the plan holds, and never refusing a merchant who still has some.
+ */
+describe('reserving an amount nobody knows in advance', () => {
+  let businessId: string;
+
+  beforeEach(async () => {
+    businessId = await seedBusiness();
+  });
+
+  const reserve = (allowance: number, want: number) =>
+    withBusiness(db, businessId, (tx) =>
+      usageRepo.reserveUpTo(tx, businessId, PERIOD, 'VOICE_MINUTES', allowance, want),
+    );
+
+  const used = async () => {
+    const rows = await withBusiness(db, businessId, (tx) =>
+      usageRepo.usageFor(tx, businessId, PERIOD),
+    );
+    return rows.find((row) => row.unit === 'VOICE_MINUTES')?.used ?? 0;
+  };
+
+  it('gives the whole ask when the allowance covers it', async () => {
+    expect(await reserve(600, 120)).toBe(120);
+    expect(await used()).toBe(120);
+  });
+
+  /* The case the all-or-nothing consume gets wrong: a merchant with eighty
+   * seconds left, sending a twenty-second note, must not be refused. */
+  it('gives what is left rather than refusing', async () => {
+    expect(await reserve(600, 520)).toBe(520);
+    expect(await reserve(600, 120)).toBe(80);
+    expect(await used()).toBe(600);
+  });
+
+  it('gives nothing once the allowance is gone, and takes nothing', async () => {
+    expect(await reserve(600, 600)).toBe(600);
+    expect(await reserve(600, 120)).toBe(0);
+    expect(await used()).toBe(600);
+  });
+
+  it('refuses a zero allowance without creating capacity', async () => {
+    expect(await reserve(0, 120)).toBe(0);
+    expect(await used()).toBe(0);
+  });
+
+  it('counts bought capacity toward the ceiling', async () => {
+    await withBusiness(db, businessId, (tx) =>
+      usageRepo.creditBonus(tx, businessId, PERIOD, 'VOICE_MINUTES', 100),
+    );
+    expect(await reserve(600, 700)).toBe(700);
+    expect(await used()).toBe(700);
+  });
+
+  /**
+   * The claim that matters, and the reason the clamp is recomputed inside a
+   * locked row rather than in TypeScript: ten simultaneous voice notes
+   * against six hundred seconds hand out six hundred seconds between them,
+   * not six hundred each.
+   */
+  it('never hands out more than the allowance under concurrency', async () => {
+    const granted = await Promise.all(Array.from({ length: 10 }, () => reserve(600, 120)));
+    expect(granted.reduce((a, b) => a + b, 0)).toBe(600);
+    expect(await used()).toBe(600);
+  });
+
+  it('gives back what the work did not need', async () => {
+    expect(await reserve(600, 120)).toBe(120);
+    await withBusiness(db, businessId, (tx) =>
+      usageRepo.refundUnit(tx, businessId, PERIOD, 'VOICE_MINUTES', 120 - 17),
+    );
+    expect(await used()).toBe(17);
+  });
+});
+
+/**
  * The vocabulary, enforced by the column rather than by the type system.
  *
  * `usage_counters.unit` is text with a CHECK, so TypeScript's UsageUnit is

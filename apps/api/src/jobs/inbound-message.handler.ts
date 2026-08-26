@@ -347,6 +347,20 @@ async function readReceiptPhoto(
     return null;
   }
 
+  /* ENTITLEMENT BEFORE ANY PROVIDER IS TOUCHED (spec §4.3, rules 1 and 2).
+   * Reading a receipt is a Chat capability. An Integrate-only merchant who
+   * photographs one is refused here, which is before the media fetch and a
+   * long way before the OCR engine: the refusal costs Rekoda nothing and
+   * costs the merchant nothing, so there is no unit to give back. */
+  if (await entitlementsRepo.requireEntitlement(tx, businessId, 'REKODA_CHAT')) {
+    await deps.replySender.send(tx, {
+      businessId,
+      to: inbound.from,
+      reply: replies.chatNotInPlan(),
+    });
+    return null;
+  }
+
   let image;
   try {
     image = await deps.sender.fetchMedia(inbound.imageId!);
@@ -360,27 +374,19 @@ async function readReceiptPhoto(
     return null;
   }
 
-  let extracted;
-  try {
-    extracted = await deps.ocr.extract(image.bytes, image.mimeType);
-  } catch {
-    /* Our failure, not the merchant's, and nothing metered. The image is
-     * dropped here and goes nowhere else: no vision model, no retry against a
-     * hosted engine, no exception "just this once". */
-    log.warn('the OCR engine could not be reached');
-    await deps.replySender.send(tx, {
-      businessId,
-      to: inbound.from,
-      reply: replies.photoUnavailable(),
-    });
-    return null;
-  }
-
   /**
-   * Metered as a document UNDERSTOOD, which is the unit that exists for
-   * exactly this and has never been consumed by anything. Charged after the
-   * work, like voice seconds, because a page nobody could read is a page
-   * nobody should pay for.
+   * Metered BEFORE the engine reads the page (spec §4.3, rule 3).
+   *
+   * This used to charge afterwards, on the reasoning that a page nobody
+   * could read is a page nobody should pay for. That reasoning is right
+   * about the refund and wrong about the order: it let an exhausted merchant
+   * spend Rekoda's OCR budget on every photograph they sent, because the
+   * refusal only arrived after the engine had already run. The unit is taken
+   * first and given back on every path that reads nothing, which is the same
+   * outcome for the merchant and a different one for the bill.
+   *
+   * Its own short transaction, like every other unit here, so the counter is
+   * not held across a network call.
    */
   const period = usagePeriod(new Date());
   const allowance = allowanceFor(plan, 'DOCUMENTS_UNDERSTOOD');
@@ -392,6 +398,25 @@ async function readReceiptPhoto(
       businessId,
       to: inbound.from,
       reply: replies.allowanceExhausted(allowance, 'DOCUMENTS_UNDERSTOOD'),
+    });
+    return null;
+  }
+
+  let extracted;
+  try {
+    extracted = await deps.ocr.extract(image.bytes, image.mimeType);
+  } catch {
+    /* Our failure, not the merchant's, so the unit goes back. The image is
+     * dropped here and goes nowhere else: no vision model, no retry against a
+     * hosted engine, no exception "just this once". */
+    log.warn('the OCR engine could not be reached');
+    await withBusiness(deps.db, businessId, (own) =>
+      usageRepo.refundUnit(own, businessId, period, 'DOCUMENTS_UNDERSTOOD'),
+    );
+    await deps.replySender.send(tx, {
+      businessId,
+      to: inbound.from,
+      reply: replies.photoUnavailable(),
     });
     return null;
   }
@@ -443,6 +468,19 @@ async function transcribeVoiceNote(
     return null;
   }
 
+  /* ENTITLEMENT BEFORE ANY PROVIDER IS TOUCHED (spec §4.3, rules 1 and 2).
+   * Speaking to Rekoda is a Chat capability, and an Integrate-only merchant
+   * refused here never reaches the transcriber. Nothing was reserved, so
+   * there is nothing to give back. */
+  if (await entitlementsRepo.requireEntitlement(tx, businessId, 'REKODA_CHAT')) {
+    await deps.replySender.send(tx, {
+      businessId,
+      to: inbound.from,
+      reply: replies.chatNotInPlan(),
+    });
+    return null;
+  }
+
   let audio;
   try {
     audio = await deps.sender.fetchMedia(inbound.audioId!);
@@ -456,13 +494,55 @@ async function transcribeVoiceNote(
     return null;
   }
 
+  /**
+   * RESERVED before the transcriber runs, then trued up (spec §4.3, rules 3
+   * and 4).
+   *
+   * This is the one metered unit whose size is unknown before it is spent:
+   * nobody knows how many seconds a voice note runs until the sidecar says
+   * so. Metering afterwards was the obvious answer and the wrong one, because
+   * it let an exhausted merchant send Rekoda's transcription budget a voice
+   * note at a time and only find out afterwards.
+   *
+   * So a window is reserved first. `VOICE_NOTE_MAX_DURATION_SECONDS` is how
+   * long a note Rekoda is willing to underwrite in one reservation, and the
+   * merchant gets whatever part of it their allowance still holds: eighty
+   * seconds left and a twenty-second note is a note that goes through, not a
+   * refusal against visible capacity. Zero back means genuinely nothing left,
+   * and the transcriber is never called.
+   *
+   * Its own short transaction, like the message unit, because the counter
+   * must not be held across a network call.
+   */
+  const period = usagePeriod(new Date());
+  const allowance = allowanceFor(plan, 'VOICE_MINUTES');
+  const reserved = await withBusiness(deps.db, businessId, (own) =>
+    usageRepo.reserveUpTo(
+      own,
+      businessId,
+      period,
+      'VOICE_MINUTES',
+      allowance,
+      deps.config.voiceNoteMaxDurationSeconds,
+    ),
+  );
+  if (reserved === 0) {
+    await deps.replySender.send(tx, {
+      businessId,
+      to: inbound.from,
+      reply: replies.allowanceExhausted(allowance, 'VOICE_MINUTES'),
+    });
+    return null;
+  }
+
   let transcript: Transcript;
   try {
     transcript = await deps.stt.transcribe(audio.bytes, audio.mimeType);
   } catch {
-    /* An outage, not the merchant's fault, and nothing metered. The reason is
-     * logged without the audio and without their words. */
+    /* An outage, not the merchant's fault, so the whole reservation goes
+     * back. The reason is logged without the audio and without their words. */
     log.warn('the transcriber could not be reached');
+    await refundVoice(deps, businessId, period, reserved);
     await deps.replySender.send(tx, {
       businessId,
       to: inbound.from,
@@ -472,23 +552,17 @@ async function transcribeVoiceNote(
   }
 
   /**
-   * Metered AFTER the work, unlike messages, because the unit is seconds and
-   * nobody knows how many there are until the sidecar says so. Consumed in
-   * its own transaction for the same reason the message unit is: the counter
-   * must not be held across a network call.
+   * The reservation was a ceiling, not a price. What the note actually ran
+   * is what the merchant pays, so the difference goes straight back.
+   *
+   * A note LONGER than the reservation is possible and is absorbed rather
+   * than clawed at: the audio has already been transcribed, the money has
+   * already left, and refusing an answer at that point would waste the spend
+   * and the merchant's time both. The exposure is bounded by one note beyond
+   * the configured window, which is what the window is for.
    */
-  const period = usagePeriod(new Date());
-  const allowance = allowanceFor(plan, 'VOICE_MINUTES');
-  const granted = await withBusiness(deps.db, businessId, (own) =>
-    usageRepo.consumeUnit(own, businessId, period, 'VOICE_MINUTES', allowance, transcript.seconds),
-  );
-  if (!granted) {
-    await deps.replySender.send(tx, {
-      businessId,
-      to: inbound.from,
-      reply: replies.allowanceExhausted(allowance, 'VOICE_MINUTES'),
-    });
-    return null;
+  if (transcript.seconds < reserved) {
+    await refundVoice(deps, businessId, period, reserved - transcript.seconds);
   }
 
   return { transcript, messageId: recorded.id };
@@ -1878,6 +1952,21 @@ function consumeMessage(
 ): Promise<boolean> {
   return withBusiness(deps.db, businessId, (tx) =>
     usageRepo.consumeUnit(tx, businessId, period, 'AI_ACTIONS', allowance),
+  );
+}
+
+/**
+ * Give back the part of a voice reservation the note did not use. Same
+ * standalone transaction as taking it, for the same reason.
+ */
+function refundVoice(
+  deps: InboundMessageDeps,
+  businessId: string,
+  period: string,
+  seconds: number,
+): Promise<void> {
+  return withBusiness(deps.db, businessId, (tx) =>
+    usageRepo.refundUnit(tx, businessId, period, 'VOICE_MINUTES', seconds),
   );
 }
 

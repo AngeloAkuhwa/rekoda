@@ -18,9 +18,11 @@ export interface Transcript {
   /**
    * How long the audio ran, in whole seconds.
    *
-   * Metered, so it is the provider's number rather than ours: `voice_seconds`
-   * is an allowance a merchant paid for, and estimating it from a byte count
-   * would bill them for our compression settings.
+   * Metered, so it is the provider's number rather than ours: `VOICE_MINUTES`
+   * is an allowance a merchant paid for, counted in seconds, and estimating
+   * it from a byte count would bill them for our compression settings. It is
+   * also the figure the reservation is trued up against, so a wrong number
+   * here is a wrong bill.
    */
   readonly seconds: number;
   /**

@@ -137,7 +137,7 @@ describe('the role ensemble (docs/ai-model-strategy.md)', () => {
     expect(config.aiModelEscalation).toMatch(/opus/);
     // ADR 0027 reversed ADR 0008's default: hosted transcription is the
     // launch configuration, and whisper-1 specifically because it reports
-    // the audio DURATION the voice_seconds meter bills from. The sidecar
+    // the audio DURATION the VOICE_MINUTES meter bills from. The sidecar
     // stays one env var away (STT_URL); this assertion keeps the default
     // and the privacy pages describing the same engine.
     expect(config.aiModelTranscriber).toBe('whisper-1');
@@ -154,5 +154,36 @@ describe('the role ensemble (docs/ai-model-strategy.md)', () => {
     });
     expect(config.aiModelClassifier).toBe('claude-sonnet-latest');
     expect(config.aiModelTranscriber).toBe('whisper-1');
+  });
+});
+
+/**
+ * The voice window stopped being decorative when it became what is reserved
+ * before the transcriber runs. A mistyped value would otherwise refuse every
+ * voice note with a sentence about the merchant's allowance, and be chased
+ * as a metering bug.
+ */
+describe('the voice reservation window', () => {
+  it('defaults to two minutes', () => {
+    expect(loadConfig({ ...BASE, ANTHROPIC_API_KEY: 'k' }).voiceNoteMaxDurationSeconds).toBe(120);
+  });
+
+  it('takes an explicit value', () => {
+    const config = loadConfig({
+      ...BASE,
+      ANTHROPIC_API_KEY: 'k',
+      VOICE_NOTE_MAX_DURATION_SECONDS: '45',
+    });
+    expect(config.voiceNoteMaxDurationSeconds).toBe(45);
+  });
+
+  it.each(['0', '-30', 'two minutes', '90.5', ''])('refuses %s at boot', (value) => {
+    expect(() =>
+      loadConfig({
+        ...BASE,
+        ANTHROPIC_API_KEY: 'k',
+        VOICE_NOTE_MAX_DURATION_SECONDS: value,
+      }),
+    ).toThrow(/VOICE_NOTE_MAX_DURATION_SECONDS/);
   });
 });

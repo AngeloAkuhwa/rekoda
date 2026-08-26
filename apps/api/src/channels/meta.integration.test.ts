@@ -24,7 +24,7 @@ import {
   type Db,
   suppliersRepo,
 } from '@rekoda/db';
-import { PLAN_ALLOWANCES, replies, usagePeriod } from '@rekoda/core';
+import { PLAN_ALLOWANCES, allowanceFor, replies, usagePeriod } from '@rekoda/core';
 import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -1982,6 +1982,113 @@ describe('a voice note', () => {
     stubSender.media.set('media-1', { bytes, mimeType: 'audio/ogg' });
   }
 
+  /** Move a business onto a plan, through the repository that owns the write. */
+  async function moveToPlan(businessId: string, plan: 'chat' | 'integrate' | 'complete') {
+    await billingRepo.setPlan(db, {
+      businessId,
+      plan,
+      expiresAt: null,
+      actor: 'operator:test-plan',
+    });
+  }
+
+  const voiceUsed = async (businessId: string) => {
+    const rows = await withBusiness(db, businessId, (tx) =>
+      usageRepo.usageFor(tx, businessId, usagePeriod(new Date())),
+    );
+    return rows.find((row) => row.unit === 'VOICE_MINUTES')?.used ?? 0;
+  };
+
+  /**
+   * Spec §4.3 rule 2: nothing that costs money at a provider is dispatched
+   * before authorisation. An Integrate-only merchant holds the customer-side
+   * half of the product and not this one, and the transcriber is a bill.
+   */
+  it('never reaches the transcriber for a merchant whose plan has no Chat', async () => {
+    const business = await seedMerchant('+2348031234567');
+    await moveToPlan(business.id, 'integrate');
+    arrangeAudio();
+    stubStt.answerWith({ text: 'should never be reached', seconds: 9, confidence: 1 });
+
+    await post(voicePayload('2348031234567', 'wamid.V20'));
+    await drain();
+
+    expect(stubStt.calls).toHaveLength(0);
+    expect(await voiceUsed(business.id)).toBe(0);
+    expect(stubSender.lastText).toContain('part of the Chat plan');
+  });
+
+  /**
+   * Spec §4.3 rule 3, the case that used to leak: metering after the work
+   * meant an exhausted merchant could send Rekoda's transcription budget a
+   * voice note at a time and only be refused afterwards.
+   */
+  it('never reaches the transcriber once the voice allowance is gone', async () => {
+    const business = await seedMerchant('+2348031234567');
+    const allowance = allowanceFor('trial', 'VOICE_MINUTES');
+    await withBusiness(db, business.id, (tx) =>
+      usageRepo.consumeUnit(
+        tx,
+        business.id,
+        usagePeriod(new Date()),
+        'VOICE_MINUTES',
+        allowance,
+        allowance,
+      ),
+    );
+    arrangeAudio();
+    stubStt.answerWith({ text: 'should never be reached', seconds: 9, confidence: 1 });
+
+    await post(voicePayload('2348031234567', 'wamid.V21'));
+    await drain();
+
+    expect(stubStt.calls).toHaveLength(0);
+    expect(await voiceUsed(business.id)).toBe(allowance);
+    expect(stubSender.lastText).toContain('seconds of voice notes');
+  });
+
+  /**
+   * The reservation is a ceiling, not a price. A window is taken before the
+   * transcriber runs and the difference comes straight back, so what the
+   * merchant is charged is still exactly what they spoke.
+   */
+  it('reserves a window, then charges only the seconds the note ran', async () => {
+    const business = await seedMerchant('+2348031234567');
+    arrangeAudio();
+    stubStt.answerWith({ text: 'Ada bought 3 wigs for 150k', seconds: 17, confidence: 0.9 });
+    stubTransport.replyWith(A_SPOKEN_SALE);
+
+    await post(voicePayload('2348031234567', 'wamid.V22'));
+    await drain();
+
+    expect(stubStt.calls).toHaveLength(1);
+    expect(await voiceUsed(business.id)).toBe(17);
+  });
+
+  /**
+   * The reason the reservation takes what it can rather than all or nothing.
+   * A merchant with less than a full window left still has capacity on their
+   * dashboard, and refusing them against visible capacity would be a lie.
+   */
+  it('lets a short note through on less than a full window of allowance', async () => {
+    const business = await seedMerchant('+2348031234567');
+    const allowance = allowanceFor('trial', 'VOICE_MINUTES');
+    const period = usagePeriod(new Date());
+    /* Spend everything but forty seconds, which is less than the window. */
+    await withBusiness(db, business.id, (tx) =>
+      usageRepo.consumeUnit(tx, business.id, period, 'VOICE_MINUTES', allowance, allowance - 40),
+    );
+    arrangeAudio();
+    stubStt.answerWith({ text: 'Ada bought 3 wigs for 150k', seconds: 17, confidence: 0.9 });
+    stubTransport.replyWith(A_SPOKEN_SALE);
+
+    await post(voicePayload('2348031234567', 'wamid.V23'));
+    await drain();
+
+    expect(stubStt.calls).toHaveLength(1);
+    expect(await voiceUsed(business.id)).toBe(allowance - 40 + 17);
+  });
+
   it('turns speech into the same preview a typed sentence would get', async () => {
     await seedMerchant('+2348031234567');
     arrangeAudio();
@@ -2353,6 +2460,86 @@ describe('a receipt photo', () => {
   function arrangePhoto(bytes = Buffer.from('JFIF-fake-photo')) {
     stubSender.media.set('photo-1', { bytes, mimeType: 'image/jpeg' });
   }
+
+  /** Move a business onto a plan, through the repository that owns the write. */
+  async function movePhotoMerchantToPlan(
+    businessId: string,
+    plan: 'chat' | 'integrate' | 'complete',
+  ) {
+    await billingRepo.setPlan(db, {
+      businessId,
+      plan,
+      expiresAt: null,
+      actor: 'operator:test-plan',
+    });
+  }
+
+  const readsUsed = async (businessId: string) => {
+    const rows = await withBusiness(db, businessId, (tx) =>
+      usageRepo.usageFor(tx, businessId, usagePeriod(new Date())),
+    );
+    return rows.find((row) => row.unit === 'DOCUMENTS_UNDERSTOOD')?.used ?? 0;
+  };
+
+  /** Spec §4.3 rule 2: reading a receipt is a Chat capability, and a bill. */
+  it('never reaches the OCR engine for a merchant whose plan has no Chat', async () => {
+    const business = await seedMerchant('+2348031234567');
+    await movePhotoMerchantToPlan(business.id, 'integrate');
+    arrangePhoto();
+    stubOcr.answerWith({ text: 'should never be reached', confidence: 1 });
+
+    await post(photoPayload('2348031234567', 'wamid.P20'));
+    await drain();
+
+    expect(stubOcr.calls).toHaveLength(0);
+    expect(await readsUsed(business.id)).toBe(0);
+    expect(stubSender.lastText).toContain('part of the Chat plan');
+  });
+
+  /**
+   * Spec §4.3 rule 3, the case that used to leak: charging after the engine
+   * had already read the page meant an exhausted merchant could spend
+   * Rekoda's OCR budget one photograph at a time.
+   */
+  it('never reaches the OCR engine once the document allowance is gone', async () => {
+    const business = await seedMerchant('+2348031234567');
+    const allowance = allowanceFor('trial', 'DOCUMENTS_UNDERSTOOD');
+    await withBusiness(db, business.id, (tx) =>
+      usageRepo.consumeUnit(
+        tx,
+        business.id,
+        usagePeriod(new Date()),
+        'DOCUMENTS_UNDERSTOOD',
+        allowance,
+        allowance,
+      ),
+    );
+    arrangePhoto();
+    stubOcr.answerWith({ text: 'should never be reached', confidence: 1 });
+
+    await post(photoPayload('2348031234567', 'wamid.P21'));
+    await drain();
+
+    expect(stubOcr.calls).toHaveLength(0);
+    expect(await readsUsed(business.id)).toBe(allowance);
+    expect(stubSender.lastText).toContain('document scans');
+  });
+
+  /**
+   * Taking the unit first only moves the order, never the price: a page
+   * nobody could read is still a page nobody pays for.
+   */
+  it('gives the unit back when the engine cannot be reached', async () => {
+    const business = await seedMerchant('+2348031234567');
+    arrangePhoto();
+    stubOcr.failWith();
+
+    await post(photoPayload('2348031234567', 'wamid.P22'));
+    await drain();
+
+    expect(stubOcr.calls).toHaveLength(1);
+    expect(await readsUsed(business.id)).toBe(0);
+  });
 
   it('takes the SAME path a typed sentence takes, gates included', async () => {
     await seedMerchant('+2348031234567');
