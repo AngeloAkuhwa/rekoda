@@ -84,6 +84,8 @@ export interface ApiConfig {
    */
   commandRecordSale: boolean;
   commandIssueInvoice: boolean;
+  commandRecordPayment: boolean;
+  commandConfirmPayment: boolean;
   /**
    * Which provider interprets a merchant's message.
    *
@@ -548,6 +550,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     workerConcurrency: Math.max(1, Number(env['REKODA_WORKER_CONCURRENCY'] ?? 4)),
     commandRecordSale: env['REKODA_COMMAND_RECORD_SALE'] === '1',
     commandIssueInvoice: env['REKODA_COMMAND_ISSUE_INVOICE'] === '1',
+    commandRecordPayment: env['REKODA_COMMAND_RECORD_PAYMENT'] === '1',
+    commandConfirmPayment: env['REKODA_COMMAND_CONFIRM_PAYMENT'] === '1',
     /**
      * Optional. The deterministic router answers most messages
      * without a model, so a missing key degrades the product rather than

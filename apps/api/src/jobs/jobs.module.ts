@@ -93,7 +93,11 @@ export function buildRunner(
   );
   runner.register(
     JobKind.ProcessPaymentEvent,
-    processPaymentEventHandler({ provider: deps.paymentProvider, config: deps.config }),
+    processPaymentEventHandler({
+      provider: deps.paymentProvider,
+      config: deps.config,
+      commandBus: deps.commandBus,
+    }),
   );
   runner.register(
     JobKind.ProcessBillingCharge,
@@ -133,6 +137,10 @@ export function buildOutboxDispatcher(): OutboxDispatcher {
    * the contract. */
   dispatcher.register('sale.recorded', async () => {});
   dispatcher.register('invoice.issued', async () => {});
+
+  /* PR-022's facts, same contract: zero subscribers today, webhooks later. */
+  dispatcher.register('payment.recorded', async () => {});
+  dispatcher.register('payment.confirmed', async () => {});
 
   return dispatcher;
 }
@@ -279,6 +287,8 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
           appDb: this.appDb,
           connectionKey: this.config.connectionKey,
           paystackBaseUrl: this.config.paystackBaseUrl,
+          commandBus: this.commandBus,
+          commandConfirmPayment: this.config.commandConfirmPayment,
         }),
       )
         .catch((error: unknown) => {

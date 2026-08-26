@@ -152,6 +152,7 @@ import {
   type IssueInvoiceInput,
   type IssuedInvoice,
 } from '../commands/sale-commands.js';
+import { recordPaymentWork, type RecordPaymentInput } from '../commands/payment-commands.js';
 import { Roles, RolesGuard } from '../auth/roles.guard.js';
 import { DB } from '../db/db.module.js';
 import { PrivacyGateway } from '../privacy/gateway.service.js';
@@ -561,29 +562,46 @@ export class ReportsController {
       throw new BadRequestException('invoiceNumber, a positive amount in kobo, and a method');
     }
     const businessId = request.auth!.businessId;
-    let outcome: Awaited<ReturnType<typeof settleRepo.recordPaymentByNumber>>;
+    const input: RecordPaymentInput = {
+      businessId,
+      invoice: { number: parsed.data.invoiceNumber },
+      amountK: parsed.data.amountK,
+      method: parsed.data.method,
+      sourceType: 'dashboard',
+      sourceId: parsed.data.invoiceNumber,
+      actor: `user:${request.auth!.userId}`,
+      clientRef: parsed.data.clientRef ?? null,
+      /* A form, not a message (spec E.7). */
+      evidenceBasis: 'NOT_A_MESSAGE',
+    };
+    let outcome: Awaited<ReturnType<typeof recordPaymentWork>>;
     try {
       outcome = await withBusiness(this.db, businessId, async (tx) => {
-        const done = await settleRepo.recordPaymentByNumber(tx, {
-          businessId,
-          invoiceNumber: parsed.data.invoiceNumber,
-          amountK: parsed.data.amountK,
-          method: parsed.data.method,
-          actor: `user:${request.auth!.userId}`,
-          clientRef: parsed.data.clientRef ?? null,
-        });
-        /* The same render the chat path enqueues, in the same transaction, so
-         * paper and record commit together. A receipt a merchant can see in
-         * the register but never open is worse than no receipt at all. */
-        if (done.outcome === 'recorded') {
-          await jobsRepo.enqueue(tx, {
-            businessId,
-            kind: 'document.render',
-            payload: { receiptId: done.receiptId },
-            singletonKey: `receipt:${done.receiptId}`,
-          });
+        /* The A1 rollout seam (spec §25): the work books the payment,
+         * enqueues the receipt's paper and announces it; the flag decides
+         * whether the bus's gates wrap the call. */
+        if (this.config.commandRecordPayment) {
+          const run = await this.commandBus.run(
+            tx,
+            {
+              businessId,
+              command: 'RecordPayment',
+              payload: input,
+              actor: input.actor,
+              ingress: 'DASHBOARD',
+              /* The form's one-shot key, when the form brought one. Absent
+               * means the caller accepts a retry may run again — the same
+               * honesty the clientRef-less path always had. */
+              idempotencyKey: input.clientRef ? `payrec:${input.clientRef}` : null,
+            },
+            () => recordPaymentWork(tx, input),
+          );
+          if (run.outcome !== 'done') {
+            throw new Error(`RecordPayment refused unexpectedly: ${run.outcome}`);
+          }
+          return run.result;
         }
-        return done;
+        return recordPaymentWork(tx, input);
       });
     } catch (error) {
       /* The clientRef met payments_rekoda_reference_ux: this exact form was

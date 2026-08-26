@@ -66,7 +66,12 @@ describe('the production wiring', () => {
      * would go dead in production — this list is what keeps that impossible. */
     const dispatcher = buildOutboxDispatcher();
     expect(dispatcher).toBeInstanceOf(OutboxDispatcher);
-    expect(dispatcher.types().sort()).toEqual(['invoice.issued', 'sale.recorded']);
+    expect(dispatcher.types().sort()).toEqual([
+      'invoice.issued',
+      'payment.confirmed',
+      'payment.recorded',
+      'sale.recorded',
+    ]);
   });
 
   it('refuses a second handler for the same type at wiring time', () => {

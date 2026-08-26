@@ -2993,6 +2993,52 @@ describe('a payment the merchant reports (RecordPayment)', () => {
     while (worked) worked = await runner.runOnce();
   }
 
+  /**
+   * The same yes with the RecordPayment rollout flag ON (PR-022): identical
+   * receipt and ledger, because the flag changes which gates run around the
+   * work and never the work. What the bus adds is in the database — the
+   * completed claim for the draft — and what the work always adds now is
+   * spec E.7's basis: this payment was TYPED.
+   */
+  it('the RecordPayment flag routes the same yes through the command bus', async () => {
+    const business = await seedMerchant('+2348031234567');
+    await issueUnpaidInvoice('wamid.PF');
+
+    const flagged = { ...deps, config: { ...deps.config, commandRecordPayment: true } };
+    async function drainFlagged() {
+      const runner = buildRunner(workerDb, db, flagged);
+      let worked = await runner.runOnce();
+      while (worked) worked = await runner.runOnce();
+    }
+
+    stubTransport.replyWith(paymentOf({ amount: 60_000 }));
+    await post(messagePayload('2348031234567', 'wamid.PF-pay', 'Ada paid 60k'));
+    await drainFlagged();
+    await post(messagePayload('2348031234567', 'wamid.PF-confirm', 'yes'));
+    await drainFlagged();
+
+    expect(stubSender.lastText).toContain('RCT-');
+    expect(stubSender.lastText).toContain('₦60,000');
+
+    const claims = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ key: string; command_name: string }>(
+        sql`SELECT key, command_name FROM idempotency_records
+            WHERE business_id = ${business.id}::uuid AND command_name = 'RecordPayment'`,
+      ),
+    );
+    expect([...claims]).toHaveLength(1);
+    expect([...claims][0]?.key).toMatch(/^draft:/);
+
+    const stamped = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ evidence_basis: string | null; initial_confirmation_source: string }>(
+        sql`SELECT evidence_basis, initial_confirmation_source FROM payments
+            WHERE business_id = ${business.id}::uuid`,
+      ),
+    );
+    expect([...stamped][0]?.evidence_basis).toBe('TYPED');
+    expect([...stamped][0]?.initial_confirmation_source).toBe('MERCHANT_ATTESTED');
+  });
+
   /** Issue a ₦150,000 invoice with nothing paid, through the chat path. */
   async function issueUnpaidInvoice(wamid: string) {
     stubTransport.replyWith(A_SALE_FOR_PAYMENT);

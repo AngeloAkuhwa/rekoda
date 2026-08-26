@@ -658,6 +658,15 @@ export interface RecordMerchantPaymentInput {
    * must end up with ONE receipt, not two.
    */
   clientRef?: string | null;
+  /**
+   * How the merchant's assertion reached us — TYPED · SPOKEN · SAW_AN_IMAGE ·
+   * NOT_A_MESSAGE (spec E.7). Context for a human, never a trust grade, and
+   * never guessed: absent when the ingress cannot honestly say.
+   */
+  evidenceBasis?: string | null;
+  /** The PaymentEvidence row this attestation cites, when an image came with
+   * the claim. The evidence proves nothing; the link says it was shown. */
+  paymentEvidenceId?: string | null;
 }
 
 export interface RecordedPayment {
@@ -756,6 +765,8 @@ export async function recordMerchantPayment(
        * representable now, which it was not while the source carried it. */
       initialConfirmationSource: 'MERCHANT_ATTESTED',
       paymentMethod: normalisePaymentMethod(input.method),
+      ...(input.evidenceBasis ? { evidenceBasis: input.evidenceBasis } : {}),
+      ...(input.paymentEvidenceId ? { paymentEvidenceId: input.paymentEvidenceId } : {}),
     })
     .returning({ id: payments.id });
   const paymentId = paymentRows[0]?.id;
@@ -902,6 +913,7 @@ export async function recordPaymentByNumber(
     method: 'cash' | 'transfer';
     actor: string;
     clientRef?: string | null;
+    evidenceBasis?: string | null;
   },
 ): Promise<RecordPaymentOutcome> {
   const rows = await tx.execute<{ id: string }>(sql`
@@ -918,6 +930,7 @@ export async function recordPaymentByNumber(
       businessId: input.businessId,
       invoiceId: found.id,
       clientRef: input.clientRef ?? null,
+      evidenceBasis: input.evidenceBasis ?? null,
       amountK: input.amountK,
       method: input.method,
       sourceType: 'dashboard',

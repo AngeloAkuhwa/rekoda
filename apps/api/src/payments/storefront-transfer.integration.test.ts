@@ -41,6 +41,8 @@ import {
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { CONFIG, type ApiConfig } from '../config.js';
 import { MerchantTransferService } from './merchant-transfer.service.js';
+import { CommandBus } from '../commands/command-bus.service.js';
+import { RiskPolicyService } from '../risk/risk-policy.service.js';
 
 let urls: Urls;
 let app: NestFastifyApplication;
@@ -455,6 +457,7 @@ describe('paying a storefront order by transfer (fix-plan 6, M5c)', () => {
     const throttled = new MerchantTransferService(
       { ...app.get<ApiConfig>(CONFIG), transferVerifyMinSeconds: 300 },
       db,
+      new CommandBus(new RiskPolicyService()),
     );
     const verifies = () => seen.filter((c) => c.url.startsWith('/transaction/verify')).length;
 

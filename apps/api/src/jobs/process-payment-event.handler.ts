@@ -27,11 +27,14 @@ import { events, jobsRepo, paymentsHub, settleRepo, type TenantDb } from '@rekod
 import type { ApiConfig } from '../config.js';
 import { openPayload } from '../privacy/payload-vault.js';
 import type { PaymentProviderPort } from '../payments/provider.port.js';
+import type { CommandBus } from '../commands/command-bus.service.js';
+import { confirmPaymentWork, type ConfirmPaymentInput } from '../commands/payment-commands.js';
 import type { JobContext, JobHandler } from './runner.js';
 
 export interface ProcessPaymentEventDeps {
   provider: PaymentProviderPort;
-  config: Pick<ApiConfig, 'vaultKey'>;
+  config: Pick<ApiConfig, 'vaultKey' | 'commandConfirmPayment'>;
+  commandBus: CommandBus;
 }
 
 /** Provider statuses that mean "this attempt is over", not "still cooking". */
@@ -141,7 +144,7 @@ export function processPaymentEventHandler(deps: ProcessPaymentEventDeps): JobHa
     }
 
     const connection = await paymentsHub.connectionFor(tx, businessId, deps.provider.providerType);
-    const booked = await settleRepo.bookVerifiedPayment(tx, {
+    const input: ConfirmPaymentInput = {
       businessId,
       intent: {
         id: intent.id,
@@ -160,22 +163,33 @@ export function processPaymentEventHandler(deps: ProcessPaymentEventDeps): JobHa
       paymentConnectionId: connection?.id ?? null,
       actor: 'system:payments',
       eventId,
-    });
+    };
 
-    /**
-     * The receipt's paper, and the owner's "money in" message, ride the same
-     * render → deliver chain invoices use — enqueued INSIDE this transaction,
-     * so a booked payment and "someone will send the receipt" are one fact.
-     * Rendering is a separate job for the same reason it is for invoices: a
-     * bucket outage or an expired Meta token must never un-book real money.
-     */
-    if (booked.receiptId) {
-      await jobsRepo.enqueue(tx, {
-        businessId,
-        kind: 'document.render',
-        payload: { receiptId: booked.receiptId },
-        singletonKey: `render:receipt:${booked.receiptId}`,
-      });
+    /* The A1 rollout seam (spec §25): `confirmPaymentWork` books the money,
+     * enqueues the receipt's paper and announces it, in this transaction;
+     * the flag decides whether the bus's gates wrap the call. */
+    let booked: Awaited<ReturnType<typeof confirmPaymentWork>>;
+    if (deps.config.commandConfirmPayment) {
+      const run = await deps.commandBus.run(
+        tx,
+        {
+          businessId,
+          command: 'ConfirmPayment',
+          payload: input,
+          actor: 'system:payments',
+          ingress: 'AUTOMATION',
+          idempotencyKey: `confirm:${intent.id}:${t.providerTransactionId}`,
+        },
+        () => confirmPaymentWork(tx, input),
+      );
+      if (run.outcome !== 'done') {
+        /* Unreachable by construction — ConfirmPayment is STANDARD and
+         * ungated — so reaching it is a bug worth a loud error. */
+        throw new Error(`ConfirmPayment refused unexpectedly: ${run.outcome}`);
+      }
+      booked = run.result;
+    } else {
+      booked = await confirmPaymentWork(tx, input);
     }
 
     await events.markProcessed(tx, eventId, null, businessId);

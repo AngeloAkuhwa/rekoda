@@ -154,6 +154,12 @@ export interface DraftRow {
   state: string;
   command: unknown;
   identityLink?: unknown;
+  /**
+   * How the DRAFTING message arrived — text | voice | media | interactive.
+   * Spec E.7's evidenceBasis is derived from this at confirmation time: a
+   * payment drafted from a photo was seen, not typed, and the record says so.
+   */
+  messageKind: string | null;
 }
 
 /**
@@ -203,8 +209,13 @@ export async function draftsFor(tx: TenantDb, businessId: string): Promise<Draft
       intent: commandDrafts.intent,
       state: commandDrafts.state,
       command: commandDrafts.command,
+      messageKind: conversationMessages.kind,
     })
     .from(commandDrafts)
+    .leftJoin(
+      conversationMessages,
+      eq(conversationMessages.id, commandDrafts.conversationMessageId),
+    )
     .where(eq(commandDrafts.businessId, businessId))
     .orderBy(commandDrafts.createdAt);
 }
@@ -271,8 +282,13 @@ export async function pendingDraft(tx: TenantDb, businessId: string): Promise<Dr
       state: commandDrafts.state,
       command: commandDrafts.command,
       identityLink: commandDrafts.identityLink,
+      messageKind: conversationMessages.kind,
     })
     .from(commandDrafts)
+    .leftJoin(
+      conversationMessages,
+      eq(conversationMessages.id, commandDrafts.conversationMessageId),
+    )
     .where(and(eq(commandDrafts.businessId, businessId), eq(commandDrafts.state, 'pending')))
     .orderBy(desc(commandDrafts.createdAt))
     .limit(1);

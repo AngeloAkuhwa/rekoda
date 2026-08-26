@@ -59,6 +59,12 @@ import type { AudioMetadataProbe } from '../ai/audio-duration.js';
 import type { TextExtraction } from '../ai/ocr.js';
 import type { CommandBus } from '../commands/command-bus.service.js';
 import { recordSaleWork, type RecordSaleInput } from '../commands/sale-commands.js';
+import {
+  recordPaymentEvidenceWork,
+  recordPaymentWork,
+  type RecordPaymentInput,
+  type RecordPaymentResult,
+} from '../commands/payment-commands.js';
 import type { MessageSender } from '../channels/sender.js';
 
 const paymentLog = new Logger('InboundMessageJob');
@@ -1056,7 +1062,7 @@ async function confirmPendingDraft(
     /* Refunds its own unit on every path that answers without issuing a
      * receipt: an invoice settled from under the merchant, or a payment we
      * could not place, must not cost them a document they never got. */
-    return confirmPayment(tx, businessId, draft.id, command, () =>
+    return confirmPayment(deps, tx, businessId, draft, command, () =>
       documentTaken ? refundDocument(deps, businessId, period) : Promise.resolve(),
     );
   }
@@ -1530,9 +1536,10 @@ async function answerQuery(
  * gate runs again on the fresh figure for the same reason.
  */
 async function confirmPayment(
+  deps: InboundMessageDeps,
   tx: TenantDb,
   businessId: string,
-  draftId: string,
+  draft: { id: string; messageKind: string | null },
   command: Record<string, unknown>,
   refundDocumentUnit: () => Promise<void>,
 ): Promise<Reply> {
@@ -1556,43 +1563,110 @@ async function confirmPayment(
     return replies.arithmeticQuestion(gate.question);
   }
 
-  /* The gate read the balance without a lock; the write takes one. If a
-   * provider payment settled the invoice in between, the write refuses.
-   * Caught here because the alternative is what it used to do: throw, fail
-   * the job, retry to exhaustion, and leave the merchant who typed "yes"
-   * with no answer at all. */
-  let recorded: Awaited<ReturnType<typeof settleRepo.recordMerchantPayment>>;
-  try {
-    recorded = await settleRepo.recordMerchantPayment(tx, {
+  /* How the merchant's assertion reached us (spec E.7) — from the DRAFTING
+   * message's kind, never guessed. Context for a human, not a trust grade:
+   * the payment stays MERCHANT_ATTESTED whichever way it was said. */
+  const basis =
+    draft.messageKind === 'voice'
+      ? 'SPOKEN'
+      : draft.messageKind === 'media'
+        ? 'SAW_AN_IMAGE'
+        : draft.messageKind === 'text'
+          ? 'TYPED'
+          : null;
+
+  /* A screenshot came with the claim: the evidence row records that an image
+   * was SHOWN (§6.1 — it proves nothing), born RESOLVED because the
+   * attestation it accompanies resolves it in this same transaction. */
+  let paymentEvidenceId: string | null = null;
+  if (basis === 'SAW_AN_IMAGE') {
+    const evidenceInput = {
       businessId,
-      invoiceId: invoice.id,
-      amountK: gate.amountK,
-      method: command['paymentMethod'] === 'cash' ? 'cash' : 'transfer',
-      sourceType: 'chat',
-      sourceId: draftId,
-      actor: 'system',
-    });
-  } catch (error) {
-    if (error instanceof settleRepo.AlreadySettled) {
-      await refundDocumentUnit();
-      return replies.paymentAlreadySettled(invoice.invoiceNumber);
+      source: 'chat_image',
+      claimedAmountK: gate.amountK,
+      resolution: { state: 'RESOLVED', at: new Date() } as const,
+    };
+    if (deps.config.commandRecordPayment) {
+      const run = await deps.commandBus.run(
+        tx,
+        {
+          businessId,
+          command: 'RecordPaymentEvidence',
+          payload: evidenceInput,
+          actor: 'system',
+          ingress: 'CHAT',
+          idempotencyKey: `evidence:${draft.id}`,
+        },
+        () => recordPaymentEvidenceWork(tx, evidenceInput),
+      );
+      paymentEvidenceId = run.outcome === 'done' ? run.result.evidenceId : null;
+    } else {
+      paymentEvidenceId = (await recordPaymentEvidenceWork(tx, evidenceInput)).evidenceId;
     }
-    if (error instanceof settleRepo.BalanceMoved) {
-      await refundDocumentUnit();
-      return replies.paymentBalanceMoved(error.invoiceNumber, error.balanceDueK, error.excessK);
-    }
-    throw error;
   }
 
-  /* The receipt gets the same render-then-deliver treatment a verified
-   * payment's does, enqueued in this transaction so paper and record commit
-   * together. */
-  await jobsRepo.enqueue(tx, {
+  const input: RecordPaymentInput = {
     businessId,
-    kind: 'document.render',
-    payload: { receiptId: recorded.receiptId },
-    singletonKey: `receipt:${recorded.receiptId}`,
-  });
+    invoice: { id: invoice.id },
+    amountK: gate.amountK,
+    method: command['paymentMethod'] === 'cash' ? 'cash' : 'transfer',
+    sourceType: 'chat',
+    sourceId: draft.id,
+    actor: 'system',
+    evidenceBasis: basis,
+    paymentEvidenceId,
+  };
+
+  /* The A1 rollout seam (spec §25): the work books the payment, enqueues the
+   * receipt's paper and announces it; the flag decides whether the bus's
+   * gates wrap the call. Refusals come back as OUTCOMES, which is what lets
+   * the idempotency snapshot complete beside them — a retried refusal
+   * replays as the same refusal instead of a claim stuck "running". */
+  let recorded: RecordPaymentResult;
+  if (deps.config.commandRecordPayment) {
+    const run = await deps.commandBus.run(
+      tx,
+      {
+        businessId,
+        command: 'RecordPayment',
+        payload: input,
+        actor: 'system',
+        ingress: 'CHAT',
+        idempotencyKey: `draft:${draft.id}`,
+      },
+      () => recordPaymentWork(tx, input),
+    );
+    if (run.outcome !== 'done') {
+      /* Unreachable by construction — RecordPayment is STANDARD and ungated. */
+      await refundDocumentUnit();
+      return replies.notYet('Recording that payment');
+    }
+    if (run.replayed && run.result.outcome === 'recorded') {
+      /* The first run already paid for this receipt. */
+      await refundDocumentUnit();
+    }
+    recorded = run.result;
+  } else {
+    recorded = await recordPaymentWork(tx, input);
+  }
+
+  if (recorded.outcome === 'already_settled') {
+    await refundDocumentUnit();
+    return replies.paymentAlreadySettled(invoice.invoiceNumber);
+  }
+  if (recorded.outcome === 'balance_moved') {
+    await refundDocumentUnit();
+    return replies.paymentBalanceMoved(
+      recorded.invoiceNumber,
+      recorded.balanceDueK,
+      recorded.excessK,
+    );
+  }
+  if (recorded.outcome !== 'recorded') {
+    /* `not_found` cannot happen on the id path; honest fallback, unit back. */
+    await refundDocumentUnit();
+    return replies.paymentNoOpenInvoice();
+  }
 
   /* Every figure here comes from the WRITE, never from the gate. The gate
    * read the balance without a lock, so its amount is what we hoped to post;

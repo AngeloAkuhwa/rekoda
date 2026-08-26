@@ -37,6 +37,8 @@ import {
   type Db,
 } from '@rekoda/db';
 import { CONFIG, type ApiConfig } from '../config.js';
+import { CommandBus } from '../commands/command-bus.service.js';
+import { confirmPaymentWork, type ConfirmPaymentInput } from '../commands/payment-commands.js';
 import { DB } from '../db/db.module.js';
 import {
   createTransferCharge,
@@ -82,6 +84,10 @@ interface MerchantKeyDeps {
   appDb: Db;
   connectionKey: string;
   paystackBaseUrl: string;
+  /** The one bus every ingress converges on (spec §25). */
+  commandBus: CommandBus;
+  /** The A1 rollout flag for `ConfirmPayment`. */
+  commandConfirmPayment: boolean;
 }
 
 @Injectable()
@@ -91,11 +97,14 @@ export class MerchantTransferService {
   constructor(
     @Inject(CONFIG) private readonly config: ApiConfig,
     @Inject(DB) private readonly db: Db,
+    @Inject(CommandBus) private readonly commandBus: CommandBus,
   ) {}
 
   private deps(): MerchantKeyDeps {
     return {
       appDb: this.db,
+      commandBus: this.commandBus,
+      commandConfirmPayment: this.config.commandConfirmPayment,
       connectionKey: this.config.connectionKey,
       paystackBaseUrl: this.config.paystackBaseUrl,
     };
@@ -415,7 +424,7 @@ async function verifyAndBook(
     }
 
     const connection = await paymentsHub.connectionFor(tx, businessId, PROVIDER);
-    const booked = await settleRepo.bookVerifiedPayment(tx, {
+    const input: ConfirmPaymentInput = {
       businessId,
       intent: {
         id: intent.id,
@@ -437,14 +446,31 @@ async function verifyAndBook(
        * transaction id is the audit anchor. */
       eventId: t.providerTransactionId,
       sourceType: 'reconciliation',
-    });
-    if (booked.receiptId) {
-      await jobsRepo.enqueue(tx, {
-        businessId,
-        kind: 'document.render',
-        payload: { receiptId: booked.receiptId },
-        singletonKey: `render:receipt:${booked.receiptId}`,
-      });
+    };
+
+    /* The A1 rollout seam (spec §25): the work books, enqueues the receipt's
+     * paper and announces, in this transaction; the flag decides whether the
+     * bus's gates wrap the call. */
+    let booked: Awaited<ReturnType<typeof confirmPaymentWork>>;
+    if (deps.commandConfirmPayment) {
+      const run = await deps.commandBus.run(
+        tx,
+        {
+          businessId,
+          command: 'ConfirmPayment',
+          payload: input,
+          actor: 'system:payments',
+          ingress: 'AUTOMATION',
+          idempotencyKey: `confirm:${intent.id}:${t.providerTransactionId}`,
+        },
+        () => confirmPaymentWork(tx, input),
+      );
+      if (run.outcome !== 'done') {
+        throw new Error(`ConfirmPayment refused unexpectedly: ${run.outcome}`);
+      }
+      booked = run.result;
+    } else {
+      booked = await confirmPaymentWork(tx, input);
     }
 
     /* Graduation telemetry (ADR 0019, M5d): the moment lifetime collections
@@ -478,6 +504,10 @@ export interface MerchantTransferSweepDeps {
   appDb: Db;
   connectionKey: string;
   paystackBaseUrl: string;
+  /** The one bus every ingress converges on (spec §25). */
+  commandBus: CommandBus;
+  /** The A1 rollout flag for `ConfirmPayment`. */
+  commandConfirmPayment: boolean;
 }
 
 const sweepLog = new Logger('MerchantTransferSweep');
@@ -516,6 +546,8 @@ export async function sweepMerchantTransfers(deps: MerchantTransferSweepDeps): P
             appDb: deps.appDb,
             connectionKey: deps.connectionKey,
             paystackBaseUrl: deps.paystackBaseUrl,
+            commandBus: deps.commandBus,
+            commandConfirmPayment: deps.commandConfirmPayment,
           },
           businessId,
           reference,
