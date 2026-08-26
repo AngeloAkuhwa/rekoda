@@ -110,6 +110,8 @@ const ALL: Record<string, readonly replies.Reply[]> = {
   reminderReady: [replies.reminderReady('INV-2026-000041')],
   reminderNothingToChase: [replies.reminderNothingToChase('INV-2026-000041')],
   voiceUnavailable: [replies.voiceUnavailable()],
+  voiceTooLong: [replies.voiceTooLong(120), replies.voiceTooLong(90), replies.voiceTooLong(60)],
+  voiceUnreadable: [replies.voiceUnreadable()],
   salesAnswer: [
     replies.salesAnswer({
       label: 'this month',

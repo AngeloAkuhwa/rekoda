@@ -95,6 +95,20 @@ export function trialExpiry(startedAt: Date): Date {
  * the table readable against the pricing page, and means a new unit arrives
  * unsold everywhere until somebody decides its number.
  */
+/**
+ * `0` MEANS ZERO. It never means unlimited.
+ *
+ * Written here because the opposite convention is common enough that someone
+ * will eventually assume it, and a meter that reads zero as unlimited hands
+ * out a plan's worth of capacity to every merchant who was sold none. If an
+ * unlimited allowance is ever needed it gets its own representation rather
+ * than overloading a number.
+ *
+ * A zero allowance is also not the only thing standing between a merchant and
+ * a capability. Entitlement, allowance, feature readiness and provider
+ * readiness each have to permit execution independently; a unit going
+ * positive does not make a half-built capability reachable.
+ */
 function sells(sold: Partial<Record<UsageUnit, number>>): Record<UsageUnit, number> {
   return Object.fromEntries(USAGE_UNITS.map((unit) => [unit, sold[unit] ?? 0])) as Record<
     UsageUnit,

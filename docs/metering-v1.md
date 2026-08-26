@@ -118,33 +118,40 @@ nobody could read is still a page nobody pays for. What changed is that the
 refund is now a compensation for a unit already taken, rather than a decision
 not to take one.
 
-### 2.2 Reservation, for the unit whose size is unknown in advance
+### 2.2 Voice: measured before it is spent
 
-Everything the meter counts is known before it is spent except one thing:
-nobody knows how many seconds a voice note runs until the transcriber says
-so. Neither the WhatsApp webhook nor the media API reports a duration, so
-"check the length first" is not available.
+Everything the meter counts is known before it is spent, voice included. That
+was not obvious: neither the WhatsApp webhook nor the media endpoint reports a
+duration, and the first implementation concluded that only the transcriber
+knows and turned the merchant's length limit into a reservation window.
 
-Spec §4.3 rule 4 names the way out, and `reserveUpTo` is its shape:
+That was wrong, and it is worth writing down why. The media binary is
+downloaded before anything is spent, and a container that stores audio stores
+how much of it there is. `AudioMetadataProbe` reads it in process, for the five
+containers Meta accepts:
 
 ```
-reserve up to VOICE_NOTE_MAX_DURATION_SECONDS, take whatever is left
-  → zero back means refuse, and the transcriber is never called
-  → transcribe
-  → give back the difference between the window and the real seconds
+entitlement  →  download  →  read the length from the audio
+             →  over the limit?  refuse, no provider called
+             →  unreadable?      ask for it again, no provider called
+             →  take exactly the seconds it runs
+             →  transcribe
 ```
 
-The reservation takes what it can rather than all or nothing on purpose. A
-merchant with eighty seconds left, sending a twenty-second note, would
-otherwise be refused against capacity their own dashboard shows them. The
-clamp is recomputed inside a locked row, so ten simultaneous notes against
-the last six hundred seconds share six hundred rather than taking six hundred
-each.
+`VOICE_NOTE_MAX_DURATION_SECONDS` is therefore a real rejection limit rather
+than a budget, which is what makes it cost protection: a note past it never
+reaches a transcription provider at all. That matters most against the case a
+budget cannot defend, which is a merchant with no allowance left sending a
+long note every few seconds.
 
-A note that runs PAST its reservation is answered rather than thrown away.
-The transcription is paid for by the time anyone knows, and refusing then
-would waste the spend and the merchant's time both. The exposure is one note
-beyond the window, which is what the window bounds.
+Unreadable is never treated as zero. A caller that cannot tell "silent" from
+"could not be measured" transcribes the second one for free, and the recovery
+for the two is not the same. The merchant is asked to record it again;
+nothing was metered and nothing was sent anywhere.
+
+The audio is the source of truth for the length, not the transcriber's
+report. They should agree, and where they do not, the number the merchant is
+charged is the one that was checked against their allowance before the spend.
 
 **Layered backstops stay layered.** Monthly allowances sit ON TOP of the
 existing daily AI ceilings (per business and global) and per-IP rate limits.

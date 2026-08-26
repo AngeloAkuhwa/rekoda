@@ -1458,7 +1458,9 @@ PARTNER_BILLED         Meta bills Rekoda as partner
 
 > **OPEN COMMERCIAL:** billing mode is unconfirmed. It changes unit economics materially and is a W0 deliverable.
 
-Message categories are metered separately (§4.2) because utility and marketing differ by roughly eightfold in cost, and that difference is the largest variable in plan margin.
+Message categories are metered separately (§4.2) because utility and marketing differ by roughly eightfold in cost, and that difference is the largest variable in plan margin. Every such multiple is an effective-dated observation of a published rate card, derived at runtime from `ProviderCostSchedule`, never a stored constant.
+
+**Usage metering and cost attribution are independent (ADR 0029).** Message usage is metered per business for entitlement, allowance, abuse control and packaging regardless of who Meta bills. `MetaBillingMode` decides whether a metered message also produces a `PlatformCostEvent`. Provider-cost attribution is never inferred from usage metering alone.
 
 ---
 

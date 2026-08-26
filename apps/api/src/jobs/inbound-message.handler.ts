@@ -55,6 +55,7 @@ import { openPayload } from '../privacy/payload-vault.js';
 import { redactForLog } from '@rekoda/core/privacy';
 import { describeFailure, JobDeferred, type JobContext, type JobHandler } from './runner.js';
 import type { SpeechToText, Transcript } from '../ai/stt.js';
+import type { AudioMetadataProbe } from '../ai/audio-duration.js';
 import type { TextExtraction } from '../ai/ocr.js';
 import type { MessageSender } from '../channels/sender.js';
 
@@ -70,6 +71,13 @@ export interface InboundMessageDeps {
   sender: MessageSender;
   /** The AfriSpeech sidecar (ADR 0008), or something that refuses honestly. */
   stt: SpeechToText;
+  /**
+   * How long a voice note runs, read from the bytes before any provider is
+   * called. A port, because an ffprobe sidecar answers the same question and
+   * a deployment that would rather run one should not have to touch this
+   * file.
+   */
+  audioProbe: AudioMetadataProbe;
   /**
    * The self-hosted OCR sidecar (ADR 0024), or something that refuses
    * honestly. Never a vision model: see `ocr.ts` for why there is no such
@@ -495,38 +503,59 @@ async function transcribeVoiceNote(
   }
 
   /**
-   * RESERVED before the transcriber runs, then trued up (spec §4.3, rules 3
-   * and 4).
+   * MEASURED before anything is spent (spec §4.3 rules 2 and 3, journey C3).
    *
-   * This is the one metered unit whose size is unknown before it is spent:
-   * nobody knows how many seconds a voice note runs until the sidecar says
-   * so. Metering afterwards was the obvious answer and the wrong one, because
-   * it let an exhausted merchant send Rekoda's transcription budget a voice
-   * note at a time and only find out afterwards.
+   * The webhook does not carry a duration and the media endpoint does not
+   * either, which was once read as "only the transcriber knows" and turned
+   * the merchant's length limit into a reservation window. That was wrong:
+   * the bytes are already here, and a container that stores audio stores how
+   * much of it there is. Reading it locally costs nothing and makes the limit
+   * a limit again.
    *
-   * So a window is reserved first. `VOICE_NOTE_MAX_DURATION_SECONDS` is how
-   * long a note Rekoda is willing to underwrite in one reservation, and the
-   * merchant gets whatever part of it their allowance still holds: eighty
-   * seconds left and a twenty-second note is a note that goes through, not a
-   * refusal against visible capacity. Zero back means genuinely nothing left,
-   * and the transcriber is never called.
-   *
-   * Its own short transaction, like the message unit, because the counter
-   * must not be held across a network call.
+   * The order below is the whole point. Measure, refuse if it is too long,
+   * take exactly the seconds it runs, and only then call a provider. A note
+   * that is refused reaches no transcriber at all, which is what stops a
+   * merchant with no allowance left from spending Rekoda's transcription
+   * budget one voice note at a time.
+   */
+  const seconds = await deps.audioProbe.duration(audio.bytes, audio.mimeType);
+  if (seconds === null) {
+    /* Unreadable is not zero. A caller that treats the two alike transcribes
+     * for free, and the recovery for the two is not the same: this one asks
+     * the merchant to send it again, and nothing has been metered or spent. */
+    log.warn('a voice note arrived in a container we could not measure');
+    await deps.replySender.send(tx, {
+      businessId,
+      to: inbound.from,
+      reply: replies.voiceUnreadable(),
+    });
+    return null;
+  }
+
+  const maxSeconds = deps.config.voiceNoteMaxDurationSeconds;
+  if (seconds > maxSeconds) {
+    /* The commercial limit, enforced where it protects money rather than
+     * where it merely reports it. Nothing is metered: the merchant did not
+     * use anything, they were told to send it differently. */
+    await deps.replySender.send(tx, {
+      businessId,
+      to: inbound.from,
+      reply: replies.voiceTooLong(maxSeconds),
+    });
+    return null;
+  }
+
+  /**
+   * Exactly the seconds the note runs, taken atomically before the
+   * transcriber is called. Its own short transaction, like the message unit,
+   * because the counter must not be held across a network call.
    */
   const period = usagePeriod(new Date());
   const allowance = allowanceFor(plan, 'VOICE_MINUTES');
-  const reserved = await withBusiness(deps.db, businessId, (own) =>
-    usageRepo.reserveUpTo(
-      own,
-      businessId,
-      period,
-      'VOICE_MINUTES',
-      allowance,
-      deps.config.voiceNoteMaxDurationSeconds,
-    ),
+  const granted = await withBusiness(deps.db, businessId, (own) =>
+    usageRepo.consumeUnit(own, businessId, period, 'VOICE_MINUTES', allowance, seconds),
   );
-  if (reserved === 0) {
+  if (!granted) {
     await deps.replySender.send(tx, {
       businessId,
       to: inbound.from,
@@ -539,30 +568,18 @@ async function transcribeVoiceNote(
   try {
     transcript = await deps.stt.transcribe(audio.bytes, audio.mimeType);
   } catch {
-    /* An outage, not the merchant's fault, so the whole reservation goes
-     * back. The reason is logged without the audio and without their words. */
+    /* An outage, not the merchant's fault, so the seconds go back. The reason
+     * is logged without the audio and without their words. */
+    await withBusiness(deps.db, businessId, (own) =>
+      usageRepo.refundUnit(own, businessId, period, 'VOICE_MINUTES', seconds),
+    );
     log.warn('the transcriber could not be reached');
-    await refundVoice(deps, businessId, period, reserved);
     await deps.replySender.send(tx, {
       businessId,
       to: inbound.from,
       reply: replies.voiceUnavailable(),
     });
     return null;
-  }
-
-  /**
-   * The reservation was a ceiling, not a price. What the note actually ran
-   * is what the merchant pays, so the difference goes straight back.
-   *
-   * A note LONGER than the reservation is possible and is absorbed rather
-   * than clawed at: the audio has already been transcribed, the money has
-   * already left, and refusing an answer at that point would waste the spend
-   * and the merchant's time both. The exposure is bounded by one note beyond
-   * the configured window, which is what the window is for.
-   */
-  if (transcript.seconds < reserved) {
-    await refundVoice(deps, businessId, period, reserved - transcript.seconds);
   }
 
   return { transcript, messageId: recorded.id };
@@ -1952,21 +1969,6 @@ function consumeMessage(
 ): Promise<boolean> {
   return withBusiness(deps.db, businessId, (tx) =>
     usageRepo.consumeUnit(tx, businessId, period, 'AI_ACTIONS', allowance),
-  );
-}
-
-/**
- * Give back the part of a voice reservation the note did not use. Same
- * standalone transaction as taking it, for the same reason.
- */
-function refundVoice(
-  deps: InboundMessageDeps,
-  businessId: string,
-  period: string,
-  seconds: number,
-): Promise<void> {
-  return withBusiness(deps.db, businessId, (tx) =>
-    usageRepo.refundUnit(tx, businessId, period, 'VOICE_MINUTES', seconds),
   );
 }
 

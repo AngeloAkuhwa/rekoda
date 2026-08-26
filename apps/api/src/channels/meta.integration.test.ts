@@ -52,6 +52,7 @@ import { LocalStorage } from '../documents/r2.storage.js';
 import { ReplySender } from '../replies/reply.service.js';
 import { loadConfig, type ApiConfig } from '../config.js';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
+import { ContainerAudioProbe } from '../ai/audio-duration.js';
 
 const APP_SECRET = 'meta-app-secret-for-tests';
 const VERIFY_TOKEN = 'meta-verify-token-for-tests';
@@ -116,6 +117,7 @@ beforeAll(async () => {
     paymentIntents: new PaymentIntentsService(config, db, intentsProvider),
     stt: stubStt,
     ocr: stubOcr,
+    audioProbe: new ContainerAudioProbe(),
   };
 });
 
@@ -1977,9 +1979,25 @@ describe('a voice note', () => {
     while (worked) worked = await runner.runOnce();
   }
 
-  /** Audio the provider will hand back for `media-1`. */
-  function arrangeAudio(bytes = Buffer.from('OggS-fake-audio')) {
-    stubSender.media.set('media-1', { bytes, mimeType: 'audio/ogg' });
+  /**
+   * Audio the provider will hand back for `media-1`, of a REAL length.
+   *
+   * A single Ogg page whose granule position says how many samples it holds,
+   * at Opus's 48 kHz. It has to be measurable now: the handler reads the
+   * duration out of these bytes before it calls anything, so a placeholder
+   * buffer is no longer a voice note, it is an unreadable file.
+   */
+  function arrangeAudio(seconds = 5) {
+    stubSender.media.set('media-1', { bytes: oggOf(seconds), mimeType: 'audio/ogg' });
+  }
+
+  function oggOf(seconds: number): Buffer {
+    const page = Buffer.alloc(28);
+    page.write('OggS', 0, 'ascii');
+    page.writeBigUInt64LE(BigInt(seconds * 48_000), 6);
+    page.writeUInt32LE(1, 14);
+    page.writeUInt8(1, 26);
+    return page;
   }
 
   /** Move a business onto a plan, through the repository that owns the write. */
@@ -2047,48 +2065,6 @@ describe('a voice note', () => {
     expect(stubSender.lastText).toContain('seconds of voice notes');
   });
 
-  /**
-   * The reservation is a ceiling, not a price. A window is taken before the
-   * transcriber runs and the difference comes straight back, so what the
-   * merchant is charged is still exactly what they spoke.
-   */
-  it('reserves a window, then charges only the seconds the note ran', async () => {
-    const business = await seedMerchant('+2348031234567');
-    arrangeAudio();
-    stubStt.answerWith({ text: 'Ada bought 3 wigs for 150k', seconds: 17, confidence: 0.9 });
-    stubTransport.replyWith(A_SPOKEN_SALE);
-
-    await post(voicePayload('2348031234567', 'wamid.V22'));
-    await drain();
-
-    expect(stubStt.calls).toHaveLength(1);
-    expect(await voiceUsed(business.id)).toBe(17);
-  });
-
-  /**
-   * The reason the reservation takes what it can rather than all or nothing.
-   * A merchant with less than a full window left still has capacity on their
-   * dashboard, and refusing them against visible capacity would be a lie.
-   */
-  it('lets a short note through on less than a full window of allowance', async () => {
-    const business = await seedMerchant('+2348031234567');
-    const allowance = allowanceFor('trial', 'VOICE_MINUTES');
-    const period = usagePeriod(new Date());
-    /* Spend everything but forty seconds, which is less than the window. */
-    await withBusiness(db, business.id, (tx) =>
-      usageRepo.consumeUnit(tx, business.id, period, 'VOICE_MINUTES', allowance, allowance - 40),
-    );
-    arrangeAudio();
-    stubStt.answerWith({ text: 'Ada bought 3 wigs for 150k', seconds: 17, confidence: 0.9 });
-    stubTransport.replyWith(A_SPOKEN_SALE);
-
-    await post(voicePayload('2348031234567', 'wamid.V23'));
-    await drain();
-
-    expect(stubStt.calls).toHaveLength(1);
-    expect(await voiceUsed(business.id)).toBe(allowance - 40 + 17);
-  });
-
   it('turns speech into the same preview a typed sentence would get', async () => {
     await seedMerchant('+2348031234567');
     arrangeAudio();
@@ -2126,7 +2102,7 @@ describe('a voice note', () => {
    */
   it('keeps the transcript and never the audio', async () => {
     const business = await seedMerchant('+2348031234567');
-    arrangeAudio(Buffer.from('OggS-secret-voice-of-ada'));
+    arrangeAudio(9);
     stubStt.answerWith({ text: 'Ada bought 3 wigs for 150k', seconds: 5, confidence: 0.9 });
     stubTransport.replyWith(A_SPOKEN_SALE);
 
@@ -2144,10 +2120,20 @@ describe('a voice note', () => {
     expect(stubStt.calls[0]?.mimeType).toBe('audio/ogg');
   });
 
-  it('meters the seconds the sidecar reports, not our guess at them', async () => {
+  /**
+   * The AUDIO is the source of truth for the length, not the sidecar.
+   *
+   * It used to be the sidecar's number, which meant the merchant could only
+   * be charged after the spend. Reading it from the container first is what
+   * lets the charge happen before the provider is called, and the number is
+   * the same number either way: the audio says seventeen seconds and
+   * seventeen is what is taken.
+   */
+  it('meters the seconds the AUDIO says, before the sidecar is called', async () => {
     const business = await seedMerchant('+2348031234567');
-    arrangeAudio();
-    stubStt.answerWith({ text: 'Ada bought 3 wigs for 150k', seconds: 17, confidence: 0.9 });
+    arrangeAudio(17);
+    /* Deliberately disagrees with the audio. The container wins. */
+    stubStt.answerWith({ text: 'Ada bought 3 wigs for 150k', seconds: 900, confidence: 0.9 });
     stubTransport.replyWith(A_SPOKEN_SALE);
 
     await post(voicePayload('2348031234567', 'wamid.V4'));
@@ -2158,6 +2144,71 @@ describe('a voice note', () => {
       usageRepo.usageFor(tx, business.id, period),
     );
     expect(rows.find((r) => r.unit === 'VOICE_MINUTES')?.used).toBe(17);
+  });
+
+  /**
+   * The commercial limit, enforced where it protects money.
+   *
+   * `VOICE_NOTE_MAX_DURATION_SECONDS` is a rejection limit, not a budget: a
+   * note past it never reaches a transcription provider at all. That is the
+   * whole reason it exists, and the reason it is checked here rather than
+   * after a bill has been incurred.
+   */
+  it('refuses a note past the limit without calling the transcriber', async () => {
+    const business = await seedMerchant('+2348031234567');
+    arrangeAudio(300);
+    stubStt.answerWith({ text: 'should never be reached', seconds: 300, confidence: 1 });
+
+    await post(voicePayload('2348031234567', 'wamid.V30'));
+    await drain();
+
+    expect(stubStt.calls).toHaveLength(0);
+    expect(stubSender.lastText).toContain('shorter parts');
+    const rows = await withBusiness(db, business.id, (tx) =>
+      usageRepo.usageFor(tx, business.id, usagePeriod(new Date())),
+    );
+    expect(rows.find((r) => r.unit === 'VOICE_MINUTES')?.used ?? 0).toBe(0);
+  });
+
+  /* Exactly at the limit is inside it, which is what a limit means. */
+  it('accepts a note exactly at the limit', async () => {
+    const business = await seedMerchant('+2348031234567');
+    arrangeAudio(120);
+    stubStt.answerWith({ text: 'Ada bought 3 wigs for 150k', seconds: 120, confidence: 0.9 });
+    stubTransport.replyWith(A_SPOKEN_SALE);
+
+    await post(voicePayload('2348031234567', 'wamid.V31'));
+    await drain();
+
+    expect(stubStt.calls).toHaveLength(1);
+    const rows = await withBusiness(db, business.id, (tx) =>
+      usageRepo.usageFor(tx, business.id, usagePeriod(new Date())),
+    );
+    expect(rows.find((r) => r.unit === 'VOICE_MINUTES')?.used).toBe(120);
+  });
+
+  /**
+   * Unreadable is not zero and not "send it anyway". Nothing was measured, so
+   * nothing is metered and no provider is called; the merchant is asked to
+   * send it again, which is a real recovery rather than a polite refusal.
+   */
+  it('asks for the note again when the audio cannot be measured', async () => {
+    const business = await seedMerchant('+2348031234567');
+    stubSender.media.set('media-1', {
+      bytes: Buffer.from('this is not an ogg stream'),
+      mimeType: 'audio/ogg',
+    });
+    stubStt.answerWith({ text: 'should never be reached', seconds: 4, confidence: 1 });
+
+    await post(voicePayload('2348031234567', 'wamid.V32'));
+    await drain();
+
+    expect(stubStt.calls).toHaveLength(0);
+    expect(stubSender.lastText).toContain('record it again');
+    const rows = await withBusiness(db, business.id, (tx) =>
+      usageRepo.usageFor(tx, business.id, usagePeriod(new Date())),
+    );
+    expect(rows.find((r) => r.unit === 'VOICE_MINUTES')?.used ?? 0).toBe(0);
   });
 
   /* Our failure, so it costs the merchant nothing and says what to do. */

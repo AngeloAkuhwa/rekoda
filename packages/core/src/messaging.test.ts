@@ -11,7 +11,9 @@ import { describe, expect, it } from 'vitest';
 import {
   MESSAGE_CATEGORIES,
   MESSAGE_COST_MICROS,
+  META_COST_SCHEDULE,
   authTemplateCategory,
+  costRatio,
   messageCostK,
 } from './messaging.js';
 import { USAGE_UNITS } from './allowances.js';
@@ -44,15 +46,45 @@ describe('what an outbound message costs', () => {
   });
 
   /**
-   * Spec §24's own justification for separating the categories. If this ratio
-   * ever collapses toward one, the separation stops earning its complexity
-   * and the specification should be told rather than the code quietly
-   * carrying five buckets that all cost the same.
+   * Spec §24's own justification for separating the categories, checked
+   * against the rates rather than against a number somebody typed.
+   *
+   * The ratio is DERIVED. Writing "5.2x" or "8x" into the codebase would
+   * create a figure that keeps its value after the rates it described have
+   * moved, which is the quiet way a cost model starts lying.
    */
   it('keeps marketing roughly eightfold utility, which is why they are apart', () => {
-    const ratio = MESSAGE_COST_MICROS.MARKETING_TEMPLATE / MESSAGE_COST_MICROS.UTILITY_TEMPLATE;
-    expect(ratio).toBeGreaterThan(7);
-    expect(ratio).toBeLessThan(9);
+    const ratio = costRatio('MARKETING_TEMPLATE', 'UTILITY_TEMPLATE');
+    expect(ratio).not.toBeNull();
+    expect(ratio!).toBeGreaterThan(7);
+    expect(ratio!).toBeLessThan(9);
+  });
+
+  it('carries the rate card it was computed from, so a report can name it', () => {
+    expect(META_COST_SCHEDULE.version).toBe('meta-ng-2026-08');
+    expect(META_COST_SCHEDULE.effectiveFrom).toBe('2026-08-24');
+    expect(MESSAGE_COST_MICROS).toBe(META_COST_SCHEDULE.micros);
+  });
+
+  /**
+   * A ratio recomputes against whatever schedule it is handed, which is the
+   * whole reason it is a function. A repricing moves it; nobody edits a
+   * constant, and no stale multiple outlives the rates behind it.
+   */
+  it('moves with the schedule instead of outliving it', () => {
+    const reprice = {
+      ...META_COST_SCHEDULE,
+      version: 'hypothetical',
+      micros: { ...META_COST_SCHEDULE.micros, MARKETING_TEMPLATE: 13_400 },
+    };
+    expect(costRatio('MARKETING_TEMPLATE', 'UTILITY_TEMPLATE', reprice)).toBe(2);
+  });
+
+  /* Service messages are free today, and a ratio against zero is not a big
+   * number, it is not a number. Null says so rather than returning Infinity
+   * into a cost report. */
+  it('refuses to divide by a free category', () => {
+    expect(costRatio('UTILITY_TEMPLATE', 'SERVICE_MESSAGE')).toBeNull();
   });
 
   /**
@@ -64,8 +96,8 @@ describe('what an outbound message costs', () => {
     expect(authTemplateCategory(true)).toBe('AUTH_TEMPLATE');
     expect(authTemplateCategory(false)).toBe('AUTH_INTL_TEMPLATE');
 
-    const domestic = MESSAGE_COST_MICROS[authTemplateCategory(true)];
-    const abroad = MESSAGE_COST_MICROS[authTemplateCategory(false)];
-    expect(abroad / domestic).toBeGreaterThan(5);
+    const overcharge = costRatio(authTemplateCategory(false), authTemplateCategory(true));
+    expect(overcharge).not.toBeNull();
+    expect(overcharge!).toBeGreaterThan(5);
   });
 });

@@ -158,12 +158,12 @@ describe('the role ensemble (docs/ai-model-strategy.md)', () => {
 });
 
 /**
- * The voice window stopped being decorative when it became what is reserved
- * before the transcriber runs. A mistyped value would otherwise refuse every
- * voice note with a sentence about the merchant's allowance, and be chased
- * as a metering bug.
+ * The voice limit stopped being decorative when it became what every note is
+ * measured against before the transcriber runs. A mistyped value would
+ * otherwise refuse every voice note as too long, and be chased as a metering
+ * bug rather than a typo.
  */
-describe('the voice reservation window', () => {
+describe('the voice length limit', () => {
   it('defaults to two minutes', () => {
     expect(loadConfig({ ...BASE, ANTHROPIC_API_KEY: 'k' }).voiceNoteMaxDurationSeconds).toBe(120);
   });

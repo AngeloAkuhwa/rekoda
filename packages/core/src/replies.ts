@@ -670,6 +670,45 @@ export function voiceUnavailable(): Reply {
   );
 }
 
+/**
+ * The note is longer than this plan will transcribe.
+ *
+ * Said BEFORE any transcriber is called, which is the whole point: the limit
+ * is cost protection, and a limit enforced after the spend protects nothing.
+ * The merchant is told the number rather than left to guess at it, and told
+ * what to do about it in the same breath, because "too long" without a
+ * length is a wall and "send it in shorter parts" is a door.
+ */
+export function voiceTooLong(maxSeconds: number): Reply {
+  const minutes = Math.floor(maxSeconds / 60);
+  const limit =
+    minutes >= 1 && maxSeconds % 60 === 0
+      ? `${minutes} ${minutes === 1 ? 'minute' : 'minutes'}`
+      : `${maxSeconds} seconds`;
+  return reply(
+    `That voice note is longer than ${limit}, which is as much as I can listen ` +
+      'to at once.\n\nPlease send it again in shorter parts and I will record ' +
+      'every one of them.',
+  );
+}
+
+/**
+ * The audio arrived and could not be read.
+ *
+ * Distinct from `voiceUnavailable`, which is the transcriber being down. This
+ * is the file itself: a container Rekoda cannot measure, and measuring it is
+ * what stands between a merchant and a bill nobody agreed to. Nothing was
+ * metered and nothing was sent anywhere, so asking again is a real recovery
+ * rather than a polite way of saying no.
+ */
+export function voiceUnreadable(): Reply {
+  return reply(
+    'Something about that voice note did not come through properly, so I did not ' +
+      'want to guess at it.\n\nPlease record it again and send it, or type it and ' +
+      'I will record it straight away.',
+  );
+}
+
 /* ── answering a question ────────────────────────────────────────────────── */
 
 /**

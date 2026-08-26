@@ -35,6 +35,7 @@ import { BANK_FEED, type BankFeedPort } from '../bank/feed.port.js';
 import { sweepBankFeeds } from '../bank/feed-sync.js';
 import { sweepUnknownSenders } from '../channels/stranger-sweep.js';
 import { sweepGracePeriods } from '../billing/grace-sweep.js';
+import { AUDIO_METADATA_PROBE, type AudioMetadataProbe } from '../ai/audio-duration.js';
 import { sweepRenewals } from '../billing/renewal-sweep.js';
 import { sweepRetention } from '../privacy/retention-sweep.js';
 import { sweepRecurring } from '../spend/recurring-sweep.js';
@@ -159,6 +160,7 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
     @Inject(BANK_FEED) private readonly bankFeed: BankFeedPort,
     @Inject(SPEECH_TO_TEXT) private readonly stt: SpeechToText,
     @Inject(TEXT_EXTRACTION) private readonly ocr: TextExtraction,
+    @Inject(AUDIO_METADATA_PROBE) private readonly audioProbe: AudioMetadataProbe,
   ) {}
 
   onModuleInit(): void {
@@ -181,6 +183,7 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
         paymentIntents: this.paymentIntents,
         stt: this.stt,
         ocr: this.ocr,
+        audioProbe: this.audioProbe,
       },
       { concurrency: this.config.workerConcurrency },
     );

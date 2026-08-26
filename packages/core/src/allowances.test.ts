@@ -166,6 +166,22 @@ describe('plan allowances (docs/metering-v1.md)', () => {
     }
   });
 
+  /**
+   * The convention, pinned rather than commented. Reading zero as unlimited
+   * is a billing bug that looks like generosity until the invoice arrives,
+   * and it is the kind of thing a later refactor introduces by accident.
+   */
+  it('treats zero as zero and never as unlimited', () => {
+    expect(allowanceFor('expired', 'AI_ACTIONS')).toBe(0);
+    expect(allowanceFor('chat', 'CATALOGUE_ORDERS')).toBe(0);
+    for (const plan of Object.values(PLAN_ALLOWANCES)) {
+      for (const value of Object.values(plan)) {
+        expect(Number.isFinite(value)).toBe(true);
+        expect(value).toBeGreaterThanOrEqual(0);
+      }
+    }
+  });
+
   it('seats climb the paid ladder, expire to zero, and treat the unknown as trial', () => {
     expect(SEATS_PER_PLAN.chat).toBeLessThanOrEqual(SEATS_PER_PLAN.integrate);
     expect(SEATS_PER_PLAN.integrate).toBeLessThanOrEqual(SEATS_PER_PLAN.complete);

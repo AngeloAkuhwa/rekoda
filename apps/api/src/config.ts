@@ -150,14 +150,12 @@ export interface ApiConfig {
    * (docs/rekoda-chat-v1.md §2). Configuration, never application logic:
    * the commercial limit varies by plan, environment and future pricing.
    *
-   * It is a RESERVATION window rather than the rejection limit that document
-   * describes. The rejection design needs the note's length before the note
-   * is transcribed, and neither the WhatsApp webhook nor the media API
-   * reports a duration: the only thing that knows how long a voice note ran
-   * is the transcriber, and asking it is the spend. So this is how many
-   * seconds Rekoda is willing to underwrite in one reservation, taken before
-   * the transcriber is called and trued up against the real figure
-   * afterwards (spec §4.3 rules 3 and 4).
+   * A REJECTION limit, enforced before any transcription provider is called.
+   * The webhook does not carry a duration and the media endpoint does not
+   * either, but the bytes are downloaded before anything is spent and the
+   * container says how long it is: `AudioMetadataProbe` reads it. A note past
+   * this never reaches a provider, which is what makes the number cost
+   * protection rather than cost reporting.
    */
   voiceNoteMaxDurationSeconds: number;
   /**
@@ -368,14 +366,14 @@ function webUrl(env: NodeJS.ProcessEnv): string | null {
 }
 
 /**
- * The voice reservation window, which now gates a capability rather than
- * merely describing one.
+ * The voice length limit, which now gates a capability rather than merely
+ * describing one.
  *
- * A blank or mistyped value used to be harmless; since the window is what is
- * reserved before the transcriber runs, a NaN or a zero would refuse every
- * voice note with "you have used all your seconds", which is a lie about the
- * cause and would be debugged as a metering bug rather than a typo. Boot is
- * the right place to say so.
+ * A blank or mistyped value used to be harmless; since this is the limit a
+ * note is measured against before the transcriber runs, a NaN or a zero would
+ * refuse every voice note as too long, which reads to a merchant as the
+ * product being broken and to an engineer as a metering bug rather than a
+ * typo. Boot is the right place to say so.
  */
 function voiceWindowSeconds(env: NodeJS.ProcessEnv): number {
   const seconds = Number(env['VOICE_NOTE_MAX_DURATION_SECONDS'] ?? 120);

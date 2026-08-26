@@ -41,6 +41,7 @@ import { LocalStorage } from '../documents/r2.storage.js';
 import { ReplySender } from '../replies/reply.service.js';
 import { loadConfig, type ApiConfig } from '../config.js';
 import { sealPayload } from '../privacy/payload-vault.js';
+import { ContainerAudioProbe } from '../ai/audio-duration.js';
 
 const RUN_SALT = randomBytes(16).toString('hex');
 
@@ -92,6 +93,7 @@ beforeAll(async () => {
     paymentIntents: new PaymentIntentsService(config, appDb, new StubPaymentProvider()),
     stt: stubStt,
     ocr: stubOcr,
+    audioProbe: new ContainerAudioProbe(),
   };
 });
 

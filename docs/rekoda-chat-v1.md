@@ -76,29 +76,25 @@ for stock. I still owe him ₦100k." → supplier purchase ₦350,000, paid
 ₦250,000, payable ₦100,000.
 
 **Voice (§2)** is a first-class input:
-receive audio → entitlement → reserve allowance → transcribe → detect/tokenise
-PII → interpret → structured command → deterministic validation → confirmation
-where required → record. The maximum duration is **configuration, never
-hard-coded logic** (`VOICE_NOTE_MAX_DURATION_SECONDS`), variable by plan,
-environment and future pricing.
+receive audio → entitlement → download → read the length from the audio →
+reject if over the limit → take the seconds it runs → transcribe →
+detect/tokenise PII → interpret → structured command → deterministic
+validation → confirmation where required → record. The maximum duration is
+**configuration, never hard-coded logic**
+(`VOICE_NOTE_MAX_DURATION_SECONDS`), variable by plan, environment and future
+pricing. An over-length note gets a natural reply ("This voice note is longer
+than your current Rekoda limit. Please send it in shorter parts."), never a
+silent failure.
 
-**Amended at implementation, 26 August 2026.** This document originally put a
-length check between receiving the audio and transcribing it, and promised an
-over-length note a natural reply ("This voice note is longer than your current
-Rekoda limit. Please send it in shorter parts."). That check is not
-implementable: the WhatsApp webhook's audio object carries an id, a mime type
-and a hash, the media API adds a file size, and neither reports a duration.
-The only thing that knows how long a voice note ran is the transcriber, and
-asking it is the spend the check exists to avoid.
-
-So the limit became a **reservation window** instead, which serves the same
-commercial purpose in the order spec §4.3 requires: the window is taken from
-the merchant's allowance before the transcriber is called, and given back down
-to the real figure afterwards. A merchant with less than a full window left
-gets what they have rather than a refusal against capacity they can see. A
-note that runs past the window is answered rather than thrown away, because
-the transcription is already paid for by then; the exposure is one note beyond
-the window, which is what the window bounds.
+**Clarified at implementation, 26 August 2026.** Neither the WhatsApp webhook
+nor the media endpoint reports a duration: the audio object carries an id, a
+mime type and a hash, and the media call adds a file size. That is not a
+reason to defer the length check to the transcriber, which was tried and
+reverted. The media binary is downloaded before anything is spent, and a
+container that stores audio stores how much of it there is, so the length is
+read locally by `AudioMetadataProbe` (spec §4.3 rules 2 and 3). Audio whose
+container cannot be measured is never sent to a provider on the hope that it
+is short; the merchant is asked to record it again.
 
 **Multiple voice notes (§3)**: sequential notes in one active conversation
 compose ("bought fifty cartons from Emeka" + "₦28,000 each" + "paid ₦1

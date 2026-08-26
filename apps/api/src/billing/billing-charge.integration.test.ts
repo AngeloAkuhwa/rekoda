@@ -44,6 +44,7 @@ import { PaymentIntentsService } from '../payments/payment-intents.service.js';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { ContainerAudioProbe } from '../ai/audio-duration.js';
 
 const RUN_SALT = randomBytes(16).toString('hex');
 const storageRoot = mkdtempSync(join(tmpdir(), 'rekoda-bill-'));
@@ -87,6 +88,7 @@ beforeAll(async () => {
     paymentIntents: new PaymentIntentsService(config, appDb, provider),
     stt: new StubSpeechToText(),
     ocr: new StubTextExtraction(),
+    audioProbe: new ContainerAudioProbe(),
   };
 });
 

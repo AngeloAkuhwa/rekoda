@@ -243,23 +243,28 @@ describe('plan changes and upgrade requests', () => {
 });
 
 /**
- * Reservation, for the one unit whose size is not known before it is spent.
+ * The consume compares NUMBERS, and had to be told so.
  *
- * Spec §4.3 rule 3 forbids paying a transcriber before the merchant is
- * authorised, and rule 4 names the way out: reserve, then refund what was
- * not used. Everything below is about the reservation never handing out more
- * than the plan holds, and never refusing a merchant who still has some.
+ * `SELECT $1, $2 WHERE $3 <= $4` gives PostgreSQL no type context, so it
+ * resolved the parameters as text and compared them as text. Text says
+ * `'9' <= '600'` is false, because it reads the nine first. A merchant
+ * sending a nine-second voice note against a six-hundred-second allowance was
+ * refused and told they had used all six hundred of them.
+ *
+ * It survived because almost every consume spends one unit and `'1' <= '600'`
+ * is true by luck of the alphabet. These cases are the ones that are not
+ * lucky: an amount whose first digit sorts above the ceiling's.
  */
-describe('reserving an amount nobody knows in advance', () => {
+describe('spending an amount, not a tally', () => {
   let businessId: string;
 
   beforeEach(async () => {
     businessId = await seedBusiness();
   });
 
-  const reserve = (allowance: number, want: number) =>
+  const spend = (allowance: number, n: number) =>
     withBusiness(db, businessId, (tx) =>
-      usageRepo.reserveUpTo(tx, businessId, PERIOD, 'VOICE_MINUTES', allowance, want),
+      usageRepo.consumeUnit(tx, businessId, PERIOD, 'VOICE_MINUTES', allowance, n),
     );
 
   const used = async () => {
@@ -269,56 +274,34 @@ describe('reserving an amount nobody knows in advance', () => {
     return rows.find((row) => row.unit === 'VOICE_MINUTES')?.used ?? 0;
   };
 
-  it('gives the whole ask when the allowance covers it', async () => {
-    expect(await reserve(600, 120)).toBe(120);
-    expect(await used()).toBe(120);
+  /* Every one of these is comfortably inside the allowance and every one of
+   * them was refused when the comparison was textual. */
+  it.each([
+    [600, 9],
+    [600, 7],
+    [600, 8],
+    [600, 95],
+    [3_600, 900],
+    [3_600, 40],
+    [120, 9],
+  ])('grants %i-allowance a spend of %i', async (allowance, n) => {
+    expect(await spend(allowance, n)).toBe(true);
+    expect(await used()).toBe(n);
   });
 
-  /* The case the all-or-nothing consume gets wrong: a merchant with eighty
-   * seconds left, sending a twenty-second note, must not be refused. */
-  it('gives what is left rather than refusing', async () => {
-    expect(await reserve(600, 520)).toBe(520);
-    expect(await reserve(600, 120)).toBe(80);
-    expect(await used()).toBe(600);
-  });
-
-  it('gives nothing once the allowance is gone, and takes nothing', async () => {
-    expect(await reserve(600, 600)).toBe(600);
-    expect(await reserve(600, 120)).toBe(0);
-    expect(await used()).toBe(600);
-  });
-
-  it('refuses a zero allowance without creating capacity', async () => {
-    expect(await reserve(0, 120)).toBe(0);
+  it('still refuses a spend that genuinely exceeds the allowance', async () => {
+    expect(await spend(600, 601)).toBe(false);
     expect(await used()).toBe(0);
   });
 
-  it('counts bought capacity toward the ceiling', async () => {
-    await withBusiness(db, businessId, (tx) =>
-      usageRepo.creditBonus(tx, businessId, PERIOD, 'VOICE_MINUTES', 100),
-    );
-    expect(await reserve(600, 700)).toBe(700);
-    expect(await used()).toBe(700);
-  });
-
-  /**
-   * The claim that matters, and the reason the clamp is recomputed inside a
-   * locked row rather than in TypeScript: ten simultaneous voice notes
-   * against six hundred seconds hand out six hundred seconds between them,
-   * not six hundred each.
-   */
-  it('never hands out more than the allowance under concurrency', async () => {
-    const granted = await Promise.all(Array.from({ length: 10 }, () => reserve(600, 120)));
-    expect(granted.reduce((a, b) => a + b, 0)).toBe(600);
-    expect(await used()).toBe(600);
-  });
-
-  it('gives back what the work did not need', async () => {
-    expect(await reserve(600, 120)).toBe(120);
-    await withBusiness(db, businessId, (tx) =>
-      usageRepo.refundUnit(tx, businessId, PERIOD, 'VOICE_MINUTES', 120 - 17),
-    );
-    expect(await used()).toBe(17);
+  /* And the ceiling still holds across several spends, which is the property
+   * the whole meter exists for. */
+  it('holds the ceiling across a sequence of amounts', async () => {
+    expect(await spend(100, 9)).toBe(true);
+    expect(await spend(100, 80)).toBe(true);
+    expect(await spend(100, 20)).toBe(false);
+    expect(await spend(100, 11)).toBe(true);
+    expect(await used()).toBe(100);
   });
 });
 

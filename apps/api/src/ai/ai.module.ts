@@ -7,6 +7,7 @@ import { MODEL_TRANSPORT, ProviderUnreachable, type ModelTransport } from './tra
 import { assertModelIsPriced, registerRuntimeModelPrices } from './model-prices.js';
 import { SPEECH_TO_TEXT, type SpeechToText } from './stt.js';
 import { TEXT_EXTRACTION, type TextExtraction } from './ocr.js';
+import { AUDIO_METADATA_PROBE, ContainerAudioProbe } from './audio-duration.js';
 import { HttpTextExtraction, NoTextExtractionConfigured } from './ocr.http.js';
 import { VisionTextExtraction } from './ocr.vision.js';
 import { HttpSpeechToText, NoSpeechToTextConfigured } from './stt.http.js';
@@ -118,8 +119,16 @@ class NoTransportConfigured implements ModelTransport {
         return new NoTextExtractionConfigured();
       },
     },
+    /**
+     * Reading a voice note's length before anything is spent on it.
+     *
+     * In process and with no configuration, because it parses containers
+     * rather than calling anything. A deployment that would rather run an
+     * ffprobe sidecar swaps the provider here and touches nothing else.
+     */
+    { provide: AUDIO_METADATA_PROBE, useClass: ContainerAudioProbe },
     Interpreter,
   ],
-  exports: [Interpreter, MODEL_TRANSPORT, SPEECH_TO_TEXT, TEXT_EXTRACTION],
+  exports: [Interpreter, MODEL_TRANSPORT, SPEECH_TO_TEXT, TEXT_EXTRACTION, AUDIO_METADATA_PROBE],
 })
 export class AiModule {}
