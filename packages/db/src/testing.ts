@@ -74,6 +74,8 @@ export async function truncateAll(urls: Urls): Promise<void> {
         command_drafts,
         ai_quota_counters, ai_global_counters,
         usage_events, usage_counters, pending_confirmations, idempotency_records,
+        payment_verification_claims, payment_verification_revocations,
+        payment_verifications, payment_evidence,
         jobs,
         conversation_messages, conversations,
         shops,
