@@ -27,6 +27,7 @@ import {
   schema,
   stockRepo,
   usageRepo,
+  entitlementsRepo,
   withBusiness,
   type Db,
 } from '@rekoda/db';
@@ -189,6 +190,40 @@ describe('the settings a merchant sees first', () => {
     await seedCatalogue(businessId, auth);
     expect((await publish(auth, 'Ada Fashion')).json()).toEqual({ outcome: 'bad_slug' });
     expect((await publish(auth, 'ad')).json()).toEqual({ outcome: 'bad_slug' });
+  });
+
+  /**
+   * The two doors of the same capability, asked the same question.
+   *
+   * Publishing compared plan names while the order endpoint next door asked
+   * `requireEntitlement`. A support-issued grant of REKODA_INTEGRATE was
+   * therefore honoured when a customer placed an order and ignored when the
+   * merchant tried to publish the shop that order would have come from.
+   */
+  it('lets a granted Chat business publish, because the grant is real', async () => {
+    const { businessId, auth } = await onboard('+2348177400020');
+    await seedCatalogue(businessId, auth);
+    await billingRepo.setPlan(db, {
+      businessId,
+      plan: 'chat',
+      expiresAt: null,
+      actor: 'operator:test',
+    });
+    expect((await publish(auth, 'ada-granted-shop')).json()).toEqual({
+      outcome: 'needs_integrate',
+    });
+
+    await withBusiness(db, businessId, (tx) =>
+      entitlementsRepo.grant(tx, {
+        businessId,
+        entitlementKey: 'REKODA_INTEGRATE',
+        source: 'MANUAL_GRANT',
+        grantedBy: 'operator:support',
+      }),
+    );
+
+    const granted = (await publish(auth, 'ada-granted-shop')).json();
+    expect(granted).not.toEqual({ outcome: 'needs_integrate' });
   });
 
   it('keeps publishing behind Integrate, and keeps drafts open to every plan', async () => {

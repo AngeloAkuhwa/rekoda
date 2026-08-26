@@ -602,19 +602,26 @@ export class ShopSettingsController {
     const owner = await identity.ownerPhoneFor(this.db, businessId);
     if (!owner) throw new BadRequestException('this business has no owner to contact');
 
-    const { sellable, plan } = await withBusiness(this.db, businessId, async (tx) => {
+    const { sellable, notEntitled } = await withBusiness(this.db, businessId, async (tx) => {
       const catalogue = await catalogueRepo.catalogueFor(tx, businessId);
       return {
         sellable: catalogue.rows.filter((p) => p.active && p.unitPriceK !== null).length,
-        plan: await usageRepo.planFor(tx, businessId),
+        notEntitled: await entitlementsRepo.requireEntitlement(tx, businessId, 'REKODA_INTEGRATE'),
       };
     });
-    /* The shop link is what the Integrate card sells, and the trial includes
-     * Integrate so a merchant can feel it before paying. Chat publishing was
-     * an accident of role-only gating: the pricing page said one thing and
-     * this door said another. Drafts and take-downs stay open to every plan,
-     * because the gate is on going public, never on keeping what was written. */
-    if (parsed.data.published && plan !== 'trial' && plan !== 'integrate' && plan !== 'complete') {
+    /* The shop link is what the Integrate card sells, and the trial holds
+     * REKODA_INTEGRATE so a merchant can feel it before paying. Drafts and
+     * take-downs stay open to every plan, because the gate is on going
+     * public, never on keeping what was written.
+     *
+     * ENTITLEMENT, not a list of plan names. This door used to read
+     * `plan !== 'trial' && plan !== 'integrate' && plan !== 'complete'`,
+     * which is the same capability the order endpoint next door gates with
+     * `requireEntitlement` — two doors answering one question two ways. A
+     * support-issued MANUAL_GRANT of REKODA_INTEGRATE was honoured when a
+     * customer placed an order and ignored when the merchant tried to
+     * publish the shop that order would have come from. */
+    if (parsed.data.published && notEntitled) {
       return { outcome: 'needs_integrate' };
     }
     /* Publishing an empty page is worse than not publishing: a customer opens
