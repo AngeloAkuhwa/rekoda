@@ -292,6 +292,23 @@ describe('the metered vocabulary (spec 4.2)', () => {
   });
 
   /**
+   * The vocabulary migration switches row-level security off for the length
+   * of its backfill, because `usage_counters` is FORCE ROW LEVEL SECURITY
+   * and a migration has no `app.business_id` to pin: without that the UPDATE
+   * matches zero rows and reports success. Switching it off is safe. Leaving
+   * it off would put every business's meter in front of every other tenant,
+   * and a migration that forgot the last line would look exactly like one
+   * that did not. So the state is asserted rather than assumed.
+   */
+  it('still has row-level security enabled and forced after the backfill', async () => {
+    const rows = await db.execute<{ enabled: boolean; forced: boolean }>(sql`
+      SELECT relrowsecurity AS enabled, relforcerowsecurity AS forced
+      FROM pg_class WHERE relname = 'usage_counters'
+    `);
+    expect([...rows][0]).toEqual({ enabled: true, forced: true });
+  });
+
+  /**
    * Voice is counted in seconds under a name that says minutes, so the two
    * halves have to be checked together: the plan sells sixty minutes, the
    * meter is handed three thousand six hundred, and a one hundred and

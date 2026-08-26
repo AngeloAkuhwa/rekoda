@@ -604,7 +604,7 @@ Size: **S** narrow and reviewable · **M** normal · **L** large but acceptable 
 | PR-011 | R0B | Evidence retention TTL, expiry sweep and legal holds | **yes** | med | PR-003 | M |
 | PR-012 | E1 | Entitlement schema, additive | **yes** | low | — | M | ✅ **MERGED** |
 | PR-013 | E1 | Entitlement resolver and single server-side gate | no | med | PR-012 | M | ✅ **MERGED** |
-| PR-014 | E1 | Metered units expanded to the canonical seventeen | **yes** | med | PR-012 | M |
+| PR-014 | E1 | Metered units expanded to the canonical seventeen | **yes** | med | PR-012 | M | ✅ **MERGED** |
 | PR-015 | E1 | Pre-cost gating for AI, OCR and transcription | no | med | PR-013 | M |
 | PR-016 | E1 | Message-category metering: utility, marketing, auth, service | no | med | PR-014 | M |
 | PR-017 | E1 | UI visibility rules and downgrade behaviour | no | low | PR-013 | M |

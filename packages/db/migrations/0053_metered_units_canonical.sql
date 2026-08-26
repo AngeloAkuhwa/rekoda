@@ -18,6 +18,10 @@
 -- owner too, and a migration has no `app.business_id` to pin: without this
 -- the UPDATE would match zero rows and report success.
 
+-- Rollback: the reverse rename plus the old five-value CHECK, under the same
+-- RLS disable/restore. No data is lost either way, because `used` is never
+-- rescaled: only the label on the row changes.
+
 ALTER TABLE usage_counters DROP CONSTRAINT usage_counters_unit_check;
 
 ALTER TABLE usage_counters DISABLE ROW LEVEL SECURITY;
