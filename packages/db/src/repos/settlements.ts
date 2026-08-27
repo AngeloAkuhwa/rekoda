@@ -243,10 +243,11 @@ export async function settlementsFor(
 /* ── the settlement posting (spec §20, §21.1; PR-065) ───────────────────── */
 
 /** The component kinds whose deduction is a FEE the merchant expensed.
- * RESERVE_* and CHARGEBACK are deliberately absent: a reserve is still the
- * merchant's asset and a chargeback clears a payable (§21.2, PR-066) —
- * expensing either would misstate the books, so a settlement carrying them
- * refuses to post until the PR that owns them lands. */
+ * CHARGEBACK is handled apart (§21.2: its deduction CLEARS THE PAYABLE,
+ * never an expense — PR-066). RESERVE_* is deliberately absent still: a
+ * reserve is the merchant's ASSET held back, and expensing it would
+ * misstate the books, so a settlement carrying one refuses to post until
+ * the PR that models reserves lands. */
 const FEE_KINDS = new Set(['PROCESSING_FEE', 'VAT_ON_FEE', 'WITHHOLDING', 'LEVY']);
 const FEE_CREDIT_KINDS = new Set(['REBATE', 'ADJUSTMENT']);
 
@@ -293,9 +294,16 @@ export async function postSettlement(
 
   const strange = settlement.components
     .map((c) => c.kind)
-    .filter((kind) => !FEE_KINDS.has(kind) && !FEE_CREDIT_KINDS.has(kind));
+    .filter(
+      (kind) => !FEE_KINDS.has(kind) && !FEE_CREDIT_KINDS.has(kind) && !(kind === 'CHARGEBACK'),
+    );
   if (strange.length > 0) {
     return { posted: false, reason: 'unpostable_components', kinds: [...new Set(strange)] };
+  }
+  /* A chargeback ADDITION has no §21 meaning — the provider giving a
+   * dispute back arrives as its own reversal, not as settlement income. */
+  if (settlement.components.some((c) => c.kind === 'CHARGEBACK' && c.direction === 'ADDITION')) {
+    return { posted: false, reason: 'unpostable_components', kinds: ['CHARGEBACK'] };
   }
 
   const clearing = await accountByRole(
@@ -311,11 +319,27 @@ export async function postSettlement(
   const bankId = bankIds.get('BANK_PAYSTACK')!;
 
   const feeDeductionsK = settlement.components
-    .filter((c) => c.direction === 'DEDUCTION')
+    .filter((c) => c.direction === 'DEDUCTION' && FEE_KINDS.has(c.kind))
     .reduce((sum, c) => sum + c.amountK, 0);
   const feeAdditionsK = settlement.components
     .filter((c) => c.direction === 'ADDITION')
     .reduce((sum, c) => sum + c.amountK, 0);
+  /* §21.2's recovery, verbatim: a CHARGEBACK deduction on a settlement
+   * clears the payable the post-settlement chargeback raised. */
+  const chargebackRecoveryK = settlement.components
+    .filter((c) => c.direction === 'DEDUCTION' && c.kind === 'CHARGEBACK')
+    .reduce((sum, c) => sum + c.amountK, 0);
+  let chargebackPayableId: string | null = null;
+  if (chargebackRecoveryK > 0) {
+    const payable = await accountByRole(
+      tx,
+      businessId,
+      'PROVIDER_CHARGEBACK_PAYABLE',
+      settlement.paymentConnectionId,
+    );
+    if (!payable) return { posted: false, reason: 'no_clearing_account' };
+    chargebackPayableId = payable.id;
+  }
 
   const inserted = await tx
     .insert(ledgerTransactions)
@@ -335,6 +359,9 @@ export async function postSettlement(
   const entries = [
     { accountId: bankId, debitK: settlement.netK, creditK: 0 },
     ...(feeDeductionsK > 0 ? [{ accountId: fees.id, debitK: feeDeductionsK, creditK: 0 }] : []),
+    ...(chargebackRecoveryK > 0 && chargebackPayableId
+      ? [{ accountId: chargebackPayableId, debitK: chargebackRecoveryK, creditK: 0 }]
+      : []),
     ...(feeAdditionsK > 0 ? [{ accountId: fees.id, debitK: 0, creditK: feeAdditionsK }] : []),
     { accountId: clearing.id, debitK: 0, creditK: settlement.grossK },
   ].filter((entry) => entry.debitK > 0 || entry.creditK > 0);

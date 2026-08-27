@@ -293,3 +293,37 @@ export const settlementComponents = pgTable(
   },
   (t) => [index('settlement_components_settlement_ix').on(t.businessId, t.settlementId)],
 );
+
+/* ── chargebacks (spec §21; migration 0091, PR-066) ── */
+
+/** The provider taking money back. Timing decides the posting: before
+ * settlement the clearing reverses; after it the merchant owes the
+ * provider — a liability, never a second receivable. */
+export const chargebacks = pgTable(
+  'chargebacks',
+  {
+    id: id(),
+    businessId: uuid('business_id')
+      .notNull()
+      .references(() => businesses.id),
+    paymentConnectionId: uuid('payment_connection_id').notNull(),
+    paymentId: uuid('payment_id').notNull(),
+    providerChargebackId: text('provider_chargeback_id').notNull(),
+    amountK: bigint('amount_k', { mode: 'number' }).notNull(),
+    timing: text('timing').notNull(),
+    recoveredVia: text('recovered_via'),
+    status: text('status').notNull().default('OPEN'),
+    reason: text('reason'),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex('chargebacks_provider_ux').on(
+      t.businessId,
+      t.paymentConnectionId,
+      t.providerChargebackId,
+    ),
+    index('chargebacks_business_status_ix').on(t.businessId, t.status),
+    index('chargebacks_payment_ix').on(t.businessId, t.paymentId),
+  ],
+);
