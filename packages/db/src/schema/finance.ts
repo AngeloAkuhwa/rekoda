@@ -301,6 +301,13 @@ export const ledgerTransactions = pgTable(
     /** §16 invariant: equals the business's own currency; a PR-039 trigger
      * enforces it. Kobo columns everywhere are this currency's minor unit. */
     functionalCurrency: char('functional_currency', { length: 3 }).notNull().default('NGN'),
+    /** §9.4: what kind of financial event this entry records. Partial
+     * unique with (sourceType, sourceId) when set; null on history and on
+     * writers whose purpose is not yet in the vocabulary. */
+    postingPurpose: text('posting_purpose'),
+    /** The ledger-level dedupe key (PR-040) for writers whose event
+     * identity is not (sourceType, sourceId) shaped. Partial unique. */
+    postingKey: text('posting_key'),
     createdAt: createdAt(),
   },
   (t) => [

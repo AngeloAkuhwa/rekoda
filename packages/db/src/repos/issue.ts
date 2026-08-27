@@ -29,6 +29,7 @@ import {
   reversal,
   type LedgerLine,
   type Posting,
+  type PostingPurpose,
 } from '@rekoda/core';
 import { snapshotHash, type DocumentSnapshot } from '@rekoda/core/documents';
 import { normalisePaymentMethod } from '@rekoda/core';
@@ -162,6 +163,13 @@ export async function writePosting(
      * unique violation the endpoint classifies instead of a second posting.
      */
     clientRef?: string | null;
+    /** §9.4: the kind of financial event, joining the ledger-level
+     * idempotency key. Stamp it wherever the (sourceType, sourceId) pair
+     * identifies exactly one event of this kind. */
+    postingPurpose?: PostingPurpose;
+    /** The ledger-level dedupe key for writers whose event identity is
+     * not (sourceType, sourceId) shaped. */
+    postingKey?: string;
   } = {},
 ): Promise<string> {
   /* Refused here as well as by the trigger behind it (migration 0034), and
@@ -182,6 +190,8 @@ export async function writePosting(
       ...(opts.occurredAt ? { createdAt: opts.occurredAt } : {}),
       ...(opts.reversesId ? { reversesId: opts.reversesId } : {}),
       ...(opts.clientRef ? { clientRef: opts.clientRef } : {}),
+      ...(opts.postingPurpose ? { postingPurpose: opts.postingPurpose } : {}),
+      ...(opts.postingKey ? { postingKey: opts.postingKey } : {}),
     })
     .returning({ id: ledgerTransactions.id });
 

@@ -296,6 +296,10 @@ export async function bookVerifiedPayment(
       memo: posting.memo,
       sourceType: input.sourceType ?? 'webhook',
       sourceId: input.eventId,
+      /* §9.4's headline case: a retried webhook cannot produce a second
+       * balanced journal even if every layer above it fails — the partial
+       * unique on (source_type, source_id, posting_purpose) holds it. */
+      postingPurpose: 'PAYMENT_CONFIRMATION',
     })
     .returning({ id: ledgerTransactions.id });
   const ledgerTx = txRows[0];
@@ -857,6 +861,12 @@ export async function recordMerchantPayment(
     }),
     input.sourceType,
     input.sourceId,
+    /* No posting_purpose here, deliberately: two partial payments on one
+     * invoice legitimately share (sourceType, sourceId) — the dashboard
+     * sends the invoice number — and the claim identity is the clientRef,
+     * enforced at the payments layer. §9.4's ledger guard belongs to
+     * writers whose source pair names exactly one event, like the webhook
+     * path above. */
   );
 
   await tx.insert(auditEvents).values({

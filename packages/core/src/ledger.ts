@@ -141,6 +141,24 @@ export function assertBalanced(posting: Posting): void {
   }
 }
 
+/**
+ * §9.4's posting purposes. What kind of financial event a journal entry
+ * records — the third leg of the ledger-level idempotency key, so a retried
+ * webhook cannot produce a second balanced journal even if every layer
+ * above it fails.
+ */
+export const POSTING_PURPOSES = [
+  'PAYMENT_CONFIRMATION',
+  'REVENUE_RECOGNITION',
+  'SETTLEMENT',
+  'CHARGEBACK',
+  'REFUND',
+  'TAX_POINT',
+  'REVERSAL',
+  'CORRECTION',
+] as const;
+export type PostingPurpose = (typeof POSTING_PURPOSES)[number];
+
 const line = (account: AccountKey, debitK: Kobo, creditK: Kobo): LedgerLine => ({
   account,
   debitK,

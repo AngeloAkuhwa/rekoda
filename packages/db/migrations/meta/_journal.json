@@ -498,6 +498,13 @@
       "when": 1787410810000,
       "tag": "0070_journal_invariant_triggers",
       "breakpoints": true
+    },
+    {
+      "idx": 71,
+      "version": "7",
+      "when": 1787410811000,
+      "tag": "0071_posting_key_purpose",
+      "breakpoints": true
     }
   ]
 }
