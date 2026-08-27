@@ -8,7 +8,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { createDb, withBusiness, type Db } from './client.js';
-import { identity, taxRepo } from './index.js';
+import { identity, issueRepo, taxRepo } from './index.js';
 import { migrate, requireUrls, truncateAll, type Urls } from './testing.js';
 
 let urls: Urls;
@@ -113,6 +113,114 @@ describe('the vocabulary is constrained', () => {
           SELECT business_id, id, -100, '2026-01-01' FROM tax_codes
           WHERE business_id = ${businessId}::uuid AND code = 'STANDARD_RATE'
         `),
+      ),
+    ).rejects.toThrow();
+  });
+});
+
+describe('TaxEvent: the tax point recorded once (§13, PR-079)', () => {
+  const sell = (businessId: string, sourceId: string) =>
+    withBusiness(db, businessId, (tx) =>
+      issueRepo.issueSale(tx, {
+        businessId,
+        customerId: null,
+        customerToken: null,
+        items: [{ name: 'wig', quantity: 1, unitPriceK: 10_000_000 }],
+        subtotalK: 10_000_000,
+        discountK: 0,
+        deliveryFeeK: 0,
+        vatK: 750_000,
+        totalK: 10_750_000,
+        paidK: 0,
+        balanceDueK: 10_750_000,
+        method: 'transfer',
+        sourceType: 'chat',
+        sourceId,
+        saleSource: null,
+        dueDate: null,
+        actor: 'system',
+      }),
+    );
+
+  it('an invoice with VAT records the event at ITS tax point, with the posting named', async () => {
+    const businessId = await seedBusiness();
+    const sale = await sell(businessId, 'draft-tax-1');
+    const events = await withBusiness(db, businessId, (tx) => taxRepo.taxEventsFor(tx, businessId));
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      basisMinor: 10_000_000,
+      taxMinor: 750_000,
+      currency: 'NGN',
+      sourceType: 'invoice',
+      sourceId: sale.invoiceId,
+      journalId: sale.ledgerTransactionId,
+    });
+  });
+
+  it('a VAT-free sale records NO event — nothing occurred', async () => {
+    const businessId = await seedBusiness();
+    await withBusiness(db, businessId, (tx) =>
+      issueRepo.issueSale(tx, {
+        businessId,
+        customerId: null,
+        customerToken: null,
+        items: [{ name: 'wig', quantity: 1, unitPriceK: 100_000 }],
+        subtotalK: 100_000,
+        discountK: 0,
+        deliveryFeeK: 0,
+        vatK: 0,
+        totalK: 100_000,
+        paidK: 0,
+        balanceDueK: 100_000,
+        method: 'cash',
+        sourceType: 'chat',
+        sourceId: 'draft-tax-free',
+        saleSource: null,
+        dueDate: null,
+        actor: 'system',
+      }),
+    );
+    expect(
+      await withBusiness(db, businessId, (tx) => taxRepo.taxEventsFor(tx, businessId)),
+    ).toEqual([]);
+  });
+
+  it('the §13 unique absorbs a retry: recording the same point twice is a duplicate', async () => {
+    const businessId = await seedBusiness();
+    const sale = await sell(businessId, 'draft-tax-2');
+    const standing = await withBusiness(db, businessId, (tx) =>
+      taxRepo.taxStandingFor(tx, businessId, 'STANDARD_RATE', '2026-08-27'),
+    );
+    const again = await withBusiness(db, businessId, (tx) =>
+      taxRepo.recordTaxEvent(tx, {
+        businessId,
+        taxCodeId: standing!.taxCodeId,
+        basisMinor: 10_000_000,
+        taxMinor: 750_000,
+        sourceType: 'invoice',
+        sourceId: sale.invoiceId,
+        occurredAt: new Date(),
+      }),
+    );
+    expect(again).toBe('duplicate');
+    expect(
+      await withBusiness(db, businessId, (tx) => taxRepo.taxEventsFor(tx, businessId)),
+    ).toHaveLength(1);
+  });
+
+  it('an event is a fact: no application role can rewrite or delete one', async () => {
+    const businessId = await seedBusiness();
+    await sell(businessId, 'draft-tax-3');
+    await expect(
+      withBusiness(db, businessId, (tx) =>
+        tx.execute(
+          sql`UPDATE tax_events SET tax_minor = 0 WHERE business_id = ${businessId}::uuid`,
+        ),
+      ),
+    ).rejects.toThrow();
+    await expect(
+      withBusiness(db, businessId, (tx) =>
+        tx.execute(sql`DELETE FROM tax_events WHERE business_id = ${businessId}::uuid`),
       ),
     ).rejects.toThrow();
   });

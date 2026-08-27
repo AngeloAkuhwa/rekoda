@@ -12,7 +12,7 @@
  */
 import { and, eq, sql } from 'drizzle-orm';
 import type { TenantDb } from '../client.js';
-import { taxCodes, taxRates } from '../schema/tax.js';
+import { taxCodes, taxEvents, taxRates } from '../schema/tax.js';
 
 /** Nigeria-first defaults, the same rows migration 0099 seeded the
  * estate with. ZERO_RATED and EXEMPT charge nothing and carry no rate
@@ -130,4 +130,81 @@ export async function taxStandingFor(
     /* A non-TAXABLE treatment charges nothing whatever any row says. */
     rateBps: row.treatment === 'TAXABLE' ? Number(row.rate_bps ?? 0) : 0,
   };
+}
+
+/* ── TaxEvent (spec §13; 0100, PR-079) ───────────────────────────────────── */
+
+export interface RecordTaxEventInput {
+  businessId: string;
+  taxCodeId: string;
+  basisMinor: number;
+  taxMinor: number;
+  currency?: string;
+  sourceType: string;
+  sourceId: string;
+  /** The TAX POINT (§13), from the code's point policy — never invented. */
+  occurredAt: Date;
+  /** The posting that carried the tax to the books, when one did. */
+  journalId?: string | null;
+}
+
+/**
+ * Record that a tax point occurred, ONCE: the §13 unique absorbs a
+ * retried issue, so 'duplicate' is an ordinary answer, never an error.
+ */
+export async function recordTaxEvent(
+  tx: TenantDb,
+  input: RecordTaxEventInput,
+): Promise<'recorded' | 'duplicate'> {
+  const inserted = await tx
+    .insert(taxEvents)
+    .values({
+      businessId: input.businessId,
+      taxCodeId: input.taxCodeId,
+      basisMinor: input.basisMinor,
+      taxMinor: input.taxMinor,
+      currency: input.currency ?? 'NGN',
+      sourceType: input.sourceType,
+      sourceId: input.sourceId,
+      occurredAt: input.occurredAt,
+      journalId: input.journalId ?? null,
+    })
+    .onConflictDoNothing()
+    .returning({ id: taxEvents.id });
+  return inserted.length > 0 ? 'recorded' : 'duplicate';
+}
+
+export interface TaxEventRow {
+  id: string;
+  taxCodeId: string;
+  basisMinor: number;
+  taxMinor: number;
+  currency: string;
+  sourceType: string;
+  sourceId: string;
+  occurredAt: Date;
+  journalId: string | null;
+}
+
+export async function taxEventsFor(
+  tx: TenantDb,
+  businessId: string,
+  limit = 200,
+): Promise<TaxEventRow[]> {
+  return tx
+    .select({
+      id: taxEvents.id,
+      taxCodeId: taxEvents.taxCodeId,
+      basisMinor: taxEvents.basisMinor,
+      taxMinor: taxEvents.taxMinor,
+      currency: taxEvents.currency,
+      sourceType: taxEvents.sourceType,
+      sourceId: taxEvents.sourceId,
+      occurredAt: taxEvents.occurredAt,
+      journalId: taxEvents.journalId,
+    })
+    .from(taxEvents)
+    .where(eq(taxEvents.businessId, businessId))
+    .orderBy(taxEvents.occurredAt)
+    .limit(limit);
 }

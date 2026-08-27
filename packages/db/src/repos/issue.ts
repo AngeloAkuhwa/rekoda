@@ -30,6 +30,8 @@ import {
   type LedgerLine,
   type Posting,
   type PostingPurpose,
+  taxPointFor,
+  lagosDay,
 } from '@rekoda/core';
 import { snapshotHash, type DocumentSnapshot } from '@rekoda/core/documents';
 import { normalisePaymentMethod } from '@rekoda/core';
@@ -48,6 +50,7 @@ import {
 } from '../schema/finance.js';
 import { assertPeriodOpen } from './close.js';
 import { appendVerification } from './provenance.js';
+import { recordTaxEvent, taxStandingFor } from './tax.js';
 
 export interface IssueItem {
   name: string;
@@ -445,6 +448,42 @@ export async function issueSale(tx: TenantDb, input: IssueSaleInput): Promise<Is
     .update(invoices)
     .set({ ledgerTransactionId })
     .where(and(eq(invoices.businessId, input.businessId), eq(invoices.id, invoice.id)));
+
+  /* The SEPARATED tax calculator's record (§13, PR-079). The recognition
+   * engine and this write read the same document state and never fuse:
+   * the event is written only when the code's OWN point policy says the
+   * moment has occurred — for the seeded ON_INVOICE_ISSUE codes that is
+   * now, and for a merchant configured ON_PAYMENT_RECEIPT it is not,
+   * whatever this posting just did. The §13 unique absorbs retries. The
+   * basis is the document's non-tax value; documents that never stated a
+   * separate taxable base carry the honest complement, total less tax. */
+  if (input.vatK > 0) {
+    const standing = await taxStandingFor(
+      tx,
+      input.businessId,
+      'STANDARD_RATE',
+      lagosDay(issuedAt),
+    );
+    const taxPoint = standing
+      ? taxPointFor(standing.pointPolicy as Parameters<typeof taxPointFor>[0], {
+          issuedAt,
+          paidAt: null,
+          fulfilledAt: null,
+        })
+      : null;
+    if (standing && taxPoint) {
+      await recordTaxEvent(tx, {
+        businessId: input.businessId,
+        taxCodeId: standing.taxCodeId,
+        basisMinor: input.totalK - input.vatK,
+        taxMinor: input.vatK,
+        sourceType: 'invoice',
+        sourceId: invoice.id,
+        occurredAt: taxPoint,
+        journalId: ledgerTransactionId,
+      });
+    }
+  }
 
   await tx.insert(auditEvents).values({
     businessId: input.businessId,

@@ -9,6 +9,7 @@
  */
 import { sql } from 'drizzle-orm';
 import {
+  bigint,
   boolean,
   date,
   index,
@@ -61,5 +62,32 @@ export const taxRates = pgTable(
   (t) => [
     uniqueIndex('tax_rates_ux').on(t.businessId, t.taxCodeId, t.effectiveFrom),
     index('tax_rates_code_ix').on(t.businessId, t.taxCodeId, t.effectiveFrom),
+  ],
+);
+
+/**
+ * TaxEvent (spec §13; migration 0100, PR-079): the record that a tax
+ * point occurred. Append-only; the §13 unique is the idempotency.
+ */
+export const taxEvents = pgTable(
+  'tax_events',
+  {
+    id: id(),
+    businessId: businessId(),
+    taxCodeId: uuid('tax_code_id').notNull(),
+    basisMinor: bigint('basis_minor', { mode: 'number' }).notNull(),
+    taxMinor: bigint('tax_minor', { mode: 'number' }).notNull(),
+    currency: text('currency').notNull().default('NGN'),
+    sourceType: text('source_type').notNull(),
+    sourceId: text('source_id').notNull(),
+    /** The TAX POINT (§13) — not automatically the recognition moment. */
+    occurredAt: timestamp('occurred_at', { withTimezone: true }).notNull(),
+    /** The posting that carried the tax to the books, when one did. */
+    journalId: uuid('journal_id'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('tax_events_ux').on(t.businessId, t.taxCodeId, t.sourceType, t.sourceId),
+    index('tax_events_business_time_ix').on(t.businessId, t.occurredAt),
   ],
 );
