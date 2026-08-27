@@ -242,6 +242,9 @@ export class BankController {
       lineId: parsed.data.lineId,
       transactionId: parsed.data.transactionId,
       actor: `user:${request.auth!.userId}`,
+      /* §22.1 tier 4: a reason is always recorded. Until the screen grows
+       * the field (PR-076), the door itself is the honest sentence. */
+      reason: parsed.data.reason || 'Paired by hand on the reconciliation screen',
     };
     /* The A1 rollout seam (spec §25). STANDARD, and stays STANDARD: this
      * door only pairs what the rule left open — `matchByHand` refuses any

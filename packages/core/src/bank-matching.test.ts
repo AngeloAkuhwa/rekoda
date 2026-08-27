@@ -14,7 +14,7 @@ describe('pairing a statement with the books', () => {
       [line('L1', '2026-08-03', 15_000_000)],
       [move('T1', '2026-08-03', 15_000_000)],
     );
-    expect(result.matched).toEqual([{ lineId: 'L1', transactionId: 'T1', daysApart: 0 }]);
+    expect(result.matched).toEqual([{ lineId: 'L1', transactionId: 'T1', daysApart: 0, tier: 2 }]);
     expect(result.unmatchedLines).toEqual([]);
     expect(result.unmatchedMovements).toEqual([]);
   });
@@ -143,7 +143,7 @@ describe('pairing a statement with the books', () => {
       [line('L1', '2026-08-03', 15_000_000), line('L2', '2026-08-09', -5_250)],
       [move('T1', '2026-08-03', 15_000_000), move('T2', '2026-08-20', -700_000)],
     );
-    expect(result.matched).toEqual([{ lineId: 'L1', transactionId: 'T1', daysApart: 0 }]);
+    expect(result.matched).toEqual([{ lineId: 'L1', transactionId: 'T1', daysApart: 0, tier: 2 }]);
     expect(result.unmatchedLines).toEqual(['L2']);
     expect(result.unmatchedMovements).toEqual(['T2']);
   });
@@ -172,6 +172,7 @@ describe('pairing a statement with the books', () => {
   it('handles nothing at all on either side', () => {
     expect(matchStatement([], [])).toEqual({
       matched: [],
+      suggestions: [],
       ambiguous: [],
       unmatchedLines: [],
       unmatchedMovements: [],
@@ -189,5 +190,57 @@ describe('pairing a statement with the books', () => {
     );
     expect(result.matched).toEqual([]);
     expect(result.unmatchedLines).toEqual(['L1']);
+  });
+});
+
+describe('tier 1: exact reference (§22.1)', () => {
+  const ref = 'RKD-PAY-20260827-K7M2P4';
+
+  it('cuts through an ambiguity amount-and-date alone could never resolve', () => {
+    /* Two identical postings in the window — tier 2 must refuse. The
+     * reference on one of them decides, and the OTHER line then pairs
+     * with the other posting cleanly at tier 2. */
+    const result = matchStatement(
+      [
+        { id: 'L1', postedOn: '2026-08-20', amountK: 5_000_000, references: [ref] },
+        { id: 'L2', postedOn: '2026-08-20', amountK: 5_000_000 },
+      ],
+      [
+        { transactionId: 'T1', occurredOn: '2026-08-20', amountK: 5_000_000, reference: ref },
+        { transactionId: 'T2', occurredOn: '2026-08-20', amountK: 5_000_000 },
+      ],
+    );
+    expect(result.matched).toEqual([
+      { lineId: 'L1', transactionId: 'T1', daysApart: 0, tier: 1 },
+      { lineId: 'L2', transactionId: 'T2', daysApart: 0, tier: 2 },
+    ]);
+    expect(result.ambiguous).toEqual([]);
+  });
+
+  it('a reference with a disagreeing amount is a SUGGESTION, never a match', () => {
+    /* The bank shows ₦49,900 for a ₦50,000 reference: a charge, a partial,
+     * a typo — a person's question. Two figures are two facts. */
+    const result = matchStatement(
+      [{ id: 'L1', postedOn: '2026-08-20', amountK: 4_990_000, references: [ref] }],
+      [{ transactionId: 'T1', occurredOn: '2026-08-20', amountK: 5_000_000, reference: ref }],
+    );
+    expect(result.matched).toEqual([]);
+    expect(result.suggestions).toEqual([
+      { lineId: 'L1', transactionId: 'T1', why: 'reference_found_amount_differs' },
+    ]);
+    /* Neither side is claimed by a proposal. */
+    expect(result.unmatchedLines).toEqual(['L1']);
+    expect(result.unmatchedMovements).toEqual(['T1']);
+  });
+
+  it('two lines carrying the same reference stop the computer', () => {
+    const result = matchStatement(
+      [
+        { id: 'L1', postedOn: '2026-08-20', amountK: 5_000_000, references: [ref] },
+        { id: 'L2', postedOn: '2026-08-21', amountK: 5_000_000, references: [ref] },
+      ],
+      [{ transactionId: 'T1', occurredOn: '2026-08-20', amountK: 5_000_000, reference: ref }],
+    );
+    expect(result.matched.filter((m) => m.tier === 1)).toEqual([]);
   });
 });

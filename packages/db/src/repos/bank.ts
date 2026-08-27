@@ -13,7 +13,12 @@
  * rule's.
  */
 import { and, eq, sql } from 'drizzle-orm';
-import { fingerprintLines, matchStatement, type BankStatementLine } from '@rekoda/core';
+import {
+  fingerprintLines,
+  matchStatement,
+  paymentReferencesIn,
+  type BankStatementLine,
+} from '@rekoda/core';
 import type { Db, TenantDb } from '../client.js';
 import { codeOf } from './accounts.js';
 import {
@@ -341,6 +346,9 @@ export interface Reconciliation {
    * pair the lines that provably cannot be.
    */
   pairable: number;
+  /** Tier-3 proposals (§22.1): a reference agrees, the amounts do not.
+   * Shown to a person, never applied. */
+  suggested: number;
   /** Lines more than one posting fits, waiting on a person. */
   ambiguous: number;
   /** Lines nothing in the books explains: money nobody recorded. */
@@ -378,20 +386,27 @@ async function bankMovements(
     transaction_id: string;
     occurred_on: string;
     amount_k: string;
+    memo: string | null;
   }>(sql`
     SELECT e.transaction_id,
            (e.created_at AT TIME ZONE 'Africa/Lagos')::date::text AS occurred_on,
-           (SUM(e.debit_k) - SUM(e.credit_k))::bigint AS amount_k
+           (SUM(e.debit_k) - SUM(e.credit_k))::bigint AS amount_k,
+           max(lt.memo) AS memo
     FROM ledger_entries e
     JOIN accounts acc ON acc.id = e.account_id
+    JOIN ledger_transactions lt ON lt.id = e.transaction_id
     WHERE e.business_id = ${businessId}::uuid AND acc.code = ${codeOf('BANK')}
     GROUP BY e.transaction_id, (e.created_at AT TIME ZONE 'Africa/Lagos')::date
     HAVING SUM(e.debit_k) - SUM(e.credit_k) <> 0
   `);
+  /* Only the extracted reference reaches the rule, never the memo itself:
+   * tier 1 matches on the identity §9 minted, and nothing else in a memo
+   * is the matcher's to read (§22.1). */
   return [...rows].map((r) => ({
     transactionId: r.transaction_id,
     occurredOn: r.occurred_on,
     amountK: Number(r.amount_k),
+    reference: paymentReferencesIn(r.memo ?? '')[0] ?? null,
   }));
 }
 
@@ -430,7 +445,13 @@ export async function reconcile(
   const openMovements = movements.filter((m) => !matchedTx.has(m.transactionId));
 
   const result = matchStatement(
-    open.map((l) => ({ id: l.id, postedOn: l.postedOn, amountK: l.amountK })),
+    open.map((l) => ({
+      id: l.id,
+      postedOn: l.postedOn,
+      amountK: l.amountK,
+      /* Only the references the bank text carried, never the text (§22.1). */
+      references: paymentReferencesIn(`${l.narration} ${l.bankRef ?? ''}`),
+    })),
     openMovements,
   );
 
@@ -449,6 +470,7 @@ export async function reconcile(
           lineId: m.lineId,
           transactionId: m.transactionId,
           decidedBy: 'auto',
+          tier: m.tier,
         })),
       )
       .onConflictDoNothing()
@@ -464,6 +486,7 @@ export async function reconcile(
   return {
     matched: existing.length + claimed,
     pairable: result.matched.length - claimed,
+    suggested: result.suggestions.length,
     ambiguous: result.ambiguous.length,
     unmatchedLines: result.unmatchedLines.length,
     unmatchedMovements: result.unmatchedMovements.length,
@@ -631,7 +654,15 @@ export type MatchByHandOutcome =
  */
 export async function matchByHand(
   tx: TenantDb,
-  input: { businessId: string; lineId: string; transactionId: string; actor: string },
+  input: {
+    businessId: string;
+    lineId: string;
+    transactionId: string;
+    actor: string;
+    /** §22.1 tier 4: a person decides, WITH A REASON RECORDED. Non-empty;
+     * the constraint refuses a manual match without one. */
+    reason: string;
+  },
 ): Promise<MatchByHandOutcome> {
   const [line] = await tx
     .select({ id: bankStatementLines.id, amountK: bankStatementLines.amountK })
@@ -678,6 +709,8 @@ export async function matchByHand(
       lineId: input.lineId,
       transactionId: input.transactionId,
       decidedBy: 'manual',
+      tier: 4,
+      reason: input.reason,
     })
     .onConflictDoNothing()
     .returning({ id: bankLineMatches.id });
@@ -692,7 +725,11 @@ export async function matchByHand(
     entity: 'bank_line_match',
     entityId: input.lineId,
     action: 'matched',
-    newValue: { transactionId: input.transactionId, decidedBy: 'manual' } as never,
+    newValue: {
+      transactionId: input.transactionId,
+      decidedBy: 'manual',
+      reason: input.reason,
+    } as never,
     sourceType: 'dashboard',
   });
   return { outcome: 'matched' };

@@ -1355,6 +1355,8 @@ export const bankPositionResponse = z.object({
     matched: z.number().int().nonnegative(),
     /** What the rule would pair if asked. The read never asks. */
     pairable: z.number().int().nonnegative(),
+    /** Tier-3 proposals (§22.1): shown to a person, never applied. */
+    suggested: z.number().int().nonnegative(),
     ambiguous: z.number().int().nonnegative(),
     unmatchedLines: z.number().int().nonnegative(),
     unmatchedMovements: z.number().int().nonnegative(),
@@ -1426,6 +1428,8 @@ export const reconcileResponse = z.object({
   matched: z.number().int().nonnegative(),
   /** Left over after this pass, which outside a race is zero. */
   pairable: z.number().int().nonnegative(),
+  /** Tier-3 proposals (§22.1): shown to a person, never applied. */
+  suggested: z.number().int().nonnegative(),
   ambiguous: z.number().int().nonnegative(),
   /** Lines nothing in the books explains: money nobody recorded. */
   unmatchedLines: z.number().int().nonnegative(),
@@ -1442,6 +1446,10 @@ export type ReconcileResponse = z.infer<typeof reconcileResponse>;
 export const matchLineRequest = z.object({
   lineId: z.string().uuid(),
   transactionId: z.string().uuid(),
+  /** §22.1 tier 4: the person's own words for why these two are the same
+   * money. Optional on the wire until the screen grows the field
+   * (PR-076); the stored reason then names the door instead. */
+  reason: z.string().trim().max(300).optional(),
 });
 
 /**

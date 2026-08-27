@@ -16,6 +16,28 @@
  *     Monday and a merchant records it when it happened.
  *   - One candidate on each side, or nothing. Two postings of ₦20,000 in the
  *     same week are exactly when a computer should stop and ask.
+ *
+ * §22.1's tiers (PR-074), on top of that timidity:
+ *
+ *   1  exact reference       the Rekoda reference minted for exactly this
+ *                            (§9: "what makes reconciliation deterministic")
+ *                            appears on BOTH sides and the amounts agree.
+ *                            Strong enough to cut through an amount-and-date
+ *                            ambiguity nothing else could.
+ *   2  strong deterministic  exact amount, inside the window, one candidate
+ *                            on each side. No counterparty name strengthens
+ *                            this tier, deliberately: customer and supplier
+ *                            names never reach the matcher (the same privacy
+ *                            rule that keeps them out of movement memos), so
+ *                            the both-sides uniqueness IS the third leg.
+ *   3  suggested             proposed to a human, NEVER applied — the
+ *                            `suggestions` and `ambiguous` outputs. A match
+ *                            row of tier 3 is unrepresentable in the store.
+ *   4  manual review         a person decides, with a reason recorded —
+ *                            `matchByHand`, not this function.
+ *
+ * AI can explain. Deterministic logic or an authorised human decides — this
+ * function is the deterministic logic, and nothing model-shaped feeds it.
  */
 
 /** A line as the bank reported it. */
@@ -24,6 +46,12 @@ export interface MatchableLine {
   readonly postedOn: string;
   /** Signed kobo. Positive is money into the account. */
   readonly amountK: number;
+  /**
+   * Rekoda payment references found in the bank's text, extracted by the
+   * caller. The rule never sees the narration itself — only the
+   * references it carried (tier 1).
+   */
+  readonly references?: readonly string[];
 }
 
 /** Movement on the bank account, as the books recorded it. */
@@ -32,13 +60,31 @@ export interface MatchableMovement {
   readonly occurredOn: string;
   /** Signed kobo, same convention: debit less credit on the bank account. */
   readonly amountK: number;
+  /**
+   * The Rekoda payment reference this posting carries, when it carries
+   * one — extracted by the caller, so the rule never reads a memo.
+   */
+  readonly reference?: string | null;
 }
+
+/** §22.1: the tiers that AUTO-match. Tier 3 proposes; tier 4 is a person. */
+export type AutoMatchTier = 1 | 2;
 
 export interface Match {
   readonly lineId: string;
   readonly transactionId: string;
   /** How many days apart the two were. Zero is the ordinary case. */
   readonly daysApart: number;
+  /** Which §22.1 tier decided it: 1 exact reference, 2 strong deterministic. */
+  readonly tier: AutoMatchTier;
+}
+
+/** A tier-3 proposal: shown to a human, NEVER applied (§22.1). */
+export interface Suggestion {
+  readonly lineId: string;
+  readonly transactionId: string;
+  /** Why it is only a suggestion, in vocabulary a surface can explain. */
+  readonly why: 'reference_found_amount_differs';
 }
 
 export interface Ambiguity {
@@ -49,6 +95,10 @@ export interface Ambiguity {
 
 export interface MatchResult {
   readonly matched: readonly Match[];
+  /** Tier 3: the reference says these belong together but the amounts do
+   * not agree — a bank charge, a partial transfer, a typo. Proposed to a
+   * person, never applied: two figures are two facts. */
+  readonly suggestions: readonly Suggestion[];
   /** More than one posting fits, so a person decides. */
   readonly ambiguous: readonly Ambiguity[];
   /** Nothing in the books fits. Often the point: money nobody recorded. */
@@ -101,6 +151,59 @@ export function matchStatement(
   lines: readonly MatchableLine[],
   movements: readonly MatchableMovement[],
 ): MatchResult {
+  /* ── tier 1: exact reference (§22.1) ──────────────────────────────────
+   * The reference was minted to make reconciliation deterministic (§9),
+   * so it is the ONE thing allowed to decide ahead of the amount-and-date
+   * pass — including through an ambiguity that pass could never resolve.
+   * It still refuses on a disagreeing amount: the pair becomes a tier-3
+   * SUGGESTION, because two figures are two facts. */
+  const matched: Match[] = [];
+  const suggestions: Suggestion[] = [];
+  const takenLines = new Set<string>();
+  const takenByReference = new Set<string>();
+
+  const linesByReference = new Map<string, MatchableLine[]>();
+  for (const line of lines) {
+    for (const reference of new Set(line.references ?? [])) {
+      const wanting = linesByReference.get(reference);
+      if (wanting) wanting.push(line);
+      else linesByReference.set(reference, [line]);
+    }
+  }
+  const referenced = movements
+    .filter((m) => m.reference)
+    .sort((a, b) => a.transactionId.localeCompare(b.transactionId));
+  for (const movement of referenced) {
+    if (takenByReference.has(movement.transactionId)) continue;
+    const wanting = (linesByReference.get(movement.reference!) ?? []).filter(
+      (l) => !takenLines.has(l.id),
+    );
+    /* Two lines carrying the same reference is exactly when a computer
+     * should stop: neither is claimed, both stay for the person. */
+    if (wanting.length !== 1) continue;
+    const line = wanting[0]!;
+    if (line.amountK !== movement.amountK) {
+      suggestions.push({
+        lineId: line.id,
+        transactionId: movement.transactionId,
+        why: 'reference_found_amount_differs',
+      });
+      continue;
+    }
+    matched.push({
+      lineId: line.id,
+      transactionId: movement.transactionId,
+      daysApart: daysBetween(line.postedOn, movement.occurredOn),
+      tier: 1,
+    });
+    takenLines.add(line.id);
+    takenByReference.add(movement.transactionId);
+  }
+
+  const openLines = lines.filter((l) => !takenLines.has(l.id));
+  const openMovements = movements.filter((m) => !takenByReference.has(m.transactionId));
+
+  /* ── tier 2: strong deterministic ─────────────────────────────────── */
   const candidatesFor = new Map<string, string[]>();
   const wantedBy = new Map<string, string[]>();
 
@@ -115,14 +218,14 @@ export function matchStatement(
    */
   const byAmount = new Map<number, MatchableMovement[]>();
   const byTransactionId = new Map<string, MatchableMovement>();
-  for (const m of movements) {
+  for (const m of openMovements) {
     const bucket = byAmount.get(m.amountK);
     if (bucket) bucket.push(m);
     else byAmount.set(m.amountK, [m]);
     byTransactionId.set(m.transactionId, m);
   }
 
-  for (const line of lines) {
+  for (const line of openLines) {
     const fits = (byAmount.get(line.amountK) ?? []).filter(
       (m) => daysBetween(line.postedOn, m.occurredOn) <= MATCH_WINDOW_DAYS,
     );
@@ -137,12 +240,11 @@ export function matchStatement(
     }
   }
 
-  const matched: Match[] = [];
   const ambiguous: Ambiguity[] = [];
   const unmatchedLines: string[] = [];
-  const takenMovements = new Set<string>();
+  const takenMovements = new Set<string>(takenByReference);
 
-  for (const line of lines) {
+  for (const line of openLines) {
     const candidates = candidatesFor.get(line.id) ?? [];
     if (candidates.length === 0) {
       unmatchedLines.push(line.id);
@@ -163,6 +265,7 @@ export function matchStatement(
       lineId: line.id,
       transactionId: only,
       daysApart: daysBetween(line.postedOn, movement.occurredOn),
+      tier: 2,
     });
     takenMovements.add(only);
   }
@@ -174,6 +277,7 @@ export function matchStatement(
 
   return {
     matched,
+    suggestions,
     ambiguous,
     unmatchedLines,
     unmatchedMovements: left

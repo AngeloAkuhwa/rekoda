@@ -143,7 +143,13 @@ describe('ConfirmReconciliation through the bus', () => {
   it('confirms once, announces once, and the replay answers the first confirmation', async () => {
     const businessId = await seedBusiness();
     const { lineId, transactionId } = await seedMatchable(businessId);
-    const input = { businessId, lineId, transactionId, actor: 'user:test' };
+    const input = {
+      businessId,
+      lineId,
+      transactionId,
+      actor: 'user:test',
+      reason: 'testing the pairing by hand',
+    };
     const envelope = {
       businessId,
       command: 'ConfirmReconciliation' as const,
@@ -185,6 +191,7 @@ describe('ConfirmReconciliation through the bus', () => {
         lineId,
         transactionId: '00000000-0000-0000-0000-000000000001',
         actor: 'user:test',
+        reason: 'testing the pairing by hand',
       }),
     );
     expect(refused.outcome).toBe('refused');

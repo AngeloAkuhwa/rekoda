@@ -130,6 +130,18 @@ export function mintReference(prefix: string, at: Date, random: RandomBytes): st
 export const PAYMENT_REFERENCE_PATTERN = /^RKD-PAY-\d{8}-[0-9A-HJKMNP-TV-Z]{6}$/;
 
 /**
+ * Every Rekoda payment reference a free text carries (§9, §22.1 tier 1).
+ *
+ * Case-insensitive and normalised to the minted casing, because a bank's
+ * narration processor may fold case; the alphabet stays the minted one
+ * (no I, L, O, U), so a reference read over a phone still scans.
+ */
+export function paymentReferencesIn(text: string): string[] {
+  const found = text.toUpperCase().match(/RKD-PAY-\d{8}-[0-9A-HJKMNP-TV-Z]{6}/g);
+  return found ? [...new Set(found)] : [];
+}
+
+/**
  * The graduation gate (ADR 0019, fix-plan 6 M5d). A Paystack Starter
  * account carries a N2,000,000 LIFETIME collection cap; crossing N1,500,000
  * is the moment to say so, while there is still room to register before

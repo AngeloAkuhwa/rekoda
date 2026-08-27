@@ -19,6 +19,7 @@ import {
   jsonb,
   numeric,
   pgTable,
+  smallint,
   text,
   timestamp,
   uniqueIndex,
@@ -438,8 +439,15 @@ export const bankLineMatches = pgTable(
     transactionId: uuid('transaction_id')
       .notNull()
       .references(() => ledgerTransactions.id),
-    /** `auto` when the rule was certain, `manual` when a person decided. */
+    /** `auto` when the rule was certain, `manual` when a person decided.
+     * No `ai` value exists: AI can explain, never decide (§22.1). */
     decidedBy: text('decided_by').notNull(),
+    /** Which §22.1 tier decided it: 1 exact reference, 2 strong
+     * deterministic, 4 manual. Tier 3 (suggested) is never applied, so a
+     * tier-3 match is unrepresentable (migration 0096). */
+    tier: smallint('tier').notNull(),
+    /** The person's sentence, required exactly when a person decided. */
+    reason: text('reason'),
     matchedAt: timestamp('matched_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
