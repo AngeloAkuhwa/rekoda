@@ -77,6 +77,13 @@ import { adjustInventoryWork, type AdjustInventoryInput } from '../commands/stoc
 import { eraseDataWork } from '../commands/privacy-commands.js';
 import type { MessageSender } from '../channels/sender.js';
 
+/** PR-058a-3: the explicit MERCHANT thread identity, when the resolver
+ * flag asks ingresses to state it. Same row either way. */
+const merchantThread = (deps: InboundMessageDeps, businessId: string) =>
+  deps.config.conversationResolver
+    ? ({ kind: 'MERCHANT', businessId, channel: 'meta' } as const)
+    : undefined;
+
 const paymentLog = new Logger('InboundMessageJob');
 
 export interface InboundMessageDeps {
@@ -213,13 +220,17 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
         return;
       }
     } else if (inbound.messageType !== 'text') {
-      const recorded = await conversationsRepo.recordInbound(tx, {
-        businessId,
-        channel: 'meta',
-        kind: 'media',
-        body: `[${inbound.messageType} message]`,
-        providerMessageId: inbound.externalId,
-      });
+      const recorded = await conversationsRepo.recordInbound(
+        tx,
+        {
+          businessId,
+          channel: 'meta',
+          kind: 'media',
+          body: `[${inbound.messageType} message]`,
+          providerMessageId: inbound.externalId,
+        },
+        merchantThread(deps, businessId),
+      );
       if (recorded.isNew) {
         await deps.replySender.send(tx, {
           businessId,
@@ -265,13 +276,17 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
             route.route === 'deterministic' ? describeIntent(route.intent) : tokenised!.text,
           ),
         }
-      : await conversationsRepo.recordInbound(tx, {
-          businessId,
-          channel: 'meta',
-          kind: 'text',
-          body: route.route === 'deterministic' ? describeIntent(route.intent) : tokenised!.text,
-          providerMessageId: inbound.externalId,
-        });
+      : await conversationsRepo.recordInbound(
+          tx,
+          {
+            businessId,
+            channel: 'meta',
+            kind: 'text',
+            body: route.route === 'deterministic' ? describeIntent(route.intent) : tokenised!.text,
+            providerMessageId: inbound.externalId,
+          },
+          merchantThread(deps, businessId),
+        );
 
     /**
      * `isNew` is what stops a re-run — a reclaimed job, a redelivered webhook
@@ -359,13 +374,17 @@ async function readReceiptPhoto(
   inbound: { externalId: string; from: string; imageId: string | null; caption: string | null },
   log: Logger,
 ): Promise<{ text: string; messageId: string } | null> {
-  const recorded = await conversationsRepo.recordInbound(tx, {
-    businessId,
-    channel: 'meta',
-    kind: 'media',
-    body: '[receipt photo]',
-    providerMessageId: inbound.externalId,
-  });
+  const recorded = await conversationsRepo.recordInbound(
+    tx,
+    {
+      businessId,
+      channel: 'meta',
+      kind: 'media',
+      body: '[receipt photo]',
+      providerMessageId: inbound.externalId,
+    },
+    merchantThread(deps, businessId),
+  );
   /* A redelivered webhook must not read, meter and answer twice. */
   if (!recorded.isNew) return null;
 
@@ -479,13 +498,17 @@ async function transcribeVoiceNote(
   inbound: { externalId: string; from: string; audioId: string | null },
   log: Logger,
 ): Promise<{ transcript: Transcript; messageId: string } | null> {
-  const recorded = await conversationsRepo.recordInbound(tx, {
-    businessId,
-    channel: 'meta',
-    kind: 'voice',
-    body: '[voice note]',
-    providerMessageId: inbound.externalId,
-  });
+  const recorded = await conversationsRepo.recordInbound(
+    tx,
+    {
+      businessId,
+      channel: 'meta',
+      kind: 'voice',
+      body: '[voice note]',
+      providerMessageId: inbound.externalId,
+    },
+    merchantThread(deps, businessId),
+  );
   /* A redelivered webhook must not transcribe, meter and answer twice. The
    * body is replaced with the transcript below only on the first pass. */
   if (!recorded.isNew) return null;

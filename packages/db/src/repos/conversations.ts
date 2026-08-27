@@ -53,6 +53,63 @@ export async function threadFor(
   return row.id;
 }
 
+/* ── the thread resolver (Appendix F.2; PR-058a-3) ─────────────────────── */
+
+/**
+ * Which thread a message belongs to, stated as an identity rather than
+ * assumed from a channel. MERCHANT is the old world, verbatim; CUSTOMER is
+ * F.2's routing key — businessId + channel + channelAccountId +
+ * participantBlindIndex — which can RESOLVE today and can only CREATE once
+ * 058a-4 replaces the broad unique with the two partial constraints.
+ */
+export type ThreadTarget =
+  | { kind: 'MERCHANT'; businessId: string; channel: Channel }
+  | {
+      kind: 'CUSTOMER';
+      businessId: string;
+      channel: Channel;
+      channelAccountId: string;
+      participantBlindIndex: string;
+      participantIndexKeyVersion: string;
+      customerId?: string | null;
+    };
+
+/** Creation of customer threads arrives with 058a-4's constraints. */
+export class CustomerThreadsNotYetEnabled extends Error {
+  constructor() {
+    super('customer threads await the F.2 constraints (PR-058a-4); refusing to create one early');
+  }
+}
+
+export async function resolveThread(tx: TenantDb, target: ThreadTarget): Promise<string> {
+  if (target.kind === 'MERCHANT') {
+    /* The old rule was CORRECT for merchant threads: exactly one per
+     * business per channel. Same function, same row. */
+    return threadFor(tx, target.businessId, target.channel);
+  }
+
+  const rows = await tx
+    .select({ id: conversations.id })
+    .from(conversations)
+    .where(
+      and(
+        eq(conversations.businessId, target.businessId),
+        eq(conversations.channel, target.channel),
+        eq(conversations.conversationKind, 'CUSTOMER'),
+        eq(conversations.channelAccountId, target.channelAccountId),
+        eq(conversations.participantBlindIndex, target.participantBlindIndex),
+        eq(conversations.participantIndexKeyVersion, target.participantIndexKeyVersion),
+      ),
+    )
+    .limit(1);
+  const row = rows[0];
+  if (row) return row.id;
+  /* Creating one BEFORE the partial constraints exist would let a customer
+   * thread occupy the broad unique's single slot and lock the merchant out
+   * of their own channel. Refuse loudly instead of breaking Chat. */
+  throw new CustomerThreadsNotYetEnabled();
+}
+
 export interface InboundMessage {
   businessId: string;
   channel: Channel;
@@ -73,8 +130,12 @@ export interface InboundMessage {
 export async function recordInbound(
   tx: TenantDb,
   message: InboundMessage,
+  thread?: ThreadTarget,
 ): Promise<{ id: string; isNew: boolean }> {
-  const conversationId = await threadFor(tx, message.businessId, message.channel);
+  const conversationId = await resolveThread(
+    tx,
+    thread ?? { kind: 'MERCHANT', businessId: message.businessId, channel: message.channel },
+  );
 
   const inserted = await tx
     .insert(conversationMessages)
@@ -127,6 +188,37 @@ export async function messagesFor(
     })
     .from(conversationMessages)
     .where(eq(conversationMessages.businessId, businessId))
+    .orderBy(conversationMessages.createdAt)
+    .limit(limit);
+}
+
+/**
+ * The messages of ONE thread (PR-058a-3): resolved by identity, scoped by
+ * conversation. For a MERCHANT target this returns exactly what
+ * `messagesFor` returns today — one business, one thread — which is the
+ * flag-equivalence the cutover stands on.
+ */
+export async function messagesForThread(
+  tx: TenantDb,
+  target: ThreadTarget,
+  limit = 50,
+): Promise<StoredMessage[]> {
+  const conversationId = await resolveThread(tx, target);
+  return tx
+    .select({
+      id: conversationMessages.id,
+      direction: conversationMessages.direction,
+      kind: conversationMessages.kind,
+      body: conversationMessages.body,
+      providerMessageId: conversationMessages.providerMessageId,
+    })
+    .from(conversationMessages)
+    .where(
+      and(
+        eq(conversationMessages.businessId, target.businessId),
+        eq(conversationMessages.conversationId, conversationId),
+      ),
+    )
     .orderBy(conversationMessages.createdAt)
     .limit(limit);
 }
@@ -240,8 +332,12 @@ export interface OutboundMessageInput {
 export async function recordOutbound(
   tx: TenantDb,
   message: OutboundMessageInput,
+  thread?: ThreadTarget,
 ): Promise<{ id: string }> {
-  const conversationId = await threadFor(tx, message.businessId, message.channel);
+  const conversationId = await resolveThread(
+    tx,
+    thread ?? { kind: 'MERCHANT', businessId: message.businessId, channel: message.channel },
+  );
   const rows = await tx
     .insert(conversationMessages)
     .values({

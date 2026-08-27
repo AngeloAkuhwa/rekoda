@@ -66,12 +66,21 @@ export class ReplySender {
       return { delivered: false };
     }
 
-    const recorded = await conversationsRepo.recordOutbound(tx, {
-      businessId: input.businessId,
-      channel: 'meta',
-      kind: 'text',
-      body: safe.text,
-    });
+    const recorded = await conversationsRepo.recordOutbound(
+      tx,
+      {
+        businessId: input.businessId,
+        channel: 'meta',
+        kind: 'text',
+        body: safe.text,
+      },
+      /* PR-058a-3: state the thread identity instead of assuming it. The
+       * MERCHANT target resolves to the same row either way; the flag is
+       * the seam customer routing plugs into. */
+      this.config.conversationResolver
+        ? { kind: 'MERCHANT', businessId: input.businessId, channel: 'meta' }
+        : undefined,
+    );
 
     // The one moment. A local, not a field, not a log line, not a row.
     const forHuman = input.tokens?.size ? rehydrate(safe.text, input.tokens) : safe.text;

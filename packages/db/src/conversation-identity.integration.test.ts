@@ -205,3 +205,79 @@ describe('the backfill and classification at birth (F.6; PR-058a-2)', () => {
     });
   });
 });
+
+describe('the resolver (F.2; PR-058a-3)', () => {
+  async function freshBusiness(): Promise<string> {
+    seq += 1;
+    const user = await identity.upsertUserByPhone(db, `+23481897${String(seq).padStart(4, '0')}`);
+    const business = await identity.createBusinessWithOwner(db, {
+      name: 'Ada Fashion',
+      businessType: null,
+      ownerUserId: user.id,
+    });
+    return business.id;
+  }
+
+  it('a MERCHANT target is the old rule, verbatim: same function, same row', async () => {
+    const businessId = await freshBusiness();
+    const viaThreadFor = await withBusiness(db, businessId, (tx) =>
+      conversationsRepo.threadFor(tx, businessId, 'meta'),
+    );
+    const viaResolver = await withBusiness(db, businessId, (tx) =>
+      conversationsRepo.resolveThread(tx, { kind: 'MERCHANT', businessId, channel: 'meta' }),
+    );
+    expect(viaResolver).toBe(viaThreadFor);
+  });
+
+  it('a writer given the explicit identity lands in the same thread as one that assumed it', async () => {
+    const businessId = await freshBusiness();
+    const assumed = await withBusiness(db, businessId, (tx) =>
+      conversationsRepo.recordInbound(tx, {
+        businessId,
+        channel: 'meta',
+        kind: 'text',
+        body: 'sold 2 wigs',
+        providerMessageId: `wamid-${seq}-a`,
+      }),
+    );
+    const explicit = await withBusiness(db, businessId, (tx) =>
+      conversationsRepo.recordInbound(
+        tx,
+        {
+          businessId,
+          channel: 'meta',
+          kind: 'text',
+          body: 'and one gele',
+          providerMessageId: `wamid-${seq}-b`,
+        },
+        { kind: 'MERCHANT', businessId, channel: 'meta' },
+      ),
+    );
+    expect(assumed.isNew && explicit.isNew).toBe(true);
+
+    const scoped = await withBusiness(db, businessId, (tx) =>
+      conversationsRepo.messagesForThread(tx, { kind: 'MERCHANT', businessId, channel: 'meta' }),
+    );
+    const broad = await withBusiness(db, businessId, (tx) =>
+      conversationsRepo.messagesFor(tx, businessId),
+    );
+    expect(scoped.map((m) => m.id)).toEqual(broad.map((m) => m.id));
+    expect(scoped).toHaveLength(2);
+  });
+
+  it('a CUSTOMER thread cannot be created early: it would occupy the broad unique and lock the merchant out', async () => {
+    const businessId = await freshBusiness();
+    await expect(
+      withBusiness(db, businessId, (tx) =>
+        conversationsRepo.resolveThread(tx, {
+          kind: 'CUSTOMER',
+          businessId,
+          channel: 'meta',
+          channelAccountId: 'pn-900',
+          participantBlindIndex: 'blind:xyz',
+          participantIndexKeyVersion: 'V1',
+        }),
+      ),
+    ).rejects.toBeInstanceOf(conversationsRepo.CustomerThreadsNotYetEnabled);
+  });
+});
