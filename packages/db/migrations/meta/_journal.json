@@ -519,6 +519,13 @@
       "when": 1787410813000,
       "tag": "0073_posted_draft_lock",
       "breakpoints": true
+    },
+    {
+      "idx": 74,
+      "version": "7",
+      "when": 1787410814000,
+      "tag": "0074_receivable_policy",
+      "breakpoints": true
     }
   ]
 }

@@ -694,3 +694,23 @@ export const journalDraftLines = pgTable('journal_draft_lines', {
   position: integer('position').notNull().default(0),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
+
+/* ── receivable recognition policy (spec §12.3, §12.5; migration 0074) ── */
+
+/**
+ * Versioned, forward-looking, append-only (0074 revokes UPDATE/DELETE).
+ * Resolution is BY DATE, so historical accounting never changes because a
+ * policy changed later. Absence means ON_ISSUE_UNCONDITIONAL.
+ */
+export const receivableRecognitionPolicies = pgTable('receivable_recognition_policies', {
+  id: uuid('id')
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  businessId: uuid('business_id')
+    .notNull()
+    .references(() => businesses.id),
+  policy: text('policy').notNull(), // ON_ISSUE_UNCONDITIONAL | ON_FULFILMENT | NONE
+  effectiveFrom: date('effective_from').notNull(),
+  createdBy: text('created_by').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
