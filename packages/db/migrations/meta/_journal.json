@@ -575,6 +575,13 @@
       "when": 1787410821000,
       "tag": "0081_payment_attempts",
       "breakpoints": true
+    },
+    {
+      "idx": 82,
+      "version": "7",
+      "when": 1787410822000,
+      "tag": "0082_fee_bearer_split",
+      "breakpoints": true
     }
   ]
 }

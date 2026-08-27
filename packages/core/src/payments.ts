@@ -64,6 +64,22 @@ export type SettlementStatus =
 
 export type FeePolicy = 'customer_bearing' | 'merchant_bearing' | 'platform_bearing';
 
+/** §19: who ends up out of pocket. Rekoda's concept — never the provider's. */
+export const ECONOMIC_FEE_BEARERS = ['MERCHANT', 'CUSTOMER', 'REKODA', 'SHARED'] as const;
+export type EconomicFeeBearer = (typeof ECONOMIC_FEE_BEARERS)[number];
+
+/** What each blended fee policy always meant economically. One place. */
+export function bearerOfFeePolicy(policy: FeePolicy): EconomicFeeBearer {
+  switch (policy) {
+    case 'customer_bearing':
+      return 'CUSTOMER';
+    case 'platform_bearing':
+      return 'REKODA';
+    case 'merchant_bearing':
+      return 'MERCHANT';
+  }
+}
+
 /* ── the Rekoda reference (payments-v1 §9) ────────────────────────────────── */
 
 /**

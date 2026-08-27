@@ -74,6 +74,9 @@ export async function upsertConnection(
       settlementAccountLast4: input.settlementAccountLast4 ?? null,
       settlementAccountName: input.settlementAccountName ?? null,
       status: 'pending_provider_creation',
+      /* §19 (PR-056): the platform subaccount model tells paystack the
+       * subaccount pays; the economic bearer stays the merchant. */
+      ...(input.providerType === 'paystack' ? { providerFeePayer: 'subaccount' } : {}),
     })
     .onConflictDoUpdate({
       target: [paymentConnections.businessId, paymentConnections.providerType],
@@ -519,6 +522,8 @@ export async function storeMerchantKey(
       commercialStatus: 'AGREED',
       representation: 'DIRECT_MERCHANT',
       credentialSource: 'MERCHANT_SUPPLIED',
+      /* §19: on the merchant's own key, the account itself pays. */
+      ...(input.providerType === 'paystack' ? { providerFeePayer: 'account' } : {}),
     })
     .onConflictDoUpdate({
       target: [paymentConnections.businessId, paymentConnections.providerType],

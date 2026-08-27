@@ -403,3 +403,66 @@ describe('payment attempts (§6.1, §22.3; PR-054)', () => {
     ).rejects.toThrow();
   });
 });
+
+describe('economic bearer vs provider payer (§19; PR-056)', () => {
+  it('a platform connection: the merchant bears, the subaccount pays', async () => {
+    const { businessId, connectionId } = await seedConnection();
+    const rows = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ economic_fee_bearer: string; provider_fee_payer: string | null }>(sql`
+        SELECT economic_fee_bearer, provider_fee_payer FROM payment_connections
+        WHERE id = ${connectionId}::uuid
+      `),
+    );
+    expect([...rows][0]).toEqual({
+      economic_fee_bearer: 'MERCHANT',
+      provider_fee_payer: 'subaccount',
+    });
+  });
+
+  it("a merchant on their own key: the account itself pays; the bearer is still Rekoda's concept", async () => {
+    seq += 1;
+    const user = await identity.upsertUserByPhone(db, `+23481868${String(seq).padStart(4, '0')}`);
+    const business = await identity.createBusinessWithOwner(db, {
+      name: 'Ada Fashion',
+      businessType: null,
+      ownerUserId: user.id,
+    });
+    await withBusiness(db, business.id, (tx) =>
+      paymentsHub.storeMerchantKey(tx, {
+        businessId: business.id,
+        providerType: 'paystack',
+        merchantKeyCipher: 'vault:blob',
+        merchantKeyTail: '2222',
+      }),
+    );
+    const rows = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ economic_fee_bearer: string; provider_fee_payer: string | null }>(sql`
+        SELECT economic_fee_bearer, provider_fee_payer FROM payment_connections
+        WHERE business_id = ${business.id}::uuid
+      `),
+    );
+    expect([...rows][0]).toEqual({
+      economic_fee_bearer: 'MERCHANT',
+      provider_fee_payer: 'account',
+    });
+  });
+
+  it('the bearer is enumerated; the payer is opaque to the core', async () => {
+    const { businessId, connectionId } = await seedConnection();
+    /* An unknown bearer is unrepresentable. */
+    await expect(
+      withBusiness(db, businessId, (tx) =>
+        tx.execute(
+          sql`UPDATE payment_connections SET economic_fee_bearer = 'FRIEND' WHERE id = ${connectionId}::uuid`,
+        ),
+      ),
+    ).rejects.toThrow();
+    /* A provider-side value the core has never heard of is FINE: the
+     * adapter that owns the vocabulary validates it. */
+    await withBusiness(db, businessId, (tx) =>
+      tx.execute(
+        sql`UPDATE payment_connections SET provider_fee_payer = 'all-proportional' WHERE id = ${connectionId}::uuid`,
+      ),
+    );
+  });
+});

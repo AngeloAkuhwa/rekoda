@@ -74,8 +74,16 @@ export const paymentConnections = pgTable(
     accountOwnership: text('account_ownership').notNull().default('MERCHANT_OWNED'),
     representation: text('representation').notNull().default('SUB_MERCHANT'),
     credentialSource: text('credential_source').notNull().default('PLATFORM_ISSUED'),
-    /** Who bears the provider's fee (§14) — commercial choice, never code. */
+    /** Who bears the provider's fee (§14) — commercial choice, never code.
+     * BLENDED and narrowing: §19 splits it into the two columns below
+     * (PR-056); the split arithmetic still reads this until the
+     * PaymentCharge model lands. */
     feePolicy: text('fee_policy').notNull().default('merchant_bearing'),
+    /** §19: who ends up out of pocket. Rekoda's concept, enumerated. */
+    economicFeeBearer: text('economic_fee_bearer').notNull().default('MERCHANT'),
+    /** §19: what we send to the provider. Adapter-specific, opaque to the
+     * core — the adapter that owns the vocabulary validates it. */
+    providerFeePayer: text('provider_fee_payer'),
     /**
      * The merchant's OWN provider secret key (ADR 0019, migration 0046),
      * vaulted like the account number beside it. `merchant_key` mode is what
