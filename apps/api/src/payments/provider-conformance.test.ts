@@ -12,6 +12,14 @@
  * or HONESTLY absent — never an invented empty day, never an invented
  * batch. Each adapter supplies only its fixtures; the assertions are one
  * set, which is what "provider neutrality" means when it is true.
+ *
+ * The fourth provider (Kuda, PR-071) forced the suite to admit what §6–7
+ * of the payments canon always said: capabilities are modelled
+ * explicitly, so a kit DECLARES whether its provider has a hosted
+ * checkout at all. A 'none' kit owes a different promise for
+ * initialization — an honest refusal naming the gap, with NO request —
+ * and the credential assertion rides the verification case so every kit
+ * proves its auth, checkout or not.
  */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -19,6 +27,7 @@ import type { PaymentProviderPort } from './provider.port.js';
 import { PaystackProvider } from './paystack.provider.js';
 import { MonoDirectPayProvider } from './mono-directpay.provider.js';
 import { OPayProvider } from './opay.provider.js';
+import { KudaProvider } from './kuda.provider.js';
 
 interface Recorded {
   method: string;
@@ -32,13 +41,20 @@ interface ConformanceKit {
   make(baseUrl: string): PaymentProviderPort;
   /** The credential must ride every request, however this wire spells it. */
   assertAuth(recorded: Recorded): void;
-  initialize: {
-    ok(res: ServerResponse): void;
-    refusal(res: ServerResponse): void;
-    checkoutUrl: string;
-    /** What the wire carried as the amount — must be the kobo, untouched. */
-    amountOnWire(body: unknown): unknown;
-  };
+  initialize:
+    | {
+        capability: 'hosted_checkout';
+        ok(res: ServerResponse): void;
+        refusal(res: ServerResponse): void;
+        checkoutUrl: string;
+        /** What the wire carried as the amount — must be the kobo, untouched. */
+        amountOnWire(body: unknown): unknown;
+      }
+    | {
+        /** No hosted checkout exists — the adapter must refuse, not invent. */
+        capability: 'none';
+        gap: RegExp;
+      };
   verify: {
     success(res: ServerResponse): void;
     failed(res: ServerResponse): void;
@@ -59,6 +75,7 @@ const paystackKit: ConformanceKit = {
     expect(recorded.headers['authorization']).toBe('Bearer sk_test_secret');
   },
   initialize: {
+    capability: 'hosted_checkout',
     ok: (res) => {
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(
@@ -129,6 +146,7 @@ const monoKit: ConformanceKit = {
     expect(recorded.headers['mono-sec-key']).toBe('test_sk_mono');
   },
   initialize: {
+    capability: 'hosted_checkout',
     ok: (res) => {
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(
@@ -188,6 +206,7 @@ const opayKit: ConformanceKit = {
     expect(recorded.headers['merchantid']).toBe('merchant_256');
   },
   initialize: {
+    capability: 'hosted_checkout',
     ok: (res) => {
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(
@@ -239,7 +258,52 @@ const opayKit: ConformanceKit = {
   settlements: 'none',
 };
 
-for (const kit of [paystackKit, monoKit, opayKit]) {
+const kudaKit: ConformanceKit = {
+  providerType: 'kuda',
+  make: (baseUrl) => new KudaProvider('ktoken_test', baseUrl),
+  assertAuth: (recorded) => {
+    expect(recorded.headers['authorization']).toBe('Bearer ktoken_test');
+  },
+  /* A bank, not a checkout: initialization is honestly refused. */
+  initialize: { capability: 'none', gap: /no hosted checkout/ },
+  verify: {
+    success: (res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          status: true,
+          message: 'Transaction successful',
+          data: {
+            transactionReference: 'kt_1',
+            status: 'Successful',
+            amount: 4_500_000,
+            transactionDate: '2026-08-27T10:00:00.000Z',
+          },
+        }),
+      );
+    },
+    failed: (res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          status: true,
+          message: 'Transaction failed',
+          data: { transactionReference: 'kt_2', status: 'Failed', amount: 4_500_000 },
+        }),
+      );
+    },
+    notFound: (res) => {
+      /* Kuda answers an unknown reference IN-BAND: status false, HTTP 200. */
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ status: false, message: 'Transaction not found', data: null }));
+    },
+    /* Kuda states no fee on the status query; the bank record carries cost. */
+    successFeeK: 0,
+  },
+  settlements: 'none',
+};
+
+for (const kit of [paystackKit, monoKit, opayKit, kudaKit]) {
   describe(`provider conformance: ${kit.providerType}`, () => {
     let server: Server;
     let baseUrl: string;
@@ -286,34 +350,44 @@ for (const kit of [paystackKit, monoKit, opayKit]) {
       customerEmail: 'adaeze@example.com',
     };
 
-    it('carries kobo UNMULTIPLIED under its own credential', async () => {
-      respond = (_req, res) => kit.initialize.ok(res);
-      const outcome = await kit.make(baseUrl).initializeTransaction(input);
-      expect(outcome).toMatchObject({
-        state: 'initialized',
-        checkoutUrl: kit.initialize.checkoutUrl,
+    const init = kit.initialize;
+    if (init.capability === 'hosted_checkout') {
+      it('carries kobo UNMULTIPLIED under its own credential', async () => {
+        respond = (_req, res) => init.ok(res);
+        const outcome = await kit.make(baseUrl).initializeTransaction(input);
+        expect(outcome).toMatchObject({
+          state: 'initialized',
+          checkoutUrl: init.checkoutUrl,
+        });
+        expect(requests).toHaveLength(1);
+        kit.assertAuth(requests[0]!);
+        expect(init.amountOnWire(requests[0]!.body)).toBe(4_500_000);
       });
-      expect(requests).toHaveLength(1);
-      kit.assertAuth(requests[0]!);
-      expect(kit.initialize.amountOnWire(requests[0]!.body)).toBe(4_500_000);
-    });
 
-    it('answers a missing email as a product state, with NO request', async () => {
-      const outcome = await kit
-        .make(baseUrl)
-        .initializeTransaction({ ...input, customerEmail: null });
-      expect(outcome).toEqual({ state: 'requires_customer_information', missing: ['email'] });
-      expect(requests).toHaveLength(0);
-    });
+      it('answers a missing email as a product state, with NO request', async () => {
+        const outcome = await kit
+          .make(baseUrl)
+          .initializeTransaction({ ...input, customerEmail: null });
+        expect(outcome).toEqual({ state: 'requires_customer_information', missing: ['email'] });
+        expect(requests).toHaveLength(0);
+      });
 
-    it('surfaces a provider refusal as an error, never a checkout URL', async () => {
-      respond = (_req, res) => kit.initialize.refusal(res);
-      await expect(kit.make(baseUrl).initializeTransaction(input)).rejects.toThrow();
-    });
+      it('surfaces a provider refusal as an error, never a checkout URL', async () => {
+        respond = (_req, res) => init.refusal(res);
+        await expect(kit.make(baseUrl).initializeTransaction(input)).rejects.toThrow();
+      });
+    } else {
+      it('refuses initialization HONESTLY: the capability gap by name, and NO request', async () => {
+        await expect(kit.make(baseUrl).initializeTransaction(input)).rejects.toThrow(init.gap);
+        expect(requests).toHaveLength(0);
+      });
+    }
 
     it('normalises a successful verification, keeping kobo as kobo', async () => {
       respond = (_req, res) => kit.verify.success(res);
       const outcome = await kit.make(baseUrl).verifyTransaction(input.reference);
+      expect(requests).toHaveLength(1);
+      kit.assertAuth(requests[0]!);
       if (!outcome.found) throw new Error('expected found');
       expect(outcome.transaction).toMatchObject({
         succeeded: true,
