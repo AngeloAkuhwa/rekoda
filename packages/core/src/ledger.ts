@@ -50,6 +50,14 @@ export const ACCOUNTS = {
   },
   ACCOUNTS_PAYABLE: { code: '2000', name: 'Accounts Payable', type: 'liability' },
   VAT_PAYABLE: { code: '2100', name: 'VAT Payable', type: 'liability' },
+  /**
+   * What the business owes its CUSTOMERS (§14.1; PR-081). A credit note
+   * lands here, never as a negative receivable: an unapplied credit
+   * reduces no invoice until it is explicitly applied, and a liability
+   * that used to hide inside AR gets its own line. Backed by the same
+   * 2300 the chart seed has carried since PR-030.
+   */
+  CUSTOMER_CREDIT: { code: '2300', name: 'Customer credits', type: 'liability' },
   OWNERS_EQUITY: { code: '3000', name: "Owner's Equity", type: 'equity' },
   SALES_REVENUE: { code: '4000', name: 'Sales Revenue', type: 'income' },
   COGS: { code: '5000', name: 'Cost of Goods Sold', type: 'expense' },
@@ -388,11 +396,30 @@ export function postCreditNote(args: { memo: string; amountK: Kobo; vatK?: Kobo 
   if (args.amountK <= 0 || vatK < 0 || vatK > args.amountK) {
     throw new UnbalancedPostingError(args.memo, args.amountK, vatK);
   }
+  /* §14.1 (PR-081): the credit CREATES A CUSTOMER CREDIT — a liability
+   * to the customer — and reduces no invoice until explicitly applied.
+   * The receivable is untouched here; postCreditApplication moves it. */
   const lines: LedgerLine[] = [line('SALES_REVENUE', args.amountK - vatK, 0)];
   if (vatK > 0) lines.push(line('VAT_PAYABLE', vatK, 0));
-  lines.push(line('ACCOUNTS_RECEIVABLE', 0, args.amountK));
+  lines.push(line('CUSTOMER_CREDIT', 0, args.amountK));
 
   const posting = { memo: args.memo, lines };
+  assertBalanced(posting);
+  return posting;
+}
+
+/**
+ * §14.1's EXPLICIT act, on the books: an applied credit settles the
+ * invoice's receivable out of the liability the credit note created.
+ */
+export function postCreditApplication(args: { memo: string; amountK: Kobo }): Posting {
+  if (args.amountK <= 0) {
+    throw new UnbalancedPostingError(args.memo, args.amountK, 0);
+  }
+  const posting = {
+    memo: args.memo,
+    lines: [line('CUSTOMER_CREDIT', args.amountK, 0), line('ACCOUNTS_RECEIVABLE', 0, args.amountK)],
+  };
   assertBalanced(posting);
   return posting;
 }
@@ -447,6 +474,7 @@ export const ACCOUNT_PICKER_LABELS: Record<AccountKey, string> = {
   INVENTORY: 'Stock on the shelf',
   ACCOUNTS_PAYABLE: 'Money you owe suppliers',
   VAT_PAYABLE: 'VAT you are holding',
+  CUSTOMER_CREDIT: 'Money you owe customers back',
   OWNERS_EQUITY: 'Your own money in the business',
   SALES_REVENUE: 'Sales',
   COGS: 'Cost of goods sold',

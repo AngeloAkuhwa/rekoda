@@ -18,13 +18,13 @@ describe('the chart of accounts, on the wire', () => {
     expect([...LedgerAccount.options].sort()).toEqual(Object.keys(ACCOUNTS).sort());
   });
 
-  /* Fifteen since ADR 0026 added equipment, its accumulated depreciation, the
-   * monthly charge, and what selling one leaves the business better or worse
-   * off by. Still fixed: a merchant cannot add one, which is the property ADR
-   * 0004 exists to protect, and this number is what makes the next addition a
-   * decision somebody writes down rather than a diff. */
+  /* Sixteen since spec §14.1 gave credit notes a liability of their own:
+   * CUSTOMER_CREDIT, what the business owes customers back. Still fixed: a
+   * merchant cannot add one, which is the property ADR 0004 exists to
+   * protect, and this number is what makes the next addition a decision
+   * somebody writes down rather than a diff. */
   it('is still a fixed chart, and still small', () => {
-    expect(LedgerAccount.options).toHaveLength(15);
+    expect(LedgerAccount.options).toHaveLength(16);
   });
 
   /* A picker missing a label renders a blank option, which is how a merchant

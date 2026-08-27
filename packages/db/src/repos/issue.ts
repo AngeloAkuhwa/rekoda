@@ -32,6 +32,7 @@ import {
   type PostingPurpose,
   taxPointFor,
   lagosDay,
+  postCreditApplication,
 } from '@rekoda/core';
 import { snapshotHash, type DocumentSnapshot } from '@rekoda/core/documents';
 import { normalisePaymentMethod } from '@rekoda/core';
@@ -47,10 +48,12 @@ import {
   ledgerTransactions,
   paymentAllocations,
   payments,
+  customerCredits,
 } from '../schema/finance.js';
 import { assertPeriodOpen } from './close.js';
 import { appendVerification } from './provenance.js';
 import { recordTaxEvent, taxStandingFor } from './tax.js';
+import { applyCustomerCredit, grantCustomerCredit } from './customer-credits.js';
 
 export interface IssueItem {
   name: string;
@@ -1079,17 +1082,23 @@ export type CreditOutcome =
       creditNoteNumber: string;
       invoiceNumber: string;
       amountK: number;
-      /** What the customer still owes after it. Never below zero. */
+      /** What the customer still owes on the INVOICE — unchanged by the
+       * credit (§14.1): an unapplied credit reduces no invoice. */
       balanceDueK: number;
-      /** What the merchant now owes the CUSTOMER, when the credit went past
-       *  what was outstanding. Zero in the ordinary case. */
+      /** What the merchant now owes the CUSTOMER: the whole credit,
+       * until it is explicitly applied or paid out. */
       owedToCustomerK: number;
+      /** The CustomerCredit the note created (§14.1). */
+      customerCreditId: string;
     }
   | { outcome: 'not_found' }
   /** Withdrawn invoices have no value left to credit. */
   | { outcome: 'voided' }
   /** Nothing has been paid, so the void is the right instrument, not this. */
   | { outcome: 'unpaid' }
+  /** §14.1 owes VALUE TO A CUSTOMER; an invoice with nobody on it has
+   * nobody to owe. */
+  | { outcome: 'no_customer' }
   /** Would take back more than the invoice was ever worth. */
   | { outcome: 'exceeds_invoice'; creditableK: number };
 
@@ -1129,6 +1138,7 @@ export async function issueCreditNote(
   const rows = await tx
     .select({
       id: invoices.id,
+      customerId: invoices.customerId,
       status: invoices.status,
       totalK: invoices.totalK,
       paidK: invoices.paidK,
@@ -1151,6 +1161,7 @@ export async function issueCreditNote(
   if (!invoice) return { outcome: 'not_found' };
   if (invoice.status === 'voided') return { outcome: 'voided' };
   if (Number(invoice.paidK) === 0) return { outcome: 'unpaid' };
+  if (!invoice.customerId) return { outcome: 'no_customer' };
 
   const totalK = Number(invoice.totalK);
   const creditableK = totalK - Number(invoice.creditedK);
@@ -1178,10 +1189,12 @@ export async function issueCreditNote(
 
   /* The claim. Two credits racing meet here and only one passes, because the
    * ceiling is checked by the same statement that moves it. */
+  /* §14.1: the invoice's BALANCE is untouched — an unapplied credit
+   * reduces no invoice. Only the over-credit ceiling moves, and it is
+   * still checked by the same statement that moves it. */
   const claimed = await tx.execute<{ id: string }>(sql`
     UPDATE invoices
        SET credited_k = credited_k + ${input.amountK},
-           balance_due_k = GREATEST(balance_due_k - ${input.amountK}, 0),
            status = CASE WHEN credited_k + ${input.amountK} >= total_k THEN 'credited' ELSE status END
      WHERE id = ${invoice.id}::uuid
        AND business_id = ${input.businessId}::uuid
@@ -1230,6 +1243,57 @@ export async function issueCreditNote(
     createdAt: issuedAt,
   });
 
+  /* §14.1: the credit note CREATES a customer credit. The unique on
+   * (sourceType, sourceId) makes a retried note owe nobody twice. */
+  const granted = await grantCustomerCredit(tx, {
+    businessId: input.businessId,
+    customerId: invoice.customerId!,
+    amountMinor: input.amountK,
+    sourceType: 'credit_note',
+    sourceId: creditNoteNumber,
+    reason: input.reason,
+  });
+  let customerCreditId: string;
+  if (granted.outcome === 'granted') {
+    customerCreditId = granted.id;
+  } else {
+    const existing = await tx
+      .select({ id: customerCredits.id })
+      .from(customerCredits)
+      .where(
+        and(
+          eq(customerCredits.businessId, input.businessId),
+          eq(customerCredits.sourceType, 'credit_note'),
+          eq(customerCredits.sourceId, creditNoteNumber),
+        ),
+      )
+      .limit(1);
+    customerCreditId = existing[0]!.id;
+  }
+
+  /* §13's reversal side (promised in PR-079): VAT given back is the same
+   * tax fact with the sign turned, deduped by the same §13 unique. */
+  if (vatK > 0) {
+    const standing = await taxStandingFor(
+      tx,
+      input.businessId,
+      'STANDARD_RATE',
+      lagosDay(issuedAt),
+    );
+    if (standing) {
+      await recordTaxEvent(tx, {
+        businessId: input.businessId,
+        taxCodeId: standing.taxCodeId,
+        basisMinor: -(input.amountK - vatK),
+        taxMinor: -vatK,
+        sourceType: 'credit_note',
+        sourceId: creditNoteNumber,
+        occurredAt: issuedAt,
+        journalId: ledgerTransactionId,
+      });
+    }
+  }
+
   await tx.insert(auditEvents).values({
     businessId: input.businessId,
     actor: input.actor,
@@ -1246,20 +1310,148 @@ export async function issueCreditNote(
     sourceType: 'dashboard',
   });
 
-  const balanceDueK = Math.max(Number(invoice.balanceDueK) - input.amountK, 0);
-  /* Credited past what was still owed means the money is now going the other
-   * way. The receivable carries it as a negative; this is the same fact said
-   * in a sentence the merchant can act on. */
-  const owedToCustomerK = Math.max(input.amountK - Number(invoice.balanceDueK), 0);
-
+  /* §14.1: the invoice balance is what it was, and the WHOLE credit is
+   * owed to the customer until it is explicitly applied or paid out. */
   return {
     outcome: 'credited',
     creditNoteNumber,
     invoiceNumber: input.invoiceNumber,
     amountK: input.amountK,
-    balanceDueK,
-    owedToCustomerK,
+    balanceDueK: Number(invoice.balanceDueK),
+    owedToCustomerK: input.amountK,
+    customerCreditId,
   };
+}
+
+export type ApplyCreditOutcomeAtInvoice =
+  | {
+      outcome: 'applied';
+      invoiceNumber: string;
+      amountK: number;
+      balanceDueK: number;
+      remainingCreditK: number;
+    }
+  | { outcome: 'not_found' }
+  | { outcome: 'voided' }
+  /** The invoice owes less than the application asked to settle. */
+  | { outcome: 'exceeds_balance'; balanceDueK: number }
+  | { outcome: 'no_such_credit' }
+  | { outcome: 'insufficient_credit'; remainingCreditK: number };
+
+/**
+ * §14.1's EXPLICIT act: apply a customer credit to an invoice. The
+ * subledger row is the fact, the posting settles the receivable out of
+ * the liability, and the invoice's balance moves HERE — the one place
+ * it may (an unapplied credit reduces no invoice).
+ */
+export async function applyCreditToInvoice(
+  tx: TenantDb,
+  input: {
+    businessId: string;
+    customerCreditId: string;
+    invoiceNumber: string;
+    amountK: number;
+    actor: string;
+  },
+): Promise<ApplyCreditOutcomeAtInvoice> {
+  const rows = await tx
+    .select({
+      id: invoices.id,
+      status: invoices.status,
+      balanceDueK: invoices.balanceDueK,
+      sourceType: invoices.sourceType,
+      sourceId: invoices.sourceId,
+    })
+    .from(invoices)
+    .where(
+      and(
+        eq(invoices.businessId, input.businessId),
+        eq(invoices.invoiceNumber, input.invoiceNumber),
+      ),
+    )
+    .limit(1);
+  const invoice = rows[0];
+  if (!invoice) return { outcome: 'not_found' };
+  if (invoice.status === 'voided') return { outcome: 'voided' };
+
+  /* The balance claim first, by the same statement that checks it: two
+   * applications racing on one invoice meet at the WHERE. */
+  const claimed = await tx.execute<{ balance_due_k: string }>(sql`
+    UPDATE invoices
+       SET balance_due_k = balance_due_k - ${input.amountK},
+           status = CASE WHEN balance_due_k - ${input.amountK} = 0 THEN 'paid'
+                         ELSE 'partially_paid' END
+     WHERE id = ${invoice.id}::uuid
+       AND business_id = ${input.businessId}::uuid
+       AND balance_due_k >= ${input.amountK}
+    RETURNING balance_due_k
+  `);
+  const after = [...claimed][0];
+  if (!after) {
+    return { outcome: 'exceeds_balance', balanceDueK: Number(invoice.balanceDueK) };
+  }
+
+  const applied = await applyCustomerCredit(tx, {
+    businessId: input.businessId,
+    customerCreditId: input.customerCreditId,
+    invoiceId: invoice.id,
+    amountMinor: input.amountK,
+    sourceType: 'credit_application',
+    sourceId: `${input.invoiceNumber}:${input.customerCreditId}`,
+  });
+  if (applied.outcome !== 'applied') {
+    /* Roll the whole application back: a balance moved for a credit that
+     * did not stretch would be a silent gift. */
+    throw new CreditApplicationRefused(
+      applied.outcome === 'not_found' ? 'no_such_credit' : 'insufficient_credit',
+      applied.outcome === 'insufficient_credit' ? applied.remainingMinor : 0,
+    );
+  }
+
+  const ledgerTransactionId = await writePosting(
+    tx,
+    input.businessId,
+    postCreditApplication({
+      memo: `Credit applied to ${input.invoiceNumber}`,
+      amountK: input.amountK,
+    }),
+    invoice.sourceType,
+    invoice.sourceId ?? input.invoiceNumber,
+  );
+
+  await tx.insert(auditEvents).values({
+    businessId: input.businessId,
+    actor: input.actor,
+    entity: 'invoice',
+    entityId: invoice.id,
+    action: 'credit_applied',
+    newValue: {
+      invoiceNumber: input.invoiceNumber,
+      amountK: input.amountK,
+      customerCreditId: input.customerCreditId,
+      ledgerTransactionId,
+    } as never,
+    sourceType: 'dashboard',
+  });
+
+  return {
+    outcome: 'applied',
+    invoiceNumber: input.invoiceNumber,
+    amountK: input.amountK,
+    balanceDueK: Number(after.balance_due_k),
+    remainingCreditK: applied.remainingMinor,
+  };
+}
+
+/** Thrown to roll back a balance claim whose credit did not stretch;
+ * callers translate it back into the refusal outcome. */
+export class CreditApplicationRefused extends Error {
+  constructor(
+    public readonly refusal: 'no_such_credit' | 'insufficient_credit',
+    public readonly remainingCreditK: number,
+  ) {
+    super(`credit application refused: ${refusal}`);
+  }
 }
 
 /** VAT already given back, at the same proportional rule used above. */

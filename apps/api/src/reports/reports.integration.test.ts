@@ -40,6 +40,7 @@ import {
   voidInvoiceResponse,
 } from '@rekoda/contracts';
 import {
+  customersRepo,
   jobsRepo,
   ordersRepo,
   usageRepo,
@@ -994,11 +995,19 @@ describe('recording a payment from the dashboard', () => {
  * other, and the pair of refusals below is what proves there is no gap.
  */
 describe('crediting an invoice', () => {
+  let creditCustomerSeq = 0;
   async function paidSale(businessId: string) {
+    creditCustomerSeq += 1;
+    const customer = await customersRepo.createCustomerWithIdentities(
+      db,
+      businessId,
+      `CUSTOMER_CN${creditCustomerSeq}`,
+      [],
+    );
     return withBusiness(db, businessId, async (tx) => {
       const sale = await issueRepo.issueSale(tx, {
         businessId,
-        customerId: null,
+        customerId: customer.id,
         customerToken: 'CUSTOMER_7K2',
         items: [{ name: 'wig', quantity: 1, unitPriceK: 15_000_000 }],
         subtotalK: 15_000_000,
@@ -1032,16 +1041,17 @@ describe('crediting an invoice', () => {
       outcome: 'credited',
       invoiceNumber,
       amountK: 9_000_000,
-      balanceDueK: 0,
-      owedToCustomerK: 0,
+      /* §14.1: an unapplied credit reduces no invoice. */
+      balanceDueK: 9_000_000,
+      /* The whole credit is owed to the customer until applied. */
+      owedToCustomerK: 9_000_000,
     });
 
     const register = reportsInvoicesResponse.parse(
       (await app.inject({ method: 'GET', url: '/v1/reports/invoices', headers: auth })).json(),
     );
-    expect(register.invoices[0]).toMatchObject({ balanceDueK: 0, creditedK: 9_000_000 });
-    /* Nothing is outstanding any more, so it leaves the ageing. */
-    expect(register.outstandingK).toBe(0);
+    expect(register.invoices[0]).toMatchObject({ balanceDueK: 9_000_000, creditedK: 9_000_000 });
+    expect(register.outstandingK).toBe(9_000_000);
     expect(res.body).not.toContain('CUSTOMER_');
   });
 
@@ -1058,7 +1068,7 @@ describe('crediting an invoice', () => {
         )
       ).json(),
     );
-    expect(outcome).toMatchObject({ owedToCustomerK: 6_000_000 });
+    expect(outcome).toMatchObject({ owedToCustomerK: 15_000_000 });
   });
 
   /* The pair must leave no invoice without a path, and give none two. */
@@ -2702,10 +2712,16 @@ describe('one-shot keys on the owner writes', () => {
 
   it('a resubmitted credit note credits once', async () => {
     const { auth, businessId } = await onboard('+2348177000201');
+    const dupCustomer = await customersRepo.createCustomerWithIdentities(
+      db,
+      businessId,
+      'CUSTOMER_DUP1',
+      [],
+    );
     const invoiceNumber = await withBusiness(db, businessId, async (tx) => {
       const sale = await issueRepo.issueSale(tx, {
         businessId,
-        customerId: null,
+        customerId: dupCustomer.id,
         customerToken: 'CUSTOMER_7K2',
         items: [{ name: 'wig', quantity: 1, unitPriceK: 15_000_000 }],
         subtotalK: 15_000_000,

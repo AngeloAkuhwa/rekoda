@@ -715,6 +715,13 @@
       "when": 1787411667000,
       "tag": "0101_goods_returns",
       "breakpoints": true
+    },
+    {
+      "idx": 102,
+      "version": "7",
+      "when": 1787411727000,
+      "tag": "0102_credit_notes_customer_credit",
+      "breakpoints": true
     }
   ]
 }

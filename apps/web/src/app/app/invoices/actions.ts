@@ -141,17 +141,23 @@ async function creditInvoiceActionUnguarded(
     };
   }
 
+  if (outcome.outcome === 'no_customer') {
+    return {
+      error:
+        `${invoiceNumber} does not name a customer, so there is nobody to owe the credit to. ` +
+        'Record the customer on the sale first, or correct it with a journal.',
+    };
+  }
+
   revalidatePath('/app/invoices');
 
-  /* Credited past what was still owed means the money is now going the other
-   * way, and a merchant needs telling in a sentence rather than left to read
-   * it off a negative balance. */
-  const owed =
-    outcome.owedToCustomerK > 0
-      ? ` You now owe the customer ${formatNaira(outcome.owedToCustomerK)}.`
-      : '';
+  /* §14.1: the whole credit is owed to the customer until it is applied
+   * or paid out, and the invoice balance has not moved. Say both. */
   return {
-    done: `${outcome.creditNoteNumber} issued against ${outcome.invoiceNumber}.` + owed,
+    done:
+      `${outcome.creditNoteNumber} issued against ${outcome.invoiceNumber}. ` +
+      `You now owe the customer ${formatNaira(outcome.owedToCustomerK)}; ` +
+      'the invoice balance is unchanged until you apply the credit or pay it back.',
   };
 }
 

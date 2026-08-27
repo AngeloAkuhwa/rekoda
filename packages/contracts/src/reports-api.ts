@@ -1111,6 +1111,7 @@ export const LedgerAccount = z.enum([
   'ACCUMULATED_DEPRECIATION',
   'ACCOUNTS_PAYABLE',
   'VAT_PAYABLE',
+  'CUSTOMER_CREDIT',
   'OWNERS_EQUITY',
   'SALES_REVENUE',
   'COGS',
@@ -1665,15 +1666,21 @@ export const creditInvoiceResponse = z.discriminatedUnion('outcome', [
     creditNoteNumber: z.string(),
     invoiceNumber: z.string(),
     amountK: kobo,
-    /** What the customer still owes. Never below zero. */
+    /** What the customer still owes on the INVOICE — unchanged (§14.1):
+     * an unapplied credit reduces no invoice. */
     balanceDueK: kobo,
-    /** What the merchant now owes the CUSTOMER. Zero in the ordinary case. */
+    /** What the merchant now owes the CUSTOMER: the whole credit, until
+     * it is explicitly applied or paid out. */
     owedToCustomerK: kobo,
+    /** The CustomerCredit the note created (§14.1). */
+    customerCreditId: z.string(),
   }),
   z.object({ outcome: z.literal('not_found') }),
   z.object({ outcome: z.literal('voided') }),
   /** Nothing was ever paid, so the void is the right instrument. */
   z.object({ outcome: z.literal('unpaid') }),
+  /** §14.1 owes value TO a customer; this invoice names nobody. */
+  z.object({ outcome: z.literal('no_customer') }),
   z.object({ outcome: z.literal('exceeds_invoice'), creditableK: kobo }),
   /** The same clientRef arrived twice: the first submission already credited. */
   z.object({ outcome: z.literal('duplicate') }),

@@ -6,6 +6,7 @@ import {
   monthlyDepreciationK,
   postAssetDisposal,
   postAssetPurchase,
+  postCreditApplication,
   postCreditNote,
   postDepreciation,
   postExpense,
@@ -270,12 +271,12 @@ describe('reversing a posting, as a void does', () => {
  * account.
  */
 describe('a credit note', () => {
-  it('takes back revenue and clears the receivable, in balance', () => {
+  it('takes back revenue and creates a CUSTOMER CREDIT, in balance (§14.1)', () => {
     const posting = postCreditNote({ memo: 'Credit CRN-2026-000001', amountK: 5_000_000 });
 
     expect(posting.lines).toEqual([
       { account: 'SALES_REVENUE', debitK: 5_000_000, creditK: 0 },
-      { account: 'ACCOUNTS_RECEIVABLE', debitK: 0, creditK: 5_000_000 },
+      { account: 'CUSTOMER_CREDIT', debitK: 0, creditK: 5_000_000 },
     ]);
     expect(() => assertBalanced(posting)).not.toThrow();
   });
@@ -296,29 +297,42 @@ describe('a credit note', () => {
     });
     expect(posting.lines).toContainEqual({ account: 'VAT_PAYABLE', debitK: 375_000, creditK: 0 });
     expect(posting.lines).toContainEqual({
-      account: 'ACCOUNTS_RECEIVABLE',
+      account: 'CUSTOMER_CREDIT',
       debitK: 0,
       creditK: 5_375_000,
     });
   });
 
   /**
-   * The property that keeps this from needing a new account. A customer
-   * credited beyond what they still owe IS in credit, and a negative
-   * receivable is how a ledger says so. Inventing a refunds-payable account
-   * would put customer credits in with what the shop owes its suppliers.
+   * SUPERSEDED negative-receivable design (§14.1, PR-081): a customer in
+   * credit is a LIABILITY with its own account, never a negative asset.
+   * The receivable is untouched until the credit is explicitly applied.
    */
-  it('lets the receivable go negative, because a customer in credit is a real thing', () => {
+  it('leaves the receivable alone until the credit is explicitly applied', () => {
     const sale = postSale({ memo: 'Sale', totalK: 15_000_000, paidK: 6_000_000 });
     const credit = postCreditNote({ memo: 'Credit', amountK: 15_000_000 });
 
     const { rows } = trialBalance([sale, credit]);
     const receivable = rows.find((r) => r.account === 'ACCOUNTS_RECEIVABLE');
-    // Billed 15m, 9m of it still owed, then all 15m credited: 6m the other way.
-    expect(receivable?.balanceK).toBe(-6_000_000);
+    // Billed 15m, 9m still owed: the credit note changed none of that.
+    expect(receivable?.balanceK).toBe(9_000_000);
+    // The whole 15m is now owed TO the customer, as its own liability.
+    const owed = rows.find((r) => r.account === 'CUSTOMER_CREDIT');
+    expect(owed?.balanceK).toBe(15_000_000);
 
     const revenue = rows.find((r) => r.account === 'SALES_REVENUE');
     expect(revenue?.balanceK).toBe(0);
+  });
+
+  it('an APPLICATION settles the receivable out of the credit (§14.1)', () => {
+    const sale = postSale({ memo: 'Sale', totalK: 15_000_000, paidK: 6_000_000 });
+    const credit = postCreditNote({ memo: 'Credit', amountK: 9_000_000 });
+    const applied = postCreditApplication({ memo: 'Applied to INV-1', amountK: 9_000_000 });
+
+    const { rows, balanced } = trialBalance([sale, credit, applied]);
+    expect(balanced).toBe(true);
+    expect(rows.find((r) => r.account === 'ACCOUNTS_RECEIVABLE')?.balanceK).toBe(0);
+    expect(rows.find((r) => r.account === 'CUSTOMER_CREDIT')?.balanceK).toBe(0);
   });
 
   it('still balances the books overall', () => {

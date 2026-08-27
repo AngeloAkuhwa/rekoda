@@ -10,7 +10,15 @@ import { randomBytes } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { paymentReference, usagePeriod } from '@rekoda/core';
 import { createDb, withBusiness, type Db } from './client.js';
-import { identity, issueRepo, paymentsHub, reportsRepo, settleRepo, spendRepo } from './index.js';
+import {
+  customersRepo,
+  identity,
+  issueRepo,
+  paymentsHub,
+  reportsRepo,
+  settleRepo,
+  spendRepo,
+} from './index.js';
 import { migrate, requireUrls, truncateAll, type Urls } from './testing.js';
 
 let urls: Urls;
@@ -452,8 +460,33 @@ describe('where the sales came from', () => {
   it('takes a credit note off the channel it was sold on', async () => {
     const businessId = await seedBusiness();
     /* Paid in full, because a credit note against an invoice nobody has paid
-     * is refused: there is nothing to give back. */
-    const sale = await sell(businessId, 'instagram', 5_000_000, 'd1', 5_000_000);
+     * is refused — and §14.1 needs a customer to owe the credit to. */
+    const customer = await customersRepo.createCustomerWithIdentities(
+      db,
+      businessId,
+      'CUSTOMER_RPT1',
+      [],
+    );
+    const sale = await withBusiness(db, businessId, (tx) =>
+      issueRepo.issueSale(tx, {
+        businessId,
+        customerId: customer.id,
+        customerToken: 'CUSTOMER_RPT1',
+        items: [{ name: 'wig', quantity: 1, unitPriceK: 5_000_000 }],
+        subtotalK: 5_000_000,
+        discountK: 0,
+        deliveryFeeK: 0,
+        vatK: 0,
+        totalK: 5_000_000,
+        paidK: 5_000_000,
+        balanceDueK: 0,
+        method: 'cash',
+        sourceType: 'chat',
+        sourceId: 'd1',
+        saleSource: 'instagram',
+        actor: 'test',
+      }),
+    );
     const credited = await withBusiness(db, businessId, (tx) =>
       issueRepo.issueCreditNote(tx, {
         businessId,
