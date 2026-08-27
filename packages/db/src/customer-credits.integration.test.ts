@@ -8,6 +8,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import {
   createDb,
   customerCreditsRepo,
+  settleRepo,
   customersRepo,
   identity,
   issueRepo,
@@ -232,6 +233,189 @@ describe('explicit application, derived remainder', () => {
         tx.execute(
           sql`DELETE FROM customer_credit_applications WHERE business_id = ${businessId}::uuid`,
         ),
+      ),
+    ).rejects.toThrow();
+  });
+});
+
+describe('one full reversal (§14.2; PR-049)', () => {
+  async function appliedFixture() {
+    const businessId = await seedBusiness();
+    const { customerId, invoiceId } = await seedCustomerAndInvoice(businessId);
+    const granted = await withBusiness(db, businessId, (tx) =>
+      customerCreditsRepo.grantCustomerCredit(tx, {
+        businessId,
+        customerId,
+        amountMinor: 20_000,
+        sourceType: 'credit_note',
+        sourceId: 'CRN-rev',
+      }),
+    );
+    if (granted.outcome !== 'granted') throw new Error('fixture');
+    const applied = await withBusiness(db, businessId, (tx) =>
+      customerCreditsRepo.applyCustomerCredit(tx, {
+        businessId,
+        customerCreditId: granted.id,
+        invoiceId,
+        amountMinor: 20_000,
+        sourceType: 'dashboard',
+        sourceId: 'apply-rev',
+      }),
+    );
+    if (applied.outcome !== 'applied') throw new Error('fixture');
+    return { businessId, creditId: granted.id, applicationId: applied.id, invoiceId };
+  }
+
+  it('reverses exactly once, restores the balance, and refuses reversing a reversal', async () => {
+    const { businessId, creditId, applicationId } = await appliedFixture();
+    expect(
+      await withBusiness(db, businessId, (tx) =>
+        customerCreditsRepo.creditBalanceMinor(tx, businessId, creditId),
+      ),
+    ).toBe(0);
+
+    const reversed = await withBusiness(db, businessId, (tx) =>
+      customerCreditsRepo.reverseCreditApplication(tx, {
+        businessId,
+        applicationId,
+        reason: 'applied to the wrong invoice',
+        sourceType: 'dashboard',
+        sourceId: 'rev-1',
+      }),
+    );
+    expect(reversed.outcome).toBe('reversed');
+    expect(
+      await withBusiness(db, businessId, (tx) =>
+        customerCreditsRepo.creditBalanceMinor(tx, businessId, creditId),
+      ),
+    ).toBe(20_000);
+
+    expect(
+      await withBusiness(db, businessId, (tx) =>
+        customerCreditsRepo.reverseCreditApplication(tx, {
+          businessId,
+          applicationId,
+          reason: 'twice',
+          sourceType: 'dashboard',
+          sourceId: 'rev-2',
+        }),
+      ),
+    ).toEqual({ outcome: 'already_reversed' });
+
+    if (reversed.outcome !== 'reversed') return;
+    expect(
+      await withBusiness(db, businessId, (tx) =>
+        customerCreditsRepo.reverseCreditApplication(tx, {
+          businessId,
+          applicationId: reversed.id,
+          reason: 'reversal of a reversal',
+          sourceType: 'dashboard',
+          sourceId: 'rev-3',
+        }),
+      ),
+    ).toEqual({ outcome: 'is_a_reversal' });
+  });
+
+  it('the trigger refuses a partial or shapeless reversal outright', async () => {
+    const { businessId, creditId, applicationId, invoiceId } = await appliedFixture();
+    /* Partial negation: "at most one reversal" plus partial amounts would
+     * strand the remainder permanently and silently. */
+    await expect(
+      withBusiness(db, businessId, (tx) =>
+        tx.execute(sql`
+          INSERT INTO customer_credit_applications
+            (business_id, customer_credit_id, invoice_id, amount_minor, currency,
+             reversal_of_id, reason, source_type, source_id)
+          VALUES (${businessId}::uuid, ${creditId}::uuid, ${invoiceId}::uuid,
+                  -10000, 'NGN', ${applicationId}::uuid, 'half-hearted', 'raw', 'r1')
+        `),
+      ),
+    ).rejects.toThrow();
+    /* A reversal without a reason is not one. */
+    await expect(
+      withBusiness(db, businessId, (tx) =>
+        tx.execute(sql`
+          INSERT INTO customer_credit_applications
+            (business_id, customer_credit_id, invoice_id, amount_minor, currency,
+             reversal_of_id, source_type, source_id)
+          VALUES (${businessId}::uuid, ${creditId}::uuid, ${invoiceId}::uuid,
+                  -20000, 'NGN', ${applicationId}::uuid, 'raw', 'r2')
+        `),
+      ),
+    ).rejects.toThrow();
+    /* A bare negative row that reverses nothing is unrepresentable. */
+    await expect(
+      withBusiness(db, businessId, (tx) =>
+        tx.execute(sql`
+          INSERT INTO customer_credit_applications
+            (business_id, customer_credit_id, invoice_id, amount_minor, currency, source_type, source_id)
+          VALUES (${businessId}::uuid, ${creditId}::uuid, ${invoiceId}::uuid,
+                  -5000, 'NGN', 'raw', 'r3')
+        `),
+      ),
+    ).rejects.toThrow();
+  });
+});
+
+describe('payment allocations under the same law (§14.2; PR-049)', () => {
+  it('a merchant payment allocation reverses once, exactly, and never twice', async () => {
+    const businessId = await seedBusiness();
+    const { invoiceId } = await seedCustomerAndInvoice(businessId);
+    await withBusiness(db, businessId, (tx) =>
+      settleRepo.recordMerchantPayment(tx, {
+        businessId,
+        invoiceId,
+        amountK: 100_000,
+        method: 'cash',
+        sourceType: 'chat',
+        sourceId: 'draft-alloc',
+        actor: 'system',
+      }),
+    );
+    const allocations = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ id: string; amount_k: string }>(
+        sql`SELECT id, amount_k::bigint AS amount_k FROM payment_allocations
+            WHERE business_id = ${businessId}::uuid`,
+      ),
+    );
+    const allocation = [...allocations][0]!;
+
+    const reversed = await withBusiness(db, businessId, (tx) =>
+      settleRepo.reverseAllocation(tx, {
+        businessId,
+        allocationId: allocation.id,
+        reason: 'matched to the wrong invoice',
+        sourceType: 'dashboard',
+        sourceId: 'realloc-1',
+      }),
+    );
+    expect(reversed.outcome).toBe('reversed');
+
+    expect(
+      await withBusiness(db, businessId, (tx) =>
+        settleRepo.reverseAllocation(tx, {
+          businessId,
+          allocationId: allocation.id,
+          reason: 'twice',
+          sourceType: 'dashboard',
+          sourceId: 'realloc-2',
+        }),
+      ),
+    ).toEqual({ outcome: 'already_reversed' });
+
+    /* Net allocation for the payment is now zero, by rows, not edits. */
+    const net = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ net: string }>(
+        sql`SELECT COALESCE(SUM(amount_k), 0)::bigint AS net FROM payment_allocations
+            WHERE business_id = ${businessId}::uuid`,
+      ),
+    );
+    expect(Number([...net][0]!.net)).toBe(0);
+
+    /* And nothing mutates: allocations are append-only now. */
+    await expect(
+      withBusiness(db, businessId, (tx) =>
+        tx.execute(sql`DELETE FROM payment_allocations WHERE business_id = ${businessId}::uuid`),
       ),
     ).rejects.toThrow();
   });

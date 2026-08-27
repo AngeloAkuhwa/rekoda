@@ -547,6 +547,13 @@
       "when": 1787410817000,
       "tag": "0077_customer_credits",
       "breakpoints": true
+    },
+    {
+      "idx": 78,
+      "version": "7",
+      "when": 1787410818000,
+      "tag": "0078_allocation_full_reversal",
+      "breakpoints": true
     }
   ]
 }

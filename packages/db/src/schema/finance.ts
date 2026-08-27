@@ -195,6 +195,13 @@ export const paymentAllocations = pgTable(
       .notNull()
       .references(() => invoices.id),
     amountK: kobo('amount_k').notNull(),
+    /** §14.2 (PR-049): a reversal row negates its original exactly; the
+     * trigger in 0078 holds the shape, and these columns carry it. */
+    currency: char('currency', { length: 3 }).notNull().default('NGN'),
+    reversalOfId: uuid('reversal_of_id'),
+    reason: text('reason'),
+    sourceType: text('source_type'),
+    sourceId: text('source_id'),
     createdAt: createdAt(),
   },
   (t) => [index('alloc_payment_ix').on(t.paymentId), index('alloc_invoice_ix').on(t.invoiceId)],

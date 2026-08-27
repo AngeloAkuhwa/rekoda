@@ -1035,3 +1035,71 @@ export async function collectedByBusiness(
   `);
   return [...rows].map((r) => ({ businessId: r.business_id, collectedK: Number(r.total) }));
 }
+
+/* ── §14.2: one full reversal per allocation (PR-049) ───────────────────── */
+
+export type ReverseAllocationOutcome =
+  | { outcome: 'reversed'; id: string }
+  | { outcome: 'not_found' }
+  | { outcome: 'already_reversed' }
+  | { outcome: 'is_a_reversal' };
+
+/**
+ * A human matched money to the wrong invoice: the correction is a row that
+ * negates the original exactly, never an edit — and a partial change of
+ * mind is this, then a fresh allocation of the correct amount. The 0078
+ * trigger holds the shape; this is the front door with the good outcomes.
+ */
+export async function reverseAllocation(
+  tx: TenantDb,
+  input: {
+    businessId: string;
+    allocationId: string;
+    reason: string;
+    sourceType: string;
+    sourceId: string;
+  },
+): Promise<ReverseAllocationOutcome> {
+  const rows = await tx
+    .select()
+    .from(paymentAllocations)
+    .where(
+      and(
+        eq(paymentAllocations.businessId, input.businessId),
+        eq(paymentAllocations.id, input.allocationId),
+      ),
+    )
+    .limit(1);
+  const original = rows[0];
+  if (!original) return { outcome: 'not_found' };
+  if (original.reversalOfId !== null) return { outcome: 'is_a_reversal' };
+  const standing = await tx
+    .select({ id: paymentAllocations.id })
+    .from(paymentAllocations)
+    .where(
+      and(
+        eq(paymentAllocations.businessId, input.businessId),
+        eq(paymentAllocations.reversalOfId, input.allocationId),
+      ),
+    )
+    .limit(1);
+  if (standing[0]) return { outcome: 'already_reversed' };
+
+  const inserted = await tx
+    .insert(paymentAllocations)
+    .values({
+      businessId: input.businessId,
+      paymentId: original.paymentId,
+      invoiceId: original.invoiceId,
+      amountK: -original.amountK,
+      currency: original.currency,
+      reversalOfId: original.id,
+      reason: input.reason,
+      sourceType: input.sourceType,
+      sourceId: input.sourceId,
+    })
+    .returning({ id: paymentAllocations.id });
+  const row = inserted[0];
+  if (!row) throw new Error('reverseAllocation: insert returned no row');
+  return { outcome: 'reversed', id: row.id };
+}
