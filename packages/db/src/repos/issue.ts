@@ -228,7 +228,7 @@ export async function accountIdsForKeys(
     return { key, code: entry.code };
   });
   const rows = await tx
-    .select({ id: accounts.id, code: accounts.code })
+    .select({ id: accounts.id, code: accounts.code, active: accounts.active })
     .from(accounts)
     .where(
       and(
@@ -239,15 +239,23 @@ export async function accountIdsForKeys(
         ),
       ),
     );
-  const byCode = new Map(rows.map((r) => [r.code, r.id]));
+  const byCode = new Map(rows.map((r) => [r.code, r]));
   const out = new Map<string, string>();
   for (const { key, code } of codes) {
-    const id = byCode.get(code);
-    if (!id) {
+    const found = byCode.get(code);
+    if (!found) {
       throw new Error(
         `accountIdsForKeys: no chart account with code ${code} for ${key} — the seed is missing`,
       );
     }
+    /* The key-based paths resolve by CODE, so a deactivated seed account is
+     * a dead end until the posting-policy engine (PR-037+) resolves by
+     * ROLE. Migration 0066's trigger would refuse the insert anyway; this
+     * is the same refusal, a sentence earlier and clearer. */
+    if (!found.active) {
+      throw new Error(`accountIdsForKeys: account with code ${code} (${key}) is deactivated`);
+    }
+    const id = found.id;
     out.set(key, id);
   }
   return out;

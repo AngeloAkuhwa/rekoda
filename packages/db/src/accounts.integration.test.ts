@@ -9,7 +9,15 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { ROLE_SCOPE, SYSTEM_ROLES, type SystemRole } from '@rekoda/core';
-import { accountsRepo, createDb, identity, paymentsHub, withBusiness, type Db } from './index.js';
+import {
+  accountsRepo,
+  createDb,
+  identity,
+  journalRepo,
+  paymentsHub,
+  withBusiness,
+  type Db,
+} from './index.js';
 import { migrate, requireUrls, truncateAll, type Urls } from './testing.js';
 
 let urls: Urls;
@@ -270,8 +278,9 @@ describe('identity is set once (§11.4)', () => {
     expect(renamed).toBe(true);
   });
 
-  it('refuses DELETE outright until the lifecycle PR can see postings', async () => {
+  it('DELETE reaches only the never-posted: the FK refuses the rest (§11.4, PR-035)', async () => {
     const businessId = await seedBusiness();
+    /* Unposted: permitted. */
     const { id } = await withBusiness(db, businessId, (tx) =>
       accountsRepo.createAccount(tx, {
         businessId,
@@ -281,9 +290,25 @@ describe('identity is set once (§11.4)', () => {
       }),
     );
     const { sql } = await import('drizzle-orm');
+    await withBusiness(db, businessId, (tx) =>
+      tx.execute(sql`DELETE FROM accounts WHERE id = ${id}::uuid`),
+    );
+    /* Posted: refused by the composite FK itself, whatever the writer. */
+    await withBusiness(db, businessId, (tx) =>
+      journalRepo.recordJournal(tx, {
+        businessId,
+        memo: 'till to bank',
+        amountK: 50_000,
+        intoAccount: 'BANK',
+        outOfAccount: 'CASH',
+        actor: 'user:test',
+      }),
+    );
     await expect(
       withBusiness(db, businessId, (tx) =>
-        tx.execute(sql`DELETE FROM accounts WHERE id = ${id}::uuid`),
+        tx.execute(
+          sql`DELETE FROM accounts WHERE business_id = ${businessId}::uuid AND code = '1020'`,
+        ),
       ),
     ).rejects.toThrow();
   });
