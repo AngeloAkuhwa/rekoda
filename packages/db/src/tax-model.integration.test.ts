@@ -1,0 +1,119 @@
+/**
+ * The tax model over real rows (spec §13; F2, PR-078). The claims: a
+ * business is born with its Nigeria-first configuration; the rate is an
+ * effective-dated observation derived at a date, never a stored
+ * constant; treatments and point policies are constrained vocabulary;
+ * and an unconfigured code is an honest null, not an invented default.
+ */
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { sql } from 'drizzle-orm';
+import { createDb, withBusiness, type Db } from './client.js';
+import { identity, taxRepo } from './index.js';
+import { migrate, requireUrls, truncateAll, type Urls } from './testing.js';
+
+let urls: Urls;
+let db: Db;
+let close: () => Promise<void>;
+
+beforeAll(async () => {
+  urls = requireUrls();
+  await migrate(urls);
+  ({ db, close } = createDb(urls.app, { max: 4 }));
+});
+
+afterAll(async () => {
+  await close?.();
+});
+
+beforeEach(async () => {
+  await truncateAll(urls);
+});
+
+let seq = 0;
+async function seedBusiness(): Promise<string> {
+  seq += 1;
+  const user = await identity.upsertUserByPhone(db, `+23481890${String(seq).padStart(5, '0')}`);
+  const business = await identity.createBusinessWithOwner(db, {
+    name: 'Ada Fashion',
+    businessType: null,
+    ownerUserId: user.id,
+  });
+  return business.id;
+}
+
+describe('born configured (§13, Nigeria-first)', () => {
+  it('a new business carries the three codes, each with treatment and point policy', async () => {
+    const businessId = await seedBusiness();
+    const codes = await withBusiness(db, businessId, (tx) => taxRepo.taxCodesFor(tx, businessId));
+    expect(codes.map((c) => [c.code, c.treatment, c.pointPolicy])).toEqual([
+      ['EXEMPT', 'EXEMPT', 'ON_INVOICE_ISSUE'],
+      ['STANDARD_RATE', 'TAXABLE', 'ON_INVOICE_ISSUE'],
+      ['ZERO_RATED', 'ZERO_RATED', 'ON_INVOICE_ISSUE'],
+    ]);
+  });
+});
+
+describe('the rate in force is derived, never stored (§13)', () => {
+  it('reads 5% before the Finance Act and 7.5% after, from the same rows', async () => {
+    const businessId = await seedBusiness();
+    const before = await withBusiness(db, businessId, (tx) =>
+      taxRepo.taxStandingFor(tx, businessId, 'STANDARD_RATE', '2019-06-01'),
+    );
+    expect(before).toMatchObject({ treatment: 'TAXABLE', rateBps: 500 });
+    const after = await withBusiness(db, businessId, (tx) =>
+      taxRepo.taxStandingFor(tx, businessId, 'STANDARD_RATE', '2026-08-27'),
+    );
+    expect(after).toMatchObject({ treatment: 'TAXABLE', rateBps: 750 });
+  });
+
+  it('a treatment that charges nothing answers zero whatever the rows say', async () => {
+    const businessId = await seedBusiness();
+    for (const code of ['ZERO_RATED', 'EXEMPT']) {
+      const standing = await withBusiness(db, businessId, (tx) =>
+        taxRepo.taxStandingFor(tx, businessId, code, '2026-08-27'),
+      );
+      expect(standing, code).toMatchObject({ rateBps: 0 });
+    }
+  });
+
+  it('an unconfigured code is an honest null — nothing invents a default', async () => {
+    const businessId = await seedBusiness();
+    expect(
+      await withBusiness(db, businessId, (tx) =>
+        taxRepo.taxStandingFor(tx, businessId, 'LUXURY_SURCHARGE', '2026-08-27'),
+      ),
+    ).toBeNull();
+  });
+});
+
+describe('the vocabulary is constrained', () => {
+  it('a treatment or point policy outside §13 is unrepresentable', async () => {
+    const businessId = await seedBusiness();
+    await expect(
+      withBusiness(db, businessId, (tx) =>
+        tx.execute(sql`
+          INSERT INTO tax_codes (business_id, code, label, treatment)
+          VALUES (${businessId}::uuid, 'VIBES', 'Vibes tax', 'VIBES_BASED')
+        `),
+      ),
+    ).rejects.toThrow();
+    await expect(
+      withBusiness(db, businessId, (tx) =>
+        tx.execute(sql`
+          INSERT INTO tax_codes (business_id, code, label, treatment, point_policy)
+          VALUES (${businessId}::uuid, 'ODD', 'Odd', 'TAXABLE', 'ON_FULL_MOON')
+        `),
+      ),
+    ).rejects.toThrow();
+    /* A negative rate is not a rate. */
+    await expect(
+      withBusiness(db, businessId, (tx) =>
+        tx.execute(sql`
+          INSERT INTO tax_rates (business_id, tax_code_id, rate_bps, effective_from)
+          SELECT business_id, id, -100, '2026-01-01' FROM tax_codes
+          WHERE business_id = ${businessId}::uuid AND code = 'STANDARD_RATE'
+        `),
+      ),
+    ).rejects.toThrow();
+  });
+});

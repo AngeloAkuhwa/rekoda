@@ -24,6 +24,7 @@ import {
 } from '../schema/tenancy.js';
 import { auditEvents } from '../schema/ops.js';
 import { seedChartOfAccounts } from './accounts.js';
+import { seedTaxModel } from './tax.js';
 
 /** Either a pool handle or a transaction — every read below accepts both. */
 export type Queryable = Db | TenantDb;
@@ -237,6 +238,11 @@ export async function createBusinessWithOwner(db: Db, input: NewBusiness): Promi
      * may rely on every seeded role existing, so there is no window where a
      * business exists and its chart does not. */
     await seedChartOfAccounts(tx, businessId);
+
+    /* The tax model arrives with the business too (§13, PR-078): codes,
+     * treatments, point policies and the published rate history, so no
+     * caller ever reaches for a hardcoded rate. */
+    await seedTaxModel(tx, businessId);
 
     return {
       id: row.id,
