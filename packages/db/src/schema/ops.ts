@@ -35,9 +35,25 @@ export const conversations = pgTable(
     id: id(),
     businessId: businessId(),
     channel: text('channel').notNull(), // meta | twilio | simulator
+    /** Appendix F (PR-058a-1, additive): MERCHANT | CUSTOMER |
+     * LEGACY_THREAD. Null until the 058a-2 backfill classifies history. */
+    conversationKind: text('conversation_kind'),
+    /** WHICH merchant channel asset (phoneNumberId / WABA). Never who is
+     * writing — F.5 keeps those identities apart. */
+    channelAccountId: text('channel_account_id'),
+    /** ADVISORY only (F.7): never the routing key, never unique. */
+    externalConversationId: text('external_conversation_id'),
+    /** Business- and channel-scoped keyed lookup token. NEVER raw. */
+    participantBlindIndex: text('participant_blind_index'),
+    participantIndexKeyVersion: text('participant_index_key_version'),
+    /** Resolved through the privacy gateway. */
+    customerId: uuid('customer_id'),
+    status: text('status').notNull().default('open'),
     createdAt: createdAt(),
   },
-  // One thread per business per channel — see migration 0006.
+  /* One thread per business per channel — see migration 0006. Correct for
+   * MERCHANT threads only; replaced by F.2's two partial constraints in
+   * PR-058a-4. */
   (t) => [uniqueIndex('conversations_business_channel_ux').on(t.businessId, t.channel)],
 );
 
