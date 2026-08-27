@@ -18,6 +18,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { PaymentProviderPort } from './provider.port.js';
 import { PaystackProvider } from './paystack.provider.js';
 import { MonoDirectPayProvider } from './mono-directpay.provider.js';
+import { OPayProvider } from './opay.provider.js';
 
 interface Recorded {
   method: string;
@@ -42,6 +43,9 @@ interface ConformanceKit {
     success(res: ServerResponse): void;
     failed(res: ServerResponse): void;
     notFound(res: ServerResponse): void;
+    /** What the success fixture states as the provider fee — zero where
+     * this provider does not state one on the verify call. */
+    successFeeK: number;
   };
   /** 'polled' providers must surface an outage as an error; 'none'
    * providers must answer an empty list WITHOUT a request. */
@@ -113,6 +117,7 @@ const paystackKit: ConformanceKit = {
       res.writeHead(404, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ status: false, message: 'Transaction reference not found' }));
     },
+    successFeeK: 67_500,
   },
   settlements: 'polled',
 };
@@ -170,11 +175,71 @@ const monoKit: ConformanceKit = {
       res.writeHead(404, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ status: 'failed', message: 'payment not found' }));
     },
+    successFeeK: 67_500,
   },
   settlements: 'none',
 };
 
-for (const kit of [paystackKit, monoKit]) {
+const opayKit: ConformanceKit = {
+  providerType: 'opay',
+  make: (baseUrl) => new OPayProvider('OPAYPUB_test', 'merchant_256', baseUrl),
+  assertAuth: (recorded) => {
+    expect(recorded.headers['authorization']).toBe('Bearer OPAYPUB_test');
+    expect(recorded.headers['merchantid']).toBe('merchant_256');
+  },
+  initialize: {
+    ok: (res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          code: '00000',
+          data: { cashierUrl: 'https://cashier.opayweb.com/o1', orderNo: 'o1' },
+        }),
+      );
+    },
+    refusal: (res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ code: '02001', message: 'merchant not available' }));
+    },
+    checkoutUrl: 'https://cashier.opayweb.com/o1',
+    amountOnWire: (body) => (body as { amount?: { total?: unknown } }).amount?.total,
+  },
+  verify: {
+    success: (res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          code: '00000',
+          data: {
+            status: 'SUCCESS',
+            orderNo: 'o1',
+            amount: { total: 4_500_000, currency: 'NGN' },
+            createTime: 1787479200000,
+          },
+        }),
+      );
+    },
+    failed: (res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          code: '00000',
+          data: { status: 'FAIL', orderNo: 'o2', amount: { total: 4_500_000, currency: 'NGN' } },
+        }),
+      );
+    },
+    notFound: (res) => {
+      /* OPay answers an unknown reference IN-BAND, not with a 404. */
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ code: '02004', message: 'order not exist' }));
+    },
+    /* OPay states no fee on the status call; settlement truth carries it. */
+    successFeeK: 0,
+  },
+  settlements: 'none',
+};
+
+for (const kit of [paystackKit, monoKit, opayKit]) {
   describe(`provider conformance: ${kit.providerType}`, () => {
     let server: Server;
     let baseUrl: string;
@@ -254,7 +319,7 @@ for (const kit of [paystackKit, monoKit]) {
         succeeded: true,
         amountK: 4_500_000,
         currency: 'NGN',
-        providerFeeK: 67_500,
+        providerFeeK: kit.verify.successFeeK,
       });
       expect(outcome.transaction.providerStatus.length).toBeGreaterThan(0);
     });
