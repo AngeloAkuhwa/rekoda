@@ -280,6 +280,10 @@ describe('the registers (§5.3.7)', () => {
     expect(invoices.invoices[0]).toMatchObject({
       invoiceNumber,
       status: 'partially_paid',
+      /* Appendix E.3's dimensions, derived at read (PR-084): part settled,
+       * nothing being chased — no due date was ever agreed. */
+      paymentStatus: 'PARTIALLY_PAID',
+      collectionStatus: 'CURRENT',
       totalK: 15_000_000,
       paidK: 6_000_000,
       balanceDueK: 9_000_000,

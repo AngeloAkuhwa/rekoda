@@ -34,6 +34,7 @@ export * as bankRepo from './repos/bank.js';
 export * as closeRepo from './repos/close.js';
 export * as journalRepo from './repos/journal.js';
 export * as openingRepo from './repos/opening.js';
+export * as projectionsRepo from './repos/projections.js';
 export * as paymentsHub from './repos/payments-hub.js';
 export * as catalogueRepo from './repos/catalogue.js';
 export * as ordersRepo from './repos/orders.js';

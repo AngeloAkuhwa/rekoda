@@ -46,9 +46,11 @@ import {
   buildCashflowStatement,
   buildProfitAndLoss,
   buildTrialBalance,
+  collectionStatusFor,
   csvDate,
   csvKobo,
   daysOverdue,
+  paymentStatusFor,
   buildXlsx,
   describeActor,
   EXPENSE_CATEGORY_LABELS,
@@ -697,6 +699,14 @@ export class ReportsController {
       invoices: list.rows.map((r) => ({
         invoiceNumber: r.invoiceNumber,
         status: r.status,
+        /* E.3's derived dimensions (PR-084). Settled = payments PLUS
+         * applied credits, which is exactly what the balance already nets;
+         * a voided document settled nothing, whatever its balance says. */
+        paymentStatus: paymentStatusFor(
+          r.totalK,
+          r.status === 'voided' ? 0 : r.totalK - r.balanceDueK,
+        ),
+        collectionStatus: collectionStatusFor(r.dueDate, r.balanceDueK, now),
         dueDate: r.dueDate?.toISOString() ?? null,
         daysOverdue: daysOverdue(r.dueDate, r.balanceDueK, now),
         totalK: r.totalK,

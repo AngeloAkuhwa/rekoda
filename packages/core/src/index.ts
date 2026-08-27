@@ -21,6 +21,7 @@ export * from './statements.js';
 export * from './statement-layout.js';
 export * from './payments.js';
 export * from './tax.js';
+export * from './document-status.js';
 export * from './due-dates.js';
 export * from './csv.js';
 export * from './xlsx.js';

@@ -289,6 +289,15 @@ export const reportsInvoicesResponse = z.object({
       invoiceNumber: z.string(),
       /** issued | partially_paid | paid | voided */
       status: z.string(),
+      /**
+       * Appendix E.3's derived dimensions (PR-084), beside the blended
+       * status rather than replacing it: what has settled, and what is
+       * being done about the rest. Both computed at read from the same
+       * figures the rebuild path proves against the subledgers — never
+       * stored.
+       */
+      paymentStatus: z.enum(['UNPAID', 'PARTIALLY_PAID', 'PAID']),
+      collectionStatus: z.enum(['CURRENT', 'DUE', 'OVERDUE']),
       /** When the money was agreed to arrive. Null when nobody said. */
       dueDate: z.string().nullable(),
       /** Whole Lagos days past that day. Zero when not late, or undated. */
