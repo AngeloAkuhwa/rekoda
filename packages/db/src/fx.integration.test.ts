@@ -40,28 +40,34 @@ async function seedBusiness(): Promise<string> {
   return business.id;
 }
 
-async function bareTransaction(businessId: string): Promise<string> {
+/**
+ * One balanced two-line posting, transaction and lines in a single
+ * database transaction — the deferred shape triggers (0070) hold at every
+ * commit, so a probe cannot leave scaffolding behind.
+ */
+function postPair(businessId: string, currency: string, snapshotId: string | null) {
+  seq += 1;
   return withBusiness(db, businessId, async (tx) => {
     const rows = await tx.execute<{ id: string }>(sql`
       INSERT INTO ledger_transactions (business_id, memo, source_type, source_id)
-      VALUES (${businessId}::uuid, 'fx probe', 'manual', ${`fx-${seq}-${Math.floor(Math.random() * 1e9)}`})
+      VALUES (${businessId}::uuid, 'fx probe', 'manual', ${`fx-${seq}`})
       RETURNING id
     `);
-    return [...rows][0]!.id;
-  });
-}
-
-function insertLine(businessId: string, txId: string, currency: string, snapshotId: string | null) {
-  return withBusiness(db, businessId, (tx) =>
-    tx.execute(sql`
+    const txId = [...rows][0]!.id;
+    const amount = currency === 'NGN' ? 100 : 15;
+    await tx.execute(sql`
       INSERT INTO ledger_entries
         (business_id, transaction_id, account_id, debit_k, credit_k,
          transaction_currency, transaction_amount_minor, exchange_rate_snapshot_id)
-      VALUES (${businessId}::uuid, ${txId}::uuid,
-              (SELECT id FROM accounts WHERE business_id = ${businessId}::uuid AND code = '1000'),
-              100, 0, ${currency}, 100, ${snapshotId}::uuid)
-    `),
-  );
+      VALUES
+        (${businessId}::uuid, ${txId}::uuid,
+         (SELECT id FROM accounts WHERE business_id = ${businessId}::uuid AND code = '1000'),
+         100, 0, ${currency}, ${amount}, ${snapshotId}::uuid),
+        (${businessId}::uuid, ${txId}::uuid,
+         (SELECT id FROM accounts WHERE business_id = ${businessId}::uuid AND code = '4000'),
+         0, 100, ${currency}, ${amount}, ${snapshotId}::uuid)
+    `);
+  });
 }
 
 const usdNgn = () => ({
@@ -119,17 +125,15 @@ describe('the snapshot row (A.1)', () => {
 describe('the FX requirement (§16, §10)', () => {
   it('a cross-currency line without a snapshot is refused', async () => {
     const businessId = await seedBusiness();
-    const txId = await bareTransaction(businessId);
-    await expect(insertLine(businessId, txId, 'USD', null)).rejects.toThrow();
+    await expect(postPair(businessId, 'USD', null)).rejects.toThrow();
   });
 
-  it('a cross-currency line with the right pair posts', async () => {
+  it('a cross-currency posting with the right pair commits', async () => {
     const businessId = await seedBusiness();
     const { id } = await withBusiness(db, businessId, (tx) =>
       fxRepo.recordExchangeRateSnapshot(tx, usdNgn()),
     );
-    const txId = await bareTransaction(businessId);
-    await expect(insertLine(businessId, txId, 'USD', id)).resolves.toBeTruthy();
+    await expect(postPair(businessId, 'USD', id)).resolves.toBeUndefined();
   });
 
   it('a snapshot for the wrong pair is refused by name', async () => {
@@ -137,8 +141,7 @@ describe('the FX requirement (§16, §10)', () => {
     const { id } = await withBusiness(db, businessId, (tx) =>
       fxRepo.recordExchangeRateSnapshot(tx, { ...usdNgn(), baseCurrency: 'GBP' }),
     );
-    const txId = await bareTransaction(businessId);
-    const refusal = await insertLine(businessId, txId, 'USD', id).then(
+    const refusal = await postPair(businessId, 'USD', id).then(
       () => 'inserted',
       (error: unknown) => (error as { cause?: { message?: string } }).cause?.message ?? 'unknown',
     );
@@ -150,8 +153,7 @@ describe('the FX requirement (§16, §10)', () => {
     const { id } = await withBusiness(db, businessId, (tx) =>
       fxRepo.recordExchangeRateSnapshot(tx, usdNgn()),
     );
-    const txId = await bareTransaction(businessId);
-    const refusal = await insertLine(businessId, txId, 'NGN', id).then(
+    const refusal = await postPair(businessId, 'NGN', id).then(
       () => 'inserted',
       (error: unknown) => (error as { cause?: { message?: string } }).cause?.message ?? 'unknown',
     );

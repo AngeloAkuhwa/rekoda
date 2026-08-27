@@ -127,6 +127,12 @@ export function assertBalanced(posting: Posting): void {
     if (line.debitK > 0 && line.creditK > 0) {
       throw new UnbalancedPostingError(posting.memo, line.debitK, line.creditK);
     }
+    /* §10: exactly one side per line. A 0/0 line says nothing and would be
+     * refused by the database CHECK (0070); refuse it here first, where
+     * the message can name the bug. */
+    if (line.debitK === 0 && line.creditK === 0) {
+      throw new UnbalancedPostingError(posting.memo, line.debitK, line.creditK);
+    }
     debits += line.debitK;
     credits += line.creditK;
   }
@@ -176,7 +182,7 @@ export function postSale(args: {
   const lines: LedgerLine[] = [];
   if (args.paidK > 0) lines.push(line(cashOrBank(args.method ?? 'transfer'), args.paidK, 0));
   if (receivableK > 0) lines.push(line('ACCOUNTS_RECEIVABLE', receivableK, 0));
-  lines.push(line('SALES_REVENUE', 0, args.totalK - vatK));
+  if (args.totalK - vatK > 0) lines.push(line('SALES_REVENUE', 0, args.totalK - vatK));
   if (vatK > 0) lines.push(line('VAT_PAYABLE', 0, vatK));
   const posting = { memo: args.memo, lines };
   assertBalanced(posting);
@@ -231,7 +237,7 @@ export function postOpeningBalances(args: {
   if (cashK > 0) lines.push(line('CASH', cashK, 0));
   if (bankK > 0) lines.push(line('BANK', bankK, 0));
   if (stockK > 0) lines.push(line('INVENTORY', stockK, 0));
-  lines.push(line('OWNERS_EQUITY', 0, equityK));
+  if (equityK > 0) lines.push(line('OWNERS_EQUITY', 0, equityK));
 
   const posting = { memo: args.memo, lines };
   assertBalanced(posting);

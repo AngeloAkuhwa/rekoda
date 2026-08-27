@@ -120,20 +120,18 @@ describe('every posting path links the right chart rows', () => {
 
   it('an entry without a chart account is unrepresentable', async () => {
     const businessId = await seedBusiness();
-    const txRow = await withBusiness(db, businessId, async (tx) => {
+    const code = await withBusiness(db, businessId, async (tx) => {
       const rows = await tx.execute<{ id: string }>(sql`
         INSERT INTO ledger_transactions (business_id, memo, source_type, source_id)
         VALUES (${businessId}::uuid, 'null probe', 'manual', 'probe-null') RETURNING id
       `);
-      return [...rows][0]!.id;
-    });
-    const code = await withBusiness(db, businessId, (tx) =>
-      tx.execute(sql`
+      const txRow = [...rows][0]!.id;
+      await tx.execute(sql`
         INSERT INTO ledger_entries
           (business_id, transaction_id, debit_k, credit_k, transaction_amount_minor)
         VALUES (${businessId}::uuid, ${txRow}::uuid, 100, 0, 100)
-      `),
-    ).then(
+      `);
+    }).then(
       () => 'inserted',
       (error: unknown) => (error as { cause?: { code?: string } }).cause?.code ?? 'unknown',
     );
@@ -180,21 +178,19 @@ describe('every posting path links the right chart rows', () => {
     const foreignId = [...bolaAccount][0]!.id;
 
     /* A direct insert with a foreign account id violates the composite FK. */
-    const txRow = await withBusiness(db, ada, async (tx) => {
-      const rows = await tx.execute<{ id: string }>(sql`
-        INSERT INTO ledger_transactions (business_id, memo, source_type, source_id)
-        VALUES (${ada}::uuid, 'fk probe', 'manual', 'probe') RETURNING id
-      `);
-      return [...rows][0]!.id;
-    });
     await expect(
-      withBusiness(db, ada, (tx) =>
-        tx.execute(sql`
+      withBusiness(db, ada, async (tx) => {
+        const rows = await tx.execute<{ id: string }>(sql`
+          INSERT INTO ledger_transactions (business_id, memo, source_type, source_id)
+          VALUES (${ada}::uuid, 'fk probe', 'manual', 'probe') RETURNING id
+        `);
+        const txRow = [...rows][0]!.id;
+        await tx.execute(sql`
           INSERT INTO ledger_entries
             (business_id, transaction_id, account_id, debit_k, credit_k, transaction_amount_minor)
           VALUES (${ada}::uuid, ${txRow}::uuid, ${foreignId}::uuid, 100, 0, 100)
-        `),
-      ),
+        `);
+      }),
     ).rejects.toThrow();
   });
 });

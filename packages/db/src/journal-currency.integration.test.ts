@@ -125,24 +125,22 @@ describe('every posting states its currency (§16)', () => {
 
   it('a negative transaction amount is unrepresentable', async () => {
     const businessId = await seedBusiness();
-    const txId = await withBusiness(db, businessId, async (tx) => {
-      const rows = await tx.execute<{ id: string }>(sql`
-        INSERT INTO ledger_transactions (business_id, memo, source_type, source_id)
-        VALUES (${businessId}::uuid, 'neg probe', 'manual', 'neg') RETURNING id
-      `);
-      return [...rows][0]!.id;
-    });
     await expect(
-      withBusiness(db, businessId, (tx) =>
-        tx.execute(sql`
+      withBusiness(db, businessId, async (tx) => {
+        const rows = await tx.execute<{ id: string }>(sql`
+          INSERT INTO ledger_transactions (business_id, memo, source_type, source_id)
+          VALUES (${businessId}::uuid, 'neg probe', 'manual', 'neg') RETURNING id
+        `);
+        const txId = [...rows][0]!.id;
+        await tx.execute(sql`
           INSERT INTO ledger_entries
             (business_id, transaction_id, account_id, debit_k, credit_k, transaction_amount_minor)
           VALUES (${businessId}::uuid, ${txId}::uuid,
                   (SELECT id FROM accounts
                     WHERE business_id = ${businessId}::uuid AND code = '1000'),
                   100, 0, -100)
-        `),
-      ),
+        `);
+      }),
     ).rejects.toThrow();
   });
 });
