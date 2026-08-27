@@ -19,10 +19,13 @@ import type { BankStatementLine } from '@rekoda/core';
 
 export interface IngestFinancialTransactionsInput {
   businessId: string;
-  lines: readonly BankStatementLine[];
+  lines: readonly (BankStatementLine & { externalTransactionId?: string | null })[];
   actor: string;
   /** Which door: `csv_upload` | `bank_feed`. Telemetry, never trust. */
   source: string;
+  /** §22.3 (PR-073): the feed connection the lines came through, so each
+   * line carries connection-scoped identity. Absent for uploads. */
+  connectionId?: string | null;
 }
 
 export type IngestedTransactions = Awaited<ReturnType<typeof bankRepo.importStatementLines>>;
@@ -35,6 +38,7 @@ export async function ingestFinancialTransactionsWork(
     businessId: input.businessId,
     lines: input.lines,
     actor: input.actor,
+    connectionId: input.connectionId ?? null,
   });
 
   /* Announced only when something actually landed: an import that was all

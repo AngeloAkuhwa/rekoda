@@ -400,6 +400,12 @@ export const bankStatementLines = pgTable(
     bankRef: text('bank_ref'),
     /** Stops a re-upload duplicating. Computed in @rekoda/core. */
     fingerprint: text('fingerprint').notNull(),
+    /** §22.3 (PR-073): which connection produced this line. Null for
+     * uploads — their identity is the fingerprint. */
+    financialAccountConnectionId: uuid('financial_account_connection_id'),
+    /** The provider's own id for the movement, scoped to the connection
+     * above by a partial unique — never assumed globally unique. */
+    externalTransactionId: text('external_transaction_id'),
     importedAt: timestamp('imported_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
@@ -469,6 +475,42 @@ export const bankFeedConnections = pgTable(
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [uniqueIndex('bank_feed_business_ux').on(t.businessId)],
+);
+
+/**
+ * FinancialAccountConnection (spec §18, §22.3; migration 0095, PR-073).
+ *
+ * The FEED side's connection entity, bound to the ONE place money sits
+ * that it reads (`financial_accounts`, composite FK in the migration).
+ * Replaces `bank_feed_connections`, which 0095 backfilled from and froze;
+ * identifiers a connection produces are scoped to it, never global.
+ */
+export const financialAccountConnections = pgTable(
+  'financial_account_connections',
+  {
+    id: id(),
+    businessId: businessId(),
+    financialAccountId: uuid('financial_account_id').notNull(),
+    providerType: text('provider_type').notNull(),
+    /** The aggregator's id for the linked account. Opaque and theirs. */
+    externalAccountId: text('external_account_id').notNull(),
+    bankName: text('bank_name').notNull().default(''),
+    accountLast4: text('account_last4').notNull().default(''),
+    /** linked | unlinked. Unlinked keeps the row: lapsed is not never-was. */
+    status: text('status').notNull().default('linked'),
+    /** The last Lagos day a sync ran, so the next fetch knows where to start. */
+    lastSyncedOn: date('last_synced_on'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('financial_account_connections_account_ux').on(t.businessId, t.financialAccountId),
+    uniqueIndex('financial_account_connections_identity_ux').on(
+      t.businessId,
+      t.providerType,
+      t.externalAccountId,
+    ),
+  ],
 );
 
 /**

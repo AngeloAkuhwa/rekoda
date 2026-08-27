@@ -431,9 +431,9 @@ function readAmount(
  */
 const SEP = String.fromCharCode(31);
 
-export function fingerprintLines(
-  lines: readonly BankStatementLine[],
-): readonly (BankStatementLine & { fingerprint: string })[] {
+export function fingerprintLines<T extends BankStatementLine>(
+  lines: readonly T[],
+): readonly (T & { fingerprint: string })[] {
   const seen = new Map<string, number>();
   return lines.map((line) => {
     const body = [line.postedOn, String(line.amountK), line.narration, line.bankRef ?? ''].join(

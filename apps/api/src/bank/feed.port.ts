@@ -29,6 +29,12 @@ export interface FeedTransaction {
   narration: string;
   /** The aggregator's reference for the movement, when it publishes one. */
   bankRef: string | null;
+  /**
+   * The aggregator's OWN id for the movement — §22.3 identity, scoped to
+   * the connection that produced it, never assumed globally unique. Null
+   * where a provider genuinely publishes none.
+   */
+  externalTransactionId: string | null;
 }
 
 export type LinkAccountResult =

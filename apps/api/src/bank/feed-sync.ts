@@ -98,6 +98,9 @@ export async function syncFeedOnce(
       lines: fetched.transactions.map((t, i) => ({ ...t, row: i + 1 })),
       actor,
       source: 'bank_feed',
+      /* §22.3: the lines carry the identity of the connection that
+       * produced them. */
+      connectionId: connection.id,
     };
     /* The A1 rollout seam (spec §25): the same import the CSV door takes,
      * through the same command. No idempotency key — the fingerprint dedupe

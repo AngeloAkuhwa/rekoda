@@ -16,7 +16,12 @@ import { and, eq, sql } from 'drizzle-orm';
 import { fingerprintLines, matchStatement, type BankStatementLine } from '@rekoda/core';
 import type { Db, TenantDb } from '../client.js';
 import { codeOf } from './accounts.js';
-import { bankFeedConnections, bankLineMatches, bankStatementLines } from '../schema/finance.js';
+import {
+  bankLineMatches,
+  bankStatementLines,
+  financialAccountConnections,
+} from '../schema/finance.js';
+import { financialAccounts } from '../schema/accounts.js';
 import { auditEvents } from '../schema/ops.js';
 
 export interface ImportedStatement {
@@ -42,12 +47,20 @@ export async function importStatementLines(
   tx: TenantDb,
   input: {
     businessId: string;
-    lines: readonly BankStatementLine[];
+    lines: readonly (BankStatementLine & { externalTransactionId?: string | null })[];
     actor: string;
+    /** §22.3 (PR-073): the feed connection the lines came through. Absent
+     * for uploads, whose identity stays the fingerprint alone. */
+    connectionId?: string | null;
     /** Test seam: rows per INSERT, so a test can prove the chunk walk. */
     chunkRows?: number;
   },
 ): Promise<ImportedStatement> {
+  /* With PR-073 the DO NOTHING absorbs conflicts on BOTH identities: the
+   * fingerprint (same content re-imported through any door) and the
+   * partial provider-identity unique (the same external id re-polled
+   * through the same connection, even if the provider reworded the
+   * narration in between). */
   const keyed = fingerprintLines(input.lines);
   if (keyed.length === 0) return { imported: 0, duplicates: 0 };
 
@@ -73,6 +86,11 @@ export async function importStatementLines(
           narration: line.narration,
           bankRef: line.bankRef,
           fingerprint: line.fingerprint,
+          /* §22.3: identity travels as a pair or not at all — an external
+           * id with no connection to scope it is the global identifier
+           * the constraint forbids. */
+          financialAccountConnectionId: input.connectionId ?? null,
+          externalTransactionId: input.connectionId ? (line.externalTransactionId ?? null) : null,
         })),
       )
       .onConflictDoNothing()
@@ -725,6 +743,8 @@ export interface FeedConnection {
   accountRef: string;
   bankName: string;
   accountLast4: string;
+  /** The place money sits that this connection reads (0061, PR-073). */
+  financialAccountId: string;
   /** linked | unlinked. Unlinked keeps the row: lapsed is not never-was. */
   status: string;
   /** `YYYY-MM-DD`, or null before the first sync. */
@@ -737,16 +757,17 @@ export async function feedConnectionFor(
 ): Promise<FeedConnection | null> {
   const rows = await tx
     .select({
-      id: bankFeedConnections.id,
-      provider: bankFeedConnections.provider,
-      accountRef: bankFeedConnections.accountRef,
-      bankName: bankFeedConnections.bankName,
-      accountLast4: bankFeedConnections.accountLast4,
-      status: bankFeedConnections.status,
-      lastSyncedOn: bankFeedConnections.lastSyncedOn,
+      id: financialAccountConnections.id,
+      financialAccountId: financialAccountConnections.financialAccountId,
+      provider: financialAccountConnections.providerType,
+      accountRef: financialAccountConnections.externalAccountId,
+      bankName: financialAccountConnections.bankName,
+      accountLast4: financialAccountConnections.accountLast4,
+      status: financialAccountConnections.status,
+      lastSyncedOn: financialAccountConnections.lastSyncedOn,
     })
-    .from(bankFeedConnections)
-    .where(eq(bankFeedConnections.businessId, businessId))
+    .from(financialAccountConnections)
+    .where(eq(financialAccountConnections.businessId, businessId))
     .limit(1);
   return rows[0] ?? null;
 }
@@ -771,21 +792,42 @@ export async function linkFeed(
     actor: string;
   },
 ): Promise<void> {
+  /* The connection reads ONE place money sits (§22.3, migration 0095).
+   * V1 has exactly one 'bank' financial account per business, seeded at
+   * creation; a business without one is a seeding defect worth an error,
+   * never a silently connection-less feed. */
+  const accounts = await tx
+    .select({ id: financialAccounts.id })
+    .from(financialAccounts)
+    .where(
+      and(eq(financialAccounts.businessId, input.businessId), eq(financialAccounts.kind, 'bank')),
+    )
+    .orderBy(financialAccounts.createdAt)
+    .limit(1);
+  const financialAccountId = accounts[0]?.id;
+  if (!financialAccountId) {
+    throw new Error('linkFeed: this business has no bank financial account to connect');
+  }
+
   await tx
-    .insert(bankFeedConnections)
+    .insert(financialAccountConnections)
     .values({
       businessId: input.businessId,
-      provider: input.provider,
-      accountRef: input.accountRef,
+      financialAccountId,
+      providerType: input.provider,
+      externalAccountId: input.accountRef,
       bankName: input.bankName,
       accountLast4: input.accountLast4,
       status: 'linked',
     })
     .onConflictDoUpdate({
-      target: [bankFeedConnections.businessId],
+      target: [
+        financialAccountConnections.businessId,
+        financialAccountConnections.financialAccountId,
+      ],
       set: {
-        provider: input.provider,
-        accountRef: input.accountRef,
+        providerType: input.provider,
+        externalAccountId: input.accountRef,
         bankName: input.bankName,
         accountLast4: input.accountLast4,
         status: 'linked',
@@ -808,9 +850,9 @@ export async function linkFeed(
 /** A sync ran and covered up to this Lagos day. */
 export async function markFeedSynced(tx: TenantDb, businessId: string, day: string): Promise<void> {
   await tx
-    .update(bankFeedConnections)
+    .update(financialAccountConnections)
     .set({ lastSyncedOn: day, updatedAt: new Date() })
-    .where(eq(bankFeedConnections.businessId, businessId));
+    .where(eq(financialAccountConnections.businessId, businessId));
 }
 
 /**
@@ -824,12 +866,15 @@ export async function markFeedUnlinked(
   actor: string,
 ): Promise<void> {
   const marked = await tx
-    .update(bankFeedConnections)
+    .update(financialAccountConnections)
     .set({ status: 'unlinked', updatedAt: new Date() })
     .where(
-      and(eq(bankFeedConnections.businessId, businessId), eq(bankFeedConnections.status, 'linked')),
+      and(
+        eq(financialAccountConnections.businessId, businessId),
+        eq(financialAccountConnections.status, 'linked'),
+      ),
     )
-    .returning({ accountRef: bankFeedConnections.accountRef });
+    .returning({ accountRef: financialAccountConnections.externalAccountId });
 
   if (marked.length > 0) {
     await tx.insert(auditEvents).values({
@@ -845,7 +890,7 @@ export async function markFeedUnlinked(
 
 /**
  * Every business with a LINKED feed, across tenants — the background
- * sweep's worklist (`sweep_read_bank_feeds`, migration 0049). Worker
+ * sweep's worklist (`sweep_read_feed_connections`, migration 0095). Worker
  * connection only; ids, nothing else.
  */
 export async function linkedFeedBusinesses(
@@ -853,9 +898,9 @@ export async function linkedFeedBusinesses(
   limit = 500,
 ): Promise<Array<{ businessId: string }>> {
   return workerDb
-    .select({ businessId: bankFeedConnections.businessId })
-    .from(bankFeedConnections)
-    .where(eq(bankFeedConnections.status, 'linked'))
-    .orderBy(bankFeedConnections.updatedAt)
+    .select({ businessId: financialAccountConnections.businessId })
+    .from(financialAccountConnections)
+    .where(eq(financialAccountConnections.status, 'linked'))
+    .orderBy(financialAccountConnections.updatedAt)
     .limit(limit);
 }
