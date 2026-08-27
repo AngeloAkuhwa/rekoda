@@ -312,6 +312,8 @@ export async function bookVerifiedPayment(
       accountId: entryAccountIds.get(line.account)!,
       debitK: line.debitK,
       creditK: line.creditK,
+      /* Same-currency posting (§16): see writePosting. */
+      transactionAmountMinor: line.debitK + line.creditK,
     })),
   );
 

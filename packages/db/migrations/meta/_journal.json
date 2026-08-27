@@ -477,6 +477,13 @@
       "when": 1787410807000,
       "tag": "0067_accounting_periods",
       "breakpoints": true
+    },
+    {
+      "idx": 68,
+      "version": "7",
+      "when": 1787410808000,
+      "tag": "0068_journal_currency",
+      "breakpoints": true
     }
   ]
 }

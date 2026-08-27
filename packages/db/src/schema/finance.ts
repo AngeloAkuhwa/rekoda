@@ -297,6 +297,9 @@ export const ledgerTransactions = pgTable(
     sourceId: text('source_id'),
     /** One-shot key a dashboard journal brings. Null on every other posting. */
     clientRef: text('client_ref'),
+    /** §16 invariant: equals the business's own currency; a PR-039 trigger
+     * enforces it. Kobo columns everywhere are this currency's minor unit. */
+    functionalCurrency: char('functional_currency', { length: 3 }).notNull().default('NGN'),
     createdAt: createdAt(),
   },
   (t) => [
@@ -319,8 +322,16 @@ export const ledgerEntries = pgTable(
      * `accounts (business_id, id)` lives in migration 0063; another
      * tenant's account is unrepresentable. */
     accountId: uuid('account_id').notNull(),
+    /** debitFunctionalMinor / creditFunctionalMinor (§16): always the
+     * entry's functional currency. Kobo IS the NGN minor unit. */
     debitK: kobo('debit_k').notNull().default(0),
     creditK: kobo('credit_k').notNull().default(0),
+    /** What the money actually was (§16). Same-currency lines carry their
+     * functional amount here and no snapshot; the FX requirement — snapshot
+     * REQUIRED exactly when currencies differ — lands with PR-038. */
+    transactionCurrency: char('transaction_currency', { length: 3 }).notNull().default('NGN'),
+    transactionAmountMinor: bigint('transaction_amount_minor', { mode: 'number' }).notNull(),
+    exchangeRateSnapshotId: uuid('exchange_rate_snapshot_id'),
     createdAt: createdAt(),
   },
   (t) => [

@@ -129,8 +129,9 @@ describe('every posting path links the right chart rows', () => {
     });
     const code = await withBusiness(db, businessId, (tx) =>
       tx.execute(sql`
-        INSERT INTO ledger_entries (business_id, transaction_id, debit_k, credit_k)
-        VALUES (${businessId}::uuid, ${txRow}::uuid, 100, 0)
+        INSERT INTO ledger_entries
+          (business_id, transaction_id, debit_k, credit_k, transaction_amount_minor)
+        VALUES (${businessId}::uuid, ${txRow}::uuid, 100, 0, 100)
       `),
     ).then(
       () => 'inserted',
@@ -189,8 +190,9 @@ describe('every posting path links the right chart rows', () => {
     await expect(
       withBusiness(db, ada, (tx) =>
         tx.execute(sql`
-          INSERT INTO ledger_entries (business_id, transaction_id, account_id, debit_k, credit_k)
-          VALUES (${ada}::uuid, ${txRow}::uuid, ${foreignId}::uuid, 100, 0)
+          INSERT INTO ledger_entries
+            (business_id, transaction_id, account_id, debit_k, credit_k, transaction_amount_minor)
+          VALUES (${ada}::uuid, ${txRow}::uuid, ${foreignId}::uuid, 100, 0, 100)
         `),
       ),
     ).rejects.toThrow();

@@ -200,6 +200,11 @@ export async function writePosting(
       accountId: accountIds.get(line.account)!,
       debitK: line.debitK,
       creditK: line.creditK,
+      /* Same-currency posting (§16): the transaction amount IS the
+       * functional amount — exactly one of debit/credit is non-zero, so
+       * the sum is the amount. Currency rides the NGN default until the
+       * FX plumbing (PR-038) gives writers something else to say. */
+      transactionAmountMinor: line.debitK + line.creditK,
       ...(opts.occurredAt ? { createdAt: opts.occurredAt } : {}),
     })),
   );
