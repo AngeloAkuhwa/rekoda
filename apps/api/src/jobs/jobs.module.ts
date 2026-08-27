@@ -18,6 +18,7 @@ import { redactForLog } from '@rekoda/core/privacy';
 import { JobQueue, JobKind } from './queue.service.js';
 import { JobRunner, describeFailure } from './runner.js';
 import { inboundMessageHandler, type InboundMessageDeps } from './inbound-message.handler.js';
+import { customerMessageHandler } from './customer-message.handler.js';
 import { renderDocumentHandler } from './render-document.handler.js';
 import { deliverDocumentHandler } from './deliver-document.handler.js';
 import { paymentLinkHandler } from './payment-link.handler.js';
@@ -78,6 +79,10 @@ export function buildRunner(
 ): JobRunner {
   const runner = new JobRunner(workerDb, appDb, options);
   runner.register(JobKind.InboundMessage, inboundMessageHandler({ ...deps, db: appDb }));
+  runner.register(
+    JobKind.CustomerMessage,
+    customerMessageHandler({ config: deps.config, gateway: deps.gateway }),
+  );
   runner.register(
     JobKind.RenderDocument,
     renderDocumentHandler({ storage: deps.storage, db: appDb }),
@@ -366,6 +371,7 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
           sender: this.sender,
           vaultKey: this.config.vaultKey,
           matchKey: this.config.matchKey,
+          metaPhoneNumberId: this.config.metaPhoneNumberId,
         }),
       )
         .catch((error: unknown) => {

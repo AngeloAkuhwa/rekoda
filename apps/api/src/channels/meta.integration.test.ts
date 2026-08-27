@@ -20,6 +20,7 @@ import {
   schema,
   usageRepo,
   stockRepo,
+  wabaRepo,
   withBusiness,
   sql,
   type Db,
@@ -40,7 +41,13 @@ import {
   settleRepo,
   spendRepo,
 } from '@rekoda/db';
-import { decryptFacet, encryptFacet, matchKeyFor } from '@rekoda/core/vault';
+import {
+  decryptFacet,
+  encryptFacet,
+  matchKeyFor,
+  participantIndexFor,
+  PARTICIPANT_INDEX_KEY_VERSION,
+} from '@rekoda/core/vault';
 import { PrivacyGateway } from '../privacy/gateway.service.js';
 import { Interpreter } from '../ai/interpreter.service.js';
 import { StubTransport } from '../ai/transport.stub.js';
@@ -87,6 +94,10 @@ beforeAll(async () => {
   process.env['REKODA_WEB_URL'] = 'https://books.example.test';
   process.env['META_APP_SECRET'] = APP_SECRET;
   process.env['META_VERIFY_TOKEN'] = VERIFY_TOKEN;
+  /* Rekoda's own Chat number (PR-059): the fixtures below arrive on PNID,
+   * so pinning it makes the routing decision explicit — anything else is a
+   * merchant's WABA or a refusal, never a guess. */
+  process.env['META_PHONE_NUMBER_ID'] = 'PNID';
   // 64 hex characters each, derived per run rather than written down.
   process.env['VAULT_KEY'] = randomBytes(32).toString('hex');
   process.env['MATCH_KEY'] = randomBytes(32).toString('hex');
@@ -145,7 +156,12 @@ beforeEach(async () => {
   intentsProvider.reset();
 });
 
-function messagePayload(waId: string, wamid: string, text = 'Ada bought 3 wigs for 150k') {
+function messagePayload(
+  waId: string,
+  wamid: string,
+  text = 'Ada bought 3 wigs for 150k',
+  phoneNumberId = 'PNID',
+) {
   return {
     object: 'whatsapp_business_account',
     entry: [
@@ -156,7 +172,7 @@ function messagePayload(waId: string, wamid: string, text = 'Ada bought 3 wigs f
             field: 'messages',
             value: {
               messaging_product: 'whatsapp',
-              metadata: { phone_number_id: 'PNID' },
+              metadata: { phone_number_id: phoneNumberId },
               messages: [
                 {
                   id: wamid,
@@ -326,6 +342,141 @@ describe('idempotency', () => {
       ],
     });
     expect(await events.eventCount(db)).toBe(3);
+  });
+});
+
+describe('phoneNumberId → BusinessId routing (spec §24; PR-059)', () => {
+  async function seedMerchant(phone: string, name: string) {
+    const user = await identity.upsertUserByPhone(db, phone);
+    return identity.createBusinessWithOwner(db, { name, businessType: null, ownerUserId: user.id });
+  }
+
+  async function connectWabaFor(businessId: string, phoneNumberId: string) {
+    return withBusiness(db, businessId, (tx) =>
+      wabaRepo.connectWaba(tx, {
+        businessId,
+        wabaId: `waba-${phoneNumberId}`,
+        phoneNumberId,
+        accessTokenCipher: 'cipher-for-tests',
+        tokenTail: '4821',
+      }),
+    );
+  }
+
+  it("routes a customer's message to the WABA's owner and onto the customer's own thread", async () => {
+    const merchant = await seedMerchant('+2348030001111', 'Ada Fashion');
+    await connectWabaFor(merchant.id, 'PN-ADA-1');
+
+    const res = await post(
+      messagePayload('2349097775555', 'wamid.CUST.1', 'do you have the bone straight?', 'PN-ADA-1'),
+    );
+    expect(res.statusCode).toBe(200);
+
+    /* The job is the customer handler's, never the interpreter's. */
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+    expect(stubTransport.requests).toHaveLength(0);
+
+    const expectedIndex = participantIndexFor(deps.config.matchKey, {
+      businessId: merchant.id,
+      channelAccountId: 'PN-ADA-1',
+      keyVersion: PARTICIPANT_INDEX_KEY_VERSION,
+      normalisedParticipant: '+2349097775555',
+    });
+    const thread = await withBusiness(db, merchant.id, (tx) =>
+      conversationsRepo.messagesForThread(tx, {
+        kind: 'CUSTOMER',
+        businessId: merchant.id,
+        channel: 'meta',
+        channelAccountId: 'PN-ADA-1',
+        participantBlindIndex: expectedIndex,
+        participantIndexKeyVersion: PARTICIPANT_INDEX_KEY_VERSION,
+      }),
+    );
+    expect(thread).toHaveLength(1);
+    expect(thread[0]!.body).toBe('do you have the bone straight?');
+
+    /* The raw number never landed in the conversation index (F.3/F.4). */
+    const raw = await withBusiness(db, merchant.id, (tx) =>
+      tx.execute<{ n: number }>(sql`
+        SELECT count(*)::int AS n FROM conversations
+        WHERE participant_blind_index LIKE '%2349097775555%'
+      `),
+    );
+    expect([...raw][0]!.n).toBe(0);
+
+    /* And the merchant's own Chat thread heard nothing. */
+    const merchantThread = await withBusiness(db, merchant.id, (tx) =>
+      conversationsRepo.messagesForThread(tx, {
+        kind: 'MERCHANT',
+        businessId: merchant.id,
+        channel: 'meta',
+      }),
+    );
+    expect(merchantThread).toHaveLength(0);
+  });
+
+  it('an unknown phoneNumberId is refused, never guessed by the sender (§24, pinned)', async () => {
+    /* The sender IS a merchant — the exact person a sender-based fallback
+     * would misfile. Their customer-of-somebody message must not become
+     * their own bookkeeping. */
+    const merchant = await seedMerchant('+2348030002222', 'Bola Threads');
+
+    const res = await post(
+      messagePayload('2348030002222', 'wamid.UNROUTED.1', 'sold 3 wigs', 'PN-NOBODY'),
+    );
+    expect(res.statusCode).toBe(200);
+
+    /* Stored, durably, attributed to nobody; no job to run. */
+    expect(await events.unattributedEvents(workerDb, 'meta')).toHaveLength(1);
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(false);
+    const heard = await withBusiness(db, merchant.id, (tx) =>
+      conversationsRepo.messagesFor(tx, merchant.id),
+    );
+    expect(heard).toHaveLength(0);
+  });
+
+  it('a revoked connection refuses like an unknown number', async () => {
+    const merchant = await seedMerchant('+2348030003333', 'Chidi Stores');
+    await connectWabaFor(merchant.id, 'PN-CHIDI-1');
+    await withBusiness(db, merchant.id, async (tx) => {
+      const connection = await wabaRepo.wabaConnectionFor(tx, merchant.id);
+      await wabaRepo.markWabaStatus(tx, {
+        businessId: merchant.id,
+        connectionId: connection!.id,
+        status: 'REVOKED',
+      });
+    });
+
+    await post(messagePayload('2349097776666', 'wamid.REVOKED.1', 'hello', 'PN-CHIDI-1'));
+
+    expect(await events.unattributedEvents(workerDb, 'meta')).toHaveLength(1);
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(false);
+  });
+
+  it('two customers on one WABA get two threads; the same customer returns to theirs', async () => {
+    const merchant = await seedMerchant('+2348030004444', 'Ngozi Beauty');
+    await connectWabaFor(merchant.id, 'PN-NGOZI-1');
+
+    await post(
+      messagePayload('2349091110001', 'wamid.TWO.1', 'price of the 22 inch?', 'PN-NGOZI-1'),
+    );
+    await post(messagePayload('2349091110002', 'wamid.TWO.2', 'is the shop open?', 'PN-NGOZI-1'));
+    await post(messagePayload('2349091110001', 'wamid.TWO.3', 'and in brown?', 'PN-NGOZI-1'));
+    const runner = buildRunner(workerDb, db, deps);
+    while (await runner.runOnce()) {
+      /* drain the queue */
+    }
+
+    const threads = await withBusiness(db, merchant.id, (tx) =>
+      tx.execute<{ id: string; n: number }>(sql`
+        SELECT c.id, count(m.id)::int AS n
+        FROM conversations c LEFT JOIN conversation_messages m ON m.conversation_id = c.id
+        WHERE c.conversation_kind = 'CUSTOMER'
+        GROUP BY c.id ORDER BY n DESC
+      `),
+    );
+    const counts = [...threads].map((t) => t.n);
+    expect(counts).toEqual([2, 1]);
   });
 });
 
