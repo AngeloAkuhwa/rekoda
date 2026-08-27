@@ -196,3 +196,30 @@ export const paymentAttempts = pgTable(
     index('payment_attempts_intent_ix').on(t.businessId, t.paymentIntentId),
   ],
 );
+
+/* ── payment charges (spec §19.1; migration 0083, PR-057) ── */
+
+/** A breakdown line the customer read: a record, never deleted. The
+ * taxable base is stated per line, and an estimate resolves to actual. */
+export const paymentCharges = pgTable(
+  'payment_charges',
+  {
+    id: id(),
+    businessId: uuid('business_id')
+      .notNull()
+      .references(() => businesses.id),
+    orderId: uuid('order_id').notNull(),
+    type: text('type').notNull(),
+    label: text('label').notNull(),
+    amountMinor: bigint('amount_minor', { mode: 'number' }).notNull(),
+    currency: text('currency').notNull().default('NGN'),
+    beneficiary: text('beneficiary').notNull(),
+    economicBearer: text('economic_bearer').notNull(),
+    taxCode: text('tax_code'),
+    actualOrEstimated: text('actual_or_estimated').notNull().default('ESTIMATED'),
+    providerCostScheduleId: uuid('provider_cost_schedule_id'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('payment_charges_order_ix').on(t.businessId, t.orderId)],
+);
