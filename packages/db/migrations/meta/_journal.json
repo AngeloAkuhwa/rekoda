@@ -631,6 +631,13 @@
       "when": 1787410947000,
       "tag": "0089_waba_health_billing",
       "breakpoints": true
+    },
+    {
+      "idx": 90,
+      "version": "7",
+      "when": 1787411007000,
+      "tag": "0090_settlements",
+      "breakpoints": true
     }
   ]
 }

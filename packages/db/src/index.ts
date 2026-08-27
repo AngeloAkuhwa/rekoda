@@ -20,6 +20,7 @@ export * as recognitionRepo from './repos/recognition.js';
 export * as customerCreditsRepo from './repos/customer-credits.js';
 export * as chargesRepo from './repos/charges.js';
 export * as wabaRepo from './repos/waba.js';
+export * as settlementsRepo from './repos/settlements.js';
 export * as outboxRepo from './repos/outbox.js';
 export * as events from './repos/events.js';
 export * as jobsRepo from './repos/jobs.js';

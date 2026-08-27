@@ -223,3 +223,73 @@ export const paymentCharges = pgTable(
   },
   (t) => [index('payment_charges_order_ix').on(t.businessId, t.orderId)],
 );
+
+/* ── provider settlement (spec §20; migration 0090, PR-063) ── */
+
+/** What the provider paid out, and when. The provider's numbers, recorded
+ * as reported; the components explain the gross→net gap. */
+export const settlements = pgTable(
+  'settlements',
+  {
+    id: id(),
+    businessId: uuid('business_id')
+      .notNull()
+      .references(() => businesses.id),
+    paymentConnectionId: uuid('payment_connection_id').notNull(),
+    /** Connection-scoped (§22.3), never assumed globally unique. */
+    providerSettlementId: text('provider_settlement_id').notNull(),
+    status: text('status').notNull().default('PENDING'),
+    currency: text('currency').notNull().default('NGN'),
+    grossK: bigint('gross_k', { mode: 'number' }).notNull(),
+    netK: bigint('net_k', { mode: 'number' }).notNull(),
+    settledAt: timestamp('settled_at', { withTimezone: true }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex('settlements_provider_ux').on(
+      t.businessId,
+      t.paymentConnectionId,
+      t.providerSettlementId,
+    ),
+    index('settlements_business_status_ix').on(t.businessId, t.status),
+  ],
+);
+
+/** Which payments a payout covered. Immutable once written. */
+export const settlementItems = pgTable(
+  'settlement_items',
+  {
+    id: id(),
+    businessId: uuid('business_id')
+      .notNull()
+      .references(() => businesses.id),
+    settlementId: uuid('settlement_id').notNull(),
+    paymentId: uuid('payment_id').notNull(),
+    amountK: bigint('amount_k', { mode: 'number' }).notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    uniqueIndex('settlement_items_payment_ux').on(t.businessId, t.settlementId, t.paymentId),
+    index('settlement_items_payment_ix').on(t.businessId, t.paymentId),
+  ],
+);
+
+/** A signed adjustment (§20's nine kinds), signed by DIRECTION, never by a
+ * negative amount. Immutable once written. */
+export const settlementComponents = pgTable(
+  'settlement_components',
+  {
+    id: id(),
+    businessId: uuid('business_id')
+      .notNull()
+      .references(() => businesses.id),
+    settlementId: uuid('settlement_id').notNull(),
+    kind: text('kind').notNull(),
+    direction: text('direction').notNull(),
+    amountK: bigint('amount_k', { mode: 'number' }).notNull(),
+    note: text('note'),
+    createdAt: createdAt(),
+  },
+  (t) => [index('settlement_components_settlement_ix').on(t.businessId, t.settlementId)],
+);
