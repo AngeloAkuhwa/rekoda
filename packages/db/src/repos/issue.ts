@@ -876,6 +876,7 @@ export async function invoiceForPayment(
   balanceDueK: number;
   currency: string;
   customerId: string | null;
+  sourceType: string;
 } | null> {
   const rows = await tx
     .select({
@@ -885,6 +886,7 @@ export async function invoiceForPayment(
       balanceDueK: invoices.balanceDueK,
       currency: invoices.currency,
       customerId: invoices.customerId,
+      sourceType: invoices.sourceType,
     })
     .from(invoices)
     .where(and(eq(invoices.businessId, businessId), eq(invoices.id, invoiceId)))

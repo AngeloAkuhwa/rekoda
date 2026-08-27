@@ -89,6 +89,16 @@ const ALL: Record<string, readonly replies.Reply[]> = {
       'https://checkout.paystack.com/0123456789abcdefghijklmnop',
     ),
   ],
+  catalogueCheckout: [
+    replies.catalogueCheckout(
+      'INV-2026-000041',
+      NAIRA_MILLIONS,
+      'https://checkout.paystack.com/0123456789abcdefghijklmnop',
+    ),
+    replies.catalogueCheckout('INV-2026-000041', NAIRA_MILLIONS, null),
+  ],
+  catalogueOrderDelivered: [replies.catalogueOrderDelivered('INV-2026-000041', NAIRA_MILLIONS)],
+  catalogueOrderNoLink: [replies.catalogueOrderNoLink('INV-2026-000041', NAIRA_MILLIONS)],
   paymentLinkSettled: [replies.paymentLinkSettled('INV-2026-000041')],
   paymentLinkUnavailable: [replies.paymentLinkUnavailable()],
   paymentLinkNothingOwed: [replies.paymentLinkNothingOwed()],

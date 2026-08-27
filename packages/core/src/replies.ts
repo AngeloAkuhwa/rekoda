@@ -515,6 +515,66 @@ export function paymentLinkReady(
   );
 }
 
+/* ── W3: the catalogue order's checkout and its merchant notice ──────────── */
+
+/**
+ * The checkout message a CUSTOMER receives in their own thread on the
+ * merchant's WABA, right after their cart survived server-side validation
+ * (spec §3.2; PR-089). This is the first figure they see, and it is the
+ * server's figure: the validated invoice total, never anything their
+ * device claimed. When the payable link could not be raised, the
+ * confirmation still carries the total and promises the details, because
+ * an order that vanished into silence is an order placed twice.
+ *
+ * The copy never names Rekoda: this message goes out on the merchant's
+ * own number, and to the customer the sender IS the business.
+ */
+export function catalogueCheckout(
+  invoiceNumber: string,
+  amountK: number,
+  checkoutUrl: string | null,
+): Reply {
+  if (checkoutUrl) {
+    return reply(
+      `Order confirmed ✅ ${invoiceNumber}: ${formatKobo(amountK)}.\n` +
+        `Pay securely here: ${checkoutUrl}`,
+    );
+  }
+  return reply(
+    `Order confirmed ✅ ${invoiceNumber}: ${formatKobo(amountK)}.\n` +
+      'Payment details will follow shortly.',
+  );
+}
+
+/**
+ * The merchant's notice of a validated WhatsApp order whose payment link
+ * already reached the customer. Deliberately NOT `paymentLinkReady`: that
+ * copy says "forward it", and forwarding a link the customer already holds
+ * would read as a system that does not know what it just did.
+ */
+export function catalogueOrderDelivered(invoiceNumber: string, amountK: number): Reply {
+  return reply(
+    `New WhatsApp order ✅ ${invoiceNumber} for ${formatKobo(amountK)}.\n` +
+      'The payment link is with your customer. I will tell you the moment ' +
+      'the money lands, and the receipt follows by itself.',
+  );
+}
+
+/**
+ * The merchant's notice when no payable link could be raised for a
+ * validated WhatsApp order. The order is real and the merchant must hear
+ * about it either way; what they do next is collect the money their own
+ * way and record it, or fix what blocked the link.
+ */
+export function catalogueOrderNoLink(invoiceNumber: string, amountK: number): Reply {
+  return reply(
+    `New WhatsApp order ✅ ${invoiceNumber} for ${formatKobo(amountK)}.\n` +
+      'I could not raise a payment link for it. Collect the payment your ' +
+      'usual way and tell me when it lands, or ask *send payment details* ' +
+      'once the customer has an email on file.',
+  );
+}
+
 /** The latest invoice settled between the ask and the mint. Scoped to that
  * invoice only: another may still be open, and "who owes me" is the answer. */
 export function paymentLinkSettled(invoiceNumber: string): Reply {

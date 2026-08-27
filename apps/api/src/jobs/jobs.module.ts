@@ -45,6 +45,7 @@ import { OutboxDispatcher } from '../commands/outbox-dispatcher.js';
 import { CommandsModule } from '../commands/commands.module.js';
 import { CommandBus } from '../commands/command-bus.service.js';
 import { MESSAGE_SENDER } from '../channels/sender.tokens.js';
+import { WabaTemplateService } from '../channels/waba-templates.service.js';
 import { SPEECH_TO_TEXT, type SpeechToText } from '../ai/stt.js';
 import { TEXT_EXTRACTION, type TextExtraction } from '../ai/ocr.js';
 import type { MessageSender } from '../channels/sender.js';
@@ -118,6 +119,10 @@ export function buildRunner(
     paymentLinkHandler({
       paymentIntents: deps.paymentIntents,
       replySender: deps.replySender,
+      /* Constructed here rather than injected: buildRunner already holds
+       * every dependency the service needs, and threading it through
+       * RunnerDeps would make each test re-declare what this line derives. */
+      customerTexts: new WabaTemplateService(appDb, deps.config, deps.sender, deps.gateway),
       db: appDb,
       config: deps.config,
     }),
