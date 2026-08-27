@@ -7,7 +7,12 @@
  */
 import { and, eq, sql } from 'drizzle-orm';
 import type { Db, TenantDb } from '../client.js';
-import { wabaConnections, wabaServiceWindows, wabaTemplates } from '../schema/waba.js';
+import {
+  wabaCatalogueItems,
+  wabaConnections,
+  wabaServiceWindows,
+  wabaTemplates,
+} from '../schema/waba.js';
 
 export type ConnectWabaOutcome =
   | { outcome: 'connected'; id: string }
@@ -398,4 +403,192 @@ export async function serviceWindowOpen(
     .limit(1);
   const row = rows[0];
   return row !== undefined && row.windowExpiresAt.getTime() > at.getTime();
+}
+
+/* ── catalogue synchronisation (spec §3.2; PR-086) ─────────────────────── */
+
+/**
+ * Link the Meta commerce catalog this WABA presents. A data act, not a
+ * sync: pushing happens when the sync runs, against whatever is linked.
+ */
+export async function setCatalogueId(
+  tx: TenantDb,
+  input: { businessId: string; catalogueId: string | null },
+): Promise<'linked' | 'no_connection'> {
+  const updated = await tx
+    .update(wabaConnections)
+    .set({ catalogueId: input.catalogueId, updatedAt: new Date() })
+    .where(eq(wabaConnections.businessId, input.businessId))
+    .returning({ id: wabaConnections.id });
+  return updated.length > 0 ? 'linked' : 'no_connection';
+}
+
+export interface CataloguePush {
+  productId: string;
+  /** The identity Meta knows the item by: the product id, stable. */
+  retailerId: string;
+  name: string;
+  priceK: number;
+  availability: 'in stock' | 'out of stock';
+}
+
+/**
+ * What the sync must SEND: every sellable product that disagrees with its
+ * synced row (or has none), plus every synced item whose product stopped
+ * being sellable — pushed as 'out of stock' rather than deleted, because a
+ * customer mid-conversation about an item that vanished is worse than one
+ * told it is gone.
+ *
+ * Dirtiness is COMPARISON, never a stored flag: the products table is the
+ * truth and the synced rows are the projection's own record of what Meta
+ * holds. A FAILED row always re-pushes — a failure is not a state to
+ * settle into.
+ *
+ * Availability tells the truth about the shelf where the shelf is
+ * counted: a product with movements and nothing on hand is 'out of
+ * stock'; one never counted (a service, say) is 'in stock' — Rekoda does
+ * not invent an empty shelf for goods it never counted.
+ */
+export async function catalogueDiffFor(
+  tx: TenantDb,
+  businessId: string,
+  wabaConnectionId: string,
+): Promise<CataloguePush[]> {
+  const rows = await tx.execute<{
+    product_id: string;
+    name: string;
+    price_k: string | null;
+    availability: string;
+    sellable: boolean;
+    synced_name: string | null;
+    synced_price_k: string | null;
+    synced_availability: string | null;
+    status: string | null;
+  }>(sql`
+    WITH shelf AS (
+      SELECT p.id AS product_id, p.name, p.unit_price_k AS price_k,
+             (p.active = 1 AND p.unit_price_k IS NOT NULL) AS sellable,
+             CASE
+               WHEN NOT EXISTS (SELECT 1 FROM inventory_movements m WHERE m.product_id = p.id)
+                 THEN 'in stock'
+               WHEN (SELECT COALESCE(SUM(m.delta), 0) FROM inventory_movements m
+                     WHERE m.product_id = p.id) > 0
+                 THEN 'in stock'
+               ELSE 'out of stock'
+             END AS availability
+      FROM products p
+      WHERE p.business_id = ${businessId}::uuid
+    )
+    SELECT s.product_id, s.name, s.price_k, s.availability, s.sellable,
+           i.synced_name, i.synced_price_k, i.synced_availability, i.status
+    FROM shelf s
+    LEFT JOIN waba_catalogue_items i
+      ON i.business_id = ${businessId}::uuid
+     AND i.waba_connection_id = ${wabaConnectionId}::uuid
+     AND i.product_id = s.product_id
+    WHERE
+      (s.sellable AND (
+        i.product_id IS NULL
+        OR i.status = 'FAILED'
+        OR i.synced_name <> s.name
+        OR i.synced_price_k <> s.price_k
+        OR i.synced_availability <> s.availability
+      ))
+      OR (NOT s.sellable AND i.product_id IS NOT NULL
+          AND (i.synced_availability <> 'out of stock' OR i.status = 'FAILED'))
+    ORDER BY s.name
+  `);
+  return [...rows].map((r) => ({
+    productId: r.product_id,
+    retailerId: r.product_id,
+    name: r.name,
+    priceK: Number(r.price_k ?? r.synced_price_k ?? 0),
+    availability: r.sellable ? (r.availability as 'in stock' | 'out of stock') : 'out of stock',
+  }));
+}
+
+export interface CatalogueSyncResult {
+  productId: string;
+  retailerId: string;
+  name: string;
+  priceK: number;
+  availability: 'in stock' | 'out of stock';
+  ok: boolean;
+  /** Meta's stated reason when not ok. Advisory prose, never parsed. */
+  error?: string | null;
+}
+
+/** Record what a push attempted, item by item: SYNCED with the figures
+ * Meta accepted, FAILED with its stated reason. One row per product per
+ * connection, upserted — the projection's record follows the push. */
+export async function recordCatalogueSync(
+  tx: TenantDb,
+  input: { businessId: string; wabaConnectionId: string; results: readonly CatalogueSyncResult[] },
+): Promise<void> {
+  const at = new Date();
+  for (const r of input.results) {
+    await tx
+      .insert(wabaCatalogueItems)
+      .values({
+        businessId: input.businessId,
+        wabaConnectionId: input.wabaConnectionId,
+        productId: r.productId,
+        retailerId: r.retailerId,
+        syncedName: r.name,
+        syncedPriceK: r.priceK,
+        syncedAvailability: r.availability,
+        status: r.ok ? 'SYNCED' : 'FAILED',
+        error: r.ok ? null : (r.error ?? 'provider refused the item'),
+        syncedAt: at,
+      })
+      .onConflictDoUpdate({
+        target: [
+          wabaCatalogueItems.businessId,
+          wabaCatalogueItems.wabaConnectionId,
+          wabaCatalogueItems.productId,
+        ],
+        set: {
+          syncedName: r.name,
+          syncedPriceK: r.priceK,
+          syncedAvailability: r.availability,
+          status: r.ok ? 'SYNCED' : 'FAILED',
+          error: r.ok ? null : (r.error ?? 'provider refused the item'),
+          syncedAt: at,
+        },
+      });
+  }
+}
+
+export interface CatalogueSyncState {
+  catalogueId: string | null;
+  syncedCount: number;
+  failedCount: number;
+  /** How many pushes the next sync would send, by the same diff the sync
+   * runs — the page and the job cannot disagree. */
+  pendingCount: number;
+  lastSyncedAt: Date | null;
+}
+
+export async function catalogueSyncStateFor(
+  tx: TenantDb,
+  businessId: string,
+): Promise<CatalogueSyncState | null> {
+  const connection = await wabaConnectionFor(tx, businessId);
+  if (!connection) return null;
+  const counts = await tx.execute<{ synced: string; failed: string; last: string | null }>(sql`
+    SELECT COUNT(*) FILTER (WHERE status = 'SYNCED') AS synced,
+           COUNT(*) FILTER (WHERE status = 'FAILED') AS failed,
+           MAX(synced_at)::text AS last
+    FROM waba_catalogue_items
+    WHERE business_id = ${businessId}::uuid AND waba_connection_id = ${connection.id}::uuid
+  `);
+  const row = [...counts][0];
+  const pending = await catalogueDiffFor(tx, businessId, connection.id);
+  return {
+    catalogueId: connection.catalogueId ?? null,
+    syncedCount: Number(row?.synced ?? 0),
+    failedCount: Number(row?.failed ?? 0),
+    pendingCount: pending.length,
+    lastSyncedAt: row?.last ? new Date(row.last) : null,
+  };
 }

@@ -7,7 +7,7 @@
  * code branch.
  */
 import { sql } from 'drizzle-orm';
-import { index, pgTable, text, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
+import { bigint, index, pgTable, text, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
 import { businesses } from './tenancy.js';
 
 const id = () =>
@@ -33,6 +33,9 @@ export const wabaConnections = pgTable(
     billingModeConfirmedBy: text('billing_mode_confirmed_by'),
     /** WHY the connection is UNHEALTHY (0089) — never a bare adjective. */
     healthReason: text('health_reason'),
+    /** The Meta commerce catalog this WABA presents (0103, PR-086). Null
+     * until the merchant links one; sync refuses honestly without it. */
+    catalogueId: text('catalogue_id'),
     accessTokenCipher: text('access_token_cipher'),
     tokenTail: text('token_tail'),
     connectedAt: timestamp('connected_at', { withTimezone: true }),
@@ -70,6 +73,38 @@ export const wabaTemplates = pgTable(
   (t) => [
     uniqueIndex('waba_templates_name_ux').on(t.businessId, t.wabaConnectionId, t.name, t.language),
   ],
+);
+
+/**
+ * What Meta's commerce catalog currently holds, item by item (0103,
+ * PR-086): the projection's own record, so the sync can DIFF the products
+ * table against it instead of re-sending the world. A product that
+ * disagrees with its synced row is dirty by comparison — no flag stored.
+ */
+export const wabaCatalogueItems = pgTable(
+  'waba_catalogue_items',
+  {
+    id: id(),
+    businessId: uuid('business_id')
+      .notNull()
+      .references(() => businesses.id),
+    wabaConnectionId: uuid('waba_connection_id')
+      .notNull()
+      .references(() => wabaConnections.id),
+    productId: uuid('product_id').notNull(),
+    /** The identity Meta knows the item by: our product id, stable. */
+    retailerId: text('retailer_id').notNull(),
+    syncedName: text('synced_name').notNull(),
+    syncedPriceK: bigint('synced_price_k', { mode: 'number' }).notNull(),
+    syncedAvailability: text('synced_availability').notNull(), // in stock | out of stock
+    status: text('status').notNull(), // SYNCED | FAILED
+    /** Meta's stated reason for a refusal. Advisory prose for the
+     * merchant's next edit — never parsed, never a routing input. */
+    error: text('error'),
+    syncedAt: timestamp('synced_at', { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('waba_catalogue_items_ux').on(t.businessId, t.wabaConnectionId, t.productId)],
 );
 
 export const wabaServiceWindows = pgTable(
