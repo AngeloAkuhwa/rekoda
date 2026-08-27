@@ -11,6 +11,7 @@ import { randomBytes } from 'node:crypto';
 import { paymentReference } from '@rekoda/core';
 import {
   chargebacksRepo,
+  refundsRepo,
   createDb,
   identity,
   issueRepo,
@@ -745,6 +746,222 @@ describe('chargeback accounting (§21; PR-066)', () => {
     await expect(
       withBusiness(db, businessId, (tx) =>
         tx.execute(sql`DELETE FROM chargebacks WHERE business_id = ${businessId}::uuid`),
+      ),
+    ).rejects.toThrow();
+  });
+});
+
+describe('refund and payment reversal, kept distinct (§6.1, §9.3; PR-067)', () => {
+  async function balanceK(businessId: string, code: string): Promise<number> {
+    const rows = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ n: number }>(sql`
+        SELECT coalesce(sum(e.debit_k - e.credit_k), 0)::int AS n
+        FROM ledger_entries e JOIN accounts a ON a.id = e.account_id
+        WHERE e.business_id = ${businessId}::uuid AND a.code = ${code}
+      `),
+    );
+    return [...rows][0]!.n;
+  }
+
+  async function seedVerified() {
+    const { businessId, connectionId } = await seedMerchant();
+    const paymentId = await withBusiness(db, businessId, async (tx) => {
+      const sale = await issueRepo.issueSale(tx, {
+        businessId,
+        customerId: null,
+        customerToken: 'CUSTOMER_RF1',
+        items: [{ name: 'wig', quantity: 1, unitPriceK: 45_000_00 }],
+        subtotalK: 45_000_00,
+        discountK: 0,
+        deliveryFeeK: 0,
+        vatK: 0,
+        totalK: 45_000_00,
+        paidK: 0,
+        balanceDueK: 45_000_00,
+        method: 'transfer',
+        sourceType: 'chat',
+        sourceId: 'draft-1',
+        actor: 'system',
+      });
+      const intent = await paymentsHub.createIntent(tx, {
+        businessId,
+        reference: paymentReference(new Date(), (n) => randomBytes(n)),
+        expectedAmountK: 45_000_00,
+        providerType: 'paystack',
+        invoiceId: sale.invoiceId,
+      });
+      const booked = await settleRepo.bookVerifiedPayment(tx, {
+        businessId,
+        intent: {
+          id: intent.id,
+          reference: intent.reference,
+          invoiceId: intent.invoiceId,
+          customerId: intent.customerId,
+        },
+        confirmedAmountK: 45_000_00,
+        currency: 'NGN',
+        providerType: 'paystack',
+        providerRef: `pst-${randomBytes(4).toString('hex')}`,
+        providerStatus: 'success',
+        providerFeeK: 0,
+        feePolicy: 'merchant_bearing',
+        method: 'transfer',
+        actor: 'test',
+        eventId: `event-${randomBytes(4).toString('hex')}`,
+        paymentConnectionId: connectionId,
+      });
+      return booked.paymentId;
+    });
+    return { businessId, connectionId, paymentId };
+  }
+
+  it('a refund is money returned deliberately: DR AR · CR Bank, partials capped by the payment', async () => {
+    const { businessId, paymentId } = await seedVerified();
+    const arBefore = await balanceK(businessId, '1100');
+
+    const first = await withBusiness(db, businessId, (tx) =>
+      refundsRepo.recordRefund(tx, {
+        businessId,
+        paymentId,
+        amountK: 10_000_00,
+        method: 'bank',
+        reason: 'one wig returned',
+        actor: 'owner:test',
+      }),
+    );
+    expect(first).toMatchObject({ outcome: 'recorded', isNew: true });
+    expect(await balanceK(businessId, '1100')).toBe(arBefore + 10_000_00);
+    expect(await balanceK(businessId, '1010')).toBe(-10_000_00);
+
+    /* The refunds on one payment can never exceed it. */
+    const tooMuch = await withBusiness(db, businessId, (tx) =>
+      refundsRepo.recordRefund(tx, {
+        businessId,
+        paymentId,
+        amountK: 40_000_00,
+        method: 'bank',
+        reason: 'everything back',
+        actor: 'owner:test',
+      }),
+    );
+    expect(tooMuch).toEqual({ outcome: 'exceeds_payment', refundedSoFarK: 10_000_00 });
+    expect(await balanceK(businessId, '1010')).toBe(-10_000_00);
+
+    /* A provider-executed refund re-notified is one row, one posting. */
+    await withBusiness(db, businessId, (tx) =>
+      refundsRepo.recordRefund(tx, {
+        businessId,
+        paymentId,
+        amountK: 5_000_00,
+        method: 'bank',
+        reason: 'provider refund',
+        actor: 'provider:paystack',
+        providerRefundId: 'RF_1',
+      }),
+    );
+    const again = await withBusiness(db, businessId, (tx) =>
+      refundsRepo.recordRefund(tx, {
+        businessId,
+        paymentId,
+        amountK: 5_000_00,
+        method: 'bank',
+        reason: 'provider refund',
+        actor: 'provider:paystack',
+        providerRefundId: 'RF_1',
+      }),
+    );
+    expect(again).toMatchObject({ outcome: 'recorded', isNew: false });
+    expect(await balanceK(businessId, '1010')).toBe(-15_000_00);
+  });
+
+  it('a payment reversal undoes the payment BEFORE settlement: whole, once, back through clearing', async () => {
+    const { businessId, connectionId, paymentId } = await seedVerified();
+    expect(await balanceK(businessId, '1015')).toBe(45_000_00);
+    const arBefore = await balanceK(businessId, '1100');
+
+    const outcome = await withBusiness(db, businessId, (tx) =>
+      refundsRepo.recordPaymentReversal(tx, {
+        businessId,
+        paymentId,
+        paymentConnectionId: connectionId,
+        reason: 'duplicate charge undone by provider',
+        actor: 'provider:paystack',
+      }),
+    );
+    expect(outcome).toMatchObject({ outcome: 'recorded', isNew: true, amountK: 45_000_00 });
+
+    /* The money the provider was holding went back; the customer owes
+     * again; the bank never saw any of it. */
+    expect(await balanceK(businessId, '1015')).toBe(0);
+    expect(await balanceK(businessId, '1100')).toBe(arBefore + 45_000_00);
+    expect(await balanceK(businessId, '1010')).toBe(0);
+
+    /* Once, whole (§9.3): a second reversal re-posts nothing. */
+    const again = await withBusiness(db, businessId, (tx) =>
+      refundsRepo.recordPaymentReversal(tx, {
+        businessId,
+        paymentId,
+        paymentConnectionId: connectionId,
+        reason: 'retry',
+        actor: 'provider:paystack',
+      }),
+    );
+    expect(again).toMatchObject({ outcome: 'recorded', isNew: false });
+    expect(await balanceK(businessId, '1015')).toBe(0);
+  });
+
+  it('a settled payment cannot be reversed — that is a refund or a chargeback (§6.1)', async () => {
+    const { businessId, connectionId, paymentId } = await seedVerified();
+    const recorded = await withBusiness(db, businessId, (tx) =>
+      settlementsRepo.recordSettlement(tx, {
+        businessId,
+        paymentConnectionId: connectionId,
+        providerSettlementId: 'STL_RV',
+        status: 'SETTLED',
+        grossK: 45_000_00,
+        netK: 45_000_00,
+        settledAt: new Date('2026-08-27T06:00:00Z'),
+        items: [{ paymentId, amountK: 45_000_00 }],
+        components: [],
+      }),
+    );
+    if (recorded.outcome !== 'recorded') throw new Error('fixture');
+    await withBusiness(db, businessId, (tx) =>
+      settlementsRepo.postSettlement(tx, businessId, recorded.id),
+    );
+
+    const outcome = await withBusiness(db, businessId, (tx) =>
+      refundsRepo.recordPaymentReversal(tx, {
+        businessId,
+        paymentId,
+        paymentConnectionId: connectionId,
+        reason: 'too late',
+        actor: 'provider:paystack',
+      }),
+    );
+    expect(outcome).toEqual({ outcome: 'already_settled' });
+  });
+
+  it('refunds and reversals are history: nothing edits or deletes them (§31 invariant 9)', async () => {
+    const { businessId, paymentId } = await seedVerified();
+    await withBusiness(db, businessId, (tx) =>
+      refundsRepo.recordRefund(tx, {
+        businessId,
+        paymentId,
+        amountK: 1_000_00,
+        method: 'cash',
+        reason: 'goodwill',
+        actor: 'owner:test',
+      }),
+    );
+    await expect(
+      withBusiness(db, businessId, (tx) =>
+        tx.execute(sql`UPDATE refunds SET amount_k = 1 WHERE business_id = ${businessId}::uuid`),
+      ),
+    ).rejects.toThrow();
+    await expect(
+      withBusiness(db, businessId, (tx) =>
+        tx.execute(sql`DELETE FROM refunds WHERE business_id = ${businessId}::uuid`),
       ),
     ).rejects.toThrow();
   });

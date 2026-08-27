@@ -327,3 +327,47 @@ export const chargebacks = pgTable(
     index('chargebacks_payment_ix').on(t.businessId, t.paymentId),
   ],
 );
+
+/* ── refunds and payment reversals (spec §6.1; migration 0092, PR-067) ── */
+
+/** Money returned DELIBERATELY: it leaves the bank or the till, on the day
+ * it actually happens, and it always has a reason. */
+export const refunds = pgTable(
+  'refunds',
+  {
+    id: id(),
+    businessId: uuid('business_id')
+      .notNull()
+      .references(() => businesses.id),
+    paymentId: uuid('payment_id').notNull(),
+    amountK: bigint('amount_k', { mode: 'number' }).notNull(),
+    method: text('method').notNull(),
+    providerRefundId: text('provider_refund_id'),
+    reason: text('reason').notNull(),
+    actor: text('actor').notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    index('refunds_payment_ix').on(t.businessId, t.paymentId),
+    uniqueIndex('refunds_provider_ux').on(t.businessId, t.providerRefundId),
+  ],
+);
+
+/** A payment UNDONE before settlement: whole, once, at the provider. */
+export const paymentReversals = pgTable(
+  'payment_reversals',
+  {
+    id: id(),
+    businessId: uuid('business_id')
+      .notNull()
+      .references(() => businesses.id),
+    paymentId: uuid('payment_id').notNull(),
+    paymentConnectionId: uuid('payment_connection_id').notNull(),
+    amountK: bigint('amount_k', { mode: 'number' }).notNull(),
+    providerReversalId: text('provider_reversal_id'),
+    reason: text('reason').notNull(),
+    actor: text('actor').notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [uniqueIndex('payment_reversals_payment_ux').on(t.businessId, t.paymentId)],
+);
