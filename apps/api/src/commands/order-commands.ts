@@ -158,3 +158,66 @@ export async function placeOrderWork(
     totalK: input.totalK,
   };
 }
+
+export interface CatalogueOrderCmdInput {
+  businessId: string;
+  customerId: string | null;
+  lines: readonly {
+    productId: string | null;
+    name: string;
+    quantity: number;
+    unitPriceK: number;
+    lineTotalK: number;
+  }[];
+  totalK: number;
+  /** Meta's message id, prefixed — `orders_external_ux` makes a redelivered
+   * webhook a no-op rather than a second order. */
+  externalRef: string;
+  sourceId: string;
+}
+
+export interface CatalogueOrderResult {
+  orderId: string;
+  orderNumber: string;
+  totalK: number;
+}
+
+/**
+ * The WABA catalogue door of `PlaceOrder` (spec §3.2; W3, PR-087): the
+ * ORDER, and only the order.
+ *
+ * The storefront door above is a one-step shape — order, invoice, stock
+ * and COGS together — because the storefront validated the cart in the
+ * same request. A cart from WhatsApp lands at Appendix E.4's PLACED and
+ * STOPS: server-side validation against real stock (PR-088) is what
+ * turns it into a VALIDATED order with an invoice and a charge breakdown,
+ * and issuing the invoice here would put a figure ahead of the validation
+ * §3.2 orders before it. Nothing financial posts; the announcement says
+ * what arrived.
+ */
+export async function placeCatalogueOrderWork(
+  tx: TenantDb,
+  input: CatalogueOrderCmdInput,
+): Promise<CatalogueOrderResult> {
+  const placed = await ordersRepo.placeOrder(tx, {
+    businessId: input.businessId,
+    customerId: input.customerId,
+    lines: [...input.lines],
+    totalK: input.totalK,
+    sourceType: 'waba_catalogue',
+    sourceId: input.sourceId,
+    externalRef: input.externalRef,
+  });
+
+  await outboxRepo.append(tx, {
+    businessId: input.businessId,
+    type: 'order.placed',
+    payload: {
+      orderNumber: placed.orderNumber,
+      totalK: input.totalK,
+      sourceType: 'waba_catalogue',
+    },
+  });
+
+  return { orderId: placed.id, orderNumber: placed.orderNumber, totalK: input.totalK };
+}

@@ -81,7 +81,12 @@ export function buildRunner(
   runner.register(JobKind.InboundMessage, inboundMessageHandler({ ...deps, db: appDb }));
   runner.register(
     JobKind.CustomerMessage,
-    customerMessageHandler({ config: deps.config, gateway: deps.gateway }),
+    customerMessageHandler({
+      config: deps.config,
+      gateway: deps.gateway,
+      commandBus: deps.commandBus,
+      commandPlaceOrder: deps.config.commandPlaceOrder,
+    }),
   );
   runner.register(
     JobKind.RenderDocument,

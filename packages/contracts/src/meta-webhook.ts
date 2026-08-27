@@ -40,6 +40,28 @@ const metaImage = z.object({
   caption: z.string().optional(),
 });
 
+/**
+ * A cart submitted from the WABA catalogue (spec §3.2; W3, PR-087).
+ *
+ * Deliberately NOT parsed: `item_price` and `currency`. The §3.2 rule —
+ * the customer's message never sets a price — is enforced at this border:
+ * the figures Meta relays from the customer's device are dropped by the
+ * schema itself, so no later layer can be tempted by a number it never
+ * received. What survives is only WHAT and HOW MANY; every price comes
+ * off the merchant's own rows.
+ */
+const metaOrder = z.object({
+  catalog_id: z.string().optional(),
+  product_items: z
+    .array(
+      z.object({
+        product_retailer_id: z.string().min(1),
+        quantity: z.number().int().positive(),
+      }),
+    )
+    .optional(),
+});
+
 const metaMessage = z.object({
   id: z.string().min(1),
   from: z.string().min(1),
@@ -48,6 +70,7 @@ const metaMessage = z.object({
   text: metaText.optional(),
   audio: metaAudio.optional(),
   image: metaImage.optional(),
+  order: metaOrder.optional(),
 });
 
 const metaStatus = z.object({
@@ -117,6 +140,15 @@ export interface InboundEvent {
   readonly imageId: string | null;
   /** A caption typed alongside a photograph. Ordinary merchant text. */
   readonly caption: string | null;
+  /**
+   * A catalogue cart, reduced to WHAT and HOW MANY (W3, PR-087). The
+   * prices Meta relayed were dropped by the schema and do not exist here:
+   * the customer's message never sets a price.
+   */
+  readonly order: {
+    readonly catalogId: string | null;
+    readonly items: ReadonlyArray<{ readonly retailerId: string; readonly quantity: number }>;
+  } | null;
   readonly status: string | null;
 }
 
@@ -147,6 +179,15 @@ export function extractInboundEvents(body: MetaWebhookBody): InboundEvent[] {
           audioId: message.audio?.id ?? null,
           imageId: message.image?.id ?? null,
           caption: message.image?.caption ?? null,
+          order: message.order
+            ? {
+                catalogId: message.order.catalog_id ?? null,
+                items: (message.order.product_items ?? []).map((item) => ({
+                  retailerId: item.product_retailer_id,
+                  quantity: item.quantity,
+                })),
+              }
+            : null,
           status: null,
         });
       }
@@ -164,6 +205,7 @@ export function extractInboundEvents(body: MetaWebhookBody): InboundEvent[] {
           audioId: null,
           imageId: null,
           caption: null,
+          order: null,
           status: status.status,
         });
       }

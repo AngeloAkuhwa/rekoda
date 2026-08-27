@@ -106,6 +106,57 @@ describe('parsing what Meta sends', () => {
     expect(result.success).toBe(false);
   });
 
+  /**
+   * §3.2's border, held by the schema itself (W3, PR-087): the customer's
+   * message never sets a price, so the prices Meta relays are DROPPED at
+   * the parse — what survives is only what and how many.
+   */
+  it('reads a catalogue cart and drops every price the customer sent', () => {
+    const body = metaWebhookBody.parse({
+      object: 'whatsapp_business_account',
+      entry: [
+        {
+          id: 'WABA',
+          changes: [
+            {
+              field: 'messages',
+              value: {
+                metadata: { phone_number_id: 'PNID' },
+                messages: [
+                  {
+                    id: 'wamid.ORDER',
+                    from: '2348031234567',
+                    type: 'order',
+                    order: {
+                      catalog_id: 'cat-1',
+                      product_items: [
+                        {
+                          product_retailer_id: 'prod-1',
+                          quantity: 2,
+                          item_price: 1,
+                          currency: 'NGN',
+                        },
+                      ],
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+    });
+    const [event] = extractInboundEvents(body);
+    expect(event).toMatchObject({
+      kind: 'message',
+      messageType: 'order',
+      order: { catalogId: 'cat-1', items: [{ retailerId: 'prod-1', quantity: 2 }] },
+    });
+    /* The figure the customer's device claimed is nowhere in the event. */
+    expect(JSON.stringify(event!.order)).not.toContain('price');
+    expect(JSON.stringify(event!.order)).not.toContain('"1"');
+  });
+
   it('reads a non-text message without pretending it has text', () => {
     const body = metaWebhookBody.parse({
       entry: [

@@ -17,9 +17,15 @@
 import { Logger } from '@nestjs/common';
 import { normaliseParticipant, InvalidPhoneError } from '@rekoda/core/identity';
 import { participantIndexFor, PARTICIPANT_INDEX_KEY_VERSION } from '@rekoda/core/vault';
-import { extractInboundEvents, metaWebhookBody } from '@rekoda/contracts';
-import { conversationsRepo, events, wabaRepo } from '@rekoda/db';
+import { extractInboundEvents, metaWebhookBody, type InboundEvent } from '@rekoda/contracts';
+import { catalogueRepo, conversationsRepo, events, ordersRepo, wabaRepo } from '@rekoda/db';
+import type { TenantDb } from '@rekoda/db';
 import type { ApiConfig } from '../config.js';
+import type { CommandBus } from '../commands/command-bus.service.js';
+import {
+  placeCatalogueOrderWork,
+  type CatalogueOrderCmdInput,
+} from '../commands/order-commands.js';
 import type { PrivacyGateway } from '../privacy/gateway.service.js';
 import { openPayload } from '../privacy/payload-vault.js';
 import type { JobContext, JobHandler } from './runner.js';
@@ -27,6 +33,10 @@ import type { JobContext, JobHandler } from './runner.js';
 export interface CustomerMessageDeps {
   config: ApiConfig;
   gateway: PrivacyGateway;
+  /** The one bus every ingress converges on (spec §25). */
+  commandBus: CommandBus;
+  /** The A1 rollout flag for `PlaceOrder`. */
+  commandPlaceOrder: boolean;
 }
 
 export function customerMessageHandler(deps: CustomerMessageDeps): JobHandler {
@@ -98,7 +108,8 @@ export function customerMessageHandler(deps: CustomerMessageDeps): JobHandler {
     };
 
     /* Same storage discipline as the merchant path: text is tokenised
-     * before it lands, anything else is stored as what it was. */
+     * before it lands, anything else is stored as what it was. A cart is
+     * stored as the FACT of a cart — its contents live on the order. */
     const stored =
       inbound.messageType === 'text'
         ? (await deps.gateway.tokenise(businessId, inbound.text ?? '')).text
@@ -127,6 +138,105 @@ export function customerMessageHandler(deps: CustomerMessageDeps): JobHandler {
       customerHash: blindIndex,
     });
 
+    /* A CART from the catalogue becomes an ORDER (spec §3.2; W3, PR-087)
+     * — through the same PlaceOrder command every other door uses, and
+     * never through the merchant-operations command set: a customer's
+     * message is a conversation plus, at most, this one narrow act. */
+    if (inbound.messageType === 'order' && inbound.order && inbound.order.items.length > 0) {
+      const note = await ingestCatalogueOrder(tx, deps, businessId, participant, inbound);
+      await events.markProcessed(tx, eventId, note, businessId);
+      return;
+    }
+
     await events.markProcessed(tx, eventId, null, businessId);
   };
+}
+
+/**
+ * The cart, priced off the merchant's own rows and placed once.
+ *
+ * The message named WHAT and HOW MANY; the parser already dropped every
+ * figure the customer's device sent. Prices come from the products table
+ * NOW — not from the catalog projection, and never from the message — so
+ * a price the merchant changed since the last sync is the price charged.
+ * An item the shelf does not sell refuses the WHOLE cart: a customer
+ * shown a partial order they did not compose would pay for a guess.
+ *
+ * Idempotent twice over: the order's externalRef is Meta's message id
+ * (`orders_external_ux` refuses a redelivered webhook structurally), and
+ * the PlaceOrder claim carries the same identity through the bus.
+ */
+async function ingestCatalogueOrder(
+  tx: TenantDb,
+  deps: CustomerMessageDeps,
+  businessId: string,
+  participant: string,
+  inbound: InboundEvent,
+): Promise<string | null> {
+  const log = new Logger('CustomerMessageJob');
+  const externalRef = `meta:${inbound.externalId}`;
+
+  const existing = await ordersRepo.orderByExternalRef(tx, businessId, externalRef);
+  if (existing) return null; // Redelivered webhook: the order already stands.
+
+  const wanted = inbound.order?.items ?? [];
+  const products = await catalogueRepo.sellableByIds(
+    tx,
+    businessId,
+    wanted.map((item) => item.retailerId),
+  );
+  const byId = new Map(products.map((p) => [p.id, p]));
+  if (wanted.some((item) => !byId.has(item.retailerId))) {
+    log.warn('customer.order: cart names an item the shelf does not sell; order refused');
+    return 'order refused: unknown or unsellable item';
+  }
+
+  const lines = wanted.map((item) => {
+    const product = byId.get(item.retailerId)!;
+    return {
+      productId: product.id,
+      name: product.name,
+      quantity: item.quantity,
+      unitPriceK: product.unitPriceK,
+      lineTotalK: item.quantity * product.unitPriceK,
+    };
+  });
+  const totalK = lines.reduce((sum, line) => sum + line.lineTotalK, 0);
+
+  /* The customer, anchored on their own phone — the same vault door every
+   * identity passes through. Raw number in memory only. */
+  const resolved = await deps.gateway.resolveStorefrontCustomer(businessId, '', participant);
+
+  const input: CatalogueOrderCmdInput = {
+    businessId,
+    customerId: resolved?.customerId ?? null,
+    lines,
+    totalK,
+    sourceId: inbound.externalId,
+    externalRef,
+  };
+  if (deps.commandPlaceOrder) {
+    const run = await deps.commandBus.run(
+      tx,
+      {
+        businessId,
+        command: 'PlaceOrder',
+        payload: input,
+        actor: 'customer:waba',
+        ingress: 'WABA',
+        idempotencyKey: externalRef,
+      },
+      () => placeCatalogueOrderWork(tx, input),
+    );
+    /* A bus refusal here is a terminal fact about THIS cart, not a fault
+     * to retry: a business whose Integrate entitlement lapsed mid-cart
+     * takes no order, and the note says so. */
+    if (run.outcome === 'not_entitled') return 'order refused: not entitled';
+    if (run.outcome !== 'done') {
+      throw new Error(`PlaceOrder refused unexpectedly: ${run.outcome}`);
+    }
+  } else {
+    await placeCatalogueOrderWork(tx, input);
+  }
+  return null;
 }

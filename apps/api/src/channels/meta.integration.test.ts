@@ -345,6 +345,177 @@ describe('idempotency', () => {
   });
 });
 
+describe('a catalogue cart becomes an order (spec §3.2; W3, PR-087)', () => {
+  function orderPayload(
+    waId: string,
+    wamid: string,
+    phoneNumberId: string,
+    items: Array<{ retailerId: string; quantity: number; liedPriceK?: number }>,
+  ) {
+    return {
+      object: 'whatsapp_business_account',
+      entry: [
+        {
+          id: 'WABA',
+          changes: [
+            {
+              field: 'messages',
+              value: {
+                messaging_product: 'whatsapp',
+                metadata: { phone_number_id: phoneNumberId },
+                messages: [
+                  {
+                    id: wamid,
+                    from: waId,
+                    timestamp: '1700000000',
+                    type: 'order',
+                    order: {
+                      catalog_id: 'cat-golden',
+                      product_items: items.map((item) => ({
+                        product_retailer_id: item.retailerId,
+                        quantity: item.quantity,
+                        /* The customer's device claims a price. It is a lie,
+                         * and the parser never lets it in the door. */
+                        item_price: item.liedPriceK ?? 1,
+                        currency: 'NGN',
+                      })),
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+    };
+  }
+
+  async function seedCommerceMerchant(phone: string, phoneNumberId: string) {
+    const user = await identity.upsertUserByPhone(db, phone);
+    const business = await identity.createBusinessWithOwner(db, {
+      name: 'Ada Fashion',
+      businessType: null,
+      ownerUserId: user.id,
+    });
+    await withBusiness(db, business.id, (tx) =>
+      wabaRepo.connectWaba(tx, {
+        businessId: business.id,
+        wabaId: `waba-${phoneNumberId}`,
+        phoneNumberId,
+        accessTokenCipher: 'cipher-for-tests',
+        tokenTail: '4821',
+      }),
+    );
+    const wig = await withBusiness(db, business.id, (tx) =>
+      catalogueRepo.createProduct(tx, business.id, { name: 'wig', unitPriceK: 150_000 }),
+    );
+    return { businessId: business.id, wigId: wig.id };
+  }
+
+  const ordersOf = (businessId: string) =>
+    withBusiness(db, businessId, (tx) =>
+      tx.execute<{
+        order_number: string;
+        status: string;
+        total_k: string;
+        external_ref: string | null;
+        customer_id: string | null;
+        invoice_id: string | null;
+      }>(sql`
+        SELECT order_number, status, total_k::bigint AS total_k, external_ref,
+               customer_id, invoice_id
+        FROM orders WHERE business_id = ${businessId}::uuid
+      `),
+    );
+
+  it('prices the cart off the merchant’s own rows, never off the message', async () => {
+    const { businessId, wigId } = await seedCommerceMerchant('+2348030002221', 'PN-CART-1');
+
+    /* The device claims each wig costs 1 kobo. */
+    expect(
+      (
+        await post(
+          orderPayload('2349097771111', 'wamid.CART.1', 'PN-CART-1', [
+            { retailerId: wigId, quantity: 2, liedPriceK: 1 },
+          ]),
+        )
+      ).statusCode,
+    ).toBe(200);
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+
+    const placed = [...(await ordersOf(businessId))];
+    expect(placed).toHaveLength(1);
+    expect(placed[0]).toMatchObject({
+      status: 'placed',
+      external_ref: 'meta:wamid.CART.1',
+      /* 2 × the MERCHANT'S 150,000 — the claimed 1 kobo never existed. */
+      total_k: '300000',
+      /* No invoice: Appendix E.4's PLACED. Validation (PR-088) is what
+       * turns this into a figure anybody is shown. */
+      invoice_id: null,
+    });
+    /* The customer exists, anchored on their own phone. */
+    expect(placed[0]!.customer_id).not.toBeNull();
+
+    /* The lines carry the shelf's names and prices. */
+    const lines = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ name: string; unit_price_k: string; quantity: number }>(sql`
+        SELECT name, unit_price_k::bigint AS unit_price_k, quantity::int AS quantity
+        FROM order_items WHERE business_id = ${businessId}::uuid
+      `),
+    );
+    expect([...lines]).toEqual([{ name: 'wig', unit_price_k: '150000', quantity: 2 }]);
+
+    /* The announcement went out with the fact. */
+    const announced = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ n: string }>(sql`
+        SELECT COUNT(*) AS n FROM outbox_events
+        WHERE business_id = ${businessId}::uuid AND type = 'order.placed'
+      `),
+    );
+    expect([...announced][0]!.n).toBe('1');
+
+    /* And the cart landed on the CUSTOMER's thread as a fact, priceless. */
+    const recorded = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ n: string }>(sql`
+        SELECT COUNT(*) AS n FROM conversation_messages
+        WHERE business_id = ${businessId}::uuid AND body = '[order message]'
+      `),
+    );
+    expect([...recorded][0]!.n).toBe('1');
+  });
+
+  it('a redelivered webhook places nothing twice', async () => {
+    const { businessId, wigId } = await seedCommerceMerchant('+2348030002222', 'PN-CART-2');
+    const payload = orderPayload('2349097772222', 'wamid.CART.2', 'PN-CART-2', [
+      { retailerId: wigId, quantity: 1 },
+    ]);
+
+    await post(payload);
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+    await post(payload);
+    await buildRunner(workerDb, db, deps).runOnce();
+
+    expect([...(await ordersOf(businessId))]).toHaveLength(1);
+  });
+
+  it('refuses the WHOLE cart when it names an item the shelf does not sell', async () => {
+    const { businessId, wigId } = await seedCommerceMerchant('+2348030002223', 'PN-CART-3');
+
+    await post(
+      orderPayload('2349097773333', 'wamid.CART.3', 'PN-CART-3', [
+        { retailerId: wigId, quantity: 1 },
+        { retailerId: '00000000-0000-4000-8000-000000000000', quantity: 1 },
+      ]),
+    );
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+
+    /* No partial order: a customer shown an order they did not compose
+     * would pay for a guess. The message still landed on their thread. */
+    expect([...(await ordersOf(businessId))]).toHaveLength(0);
+  });
+});
+
 describe('phoneNumberId → BusinessId routing (spec §24; PR-059)', () => {
   async function seedMerchant(phone: string, name: string) {
     const user = await identity.upsertUserByPhone(db, phone);
