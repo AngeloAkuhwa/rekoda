@@ -314,21 +314,23 @@ export const ledgerEntries = pgTable(
     transactionId: uuid('transaction_id')
       .notNull()
       .references(() => ledgerTransactions.id),
-    /** Account key from @rekoda/core ACCOUNTS (CASH, SALES_REVENUE, …).
-     * Being replaced by `accountId` (F1); dropped in PR-034. */
-    account: text('account').notNull(),
-    /** The real chart row (PR-031). Null only on rows older than the dual
-     * write; PR-032 backfills, PR-033 cuts readers over. */
-    accountId: uuid('account_id'),
+    /** The chart row this entry moves (PR-031…034). The composite FK to
+     * `accounts (business_id, id)` lives in migration 0063; another
+     * tenant's account is unrepresentable. */
+    accountId: uuid('account_id').notNull(),
     debitK: kobo('debit_k').notNull().default(0),
     creditK: kobo('credit_k').notNull().default(0),
     createdAt: createdAt(),
   },
   (t) => [
     index('ledger_entries_tx_ix').on(t.transactionId),
-    index('ledger_entries_account_ix').on(t.businessId, t.account),
-    /* The statement schedules: business + account + a month of created_at. */
-    index('ledger_entries_business_account_created_ix').on(t.businessId, t.account, t.createdAt),
+    /* The statement schedules: business + account + a month of created_at;
+     * by prefix, every business+account balance read too. */
+    index('ledger_entries_business_account_id_created_ix').on(
+      t.businessId,
+      t.accountId,
+      t.createdAt,
+    ),
     /* The overview cards and cashflow chart: a created_at window with the
      * account only in FILTER clauses, which no account-pinned index serves. */
     index('ledger_entries_business_created_ix').on(t.businessId, t.createdAt),

@@ -1,13 +1,14 @@
 /**
- * The dual write (F1; PR-031): from this deploy on, no ledger entry is born
- * without its chart account. The text key stays (readers cut over in
- * PR-033), the `account_id` arrives beside it, and the two must AGREE — the
- * linked account's code is the legacy key's code, for every line of every
- * posting path.
+ * The chart link, end state (F1; PR-031…034): `account_id` is NOT NULL with
+ * a composite tenant FK, so an entry without its chart account — or citing
+ * another tenant's — is unrepresentable. What the dual write once promised
+ * and the backfill once proved, the database now simply enforces; what is
+ * left to test is that every posting path links the RIGHT rows, and that
+ * the failure modes stay loud.
  */
 import postgres from 'postgres';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { ACCOUNTS, type AccountKey } from '@rekoda/core';
+import { ACCOUNTS } from '@rekoda/core';
 import {
   createDb,
   identity,
@@ -50,21 +51,8 @@ async function seedBusiness(): Promise<string> {
   return business.id;
 }
 
-/** Every entry row with the code of the account its account_id points at. */
-async function entryLinks(businessId: string) {
-  const rows = await withBusiness(db, businessId, (tx) =>
-    tx.execute<{ account: string; account_id: string | null; linked_code: string | null }>(sql`
-      SELECT e.account, e.account_id, a.code AS linked_code
-      FROM ledger_entries e
-      LEFT JOIN accounts a ON a.id = e.account_id
-      WHERE e.business_id = ${businessId}::uuid
-    `),
-  );
-  return [...rows];
-}
-
-describe('every posting path writes both halves', () => {
-  it('a journal, a sale and a reported payment all link their entries', async () => {
+describe('every posting path links the right chart rows', () => {
+  it('a journal, a sale and a reported payment land on the seeded accounts, by code', async () => {
     const businessId = await seedBusiness();
 
     await withBusiness(db, businessId, async (tx) => {
@@ -106,15 +94,50 @@ describe('every posting path writes both halves', () => {
       });
     });
 
-    const links = await entryLinks(businessId);
-    expect(links.length).toBeGreaterThanOrEqual(6);
-    for (const link of links) {
-      /* Born linked... */
-      expect(link.account_id, link.account).not.toBeNull();
-      /* ...and linked to the RIGHT row: the seeded account that kept the
-       * legacy key's code. */
-      expect(link.linked_code, link.account).toBe(ACCOUNTS[link.account as AccountKey].code);
-    }
+    /* The whole history, grouped by the CODE of the linked chart row. The
+     * per-code sums pin both halves at once: that entries link (a dangling
+     * one cannot exist), and that they link where the posting builders
+     * meant — the seeded account that kept the legacy key's code. */
+    const rows = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ code: string; debit_k: string; credit_k: string }>(sql`
+        SELECT a.code, SUM(e.debit_k)::bigint AS debit_k, SUM(e.credit_k)::bigint AS credit_k
+        FROM ledger_entries e
+        JOIN accounts a ON a.id = e.account_id
+        WHERE e.business_id = ${businessId}::uuid
+        GROUP BY a.code
+      `),
+    );
+    const byCode = Object.fromEntries(
+      [...rows].map((r) => [r.code, { debitK: Number(r.debit_k), creditK: Number(r.credit_k) }]),
+    );
+    expect(byCode).toEqual({
+      [ACCOUNTS.CASH.code]: { debitK: 500_000, creditK: 250_000 },
+      [ACCOUNTS.BANK.code]: { debitK: 250_000, creditK: 0 },
+      [ACCOUNTS.ACCOUNTS_RECEIVABLE.code]: { debitK: 500_000, creditK: 500_000 },
+      [ACCOUNTS.SALES_REVENUE.code]: { debitK: 0, creditK: 500_000 },
+    });
+  });
+
+  it('an entry without a chart account is unrepresentable', async () => {
+    const businessId = await seedBusiness();
+    const txRow = await withBusiness(db, businessId, async (tx) => {
+      const rows = await tx.execute<{ id: string }>(sql`
+        INSERT INTO ledger_transactions (business_id, memo, source_type, source_id)
+        VALUES (${businessId}::uuid, 'null probe', 'manual', 'probe-null') RETURNING id
+      `);
+      return [...rows][0]!.id;
+    });
+    const code = await withBusiness(db, businessId, (tx) =>
+      tx.execute(sql`
+        INSERT INTO ledger_entries (business_id, transaction_id, debit_k, credit_k)
+        VALUES (${businessId}::uuid, ${txRow}::uuid, 100, 0)
+      `),
+    ).then(
+      () => 'inserted',
+      (error: unknown) => (error as { cause?: { code?: string } }).cause?.code ?? 'unknown',
+    );
+    /* 23502: the NOT NULL the end state promises. */
+    expect(code).toBe('23502');
   });
 
   it('refuses to post when the seeded account is missing, loudly', async () => {
@@ -166,8 +189,8 @@ describe('every posting path writes both halves', () => {
     await expect(
       withBusiness(db, ada, (tx) =>
         tx.execute(sql`
-          INSERT INTO ledger_entries (business_id, transaction_id, account, account_id, debit_k, credit_k)
-          VALUES (${ada}::uuid, ${txRow}::uuid, 'CASH', ${foreignId}::uuid, 100, 0)
+          INSERT INTO ledger_entries (business_id, transaction_id, account_id, debit_k, credit_k)
+          VALUES (${ada}::uuid, ${txRow}::uuid, ${foreignId}::uuid, 100, 0)
         `),
       ),
     ).rejects.toThrow();

@@ -206,9 +206,11 @@ describe('closing a month', () => {
     const refused = await withBusiness(db, businessId, (tx) =>
       tx.execute(sql`
         INSERT INTO ledger_entries
-          (business_id, transaction_id, account, debit_k, credit_k, created_at)
-        VALUES (${businessId}::uuid, ${txId}::uuid, 'CASH', 100, 0,
-                ${lagosNoon(OLD_DAY).toISOString()}::timestamptz)
+          (business_id, transaction_id, account_id, debit_k, credit_k, created_at)
+        VALUES (${businessId}::uuid, ${txId}::uuid,
+                (SELECT id FROM accounts
+                  WHERE business_id = ${businessId}::uuid AND code = '1000'),
+                100, 0, ${lagosNoon(OLD_DAY).toISOString()}::timestamptz)
       `),
     ).catch((error: unknown) => refusal(error));
     expect(refused).toMatchObject({ code: '23514' });

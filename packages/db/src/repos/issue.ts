@@ -197,7 +197,6 @@ export async function writePosting(
     posting.lines.map((line) => ({
       businessId,
       transactionId: transaction.id,
-      account: line.account,
       accountId: accountIds.get(line.account)!,
       debitK: line.debitK,
       creditK: line.creditK,

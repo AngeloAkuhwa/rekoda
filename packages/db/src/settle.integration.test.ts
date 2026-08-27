@@ -138,7 +138,9 @@ describe('booking outcomes (§21–25)', () => {
     // …and NEVER out of revenue. Read back from the database, not the input.
     const revenue = await one<{ credit: number }>(
       businessId,
-      sql`SELECT coalesce(sum(credit_k), 0)::bigint AS credit FROM ledger_entries WHERE account = 'SALES_REVENUE'`,
+      sql`SELECT coalesce(sum(e.credit_k), 0)::bigint AS credit
+           FROM ledger_entries e JOIN accounts a ON a.id = e.account_id
+           WHERE a.code = '4000'`,
     );
     expect(Number(revenue?.credit)).toBe(15_000_000);
 
@@ -198,7 +200,9 @@ describe('booking outcomes (§21–25)', () => {
     // And the ledger holds the allocated portion, not the gross.
     const bank = await one<{ d: number }>(
       businessId,
-      sql`SELECT coalesce(sum(debit_k), 0)::bigint AS d FROM ledger_entries WHERE account = 'BANK_PAYSTACK'`,
+      sql`SELECT coalesce(sum(e.debit_k), 0)::bigint AS d
+           FROM ledger_entries e JOIN accounts a ON a.id = e.account_id
+           WHERE a.code = '1010'`,
     );
     expect(Number(bank?.d)).toBe(15_000_000);
   });

@@ -309,7 +309,6 @@ export async function bookVerifiedPayment(
     posting.lines.map((line) => ({
       businessId: input.businessId,
       transactionId: ledgerTx.id,
-      account: line.account,
       accountId: entryAccountIds.get(line.account)!,
       debitK: line.debitK,
       creditK: line.creditK,
