@@ -35,9 +35,9 @@ export const conversations = pgTable(
     id: id(),
     businessId: businessId(),
     channel: text('channel').notNull(), // meta | twilio | simulator
-    /** Appendix F (PR-058a-1, additive): MERCHANT | CUSTOMER |
-     * LEGACY_THREAD. Null until the 058a-2 backfill classifies history. */
-    conversationKind: text('conversation_kind'),
+    /** Appendix F: MERCHANT | CUSTOMER | LEGACY_THREAD. NOT NULL since
+     * 0087 — every thread is classified at birth, none may dodge F.2. */
+    conversationKind: text('conversation_kind').notNull(),
     /** WHICH merchant channel asset (phoneNumberId / WABA). Never who is
      * writing — F.5 keeps those identities apart. */
     channelAccountId: text('channel_account_id'),
@@ -51,10 +51,27 @@ export const conversations = pgTable(
     status: text('status').notNull().default('open'),
     createdAt: createdAt(),
   },
-  /* One thread per business per channel — see migration 0006. Correct for
-   * MERCHANT threads only; replaced by F.2's two partial constraints in
-   * PR-058a-4. */
-  (t) => [uniqueIndex('conversations_business_channel_ux').on(t.businessId, t.channel)],
+  /* F.2's two identities, two constraints (migration 0087, which replaced
+   * 0006's broad one-thread-per-channel unique): exactly one MERCHANT
+   * thread per business per channel, and one CUSTOMER thread per
+   * (business, channel, asset, blind index, key version). The NULL
+   * exclusion on the customer unique is explicit — a customer row without
+   * an identity is already unrepresentable via the CHECK in 0087, but the
+   * index predicate says so on its own rather than leaning on it. */
+  (t) => [
+    uniqueIndex('conversations_merchant_ux')
+      .on(t.businessId, t.channel)
+      .where(sql`conversation_kind = 'MERCHANT'`),
+    uniqueIndex('conversations_customer_ux')
+      .on(
+        t.businessId,
+        t.channel,
+        t.channelAccountId,
+        t.participantBlindIndex,
+        t.participantIndexKeyVersion,
+      )
+      .where(sql`conversation_kind = 'CUSTOMER' AND participant_blind_index IS NOT NULL`),
+  ],
 );
 
 export const conversationMessages = pgTable(

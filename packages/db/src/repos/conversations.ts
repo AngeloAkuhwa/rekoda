@@ -20,9 +20,10 @@ export type MessageKind = 'text' | 'voice' | 'media' | 'interactive';
 /**
  * The business's thread on this channel, creating it the first time.
  *
- * `ON CONFLICT DO NOTHING` against `conversations_business_channel_ux`
- * (migration 0006) rather than select-then-insert: two messages arriving
- * together would otherwise both find no thread and both create one.
+ * `ON CONFLICT DO NOTHING` against `conversations_merchant_ux` (F.2's
+ * partial merchant unique, migration 0087) rather than select-then-insert:
+ * two messages arriving together would otherwise both find no thread and
+ * both create one.
  */
 export async function threadFor(
   tx: TenantDb,
@@ -33,10 +34,15 @@ export async function threadFor(
     .insert(conversations)
     /* Classified at birth (F.6, PR-058a-2): every thread this function
      * mints is the merchant talking to Rekoda, so the backfill's tail
-     * only ever shrinks. Customer threads arrive by their own writer
-     * (058a-4) and never through here. */
+     * only ever shrinks. Customer threads arrive through
+     * `resolveThread`, never through here. The conflict target is the
+     * PARTIAL merchant unique (058a-4), so the race lands on the same
+     * row it always did. */
     .values({ businessId, channel, conversationKind: 'MERCHANT' })
-    .onConflictDoNothing({ target: [conversations.businessId, conversations.channel] })
+    .onConflictDoNothing({
+      target: [conversations.businessId, conversations.channel],
+      where: sql`conversation_kind = 'MERCHANT'`,
+    })
     .returning({ id: conversations.id });
 
   const created = inserted[0];
@@ -45,7 +51,13 @@ export async function threadFor(
   const existing = await tx
     .select({ id: conversations.id })
     .from(conversations)
-    .where(and(eq(conversations.businessId, businessId), eq(conversations.channel, channel)))
+    .where(
+      and(
+        eq(conversations.businessId, businessId),
+        eq(conversations.channel, channel),
+        eq(conversations.conversationKind, 'MERCHANT'),
+      ),
+    )
     .limit(1);
 
   const row = existing[0];
@@ -74,7 +86,8 @@ export type ThreadTarget =
       customerId?: string | null;
     };
 
-/** Creation of customer threads arrives with 058a-4's constraints. */
+/** The 058a-3 guard, retired by 058a-4: kept only so the interim error
+ * remains identifiable in logs from the flagged window. */
 export class CustomerThreadsNotYetEnabled extends Error {
   constructor() {
     super('customer threads await the F.2 constraints (PR-058a-4); refusing to create one early');
@@ -104,10 +117,52 @@ export async function resolveThread(tx: TenantDb, target: ThreadTarget): Promise
     .limit(1);
   const row = rows[0];
   if (row) return row.id;
-  /* Creating one BEFORE the partial constraints exist would let a customer
-   * thread occupy the broad unique's single slot and lock the merchant out
-   * of their own channel. Refuse loudly instead of breaking Chat. */
-  throw new CustomerThreadsNotYetEnabled();
+
+  /* Enabled by 058a-4's partial constraints: a new customer's first
+   * message mints their thread, and the F.2 unique makes the race land
+   * every writer on one row. */
+  const inserted = await tx
+    .insert(conversations)
+    .values({
+      businessId: target.businessId,
+      channel: target.channel,
+      conversationKind: 'CUSTOMER',
+      channelAccountId: target.channelAccountId,
+      participantBlindIndex: target.participantBlindIndex,
+      participantIndexKeyVersion: target.participantIndexKeyVersion,
+      ...(target.customerId ? { customerId: target.customerId } : {}),
+    })
+    .onConflictDoNothing({
+      target: [
+        conversations.businessId,
+        conversations.channel,
+        conversations.channelAccountId,
+        conversations.participantBlindIndex,
+        conversations.participantIndexKeyVersion,
+      ],
+      where: sql`conversation_kind = 'CUSTOMER' AND participant_blind_index IS NOT NULL`,
+    })
+    .returning({ id: conversations.id });
+  const created = inserted[0];
+  if (created) return created.id;
+
+  const raced = await tx
+    .select({ id: conversations.id })
+    .from(conversations)
+    .where(
+      and(
+        eq(conversations.businessId, target.businessId),
+        eq(conversations.channel, target.channel),
+        eq(conversations.conversationKind, 'CUSTOMER'),
+        eq(conversations.channelAccountId, target.channelAccountId),
+        eq(conversations.participantBlindIndex, target.participantBlindIndex),
+        eq(conversations.participantIndexKeyVersion, target.participantIndexKeyVersion),
+      ),
+    )
+    .limit(1);
+  const winner = raced[0];
+  if (!winner) throw new Error('resolveThread: conflict reported but no thread found');
+  return winner.id;
 }
 
 export interface InboundMessage {
