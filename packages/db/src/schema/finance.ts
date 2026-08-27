@@ -314,8 +314,12 @@ export const ledgerEntries = pgTable(
     transactionId: uuid('transaction_id')
       .notNull()
       .references(() => ledgerTransactions.id),
-    /** Account key from @rekoda/core ACCOUNTS (CASH, SALES_REVENUE, …). */
+    /** Account key from @rekoda/core ACCOUNTS (CASH, SALES_REVENUE, …).
+     * Being replaced by `accountId` (F1); dropped in PR-034. */
     account: text('account').notNull(),
+    /** The real chart row (PR-031). Null only on rows older than the dual
+     * write; PR-032 backfills, PR-033 cuts readers over. */
+    accountId: uuid('account_id'),
     debitK: kobo('debit_k').notNull().default(0),
     creditK: kobo('credit_k').notNull().default(0),
     createdAt: createdAt(),

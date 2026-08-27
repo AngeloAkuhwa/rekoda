@@ -442,6 +442,13 @@
       "when": 1787410802000,
       "tag": "0062_seed_chart_of_accounts",
       "breakpoints": true
+    },
+    {
+      "idx": 63,
+      "version": "7",
+      "when": 1787410803000,
+      "tag": "0063_ledger_entries_account_id",
+      "breakpoints": true
     }
   ]
 }

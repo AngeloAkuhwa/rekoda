@@ -44,7 +44,7 @@ import {
   receipts,
   reconciliations,
 } from '../schema/finance.js';
-import { nextDocumentNumber, writePosting } from './issue.js';
+import { accountIdsForKeys, nextDocumentNumber, writePosting } from './issue.js';
 import { appendVerification } from './provenance.js';
 
 /** The same rekoda_reference booked twice — the terminal-intent gate's job,
@@ -300,11 +300,17 @@ export async function bookVerifiedPayment(
     .returning({ id: ledgerTransactions.id });
   const ledgerTx = txRows[0];
   if (!ledgerTx) throw new Error('bookVerifiedPayment: ledger transaction insert returned no row');
+  const entryAccountIds = await accountIdsForKeys(
+    tx,
+    input.businessId,
+    posting.lines.map((line) => line.account),
+  );
   await tx.insert(ledgerEntries).values(
     posting.lines.map((line) => ({
       businessId: input.businessId,
       transactionId: ledgerTx.id,
       account: line.account,
+      accountId: entryAccountIds.get(line.account)!,
       debitK: line.debitK,
       creditK: line.creditK,
     })),

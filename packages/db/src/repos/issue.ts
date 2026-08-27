@@ -18,8 +18,9 @@
  * of its own, so "all of it or none of it" is the caller's transaction, not a
  * property this file has to remember to preserve.
  */
-import { and, eq, sql, desc } from 'drizzle-orm';
+import { and, eq, sql, desc, inArray } from 'drizzle-orm';
 import {
+  ACCOUNTS,
   formatDocumentNumber,
   isAccountKey,
   lagosYear,
@@ -33,6 +34,7 @@ import { snapshotHash, type DocumentSnapshot } from '@rekoda/core/documents';
 import { normalisePaymentMethod } from '@rekoda/core';
 import type { TenantDb } from '../client.js';
 import { auditEvents, documents } from '../schema/ops.js';
+import { accounts } from '../schema/accounts.js';
 import {
   creditNotes,
   invoiceItems,
@@ -185,17 +187,70 @@ export async function writePosting(
   const transaction = inserted[0];
   if (!transaction) throw new Error('writePosting: ledger transaction insert returned no row');
 
+  const accountIds = await accountIdsForKeys(
+    tx,
+    businessId,
+    posting.lines.map((line) => line.account),
+  );
   await tx.insert(ledgerEntries).values(
     posting.lines.map((line) => ({
       businessId,
       transactionId: transaction.id,
       account: line.account,
+      accountId: accountIds.get(line.account)!,
       debitK: line.debitK,
       creditK: line.creditK,
       ...(opts.occurredAt ? { createdAt: opts.occurredAt } : {}),
     })),
   );
   return transaction.id;
+}
+
+/**
+ * The DUAL WRITE's resolver (PR-031): each legacy text key maps to the
+ * seeded chart row that kept its CODE — the seed carried every key over on
+ * its existing code precisely so this lookup is a join, not a judgement.
+ *
+ * A missing row THROWS. The seed guarantees presence at business creation
+ * and migration 0062 guarantees it for the estate, so absence here means an
+ * invariant broke — and a posting written half-linked would poison the
+ * PR-032 backfill's validation quietly.
+ */
+export async function accountIdsForKeys(
+  tx: TenantDb,
+  businessId: string,
+  keys: readonly string[],
+): Promise<Map<string, string>> {
+  const wanted = [...new Set(keys)];
+  const codes = wanted.map((key) => {
+    const entry = (ACCOUNTS as Record<string, { code: string }>)[key];
+    if (!entry) throw new Error(`accountIdsForKeys: unknown ledger key ${key}`);
+    return { key, code: entry.code };
+  });
+  const rows = await tx
+    .select({ id: accounts.id, code: accounts.code })
+    .from(accounts)
+    .where(
+      and(
+        eq(accounts.businessId, businessId),
+        inArray(
+          accounts.code,
+          codes.map((c) => c.code),
+        ),
+      ),
+    );
+  const byCode = new Map(rows.map((r) => [r.code, r.id]));
+  const out = new Map<string, string>();
+  for (const { key, code } of codes) {
+    const id = byCode.get(code);
+    if (!id) {
+      throw new Error(
+        `accountIdsForKeys: no chart account with code ${code} for ${key} — the seed is missing`,
+      );
+    }
+    out.set(key, id);
+  }
+  return out;
 }
 
 /**
