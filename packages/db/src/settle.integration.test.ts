@@ -697,3 +697,52 @@ describe('one merchant counting their payments', () => {
     expect(seen.count).toBe(2);
   });
 });
+
+describe('the verification knows its try (§6.5; PR-055)', () => {
+  it('a connection-known confirmation records a SUCCEEDED attempt and links it', async () => {
+    const businessId = await seedBusiness();
+    const { intent } = await seedObligation(businessId, 15_000_000);
+    const connection = await withBusiness(db, businessId, (tx) =>
+      paymentsHub.upsertConnection(tx, { businessId, providerType: 'paystack' }),
+    );
+
+    await withBusiness(db, businessId, (tx) =>
+      book(tx, businessId, intent, 15_000_000, {
+        paymentConnectionId: connection.id,
+        providerRef: 'pst-linked-1',
+      }),
+    );
+
+    const rows = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{
+        attempt_id: string | null;
+        status: string;
+        provider_attempt_id: string;
+      }>(sql`
+        SELECT v.payment_attempt_id AS attempt_id, a.status, a.provider_attempt_id
+        FROM payment_verifications v
+        JOIN payment_attempts a ON a.id = v.payment_attempt_id
+        WHERE v.business_id = ${businessId}::uuid AND v.source = 'PROVIDER_VERIFIED'
+      `),
+    );
+    const row = [...rows][0];
+    expect(row).toBeTruthy();
+    expect(row!.status).toBe('SUCCEEDED');
+    expect(row!.provider_attempt_id).toBe('pst-linked-1');
+  });
+
+  it('a confirmation with no known connection still verifies, attempt-less and honest', async () => {
+    const businessId = await seedBusiness();
+    const { intent } = await seedObligation(businessId, 15_000_000);
+    await withBusiness(db, businessId, (tx) =>
+      book(tx, businessId, intent, 15_000_000, { providerRef: 'pst-bare-1' }),
+    );
+    const rows = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ payment_attempt_id: string | null }>(sql`
+        SELECT payment_attempt_id FROM payment_verifications
+        WHERE business_id = ${businessId}::uuid AND source = 'PROVIDER_VERIFIED'
+      `),
+    );
+    expect([...rows][0]!.payment_attempt_id).toBeNull();
+  });
+});

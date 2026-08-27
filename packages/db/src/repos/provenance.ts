@@ -28,6 +28,8 @@ export interface AppendVerificationInput {
   financialTransactionId?: string | null;
   confirmationEventId?: string | null;
   paymentEvidenceId?: string | null;
+  /** The provider try this verification answers (§6.5; PR-055). */
+  paymentAttemptId?: string | null;
   providerReference?: string | null;
   /** Who, for MERCHANT_ATTESTED and MANUAL_RECONCILIATION. */
   actorId?: string | null;
@@ -67,11 +69,13 @@ export async function appendVerification(
   const rows = await tx.execute<{ id: string }>(sql`
     INSERT INTO payment_verifications
       (business_id, payment_id, source, payment_evidence_id, financial_transaction_id,
-       provider_source_identity, provider_reference, actor_id, reason, verified_at)
+       provider_source_identity, payment_attempt_id, provider_reference, actor_id, reason,
+       verified_at)
     VALUES
       (${input.businessId}::uuid, ${input.paymentId}::uuid, ${input.source}::text,
        ${input.paymentEvidenceId ?? null}::uuid, ${input.financialTransactionId ?? null}::uuid,
-       ${input.providerSourceIdentity ?? null}::text, ${input.providerReference ?? null}::text,
+       ${input.providerSourceIdentity ?? null}::text, ${input.paymentAttemptId ?? null}::uuid,
+       ${input.providerReference ?? null}::text,
        ${input.actorId ?? null}::text, ${input.reason ?? null}::text,
        ${(input.verifiedAt ?? new Date()).toISOString()}::timestamptz)
     RETURNING id

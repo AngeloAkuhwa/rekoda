@@ -76,12 +76,18 @@ async function seedObligation(businessId: string, draft = 'draft-1') {
   });
 }
 
-function book(
+async function book(
   tx: TenantDb,
   businessId: string,
   intent: paymentsHub.IntentRow,
   overrides: Partial<settleRepo.BookVerifiedPaymentInput> = {},
 ) {
+  /* A REAL connection: since PR-054 the attempt row holds a tenant-safe FK
+   * to it, so a made-up id is (rightly) unrepresentable. */
+  const connection = await paymentsHub.upsertConnection(tx, {
+    businessId,
+    providerType: 'paystack',
+  });
   return settleRepo.bookVerifiedPayment(tx, {
     businessId,
     intent: {
@@ -98,7 +104,7 @@ function book(
     providerFeeK: 0,
     feePolicy: 'merchant_bearing',
     method: 'transfer',
-    paymentConnectionId: 'conn-1',
+    paymentConnectionId: connection.id,
     actor: 'system:payments',
     eventId: 'event-1',
     ...overrides,
@@ -153,7 +159,7 @@ describe('bookVerifiedPayment', () => {
       initial_confirmation_source: 'PROVIDER_VERIFIED',
       payment_method: 'BANK_TRANSFER',
       source: 'PROVIDER_VERIFIED',
-      provider_source_identity: 'conn-1:pst-abc123',
+      provider_source_identity: expect.stringMatching(/^[0-9a-f-]{36}:pst-abc123$/),
     });
   });
 

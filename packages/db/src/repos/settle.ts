@@ -46,6 +46,7 @@ import {
 } from '../schema/finance.js';
 import { accountIdsForKeys, nextDocumentNumber, writePosting } from './issue.js';
 import { appendVerification } from './provenance.js';
+import { recordPaymentAttempt, resolvePaymentAttempt } from './payments-hub.js';
 
 /** The same rekoda_reference booked twice — the terminal-intent gate's job,
  * and this error firing means that gate was bypassed. Callers treat it as
@@ -156,6 +157,28 @@ export async function bookVerifiedPayment(
     throw error;
   }
 
+  /* The try this confirmation answers (§6.1, PR-055): recorded against
+   * the connection when one is known, resolved SUCCEEDED — a redelivered
+   * webhook lands on the same attempt row — and linked into the
+   * verification so the §6.5 chain runs provider event → attempt →
+   * payment → verification without a gap. */
+  let paymentAttemptId: string | null = null;
+  if (input.paymentConnectionId) {
+    const attempt = await recordPaymentAttempt(tx, {
+      businessId: input.businessId,
+      paymentIntentId: input.intent.id,
+      paymentConnectionId: input.paymentConnectionId,
+      providerAttemptId: input.providerRef,
+      method: input.method,
+    });
+    await resolvePaymentAttempt(tx, {
+      businessId: input.businessId,
+      attemptId: attempt.id,
+      status: 'SUCCEEDED',
+    });
+    paymentAttemptId = attempt.id;
+  }
+
   /* The verification and its claim, canonical order, same transaction, no
    * external work between them (spec §6.5). The claim's identity is the
    * provider's own transaction on this connection, so a second intent
@@ -166,6 +189,7 @@ export async function bookVerifiedPayment(
     paymentId,
     source: 'PROVIDER_VERIFIED',
     providerSourceIdentity: `${input.paymentConnectionId ?? input.providerType}:${input.providerRef}`,
+    paymentAttemptId,
     providerReference: input.providerRef,
     actorId: input.actor,
   });
