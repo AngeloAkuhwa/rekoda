@@ -206,3 +206,93 @@ describe('the one-step form leaves a trail (§9.5 rationale)', () => {
     expect(draft!.lines.find((l) => l.accountId === bank)?.debitK).toBe(250_000);
   });
 });
+
+describe('the posted-draft lock (§9.5; PR-042)', () => {
+  async function postedDraft(businessId: string) {
+    const cash = await accountId(businessId, '1000');
+    const revenue = await accountId(businessId, '4000');
+    const { id } = await withBusiness(db, businessId, (tx) =>
+      journalDraftsRepo.createJournalDraft(tx, {
+        businessId,
+        memo: 'what was approved',
+        createdBy: 'user:ada',
+        lines: [
+          { accountId: cash, debitK: 100_000, creditK: 0 },
+          { accountId: revenue, debitK: 0, creditK: 100_000 },
+        ],
+      }),
+    );
+    const posted = await withBusiness(db, businessId, (tx) =>
+      journalDraftsRepo.postJournalDraft(tx, { businessId, draftId: id, actor: 'user:ada' }),
+    );
+    if (posted.outcome !== 'posted') throw new Error('fixture should post');
+    return { id, cash };
+  }
+
+  it('a posted draft refuses edits, and its lines refuse everything', async () => {
+    const businessId = await seedBusiness();
+    const { id, cash } = await postedDraft(businessId);
+
+    /* Post DR Rent / CR Bank, then edit the draft to say DR Advertising:
+     * the exact rewrite §9.5 exists to stop. */
+    await expect(
+      withBusiness(db, businessId, (tx) =>
+        tx.execute(sql`UPDATE journal_drafts SET memo = 'what we now claim was approved'
+                       WHERE id = ${id}::uuid`),
+      ),
+    ).rejects.toThrow();
+    await expect(
+      withBusiness(db, businessId, (tx) =>
+        tx.execute(
+          sql`UPDATE journal_draft_lines SET debit_k = 999 WHERE draft_id = ${id}::uuid AND debit_k > 0`,
+        ),
+      ),
+    ).rejects.toThrow();
+    await expect(
+      withBusiness(db, businessId, (tx) =>
+        tx.execute(sql`DELETE FROM journal_draft_lines WHERE draft_id = ${id}::uuid`),
+      ),
+    ).rejects.toThrow();
+    await expect(
+      withBusiness(db, businessId, (tx) =>
+        tx.execute(sql`
+          INSERT INTO journal_draft_lines (business_id, draft_id, account_id, debit_k, credit_k)
+          VALUES (${businessId}::uuid, ${id}::uuid, ${cash}::uuid, 1, 0)
+        `),
+      ),
+    ).rejects.toThrow();
+    await expect(
+      withBusiness(db, businessId, (tx) =>
+        tx.execute(sql`DELETE FROM journal_drafts WHERE id = ${id}::uuid`),
+      ),
+    ).rejects.toThrow();
+  });
+
+  it('an unposted draft stays fully editable and deletable', async () => {
+    const businessId = await seedBusiness();
+    const cash = await accountId(businessId, '1000');
+    const revenue = await accountId(businessId, '4000');
+    const { id } = await withBusiness(db, businessId, (tx) =>
+      journalDraftsRepo.createJournalDraft(tx, {
+        businessId,
+        memo: 'still a proposal',
+        createdBy: 'user:ada',
+        lines: [
+          { accountId: cash, debitK: 100, creditK: 0 },
+          { accountId: revenue, debitK: 0, creditK: 100 },
+        ],
+      }),
+    );
+    await withBusiness(db, businessId, (tx) =>
+      journalDraftsRepo.reviseJournalDraft(tx, { businessId, draftId: id, memo: 'edited' }),
+    );
+    await withBusiness(db, businessId, (tx) =>
+      tx.execute(sql`DELETE FROM journal_drafts WHERE id = ${id}::uuid`),
+    );
+    expect(
+      await withBusiness(db, businessId, (tx) =>
+        journalDraftsRepo.journalDraftById(tx, businessId, id),
+      ),
+    ).toBeNull();
+  });
+});

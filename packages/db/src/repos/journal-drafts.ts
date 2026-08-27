@@ -168,13 +168,14 @@ export async function recordPostedDraft(
     lines: DraftLineInput[];
   },
 ): Promise<{ id: string }> {
+  /* Lines land BEFORE the claim: 0073's lock admits edits only while
+   * `posted_journal_id` is null, and being born posted is still a birth. */
   const rows = await tx
     .insert(journalDrafts)
     .values({
       businessId: input.businessId,
       memo: input.memo,
       createdBy: input.createdBy,
-      postedJournalId: input.postedJournalId,
     })
     .returning({ id: journalDrafts.id });
   const draft = rows[0];
@@ -189,6 +190,10 @@ export async function recordPostedDraft(
       position,
     })),
   );
+  await tx
+    .update(journalDrafts)
+    .set({ postedJournalId: input.postedJournalId })
+    .where(and(eq(journalDrafts.businessId, input.businessId), eq(journalDrafts.id, draft.id)));
   return draft;
 }
 

@@ -512,6 +512,13 @@
       "when": 1787410812000,
       "tag": "0072_journal_drafts",
       "breakpoints": true
+    },
+    {
+      "idx": 73,
+      "version": "7",
+      "when": 1787410813000,
+      "tag": "0073_posted_draft_lock",
+      "breakpoints": true
     }
   ]
 }
