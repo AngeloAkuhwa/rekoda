@@ -435,6 +435,13 @@
       "when": 1787410801000,
       "tag": "0061_accounts",
       "breakpoints": true
+    },
+    {
+      "idx": 62,
+      "version": "7",
+      "when": 1787410802000,
+      "tag": "0062_seed_chart_of_accounts",
+      "breakpoints": true
     }
   ]
 }

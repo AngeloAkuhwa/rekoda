@@ -23,6 +23,7 @@ import {
   users,
 } from '../schema/tenancy.js';
 import { auditEvents } from '../schema/ops.js';
+import { seedChartOfAccounts } from './accounts.js';
 
 /** Either a pool handle or a transaction — every read below accepts both. */
 export type Queryable = Db | TenantDb;
@@ -231,6 +232,11 @@ export async function createBusinessWithOwner(db: Db, input: NewBusiness): Promi
     if (!row) throw new Error('createBusinessWithOwner: insert returned no row');
 
     await tx.insert(memberships).values({ businessId, userId: input.ownerUserId, role: 'owner' });
+
+    /* The chart of accounts arrives WITH the business (PR-030): the engine
+     * may rely on every seeded role existing, so there is no window where a
+     * business exists and its chart does not. */
+    await seedChartOfAccounts(tx, businessId);
 
     return {
       id: row.id,

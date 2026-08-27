@@ -8,7 +8,7 @@
  * active account or an honest null.
  */
 import { and, eq } from 'drizzle-orm';
-import { ROLE_SCOPE, type SystemRole } from '@rekoda/core';
+import { ROLE_SCOPE, SEED_CHART, SEED_FINANCIAL_ACCOUNTS, type SystemRole } from '@rekoda/core';
 import type { TenantDb } from '../client.js';
 import { accounts, financialAccounts } from '../schema/accounts.js';
 
@@ -183,4 +183,60 @@ export async function renameAccount(
     .where(and(eq(accounts.businessId, businessId), eq(accounts.id, accountId)))
     .returning({ id: accounts.id });
   return rows.length === 1;
+}
+
+/**
+ * Give a business the chart it starts with (PR-030): the same rows migration
+ * 0062 seeds for businesses that already existed, from the same SEED_CHART —
+ * the integration suite proves the two agree row for row. Idempotent by
+ * `onConflictDoNothing`, so a retried creation seeds once.
+ */
+export async function seedChartOfAccounts(tx: TenantDb, businessId: string): Promise<void> {
+  /* The places money sits, looked up or created by their natural key. */
+  const financialIds = new Map<string, string>();
+  for (const fa of SEED_FINANCIAL_ACCOUNTS) {
+    const existing = await tx
+      .select({ id: financialAccounts.id })
+      .from(financialAccounts)
+      .where(
+        and(
+          eq(financialAccounts.businessId, businessId),
+          eq(financialAccounts.kind, fa.kind),
+          eq(financialAccounts.label, fa.label),
+        ),
+      )
+      .limit(1);
+    const id =
+      existing[0]?.id ??
+      (await createFinancialAccount(tx, { businessId, kind: fa.kind, label: fa.label })).id;
+    financialIds.set(`${fa.kind}:${fa.label}`, id);
+  }
+
+  for (const seed of SEED_CHART) {
+    await tx
+      .insert(accounts)
+      .values({
+        businessId,
+        code: seed.code,
+        name: seed.name,
+        type: seed.type,
+        contra: seed.contra ?? false,
+        ...(seed.role
+          ? seed.financial
+            ? {
+                systemRole: seed.role,
+                systemScopeType: 'FINANCIAL_ACCOUNT',
+                scopeFinancialAccountId: financialIds.get(
+                  `${seed.financial.kind}:${seed.financial.label}`,
+                )!,
+              }
+            : {
+                systemRole: seed.role,
+                systemScopeType: 'BUSINESS',
+                scopeBusinessId: businessId,
+              }
+          : {}),
+      })
+      .onConflictDoNothing();
+  }
 }

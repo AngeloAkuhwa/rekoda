@@ -74,11 +74,15 @@ function scopeFor(
 }
 
 describe('the §11.2 mapping, agreed between core and the database', () => {
-  it('accepts every canonical (role, scope) pair', async () => {
+  it('holds every canonical (role, scope) pair — seeded or freshly created', async () => {
     const businessId = await seedBusiness();
     const ids = await seedScopes(businessId);
 
+    /* PR-030's seed already carries every role except the per-connection
+     * pair, so the chart holds them; the pair is created here, against a
+     * real connection, proving the PAYMENT_CONNECTION half of the CHECK. */
     for (const [i, role] of SYSTEM_ROLES.entries()) {
+      if (ROLE_SCOPE[role] !== 'PAYMENT_CONNECTION') continue;
       const { id } = await withBusiness(db, businessId, (tx) =>
         accountsRepo.createAccount(tx, {
           businessId,
@@ -94,7 +98,8 @@ describe('the §11.2 mapping, agreed between core and the database', () => {
     const chart = await withBusiness(db, businessId, (tx) =>
       accountsRepo.accountsFor(tx, businessId),
     );
-    expect(chart).toHaveLength(SYSTEM_ROLES.length);
+    const held = new Set(chart.filter((a) => a.systemRole).map((a) => a.systemRole));
+    for (const role of SYSTEM_ROLES) expect(held.has(role), role).toBe(true);
   });
 
   it('makes ACCOUNTS_RECEIVABLE scoped to a payment connection unrepresentable', async () => {
@@ -124,7 +129,7 @@ describe('all-or-none and scope integrity (§11.3)', () => {
     const { id } = await withBusiness(db, businessId, (tx) =>
       accountsRepo.createAccount(tx, {
         businessId,
-        code: '6200',
+        code: '6900',
         name: 'Generator diesel',
         type: 'expense',
       }),
@@ -176,18 +181,18 @@ describe('all-or-none and scope integrity (§11.3)', () => {
         }),
       );
 
-    await mk('1010', ids.connectionId);
+    await mk('8010', ids.connectionId);
     /* Two providers, two clearing accounts: the whole reason a single
      * global systemKey was replaced. */
-    await mk('1011', second.id);
+    await mk('8011', second.id);
     /* A second clearing account for the SAME connection is refused. */
-    await expect(mk('1012', ids.connectionId)).rejects.toThrow();
+    await expect(mk('8012', ids.connectionId)).rejects.toThrow();
 
     /* BANK per financial account behaves identically. */
     await withBusiness(db, businessId, (tx) =>
       accountsRepo.createAccount(tx, {
         businessId,
-        code: '1020',
+        code: '8020',
         name: 'GTBank',
         type: 'asset',
         role: { systemRole: 'BANK', scope: { kind: 'financial_account', id: ids.bankId } },
@@ -196,7 +201,7 @@ describe('all-or-none and scope integrity (§11.3)', () => {
     await withBusiness(db, businessId, (tx) =>
       accountsRepo.createAccount(tx, {
         businessId,
-        code: '1000',
+        code: '8000',
         name: 'Shop till',
         type: 'asset',
         role: { systemRole: 'CASH', scope: { kind: 'financial_account', id: ids.tillId } },
@@ -209,15 +214,13 @@ describe('the engine resolves a role, never a name (§11.2)', () => {
   it('finds the account by role and scope after the merchant renames it', async () => {
     const businessId = await seedBusiness();
     const ids = await seedScopes(businessId);
-    const { id } = await withBusiness(db, businessId, (tx) =>
-      accountsRepo.createAccount(tx, {
-        businessId,
-        code: '4000',
-        name: 'Sales Revenue',
-        type: 'income',
-        role: { systemRole: 'SALES_REVENUE', scope: { kind: 'business' } },
-      }),
+    /* The SEEDED revenue account (PR-030): the engine's contract holds on
+     * the chart a business actually starts with. */
+    const seeded = await withBusiness(db, businessId, (tx) =>
+      accountsRepo.accountByRole(tx, businessId, 'SALES_REVENUE'),
     );
+    expect(seeded).not.toBeNull();
+    const id = seeded!.id;
     await withBusiness(db, businessId, (tx) =>
       accountsRepo.renameAccount(tx, businessId, id, 'Shop takings'),
     );
@@ -242,16 +245,10 @@ describe('the engine resolves a role, never a name (§11.2)', () => {
 describe('identity is set once (§11.4)', () => {
   it('refuses changing the role, the scope or the type; allows the name', async () => {
     const businessId = await seedBusiness();
-    await seedScopes(businessId);
-    const { id } = await withBusiness(db, businessId, (tx) =>
-      accountsRepo.createAccount(tx, {
-        businessId,
-        code: '4000',
-        name: 'Sales',
-        type: 'income',
-        role: { systemRole: 'SALES_REVENUE', scope: { kind: 'business' } },
-      }),
+    const seeded = await withBusiness(db, businessId, (tx) =>
+      accountsRepo.accountByRole(tx, businessId, 'SALES_REVENUE'),
     );
+    const id = seeded!.id;
 
     const { sql } = await import('drizzle-orm');
     /* Role change: refused by the trigger however it is attempted. */
@@ -278,7 +275,7 @@ describe('identity is set once (§11.4)', () => {
     const { id } = await withBusiness(db, businessId, (tx) =>
       accountsRepo.createAccount(tx, {
         businessId,
-        code: '6100',
+        code: '6910',
         name: 'Fuel',
         type: 'expense',
       }),
@@ -299,13 +296,16 @@ describe('tenant isolation', () => {
     await withBusiness(db, ada, (tx) =>
       accountsRepo.createAccount(tx, {
         businessId: ada,
-        code: '4000',
-        name: 'Sales',
+        code: '8999',
+        name: 'Private side hustle',
         type: 'income',
       }),
     );
 
     const bolaSees = await withBusiness(db, bola, (tx) => accountsRepo.accountsFor(tx, bola));
-    expect(bolaSees).toHaveLength(0);
+    expect(bolaSees.map((a) => a.code)).not.toContain('8999');
+    /* And each holds its own seeded chart, not a shared one. */
+    const adaSees = await withBusiness(db, ada, (tx) => accountsRepo.accountsFor(tx, ada));
+    expect(adaSees.length).toBe(bolaSees.length + 1);
   });
 });
