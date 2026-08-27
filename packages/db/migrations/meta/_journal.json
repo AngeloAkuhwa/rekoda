@@ -505,6 +505,13 @@
       "when": 1787410811000,
       "tag": "0071_posting_key_purpose",
       "breakpoints": true
+    },
+    {
+      "idx": 72,
+      "version": "7",
+      "when": 1787410812000,
+      "tag": "0072_journal_drafts",
+      "breakpoints": true
     }
   ]
 }

@@ -648,3 +648,49 @@ export const exchangeRateSnapshots = pgTable('exchange_rate_snapshots', {
   reason: text('reason'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
+
+/* ── journal drafts (spec §9.1; migration 0072, PR-041) ── */
+
+/**
+ * The EDITABLE half of §9.1's two pairs. A draft is a proposal: lines cite
+ * chart accounts directly, edits are ordinary UPDATEs, and a never-posted
+ * draft may be discarded. `postedJournalId` (UNIQUE where set) records
+ * which immutable entry it became; PR-042's trigger makes a posted draft
+ * read-only so the approval trail keeps describing what was approved.
+ */
+export const journalDrafts = pgTable(
+  'journal_drafts',
+  {
+    id: uuid('id')
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    businessId: uuid('business_id')
+      .notNull()
+      .references(() => businesses.id),
+    memo: text('memo').notNull(),
+    createdBy: text('created_by').notNull(),
+    postedJournalId: uuid('posted_journal_id'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('journal_drafts_posted_ux')
+      .on(t.postedJournalId)
+      .where(sql`${t.postedJournalId} IS NOT NULL`),
+  ],
+);
+
+export const journalDraftLines = pgTable('journal_draft_lines', {
+  id: uuid('id')
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  businessId: uuid('business_id')
+    .notNull()
+    .references(() => businesses.id),
+  draftId: uuid('draft_id').notNull(),
+  accountId: uuid('account_id').notNull(),
+  debitK: kobo('debit_k').notNull().default(0),
+  creditK: kobo('credit_k').notNull().default(0),
+  position: integer('position').notNull().default(0),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
