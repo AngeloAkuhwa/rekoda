@@ -11,6 +11,7 @@ export * as idempotencyRepo from './repos/idempotency.js';
 export * as provenanceRepo from './repos/provenance.js';
 export * as evidenceRetentionRepo from './repos/evidence-retention.js';
 export * as evidenceRepo from './repos/evidence.js';
+export * as accountsRepo from './repos/accounts.js';
 export * as outboxRepo from './repos/outbox.js';
 export * as events from './repos/events.js';
 export * as jobsRepo from './repos/jobs.js';

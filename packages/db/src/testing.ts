@@ -69,6 +69,7 @@ export async function truncateAll(urls: Urls): Promise<void> {
         audit_events,
         ledger_entries, ledger_transactions,
         payment_allocations, payments,
+        accounts, financial_accounts,
         invoice_items, invoices,
         doc_counters,
         command_drafts,
