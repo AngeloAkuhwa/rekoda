@@ -95,8 +95,35 @@ export interface OutboundRetentionNotice {
   deletesOn: string;
 }
 
+/**
+ * A merchant's own template, sent on the MERCHANT'S OWN WABA (spec §24;
+ * PR-060). Unlike every other send in this port, the credential travels
+ * with the call: Rekoda's token sends on Rekoda's number, and a merchant's
+ * template sends on the merchant's `phoneNumberId` under the merchant's
+ * token, decrypted for the length of this one request.
+ */
+export interface OutboundTemplate {
+  to: string;
+  /** WHICH channel asset dispatches this — the merchant's number, never ours. */
+  phoneNumberId: string;
+  /** The merchant's WABA token, already decrypted. Never logged, never stored. */
+  accessToken: string;
+  name: string;
+  language: string;
+  /** Body placeholder values, in order. Rehydrated like any message text. */
+  parameters: string[];
+}
+
 export interface MessageSender {
   send(message: OutboundMessage): Promise<SendResult>;
+  /**
+   * Send a merchant's approved template on their own WABA. Separate from
+   * the named platform templates below for the same reason those are
+   * separate from `send`: different credential, different number,
+   * different rules, and hiding that would make Integrate look shipped
+   * while every send went out on Rekoda's number.
+   */
+  sendTemplate(template: OutboundTemplate): Promise<SendResult>;
   /** Download media by Meta's id. Throws `SendFailed` when it cannot. */
   fetchMedia(mediaId: string): Promise<InboundMedia>;
   /**

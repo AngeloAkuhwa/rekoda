@@ -7,6 +7,7 @@ import {
   allowanceFor,
   seatsFor,
   usagePeriod,
+  templateUnitFor,
 } from './allowances.js';
 
 describe('plan allowances (docs/metering-v1.md)', () => {
@@ -146,9 +147,13 @@ describe('plan allowances (docs/metering-v1.md)', () => {
   });
 
   /**
-   * The twelve units nothing consumes yet are sold by nobody. A number here
-   * would be capacity on the pricing page that no code path can spend; the
-   * PR that wires each consumer sets its figure at the same time.
+   * The units nothing consumes yet are sold by nobody. A number here would
+   * be capacity on the pricing page that no code path can spend; the PR
+   * that wires each consumer sets its figure at the same time —
+   * UTILITY_TEMPLATE joined the live list when PR-060 wired template sends.
+   * The template units MARKETING/AUTH stay listed as live-but-zero
+   * elsewhere: their consumer exists, and zero is their PRICED figure
+   * (marketing is excluded from V1; auth codes are platform sends).
    */
   it('sells nothing it cannot yet deliver', () => {
     const live = [
@@ -157,6 +162,10 @@ describe('plan allowances (docs/metering-v1.md)', () => {
       'DOCUMENT_GENERATION',
       'DOCUMENTS_UNDERSTOOD',
       'CATALOGUE_ORDERS',
+      'UTILITY_TEMPLATE',
+      'MARKETING_TEMPLATE',
+      'AUTH_TEMPLATE',
+      'AUTH_INTL_TEMPLATE',
     ] as const;
     for (const unit of USAGE_UNITS) {
       if ((live as readonly string[]).includes(unit)) continue;
@@ -194,5 +203,21 @@ describe('plan allowances (docs/metering-v1.md)', () => {
     expect(usagePeriod(new Date('2026-08-31T23:30:00Z'))).toBe('2026-09');
     // 22:30 UTC is still 23:30 August in Lagos.
     expect(usagePeriod(new Date('2026-08-31T22:30:00Z'))).toBe('2026-08');
+  });
+
+  it('derives the template unit at send time, splitting authentication by destination (§4.2)', () => {
+    expect(templateUnitFor('UTILITY', '+2348031234567')).toBe('UTILITY_TEMPLATE');
+    expect(templateUnitFor('MARKETING', '+2348031234567')).toBe('MARKETING_TEMPLATE');
+    expect(templateUnitFor('AUTHENTICATION', '+2348031234567')).toBe('AUTH_TEMPLATE');
+    expect(templateUnitFor('AUTHENTICATION', '+447700900123')).toBe('AUTH_INTL_TEMPLATE');
+  });
+
+  it('sells utility templates as pricing-model.md does, and marketing NOWHERE (V1)', () => {
+    expect(PLAN_ALLOWANCES.chat.UTILITY_TEMPLATE).toBe(25);
+    expect(PLAN_ALLOWANCES.integrate.UTILITY_TEMPLATE).toBe(100);
+    expect(PLAN_ALLOWANCES.complete.UTILITY_TEMPLATE).toBe(150);
+    for (const plan of Object.values(PLAN_ALLOWANCES)) {
+      expect(plan.MARKETING_TEMPLATE).toBe(0);
+    }
   });
 });

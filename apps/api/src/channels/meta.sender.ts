@@ -8,6 +8,7 @@ import {
   type OutboundBillingNotice,
   type OutboundDocument,
   type OutboundRetentionNotice,
+  type OutboundTemplate,
   type OutboundMessage,
   type SendResult,
 } from './sender.js';
@@ -273,6 +274,48 @@ export class MetaSender implements MessageSender {
     });
   }
 
+  /**
+   * A merchant's own approved template, on the MERCHANT'S OWN number.
+   *
+   * The one send here that does not use the constructor credential: the
+   * request goes to the merchant's `phoneNumberId` under the merchant's
+   * token, both carried by the call (spec §24 — the WABA is theirs, we
+   * route it). The token exists for the length of this request and is
+   * never logged; the error path reports status codes only, like every
+   * other Graph call in this file.
+   */
+  async sendTemplate(template: OutboundTemplate): Promise<SendResult> {
+    const body = await this.request(`/${template.phoneNumberId}/messages`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${template.accessToken}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        messaging_product: 'whatsapp',
+        recipient_type: 'individual',
+        to: template.to,
+        type: 'template',
+        template: {
+          name: template.name,
+          language: { code: template.language },
+          ...(template.parameters.length
+            ? {
+                components: [
+                  {
+                    type: 'body',
+                    parameters: template.parameters.map((text) => ({ type: 'text', text })),
+                  },
+                ],
+              }
+            : {}),
+        },
+      }),
+    });
+    const messages = (body as { messages?: Array<{ id?: string }> }).messages;
+    return { providerMessageId: messages?.[0]?.id ?? null };
+  }
+
   private async post(payload: Record<string, unknown>): Promise<SendResult> {
     const body = await this.request(`/${this.phoneNumberId}/messages`, {
       method: 'POST',
@@ -343,6 +386,10 @@ export class NoSenderConfigured implements MessageSender {
   }
 
   sendDocument(): Promise<never> {
+    return Promise.reject(new SendFailed('META_ACCESS_TOKEN is not set'));
+  }
+
+  sendTemplate(): Promise<never> {
     return Promise.reject(new SendFailed('META_ACCESS_TOKEN is not set'));
   }
 

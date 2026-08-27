@@ -55,6 +55,9 @@ export const wabaTemplates = pgTable(
     category: text('category').notNull(),
     status: text('status').notNull().default('PENDING'),
     providerTemplateId: text('provider_template_id'),
+    /** Meta's stated reason for a rejection or pause (0088). Advisory prose
+     * for the merchant's next edit — never parsed, never a routing input. */
+    rejectionReason: text('rejection_reason'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },

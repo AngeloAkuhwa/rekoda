@@ -11,6 +11,7 @@ import {
   issueMagicLink,
   issueOtp,
   issueSession,
+  normaliseParticipant,
   normalisePhone,
   secretMatches,
   validateMagicLink,
@@ -78,6 +79,27 @@ describe('phone normalisation', () => {
       '',
     ]) {
       expect(() => normalisePhone(bad)).toThrow(InvalidPhoneError);
+    }
+  });
+});
+
+describe('participant normalisation (Appendix F; PR-060)', () => {
+  it('keeps Nigerian numbers on the canonical form, so one person is one hash', () => {
+    expect(normaliseParticipant('2348031234567')).toBe('+2348031234567');
+    expect(normaliseParticipant('+234 803 123 4567')).toBe('+2348031234567');
+    expect(normaliseParticipant('08031234567')).toBe('+2348031234567');
+  });
+
+  it("accepts a merchant's INTERNATIONAL customer, which normalisePhone must not", () => {
+    expect(normaliseParticipant('447700900123')).toBe('+447700900123');
+    expect(normaliseParticipant('+44 7700 900123')).toBe('+447700900123');
+    expect(normaliseParticipant('0044 7700 900123')).toBe('+447700900123');
+    expect(() => normalisePhone('447700900123')).toThrow(InvalidPhoneError);
+  });
+
+  it('refuses what cannot be a wa_id, rather than guessing an identity (F.8)', () => {
+    for (const bad of ['', 'not-a-number', '0123', '1234567', '1234567890123456']) {
+      expect(() => normaliseParticipant(bad)).toThrow(InvalidPhoneError);
     }
   });
 });

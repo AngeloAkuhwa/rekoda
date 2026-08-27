@@ -15,7 +15,7 @@
  * never placed in a payload — F.3's list is absolute.
  */
 import { Logger } from '@nestjs/common';
-import { normalisePhone, InvalidPhoneError } from '@rekoda/core/identity';
+import { normaliseParticipant, InvalidPhoneError } from '@rekoda/core/identity';
 import { participantIndexFor, PARTICIPANT_INDEX_KEY_VERSION } from '@rekoda/core/vault';
 import { extractInboundEvents, metaWebhookBody } from '@rekoda/contracts';
 import { conversationsRepo, events } from '@rekoda/db';
@@ -69,7 +69,7 @@ export function customerMessageHandler(deps: CustomerMessageDeps): JobHandler {
      * indistinguishable from a real one forever after (F.8) — so refuse. */
     let participant: string;
     try {
-      participant = normalisePhone(inbound.from);
+      participant = normaliseParticipant(inbound.from);
     } catch (error) {
       if (error instanceof InvalidPhoneError) {
         await events.markProcessed(tx, eventId, 'participant did not normalise', businessId);

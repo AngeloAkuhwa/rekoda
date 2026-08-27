@@ -139,7 +139,7 @@ export async function upsertTemplate(
     wabaConnectionId: string;
     name: string;
     language?: string;
-    category: 'UTILITY' | 'MARKETING' | 'AUTHENTICATION' | 'SERVICE';
+    category: 'UTILITY' | 'MARKETING' | 'AUTHENTICATION';
     providerTemplateId?: string;
   },
 ): Promise<{ id: string }> {
@@ -178,16 +178,82 @@ export async function markTemplateStatus(
     businessId: string;
     templateId: string;
     status: 'APPROVED' | 'REJECTED' | 'PAUSED';
+    /** Meta's stated reason, for REJECTED/PAUSED. Approval clears it. */
+    rejectionReason?: string;
   },
 ): Promise<boolean> {
   const rows = await tx
     .update(wabaTemplates)
-    .set({ status: input.status, updatedAt: sql`now()` })
+    .set({
+      status: input.status,
+      rejectionReason: input.status === 'APPROVED' ? null : (input.rejectionReason ?? null),
+      updatedAt: sql`now()`,
+    })
     .where(
       and(eq(wabaTemplates.businessId, input.businessId), eq(wabaTemplates.id, input.templateId)),
     )
     .returning({ id: wabaTemplates.id });
   return rows.length === 1;
+}
+
+export interface TemplateRow {
+  id: string;
+  name: string;
+  language: string;
+  category: 'UTILITY' | 'MARKETING' | 'AUTHENTICATION';
+  status: string;
+  rejectionReason: string | null;
+}
+
+/**
+ * The template a send names, if Meta has APPROVED it (PR-060). Anything
+ * else — pending, rejected, paused, absent — is null, and the caller
+ * refuses before any unit is consumed: an unapproved template send would
+ * bounce at Meta AFTER costing the merchant capacity.
+ */
+export async function approvedTemplate(
+  tx: TenantDb,
+  input: { businessId: string; wabaConnectionId: string; name: string; language?: string },
+): Promise<TemplateRow | null> {
+  const rows = await tx
+    .select({
+      id: wabaTemplates.id,
+      name: wabaTemplates.name,
+      language: wabaTemplates.language,
+      category: wabaTemplates.category,
+      status: wabaTemplates.status,
+      rejectionReason: wabaTemplates.rejectionReason,
+    })
+    .from(wabaTemplates)
+    .where(
+      and(
+        eq(wabaTemplates.businessId, input.businessId),
+        eq(wabaTemplates.wabaConnectionId, input.wabaConnectionId),
+        eq(wabaTemplates.name, input.name),
+        eq(wabaTemplates.language, input.language ?? 'en'),
+        eq(wabaTemplates.status, 'APPROVED'),
+      ),
+    )
+    .limit(1);
+  const row = rows[0];
+  return row ? ({ ...row } as TemplateRow) : null;
+}
+
+/** The registry, as the dashboard lists it: every template, every status. */
+export async function templatesFor(tx: TenantDb, businessId: string): Promise<TemplateRow[]> {
+  const rows = await tx
+    .select({
+      id: wabaTemplates.id,
+      name: wabaTemplates.name,
+      language: wabaTemplates.language,
+      category: wabaTemplates.category,
+      status: wabaTemplates.status,
+      rejectionReason: wabaTemplates.rejectionReason,
+    })
+    .from(wabaTemplates)
+    .where(eq(wabaTemplates.businessId, businessId))
+    .orderBy(wabaTemplates.name, wabaTemplates.language);
+  return rows as TemplateRow[];
 }
 
 /* ── the 24-hour service window ─────────────────────────────────────────── */

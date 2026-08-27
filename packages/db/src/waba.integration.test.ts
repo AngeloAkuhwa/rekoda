@@ -155,6 +155,74 @@ describe('templates and the service window (§24, §4.2)', () => {
     expect([...rows]).toEqual([{ category: 'MARKETING', status: 'APPROVED' }]);
   });
 
+  it('a template is never SERVICE: a service message is the absence of a template (0088)', async () => {
+    const businessId = await seedBusiness();
+    const connected = await signup(businessId, 'pn-450');
+    if (connected.outcome !== 'connected') throw new Error('fixture');
+    await expect(
+      withBusiness(db, businessId, (tx) =>
+        tx.execute(sql`
+          INSERT INTO waba_templates (business_id, waba_connection_id, name, category)
+          VALUES (${businessId}::uuid, ${connected.id}::uuid, 'free_form', 'SERVICE')
+        `),
+      ),
+    ).rejects.toThrow();
+  });
+
+  it("a rejection carries Meta's reason; approval clears it (PR-060)", async () => {
+    const businessId = await seedBusiness();
+    const connected = await signup(businessId, 'pn-460');
+    if (connected.outcome !== 'connected') throw new Error('fixture');
+    const template = await withBusiness(db, businessId, (tx) =>
+      wabaRepo.upsertTemplate(tx, {
+        businessId,
+        wabaConnectionId: connected.id,
+        name: 'payment_reminder',
+        category: 'UTILITY',
+      }),
+    );
+
+    await withBusiness(db, businessId, (tx) =>
+      wabaRepo.markTemplateStatus(tx, {
+        businessId,
+        templateId: template.id,
+        status: 'REJECTED',
+        rejectionReason: 'add a clear opt-out line',
+      }),
+    );
+    let rows = await withBusiness(db, businessId, (tx) => wabaRepo.templatesFor(tx, businessId));
+    expect(rows[0]).toMatchObject({
+      status: 'REJECTED',
+      rejectionReason: 'add a clear opt-out line',
+    });
+
+    /* Rejected is not sendable: the registry answers null before a unit
+     * could be spent on a send Meta would bounce. */
+    expect(
+      await withBusiness(db, businessId, (tx) =>
+        wabaRepo.approvedTemplate(tx, {
+          businessId,
+          wabaConnectionId: connected.id,
+          name: 'payment_reminder',
+        }),
+      ),
+    ).toBeNull();
+
+    await withBusiness(db, businessId, (tx) =>
+      wabaRepo.markTemplateStatus(tx, { businessId, templateId: template.id, status: 'APPROVED' }),
+    );
+    rows = await withBusiness(db, businessId, (tx) => wabaRepo.templatesFor(tx, businessId));
+    expect(rows[0]).toMatchObject({ status: 'APPROVED', rejectionReason: null });
+    const sendable = await withBusiness(db, businessId, (tx) =>
+      wabaRepo.approvedTemplate(tx, {
+        businessId,
+        wabaConnectionId: connected.id,
+        name: 'payment_reminder',
+      }),
+    );
+    expect(sendable).toMatchObject({ name: 'payment_reminder', category: 'UTILITY' });
+  });
+
   it('the 24-hour window opens on a customer message and closes by its own clock', async () => {
     const businessId = await seedBusiness();
     const connected = await signup(businessId, 'pn-500');

@@ -120,12 +120,16 @@ function sells(sold: Partial<Record<UsageUnit, number>>): Record<UsageUnit, numb
  * The plan table, in the units a merchant is sold: minutes of voice, not
  * seconds. `allowanceFor` converts to the counts the meter stores.
  *
- * Twelve of the seventeen canonical units are zero on every plan today.
+ * Eleven of the seventeen canonical units are zero on every plan today.
  * That is not an oversight and not a placeholder price of nothing: no code
- * consumes them yet, so there is no capability behind them to sell. Message
- * categories get their numbers in the PR that starts metering categories;
- * the API units get theirs with the API product. Inventing a figure here
- * would put capacity on the pricing page that nothing can spend.
+ * consumes them yet, so there is no capability behind them to sell; the API
+ * units get theirs with the API product. UTILITY_TEMPLATE got its numbers
+ * when PR-060 started metering template sends — straight from
+ * pricing-model.md, which is the page these figures must never disagree
+ * with. MARKETING_TEMPLATE stays zero on EVERY plan by decision, not
+ * omission: pricing-model.md excludes bulk WhatsApp marketing from V1
+ * entirely, and zero means zero. AUTH templates are Rekoda's own platform
+ * sends (sign-in codes), a platform cost rather than merchant capacity.
  */
 export const PLAN_ALLOWANCES: Record<PlanId, Record<UsageUnit, number>> = {
   /* Ten orders on trial, not zero: MASTER-PLAN allows the Integrate
@@ -144,6 +148,10 @@ export const PLAN_ALLOWANCES: Record<PlanId, Record<UsageUnit, number>> = {
     VOICE_MINUTES: 60,
     DOCUMENT_GENERATION: 100,
     DOCUMENTS_UNDERSTOOD: 50,
+    /* pricing-model.md's "25 utility reminders": payment reminders and
+     * account notices that must reach a customer OUTSIDE the 24-hour
+     * window, which is what a utility template is for. */
+    UTILITY_TEMPLATE: 25,
   }),
   /**
    * Integrate holds REKODA_INTEGRATE and not REKODA_CHAT (owner decision,
@@ -162,13 +170,20 @@ export const PLAN_ALLOWANCES: Record<PlanId, Record<UsageUnit, number>> = {
    * capability tier rather than a volume tier. Complete is the plan for a
    * merchant who wants both.
    */
-  integrate: sells({ DOCUMENT_GENERATION: 500, CATALOGUE_ORDERS: 300 }),
+  integrate: sells({
+    DOCUMENT_GENERATION: 500,
+    CATALOGUE_ORDERS: 300,
+    /* pricing-model.md: "100 utility templates". */
+    UTILITY_TEMPLATE: 100,
+  }),
   complete: sells({
     AI_ACTIONS: 1_200,
     VOICE_MINUTES: 120,
     DOCUMENT_GENERATION: 750,
     DOCUMENTS_UNDERSTOOD: 200,
     CATALOGUE_ORDERS: 300,
+    /* pricing-model.md: "150 utility templates". */
+    UTILITY_TEMPLATE: 150,
   }),
 };
 
@@ -250,4 +265,36 @@ export const PLAN_PRICES_K: Record<PlanId, number> = {
 /** An unknown plan earns nothing, which is the safe direction for a margin. */
 export function planPriceK(plan: string): number {
   return (PLAN_PRICES_K as Record<string, number>)[plan] ?? 0;
+}
+
+/**
+ * Meta's three template categories (spec §24; migration 0088 makes them the
+ * only registrable values). SERVICE is deliberately not here: a service
+ * message is a free-form reply INSIDE the 24-hour window, and a template is
+ * what one sends because there is no window to be inside.
+ */
+export const TEMPLATE_CATEGORIES = ['UTILITY', 'MARKETING', 'AUTHENTICATION'] as const;
+export type TemplateCategory = (typeof TEMPLATE_CATEGORIES)[number];
+
+/**
+ * The §4.2 unit a template send meters to, derived at SEND time and never
+ * stored (spec §24): the categories are separated because their provider
+ * costs differ by nearly eightfold, and that difference is the largest
+ * variable in plan margin.
+ *
+ * AUTHENTICATION splits by DESTINATION, because that is how Meta prices it:
+ * a code to a Nigerian number is AUTH_TEMPLATE, anywhere else is
+ * AUTH_INTL_TEMPLATE. `to` must already be normalised E.164 — this function
+ * classifies, it does not parse, and a half-normalised number misfiled as
+ * domestic is a mispriced unit.
+ */
+export function templateUnitFor(category: TemplateCategory, to: string): UsageUnit {
+  switch (category) {
+    case 'UTILITY':
+      return 'UTILITY_TEMPLATE';
+    case 'MARKETING':
+      return 'MARKETING_TEMPLATE';
+    case 'AUTHENTICATION':
+      return to.startsWith('+234') ? 'AUTH_TEMPLATE' : 'AUTH_INTL_TEMPLATE';
+  }
 }
