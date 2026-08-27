@@ -25,6 +25,7 @@ import {
   paymentConnections,
   paymentIntents,
   providerCapabilities,
+  providerCostSchedules,
 } from '../schema/payments-hub.js';
 import { provisionConnectionAccounts } from './accounts.js';
 
@@ -840,4 +841,69 @@ export async function resolveProviderConnection(
     })),
     capabilities,
   );
+}
+
+/* ── provider cost schedules (spec §17, §19.1, §24, §29; PR-072) ────────── */
+
+/** One effective-dated observation of a published provider rate card. */
+export interface CostScheduleRow {
+  id: string;
+  providerType: string;
+  costType: string;
+  providerProduct: string;
+  /** Which published card the observation came from. */
+  version: string;
+  /** ISO date the card took effect. */
+  effectiveFrom: string;
+  basis: 'PER_UNIT' | 'PERCENT_PLUS_FLAT';
+  unitPriceMicros: number | null;
+  percentPpm: number | null;
+  flatMinor: number | null;
+  capMinor: number | null;
+  waiveFlatUnderMinor: number | null;
+  currency: string;
+}
+
+/**
+ * The observation IN FORCE for a provider's product on a date: the latest
+ * card at or before it (§24 — a rate is an effective-dated observation,
+ * so "what does this cost" is always a question about a date). Null when
+ * no card had been observed yet by then — an honest "we do not know what
+ * this cost", never a guess backdated from a later card.
+ */
+export async function costScheduleInForce(
+  db: Db | TenantDb,
+  providerType: string,
+  providerProduct: string,
+  onDate: string,
+): Promise<CostScheduleRow | null> {
+  const rows = await db
+    .select()
+    .from(providerCostSchedules)
+    .where(
+      and(
+        eq(providerCostSchedules.providerType, providerType),
+        eq(providerCostSchedules.providerProduct, providerProduct),
+        sql`${providerCostSchedules.effectiveFrom} <= ${onDate}::date`,
+      ),
+    )
+    .orderBy(sql`${providerCostSchedules.effectiveFrom} DESC`)
+    .limit(1);
+  const row = rows[0];
+  if (!row) return null;
+  return {
+    id: row.id,
+    providerType: row.providerType,
+    costType: row.costType,
+    providerProduct: row.providerProduct,
+    version: row.version,
+    effectiveFrom: row.effectiveFrom,
+    basis: row.basis as CostScheduleRow['basis'],
+    unitPriceMicros: row.unitPriceMicros,
+    percentPpm: row.percentPpm,
+    flatMinor: row.flatMinor,
+    capMinor: row.capMinor,
+    waiveFlatUnderMinor: row.waiveFlatUnderMinor,
+    currency: row.currency,
+  };
 }

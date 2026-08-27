@@ -15,7 +15,9 @@ import { sql } from 'drizzle-orm';
 import {
   bigint,
   boolean,
+  date,
   index,
+  integer,
   jsonb,
   pgTable,
   text,
@@ -389,4 +391,38 @@ export const providerCapabilities = pgTable(
     updatedAt: updatedAt(),
   },
   (t) => [uniqueIndex('provider_capabilities_ux').on(t.providerType, t.capability)],
+);
+
+/* ── provider cost schedules (spec §17, §19.1, §24, §29; 0094, PR-072) ── */
+
+/** Effective-dated observations of published provider rate cards — the
+ * table ratios and estimates are DERIVED from, never a stored multiple.
+ * Same construction as provider_capabilities: GLOBAL reference data, no
+ * RLS, read-only to both runtime roles; a new card is a new row. */
+export const providerCostSchedules = pgTable(
+  'provider_cost_schedules',
+  {
+    id: id(),
+    providerType: text('provider_type').notNull(),
+    costType: text('cost_type').notNull(),
+    providerProduct: text('provider_product').notNull(),
+    version: text('version').notNull(),
+    effectiveFrom: date('effective_from').notNull(),
+    basis: text('basis').notNull(),
+    unitPriceMicros: bigint('unit_price_micros', { mode: 'number' }),
+    percentPpm: integer('percent_ppm'),
+    flatMinor: bigint('flat_minor', { mode: 'number' }),
+    capMinor: bigint('cap_minor', { mode: 'number' }),
+    waiveFlatUnderMinor: bigint('waive_flat_under_minor', { mode: 'number' }),
+    currency: text('currency').notNull(),
+    note: text('note'),
+    observedAt: timestamp('observed_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('provider_cost_schedules_ux').on(
+      t.providerType,
+      t.providerProduct,
+      t.effectiveFrom,
+    ),
+  ],
 );

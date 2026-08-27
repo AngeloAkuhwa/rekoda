@@ -371,3 +371,39 @@ export function resolvePaymentProvider(
   }
   return { resolved: true, connectionId: winner.connectionId, providerType: winner.providerType };
 }
+
+/* ── provider fee estimation from a rate observation (§19.1, §24; PR-072) ── */
+
+/**
+ * A PERCENT_PLUS_FLAT rate as one `ProviderCostSchedule` row states it:
+ * a percentage of the amount plus a flat fee, the whole thing optionally
+ * capped, the flat part optionally waived below a threshold. This is the
+ * shape Paystack's collection pricing actually has, and the fields are
+ * the observation's — an estimate never carries a number the row cannot
+ * justify.
+ */
+export interface PercentPlusFlatRate {
+  /** Parts-per-million of the amount (15000 = 1.5%). */
+  percentPpm: number;
+  flatMinor: number;
+  /** The whole fee is capped here; null means uncapped. */
+  capMinor: number | null;
+  /** The flat part is waived below this amount; null means never. */
+  waiveFlatUnderMinor: number | null;
+}
+
+/**
+ * What a provider will charge on an amount, DERIVED from the observation
+ * in force — the §19.1 ESTIMATED figure, whose row id rides along as
+ * `providerCostScheduleId` so the estimate can always name its source.
+ * Rounded UP on the percentage, per the planning rule the rate cards
+ * are recorded under: model every cost at or above market.
+ */
+export function estimateProviderFeeMinor(rate: PercentPlusFlatRate, amountMinor: number): number {
+  const flat =
+    rate.waiveFlatUnderMinor !== null && amountMinor < rate.waiveFlatUnderMinor
+      ? 0
+      : rate.flatMinor;
+  const fee = Math.ceil((amountMinor * rate.percentPpm) / 1_000_000) + flat;
+  return rate.capMinor === null ? fee : Math.min(fee, rate.capMinor);
+}

@@ -8,6 +8,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  estimateProviderFeeMinor,
   isTerminalIntentStatus,
   judgeProviderPayment,
   paymentReference,
@@ -264,5 +265,58 @@ describe('the provider resolver (§17, §18; PR-068)', () => {
       [cap('paystack', 'AVAILABLE')],
     );
     expect(tie).toEqual({ resolved: true, connectionId: 'c-old', providerType: 'paystack' });
+  });
+});
+
+describe('estimateProviderFeeMinor (§19.1, §24; PR-072)', () => {
+  /* Paystack's local-card pricing as the schedule observes it:
+   * 1.5% + N100, capped N2,000, the N100 waived below N2,500. */
+  const localCard = {
+    percentPpm: 15_000,
+    flatMinor: 10_000,
+    capMinor: 200_000,
+    waiveFlatUnderMinor: 250_000,
+  };
+
+  it('derives percentage plus flat from the observation', () => {
+    /* N100,000: 1.5% is N1,500, plus the N100 flat. */
+    expect(estimateProviderFeeMinor(localCard, 10_000_000)).toBe(160_000);
+  });
+
+  it('caps the WHOLE fee, not just the percentage', () => {
+    /* N1,000,000: 1.5% alone is N15,000; the card says N2,000 and stops. */
+    expect(estimateProviderFeeMinor(localCard, 100_000_000)).toBe(200_000);
+  });
+
+  it('waives the flat part below the threshold, and only below it', () => {
+    /* N2,000 is under N2,500: percentage only. */
+    expect(estimateProviderFeeMinor(localCard, 200_000)).toBe(3_000);
+    /* N2,500 exactly is NOT under the threshold: the flat fee applies. */
+    expect(estimateProviderFeeMinor(localCard, 250_000)).toBe(13_750);
+  });
+
+  it('rounds the percentage UP — every cost modelled at or above market', () => {
+    /* 1 kobo at 1.5% is 0.015 kobo; the estimate says 1, never 0. */
+    expect(estimateProviderFeeMinor({ ...localCard, waiveFlatUnderMinor: null }, 1)).toBe(10_001);
+  });
+
+  it('an uncapped rate is honoured as uncapped', () => {
+    expect(
+      estimateProviderFeeMinor(
+        { percentPpm: 10_000, flatMinor: 0, capMinor: null, waiveFlatUnderMinor: null },
+        100_000_000,
+      ),
+    ).toBe(1_000_000);
+  });
+
+  it('the transfer card: 1% capped N300', () => {
+    const transfer = {
+      percentPpm: 10_000,
+      flatMinor: 0,
+      capMinor: 30_000,
+      waiveFlatUnderMinor: null,
+    };
+    expect(estimateProviderFeeMinor(transfer, 2_000_000)).toBe(20_000);
+    expect(estimateProviderFeeMinor(transfer, 5_000_000)).toBe(30_000);
   });
 });
