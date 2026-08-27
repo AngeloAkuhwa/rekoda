@@ -624,6 +624,13 @@
       "when": 1787410887000,
       "tag": "0088_waba_template_registry",
       "breakpoints": true
+    },
+    {
+      "idx": 89,
+      "version": "7",
+      "when": 1787410947000,
+      "tag": "0089_waba_health_billing",
+      "breakpoints": true
     }
   ]
 }

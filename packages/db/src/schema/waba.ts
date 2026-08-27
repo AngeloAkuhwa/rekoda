@@ -27,6 +27,12 @@ export const wabaConnections = pgTable(
     displayPhone: text('display_phone'),
     status: text('status').notNull().default('PENDING_SIGNUP'),
     billingMode: text('billing_mode').notNull().default('UNCONFIRMED'),
+    /** W0's confirmation is an auditable act (0089): WHEN and BY WHOM
+     * travel with the mode, and a CHECK makes a bare UPDATE unrepresentable. */
+    billingModeConfirmedAt: timestamp('billing_mode_confirmed_at', { withTimezone: true }),
+    billingModeConfirmedBy: text('billing_mode_confirmed_by'),
+    /** WHY the connection is UNHEALTHY (0089) — never a bare adjective. */
+    healthReason: text('health_reason'),
     accessTokenCipher: text('access_token_cipher'),
     tokenTail: text('token_tail'),
     connectedAt: timestamp('connected_at', { withTimezone: true }),

@@ -108,8 +108,12 @@ export class WabaTemplateService {
         return { outcome: 'not_entitled' };
       }
 
+      /* UNHEALTHY still sends, deliberately: the send IS the health
+       * check, and a connection that could only recover through a send
+       * the gate refuses would be down forever after one bad minute.
+       * PENDING_SIGNUP and REVOKED refuse, as they do at the ingress. */
       const connection = await wabaRepo.wabaConnectionFor(tx, businessId);
-      if (!connection || connection.status !== 'CONNECTED') {
+      if (!connection || (connection.status !== 'CONNECTED' && connection.status !== 'UNHEALTHY')) {
         return { outcome: 'no_connection' };
       }
 
@@ -193,6 +197,9 @@ export class WabaTemplateService {
           parameters: input.parameters ?? [],
         });
         await conversationsRepo.markOutboundSent(tx, recorded.id, result.providerMessageId);
+        /* The send IS the health check (PR-062): success touches the
+         * watermark and recovers an UNHEALTHY connection. */
+        await wabaRepo.markWabaHealthy(tx, { businessId, connectionId: connection.id });
         return { outcome: 'sent', unit };
       } catch (error) {
         if (error instanceof SendFailed) {
@@ -200,6 +207,14 @@ export class WabaTemplateService {
            * recorded message keeps its empty provider id — a reply owed
            * and not delivered, findable as such. */
           await usageRepo.refundUnit(tx, businessId, period, unit);
+          /* And the failure is health signal: UNHEALTHY plus WHY, so the
+           * dashboard has something the merchant can act on. SendFailed
+           * messages carry status codes, never message content. */
+          await wabaRepo.markWabaUnhealthy(tx, {
+            businessId,
+            connectionId: connection.id,
+            reason: error.message,
+          });
           this.log.warn('template send failed; unit refunded');
           return { outcome: 'send_failed', unit };
         }
@@ -228,8 +243,12 @@ export class WabaTemplateService {
         return { outcome: 'not_entitled' };
       }
 
+      /* UNHEALTHY still sends, deliberately: the send IS the health
+       * check, and a connection that could only recover through a send
+       * the gate refuses would be down forever after one bad minute.
+       * PENDING_SIGNUP and REVOKED refuse, as they do at the ingress. */
       const connection = await wabaRepo.wabaConnectionFor(tx, businessId);
-      if (!connection || connection.status !== 'CONNECTED') {
+      if (!connection || (connection.status !== 'CONNECTED' && connection.status !== 'UNHEALTHY')) {
         return { outcome: 'no_connection' };
       }
 
@@ -306,10 +325,16 @@ export class WabaTemplateService {
           text: input.text,
         });
         await conversationsRepo.markOutboundSent(tx, recorded.id, result.providerMessageId);
+        await wabaRepo.markWabaHealthy(tx, { businessId, connectionId: connection.id });
         return { outcome: 'sent', unit };
       } catch (error) {
         if (error instanceof SendFailed) {
           await usageRepo.refundUnit(tx, businessId, period, unit);
+          await wabaRepo.markWabaUnhealthy(tx, {
+            businessId,
+            connectionId: connection.id,
+            reason: error.message,
+          });
           this.log.warn('customer text send failed; unit refunded');
           return { outcome: 'send_failed', unit };
         }

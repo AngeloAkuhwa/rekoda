@@ -343,3 +343,32 @@ describe('the window selects the send (§24; PR-061)', () => {
     expect(await used(businessId, 'SERVICE_MESSAGE')).toBe(0);
   });
 });
+
+describe('the sends are the health check (§24; PR-062)', () => {
+  it('a failed send marks the connection UNHEALTHY with WHY; the next success recovers it', async () => {
+    const { businessId, connectionId } = await seedMerchant('integrate');
+    await registerTemplate(businessId, connectionId, 'payment_reminder', 'UTILITY');
+
+    sender.failWith(new SendFailed('meta /pn/messages failed with 401'));
+    await service.sendTemplate(businessId, { to: '+2349098887777', name: 'payment_reminder' });
+
+    let row = await withBusiness(db, businessId, (tx) =>
+      wabaRepo.wabaConnectionFor(tx, businessId),
+    );
+    expect(row!.status).toBe('UNHEALTHY');
+    expect(row!.healthReason).toBe('meta /pn/messages failed with 401');
+
+    /* UNHEALTHY still sends — the send is how it recovers. A gate that
+     * refused it would leave the connection down forever after one bad
+     * minute. */
+    const retried = await service.sendTemplate(businessId, {
+      to: '+2349098887777',
+      name: 'payment_reminder',
+    });
+    expect(retried).toEqual({ outcome: 'sent', unit: 'UTILITY_TEMPLATE' });
+    row = await withBusiness(db, businessId, (tx) => wabaRepo.wabaConnectionFor(tx, businessId));
+    expect(row!.status).toBe('CONNECTED');
+    expect(row!.healthReason).toBeNull();
+    expect(row!.lastHealthyAt).not.toBeNull();
+  });
+});

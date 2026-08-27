@@ -130,6 +130,98 @@ export async function markWabaStatus(
   return rows.length === 1;
 }
 
+/* ── connection health (PR-062): the sends ARE the health check ─────────── */
+
+/**
+ * A send on the connection succeeded: the connection is demonstrably
+ * healthy NOW. Touches the watermark, clears any recorded reason, and
+ * recovers an UNHEALTHY connection to CONNECTED — but never resurrects a
+ * REVOKED one, whose number is no longer this business's to send on:
+ * revocation ends by a NEW signup, not by a send that should have failed.
+ */
+export async function markWabaHealthy(
+  tx: TenantDb,
+  input: { businessId: string; connectionId: string },
+): Promise<boolean> {
+  const rows = await tx
+    .update(wabaConnections)
+    .set({
+      status: 'CONNECTED',
+      healthReason: null,
+      lastHealthyAt: sql`now()`,
+      updatedAt: sql`now()`,
+    })
+    .where(
+      and(
+        eq(wabaConnections.businessId, input.businessId),
+        eq(wabaConnections.id, input.connectionId),
+        sql`${wabaConnections.status} IN ('CONNECTED', 'UNHEALTHY')`,
+      ),
+    )
+    .returning({ id: wabaConnections.id });
+  return rows.length === 1;
+}
+
+/**
+ * A send failed for a connection-shaped reason. UNHEALTHY plus WHY — a
+ * merchant told their WhatsApp is "unhealthy" with no reason has nothing
+ * to act on, and the reason column is what the dashboard renders. Same
+ * REVOKED guard as recovery: a dead connection does not change state
+ * because a send bounced off it.
+ */
+export async function markWabaUnhealthy(
+  tx: TenantDb,
+  input: { businessId: string; connectionId: string; reason: string },
+): Promise<boolean> {
+  const rows = await tx
+    .update(wabaConnections)
+    .set({ status: 'UNHEALTHY', healthReason: input.reason, updatedAt: sql`now()` })
+    .where(
+      and(
+        eq(wabaConnections.businessId, input.businessId),
+        eq(wabaConnections.id, input.connectionId),
+        sql`${wabaConnections.status} IN ('CONNECTED', 'UNHEALTHY')`,
+      ),
+    )
+    .returning({ id: wabaConnections.id });
+  return rows.length === 1;
+}
+
+/**
+ * W0's billing-mode confirmation, as the auditable act it is (spec §24
+ * OPEN COMMERCIAL; owner decision 2). The mode, the moment and the actor
+ * land together — 0089's CHECK makes any other shape unrepresentable —
+ * and the mode must be one of §24's three: UNCONFIRMED is the absence of
+ * a confirmation, not something one confirms.
+ */
+export async function confirmBillingMode(
+  tx: TenantDb,
+  input: {
+    businessId: string;
+    connectionId: string;
+    mode: 'MERCHANT_DIRECT' | 'REKODA_CREDIT_LINE' | 'PARTNER_BILLED';
+    /** `owner:<name>` / `operator:<name>` — never a bare 'system'. */
+    actor: string;
+  },
+): Promise<boolean> {
+  const rows = await tx
+    .update(wabaConnections)
+    .set({
+      billingMode: input.mode,
+      billingModeConfirmedAt: sql`now()`,
+      billingModeConfirmedBy: input.actor,
+      updatedAt: sql`now()`,
+    })
+    .where(
+      and(
+        eq(wabaConnections.businessId, input.businessId),
+        eq(wabaConnections.id, input.connectionId),
+      ),
+    )
+    .returning({ id: wabaConnections.id });
+  return rows.length === 1;
+}
+
 /* ── templates ──────────────────────────────────────────────────────────── */
 
 export async function upsertTemplate(

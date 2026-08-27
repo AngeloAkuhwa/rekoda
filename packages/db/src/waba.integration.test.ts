@@ -99,23 +99,89 @@ describe('phoneNumberId → BusinessId routing (§24)', () => {
     ).rejects.toThrow();
   });
 
-  it('billing mode carries every §24 value and starts UNCONFIRMED: W0 is a data change', async () => {
+  it('billing mode starts UNCONFIRMED, and W0 confirms it as an AUDITED data change', async () => {
     const businessId = await seedBusiness();
-    await signup(businessId, 'pn-300');
-    const row = await withBusiness(db, businessId, (tx) =>
+    const connected = await signup(businessId, 'pn-300');
+    if (connected.outcome !== 'connected') throw new Error('fixture');
+    const before = await withBusiness(db, businessId, (tx) =>
       wabaRepo.wabaConnectionFor(tx, businessId),
     );
-    expect(row!.billingMode).toBe('UNCONFIRMED');
-    await withBusiness(db, businessId, (tx) =>
-      tx.execute(sql`UPDATE waba_connections SET billing_mode = 'MERCHANT_DIRECT'
-                     WHERE business_id = ${businessId}::uuid`),
-    );
+    expect(before!.billingMode).toBe('UNCONFIRMED');
+    expect(before!.billingModeConfirmedAt).toBeNull();
+
+    /* A bare UPDATE — the mode without its audit — is unrepresentable
+     * since 0089: a data change that alters unit economics is an act with
+     * an actor, not a value someone once poked. */
     await expect(
       withBusiness(db, businessId, (tx) =>
-        tx.execute(sql`UPDATE waba_connections SET billing_mode = 'VIBES'
+        tx.execute(sql`UPDATE waba_connections SET billing_mode = 'MERCHANT_DIRECT'
                        WHERE business_id = ${businessId}::uuid`),
       ),
     ).rejects.toThrow();
+
+    /* W0's actual shape: mode, moment and actor land together. */
+    await withBusiness(db, businessId, (tx) =>
+      wabaRepo.confirmBillingMode(tx, {
+        businessId,
+        connectionId: connected.id,
+        mode: 'MERCHANT_DIRECT',
+        actor: 'owner:angelo',
+      }),
+    );
+    const after = await withBusiness(db, businessId, (tx) =>
+      wabaRepo.wabaConnectionFor(tx, businessId),
+    );
+    expect(after!.billingMode).toBe('MERCHANT_DIRECT');
+    expect(after!.billingModeConfirmedAt).not.toBeNull();
+    expect(after!.billingModeConfirmedBy).toBe('owner:angelo');
+
+    /* An invented mode is still refused by 0084's value CHECK. */
+    await expect(
+      withBusiness(db, businessId, (tx) =>
+        tx.execute(sql`UPDATE waba_connections
+                       SET billing_mode = 'VIBES', billing_mode_confirmed_by = 'owner:x'
+                       WHERE business_id = ${businessId}::uuid`),
+      ),
+    ).rejects.toThrow();
+  });
+
+  it('the sends are the health check: failure records WHY, success recovers, REVOKED stays dead', async () => {
+    const businessId = await seedBusiness();
+    const connected = await signup(businessId, 'pn-350');
+    if (connected.outcome !== 'connected') throw new Error('fixture');
+
+    await withBusiness(db, businessId, (tx) =>
+      wabaRepo.markWabaUnhealthy(tx, {
+        businessId,
+        connectionId: connected.id,
+        reason: 'meta /pn-350/messages failed with 401',
+      }),
+    );
+    let row = await withBusiness(db, businessId, (tx) =>
+      wabaRepo.wabaConnectionFor(tx, businessId),
+    );
+    expect(row!.status).toBe('UNHEALTHY');
+    expect(row!.healthReason).toBe('meta /pn-350/messages failed with 401');
+
+    await withBusiness(db, businessId, (tx) =>
+      wabaRepo.markWabaHealthy(tx, { businessId, connectionId: connected.id }),
+    );
+    row = await withBusiness(db, businessId, (tx) => wabaRepo.wabaConnectionFor(tx, businessId));
+    expect(row!.status).toBe('CONNECTED');
+    expect(row!.healthReason).toBeNull();
+    expect(row!.lastHealthyAt).not.toBeNull();
+
+    /* Revocation ends by a NEW signup, never by a send outcome. */
+    await withBusiness(db, businessId, (tx) =>
+      wabaRepo.markWabaStatus(tx, { businessId, connectionId: connected.id, status: 'REVOKED' }),
+    );
+    expect(
+      await withBusiness(db, businessId, (tx) =>
+        wabaRepo.markWabaHealthy(tx, { businessId, connectionId: connected.id }),
+      ),
+    ).toBe(false);
+    row = await withBusiness(db, businessId, (tx) => wabaRepo.wabaConnectionFor(tx, businessId));
+    expect(row!.status).toBe('REVOKED');
   });
 });
 
