@@ -10,7 +10,10 @@
  */
 import { and, desc, eq } from 'drizzle-orm';
 import type { TenantDb } from '../client.js';
+import { ledgerEntries, ledgerTransactions } from '../schema/finance.js';
 import { settlementComponents, settlementItems, settlements } from '../schema/payments-hub.js';
+import { accountByRole } from './accounts.js';
+import { accountIdsForKeys } from './issue.js';
 
 export const COMPONENT_KINDS = [
   'PROCESSING_FEE',
@@ -235,4 +238,118 @@ export async function settlementsFor(
     .where(eq(settlements.businessId, businessId))
     .orderBy(desc(settlements.createdAt))
     .limit(limit);
+}
+
+/* ── the settlement posting (spec §20, §21.1; PR-065) ───────────────────── */
+
+/** The component kinds whose deduction is a FEE the merchant expensed.
+ * RESERVE_* and CHARGEBACK are deliberately absent: a reserve is still the
+ * merchant's asset and a chargeback clears a payable (§21.2, PR-066) —
+ * expensing either would misstate the books, so a settlement carrying them
+ * refuses to post until the PR that owns them lands. */
+const FEE_KINDS = new Set(['PROCESSING_FEE', 'VAT_ON_FEE', 'WITHHOLDING', 'LEVY']);
+const FEE_CREDIT_KINDS = new Set(['REBATE', 'ADJUSTMENT']);
+
+export type PostSettlementOutcome =
+  | { posted: true; ledgerTransactionId: string }
+  | { posted: false; reason: 'already_posted' }
+  | { posted: false; reason: 'not_settled' }
+  /** Invariant 5 (§31): the settlement does not reconcile to the gross of
+   * the payments it covered. Posting it would tie the books to a payout
+   * whose contents the books cannot name. */
+  | { posted: false; reason: 'items_do_not_reconcile'; itemsSumK: number }
+  | { posted: false; reason: 'unpostable_components'; kinds: string[] }
+  | { posted: false; reason: 'no_clearing_account' };
+
+/**
+ * Post a SETTLED settlement from its own stored §20 data — never a rate
+ * card (§20's one rule). The money the provider was holding becomes bank
+ * and fees:
+ *
+ *   DR Bank                        net
+ *   DR Payment processing fees     deduction components
+ *   CR Payment processing fees     addition components (a rebate reduces cost)
+ *   CR Provider Clearing           gross
+ *
+ * Balanced BY CONSTRUCTION: ingestion refused any report where
+ * gross − deductions + additions ≠ net, so the equation here is the same
+ * arithmetic read back. Idempotent by §9.4's partial unique on
+ * (source_type='settlement', source_id, posting_purpose='SETTLEMENT').
+ */
+export async function postSettlement(
+  tx: TenantDb,
+  businessId: string,
+  settlementId: string,
+): Promise<PostSettlementOutcome> {
+  const settlement = await settlementById(tx, businessId, settlementId);
+  if (!settlement || settlement.status !== 'SETTLED') {
+    return { posted: false, reason: 'not_settled' };
+  }
+
+  const itemsSumK = settlement.items.reduce((sum, item) => sum + item.amountK, 0);
+  if (itemsSumK !== settlement.grossK) {
+    return { posted: false, reason: 'items_do_not_reconcile', itemsSumK };
+  }
+
+  const strange = settlement.components
+    .map((c) => c.kind)
+    .filter((kind) => !FEE_KINDS.has(kind) && !FEE_CREDIT_KINDS.has(kind));
+  if (strange.length > 0) {
+    return { posted: false, reason: 'unpostable_components', kinds: [...new Set(strange)] };
+  }
+
+  const clearing = await accountByRole(
+    tx,
+    businessId,
+    'PAYMENT_PROVIDER_CLEARING',
+    settlement.paymentConnectionId,
+  );
+  if (!clearing) return { posted: false, reason: 'no_clearing_account' };
+  const fees = await accountByRole(tx, businessId, 'PAYMENT_PROCESSING_FEES');
+  if (!fees) return { posted: false, reason: 'no_clearing_account' };
+  const bankIds = await accountIdsForKeys(tx, businessId, ['BANK_PAYSTACK']);
+  const bankId = bankIds.get('BANK_PAYSTACK')!;
+
+  const feeDeductionsK = settlement.components
+    .filter((c) => c.direction === 'DEDUCTION')
+    .reduce((sum, c) => sum + c.amountK, 0);
+  const feeAdditionsK = settlement.components
+    .filter((c) => c.direction === 'ADDITION')
+    .reduce((sum, c) => sum + c.amountK, 0);
+
+  const inserted = await tx
+    .insert(ledgerTransactions)
+    .values({
+      businessId,
+      memo: `Settlement ${settlement.providerSettlementId}`,
+      sourceType: 'settlement',
+      sourceId: settlementId,
+      postingPurpose: 'SETTLEMENT',
+      ...(settlement.settledAt ? { createdAt: settlement.settledAt } : {}),
+    })
+    .onConflictDoNothing()
+    .returning({ id: ledgerTransactions.id });
+  const transaction = inserted[0];
+  if (!transaction) return { posted: false, reason: 'already_posted' };
+
+  const entries = [
+    { accountId: bankId, debitK: settlement.netK, creditK: 0 },
+    ...(feeDeductionsK > 0 ? [{ accountId: fees.id, debitK: feeDeductionsK, creditK: 0 }] : []),
+    ...(feeAdditionsK > 0 ? [{ accountId: fees.id, debitK: 0, creditK: feeAdditionsK }] : []),
+    { accountId: clearing.id, debitK: 0, creditK: settlement.grossK },
+  ].filter((entry) => entry.debitK > 0 || entry.creditK > 0);
+
+  await tx.insert(ledgerEntries).values(
+    entries.map((entry) => ({
+      businessId,
+      transactionId: transaction.id,
+      accountId: entry.accountId,
+      debitK: entry.debitK,
+      creditK: entry.creditK,
+      /* Same-currency posting (§16): see writePosting. */
+      transactionAmountMinor: entry.debitK + entry.creditK,
+      ...(settlement.settledAt ? { createdAt: settlement.settledAt } : {}),
+    })),
+  );
+  return { posted: true, ledgerTransactionId: transaction.id };
 }

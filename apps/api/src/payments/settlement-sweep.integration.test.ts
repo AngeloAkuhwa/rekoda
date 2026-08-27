@@ -62,8 +62,12 @@ async function seedVerifiedPayment(phone: string) {
 
   await withBusiness(appDb, businessId, async (tx) => {
     /* The provider connection the payout lands against (§20 ingestion
-     * names it). Real merchants have one before they have payments. */
-    await paymentsHub.upsertConnection(tx, { businessId, providerType: 'paystack' });
+     * names it), and the rail the verification is booked THROUGH so the
+     * gross parks in that connection's clearing account (PR-065). */
+    const connection = await paymentsHub.upsertConnection(tx, {
+      businessId,
+      providerType: 'paystack',
+    });
     const sale = await issueRepo.issueSale(tx, {
       businessId,
       customerId: null,
@@ -106,6 +110,7 @@ async function seedVerifiedPayment(phone: string) {
       method: 'transfer',
       actor: 'test',
       eventId: `event-${randomBytes(4).toString('hex')}`,
+      paymentConnectionId: connection.id,
     });
   });
   return { businessId, reference };
@@ -217,6 +222,22 @@ describe('§20 ingestion: the payout itself, behind the stamps (PR-064)', () => 
         note: 'gross − net as reported by the provider',
       },
     ]);
+
+    /* Invariant 5 closes end to end: the payout posted, the clearing
+     * account is explainable at zero, the bank holds the net and the
+     * fees are the ACTUAL deductions. */
+    const balances = await withBusiness(appDb, businessId, (tx) =>
+      tx.execute<{ code: string; n: number }>(sql`
+        SELECT a.code, coalesce(sum(e.debit_k - e.credit_k), 0)::int AS n
+        FROM ledger_entries e JOIN accounts a ON a.id = e.account_id
+        WHERE e.business_id = ${businessId}::uuid AND a.code IN ('1015', '1010', '6050')
+        GROUP BY a.code
+      `),
+    );
+    const byCode = new Map([...balances].map((b) => [b.code, b.n]));
+    expect(byCode.get('1015') ?? 0).toBe(0);
+    expect(byCode.get('1010')).toBe(14_776_250);
+    expect(byCode.get('6050')).toBe(223_750);
 
     /* Re-polling is a refresh, not a second payout or doubled detail. */
     await sweepSettlements(deps());

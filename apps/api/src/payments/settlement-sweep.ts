@@ -170,6 +170,35 @@ async function ingestSettlement(
      * human will not: the provider's own report disagreeing with itself,
      * or with what it reported before, is precisely the reconciliation
      * queue's business. */
+    if (outcome.outcome === 'recorded') {
+      /* The books (PR-065, §21.1): a SETTLED payout moves clearing → bank
+       * and recognises the ACTUAL fees, from the row just recorded and
+       * nothing else. Idempotent by posting purpose; a payout that cannot
+       * post yet (reserves/chargebacks await their PRs, or the items do
+       * not reconcile to gross — invariant 5) surfaces as an exception. */
+      const posting = await settlementsRepo.postSettlement(tx, businessId, outcome.id);
+      if (
+        !posting.posted &&
+        (posting.reason === 'items_do_not_reconcile' || posting.reason === 'unpostable_components')
+      ) {
+        const already = await settleRepo.hasException(
+          tx,
+          businessId,
+          'settlement',
+          settlement.settlementId,
+        );
+        if (!already) {
+          await settleRepo.recordException(tx, {
+            businessId,
+            reason: `settlement_${posting.reason}`,
+            expectationKind: 'settlement',
+            expectationId: settlement.settlementId,
+            amountK: grossK,
+          });
+        }
+      }
+    }
+
     if (outcome.outcome === 'incoherent_report' || outcome.outcome === 'conflicting_report') {
       /* Once per settlement, however often the sweep re-polls it. */
       const already = await settleRepo.hasException(

@@ -7,10 +7,14 @@
  * name, a deletion of a fact.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { randomBytes } from 'node:crypto';
+import { paymentReference } from '@rekoda/core';
 import {
   createDb,
   identity,
+  issueRepo,
   paymentsHub,
+  settleRepo,
   settlementsRepo,
   sql,
   withBusiness,
@@ -266,5 +270,175 @@ describe('what the provider paid out (§20)', () => {
         }),
       ),
     ).rejects.toThrow(/settlement_items/);
+  });
+});
+
+describe('the settlement posting: clearing → bank + actual fees (§20, §21.1; PR-065)', () => {
+  async function balanceK(businessId: string, code: string): Promise<number> {
+    const rows = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ n: number }>(sql`
+        SELECT coalesce(sum(e.debit_k - e.credit_k), 0)::int AS n
+        FROM ledger_entries e JOIN accounts a ON a.id = e.account_id
+        WHERE e.business_id = ${businessId}::uuid AND a.code = ${code}
+      `),
+    );
+    return [...rows][0]!.n;
+  }
+
+  /** A verified provider payment, booked THROUGH the connection so the
+   * debit lands in that connection's clearing account. */
+  async function seedVerifiedThroughConnection() {
+    const { businessId, connectionId } = await seedMerchant();
+    const reference = paymentReference(new Date(), (n) => randomBytes(n));
+    const paymentId = await withBusiness(db, businessId, async (tx) => {
+      const sale = await issueRepo.issueSale(tx, {
+        businessId,
+        customerId: null,
+        customerToken: 'CUSTOMER_9Z1',
+        items: [{ name: 'wig', quantity: 1, unitPriceK: 45_000_00 }],
+        subtotalK: 45_000_00,
+        discountK: 0,
+        deliveryFeeK: 0,
+        vatK: 0,
+        totalK: 45_000_00,
+        paidK: 0,
+        balanceDueK: 45_000_00,
+        method: 'transfer',
+        sourceType: 'chat',
+        sourceId: 'draft-1',
+        actor: 'system',
+      });
+      const intent = await paymentsHub.createIntent(tx, {
+        businessId,
+        reference,
+        expectedAmountK: 45_000_00,
+        providerType: 'paystack',
+        invoiceId: sale.invoiceId,
+      });
+      const booked = await settleRepo.bookVerifiedPayment(tx, {
+        businessId,
+        intent: {
+          id: intent.id,
+          reference: intent.reference,
+          invoiceId: intent.invoiceId,
+          customerId: intent.customerId,
+        },
+        confirmedAmountK: 45_000_00,
+        currency: 'NGN',
+        providerType: 'paystack',
+        providerRef: `pst-${randomBytes(4).toString('hex')}`,
+        providerStatus: 'success',
+        providerFeeK: 675_00,
+        feePolicy: 'merchant_bearing',
+        method: 'transfer',
+        actor: 'test',
+        eventId: `event-${randomBytes(4).toString('hex')}`,
+        paymentConnectionId: connectionId,
+      });
+      return booked.paymentId;
+    });
+    return { businessId, connectionId, reference, paymentId };
+  }
+
+  it('verification debits the CONNECTION CLEARING gross — the bank waits for the payout', async () => {
+    const { businessId } = await seedVerifiedThroughConnection();
+
+    /* Clearing 1015 holds the gross; the bank saw nothing; NO fee was
+     * expensed — the settlement's actual components own that (§20). */
+    expect(await balanceK(businessId, '1015')).toBe(45_000_00);
+    expect(await balanceK(businessId, '1010')).toBe(0);
+    expect(await balanceK(businessId, '6050')).toBe(0);
+  });
+
+  it('a SETTLED payout posts bank + actual fees against clearing, ONCE — invariant 5 closes', async () => {
+    const { businessId, connectionId, paymentId } = await seedVerifiedThroughConnection();
+    const recorded = await withBusiness(db, businessId, (tx) =>
+      settlementsRepo.recordSettlement(tx, {
+        businessId,
+        paymentConnectionId: connectionId,
+        providerSettlementId: 'STL_POST_1',
+        status: 'SETTLED',
+        grossK: 45_000_00,
+        netK: 44_257_50,
+        settledAt: new Date('2026-08-27T06:00:00Z'),
+        items: [{ paymentId, amountK: 45_000_00 }],
+        components: [
+          { kind: 'PROCESSING_FEE', direction: 'DEDUCTION', amountK: 675_00 },
+          { kind: 'VAT_ON_FEE', direction: 'DEDUCTION', amountK: 67_50 },
+        ],
+      }),
+    );
+    if (recorded.outcome !== 'recorded') throw new Error('fixture');
+
+    const posted = await withBusiness(db, businessId, (tx) =>
+      settlementsRepo.postSettlement(tx, businessId, recorded.id),
+    );
+    expect(posted).toMatchObject({ posted: true });
+
+    /* The provider's money became the merchant's, and the clearing
+     * account is EXPLAINABLE at zero (§31 invariants 5 and 10). */
+    expect(await balanceK(businessId, '1015')).toBe(0);
+    expect(await balanceK(businessId, '1010')).toBe(44_257_50);
+    expect(await balanceK(businessId, '6050')).toBe(742_50);
+
+    /* Once. A re-poll re-posts nothing (§9.4). */
+    const again = await withBusiness(db, businessId, (tx) =>
+      settlementsRepo.postSettlement(tx, businessId, recorded.id),
+    );
+    expect(again).toEqual({ posted: false, reason: 'already_posted' });
+    expect(await balanceK(businessId, '1010')).toBe(44_257_50);
+  });
+
+  it('a payout whose items do not reconcile to its gross refuses to post (invariant 5)', async () => {
+    const { businessId, connectionId, paymentId } = await seedVerifiedThroughConnection();
+    const recorded = await withBusiness(db, businessId, (tx) =>
+      settlementsRepo.recordSettlement(tx, {
+        businessId,
+        paymentConnectionId: connectionId,
+        providerSettlementId: 'STL_SHORT',
+        status: 'SETTLED',
+        grossK: 50_000_00,
+        netK: 50_000_00,
+        items: [{ paymentId, amountK: 45_000_00 }],
+        components: [],
+      }),
+    );
+    if (recorded.outcome !== 'recorded') throw new Error('fixture');
+
+    const posted = await withBusiness(db, businessId, (tx) =>
+      settlementsRepo.postSettlement(tx, businessId, recorded.id),
+    );
+    expect(posted).toEqual({
+      posted: false,
+      reason: 'items_do_not_reconcile',
+      itemsSumK: 45_000_00,
+    });
+    expect(await balanceK(businessId, '1010')).toBe(0);
+  });
+
+  it('reserves and chargebacks refuse to post until the PR that owns them (§21)', async () => {
+    const { businessId, connectionId, paymentId } = await seedVerifiedThroughConnection();
+    const recorded = await withBusiness(db, businessId, (tx) =>
+      settlementsRepo.recordSettlement(tx, {
+        businessId,
+        paymentConnectionId: connectionId,
+        providerSettlementId: 'STL_RESERVE',
+        status: 'SETTLED',
+        grossK: 45_000_00,
+        netK: 40_000_00,
+        items: [{ paymentId, amountK: 45_000_00 }],
+        components: [{ kind: 'RESERVE_HELD', direction: 'DEDUCTION', amountK: 5_000_00 }],
+      }),
+    );
+    if (recorded.outcome !== 'recorded') throw new Error('fixture');
+
+    const posted = await withBusiness(db, businessId, (tx) =>
+      settlementsRepo.postSettlement(tx, businessId, recorded.id),
+    );
+    expect(posted).toEqual({
+      posted: false,
+      reason: 'unpostable_components',
+      kinds: ['RESERVE_HELD'],
+    });
   });
 });

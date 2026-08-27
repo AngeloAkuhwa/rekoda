@@ -44,6 +44,7 @@ import {
   receipts,
   reconciliations,
 } from '../schema/finance.js';
+import { accountByRole } from './accounts.js';
 import { accountIdsForKeys, nextDocumentNumber, writePosting } from './issue.js';
 import { appendVerification } from './provenance.js';
 import { recordPaymentAttempt, resolvePaymentAttempt } from './payments-hub.js';
@@ -306,18 +307,34 @@ export async function bookVerifiedPayment(
   const receipt = receiptRows[0];
   if (!receipt) throw new Error('bookVerifiedPayment: receipt insert returned no row');
 
-  /* 5 ── the books. Only the allocated portion posts; see the file comment. */
-  const posting = postProviderPayment({
-    memo: `Payment ${input.intent.reference} → ${invoice.invoice_number}`,
-    allocatedK,
-    providerFeeK: input.providerFeeK,
-    feePolicy: input.feePolicy,
-  });
+  /* 5 ── the books. Only the allocated portion posts; see the file comment.
+   *
+   * WHERE it posts changed with PR-065 (spec §21.1, invariant 10): a
+   * provider-verified payment is money the PROVIDER holds on its way to the
+   * merchant, so when the connection's clearing account exists, the debit
+   * lands THERE — gross, fee untouched — and the settlement posting
+   * (postSettlement, from ACTUAL §20 data) later moves clearing → bank and
+   * recognises the real fees. Expensing the webhook's fee here AND the
+   * settlement's components would double-count; the settlement's numbers
+   * are the authoritative ones (§20). The legacy bank-and-fee posting
+   * remains only for the degraded case with no resolvable clearing account,
+   * where claiming money is "at the provider" would name an account that
+   * does not exist. */
+  const memo = `Payment ${input.intent.reference} → ${invoice.invoice_number}`;
+  const clearing = input.paymentConnectionId
+    ? await accountByRole(
+        tx,
+        input.businessId,
+        'PAYMENT_PROVIDER_CLEARING',
+        input.paymentConnectionId,
+      )
+    : null;
+
   const txRows = await tx
     .insert(ledgerTransactions)
     .values({
       businessId: input.businessId,
-      memo: posting.memo,
+      memo,
       sourceType: input.sourceType ?? 'webhook',
       sourceId: input.eventId,
       /* §9.4's headline case: a retried webhook cannot produce a second
@@ -328,22 +345,47 @@ export async function bookVerifiedPayment(
     .returning({ id: ledgerTransactions.id });
   const ledgerTx = txRows[0];
   if (!ledgerTx) throw new Error('bookVerifiedPayment: ledger transaction insert returned no row');
-  const entryAccountIds = await accountIdsForKeys(
-    tx,
-    input.businessId,
-    posting.lines.map((line) => line.account),
-  );
-  await tx.insert(ledgerEntries).values(
-    posting.lines.map((line) => ({
-      businessId: input.businessId,
-      transactionId: ledgerTx.id,
-      accountId: entryAccountIds.get(line.account)!,
-      debitK: line.debitK,
-      creditK: line.creditK,
-      /* Same-currency posting (§16): see writePosting. */
-      transactionAmountMinor: line.debitK + line.creditK,
-    })),
-  );
+
+  if (clearing) {
+    const arIds = await accountIdsForKeys(tx, input.businessId, ['ACCOUNTS_RECEIVABLE']);
+    await tx.insert(ledgerEntries).values(
+      [
+        { accountId: clearing.id, debitK: allocatedK, creditK: 0 },
+        { accountId: arIds.get('ACCOUNTS_RECEIVABLE')!, debitK: 0, creditK: allocatedK },
+      ].map((entry) => ({
+        businessId: input.businessId,
+        transactionId: ledgerTx.id,
+        accountId: entry.accountId,
+        debitK: entry.debitK,
+        creditK: entry.creditK,
+        /* Same-currency posting (§16): see writePosting. */
+        transactionAmountMinor: entry.debitK + entry.creditK,
+      })),
+    );
+  } else {
+    const posting = postProviderPayment({
+      memo,
+      allocatedK,
+      providerFeeK: input.providerFeeK,
+      feePolicy: input.feePolicy,
+    });
+    const entryAccountIds = await accountIdsForKeys(
+      tx,
+      input.businessId,
+      posting.lines.map((line) => line.account),
+    );
+    await tx.insert(ledgerEntries).values(
+      posting.lines.map((line) => ({
+        businessId: input.businessId,
+        transactionId: ledgerTx.id,
+        accountId: entryAccountIds.get(line.account)!,
+        debitK: line.debitK,
+        creditK: line.creditK,
+        /* Same-currency posting (§16): see writePosting. */
+        transactionAmountMinor: line.debitK + line.creditK,
+      })),
+    );
+  }
 
   /* 6 ── how the money answered the obligation. */
   const reconciliation =
