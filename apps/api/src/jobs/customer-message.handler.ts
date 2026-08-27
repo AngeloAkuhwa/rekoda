@@ -24,6 +24,7 @@ import type { ApiConfig } from '../config.js';
 import type { CommandBus } from '../commands/command-bus.service.js';
 import {
   placeCatalogueOrderWork,
+  validateCatalogueOrderWork,
   type CatalogueOrderCmdInput,
 } from '../commands/order-commands.js';
 import type { PrivacyGateway } from '../privacy/gateway.service.js';
@@ -215,6 +216,7 @@ async function ingestCatalogueOrder(
     sourceId: inbound.externalId,
     externalRef,
   };
+  let orderId: string;
   if (deps.commandPlaceOrder) {
     const run = await deps.commandBus.run(
       tx,
@@ -235,8 +237,26 @@ async function ingestCatalogueOrder(
     if (run.outcome !== 'done') {
       throw new Error(`PlaceOrder refused unexpectedly: ${run.outcome}`);
     }
+    orderId = run.result.orderId;
   } else {
-    await placeCatalogueOrderWork(tx, input);
+    const placed = await placeCatalogueOrderWork(tx, input);
+    orderId = placed.orderId;
+  }
+
+  /* §5.2, in the same transaction as the placement: server-side
+   * validation against real catalogue state and real stock, BEFORE any
+   * figure is shown. VALIDATED gets its invoice and its §19.1 charge
+   * records; a refusal leaves the order visibly CANCELLED with nothing
+   * financial behind it — and the atomicity means a crash between the two
+   * leaves no half-validated order anywhere. */
+  const validated = await validateCatalogueOrderWork(tx, {
+    businessId,
+    orderId,
+    actor: 'customer:waba',
+  });
+  if (validated.outcome === 'rejected') {
+    log.warn(`customer.order: validation refused the cart (${validated.reason})`);
+    return `order rejected: ${validated.reason}`;
   }
   return null;
 }

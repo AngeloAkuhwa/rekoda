@@ -76,6 +76,8 @@ describe('the production wiring', () => {
       'invoice.voided',
       'journal.posted',
       'order.placed',
+      'order.rejected',
+      'order.validated',
       'payment.confirmed',
       'payment.recorded',
       'period.closed',

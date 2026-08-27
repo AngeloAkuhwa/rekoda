@@ -738,3 +738,67 @@ export async function quoteForRender(
     })),
   };
 }
+
+/**
+ * One order with its lines, for the validator that must see both (W3,
+ * PR-088): the request as placed, before any figure is shown.
+ */
+export async function orderWithItems(
+  tx: TenantDb,
+  businessId: string,
+  orderId: string,
+): Promise<{
+  id: string;
+  status: string;
+  sourceType: string;
+  totalK: number;
+  customerId: string | null;
+  invoiceId: string | null;
+  lines: Array<{
+    productId: string | null;
+    name: string;
+    quantity: number;
+    unitPriceK: number;
+    lineTotalK: number;
+  }>;
+} | null> {
+  const head = await tx
+    .select({
+      id: orders.id,
+      status: orders.status,
+      sourceType: orders.sourceType,
+      totalK: orders.totalK,
+      customerId: orders.customerId,
+      invoiceId: orders.invoiceId,
+    })
+    .from(orders)
+    .where(and(eq(orders.businessId, businessId), eq(orders.id, orderId)))
+    .limit(1);
+  const order = head[0];
+  if (!order) return null;
+  const lines = await tx
+    .select({
+      productId: orderItems.productId,
+      name: orderItems.name,
+      quantity: orderItems.quantity,
+      unitPriceK: orderItems.unitPriceK,
+      lineTotalK: orderItems.lineTotalK,
+    })
+    .from(orderItems)
+    .where(and(eq(orderItems.businessId, businessId), eq(orderItems.orderId, order.id)));
+  return {
+    id: order.id,
+    status: order.status,
+    sourceType: order.sourceType,
+    totalK: Number(order.totalK),
+    customerId: order.customerId,
+    invoiceId: order.invoiceId,
+    lines: lines.map((l) => ({
+      productId: l.productId,
+      name: l.name,
+      quantity: l.quantity,
+      unitPriceK: Number(l.unitPriceK),
+      lineTotalK: Number(l.lineTotalK),
+    })),
+  };
+}

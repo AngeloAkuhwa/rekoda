@@ -404,3 +404,29 @@ export async function stockList(
     withoutCost: list[0]?.nocost_n ?? 0,
   };
 }
+
+/**
+ * On-hand per product, with whether the shelf was ever counted (W3,
+ * PR-088). The validator refuses an order the counted shelf cannot serve;
+ * a product with no movement history is not stock-tracked, and inventing
+ * an empty shelf for it would refuse a service nobody counts.
+ */
+export async function onHandByIds(
+  tx: TenantDb,
+  businessId: string,
+  ids: readonly string[],
+): Promise<Map<string, { onHand: number; counted: boolean }>> {
+  if (ids.length === 0) return new Map();
+  const rows = await tx.execute<{ id: string; on_hand: string; counted: boolean }>(sql`
+    SELECT p.id,
+           COALESCE((SELECT SUM(m.delta) FROM inventory_movements m WHERE m.product_id = p.id), 0) AS on_hand,
+           EXISTS (SELECT 1 FROM inventory_movements m WHERE m.product_id = p.id) AS counted
+    FROM products p
+    WHERE p.business_id = ${businessId}::uuid
+      AND p.id IN (${sql.join(
+        ids.map((id) => sql`${id}::uuid`),
+        sql`, `,
+      )})
+  `);
+  return new Map([...rows].map((r) => [r.id, { onHand: Number(r.on_hand), counted: r.counted }]));
+}

@@ -26,6 +26,7 @@ import {
   type Db,
   suppliersRepo,
 } from '@rekoda/db';
+import { placeCatalogueOrderWork, validateCatalogueOrderWork } from '../commands/order-commands.js';
 import { PLAN_ALLOWANCES, allowanceFor, replies, usagePeriod } from '@rekoda/core';
 import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
 import { mkdtempSync } from 'node:fs';
@@ -446,16 +447,27 @@ describe('a catalogue cart becomes an order (spec §3.2; W3, PR-087)', () => {
     const placed = [...(await ordersOf(businessId))];
     expect(placed).toHaveLength(1);
     expect(placed[0]).toMatchObject({
-      status: 'placed',
+      /* PLACED then VALIDATED in the same transaction (PR-088): the
+       * §5.2 validation ran against the real catalogue and real shelf
+       * before any figure could be shown. */
+      status: 'validated',
       external_ref: 'meta:wamid.CART.1',
       /* 2 × the MERCHANT'S 150,000 — the claimed 1 kobo never existed. */
       total_k: '300000',
-      /* No invoice: Appendix E.4's PLACED. Validation (PR-088) is what
-       * turns this into a figure anybody is shown. */
-      invoice_id: null,
     });
     /* The customer exists, anchored on their own phone. */
     expect(placed[0]!.customer_id).not.toBeNull();
+    /* Validation issued the invoice: a receivable exists NOW, not before. */
+    expect(placed[0]!.invoice_id).not.toBeNull();
+    const invoice = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ total_k: string; balance_due_k: string; source_type: string }>(sql`
+        SELECT total_k::bigint AS total_k, balance_due_k::bigint AS balance_due_k, source_type
+        FROM invoices WHERE business_id = ${businessId}::uuid
+      `),
+    );
+    expect([...invoice]).toEqual([
+      { total_k: '300000', balance_due_k: '300000', source_type: 'waba_catalogue' },
+    ]);
 
     /* The lines carry the shelf's names and prices. */
     const lines = await withBusiness(db, businessId, (tx) =>
@@ -497,6 +509,129 @@ describe('a catalogue cart becomes an order (spec §3.2; W3, PR-087)', () => {
     await buildRunner(workerDb, db, deps).runOnce();
 
     expect([...(await ordersOf(businessId))]).toHaveLength(1);
+  });
+
+  it('refuses a cart the counted shelf cannot serve, leaving the order visibly cancelled', async () => {
+    const { businessId, wigId } = await seedCommerceMerchant('+2348030002224', 'PN-CART-4');
+    await withBusiness(db, businessId, async (tx) => {
+      const wig = (await stockRepo.productByName(tx, businessId, 'wig'))!;
+      await stockRepo.recordDelivery(tx, {
+        businessId,
+        product: wig,
+        quantity: 1,
+        costK: 20_000,
+        sourceType: 'chat',
+      });
+    });
+
+    await post(
+      orderPayload('2349097774444', 'wamid.CART.4', 'PN-CART-4', [
+        { retailerId: wigId, quantity: 3 },
+      ]),
+    );
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+
+    /* The request stands, visibly refused; nothing financial exists. */
+    const refused = [...(await ordersOf(businessId))];
+    expect(refused).toHaveLength(1);
+    expect(refused[0]).toMatchObject({ status: 'cancelled', invoice_id: null });
+    const ledger = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ n: string }>(
+        sql`SELECT COUNT(*) AS n FROM ledger_entries WHERE business_id = ${businessId}::uuid`,
+      ),
+    );
+    expect([...ledger][0]!.n).toBe('0');
+  });
+
+  it('a counted shelf serves the cart, commits the goods, and the fee lands as a record', async () => {
+    const { businessId, wigId } = await seedCommerceMerchant('+2348030002225', 'PN-CART-5');
+    await withBusiness(db, businessId, async (tx) => {
+      const wig = (await stockRepo.productByName(tx, businessId, 'wig'))!;
+      await stockRepo.recordDelivery(tx, {
+        businessId,
+        product: wig,
+        quantity: 5,
+        costK: 100_000,
+        sourceType: 'chat',
+      });
+      await paymentsHub.upsertConnection(tx, { businessId, providerType: 'paystack' });
+    });
+
+    await post(
+      orderPayload('2349097775555', 'wamid.CART.5', 'PN-CART-5', [
+        { retailerId: wigId, quantity: 2 },
+      ]),
+    );
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+
+    /* Goods committed at their cost: 2 off the shelf, COGS 2 × 20,000. */
+    const shelf = await withBusiness(db, businessId, (tx) =>
+      stockRepo.productByName(tx, businessId, 'wig'),
+    );
+    expect(shelf).toMatchObject({ onHand: 3 });
+    const cogs = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ k: string }>(sql`
+        SELECT COALESCE(SUM(e.debit_k), 0)::bigint AS k
+        FROM ledger_entries e JOIN accounts a ON a.id = e.account_id
+        WHERE e.business_id = ${businessId}::uuid AND a.code = '5000'
+      `),
+    );
+    expect([...cogs][0]!.k).toBe('40000');
+
+    /* §19.1: the provider's expected fee is a RECORD — estimated from the
+     * observed rate card (1% capped ₦300), merchant-borne, resolved to
+     * actual by settlement. 1% of 300,000 kobo = 3,000. */
+    const charges = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{
+        type: string;
+        amount_minor: string;
+        beneficiary: string;
+        economic_bearer: string;
+        actual_or_estimated: string;
+      }>(sql`
+        SELECT type, amount_minor::bigint AS amount_minor, beneficiary, economic_bearer,
+               actual_or_estimated
+        FROM payment_charges WHERE business_id = ${businessId}::uuid
+      `),
+    );
+    expect([...charges]).toEqual([
+      {
+        type: 'PAYMENT_PROCESSING',
+        amount_minor: '3000',
+        beneficiary: 'PROVIDER',
+        economic_bearer: 'MERCHANT',
+        actual_or_estimated: 'ESTIMATED',
+      },
+    ]);
+  });
+
+  it('a price moved between placement and validation refuses rather than re-quotes', async () => {
+    const { businessId, wigId } = await seedCommerceMerchant('+2348030002226', 'PN-CART-6');
+
+    const rejected = await withBusiness(db, businessId, async (tx) => {
+      const placed = await placeCatalogueOrderWork(tx, {
+        businessId,
+        customerId: null,
+        lines: [
+          { productId: wigId, name: 'wig', quantity: 1, unitPriceK: 150_000, lineTotalK: 150_000 },
+        ],
+        totalK: 150_000,
+        externalRef: 'meta:wamid.CART.6',
+        sourceId: 'wamid.CART.6',
+      });
+      /* The merchant moves the price while the order sits PLACED. */
+      await catalogueRepo.editProduct(tx, businessId, wigId, { unitPriceK: 175_000 });
+      return validateCatalogueOrderWork(tx, {
+        businessId,
+        orderId: placed.orderId,
+        actor: 'customer:waba',
+      });
+    });
+    expect(rejected).toEqual({ outcome: 'rejected', reason: 'price_changed' });
+    expect([...(await ordersOf(businessId))][0]).toMatchObject({
+      status: 'cancelled',
+      invoice_id: null,
+    });
   });
 
   it('refuses the WHOLE cart when it names an item the shelf does not sell', async () => {

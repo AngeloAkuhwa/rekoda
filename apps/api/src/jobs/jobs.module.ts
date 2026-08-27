@@ -163,6 +163,10 @@ export function buildOutboxDispatcher(): OutboxDispatcher {
   /* PR-083's fact. */
   dispatcher.register('books.opened', async () => {});
 
+  /* PR-088's facts: what validation decided, either way. */
+  dispatcher.register('order.validated', async () => {});
+  dispatcher.register('order.rejected', async () => {});
+
   /* PR-025's fact. */
   dispatcher.register('order.placed', async () => {});
 
