@@ -89,3 +89,27 @@ export function nextDueAfter(after: string, anchorDay: number): string {
   const next = new Date(Date.UTC(from.year, from.month + 1, 1));
   return inMonth(next.getUTCFullYear(), next.getUTCMonth(), anchorDay);
 }
+
+/**
+ * The day a raise may actually be dated, given how far the books are closed.
+ *
+ * A catch-up dates each entry the day it fell due, so September's rent lands
+ * in September's profit and loss however late the sweep ran. But a due day
+ * inside a CLOSED period is a posting the kernel refuses outright, and a
+ * sweep that keeps presenting it is a schedule wedged forever on a month
+ * that is not going to reopen for it. The bookkeeping answer is the
+ * ordinary one: a cost that missed its own month is posted in the earliest
+ * month still open — the first day of it, which is the closest an open book
+ * comes to the day the cost was really due. The entry then SAYS which day
+ * it was for, because a displaced date with no explanation is a rent that
+ * looks paid twice in one month and never in the month before.
+ */
+export function raiseDayFor(dueOn: string, closedThrough: string | null): string {
+  if (closedThrough === null || dueOn.slice(0, 7) > closedThrough) return dueOn;
+  const match = /^(\d{4})-(\d{2})$/.exec(closedThrough);
+  if (!match) throw new RangeError(`not a calendar month: ${closedThrough}`);
+  /* Month index `Number(match[2])` is one PAST the closed month (zero-based
+   * arithmetic), and `Date.UTC` rolls December over into January itself. */
+  const next = new Date(Date.UTC(Number(match[1]), Number(match[2]), 1));
+  return format(next.getUTCFullYear(), next.getUTCMonth(), 1);
+}

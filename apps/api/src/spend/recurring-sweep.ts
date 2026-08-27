@@ -23,9 +23,9 @@
  * than collapsing them into a single entry with the wrong figure.
  */
 import { Logger } from '@nestjs/common';
-import { lagosDay, lagosNoon, nextDueAfter } from '@rekoda/core';
+import { lagosDay, lagosNoon, nextDueAfter, raiseDayFor } from '@rekoda/core';
 import { redactForLog } from '@rekoda/core/privacy';
-import { recurringRepo, spendRepo, withBusiness, type Db } from '@rekoda/db';
+import { closeRepo, recurringRepo, spendRepo, withBusiness, type Db } from '@rekoda/db';
 import type { CommandBus } from '../commands/command-bus.service.js';
 import { recordExpenseWork, type RecordExpenseCmdInput } from '../commands/spend-commands.js';
 
@@ -88,9 +88,22 @@ export async function sweepRecurring(
             );
             if (!claimed) return false;
 
+            /* The day it fell DUE, unless that month's books have CLOSED
+             * under it. September's rent belongs in September's profit and
+             * loss whatever month it was raised in — but a due day inside a
+             * closed period is a posting the kernel refuses, and retrying it
+             * daily forever is a schedule wedged on a month that will not
+             * reopen. It lands on day one of the earliest open month, and
+             * the entry says which day it was really for. */
+            const closedThrough = await closeRepo.booksClosedThroughFor(tx, schedule.businessId);
+            const raiseDay = raiseDayFor(dueOn, closedThrough);
+
             const input: RecordExpenseCmdInput = {
               businessId: schedule.businessId,
-              description: schedule.description,
+              description:
+                raiseDay === dueOn
+                  ? schedule.description
+                  : `${schedule.description} (due ${dueOn})`,
               category: schedule.category,
               amountK: schedule.amountK,
               method: schedule.method === 'transfer' ? 'transfer' : 'cash',
@@ -99,11 +112,12 @@ export async function sweepRecurring(
                * so a catch-up's entries are told apart by the thing that makes
                * them different rather than by the order they were written. */
               sourceId: `${schedule.id}:${dueOn}`,
-              /* The day it fell DUE, not the day the sweep noticed. September's
-               * rent belongs in September's profit and loss whatever month it
-               * was raised in, and a catch-up that stamped today would put a
-               * quarter of rent into one month and none into the two before. */
-              recordedAt: lagosNoon(dueOn),
+              recordedAt: lagosNoon(raiseDay),
+              /* §9.4 at the ledger itself: the raise's identity, deduped by
+               * `ledger_tx_posting_key_ux` even for a writer that never met
+               * the command bus. Keyed by the DUE day — displacement changes
+               * where an entry is dated, never which raise it is. */
+              postingKey: `recurring:${schedule.id}:${dueOn}`,
             };
             /* A standing order is an ingress too (spec §25, AUTOMATION): the
              * same command a sentence reaches, behind the same flag. */

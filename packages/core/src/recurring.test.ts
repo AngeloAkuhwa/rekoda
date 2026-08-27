@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isAnchorDay, lagosDay, nextDueAfter } from './recurring.js';
+import { isAnchorDay, lagosDay, nextDueAfter, raiseDayFor } from './recurring.js';
 
 describe('lagosDay', () => {
   it('reads 23:30 UTC as the next Lagos day', () => {
@@ -49,6 +49,33 @@ describe('nextDueAfter', () => {
 
   it('refuses anything that is not a calendar day', () => {
     expect(() => nextDueAfter('5 March', 5)).toThrow(RangeError);
+  });
+});
+
+describe('raiseDayFor', () => {
+  it('keeps the due day when nothing is closed', () => {
+    expect(raiseDayFor('2026-05-01', null)).toBe('2026-05-01');
+  });
+
+  it('keeps the due day when it falls after the closed months', () => {
+    expect(raiseDayFor('2026-05-01', '2026-04')).toBe('2026-05-01');
+    expect(raiseDayFor('2026-05-31', '2026-04')).toBe('2026-05-31');
+  });
+
+  /* The wedge this exists to prevent: rent fell due in a month the books
+   * have since closed, and dating it there is a posting the kernel refuses
+   * forever. It lands on day one of the first open month instead. */
+  it('moves a due day inside a closed month to the first open day', () => {
+    expect(raiseDayFor('2026-04-15', '2026-04')).toBe('2026-05-01');
+    expect(raiseDayFor('2026-02-28', '2026-04')).toBe('2026-05-01');
+  });
+
+  it('rolls the year over when December is the last closed month', () => {
+    expect(raiseDayFor('2026-11-30', '2026-12')).toBe('2027-01-01');
+  });
+
+  it('refuses a watermark that is not a calendar month', () => {
+    expect(() => raiseDayFor('2026-04-15', 'April')).toThrow(RangeError);
   });
 });
 

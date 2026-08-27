@@ -55,6 +55,16 @@ export interface RecordExpenseInput {
    * catches up in November; left unset by everything a merchant does live.
    */
   recordedAt?: Date;
+  /**
+   * §9.4's ledger-level dedupe key, for a caller whose expense IS one
+   * financial event with a name of its own. The recurring sweep passes the
+   * raise (`recurring:{scheduleId}:{dueOn}`) — the same identity the
+   * command layer dedupes on, now backed by `ledger_tx_posting_key_ux` at
+   * the ledger itself, so a writer that bypasses the bus still cannot raise
+   * one month's rent twice. Live merchant paths leave it unset: two
+   * identical sentences on one day are two expenses, not a retry.
+   */
+  postingKey?: string;
 }
 
 export interface RecordPurchaseInput {
@@ -98,7 +108,10 @@ export async function recordExpense(
     posting,
     input.sourceType,
     input.sourceId,
-    input.recordedAt ? { occurredAt: input.recordedAt } : {},
+    {
+      ...(input.recordedAt ? { occurredAt: input.recordedAt } : {}),
+      ...(input.postingKey ? { postingKey: input.postingKey } : {}),
+    },
   );
 
   const rows = await tx
