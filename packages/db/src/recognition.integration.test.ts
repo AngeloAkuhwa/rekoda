@@ -5,6 +5,7 @@
  * still never told which case it is in.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { earnedToDateMinor } from '@rekoda/core';
 import {
   createDb,
   identity,
@@ -298,6 +299,70 @@ describe('the refusal, kept and replayable (§12.2)', () => {
     await apply(businessId, orderId, 'ful-i', { kind: 'FULFILMENT', earnedToDateMinor: 100_000 });
     expect(
       await apply(businessId, orderId, 'ful-i', { kind: 'FULFILMENT', earnedToDateMinor: 100_000 }),
+    ).toEqual({ outcome: 'nothing_to_post' });
+  });
+});
+
+describe('proportional recognition on partial fulfilment (§12.5; PR-047)', () => {
+  it('each delivery recognises only its proportion; completion carries the residual', async () => {
+    const businessId = await seedBusiness('NONE');
+    const orderId = await seedOrder(businessId);
+    const lineId = '33333333-3333-4333-8333-333333333333';
+    /* 100,000 over 3 units: nothing rounds up, nothing is lost. */
+    const line = (deliveredToDate: number) => [
+      { lineTotalMinor: 100_000, quantity: 3, deliveredToDate },
+    ];
+
+    /* Prepaid, so every delivery releases from contract liability. */
+    await apply(businessId, orderId, 'pay-p', {
+      kind: 'PAYMENT_COLLECTED',
+      amountMinor: 100_000,
+      moneyRole: 'BANK',
+    });
+
+    const first = await apply(
+      businessId,
+      orderId,
+      'ful-p-1',
+      { kind: 'FULFILMENT', earnedToDateMinor: earnedToDateMinor(line(1)) },
+      { orderLineId: lineId },
+    );
+    expect(first).toMatchObject({ outcome: 'posted', revenueDeltaMinor: 33_333 });
+
+    const second = await apply(
+      businessId,
+      orderId,
+      'ful-p-2',
+      { kind: 'FULFILMENT', earnedToDateMinor: earnedToDateMinor(line(2)) },
+      { orderLineId: lineId },
+    );
+    expect(second).toMatchObject({ outcome: 'posted', revenueDeltaMinor: 33_333 });
+
+    const last = await apply(
+      businessId,
+      orderId,
+      'ful-p-3',
+      { kind: 'FULFILMENT', earnedToDateMinor: earnedToDateMinor(line(3)) },
+      { orderLineId: lineId },
+    );
+    /* The residual kobo held back by rounding posts with the last unit. */
+    expect(last).toMatchObject({ outcome: 'posted', revenueDeltaMinor: 33_334 });
+
+    expect(await state(businessId, orderId)).toEqual({
+      contractLiabilityMinor: 0,
+      receivableMinor: 0,
+      revenueRecognisedToDateMinor: 100_000,
+    });
+
+    /* Replaying a step recognises nothing more. */
+    expect(
+      await apply(
+        businessId,
+        orderId,
+        'ful-p-3',
+        { kind: 'FULFILMENT', earnedToDateMinor: earnedToDateMinor(line(3)) },
+        { orderLineId: lineId },
+      ),
     ).toEqual({ outcome: 'nothing_to_post' });
   });
 });
