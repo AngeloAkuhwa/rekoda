@@ -63,3 +63,33 @@ export function costOfQuantityK(averageCostK: number | null, quantity: number): 
   if (quantity <= 0) return null;
   return Math.round(averageCostK * quantity);
 }
+
+/**
+ * The moving average after stock LEAVES at a stated cost (Appendix B:
+ * a supplier return "reverses the receipt at the receipt's own cost,
+ * and the average is recomputed as at that moment").
+ *
+ * Value-based, in integer kobo: new value = old value − removed value,
+ * new average = new value ÷ new quantity, rounded once. Removing more
+ * than is on hand is REFUSED — negative stock produces a negative
+ * average no statement can survive (B.2). An uncosted line stays
+ * uncosted: null in, null out.
+ */
+export function averageAfterRemovalK(args: {
+  onHand: number;
+  averageCostK: number | null;
+  removing: number;
+  unitCostK: number;
+}): number | null {
+  if (args.removing <= 0) throw new RangeError('a removal of nothing changes no average');
+  if (args.removing > args.onHand) {
+    throw new RangeError(
+      `cannot remove ${args.removing} from ${args.onHand} on hand: negative stock is refused`,
+    );
+  }
+  if (args.averageCostK === null) return null;
+  const remaining = args.onHand - args.removing;
+  if (remaining === 0) return null;
+  const remainingValueK = args.onHand * args.averageCostK - args.removing * args.unitCostK;
+  return Math.max(0, Math.round(remainingValueK / remaining));
+}

@@ -32,7 +32,8 @@ export interface Product {
 }
 
 /** Why the stock moved. `adjustment` is the merchant counting their own shelf. */
-export type MovementReason = 'sale' | 'purchase' | 'adjustment' | 'reservation' | 'release';
+export type MovementReason =
+  'sale' | 'purchase' | 'adjustment' | 'reservation' | 'release' | 'return' | 'supplier_return';
 
 export interface StockMovement {
   businessId: string;
@@ -41,6 +42,9 @@ export interface StockMovement {
   reason: MovementReason;
   sourceType: string;
   sourceId?: string | null;
+  /** The unit cost APPLIED to this movement (Appendix B): receipt cost
+   * inbound, issue cost outbound. Null when nobody has ever costed it. */
+  unitCostK?: number | null;
 }
 
 /**
@@ -151,6 +155,7 @@ export async function recordMovement(tx: TenantDb, movement: StockMovement): Pro
     reason: movement.reason,
     sourceType: movement.sourceType,
     sourceId: movement.sourceId ?? null,
+    unitCostK: movement.unitCostK ?? null,
   });
 }
 
@@ -212,6 +217,9 @@ export async function recordDelivery(
     reason: 'purchase',
     sourceType: input.sourceType,
     sourceId: input.sourceId ?? null,
+    /* The receipt's own per-unit cost rides the movement (Appendix B),
+     * which is what a supplier return later reverses at. */
+    unitCostK: Math.round(input.costK / input.quantity),
   });
 
   await tx
@@ -286,6 +294,9 @@ export async function recordSaleMovements(
       reason: 'sale',
       sourceType: 'invoice',
       sourceId,
+      /* The ORIGINAL ISSUE COST, carried on the outbound movement
+       * (Appendix B) — what a customer return restores at. */
+      unitCostK: product.unitCostK,
     });
     moved += 1;
 

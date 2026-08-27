@@ -708,6 +708,13 @@
       "when": 1787411607000,
       "tag": "0100_tax_events",
       "breakpoints": true
+    },
+    {
+      "idx": 101,
+      "version": "7",
+      "when": 1787411667000,
+      "tag": "0101_goods_returns",
+      "breakpoints": true
     }
   ]
 }
