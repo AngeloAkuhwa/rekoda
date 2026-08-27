@@ -54,3 +54,4 @@ export type { Reply } from './replies.js';
  * dangerous one share a spelling. An explicit `@rekoda/core/vault` import is a
  * thing a reviewer notices.
  */
+export * from './fx.js';

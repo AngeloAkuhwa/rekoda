@@ -17,6 +17,7 @@ import {
   index,
   integer,
   jsonb,
+  numeric,
   pgTable,
   text,
   timestamp,
@@ -614,3 +615,29 @@ export const accountingPeriods = pgTable(
   },
   (t) => [uniqueIndex('accounting_periods_business_period_ux').on(t.businessId, t.period)],
 );
+
+/* ── exchange rate snapshots (spec §16, Appendix A.1; migration 0069) ── */
+
+/**
+ * A market fact, not tenant data: no businessId, no RLS. Immutable once
+ * written (UPDATE/DELETE revoked in 0069); `effectiveAt` is the moment the
+ * rate applies to, never fetch time; a MANUAL_OVERRIDE carries who decided
+ * and why, by CHECK.
+ */
+export const exchangeRateSnapshots = pgTable('exchange_rate_snapshots', {
+  id: uuid('id')
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  baseCurrency: char('base_currency', { length: 3 }).notNull(),
+  quoteCurrency: char('quote_currency', { length: 3 }).notNull(),
+  /** Full provider precision, never rounded — a decimal string. */
+  rate: numeric('rate').notNull(),
+  effectiveAt: timestamp('effective_at', { withTimezone: true }).notNull(),
+  fetchedAt: timestamp('fetched_at', { withTimezone: true }).notNull().defaultNow(),
+  source: text('source').notNull(), // PROVIDER | MANUAL_OVERRIDE | INHERITED
+  providerName: text('provider_name').notNull(),
+  providerReference: text('provider_reference'),
+  actorId: text('actor_id'),
+  reason: text('reason'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
