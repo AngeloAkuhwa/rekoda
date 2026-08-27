@@ -12,7 +12,7 @@
 import { and, eq, inArray, not, sql } from 'drizzle-orm';
 import type { Db, TenantDb } from '../client.js';
 import { INTENT_STATUSES, type ConnectionStatus, type PaymentIntentStatus } from '@rekoda/core';
-import { paymentConnections, paymentIntents } from '../schema/payments-hub.js';
+import { paymentAttempts, paymentConnections, paymentIntents } from '../schema/payments-hub.js';
 import { provisionConnectionAccounts } from './accounts.js';
 
 const TERMINAL: readonly PaymentIntentStatus[] = ['succeeded', 'failed', 'expired', 'cancelled'];
@@ -676,4 +676,101 @@ export async function claimGraduationNudge(
     )
     .returning({ id: paymentConnections.id });
   return rows.length === 1;
+}
+
+/* ── payment attempts (spec §6.1, §22.3; PR-054) ────────────────────────── */
+
+export type RecordAttemptOutcome =
+  | { outcome: 'recorded'; id: string }
+  /* §22.3's unique: a redelivered provider callback is the same try. */
+  | { outcome: 'already_recorded'; id: string };
+
+export async function recordPaymentAttempt(
+  tx: TenantDb,
+  input: {
+    businessId: string;
+    paymentIntentId: string;
+    paymentConnectionId: string;
+    providerAttemptId: string;
+    method?: string;
+  },
+): Promise<RecordAttemptOutcome> {
+  const rows = await tx
+    .insert(paymentAttempts)
+    .values({
+      businessId: input.businessId,
+      paymentIntentId: input.paymentIntentId,
+      paymentConnectionId: input.paymentConnectionId,
+      providerAttemptId: input.providerAttemptId,
+      ...(input.method ? { method: input.method } : {}),
+    })
+    .onConflictDoNothing()
+    .returning({ id: paymentAttempts.id });
+  const row = rows[0];
+  if (row) return { outcome: 'recorded', id: row.id };
+  const standing = await tx
+    .select({ id: paymentAttempts.id })
+    .from(paymentAttempts)
+    .where(
+      and(
+        eq(paymentAttempts.businessId, input.businessId),
+        eq(paymentAttempts.paymentConnectionId, input.paymentConnectionId),
+        eq(paymentAttempts.providerAttemptId, input.providerAttemptId),
+      ),
+    )
+    .limit(1);
+  if (!standing[0]) throw new Error('recordPaymentAttempt: conflict row vanished');
+  return { outcome: 'already_recorded', id: standing[0].id };
+}
+
+/** A try resolves once: INITIATED → SUCCEEDED | FAILED | ABANDONED. */
+export async function resolvePaymentAttempt(
+  tx: TenantDb,
+  input: {
+    businessId: string;
+    attemptId: string;
+    status: 'SUCCEEDED' | 'FAILED' | 'ABANDONED';
+    failureReason?: string;
+  },
+): Promise<'resolved' | 'not_found' | 'already_resolved'> {
+  const rows = await tx
+    .update(paymentAttempts)
+    .set({
+      status: input.status,
+      ...(input.failureReason ? { failureReason: input.failureReason } : {}),
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(paymentAttempts.businessId, input.businessId),
+        eq(paymentAttempts.id, input.attemptId),
+        eq(paymentAttempts.status, 'INITIATED'),
+      ),
+    )
+    .returning({ id: paymentAttempts.id });
+  if (rows.length === 1) return 'resolved';
+  const exists = await tx
+    .select({ id: paymentAttempts.id })
+    .from(paymentAttempts)
+    .where(
+      and(
+        eq(paymentAttempts.businessId, input.businessId),
+        eq(paymentAttempts.id, input.attemptId),
+      ),
+    )
+    .limit(1);
+  return exists[0] ? 'already_resolved' : 'not_found';
+}
+
+export async function attemptsForIntent(tx: TenantDb, businessId: string, paymentIntentId: string) {
+  return tx
+    .select()
+    .from(paymentAttempts)
+    .where(
+      and(
+        eq(paymentAttempts.businessId, businessId),
+        eq(paymentAttempts.paymentIntentId, paymentIntentId),
+      ),
+    )
+    .orderBy(paymentAttempts.createdAt);
 }

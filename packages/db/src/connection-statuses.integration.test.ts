@@ -265,3 +265,141 @@ describe('connection-scoped clearing accounts (§11.2; PR-053)', () => {
     expect(first!.id).not.toBe(secondClearing!.id);
   });
 });
+
+describe('payment attempts (§6.1, §22.3; PR-054)', () => {
+  async function intentFixture() {
+    const { businessId, connectionId } = await seedConnection();
+    const intent = await withBusiness(db, businessId, (tx) =>
+      paymentsHub.createIntent(tx, {
+        businessId,
+        reference: `RKD-PAY-${seq}`,
+        expectedAmountK: 100_000,
+        providerType: 'paystack',
+        paymentConnectionId: connectionId,
+      }),
+    );
+    return { businessId, connectionId, intentId: intent.id };
+  }
+
+  it('one try records once: a redelivered callback is the same attempt', async () => {
+    const { businessId, connectionId, intentId } = await intentFixture();
+    const first = await withBusiness(db, businessId, (tx) =>
+      paymentsHub.recordPaymentAttempt(tx, {
+        businessId,
+        paymentIntentId: intentId,
+        paymentConnectionId: connectionId,
+        providerAttemptId: 'att_123',
+        method: 'bank_transfer',
+      }),
+    );
+    expect(first.outcome).toBe('recorded');
+    const replay = await withBusiness(db, businessId, (tx) =>
+      paymentsHub.recordPaymentAttempt(tx, {
+        businessId,
+        paymentIntentId: intentId,
+        paymentConnectionId: connectionId,
+        providerAttemptId: 'att_123',
+      }),
+    );
+    expect(replay).toEqual({ outcome: 'already_recorded', id: first.id });
+  });
+
+  it('the same provider attempt id on another connection is another try: identity is connection-scoped', async () => {
+    const { businessId, connectionId, intentId } = await intentFixture();
+    await withBusiness(db, businessId, (tx) =>
+      paymentsHub.storeMerchantKey(tx, {
+        businessId,
+        providerType: 'monnify',
+        merchantKeyCipher: 'vault:blob',
+        merchantKeyTail: '1111',
+      }),
+    );
+    const monnify = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ id: string }>(sql`
+        SELECT id FROM payment_connections
+        WHERE business_id = ${businessId}::uuid AND provider_type = 'monnify'
+      `),
+    );
+    const monnifyId = [...monnify][0]!.id;
+    const monnifyIntent = await withBusiness(db, businessId, (tx) =>
+      paymentsHub.createIntent(tx, {
+        businessId,
+        reference: `RKD-PAY-M-${seq}`,
+        expectedAmountK: 50_000,
+        providerType: 'monnify',
+        paymentConnectionId: monnifyId,
+      }),
+    );
+
+    const a = await withBusiness(db, businessId, (tx) =>
+      paymentsHub.recordPaymentAttempt(tx, {
+        businessId,
+        paymentIntentId: intentId,
+        paymentConnectionId: connectionId,
+        providerAttemptId: 'att_shared',
+      }),
+    );
+    const b = await withBusiness(db, businessId, (tx) =>
+      paymentsHub.recordPaymentAttempt(tx, {
+        businessId,
+        paymentIntentId: monnifyIntent.id,
+        paymentConnectionId: monnifyId,
+        providerAttemptId: 'att_shared',
+      }),
+    );
+    expect(a.outcome).toBe('recorded');
+    expect(b.outcome).toBe('recorded');
+    expect(a.id).not.toBe(b.id);
+  });
+
+  it('a try resolves once, keeps its reason, and never deletes', async () => {
+    const { businessId, connectionId, intentId } = await intentFixture();
+    const attempt = await withBusiness(db, businessId, (tx) =>
+      paymentsHub.recordPaymentAttempt(tx, {
+        businessId,
+        paymentIntentId: intentId,
+        paymentConnectionId: connectionId,
+        providerAttemptId: 'att_res',
+      }),
+    );
+    expect(
+      await withBusiness(db, businessId, (tx) =>
+        paymentsHub.resolvePaymentAttempt(tx, {
+          businessId,
+          attemptId: attempt.id,
+          status: 'FAILED',
+          failureReason: 'insufficient_funds',
+        }),
+      ),
+    ).toBe('resolved');
+    expect(
+      await withBusiness(db, businessId, (tx) =>
+        paymentsHub.resolvePaymentAttempt(tx, {
+          businessId,
+          attemptId: attempt.id,
+          status: 'SUCCEEDED',
+        }),
+      ),
+    ).toBe('already_resolved');
+    await expect(
+      withBusiness(db, businessId, (tx) =>
+        tx.execute(sql`DELETE FROM payment_attempts WHERE business_id = ${businessId}::uuid`),
+      ),
+    ).rejects.toThrow();
+  });
+
+  it("an attempt cannot cite another tenant's intent", async () => {
+    const ada = await intentFixture();
+    const bola = await intentFixture();
+    await expect(
+      withBusiness(db, ada.businessId, (tx) =>
+        paymentsHub.recordPaymentAttempt(tx, {
+          businessId: ada.businessId,
+          paymentIntentId: bola.intentId,
+          paymentConnectionId: ada.connectionId,
+          providerAttemptId: 'att_foreign',
+        }),
+      ),
+    ).rejects.toThrow();
+  });
+});

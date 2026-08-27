@@ -157,3 +157,34 @@ export const paymentIntents = pgTable(
     index('payment_intents_invoice_ix').on(t.invoiceId),
   ],
 );
+
+/* ── payment attempts (spec §6.1, §22.3; migration 0081, PR-054) ── */
+
+/** One try against an intent. The provider's attempt id is scoped to the
+ * connection that produced it — never assumed globally unique. A try that
+ * happened stays on file; only its status resolves. */
+export const paymentAttempts = pgTable(
+  'payment_attempts',
+  {
+    id: id(),
+    businessId: uuid('business_id')
+      .notNull()
+      .references(() => businesses.id),
+    paymentIntentId: uuid('payment_intent_id').notNull(),
+    paymentConnectionId: uuid('payment_connection_id').notNull(),
+    providerAttemptId: text('provider_attempt_id').notNull(),
+    status: text('status').notNull().default('INITIATED'),
+    method: text('method'),
+    failureReason: text('failure_reason'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('payment_attempts_provider_ux').on(
+      t.businessId,
+      t.paymentConnectionId,
+      t.providerAttemptId,
+    ),
+    index('payment_attempts_intent_ix').on(t.businessId, t.paymentIntentId),
+  ],
+);

@@ -568,6 +568,13 @@
       "when": 1787410820000,
       "tag": "0080_connection_attributes",
       "breakpoints": true
+    },
+    {
+      "idx": 81,
+      "version": "7",
+      "when": 1787410821000,
+      "tag": "0081_payment_attempts",
+      "breakpoints": true
     }
   ]
 }
