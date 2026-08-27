@@ -517,6 +517,9 @@ export const supplierPayments = pgTable(
       .notNull()
       .references(() => ledgerTransactions.id),
     paidOn: date('paid_on').notNull(),
+    /** Which bill this settled (0098, PR-077) — beside expenseId, not
+     * replacing it: the ageing still reads the expense attribution. */
+    billId: uuid('bill_id'),
     /** One-shot key the pay form brings, so a resubmission pays once. */
     clientRef: text('client_ref'),
     recordedAt: timestamp('recorded_at', { withTimezone: true }).notNull().defaultNow(),
@@ -526,6 +529,46 @@ export const supplierPayments = pgTable(
     uniqueIndex('supplier_payments_client_ref_ux')
       .on(t.businessId, t.clientRef)
       .where(sql`${t.clientRef} IS NOT NULL`),
+  ],
+);
+
+/**
+ * A bill: the mirror of an invoice, pointing the other way (spec §8;
+ * migration 0098, PR-077). One per spend row whose posting raised
+ * ACCOUNTS_PAYABLE; the balance is GENERATED and the status is
+ * CHECK-bound to the money, so a lifecycle that disagrees with the
+ * ledger cannot be written.
+ */
+export const bills = pgTable(
+  'bills',
+  {
+    id: id(),
+    businessId: businessId(),
+    /** Who is owed. Nullable: an unaddressed debt is still a debt. */
+    supplierId: uuid('supplier_id'),
+    expenseId: uuid('expense_id').notNull(),
+    /** BILL-2026-000041, on its own doc_counters kind. */
+    billNumber: text('bill_number').notNull(),
+    /** The supplier's own reference, when the merchant has one. */
+    supplierReference: text('supplier_reference'),
+    status: text('status').notNull().default('open'),
+    /** The CREDIT portion the posting raised — not the whole purchase. */
+    totalK: kobo('total_k').notNull(),
+    paidK: kobo('paid_k').notNull().default(0),
+    /** GENERATED ALWAYS AS (total_k - paid_k) in the database. */
+    balanceDueK: kobo('balance_due_k'),
+    billedOn: date('billed_on').notNull(),
+    /** Nullable, honestly: Rekoda never invents terms nobody set. */
+    dueDate: date('due_date'),
+    ledgerTransactionId: uuid('ledger_transaction_id'),
+    sourceType: text('source_type').notNull(),
+    sourceId: text('source_id'),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    uniqueIndex('bills_number_ux').on(t.businessId, t.billNumber),
+    uniqueIndex('bills_expense_ux').on(t.businessId, t.expenseId),
+    index('bills_business_status_ix').on(t.businessId, t.status),
   ],
 );
 

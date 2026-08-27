@@ -23,6 +23,7 @@ import {
   categoriseExpense,
   KEY_BY_CODE,
   lagosDay,
+  lagosYear,
   postExpense,
   postJournal,
   postPurchase,
@@ -35,9 +36,9 @@ import type { TenantDb } from '../client.js';
 import { auditEvents } from '../schema/ops.js';
 import { accounts } from '../schema/accounts.js';
 import { codeOf } from './accounts.js';
-import { expenses, ledgerEntries, supplierPayments } from '../schema/finance.js';
+import { bills, expenses, ledgerEntries, supplierPayments } from '../schema/finance.js';
 import { inventoryMovements } from '../schema/commerce.js';
-import { writePosting } from './issue.js';
+import { nextDocumentNumber, writePosting } from './issue.js';
 
 export interface RecordExpenseInput {
   businessId: string;
@@ -74,6 +75,9 @@ export interface RecordedSpend {
   ledgerTransactionId: string;
   /** For purchases: what remains owed to the supplier. Always 0 for expenses. */
   owedK: number;
+  /** The bill the credit portion raised (spec §8; PR-077). Null when the
+   * purchase was fully paid — nothing owed mints no document. */
+  billNumber: string | null;
 }
 
 export async function recordExpense(
@@ -123,7 +127,7 @@ export async function recordExpense(
   const row = rows[0];
   if (!row) throw new Error('recordExpense: insert returned no row');
 
-  return { expenseId: row.id, ledgerTransactionId, owedK: 0 };
+  return { expenseId: row.id, ledgerTransactionId, owedK: 0, billNumber: null };
 }
 
 export async function recordPurchase(
@@ -164,7 +168,28 @@ export async function recordPurchase(
   const row = rows[0];
   if (!row) throw new Error('recordPurchase: insert returned no row');
 
-  return { expenseId: row.id, ledgerTransactionId, owedK: input.amountK - input.paidK };
+  /* The bill lifecycle (spec §8; PR-077): the credit portion becomes a
+   * DOCUMENT, in the same transaction that raised the payable. Fully-paid
+   * purchases mint nothing — no debt, no bill. */
+  const owedK = input.amountK - input.paidK;
+  let billNumber: string | null = null;
+  if (owedK > 0) {
+    const now = new Date();
+    billNumber = await nextDocumentNumber(tx, input.businessId, 'bill', lagosYear(now));
+    await tx.insert(bills).values({
+      businessId: input.businessId,
+      supplierId: input.supplierId ?? null,
+      expenseId: row.id,
+      billNumber,
+      totalK: owedK,
+      billedOn: lagosDay(now),
+      ledgerTransactionId,
+      sourceType: input.sourceType,
+      sourceId: input.sourceId,
+    });
+  }
+
+  return { expenseId: row.id, ledgerTransactionId, owedK, billNumber };
 }
 
 /* ── read-backs (tests and, later, the dashboard's expense list) ─────────── */
@@ -420,6 +445,14 @@ export async function voidExpense(
     .set({ status: 'voided' })
     .where(and(eq(expenses.id, entry.id), eq(expenses.status, 'recorded')))
     .returning({ id: expenses.id });
+
+  /* Its bill, if the purchase raised one, is voided with it (PR-077):
+   * the reversal above already took the payable off the books, and a
+   * bill left open would report a debt the ledger no longer carries. */
+  await tx
+    .update(bills)
+    .set({ status: 'voided' })
+    .where(and(eq(bills.businessId, businessId), eq(bills.expenseId, expenseId)));
   if (marked.length !== 1) return { outcome: 'already_void' };
 
   await writePosting(
@@ -724,6 +757,26 @@ export async function paySupplier(
     { occurredAt: at },
   );
 
+  /* The bill's lifecycle follows the money it already agrees with: the
+   * FOR UPDATE above serialises settlements per purchase, so the read
+   * and the stamp cannot race another payment on the same debt. */
+  const billRows = await tx
+    .select({ id: bills.id, totalK: bills.totalK, paidK: bills.paidK })
+    .from(bills)
+    .where(and(eq(bills.businessId, input.businessId), eq(bills.expenseId, input.expenseId)))
+    .limit(1);
+  const bill = billRows[0] ?? null;
+  if (bill) {
+    const paidK = bill.paidK + input.amountK;
+    await tx
+      .update(bills)
+      .set({
+        paidK,
+        status: paidK >= bill.totalK ? 'paid' : 'partially_paid',
+      })
+      .where(and(eq(bills.businessId, input.businessId), eq(bills.id, bill.id)));
+  }
+
   await tx.insert(supplierPayments).values({
     businessId: input.businessId,
     expenseId: input.expenseId,
@@ -731,6 +784,7 @@ export async function paySupplier(
     method: input.method,
     ledgerTransactionId,
     paidOn: lagosDay(at),
+    billId: bill?.id ?? null,
     ...(input.clientRef ? { clientRef: input.clientRef } : {}),
   });
 
@@ -804,5 +858,67 @@ export async function outstandingPurchases(
     purchasedOn: r.purchased_on,
     amountK: Number(r.amount_k),
     owedK: Number(r.owed_k),
+  }));
+}
+
+/* ── the bill register (spec §8; PR-077) ─────────────────────────────────── */
+
+export interface BillRow {
+  id: string;
+  billNumber: string;
+  supplierId: string | null;
+  expenseId: string;
+  status: string;
+  totalK: number;
+  paidK: number;
+  /** GENERATED in the database: always total less paid. */
+  balanceDueK: number;
+  billedOn: string;
+  dueDate: string | null;
+  description: string;
+}
+
+/** The payable side's register, newest first. */
+export async function billsFor(
+  tx: TenantDb,
+  businessId: string,
+  options: { status?: string; limit?: number } = {},
+): Promise<BillRow[]> {
+  const rows = await tx.execute<{
+    id: string;
+    bill_number: string;
+    supplier_id: string | null;
+    expense_id: string;
+    status: string;
+    total_k: string;
+    paid_k: string;
+    balance_due_k: string;
+    billed_on: string;
+    due_date: string | null;
+    description: string;
+  }>(sql`
+    SELECT b.id, b.bill_number, b.supplier_id, b.expense_id, b.status,
+           b.total_k, b.paid_k, b.balance_due_k,
+           b.billed_on::text AS billed_on, b.due_date::text AS due_date,
+           e.description
+    FROM bills b
+    JOIN expenses e ON e.business_id = b.business_id AND e.id = b.expense_id
+    WHERE b.business_id = ${businessId}::uuid
+      ${options.status ? sql`AND b.status = ${options.status}` : sql``}
+    ORDER BY b.created_at DESC
+    LIMIT ${options.limit ?? 200}
+  `);
+  return [...rows].map((r) => ({
+    id: r.id,
+    billNumber: r.bill_number,
+    supplierId: r.supplier_id,
+    expenseId: r.expense_id,
+    status: r.status,
+    totalK: Number(r.total_k),
+    paidK: Number(r.paid_k),
+    balanceDueK: Number(r.balance_due_k),
+    billedOn: r.billed_on,
+    dueDate: r.due_date,
+    description: r.description,
   }));
 }

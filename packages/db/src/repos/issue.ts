@@ -109,7 +109,15 @@ export interface IssuedSale {
 export async function nextDocumentNumber(
   tx: TenantDb,
   businessId: string,
-  docType: 'invoice' | 'receipt' | 'credit_note' | 'order' | 'quote' | 'purchase_order' | 'journal',
+  docType:
+    | 'invoice'
+    | 'receipt'
+    | 'credit_note'
+    | 'order'
+    | 'quote'
+    | 'purchase_order'
+    | 'journal'
+    | 'bill',
   year: number,
 ): Promise<string> {
   const rows = await tx.execute<{ last_seq: number }>(sql`

@@ -7,7 +7,7 @@
  */
 
 export type DocType =
-  'invoice' | 'receipt' | 'credit_note' | 'order' | 'quote' | 'purchase_order' | 'journal';
+  'invoice' | 'receipt' | 'credit_note' | 'order' | 'quote' | 'purchase_order' | 'journal' | 'bill';
 
 const PREFIX: Record<DocType, string> = {
   invoice: 'INV',
@@ -32,6 +32,11 @@ const PREFIX: Record<DocType, string> = {
    * makes two corrections all year has JNL-2026-000001 and JNL-2026-000002
    * rather than two numbers from the middle of the invoice run. */
   journal: 'JNL',
+  /* The mirror of an invoice, pointing the other way: what a SUPPLIER is
+   * owed by the merchant (spec §8; F2, PR-077). Its own counter, because
+   * "BILL-2026-000002 is due Friday" is about money going OUT and must
+   * never name a customer's document. */
+  bill: 'BILL',
 };
 
 export function formatDocumentNumber(docType: DocType, year: number, seq: number): string {
