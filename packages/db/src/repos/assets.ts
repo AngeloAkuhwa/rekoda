@@ -11,6 +11,7 @@
  */
 import { and, eq, sql } from 'drizzle-orm';
 import {
+  KEY_BY_CODE,
   lagosDay,
   monthlyDepreciationK,
   postAssetDisposal,
@@ -22,6 +23,7 @@ import {
 import type { Db, TenantDb } from '../client.js';
 import { auditEvents } from '../schema/ops.js';
 import { fixedAssets } from '../schema/finance.js';
+import { codeOf } from './accounts.js';
 import { writePosting } from './issue.js';
 
 export interface RecordedAsset {
@@ -178,9 +180,10 @@ export async function assetsFor(
            COALESCE((
              SELECT SUM(e.debit_k) - SUM(e.credit_k)
                FROM ledger_entries e
+               JOIN accounts acc ON acc.id = e.account_id
                JOIN ledger_transactions t ON t.id = e.transaction_id
               WHERE e.business_id = a.business_id
-                AND e.account = 'DEPRECIATION'
+                AND acc.code = ${codeOf('DEPRECIATION')}
                 AND t.source_id = a.id::text
            ), 0)::bigint AS charged_k,
            count(*) OVER ()::int AS n
@@ -244,15 +247,21 @@ export async function withdrawAsset(
   if (asset.status !== 'recorded') return { outcome: 'already_withdrawn' };
 
   if (asset.ledgerTransactionId) {
-    const entries = await tx.execute<{ account: string; debit_k: string; credit_k: string }>(sql`
-      SELECT account, debit_k, credit_k FROM ledger_entries
-      WHERE business_id = ${input.businessId}::uuid
-        AND transaction_id = ${asset.ledgerTransactionId}::uuid
+    const entries = await tx.execute<{
+      account_code: string;
+      debit_k: string;
+      credit_k: string;
+    }>(sql`
+      SELECT acc.code AS account_code, e.debit_k, e.credit_k
+      FROM ledger_entries e
+      JOIN accounts acc ON acc.id = e.account_id
+      WHERE e.business_id = ${input.businessId}::uuid
+        AND e.transaction_id = ${asset.ledgerTransactionId}::uuid
     `);
     const original = {
       memo: `Equipment: ${asset.description}`,
       lines: [...entries].map((e) => ({
-        account: e.account as never,
+        account: KEY_BY_CODE[e.account_code]!,
         debitK: Number(e.debit_k),
         creditK: Number(e.credit_k),
       })),
@@ -467,9 +476,10 @@ export async function disposeAsset(
            COALESCE((
              SELECT SUM(e.credit_k) - SUM(e.debit_k)
                FROM ledger_entries e
+               JOIN accounts acc ON acc.id = e.account_id
                JOIN ledger_transactions t ON t.id = e.transaction_id
               WHERE e.business_id = a.business_id
-                AND e.account = 'ACCUMULATED_DEPRECIATION'
+                AND acc.code = ${codeOf('ACCUMULATED_DEPRECIATION')}
                 AND t.source_id = a.id::text
            ), 0)::bigint AS accumulated_k
     FROM fixed_assets a

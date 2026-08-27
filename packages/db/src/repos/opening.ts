@@ -14,6 +14,7 @@ import { sql } from 'drizzle-orm';
 import { postOpeningBalances, lagosNoon } from '@rekoda/core';
 import type { TenantDb } from '../client.js';
 import { auditEvents } from '../schema/ops.js';
+import { codeOf } from './accounts.js';
 import { writePosting } from './issue.js';
 
 /**
@@ -130,12 +131,13 @@ export async function openingBalancesFor(
     stock_k: string;
   }>(sql`
     SELECT t.source_id AS as_at,
-           COALESCE(SUM(e.debit_k) FILTER (WHERE e.account = 'CASH'), 0)::bigint AS cash_k,
-           COALESCE(SUM(e.debit_k) FILTER (WHERE e.account = 'BANK'), 0)::bigint AS bank_k,
-           COALESCE(SUM(e.debit_k) FILTER (WHERE e.account = 'INVENTORY'), 0)::bigint AS stock_k
+           COALESCE(SUM(e.debit_k) FILTER (WHERE acc.code = ${codeOf('CASH')}), 0)::bigint AS cash_k,
+           COALESCE(SUM(e.debit_k) FILTER (WHERE acc.code = ${codeOf('BANK')}), 0)::bigint AS bank_k,
+           COALESCE(SUM(e.debit_k) FILTER (WHERE acc.code = ${codeOf('INVENTORY')}), 0)::bigint AS stock_k
     FROM ledger_transactions t
     JOIN ledger_entries e
       ON e.transaction_id = t.id AND e.business_id = t.business_id
+    JOIN accounts acc ON acc.id = e.account_id
     WHERE t.business_id = ${businessId}::uuid AND t.source_type = ${OPENING_SOURCE}
     GROUP BY t.source_id
   `);

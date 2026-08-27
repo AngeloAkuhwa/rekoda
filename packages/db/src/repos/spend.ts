@@ -21,7 +21,7 @@
 import { and, eq, sql } from 'drizzle-orm';
 import {
   categoriseExpense,
-  isAccountKey,
+  KEY_BY_CODE,
   lagosDay,
   postExpense,
   postJournal,
@@ -33,6 +33,8 @@ import {
 } from '@rekoda/core';
 import type { TenantDb } from '../client.js';
 import { auditEvents } from '../schema/ops.js';
+import { accounts } from '../schema/accounts.js';
+import { codeOf } from './accounts.js';
 import { expenses, ledgerEntries, supplierPayments } from '../schema/finance.js';
 import { inventoryMovements } from '../schema/commerce.js';
 import { writePosting } from './issue.js';
@@ -281,9 +283,10 @@ export async function spendFor(
     WHERE business_id = ${businessId}::uuid
   `);
   const payable = await tx.execute<{ payable_k: string }>(sql`
-    SELECT COALESCE(SUM(credit_k) - SUM(debit_k), 0)::bigint AS payable_k
-    FROM ledger_entries
-    WHERE business_id = ${businessId}::uuid AND account = 'ACCOUNTS_PAYABLE'
+    SELECT COALESCE(SUM(le.credit_k) - SUM(le.debit_k), 0)::bigint AS payable_k
+    FROM ledger_entries le
+    JOIN accounts acc ON acc.id = le.account_id
+    WHERE le.business_id = ${businessId}::uuid AND acc.code = ${codeOf('ACCOUNTS_PAYABLE')}
   `);
   const t = [...totals][0];
   return {
@@ -374,23 +377,25 @@ export async function voidExpense(
 
   const lines = await tx
     .select({
-      account: ledgerEntries.account,
+      accountCode: accounts.code,
       debitK: ledgerEntries.debitK,
       creditK: ledgerEntries.creditK,
     })
     .from(ledgerEntries)
+    .innerJoin(accounts, eq(accounts.id, ledgerEntries.accountId))
     .where(
       and(
         eq(ledgerEntries.businessId, businessId),
         eq(ledgerEntries.transactionId, entry.ledgerTransactionId),
       ),
     );
-  /* An unknown account key would mean a write path bypassed the posting
-   * builders. Reversing what we cannot name is worse than refusing. */
+  /* An account outside the seeded map would mean a write path bypassed the
+   * posting builders. Reversing what we cannot name is worse than refusing. */
   const posted: LedgerLine[] = [];
   for (const l of lines) {
-    if (!isAccountKey(l.account)) return { outcome: 'no_posting' };
-    posted.push({ account: l.account, debitK: Number(l.debitK), creditK: Number(l.creditK) });
+    const account = KEY_BY_CODE[l.accountCode];
+    if (!account) return { outcome: 'no_posting' };
+    posted.push({ account, debitK: Number(l.debitK), creditK: Number(l.creditK) });
   }
   if (posted.length === 0) return { outcome: 'no_posting' };
 
@@ -561,9 +566,10 @@ export async function payableAgeingFor(
       JOIN ledger_entries le
         ON le.transaction_id = e.ledger_transaction_id
        AND le.business_id = e.business_id
+      JOIN accounts acc ON acc.id = le.account_id
       WHERE e.business_id = ${businessId}::uuid
         AND e.status = 'recorded'
-        AND le.account = 'ACCOUNTS_PAYABLE'
+        AND acc.code = ${codeOf('ACCOUNTS_PAYABLE')}
       GROUP BY e.id, e.created_at
       HAVING SUM(le.credit_k - le.debit_k) > 0
     ),
@@ -588,10 +594,11 @@ export async function payableAgeingFor(
       COALESCE(SUM(owed_k) FILTER (WHERE days_owed BETWEEN 61 AND 90), 0)::bigint AS d61_90_k,
       COALESCE(SUM(owed_k) FILTER (WHERE days_owed > 90), 0)::bigint              AS d90_plus_k,
       COALESCE(SUM(owed_k), 0)::bigint                                            AS linked_k,
-      (SELECT COALESCE(SUM(credit_k) - SUM(debit_k), 0)
-         FROM ledger_entries
-        WHERE business_id = ${businessId}::uuid
-          AND account = 'ACCOUNTS_PAYABLE')::bigint                               AS balance_k
+      (SELECT COALESCE(SUM(le2.credit_k) - SUM(le2.debit_k), 0)
+         FROM ledger_entries le2
+         JOIN accounts acc2 ON acc2.id = le2.account_id
+        WHERE le2.business_id = ${businessId}::uuid
+          AND acc2.code = ${codeOf('ACCOUNTS_PAYABLE')})::bigint                  AS balance_k
     FROM settled
   `);
   const row = [...rows][0];
@@ -627,9 +634,10 @@ async function owedOn(tx: TenantDb, businessId: string, expenseId: string): Prom
       (COALESCE(
         (SELECT SUM(le.credit_k) - SUM(le.debit_k)
            FROM ledger_entries le
+           JOIN accounts acc ON acc.id = le.account_id
           WHERE le.business_id = e.business_id
             AND le.transaction_id = e.ledger_transaction_id
-            AND le.account = 'ACCOUNTS_PAYABLE'), 0)
+            AND acc.code = ${codeOf('ACCOUNTS_PAYABLE')}), 0)
        - COALESCE(
         (SELECT SUM(sp.amount_k) FROM supplier_payments sp
           WHERE sp.business_id = e.business_id AND sp.expense_id = e.id), 0)
@@ -778,9 +786,10 @@ export async function outstandingPurchases(
     JOIN ledger_entries le
       ON le.transaction_id = e.ledger_transaction_id
      AND le.business_id = e.business_id
+    JOIN accounts acc ON acc.id = le.account_id
     WHERE e.business_id = ${businessId}::uuid
       AND e.status = 'recorded'
-      AND le.account = 'ACCOUNTS_PAYABLE'
+      AND acc.code = ${codeOf('ACCOUNTS_PAYABLE')}
     GROUP BY e.id, e.description, e.created_at, e.amount_k
     HAVING COALESCE(SUM(le.credit_k) - SUM(le.debit_k), 0)
              - COALESCE(

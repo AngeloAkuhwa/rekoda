@@ -15,6 +15,7 @@
 import { and, eq, sql } from 'drizzle-orm';
 import { fingerprintLines, matchStatement, type BankStatementLine } from '@rekoda/core';
 import type { Db, TenantDb } from '../client.js';
+import { codeOf } from './accounts.js';
 import { bankFeedConnections, bankLineMatches, bankStatementLines } from '../schema/finance.js';
 import { auditEvents } from '../schema/ops.js';
 
@@ -140,7 +141,9 @@ export async function bankPositionFor(tx: TenantDb, businessId: string): Promise
     SELECT
       (SELECT COALESCE(SUM(e.debit_k) - SUM(e.credit_k), 0)
          FROM ledger_entries e
-        WHERE e.business_id = ${businessId}::uuid AND e.account = 'BANK')::bigint AS ledger_k,
+         JOIN accounts acc ON acc.id = e.account_id
+        WHERE e.business_id = ${businessId}::uuid
+          AND acc.code = ${codeOf('BANK')})::bigint AS ledger_k,
       (SELECT COALESCE(SUM(l.amount_k), 0)
          FROM bank_statement_lines l
         WHERE l.business_id = ${businessId}::uuid)::bigint AS statement_k,
@@ -362,7 +365,8 @@ async function bankMovements(
            (e.created_at AT TIME ZONE 'Africa/Lagos')::date::text AS occurred_on,
            (SUM(e.debit_k) - SUM(e.credit_k))::bigint AS amount_k
     FROM ledger_entries e
-    WHERE e.business_id = ${businessId}::uuid AND e.account = 'BANK'
+    JOIN accounts acc ON acc.id = e.account_id
+    WHERE e.business_id = ${businessId}::uuid AND acc.code = ${codeOf('BANK')}
     GROUP BY e.transaction_id, (e.created_at AT TIME ZONE 'Africa/Lagos')::date
     HAVING SUM(e.debit_k) - SUM(e.credit_k) <> 0
   `);
@@ -525,9 +529,10 @@ export async function openMovements(
            (SUM(e.debit_k) - SUM(e.credit_k))::bigint AS amount_k,
            MIN(t.memo) AS memo
     FROM ledger_entries e
+    JOIN accounts acc ON acc.id = e.account_id
     JOIN ledger_transactions t ON t.id = e.transaction_id
     WHERE e.business_id = ${businessId}::uuid
-      AND e.account = 'BANK'${onlyIds}
+      AND acc.code = ${codeOf('BANK')}${onlyIds}
       AND NOT EXISTS (
         SELECT 1 FROM bank_line_matches m
          WHERE m.business_id = ${businessId}::uuid

@@ -74,6 +74,15 @@ export const ACCOUNTS = {
 } as const satisfies Record<string, { code: string; name: string; type: AccountType }>;
 
 export type AccountKey = keyof typeof ACCOUNTS;
+
+/**
+ * The inverse of the chart: display code back to legacy key (F1, PR-033).
+ * Readers now filter and group the ledger by the chart row's CODE through
+ * `account_id`; consumers that still speak in keys map back through this.
+ */
+export const KEY_BY_CODE = Object.fromEntries(
+  Object.entries(ACCOUNTS).map(([key, value]) => [value.code, key]),
+) as Record<string, AccountKey>;
 export type AccountType = 'asset' | 'liability' | 'equity' | 'income' | 'expense';
 
 /** For rows read back from storage, where `account` arrives as a string. */

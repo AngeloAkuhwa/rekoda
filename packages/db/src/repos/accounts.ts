@@ -7,10 +7,25 @@
  * promises — hand it a role and the scope the role needs, get exactly one
  * active account or an honest null.
  */
-import { and, eq } from 'drizzle-orm';
-import { ROLE_SCOPE, SEED_CHART, SEED_FINANCIAL_ACCOUNTS, type SystemRole } from '@rekoda/core';
+import { and, eq, sql } from 'drizzle-orm';
+import {
+  ACCOUNTS,
+  ROLE_SCOPE,
+  SEED_CHART,
+  SEED_FINANCIAL_ACCOUNTS,
+  type AccountKey,
+  type SystemRole,
+} from '@rekoda/core';
 import type { TenantDb } from '../client.js';
 import { accounts, financialAccounts } from '../schema/accounts.js';
+
+/**
+ * The chart CODE of a legacy account key, as an inline SQL literal — the
+ * comparison every reader uses once it joins through `account_id` (PR-033).
+ * Never user input: these are the seed's own constants, the codes the
+ * migration carried over from the seventeen-key era.
+ */
+export const codeOf = (key: AccountKey) => sql.raw(`'${ACCOUNTS[key].code}'`);
 
 export interface FinancialAccountInput {
   businessId: string;

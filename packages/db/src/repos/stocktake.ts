@@ -18,6 +18,7 @@ import { sql } from 'drizzle-orm';
 import { postStockCount } from '@rekoda/core';
 import type { TenantDb } from '../client.js';
 import { auditEvents } from '../schema/ops.js';
+import { codeOf } from './accounts.js';
 import { writePosting } from './issue.js';
 
 /** What the ledger calls a count that was acted on. */
@@ -57,7 +58,8 @@ export async function stockValuationFor(tx: TenantDb, businessId: string): Promi
     WITH ledger AS (
       SELECT COALESCE(SUM(e.debit_k) - SUM(e.credit_k), 0)::bigint AS ledger_k
       FROM ledger_entries e
-      WHERE e.business_id = ${businessId}::uuid AND e.account = 'INVENTORY'
+      JOIN accounts acc ON acc.id = e.account_id
+      WHERE e.business_id = ${businessId}::uuid AND acc.code = ${codeOf('INVENTORY')}
     ),
     held AS (
       SELECT p.unit_cost_k,

@@ -22,7 +22,7 @@ import { and, eq, sql, desc, inArray } from 'drizzle-orm';
 import {
   ACCOUNTS,
   formatDocumentNumber,
-  isAccountKey,
+  KEY_BY_CODE,
   lagosYear,
   postCreditNote,
   postSale,
@@ -35,6 +35,7 @@ import { normalisePaymentMethod } from '@rekoda/core';
 import type { TenantDb } from '../client.js';
 import { auditEvents, documents } from '../schema/ops.js';
 import { accounts } from '../schema/accounts.js';
+import { codeOf } from './accounts.js';
 import {
   creditNotes,
   invoiceItems,
@@ -583,12 +584,14 @@ async function reverseCostOfSale(
 ): Promise<void> {
   const posted = await tx.execute<{
     transaction_id: string;
-    account: string;
+    account_code: string;
     debit_k: string;
     credit_k: string;
   }>(sql`
-    SELECT e.transaction_id, e.account, e.debit_k::bigint AS debit_k, e.credit_k::bigint AS credit_k
+    SELECT e.transaction_id, acc.code AS account_code,
+           e.debit_k::bigint AS debit_k, e.credit_k::bigint AS credit_k
     FROM ledger_entries e
+    JOIN accounts acc ON acc.id = e.account_id
     JOIN ledger_transactions t
       ON t.id = e.transaction_id AND t.business_id = e.business_id
     WHERE e.business_id = ${businessId}::uuid
@@ -597,16 +600,19 @@ async function reverseCostOfSale(
       AND t.reverses_id IS NULL
       AND EXISTS (
         SELECT 1 FROM ledger_entries c
-        WHERE c.transaction_id = t.id AND c.business_id = e.business_id AND c.account = 'COGS'
+        JOIN accounts ca ON ca.id = c.account_id
+        WHERE c.transaction_id = t.id AND c.business_id = e.business_id
+          AND ca.code = ${codeOf('COGS')}
       )
   `);
 
   const byTransaction = new Map<string, LedgerLine[]>();
   for (const row of posted) {
-    if (!isAccountKey(row.account)) continue;
+    const account = KEY_BY_CODE[row.account_code];
+    if (!account) continue;
     const lines = byTransaction.get(row.transaction_id) ?? [];
     lines.push({
-      account: row.account,
+      account,
       debitK: Number(row.debit_k),
       creditK: Number(row.credit_k),
     });
@@ -634,14 +640,23 @@ export async function ledgerEntriesFor(
   tx: TenantDb,
   businessId: string,
 ): Promise<Array<{ account: string; debitK: number; creditK: number }>> {
-  return tx
+  const rows = await tx
     .select({
-      account: ledgerEntries.account,
+      code: accounts.code,
       debitK: ledgerEntries.debitK,
       creditK: ledgerEntries.creditK,
     })
     .from(ledgerEntries)
+    .innerJoin(accounts, eq(accounts.id, ledgerEntries.accountId))
     .where(eq(ledgerEntries.businessId, businessId));
+  /* By KEY where the seed knows the code, so every consumer built on the
+   * seventeen-key vocabulary keeps reading; by CODE where it does not, so a
+   * post-seed account can never silently vanish from a trial balance. */
+  return rows.map((r) => ({
+    account: KEY_BY_CODE[r.code] ?? r.code,
+    debitK: r.debitK,
+    creditK: r.creditK,
+  }));
 }
 
 /** How many invoices this business has. Row-level security does the scoping. */
