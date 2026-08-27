@@ -7,6 +7,7 @@ import {
   type OutboundDocument,
   type OutboundRetentionNotice,
   type OutboundTemplate,
+  type OutboundConnectionText,
   type OutboundMessage,
   type SendResult,
 } from './sender.js';
@@ -31,6 +32,8 @@ export class StubSender implements MessageSender {
   readonly retentionNotices: OutboundRetentionNotice[] = [];
   /** Merchant-WABA template sends (PR-060), with the credential they carried. */
   readonly templates: OutboundTemplate[] = [];
+  /** In-window free-form sends on a merchant WABA (PR-061). */
+  readonly connectionTexts: OutboundConnectionText[] = [];
   private failNext: Error | null = null;
   private failDocuments: Error | null = null;
 
@@ -57,6 +60,7 @@ export class StubSender implements MessageSender {
     this.billingNotices.length = 0;
     this.retentionNotices.length = 0;
     this.templates.length = 0;
+    this.connectionTexts.length = 0;
     this.media.clear();
     this.failNext = null;
     this.failDocuments = null;
@@ -119,6 +123,16 @@ export class StubSender implements MessageSender {
     }
     this.retentionNotices.push(notice);
     return Promise.resolve({ providerMessageId: `wamid.RET${this.retentionNotices.length}` });
+  }
+
+  sendOnConnection(message: OutboundConnectionText): Promise<SendResult> {
+    if (this.failNext) {
+      const error = this.failNext;
+      this.failNext = null;
+      return Promise.reject(error);
+    }
+    this.connectionTexts.push(message);
+    return Promise.resolve({ providerMessageId: `wamid.CTX${this.connectionTexts.length}` });
   }
 
   sendTemplate(template: OutboundTemplate): Promise<SendResult> {

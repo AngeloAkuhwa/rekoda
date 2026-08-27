@@ -9,6 +9,7 @@ import {
   type OutboundDocument,
   type OutboundRetentionNotice,
   type OutboundTemplate,
+  type OutboundConnectionText,
   type OutboundMessage,
   type SendResult,
 } from './sender.js';
@@ -275,6 +276,31 @@ export class MetaSender implements MessageSender {
   }
 
   /**
+   * A free-form reply on the merchant's own number, inside the window.
+   * Same travelling credential as `sendTemplate`; same one-request
+   * lifetime for the token; link previews off for the same reason `send`
+   * keeps them off.
+   */
+  async sendOnConnection(message: OutboundConnectionText): Promise<SendResult> {
+    const body = await this.request(`/${message.phoneNumberId}/messages`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${message.accessToken}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        messaging_product: 'whatsapp',
+        recipient_type: 'individual',
+        to: message.to,
+        type: 'text',
+        text: { preview_url: false, body: message.text },
+      }),
+    });
+    const messages = (body as { messages?: Array<{ id?: string }> }).messages;
+    return { providerMessageId: messages?.[0]?.id ?? null };
+  }
+
+  /**
    * A merchant's own approved template, on the MERCHANT'S OWN number.
    *
    * The one send here that does not use the constructor credential: the
@@ -390,6 +416,10 @@ export class NoSenderConfigured implements MessageSender {
   }
 
   sendTemplate(): Promise<never> {
+    return Promise.reject(new SendFailed('META_ACCESS_TOKEN is not set'));
+  }
+
+  sendOnConnection(): Promise<never> {
     return Promise.reject(new SendFailed('META_ACCESS_TOKEN is not set'));
   }
 

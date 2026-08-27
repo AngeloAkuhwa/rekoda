@@ -114,8 +114,30 @@ export interface OutboundTemplate {
   parameters: string[];
 }
 
+/**
+ * A free-form reply INSIDE a customer's 24-hour window, on the merchant's
+ * own WABA (spec §24; PR-061). Same travelling credential as
+ * `OutboundTemplate`, and only sendable while the window the CUSTOMER
+ * opened is still running — outside it, Meta rejects free-form text
+ * (131047) and the only thing that can reach them is a template.
+ */
+export interface OutboundConnectionText {
+  to: string;
+  phoneNumberId: string;
+  /** The merchant's WABA token, already decrypted. Never logged, never stored. */
+  accessToken: string;
+  /** Fully rehydrated, for the length of this one request. */
+  text: string;
+}
+
 export interface MessageSender {
   send(message: OutboundMessage): Promise<SendResult>;
+  /**
+   * A free-form text on a merchant's own WABA, inside the service window.
+   * The window check is the CALLER'S duty (it needs the database); this
+   * method just carries the credential the way `sendTemplate` does.
+   */
+  sendOnConnection(message: OutboundConnectionText): Promise<SendResult>;
   /**
    * Send a merchant's approved template on their own WABA. Separate from
    * the named platform templates below for the same reason those are

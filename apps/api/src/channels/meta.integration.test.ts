@@ -415,6 +415,32 @@ describe('phoneNumberId → BusinessId routing (spec §24; PR-059)', () => {
     expect(merchantThread).toHaveLength(0);
   });
 
+  it("a customer's message OPENS their 24-hour window (§24; PR-061)", async () => {
+    const merchant = await seedMerchant('+2348030005555', 'Efe Fabrics');
+    await connectWabaFor(merchant.id, 'PN-EFE-1');
+
+    await post(messagePayload('2349097778888', 'wamid.WIN.1', 'good evening', 'PN-EFE-1'));
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+
+    /* Keyed by the SAME F.4-scoped blind index the thread routes by, and
+     * expiring 24 hours out by its own clock. */
+    const hash = participantIndexFor(deps.config.matchKey, {
+      businessId: merchant.id,
+      channelAccountId: 'PN-EFE-1',
+      keyVersion: PARTICIPANT_INDEX_KEY_VERSION,
+      normalisedParticipant: '+2349097778888',
+    });
+    const open = await withBusiness(db, merchant.id, async (tx) => {
+      const connection = await wabaRepo.wabaConnectionFor(tx, merchant.id);
+      return wabaRepo.serviceWindowOpen(tx, {
+        businessId: merchant.id,
+        wabaConnectionId: connection!.id,
+        customerHash: hash,
+      });
+    });
+    expect(open).toBe(true);
+  });
+
   it('an unknown phoneNumberId is refused, never guessed by the sender (§24, pinned)', async () => {
     /* The sender IS a merchant — the exact person a sender-based fallback
      * would misfile. Their customer-of-somebody message must not become

@@ -40,6 +40,7 @@ import {
 } from '@rekoda/db';
 import { CONFIG, type ApiConfig } from '../config.js';
 import { DB } from '../db/db.module.js';
+import { PrivacyGateway } from '../privacy/gateway.service.js';
 import { MESSAGE_SENDER } from './sender.tokens.js';
 import { SendFailed, type MessageSender } from './sender.js';
 
@@ -52,6 +53,25 @@ export interface SendTemplateInput {
    * the template's name, not its rendering). */
   parameters?: string[];
 }
+
+export interface SendCustomerTextInput {
+  to: string;
+  /** Rehydrated free-form text, alive for the send; stored TOKENISED. */
+  text: string;
+}
+
+export type SendCustomerTextOutcome =
+  | { outcome: 'sent'; unit: 'SERVICE_MESSAGE' }
+  | { outcome: 'not_entitled' }
+  | { outcome: 'no_connection' }
+  | { outcome: 'invalid_recipient' }
+  /** Not a failure — an instruction: outside the 24-hour window only a
+   * template can reach this customer. The caller selects one and goes
+   * through `sendTemplate`, which is the send-time category selection. */
+  | { outcome: 'window_closed' }
+  | { outcome: 'allowance_exhausted'; unit: 'SERVICE_MESSAGE' }
+  | { outcome: 'send_failed'; unit: 'SERVICE_MESSAGE' }
+  | { outcome: 'unavailable'; reason: 'connection_key_missing' | 'token_missing' };
 
 export type SendTemplateOutcome =
   | { outcome: 'sent'; unit: UsageUnit }
@@ -71,6 +91,7 @@ export class WabaTemplateService {
     @Inject(DB) private readonly db: Db,
     @Inject(CONFIG) private readonly config: ApiConfig,
     @Inject(MESSAGE_SENDER) private readonly sender: MessageSender,
+    @Inject(PrivacyGateway) private readonly gateway: PrivacyGateway,
   ) {}
 
   async sendTemplate(businessId: string, input: SendTemplateInput): Promise<SendTemplateOutcome> {
@@ -180,6 +201,116 @@ export class WabaTemplateService {
            * and not delivered, findable as such. */
           await usageRepo.refundUnit(tx, businessId, period, unit);
           this.log.warn('template send failed; unit refunded');
+          return { outcome: 'send_failed', unit };
+        }
+        throw error;
+      }
+    });
+  }
+
+  /**
+   * A free-form reply to a customer, selected by the WINDOW (spec §24;
+   * PR-061): inside the 24 hours their last message opened, free-form text
+   * goes as a SERVICE_MESSAGE; outside it, Meta rejects free-form (131047)
+   * and the refusal here says so BEFORE anything is consumed — choosing a
+   * template instead is the caller's next move, priced by its own unit.
+   */
+  async sendCustomerText(
+    businessId: string,
+    input: SendCustomerTextInput,
+  ): Promise<SendCustomerTextOutcome> {
+    if (!this.config.connectionKey) {
+      return { outcome: 'unavailable', reason: 'connection_key_missing' };
+    }
+
+    return withBusiness(this.db, businessId, async (tx): Promise<SendCustomerTextOutcome> => {
+      if (await entitlementsRepo.requireEntitlement(tx, businessId, 'REKODA_INTEGRATE')) {
+        return { outcome: 'not_entitled' };
+      }
+
+      const connection = await wabaRepo.wabaConnectionFor(tx, businessId);
+      if (!connection || connection.status !== 'CONNECTED') {
+        return { outcome: 'no_connection' };
+      }
+
+      let to: string;
+      try {
+        to = normaliseParticipant(input.to);
+      } catch (error) {
+        if (error instanceof InvalidPhoneError) return { outcome: 'invalid_recipient' };
+        throw error;
+      }
+
+      const blindIndex = participantIndexFor(this.config.matchKey, {
+        businessId,
+        channelAccountId: connection.phoneNumberId,
+        keyVersion: PARTICIPANT_INDEX_KEY_VERSION,
+        normalisedParticipant: to,
+      });
+
+      /* The selection itself: the window answers BEFORE the meter moves.
+       * A closed window consumed nothing (§4.3 rule 4) — it redirects. */
+      const open = await wabaRepo.serviceWindowOpen(tx, {
+        businessId,
+        wabaConnectionId: connection.id,
+        customerHash: blindIndex,
+      });
+      if (!open) return { outcome: 'window_closed' };
+
+      const unit = 'SERVICE_MESSAGE' as const;
+      const plan = await usageRepo.planFor(tx, businessId);
+      const period = usagePeriod(new Date());
+      const allowed = await usageRepo.consumeUnit(
+        tx,
+        businessId,
+        period,
+        unit,
+        allowanceFor(plan, unit),
+      );
+      if (!allowed) return { outcome: 'allowance_exhausted', unit };
+
+      const token = connection.accessTokenCipher
+        ? decryptFacet(
+            connection.accessTokenCipher,
+            this.config.connectionKey,
+            `${businessId}:waba_token`,
+          )
+        : null;
+      if (!token) {
+        await usageRepo.refundUnit(tx, businessId, period, unit);
+        return { outcome: 'unavailable', reason: 'token_missing' };
+      }
+
+      /* Stored TOKENISED, before the send — same two disciplines as every
+       * message in the estate: the history never holds a real name, and an
+       * undelivered reply is a visible debt. */
+      const tokenised = await this.gateway.tokenise(businessId, input.text);
+      const recorded = await conversationsRepo.recordOutbound(
+        tx,
+        { businessId, channel: 'meta', kind: 'text', body: tokenised.text },
+        {
+          kind: 'CUSTOMER',
+          businessId,
+          channel: 'meta',
+          channelAccountId: connection.phoneNumberId,
+          participantBlindIndex: blindIndex,
+          participantIndexKeyVersion: PARTICIPANT_INDEX_KEY_VERSION,
+        },
+      );
+
+      try {
+        const result = await this.sender.sendOnConnection({
+          to,
+          phoneNumberId: connection.phoneNumberId,
+          accessToken: token,
+          text: input.text,
+        });
+        await conversationsRepo.markOutboundSent(tx, recorded.id, result.providerMessageId);
+        return { outcome: 'sent', unit };
+      } catch (error) {
+        if (error instanceof SendFailed) {
+          await usageRepo.refundUnit(tx, businessId, period, unit);
+          this.log.warn('customer text send failed; unit refunded');
           return { outcome: 'send_failed', unit };
         }
         throw error;

@@ -18,7 +18,7 @@ import { Logger } from '@nestjs/common';
 import { normaliseParticipant, InvalidPhoneError } from '@rekoda/core/identity';
 import { participantIndexFor, PARTICIPANT_INDEX_KEY_VERSION } from '@rekoda/core/vault';
 import { extractInboundEvents, metaWebhookBody } from '@rekoda/contracts';
-import { conversationsRepo, events } from '@rekoda/db';
+import { conversationsRepo, events, wabaRepo } from '@rekoda/db';
 import type { ApiConfig } from '../config.js';
 import type { PrivacyGateway } from '../privacy/gateway.service.js';
 import { openPayload } from '../privacy/payload-vault.js';
@@ -36,9 +36,13 @@ export function customerMessageHandler(deps: CustomerMessageDeps): JobHandler {
     const eventId = typeof payload['eventId'] === 'string' ? payload['eventId'] : null;
     const phoneNumberId =
       typeof payload['phoneNumberId'] === 'string' ? payload['phoneNumberId'] : null;
-    if (!eventId || !phoneNumberId) {
+    const connectionId =
+      typeof payload['connectionId'] === 'string' ? payload['connectionId'] : null;
+    if (!eventId || !phoneNumberId || !connectionId) {
       // Dies rather than retries: a payload missing these will not grow them.
-      throw new Error('customer.message: payload is missing eventId or phoneNumberId');
+      throw new Error(
+        'customer.message: payload is missing eventId, phoneNumberId or connectionId',
+      );
     }
 
     const event = await events.eventForBusiness(tx, eventId, businessId);
@@ -78,17 +82,18 @@ export function customerMessageHandler(deps: CustomerMessageDeps): JobHandler {
       throw error;
     }
 
+    const blindIndex = participantIndexFor(deps.config.matchKey, {
+      businessId,
+      channelAccountId: phoneNumberId,
+      keyVersion: PARTICIPANT_INDEX_KEY_VERSION,
+      normalisedParticipant: participant,
+    });
     const target: conversationsRepo.ThreadTarget = {
       kind: 'CUSTOMER',
       businessId,
       channel: 'meta',
       channelAccountId: phoneNumberId,
-      participantBlindIndex: participantIndexFor(deps.config.matchKey, {
-        businessId,
-        channelAccountId: phoneNumberId,
-        keyVersion: PARTICIPANT_INDEX_KEY_VERSION,
-        normalisedParticipant: participant,
-      }),
+      participantBlindIndex: blindIndex,
       participantIndexKeyVersion: PARTICIPANT_INDEX_KEY_VERSION,
     };
 
@@ -110,6 +115,17 @@ export function customerMessageHandler(deps: CustomerMessageDeps): JobHandler {
       },
       target,
     );
+
+    /* THE CUSTOMER'S MESSAGE IS WHAT OPENS THE WINDOW (spec §24; PR-061):
+     * 24 hours of free-form replies, per customer per connection, extended
+     * by each new message and closed by its own clock. The window's key is
+     * the SAME blind index the thread routes by — one identity vocabulary,
+     * scoped per F.4, never a raw number. */
+    await wabaRepo.touchServiceWindow(tx, {
+      businessId,
+      wabaConnectionId: connectionId,
+      customerHash: blindIndex,
+    });
 
     await events.markProcessed(tx, eventId, null, businessId);
   };

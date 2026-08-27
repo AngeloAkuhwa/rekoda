@@ -11,6 +11,7 @@ import { randomBytes } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import {
   billingRepo,
+  usageRepo,
   conversationsRepo,
   createDb,
   identity,
@@ -20,6 +21,7 @@ import {
   type Db,
 } from '@rekoda/db';
 import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
+import { usagePeriod } from '@rekoda/core';
 import {
   encryptFacet,
   participantIndexFor,
@@ -27,6 +29,7 @@ import {
 } from '@rekoda/core/vault';
 import { SendFailed } from './sender.js';
 import { StubSender } from './sender.stub.js';
+import { PrivacyGateway } from '../privacy/gateway.service.js';
 import { WabaTemplateService } from './waba-templates.service.js';
 import { loadConfig, type ApiConfig } from '../config.js';
 
@@ -53,7 +56,7 @@ beforeAll(async () => {
   ({ db, close: closeDb } = createDb(urls.app, { max: 4 }));
   config = loadConfig();
   sender = new StubSender();
-  service = new WabaTemplateService(db, config, sender);
+  service = new WabaTemplateService(db, config, sender, new PrivacyGateway(db, config));
 });
 
 afterAll(async () => {
@@ -262,5 +265,81 @@ describe('sending a template on the merchant WABA (§4.2, §4.3)', () => {
       ),
     );
     expect([...rows]).toEqual([{ provider_message_id: null }]);
+  });
+});
+
+describe('the window selects the send (§24; PR-061)', () => {
+  async function openWindowFor(businessId: string, connectionId: string, phoneNumberId: string) {
+    /* What a customer message does (the customer-message handler calls
+     * exactly this): the window's key is the same F.4-scoped blind index
+     * the thread routes by. */
+    const hash = participantIndexFor(config.matchKey, {
+      businessId,
+      channelAccountId: phoneNumberId,
+      keyVersion: PARTICIPANT_INDEX_KEY_VERSION,
+      normalisedParticipant: '+2349098887777',
+    });
+    await withBusiness(db, businessId, (tx) =>
+      wabaRepo.touchServiceWindow(tx, {
+        businessId,
+        wabaConnectionId: connectionId,
+        customerHash: hash,
+      }),
+    );
+  }
+
+  it('outside the window, free-form is refused BEFORE any meter: a template is the way', async () => {
+    const { businessId } = await seedMerchant('integrate');
+
+    const outcome = await service.sendCustomerText(businessId, {
+      to: '+2349098887777',
+      text: 'Your order is ready for pickup',
+    });
+
+    expect(outcome).toEqual({ outcome: 'window_closed' });
+    expect(sender.connectionTexts).toHaveLength(0);
+    expect(await used(businessId, 'SERVICE_MESSAGE')).toBe(0);
+  });
+
+  it('inside the window, free-form goes as a SERVICE_MESSAGE, metered and tokenised', async () => {
+    const { businessId, connectionId, phoneNumberId } = await seedMerchant('integrate');
+    await openWindowFor(businessId, connectionId, phoneNumberId);
+    /* SERVICE_MESSAGE is sold on no plan today — its figure arrives with
+     * the pricing decision, and 0 means zero. A bonus credit raises the
+     * ceiling the way a billing top-up would, which proves the machinery
+     * without inventing capacity. */
+    const period = usagePeriod(new Date());
+    await withBusiness(db, businessId, (tx) =>
+      usageRepo.creditBonus(tx, businessId, period, 'SERVICE_MESSAGE', 5),
+    );
+
+    const outcome = await service.sendCustomerText(businessId, {
+      to: '+2349098887777',
+      text: 'Your order is ready for pickup, Ada',
+    });
+
+    expect(outcome).toEqual({ outcome: 'sent', unit: 'SERVICE_MESSAGE' });
+    expect(await used(businessId, 'SERVICE_MESSAGE')).toBe(1);
+    expect(sender.connectionTexts).toHaveLength(1);
+    expect(sender.connectionTexts[0]).toMatchObject({
+      to: '+2349098887777',
+      phoneNumberId,
+      accessToken: MERCHANT_TOKEN,
+      text: 'Your order is ready for pickup, Ada',
+    });
+  });
+
+  it('with the window open and nothing sold, zero still means zero (§4.3 rule 4)', async () => {
+    const { businessId, connectionId, phoneNumberId } = await seedMerchant('complete');
+    await openWindowFor(businessId, connectionId, phoneNumberId);
+
+    const outcome = await service.sendCustomerText(businessId, {
+      to: '+2349098887777',
+      text: 'hello',
+    });
+
+    expect(outcome).toEqual({ outcome: 'allowance_exhausted', unit: 'SERVICE_MESSAGE' });
+    expect(sender.connectionTexts).toHaveLength(0);
+    expect(await used(businessId, 'SERVICE_MESSAGE')).toBe(0);
   });
 });
