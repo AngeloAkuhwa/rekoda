@@ -127,3 +127,72 @@ describe('four axes, one derived answer (§17.1)', () => {
     ).rejects.toThrow();
   });
 });
+
+describe('provider-neutral attributes (§17.2; PR-052)', () => {
+  it('a merchant on their own key is a direct merchant on their own credentials, production-enabled', async () => {
+    seq += 1;
+    const user = await identity.upsertUserByPhone(db, `+23481865${String(seq).padStart(4, '0')}`);
+    const business = await identity.createBusinessWithOwner(db, {
+      name: 'Ada Fashion',
+      businessType: null,
+      ownerUserId: user.id,
+    });
+    await withBusiness(db, business.id, (tx) =>
+      paymentsHub.storeMerchantKey(tx, {
+        businessId: business.id,
+        providerType: 'paystack',
+        merchantKeyCipher: 'vault:blob',
+        merchantKeyTail: '4821',
+      }),
+    );
+    const rows = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{
+        representation: string;
+        credential_source: string;
+        account_ownership: string;
+        production_enabled: boolean;
+      }>(sql`
+        SELECT representation, credential_source, account_ownership, production_enabled
+        FROM payment_connections WHERE business_id = ${business.id}::uuid
+      `),
+    );
+    expect([...rows][0]).toEqual({
+      representation: 'DIRECT_MERCHANT',
+      credential_source: 'MERCHANT_SUPPLIED',
+      account_ownership: 'MERCHANT_OWNED',
+      /* kyc 'not_required' permits: the provider verified this merchant
+       * when it issued their live key. */
+      production_enabled: true,
+    });
+  });
+
+  it('a platform connection defaults to sub-merchant on platform credentials', async () => {
+    const { businessId, connectionId } = await seedConnection();
+    const rows = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ representation: string; credential_source: string }>(sql`
+        SELECT representation, credential_source FROM payment_connections
+        WHERE id = ${connectionId}::uuid
+      `),
+    );
+    expect([...rows][0]).toEqual({
+      representation: 'SUB_MERCHANT',
+      credential_source: 'PLATFORM_ISSUED',
+    });
+  });
+
+  it('PLATFORM_ONLY is representable, and nonsense is not', async () => {
+    const { businessId, connectionId } = await seedConnection();
+    await withBusiness(db, businessId, (tx) =>
+      tx.execute(
+        sql`UPDATE payment_connections SET representation = 'PLATFORM_ONLY' WHERE id = ${connectionId}::uuid`,
+      ),
+    );
+    await expect(
+      withBusiness(db, businessId, (tx) =>
+        tx.execute(
+          sql`UPDATE payment_connections SET account_ownership = 'COMMUNAL' WHERE id = ${connectionId}::uuid`,
+        ),
+      ),
+    ).rejects.toThrow();
+  });
+});

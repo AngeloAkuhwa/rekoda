@@ -561,6 +561,13 @@
       "when": 1787410819000,
       "tag": "0079_connection_four_statuses",
       "breakpoints": true
+    },
+    {
+      "idx": 80,
+      "version": "7",
+      "when": 1787410820000,
+      "tag": "0080_connection_attributes",
+      "breakpoints": true
     }
   ]
 }

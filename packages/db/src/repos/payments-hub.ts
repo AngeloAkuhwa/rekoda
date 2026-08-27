@@ -499,6 +499,12 @@ export async function storeMerchantKey(
       keyMode: 'merchant_key',
       status: 'active',
       kycStatus: 'not_required',
+      /* §17.1/§17.2 (PR-052): their own key, their own arrangement — the
+       * axes and attributes say so, and production derives from them. */
+      operationalStatus: 'ACTIVE',
+      commercialStatus: 'AGREED',
+      representation: 'DIRECT_MERCHANT',
+      credentialSource: 'MERCHANT_SUPPLIED',
     })
     .onConflictDoUpdate({
       target: [paymentConnections.businessId, paymentConnections.providerType],
@@ -507,6 +513,10 @@ export async function storeMerchantKey(
         merchantKeyTail: input.merchantKeyTail,
         keyMode: 'merchant_key',
         status: 'active',
+        operationalStatus: 'ACTIVE',
+        commercialStatus: 'AGREED',
+        representation: 'DIRECT_MERCHANT',
+        credentialSource: 'MERCHANT_SUPPLIED',
         updatedAt: new Date(),
       },
     });

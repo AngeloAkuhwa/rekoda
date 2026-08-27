@@ -65,8 +65,15 @@ export const paymentConnections = pgTable(
     operationalStatus: text('operational_status').notNull().default('NOT_CONFIGURED'),
     commercialStatus: text('commercial_status').notNull().default('UNCONFIRMED'),
     complianceStatus: text('compliance_status').notNull().default('PERMITTED'),
-    /** DERIVED in the database (GENERATED column): all four must permit. */
+    /** DERIVED in the database (GENERATED column): all four must permit.
+     * kyc 'not_required' permits — a merchant-supplied live key is the
+     * provider's own verification (PR-052). */
     productionEnabled: boolean('production_enabled'),
+    /** §17.2 provider-neutral attributes. PLATFORM_ONLY is a real
+     * arrangement, not a degenerate case. */
+    accountOwnership: text('account_ownership').notNull().default('MERCHANT_OWNED'),
+    representation: text('representation').notNull().default('SUB_MERCHANT'),
+    credentialSource: text('credential_source').notNull().default('PLATFORM_ISSUED'),
     /** Who bears the provider's fee (§14) — commercial choice, never code. */
     feePolicy: text('fee_policy').notNull().default('merchant_bearing'),
     /**
