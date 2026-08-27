@@ -714,3 +714,49 @@ export const receivableRecognitionPolicies = pgTable('receivable_recognition_pol
   createdBy: text('created_by').notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
+
+/* ── revenue recognition events + review items (§12.2, §12.5; 0075) ── */
+
+/**
+ * What has been recognised, per order. §12.2's revenueRecognisedToDate is
+ * the SUM of these rows, read at posting time, never cached. Idempotent by
+ * the §12.5 quadruple (NULL order lines pinned to a sentinel in 0075's
+ * unique index). Append-only.
+ */
+export const revenueRecognitionEvents = pgTable('revenue_recognition_events', {
+  id: uuid('id')
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  businessId: uuid('business_id')
+    .notNull()
+    .references(() => businesses.id),
+  orderId: uuid('order_id').notNull(),
+  orderLineId: uuid('order_line_id'),
+  sourceType: text('source_type').notNull(),
+  sourceId: text('source_id').notNull(),
+  /** REVENUE only. Never gross. Never VAT-inclusive. */
+  amountMinor: bigint('amount_minor', { mode: 'number' }).notNull(),
+  ledgerTransactionId: uuid('ledger_transaction_id').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
+ * §12.2's REQUIRES_REVIEW queue: machine-readable reason, full context at
+ * the moment of refusal, resolution recorded — never deleted.
+ */
+export const recognitionReviewItems = pgTable('recognition_review_items', {
+  id: uuid('id')
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  businessId: uuid('business_id')
+    .notNull()
+    .references(() => businesses.id),
+  orderId: uuid('order_id'),
+  reviewReason: text('review_reason').notNull(),
+  sourceType: text('source_type').notNull(),
+  sourceId: text('source_id').notNull(),
+  context: jsonb('context').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  resolvedAt: timestamp('resolved_at', { withTimezone: true }),
+  resolvedBy: text('resolved_by'),
+});
