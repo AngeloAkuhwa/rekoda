@@ -26,6 +26,9 @@ export function CloseBooksForm({
     <form action={action}>
       <input type="hidden" name="period" value={period} />
       <input type="hidden" name="intent" value={closed ? 'reopen' : 'close'} />
+      {state.confirm ? (
+        <input type="hidden" name="confirmationId" value={state.confirm.confirmationId} />
+      ) : null}
       {state.error ? (
         <p className="rk-fineprint" role="alert">
           {state.error}
@@ -36,8 +39,19 @@ export function CloseBooksForm({
           {state.done}
         </p>
       ) : null}
+      {state.confirm ? (
+        <p className="rk-fineprint" role="alert">
+          {state.confirm.consequence}
+        </p>
+      ) : null}
       <Button type="submit" disabled={pending}>
-        {pending ? 'Saving…' : closed ? `Reopen ${label}` : `Close ${label}`}
+        {pending
+          ? 'Saving…'
+          : state.confirm
+            ? `Yes, reopen ${label}`
+            : closed
+              ? `Reopen ${label}`
+              : `Close ${label}`}
       </Button>
     </form>
   );

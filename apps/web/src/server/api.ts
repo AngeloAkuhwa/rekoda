@@ -1351,11 +1351,12 @@ export async function voidInvoice(
   sessionToken: string,
   invoiceNumber: string,
   reason: string,
+  confirmationId?: string,
 ): Promise<VoidInvoiceResponse | null> {
   const { status, json } = await call({
     method: 'POST',
     path: '/v1/reports/invoices/void',
-    body: { invoiceNumber, reason },
+    body: { invoiceNumber, reason, ...(confirmationId ? { confirmationId } : {}) },
     headers: { authorization: `Bearer ${sessionToken}` },
     expect: [200, 400],
   });

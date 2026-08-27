@@ -65,8 +65,17 @@ export function VoidForm({ voidable }: { voidable: string[] }) {
         </p>
       ) : null}
 
+      {state.confirm ? (
+        <>
+          <input type="hidden" name="confirmationId" value={state.confirm.confirmationId} />
+          <p className="rk-fineprint" role="alert">
+            {state.confirm.consequence}
+          </p>
+        </>
+      ) : null}
+
       <Button type="submit" disabled={pending}>
-        {pending ? 'Voiding…' : 'Void this invoice'}
+        {pending ? 'Voiding…' : state.confirm ? 'Yes, void it' : 'Void this invoice'}
       </Button>
     </form>
   );

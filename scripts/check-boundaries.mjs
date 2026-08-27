@@ -95,6 +95,36 @@ function aiAdapterViolations(rel, body) {
   return found;
 }
 
+/**
+ * A1's completion gate (spec §25, build plan A1): no financial write occurs
+ * outside the command layer. The fourteen commands own these writers; a
+ * controller, job handler or sweep that calls one directly has built the
+ * alternate cheaper path §25 exists to forbid. Member-access is what the
+ * repos expose (`issueRepo.issueSale(...)`), so the scan is on call sites,
+ * not import specifiers.
+ */
+const COMMAND_LAYER_DIR = 'apps/api/src/commands/';
+const FINANCIAL_WRITER_CALL =
+  /\.(issueSale|voidInvoice|recordMerchantPayment|recordPaymentByNumber|bookVerifiedPayment|recordExpense|recordPurchase|recordJournal|closeBooks|reopenBooks|importStatementLines|matchByHand|eraseAllIdentities|placeOrder|recordSaleMovements|recordDelivery|recordMovement|writePosting|appendVerification)\(/g;
+
+function commandLayerViolations(rel, body) {
+  if (!rel.startsWith('apps/api/src/')) return [];
+  if (rel.startsWith(COMMAND_LAYER_DIR)) return [];
+  const found = [];
+  for (const m of body.matchAll(FINANCIAL_WRITER_CALL)) {
+    found.push({
+      rel,
+      spec: `${m[1]}()`,
+      rule: {
+        name: 'financial write outside the command layer',
+        reason:
+          'every ingress converges on the command layer (spec §25); call the command work function in apps/api/src/commands instead of the repository writer',
+      },
+    });
+  }
+  return found;
+}
+
 const SKIP_DIRS = new Set(['node_modules', 'dist', '.next', '.turbo', 'migrations', '.git']);
 const SOURCE = /\.(ts|tsx|mts|cts|mjs|js)$/;
 
@@ -127,6 +157,7 @@ for (const dir of ['apps', 'packages']) {
       }
     }
     if (!isTestOrConfig) violations.push(...aiAdapterViolations(rel, body));
+    if (!isTestOrConfig) violations.push(...commandLayerViolations(rel, body));
   }
 }
 
@@ -140,4 +171,4 @@ if (violations.length > 0) {
   process.exit(1);
 }
 
-console.log(`Boundaries OK — ${RULES.length + 1} rules, no violations.`);
+console.log(`Boundaries OK — ${RULES.length + 2} rules, no violations.`);

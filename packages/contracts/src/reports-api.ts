@@ -864,6 +864,9 @@ export type RecordPaymentResponse = z.infer<typeof recordPaymentResponse>;
 export const voidInvoiceRequest = z.object({
   invoiceNumber: z.string().min(1),
   reason: z.string().trim().min(4).max(200),
+  /** Second call of the HIGH_RISK two-step (Appendix D): the confirmation
+   * the first call opened, agreed to. Absent on the first call. */
+  confirmationId: z.string().uuid().optional(),
 });
 
 export const voidInvoiceResponse = z.discriminatedUnion('outcome', [
@@ -872,6 +875,15 @@ export const voidInvoiceResponse = z.discriminatedUnion('outcome', [
   z.object({ outcome: z.literal('already_void') }),
   /** Money arrived against it. A credit note is the right instrument, not a void. */
   z.object({ outcome: z.literal('has_payments'), paidK: kobo }),
+  /** A void is HIGH_RISK: nothing happened yet — show this consequence and
+   * resubmit with the confirmationId to proceed. */
+  z.object({
+    outcome: z.literal('confirm'),
+    confirmationId: z.string().uuid(),
+    consequence: z.string(),
+  }),
+  /** The confirmation expired or was already used. Start again. */
+  z.object({ outcome: z.literal('confirmation_lapsed') }),
 ]);
 
 /**
@@ -1058,7 +1070,11 @@ export const closeBooksResponse = z.discriminatedUnion('outcome', [
  * necessarily reopens August too. Saying that is better than a second way to
  * describe what is closed.
  */
-export const reopenBooksRequest = z.object({ from: period });
+export const reopenBooksRequest = z.object({
+  from: period,
+  /** Second call of the HIGH_RISK two-step (Appendix D). */
+  confirmationId: z.string().uuid().optional(),
+});
 
 export const reopenBooksResponse = z.discriminatedUnion('outcome', [
   z.object({
@@ -1067,6 +1083,14 @@ export const reopenBooksResponse = z.discriminatedUnion('outcome', [
     /** What the watermark was, so the page can say what else came open. */
     wasClosedThrough: period,
   }),
+  /** Reopening is HIGH_RISK: reported figures become movable again. Nothing
+   * happened yet — show this consequence and resubmit with the id. */
+  z.object({
+    outcome: z.literal('confirm'),
+    confirmationId: z.string().uuid(),
+    consequence: z.string(),
+  }),
+  z.object({ outcome: z.literal('confirmation_lapsed') }),
   z.object({ outcome: z.literal('already_open') }),
 ]);
 

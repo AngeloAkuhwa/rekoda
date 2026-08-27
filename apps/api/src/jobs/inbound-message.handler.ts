@@ -1242,35 +1242,6 @@ async function confirmPendingDraft(
 }
 
 /**
- * What the goods a sale took off the shelf cost.
- *
- * A SECOND posting beside the sale, in the same transaction, and the
- * separation is the point. A sale is a fact about money and is known exactly;
- * what the goods cost is an estimate from a costing method and is known only
- * for products the merchant has told Rekoda about. Two postings means a sale
- * whose cost is unknown still records the sale.
- *
- * Nothing is written when nothing that moved had a cost, which is not the
- * same as the goods having been free. The statements say how much revenue
- * that was rather than reporting a gross margin that assumes it.
- */
-async function postCostOfGoods(
-  tx: TenantDb,
-  businessId: string,
-  invoiceNumber: string,
-  movements: { costK: number },
-): Promise<void> {
-  if (movements.costK <= 0) return;
-  await issueRepo.writePosting(
-    tx,
-    businessId,
-    postCostOfSale({ memo: `Cost of goods on ${invoiceNumber}`, costK: movements.costK }),
-    'invoice',
-    invoiceNumber,
-  );
-}
-
-/**
  * A confirmed order: the order, the invoice it becomes, and the stock it
  * commits, in one transaction.
  *

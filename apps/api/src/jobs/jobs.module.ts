@@ -161,6 +161,10 @@ export function buildOutboxDispatcher(): OutboxDispatcher {
   dispatcher.register('inventory.adjusted', async () => {});
   dispatcher.register('data.erased', async () => {});
 
+  /* PR-028's facts. */
+  dispatcher.register('invoice.voided', async () => {});
+  dispatcher.register('period.reopened', async () => {});
+
   return dispatcher;
 }
 

@@ -16,6 +16,8 @@ import { readSessionToken } from '@/server/session-cookies';
 export interface VoidFormState {
   error?: string;
   done?: string;
+  /** The API named the consequence and waits for the merchant to agree. */
+  confirm?: { confirmationId: string; consequence: string; invoiceNumber: string; reason: string };
 }
 
 /**
@@ -41,9 +43,23 @@ async function voidInvoiceActionUnguarded(
   if (!invoiceNumber) return { error: 'Pick an invoice to void.' };
   if (reason.length < 4) return { error: 'Say why, in a few words. It goes on the record.' };
 
-  const outcome = await voidInvoice(token, invoiceNumber, reason);
+  const confirmationId = String(formData.get('confirmationId') ?? '').trim() || undefined;
+  const outcome = await voidInvoice(token, invoiceNumber, reason, confirmationId);
   if (!outcome) return { error: 'That did not go through. Nothing was changed.' };
 
+  if (outcome.outcome === 'confirm') {
+    return {
+      confirm: {
+        confirmationId: outcome.confirmationId,
+        consequence: outcome.consequence,
+        invoiceNumber,
+        reason,
+      },
+    };
+  }
+  if (outcome.outcome === 'confirmation_lapsed') {
+    return { error: 'That took a little too long. Submit it again to start over.' };
+  }
   if (outcome.outcome === 'not_found') return { error: 'No invoice with that number.' };
   if (outcome.outcome === 'already_void') {
     return { error: `${invoiceNumber} was already voided. Nothing changed.` };

@@ -15,6 +15,7 @@ import { RiskPolicyService } from '../risk/risk-policy.service.js';
 import {
   closePeriodWork,
   postJournalWork,
+  reopenPeriodWork,
   type ClosePeriodInput,
   type PostJournalInput,
 } from './ledger-commands.js';
@@ -181,6 +182,63 @@ describe('ClosePeriod through the bus', () => {
     );
     expect(refused).toEqual({ outcome: 'not_ended' });
     expect(await count(businessId, 'outbox_events')).toBe(0);
+  });
+});
+
+describe('ReopenAccountingPeriod: the dashboard two-step (Appendix D)', () => {
+  it('refuses without a confirmation, reopens with one, and refuses its reuse', async () => {
+    const businessId = await seedBusiness();
+    await withBusiness(appDb, businessId, (tx) =>
+      closePeriodWork(tx, { businessId, through: '2026-07', actor: 'user:test' }),
+    );
+
+    const input = { businessId, from: '2026-07', actor: 'user:test' };
+    const envelope = {
+      businessId,
+      command: 'ReopenAccountingPeriod' as const,
+      payload: input,
+      subject: 'reopen:2026-07',
+      actor: 'user:test',
+      ingress: 'DASHBOARD' as const,
+    };
+
+    /* First call: HIGH_RISK with no confirmation is confirm_first, and
+     * NOTHING happened — the books stay closed. */
+    const first = await withBusiness(appDb, businessId, (tx) =>
+      bus.run(tx, envelope, () => reopenPeriodWork(tx, input)),
+    );
+    expect(first.outcome).toBe('confirm_first');
+    expect(await count(businessId, 'outbox_events', "AND type = 'period.reopened'")).toBe(0);
+
+    /* The consequence is shown, agreed to, and the claim reopens. */
+    const opened = await withBusiness(appDb, businessId, (tx) =>
+      bus.riskPolicy.ask(tx, {
+        businessId,
+        command: 'ReopenAccountingPeriod',
+        subject: 'reopen:2026-07',
+        actor: 'user:test',
+        ingress: 'DASHBOARD',
+        consequence: '2026-07 opens back up. Statements you already sent can change.',
+        reason: 'merchant asked to reopen from the dashboard',
+      }),
+    );
+    const second = await withBusiness(appDb, businessId, (tx) =>
+      bus.run(tx, { ...envelope, confirmationId: opened.id }, () => reopenPeriodWork(tx, input)),
+    );
+    expect(second.outcome).toBe('done');
+    if (second.outcome !== 'done') return;
+    expect(second.result).toEqual({
+      outcome: 'reopened',
+      from: '2026-07',
+      wasClosedThrough: '2026-07',
+    });
+    expect(await count(businessId, 'outbox_events', "AND type = 'period.reopened'")).toBe(1);
+
+    /* A confirmation is spent by its claim: reusing it is refused. */
+    const reused = await withBusiness(appDb, businessId, (tx) =>
+      bus.run(tx, { ...envelope, confirmationId: opened.id }, () => reopenPeriodWork(tx, input)),
+    );
+    expect(reused.outcome).toBe('confirmation_already_used');
   });
 });
 

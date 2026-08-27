@@ -22,6 +22,7 @@ import { RiskPolicyService } from '../risk/risk-policy.service.js';
 import {
   issueInvoiceWork,
   recordSaleWork,
+  voidReceiptWork,
   QuoteAlreadyTaken,
   type IssueInvoiceInput,
   type RecordSaleInput,
@@ -83,10 +84,11 @@ function saleInput(businessId: string): RecordSaleInput {
   };
 }
 
-async function count(businessId: string, table: string): Promise<number> {
+async function count(businessId: string, table: string, where = ''): Promise<number> {
   const rows = await withBusiness(appDb, businessId, (tx) =>
     tx.execute<{ n: string }>(
-      sql`SELECT count(*)::text AS n FROM ${sql.raw(table)} WHERE business_id = ${businessId}::uuid`,
+      sql`SELECT count(*)::text AS n FROM ${sql.raw(table)}
+          WHERE business_id = ${businessId}::uuid ${sql.raw(where)}`,
     ),
   );
   return Number([...rows][0]?.n ?? 0);
@@ -249,6 +251,73 @@ describe('IssueInvoice through the bus', () => {
 
     expect(await count(businessId, 'invoices')).toBe(1);
     expect(await count(businessId, 'outbox_events')).toBe(1);
+  });
+});
+
+describe('VoidReceipt: the dashboard two-step (Appendix D)', () => {
+  it('refuses without a confirmation, voids with one, and a refusal writes nothing', async () => {
+    const businessId = await seedBusiness();
+    const sale = await withBusiness(appDb, businessId, (tx) =>
+      recordSaleWork(tx, { ...saleInput(businessId), paidK: 0, balanceDueK: 1_000_000 }),
+    );
+
+    const input = {
+      businessId,
+      invoiceNumber: sale.invoiceNumber,
+      reason: 'wrong customer',
+      actor: 'user:test',
+    };
+    const envelope = {
+      businessId,
+      command: 'VoidReceipt' as const,
+      payload: input,
+      subject: `invoice:${sale.invoiceNumber}`,
+      actor: 'user:test',
+      ingress: 'DASHBOARD' as const,
+    };
+
+    const first = await withBusiness(appDb, businessId, (tx) =>
+      bus.run(tx, envelope, () => voidReceiptWork(tx, input)),
+    );
+    expect(first.outcome).toBe('confirm_first');
+    expect(await count(businessId, 'outbox_events', "AND type = 'invoice.voided'")).toBe(0);
+
+    const opened = await withBusiness(appDb, businessId, (tx) =>
+      bus.riskPolicy.ask(tx, {
+        businessId,
+        command: 'VoidReceipt',
+        subject: `invoice:${sale.invoiceNumber}`,
+        actor: 'user:test',
+        ingress: 'DASHBOARD',
+        consequence: `${sale.invoiceNumber} will be voided and its posting reversed.`,
+        reason: 'wrong customer',
+      }),
+    );
+    const second = await withBusiness(appDb, businessId, (tx) =>
+      bus.run(tx, { ...envelope, confirmationId: opened.id }, () => voidReceiptWork(tx, input)),
+    );
+    expect(second.outcome).toBe('done');
+    if (second.outcome !== 'done') return;
+    expect(second.result).toMatchObject({ outcome: 'voided', invoiceNumber: sale.invoiceNumber });
+    expect(await count(businessId, 'outbox_events', "AND type = 'invoice.voided'")).toBe(1);
+  });
+
+  it('a paid invoice is refused with has_payments, announcing nothing', async () => {
+    const businessId = await seedBusiness();
+    const sale = await withBusiness(appDb, businessId, (tx) =>
+      recordSaleWork(tx, saleInput(businessId)),
+    );
+
+    const refused = await withBusiness(appDb, businessId, (tx) =>
+      voidReceiptWork(tx, {
+        businessId,
+        invoiceNumber: sale.invoiceNumber,
+        reason: 'testing the refusal',
+        actor: 'user:test',
+      }),
+    );
+    expect(refused.outcome).toBe('has_payments');
+    expect(await count(businessId, 'outbox_events', "AND type = 'invoice.voided'")).toBe(0);
   });
 });
 

@@ -135,6 +135,9 @@ async function countStockActionUnguarded(
 export interface CloseBooksState {
   error?: string;
   done?: string;
+  /** Reopening is a decision, not a tap: the API named the consequence and
+   * waits for the merchant to agree to exactly it. */
+  confirm?: { confirmationId: string; consequence: string };
 }
 
 /**
@@ -157,8 +160,20 @@ async function closeBooksActionUnguarded(
   const reopening = String(formData.get('intent') ?? '') === 'reopen';
 
   if (reopening) {
-    const outcome = await reopenBooks(token, { from: period });
+    const confirmationId = String(formData.get('confirmationId') ?? '').trim() || undefined;
+    const outcome = await reopenBooks(token, {
+      from: period,
+      ...(confirmationId ? { confirmationId } : {}),
+    });
     if (!outcome) return { error: 'That did not go through. Nothing was changed.' };
+    if (outcome.outcome === 'confirm') {
+      return {
+        confirm: { confirmationId: outcome.confirmationId, consequence: outcome.consequence },
+      };
+    }
+    if (outcome.outcome === 'confirmation_lapsed') {
+      return { error: 'That took a little too long. Press the button again to start over.' };
+    }
     if (outcome.outcome === 'already_open') {
       return { done: `${periodLabel(period)} was already open.` };
     }

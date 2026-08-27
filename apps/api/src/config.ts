@@ -96,6 +96,8 @@ export interface ApiConfig {
   commandConfirmReconciliation: boolean;
   commandAdjustInventory: boolean;
   commandEraseData: boolean;
+  commandVoidReceipt: boolean;
+  commandReopenPeriod: boolean;
   /**
    * Which provider interprets a merchant's message.
    *
@@ -572,6 +574,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     commandConfirmReconciliation: env['REKODA_COMMAND_CONFIRM_RECONCILIATION'] === '1',
     commandAdjustInventory: env['REKODA_COMMAND_ADJUST_INVENTORY'] === '1',
     commandEraseData: env['REKODA_COMMAND_ERASE_DATA'] === '1',
+    commandVoidReceipt: env['REKODA_COMMAND_VOID_RECEIPT'] === '1',
+    commandReopenPeriod: env['REKODA_COMMAND_REOPEN_PERIOD'] === '1',
     /**
      * Optional. The deterministic router answers most messages
      * without a model, so a missing key degrades the product rather than

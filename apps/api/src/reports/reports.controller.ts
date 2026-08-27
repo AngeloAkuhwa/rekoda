@@ -157,9 +157,12 @@ import { recordPurchaseWork, type RecordPurchaseCmdInput } from '../commands/spe
 import {
   closePeriodWork,
   postJournalWork,
+  reopenPeriodWork,
   type ClosePeriodInput,
   type PostJournalInput,
+  type ReopenPeriodInput,
 } from '../commands/ledger-commands.js';
+import { voidReceiptWork, type VoidReceiptInput } from '../commands/sale-commands.js';
 import { Roles, RolesGuard } from '../auth/roles.guard.js';
 import { DB } from '../db/db.module.js';
 import { PrivacyGateway } from '../privacy/gateway.service.js';
@@ -492,15 +495,58 @@ export class ReportsController {
       throw new BadRequestException('invoiceNumber and a reason of at least 4 characters');
     }
     const businessId = request.auth!.businessId;
-    return withBusiness(this.db, businessId, (tx) =>
-      issueRepo.voidInvoice(
+    const input: VoidReceiptInput = {
+      businessId,
+      invoiceNumber: parsed.data.invoiceNumber,
+      reason: parsed.data.reason,
+      actor: `user:${request.auth!.userId}`,
+    };
+    return withBusiness(this.db, businessId, async (tx) => {
+      if (!this.config.commandVoidReceipt) return voidReceiptWork(tx, input);
+
+      /* Appendix D's two-step. The first call carries no confirmationId, so
+       * the bus answers `confirm_first`; a confirmation is opened naming the
+       * consequence and handed back for the merchant to read. The second
+       * call claims it and voids. */
+      const run = await this.commandBus.run(
         tx,
-        businessId,
-        parsed.data.invoiceNumber,
-        parsed.data.reason,
-        `user:${request.auth!.userId}`,
-      ),
-    );
+        {
+          businessId,
+          command: 'VoidReceipt',
+          payload: input,
+          subject: `invoice:${input.invoiceNumber}`,
+          confirmationId: parsed.data.confirmationId ?? null,
+          actor: input.actor,
+          ingress: 'DASHBOARD',
+        },
+        () => voidReceiptWork(tx, input),
+      );
+      if (run.outcome === 'confirm_first') {
+        const opened = await this.commandBus.riskPolicy.ask(tx, {
+          businessId,
+          command: 'VoidReceipt',
+          subject: `invoice:${input.invoiceNumber}`,
+          actor: input.actor,
+          ingress: 'DASHBOARD',
+          consequence:
+            `${input.invoiceNumber} will be voided and its posting reversed. ` +
+            'The number stays used, and the record of the void is permanent.',
+          reason: input.reason,
+        });
+        return { outcome: 'confirm', confirmationId: opened.id, consequence: opened.consequence };
+      }
+      if (
+        run.outcome === 'confirmation_expired' ||
+        run.outcome === 'confirmation_already_used' ||
+        run.outcome === 'confirmation_invalid'
+      ) {
+        return { outcome: 'confirmation_lapsed' };
+      }
+      if (run.outcome !== 'done') {
+        throw new Error(`VoidReceipt refused unexpectedly: ${run.outcome}`);
+      }
+      return run.result;
+    });
   }
 
   /**
@@ -1632,13 +1678,56 @@ export class ReportsController {
     if (!parsed.success) throw new BadRequestException('the month to reopen from');
 
     const businessId = request.auth!.businessId;
-    return withBusiness(this.db, businessId, (tx) =>
-      closeRepo.reopenBooks(tx, {
-        businessId,
-        from: parsed.data.from,
-        actor: `user:${request.auth!.userId}`,
-      }),
-    );
+    const input: ReopenPeriodInput = {
+      businessId,
+      from: parsed.data.from,
+      actor: `user:${request.auth!.userId}`,
+    };
+    return withBusiness(this.db, businessId, async (tx) => {
+      if (!this.config.commandReopenPeriod) return reopenPeriodWork(tx, input);
+
+      /* Appendix D's two-step: reported figures becoming movable again is
+       * HIGH_RISK, so the first call opens the confirmation naming what
+       * comes open, and the second claims it and reopens. */
+      const run = await this.commandBus.run(
+        tx,
+        {
+          businessId,
+          command: 'ReopenAccountingPeriod',
+          payload: input,
+          subject: `reopen:${input.from}`,
+          confirmationId: parsed.data.confirmationId ?? null,
+          actor: input.actor,
+          ingress: 'DASHBOARD',
+        },
+        () => reopenPeriodWork(tx, input),
+      );
+      if (run.outcome === 'confirm_first') {
+        const opened = await this.commandBus.riskPolicy.ask(tx, {
+          businessId,
+          command: 'ReopenAccountingPeriod',
+          subject: `reopen:${input.from}`,
+          actor: input.actor,
+          ingress: 'DASHBOARD',
+          consequence:
+            `${input.from} opens back up, and so does every month after it. ` +
+            'Statements you already sent can change until you close again.',
+          reason: 'merchant asked to reopen from the dashboard',
+        });
+        return { outcome: 'confirm', confirmationId: opened.id, consequence: opened.consequence };
+      }
+      if (
+        run.outcome === 'confirmation_expired' ||
+        run.outcome === 'confirmation_already_used' ||
+        run.outcome === 'confirmation_invalid'
+      ) {
+        return { outcome: 'confirmation_lapsed' };
+      }
+      if (run.outcome !== 'done') {
+        throw new Error(`ReopenAccountingPeriod refused unexpectedly: ${run.outcome}`);
+      }
+      return run.result;
+    });
   }
 
   /**

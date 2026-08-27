@@ -211,3 +211,45 @@ async function postCostOfGoods(
     invoiceNumber,
   );
 }
+
+/* ── VoidReceipt (Appendix D.2: a document already given to a customer) ── */
+
+export interface VoidReceiptInput {
+  businessId: string;
+  invoiceNumber: string;
+  /** Goes on the record, so the gap in the numbering is explained. */
+  reason: string;
+  actor: string;
+}
+
+export type VoidReceiptResult = Awaited<ReturnType<typeof issueRepo.voidInvoice>>;
+
+/**
+ * Withdraw a document a customer may already hold. HIGH_RISK, so the
+ * dashboard runs Appendix D's two-step around this work; the refusals
+ * (`not_found`, `already_void`, `has_payments`) are outcomes that write
+ * nothing, and the announcement carries the number and the reversed amount
+ * — never the reason, which is merchant prose.
+ */
+export async function voidReceiptWork(
+  tx: TenantDb,
+  input: VoidReceiptInput,
+): Promise<VoidReceiptResult> {
+  const outcome = await issueRepo.voidInvoice(
+    tx,
+    input.businessId,
+    input.invoiceNumber,
+    input.reason,
+    input.actor,
+  );
+
+  if (outcome.outcome === 'voided') {
+    await outboxRepo.append(tx, {
+      businessId: input.businessId,
+      type: 'invoice.voided',
+      payload: { invoiceNumber: outcome.invoiceNumber, reversedK: outcome.reversedK },
+    });
+  }
+
+  return outcome;
+}

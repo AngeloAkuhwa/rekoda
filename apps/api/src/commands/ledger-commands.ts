@@ -14,12 +14,10 @@
  * dense numbering. The throw rolls the whole transaction back, claim and
  * counter included, which is exactly §26's promise.
  *
- * `ReopenAccountingPeriod` is deliberately NOT here: it is HIGH_RISK
- * (Appendix D), so putting it through the bus demands a confirmation the
- * dashboard cannot yet collect. It arrives with PR-028's ingress rewiring,
- * confirmation screen and all — moving it early would have meant either
- * breaking the endpoint or exempting a high-risk command from its tier,
- * and the second is the thing Appendix D.3 forbids.
+ * `ReopenAccountingPeriod` (PR-028) is the dashboard's first HIGH_RISK
+ * command: reported figures become movable again, so the endpoint runs the
+ * two-step Appendix D demands — the first call opens a confirmation naming
+ * the consequence, the second claims it through the bus and reopens.
  */
 import { closeRepo, journalRepo, outboxRepo, type TenantDb } from '@rekoda/db';
 
@@ -69,6 +67,37 @@ export async function closePeriodWork(
       businessId: input.businessId,
       type: 'period.closed',
       payload: { through: outcome.through, actor: input.actor },
+    });
+  }
+
+  return outcome;
+}
+
+export interface ReopenPeriodInput {
+  businessId: string;
+  /** `YYYY-MM`, the month to open back up (and everything after it). */
+  from: string;
+  actor: string;
+}
+
+export type ReopenPeriodResult = Awaited<ReturnType<typeof closeRepo.reopenBooks>>;
+
+/**
+ * Never refused, never quiet (§ the close's mirror): a merchant who must
+ * correct a filed month can, and the audit trail plus the announcement say
+ * so beside the close they undo.
+ */
+export async function reopenPeriodWork(
+  tx: TenantDb,
+  input: ReopenPeriodInput,
+): Promise<ReopenPeriodResult> {
+  const outcome = await closeRepo.reopenBooks(tx, input);
+
+  if (outcome.outcome === 'reopened') {
+    await outboxRepo.append(tx, {
+      businessId: input.businessId,
+      type: 'period.reopened',
+      payload: { from: outcome.from, wasClosedThrough: outcome.wasClosedThrough },
     });
   }
 
