@@ -78,3 +78,97 @@ export async function confirmReconciliationWork(
 
   return outcome;
 }
+
+/* ── classification (spec §22.2; B1, PR-076) ─────────────────────────────
+ * "The merchant may classify a line as owner capital, a loan, a supplier
+ * refund, an internal transfer, or anything else. Rekoda never makes
+ * that judgement silently." The classify door is the §22.2 WHEN made a
+ * surface: ONE transaction that posts the journal the merchant's
+ * judgement implies and pairs it with the line, through the same two §25
+ * commands a person doing it by hand would use — PostJournal, then
+ * ConfirmReconciliation — so the audit trail reads identically either
+ * way. "Anything else" stays the general journal-plus-pair flow; LOAN is
+ * deliberately absent because the fixed V1 chart (ADR 0004) has no
+ * borrowings account, and arrives with F2's chart extensions. */
+
+export const CLASSIFICATIONS = {
+  /** Money the owner put in (or drew out): equity, never revenue. */
+  OWNER_CAPITAL: { account: 'OWNERS_EQUITY', label: 'Owner capital' },
+  /** A supplier handing money back: an expense reduction, never income. */
+  SUPPLIER_REFUND: { account: 'EXPENSES', label: 'Supplier refund' },
+  /** The business's own cash crossing its own accounts. */
+  INTERNAL_TRANSFER: { account: 'CASH', label: 'Cash transfer' },
+} as const;
+
+export type Classification = keyof typeof CLASSIFICATIONS;
+
+export interface ClassifyLineInput {
+  businessId: string;
+  lineId: string;
+  classification: Classification;
+  /** The merchant's own words, riding into the memo and the reason. */
+  note?: string | null;
+  actor: string;
+}
+
+export type ClassificationPrepared =
+  | {
+      outcome: 'ready';
+      journal: {
+        businessId: string;
+        actor: string;
+        memo: string;
+        amountK: number;
+        intoAccount: 'BANK' | 'OWNERS_EQUITY' | 'EXPENSES' | 'CASH';
+        outOfAccount: 'BANK' | 'OWNERS_EQUITY' | 'EXPENSES' | 'CASH';
+        occurredAt: Date;
+      };
+      reason: string;
+    }
+  | { outcome: 'refused'; reason: 'no_such_line' | 'line_already_matched' };
+
+/**
+ * Everything decided BEFORE anything is written: which journal the
+ * classification implies (direction follows the line's sign), dated the
+ * day the bank says the money moved, and the tier-4 reason that will sit
+ * on the match. Refusals are read-only.
+ */
+export async function prepareClassification(
+  tx: TenantDb,
+  input: ClassifyLineInput,
+): Promise<ClassificationPrepared> {
+  const line = await bankRepo.lineFor(tx, input.businessId, input.lineId);
+  if (!line) return { outcome: 'refused', reason: 'no_such_line' };
+  if (line.matched) return { outcome: 'refused', reason: 'line_already_matched' };
+
+  const spec = CLASSIFICATIONS[input.classification];
+  const note = input.note?.trim() ?? '';
+  return {
+    outcome: 'ready',
+    journal: {
+      businessId: input.businessId,
+      actor: input.actor,
+      memo: note ? `${spec.label}: ${note}` : spec.label,
+      amountK: Math.abs(line.amountK),
+      intoAccount: line.amountK > 0 ? 'BANK' : spec.account,
+      outOfAccount: line.amountK > 0 ? spec.account : 'BANK',
+      /* The line's own day: the classification is ABOUT that movement. */
+      occurredAt: new Date(`${line.postedOn}T12:00:00+01:00`),
+    },
+    reason: note
+      ? `Classified as ${spec.label.toLowerCase()}: ${note}`
+      : `Classified as ${spec.label.toLowerCase()}`,
+  };
+}
+
+/**
+ * The pairing raced: something claimed the line or the posting between
+ * the pre-check and the match. Thrown so the WHOLE classification rolls
+ * back — a journal that exists without its line would be the silent
+ * judgement §22.2 forbids, twice over.
+ */
+export class ClassificationRaced extends Error {
+  constructor(public readonly refusal: string) {
+    super(`classification raced: ${refusal}`);
+  }
+}

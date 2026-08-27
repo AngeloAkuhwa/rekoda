@@ -2,6 +2,7 @@
 
 import { revalidatePath } from 'next/cache';
 import {
+  classifyBankLine,
   connectBankFeed,
   forgetStatementDay,
   importStatement,
@@ -174,7 +175,14 @@ async function matchLineActionUnguarded(
   const transactionId = String(formData.get('transactionId') ?? '');
   if (!lineId || !transactionId) return { error: 'Pick the entry this line belongs to.' };
 
-  const outcome = await matchBankLine(token, { lineId, transactionId });
+  /* §22.1 tier 4: the merchant's own words ride onto the match. Optional
+   * here; the stored reason falls back to naming this screen. */
+  const reason = String(formData.get('reason') ?? '').trim();
+  const outcome = await matchBankLine(token, {
+    lineId,
+    transactionId,
+    ...(reason ? { reason: reason.slice(0, 300) } : {}),
+  });
   if (!outcome) return { error: 'That did not go through. Nothing was changed.' };
   if (outcome.outcome === 'refused') {
     return { error: REFUSED[outcome.reason] ?? 'That pairing was refused. Nothing was changed.' };
@@ -213,6 +221,50 @@ async function unmatchLineActionUnguarded(
   };
 }
 
+/**
+ * The merchant saying what money WAS (§22.2). One transaction posts the
+ * journal that judgement implies and pairs it with the line; Rekoda never
+ * decides this silently, and this form is where the deciding happens.
+ */
+const CLASSIFY_REFUSED: Record<string, string> = {
+  no_such_line: 'That line is no longer here. Reload the page and try again.',
+  line_already_matched:
+    'That line is already matched to something. Release it first if this was a mistake.',
+};
+
+async function classifyLineActionUnguarded(
+  _prev: StatementState,
+  formData: FormData,
+): Promise<StatementState> {
+  const token = await readSessionToken();
+  if (!token) return { error: 'Your session expired. Sign in again.' };
+
+  const lineId = String(formData.get('lineId') ?? '');
+  const classification = String(formData.get('classification') ?? '');
+  if (!lineId) return { error: 'Pick the line to classify.' };
+  if (!['OWNER_CAPITAL', 'SUPPLIER_REFUND', 'INTERNAL_TRANSFER'].includes(classification)) {
+    return { error: 'Say what that money was.' };
+  }
+  const note = String(formData.get('note') ?? '').trim();
+
+  const outcome = await classifyBankLine(token, {
+    lineId,
+    classification: classification as 'OWNER_CAPITAL' | 'SUPPLIER_REFUND' | 'INTERNAL_TRANSFER',
+    ...(note ? { note: note.slice(0, 300) } : {}),
+  });
+  if (!outcome) return { error: 'That did not go through. Nothing was changed.' };
+  if (outcome.outcome === 'refused') {
+    return {
+      error: CLASSIFY_REFUSED[outcome.reason] ?? 'That was refused. Nothing was changed.',
+    };
+  }
+
+  revalidatePath('/app/bank');
+  return {
+    done: `Recorded as ${outcome.journalNumber} and matched to this line. Your books now say what you said it was.`,
+  };
+}
+
 /* Role refusals (403) come back as a sentence in the form, not a crash.
  * Everything else still throws to the error boundary. */
 
@@ -243,6 +295,16 @@ export async function reconcileAction(
     return await reconcileActionUnguarded(...args);
   } catch (error) {
     return viewOnlyRefusal(error) as Awaited<ReturnType<typeof reconcileActionUnguarded>>;
+  }
+}
+
+export async function classifyLineAction(
+  ...args: Parameters<typeof classifyLineActionUnguarded>
+): ReturnType<typeof classifyLineActionUnguarded> {
+  try {
+    return await classifyLineActionUnguarded(...args);
+  } catch (error) {
+    return viewOnlyRefusal(error) as Awaited<ReturnType<typeof classifyLineActionUnguarded>>;
   }
 }
 

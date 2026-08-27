@@ -196,17 +196,11 @@ describe('connection-scoped line identity (§22.3)', () => {
   });
 });
 
-describe('the 0045 sketch is frozen', () => {
-  it('nothing can write bank_feed_connections any more', async () => {
-    const businessId = await seedBusiness();
-    await expect(
-      withBusiness(db, businessId, (tx) =>
-        tx.execute(sql`
-          INSERT INTO bank_feed_connections
-            (business_id, provider, account_ref, bank_name, account_last4)
-          VALUES (${businessId}::uuid, 'mono', 'acct_stale', 'GTBank', '4821')
-        `),
-      ),
-    ).rejects.toThrow();
+describe('the 0045 sketch is gone', () => {
+  it('bank_feed_connections no longer exists — frozen by 0095, dropped by 0097', async () => {
+    const rows = await db.execute<{ n: number }>(
+      sql`SELECT count(*)::int AS n FROM pg_tables WHERE tablename = 'bank_feed_connections'`,
+    );
+    expect([...rows][0]!.n).toBe(0);
   });
 });

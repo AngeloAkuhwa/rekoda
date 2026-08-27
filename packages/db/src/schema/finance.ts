@@ -457,35 +457,6 @@ export const bankLineMatches = pgTable(
 );
 
 /**
- * The live bank feed's standing authorisation (migration 0045, ADR 0012).
- *
- * The second door into `bank_statement_lines`: an aggregator the merchant
- * authorised reads their account and Rekoda pulls what moved. This row holds
- * only the fact of the link — provider, opaque account reference, a label —
- * never credentials, tokens or the account number. One row per business,
- * because V1 has one BANK ledger account to reconcile against.
- */
-export const bankFeedConnections = pgTable(
-  'bank_feed_connections',
-  {
-    id: id(),
-    businessId: businessId(),
-    provider: text('provider').notNull(),
-    /** The aggregator's id for the linked account. Opaque and theirs. */
-    accountRef: text('account_ref').notNull(),
-    bankName: text('bank_name').notNull(),
-    accountLast4: text('account_last4').notNull(),
-    /** linked | unlinked. Unlinked keeps the row: lapsed is not never-was. */
-    status: text('status').notNull().default('linked'),
-    /** The last Lagos day a sync ran, so the next fetch knows where to start. */
-    lastSyncedOn: date('last_synced_on'),
-    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => [uniqueIndex('bank_feed_business_ux').on(t.businessId)],
-);
-
-/**
  * FinancialAccountConnection (spec §18, §22.3; migration 0095, PR-073).
  *
  * The FEED side's connection entity, bound to the ONE place money sits

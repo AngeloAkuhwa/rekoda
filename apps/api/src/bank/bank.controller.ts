@@ -37,6 +37,9 @@ import {
   type SyncBankFeedResponse,
   matchLineRequest,
   unmatchLineRequest,
+  classifyLineRequest,
+  classifyLineResponse,
+  type ClassifyLineResponse,
   type MatchLineResponse,
   type UnmatchLineResponse,
 } from '@rekoda/contracts';
@@ -50,11 +53,14 @@ import { MonoApiError } from './mono.provider.js';
 import { syncFeedOnce } from './feed-sync.js';
 import { CommandBus } from '../commands/command-bus.service.js';
 import {
+  ClassificationRaced,
   confirmReconciliationWork,
   ingestFinancialTransactionsWork,
+  prepareClassification,
   type ConfirmReconciliationInput,
   type IngestFinancialTransactionsInput,
 } from '../commands/bank-commands.js';
+import { postJournalWork } from '../commands/ledger-commands.js';
 
 /**
  * How much of the statement the page carries.
@@ -130,6 +136,8 @@ export class BankController {
                 transactionId: match.transactionId,
                 memo: match.memo,
                 decidedBy: match.decidedBy,
+                tier: match.tier,
+                reason: match.reason,
               }
             : null,
         };
@@ -306,6 +314,108 @@ export class BankController {
    * The live feed's standing state, for the card the bank page renders
    * (fix-plan 4, G5). A read that decides nothing, like `position`.
    */
+  /**
+   * §22.2's WHEN: "the merchant classifies it as owner capital" — or a
+   * supplier refund, or their own cash moving. ONE transaction posts the
+   * journal that judgement implies (dated the day the bank says the money
+   * moved) and pairs it with the line, through the same two §25 commands a
+   * person doing it stepwise would use, so the audit trail reads
+   * identically. A race after the pre-check rolls the WHOLE thing back: a
+   * journal existing without its line would be a silent judgement.
+   */
+  @Post('classify')
+  @Roles('owner', 'accountant')
+  @HttpCode(200)
+  async classify(
+    @Req() request: AuthedRequest,
+    @Body() body: unknown,
+  ): Promise<ClassifyLineResponse> {
+    const parsed = classifyLineRequest.safeParse(body);
+    if (!parsed.success) throw new BadRequestException('a line and what that money was');
+
+    const businessId = request.auth!.businessId;
+    const actor = `user:${request.auth!.userId}`;
+    try {
+      return await withBusiness(this.db, businessId, async (tx) => {
+        const prepared = await prepareClassification(tx, {
+          businessId,
+          lineId: parsed.data.lineId,
+          classification: parsed.data.classification,
+          note: parsed.data.note ?? null,
+          actor,
+        });
+        if (prepared.outcome === 'refused') return classifyLineResponse.parse(prepared);
+
+        const posted = this.config.commandPostJournal
+          ? await this.runCommand(
+              tx,
+              businessId,
+              'PostJournal',
+              `classify-journal:${parsed.data.lineId}`,
+              actor,
+              { lineId: parsed.data.lineId, classification: parsed.data.classification },
+              () => postJournalWork(tx, prepared.journal),
+            )
+          : await postJournalWork(tx, prepared.journal);
+
+        const matchInput: ConfirmReconciliationInput = {
+          businessId,
+          lineId: parsed.data.lineId,
+          transactionId: posted.ledgerTransactionId,
+          actor,
+          reason: prepared.reason,
+        };
+        const paired = this.config.commandConfirmReconciliation
+          ? await this.runCommand(
+              tx,
+              businessId,
+              'ConfirmReconciliation',
+              `classify-match:${parsed.data.lineId}`,
+              actor,
+              matchInput,
+              () => confirmReconciliationWork(tx, matchInput),
+            )
+          : await confirmReconciliationWork(tx, matchInput);
+        if (paired.outcome !== 'matched') throw new ClassificationRaced(paired.reason);
+
+        return classifyLineResponse.parse({
+          outcome: 'classified',
+          journalNumber: posted.journalNumber,
+        });
+      });
+    } catch (error) {
+      if (error instanceof ClassificationRaced) {
+        return classifyLineResponse.parse({
+          outcome: 'refused',
+          reason: 'line_already_matched',
+        });
+      }
+      throw error;
+    }
+  }
+
+  /** The §25 seam, once: run one command through the bus inside the open
+   * transaction, refusing loudly if the bus refuses. */
+  private async runCommand<T>(
+    tx: Parameters<typeof confirmReconciliationWork>[0],
+    businessId: string,
+    command: 'PostJournal' | 'ConfirmReconciliation',
+    idempotencyKey: string,
+    actor: string,
+    payload: unknown,
+    work: () => Promise<T>,
+  ): Promise<T> {
+    const run = await this.commandBus.run(
+      tx,
+      { businessId, command, payload, actor, ingress: 'DASHBOARD', idempotencyKey },
+      work,
+    );
+    if (run.outcome !== 'done') {
+      throw new Error(`${command} refused unexpectedly: ${run.outcome}`);
+    }
+    return run.result;
+  }
+
   @Get('feed')
   async feedState(@Req() request: AuthedRequest): Promise<BankFeedStateResponse> {
     if (!this.feed.configured) return { state: 'not_configured' };

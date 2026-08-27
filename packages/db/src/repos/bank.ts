@@ -349,6 +349,15 @@ export interface Reconciliation {
   /** Tier-3 proposals (§22.1): a reference agrees, the amounts do not.
    * Shown to a person, never applied. */
   suggested: number;
+  /** The proposals themselves, enriched for the review screen. */
+  proposals: {
+    lineId: string;
+    transactionId: string;
+    why: 'reference_found_amount_differs';
+    movementAmountK: number;
+    movementOccurredOn: string;
+    movementMemo: string;
+  }[];
   /** Lines more than one posting fits, waiting on a person. */
   ambiguous: number;
   /** Lines nothing in the books explains: money nobody recorded. */
@@ -381,7 +390,15 @@ export interface Reconciliation {
 async function bankMovements(
   tx: TenantDb,
   businessId: string,
-): Promise<{ transactionId: string; occurredOn: string; amountK: number }[]> {
+): Promise<
+  {
+    transactionId: string;
+    occurredOn: string;
+    amountK: number;
+    reference: string | null;
+    memo: string;
+  }[]
+> {
   const rows = await tx.execute<{
     transaction_id: string;
     occurred_on: string;
@@ -407,6 +424,8 @@ async function bankMovements(
     occurredOn: r.occurred_on,
     amountK: Number(r.amount_k),
     reference: paymentReferencesIn(r.memo ?? '')[0] ?? null,
+    /* For the review screen's proposal cards, never for the rule. */
+    memo: r.memo ?? '',
   }));
 }
 
@@ -487,6 +506,17 @@ export async function reconcile(
     matched: existing.length + claimed,
     pairable: result.matched.length - claimed,
     suggested: result.suggestions.length,
+    proposals: result.suggestions.map((sug) => {
+      const movement = movementById.get(sug.transactionId);
+      return {
+        lineId: sug.lineId,
+        transactionId: sug.transactionId,
+        why: sug.why,
+        movementAmountK: movement?.amountK ?? 0,
+        movementOccurredOn: movement?.occurredOn ?? '',
+        movementMemo: movement?.memo ?? '',
+      };
+    }),
     ambiguous: result.ambiguous.length,
     unmatchedLines: result.unmatchedLines.length,
     unmatchedMovements: result.unmatchedMovements.length,
@@ -603,15 +633,28 @@ export async function matchesFor(
    * rather than with the page.
    */
   lineIds: readonly string[],
-): Promise<{ lineId: string; transactionId: string; decidedBy: string; memo: string }[]> {
+): Promise<
+  {
+    lineId: string;
+    transactionId: string;
+    decidedBy: string;
+    /** Which §22.1 tier decided it: 1, 2 or 4. */
+    tier: number;
+    /** The person's sentence on a tier-4 match; null on auto tiers. */
+    reason: string | null;
+    memo: string;
+  }[]
+> {
   if (lineIds.length === 0) return [];
   const rows = await tx.execute<{
     line_id: string;
     transaction_id: string;
     decided_by: string;
+    tier: number;
+    reason: string | null;
     memo: string;
   }>(sql`
-    SELECT m.line_id, m.transaction_id, m.decided_by, t.memo
+    SELECT m.line_id, m.transaction_id, m.decided_by, m.tier, m.reason, t.memo
     FROM bank_line_matches m
     JOIN ledger_transactions t ON t.id = m.transaction_id
     WHERE m.business_id = ${businessId}::uuid
@@ -624,8 +667,43 @@ export async function matchesFor(
     lineId: r.line_id,
     transactionId: r.transaction_id,
     decidedBy: r.decided_by,
+    tier: r.tier,
+    reason: r.reason,
     memo: r.memo,
   }));
+}
+
+/** One line, with whether anything already claims it — the classify
+ * door's pre-check (§22.2), read before a journal is minted for it. */
+export async function lineFor(
+  tx: TenantDb,
+  businessId: string,
+  lineId: string,
+): Promise<(BankLine & { matched: boolean }) | null> {
+  const rows = await tx.execute<{
+    id: string;
+    posted_on: string;
+    amount_k: string;
+    narration: string;
+    bank_ref: string | null;
+    match_id: string | null;
+  }>(sql`
+    SELECT l.id, l.posted_on::text AS posted_on, l.amount_k, l.narration, l.bank_ref,
+           m.id AS match_id
+    FROM bank_statement_lines l
+    LEFT JOIN bank_line_matches m ON m.business_id = l.business_id AND m.line_id = l.id
+    WHERE l.business_id = ${businessId}::uuid AND l.id = ${lineId}::uuid
+  `);
+  const row = [...rows][0];
+  if (!row) return null;
+  return {
+    id: row.id,
+    postedOn: row.posted_on,
+    amountK: Number(row.amount_k),
+    narration: row.narration,
+    bankRef: row.bank_ref,
+    matched: row.match_id !== null,
+  };
 }
 
 /** Why a hand-made match was refused, in terms the page can explain. */

@@ -108,6 +108,9 @@ import {
   type ForgetStatementDayResponse,
   type ReconcileResponse,
   type MatchLineRequest,
+  classifyLineResponse,
+  type ClassifyLineRequest,
+  type ClassifyLineResponse,
   type MatchLineResponse,
   type UnmatchLineResponse,
   type CloseBooksResponse,
@@ -1070,6 +1073,21 @@ export async function matchBankLine(
 }
 
 /** Release a pairing, leaving the line and the posting as they were. */
+/** §22.2's WHEN: classify an unmatched line, journal and pairing in one. */
+export async function classifyBankLine(
+  sessionToken: string,
+  body: ClassifyLineRequest,
+): Promise<ClassifyLineResponse | null> {
+  const { status, json } = await call({
+    method: 'POST',
+    path: '/v1/bank/classify',
+    body,
+    headers: { authorization: `Bearer ${sessionToken}` },
+    expect: [200, 400],
+  });
+  return status === 200 ? classifyLineResponse.parse(json) : null;
+}
+
 export async function unmatchBankLine(
   sessionToken: string,
   lineId: string,

@@ -1357,6 +1357,17 @@ export const bankPositionResponse = z.object({
     pairable: z.number().int().nonnegative(),
     /** Tier-3 proposals (§22.1): shown to a person, never applied. */
     suggested: z.number().int().nonnegative(),
+    /** The proposals themselves, for the review cards. */
+    proposals: z.array(
+      z.object({
+        lineId: z.string(),
+        transactionId: z.string(),
+        why: z.enum(['reference_found_amount_differs']),
+        movementAmountK: z.number().int(),
+        movementOccurredOn: z.string(),
+        movementMemo: z.string(),
+      }),
+    ),
     ambiguous: z.number().int().nonnegative(),
     unmatchedLines: z.number().int().nonnegative(),
     unmatchedMovements: z.number().int().nonnegative(),
@@ -1399,6 +1410,11 @@ export const bankPositionResponse = z.object({
           memo: z.string(),
           /** Whether Rekoda decided this or the merchant did. */
           decidedBy: z.enum(['auto', 'manual']),
+          /** Which §22.1 tier decided it: 1 exact reference, 2 strong
+           * deterministic, 4 manual. */
+          tier: z.number().int(),
+          /** The person's sentence on a tier-4 match; null on auto tiers. */
+          reason: z.string().nullable(),
         })
         .nullable(),
     }),
@@ -1430,6 +1446,17 @@ export const reconcileResponse = z.object({
   pairable: z.number().int().nonnegative(),
   /** Tier-3 proposals (§22.1): shown to a person, never applied. */
   suggested: z.number().int().nonnegative(),
+  /** The proposals themselves, for the review cards. */
+  proposals: z.array(
+    z.object({
+      lineId: z.string(),
+      transactionId: z.string(),
+      why: z.enum(['reference_found_amount_differs']),
+      movementAmountK: z.number().int(),
+      movementOccurredOn: z.string(),
+      movementMemo: z.string(),
+    }),
+  ),
   ambiguous: z.number().int().nonnegative(),
   /** Lines nothing in the books explains: money nobody recorded. */
   unmatchedLines: z.number().int().nonnegative(),
@@ -1475,6 +1502,30 @@ export const unmatchLineRequest = z.object({ lineId: z.string().uuid() });
 export const unmatchLineResponse = z.object({
   released: z.number().int().nonnegative(),
 });
+
+/**
+ * §22.2's WHEN, as a door: the merchant classifies an unmatched line, and
+ * ONE transaction posts the journal that judgement implies and pairs it.
+ * LOAN is absent until F2 brings a borrowings account (ADR 0004's chart
+ * is fixed at V1); anything else stays the journal-plus-pair flow.
+ */
+export const classifyLineRequest = z.object({
+  lineId: z.string().uuid(),
+  classification: z.enum(['OWNER_CAPITAL', 'SUPPLIER_REFUND', 'INTERNAL_TRANSFER']),
+  /** The merchant's own words, riding into the memo and the reason. */
+  note: z.string().trim().max(300).optional(),
+});
+
+export const classifyLineResponse = z.discriminatedUnion('outcome', [
+  z.object({ outcome: z.literal('classified'), journalNumber: z.string() }),
+  z.object({
+    outcome: z.literal('refused'),
+    reason: z.enum(['no_such_line', 'line_already_matched']),
+  }),
+]);
+
+export type ClassifyLineRequest = z.infer<typeof classifyLineRequest>;
+export type ClassifyLineResponse = z.infer<typeof classifyLineResponse>;
 
 export type MatchLineRequest = z.infer<typeof matchLineRequest>;
 export type MatchLineResponse = z.infer<typeof matchLineResponse>;

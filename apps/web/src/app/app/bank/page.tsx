@@ -41,6 +41,7 @@ export default async function BankPage() {
   ]);
   const today = lagosDay(new Date());
   const started = position.lines > 0;
+  const lineById = new Map(lines.map((line) => [line.id, line]));
 
   return (
     <section className="rk-container rk-dash">
@@ -161,6 +162,32 @@ export default async function BankPage() {
             line for you rather than guessing: a wrong match makes your books and your bank look
             like they agree when they do not.
           </p>
+          {/* Tier-3 proposals (§22.1): the payment reference says these two
+              belong together, the amounts say otherwise. Shown, explained,
+              never applied — two figures are two facts, and the difference
+              is usually a bank charge the merchant should record. */}
+          {reconciliation.proposals.length > 0 ? (
+            <div className="rk-void">
+              <h3>Worth a look</h3>
+              {reconciliation.proposals.map((proposal) => {
+                const line = lineById.get(proposal.lineId);
+                return (
+                  <p key={`${proposal.lineId}:${proposal.transactionId}`} className="rk-fineprint">
+                    {line ? `The line from ${presentDay(line.postedOn)} (` : 'A statement line ('}
+                    {line ? <Money kobo={line.amountK} /> : null}
+                    {line ? ') ' : ''}
+                    carries the payment reference of &ldquo;{proposal.movementMemo}&rdquo; (
+                    <Money kobo={proposal.movementAmountK} />
+                    {proposal.movementOccurredOn
+                      ? `, ${presentDay(proposal.movementOccurredOn)}`
+                      : ''}
+                    ), but the amounts differ, so Rekoda has not matched them. If your bank took a
+                    charge, record the charge as its own expense; the two will then agree.
+                  </p>
+                );
+              })}
+            </div>
+          ) : null}
           {canReconcileBank(identity.role) ? (
             <ReconcileForm pairable={reconciliation.pairable} />
           ) : null}

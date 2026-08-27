@@ -11,6 +11,7 @@ import { randomBytes } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import {
   bankPositionResponse,
+  classifyLineResponse,
   importStatementResponse,
   reconcileResponse,
   matchLineResponse,
@@ -345,6 +346,53 @@ describe('pairing the two sides, end to end', () => {
     expect(after.openMovements.map((m) => m.transactionId)).not.toContain(
       options[0]!.transactionId,
     );
+  });
+
+  it('classifies what the books do not explain: judgement and pairing in one door (§22.2)', async () => {
+    const { auth } = await onboard('+2348177000092');
+    await post('/v1/bank/statement', { csv: AUG }, auth);
+
+    const before = bankPositionResponse.parse(
+      (await app.inject({ method: 'GET', url: '/v1/bank/position', headers: auth })).json(),
+    );
+    const line = before.lines.find((l) => l.amountK === 15_000_000)!;
+    expect(line.matchedTo).toBeNull();
+
+    const classified = classifyLineResponse.parse(
+      (
+        await post(
+          '/v1/bank/classify',
+          { lineId: line.id, classification: 'OWNER_CAPITAL', note: 'my savings' },
+          auth,
+        )
+      ).json(),
+    );
+    expect(classified).toEqual({ outcome: 'classified', journalNumber: 'JNL-2026-000001' });
+
+    /* The line now carries the merchant's judgement as a tier-4 decision
+     * with their words on it, and the journal it implied is the match. */
+    const after = bankPositionResponse.parse(
+      (await app.inject({ method: 'GET', url: '/v1/bank/position', headers: auth })).json(),
+    );
+    expect(after.lines.find((l) => l.id === line.id)!.matchedTo).toMatchObject({
+      decidedBy: 'manual',
+      tier: 4,
+      reason: 'Classified as owner capital: my savings',
+      memo: 'JNL-2026-000001: Owner capital: my savings',
+    });
+
+    /* Saying it twice is refused, not doubled. */
+    expect(
+      classifyLineResponse.parse(
+        (
+          await post(
+            '/v1/bank/classify',
+            { lineId: line.id, classification: 'OWNER_CAPITAL' },
+            auth,
+          )
+        ).json(),
+      ),
+    ).toEqual({ outcome: 'refused', reason: 'line_already_matched' });
   });
 
   it('names why a hand-made match was refused', async () => {
