@@ -14,6 +14,7 @@
 import { sql } from 'drizzle-orm';
 import {
   bigint,
+  boolean,
   index,
   jsonb,
   pgTable,
@@ -54,9 +55,18 @@ export const paymentConnections = pgTable(
     settlementAccountCipher: text('settlement_account_cipher'),
     settlementAccountLast4: text('settlement_account_last4'),
     settlementAccountName: text('settlement_account_name'),
-    /** The §5 state machine. The CHECK constraint lives in the migration. */
+    /** The §5 state machine. The CHECK constraint lives in the migration.
+     * BLENDED and on its way out: §17.1 splits it into the four axes
+     * below (PR-051); readers cut over to `productionEnabled` in P1. */
     status: text('status').notNull().default('pending_details'),
     kycStatus: text('kyc_status').notNull().default('pending'),
+    /** §17.1's independent axes: they fail independently, so blending
+     * them makes real states unrepresentable. */
+    operationalStatus: text('operational_status').notNull().default('NOT_CONFIGURED'),
+    commercialStatus: text('commercial_status').notNull().default('UNCONFIRMED'),
+    complianceStatus: text('compliance_status').notNull().default('PERMITTED'),
+    /** DERIVED in the database (GENERATED column): all four must permit. */
+    productionEnabled: boolean('production_enabled'),
     /** Who bears the provider's fee (§14) — commercial choice, never code. */
     feePolicy: text('fee_policy').notNull().default('merchant_bearing'),
     /**
