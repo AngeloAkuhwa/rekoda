@@ -86,14 +86,6 @@ export type ThreadTarget =
       customerId?: string | null;
     };
 
-/** The 058a-3 guard, retired by 058a-4: kept only so the interim error
- * remains identifiable in logs from the flagged window. */
-export class CustomerThreadsNotYetEnabled extends Error {
-  constructor() {
-    super('customer threads await the F.2 constraints (PR-058a-4); refusing to create one early');
-  }
-}
-
 export async function resolveThread(tx: TenantDb, target: ThreadTarget): Promise<string> {
   if (target.kind === 'MERCHANT') {
     /* The old rule was CORRECT for merchant threads: exactly one per

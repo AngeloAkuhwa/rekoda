@@ -77,12 +77,11 @@ import { adjustInventoryWork, type AdjustInventoryInput } from '../commands/stoc
 import { eraseDataWork } from '../commands/privacy-commands.js';
 import type { MessageSender } from '../channels/sender.js';
 
-/** PR-058a-3: the explicit MERCHANT thread identity, when the resolver
- * flag asks ingresses to state it. Same row either way. */
-const merchantThread = (deps: InboundMessageDeps, businessId: string) =>
-  deps.config.conversationResolver
-    ? ({ kind: 'MERCHANT', businessId, channel: 'meta' } as const)
-    : undefined;
+/** The MERCHANT thread identity, stated at the ingress (Appendix F.2).
+ * This ingress hears the merchant talking to Rekoda; customer threads
+ * arrive with their own stated identity when Integrate routing lands. */
+const merchantThread = (businessId: string) =>
+  ({ kind: 'MERCHANT', businessId, channel: 'meta' }) as const;
 
 const paymentLog = new Logger('InboundMessageJob');
 
@@ -229,7 +228,7 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
           body: `[${inbound.messageType} message]`,
           providerMessageId: inbound.externalId,
         },
-        merchantThread(deps, businessId),
+        merchantThread(businessId),
       );
       if (recorded.isNew) {
         await deps.replySender.send(tx, {
@@ -285,7 +284,7 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
             body: route.route === 'deterministic' ? describeIntent(route.intent) : tokenised!.text,
             providerMessageId: inbound.externalId,
           },
-          merchantThread(deps, businessId),
+          merchantThread(businessId),
         );
 
     /**
@@ -383,7 +382,7 @@ async function readReceiptPhoto(
       body: '[receipt photo]',
       providerMessageId: inbound.externalId,
     },
-    merchantThread(deps, businessId),
+    merchantThread(businessId),
   );
   /* A redelivered webhook must not read, meter and answer twice. */
   if (!recorded.isNew) return null;
@@ -507,7 +506,7 @@ async function transcribeVoiceNote(
       body: '[voice note]',
       providerMessageId: inbound.externalId,
     },
-    merchantThread(deps, businessId),
+    merchantThread(businessId),
   );
   /* A redelivered webhook must not transcribe, meter and answer twice. The
    * body is replaced with the transcript below only on the first pass. */

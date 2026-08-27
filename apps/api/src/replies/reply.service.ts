@@ -74,12 +74,9 @@ export class ReplySender {
         kind: 'text',
         body: safe.text,
       },
-      /* PR-058a-3: state the thread identity instead of assuming it. The
-       * MERCHANT target resolves to the same row either way; the flag is
-       * the seam customer routing plugs into. */
-      this.config.conversationResolver
-        ? { kind: 'MERCHANT', businessId: input.businessId, channel: 'meta' }
-        : undefined,
+      /* The thread identity, stated rather than assumed (Appendix F.2):
+       * a reply to the merchant belongs on the merchant's thread. */
+      { kind: 'MERCHANT', businessId: input.businessId, channel: 'meta' },
     );
 
     // The one moment. A local, not a field, not a log line, not a row.

@@ -82,8 +82,6 @@ export interface ApiConfig {
    * work called directly, which is exactly what the ingress did before the
    * command existed. Rollback is a flag flip, per command, with no deploy.
    */
-  /** PR-058a-3: message writers resolve threads by explicit identity. */
-  conversationResolver: boolean;
   commandRecordSale: boolean;
   commandIssueInvoice: boolean;
   commandRecordPayment: boolean;
@@ -562,7 +560,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
      * a handler transaction. Raise it with the pool, not instead of it.
      */
     workerConcurrency: Math.max(1, Number(env['REKODA_WORKER_CONCURRENCY'] ?? 4)),
-    conversationResolver: env['REKODA_CONVERSATION_RESOLVER'] === '1',
     commandRecordSale: env['REKODA_COMMAND_RECORD_SALE'] === '1',
     commandIssueInvoice: env['REKODA_COMMAND_ISSUE_INVOICE'] === '1',
     commandRecordPayment: env['REKODA_COMMAND_RECORD_PAYMENT'] === '1',
