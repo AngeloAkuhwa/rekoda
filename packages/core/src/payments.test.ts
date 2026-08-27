@@ -14,6 +14,7 @@ import {
   PAYMENT_REFERENCE_PATTERN,
   splitFees,
   type ExpectedPayment,
+  resolvePaymentProvider,
 } from './payments.js';
 
 const EXPECTED: ExpectedPayment = {
@@ -198,4 +199,70 @@ describe('terminal intents', () => {
       expect(isTerminalIntentStatus(status)).toBe(false);
     },
   );
+});
+
+describe('the provider resolver (§17, §18; PR-068)', () => {
+  const cap = (
+    providerType: string,
+    status: 'AVAILABLE' | 'BLOCKED',
+    reason: string | null = null,
+  ) => ({ providerType, capability: 'COLLECT' as const, status, reason });
+  const conn = (
+    connectionId: string,
+    providerType: string,
+    productionEnabled: boolean,
+    connectedAtMs = 0,
+  ) => ({ connectionId, providerType, productionEnabled, connectedAtMs });
+
+  it('picks from capability and compliance, never a hardcoded default', () => {
+    const outcome = resolvePaymentProvider(
+      'COLLECT',
+      [conn('c-mono', 'mono', true, 1), conn('c-pst', 'paystack', true, 2)],
+      [
+        cap('paystack', 'AVAILABLE'),
+        cap('mono', 'BLOCKED', 'OPEN COMMERCIAL: Mono production terms'),
+      ],
+    );
+    /* Mono is OLDER but blocked at the platform — capability decides. */
+    expect(outcome).toEqual({ resolved: true, connectionId: 'c-pst', providerType: 'paystack' });
+  });
+
+  it('refuses with the blocker BY NAME when no capable provider remains', () => {
+    const outcome = resolvePaymentProvider(
+      'COLLECT',
+      [conn('c-mono', 'mono', true)],
+      [cap('mono', 'BLOCKED', 'OPEN COMMERCIAL: Mono production terms')],
+    );
+    expect(outcome).toEqual({
+      resolved: false,
+      reason: 'no_capable_provider',
+      detail: ['OPEN COMMERCIAL: Mono production terms'],
+    });
+  });
+
+  it("refuses when the merchant's own axes do not derive production-enabled", () => {
+    const outcome = resolvePaymentProvider(
+      'COLLECT',
+      [conn('c-pst', 'paystack', false)],
+      [cap('paystack', 'AVAILABLE')],
+    );
+    expect(outcome).toEqual({
+      resolved: false,
+      reason: 'not_production_enabled',
+      providerTypes: ['paystack'],
+    });
+  });
+
+  it('no connection is its own refusal, and seniority breaks a tie deterministically', () => {
+    expect(resolvePaymentProvider('COLLECT', [], [cap('paystack', 'AVAILABLE')])).toEqual({
+      resolved: false,
+      reason: 'no_connection',
+    });
+    const tie = resolvePaymentProvider(
+      'COLLECT',
+      [conn('c-new', 'paystack', true, 200), conn('c-old', 'paystack', true, 100)],
+      [cap('paystack', 'AVAILABLE')],
+    );
+    expect(tie).toEqual({ resolved: true, connectionId: 'c-old', providerType: 'paystack' });
+  });
 });

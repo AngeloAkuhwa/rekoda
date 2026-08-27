@@ -371,3 +371,22 @@ export const paymentReversals = pgTable(
   },
   (t) => [uniqueIndex('payment_reversals_payment_ux').on(t.businessId, t.paymentId)],
 );
+
+/* ── platform provider capabilities (spec §17, §18; 0093, PR-068) ── */
+
+/** GLOBAL reference data: what each provider may do on this platform, and
+ * which external blocker says otherwise. No business_id, no RLS — the
+ * platform's standing is not tenant state; each merchant's own standing
+ * lives on their connection's four §17.1 axes. Read-only to both roles. */
+export const providerCapabilities = pgTable(
+  'provider_capabilities',
+  {
+    id: id(),
+    providerType: text('provider_type').notNull(),
+    capability: text('capability').notNull(),
+    status: text('status').notNull().default('BLOCKED'),
+    reason: text('reason'),
+    updatedAt: updatedAt(),
+  },
+  (t) => [uniqueIndex('provider_capabilities_ux').on(t.providerType, t.capability)],
+);

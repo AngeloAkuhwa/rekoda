@@ -286,3 +286,88 @@ export function splitFees(input: FeeSplitInput): FeeSplit {
       };
   }
 }
+
+/* ── the provider resolver (spec §17, §18; PR-068) ─────────────────────── */
+
+/** §18's three ports. A provider that does two things has two rows. */
+export type ProviderCapabilityKind = 'COLLECT' | 'FEED' | 'PAYOUT';
+
+export interface PlatformCapability {
+  providerType: string;
+  capability: ProviderCapabilityKind;
+  status: 'AVAILABLE' | 'BLOCKED';
+  /** The external blocker by name, when blocked. */
+  reason?: string | null;
+}
+
+export interface CandidateConnection {
+  connectionId: string;
+  providerType: string;
+  /** The §17.1 derivation: all four axes must permit it. */
+  productionEnabled: boolean;
+  /** For deterministic seniority when more than one connection is eligible. */
+  connectedAtMs: number;
+}
+
+export type ResolveProviderOutcome =
+  | { resolved: true; connectionId: string; providerType: string }
+  /** The business holds no connection at all for this need. */
+  | { resolved: false; reason: 'no_connection' }
+  /** Connections exist, but no provider among them may do this on the
+   * platform — the detail carries the blockers by name. */
+  | { resolved: false; reason: 'no_capable_provider'; detail: string[] }
+  /** A capable provider exists, but that merchant's own connection does
+   * not derive production-enabled: their §17.1 axes are the refusal. */
+  | { resolved: false; reason: 'not_production_enabled'; providerTypes: string[] };
+
+/**
+ * Which provider serves this need, decided from CAPABILITY and COMPLIANCE
+ * and NOTHING else (§18: production availability is capability and
+ * compliance gated; the build plan's slice test says it plainer — never a
+ * hardcoded default).
+ *
+ * Two layers gate together: the PLATFORM may offer the provider
+ * (ProviderCapability, the OPEN COMMERCIAL/COMPLIANCE table) and THIS
+ * merchant's connection derives production-enabled (§17.1's four axes).
+ * When more than one connection survives both gates, the OLDEST wins —
+ * seniority is deterministic and merchant-explicable, where any
+ * preference list would quietly be the hardcoded default coming back in.
+ */
+export function resolvePaymentProvider(
+  need: ProviderCapabilityKind,
+  connections: CandidateConnection[],
+  capabilities: PlatformCapability[],
+): ResolveProviderOutcome {
+  if (connections.length === 0) return { resolved: false, reason: 'no_connection' };
+
+  const capable = new Set(
+    capabilities
+      .filter((c) => c.capability === need && c.status === 'AVAILABLE')
+      .map((c) => c.providerType),
+  );
+  const withCapableProvider = connections.filter((c) => capable.has(c.providerType));
+  if (withCapableProvider.length === 0) {
+    const blockers = capabilities
+      .filter(
+        (c) =>
+          c.capability === need &&
+          c.status === 'BLOCKED' &&
+          connections.some((connection) => connection.providerType === c.providerType),
+      )
+      .map((c) => c.reason ?? `${c.providerType} is blocked`);
+    return { resolved: false, reason: 'no_capable_provider', detail: blockers };
+  }
+
+  const eligible = withCapableProvider
+    .filter((c) => c.productionEnabled)
+    .sort((a, b) => a.connectedAtMs - b.connectedAtMs);
+  const winner = eligible[0];
+  if (!winner) {
+    return {
+      resolved: false,
+      reason: 'not_production_enabled',
+      providerTypes: withCapableProvider.map((c) => c.providerType),
+    };
+  }
+  return { resolved: true, connectionId: winner.connectionId, providerType: winner.providerType };
+}

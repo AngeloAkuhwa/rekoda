@@ -11,8 +11,21 @@
  */
 import { and, eq, inArray, not, sql } from 'drizzle-orm';
 import type { Db, TenantDb } from '../client.js';
-import { INTENT_STATUSES, type ConnectionStatus, type PaymentIntentStatus } from '@rekoda/core';
-import { paymentAttempts, paymentConnections, paymentIntents } from '../schema/payments-hub.js';
+import {
+  INTENT_STATUSES,
+  resolvePaymentProvider,
+  type ConnectionStatus,
+  type PaymentIntentStatus,
+  type PlatformCapability,
+  type ProviderCapabilityKind,
+  type ResolveProviderOutcome,
+} from '@rekoda/core';
+import {
+  paymentAttempts,
+  paymentConnections,
+  paymentIntents,
+  providerCapabilities,
+} from '../schema/payments-hub.js';
 import { provisionConnectionAccounts } from './accounts.js';
 
 const TERMINAL: readonly PaymentIntentStatus[] = ['succeeded', 'failed', 'expired', 'cancelled'];
@@ -778,4 +791,53 @@ export async function attemptsForIntent(tx: TenantDb, businessId: string, paymen
       ),
     )
     .orderBy(paymentAttempts.createdAt);
+}
+
+/* ── the provider resolver, over real rows (spec §17, §18; PR-068) ──────── */
+
+/** The platform's standing, as 0093 seeded and operators amend it. */
+export async function platformCapabilities(db: Db | TenantDb): Promise<PlatformCapability[]> {
+  const rows = await db
+    .select({
+      providerType: providerCapabilities.providerType,
+      capability: providerCapabilities.capability,
+      status: providerCapabilities.status,
+      reason: providerCapabilities.reason,
+    })
+    .from(providerCapabilities);
+  return rows as PlatformCapability[];
+}
+
+/**
+ * Which of this business's connections serves a need, from capability and
+ * compliance and nothing else. The pure decision lives in @rekoda/core;
+ * this reads the two layers it decides over — the platform capability
+ * table and the merchant's own connections with their derived
+ * `production_enabled` — and hands them across.
+ */
+export async function resolveProviderConnection(
+  tx: TenantDb,
+  businessId: string,
+  need: ProviderCapabilityKind,
+): Promise<ResolveProviderOutcome> {
+  const connections = await tx
+    .select({
+      connectionId: paymentConnections.id,
+      providerType: paymentConnections.providerType,
+      productionEnabled: paymentConnections.productionEnabled,
+      createdAt: paymentConnections.createdAt,
+    })
+    .from(paymentConnections)
+    .where(eq(paymentConnections.businessId, businessId));
+  const capabilities = await platformCapabilities(tx);
+  return resolvePaymentProvider(
+    need,
+    connections.map((c) => ({
+      connectionId: c.connectionId,
+      providerType: c.providerType,
+      productionEnabled: c.productionEnabled === true,
+      connectedAtMs: c.createdAt?.getTime() ?? 0,
+    })),
+    capabilities,
+  );
 }

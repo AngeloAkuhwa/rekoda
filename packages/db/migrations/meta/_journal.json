@@ -652,6 +652,13 @@
       "when": 1787411127000,
       "tag": "0092_refunds_reversals",
       "breakpoints": true
+    },
+    {
+      "idx": 93,
+      "version": "7",
+      "when": 1787411187000,
+      "tag": "0093_provider_capabilities",
+      "breakpoints": true
     }
   ]
 }
