@@ -60,6 +60,9 @@ export const COMMAND_RISK = {
   AdjustInventory: 'STANDARD',
   ConfirmReconciliation: 'STANDARD',
   PostJournal: 'STANDARD',
+  /* Once only by the database's partial unique, owner-only at the ingress;
+   * a preview and a yes is the right ceremony for a setup act (PR-083). */
+  RecordOpeningBalances: 'STANDARD',
   ClosePeriod: 'STANDARD',
   DeactivateAccount: 'STANDARD',
   ChangePaymentConnection: 'STANDARD',

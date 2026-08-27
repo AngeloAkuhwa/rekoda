@@ -67,6 +67,7 @@ describe('the production wiring', () => {
     const dispatcher = buildOutboxDispatcher();
     expect(dispatcher).toBeInstanceOf(OutboxDispatcher);
     expect(dispatcher.types().sort()).toEqual([
+      'books.opened',
       'data.erased',
       'expense.recorded',
       'financial_transactions.ingested',

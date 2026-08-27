@@ -90,6 +90,7 @@ export interface ApiConfig {
   commandRecordPurchase: boolean;
   commandPostJournal: boolean;
   commandClosePeriod: boolean;
+  commandOpeningBalances: boolean;
   commandPlaceOrder: boolean;
   commandRecordOrder: boolean;
   commandIngestFinancialTransaction: boolean;
@@ -568,6 +569,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     commandRecordPurchase: env['REKODA_COMMAND_RECORD_PURCHASE'] === '1',
     commandPostJournal: env['REKODA_COMMAND_POST_JOURNAL'] === '1',
     commandClosePeriod: env['REKODA_COMMAND_CLOSE_PERIOD'] === '1',
+    commandOpeningBalances: env['REKODA_COMMAND_OPENING_BALANCES'] === '1',
     commandPlaceOrder: env['REKODA_COMMAND_PLACE_ORDER'] === '1',
     commandRecordOrder: env['REKODA_COMMAND_RECORD_ORDER'] === '1',
     commandIngestFinancialTransaction: env['REKODA_COMMAND_INGEST_FINANCIAL_TRANSACTION'] === '1',

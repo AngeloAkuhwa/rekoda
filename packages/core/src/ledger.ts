@@ -104,6 +104,14 @@ export interface LedgerLine {
   readonly account: AccountKey;
   readonly debitK: Kobo;
   readonly creditK: Kobo;
+  /**
+   * §12.3's subledger dimension, where the writer knows it: an
+   * ACCOUNTS_RECEIVABLE line answers "which invoice" or it answers to
+   * nobody. Optional because most builders post one aggregate line per
+   * account; the writers that keep per-document lines (opening
+   * receivables) carry the reference through to the entry row.
+   */
+  readonly invoiceId?: string;
 }
 
 export interface Posting {
@@ -249,20 +257,44 @@ export function postOpeningBalances(args: {
   cashK?: Kobo;
   bankK?: Kobo;
   stockK?: Kobo;
+  /**
+   * What customers already owed, one line PER INVOICE (spec §12.3): an
+   * ACCOUNTS_RECEIVABLE line carries the invoice it collects against or
+   * the debtors page and the ledger become two answers to one question.
+   * The invoices are minted by the caller in the same transaction — an
+   * opening receivable figure with no document behind it is refused by
+   * the contract, not modelled here.
+   */
+  receivables?: readonly { invoiceId: string; amountK: Kobo }[];
 }): Posting {
   const cashK = args.cashK ?? 0;
   const bankK = args.bankK ?? 0;
   const stockK = args.stockK ?? 0;
+  const receivables = args.receivables ?? [];
   if (cashK < 0 || bankK < 0 || stockK < 0) {
     throw new RangeError('opening balances cannot be negative');
   }
-  const equityK = cashK + bankK + stockK;
+  for (const r of receivables) {
+    /* An opening invoice of nothing is not a debt, and a negative one is a
+     * credit note wearing the wrong clothes. */
+    if (r.amountK <= 0) throw new RangeError('an opening receivable must be owed something');
+  }
+  const receivablesK = receivables.reduce((sum, r) => sum + r.amountK, 0);
+  const equityK = cashK + bankK + stockK + receivablesK;
   if (equityK === 0) throw new RangeError('opening balances of nothing are not an entry');
 
   const lines: LedgerLine[] = [];
   if (cashK > 0) lines.push(line('CASH', cashK, 0));
   if (bankK > 0) lines.push(line('BANK', bankK, 0));
   if (stockK > 0) lines.push(line('INVENTORY', stockK, 0));
+  for (const r of receivables) {
+    lines.push({
+      account: 'ACCOUNTS_RECEIVABLE',
+      debitK: r.amountK,
+      creditK: 0,
+      invoiceId: r.invoiceId,
+    });
+  }
   if (equityK > 0) lines.push(line('OWNERS_EQUITY', 0, equityK));
 
   const posting = { memo: args.memo, lines };

@@ -15,9 +15,11 @@ import { RiskPolicyService } from '../risk/risk-policy.service.js';
 import {
   closePeriodWork,
   postJournalWork,
+  recordOpeningBalancesWork,
   reopenPeriodWork,
   type ClosePeriodInput,
   type PostJournalInput,
+  type RecordOpeningBalancesInput,
 } from './ledger-commands.js';
 import { buildOutboxDispatcher } from '../jobs/jobs.module.js';
 
@@ -140,6 +142,58 @@ describe('PostJournal through the bus', () => {
     expect(await count(businessId, 'ledger_transactions')).toBe(0);
     expect(await count(businessId, 'outbox_events')).toBe(0);
     expect(await count(businessId, 'idempotency_records')).toBe(0);
+  });
+});
+
+describe('RecordOpeningBalances through the bus (PR-083)', () => {
+  it('opens once, announces, replays without writing, and the database still owns once-only', async () => {
+    const businessId = await seedBusiness();
+    const input: RecordOpeningBalancesInput = {
+      businessId,
+      asAt: '2026-07-31',
+      cashK: 20_000_000,
+      bankK: 0,
+      stockK: 0,
+      actor: 'user:test',
+    };
+    const envelope = {
+      businessId,
+      command: 'RecordOpeningBalances' as const,
+      payload: input,
+      actor: 'user:test',
+      ingress: 'DASHBOARD' as const,
+      idempotencyKey: 'opening:2026-07-31',
+    };
+
+    const first = await withBusiness(appDb, businessId, (tx) =>
+      bus.run(tx, envelope, () => recordOpeningBalancesWork(tx, input)),
+    );
+    expect(first.outcome).toBe('done');
+    if (first.outcome !== 'done') return;
+    expect(first.result.equityK).toBe(20_000_000);
+
+    /* The claim replays: same key, nothing written twice. */
+    const replay = await withBusiness(appDb, businessId, (tx) =>
+      bus.run(tx, envelope, () => recordOpeningBalancesWork(tx, input)),
+    );
+    expect(replay.outcome).toBe('done');
+    if (replay.outcome !== 'done') return;
+    expect(replay.replayed).toBe(true);
+
+    expect(await count(businessId, 'ledger_transactions')).toBe(1);
+    expect(await count(businessId, 'outbox_events', "AND type = 'books.opened'")).toBe(1);
+
+    /* A DIFFERENT key does not get past the database: the 0032 partial
+     * unique throws, and the whole transaction — claim included — rolls
+     * back. Defence in depth, not either-or. */
+    const again = { ...envelope, idempotencyKey: 'opening:2026-08-31' };
+    const retry: RecordOpeningBalancesInput = { ...input, asAt: '2026-08-31' };
+    await expect(
+      withBusiness(appDb, businessId, (tx) =>
+        bus.run(tx, { ...again, payload: retry }, () => recordOpeningBalancesWork(tx, retry)),
+      ),
+    ).rejects.toThrow();
+    expect(await count(businessId, 'ledger_transactions')).toBe(1);
   });
 });
 

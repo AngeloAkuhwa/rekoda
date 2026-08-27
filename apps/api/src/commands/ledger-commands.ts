@@ -19,7 +19,7 @@
  * two-step Appendix D demands — the first call opens a confirmation naming
  * the consequence, the second claims it through the bus and reopens.
  */
-import { closeRepo, journalRepo, outboxRepo, type TenantDb } from '@rekoda/db';
+import { closeRepo, journalRepo, openingRepo, outboxRepo, type TenantDb } from '@rekoda/db';
 
 export type PostJournalInput = Parameters<typeof journalRepo.recordJournal>[1];
 export type JournalPosted = Awaited<ReturnType<typeof journalRepo.recordJournal>>;
@@ -41,6 +41,36 @@ export async function postJournalWork(
       amountK: input.amountK,
       intoAccount: input.intoAccount,
       outOfAccount: input.outOfAccount,
+    },
+  });
+
+  return recorded;
+}
+
+export type RecordOpeningBalancesInput = Parameters<typeof openingRepo.recordOpeningBalances>[1];
+export type OpeningBalancesRecorded = Awaited<ReturnType<typeof openingRepo.recordOpeningBalances>>;
+
+/**
+ * The setup act, on the bus at last (the 1.29 deferral): opening balances
+ * were the one financial write still reaching the ledger from a controller.
+ * Once-only stays the database's promise (the 0032 partial unique throws
+ * `OpeningBalancesAlreadySet` and rolls the claim back with everything
+ * else); the bus adds what every other write has — one door, an
+ * idempotency claim, and the announcement in the same transaction.
+ */
+export async function recordOpeningBalancesWork(
+  tx: TenantDb,
+  input: RecordOpeningBalancesInput,
+): Promise<OpeningBalancesRecorded> {
+  const recorded = await openingRepo.recordOpeningBalances(tx, input);
+
+  await outboxRepo.append(tx, {
+    businessId: input.businessId,
+    type: 'books.opened',
+    payload: {
+      asAt: input.asAt,
+      equityK: recorded.equityK,
+      invoices: recorded.invoices.map((minted) => minted.invoiceNumber),
     },
   });
 

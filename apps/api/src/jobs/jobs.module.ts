@@ -155,6 +155,9 @@ export function buildOutboxDispatcher(): OutboxDispatcher {
   dispatcher.register('journal.posted', async () => {});
   dispatcher.register('period.closed', async () => {});
 
+  /* PR-083's fact. */
+  dispatcher.register('books.opened', async () => {});
+
   /* PR-025's fact. */
   dispatcher.register('order.placed', async () => {});
 

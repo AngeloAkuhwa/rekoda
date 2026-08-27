@@ -382,10 +382,44 @@ describe('opening balances', () => {
     expect(posting.lines.map((l) => l.account)).toEqual(['CASH', 'OWNERS_EQUITY']);
   });
 
-  /* Never touches receivables or payables. An opening figure for what
-   * customers owe would have no invoice behind it, and the debtors page and
-   * the ledger would answer the same question differently. */
-  it('cannot set what customers owe or what is owed to suppliers', () => {
+  /* §12.3: an AR line answers "which invoice" or it answers to nobody. One
+   * line PER invoice, each carrying its document, never an aggregate. */
+  it('debits receivables one line per invoice, each carrying its document', () => {
+    const posting = postOpeningBalances({
+      memo: 'Opening balances',
+      cashK: 1_000_000,
+      receivables: [
+        { invoiceId: 'inv-1', amountK: 3_000_000 },
+        { invoiceId: 'inv-2', amountK: 2_000_000 },
+      ],
+    });
+    expect(posting.lines).toEqual([
+      { account: 'CASH', debitK: 1_000_000, creditK: 0 },
+      { account: 'ACCOUNTS_RECEIVABLE', debitK: 3_000_000, creditK: 0, invoiceId: 'inv-1' },
+      { account: 'ACCOUNTS_RECEIVABLE', debitK: 2_000_000, creditK: 0, invoiceId: 'inv-2' },
+      { account: 'OWNERS_EQUITY', debitK: 0, creditK: 6_000_000 },
+    ]);
+  });
+
+  it('refuses an opening receivable that is owed nothing, or less', () => {
+    expect(() =>
+      postOpeningBalances({
+        memo: 'Opening balances',
+        receivables: [{ invoiceId: 'inv-1', amountK: 0 }],
+      }),
+    ).toThrow(RangeError);
+    expect(() =>
+      postOpeningBalances({
+        memo: 'Opening balances',
+        receivables: [{ invoiceId: 'inv-1', amountK: -5 }],
+      }),
+    ).toThrow(RangeError);
+  });
+
+  /* Payables stay out until a bill can live without a purchase behind it:
+   * an opening debt that could never be settled would be a document
+   * pretending to be alive. */
+  it('cannot set what is owed to suppliers', () => {
     const posting = postOpeningBalances({
       memo: 'Opening balances',
       cashK: 1,
@@ -393,7 +427,6 @@ describe('opening balances', () => {
       stockK: 1,
     });
     const accounts = posting.lines.map((l) => l.account);
-    expect(accounts).not.toContain('ACCOUNTS_RECEIVABLE');
     expect(accounts).not.toContain('ACCOUNTS_PAYABLE');
   });
 

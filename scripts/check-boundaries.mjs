@@ -105,7 +105,7 @@ function aiAdapterViolations(rel, body) {
  */
 const COMMAND_LAYER_DIR = 'apps/api/src/commands/';
 const FINANCIAL_WRITER_CALL =
-  /\.(issueSale|voidInvoice|recordMerchantPayment|recordPaymentByNumber|bookVerifiedPayment|recordExpense|recordPurchase|recordJournal|closeBooks|reopenBooks|importStatementLines|matchByHand|eraseAllIdentities|placeOrder|recordSaleMovements|recordDelivery|recordMovement|writePosting|appendVerification)\(/g;
+  /\.(issueSale|voidInvoice|recordMerchantPayment|recordPaymentByNumber|bookVerifiedPayment|recordExpense|recordPurchase|recordJournal|recordOpeningBalances|closeBooks|reopenBooks|importStatementLines|matchByHand|eraseAllIdentities|placeOrder|recordSaleMovements|recordDelivery|recordMovement|writePosting|appendVerification)\(/g;
 
 function commandLayerViolations(rel, body) {
   if (!rel.startsWith('apps/api/src/')) return [];

@@ -72,7 +72,7 @@ export const inventoryMovements = pgTable(
       .notNull()
       .references(() => products.id),
     delta: integer('delta').notNull(),
-    reason: text('reason').notNull(), // sale | purchase | adjustment | reservation | release | return | supplier_return
+    reason: text('reason').notNull(), // sale | purchase | adjustment | reservation | release | return | supplier_return | opening
     sourceType: text('source_type').notNull(),
     sourceId: text('source_id'),
     /** The unit cost APPLIED to this movement (Appendix B): the receipt

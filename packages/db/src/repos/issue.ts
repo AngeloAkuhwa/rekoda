@@ -229,6 +229,9 @@ export async function writePosting(
        * the sum is the amount. Currency rides the NGN default until the
        * FX plumbing (PR-038) gives writers something else to say. */
       transactionAmountMinor: line.debitK + line.creditK,
+      /* §12.3: the subledger dimension rides the line where the builder
+       * knew it — an opening AR line names the invoice it collects against. */
+      ...(line.invoiceId ? { invoiceId: line.invoiceId } : {}),
       ...(opts.occurredAt ? { createdAt: opts.occurredAt } : {}),
     })),
   );

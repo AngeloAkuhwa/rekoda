@@ -157,6 +157,7 @@ import { recordPurchaseWork, type RecordPurchaseCmdInput } from '../commands/spe
 import {
   closePeriodWork,
   postJournalWork,
+  recordOpeningBalancesWork,
   reopenPeriodWork,
   type ClosePeriodInput,
   type PostJournalInput,
@@ -1440,25 +1441,60 @@ export class ReportsController {
     if (!parsed.success) {
       throw new BadRequestException('a day, and what was in cash, in the bank and on the shelf');
     }
-    const { asAt, cashK, bankK, stockK } = parsed.data;
-    if (cashK + bankK + stockK === 0) return { outcome: 'nothing_to_open' };
+    const { asAt, cashK, bankK, stockK, stock, receivables } = parsed.data;
+    const holdsAnything =
+      cashK + bankK + stockK > 0 || (stock?.length ?? 0) > 0 || (receivables?.length ?? 0) > 0;
+    if (!holdsAnything) return { outcome: 'nothing_to_open' };
     /* A balance dated tomorrow is a typo, and one accepted would sit outside
      * every period the merchant can look at until the day arrives. */
     if (asAt > lagosDay(new Date())) return { outcome: 'not_yet' };
 
     const businessId = request.auth!.businessId;
+    const input = {
+      businessId,
+      asAt,
+      cashK,
+      bankK,
+      stockK,
+      ...(stock ? { stock } : {}),
+      ...(receivables ? { receivables } : {}),
+      actor: `user:${request.auth!.userId}`,
+    };
     try {
-      const recorded = await withBusiness(this.db, businessId, (tx) =>
-        openingRepo.recordOpeningBalances(tx, {
-          businessId,
-          asAt,
-          cashK,
-          bankK,
-          stockK,
-          actor: `user:${request.auth!.userId}`,
-        }),
-      );
-      return { outcome: 'recorded', asAt, equityK: recorded.equityK };
+      /* The A1 rollout seam (spec §25; the 1.29 deferral discharged): a
+       * setup act is a financial write like any other, so it goes through
+       * the one door. Once-only stays the database's decision either way. */
+      const recorded = await withBusiness(this.db, businessId, async (tx) => {
+        if (this.config.commandOpeningBalances) {
+          const run = await this.commandBus.run(
+            tx,
+            {
+              businessId,
+              command: 'RecordOpeningBalances',
+              payload: input,
+              actor: input.actor,
+              ingress: 'DASHBOARD',
+              idempotencyKey: `opening:${asAt}`,
+            },
+            () => recordOpeningBalancesWork(tx, input),
+          );
+          if (run.outcome !== 'done') {
+            throw new Error(`RecordOpeningBalances refused unexpectedly: ${run.outcome}`);
+          }
+          return run.result;
+        }
+        return recordOpeningBalancesWork(tx, input);
+      });
+      return {
+        outcome: 'recorded',
+        asAt,
+        equityK: recorded.equityK,
+        stockValueK: recorded.stockValueK,
+        invoices: recorded.invoices.map((minted) => ({
+          invoiceNumber: minted.invoiceNumber,
+          amountK: minted.amountK,
+        })),
+      };
     } catch (error) {
       /* Classified OUTSIDE the transaction, which is the point of the throw:
        * a unique violation aborts the transaction, so returning an outcome
@@ -1470,6 +1506,12 @@ export class ReportsController {
        * clean and the outcome can be returned rather than raised. */
       if (error instanceof closeRepo.PeriodClosed) {
         return { outcome: 'period_closed', closedThrough: error.closedThrough };
+      }
+      /* The repo's own refusals (a shelf stated twice, a stranger's
+       * customer, an opening whose lines add to nothing): the caller's
+       * mistake, said as one, never a 500. The transaction rolled back. */
+      if (error instanceof RangeError) {
+        throw new BadRequestException(error.message);
       }
       throw error;
     }

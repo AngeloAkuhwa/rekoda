@@ -201,6 +201,8 @@ export const reportsStatementsResponse = z.object({
       cashK: kobo,
       bankK: kobo,
       stockK: kobo,
+      /** What customers already owed, read off the opening entry's AR lines. */
+      receivablesK: kobo,
     })
     .nullable(),
   /**
@@ -966,17 +968,54 @@ export const createRecurringResponse = z.discriminatedUnion('outcome', [
  * July" put the entry in July, so it becomes the opening balance of August
  * rather than appearing as money that arrived in August.
  *
- * Deliberately no field for what customers owe or what is owed to suppliers.
- * An opening receivable has no invoice behind it, so the debtors page and the
- * ledger would hold two different answers to the same question and the
- * merchant could chase neither. Old unpaid invoices belong here as invoices.
+ * Still no BARE figure for what customers owe: an opening receivable with no
+ * invoice behind it would leave the debtors page and the ledger holding two
+ * different answers to the same question, and the merchant chasing neither.
+ * Since PR-083 the `receivables` lines honour that rule by MINTING the
+ * invoices — each line becomes a real open invoice, settleable like any
+ * other, and the ledger's receivable cites it. What is owed TO suppliers
+ * still waits: the settlement plane is purchase-keyed, and an opening debt
+ * that could never be paid off would be a document pretending to be alive.
+ *
+ * The shelf comes one of two ways, never both: `stockK` for a merchant who
+ * knows the value alone, or counted `stock` lines that create the products
+ * and their costs so the physical and financial books open agreeing.
  */
-export const openingBalancesRequest = z.object({
-  asAt: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/, 'a day like 2026-07-31'),
-  cashK: kobo,
-  bankK: kobo,
-  stockK: kobo,
-});
+export const openingBalancesRequest = z
+  .object({
+    asAt: z
+      .string()
+      .regex(/^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/, 'a day like 2026-07-31'),
+    cashK: kobo,
+    bankK: kobo,
+    stockK: kobo,
+    stock: z
+      .array(
+        z.object({
+          name: z.string().trim().min(1).max(200),
+          quantity: z.number().positive().finite(),
+          unitCostK: kobo,
+        }),
+      )
+      .max(200)
+      .optional(),
+    receivables: z
+      .array(
+        z.object({
+          customerId: z.string().uuid(),
+          amountK: kobo.refine((v) => v > 0, 'an opening receivable must be owed something'),
+          dueDate: z
+            .string()
+            .regex(/^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/)
+            .nullish(),
+        }),
+      )
+      .max(200)
+      .optional(),
+  })
+  .refine((v) => !(v.stockK > 0 && (v.stock?.length ?? 0) > 0), {
+    message: 'opening stock is a value or counted lines, never both',
+  });
 
 export const openingBalancesResponse = z.discriminatedUnion('outcome', [
   z.object({
@@ -984,6 +1023,10 @@ export const openingBalancesResponse = z.discriminatedUnion('outcome', [
     asAt: z.string(),
     /** Everything held, which is what went to owner's equity. */
     equityK: kobo,
+    /** The shelf's value: stated, or derived from the counted lines. */
+    stockValueK: kobo,
+    /** The open invoices the opening receivables became. */
+    invoices: z.array(z.object({ invoiceNumber: z.string(), amountK: kobo })),
   }),
   /** Once only. The books cannot be opened twice without saying which is true. */
   z.object({ outcome: z.literal('already_set') }),

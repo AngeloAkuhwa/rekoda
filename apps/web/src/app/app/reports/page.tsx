@@ -484,7 +484,13 @@ export default async function ReportsPage({
                 <p className="rk-fineprint">
                   Your books open on {shortDate(openingBalances.asAt)} with{' '}
                   <Money kobo={openingBalances.cashK + openingBalances.bankK} /> in money and{' '}
-                  <Money kobo={openingBalances.stockK} /> of stock.
+                  <Money kobo={openingBalances.stockK} /> of stock
+                  {openingBalances.receivablesK > 0 ? (
+                    <>
+                      , and <Money kobo={openingBalances.receivablesK} /> customers already owed you
+                    </>
+                  ) : null}
+                  .
                 </p>
               ) : isOwner(identity.role) ? (
                 <details className="rk-void">

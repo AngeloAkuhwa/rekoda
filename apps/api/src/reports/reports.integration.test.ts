@@ -1474,7 +1474,13 @@ describe('what the business was already holding', () => {
           stockK: 0,
         })
       ).json(),
-    ).toEqual({ outcome: 'recorded', asAt: '2026-07-31', equityK: 20_000_000 });
+    ).toEqual({
+      outcome: 'recorded',
+      asAt: '2026-07-31',
+      equityK: 20_000_000,
+      stockValueK: 0,
+      invoices: [],
+    });
 
     const after = reportsStatementsResponse.parse(
       (await app.inject({ method: 'GET', url: '/v1/reports/statements', headers: auth })).json(),
@@ -1486,7 +1492,65 @@ describe('what the business was already holding', () => {
       cashK: 20_000_000,
       bankK: 0,
       stockK: 0,
+      receivablesK: 0,
     });
+  });
+
+  /**
+   * The kernel shapes (PR-083), through the same door: receivables become
+   * open invoices the response names, counted stock becomes products, and
+   * a shelf stated twice — a value AND lines — is refused at the border.
+   */
+  it('opens with invoices behind the debts and products behind the shelf', async () => {
+    const { auth, businessId } = await onboard('+2348177000027');
+    const customer = await customersRepo.createCustomerWithIdentities(
+      db,
+      businessId,
+      'CUSTOMER_OB1',
+      [],
+    );
+
+    const res = (
+      await open(auth, {
+        asAt: '2026-07-31',
+        cashK: 1_000_000,
+        bankK: 0,
+        stockK: 0,
+        stock: [{ name: 'ankara', quantity: 10, unitCostK: 150_000 }],
+        receivables: [{ customerId: customer.id, amountK: 3_000_000 }],
+      })
+    ).json() as {
+      outcome: string;
+      equityK: number;
+      stockValueK: number;
+      invoices: { invoiceNumber: string; amountK: number }[];
+    };
+    expect(res.outcome).toBe('recorded');
+    expect(res.equityK).toBe(5_500_000);
+    expect(res.stockValueK).toBe(1_500_000);
+    expect(res.invoices).toEqual([
+      { invoiceNumber: expect.stringMatching(/^INV-2026-/), amountK: 3_000_000 },
+    ]);
+
+    const shelf = await withBusiness(db, businessId, (tx) =>
+      stockRepo.productByName(tx, businessId, 'ankara'),
+    );
+    expect(shelf).toMatchObject({ onHand: 10, unitCostK: 150_000 });
+  });
+
+  it('refuses a shelf stated twice: a value and counted lines together', async () => {
+    const { auth } = await onboard('+2348177000028');
+    expect(
+      (
+        await open(auth, {
+          asAt: '2026-07-31',
+          cashK: 0,
+          bankK: 0,
+          stockK: 1_000_000,
+          stock: [{ name: 'ankara', quantity: 1, unitCostK: 100 }],
+        })
+      ).statusCode,
+    ).toBe(400);
   });
 
   /**

@@ -31,9 +31,17 @@ export interface Product {
   active: boolean;
 }
 
-/** Why the stock moved. `adjustment` is the merchant counting their own shelf. */
+/** Why the stock moved. `adjustment` is the merchant counting their own
+ * shelf; `opening` is what the shelf already held on day one (PR-083). */
 export type MovementReason =
-  'sale' | 'purchase' | 'adjustment' | 'reservation' | 'release' | 'return' | 'supplier_return';
+  | 'sale'
+  | 'purchase'
+  | 'adjustment'
+  | 'reservation'
+  | 'release'
+  | 'return'
+  | 'supplier_return'
+  | 'opening';
 
 export interface StockMovement {
   businessId: string;
@@ -179,6 +187,13 @@ export async function recordDelivery(
     costK: number;
     sourceType: string;
     sourceId?: string | null;
+    /**
+     * How this arrival should be remembered. 'purchase' for goods bought;
+     * 'opening' for stock the business already held on the day it started
+     * with Rekoda (PR-083) — same lock, same weighted average, different
+     * history.
+     */
+    reason?: 'purchase' | 'opening';
   },
 ): Promise<number> {
   /**
@@ -214,7 +229,7 @@ export async function recordDelivery(
     businessId: input.businessId,
     productId: input.product.id,
     delta: input.quantity,
-    reason: 'purchase',
+    reason: input.reason ?? 'purchase',
     sourceType: input.sourceType,
     sourceId: input.sourceId ?? null,
     /* The receipt's own per-unit cost rides the movement (Appendix B),

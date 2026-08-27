@@ -41,6 +41,7 @@ export const COMMAND_ENTITLEMENT: Record<CommandName, EntitlementKey | null> = {
   AdjustInventory: null,
   ConfirmReconciliation: null,
   PostJournal: null,
+  RecordOpeningBalances: null,
   ClosePeriod: null,
   DeactivateAccount: null,
   ChangePaymentConnection: null,
