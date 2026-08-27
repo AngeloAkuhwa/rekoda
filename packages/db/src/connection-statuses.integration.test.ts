@@ -5,7 +5,15 @@
  * stale copy of that answer, because no writer can write it at all.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { createDb, identity, paymentsHub, sql, withBusiness, type Db } from './index.js';
+import {
+  accountsRepo,
+  createDb,
+  identity,
+  paymentsHub,
+  sql,
+  withBusiness,
+  type Db,
+} from './index.js';
 import { migrate, requireUrls, truncateAll, type Urls } from './testing.js';
 
 let urls: Urls;
@@ -194,5 +202,66 @@ describe('provider-neutral attributes (§17.2; PR-052)', () => {
         ),
       ),
     ).rejects.toThrow();
+  });
+});
+
+describe('connection-scoped clearing accounts (§11.2; PR-053)', () => {
+  it('a connection is born with its clearing and chargeback accounts, once', async () => {
+    const { businessId, connectionId } = await seedConnection();
+    const clearing = await withBusiness(db, businessId, (tx) =>
+      accountsRepo.accountByRole(tx, businessId, 'PAYMENT_PROVIDER_CLEARING', connectionId),
+    );
+    const chargeback = await withBusiness(db, businessId, (tx) =>
+      accountsRepo.accountByRole(tx, businessId, 'PROVIDER_CHARGEBACK_PAYABLE', connectionId),
+    );
+    expect(clearing).toMatchObject({ code: '1015', type: 'asset', name: 'Paystack clearing' });
+    expect(chargeback).toMatchObject({
+      code: '2150',
+      type: 'liability',
+      name: 'Paystack chargebacks',
+    });
+
+    /* A reconnect provisions nothing twice. */
+    await withBusiness(db, businessId, (tx) =>
+      paymentsHub.upsertConnection(tx, { businessId, providerType: 'paystack' }),
+    );
+    const count = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ n: string }>(sql`
+        SELECT count(*)::bigint AS n FROM accounts
+        WHERE business_id = ${businessId}::uuid AND system_role = 'PAYMENT_PROVIDER_CLEARING'
+      `),
+    );
+    expect(Number([...count][0]!.n)).toBe(1);
+  });
+
+  it('two providers, two pairs, distinct codes, each resolvable by its own scope', async () => {
+    const { businessId, connectionId } = await seedConnection();
+    const second = await withBusiness(db, businessId, (tx) =>
+      paymentsHub.storeMerchantKey(tx, {
+        businessId,
+        providerType: 'monnify',
+        merchantKeyCipher: 'vault:blob',
+        merchantKeyTail: '9911',
+      }),
+    );
+    void second;
+    const monnify = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ id: string }>(sql`
+        SELECT id FROM payment_connections
+        WHERE business_id = ${businessId}::uuid AND provider_type = 'monnify'
+      `),
+    );
+    const monnifyId = [...monnify][0]!.id;
+
+    const first = await withBusiness(db, businessId, (tx) =>
+      accountsRepo.accountByRole(tx, businessId, 'PAYMENT_PROVIDER_CLEARING', connectionId),
+    );
+    const secondClearing = await withBusiness(db, businessId, (tx) =>
+      accountsRepo.accountByRole(tx, businessId, 'PAYMENT_PROVIDER_CLEARING', monnifyId),
+    );
+    expect(first!.code).toBe('1015');
+    expect(secondClearing!.code).toBe('1015-2');
+    expect(secondClearing!.name).toBe('Monnify clearing');
+    expect(first!.id).not.toBe(secondClearing!.id);
   });
 });

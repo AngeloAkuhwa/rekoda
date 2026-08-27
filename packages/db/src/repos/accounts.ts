@@ -202,6 +202,82 @@ export async function renameAccount(
   return rows.length === 1;
 }
 
+/* ── connection-scoped provisioning (spec §11.2; PR-053) ────────────────── */
+
+/**
+ * Every payment connection carries its own two money-in-flight accounts:
+ * PAYMENT_PROVIDER_CLEARING (money the provider holds on the way to the
+ * merchant) and PROVIDER_CHARGEBACK_PAYABLE (money the provider may take
+ * back). Scoped per connection because "the clearing account" is
+ * meaningless until somebody says WHICH connection's — the same argument
+ * that shaped `accountByRole`.
+ *
+ * Idempotent: resolving the role in the connection's scope first means a
+ * reconnect provisions nothing twice, and the one-role-per-scope unique
+ * (0061/0066) backs that against every racer.
+ */
+export async function provisionConnectionAccounts(
+  tx: TenantDb,
+  input: { businessId: string; paymentConnectionId: string; providerLabel: string },
+): Promise<{ clearingId: string; chargebackId: string }> {
+  const wanted: Array<{
+    role: SystemRole;
+    baseCode: string;
+    name: string;
+    type: AccountInput['type'];
+  }> = [
+    {
+      role: 'PAYMENT_PROVIDER_CLEARING',
+      baseCode: '1015',
+      name: `${input.providerLabel} clearing`,
+      type: 'asset',
+    },
+    {
+      role: 'PROVIDER_CHARGEBACK_PAYABLE',
+      baseCode: '2150',
+      name: `${input.providerLabel} chargebacks`,
+      type: 'liability',
+    },
+  ];
+
+  const ids: string[] = [];
+  for (const spec of wanted) {
+    const existing = await accountByRole(
+      tx,
+      input.businessId,
+      spec.role,
+      input.paymentConnectionId,
+    );
+    if (existing) {
+      ids.push(existing.id);
+      continue;
+    }
+    /* The display code must be unique per business; a second connection
+     * takes a suffixed one. Codes are the merchant-visible ordering key,
+     * never the engine's identity — the ROLE and its scope are. */
+    const taken = await tx
+      .select({ code: accounts.code })
+      .from(accounts)
+      .where(and(eq(accounts.businessId, input.businessId)));
+    const codes = new Set(taken.map((r) => r.code));
+    let code = spec.baseCode;
+    for (let n = 2; codes.has(code); n += 1) code = `${spec.baseCode}-${n}`;
+
+    const created = await createAccount(tx, {
+      businessId: input.businessId,
+      code,
+      name: spec.name,
+      type: spec.type,
+      role: {
+        systemRole: spec.role,
+        scope: { kind: 'payment_connection', id: input.paymentConnectionId },
+      },
+    });
+    ids.push(created.id);
+  }
+  return { clearingId: ids[0]!, chargebackId: ids[1]! };
+}
+
 /* ── lifecycle (spec §11.4; PR-035) ─────────────────────────────────────── */
 
 const isMandatory = (role: string | null): role is SystemRole =>

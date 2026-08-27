@@ -86,23 +86,11 @@ describe('the §11.2 mapping, agreed between core and the database', () => {
     const businessId = await seedBusiness();
     const ids = await seedScopes(businessId);
 
-    /* PR-030's seed already carries every role except the per-connection
-     * pair, so the chart holds them; the pair is created here, against a
-     * real connection, proving the PAYMENT_CONNECTION half of the CHECK. */
-    for (const [i, role] of SYSTEM_ROLES.entries()) {
-      if (ROLE_SCOPE[role] !== 'PAYMENT_CONNECTION') continue;
-      const { id } = await withBusiness(db, businessId, (tx) =>
-        accountsRepo.createAccount(tx, {
-          businessId,
-          code: `9${String(i).padStart(3, '0')}`,
-          name: role.toLowerCase().replaceAll('_', ' '),
-          type: 'asset',
-          role: { systemRole: role, scope: scopeFor(role, ids) },
-        }),
-      );
-      expect(id).toBeTruthy();
-    }
-
+    /* PR-030's seed carries every role except the per-connection pair, and
+     * PR-053's provisioning creates THAT pair the moment the connection
+     * exists — so a business with one connection holds the whole §11.2
+     * mapping without anyone asking. */
+    void ids;
     const chart = await withBusiness(db, businessId, (tx) =>
       accountsRepo.accountsFor(tx, businessId),
     );
@@ -175,26 +163,34 @@ describe('all-or-none and scope integrity (§11.3)', () => {
       paymentsHub.upsertConnection(tx, { businessId, providerType: 'monnify' }),
     );
 
-    const mk = (code: string, connectionId: string) =>
+    /* Two providers, two clearing accounts — provisioned with the
+     * connections themselves (PR-053): the whole reason a single global
+     * systemKey was replaced. */
+    const first = await withBusiness(db, businessId, (tx) =>
+      accountsRepo.accountByRole(tx, businessId, 'PAYMENT_PROVIDER_CLEARING', ids.connectionId),
+    );
+    const other = await withBusiness(db, businessId, (tx) =>
+      accountsRepo.accountByRole(tx, businessId, 'PAYMENT_PROVIDER_CLEARING', second.id),
+    );
+    expect(first).not.toBeNull();
+    expect(other).not.toBeNull();
+    expect(first!.id).not.toBe(other!.id);
+
+    /* A second clearing account for the SAME connection is refused. */
+    await expect(
       withBusiness(db, businessId, (tx) =>
         accountsRepo.createAccount(tx, {
           businessId,
-          code,
+          code: '8012',
           name: 'Clearing',
           type: 'asset',
           role: {
             systemRole: 'PAYMENT_PROVIDER_CLEARING',
-            scope: { kind: 'payment_connection', id: connectionId },
+            scope: { kind: 'payment_connection', id: ids.connectionId },
           },
         }),
-      );
-
-    await mk('8010', ids.connectionId);
-    /* Two providers, two clearing accounts: the whole reason a single
-     * global systemKey was replaced. */
-    await mk('8011', second.id);
-    /* A second clearing account for the SAME connection is refused. */
-    await expect(mk('8012', ids.connectionId)).rejects.toThrow();
+      ),
+    ).rejects.toThrow();
 
     /* BANK per financial account behaves identically. */
     await withBusiness(db, businessId, (tx) =>

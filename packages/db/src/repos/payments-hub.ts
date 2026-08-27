@@ -13,6 +13,7 @@ import { and, eq, inArray, not, sql } from 'drizzle-orm';
 import type { Db, TenantDb } from '../client.js';
 import { INTENT_STATUSES, type ConnectionStatus, type PaymentIntentStatus } from '@rekoda/core';
 import { paymentConnections, paymentIntents } from '../schema/payments-hub.js';
+import { provisionConnectionAccounts } from './accounts.js';
 
 const TERMINAL: readonly PaymentIntentStatus[] = ['succeeded', 'failed', 'expired', 'cancelled'];
 
@@ -54,6 +55,11 @@ export interface ConnectionRow {
  * state transition on the same row, never a second row — two rows would be two
  * settlement destinations with nobody able to say which is live.
  */
+
+/** "paystack" → "Paystack", for the account names a merchant reads. */
+const providerLabel = (providerType: string): string =>
+  providerType.charAt(0).toUpperCase() + providerType.slice(1);
+
 export async function upsertConnection(
   tx: TenantDb,
   input: ConnectionInput,
@@ -97,6 +103,14 @@ export async function upsertConnection(
 
   const row = rows[0];
   if (!row) throw new Error('upsertConnection: upsert returned no row');
+
+  /* §11.2 (PR-053): the connection's own money-in-flight accounts, born
+   * with it. Idempotent, so a reconnect provisions nothing twice. */
+  await provisionConnectionAccounts(tx, {
+    businessId: input.businessId,
+    paymentConnectionId: row.id,
+    providerLabel: providerLabel(input.providerType),
+  });
   return row;
 }
 
@@ -489,7 +503,7 @@ export async function storeMerchantKey(
     merchantKeyTail: string;
   },
 ): Promise<void> {
-  await tx
+  const rows = await tx
     .insert(paymentConnections)
     .values({
       businessId: input.businessId,
@@ -519,7 +533,16 @@ export async function storeMerchantKey(
         credentialSource: 'MERCHANT_SUPPLIED',
         updatedAt: new Date(),
       },
-    });
+    })
+    .returning({ id: paymentConnections.id });
+
+  const stored = rows[0];
+  if (!stored) throw new Error('storeMerchantKey: upsert returned no row');
+  await provisionConnectionAccounts(tx, {
+    businessId: input.businessId,
+    paymentConnectionId: stored.id,
+    providerLabel: providerLabel(input.providerType),
+  });
 }
 
 /** The vault blob of the merchant's key, for the adapter factory. */
