@@ -55,3 +55,4 @@ export type { Reply } from './replies.js';
  * thing a reviewer notices.
  */
 export * from './fx.js';
+export * from './recognition.js';
