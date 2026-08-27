@@ -12,6 +12,7 @@ import { sql } from 'drizzle-orm';
 import {
   bigint,
   boolean,
+  char,
   date,
   index,
   integer,
@@ -572,4 +573,33 @@ export const recurringEntries = pgTable(
       .on(t.businessId, t.clientRef)
       .where(sql`${t.clientRef} IS NOT NULL`),
   ],
+);
+
+/* ── accounting periods (spec §8; migration 0067, PR-036) ── */
+
+/**
+ * A closed month as a row. A month never closed has no row at all; a
+ * reopened month keeps its row with status 'open', because the fact that it
+ * was once closed is history and history is kept. The watermark the ledger
+ * triggers enforce is DERIVED: MAX(period) over rows with status 'closed'.
+ */
+export const accountingPeriods = pgTable(
+  'accounting_periods',
+  {
+    id: uuid('id')
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    businessId: uuid('business_id')
+      .notNull()
+      .references(() => businesses.id),
+    /** Lagos month, YYYY-MM. */
+    period: char('period', { length: 7 }).notNull(),
+    status: text('status').notNull(), // closed | open
+    closedAt: timestamp('closed_at', { withTimezone: true }).notNull().defaultNow(),
+    closedBy: text('closed_by').notNull(),
+    reopenedAt: timestamp('reopened_at', { withTimezone: true }),
+    reopenedBy: text('reopened_by'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('accounting_periods_business_period_ux').on(t.businessId, t.period)],
 );

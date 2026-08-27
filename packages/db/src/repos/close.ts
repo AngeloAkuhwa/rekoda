@@ -8,16 +8,17 @@
  * merchant's own date. September could change in October, and neither copy
  * would say so.
  *
- * The refusal itself lives in the database (migration 0034), not here. A
+ * The refusal itself lives in the database (migration 0034, reading
+ * `accounting_periods` since 0067), not here. A
  * check the writer is trusted to make is exactly the weaker thing a close is
  * meant to replace. What lives here is the friendly path: read the watermark
  * before writing, so an ordinary refusal is an outcome rather than a poisoned
  * transaction.
  */
-import { eq, sql, and, isNull } from 'drizzle-orm';
+import { and, eq, gte, sql } from 'drizzle-orm';
 import { usagePeriod } from '@rekoda/core';
 import type { TenantDb } from '../client.js';
-import { businesses } from '../schema/tenancy.js';
+import { accountingPeriods } from '../schema/finance.js';
 import { auditEvents } from '../schema/ops.js';
 
 /**
@@ -38,15 +39,50 @@ export class PeriodClosed extends Error {
 /** The Lagos month a posting belongs to. Lagos is UTC+1 all year. */
 export const periodOf = (at: Date): string => usagePeriod(at);
 
+/**
+ * The watermark, DERIVED (PR-036): the latest month with a closed period
+ * row. One fact a merchant can hold in their head, now computed from the
+ * rows that also know when each month closed and who closed it.
+ */
 export async function booksClosedThroughFor(
   tx: TenantDb,
   businessId: string,
 ): Promise<string | null> {
   const rows = await tx
-    .select({ closedThrough: businesses.booksClosedThrough })
-    .from(businesses)
-    .where(eq(businesses.id, businessId));
-  return rows[0]?.closedThrough ?? null;
+    .select({ through: sql<string | null>`max(${accountingPeriods.period})` })
+    .from(accountingPeriods)
+    .where(
+      and(eq(accountingPeriods.businessId, businessId), eq(accountingPeriods.status, 'closed')),
+    );
+  return rows[0]?.through ?? null;
+}
+
+/** Every period row, newest first — the record behind the watermark. */
+export async function periodsFor(
+  tx: TenantDb,
+  businessId: string,
+): Promise<
+  Array<{
+    period: string;
+    status: string;
+    closedAt: Date;
+    closedBy: string;
+    reopenedAt: Date | null;
+    reopenedBy: string | null;
+  }>
+> {
+  const rows = await tx
+    .select({
+      period: accountingPeriods.period,
+      status: accountingPeriods.status,
+      closedAt: accountingPeriods.closedAt,
+      closedBy: accountingPeriods.closedBy,
+      reopenedAt: accountingPeriods.reopenedAt,
+      reopenedBy: accountingPeriods.reopenedBy,
+    })
+    .from(accountingPeriods)
+    .where(eq(accountingPeriods.businessId, businessId));
+  return rows.sort((a, b) => (a.period < b.period ? 1 : -1));
 }
 
 /**
@@ -94,32 +130,48 @@ export async function closeBooks(
     return { outcome: 'already_closed', through: existing };
   }
 
-  /* Compare-and-set against the watermark just read. Two operators closing
-   * different months at once used to race here: the later UPDATE won
-   * whatever it held, so a close-through-September could be rolled back to
-   * July by a slower request. Zero rows means the other close landed first;
-   * re-reading turns it into the honest answer. */
-  const moved = await tx
-    .update(businesses)
-    .set({ booksClosedThrough: input.through, updatedAt: sql`now()` })
-    .where(
-      and(
-        eq(businesses.id, input.businessId),
-        existing === null
-          ? isNull(businesses.booksClosedThrough)
-          : eq(businesses.booksClosedThrough, existing),
-      ),
-    )
-    .returning({ id: businesses.id });
-  if (moved.length === 0) {
-    const winner = await booksClosedThroughFor(tx, input.businessId);
-    if (winner !== null && input.through <= winner) {
-      return { outcome: 'already_closed', through: winner };
-    }
-    /* The winner closed through something EARLIER than this request: apply
-     * on top of theirs by handing the caller the retryable truth. */
-    return { outcome: 'already_closed', through: winner ?? input.through };
+  /* One row per month being closed: from the month after the watermark, or
+   * from the business's earliest ledger activity on a first close (a
+   * business with no postings still keeps its close — the target month
+   * alone). The old compare-and-set race is structurally gone: closing only
+   * ever ADDS closed rows, so two concurrent closes commute, and the
+   * later-through one simply owns the extra months. Re-closing a reopened
+   * month rehabilitates its row rather than minting a second. */
+  let start: string;
+  if (existing !== null) {
+    start = monthAfter(existing);
+  } else {
+    const firstRows = await tx.execute<{ p: string | null }>(sql`
+      SELECT to_char(MIN(t.created_at AT TIME ZONE 'Africa/Lagos'), 'YYYY-MM') AS p
+      FROM ledger_transactions t
+      WHERE t.business_id = ${input.businessId}::uuid
+    `);
+    const first = [...firstRows][0]?.p ?? null;
+    start = first !== null && first < input.through ? first : input.through;
   }
+
+  const months: string[] = [];
+  for (let m = start; m <= input.through; m = monthAfter(m)) months.push(m);
+  await tx
+    .insert(accountingPeriods)
+    .values(
+      months.map((period) => ({
+        businessId: input.businessId,
+        period,
+        status: 'closed',
+        closedBy: input.actor,
+      })),
+    )
+    .onConflictDoUpdate({
+      target: [accountingPeriods.businessId, accountingPeriods.period],
+      set: {
+        status: 'closed',
+        closedAt: sql`now()`,
+        closedBy: input.actor,
+        reopenedAt: null,
+        reopenedBy: null,
+      },
+    });
 
   await tx.insert(auditEvents).values({
     businessId: input.businessId,
@@ -159,11 +211,38 @@ export async function reopenBooks(
   const existing = await booksClosedThroughFor(tx, input.businessId);
   if (existing === null || input.from > existing) return { outcome: 'already_open' };
 
-  const back = monthBefore(input.from);
+  /* Flip, never delete: a reopened month keeps its row, its original close
+   * and now its reopening, which is the honest version of this trade. */
   await tx
-    .update(businesses)
-    .set({ booksClosedThrough: back, updatedAt: sql`now()` })
-    .where(eq(businesses.id, input.businessId));
+    .update(accountingPeriods)
+    .set({ status: 'open', reopenedAt: sql`now()`, reopenedBy: input.actor })
+    .where(
+      and(
+        eq(accountingPeriods.businessId, input.businessId),
+        gte(accountingPeriods.period, input.from),
+        eq(accountingPeriods.status, 'closed'),
+      ),
+    );
+
+  /* The surviving frontier, materialised. "Closed through May" protected
+   * every month at or before May whether or not it had a row; reopening
+   * from March splits that range, and February's protection must not
+   * depend on February having had activity. If no closed row already
+   * marks the month before `from`, one is written now — the remnant of
+   * the close being partially undone. */
+  const back = monthBefore(input.from);
+  const remaining = await booksClosedThroughFor(tx, input.businessId);
+  if (remaining === null || remaining < back) {
+    await tx
+      .insert(accountingPeriods)
+      .values({
+        businessId: input.businessId,
+        period: back,
+        status: 'closed',
+        closedBy: input.actor,
+      })
+      .onConflictDoNothing();
+  }
 
   await tx.insert(auditEvents).values({
     businessId: input.businessId,
@@ -177,6 +256,13 @@ export async function reopenBooks(
   });
 
   return { outcome: 'reopened', from: input.from, wasClosedThrough: existing };
+}
+
+/** The Lagos month after a period. */
+function monthAfter(period: string): string {
+  const [year, month] = period.split('-').map(Number) as [number, number];
+  if (month < 12) return `${year}-${String(month + 1).padStart(2, '0')}`;
+  return `${year + 1}-01`;
 }
 
 /** The Lagos month before a period. */

@@ -281,6 +281,27 @@ describe('opening a closed month back up', () => {
     ).toBe('2025-12');
   });
 
+  /**
+   * The rows behind the watermark (PR-036): a reopened month keeps its row
+   * with its close AND its reopening, and the month before `from` holds a
+   * closed row even when it never had one — "closed through January"
+   * protected December whether or not December had activity, and reopening
+   * January must not silently give December up.
+   */
+  it('keeps the record: the reopened month stays a row, the frontier gains one', async () => {
+    const businessId = await seedBusiness('+2348070000023');
+    await closeThrough(businessId, '2026-01');
+    await reopenFrom(businessId, '2026-01');
+
+    const rows = await withBusiness(db, businessId, (tx) => closeRepo.periodsFor(tx, businessId));
+    expect(rows.map((r) => ({ period: r.period, status: r.status }))).toEqual([
+      { period: '2026-01', status: 'open' },
+      { period: '2025-12', status: 'closed' },
+    ]);
+    expect(rows[0]!.reopenedAt).not.toBeNull();
+    expect(rows[1]!.reopenedAt).toBeNull();
+  });
+
   it('says so plainly when the month was never closed', async () => {
     const businessId = await seedBusiness('+2348070000023');
     expect(await reopenFrom(businessId, OLD)).toEqual({ outcome: 'already_open' });

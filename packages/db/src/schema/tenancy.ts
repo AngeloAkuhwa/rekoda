@@ -79,9 +79,8 @@ export const businesses = pgTable(
      * closing is monotonic, "closed through August" is one fact a merchant
      * can hold in their head, and reopening is then a single visible act. A
      * trigger on the ledger enforces it, so no writer can post behind it by
-     * forgetting to look.
-     */
-    booksClosedThrough: text('books_closed_through'),
+     * forgetting to look. Since PR-036 the watermark is DERIVED — MAX over
+     * `accounting_periods` rows with status closed — and lives there. */
     settings: jsonb('settings')
       .notNull()
       .default(sql`'{}'::jsonb`),
