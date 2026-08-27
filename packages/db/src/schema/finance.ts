@@ -765,3 +765,42 @@ export const recognitionReviewItems = pgTable('recognition_review_items', {
   resolvedAt: timestamp('resolved_at', { withTimezone: true }),
   resolvedBy: text('resolved_by'),
 });
+
+/* ── customer credit subledger (spec §14.1; migration 0077) ── */
+
+/** A balance the business owes a customer. Append-only. */
+export const customerCredits = pgTable('customer_credits', {
+  id: uuid('id')
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  businessId: uuid('business_id')
+    .notNull()
+    .references(() => businesses.id),
+  customerId: uuid('customer_id').notNull(),
+  amountMinor: bigint('amount_minor', { mode: 'number' }).notNull(),
+  currency: char('currency', { length: 3 }).notNull().default('NGN'),
+  sourceType: text('source_type').notNull(),
+  sourceId: text('source_id').notNull(),
+  reason: text('reason'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+/** That balance, applied to an invoice. Append-only; §14.2's reversal
+ * constraints arrive with PR-049 and govern `reversalOfId`. */
+export const customerCreditApplications = pgTable('customer_credit_applications', {
+  id: uuid('id')
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  businessId: uuid('business_id')
+    .notNull()
+    .references(() => businesses.id),
+  customerCreditId: uuid('customer_credit_id').notNull(),
+  invoiceId: uuid('invoice_id').notNull(),
+  amountMinor: bigint('amount_minor', { mode: 'number' }).notNull(),
+  currency: char('currency', { length: 3 }).notNull().default('NGN'),
+  reversalOfId: uuid('reversal_of_id'),
+  reason: text('reason'),
+  sourceType: text('source_type').notNull(),
+  sourceId: text('source_id').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
