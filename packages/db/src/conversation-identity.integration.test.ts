@@ -6,7 +6,15 @@
  * at all, and the kind vocabulary admits the honest third answer.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { createDb, customersRepo, identity, sql, withBusiness, type Db } from './index.js';
+import {
+  conversationsRepo,
+  createDb,
+  customersRepo,
+  identity,
+  sql,
+  withBusiness,
+  type Db,
+} from './index.js';
 import { migrate, requireUrls, truncateAll, type Urls } from './testing.js';
 
 let urls: Urls;
@@ -131,5 +139,69 @@ describe('additive and honest (PR-058a-1)', () => {
         ),
       ),
     ).rejects.toThrow();
+  });
+});
+
+describe('the backfill and classification at birth (F.6; PR-058a-2)', () => {
+  it('a thread minted by threadFor is MERCHANT from its first breath', async () => {
+    seq += 1;
+    const user = await identity.upsertUserByPhone(db, `+23481895${String(seq).padStart(4, '0')}`);
+    const business = await identity.createBusinessWithOwner(db, {
+      name: 'Ada Fashion',
+      businessType: null,
+      ownerUserId: user.id,
+    });
+    const threadId = await withBusiness(db, business.id, (tx) =>
+      conversationsRepo.threadFor(tx, business.id, 'meta'),
+    );
+    const rows = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ conversation_kind: string | null; participant_blind_index: string | null }>(
+        sql`SELECT conversation_kind, participant_blind_index FROM conversations
+            WHERE id = ${threadId}::uuid`,
+      ),
+    );
+    expect([...rows][0]).toEqual({
+      conversation_kind: 'MERCHANT',
+      /* And STOP: no fabricated participant. There was no customer on the
+       * other end; there was Rekoda. */
+      participant_blind_index: null,
+    });
+  });
+
+  it('the migration file replays over a pre-backfill estate and classifies it, inventing nothing', async () => {
+    const { businessId, conversationId } = await seedConversation();
+    /* seedConversation inserts raw, kind NULL — exactly the legacy shape. */
+    const { readFileSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    const { fileURLToPath } = await import('node:url');
+    const migration = readFileSync(
+      join(
+        fileURLToPath(import.meta.url),
+        '..',
+        '..',
+        'migrations',
+        '0086_conversation_backfill.sql',
+      ),
+      'utf8',
+    );
+    const postgres = (await import('postgres')).default;
+    const owner = postgres(urls.owner, { max: 1, onnotice: () => {} });
+    try {
+      await owner.unsafe(migration);
+      /* Idempotent: a second run changes nothing and still validates. */
+      await owner.unsafe(migration);
+    } finally {
+      await owner.end();
+    }
+    const rows = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ conversation_kind: string | null; participant_blind_index: string | null }>(
+        sql`SELECT conversation_kind, participant_blind_index FROM conversations
+            WHERE id = ${conversationId}::uuid`,
+      ),
+    );
+    expect([...rows][0]).toEqual({
+      conversation_kind: 'MERCHANT',
+      participant_blind_index: null,
+    });
   });
 });

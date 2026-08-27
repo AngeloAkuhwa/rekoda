@@ -31,7 +31,11 @@ export async function threadFor(
 ): Promise<string> {
   const inserted = await tx
     .insert(conversations)
-    .values({ businessId, channel })
+    /* Classified at birth (F.6, PR-058a-2): every thread this function
+     * mints is the merchant talking to Rekoda, so the backfill's tail
+     * only ever shrinks. Customer threads arrive by their own writer
+     * (058a-4) and never through here. */
+    .values({ businessId, channel, conversationKind: 'MERCHANT' })
     .onConflictDoNothing({ target: [conversations.businessId, conversations.channel] })
     .returning({ id: conversations.id });
 
