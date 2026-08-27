@@ -533,6 +533,13 @@
       "when": 1787410815000,
       "tag": "0075_revenue_recognition_events",
       "breakpoints": true
+    },
+    {
+      "idx": 76,
+      "version": "7",
+      "when": 1787410816000,
+      "tag": "0076_ledger_dimensions",
+      "breakpoints": true
     }
   ]
 }

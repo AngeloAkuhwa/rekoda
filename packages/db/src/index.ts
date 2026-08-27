@@ -16,6 +16,7 @@ export * as fxRepo from './repos/fx.js';
 export * as journalDraftsRepo from './repos/journal-drafts.js';
 export * as recognitionPolicyRepo from './repos/recognition-policy.js';
 export * as recognitionEventsRepo from './repos/recognition-events.js';
+export * as recognitionRepo from './repos/recognition.js';
 export * as outboxRepo from './repos/outbox.js';
 export * as events from './repos/events.js';
 export * as jobsRepo from './repos/jobs.js';

@@ -340,6 +340,11 @@ export const ledgerEntries = pgTable(
     transactionCurrency: char('transaction_currency', { length: 3 }).notNull().default('NGN'),
     transactionAmountMinor: bigint('transaction_amount_minor', { mode: 'number' }).notNull(),
     exchangeRateSnapshotId: uuid('exchange_rate_snapshot_id'),
+    /** §12.2 subledger dimensions: additional context, never the only
+     * route. NULL is truthful for history and for postings whose source
+     * is not commerce. */
+    orderId: uuid('order_id'),
+    invoiceId: uuid('invoice_id'),
     createdAt: createdAt(),
   },
   (t) => [
