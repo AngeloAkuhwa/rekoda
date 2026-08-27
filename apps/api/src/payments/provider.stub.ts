@@ -65,6 +65,10 @@ export class StubPaymentProvider implements PaymentProviderPort {
       status: 'settled',
       providerStatus: 'success',
       settledAtIso: '2026-08-19T04:00:00.000Z',
+      /* Null by default, as an old provider row would be: a test that
+       * wants §20 ingestion scripts the amounts explicitly. */
+      grossK: null,
+      netK: null,
       ...settlement,
     });
   }

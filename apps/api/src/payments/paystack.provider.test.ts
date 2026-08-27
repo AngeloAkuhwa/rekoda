@@ -203,7 +203,13 @@ describe('listing settlements (§26–28)', () => {
         JSON.stringify({
           status: true,
           data: [
-            { id: 91, status: 'success', settlement_date: '2026-08-19T04:00:00.000Z' },
+            {
+              id: 91,
+              status: 'success',
+              settlement_date: '2026-08-19T04:00:00.000Z',
+              total_amount: 6_500_000,
+              effective_amount: 6_397_750,
+            },
             { id: 92, status: 'processing', effective_date: '2026-08-20T04:00:00.000Z' },
             { id: 93, status: 'dancing', settlement_date: '2026-08-20T04:00:00.000Z' },
           ],
@@ -220,7 +226,13 @@ describe('listing settlements (§26–28)', () => {
       status: 'settled',
       providerStatus: 'success',
       settledAtIso: '2026-08-19T04:00:00.000Z',
+      /* Kobo, verbatim off GET /settlement (PR-064): the provider's own
+       * totals, or null where a row never stated them. */
+      grossK: 6_500_000,
+      netK: 6_397_750,
     });
+    expect(settlements[1]?.grossK).toBeNull();
+    expect(settlements[1]?.netK).toBeNull();
     // Still moving: no settled date is claimed for money not yet landed.
     expect(settlements[1]?.status).toBe('processing');
     expect(settlements[1]?.settledAtIso).toBeNull();

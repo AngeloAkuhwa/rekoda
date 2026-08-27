@@ -84,6 +84,10 @@ export const paystackSettlementListResponse = z
             /** When the batch reached (or is due to reach) the merchant's bank. */
             effective_date: z.string().nullish(),
             settlement_date: z.string().nullish(),
+            /** Kobo, as Paystack states them: what the covered payments
+             * summed to, and what actually left after deductions. */
+            total_amount: z.number().nullish(),
+            effective_amount: z.number().nullish(),
           })
           .loose(),
       )

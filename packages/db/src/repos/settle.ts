@@ -381,6 +381,32 @@ export async function bookVerifiedPayment(
  * that arrived and was deliberately not booked (wrong currency, late after
  * expiry, a verify miss). This is the admin exception queue's raw material.
  */
+/**
+ * Whether an exception for this expectation is already on file (PR-064):
+ * a sweep that re-polls every ten minutes must not turn one disagreement
+ * into a hundred rows.
+ */
+export async function hasException(
+  tx: TenantDb,
+  businessId: string,
+  expectationKind: string,
+  expectationId: string,
+): Promise<boolean> {
+  const rows = await tx
+    .select({ id: reconciliations.id })
+    .from(reconciliations)
+    .where(
+      and(
+        eq(reconciliations.businessId, businessId),
+        eq(reconciliations.status, 'EXCEPTION'),
+        eq(reconciliations.expectationKind, expectationKind),
+        eq(reconciliations.expectationId, expectationId),
+      ),
+    )
+    .limit(1);
+  return rows.length === 1;
+}
+
 export async function recordException(
   tx: TenantDb,
   input: {
@@ -589,6 +615,32 @@ export async function markSettlements(
     )
     .returning({ id: payments.id });
   return rows.length;
+}
+
+/**
+ * The verified payments behind a set of references (PR-064): what a §20
+ * settlement's items are made of. Verified only — an unverified payment
+ * has no business inside a provider payout.
+ */
+export async function paymentsByReferences(
+  tx: TenantDb,
+  businessId: string,
+  references: string[],
+): Promise<Array<{ id: string; amountK: number; reference: string }>> {
+  if (references.length === 0) return [];
+  const rows = await tx
+    .select({ id: payments.id, amountK: payments.amountK, reference: payments.rekodaReference })
+    .from(payments)
+    .where(
+      and(
+        eq(payments.businessId, businessId),
+        eq(payments.verified, 1),
+        inArray(payments.rekodaReference, references),
+      ),
+    );
+  return rows.filter((r): r is { id: string; amountK: number; reference: string } =>
+    Boolean(r.reference),
+  );
 }
 
 export interface ReconciliationReadback {

@@ -82,6 +82,28 @@ export type CreateSubaccountResult =
   | { state: 'rejected'; reason: string };
 
 /** One settlement batch, normalised (§26–28). */
+/**
+ * A signed adjustment inside a settlement, in §20's vocabulary. The
+ * adapter translates whatever its provider itemises; where a provider
+ * states only totals, the sweep derives the one component the totals
+ * prove (gross − net) and says so in the note.
+ */
+export interface ProviderSettlementComponent {
+  kind:
+    | 'PROCESSING_FEE'
+    | 'VAT_ON_FEE'
+    | 'WITHHOLDING'
+    | 'LEVY'
+    | 'RESERVE_HELD'
+    | 'RESERVE_RELEASED'
+    | 'REBATE'
+    | 'ADJUSTMENT'
+    | 'CHARGEBACK';
+  direction: 'DEDUCTION' | 'ADDITION';
+  amountK: number;
+  note?: string;
+}
+
 export interface ProviderSettlement {
   settlementId: string;
   /**
@@ -95,6 +117,16 @@ export interface ProviderSettlement {
   providerStatus: string;
   /** When the batch reached the merchant's bank; null until it has. */
   settledAtIso: string | null;
+  /**
+   * The provider's own totals in kobo (§20: actual data drives the
+   * books). Null when the provider did not state them — then there is no
+   * authoritative settlement to record, only statuses to stamp.
+   */
+  grossK: number | null;
+  netK: number | null;
+  currency?: string;
+  /** Itemised adjustments, where the provider itemises. */
+  components?: ProviderSettlementComponent[];
 }
 
 export interface PaymentProviderPort {
