@@ -100,8 +100,9 @@ export type ReportsActivityResponse = z.infer<typeof reportsActivityResponse>;
 
 /* ── the four statements (ADR 0015) ─────────────────────────────────────── */
 
+/* Statements v2 (D1, PR-095): lines carry the account's own chart code and
+ * name; the fixed key vocabulary is gone with the fixed chart. */
 const statementLine = z.object({
-  account: z.string(),
   code: z.string(),
   name: z.string(),
   amountK: z.number().int().finite(),
@@ -112,7 +113,6 @@ export const reportsStatementsResponse = z.object({
   trialBalance: z.object({
     rows: z.array(
       z.object({
-        account: z.string(),
         code: z.string(),
         name: z.string(),
         debitK: kobo,

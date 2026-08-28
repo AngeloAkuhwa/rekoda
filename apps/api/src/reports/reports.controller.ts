@@ -59,7 +59,6 @@ import {
   STOCK_CATEGORY,
   UNATTRIBUTED_SALE_LABEL,
   describeAuditEvent,
-  isAccountKey,
   lagosDay,
   lagosNoon,
   nextDueAfter,
@@ -318,7 +317,7 @@ export class ReportsController {
         totalExpensesK: prior.totalExpensesK,
         netProfitK: prior.netProfitK,
         lines: Object.fromEntries(
-          [...prior.income, ...prior.expenses].map((line) => [line.account, line.amountK]),
+          [...prior.income, ...prior.expenses].map((line) => [line.code, line.amountK]),
         ),
       },
     };
@@ -453,22 +452,14 @@ export class ReportsController {
     };
   }
 
-  /** Per-account sums for one month, with any account the chart does not know
-   * dropped. An unknown key means a write path bypassed the posting builders,
-   * and the trial balance's own `balanced` flag is what exposes the damage. */
+  /** Per-account sums for one month, with the account's OWN chart metadata
+   * (D1, PR-095): the chart in the database is the authority, and no
+   * account — provisioned, custom or seeded — is dropped for being unknown
+   * to a private table. */
   private async sumsFor(businessId: string, period: string): Promise<AccountSums[]> {
-    const rows = await withBusiness(this.db, businessId, (tx) =>
+    return withBusiness(this.db, businessId, (tx) =>
       reportsRepo.accountSumsFor(tx, businessId, period),
     );
-    return rows
-      .filter((r) => isAccountKey(r.account))
-      .map((r) => ({
-        account: r.account as AccountSums['account'],
-        periodDebitK: r.periodDebitK,
-        periodCreditK: r.periodCreditK,
-        cumulativeDebitK: r.cumulativeDebitK,
-        cumulativeCreditK: r.cumulativeCreditK,
-      }));
   }
 
   /** The invoice register — numbers and figures only, never a customer name. */

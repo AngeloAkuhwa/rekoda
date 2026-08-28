@@ -12,15 +12,13 @@ import type { BalanceSheet, CashflowStatement, ProfitAndLoss, TrialBalance } fro
 const K = (naira: number) => naira * 100;
 
 const PROFIT: ProfitAndLoss = {
-  income: [{ account: 'SALES_REVENUE', code: '4000', name: 'Sales', amountK: K(150_000) }],
+  income: [{ code: '4000', name: 'Sales', amountK: K(150_000) }],
   /* A real account from the real chart. This fixture used to say `RENT` at
    * code 6100: an account that has never existed, at a code that means
    * DEPRECIATION since ADR 0026. It compiled only because core excluded its
    * own tests from typechecking, which this PR fixes. */
-  expenses: [{ account: 'EXPENSES', code: '6000', name: 'Operating Expenses', amountK: K(12_000) }],
-  operatingExpenses: [
-    { account: 'EXPENSES', code: '6000', name: 'Operating Expenses', amountK: K(12_000) },
-  ],
+  expenses: [{ code: '6000', name: 'Operating Expenses', amountK: K(12_000) }],
+  operatingExpenses: [{ code: '6000', name: 'Operating Expenses', amountK: K(12_000) }],
   totalIncomeK: K(150_000),
   totalExpensesK: K(12_000),
   /* Nothing sold has a cost recorded, which is the state a business is in
@@ -32,13 +30,9 @@ const PROFIT: ProfitAndLoss = {
 };
 
 const SHEET: BalanceSheet = {
-  assets: [{ account: 'CASH', code: '1000', name: 'Cash', amountK: K(40_000) }],
-  liabilities: [
-    { account: 'ACCOUNTS_PAYABLE', code: '2000', name: 'Accounts Payable', amountK: K(30_000) },
-  ],
-  equity: [
-    { account: 'OWNERS_EQUITY', code: '3000', name: 'Retained Earnings', amountK: K(10_000) },
-  ],
+  assets: [{ code: '1000', name: 'Cash', amountK: K(40_000) }],
+  liabilities: [{ code: '2000', name: 'Accounts Payable', amountK: K(30_000) }],
+  equity: [{ code: '3000', name: 'Retained Earnings', amountK: K(10_000) }],
   totalAssetsK: K(40_000),
   totalLiabilitiesK: K(30_000),
   totalEquityK: K(10_000),
@@ -54,9 +48,8 @@ const CASHFLOW: CashflowStatement = {
 
 const TRIAL: TrialBalance = {
   rows: [
-    { account: 'CASH', code: '1000', name: 'Cash', debitK: K(40_000), creditK: 0 },
+    { code: '1000', name: 'Cash', debitK: K(40_000), creditK: 0 },
     {
-      account: 'SALES_REVENUE',
       code: '4000',
       name: 'Sales',
       debitK: 0,
@@ -255,7 +248,7 @@ describe('what the statements document says', () => {
         profitAndLoss: {
           ...PROFIT,
           expenses: [
-            { account: 'COGS', code: '5000', name: 'Cost of Goods Sold', amountK: K(20_000) },
+            { code: '5000', name: 'Cost of Goods Sold', amountK: K(20_000) },
             ...PROFIT.operatingExpenses,
           ],
           costOfSalesK: K(20_000),

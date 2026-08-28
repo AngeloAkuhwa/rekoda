@@ -57,15 +57,12 @@ export default async function ReportsPage({
    * credits. `chargedK` is this month; `owedK` is everything collected and
    * not yet paid over, which is the balance a merchant is actually holding.
    */
-  const vatRow = trialBalance.rows.find((r) => r.account === 'VAT_PAYABLE');
+  const vatRow = trialBalance.rows.find((r) => r.code === '2100');
   const vat = {
     /* The trial balance is the PERIOD; the balance sheet carries the running
      * liability, which is the money actually being held. */
     chargedK: Math.max(0, (vatRow?.creditK ?? 0) - (vatRow?.debitK ?? 0)),
-    owedK: Math.max(
-      0,
-      balanceSheet.liabilities.find((l) => l.account === 'VAT_PAYABLE')?.amountK ?? 0,
-    ),
+    owedK: Math.max(0, balanceSheet.liabilities.find((l) => l.code === '2100')?.amountK ?? 0),
   };
 
   const label = periodLabel(period);
@@ -184,13 +181,13 @@ export default async function ReportsPage({
                       <th colSpan={3}>Income</th>
                     </tr>
                     {profitAndLoss.income.map((line) => (
-                      <tr key={line.account}>
+                      <tr key={line.code}>
                         <td>{line.name}</td>
                         <td>
                           <Money kobo={line.amountK} />
                         </td>
                         <td>
-                          <Prior kobo={comparison.lines[line.account]} />
+                          <Prior kobo={comparison.lines[line.code]} />
                         </td>
                       </tr>
                     ))}
@@ -230,13 +227,13 @@ export default async function ReportsPage({
                       <th colSpan={3}>Expenses</th>
                     </tr>
                     {profitAndLoss.expenses.map((line) => (
-                      <tr key={line.account}>
+                      <tr key={line.code}>
                         <td>{line.name}</td>
                         <td>
                           <Money kobo={line.amountK} />
                         </td>
                         <td>
-                          <Prior kobo={comparison.lines[line.account]} />
+                          <Prior kobo={comparison.lines[line.code]} />
                         </td>
                       </tr>
                     ))}
@@ -407,7 +404,7 @@ export default async function ReportsPage({
                       <th colSpan={2}>Assets</th>
                     </tr>
                     {balanceSheet.assets.map((line) => (
-                      <tr key={line.account}>
+                      <tr key={line.code}>
                         <td>{line.name}</td>
                         <td>
                           <Money kobo={line.amountK} />
@@ -424,7 +421,7 @@ export default async function ReportsPage({
                       <th colSpan={2}>Liabilities</th>
                     </tr>
                     {balanceSheet.liabilities.map((line) => (
-                      <tr key={line.account}>
+                      <tr key={line.code}>
                         <td>{line.name}</td>
                         <td>
                           <Money kobo={line.amountK} />
@@ -441,7 +438,7 @@ export default async function ReportsPage({
                       <th colSpan={2}>Equity</th>
                     </tr>
                     {balanceSheet.equity.map((line) => (
-                      <tr key={`${line.account}-${line.name}`}>
+                      <tr key={`${line.code}-${line.name}`}>
                         <td>{line.name}</td>
                         <td>
                           <Money kobo={line.amountK} />
@@ -588,7 +585,7 @@ export default async function ReportsPage({
                   </thead>
                   <tbody>
                     {trialBalance.rows.map((row) => (
-                      <tr key={row.account}>
+                      <tr key={row.code}>
                         <td>
                           <span className="rk-fineprint">{row.code}</span> {row.name}
                         </td>

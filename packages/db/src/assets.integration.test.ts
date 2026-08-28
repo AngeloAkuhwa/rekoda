@@ -9,9 +9,11 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import {
+  ACCOUNTS,
   buildBalanceSheet,
   buildProfitAndLoss,
   isAccountKey,
+  type AccountKey,
   type AccountSums,
 } from '@rekoda/core';
 import { createDb, withBusiness, type Db } from './client.js';
@@ -76,10 +78,15 @@ async function sumsOf(businessId: string): Promise<AccountSums[]> {
     const at = byAccount.get(e.account) ?? { d: 0, c: 0 };
     byAccount.set(e.account, { d: at.d + e.debitK, c: at.c + e.creditK });
   }
+  /* Statements v2 (PR-095) take the account's own chart metadata; these
+   * fixtures synthesise it from core's seeded chart, roles not needed. */
   return [...byAccount]
     .filter(([account]) => isAccountKey(account))
     .map(([account, n]) => ({
-      account: account as AccountSums['account'],
+      code: ACCOUNTS[account as AccountKey].code,
+      name: ACCOUNTS[account as AccountKey].name,
+      type: ACCOUNTS[account as AccountKey].type,
+      systemRole: null,
       periodDebitK: n.d,
       periodCreditK: n.c,
       cumulativeDebitK: n.d,
@@ -100,10 +107,10 @@ describe('buying something the business keeps', () => {
     const sheet = buildBalanceSheet(sums);
     const pnl = buildProfitAndLoss(sums);
 
-    const equipment = sheet.assets.find((l) => l.account === 'EQUIPMENT');
+    const equipment = sheet.assets.find((l) => l.code === ACCOUNTS.EQUIPMENT.code);
     expect(equipment?.amountK).toBe(45_000_000);
     /* Money left the bank; the value did not leave the business. */
-    expect(sheet.assets.find((l) => l.account === 'BANK')?.amountK).toBe(-45_000_000);
+    expect(sheet.assets.find((l) => l.code === ACCOUNTS.BANK.code)?.amountK).toBe(-45_000_000);
     expect(sheet.totalAssetsK).toBe(0);
 
     /* Not a naira of it reaches the profit and loss. */
@@ -117,7 +124,7 @@ describe('buying something the business keeps', () => {
     expect(recorded.owedK).toBe(20_000_000);
 
     const sheet = buildBalanceSheet(await sumsOf(businessId));
-    expect(sheet.liabilities.find((l) => l.account === 'ACCOUNTS_PAYABLE')?.amountK).toBe(
+    expect(sheet.liabilities.find((l) => l.code === ACCOUNTS.ACCOUNTS_PAYABLE.code)?.amountK).toBe(
       20_000_000,
     );
   });
@@ -176,8 +183,8 @@ describe('taking one back out', () => {
     ).toMatchObject({ outcome: 'withdrawn', reversedK: 45_000_000 });
 
     const sheet = buildBalanceSheet(await sumsOf(businessId));
-    expect(sheet.assets.find((l) => l.account === 'EQUIPMENT')?.amountK ?? 0).toBe(0);
-    expect(sheet.assets.find((l) => l.account === 'BANK')?.amountK ?? 0).toBe(0);
+    expect(sheet.assets.find((l) => l.code === ACCOUNTS.EQUIPMENT.code)?.amountK ?? 0).toBe(0);
+    expect(sheet.assets.find((l) => l.code === ACCOUNTS.BANK.code)?.amountK ?? 0).toBe(0);
 
     /* And it reads as withdrawn, worth nothing, rather than disappearing. */
     const { rows } = await withBusiness(db, businessId, (tx) =>
@@ -286,17 +293,21 @@ describe('selling or scrapping one', () => {
 
     const sums = await sumsOf(businessId);
     const sheet = buildBalanceSheet(sums);
-    expect(sheet.assets.find((l) => l.account === 'EQUIPMENT')?.amountK ?? 0).toBe(0);
-    expect(sheet.assets.find((l) => l.account === 'ACCUMULATED_DEPRECIATION')?.amountK ?? 0).toBe(
-      0,
-    );
+    expect(sheet.assets.find((l) => l.code === ACCOUNTS.EQUIPMENT.code)?.amountK ?? 0).toBe(0);
+    expect(
+      sheet.assets.find((l) => l.code === ACCOUNTS.ACCUMULATED_DEPRECIATION.code)?.amountK ?? 0,
+    ).toBe(0);
     expect(sheet.balanced).toBe(true);
 
     /* The loss is in the profit and loss, once, at its true size. */
     const pnl = buildProfitAndLoss(sums);
-    expect(pnl.expenses.find((l) => l.account === 'DISPOSAL_RESULT')?.amountK).toBe(16_000_000);
+    expect(pnl.expenses.find((l) => l.code === ACCOUNTS.DISPOSAL_RESULT.code)?.amountK).toBe(
+      16_000_000,
+    );
     /* And the depreciation charged over the year is still there, unerased. */
-    expect(pnl.expenses.find((l) => l.account === 'DEPRECIATION')?.amountK).toBe(9_000_000);
+    expect(pnl.expenses.find((l) => l.code === ACCOUNTS.DEPRECIATION.code)?.amountK).toBe(
+      9_000_000,
+    );
   });
 
   it('records a gain when it fetched more than it was worth', async () => {
@@ -316,7 +327,9 @@ describe('selling or scrapping one', () => {
 
     const pnl = buildProfitAndLoss(await sumsOf(businessId));
     /* A gain is a credit on an expense account, so it reads as negative. */
-    expect(pnl.expenses.find((l) => l.account === 'DISPOSAL_RESULT')?.amountK).toBe(-4_000_000);
+    expect(pnl.expenses.find((l) => l.code === ACCOUNTS.DISPOSAL_RESULT.code)?.amountK).toBe(
+      -4_000_000,
+    );
   });
 
   /* Scrapped: it went and nothing came back, so the whole book value is lost. */

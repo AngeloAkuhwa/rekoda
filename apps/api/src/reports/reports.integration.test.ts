@@ -413,7 +413,7 @@ describe('the spend register', () => {
       expect(recordAssetResponse.parse(res.json())).toMatchObject({ owedK: 0 });
 
       const after = await statementsOf(auth);
-      const equipment = after.balanceSheet.assets.find((l) => l.account === 'EQUIPMENT');
+      const equipment = after.balanceSheet.assets.find((l) => l.code === '1300');
       expect(equipment?.amountK).toBe(45_000_000);
       /* The whole reason ADR 0026 exists: profit does not move. */
       expect(after.profitAndLoss.totalExpensesK).toBe(before.profitAndLoss.totalExpensesK);
@@ -482,9 +482,7 @@ describe('the spend register', () => {
       ).toMatchObject({ outcome: 'withdrawn', reversedK: 45_000_000 });
 
       const after = await statementsOf(auth);
-      expect(after.balanceSheet.assets.find((l) => l.account === 'EQUIPMENT')?.amountK ?? 0).toBe(
-        0,
-      );
+      expect(after.balanceSheet.assets.find((l) => l.code === '1300')?.amountK ?? 0).toBe(0);
       expect(after.balanceSheet.balanced).toBe(true);
     });
 
@@ -516,12 +514,8 @@ describe('the spend register', () => {
       });
 
       const after = await statementsOf(auth);
-      expect(after.balanceSheet.assets.find((l) => l.account === 'EQUIPMENT')?.amountK ?? 0).toBe(
-        0,
-      );
-      expect(
-        after.profitAndLoss.expenses.find((l) => l.account === 'DISPOSAL_RESULT')?.amountK,
-      ).toBe(25_000_000);
+      expect(after.balanceSheet.assets.find((l) => l.code === '1300')?.amountK ?? 0).toBe(0);
+      expect(after.profitAndLoss.expenses.find((l) => l.code === '6200')?.amountK).toBe(25_000_000);
       expect(after.balanceSheet.balanced).toBe(true);
 
       const spend = reportsExpensesResponse.parse(
@@ -1355,7 +1349,7 @@ describe('the four statements (ADR 0015)', () => {
     expect(statements.trialBalance.balanced).toBe(true);
     expect(statements.balanceSheet.balanced).toBe(true);
     // Cash went negative (an expense with no income): it crosses to credit.
-    const cash = statements.trialBalance.rows.find((r) => r.account === 'CASH');
+    const cash = statements.trialBalance.rows.find((r) => r.code === '1000');
     expect(cash?.creditK).toBe(1_200_000);
 
     /* And the schedule underneath it, labelled the way the statement is:
@@ -2688,8 +2682,8 @@ describe('a correction written by hand', () => {
     );
     expect(seen.balanceSheet.balanced).toBe(true);
     expect(seen.profitAndLoss.netProfitK).toBe(0);
-    const bank = seen.balanceSheet.assets.find((a) => a.account === 'BANK_PAYSTACK');
-    const cash = seen.balanceSheet.assets.find((a) => a.account === 'CASH');
+    const bank = seen.balanceSheet.assets.find((a) => a.code === '1010');
+    const cash = seen.balanceSheet.assets.find((a) => a.code === '1000');
     expect(bank?.amountK).toBe(5_000_000);
     expect(cash?.amountK).toBe(-5_000_000);
   });
@@ -2774,7 +2768,7 @@ describe('one-shot keys on the owner writes', () => {
     const statements = reportsStatementsResponse.parse(
       (await app.inject({ method: 'GET', url: '/v1/reports/statements', headers: auth })).json(),
     );
-    const bank = statements.trialBalance.rows.find((row) => row.account === 'BANK_PAYSTACK');
+    const bank = statements.trialBalance.rows.find((row) => row.code === '1010');
     expect(bank?.debitK).toBe(500_000);
   });
 

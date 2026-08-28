@@ -21,7 +21,6 @@
 import { sql } from 'drizzle-orm';
 import {
   ACCOUNTS,
-  KEY_BY_CODE,
   isExpenseCategory,
   isSaleSource,
   type ExpenseCategory,
@@ -35,8 +34,10 @@ import { codeOf } from './accounts.js';
 /* All three, since ADR 0025 split the bank. Money waiting to settle at the
  * provider is still the merchant's money; the split changed where it is
  * recorded, never whether it counts. */
-/* By chart CODE through account_id (PR-033): the text key is on its way
- * out, and the codes are the identity the seed carried over. */
+/* By chart CODE through account_id (PR-033) for the seeded three, plus the
+ * PAYMENT_PROVIDER_CLEARING role wherever it appears (PR-095): money a
+ * provider verifiably holds for the merchant is still their money, however
+ * many connections hold it. */
 const CASH_CODES = sql.raw(
   `'${ACCOUNTS.CASH.code}', '${ACCOUNTS.BANK.code}', '${ACCOUNTS.BANK_PAYSTACK.code}'`,
 );
@@ -66,10 +67,13 @@ export async function overviewFor(tx: TenantDb, businessId: string): Promise<Ove
     sales_k: string;
   }>(sql`
     SELECT
-      COALESCE(SUM(e.debit_k)  FILTER (WHERE acc.code IN (${CASH_CODES})), 0)::bigint AS money_in_k,
-      COALESCE(SUM(e.debit_k)  FILTER (WHERE acc.code = ${codeOf('BANK_PAYSTACK')}
+      COALESCE(SUM(e.debit_k)  FILTER (WHERE acc.code IN (${CASH_CODES})
+                                         OR acc.system_role = 'PAYMENT_PROVIDER_CLEARING'), 0)::bigint AS money_in_k,
+      COALESCE(SUM(e.debit_k)  FILTER (WHERE (acc.code = ${codeOf('BANK_PAYSTACK')}
+                                         OR acc.system_role = 'PAYMENT_PROVIDER_CLEARING')
                                          AND t.source_type = 'webhook'), 0)::bigint  AS verified_in_k,
-      COALESCE(SUM(e.credit_k) FILTER (WHERE acc.code IN (${CASH_CODES})), 0)::bigint AS money_out_k,
+      COALESCE(SUM(e.credit_k) FILTER (WHERE acc.code IN (${CASH_CODES})
+                                         OR acc.system_role = 'PAYMENT_PROVIDER_CLEARING'), 0)::bigint AS money_out_k,
       COALESCE(SUM(e.credit_k) FILTER (WHERE acc.code = ${codeOf('SALES_REVENUE')}), 0)::bigint AS sales_k
     FROM ledger_entries e
     JOIN accounts acc ON acc.id = e.account_id
@@ -129,8 +133,10 @@ export async function cashflowFor(
   const rows = await tx.execute<{ period: string; in_k: string; out_k: string }>(sql`
     SELECT
       to_char(date_trunc('month', e.created_at + interval '1 hour'), 'YYYY-MM') AS period,
-      COALESCE(SUM(e.debit_k)  FILTER (WHERE acc.code IN (${CASH_CODES})), 0)::bigint AS in_k,
-      COALESCE(SUM(e.credit_k) FILTER (WHERE acc.code IN (${CASH_CODES})), 0)::bigint AS out_k
+      COALESCE(SUM(e.debit_k)  FILTER (WHERE acc.code IN (${CASH_CODES})
+                                         OR acc.system_role = 'PAYMENT_PROVIDER_CLEARING'), 0)::bigint AS in_k,
+      COALESCE(SUM(e.credit_k) FILTER (WHERE acc.code IN (${CASH_CODES})
+                                         OR acc.system_role = 'PAYMENT_PROVIDER_CLEARING'), 0)::bigint AS out_k
     FROM ledger_entries e
     JOIN accounts acc ON acc.id = e.account_id
     WHERE e.business_id = ${businessId}::uuid
@@ -383,7 +389,10 @@ export async function activityFor(
 }
 
 export interface AccountSumsRow {
-  account: string;
+  code: string;
+  name: string;
+  type: 'asset' | 'liability' | 'equity' | 'income' | 'expense';
+  systemRole: string | null;
   periodDebitK: number;
   periodCreditK: number;
   cumulativeDebitK: number;
@@ -402,6 +411,9 @@ export async function accountSumsFor(
 ): Promise<AccountSumsRow[]> {
   const rows = await tx.execute<{
     account_code: string;
+    account_name: string;
+    account_type: string;
+    system_role: string | null;
     period_debit_k: string;
     period_credit_k: string;
     cumulative_debit_k: string;
@@ -419,7 +431,8 @@ export async function accountSumsFor(
              (((${period} || '-01')::date + interval '1 month')::timestamptz
                - interval '1 hour') AS pend
     )
-    SELECT acc.code AS account_code,
+    SELECT acc.code AS account_code, acc.name AS account_name, acc.type AS account_type,
+      acc.system_role,
       COALESCE(SUM(e.debit_k)  FILTER (WHERE e.created_at >= b.pstart), 0)::bigint AS period_debit_k,
       COALESCE(SUM(e.credit_k) FILTER (WHERE e.created_at >= b.pstart), 0)::bigint AS period_credit_k,
       COALESCE(SUM(e.debit_k), 0)::bigint  AS cumulative_debit_k,
@@ -427,11 +440,18 @@ export async function accountSumsFor(
     FROM ledger_entries e
     JOIN accounts acc ON acc.id = e.account_id, bounds b
     WHERE e.business_id = ${businessId}::uuid AND e.created_at < b.pend
-    GROUP BY acc.code
+    GROUP BY acc.code, acc.name, acc.type, acc.system_role
     ORDER BY acc.code
   `);
+  /* Every account the ledger moved, with ITS OWN chart metadata (D1,
+   * PR-095): the chart in the database is the authority, and no account —
+   * provisioned, custom or seeded — is dropped for being unknown to a
+   * private table. */
   return [...rows].map((r) => ({
-    account: KEY_BY_CODE[r.account_code]!,
+    code: r.account_code,
+    name: r.account_name,
+    type: r.account_type as AccountSumsRow['type'],
+    systemRole: r.system_role,
     periodDebitK: Number(r.period_debit_k),
     periodCreditK: Number(r.period_credit_k),
     cumulativeDebitK: Number(r.cumulative_debit_k),
