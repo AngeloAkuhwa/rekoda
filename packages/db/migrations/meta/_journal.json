@@ -757,6 +757,13 @@
       "when": 1787412027000,
       "tag": "0107_platform_cost_events",
       "breakpoints": true
+    },
+    {
+      "idx": 108,
+      "version": "7",
+      "when": 1787412087000,
+      "tag": "0108_hot_path_indexes",
+      "breakpoints": true
     }
   ]
 }
