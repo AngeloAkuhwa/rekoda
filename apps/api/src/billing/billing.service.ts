@@ -37,7 +37,14 @@ import type {
   BillingQuoteResponse,
   BillingStateView,
 } from '@rekoda/contracts';
-import { subscriptionsRepo, usageRepo, withBusiness, type Db, type TenantDb } from '@rekoda/db';
+import {
+  addOnsRepo,
+  subscriptionsRepo,
+  usageRepo,
+  withBusiness,
+  type Db,
+  type TenantDb,
+} from '@rekoda/db';
 import { CONFIG, type ApiConfig } from '../config.js';
 import { DB } from '../db/db.module.js';
 
@@ -115,6 +122,15 @@ export class BillingService {
           unit: pack.unit,
           quantity: pack.quantity,
           priceK: pack.priceK,
+        })),
+        /* What they hold, not what they could buy. A merchant paying
+         * ₦25,000 a month for the API should see it named on the page they
+         * go to when they wonder what they are paying for (PR-117). */
+        addOns: (await addOnsRepo.heldBy(tx, businessId, now)).map((held) => ({
+          addOnId: held.addOnId,
+          name: held.name,
+          startedAt: held.startedAt.toISOString(),
+          endsAt: held.endsAt?.toISOString() ?? null,
         })),
         chargesTotal: charges.count,
         charges: chargeRows.map((charge) => ({

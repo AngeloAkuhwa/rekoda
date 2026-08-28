@@ -188,16 +188,18 @@ function sells(sold: Partial<Record<UsageUnit, number>>): Record<UsageUnit, numb
  * The plan table, in the units a merchant is sold: minutes of voice, not
  * seconds. `allowanceFor` converts to the counts the meter stores.
  *
- * Eleven of the seventeen canonical units are zero on every plan today.
- * That is not an oversight and not a placeholder price of nothing: no code
+ * Nine of the seventeen canonical units are zero on every plan today. That
+ * is not an oversight and not a placeholder price of nothing: no code
  * consumes them yet, so there is no capability behind them to sell; the API
- * units get theirs with the API product. UTILITY_TEMPLATE got its numbers
- * when PR-060 started metering template sends — straight from
- * pricing-model.md, which is the page these figures must never disagree
- * with. MARKETING_TEMPLATE stays zero on EVERY plan by decision, not
- * omission: pricing-model.md excludes bulk WhatsApp marketing from V1
- * entirely, and zero means zero. AUTH templates are Rekoda's own platform
- * sends (sign-in codes), a platform cost rather than merchant capacity.
+ * units get theirs with the API product, which §27 puts in no plan.
+ * UTILITY_TEMPLATE got its numbers when PR-060 started metering template
+ * sends — straight from pricing-model.md, which is the page these figures
+ * must never disagree with. MARKETING_TEMPLATE stays zero on EVERY plan by
+ * decision, not omission: pricing-model.md excludes bulk WhatsApp marketing
+ * from V1 entirely, and zero means zero. AUTH templates are Rekoda's own
+ * platform sends (sign-in codes), a platform cost rather than merchant
+ * capacity. SERVICE_MESSAGE and REPORT_EXPORTS got theirs from the owner on
+ * 28 August 2026 (PR-117).
  */
 export const PLAN_ALLOWANCES: Record<PlanId, Record<UsageUnit, number>> = {
   /* Ten orders on trial, not zero: MASTER-PLAN allows the Integrate
@@ -209,6 +211,10 @@ export const PLAN_ALLOWANCES: Record<PlanId, Record<UsageUnit, number>> = {
     DOCUMENT_GENERATION: 25,
     DOCUMENTS_UNDERSTOOD: 10,
     CATALOGUE_ORDERS: 10,
+    /* Enough to feel the storefront conversation working, not enough to run
+     * a business on it for free. */
+    SERVICE_MESSAGE: 250,
+    REPORT_EXPORTS: 10,
   }),
   expired: sells({}),
   chat: sells({
@@ -220,6 +226,10 @@ export const PLAN_ALLOWANCES: Record<PlanId, Record<UsageUnit, number>> = {
      * account notices that must reach a customer OUTSIDE the 24-hour
      * window, which is what a utility template is for. */
     UTILITY_TEMPLATE: 25,
+    /* No SERVICE_MESSAGE on Chat, by decision. A Chat merchant talks to
+     * their customers from their own phone; the plan sells them the
+     * assistant, not an outbound channel of their own. */
+    REPORT_EXPORTS: 50,
   }),
   /**
    * Integrate holds REKODA_INTEGRATE and not REKODA_CHAT (owner decision,
@@ -243,6 +253,10 @@ export const PLAN_ALLOWANCES: Record<PlanId, Record<UsageUnit, number>> = {
     CATALOGUE_ORDERS: 300,
     /* pricing-model.md: "100 utility templates". */
     UTILITY_TEMPLATE: 100,
+    /* Integrate runs the storefront conversation, which is where the
+     * outside-the-window replies actually happen. */
+    SERVICE_MESSAGE: 5_000,
+    REPORT_EXPORTS: 100,
   }),
   complete: sells({
     AI_ACTIONS: 1_200,
@@ -252,6 +266,8 @@ export const PLAN_ALLOWANCES: Record<PlanId, Record<UsageUnit, number>> = {
     CATALOGUE_ORDERS: 300,
     /* pricing-model.md: "150 utility templates". */
     UTILITY_TEMPLATE: 150,
+    SERVICE_MESSAGE: 5_000,
+    REPORT_EXPORTS: 200,
   }),
 };
 

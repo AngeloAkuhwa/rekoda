@@ -141,8 +141,16 @@ export async function planPriceKFor(
 }
 
 /**
- * Every unit's allowance at once, in meter counts, for the billing overview.
- * One resolution and one allowance read instead of seventeen.
+ * Every unit's ceiling at once, in meter counts, for the billing overview.
+ * One resolution and two grant reads instead of thirty-four.
+ *
+ * The grants are not an optimisation, they are the difference between the
+ * page telling the truth and not: a merchant holding the Developer API
+ * Starter is metered against twenty-five thousand requests, and a billing
+ * page that read only the plan would show them zero while the API served
+ * their calls (PR-117). What a unit's ceiling MEANS still depends on its
+ * kind: for a consumable it is how many this month, for a capacity unit it
+ * is how many may be held at once.
  */
 export async function meterAllowances(
   config: PlanTermsConfig,
@@ -151,17 +159,28 @@ export async function meterAllowances(
   plan: string,
   now = new Date(),
 ): Promise<Record<UsageUnit, number>> {
-  if (!config.planCatalogueReads) {
-    return Object.fromEntries(
-      Object.keys(UNIT_SCALE).map((unit) => [unit, allowanceFor(plan, unit as UsageUnit)]),
-    ) as Record<UsageUnit, number>;
+  const sold: Record<string, number> = {};
+  if (config.planCatalogueReads) {
+    const terms = await planCatalogueRepo.commercialTermsFor(tx, businessId, plan, now);
+    for (const [unit, scale] of Object.entries(UNIT_SCALE)) {
+      sold[unit] = (terms.allowances[unit as UsageUnit] ?? 0) * scale;
+    }
+  } else {
+    for (const unit of Object.keys(UNIT_SCALE)) {
+      sold[unit] = allowanceFor(plan, unit as UsageUnit);
+    }
   }
-  const terms = await planCatalogueRepo.commercialTermsFor(tx, businessId, plan, now);
+
+  /* Held add-ons, on BOTH paths: the rollback flag decides where the plan's
+   * numbers come from, not whether a merchant's subscriptions count. */
+  const monthly = await addOnsRepo.grantedUnitTotals(tx, businessId, 'MONTHLY_UNITS', now);
+  const capacity = await addOnsRepo.grantedUnitTotals(tx, businessId, 'CAPACITY', now);
+
   return Object.fromEntries(
-    Object.entries(UNIT_SCALE).map(([unit, scale]) => [
-      unit,
-      (terms.allowances[unit as UsageUnit] ?? 0) * scale,
-    ]),
+    Object.entries(UNIT_SCALE).map(([unit, scale]) => {
+      const granted = (isConsumable(unit as UsageUnit) ? monthly[unit] : capacity[unit]) ?? 0;
+      return [unit, (sold[unit] ?? 0) + granted * scale];
+    }),
   ) as Record<UsageUnit, number>;
 }
 
@@ -189,12 +208,18 @@ function toCorePack(pack: {
  * Which packs THIS business may buy, priced as offered today.
  *
  * The data path derives eligibility instead of keeping a matrix: a pack is
- * buyable exactly when the merchant's plan VERSION sells a nonzero
- * allowance of its unit, on a paid plan. A pack is overage by definition,
- * and overage on capacity the gate refuses is capacity the product cannot
- * spend - the same correction the 26 Aug owner decision made to the plan
- * table, applied to the packs that ride it. (The constant path keeps the
- * old matrix, which still offered Chat-side packs to Integrate.)
+ * buyable exactly when the merchant already has a nonzero monthly ceiling
+ * for its unit, on a paid plan. A pack is overage by definition, and
+ * overage on capacity the gate refuses is capacity the product cannot spend
+ * - the same correction the 26 Aug owner decision made to the plan table,
+ * applied to the packs that ride it. (The constant path keeps the old
+ * matrix, which still offered Chat-side packs to Integrate.)
+ *
+ * "Ceiling" rather than "plan allowance" since PR-117, because the API
+ * packs top up a product NO PLAN SELLS (§27): a merchant's twenty-five
+ * thousand requests come from the Developer API Starter they hold, so
+ * eligibility has to read the grants too. Reading only the plan would sell
+ * the API top-up to nobody at all.
  */
 export async function packsForBusiness(
   config: PlanTermsConfig,
@@ -207,12 +232,17 @@ export async function packsForBusiness(
   const terms = await planCatalogueRepo.commercialTermsFor(tx, businessId, plan, now);
   if (!terms.version || terms.monthlyPriceK === 0) return [];
   const packs = await planCatalogueRepo.usagePacksAt(tx, now);
+  const granted = await addOnsRepo.grantedUnitTotals(tx, businessId, 'MONTHLY_UNITS', now);
   /* Consumables only: a pack credits one month's bonus, which cannot
    * express standing capacity (owner ruling, 28 Aug 2026). Migration 0112
    * refuses a capacity pack in the catalogue; this keeps the reader honest
    * about rows written before it. */
   return packs
-    .filter((pack) => isConsumable(pack.unit) && (terms.allowances[pack.unit] ?? 0) > 0)
+    .filter(
+      (pack) =>
+        isConsumable(pack.unit) &&
+        (terms.allowances[pack.unit] ?? 0) + (granted[pack.unit] ?? 0) > 0,
+    )
     .map(toCorePack);
 }
 

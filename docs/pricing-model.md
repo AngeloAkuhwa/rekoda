@@ -102,22 +102,52 @@ Chat + Integrate combined: **1,200 messages** · **120 voice minutes** ·
 documents. This is the plan growing merchants should land on — offline and
 online reality in one consolidated financial position.
 
-## Add-on packs (launch overage model)
+## Add-ons and packs (launch overage model)
 
-| Add-on                                  | Price            |
-| --------------------------------------- | ---------------- |
-| +100 WhatsApp messages                  | ₦2,500           |
-| +30 voice minutes                       | ₦1,500           |
-| +50 document generations                | ₦2,000           |
-| +50 Integrate orders + related capacity | ₦5,000           |
-| Extra accountant/delegate               | ₦1,500/month     |
-| Additional WhatsApp number              | Custom initially |
+Two different things, and the difference is not cosmetic (owner ruling, 28
+August 2026). A **pack** is a one-off block of a CONSUMABLE unit: bought
+inside a month, spent inside that month, gone. An **add-on** is a recurring
+subscription that grants the same thing every month for as long as it is
+held, which is the only shape that can express standing CAPACITY, because a
+seat or an API application is held rather than spent.
+
+One-off packs:
+
+| Pack                                    | Price  |
+| --------------------------------------- | ------ |
+| +100 WhatsApp messages                  | ₦2,500 |
+| +30 voice minutes                       | ₦1,500 |
+| +50 document generations                | ₦2,000 |
+| +50 Integrate orders + related capacity | ₦5,000 |
+| +25,000 API requests                    | ₦10,000 |
+| +25,000 webhook deliveries              | ₦5,000 |
+
+Recurring add-ons:
+
+| Add-on                     | Price            | What it grants                                                        |
+| -------------------------- | ---------------- | --------------------------------------------------------------------- |
+| Extra accountant/delegate  | ₦1,500/month     | +1 accountant seat                                                    |
+| Developer API Starter      | ₦25,000/month    | the REKODA_API entitlement, 1 application, 25,000 requests, 25,000 webhook deliveries |
+| One extra API application  | ₦5,000/month     | +1 application                                                        |
+| Additional WhatsApp number | Custom initially | a further number, handled as a conversation                           |
+
+There is deliberately no pack of API applications. "Fifty more applications,
+once" is not a sentence about standing capacity, and the catalogue is
+constrained so it cannot be written.
 
 No unlimited CONSUMABLE usage at launch — real merchant behaviour is unknown,
 and packs protect against the ₦9,900-payer who scripts 30,000 messages.
-Reports are not a consumable: a PDF or a workbook costs compute and costs no
-provider a naira, and metering the one habit worth encouraging would be
-charging a merchant to look at their own accounts (ADR 0024).
+
+**Exports are metered from 28 August 2026, and data portability never is.**
+This supersedes ADR 0024's "reports are not a consumable", and the reasoning
+that produced that line still stands where it belongs: nobody should be
+charged to look at their own accounts. What changed is the recognition that
+a generated PDF or workbook is a produced artefact with a real cost, so it
+gets a generous monthly allowance (10 on trial, 50 on Chat, 100 on
+Integrate, 200 on Complete) rather than none. Taking YOUR OWN DATA out of
+Rekoda is a separate right, not a product feature, and is never counted
+against any allowance — including for an expired or downgraded business,
+which is exactly when someone needs it most.
 
 > **Payment-processing fee, confirmed 19 Aug 2026.** Collection runs on
 > **Pay with Transfer**, charged at Nigeria's **local rate: 1.5% + ₦100, capped

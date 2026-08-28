@@ -7,6 +7,20 @@ The API is a **separate commercial entitlement** (canonical spec §27). It is
 not included with Chat, Integrate or Complete: a business holds `REKODA_API`
 because it was granted, and holds capacity because it was bought.
 
+## What it costs
+
+| What you buy               | Billing   | Price         | What it gives you                                                  |
+| -------------------------- | --------- | ------------- | ------------------------------------------------------------------ |
+| Developer API Starter      | monthly   | ₦25,000       | API access, one application, 25,000 requests, 25,000 webhook deliveries |
+| One extra API application  | monthly   | ₦5,000        | one more application you may hold                                  |
+| 25,000 extra API requests  | one-off   | ₦10,000       | requests for the month you buy them in                             |
+| 25,000 extra deliveries    | one-off   | ₦5,000        | webhook deliveries for the month you buy them in                   |
+
+Requests and deliveries are **spent**: they reset every month, and a one-off
+top-up covers the month you buy it in. Applications are **held**: the number
+you may have at once, so disabling one frees the slot immediately rather
+than at the month boundary. Test-key calls cost no requests at all.
+
 ## Getting a key
 
 Keys are minted from the dashboard, by the **owner** of the business.

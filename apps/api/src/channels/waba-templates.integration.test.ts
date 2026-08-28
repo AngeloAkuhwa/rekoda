@@ -31,6 +31,7 @@ import { SendFailed } from './sender.js';
 import { StubSender } from './sender.stub.js';
 import { PrivacyGateway } from '../privacy/gateway.service.js';
 import { WabaTemplateService } from './waba-templates.service.js';
+import { meterAllowance } from '../billing/plan-terms.js';
 import { loadConfig, type ApiConfig } from '../config.js';
 
 let urls: Urls;
@@ -304,10 +305,10 @@ describe('the window selects the send (§24; PR-061)', () => {
   it('inside the window, free-form goes as a SERVICE_MESSAGE, metered and tokenised', async () => {
     const { businessId, connectionId, phoneNumberId } = await seedMerchant('integrate');
     await openWindowFor(businessId, connectionId, phoneNumberId);
-    /* SERVICE_MESSAGE is sold on no plan today — its figure arrives with
-     * the pricing decision, and 0 means zero. A bonus credit raises the
-     * ceiling the way a billing top-up would, which proves the machinery
-     * without inventing capacity. */
+    /* Integrate sells 5,000 SERVICE_MESSAGE (PR-117), so the send has room
+     * from the plan alone. The bonus credit stays because it proves the
+     * other half of the ceiling: a top-up adds to the plan rather than
+     * replacing it. */
     const period = usagePeriod(new Date());
     await withBusiness(db, businessId, (tx) =>
       usageRepo.creditBonus(tx, businessId, period, 'SERVICE_MESSAGE', 5),
@@ -329,9 +330,22 @@ describe('the window selects the send (§24; PR-061)', () => {
     });
   });
 
-  it('with the window open and nothing sold, zero still means zero (§4.3 rule 4)', async () => {
+  it('with the window open and the month spent, exhausted means refused (§4.3 rule 4)', async () => {
     const { businessId, connectionId, phoneNumberId } = await seedMerchant('complete');
     await openWindowFor(businessId, connectionId, phoneNumberId);
+
+    /* Spend the month. Before PR-117 this test needed no setup, because
+     * SERVICE_MESSAGE was sold on no plan and zero was the starting state;
+     * now Complete sells 5,000, so the state worth pinning is the one a
+     * real merchant reaches. The window being open does not create
+     * capacity, which is what §4.3 rule 4 says and what this proves. */
+    const sold = await withBusiness(db, businessId, (tx) =>
+      meterAllowance({ planCatalogueReads: true }, tx, businessId, 'complete', 'SERVICE_MESSAGE'),
+    );
+    expect(sold).toBeGreaterThan(0);
+    await withBusiness(db, businessId, (tx) =>
+      usageRepo.consumeUnit(tx, businessId, usagePeriod(new Date()), 'SERVICE_MESSAGE', sold, sold),
+    );
 
     const outcome = await service.sendCustomerText(businessId, {
       to: '+2349098887777',
@@ -340,7 +354,9 @@ describe('the window selects the send (§24; PR-061)', () => {
 
     expect(outcome).toEqual({ outcome: 'allowance_exhausted', unit: 'SERVICE_MESSAGE' });
     expect(sender.connectionTexts).toHaveLength(0);
-    expect(await used(businessId, 'SERVICE_MESSAGE')).toBe(0);
+    /* The refusal consumed nothing: the counter still reads exactly what
+     * was spent before it, not one more. */
+    expect(await used(businessId, 'SERVICE_MESSAGE')).toBe(sold);
   });
 });
 

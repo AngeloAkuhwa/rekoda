@@ -24,12 +24,27 @@ pricing page must not promise.
 | `DOCUMENTS_UNDERSTOOD` | Uploaded documents READ by the vision role (the new cost class; pricing-model "Known gap")                                              | 10    | 50   | 0         | 200      |
 | `CATALOGUE_ORDERS`     | Catalogue orders captured (Integrate/Complete)                                                                                          | 10    | 0    | 300       | 300      |
 
-The twelve with no plan allowance yet: `SERVICE_MESSAGE`,
-`UTILITY_TEMPLATE`, `AUTH_TEMPLATE`, `AUTH_INTL_TEMPLATE`,
-`MARKETING_TEMPLATE`, `PAYMENT_CONNECTIONS`,
-`FINANCIAL_ACCOUNT_CONNECTIONS`, `ACCOUNTANT_USERS`, `REPORT_EXPORTS`,
-`API_REQUEST_UNITS`, `API_APPLICATIONS`, `WEBHOOK_DELIVERIES`. Each gets its
-plan figure in the PR that wires its consumer, not before.
+`SERVICE_MESSAGE` and `REPORT_EXPORTS` got their figures from the owner on
+28 August 2026 (PR-117, migration 0113):
+
+| Unit              | What counts                                                     | Trial | Chat | Integrate | Complete |
+| ----------------- | --------------------------------------------------------------- | ----- | ---- | --------- | -------- |
+| `SERVICE_MESSAGE` | A free-form reply to a customer outside the 24-hour window       | 250   | 0    | 5,000     | 5,000    |
+| `REPORT_EXPORTS`  | A statement PDF or workbook GENERATED. Data portability is never counted (PR-118) | 10 | 50 | 100 | 200 |
+
+Chat sells no `SERVICE_MESSAGE` by decision, not omission: a Chat merchant
+talks to their customers from their own phone, and the plan sells them the
+assistant rather than an outbound channel of their own. Integrate and
+Complete run the storefront conversation, which is where the
+outside-the-window replies actually happen.
+
+The ten still with no plan allowance: `UTILITY_TEMPLATE` (Chat, Integrate
+and Complete have figures; trial and expired do not), `AUTH_TEMPLATE`,
+`AUTH_INTL_TEMPLATE`, `MARKETING_TEMPLATE`, `PAYMENT_CONNECTIONS`,
+`FINANCIAL_ACCOUNT_CONNECTIONS`, `ACCOUNTANT_USERS`, `API_REQUEST_UNITS`,
+`API_APPLICATIONS` and `WEBHOOK_DELIVERIES`. The last three are zero on
+every plan on purpose (below); the rest get their figure in the PR that
+wires their consumer, not before.
 
 ### The two kinds of unit (owner ruling, 28 August 2026)
 
@@ -89,6 +104,15 @@ plan, and the two consumables and the one capacity unit arrive differently
 arrive as a monthly grant from the held add-on, or as `bonus` from a top-up
 pack bought inside one month. `API_APPLICATIONS` is capacity: it arrives as
 a standing grant from the held add-on, and never as a pack.
+
+The product, as approved on 28 August 2026 and seeded by migration 0113:
+
+| What is sold              | Shape             | Price         | Grants                                                              |
+| ------------------------- | ----------------- | ------------- | ------------------------------------------------------------------- |
+| Developer API Starter     | recurring add-on  | ₦25,000/month | `REKODA_API`, 1 application, 25,000 requests, 25,000 deliveries |
+| One extra API application | recurring add-on  | ₦5,000/month  | +1 application (capacity)                                           |
+| `api_requests_25k`        | one-off pack      | ₦10,000       | +25,000 requests this month                                         |
+| `webhook_deliveries_25k`  | one-off pack      | ₦5,000        | +25,000 deliveries this month                                       |
 
 The ceiling every API consume reads is `allowance + grants + bonus`, so:
 

@@ -134,6 +134,8 @@ export async function resetPlanCatalogue(urls: Urls): Promise<void> {
       UPDATE usage_packs SET effective_to = NULL WHERE effective_to IS NOT NULL;
       DELETE FROM add_ons WHERE version > 1;
       UPDATE add_ons SET effective_to = NULL WHERE effective_to IS NOT NULL;
+      DELETE FROM add_on_grants WHERE add_on_id LIKE 'test_%';
+      DELETE FROM add_ons WHERE add_on_id LIKE 'test_%';
     `);
   } finally {
     await sql.end();
@@ -187,6 +189,40 @@ export async function grantCapacityAddOn(
     await sql.end();
   }
   return addOnId;
+}
+
+/**
+ * Make a business hold a REAL catalogue add-on, as the owner.
+ *
+ * `grantCapacityAddOn` invents an add-on to prove a mechanism; this one
+ * sells what the catalogue actually offers, which is what a suite wants
+ * when the thing under test is the product rather than the plumbing. The
+ * version is whichever is open now, exactly as a purchase would pin it.
+ */
+export async function holdAddOn(
+  urls: Urls,
+  businessId: string,
+  addOnId: string,
+  startedAt: Date = new Date(),
+): Promise<number> {
+  const sql = postgres(urls.owner, { max: 1, onnotice: () => {} });
+  try {
+    const open = await sql<{ version: number }[]>`
+      SELECT version FROM add_ons
+       WHERE add_on_id = ${addOnId} AND effective_to IS NULL
+       ORDER BY version DESC LIMIT 1
+    `;
+    const version = open[0]?.version;
+    if (version === undefined) throw new Error(`no open version of add-on ${addOnId}`);
+    await sql`
+      INSERT INTO business_add_ons (business_id, add_on_id, version, started_at)
+      VALUES (${businessId}::uuid, ${addOnId}, ${version}, ${startedAt.toISOString()}::timestamptz)
+      ON CONFLICT DO NOTHING
+    `;
+    return version;
+  } finally {
+    await sql.end();
+  }
 }
 
 /**

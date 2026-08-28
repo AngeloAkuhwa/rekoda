@@ -75,6 +75,21 @@ export const billingPackView = z.object({
   priceK: kobo,
 });
 
+/**
+ * A recurring add-on this business holds (PR-117).
+ *
+ * Distinct from a pack, and the page says so in as many words: a pack is
+ * one month's top-up, an add-on is a subscription that grants the same
+ * thing every month until it is ended. `endsAt` is a cancellation that has
+ * not taken effect yet - the merchant paid for the month and keeps it.
+ */
+export const billingAddOnView = z.object({
+  addOnId: z.string(),
+  name: z.string(),
+  startedAt: isoDate,
+  endsAt: isoDate.nullable(),
+});
+
 export const billingOverviewResponse = z.object({
   plan: z.string(),
   priceK: kobo,
@@ -84,6 +99,8 @@ export const billingOverviewResponse = z.object({
   period: z.string().regex(/^\d{4}-\d{2}$/),
   units: z.array(billingUnitView),
   packs: z.array(billingPackView),
+  /** Recurring add-ons held right now. Empty for most businesses. */
+  addOns: z.array(billingAddOnView),
   /**
    * Every charge on this account, which is not `charges.length`.
    *

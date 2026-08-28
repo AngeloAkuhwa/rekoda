@@ -85,6 +85,36 @@ export async function grantedUnits(
 }
 
 /**
+ * Every unit a business's holdings grant, of one kind, in one query.
+ *
+ * The same answer as `grantedUnits` for each unit in turn, and it exists so
+ * a caller deciding about SEVENTEEN units does not make seventeen round
+ * trips. Units nothing grants are ABSENT rather than zero: a caller reading
+ * `?? 0` gets the honest answer, and an empty map is the common case.
+ */
+export async function grantedUnitTotals(
+  tx: TenantDb,
+  businessId: string,
+  kind: 'CAPACITY' | 'MONTHLY_UNITS',
+  now: Date = new Date(),
+): Promise<Record<string, number>> {
+  const at = now.toISOString();
+  const rows = await tx.execute<{ unit: string; granted: number }>(sql`
+    SELECT g.unit, sum(g.quantity)::int AS granted
+      FROM business_add_ons h
+      JOIN add_on_grants g
+        ON g.add_on_id = h.add_on_id AND g.version = h.version
+     WHERE h.business_id = ${businessId}
+       AND h.started_at <= ${at}::timestamptz
+       AND (h.ends_at IS NULL OR h.ends_at > ${at}::timestamptz)
+       AND g.grant_kind = ${kind}
+       AND g.unit IS NOT NULL
+     GROUP BY g.unit
+  `);
+  return Object.fromEntries([...rows].map((row) => [row.unit, Number(row.granted)]));
+}
+
+/**
  * Entitlements the held add-ons grant.
  *
  * DERIVED rather than copied into `business_entitlements` when the add-on is

@@ -170,6 +170,11 @@ describe('plan allowances (docs/metering-v1.md)', () => {
       'MARKETING_TEMPLATE',
       'AUTH_TEMPLATE',
       'AUTH_INTL_TEMPLATE',
+      /* Priced by the owner on 28 Aug 2026 (PR-117). Both have live
+       * consumers: the storefront's free-form replies and the statement
+       * exports. */
+      'SERVICE_MESSAGE',
+      'REPORT_EXPORTS',
     ] as const;
     for (const unit of USAGE_UNITS) {
       if ((live as readonly string[]).includes(unit)) continue;

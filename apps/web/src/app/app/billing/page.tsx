@@ -351,6 +351,41 @@ export default async function BillingPage({
         </div>
       )}
 
+      {/* ── recurring add-ons held ── */}
+      {overview.addOns.length > 0 ? (
+        <div className="rk-card">
+          <h2>What you also subscribe to</h2>
+          <div className="rk-table-scroll">
+            <table className="rk-table">
+              <thead>
+                <tr>
+                  <th>Add-on</th>
+                  <th>Since</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {overview.addOns.map((addOn) => (
+                  <tr key={addOn.addOnId}>
+                    <td>{addOn.name}</td>
+                    <td>{new Date(addOn.startedAt).toLocaleDateString('en-NG')}</td>
+                    <td>
+                      {addOn.endsAt
+                        ? `Ends ${new Date(addOn.endsAt).toLocaleDateString('en-NG')}`
+                        : 'Renews monthly'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="rk-fineprint">
+            These renew every month alongside your plan. To change one, message us and we will
+            handle it on your next renewal.
+          </p>
+        </div>
+      ) : null}
+
       {/* ── add-on packs ── */}
       {overview.packs.length > 0 ? (
         <div className="rk-card">

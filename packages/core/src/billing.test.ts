@@ -9,6 +9,7 @@ import {
   planChangeCharge,
   planChangeKind,
 } from './billing.js';
+import { isConsumable } from './allowances.js';
 
 const at = (iso: string) => new Date(iso);
 
@@ -288,13 +289,21 @@ describe('add-on packs', () => {
     expect(addOnPack('messages_1000000')).toBeNull();
   });
 
-  it('every pack names a real usage unit', () => {
+  it('every pack names a real usage unit, and never a held one', () => {
     for (const pack of ADD_ON_PACKS) {
-      expect(['AI_ACTIONS', 'VOICE_MINUTES', 'DOCUMENT_GENERATION', 'CATALOGUE_ORDERS']).toContain(
-        pack.unit,
-      );
+      expect([
+        'AI_ACTIONS',
+        'VOICE_MINUTES',
+        'DOCUMENT_GENERATION',
+        'CATALOGUE_ORDERS',
+        'API_REQUEST_UNITS',
+        'WEBHOOK_DELIVERIES',
+      ]).toContain(pack.unit);
       expect(pack.quantity).toBeGreaterThan(0);
       expect(pack.priceK).toBeGreaterThan(0);
+      /* A pack credits one month's bonus, so it can only ever sell a
+       * consumable. Capacity is sold as a recurring add-on (PR-116). */
+      expect(isConsumable(pack.unit)).toBe(true);
     }
   });
 });
@@ -324,8 +333,16 @@ describe('which packs a plan may buy', () => {
     }
   });
 
-  it('sells everything to Complete, which does everything', () => {
-    expect(packsFor('complete')).toHaveLength(ADD_ON_PACKS.length);
+  it('sells Complete every pack its plan has a ceiling for', () => {
+    /* Every merchant-side consumable, which is all of them except the two
+     * API packs: no PLAN sells API units (§27), so this plan-only path
+     * offers them to nobody and the data path answers from the grants. */
+    expect(packsFor('complete').map((pack) => pack.id)).toEqual([
+      'messages_100',
+      'voice_30min',
+      'documents_50',
+      'orders_50',
+    ]);
   });
 
   it('always sells messages and documents, which every plan uses', () => {

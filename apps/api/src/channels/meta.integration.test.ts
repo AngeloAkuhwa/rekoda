@@ -67,6 +67,7 @@ import { ContainerAudioProbe } from '../ai/audio-duration.js';
 import { CommandBus } from '../commands/command-bus.service.js';
 import { RiskPolicyService } from '../risk/risk-policy.service.js';
 import { SecurityMetrics } from './security-metrics.service.js';
+import { meterAllowance } from '../billing/plan-terms.js';
 
 const APP_SECRET = 'meta-app-secret-for-tests';
 const VERIFY_TOKEN = 'meta-verify-token-for-tests';
@@ -751,8 +752,25 @@ describe('the W3 completion gate: catalogue to receipt (spec §3.2; PR-089)', ()
         status: 'active',
         externalSubaccountId: 'ACCT_live1',
       });
-      if (opts.capacity !== false) {
-        await usageRepo.creditBonus(tx, businessId, usagePeriod(new Date()), 'SERVICE_MESSAGE', 5);
+      const period = usagePeriod(new Date());
+      if (opts.capacity === false) {
+        /* Spend the month, rather than assume the plan sells none. Integrate
+         * sells 5,000 SERVICE_MESSAGE since PR-117, so "no capacity" is now
+         * a merchant who has USED theirs, which is the state the fallback
+         * below actually exists for. The figure is read rather than
+         * retyped, so a repricing does not silently stop exhausting it. */
+        const sold = await meterAllowance(
+          deps.config,
+          tx,
+          businessId,
+          'integrate',
+          'SERVICE_MESSAGE',
+        );
+        if (sold > 0) {
+          await usageRepo.consumeUnit(tx, businessId, period, 'SERVICE_MESSAGE', sold, sold);
+        }
+      } else {
+        await usageRepo.creditBonus(tx, businessId, period, 'SERVICE_MESSAGE', 5);
       }
       return wig.id;
     });
@@ -934,9 +952,9 @@ describe('the W3 completion gate: catalogue to receipt (spec §3.2; PR-089)', ()
     );
     await drainAll();
 
-    /* SERVICE_MESSAGE is sold on no plan until the pricing decision, and 0
-     * means zero: the customer leg refuses without consuming, and the link
-     * falls back to the merchant to forward — the money can still move. */
+    /* The month's SERVICE_MESSAGE is spent, and spent means spent: the
+     * customer leg refuses without consuming, and the link falls back to
+     * the merchant to forward — the money can still move. */
     const invoice = await invoiceOf(businessId);
     expect(invoice).toMatchObject({ status: 'issued' });
     expect(stubSender.connectionTexts).toHaveLength(0);

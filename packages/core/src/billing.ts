@@ -266,6 +266,24 @@ export const ADD_ON_PACKS: readonly AddOnPack[] = [
     quantity: 50,
     priceK: 500_000,
   },
+  /* The two API consumables (PR-117, owner figures of 28 Aug 2026). There
+   * is no pack of API applications: capacity is held, so it is sold as the
+   * recurring `api_application_extra` add-on and migration 0112 stops the
+   * catalogue expressing a pack of one. */
+  {
+    id: 'api_requests_25k',
+    label: '25,000 extra API requests',
+    unit: 'API_REQUEST_UNITS',
+    quantity: 25_000,
+    priceK: 1_000_000,
+  },
+  {
+    id: 'webhook_deliveries_25k',
+    label: '25,000 extra webhook deliveries',
+    unit: 'WEBHOOK_DELIVERIES',
+    quantity: 25_000,
+    priceK: 500_000,
+  },
 ];
 
 /** ₦1,500 a month, recurring, and not a pack. */
@@ -292,11 +310,18 @@ export function addOnPack(id: string): AddOnPack | null {
  * since the ladder fix every paid plan carries a voice allowance, and a
  * merchant with an allowance to exhaust must have the overage path that
  * goes with it.
+ *
+ * The two API packs are offered to NOBODY here. They top up a product no
+ * plan sells (§27), so who may buy them depends on which add-on a business
+ * HOLDS, which this plan-only rollback path cannot see. Offering them to
+ * every paid plan would sell requests to merchants with no key to spend
+ * them with; the data path answers properly, from the grants.
  */
 export function packsFor(plan: string): AddOnPack[] {
   if ((PLAN_PRICES_K[plan as PlanId] ?? 0) === 0) return [];
   return ADD_ON_PACKS.filter((pack) => {
     if (pack.unit === 'CATALOGUE_ORDERS') return plan === 'integrate' || plan === 'complete';
+    if (pack.unit === 'API_REQUEST_UNITS' || pack.unit === 'WEBHOOK_DELIVERIES') return false;
     return true;
   });
 }

@@ -1,6 +1,6 @@
 # 0024 — The commercial terms, decided
 
-**Status:** Accepted
+**Status:** Accepted — the "report generation is not capped" clause is **superseded in part** by the owner ruling of 2026-08-28 (see Scope)
 **Date:** 2026-08-21
 **Decided by:** Angelo Akuhwa
 
@@ -131,6 +131,17 @@ and cost no provider a naira. `docs/pricing-model.md` previously advertised 10
 reports on Chat and 50 on Complete, which nothing ever metered; the numbers
 are removed rather than implemented. Metering the one behaviour we most want
 merchants to develop would be charging them to look at their own accounts.
+
+> **Superseded in part, 2026-08-28 (owner ruling; PR-117).** Generated
+> exports ARE metered, at 10 on trial, 50 on Chat, 100 on Integrate and 200
+> on Complete. What changed is the recognition that a generated PDF or
+> workbook is a produced artefact with a real cost; what did not change is
+> the reasoning above, which is why the allowances are generous rather than
+> tight. The sentence this note qualifies is the only part of ADR 0024
+> affected. Two guarantees are explicitly untouched: reading your own books
+> in the dashboard is never metered, and taking your own data OUT of Rekoda
+> is a right rather than a product feature and is never counted against any
+> allowance, including for the expired account the section above describes.
 
 **`documents_understood` and `orders` allowances stay, unadvertised.** Both
 exist with nothing consuming them. They are kept pending the M5
