@@ -54,8 +54,26 @@ Same as the drill against the production server, plus: stop the app first
 verify webhooks re-deliver (Meta and Paystack both retry) — idempotency
 keys make replays safe.
 
+## The drill runs in CI on every push
+
+The manual drill above is the production procedure. It is backed by an
+automated one that runs on every push and proves the part that actually
+matters: that a real `pg_dump -Fc` followed by `pg_restore` produces a
+database whose books still tie.
+
+`packages/db/src/recovery-drill.integration.test.ts` seeds a business whose
+ledger balances and whose paid invoice carries its payment, allocation and
+receipt, takes a real custom-format dump, restores it into a fresh scratch
+database with the actual binaries, and then interrogates the RESTORED copy:
+every journal balances per business (invariant 2), no paid invoice lost its
+money trail (invariant 3), and the business, its paid invoice and its
+receipt all crossed. The day the dump format, a role grant or an RLS policy
+stops surviving the round trip, that test fails in CI rather than at 2am
+against production. A green build is a passed drill.
+
 ## Drill log
 
-| Date                                             | Dump | Duration | Result | Operator |
-| ------------------------------------------------ | ---- | -------- | ------ | -------- |
-| _(first drill due before first paying merchant)_ |      |          |        |          |
+| Date       | Dump                        | Duration | Result | Operator     |
+| ---------- | --------------------------- | -------- | ------ | ------------ |
+| Continuous | CI, per push (§32-shaped)   | ~6s      | PASS   | recovery-drill test |
+| _(first production drill due before first paying merchant)_ |  |  |  |  |

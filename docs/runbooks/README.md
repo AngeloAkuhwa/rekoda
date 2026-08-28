@@ -7,11 +7,11 @@ Planned (populated as the systems they describe land):
 
 | Runbook                                                             | Lands with |
 | ------------------------------------------------------------------- | ---------- |
-| `deploy.md` — zero-touch deploy + rollback                          | M0         |
-| `backup-restore.md` — nightly dumps, B2 offsite, **restore drill**  | M0         |
-| `incident.md` — triage, provider status pages, comms templates      | M2         |
-| `meta-submission.md` — WhatsApp/app review, exact URLs per field    | M2         |
-| `key-rotation.md` — provider keys, vault key, session secrets       | M2         |
+| `deploy.md` — zero-touch deploy + rollback                          | M0 ✅      |
+| `backup-restore.md` — nightly dumps, B2 offsite, **restore drill**  | M0 ✅ (drill automated, PR-107) |
+| `incident.md` — triage off the §31 integrity probes, provider status | S1 ✅ (PR-107) |
+| `key-rotation.md` — provider keys, vault key, session secrets       | S1 ✅ (PR-107) |
+| `meta-submission.md` — WhatsApp/app review, exact URLs per field    | M2 (owner, W0) |
 | `erasure.md` — NDPA deletion requests end-to-end                    | M3         |
 | `integrate-onboarding.md` — concierge WABA/catalogue/Paystack setup | M5         |
 
