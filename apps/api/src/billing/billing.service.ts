@@ -16,16 +16,20 @@ import { randomBytes } from 'node:crypto';
 import {
   addMonth,
   addOnReference,
-  addOnPack,
   billingState,
   GRACE_DAYS,
-  packsFor,
   planChangeCharge,
   subscriptionReference,
   usagePeriod,
   USAGE_UNITS,
 } from '@rekoda/core';
-import { meterAllowances, planPriceKFor } from './plan-terms.js';
+import {
+  meterAllowances,
+  packOffer,
+  packsForBusiness,
+  planPriceKFor,
+  type PlanTermsConfig,
+} from './plan-terms.js';
 import type {
   BillingCancelResponse,
   BillingOverviewResponse,
@@ -105,7 +109,7 @@ export class BillingService {
           allowance: allowances[unit],
           bonus: byUnit.get(unit)?.bonus ?? 0,
         })),
-        packs: packsFor(plan).map((pack) => ({
+        packs: (await packsForBusiness(this.config, tx, businessId, plan, now)).map((pack) => ({
           id: pack.id,
           label: pack.label,
           unit: pack.unit,
@@ -295,12 +299,12 @@ export class BillingService {
     | { state: 'payment_required'; reference: string; amountK: number }
     | { state: 'unavailable'; reason: string }
   > {
-    const pack = addOnPack(packId);
-    if (!pack) return { state: 'unavailable', reason: 'unknown_pack' };
-
     return withBusiness(this.db, businessId, async (tx) => {
+      const pack = await packOffer(this.config, tx, packId, now);
+      if (!pack) return { state: 'unavailable' as const, reason: 'unknown_pack' };
       const plan = await usageRepo.planFor(tx, businessId, now);
-      if (!packsFor(plan).some((candidate) => candidate.id === pack.id)) {
+      const offered = await packsForBusiness(this.config, tx, businessId, plan, now);
+      if (!offered.some((candidate) => candidate.id === pack.id)) {
         return { state: 'unavailable' as const, reason: 'not_available_on_plan' };
       }
       if (!this.config.paystackPlatformConfirmed) {
@@ -348,7 +352,13 @@ export class BillingService {
  */
 export async function applySettledCharge(
   tx: TenantDb,
-  input: { businessId: string; reference: string; providerReference: string; when: Date },
+  input: {
+    businessId: string;
+    reference: string;
+    providerReference: string;
+    when: Date;
+    config: PlanTermsConfig;
+  },
 ): Promise<'applied' | 'already_settled'> {
   const charge = await subscriptionsRepo.settleCharge(tx, {
     reference: input.reference,
@@ -359,7 +369,10 @@ export async function applySettledCharge(
   if (!charge) return 'already_settled';
 
   if (charge.kind === 'add_on' && charge.packId) {
-    const pack = addOnPack(charge.packId);
+    /* The version in force when the charge was OPENED, not when the webhook
+     * arrived: a pack repriced or resized between purchase and settlement
+     * still credits exactly what was bought and paid for. */
+    const pack = await packOffer(input.config, tx, charge.packId, charge.createdAt);
     if (pack) {
       await usageRepo.creditBonus(
         tx,

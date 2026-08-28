@@ -127,6 +127,10 @@ export async function resetPlanCatalogue(urls: Urls): Promise<void> {
         WHERE v.id = p.plan_version_id AND p.effective_from <> v.effective_from;
       UPDATE plan_prices SET effective_to = NULL WHERE effective_to IS NOT NULL;
       UPDATE plan_versions SET effective_to = NULL WHERE effective_to IS NOT NULL;
+      DELETE FROM usage_packs WHERE version > 1;
+      UPDATE usage_packs SET effective_to = NULL WHERE effective_to IS NOT NULL;
+      DELETE FROM add_ons WHERE version > 1;
+      UPDATE add_ons SET effective_to = NULL WHERE effective_to IS NOT NULL;
     `);
   } finally {
     await sql.end();

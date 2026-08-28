@@ -743,6 +743,13 @@
       "when": 1787411907000,
       "tag": "0105_plan_catalogue",
       "breakpoints": true
+    },
+    {
+      "idx": 106,
+      "version": "7",
+      "when": 1787411967000,
+      "tag": "0106_add_ons_usage_packs",
+      "breakpoints": true
     }
   ]
 }

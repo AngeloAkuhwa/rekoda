@@ -32,7 +32,7 @@ import type { JobContext, JobHandler } from './runner.js';
 
 export interface ProcessBillingChargeDeps {
   provider: PaymentProviderPort;
-  config: Pick<ApiConfig, 'vaultKey'>;
+  config: Pick<ApiConfig, 'vaultKey' | 'planCatalogueReads'>;
 }
 
 /** Provider statuses that mean "this attempt is over", not "still cooking". */
@@ -129,6 +129,7 @@ export function processBillingChargeHandler(deps: ProcessBillingChargeDeps): Job
       reference,
       providerReference: t.providerTransactionId,
       when: new Date(),
+      config: deps.config,
     });
     await events.markProcessed(
       tx,

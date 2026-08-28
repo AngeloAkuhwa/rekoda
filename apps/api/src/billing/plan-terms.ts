@@ -17,7 +17,16 @@
  * stale-pin rule in the repo keeps an expired business's old pin from
  * answering.
  */
-import { allowanceFor, planPriceK, seatsFor, UNIT_SCALE, type UsageUnit } from '@rekoda/core';
+import {
+  addOnPack,
+  allowanceFor,
+  packsFor,
+  planPriceK,
+  seatsFor,
+  UNIT_SCALE,
+  type AddOnPack,
+  type UsageUnit,
+} from '@rekoda/core';
 import { planCatalogueRepo, type TenantDb } from '@rekoda/db';
 
 /** The one config fact this seam needs; keeps the functions testable bare. */
@@ -100,4 +109,61 @@ export async function meterAllowances(
       (terms.allowances[unit as UsageUnit] ?? 0) * scale,
     ]),
   ) as Record<UsageUnit, number>;
+}
+
+/* ── usage packs (PR-101) ─────────────────────────────────────────────── */
+
+/** A catalogue pack in the shape the page and the charge already speak:
+ * quantity in METER counts (seconds of voice), price in kobo. */
+function toCorePack(pack: {
+  packId: string;
+  label: string;
+  unit: UsageUnit;
+  quantity: number;
+  priceMinor: number;
+}): AddOnPack {
+  return {
+    id: pack.packId,
+    label: pack.label,
+    unit: pack.unit,
+    quantity: pack.quantity * UNIT_SCALE[pack.unit],
+    priceK: pack.priceMinor,
+  };
+}
+
+/**
+ * Which packs THIS business may buy, priced as offered today.
+ *
+ * The data path derives eligibility instead of keeping a matrix: a pack is
+ * buyable exactly when the merchant's plan VERSION sells a nonzero
+ * allowance of its unit, on a paid plan. A pack is overage by definition,
+ * and overage on capacity the gate refuses is capacity the product cannot
+ * spend - the same correction the 26 Aug owner decision made to the plan
+ * table, applied to the packs that ride it. (The constant path keeps the
+ * old matrix, which still offered Chat-side packs to Integrate.)
+ */
+export async function packsForBusiness(
+  config: PlanTermsConfig,
+  tx: TenantDb,
+  businessId: string,
+  plan: string,
+  now = new Date(),
+): Promise<AddOnPack[]> {
+  if (!config.planCatalogueReads) return packsFor(plan);
+  const terms = await planCatalogueRepo.commercialTermsFor(tx, businessId, plan, now);
+  if (!terms.version || terms.monthlyPriceK === 0) return [];
+  const packs = await planCatalogueRepo.usagePacksAt(tx, now);
+  return packs.filter((pack) => (terms.allowances[pack.unit] ?? 0) > 0).map(toCorePack);
+}
+
+/** One pack as offered at `at`, whoever is asking. Null for an unknown id. */
+export async function packOffer(
+  config: PlanTermsConfig,
+  tx: TenantDb,
+  packId: string,
+  at = new Date(),
+): Promise<AddOnPack | null> {
+  if (!config.planCatalogueReads) return addOnPack(packId);
+  const pack = await planCatalogueRepo.usagePackAt(tx, packId, at);
+  return pack ? toCorePack(pack) : null;
 }

@@ -391,3 +391,188 @@ export async function pinPlanVersion(
     WHERE id = ${businessId}::uuid
   `);
 }
+
+/* ── usage packs and add-ons (PR-101) ─────────────────────────────────────
+ *
+ * The other two §30 shapes, on the plan-catalogue discipline: versioned,
+ * effective-dated, read-only to the application. A pack row is the OFFER;
+ * what a merchant bought lives in subscription_charges, and settling a
+ * charge credits the version in force when the charge was OPENED, so a
+ * repricing between purchase and webhook never changes what was bought.
+ */
+
+export interface UsagePack {
+  id: string;
+  packId: string;
+  version: number;
+  label: string;
+  unit: UsageUnit;
+  /** Sold units (minutes of voice), like allowance_versions. */
+  quantity: number;
+  priceMinor: number;
+  currency: string;
+  effectiveFrom: Date;
+  effectiveTo: Date | null;
+}
+
+type PackRow = {
+  id: string;
+  pack_id: string;
+  version: number;
+  label: string;
+  unit: string;
+  quantity: number;
+  price_minor: string | number;
+  currency: string;
+  effective_from: string;
+  effective_to: string | null;
+};
+
+const shapePack = (row: PackRow): UsagePack => ({
+  id: row.id,
+  packId: row.pack_id,
+  version: row.version,
+  label: row.label,
+  unit: row.unit as UsageUnit,
+  quantity: row.quantity,
+  priceMinor: Number(row.price_minor),
+  currency: row.currency,
+  effectiveFrom: new Date(row.effective_from),
+  effectiveTo: row.effective_to ? new Date(row.effective_to) : null,
+});
+
+const PACK_COLUMNS = sql`id, pack_id, version, label, unit, quantity,
+  price_minor, currency, effective_from, effective_to`;
+
+/**
+ * The pack version in force at a moment, with the same pre-catalogue rule
+ * the grandfathering pin uses: a moment before the catalogue existed
+ * answers version 1, because the pre-catalogue offer WAS version 1's terms.
+ * Null only for a pack id that never existed.
+ */
+export async function usagePackAt(db: AnyDb, packId: string, at: Date): Promise<UsagePack | null> {
+  const stamp = at.toISOString();
+  const rows = await db.execute<PackRow>(sql`
+    SELECT ${PACK_COLUMNS} FROM usage_packs
+    WHERE id = COALESCE(
+      (SELECT id FROM usage_packs
+       WHERE pack_id = ${packId}
+         AND effective_from <= ${stamp}::timestamptz
+         AND (effective_to IS NULL OR effective_to > ${stamp}::timestamptz)
+       ORDER BY version DESC
+       LIMIT 1),
+      (SELECT id FROM usage_packs WHERE pack_id = ${packId} ORDER BY version LIMIT 1)
+    )
+  `);
+  const row = [...rows][0];
+  return row ? shapePack(row) : null;
+}
+
+/** Every pack on offer at a moment, in a stable order for the billing page. */
+export async function usagePacksAt(db: AnyDb, at: Date): Promise<UsagePack[]> {
+  const stamp = at.toISOString();
+  const rows = await db.execute<PackRow>(sql`
+    SELECT ${PACK_COLUMNS} FROM usage_packs
+    WHERE effective_from <= ${stamp}::timestamptz
+      AND (effective_to IS NULL OR effective_to > ${stamp}::timestamptz)
+    ORDER BY pack_id
+  `);
+  return [...rows].map(shapePack);
+}
+
+export interface AddOn {
+  id: string;
+  addOnId: string;
+  version: number;
+  name: string;
+  billingInterval: BillingInterval;
+  /** Null means not self-service purchasable ("Custom initially"). */
+  priceMinor: number | null;
+  currency: string;
+  effectiveFrom: Date;
+  effectiveTo: Date | null;
+}
+
+type AddOnRow = {
+  id: string;
+  add_on_id: string;
+  version: number;
+  name: string;
+  billing_interval: string;
+  price_minor: string | number | null;
+  currency: string;
+  effective_from: string;
+  effective_to: string | null;
+};
+
+const shapeAddOn = (row: AddOnRow): AddOn => ({
+  id: row.id,
+  addOnId: row.add_on_id,
+  version: row.version,
+  name: row.name,
+  billingInterval: row.billing_interval as BillingInterval,
+  priceMinor: row.price_minor === null ? null : Number(row.price_minor),
+  currency: row.currency,
+  effectiveFrom: new Date(row.effective_from),
+  effectiveTo: row.effective_to ? new Date(row.effective_to) : null,
+});
+
+/** The add-on version in force at a moment, pre-catalogue rule included. */
+export async function addOnAt(db: AnyDb, addOnId: string, at: Date): Promise<AddOn | null> {
+  const stamp = at.toISOString();
+  const rows = await db.execute<AddOnRow>(sql`
+    SELECT id, add_on_id, version, name, billing_interval, price_minor,
+           currency, effective_from, effective_to
+    FROM add_ons
+    WHERE id = COALESCE(
+      (SELECT id FROM add_ons
+       WHERE add_on_id = ${addOnId}
+         AND effective_from <= ${stamp}::timestamptz
+         AND (effective_to IS NULL OR effective_to > ${stamp}::timestamptz)
+       ORDER BY version DESC
+       LIMIT 1),
+      (SELECT id FROM add_ons WHERE add_on_id = ${addOnId} ORDER BY version LIMIT 1)
+    )
+  `);
+  const row = [...rows][0];
+  return row ? shapeAddOn(row) : null;
+}
+
+/**
+ * Publish the next version of a pack: close the open version at the
+ * successor's effective_from and append. Owner-credential only, like every
+ * catalogue write; historical versions keep every field they ever had, so a
+ * charge opened under them still credits what was bought.
+ */
+export async function publishUsagePack(
+  db: Db,
+  input: {
+    packId: string;
+    label: string;
+    unit: UsageUnit;
+    quantity: number;
+    priceMinor: number;
+    currency: string;
+    effectiveFrom: Date;
+  },
+): Promise<string> {
+  const from = input.effectiveFrom.toISOString();
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`
+      UPDATE usage_packs SET effective_to = ${from}::timestamptz
+      WHERE pack_id = ${input.packId} AND effective_to IS NULL
+    `);
+    const rows = await tx.execute<{ id: string }>(sql`
+      INSERT INTO usage_packs
+        (pack_id, version, label, unit, quantity, price_minor, currency, effective_from)
+      SELECT ${input.packId}, COALESCE(MAX(version), 0) + 1, ${input.label},
+             ${input.unit}, ${input.quantity}, ${input.priceMinor},
+             ${input.currency}, ${from}::timestamptz
+      FROM usage_packs WHERE pack_id = ${input.packId}
+      RETURNING id
+    `);
+    const id = [...rows][0]?.id;
+    if (!id) throw new Error('usage pack insert returned no id');
+    return id;
+  });
+}

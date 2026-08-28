@@ -243,6 +243,7 @@ describe('paying, and the gate in front of it', () => {
         reference: answer.reference,
         providerReference: 'ps_upgrade',
         when: now,
+        config,
       }),
     );
 
@@ -367,6 +368,7 @@ describe('a charge the provider confirmed', () => {
         reference: 'RKD-SUB-20260815-AAAAAA',
         providerReference: 'ps_1',
         when: now,
+        config,
       }),
     );
     expect(applied).toBe('applied');
@@ -383,6 +385,7 @@ describe('a charge the provider confirmed', () => {
         reference: 'RKD-SUB-20260815-AAAAAA',
         providerReference: 'ps_1',
         when: new Date('2026-08-15T10:05:00Z'),
+        config,
       }),
     );
     expect(replay).toBe('already_settled');
@@ -409,6 +412,7 @@ describe('a charge the provider confirmed', () => {
         reference: 'RKD-PACK-20260815-BBBBBB',
         providerReference: 'ps_2',
         when: now,
+        config,
       }),
     );
 
@@ -441,7 +445,7 @@ describe('the cycle a payment starts', () => {
       }),
     );
     await withBusiness(db, businessId, (tx) =>
-      applySettledCharge(tx, { businessId, reference, providerReference: 'ps_x', when }),
+      applySettledCharge(tx, { businessId, reference, providerReference: 'ps_x', when, config }),
     );
     return withBusiness(db, businessId, (tx) => subscriptionsRepo.subscriptionFor(tx, businessId));
   }
@@ -679,6 +683,7 @@ describe('the renewal sweep', () => {
         reference: charge!.reference,
         providerReference: 'ps_renewal',
         when: new Date(),
+        config,
       }),
     );
 
@@ -935,5 +940,66 @@ describe('grandfathering through the catalogue (BL2, PR-100)', () => {
     const constants = await onConstants.overview(businessId);
     expect(data.priceK).toBe(constants.priceK);
     expect(data.units).toEqual(constants.units);
+  });
+
+  it('a pack repricing between purchase and settlement credits what was bought', async () => {
+    const { businessId } = await onboard('+2348177100063');
+    await putOnPlan(
+      businessId,
+      'chat',
+      new Date(Date.now() - 5 * 86_400_000),
+      new Date(Date.now() + 25 * 86_400_000),
+    );
+
+    const answer = await confirmedBilling().buyPack(businessId, 'messages_100');
+    if (answer.state !== 'payment_required') throw new Error('expected a payable pack');
+    expect(answer.amountK).toBe(250_000);
+
+    /* The pack is resized and repriced before the webhook lands. */
+    await planCatalogueRepo.publishUsagePack(ownerDb, {
+      packId: 'messages_100',
+      label: '250 extra WhatsApp messages',
+      unit: 'AI_ACTIONS',
+      quantity: 250,
+      priceMinor: 500_000,
+      currency: 'NGN',
+      effectiveFrom: new Date(),
+    });
+
+    await withBusiness(db, businessId, (tx) =>
+      applySettledCharge(tx, {
+        businessId,
+        reference: answer.reference,
+        providerReference: 'ps_pack_v1',
+        when: new Date(),
+        config,
+      }),
+    );
+
+    /* Credited: the 100 messages of the version the charge was opened
+     * under, not the 250 on sale by the time the provider confirmed. */
+    const counters = await withBusiness(db, businessId, (tx) =>
+      usageRepo.usageFor(tx, businessId, usagePeriod(new Date())),
+    );
+    expect(counters.find((row) => row.unit === 'AI_ACTIONS')?.bonus).toBe(100);
+  });
+
+  it('a pack is offered exactly where its unit is sold: Integrate is not sold Chat overage', async () => {
+    const { businessId } = await onboard('+2348177100064');
+    await putOnPlan(
+      businessId,
+      'integrate',
+      new Date(Date.now() - 5 * 86_400_000),
+      new Date(Date.now() + 25 * 86_400_000),
+    );
+
+    const overview = await confirmedBilling().overview(businessId);
+    const offered = overview.packs.map((pack) => pack.id).sort();
+    /* Integrate sells documents and orders; it holds no REKODA_CHAT, so
+     * message and voice packs would be capacity the gate refuses. */
+    expect(offered).toEqual(['documents_50', 'orders_50']);
+
+    const refused = await confirmedBilling().buyPack(businessId, 'messages_100');
+    expect(refused).toEqual({ state: 'unavailable', reason: 'not_available_on_plan' });
   });
 });
