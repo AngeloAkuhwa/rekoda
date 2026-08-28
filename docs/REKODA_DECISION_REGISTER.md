@@ -2,6 +2,13 @@
 
 > **GENERATED VIEW — NOT A SOURCE OF TRUTH.**
 > Every decision below is owned by the document named in its Authority column. This file exists so a decision can be found by name; it never states a rule the authority does not.
+>
+> **Owner rulings live in `REKODA_OWNER_DECISIONS.md`**, which is a source
+> rather than a view: they are decisions made in response to what the build
+> found, and they are recorded with the date they were made and the code
+> that enforces them until the spec absorbs them. That file also carries the
+> external go-live register — Meta, Paystack, the legal facts, tax and
+> fiscalisation, accounting sign-off, and the R0A-i report.
 
 | Field | Value |
 |---|---|

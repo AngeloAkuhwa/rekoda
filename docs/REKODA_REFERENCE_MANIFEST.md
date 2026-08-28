@@ -19,6 +19,7 @@
 | `REKODA_USER_JOURNEYS.md` | 1.0 | **AUTHORITATIVE** for journeys, subordinate to the spec | Chat, Integrate and Complete journeys end to end | Chat & Integrate Journey Spec v1.0; `rekoda-chat-v1.md` and `integrate-explained.md` where they conflict |
 | `REKODA_DESIGN_SYSTEM.md` | 1.0 | **AUTHORITATIVE** for patterns; token values live elsewhere | Which patterns exist and what a screen may claim | Nothing. It consolidates `design-system/rekoda/MASTER.md` |
 | `REKODA_DECISION_REGISTER.md` | 1.0 | **GENERATED VIEW** | Nothing. An index into the two authoritative documents | — |
+| `REKODA_OWNER_DECISIONS.md` | 1.0 | **AUTHORITATIVE** for owner rulings until the spec absorbs them, and for the external go-live register | The owner's own decisions, dated, each naming the code that enforces it; and what is open outside this repository | ADR 0024's "report generation is not capped", in that clause only |
 | `REKODA_AMENDMENT_LOG.md` | 1.0 | **GENERATED VIEW** | Nothing. An index into build plan §15 | — |
 
 ## Non-document authorities
@@ -27,7 +28,9 @@
 |---|---|
 | `design-system/rekoda/MASTER.md` | **Token source of truth.** Generates `tokens.css` |
 | `apps/web/src/styles/tokens.css` | Generated tokens the application consumes |
-| `scripts/investigations/r0a-i-payment-provenance.sql` | The corrected R0A-i provenance classifier. Read-only. Never run against production yet |
+| `scripts/investigations/r0a-i-payment-provenance.sql` | The corrected R0A-i provenance classifier. Read-only, one `REPEATABLE READ` snapshot. Never run against production yet |
+| `scripts/investigations/run-r0a-i.sh` | Runs the classifier with the header that makes its output citable. **The output never enters this repository** |
+| `docs/runbooks/r0a-provenance.md` | How to run, review and approve the R0A-i report, and what remediation may never do |
 | `scripts/check-boundaries.mjs` | Enforces the AI and persistence boundaries in CI |
 
 ## ADR status
