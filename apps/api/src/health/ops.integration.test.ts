@@ -15,12 +15,19 @@ import {
   events,
   identity,
   jobsRepo,
+  planCatalogueRepo,
   quotaRepo,
   subscriptionsRepo,
   withBusiness,
   type Db,
 } from '@rekoda/db';
-import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
+import {
+  migrate,
+  requireUrls,
+  resetPlanCatalogue,
+  truncateAll,
+  type Urls,
+} from '@rekoda/db/testing';
 
 const SECRET = 'test-secret-at-least-32-characters-long';
 /* Deliberately different from REKODA_API_SECRET, which is the point of it
@@ -31,7 +38,9 @@ const OPERATOR_SECRET = `operator-${SECRET}`;
 let urls: Urls;
 let app: NestFastifyApplication;
 let db: Db;
+let ownerDb: Db;
 let closeDb: () => Promise<void>;
+let closeOwner: () => Promise<void>;
 
 beforeAll(async () => {
   urls = requireUrls();
@@ -57,11 +66,13 @@ beforeAll(async () => {
   await app.getHttpAdapter().getInstance().ready();
 
   ({ db, close: closeDb } = createDb(urls.app, { max: 4 }));
+  ({ db: ownerDb, close: closeOwner } = createDb(urls.owner, { max: 2 }));
 });
 
 afterAll(async () => {
   await app?.close();
   await closeDb?.();
+  await closeOwner?.();
 });
 
 beforeEach(async () => {
@@ -313,6 +324,62 @@ describe('the margin report', () => {
       { provider: 'meta', costK: 80_000, quantity: 1, events: 1 },
       { provider: 'anthropic', costK: 12_000, quantity: 1, events: 1 },
     ]);
+
+    /* And the same money by §29 class, off the subledger: the report's
+     * figures come from platform_cost_events, and this is where an ACTUAL
+     * invoice row will one day stand beside the rate-card estimates. */
+    expect(body.byCostType).toEqual([
+      {
+        costType: 'MESSAGING',
+        provider: 'meta',
+        actualOrEstimated: 'ESTIMATED',
+        costK: 80_000,
+        events: 1,
+      },
+      {
+        costType: 'AI_INFERENCE',
+        provider: 'anthropic',
+        actualOrEstimated: 'ESTIMATED',
+        costK: 12_000,
+        events: 1,
+      },
+    ]);
+  });
+
+  it('prices a grandfathered merchant at the version they were sold', async () => {
+    const pinned = await merchant('Launch Cohort', '+2348030000210', 'trial');
+    /* Sold Chat through the real cycle path, which pins version 1. */
+    await withBusiness(db, pinned, (tx) =>
+      subscriptionsRepo.applyCycle(tx, pinned, {
+        plan: 'chat',
+        cycleStartedAt: new Date(),
+        renewsAt: new Date(Date.now() + 30 * 86_400_000),
+        anchorDay: 15,
+      }),
+    );
+    await spend(pinned, 'meta', 50_000);
+
+    /* Chat is repriced upward; the pinned merchant must not move. */
+    await planCatalogueRepo.publishPlanVersion(ownerDb, {
+      planId: 'chat',
+      name: 'Rekoda Chat',
+      seats: 1,
+      effectiveFrom: new Date(),
+      entitlements: ['REKODA_CHAT'],
+      allowances: { AI_ACTIONS: 400 },
+      prices: [{ currency: 'NGN', billingInterval: 'monthly', amountMinor: 1_490_000 }],
+    });
+    try {
+      const body = await margin(`?period=${PERIOD}`, {
+        'x-rekoda-operator-secret': OPERATOR_SECRET,
+      }).then((r) => r.json());
+
+      const row = body.businesses.find((b: { businessId: string }) => b.businessId === pinned);
+      expect(row).toMatchObject({ plan: 'chat', revenueK: 990_000, costK: 50_000 });
+      expect(body.total.revenueK).toBe(990_000);
+    } finally {
+      await resetPlanCatalogue(urls);
+    }
   });
 
   it('lists the months that have usage, so nobody guesses at an empty one', async () => {

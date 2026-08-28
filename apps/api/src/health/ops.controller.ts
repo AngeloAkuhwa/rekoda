@@ -171,6 +171,13 @@ export class OpsController {
      * the estate outgrows the page of rows below it.
      */
     total: Margin & { businesses: number; paying: number; spending: number; events: number };
+    /**
+     * The period's money by §29 cost class, straight off the append-only
+     * subledger (COST-1). ESTIMATED rows are rate-card derivations; ACTUAL
+     * rows are the provider's own word, and the day they disagree with the
+     * telemetry below is the day the subledger is doing its job.
+     */
+    byCostType: Awaited<ReturnType<typeof marginRepo.costEventsByType>>;
     byProvider: Awaited<ReturnType<typeof marginRepo.costByProvider>>;
     /**
      * The same period split by what was actually bought: which message
@@ -204,14 +211,21 @@ export class OpsController {
       throw new BadRequestException('period must be YYYY-MM');
     }
 
-    const [rows, byProvider, byUsageType, availablePeriods, census, totals] = await Promise.all([
-      marginRepo.costByBusiness(this.workerDb, wanted),
-      marginRepo.costByProvider(this.workerDb, wanted),
-      marginRepo.costByUsageType(this.workerDb, wanted),
-      marginRepo.meteredPeriods(this.workerDb),
-      marginRepo.planCensus(this.workerDb),
-      marginRepo.periodTotals(this.workerDb, wanted),
-    ]);
+    /* Money from the subledger and the catalogue; units from telemetry.
+     * `platform_cost_events` carries the figures (BL2's gate: margin
+     * reconstructs per merchant from PlatformCostEvent), the catalogue
+     * prices each business through its grandfathering pin, and
+     * `usage_events` stays underneath as the what-was-bought detail. */
+    const [rows, byCostType, byProvider, byUsageType, availablePeriods, census, totals] =
+      await Promise.all([
+        marginRepo.marginByBusiness(this.workerDb, wanted),
+        marginRepo.costEventsByType(this.workerDb, wanted),
+        marginRepo.costByProvider(this.workerDb, wanted),
+        marginRepo.costByUsageType(this.workerDb, wanted),
+        marginRepo.meteredPeriods(this.workerDb),
+        marginRepo.revenueCensus(this.workerDb),
+        marginRepo.costEventTotals(this.workerDb, wanted),
+      ]);
 
     return {
       period: wanted,
@@ -223,6 +237,7 @@ export class OpsController {
         spending: totals.spending,
         events: totals.events,
       },
+      byCostType,
       byProvider,
       byUsageType,
       businesses: rows.map((row) => ({
@@ -230,7 +245,7 @@ export class OpsController {
         plan: row.plan,
         events: row.events,
         createdAt: row.createdAt.toISOString(),
-        ...margin({ plan: row.plan, costK: row.costK }),
+        ...margin({ revenueK: row.revenueK, costK: row.costK }),
       })),
     };
   }

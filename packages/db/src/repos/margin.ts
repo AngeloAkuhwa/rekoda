@@ -249,3 +249,203 @@ export async function meteredPeriods(db: Db, limit = 12): Promise<string[]> {
   `);
   return [...rows].map((r) => r.billing_period);
 }
+
+/* ── the subledger side (BL2, PR-103) ─────────────────────────────────────
+ *
+ * Since COST-1 landed, real money lives in `platform_cost_events` and the
+ * margin stands on it: cost from the subledger, revenue from the plan
+ * catalogue through the grandfathering pin. `usage_events` stays in this
+ * file as the telemetry detail beneath the money - what was bought, in what
+ * quantity - and the two can legitimately disagree the day an ACTUAL
+ * provider invoice corrects an ESTIMATED rate-card row, which is exactly
+ * why the financial figure comes from the financial record.
+ */
+
+/** The Lagos month `period` labels, as a half-open UTC window. */
+function lagosMonth(period: string): { from: string; to: string } {
+  const [year, month] = period.split('-').map(Number);
+  const from = new Date(Date.UTC(year ?? 1970, (month ?? 1) - 1, 1) - 3_600_000);
+  const to = new Date(Date.UTC(year ?? 1970, month ?? 1, 1) - 3_600_000);
+  return { from: from.toISOString(), to: to.toISOString() };
+}
+
+/**
+ * The one pricing question, as SQL: which version governs this business
+ * (the pin when it matches the plan, else the version in force), and what
+ * does its open monthly NGN price say. Inlined per row via LATERAL because
+ * the census and the per-merchant rows both need it and neither may loop.
+ */
+const MONTHLY_PRICE_LATERAL = sql`
+  LEFT JOIN LATERAL (
+    SELECT pp.amount_minor
+    FROM plan_prices pp
+    WHERE pp.plan_version_id = COALESCE(
+        (SELECT pv.id FROM plan_versions pv
+         WHERE pv.id = b.plan_version_id AND pv.plan_id = b.plan),
+        (SELECT v.id FROM plan_versions v
+         WHERE v.plan_id = b.plan
+           AND v.effective_from <= now()
+           AND (v.effective_to IS NULL OR v.effective_to > now())
+         ORDER BY v.version DESC LIMIT 1))
+      AND pp.currency = 'NGN'
+      AND pp.billing_interval = 'monthly'
+      AND pp.effective_from <= now()
+      AND (pp.effective_to IS NULL OR pp.effective_to > now())
+    ORDER BY pp.effective_from DESC
+    LIMIT 1
+  ) price ON true`;
+
+export interface BusinessMargin extends BusinessCost {
+  /** This merchant's monthly price from the catalogue, pin-aware, in kobo. */
+  revenueK: number;
+}
+
+/**
+ * The costliest merchants in one period, costed from the subledger and
+ * priced from the catalogue. The LEFT JOIN keeps the silent merchants: a
+ * business that cost nothing all month is either about to churn or a plan
+ * being paid for and not used, and both are worth seeing.
+ */
+export async function marginByBusiness(
+  db: Db,
+  period: string,
+  limit: number = DEFAULT_ROW_LIMIT,
+): Promise<BusinessMargin[]> {
+  const window = lagosMonth(period);
+  const rows = await db.execute<{
+    business_id: string;
+    plan: string;
+    revenue_k: string | number | null;
+    cost_k: string | number | null;
+    events: number | null;
+    created_at: string;
+  }>(sql`
+    SELECT
+      b.id                            AS business_id,
+      b.plan                          AS plan,
+      coalesce(price.amount_minor, 0) AS revenue_k,
+      coalesce(c.cost_k, 0)           AS cost_k,
+      coalesce(c.events, 0)::int      AS events,
+      b.created_at                    AS created_at
+    FROM businesses b
+    ${MONTHLY_PRICE_LATERAL}
+    LEFT JOIN (
+      SELECT business_id,
+             sum(amount_minor) AS cost_k,
+             count(*)          AS events
+      FROM platform_cost_events
+      WHERE incurred_at >= ${window.from}::timestamptz
+        AND incurred_at < ${window.to}::timestamptz
+      GROUP BY business_id
+    ) c ON c.business_id = b.id
+    ORDER BY coalesce(c.cost_k, 0) DESC, b.created_at ASC
+    LIMIT ${limit}
+  `);
+  return [...rows].map((r) => ({
+    businessId: r.business_id,
+    plan: r.plan,
+    revenueK: Number(r.revenue_k ?? 0),
+    costK: Number(r.cost_k ?? 0),
+    events: r.events ?? 0,
+    createdAt: new Date(r.created_at),
+  }));
+}
+
+export interface RevenueCensusRow {
+  plan: string;
+  businesses: number;
+  /** Of those, how many are priced above zero. */
+  paying: number;
+  /** What the plan's businesses pay per month between them, in kobo. */
+  revenueK: number;
+}
+
+/**
+ * The revenue side, over the whole estate, from the catalogue rather than a
+ * constant: each business is priced by ITS version through the pin, so two
+ * merchants on one plan can carry two prices and the census stays exact.
+ */
+export async function revenueCensus(db: Db): Promise<RevenueCensusRow[]> {
+  const rows = await db.execute<{
+    plan: string;
+    businesses: number;
+    paying: number;
+    revenue_k: string | number | null;
+  }>(sql`
+    SELECT b.plan,
+           count(*)::int AS businesses,
+           count(*) FILTER (WHERE coalesce(price.amount_minor, 0) > 0)::int AS paying,
+           coalesce(sum(price.amount_minor), 0) AS revenue_k
+    FROM businesses b
+    ${MONTHLY_PRICE_LATERAL}
+    GROUP BY b.plan
+    ORDER BY count(*) DESC
+  `);
+  return [...rows].map((r) => ({
+    plan: r.plan,
+    businesses: r.businesses,
+    paying: r.paying,
+    revenueK: Number(r.revenue_k ?? 0),
+  }));
+}
+
+export interface CostTypeLine {
+  /** A §29 cost class: MESSAGING, AI_INFERENCE, OCR, PAYMENT_FEE, BANK_FEED, STORAGE, TELEPHONY. */
+  costType: string;
+  provider: string;
+  /** ESTIMATED rows are rate-card derivations; ACTUAL rows are the provider's word. */
+  actualOrEstimated: string;
+  costK: number;
+  events: number;
+}
+
+/** The period's money by §29 class, straight off the subledger. */
+export async function costEventsByType(db: Db, period: string): Promise<CostTypeLine[]> {
+  const window = lagosMonth(period);
+  const rows = await db.execute<{
+    cost_type: string;
+    provider: string;
+    actual_or_estimated: string;
+    cost_k: string | number | null;
+    events: number | null;
+  }>(sql`
+    SELECT cost_type, provider, actual_or_estimated,
+           sum(amount_minor) AS cost_k,
+           count(*)::int     AS events
+    FROM platform_cost_events
+    WHERE incurred_at >= ${window.from}::timestamptz
+      AND incurred_at < ${window.to}::timestamptz
+    GROUP BY cost_type, provider, actual_or_estimated
+    ORDER BY sum(amount_minor) DESC
+  `);
+  return [...rows].map((r) => ({
+    costType: r.cost_type,
+    provider: r.provider,
+    actualOrEstimated: r.actual_or_estimated,
+    costK: Number(r.cost_k ?? 0),
+    events: r.events ?? 0,
+  }));
+}
+
+/** The estate's subledger totals for one period, unattributed cost included. */
+export async function costEventTotals(db: Db, period: string): Promise<PeriodTotals> {
+  const window = lagosMonth(period);
+  const rows = await db.execute<{
+    cost_k: string | number | null;
+    events: number | null;
+    spending: number | null;
+  }>(sql`
+    SELECT coalesce(sum(amount_minor), 0)      AS cost_k,
+           count(*)::int                       AS events,
+           count(DISTINCT business_id)::int    AS spending
+    FROM platform_cost_events
+    WHERE incurred_at >= ${window.from}::timestamptz
+      AND incurred_at < ${window.to}::timestamptz
+  `);
+  const row = [...rows][0];
+  return {
+    costK: Number(row?.cost_k ?? 0),
+    events: row?.events ?? 0,
+    spending: row?.spending ?? 0,
+  };
+}
