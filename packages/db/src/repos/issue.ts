@@ -843,13 +843,19 @@ export async function latestDocumentFor(
 export async function latestOpenInvoice(
   tx: TenantDb,
   businessId: string,
-): Promise<{ id: string; invoiceNumber: string; balanceDueK: number } | null> {
+): Promise<{
+  id: string;
+  invoiceNumber: string;
+  balanceDueK: number;
+  customerId: string | null;
+} | null> {
   const rows = await tx.execute<{
     id: string;
     invoice_number: string;
     balance_due_k: string;
+    customer_id: string | null;
   }>(sql`
-    SELECT id, invoice_number, balance_due_k::bigint AS balance_due_k
+    SELECT id, invoice_number, balance_due_k::bigint AS balance_due_k, customer_id
     FROM invoices
     WHERE business_id = ${businessId}::uuid AND status IN ('issued', 'partially_paid')
     ORDER BY created_at DESC
@@ -861,6 +867,7 @@ export async function latestOpenInvoice(
     id: row.id,
     invoiceNumber: row.invoice_number,
     balanceDueK: Number(row.balance_due_k),
+    customerId: row.customer_id,
   };
 }
 

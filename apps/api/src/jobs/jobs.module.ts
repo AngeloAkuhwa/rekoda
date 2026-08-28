@@ -67,7 +67,10 @@ import type { DocumentStorage } from '../documents/storage.js';
  * a test whose deps type drifts from `buildRunner`'s is a test that stops
  * covering a handler the moment one is added.
  */
-export interface RunnerDeps extends Omit<InboundMessageDeps, 'db'> {
+export interface RunnerDeps extends Omit<
+  InboundMessageDeps,
+  'db' | 'customerRoute' | 'customerTexts'
+> {
   storage: DocumentStorage;
   sender: MessageSender;
   paymentProvider: PaymentProviderPort;
@@ -84,7 +87,11 @@ export function buildRunner(
    * dependency the service needs, and threading it through RunnerDeps would
    * make each test re-declare what this line derives. */
   const customerTexts = new WabaTemplateService(appDb, deps.config, deps.sender, deps.gateway);
-  runner.register(JobKind.InboundMessage, inboundMessageHandler({ ...deps, db: appDb }));
+  const customerRoute = new CustomerThreadRouter(deps.config);
+  runner.register(
+    JobKind.InboundMessage,
+    inboundMessageHandler({ ...deps, db: appDb, customerTexts, customerRoute }),
+  );
   runner.register(
     JobKind.CustomerMessage,
     customerMessageHandler({
@@ -128,7 +135,7 @@ export function buildRunner(
       paymentIntents: deps.paymentIntents,
       replySender: deps.replySender,
       customerTexts,
-      customerRoute: new CustomerThreadRouter(deps.config),
+      customerRoute,
       db: appDb,
       config: deps.config,
     }),

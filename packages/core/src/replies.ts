@@ -575,6 +575,35 @@ export function catalogueOrderNoLink(invoiceNumber: string, amountK: number): Re
   );
 }
 
+/* ── X1: payment details delivered across products (PR-093) ──────────────── */
+
+/**
+ * The payment details as the CUSTOMER receives them, in their own thread
+ * on the merchant's WABA (spec §5.3; X1). The figure and the link, no
+ * greeting theatre, no Rekoda: to the customer the sender is the
+ * business asking to be paid.
+ */
+export function paymentDetailsForCustomer(
+  invoiceNumber: string,
+  amountK: number,
+  checkoutUrl: string,
+): Reply {
+  return reply(`${invoiceNumber}: ${formatKobo(amountK)} due.\nPay securely here: ${checkoutUrl}`);
+}
+
+/**
+ * What the merchant hears when the delivery LANDED: not "forward it" —
+ * the system knows what it just did — but where it went and what happens
+ * next. The Complete journey's one visible seam.
+ */
+export function paymentDetailsDelivered(invoiceNumber: string, amountK: number): Reply {
+  return reply(
+    `Sent ✅ payment details for ${invoiceNumber} (${formatKobo(amountK)}) to your ` +
+      "customer's WhatsApp. I will tell you the moment the money lands, and the " +
+      'receipt follows by itself.',
+  );
+}
+
 /* ── W4: the away assistant's handoff ────────────────────────────────────── */
 
 /**

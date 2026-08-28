@@ -1158,6 +1158,166 @@ describe('one customer, both products (spec §5.3 X2; X1, PR-092)', () => {
   });
 });
 
+describe('send payment details across products (spec §5.3 X1; PR-093)', () => {
+  const OWNER = '+2348030002260';
+  const CUSTOMER_PHONE = '+2349097775577';
+
+  async function seedComplete(
+    phoneNumberId: string,
+    opts: { plan?: 'complete' | 'chat'; windowOpen?: boolean } = {},
+  ) {
+    const user = await identity.upsertUserByPhone(db, OWNER);
+    const business = await identity.createBusinessWithOwner(db, {
+      name: 'Ada Fashion',
+      businessType: null,
+      ownerUserId: user.id,
+    });
+    const businessId = business.id;
+    await billingRepo.setPlan(db, {
+      businessId,
+      plan: opts.plan ?? 'complete',
+      expiresAt: null,
+      actor: 'operator:test',
+    });
+    let connectionId = '';
+    await withBusiness(db, businessId, async (tx) => {
+      const connected = await wabaRepo.connectWaba(tx, {
+        businessId,
+        wabaId: `waba-${phoneNumberId}`,
+        phoneNumberId,
+        accessTokenCipher: encryptFacet(
+          'EAAG-merchant-token',
+          deps.config.connectionKey,
+          `${businessId}:waba_token`,
+        ),
+        tokenTail: '4821',
+      });
+      if (connected.outcome === 'connected') connectionId = connected.id;
+      const connection = await paymentsHub.upsertConnection(tx, {
+        businessId,
+        providerType: 'paystack',
+        settlementAccountLast4: '4821',
+      });
+      await paymentsHub.setConnectionState(tx, connection.id, {
+        status: 'active',
+        externalSubaccountId: 'ACCT_live1',
+      });
+      await usageRepo.creditBonus(tx, businessId, usagePeriod(new Date()), 'SERVICE_MESSAGE', 5);
+    });
+
+    /* Chidi: phone-anchored through the gateway, email on file for the
+     * mint, and (usually) a service window their last message opened. */
+    const chidi = await deps.gateway.resolveStorefrontCustomer(businessId, 'Chidi', CUSTOMER_PHONE);
+    await customersRepo.addIdentityFacet(db, businessId, chidi!.customerId, {
+      facet: 'email',
+      ciphertext: encryptFacet('chidi@example.com', deps.config.vaultKey, `${businessId}:email`),
+      matchKey: null,
+    });
+    if (opts.windowOpen !== false) {
+      const blindIndex = participantIndexFor(deps.config.matchKey, {
+        businessId,
+        channelAccountId: phoneNumberId,
+        keyVersion: PARTICIPANT_INDEX_KEY_VERSION,
+        normalisedParticipant: CUSTOMER_PHONE,
+      });
+      await withBusiness(db, businessId, (tx) =>
+        wabaRepo.touchServiceWindow(tx, {
+          businessId,
+          wabaConnectionId: connectionId,
+          customerHash: blindIndex,
+        }),
+      );
+    }
+
+    await withBusiness(db, businessId, (tx) =>
+      issueRepo.issueSale(tx, {
+        businessId,
+        customerId: chidi!.customerId,
+        customerToken: chidi!.token,
+        items: [{ name: 'gown', quantity: 1, unitPriceK: 8_000_000 }],
+        subtotalK: 8_000_000,
+        discountK: 0,
+        deliveryFeeK: 0,
+        vatK: 0,
+        totalK: 8_000_000,
+        paidK: 0,
+        balanceDueK: 8_000_000,
+        method: 'transfer',
+        sourceType: 'chat',
+        sourceId: 'draft-x1',
+        actor: 'owner',
+      }),
+    );
+    return businessId;
+  }
+
+  async function ask(wamid: string) {
+    await post(messagePayload(OWNER.slice(1), wamid, 'send payment details'));
+    const runner = buildRunner(workerDb, db, deps);
+    let worked = await runner.runOnce();
+    expect(worked).toBe(true);
+    while (worked) worked = await runner.runOnce();
+  }
+
+  const intentCount = (businessId: string) =>
+    withBusiness(db, businessId, (tx) =>
+      tx
+        .execute<{
+          n: string;
+        }>(sql`SELECT COUNT(*) AS n FROM payment_intents WHERE business_id = ${businessId}::uuid`)
+        .then((rows) => Number([...rows][0]!.n)),
+    );
+
+  it('a Complete business delivers into the customer thread: one intent, said plainly to both sides', async () => {
+    const businessId = await seedComplete('PN-X1-1');
+
+    await ask('wamid.X1.1');
+
+    /* The customer holds the details, in their own thread on the
+     * merchant's number: the figure and the link, nothing else. */
+    expect(stubSender.connectionTexts).toHaveLength(1);
+    expect(stubSender.connectionTexts[0]).toMatchObject({
+      to: CUSTOMER_PHONE,
+      phoneNumberId: 'PN-X1-1',
+      accessToken: 'EAAG-merchant-token',
+    });
+    expect(stubSender.connectionTexts[0]!.text).toContain('₦80,000 due');
+    expect(stubSender.connectionTexts[0]!.text).toMatch(/https:\/\/checkout\.stub\/RKD-PAY-/);
+
+    /* The merchant hears where it WENT, never "forward it". */
+    expect(stubSender.lastText).toContain('Sent ✅ payment details for INV');
+    expect(stubSender.lastText).not.toContain('Forward it');
+
+    /* ONE intent. A second ask reuses it — one obligation, one reference
+     * — so when Chidi pays there is exactly one thing to reconcile. */
+    expect(await intentCount(businessId)).toBe(1);
+    await ask('wamid.X1.2');
+    expect(await intentCount(businessId)).toBe(1);
+    const first = stubSender.connectionTexts[0]!.text;
+    const second = stubSender.connectionTexts[1]!.text;
+    expect(second).toBe(first);
+  });
+
+  it('a Chat-only business gets the details in their own hands, and nothing enters the customer thread', async () => {
+    await seedComplete('PN-X1-2', { plan: 'chat' });
+
+    await ask('wamid.X1.3');
+
+    expect(stubSender.connectionTexts).toHaveLength(0);
+    expect(stubSender.lastText).toMatch(/Payment link for INV-\d{4}-000001/);
+    expect(stubSender.lastText).toContain('Forward it to your customer');
+  });
+
+  it('a closed window falls back to the forwardable link rather than a send Meta will refuse', async () => {
+    await seedComplete('PN-X1-3', { windowOpen: false });
+
+    await ask('wamid.X1.4');
+
+    expect(stubSender.connectionTexts).toHaveLength(0);
+    expect(stubSender.lastText).toContain('Forward it to your customer');
+  });
+});
+
 describe('phoneNumberId → BusinessId routing (spec §24; PR-059)', () => {
   async function seedMerchant(phone: string, name: string) {
     const user = await identity.upsertUserByPhone(db, phone);

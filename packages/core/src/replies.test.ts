@@ -101,6 +101,14 @@ const ALL: Record<string, readonly replies.Reply[]> = {
   catalogueOrderNoLink: [replies.catalogueOrderNoLink('INV-2026-000041', NAIRA_MILLIONS)],
   assistantHandoff: [replies.assistantHandoff()],
   assistantHandoffNotice: [replies.assistantHandoffNotice()],
+  paymentDetailsForCustomer: [
+    replies.paymentDetailsForCustomer(
+      'INV-2026-000041',
+      NAIRA_MILLIONS,
+      'https://checkout.paystack.com/0123456789abcdefghijklmnop',
+    ),
+  ],
+  paymentDetailsDelivered: [replies.paymentDetailsDelivered('INV-2026-000041', NAIRA_MILLIONS)],
   paymentLinkSettled: [replies.paymentLinkSettled('INV-2026-000041')],
   paymentLinkUnavailable: [replies.paymentLinkUnavailable()],
   paymentLinkNothingOwed: [replies.paymentLinkNothingOwed()],

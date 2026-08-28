@@ -76,6 +76,8 @@ import { placeOrderWork, type PlaceOrderCmdInput } from '../commands/order-comma
 import { adjustInventoryWork, type AdjustInventoryInput } from '../commands/stock-commands.js';
 import { eraseDataWork } from '../commands/privacy-commands.js';
 import type { MessageSender } from '../channels/sender.js';
+import type { CustomerThreadRouter } from '../channels/customer-route.service.js';
+import type { CustomerTexts } from './payment-link.handler.js';
 
 /** The MERCHANT thread identity, stated at the ingress (Appendix F.2).
  * This ingress hears the merchant talking to Rekoda; customer threads
@@ -112,6 +114,10 @@ export interface InboundMessageDeps {
   db: Db;
   /** The one bus every ingress converges on (spec §25). */
   commandBus: CommandBus;
+  /** THE cross-product routing decision (X1, PR-092). */
+  customerRoute: CustomerThreadRouter;
+  /** The metered door into a customer's thread (PR-061), for X1 delivery. */
+  customerTexts: CustomerTexts;
 }
 
 /**
@@ -981,8 +987,47 @@ async function paymentDetailsReply(
   }
 
   switch (outcome.state) {
-    case 'ready':
+    case 'ready': {
+      /* THE COMPLETE JOURNEY (spec §5.3; X1, PR-093): the ask came from
+       * Chat, the delivery goes through Integrate — into the customer's
+       * own thread on the merchant's WABA, through the same routing
+       * decision and the same metered door every cross-product delivery
+       * uses. ONE intent was minted above; when the customer pays it,
+       * the pipeline books ONE payment, ONE allocation, ONE receipt.
+       * Every unreachable rung falls back to today's Chat shape: the
+       * merchant gets the forwardable link in their own hands, which is
+       * exactly what §3.1 says a Chat-only business gets by design. */
+      if (invoice.customerId) {
+        const route = await deps.customerRoute.routeFor(tx, businessId, invoice.customerId);
+        if (route.state === 'reachable') {
+          try {
+            const sent = await deps.customerTexts.sendCustomerText(
+              businessId,
+              {
+                to: route.phone,
+                text: replies.paymentDetailsForCustomer(
+                  invoice.invoiceNumber,
+                  outcome.amountK,
+                  outcome.checkoutUrl,
+                ).text,
+              },
+              tx,
+            );
+            if (sent.outcome === 'sent') {
+              return replies.paymentDetailsDelivered(invoice.invoiceNumber, outcome.amountK);
+            }
+            paymentLog.log(`cross-product delivery not made: ${sent.outcome}`);
+          } catch (error) {
+            paymentLog.warn(
+              `cross-product delivery failed: ${redactForLog(describeFailure(error))}`,
+            );
+          }
+        } else {
+          paymentLog.log(`cross-product delivery not routed: ${route.state}`);
+        }
+      }
       return replies.paymentLinkReady(invoice.invoiceNumber, outcome.amountK, outcome.checkoutUrl);
+    }
     case 'connection_not_active':
       return replies.paymentLinkNeedsConnection();
     case 'requires_customer_information':
