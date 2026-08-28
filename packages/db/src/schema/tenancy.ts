@@ -73,6 +73,12 @@ export const businesses = pgTable(
     /** The last grace-reminder day sent, claimed by conditional UPDATE. */
     lastGraceReminderDay: smallint('last_grace_reminder_day'),
     /**
+     * The grandfathering pin (spec §30, migration 0105). Null floats on the
+     * current open plan_versions row for `plan`; non-null holds the business
+     * to the version it was sold. Unwritten until the PR-100 cutover.
+     */
+    planVersionId: uuid('plan_version_id'),
+    /**
      * The Lagos month through which the books are closed, or null.
      *
      * A watermark rather than a list of closed periods (migration 0034):

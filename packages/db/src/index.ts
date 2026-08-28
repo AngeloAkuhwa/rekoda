@@ -41,6 +41,7 @@ export * as ordersRepo from './repos/orders.js';
 export * as recurringRepo from './repos/recurring.js';
 export * as reportsRepo from './repos/reports.js';
 export * as partyStatementsRepo from './repos/party-statements.js';
+export * as planCatalogueRepo from './repos/plan-catalogue.js';
 export * as retentionRepo from './repos/retention.js';
 export * as settleRepo from './repos/settle.js';
 export * as stockRepo from './repos/stock.js';
