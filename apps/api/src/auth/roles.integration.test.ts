@@ -151,6 +151,9 @@ describe('what an accountant may do', () => {
       ['/v1/billing/packs', { packId: 'docs-100' }],
       ['/v1/catalogue/product', {}],
       ['/v1/shop-settings', {}],
+      /* Minting an API key is standing access to the whole business that
+       * outlives every sign-out. Owner only (spec §27). */
+      ['/v1/api-keys/applications', { name: 'Accountant app' }],
     ] as const;
     for (const [url, payload] of doors) {
       expect((await post(url, payload, accountant)).statusCode, url).toBe(403);
@@ -178,6 +181,7 @@ describe('what a delegate may do', () => {
       ['/v1/bank/statement/forget', {}],
       ['/v1/billing/plan', { plan: 'complete' }],
       ['/v1/shop-settings', {}],
+      ['/v1/api-keys/applications', { name: 'Delegate app' }],
     ] as const;
     for (const [url, payload] of doors) {
       expect((await post(url, payload, delegate)).statusCode, url).toBe(403);
@@ -195,5 +199,8 @@ describe('what the owner may do', () => {
     // The shop route answers a bad body with {outcome: 'bad_slug'} and 200,
     // so "past the guard" here is simply "anything but 403".
     expect((await post('/v1/shop-settings', {}, owner)).statusCode).not.toBe(403);
+    expect((await post('/v1/api-keys/applications', { name: 'Owner app' }, owner)).statusCode).toBe(
+      200,
+    );
   });
 });
