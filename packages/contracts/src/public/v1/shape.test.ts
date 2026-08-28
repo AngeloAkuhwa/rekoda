@@ -44,12 +44,75 @@ describe('the v1 wire shape', () => {
     );
   });
 
+  it("freezes the Merchant API's reads", () => {
+    expect(describe_(v1.merchantCustomer)).toBe('object{createdAt:string,id:string,token:string}');
+
+    expect(describe_(v1.merchantProduct)).toBe(
+      'object{' +
+        'active:boolean,' +
+        'createdAt:string,' +
+        'description:nullable(string),' +
+        'id:string,' +
+        'name:string,' +
+        'unitPriceK:nullable(number)' +
+        '}',
+    );
+
+    expect(describe_(v1.merchantInvoice)).toBe(
+      'object{' +
+        'balanceDueK:number,' +
+        'currency:string,' +
+        'customerId:nullable(string),' +
+        'dueDate:nullable(string),' +
+        'id:string,' +
+        'invoiceNumber:string,' +
+        'issuedAt:string,' +
+        'paidK:number,' +
+        'status:enum(issued|paid|partially_paid|voided),' +
+        'totalK:number' +
+        '}',
+    );
+  });
+
+  it("freezes the Merchant API's writes", () => {
+    expect(describe_(v1.recordSaleRequest)).toBe(
+      'object{' +
+        'amountPaidK?:number,' +
+        'customerId?:nullable(string),' +
+        'deliveryFeeK?:number,' +
+        'discountK?:number,' +
+        'dueDate?:nullable(string),' +
+        'items:array(object{name:string,quantity:number,unitPriceK:number}),' +
+        'method?:enum(cash|transfer),' +
+        'vatK?:number' +
+        '}',
+    );
+
+    expect(describe_(v1.recordSaleResponse)).toBe(
+      'object{balanceDueK:number,invoiceId:string,invoiceNumber:string,totalK:number}',
+    );
+
+    expect(describe_(v1.recordPaymentRequest)).toBe(
+      'object{amountK:number,invoiceNumber:string,method?:enum(cash|transfer),' +
+        'reference?:nullable(string)}',
+    );
+  });
+
   it('exposes no field whose name belongs to a database column', () => {
     /* A cheap, blunt guard on §27's "must not expose Drizzle table shapes":
      * a snake_case FIELD name means a column travelled here verbatim, and
      * so did the table it came from. Error CODES are snake_case on purpose
      * and are values, not fields, so the walk collects names only. */
-    for (const shape of [v1.publicErrorResponse, v1.publicIdentityResponse]) {
+    for (const shape of [
+      v1.publicErrorResponse,
+      v1.publicIdentityResponse,
+      v1.merchantCustomer,
+      v1.merchantProduct,
+      v1.merchantInvoice,
+      v1.recordSaleRequest,
+      v1.recordSaleResponse,
+      v1.recordPaymentRequest,
+    ]) {
       for (const name of fieldNames(shape)) {
         expect(name, name).not.toMatch(/_/);
       }

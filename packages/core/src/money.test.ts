@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   applyPayment,
   computeMoney,
+  computeMoneyFromKobo,
   computeVat,
   formatKobo,
   fromKobo,
@@ -180,5 +181,50 @@ describe('formatKobo', () => {
     expect(formatKobo(12_345_678_900)).toBe('₦123,456,789');
     expect(formatKobo(199_999)).toBe('₦1,999.99');
     expect(formatKobo(-5_000)).toBe('-₦50');
+  });
+});
+
+describe('computeMoneyFromKobo', () => {
+  it('answers exactly what the naira door answers, for the same document', () => {
+    const fromKobo_ = computeMoneyFromKobo({
+      items: [
+        { name: 'Bag of rice', quantity: 2, unitPriceK: 4_500_000 },
+        { name: 'Groundnut oil', quantity: 3, unitPriceK: 780_050 },
+      ],
+      discountK: 100_000,
+      deliveryFeeK: 250_000,
+      vatK: 67_500,
+      amountPaidK: 5_000_000,
+    });
+    const fromNaira = computeMoney({
+      items: [
+        { name: 'Bag of rice', quantity: 2, unitPriceNaira: 45_000 },
+        { name: 'Groundnut oil', quantity: 3, unitPriceNaira: 7_800.5 },
+      ],
+      discountNaira: 1_000,
+      deliveryFeeNaira: 2_500,
+      vatAmountNaira: 675,
+      amountPaidNaira: 50_000,
+    });
+    expect(fromKobo_).toEqual(fromNaira);
+  });
+
+  it('loses nothing on the way through naira, at every kobo of a wide range', () => {
+    /* The conversion is only safe because k -> k/100 -> round(*100) is the
+     * identity. This is the assertion the whole kobo door rests on, and it
+     * is cheaper to check than to reason about. */
+    for (let k = 0; k <= 2_000_000; k += 7) {
+      expect(
+        computeMoneyFromKobo({ items: [{ name: 'x', quantity: 1, unitPriceK: k }] }).totalK,
+      ).toBe(k);
+    }
+  });
+
+  it('keeps an overpayment visible rather than capping it', () => {
+    const block = computeMoneyFromKobo({
+      items: [{ name: 'Crate', quantity: 1, unitPriceK: 1_000_000 }],
+      amountPaidK: 1_500_000,
+    });
+    expect(block).toMatchObject({ totalK: 1_000_000, balanceDueK: 0, overpaymentK: 500_000 });
   });
 });

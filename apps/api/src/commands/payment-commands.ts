@@ -30,7 +30,9 @@ export interface RecordPaymentInput {
   /** Already gated in core — never a model's figure. */
   amountK: number;
   method: 'cash' | 'transfer';
-  sourceType: 'chat' | 'dashboard';
+  /* 'api' since PR-111: a public-API caller is a third front door, and the
+   * record must say which one asserted the payment. */
+  sourceType: 'chat' | 'dashboard' | 'api';
   sourceId: string;
   actor: string;
   clientRef?: string | null;
