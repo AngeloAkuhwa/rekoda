@@ -17,7 +17,13 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { entitlementsRepo, sql, usageRepo, withBusiness, createDb, type Db } from '@rekoda/db';
 import { usagePeriod } from '@rekoda/core';
-import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
+import {
+  grantCapacityAddOn,
+  migrate,
+  requireUrls,
+  truncateAll,
+  type Urls,
+} from '@rekoda/db/testing';
 
 const SECRET = 'api-keys-secret-at-least-32-characters';
 
@@ -86,19 +92,22 @@ async function onboard(phone: string, name: string) {
 }
 
 /**
- * The capacity the API product sells, credited as bonus.
+ * Buy the API capacity this suite spends.
  *
- * Every plan sells ZERO of the API units (spec §27 puts the API in no
- * plan), so an entitled business with no bonus is refused at the meter.
- * That is the product, not a test detail: what a merchant buys with the
- * API is capacity, and these lines are where this suite buys it.
+ * §27 sells API units with the API product and no plan grants them (every
+ * plan sells zero of all three, which is why the allowance comes from the
+ * plan), so an entitled business with nothing bought is refused. That is
+ * the product, not a test detail, and the two units are bought differently
+ * because they are different kinds (PR-116): requests are CONSUMED, so they
+ * are credited to the month; applications are HELD, so they arrive as an
+ * add-on holding and are answered by counting what exists.
  */
 async function creditApiCapacity(businessId: string): Promise<void> {
   const period = usagePeriod(new Date());
   await withBusiness(db, businessId, async (tx) => {
     await usageRepo.creditBonus(tx, businessId, period, 'API_REQUEST_UNITS', 1_000);
-    await usageRepo.creditBonus(tx, businessId, period, 'API_APPLICATIONS', 20);
   });
+  await grantCapacityAddOn(urls, businessId, 'API_APPLICATIONS', 20);
 }
 
 async function grantApi(businessId: string): Promise<void> {

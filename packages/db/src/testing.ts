@@ -89,6 +89,7 @@ export async function truncateAll(urls: Urls): Promise<void> {
         api_key_rate_windows, api_keys, api_applications,
         conversation_messages, conversations,
         shops,
+        business_add_ons,
         business_entitlements,
         memberships, business_connections, products,
         customer_identities, customers,
@@ -137,6 +138,55 @@ export async function resetPlanCatalogue(urls: Urls): Promise<void> {
   } finally {
     await sql.end();
   }
+}
+
+/**
+ * Give a business standing capacity of a unit, the way production does
+ * (PR-116).
+ *
+ * A CAPACITY unit is HELD, never spent, so there is no counter to credit:
+ * the ceiling comes from an add-on the business holds. Suites that need
+ * "this merchant may hold three applications" ask for it here rather than
+ * crediting a monthly bonus, which is the exact confusion `check-boundaries`
+ * refuses in source and this helper makes unnecessary in tests.
+ *
+ * The add-on is seeded as owner, because the catalogue is never written by
+ * the application, and one add-on per quantity: a business holds a given
+ * add-on once, which is what the live-holding index enforces.
+ */
+export async function grantCapacityAddOn(
+  urls: Urls,
+  businessId: string,
+  unit: string,
+  quantity: number,
+): Promise<string> {
+  const addOnId = `test_capacity_${unit.toLowerCase()}_${quantity}`;
+  const sql = postgres(urls.owner, { max: 1, onnotice: () => {} });
+  try {
+    await sql`
+      INSERT INTO add_ons
+        (add_on_id, version, name, billing_interval, price_minor, currency, effective_from)
+      VALUES (${addOnId}, 1, ${`${quantity} x ${unit}`}, 'monthly',
+              500000, 'NGN', '2026-01-01T00:00:00Z')
+      ON CONFLICT (add_on_id, version) DO NOTHING
+    `;
+    await sql`
+      INSERT INTO add_on_grants (add_on_id, version, grant_kind, unit, quantity)
+      SELECT ${addOnId}, 1, 'CAPACITY', ${unit}, ${quantity}
+      WHERE NOT EXISTS (
+        SELECT 1 FROM add_on_grants
+         WHERE add_on_id = ${addOnId} AND version = 1 AND unit = ${unit}
+      )
+    `;
+    await sql`
+      INSERT INTO business_add_ons (business_id, add_on_id, version, started_at)
+      VALUES (${businessId}::uuid, ${addOnId}, 1, now())
+      ON CONFLICT DO NOTHING
+    `;
+  } finally {
+    await sql.end();
+  }
+  return addOnId;
 }
 
 /**

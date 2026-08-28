@@ -31,6 +31,50 @@ The twelve with no plan allowance yet: `SERVICE_MESSAGE`,
 `API_REQUEST_UNITS`, `API_APPLICATIONS`, `WEBHOOK_DELIVERIES`. Each gets its
 plan figure in the PR that wires its consumer, not before.
 
+### The two kinds of unit (owner ruling, 28 August 2026)
+
+The seventeen are not all the same kind of thing, and treating them as one
+kind produced a real defect. `UNIT_KIND` in `@rekoda/core` names the two.
+
+A **`CONSUMABLE_MONTHLY`** unit is SPENT and RESET. Sending a message,
+generating a document, making an API request: something was used up, the
+allowance returns next month, and a usage pack tops it up within the month
+it was bought. Thirteen units are of this kind, and only these may go
+through `consumeUnit`.
+
+A **`CAPACITY`** unit is HELD, not spent. A merchant does not consume an API
+application or an accountant seat; they are permitted to maintain some
+number of them at once. The ceiling is answered by counting how many
+currently exist, so disabling one frees the slot the same day, and a month
+boundary means nothing to it. Four units are of this kind:
+`ACCOUNTANT_USERS`, `PAYMENT_CONNECTIONS`, `FINANCIAL_ACCOUNT_CONNECTIONS`
+and `API_APPLICATIONS`.
+
+Three consequences, each enforced rather than documented:
+
+1. A capacity unit never reaches `consumeUnit`, `refundUnit` or
+   `creditBonus`. `scripts/check-boundaries.mjs` refuses the call in source,
+   and it is the one boundary rule tests are not exempt from: a suite that
+   credits a month's bonus to buy capacity is asserting the wrong model
+   however green it runs.
+2. A capacity unit is sold as a RECURRING add-on, never as a one-off pack.
+   "Fifty more applications, once" is not a sentence about standing
+   capacity, and a pack credits a single month's bonus, which cannot express
+   a permanent seat. Migration 0112 narrows `usage_packs.unit` to the
+   thirteen consumables so the catalogue cannot express one.
+3. `usage_counters.used` means "spent this period", so a capacity unit never
+   writes a counter row at all. A row there would be a lie about what
+   happened.
+
+The two questions are read through two functions, `meterAllowance` and
+`standingCapacity`, and each REFUSES the other's units rather than quietly
+answering: a silent answer is how the confusion returns.
+
+Where a capacity ceiling and a monthly allowance both come from beyond the
+plan, they come from `add_on_grants` (migration 0112): a held add-on grants
+an entitlement, standing capacity, or monthly units, at the version it was
+sold at. Ending the holding ends all three, with nothing to un-copy.
+
 ### The three API units keep a plan allowance of zero, on purpose (PR-113)
 
 PR-113 wired their consumers, and the figure it wrote is zero on every plan.
@@ -39,9 +83,14 @@ separate commercial entitlement … not automatically included with Chat,
 Integrate or Complete", so a plan that sold API capacity would contradict the
 sentence that defines the product.
 
-Capacity therefore arrives the way a pack's does, as `bonus` on the month it
-was sold for, credited when the API product is sold. The ceiling every API
-consume reads is `allowance + bonus`, so:
+What a merchant buys therefore arrives from the API product rather than the
+plan, and the two consumables and the one capacity unit arrive differently
+(PR-116). `API_REQUEST_UNITS` and `WEBHOOK_DELIVERIES` are consumables: they
+arrive as a monthly grant from the held add-on, or as `bonus` from a top-up
+pack bought inside one month. `API_APPLICATIONS` is capacity: it arrives as
+a standing grant from the held add-on, and never as a pack.
+
+The ceiling every API consume reads is `allowance + grants + bonus`, so:
 
 - a business without the `REKODA_API` entitlement is refused at the gate,
   before any meter is touched;
@@ -52,11 +101,16 @@ consume reads is `allowance + bonus`, so:
 
 The three consume like this:
 
-| Unit | Taken | Given back |
+| Unit | Kind | How the ceiling is enforced |
 | --- | --- | --- |
-| `API_REQUEST_UNITS` | one per authenticated request, after the per-minute key ceiling so a flood cannot burn a month faster than that ceiling allows | never; the request was served |
-| `API_APPLICATIONS` | one per registration | never; the month it was created in is the month it was sold in |
-| `WEBHOOK_DELIVERIES` | one per delivery, before the send | on every attempt that delivered nothing, so a merchant's own outage is not billed six times |
+| `API_REQUEST_UNITS` | consumable | one taken per authenticated request, after the per-minute key ceiling so a flood cannot burn a month faster than that ceiling allows; never given back, because the request was served |
+| `WEBHOOK_DELIVERIES` | consumable | one taken per delivery, before the send; refunded on every attempt that delivered nothing, so a merchant's own outage is not billed six times |
+| `API_APPLICATIONS` | capacity | nothing is taken: registration counts the ACTIVE applications and refuses the one past the ceiling. Disabling an application frees its slot immediately |
+
+PR-113 metered `API_APPLICATIONS` as a monthly tally, which meant a merchant
+who registered their applications and then deleted every one of them still
+could not register another until the month turned over. The correction is
+PR-116, and the row above is the corrected behaviour.
 
 A delivery refused at the ceiling is an ordinary failed attempt rather than a
 lost fact: the backoff spreads six attempts over more than a day, so capacity

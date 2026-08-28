@@ -1,13 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import {
   PLAN_ALLOWANCES,
+  SEATS_PER_PLAN,
+  UNIT_KIND,
+  UNIT_KINDS,
   UNIT_SCALE,
   USAGE_UNITS,
-  SEATS_PER_PLAN,
   allowanceFor,
+  isConsumable,
   seatsFor,
-  usagePeriod,
   templateUnitFor,
+  unitsOfKind,
+  usagePeriod,
 } from './allowances.js';
 
 describe('plan allowances (docs/metering-v1.md)', () => {
@@ -219,5 +223,37 @@ describe('plan allowances (docs/metering-v1.md)', () => {
     for (const plan of Object.values(PLAN_ALLOWANCES)) {
       expect(plan.MARKETING_TEMPLATE).toBe(0);
     }
+  });
+});
+
+describe('the two kinds of allowance', () => {
+  it('classifies every unit, so a new one forces the decision', () => {
+    for (const unit of USAGE_UNITS) {
+      expect(UNIT_KINDS).toContain(UNIT_KIND[unit]);
+    }
+    expect(Object.keys(UNIT_KIND).sort()).toEqual([...USAGE_UNITS].sort());
+  });
+
+  it('holds the four things a merchant keeps rather than spends', () => {
+    expect(unitsOfKind('CAPACITY').sort()).toEqual([
+      'ACCOUNTANT_USERS',
+      'API_APPLICATIONS',
+      'FINANCIAL_ACCOUNT_CONNECTIONS',
+      'PAYMENT_CONNECTIONS',
+    ]);
+  });
+
+  it('counts an export as consumed, because the merchant has the file', () => {
+    /* Grouped with the connections by an older comment, which was wrong:
+     * an export is produced and gone, not held. */
+    expect(UNIT_KIND.REPORT_EXPORTS).toBe('CONSUMABLE_MONTHLY');
+    expect(isConsumable('REPORT_EXPORTS')).toBe(true);
+    expect(isConsumable('API_APPLICATIONS')).toBe(false);
+  });
+
+  it('puts every API unit but the application on the monthly meter', () => {
+    expect(UNIT_KIND.API_REQUEST_UNITS).toBe('CONSUMABLE_MONTHLY');
+    expect(UNIT_KIND.WEBHOOK_DELIVERIES).toBe('CONSUMABLE_MONTHLY');
+    expect(UNIT_KIND.API_APPLICATIONS).toBe('CAPACITY');
   });
 });

@@ -12,6 +12,7 @@ export * as idempotencyRepo from './repos/idempotency.js';
 export * as provenanceRepo from './repos/provenance.js';
 export * as evidenceRetentionRepo from './repos/evidence-retention.js';
 export * as evidenceRepo from './repos/evidence.js';
+export * as addOnsRepo from './repos/add-ons.js';
 export * as accountsRepo from './repos/accounts.js';
 export * as fxRepo from './repos/fx.js';
 export * as journalDraftsRepo from './repos/journal-drafts.js';

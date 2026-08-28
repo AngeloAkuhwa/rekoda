@@ -74,6 +74,24 @@ export async function createApplication(
   return toApplication([...rows][0]!);
 }
 
+/**
+ * How many applications this business is holding right now.
+ *
+ * `API_APPLICATIONS` is CAPACITY, not a monthly consumable (owner ruling,
+ * 28 August 2026), so the ceiling is answered by counting what exists
+ * rather than by a counter that resets. Disabled applications do not count:
+ * a disabled application opens no door, so holding one costs nothing and
+ * freeing a slot is something a merchant can actually do.
+ */
+export async function activeApplicationCount(tx: TenantDb, businessId: string): Promise<number> {
+  const rows = await tx.execute<{ held: number }>(sql`
+    SELECT count(*)::int AS held
+      FROM api_applications
+     WHERE business_id = ${businessId} AND status = 'active'
+  `);
+  return [...rows][0]?.held ?? 0;
+}
+
 export async function applicationsFor(tx: TenantDb, businessId: string): Promise<ApiApplication[]> {
   const rows = await tx.execute<ApplicationColumns>(sql`
     SELECT id, business_id, name, status, created_at

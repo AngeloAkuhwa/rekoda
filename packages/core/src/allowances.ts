@@ -24,8 +24,7 @@ export const USAGE_UNITS = [
   'MARKETING_TEMPLATE',
   /* Integrate: what a customer's shopping spends. */
   'CATALOGUE_ORDERS',
-  /* Standing capacity rather than monthly consumption: connections held,
-   * people admitted, files taken away. */
+  /* Standing capacity: connections held, people admitted. See UNIT_KIND. */
   'PAYMENT_CONNECTIONS',
   'FINANCIAL_ACCOUNT_CONNECTIONS',
   'ACCOUNTANT_USERS',
@@ -36,6 +35,75 @@ export const USAGE_UNITS = [
   'WEBHOOK_DELIVERIES',
 ] as const;
 export type UsageUnit = (typeof USAGE_UNITS)[number];
+
+/**
+ * The two kinds of allowance, named because conflating them produces a
+ * product nobody wants (owner ruling, 28 August 2026).
+ *
+ * A **CONSUMABLE_MONTHLY** unit is spent and reset. Sending a message,
+ * generating a document, making an API request: the merchant used something
+ * up, next month they get the allowance again, and a pack tops it up in the
+ * month it was bought.
+ *
+ * A **CAPACITY** unit is held, not spent. A merchant does not "consume" an
+ * API application or an accountant seat — they are permitted to MAINTAIN
+ * some number of them at once. The ceiling is checked against how many
+ * currently exist, so deleting one frees the slot immediately, and a month
+ * boundary means nothing to it.
+ *
+ * The distinction is load-bearing in three places:
+ *
+ *   `consumeUnit` is for consumables only. Running a capacity unit through
+ *   it produces the bug this table exists to prevent: PR-113 metered
+ *   `API_APPLICATIONS` as a monthly tally, so a merchant who registered
+ *   their allowance of applications and then deleted every one of them
+ *   still could not register another until the month turned over. A
+ *   capacity ceiling is answered by counting what is there.
+ *
+ *   Capacity is sold as a RECURRING add-on, never as a one-off pack. "Buy
+ *   fifty more applications, once" is not a sentence about standing
+ *   capacity, and a pack that credits bonus into one month cannot express
+ *   a permanent seat.
+ *
+ *   A capacity unit's counter row would be a lie: `usage_counters.used`
+ *   means "spent this period", and a held thing is not spent.
+ */
+export const UNIT_KINDS = ['CONSUMABLE_MONTHLY', 'CAPACITY'] as const;
+export type UnitKind = (typeof UNIT_KINDS)[number];
+
+export const UNIT_KIND: Record<UsageUnit, UnitKind> = {
+  AI_ACTIONS: 'CONSUMABLE_MONTHLY',
+  VOICE_MINUTES: 'CONSUMABLE_MONTHLY',
+  DOCUMENT_GENERATION: 'CONSUMABLE_MONTHLY',
+  DOCUMENTS_UNDERSTOOD: 'CONSUMABLE_MONTHLY',
+  SERVICE_MESSAGE: 'CONSUMABLE_MONTHLY',
+  UTILITY_TEMPLATE: 'CONSUMABLE_MONTHLY',
+  AUTH_TEMPLATE: 'CONSUMABLE_MONTHLY',
+  AUTH_INTL_TEMPLATE: 'CONSUMABLE_MONTHLY',
+  MARKETING_TEMPLATE: 'CONSUMABLE_MONTHLY',
+  CATALOGUE_ORDERS: 'CONSUMABLE_MONTHLY',
+  /* An export is produced and gone: the merchant has the file. Grouped with
+   * the connections above by an older comment, which was wrong about this
+   * one and is corrected here. */
+  REPORT_EXPORTS: 'CONSUMABLE_MONTHLY',
+  API_REQUEST_UNITS: 'CONSUMABLE_MONTHLY',
+  WEBHOOK_DELIVERIES: 'CONSUMABLE_MONTHLY',
+
+  ACCOUNTANT_USERS: 'CAPACITY',
+  PAYMENT_CONNECTIONS: 'CAPACITY',
+  FINANCIAL_ACCOUNT_CONNECTIONS: 'CAPACITY',
+  API_APPLICATIONS: 'CAPACITY',
+};
+
+/** Every unit of one kind. The list a gate iterates rather than retypes. */
+export function unitsOfKind(kind: UnitKind): UsageUnit[] {
+  return USAGE_UNITS.filter((unit) => UNIT_KIND[unit] === kind);
+}
+
+/** May this unit go through the monthly meter at all? */
+export function isConsumable(unit: UsageUnit): boolean {
+  return UNIT_KIND[unit] === 'CONSUMABLE_MONTHLY';
+}
 
 /**
  * How many counts the meter stores for one merchant-facing unit.

@@ -17,7 +17,13 @@ const id = () =>
 const createdAt = () => timestamp('created_at', { withTimezone: true }).notNull().defaultNow();
 const updatedAt = () => timestamp('updated_at', { withTimezone: true }).notNull().defaultNow();
 
-/** A registered consumer of the API. What the API_APPLICATIONS meter counts. */
+/**
+ * A registered consumer of the API.
+ *
+ * `API_APPLICATIONS` is CAPACITY: what a business may hold at once, counted
+ * from the active rows here rather than tallied in a monthly meter, so
+ * disabling one frees the slot the same day (PR-116).
+ */
 export const apiApplications = pgTable(
   'api_applications',
   {

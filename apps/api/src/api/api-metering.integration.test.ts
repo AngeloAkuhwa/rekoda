@@ -7,11 +7,14 @@
  * them real: every plan sells ZERO of these units, so a business is bounded
  * by what the API product credited and by nothing else.
  *
- *   API_REQUEST_UNITS    one per authenticated request, taken behind the
- *                        per-minute ceiling so a flood cannot burn a month.
- *   API_APPLICATIONS     one per registration, not given back.
- *   WEBHOOK_DELIVERIES   one per delivery, refunded on every attempt that
- *                        delivered nothing.
+ *   API_REQUEST_UNITS    consumable: one per authenticated request, taken
+ *                        behind the per-minute ceiling so a flood cannot
+ *                        burn a month.
+ *   API_APPLICATIONS     capacity: held rather than spent, so the ceiling
+ *                        comes from an add-on holding and the answer comes
+ *                        from counting what exists (PR-116).
+ *   WEBHOOK_DELIVERIES   consumable: one per delivery, refunded on every
+ *                        attempt that delivered nothing.
  */
 import { randomBytes } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -19,7 +22,14 @@ import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { publicApi } from '@rekoda/contracts';
 import { usagePeriod } from '@rekoda/core';
 import { createDb, entitlementsRepo, usageRepo, withBusiness, type Db } from '@rekoda/db';
-import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
+import { meterAllowance, standingCapacity } from '../billing/plan-terms.js';
+import {
+  grantCapacityAddOn,
+  migrate,
+  requireUrls,
+  truncateAll,
+  type Urls,
+} from '@rekoda/db/testing';
 
 const SECRET = 'api-metering-secret-at-least-32-chars';
 
@@ -101,16 +111,15 @@ async function entitled(
         capacity.requests,
       );
     }
-    if (capacity.applications !== undefined) {
-      await usageRepo.creditBonus(
-        tx,
-        created.businessId,
-        period,
-        'API_APPLICATIONS',
-        capacity.applications,
-      );
-    }
   });
+
+  /* Capacity is HELD, not credited: API_APPLICATIONS never touches the
+   * monthly meter, so the ceiling arrives as an add-on the business holds
+   * (PR-116). Crediting a bonus here is exactly the mistake this suite
+   * exists to prevent, and `check-boundaries` refuses it in source. */
+  if (capacity.applications !== undefined) {
+    await grantCapacityAddOn(urls, created.businessId, 'API_APPLICATIONS', capacity.applications);
+  }
 
   return {
     businessId: created.businessId,
@@ -198,8 +207,8 @@ describe('API_REQUEST_UNITS', () => {
   });
 });
 
-describe('API_APPLICATIONS', () => {
-  it('counts each registration and refuses the one past the ceiling', async () => {
+describe('API_APPLICATIONS is capacity, not a monthly tally', () => {
+  it('refuses the one past the standing ceiling', async () => {
     const shop = await entitled('+2348195000010', 'Apps Co', { requests: 10, applications: 2 });
 
     expect((await post('/v1/api-keys/applications', { name: 'One' }, shop.auth)).statusCode).toBe(
@@ -208,30 +217,68 @@ describe('API_APPLICATIONS', () => {
     expect((await post('/v1/api-keys/applications', { name: 'Two' }, shop.auth)).statusCode).toBe(
       200,
     );
-    expect(await used(shop.businessId, 'API_APPLICATIONS')).toBe(2);
 
     const refused = await post('/v1/api-keys/applications', { name: 'Three' }, shop.auth);
     expect(refused.statusCode).toBe(403);
-    expect(refused.json()).toMatchObject({ message: expect.stringContaining('capacity') });
+    expect(refused.json()).toMatchObject({ message: expect.stringContaining('may hold 2') });
 
-    /* And the refusal wrote nothing: a merchant refused at the meter has
-     * the applications they had before they asked. */
+    /* The refusal wrote nothing: a merchant refused has the applications
+     * they had before they asked. */
     const listed = (await get('/v1/api-keys', shop.auth)).json() as { applications: unknown[] };
     expect(listed.applications).toHaveLength(2);
   });
 
-  it('does not give the unit back when an application is disabled', async () => {
-    const shop = await entitled('+2348195000011', 'Disabled Co', {
-      requests: 10,
-      applications: 2,
-    });
+  it('frees the slot when an application is disabled', async () => {
+    const shop = await entitled('+2348195000011', 'Freed Co', { requests: 10, applications: 1 });
     const created = (
-      await post('/v1/api-keys/applications', { name: 'Short lived' }, shop.auth)
+      await post('/v1/api-keys/applications', { name: 'First' }, shop.auth)
     ).json() as { id: string };
+
+    /* At the ceiling, so the second is refused. */
+    expect(
+      (await post('/v1/api-keys/applications', { name: 'Second' }, shop.auth)).statusCode,
+    ).toBe(403);
+
     await post(`/v1/api-keys/applications/${created.id}/disable`, {}, shop.auth);
 
-    /* The month it was created in is the month it was sold in, exactly as
-     * every other exhaustible unit behaves. */
-    expect(await used(shop.businessId, 'API_APPLICATIONS')).toBe(1);
+    /* This is the behaviour PR-113 got wrong. A monthly tally counts
+     * EVENTS, so the merchant had spent their registration and would have
+     * waited for the month to turn over even though they now hold nothing.
+     * Capacity counts what is THERE. */
+    expect(
+      (await post('/v1/api-keys/applications', { name: 'Second' }, shop.auth)).statusCode,
+    ).toBe(200);
+  });
+
+  it('never writes a usage counter for a held thing', async () => {
+    const shop = await entitled('+2348195000012', 'Uncounted Co', {
+      requests: 10,
+      applications: 3,
+    });
+    await post('/v1/api-keys/applications', { name: 'One' }, shop.auth);
+
+    /* `usage_counters.used` means "spent this period", and a held thing is
+     * not spent. A row here would be a lie about what happened. */
+    expect(await used(shop.businessId, 'API_APPLICATIONS')).toBe(0);
+  });
+});
+
+describe("the two seams refuse each other's units", () => {
+  it('will not answer a capacity question as an allowance, or the reverse', async () => {
+    const shop = await entitled('+2348195000030', 'Confused Co', { requests: 10 });
+    const config = { planCatalogueReads: true };
+
+    await withBusiness(db, shop.businessId, async (tx) => {
+      /* A silent answer is how the confusion returns: a number from
+       * `meterAllowance` is a number the meter will decrement, and
+       * decrementing a held thing is the PR-113 bug. */
+      await expect(
+        meterAllowance(config, tx, shop.businessId, 'chat', 'API_APPLICATIONS'),
+      ).rejects.toThrow(/standingCapacity/);
+
+      await expect(
+        standingCapacity(config, tx, shop.businessId, 'chat', 'API_REQUEST_UNITS'),
+      ).rejects.toThrow(/meterAllowance/);
+    });
   });
 });

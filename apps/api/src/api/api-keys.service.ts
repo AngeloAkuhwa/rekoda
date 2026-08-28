@@ -43,7 +43,7 @@ import {
 import type { ApiApplicationView, ApiKeyView, CreateApiKeyResponse } from '@rekoda/contracts';
 import { CONFIG, type ApiConfig } from '../config.js';
 import { DB } from '../db/db.module.js';
-import { meterAllowance } from '../billing/plan-terms.js';
+import { meterAllowance, standingCapacity } from '../billing/plan-terms.js';
 
 /** Why a presented key was refused. The caller sees far less than this. */
 export type ApiAuthFailure =
@@ -180,48 +180,63 @@ export class ApiKeysService {
   }
 
   /**
-   * Register an application, if the merchant has room for another.
+   * Register an application, if the merchant has room to HOLD another.
    *
-   * `API_APPLICATIONS` is a count of things that EXIST rather than a tally
-   * of events, so the unit is spent when one is registered and is not given
-   * back: the month it was created in is the month it was sold in, which is
-   * how every other exhaustible unit behaves.
+   * `API_APPLICATIONS` is CAPACITY, not a monthly consumable (owner ruling,
+   * 28 August 2026, and `UNIT_KIND` in core). PR-113 metered it through
+   * `consumeUnit`, which was wrong in a way a merchant would have felt: a
+   * developer who registered their allowance of applications and then
+   * deleted every one of them still could not register another until the
+   * month turned over, because a monthly tally counts events and they had
+   * spent the events. A capacity ceiling counts what is THERE, so disabling
+   * an application frees its slot the moment it is disabled.
+   *
+   * The count and the insert share one transaction, so two simultaneous
+   * registrations cannot both read the same "one below the ceiling".
    */
   async registerApplication(
     businessId: string,
     name: string,
-    now = new Date(),
-  ): Promise<ApiApplicationView | { reason: 'quota_exhausted' }> {
+  ): Promise<ApiApplicationView | { reason: 'no_capacity'; limit: number }> {
     return withBusiness(this.db, businessId, async (tx) => {
-      const granted = await usageRepo.consumeUnit(
-        tx,
-        businessId,
-        usagePeriod(now),
-        'API_APPLICATIONS',
-        await this.apiAllowance(tx, businessId, 'API_APPLICATIONS'),
-      );
-      if (!granted) return { reason: 'quota_exhausted' } as const;
+      const limit = await this.apiCapacity(tx, businessId, 'API_APPLICATIONS');
+      const held = await apiKeysRepo.activeApplicationCount(tx, businessId);
+      if (held >= limit) return { reason: 'no_capacity', limit } as const;
 
       return viewApplication(await apiKeysRepo.createApplication(tx, { businessId, name }));
     });
   }
 
   /**
-   * What this business may spend of an API unit this month.
+   * What this business may spend, or hold, of an API unit.
    *
    * Through the same catalogue seam every other meter reads, so a
-   * grandfathered merchant is judged by the terms they were sold. Today
-   * every plan sells zero of these three, which §27 requires; the figure
-   * that matters is the bonus the API product credits.
+   * grandfathered merchant is judged by the terms they were sold. Every
+   * plan sells zero of these three, which §27 requires; the figure that
+   * matters is what the API product granted.
    */
   private apiAllowance(
     tx: TenantDb,
     businessId: string,
-    unit: 'API_REQUEST_UNITS' | 'API_APPLICATIONS',
+    unit: 'API_REQUEST_UNITS',
   ): Promise<number> {
     return usageRepo
       .planFor(tx, businessId)
       .then((plan) => meterAllowance(this.config, tx, businessId, plan, unit));
+  }
+
+  /**
+   * The standing ceiling for a capacity unit.
+   *
+   * Read through the same catalogue seam, and deliberately a DIFFERENT
+   * function from `apiAllowance` even though today they resolve the same
+   * way: they answer different questions, and one signature for both is how
+   * a capacity unit ends up back in the monthly meter.
+   */
+  private apiCapacity(tx: TenantDb, businessId: string, unit: 'API_APPLICATIONS'): Promise<number> {
+    return usageRepo
+      .planFor(tx, businessId)
+      .then((plan) => standingCapacity(this.config, tx, businessId, plan, unit));
   }
 
   async listApplications(

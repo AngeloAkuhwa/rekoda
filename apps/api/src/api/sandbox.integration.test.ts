@@ -18,7 +18,13 @@ import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { publicApi } from '@rekoda/contracts';
 import { usagePeriod } from '@rekoda/core';
 import { createDb, entitlementsRepo, usageRepo, withBusiness, type Db } from '@rekoda/db';
-import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
+import {
+  grantCapacityAddOn,
+  migrate,
+  requireUrls,
+  truncateAll,
+  type Urls,
+} from '@rekoda/db/testing';
 
 const SECRET = 'sandbox-secret-at-least-32-characters';
 
@@ -97,8 +103,10 @@ async function developer(phone: string, name: string): Promise<Developer> {
       grantedBy: 'operator:sandbox-suite',
     });
     await usageRepo.creditBonus(tx, created.businessId, period, 'API_REQUEST_UNITS', 20);
-    await usageRepo.creditBonus(tx, created.businessId, period, 'API_APPLICATIONS', 5);
   });
+  /* Applications are held, not spent (PR-116): capacity comes from an
+   * add-on holding rather than a credit against the month. */
+  await grantCapacityAddOn(urls, created.businessId, 'API_APPLICATIONS', 5);
 
   const application = (
     await post('/v1/api-keys/applications', { name: `${name} app` }, auth)

@@ -12,9 +12,39 @@
  * it, are PR-013. This module is the record they will read.
  */
 import { sql } from 'drizzle-orm';
-import { effectiveEntitlements, type EntitlementKey } from '@rekoda/core';
+import { effectiveEntitlements, ENTITLEMENT_KEYS as KEYS, type EntitlementKey } from '@rekoda/core';
 import type { Db, TenantDb } from '../client.js';
+import { grantedEntitlements } from './add-ons.js';
 import { planFor } from './usage.js';
+
+/**
+ * Every source of an entitlement, resolved together (PR-116).
+ *
+ * Three: what the PLAN implies, what support GRANTED explicitly, and what a
+ * held ADD-ON grants. The third is derived rather than copied into
+ * `business_entitlements` when the add-on is bought, because a copied
+ * entitlement has to be un-copied when the holding ends, and the day
+ * somebody forgets, a cancelled subscription leaves a live capability
+ * behind. Deriving it means ending the holding ends the capability, with
+ * nothing to remember.
+ */
+async function allSources(
+  tx: TenantDb,
+  businessId: string,
+  now: Date,
+): Promise<{ plan: string; held: EntitlementKey[] }> {
+  const plan = await planFor(tx, businessId, now);
+  const explicit = await heldBy(tx, businessId);
+  const fromAddOns = await grantedEntitlements(tx, businessId, now);
+  const known = new Set<string>(KEYS);
+  return {
+    plan,
+    held: effectiveEntitlements(plan, [
+      ...explicit.map((g) => g.entitlementKey),
+      ...fromAddOns.filter((key): key is EntitlementKey => known.has(key)),
+    ]),
+  };
+}
 
 /* The key set and the plan map are pure, so they live in core. Re-exported
  * here because every caller that needs one needs the other. */
@@ -146,8 +176,8 @@ export async function holds(
 /* ── the resolver and the gate ─────────────────────────────────────────── */
 
 /**
- * What this business can actually do: what its plan implies, plus whatever
- * was granted explicitly (spec §4.1).
+ * What this business can actually do: what its plan implies, what was
+ * granted explicitly, and what a held add-on grants (spec §4.1).
  *
  * One place. Every ingress asks this and none of them derives it, which is
  * the whole point: before PR-013 the Chat handler inferred the boundary from
@@ -155,13 +185,12 @@ export async function holds(
  * plan" from "you have used all 300", so the same rule had two
  * implementations and one of them could not express the answer.
  */
-export async function resolve(tx: TenantDb, businessId: string): Promise<EntitlementKey[]> {
-  const plan = await planFor(tx, businessId);
-  const granted = await heldBy(tx, businessId);
-  return effectiveEntitlements(
-    plan,
-    granted.map((g) => g.entitlementKey),
-  );
+export async function resolve(
+  tx: TenantDb,
+  businessId: string,
+  now: Date = new Date(),
+): Promise<EntitlementKey[]> {
+  return (await allSources(tx, businessId, now)).held;
 }
 
 /** Why a capability was refused. Never a bare boolean: the caller has to say something. */
@@ -188,12 +217,8 @@ export async function requireEntitlement(
   tx: TenantDb,
   businessId: string,
   required: EntitlementKey,
+  now: Date = new Date(),
 ): Promise<EntitlementRefusal | null> {
-  const plan = await planFor(tx, businessId);
-  const granted = await heldBy(tx, businessId);
-  const held = effectiveEntitlements(
-    plan,
-    granted.map((g) => g.entitlementKey),
-  );
+  const { plan, held } = await allSources(tx, businessId, now);
   return held.includes(required) ? null : { missing: required, plan };
 }

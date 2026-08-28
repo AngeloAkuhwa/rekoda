@@ -157,6 +157,55 @@ function contractViolations(rel, body) {
   return found;
 }
 
+/**
+ * A CAPACITY unit may never reach the monthly meter (owner ruling, 28 Aug
+ * 2026; `UNIT_KIND` in @rekoda/core).
+ *
+ * `consumeUnit` spends something and resets at the month boundary. A held
+ * thing is not spent, so putting a capacity unit through it produces a bug
+ * a merchant feels rather than one a test catches: they delete every
+ * application they hold and still cannot register another until the month
+ * turns over. PR-113 shipped exactly that, which is why this is a rule now
+ * and not a convention.
+ *
+ * Matched on the literal in the call, because the unit always arrives as
+ * one: `consumeUnit(tx, id, period, 'API_APPLICATIONS', n)`.
+ *
+ * The one rule here that TESTS are not exempt from. Every other rule guards
+ * a dependency direction a suite has a legitimate reason to cross; this one
+ * guards the meaning of a unit, and a suite that credits a month's bonus to
+ * buy capacity is asserting the wrong model however green it runs. PR-113's
+ * suites did exactly that and passed.
+ */
+const CAPACITY_UNITS = [
+  'ACCOUNTANT_USERS',
+  'PAYMENT_CONNECTIONS',
+  'FINANCIAL_ACCOUNT_CONNECTIONS',
+  'API_APPLICATIONS',
+];
+const CONSUME_CALL = /\b(?:consumeUnit|refundUnit|creditBonus)\s*\(([\s\S]{0,240}?)\)/g;
+
+function capacityMeterViolations(rel, body) {
+  if (!rel.startsWith('apps/') && !rel.startsWith('packages/')) return [];
+  const found = [];
+  for (const match of body.matchAll(CONSUME_CALL)) {
+    for (const unit of CAPACITY_UNITS) {
+      if (!match[1].includes(`'${unit}'`)) continue;
+      found.push({
+        rel,
+        spec: `${unit} in a monthly meter call`,
+        rule: {
+          verb: 'passes',
+          name: 'capacity unit through the monthly meter',
+          reason:
+            'CAPACITY units are held, not spent (UNIT_KIND in @rekoda/core): check the ceiling against how many currently exist, so deleting one frees the slot',
+        },
+      });
+    }
+  }
+  return found;
+}
+
 const SKIP_DIRS = new Set(['node_modules', 'dist', '.next', '.turbo', 'migrations', '.git']);
 const SOURCE = /\.(ts|tsx|mts|cts|mjs|js)$/;
 
@@ -191,6 +240,7 @@ for (const dir of ['apps', 'packages']) {
     if (!isTestOrConfig) violations.push(...aiAdapterViolations(rel, body));
     if (!isTestOrConfig) violations.push(...commandLayerViolations(rel, body));
     if (!isTestOrConfig) violations.push(...contractViolations(rel, body));
+    violations.push(...capacityMeterViolations(rel, body));
   }
 }
 
@@ -198,7 +248,7 @@ if (violations.length > 0) {
   console.error('Architectural boundary violations:\n');
   for (const { rel, spec, rule } of violations) {
     console.error(`  ${rel}`);
-    console.error(`    imports "${spec}" — ${rule.name} is not allowed here`);
+    console.error(`    ${rule.verb ?? 'imports'} "${spec}": ${rule.name} is not allowed here`);
     console.error(`    ${rule.reason}\n`);
   }
   process.exit(1);

@@ -64,9 +64,12 @@ export class ApiKeysController {
     if ('reason' in created) {
       /* The dashboard's own refusal, not the public envelope: this surface
        * answers a session, and the merchant reading it needs the sentence
-       * they can act on rather than a machine code. */
+       * they can act on. "This month" is deliberately absent: capacity is
+       * standing, so waiting changes nothing and the two real options are
+       * to free a slot or to buy another. */
       throw new ForbiddenException(
-        'this business has no API applications left this month, buy more capacity first',
+        `this business may hold ${created.limit} active API application${created.limit === 1 ? '' : 's'}. ` +
+          'Disable one, or add capacity.',
       );
     }
     return created;

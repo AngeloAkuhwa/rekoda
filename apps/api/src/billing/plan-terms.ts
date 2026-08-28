@@ -20,14 +20,16 @@
 import {
   addOnPack,
   allowanceFor,
+  isConsumable,
   packsFor,
   planPriceK,
   seatsFor,
+  UNIT_KIND,
   UNIT_SCALE,
   type AddOnPack,
   type UsageUnit,
 } from '@rekoda/core';
-import { planCatalogueRepo, type TenantDb } from '@rekoda/db';
+import { addOnsRepo, planCatalogueRepo, type TenantDb } from '@rekoda/db';
 
 /** The one config fact this seam needs; keeps the functions testable bare. */
 export interface PlanTermsConfig {
@@ -48,9 +50,61 @@ export async function meterAllowance(
   unit: UsageUnit,
   now = new Date(),
 ): Promise<number> {
-  if (!config.planCatalogueReads) return allowanceFor(plan, unit);
-  const sold = await planCatalogueRepo.soldAllowanceFor(tx, businessId, plan, unit, now);
-  return sold * UNIT_SCALE[unit];
+  if (!isConsumable(unit)) {
+    throw new Error(`${unit} is ${UNIT_KIND[unit]}, not a monthly allowance: use standingCapacity`);
+  }
+  const sold = config.planCatalogueReads
+    ? (await planCatalogueRepo.soldAllowanceFor(tx, businessId, plan, unit, now)) * UNIT_SCALE[unit]
+    : allowanceFor(plan, unit);
+
+  /*
+   * Plus what a held add-on grants every month (PR-116).
+   *
+   * Distinct from a pack, which credits `bonus` into one month and is gone:
+   * a MONTHLY_UNITS grant belongs to a recurring subscription, so it arrives
+   * every month for as long as the holding lasts and stops when it ends.
+   * That difference is why the Developer API Starter's twenty-five thousand
+   * requests are a grant and not a pack: a merchant paying monthly should
+   * not have to re-buy the thing they are already paying for.
+   */
+  const granted = await addOnsRepo.grantedUnits(tx, businessId, 'MONTHLY_UNITS', unit, now);
+  return sold + granted * UNIT_SCALE[unit];
+}
+
+/**
+ * The standing ceiling for a CAPACITY unit: seats, connections, API
+ * applications (owner ruling, 28 August 2026; `UNIT_KIND` in core).
+ *
+ * Deliberately its own function rather than a flag on `meterAllowance`,
+ * because the two answer different questions and one signature for both is
+ * how a held thing ends up back in the monthly meter. Nothing here consults
+ * `usage_counters`: a capacity ceiling is compared against how many
+ * currently EXIST, which the caller counts.
+ *
+ * The answer is in WHOLE things, not meter counts, because a capacity unit
+ * is always counted one for one: half an accountant is not a quantity.
+ *
+ * Each function refuses the other's units rather than quietly answering.
+ * A silent answer is how the confusion returns: `meterAllowance` on
+ * `API_APPLICATIONS` would give a number the meter would then happily
+ * decrement, which is precisely the PR-113 bug.
+ */
+export async function standingCapacity(
+  config: PlanTermsConfig,
+  tx: TenantDb,
+  businessId: string,
+  plan: string,
+  unit: UsageUnit,
+  now = new Date(),
+): Promise<number> {
+  if (isConsumable(unit)) {
+    throw new Error(`${unit} is CONSUMABLE_MONTHLY, not capacity: use meterAllowance`);
+  }
+  const sold = config.planCatalogueReads
+    ? await planCatalogueRepo.soldAllowanceFor(tx, businessId, plan, unit, now)
+    : allowanceFor(plan, unit);
+  const granted = await addOnsRepo.grantedUnits(tx, businessId, 'CAPACITY', unit, now);
+  return sold + granted;
 }
 
 /** Team seats beyond the owner, for the invite gate. */
@@ -153,7 +207,13 @@ export async function packsForBusiness(
   const terms = await planCatalogueRepo.commercialTermsFor(tx, businessId, plan, now);
   if (!terms.version || terms.monthlyPriceK === 0) return [];
   const packs = await planCatalogueRepo.usagePacksAt(tx, now);
-  return packs.filter((pack) => (terms.allowances[pack.unit] ?? 0) > 0).map(toCorePack);
+  /* Consumables only: a pack credits one month's bonus, which cannot
+   * express standing capacity (owner ruling, 28 Aug 2026). Migration 0112
+   * refuses a capacity pack in the catalogue; this keeps the reader honest
+   * about rows written before it. */
+  return packs
+    .filter((pack) => isConsumable(pack.unit) && (terms.allowances[pack.unit] ?? 0) > 0)
+    .map(toCorePack);
 }
 
 /** One pack as offered at `at`, whoever is asking. Null for an unknown id. */
