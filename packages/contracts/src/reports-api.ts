@@ -98,6 +98,24 @@ export const reportsActivityResponse = z.object({
 });
 export type ReportsActivityResponse = z.infer<typeof reportsActivityResponse>;
 
+/* ── customer and supplier statements (D1, PR-096) ──────────────────────── */
+
+/** One party's account: dated, signed entries with a running balance. */
+export const partyStatementResponse = z.object({
+  openingK: z.number().int().finite(),
+  closingK: z.number().int().finite(),
+  entries: z.array(
+    z.object({
+      on: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+      kind: z.enum(['invoice', 'payment', 'credit_applied', 'bill', 'supplier_payment']),
+      reference: z.string(),
+      amountK: z.number().int().finite(),
+      balanceK: z.number().int().finite(),
+    }),
+  ),
+});
+export type PartyStatementResponse = z.infer<typeof partyStatementResponse>;
+
 /* ── the four statements (ADR 0015) ─────────────────────────────────────── */
 
 /* Statements v2 (D1, PR-095): lines carry the account's own chart code and

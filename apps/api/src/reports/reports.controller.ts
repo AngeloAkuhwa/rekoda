@@ -15,6 +15,7 @@ import {
   HttpCode,
   Inject,
   Post,
+  Param,
   Query,
   Req,
   Res,
@@ -70,6 +71,7 @@ import {
 } from '@rekoda/core';
 import { FontsMissing, renderStatementsPdf } from '../documents/pdf.js';
 import type {
+  PartyStatementResponse,
   ReportsActivityResponse,
   ReportsAuditResponse,
   ReportsCashflowResponse,
@@ -143,6 +145,7 @@ import {
   stockRepo,
   withBusiness,
   type Db,
+  partyStatementsRepo,
 } from '@rekoda/db';
 import { SessionGuard, type AuthedRequest } from '../auth/session.guard.js';
 import { CONFIG, type ApiConfig } from '../config.js';
@@ -232,6 +235,47 @@ export class ReportsController {
       ageing: await reportsRepo.ageingFor(tx, businessId),
     }));
     return { period: usagePeriod(new Date()), ...overview, ageing };
+  }
+
+  /**
+   * One customer's account with the business (D1, PR-096): dated entries
+   * with a running balance, closing exactly where the balances page
+   * stands. Readable by every member — an accountant sent to reconcile a
+   * customer's account is the whole reason the page exists — and carrying
+   * document numbers and figures only, never a name: the web tier holds
+   * no vault key, and the statement is quoted down the phone by number.
+   */
+  @Get('customers/:customerId/statement')
+  async customerStatement(
+    @Req() request: AuthedRequest,
+    @Param('customerId') customerId: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ): Promise<PartyStatementResponse> {
+    const businessId = request.auth!.businessId;
+    return withBusiness(this.db, businessId, (tx) =>
+      partyStatementsRepo.customerStatementFor(tx, businessId, customerId, {
+        from: dayOrNull(from),
+        to: dayOrNull(to),
+      }),
+    );
+  }
+
+  /** The mirror for a supplier: bills raised, payments made, balance owed. */
+  @Get('suppliers/:supplierId/statement')
+  async supplierStatement(
+    @Req() request: AuthedRequest,
+    @Param('supplierId') supplierId: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ): Promise<PartyStatementResponse> {
+    const businessId = request.auth!.businessId;
+    return withBusiness(this.db, businessId, (tx) =>
+      partyStatementsRepo.supplierStatementFor(tx, businessId, supplierId, {
+        from: dayOrNull(from),
+        to: dayOrNull(to),
+      }),
+    );
   }
 
   @Get('cashflow')
@@ -2046,6 +2090,12 @@ function requirePeriod(period: string | undefined): string {
 }
 
 /** All four, from one set of sums, so the JSON and the PDF cannot disagree. */
+/** A YYYY-MM-DD the query actually sent, or null. Garbage is null too:
+ * an unreadable window is the whole account, never an error page. */
+function dayOrNull(value?: string): string | null {
+  return value && /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : null;
+}
+
 function buildAll(sums: AccountSums[]) {
   return {
     trialBalance: buildTrialBalance(sums),

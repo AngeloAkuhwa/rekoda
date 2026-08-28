@@ -50,6 +50,7 @@ import {
   paymentsHub,
   settleRepo,
   spendRepo,
+  suppliersRepo,
   stockRepo,
   withBusiness,
   type Db,
@@ -3435,5 +3436,112 @@ describe('the debtors page asks for the whole register', () => {
     expect(full.rows).toHaveLength(8);
     expect(full.count).toBe(8);
     expect(full.totalK).toBe(8 * 50_000);
+  });
+});
+
+describe('customer and supplier statements (D1, PR-096)', () => {
+  it('serves a customer statement whose closing balance is the balances page', async () => {
+    const ada = await onboard('+2348055500061');
+    const customer = await customersRepo.createCustomerWithIdentities(
+      db,
+      ada.businessId,
+      'CHI96',
+      [],
+    );
+    const sale = await withBusiness(db, ada.businessId, (tx) =>
+      issueRepo.issueSale(tx, {
+        businessId: ada.businessId,
+        customerId: customer.id,
+        customerToken: 'CHI96',
+        items: [{ name: 'gown', quantity: 1, unitPriceK: 8_000_000 }],
+        subtotalK: 8_000_000,
+        discountK: 0,
+        deliveryFeeK: 0,
+        vatK: 0,
+        totalK: 8_000_000,
+        paidK: 0,
+        balanceDueK: 8_000_000,
+        method: 'transfer',
+        sourceType: 'chat',
+        sourceId: 'draft-st',
+        actor: 'owner',
+      }),
+    );
+    await withBusiness(db, ada.businessId, (tx) =>
+      settleRepo.recordMerchantPayment(tx, {
+        businessId: ada.businessId,
+        invoiceId: sale.invoiceId,
+        amountK: 3_000_000,
+        method: 'transfer',
+        sourceType: 'chat',
+        sourceId: 'pay-st',
+        actor: 'owner',
+      }),
+    );
+
+    const res = await app.inject({
+      method: 'GET',
+      url: `/v1/reports/customers/${customer.id}/statement`,
+      headers: ada.auth,
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as {
+      openingK: number;
+      closingK: number;
+      entries: Array<{ kind: string; amountK: number; balanceK: number; reference: string }>;
+    };
+    expect(body.entries.map((e) => [e.kind, e.amountK, e.balanceK])).toEqual([
+      ['invoice', 8_000_000, 8_000_000],
+      ['payment', -3_000_000, 5_000_000],
+    ]);
+    expect(body.closingK).toBe(5_000_000);
+    /* Numbers and figures only: no customer name crosses this wire. */
+    expect(JSON.stringify(body)).not.toContain('Chidi');
+  });
+
+  it('serves a supplier statement over bills and payments, and refuses no member', async () => {
+    const ada = await onboard('+2348055500062');
+    const { supplierId } = await withBusiness(db, ada.businessId, (tx) =>
+      suppliersRepo.findOrCreateSupplier(tx, ada.businessId, {
+        nameCipher: 'cipher-mama',
+        matchKey: 'mk-mama-96',
+      }),
+    );
+    const purchase = await withBusiness(db, ada.businessId, (tx) =>
+      spendRepo.recordPurchase(tx, {
+        businessId: ada.businessId,
+        description: 'bales',
+        amountK: 20_000_000,
+        paidK: 5_000_000,
+        sourceType: 'chat',
+        sourceId: 'purch-st',
+        supplierId,
+      }),
+    );
+    await withBusiness(db, ada.businessId, (tx) =>
+      spendRepo.paySupplier(tx, {
+        businessId: ada.businessId,
+        expenseId: purchase.expenseId,
+        amountK: 4_000_000,
+        method: 'transfer',
+        actor: 'owner',
+      }),
+    );
+
+    const res = await app.inject({
+      method: 'GET',
+      url: `/v1/reports/suppliers/${supplierId}/statement`,
+      headers: ada.auth,
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as {
+      closingK: number;
+      entries: Array<{ kind: string; amountK: number }>;
+    };
+    expect(body.entries.map((e) => [e.kind, e.amountK])).toEqual([
+      ['bill', 15_000_000],
+      ['supplier_payment', -4_000_000],
+    ]);
+    expect(body.closingK).toBe(11_000_000);
   });
 });
