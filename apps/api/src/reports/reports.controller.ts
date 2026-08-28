@@ -743,6 +743,7 @@ export class ReportsController {
         ),
         collectionStatus: collectionStatusFor(r.dueDate, r.balanceDueK, now),
         dueDate: r.dueDate?.toISOString() ?? null,
+        customerId: r.customerId,
         daysOverdue: daysOverdue(r.dueDate, r.balanceDueK, now),
         totalK: r.totalK,
         paidK: r.paidK,

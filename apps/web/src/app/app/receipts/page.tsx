@@ -43,6 +43,11 @@ export default async function ReceiptsPage({
 
       <div className="rk-card">
         <h2>Receipt register</h2>
+        <p className="rk-fineprint">
+          A receipt acknowledges that one payment was accepted, with what was known the moment it
+          was issued. It never changes afterwards. Where a customer&apos;s whole account stands
+          lives on their statement, reached from the <a href="/app/invoices">invoices page</a>.
+        </p>
         {receipts.length === 0 ? (
           <p className="rk-fineprint">
             No receipts yet. When a payment settles an invoice, the receipt is issued and numbered

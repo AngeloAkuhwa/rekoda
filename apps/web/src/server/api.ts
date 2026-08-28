@@ -30,6 +30,7 @@ import {
   recordAssetResponse,
   recordPaymentResponse,
   withdrawAssetResponse,
+  partyStatementResponse,
   reportsInvoicesResponse,
   teamResponse,
   reportsOverviewResponse,
@@ -147,6 +148,7 @@ import {
   type RecordAssetResponse,
   type RecordPaymentResponse,
   type WithdrawAssetResponse,
+  type PartyStatementResponse,
   type ReportsInvoicesResponse,
   type TeamResponse,
   type ReportsOverviewResponse,
@@ -500,6 +502,19 @@ export async function removeBusinessMember(sessionToken: string, userId: string)
     expect: [200, 400],
   });
   return (json as { removed?: boolean })?.removed === true;
+}
+
+export async function reportsCustomerStatement(
+  sessionToken: string,
+  customerId: string,
+): Promise<PartyStatementResponse> {
+  const { json } = await call({
+    method: 'GET',
+    path: `/v1/reports/customers/${customerId}/statement`,
+    headers: { authorization: `Bearer ${sessionToken}` },
+    expect: [200],
+  });
+  return partyStatementResponse.parse(json);
 }
 
 export async function reportsInvoices(

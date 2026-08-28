@@ -318,6 +318,9 @@ export const reportsInvoicesResponse = z.object({
       collectionStatus: z.enum(['CURRENT', 'DUE', 'OVERDUE']),
       /** When the money was agreed to arrive. Null when nobody said. */
       dueDate: z.string().nullable(),
+      /** An opaque reference for the customer's statement page (PR-097).
+       * Never a name: the web tier holds no vault key. */
+      customerId: z.string().uuid().nullable(),
       /** Whole Lagos days past that day. Zero when not late, or undated. */
       daysOverdue: z.number().int().nonnegative(),
       totalK: kobo,

@@ -684,6 +684,8 @@ export interface InvoiceListRow {
   issuedAt: Date;
   /** When the money was agreed to arrive. Null when nobody said. */
   dueDate: Date | null;
+  /** An opaque reference for the statement page, never a name (PR-097). */
+  customerId: string | null;
 }
 
 export interface InvoiceList {
@@ -713,10 +715,11 @@ export async function invoicesFor(
     balance_due_k: string;
     credited_k: string;
     issued_at: Date;
+    customer_id: string | null;
   }>(sql`
     SELECT invoice_number, status, due_date, total_k::bigint AS total_k, paid_k::bigint AS paid_k,
            balance_due_k::bigint AS balance_due_k, credited_k::bigint AS credited_k,
-           created_at AS issued_at
+           created_at AS issued_at, customer_id
     FROM invoices
     WHERE business_id = ${businessId}::uuid
     ORDER BY created_at DESC
@@ -740,6 +743,7 @@ export async function invoicesFor(
       creditedK: Number(r.credited_k),
       issuedAt: new Date(r.issued_at),
       dueDate: r.due_date === null ? null : new Date(r.due_date),
+      customerId: r.customer_id,
     })),
     count: t?.n ?? 0,
     outstandingK: Number(t?.outstanding_k ?? 0),
