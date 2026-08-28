@@ -15,6 +15,7 @@ import {
   PAYMENT_REFERENCE_PATTERN,
   splitFees,
   type ExpectedPayment,
+  capabilityBlockers,
   resolvePaymentProvider,
 } from './payments.js';
 
@@ -203,11 +204,39 @@ describe('terminal intents', () => {
 });
 
 describe('the provider resolver (§17, §18; PR-068)', () => {
+  /**
+   * A platform capability on its three axes (PR-119). `open()` is the
+   * everyday case; a closed axis is named individually, because that is
+   * the whole reason the axes are separate.
+   */
   const cap = (
     providerType: string,
-    status: 'AVAILABLE' | 'BLOCKED',
-    reason: string | null = null,
-  ) => ({ providerType, capability: 'COLLECT' as const, status, reason });
+    axes: {
+      technicalSupport?: boolean;
+      commercialApproval?: boolean;
+      complianceApproval?: boolean;
+      technicalNote?: string;
+      commercialNote?: string;
+      complianceNote?: string;
+    } = {},
+  ) => {
+    const technicalSupport = axes.technicalSupport ?? true;
+    const commercialApproval = axes.commercialApproval ?? true;
+    const complianceApproval = axes.complianceApproval ?? true;
+    return {
+      providerType,
+      capability: 'COLLECT' as const,
+      technicalSupport,
+      commercialApproval,
+      complianceApproval,
+      technicalNote: axes.technicalNote ?? null,
+      commercialNote: axes.commercialNote ?? null,
+      complianceNote: axes.complianceNote ?? null,
+      /* The database generates this; here it is derived the same way, and
+       * the test below proves the resolver reads it rather than guessing. */
+      productionEnabled: technicalSupport && commercialApproval && complianceApproval,
+    };
+  };
   const conn = (
     connectionId: string,
     providerType: string,
@@ -220,8 +249,11 @@ describe('the provider resolver (§17, §18; PR-068)', () => {
       'COLLECT',
       [conn('c-mono', 'mono', true, 1), conn('c-pst', 'paystack', true, 2)],
       [
-        cap('paystack', 'AVAILABLE'),
-        cap('mono', 'BLOCKED', 'OPEN COMMERCIAL: Mono production terms'),
+        cap('paystack'),
+        cap('mono', {
+          commercialApproval: false,
+          commercialNote: 'OPEN COMMERCIAL: Mono production terms',
+        }),
       ],
     );
     /* Mono is OLDER but blocked at the platform — capability decides. */
@@ -232,7 +264,12 @@ describe('the provider resolver (§17, §18; PR-068)', () => {
     const outcome = resolvePaymentProvider(
       'COLLECT',
       [conn('c-mono', 'mono', true)],
-      [cap('mono', 'BLOCKED', 'OPEN COMMERCIAL: Mono production terms')],
+      [
+        cap('mono', {
+          commercialApproval: false,
+          commercialNote: 'OPEN COMMERCIAL: Mono production terms',
+        }),
+      ],
     );
     expect(outcome).toEqual({
       resolved: false,
@@ -245,7 +282,7 @@ describe('the provider resolver (§17, §18; PR-068)', () => {
     const outcome = resolvePaymentProvider(
       'COLLECT',
       [conn('c-pst', 'paystack', false)],
-      [cap('paystack', 'AVAILABLE')],
+      [cap('paystack')],
     );
     expect(outcome).toEqual({
       resolved: false,
@@ -254,15 +291,66 @@ describe('the provider resolver (§17, §18; PR-068)', () => {
     });
   });
 
+  it('a working sandbox is one axis, and one axis never opens production', () => {
+    /* The owner's sentence of 28 Aug 2026, as a property: "do not let
+     * sandbox works turn that boolean on". Passing tests set
+     * `technicalSupport`; production still needs two more signatures, and
+     * the refusal names both of the people who have not given theirs. */
+    const sandboxOnly = cap('kuda', {
+      commercialApproval: false,
+      commercialNote: 'OPEN COMMERCIAL: Kuda production commercial terms',
+      complianceApproval: false,
+      complianceNote: 'OPEN COMPLIANCE: Kuda regulatory approval',
+    });
+    expect(sandboxOnly.technicalSupport).toBe(true);
+    expect(sandboxOnly.productionEnabled).toBe(false);
+
+    const outcome = resolvePaymentProvider(
+      'COLLECT',
+      [conn('c-kuda', 'kuda', true)],
+      [sandboxOnly],
+    );
+    expect(outcome).toEqual({
+      resolved: false,
+      reason: 'no_capable_provider',
+      detail: [
+        'OPEN COMMERCIAL: Kuda production commercial terms',
+        'OPEN COMPLIANCE: Kuda regulatory approval',
+      ],
+    });
+  });
+
+  it('names every closed axis, because a merchant told one at a time waits twice', () => {
+    expect(capabilityBlockers(cap('paystack'))).toEqual([]);
+    expect(
+      capabilityBlockers(
+        cap('mono', { commercialApproval: false, commercialNote: 'terms unsigned' }),
+      ),
+    ).toEqual(['terms unsigned']);
+    expect(
+      capabilityBlockers(
+        cap('nobody', {
+          technicalSupport: false,
+          commercialApproval: false,
+          complianceApproval: false,
+        }),
+      ),
+    ).toEqual([
+      'nobody: no adapter',
+      'nobody: no commercial approval',
+      'nobody: no compliance approval',
+    ]);
+  });
+
   it('no connection is its own refusal, and seniority breaks a tie deterministically', () => {
-    expect(resolvePaymentProvider('COLLECT', [], [cap('paystack', 'AVAILABLE')])).toEqual({
+    expect(resolvePaymentProvider('COLLECT', [], [cap('paystack')])).toEqual({
       resolved: false,
       reason: 'no_connection',
     });
     const tie = resolvePaymentProvider(
       'COLLECT',
       [conn('c-new', 'paystack', true, 200), conn('c-old', 'paystack', true, 100)],
-      [cap('paystack', 'AVAILABLE')],
+      [cap('paystack')],
     );
     expect(tie).toEqual({ resolved: true, connectionId: 'c-old', providerType: 'paystack' });
   });

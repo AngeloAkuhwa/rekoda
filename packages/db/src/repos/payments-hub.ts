@@ -796,14 +796,26 @@ export async function attemptsForIntent(tx: TenantDb, businessId: string, paymen
 
 /* ── the provider resolver, over real rows (spec §17, §18; PR-068) ──────── */
 
-/** The platform's standing, as 0093 seeded and operators amend it. */
+/**
+ * The platform's standing on each provider and port: three independent
+ * axes and the production flag the database derives from them (0115).
+ *
+ * `production_enabled` is read here and never written anywhere. It is a
+ * generated column precisely so that opening production requires setting
+ * three separate axes, and no UPDATE in this codebase can shortcut that.
+ */
 export async function platformCapabilities(db: Db | TenantDb): Promise<PlatformCapability[]> {
   const rows = await db
     .select({
       providerType: providerCapabilities.providerType,
       capability: providerCapabilities.capability,
-      status: providerCapabilities.status,
-      reason: providerCapabilities.reason,
+      technicalSupport: providerCapabilities.technicalSupport,
+      technicalNote: providerCapabilities.technicalNote,
+      commercialApproval: providerCapabilities.commercialApproval,
+      commercialNote: providerCapabilities.commercialNote,
+      complianceApproval: providerCapabilities.complianceApproval,
+      complianceNote: providerCapabilities.complianceNote,
+      productionEnabled: providerCapabilities.productionEnabled,
     })
     .from(providerCapabilities);
   return rows as PlatformCapability[];

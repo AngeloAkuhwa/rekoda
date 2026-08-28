@@ -304,12 +304,59 @@ export function splitFees(input: FeeSplitInput): FeeSplit {
 /** §18's three ports. A provider that does two things has two rows. */
 export type ProviderCapabilityKind = 'COLLECT' | 'FEED' | 'PAYOUT';
 
+/**
+ * What the PLATFORM may do with one provider on one port, on three
+ * independent axes (PR-119, owner ruling 28 Aug 2026).
+ *
+ * They are independent because they fail independently and are cleared by
+ * different people on different timescales, which is the same argument
+ * §17.1 makes for a connection's four statuses. A single blended status
+ * could not express "the adapter is written and tested, the terms are
+ * signed, and legal has not finished" - it rendered as BLOCKED with a
+ * sentence, and nobody could see which axis was outstanding.
+ *
+ * `productionEnabled` is DERIVED from all three by the database (migration
+ * 0115 generates the column), so a working sandbox can never open
+ * production: passing tests sets `technicalSupport` alone, and one axis is
+ * never enough.
+ */
 export interface PlatformCapability {
   providerType: string;
   capability: ProviderCapabilityKind;
-  status: 'AVAILABLE' | 'BLOCKED';
-  /** The external blocker by name, when blocked. */
-  reason?: string | null;
+  /** An adapter exists for this port and passes its sandbox tests. */
+  technicalSupport: boolean;
+  /** There is a signed production arrangement with the provider. */
+  commercialApproval: boolean;
+  /** Permitted under Rekoda's own policy and the applicable regulation. */
+  complianceApproval: boolean;
+  /** All three, decided by the database rather than recomputed here. */
+  productionEnabled: boolean;
+  /** Why each closed axis is closed, in the words whoever closed it used. */
+  technicalNote?: string | null;
+  commercialNote?: string | null;
+  complianceNote?: string | null;
+}
+
+/**
+ * The closed axes of one capability, named, for a refusal a person can act
+ * on. Empty when nothing is blocking.
+ */
+export function capabilityBlockers(capability: PlatformCapability): string[] {
+  const blockers: string[] = [];
+  if (!capability.technicalSupport) {
+    blockers.push(capability.technicalNote ?? `${capability.providerType}: no adapter`);
+  }
+  if (!capability.commercialApproval) {
+    blockers.push(
+      capability.commercialNote ?? `${capability.providerType}: no commercial approval`,
+    );
+  }
+  if (!capability.complianceApproval) {
+    blockers.push(
+      capability.complianceNote ?? `${capability.providerType}: no compliance approval`,
+    );
+  }
+  return blockers;
 }
 
 export interface CandidateConnection {
@@ -354,19 +401,23 @@ export function resolvePaymentProvider(
 
   const capable = new Set(
     capabilities
-      .filter((c) => c.capability === need && c.status === 'AVAILABLE')
+      .filter((c) => c.capability === need && c.productionEnabled)
       .map((c) => c.providerType),
   );
   const withCapableProvider = connections.filter((c) => capable.has(c.providerType));
   if (withCapableProvider.length === 0) {
+    /* Every closed axis, not the first one. A merchant told "commercial
+     * approval is outstanding" who then waits for it, only to be refused
+     * again for compliance, has been told the truth twice and helped
+     * neither time. */
     const blockers = capabilities
       .filter(
         (c) =>
           c.capability === need &&
-          c.status === 'BLOCKED' &&
+          !c.productionEnabled &&
           connections.some((connection) => connection.providerType === c.providerType),
       )
-      .map((c) => c.reason ?? `${c.providerType} is blocked`);
+      .flatMap(capabilityBlockers);
     return { resolved: false, reason: 'no_capable_provider', detail: blockers };
   }
 

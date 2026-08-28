@@ -386,8 +386,16 @@ export const providerCapabilities = pgTable(
     id: id(),
     providerType: text('provider_type').notNull(),
     capability: text('capability').notNull(),
-    status: text('status').notNull().default('BLOCKED'),
-    reason: text('reason'),
+    /* Three independent axes and one derived from them (0115). The derived
+     * column is GENERATED in the database, so it is read and never
+     * written. */
+    technicalSupport: boolean('technical_support').notNull().default(false),
+    technicalNote: text('technical_note'),
+    commercialApproval: boolean('commercial_approval').notNull().default(false),
+    commercialNote: text('commercial_note'),
+    complianceApproval: boolean('compliance_approval').notNull().default(false),
+    complianceNote: text('compliance_note'),
+    productionEnabled: boolean('production_enabled').notNull(),
     updatedAt: updatedAt(),
   },
   (t) => [uniqueIndex('provider_capabilities_ux').on(t.providerType, t.capability)],
