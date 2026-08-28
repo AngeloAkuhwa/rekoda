@@ -15,7 +15,8 @@
 import { randomBytes } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
-import { entitlementsRepo, sql, withBusiness, createDb, type Db } from '@rekoda/db';
+import { entitlementsRepo, sql, usageRepo, withBusiness, createDb, type Db } from '@rekoda/db';
+import { usagePeriod } from '@rekoda/core';
 import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
 
 const SECRET = 'api-keys-secret-at-least-32-characters';
@@ -77,10 +78,27 @@ async function onboard(phone: string, name: string) {
     )
   ).json() as { sessionToken: string; businessId: string };
 
+  await creditApiCapacity(created.businessId);
   return {
     businessId: created.businessId,
     auth: { authorization: `Bearer ${created.sessionToken}` },
   };
+}
+
+/**
+ * The capacity the API product sells, credited as bonus.
+ *
+ * Every plan sells ZERO of the API units (spec §27 puts the API in no
+ * plan), so an entitled business with no bonus is refused at the meter.
+ * That is the product, not a test detail: what a merchant buys with the
+ * API is capacity, and these lines are where this suite buys it.
+ */
+async function creditApiCapacity(businessId: string): Promise<void> {
+  const period = usagePeriod(new Date());
+  await withBusiness(db, businessId, async (tx) => {
+    await usageRepo.creditBonus(tx, businessId, period, 'API_REQUEST_UNITS', 1_000);
+    await usageRepo.creditBonus(tx, businessId, period, 'API_APPLICATIONS', 20);
+  });
 }
 
 async function grantApi(businessId: string): Promise<void> {

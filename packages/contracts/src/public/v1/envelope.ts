@@ -28,8 +28,17 @@ export const PUBLIC_ERROR_CODES = [
   'invalid_request',
   /** No such thing, or nothing this caller may see. The two are one answer. */
   'not_found',
-  /** The ceiling. `retryAfterSeconds` says when to come back. */
+  /** The per-key ceiling. `retryAfterSeconds` says when to come back. */
   'rate_limited',
+  /**
+   * The MONTH's capacity is spent, which is a different thing from the
+   * minute's: waiting will not help, buying will. Added in v1 rather than
+   * folded into `rate_limited` because a client that retries on one and
+   * alerts on the other needs to tell them apart. Additive, so a client
+   * written before it existed meets an unknown code rather than a changed
+   * meaning (`docs/public-api-versioning.md`).
+   */
+  'quota_exhausted',
   /** A version segment this API does not serve. */
   'unsupported_version',
   /** Ours, not yours. Carries nothing about what broke. */

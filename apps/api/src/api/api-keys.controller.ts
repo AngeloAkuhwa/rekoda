@@ -15,6 +15,7 @@
 import {
   BadRequestException,
   Body,
+  ForbiddenException,
   Controller,
   Get,
   HttpCode,
@@ -59,7 +60,16 @@ export class ApiKeysController {
     const parsed = createApiApplicationRequest.safeParse(body);
     if (!parsed.success) throw new BadRequestException('a name for the application');
 
-    return this.keys.registerApplication(request.auth!.businessId, parsed.data.name);
+    const created = await this.keys.registerApplication(request.auth!.businessId, parsed.data.name);
+    if ('reason' in created) {
+      /* The dashboard's own refusal, not the public envelope: this surface
+       * answers a session, and the merchant reading it needs the sentence
+       * they can act on rather than a machine code. */
+      throw new ForbiddenException(
+        'this business has no API applications left this month, buy more capacity first',
+      );
+    }
+    return created;
   }
 
   @Post('applications/:id/keys')

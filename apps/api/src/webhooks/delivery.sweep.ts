@@ -17,9 +17,11 @@ import { Logger } from '@nestjs/common';
 import { decryptFacet } from '@rekoda/core/vault';
 import { nextAttemptAt, signWebhook, WEBHOOK_SIGNATURE_HEADER } from '@rekoda/core/webhooks';
 import { publicApi } from '@rekoda/contracts';
-import { webhooksRepo, type Db } from '@rekoda/db';
+import { usagePeriod } from '@rekoda/core';
+import { usageRepo, webhooksRepo, withBusiness, type Db } from '@rekoda/db';
 import { redactForLog } from '@rekoda/core/privacy';
 import { WebhookSendFailed, type WebhookSender } from './sender.js';
+import { meterAllowance } from '../billing/plan-terms.js';
 
 const log = new Logger('WebhookDelivery');
 
@@ -33,6 +35,7 @@ export async function deliverWebhooks(deps: {
   worker: Db;
   vaultKey: string;
   sender: WebhookSender;
+  planCatalogueReads: boolean;
   batchSize?: number;
   now?: Date;
 }): Promise<SweepResult> {
@@ -56,6 +59,42 @@ export async function deliverWebhooks(deps: {
       }),
     );
 
+    /* The month's capacity, taken BEFORE the send (spec §27's
+     * WEBHOOK_DELIVERIES) and OUTSIDE the try, so the refund below can
+     * belong to sends that were attempted and this refusal can be its own
+     * path. Refused, it is an ordinary failed attempt rather than a lost
+     * fact: the backoff spreads six attempts over more than a day, so a
+     * merchant who buys capacity in that window still receives it, and one
+     * who does not sees why in their delivery log. Dropping the fact
+     * silently at a ceiling would be the platform deciding which of their
+     * own events they may hear about. */
+    const capacity = await withBusiness(deps.worker, delivery.businessId, async (tx) =>
+      usageRepo.consumeUnit(
+        tx,
+        delivery.businessId,
+        usagePeriod(now),
+        'WEBHOOK_DELIVERIES',
+        await meterAllowance(
+          { planCatalogueReads: deps.planCatalogueReads },
+          tx,
+          delivery.businessId,
+          await usageRepo.planFor(tx, delivery.businessId),
+          'WEBHOOK_DELIVERIES',
+        ),
+      ),
+    );
+    if (!capacity) {
+      const outcome = await webhooksRepo.markAttemptFailed(deps.worker, {
+        id: delivery.id,
+        status: null,
+        error: "the month's webhook capacity is spent",
+        nextAttemptAt: nextAttemptAt(delivery.attempts + 1, now),
+      });
+      if (outcome === 'dead') result.dead += 1;
+      else result.failed += 1;
+      continue;
+    }
+
     try {
       const secret = decryptFacet(delivery.encryptedSecret, deps.vaultKey, delivery.endpointId);
       const sent = await deps.sender.send({
@@ -70,6 +109,13 @@ export async function deliverWebhooks(deps: {
       await webhooksRepo.markDelivered(deps.worker, delivery.id, sent.status, now);
       result.sent += 1;
     } catch (error) {
+      /* The unit is given back, the same rule the chat capture keeps: the
+       * merchant's meter moves when the product worked, and a send that
+       * failed did not. Only reachable for an attempt that TOOK a unit —
+       * the capacity refusal above never enters this block. */
+      await withBusiness(deps.worker, delivery.businessId, (tx) =>
+        usageRepo.refundUnit(tx, delivery.businessId, usagePeriod(now), 'WEBHOOK_DELIVERIES'),
+      );
       const status = error instanceof WebhookSendFailed ? error.status : null;
       const reason = error instanceof Error ? error.message : 'delivery failed';
       const outcome = await webhooksRepo.markAttemptFailed(deps.worker, {

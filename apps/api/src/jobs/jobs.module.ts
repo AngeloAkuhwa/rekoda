@@ -587,7 +587,12 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
     this.webhookTimer = setInterval(() => {
       if (this.sendingWebhooks) return;
       this.sendingWebhooks = true;
-      deliverWebhooks({ worker: workerDb, vaultKey: this.config.vaultKey, sender: webhookSender })
+      deliverWebhooks({
+        worker: workerDb,
+        vaultKey: this.config.vaultKey,
+        sender: webhookSender,
+        planCatalogueReads: this.config.planCatalogueReads,
+      })
         .catch((error: unknown) => {
           this.log.warn(`webhook pass failed: ${redactForLog(describeFailure(error))}`);
         })

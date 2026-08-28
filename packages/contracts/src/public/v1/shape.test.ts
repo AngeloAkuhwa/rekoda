@@ -22,7 +22,7 @@ describe('the v1 wire shape', () => {
     expect(describe_(v1.publicErrorResponse)).toBe(
       'object{error:object{' +
         'code:enum(forbidden|internal|invalid_request|not_entitled|not_found|' +
-        'rate_limited|unauthenticated|unsupported_version),' +
+        'quota_exhausted|rate_limited|unauthenticated|unsupported_version),' +
         'details?:array(object{field:string,message:string}),' +
         'message:string,' +
         'retryAfterSeconds?:number' +

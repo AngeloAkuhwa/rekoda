@@ -31,6 +31,38 @@ The twelve with no plan allowance yet: `SERVICE_MESSAGE`,
 `API_REQUEST_UNITS`, `API_APPLICATIONS`, `WEBHOOK_DELIVERIES`. Each gets its
 plan figure in the PR that wires its consumer, not before.
 
+### The three API units keep a plan allowance of zero, on purpose (PR-113)
+
+PR-113 wired their consumers, and the figure it wrote is zero on every plan.
+That is canon rather than an omission: spec §27 says the public API "is a
+separate commercial entitlement … not automatically included with Chat,
+Integrate or Complete", so a plan that sold API capacity would contradict the
+sentence that defines the product.
+
+Capacity therefore arrives the way a pack's does, as `bonus` on the month it
+was sold for, credited when the API product is sold. The ceiling every API
+consume reads is `allowance + bonus`, so:
+
+- a business without the `REKODA_API` entitlement is refused at the gate,
+  before any meter is touched;
+- a business with the entitlement and no capacity is refused at the meter,
+  with the public code `quota_exhausted` — a 429 with no `Retry-After`,
+  because waiting will not help and buying will;
+- a business that bought capacity spends exactly what it bought.
+
+The three consume like this:
+
+| Unit | Taken | Given back |
+| --- | --- | --- |
+| `API_REQUEST_UNITS` | one per authenticated request, after the per-minute key ceiling so a flood cannot burn a month faster than that ceiling allows | never; the request was served |
+| `API_APPLICATIONS` | one per registration | never; the month it was created in is the month it was sold in |
+| `WEBHOOK_DELIVERIES` | one per delivery, before the send | on every attempt that delivered nothing, so a merchant's own outage is not billed six times |
+
+A delivery refused at the ceiling is an ordinary failed attempt rather than a
+lost fact: the backoff spreads six attempts over more than a day, so capacity
+bought inside that window still delivers, and the reason is readable in the
+merchant's delivery log.
+
 ### The five message categories are Rekoda's cost, not the merchant's
 
 The five WhatsApp categories are metered, just not against an allowance. They

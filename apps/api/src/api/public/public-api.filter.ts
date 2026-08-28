@@ -33,6 +33,19 @@ export class NotEntitledException extends HttpException {
   }
 }
 
+/**
+ * Marks a refusal as "the month's capacity is spent".
+ *
+ * 429 like the rate limit, because both mean "not now" to every proxy and
+ * client library in between, and the CODE is what separates them: one is
+ * worth retrying in a minute and the other is not worth retrying at all.
+ */
+export class QuotaExhaustedException extends HttpException {
+  constructor(message: string) {
+    super(message, HttpStatus.TOO_MANY_REQUESTS);
+  }
+}
+
 @Catch()
 export class PublicApiExceptionFilter implements ExceptionFilter {
   private readonly log = new Logger(PublicApiExceptionFilter.name);
@@ -54,6 +67,9 @@ export class PublicApiExceptionFilter implements ExceptionFilter {
     const code = codeFor(exception, status);
     const message = messageFor(payload, code);
 
+    /* `quota_exhausted` shares the 429 and NOT the Retry-After: telling a
+     * caller to come back in forty seconds when the month is spent would be
+     * an instruction to keep failing. */
     if (code === 'rate_limited') {
       const retryAfterSeconds = retryAfterFrom(payload);
       /* The header AND the field. A well-written client reads the header; a
@@ -70,6 +86,7 @@ export class PublicApiExceptionFilter implements ExceptionFilter {
 
 function codeFor(exception: HttpException, status: number): PublicErrorCode {
   if (exception instanceof NotEntitledException) return 'not_entitled';
+  if (exception instanceof QuotaExhaustedException) return 'quota_exhausted';
   switch (status) {
     case HttpStatus.UNAUTHORIZED:
       return 'unauthenticated';

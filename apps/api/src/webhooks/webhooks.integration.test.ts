@@ -14,7 +14,8 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { publicApi, type WebhookSecretResponse } from '@rekoda/contracts';
 import { verifyRekodaSignature, WEBHOOK_SIGNATURE_HEADER } from '@rekoda/core/webhooks';
-import { createDb, sql, webhooksRepo, withBusiness, type Db } from '@rekoda/db';
+import { createDb, sql, usageRepo, webhooksRepo, withBusiness, type Db } from '@rekoda/db';
+import { usagePeriod } from '@rekoda/core';
 import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
 import { buildOutboxDispatcher } from '../jobs/jobs.module.js';
 import { webhookFanOut } from './fan-out.js';
@@ -84,6 +85,20 @@ async function onboard(phone: string, name: string) {
       { 'x-rekoda-setup-token': verified.setupToken },
     )
   ).json() as { sessionToken: string; businessId: string };
+  /* Deliveries are metered (spec §27's WEBHOOK_DELIVERIES) and no plan
+   * sells them, so the capacity a merchant buys with the API product is
+   * credited here as bonus. A business without it is refused at the meter,
+   * which is its own test below. */
+  await withBusiness(db, created.businessId, (tx) =>
+    usageRepo.creditBonus(
+      tx,
+      created.businessId,
+      usagePeriod(new Date()),
+      'WEBHOOK_DELIVERIES',
+      100,
+    ),
+  );
+
   return {
     businessId: created.businessId,
     auth: { authorization: `Bearer ${created.sessionToken}` },
@@ -245,7 +260,13 @@ describe('delivery', () => {
 
     const sender = new RecordingSender();
     const now = new Date();
-    const result = await deliverWebhooks({ worker: workerDb, vaultKey: VAULT_KEY, sender, now });
+    const result = await deliverWebhooks({
+      worker: workerDb,
+      vaultKey: VAULT_KEY,
+      sender,
+      now,
+      planCatalogueReads: true,
+    });
     expect(result).toEqual({ sent: 1, failed: 0, dead: 0 });
 
     const attempt = sender.sent[0]!;
@@ -288,7 +309,13 @@ describe('delivery', () => {
     let last = { sent: 0, failed: 0, dead: 0 };
     let at = new Date();
     for (let attempt = 0; attempt < 6; attempt += 1) {
-      last = await deliverWebhooks({ worker: workerDb, vaultKey: VAULT_KEY, sender, now: at });
+      last = await deliverWebhooks({
+        worker: workerDb,
+        vaultKey: VAULT_KEY,
+        sender,
+        now: at,
+        planCatalogueReads: true,
+      });
       const rows = await withBusiness(db, shop.businessId, (tx) =>
         webhooksRepo.deliveriesFor(tx, shop.businessId),
       );
@@ -308,6 +335,7 @@ describe('delivery', () => {
     const after = await deliverWebhooks({
       worker: workerDb,
       vaultKey: VAULT_KEY,
+      planCatalogueReads: true,
       sender,
       now: new Date(at.getTime() + 86_400_000),
     });
@@ -325,14 +353,30 @@ describe('delivery', () => {
     await post(`/v1/webhooks/${created.endpoint.id}/disable`, {}, shop.auth);
 
     const sender = new RecordingSender();
-    expect(await deliverWebhooks({ worker: workerDb, vaultKey: VAULT_KEY, sender })).toEqual({
+    expect(
+      await deliverWebhooks({
+        worker: workerDb,
+        vaultKey: VAULT_KEY,
+        sender,
+        planCatalogueReads: true,
+      }),
+    ).toEqual({
       sent: 0,
       failed: 0,
       dead: 0,
     });
 
     await post(`/v1/webhooks/${created.endpoint.id}/enable`, {}, shop.auth);
-    expect((await deliverWebhooks({ worker: workerDb, vaultKey: VAULT_KEY, sender })).sent).toBe(1);
+    expect(
+      (
+        await deliverWebhooks({
+          worker: workerDb,
+          vaultKey: VAULT_KEY,
+          sender,
+          planCatalogueReads: true,
+        })
+      ).sent,
+    ).toBe(1);
   });
 
   it("counts an endpoint's failures and clears the count on a success", async () => {
@@ -344,6 +388,7 @@ describe('delivery', () => {
     await deliverWebhooks({
       worker: workerDb,
       vaultKey: VAULT_KEY,
+      planCatalogueReads: true,
       sender: new RecordingSender(() => new WebhookSendFailed('nope', 502)),
     });
     let listed = (await get('/v1/webhooks', shop.auth)).json() as {
@@ -358,6 +403,7 @@ describe('delivery', () => {
     await deliverWebhooks({
       worker: workerDb,
       vaultKey: VAULT_KEY,
+      planCatalogueReads: true,
       sender: new RecordingSender(),
       now: new Date(rows[0]!.nextAttemptAt.getTime() + 1_000),
     });
@@ -384,11 +430,109 @@ describe('delivery', () => {
 
     const sender = new RecordingSender();
     const now = new Date();
-    await deliverWebhooks({ worker: workerDb, vaultKey: VAULT_KEY, sender, now });
+    await deliverWebhooks({
+      worker: workerDb,
+      vaultKey: VAULT_KEY,
+      sender,
+      now,
+      planCatalogueReads: true,
+    });
     const attempt = sender.sent[0]!;
     const header = attempt.headers[WEBHOOK_SIGNATURE_HEADER];
 
     expect(verifyRekodaSignature(attempt.body, header, rotated.signingSecret, now)).toBe(true);
     expect(verifyRekodaSignature(attempt.body, header, created.signingSecret, now)).toBe(false);
+  });
+});
+
+describe('the delivery meter', () => {
+  /** Spend the endpoint's whole month, leaving nothing for the next fact. */
+  async function drain(businessId: string): Promise<void> {
+    await withBusiness(db, businessId, (tx) =>
+      usageRepo.consumeUnit(
+        tx,
+        businessId,
+        usagePeriod(new Date()),
+        'WEBHOOK_DELIVERIES',
+        100,
+        100,
+      ),
+    );
+  }
+
+  it('counts a delivery that arrived (spec §27)', async () => {
+    const shop = await onboard('+2348193000030', 'Counted Co');
+    await post('/v1/webhooks', { url: 'https://metered.test/hook' }, shop.auth);
+    await emit(shop.businessId, 'sale.recorded', {});
+    await fanOutOnce();
+
+    await deliverWebhooks({
+      worker: workerDb,
+      vaultKey: VAULT_KEY,
+      sender: new RecordingSender(),
+      planCatalogueReads: true,
+    });
+
+    const rows = await withBusiness(db, shop.businessId, (tx) =>
+      usageRepo.usageFor(tx, shop.businessId, usagePeriod(new Date())),
+    );
+    expect(rows.find((row) => row.unit === 'WEBHOOK_DELIVERIES')?.used).toBe(1);
+  });
+
+  it('gives the unit back when the endpoint refused, so an outage is not billed', async () => {
+    const shop = await onboard('+2348193000031', 'Refunded Co');
+    await post('/v1/webhooks', { url: 'https://refunded.test/hook' }, shop.auth);
+    await emit(shop.businessId, 'sale.recorded', {});
+    await fanOutOnce();
+
+    await deliverWebhooks({
+      worker: workerDb,
+      vaultKey: VAULT_KEY,
+      planCatalogueReads: true,
+      sender: new RecordingSender(() => new WebhookSendFailed('endpoint answered 500', 500)),
+    });
+
+    const rows = await withBusiness(db, shop.businessId, (tx) =>
+      usageRepo.usageFor(tx, shop.businessId, usagePeriod(new Date())),
+    );
+    expect(rows.find((row) => row.unit === 'WEBHOOK_DELIVERIES')?.used).toBe(0);
+  });
+
+  it('holds the fact rather than dropping it when the month is spent', async () => {
+    const shop = await onboard('+2348193000032', 'Spent Co');
+    await post('/v1/webhooks', { url: 'https://spent.test/hook' }, shop.auth);
+    await emit(shop.businessId, 'sale.recorded', {});
+    await fanOutOnce();
+    await drain(shop.businessId);
+
+    const sender = new RecordingSender();
+    const refused = await deliverWebhooks({
+      worker: workerDb,
+      vaultKey: VAULT_KEY,
+      sender,
+      planCatalogueReads: true,
+    });
+    expect(refused).toEqual({ sent: 0, failed: 1, dead: 0 });
+    expect(sender.sent).toHaveLength(0);
+
+    const log = await withBusiness(db, shop.businessId, (tx) =>
+      webhooksRepo.deliveriesFor(tx, shop.businessId),
+    );
+    /* Still pending, with the reason readable: the merchant who buys
+     * capacity inside the backoff still receives the fact. */
+    expect(log[0]).toMatchObject({ status: 'pending', attempts: 1 });
+    expect(log[0]!.lastError).toContain('capacity');
+
+    await withBusiness(db, shop.businessId, (tx) =>
+      usageRepo.creditBonus(tx, shop.businessId, usagePeriod(new Date()), 'WEBHOOK_DELIVERIES', 10),
+    );
+    const after = await deliverWebhooks({
+      worker: workerDb,
+      vaultKey: VAULT_KEY,
+      sender,
+      planCatalogueReads: true,
+      now: new Date(log[0]!.nextAttemptAt.getTime() + 1_000),
+    });
+    expect(after.sent).toBe(1);
   });
 });

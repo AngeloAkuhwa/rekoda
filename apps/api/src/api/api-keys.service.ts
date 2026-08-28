@@ -6,11 +6,13 @@
  * this file holds neither. What it does hold is the ORDER the checks happen
  * in, which is the security property worth reading twice:
  *
- *   shape → resolve → validity → entitlement → rate limit
+ *   shape → resolve → validity → entitlement → rate limit → month's meter
  *
  * Cheapest and least revealing first. A malformed bearer never reaches the
  * database; an unknown token never reaches the entitlement read; a key
- * belonging to a business without REKODA_API never spends rate-limit room.
+ * belonging to a business without REKODA_API never spends rate-limit room;
+ * and the MONTH's capacity is taken last, behind the per-minute ceiling, so
+ * a flood cannot burn a merchant's month faster than that ceiling allows.
  */
 import { randomBytes } from 'node:crypto';
 import { Inject, Injectable } from '@nestjs/common';
@@ -25,9 +27,20 @@ import {
   validateApiKey,
 } from '@rekoda/core/api-keys';
 import type { RandomSource } from '@rekoda/core/identity';
-import { apiKeysRepo, entitlementsRepo, identity, withBusiness, type Db } from '@rekoda/db';
+import { usagePeriod } from '@rekoda/core';
+import {
+  apiKeysRepo,
+  entitlementsRepo,
+  identity,
+  usageRepo,
+  withBusiness,
+  type Db,
+  type TenantDb,
+} from '@rekoda/db';
 import type { ApiApplicationView, ApiKeyView, CreateApiKeyResponse } from '@rekoda/contracts';
+import { CONFIG, type ApiConfig } from '../config.js';
 import { DB } from '../db/db.module.js';
+import { meterAllowance } from '../billing/plan-terms.js';
 
 /** Why a presented key was refused. The caller sees far less than this. */
 export type ApiAuthFailure =
@@ -37,7 +50,8 @@ export type ApiAuthFailure =
   | { reason: 'expired' }
   | { reason: 'application_disabled' }
   | { reason: 'not_entitled' }
-  | { reason: 'rate_limited'; retryAfterSeconds: number };
+  | { reason: 'rate_limited'; retryAfterSeconds: number }
+  | { reason: 'quota_exhausted' };
 
 /** Who the caller is, once the whole chain has said yes. */
 export interface ApiCaller {
@@ -61,7 +75,10 @@ export type MintRefusal =
 export class ApiKeysService {
   private readonly random: RandomSource = (n) => randomBytes(n);
 
-  constructor(@Inject(DB) private readonly db: Db) {}
+  constructor(
+    @Inject(DB) private readonly db: Db,
+    @Inject(CONFIG) private readonly config: ApiConfig,
+  ) {}
 
   /**
    * Authenticate a bearer token presented to the public API.
@@ -109,6 +126,23 @@ export class ApiKeysService {
         } as const;
       }
 
+      /* The month's capacity, last (spec §27: API usage is metered).
+       *
+       * The plan allowance is ZERO on every plan, and that is canon rather
+       * than an omission: §27 puts the API in no plan, so capacity is what
+       * the API product credited as bonus for this month. `consumeUnit`
+       * reads `allowance + bonus`, so a merchant who bought the product
+       * spends what they bought and one who has not is refused here rather
+       * than at some later, more expensive point. */
+      const granted = await usageRepo.consumeUnit(
+        tx,
+        key.businessId,
+        usagePeriod(now),
+        'API_REQUEST_UNITS',
+        await this.apiAllowance(tx, key.businessId, 'API_REQUEST_UNITS'),
+      );
+      if (!granted) return { ok: false, failure: { reason: 'quota_exhausted' } } as const;
+
       /* Housekeeping rides the request that earned it: the closed windows
        * for this one key, and `last_used_at` at most once a minute. Both are
        * bounded by the key already in hand, so neither becomes a sweep. */
@@ -130,11 +164,49 @@ export class ApiKeysService {
     });
   }
 
-  async registerApplication(businessId: string, name: string): Promise<ApiApplicationView> {
-    const application = await withBusiness(this.db, businessId, (tx) =>
-      apiKeysRepo.createApplication(tx, { businessId, name }),
-    );
-    return viewApplication(application);
+  /**
+   * Register an application, if the merchant has room for another.
+   *
+   * `API_APPLICATIONS` is a count of things that EXIST rather than a tally
+   * of events, so the unit is spent when one is registered and is not given
+   * back: the month it was created in is the month it was sold in, which is
+   * how every other exhaustible unit behaves.
+   */
+  async registerApplication(
+    businessId: string,
+    name: string,
+    now = new Date(),
+  ): Promise<ApiApplicationView | { reason: 'quota_exhausted' }> {
+    return withBusiness(this.db, businessId, async (tx) => {
+      const granted = await usageRepo.consumeUnit(
+        tx,
+        businessId,
+        usagePeriod(now),
+        'API_APPLICATIONS',
+        await this.apiAllowance(tx, businessId, 'API_APPLICATIONS'),
+      );
+      if (!granted) return { reason: 'quota_exhausted' } as const;
+
+      return viewApplication(await apiKeysRepo.createApplication(tx, { businessId, name }));
+    });
+  }
+
+  /**
+   * What this business may spend of an API unit this month.
+   *
+   * Through the same catalogue seam every other meter reads, so a
+   * grandfathered merchant is judged by the terms they were sold. Today
+   * every plan sells zero of these three, which §27 requires; the figure
+   * that matters is the bonus the API product credits.
+   */
+  private apiAllowance(
+    tx: TenantDb,
+    businessId: string,
+    unit: 'API_REQUEST_UNITS' | 'API_APPLICATIONS',
+  ): Promise<number> {
+    return usageRepo
+      .planFor(tx, businessId)
+      .then((plan) => meterAllowance(this.config, tx, businessId, plan, unit));
   }
 
   async listApplications(

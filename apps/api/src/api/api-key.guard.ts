@@ -21,7 +21,7 @@ import {
 } from '@nestjs/common';
 import type { CanActivate, ExecutionContext } from '@nestjs/common';
 import { ApiKeysService, type ApiCaller } from './api-keys.service.js';
-import { NotEntitledException } from './public/public-api.filter.js';
+import { NotEntitledException, QuotaExhaustedException } from './public/public-api.filter.js';
 
 export interface ApiKeyedRequest {
   headers: Record<string, string | string[] | undefined>;
@@ -51,6 +51,11 @@ export class ApiKeyGuard implements CanActivate {
          * reading their integration's logs needs to know the answer is
          * "buy the API", not "your key is broken". */
         throw new NotEntitledException('this business does not have the Rekoda API entitlement');
+      case 'quota_exhausted':
+        /* Named for the same reason `not_entitled` is: the caller holds a
+         * working key, waiting will not help, and the answer they need is
+         * "buy more capacity" rather than "try again". */
+        throw new QuotaExhaustedException('this business has spent its API requests for the month');
       case 'rate_limited':
         throw new HttpException(
           {

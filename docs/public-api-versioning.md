@@ -66,6 +66,18 @@ branch on; `message` is prose for a human reading a log and may be reworded
 at any time. `rate_limited` also carries `retryAfterSeconds`, mirrored on the
 standard `Retry-After` header.
 
+Two codes share the `429` status and mean different things, which is why
+they are two codes:
+
+- `rate_limited` is the per-key **minute** ceiling. Retry after the wait it
+  names.
+- `quota_exhausted` is the **month's** capacity, and carries no
+  `Retry-After` at all. Waiting will not help; buying more capacity will.
+
+`quota_exhausted` was added to v1 in PR-113, which is what an additive
+change looks like here: a client written before it existed meets a code it
+does not know rather than a code whose meaning moved.
+
 The mapping lives in `apps/api/src/api/public/public-api.filter.ts`, and the
 per-IP limiter in `main.ts` answers in the same envelope, so a client never
 meets two different bodies for the same refusal.
