@@ -813,6 +813,13 @@
       "when": 1787412507000,
       "tag": "0115_provider_readiness_axes",
       "breakpoints": true
+    },
+    {
+      "idx": 116,
+      "version": "7",
+      "when": 1787412567000,
+      "tag": "0116_manifest_report_fingerprints",
+      "breakpoints": true
     }
   ]
 }

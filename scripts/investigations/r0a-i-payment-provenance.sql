@@ -21,8 +21,30 @@
 -- proof survives: the merchant was shown a preview naming the amount and the
 -- invoice, and answered it.
 --
--- Nothing here writes. Run it against production before any R0A-ii migration:
+-- Nothing here writes, and the database is told so twice: the whole report
+-- runs inside ONE read-only REPEATABLE READ transaction (PR-120). That is
+-- not decoration.
+--
+--   READ ONLY means the server refuses a write, so "read-only" stops being
+--   a property of this file that a later edit could quietly remove.
+--
+--   REPEATABLE READ means all five sections see ONE SNAPSHOT. Without it
+--   each statement takes its own, a payment booked between section 1 and
+--   section 5 appears in one and not the other, and the reviewer
+--   reconciling the counts finds a discrepancy that is real, unexplainable
+--   and not a bug. A report whose own sections disagree cannot be approved,
+--   and this report exists to be approved.
+--
+-- Run it with the wrapper, which writes the header (when, where, which
+-- snapshot, which version of this file) that makes the output citable:
+--   scripts/investigations/run-r0a-i.sh > /secure/path/r0a-i-<date>.txt
+--
+-- Or directly, accepting that you then have output with no provenance of
+-- its own:
 --   psql "$DATABASE_URL" -f scripts/investigations/r0a-i-payment-provenance.sql
+--
+-- THE OUTPUT DOES NOT GO IN GIT. It is a production record containing
+-- business identifiers and amounts; it belongs in private audit storage.
 --
 -- The ladder, in the order the CASE applies it:
 --   provider intent + provider reference        -> PROVIDER_VERIFIED
@@ -31,12 +53,30 @@
 --   an authenticated dashboard entry            -> MERCHANT_ATTESTED
 --   anything else                               -> LEGACY_PROVENANCE_UNKNOWN
 --
--- The ladder below is repeated verbatim in each of the three statements. A
--- WITH clause binds only to its own statement, and a temp view would make a
--- read-only script write to the temp catalogue and stop it running on a
--- standby. Change one copy and you must change all three.
+-- The ladder below is repeated verbatim in each of the four statements that
+-- classify. A WITH clause binds only to its own statement, and a temp view
+-- would make a read-only script write to the temp catalogue and stop it
+-- running on a standby. Change one copy and you must change all four - and
+-- section 6's copy especially, because its whole value is that it hashes
+-- exactly the population the other sections counted.
 \pset footer off
+-- Stop on the first error rather than carrying on and producing a report
+-- that is missing a section somebody will not notice is missing.
+\set ON_ERROR_STOP on
 
+BEGIN;
+SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY;
+
+\echo '== 0. the snapshot this whole report was taken from =='
+SELECT current_database()                              AS database,
+       current_user                                    AS read_as,
+       now()                                           AS snapshot_at,
+       txid_current_if_assigned()                      AS txid,
+       current_setting('transaction_isolation')        AS isolation,
+       current_setting('transaction_read_only')        AS read_only,
+       (SELECT max(tag) FROM rekoda_migrations)        AS schema_at;
+
+\echo ''
 \echo '== 1. provenance distribution =='
 WITH classified AS (
   SELECT
@@ -433,3 +473,62 @@ SELECT count(*)                                     AS all_payments,
                           AND (payment_intent_id IS NULL
                             OR provider_ref IS NULL)) AS flag_set_without_anchors
   FROM payments;
+
+\echo ''
+\echo '== 6. THE APPROVAL CHECKSUM =='
+\echo '   This is the number the R0A-ii migration must be able to reproduce.'
+\echo '   Counts matching is not the same as the POPULATION matching: two sets'
+\echo '   of 412 payments are equally numerous and need not be the same 412.'
+\echo '   Goes on migration_manifests.item_set_checksum when the backfill runs;'
+\echo '   a run whose recomputed checksum differs is operating on rows nobody'
+\echo '   approved and must stop.'
+WITH classified AS (
+  SELECT
+    p.id,
+    /* The ladder, the FOURTH verbatim copy. The header above says why it
+     * is copied rather than shared, and says that changing one means
+     * changing all of them: this section's whole value is that it hashes
+     * exactly the population the sections above counted. */
+    CASE
+      WHEN p.payment_intent_id IS NOT NULL
+       AND p.provider_ref IS NOT NULL              THEN 'PROVIDER_VERIFIED'
+      WHEN p.source_id IS NOT NULL AND EXISTS (
+        SELECT 1
+          FROM ledger_transactions lt
+          JOIN bank_line_matches   blm ON blm.transaction_id = lt.id
+         WHERE lt.business_id = p.business_id
+           AND lt.source_type = p.source_type
+           AND lt.source_id   = p.source_id
+      )                                            THEN 'BANK_FEED_MATCH'
+      WHEN p.source_type = 'chat'
+       AND d.state = 'confirmed'
+       AND d.intent IN ('RecordPayment', 'RecordSale')
+                                                   THEN 'MERCHANT_ATTESTED'
+      WHEN p.source_type = 'dashboard' AND EXISTS (
+        SELECT 1 FROM audit_events a
+         WHERE a.business_id = p.business_id
+           AND a.entity      = 'payment'
+           AND a.entity_id   = p.id::text
+           AND a.actor LIKE 'user:%'
+      )                                            THEN 'MERCHANT_ATTESTED'
+      ELSE                                              'LEGACY_PROVENANCE_UNKNOWN'
+    END AS provenance
+  FROM payments p
+  LEFT JOIN command_drafts d
+    ON p.source_type = 'chat'
+   AND d.business_id = p.business_id
+   AND d.id::text    = p.source_id
+)
+SELECT provenance,
+       count(*) AS rows,
+       /* Ordered inside the aggregate, so the same population always hashes
+        * to the same value however the planner feels about it today. */
+       encode(
+         sha256(coalesce(string_agg(id::text, ',' ORDER BY id), '')::bytea),
+         'hex'
+       ) AS population_sha256
+  FROM classified
+ GROUP BY provenance
+ ORDER BY provenance;
+
+COMMIT;
