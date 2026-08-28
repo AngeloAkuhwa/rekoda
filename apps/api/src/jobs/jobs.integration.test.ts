@@ -338,7 +338,7 @@ describe('the chat surface enforces roles', () => {
     phone: string,
     role: 'accountant' | 'delegate',
   ): Promise<void> {
-    await identity.inviteMember(appDb, businessId, phone, role, 3);
+    await identity.inviteMember(appDb, businessId, phone, role, 3, 'user:test-owner');
   }
 
   async function saysOverChat(businessId: string, phone: string, text: string): Promise<string> {

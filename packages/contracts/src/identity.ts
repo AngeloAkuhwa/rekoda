@@ -166,6 +166,12 @@ export const inviteMemberRequest = z.object({
 });
 export type InviteMemberRequest = z.infer<typeof inviteMemberRequest>;
 
+/** Change a member's role (D1, PR-094). The owner's role is not assignable. */
+export const changeMemberRoleRequest = z.object({
+  role: invitableRole,
+});
+export type ChangeMemberRoleRequest = z.infer<typeof changeMemberRoleRequest>;
+
 export const teamMember = z.object({
   userId: z.string().uuid(),
   /** E.164. The only identifier an owner has for somebody they invited. */
