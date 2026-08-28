@@ -89,6 +89,7 @@ export async function truncateAll(urls: Urls): Promise<void> {
         api_key_rate_windows, api_keys, api_applications,
         conversation_messages, conversations,
         shops,
+        portability_exports,
         business_add_ons,
         business_entitlements,
         memberships, business_connections, products,

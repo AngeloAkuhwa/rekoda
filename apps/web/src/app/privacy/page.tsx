@@ -182,12 +182,20 @@ export default function PrivacyPage() {
           id: 'rights',
           heading: 'Your rights',
           body: (
-            <p>
-              You can ask for a copy of your data, ask us to correct it, or ask us to delete it, see{' '}
-              <a href="/data-deletion">Delete my data</a>. You can withdraw consent at any time by
-              replying <strong>STOP</strong> on WhatsApp, which ends the messages without destroying
-              the books you may still need.
-            </p>
+            <>
+              <p>
+                You do not have to ask for a copy of your data. Sign in and download it: Settings
+                has one file with every record your business holds. It is your data, so it never
+                counts against your monthly downloads, and it keeps working if your subscription
+                lapses.
+              </p>
+              <p>
+                You can also ask us to correct your data, or ask us to delete it, see{' '}
+                <a href="/data-deletion">Delete my data</a>. You can withdraw consent at any time by
+                replying <strong>STOP</strong> on WhatsApp, which ends the messages without
+                destroying the books you may still need.
+              </p>
+            </>
           ),
         },
         {

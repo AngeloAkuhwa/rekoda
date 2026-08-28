@@ -30,7 +30,7 @@ pricing page must not promise.
 | Unit              | What counts                                                     | Trial | Chat | Integrate | Complete |
 | ----------------- | --------------------------------------------------------------- | ----- | ---- | --------- | -------- |
 | `SERVICE_MESSAGE` | A free-form reply to a customer outside the 24-hour window       | 250   | 0    | 5,000     | 5,000    |
-| `REPORT_EXPORTS`  | A statement PDF or workbook GENERATED. Data portability is never counted (PR-118) | 10 | 50 | 100 | 200 |
+| `REPORT_EXPORTS`  | One unit per file PRODUCED: the statements PDF, the workbook, and each CSV. Reading the same figures on a page costs nothing, and data portability is never counted (below) | 10 | 50 | 100 | 200 |
 
 Chat sells no `SERVICE_MESSAGE` by decision, not omission: a Chat merchant
 talks to their customers from their own phone, and the plan sells them the
@@ -140,6 +140,28 @@ A delivery refused at the ceiling is an ordinary failed attempt rather than a
 lost fact: the backoff spreads six attempts over more than a day, so capacity
 bought inside that window still delivers, and the reason is readable in the
 merchant's delivery log.
+
+### Data portability is a right, and rights are not metered (PR-118)
+
+`GET /v1/reports/portability.json` hands a business every record it holds,
+in one file, and it is **never metered, on any plan, ever**. `expired` sells
+zero `REPORT_EXPORTS`, so every export above refuses a lapsed business,
+which is exactly the moment leaving with your own records matters most. A
+merchant who cannot get their data out is held hostage by a billing state.
+
+The two limits on it are about the estate, not the merchant: one request in
+flight per business (a partial unique index, because two simultaneous
+requests would both read "none in flight"), and ten minutes between
+requests. Both refusals say when to come back. Every request leaves a row in
+`portability_exports` whether or not it succeeded, because "who took a
+complete copy of these books, and when" is a question a security review
+asks.
+
+It carries no raw customer PII: no name, phone or email rides an export,
+here or anywhere else, because the web tier holds no vault key and a bulk
+decrypt route is exactly what §27's public API refused to become. Contact
+details are released one record at a time, on the record, through the
+privacy gateway.
 
 ### The five message categories are Rekoda's cost, not the merchant's
 

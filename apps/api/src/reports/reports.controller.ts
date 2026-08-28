@@ -13,6 +13,7 @@ import {
   Controller,
   Get,
   HttpCode,
+  HttpException,
   Inject,
   Post,
   Param,
@@ -133,6 +134,7 @@ import {
   issueRepo,
   jobsRepo,
   ordersRepo,
+  portabilityRepo,
   openingRepo,
   stocktakeRepo,
   closeRepo,
@@ -192,6 +194,16 @@ const XLSX_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.s
 const EXPORT_ROWS = 10_000;
 
 /**
+ * The gap between one merchant's data-portability exports (PR-118).
+ *
+ * Ten minutes is not a rationing device: nobody legitimately needs a
+ * complete copy of their books twice inside ten minutes, and the whole
+ * estate reads for one business when they ask. A merchant who genuinely
+ * wants two waits, and is told exactly how long.
+ */
+const PORTABILITY_GAP_SECONDS = 600;
+
+/**
  * A page number from a query string. One-based because merchants count from
  * one; anything unparseable is page one, because a mangled link should show
  * the register, not an error.
@@ -226,6 +238,36 @@ export class ReportsController {
     private readonly gateway: PrivacyGateway,
     private readonly commandBus: CommandBus,
   ) {}
+
+  /**
+   * Take one REPORT_EXPORTS unit, or say why not (PR-118).
+   *
+   * Every route that PRODUCES A FILE goes through here, and nothing else
+   * does. An export is a produced artefact with a real cost, which is what
+   * the 28 August owner ruling recognised; reading the same figures on a
+   * page is not, and never passes through this method.
+   *
+   * The refusal is a 429 rather than a 403, and says what to do: the
+   * merchant is not forbidden, they have used this month's exports, and
+   * either next month or a bigger plan fixes it. `expired` sells zero, so
+   * a lapsed business is refused here and sent to the portability export
+   * below, which is the route that must never be metered.
+   */
+  private async takeExport(businessId: string): Promise<void> {
+    const period = usagePeriod(new Date());
+    const granted = await withBusiness(this.db, businessId, async (tx) => {
+      const plan = await usageRepo.planFor(tx, businessId);
+      const allowance = await meterAllowance(this.config, tx, businessId, plan, 'REPORT_EXPORTS');
+      return usageRepo.consumeUnit(tx, businessId, period, 'REPORT_EXPORTS', allowance);
+    });
+    if (!granted) {
+      throw new HttpException(
+        "You have used this month's downloads. Your books are still here to read, " +
+          'and Settings has a full data export that never counts against this.',
+        429,
+      );
+    }
+  }
 
   @Get('overview')
   async overview(@Req() request: AuthedRequest): Promise<ReportsOverviewResponse> {
@@ -376,9 +418,12 @@ export class ReportsController {
    * file the chat assistant has been pointing at the dashboard INSTEAD of,
    * because it did not exist.
    *
-   * Not metered. It costs compute and no provider a naira, and locking a
-   * merchant out of their own accounts to protect a report allowance would
-   * be the wrong trade in both directions.
+   * Metered, one `REPORT_EXPORTS` unit, since the owner priced the unit on
+   * 28 August 2026 (PR-117). A generated file is a produced artefact with a
+   * real cost, which is what changed; what did not change is that nobody
+   * should be locked out of their own accounts, which is why the allowance
+   * is generous, why READING the same figures on a page costs nothing, and
+   * why the portability export below is never counted at all.
    */
   @Get('statements.pdf')
   async statementsPdf(
@@ -388,6 +433,7 @@ export class ReportsController {
   ): Promise<void> {
     const period = requirePeriod(periodParam);
     const auth = request.auth!;
+    await this.takeExport(auth.businessId);
     const [sums, schedule, revenue] = await Promise.all([
       this.sumsFor(auth.businessId, period),
       this.expenseScheduleFor(auth.businessId, period),
@@ -437,6 +483,7 @@ export class ReportsController {
   ): Promise<void> {
     const period = requirePeriod(periodParam);
     const auth = request.auth!;
+    await this.takeExport(auth.businessId);
     const [sums, schedule, revenue] = await Promise.all([
       this.sumsFor(auth.businessId, period),
       this.expenseScheduleFor(auth.businessId, period),
@@ -1898,6 +1945,7 @@ export class ReportsController {
   @Get('invoices.csv')
   async invoicesCsv(@Req() request: AuthedRequest, @Res() reply: CsvReply): Promise<void> {
     const businessId = request.auth!.businessId;
+    await this.takeExport(businessId);
     const now = new Date();
     const list = await withBusiness(this.db, businessId, (tx) =>
       reportsRepo.invoicesFor(tx, businessId, EXPORT_ROWS),
@@ -1928,10 +1976,7 @@ export class ReportsController {
    * closing balance — one derivation, two presentations. Numbers and
    * figures only: no name rides an export any more than a page.
    *
-   * REPORT_EXPORTS is not consumed here yet, deliberately: the unit is
-   * sold on no plan until the pricing decision assigns its figure, and 0
-   * means zero — metering today would remove a working capability rather
-   * than price one. The gate arrives with BL2's allowances-as-data.
+   * One `REPORT_EXPORTS` unit, like every other produced file (PR-118).
    */
   @Get('customers/:customerId/statement.csv')
   async customerStatementCsv(
@@ -1940,6 +1985,7 @@ export class ReportsController {
     @Res() reply: CsvReply,
   ): Promise<void> {
     const businessId = request.auth!.businessId;
+    await this.takeExport(businessId);
     const statement = await withBusiness(this.db, businessId, (tx) =>
       partyStatementsRepo.customerStatementFor(tx, businessId, customerId),
     );
@@ -1958,6 +2004,7 @@ export class ReportsController {
     @Res() reply: CsvReply,
   ): Promise<void> {
     const businessId = request.auth!.businessId;
+    await this.takeExport(businessId);
     const statement = await withBusiness(this.db, businessId, (tx) =>
       partyStatementsRepo.supplierStatementFor(tx, businessId, supplierId),
     );
@@ -1971,6 +2018,7 @@ export class ReportsController {
   @Get('expenses.csv')
   async expensesCsv(@Req() request: AuthedRequest, @Res() reply: CsvReply): Promise<void> {
     const businessId = request.auth!.businessId;
+    await this.takeExport(businessId);
     const list = await withBusiness(this.db, businessId, (tx) =>
       spendRepo.spendFor(tx, businessId, EXPORT_ROWS),
     );
@@ -2000,6 +2048,7 @@ export class ReportsController {
   @Get('receipts.csv')
   async receiptsCsv(@Req() request: AuthedRequest, @Res() reply: CsvReply): Promise<void> {
     const businessId = request.auth!.businessId;
+    await this.takeExport(businessId);
     const list = await withBusiness(this.db, businessId, (tx) =>
       reportsRepo.receiptsFor(tx, businessId, EXPORT_ROWS),
     );
@@ -2027,6 +2076,7 @@ export class ReportsController {
   @Get('audit.csv')
   async auditCsv(@Req() request: AuthedRequest, @Res() reply: CsvReply): Promise<void> {
     const businessId = request.auth!.businessId;
+    await this.takeExport(businessId);
     const { list, members } = await withBusiness(this.db, businessId, async (tx) => ({
       list: await reportsRepo.auditFor(tx, businessId, EXPORT_ROWS),
       members: await identity.membersOf(tx, businessId),
@@ -2058,6 +2108,7 @@ export class ReportsController {
   @Get('stock.csv')
   async stockCsv(@Req() request: AuthedRequest, @Res() reply: CsvReply): Promise<void> {
     const businessId = request.auth!.businessId;
+    await this.takeExport(businessId);
     const list = await withBusiness(this.db, businessId, (tx) =>
       stockRepo.stockList(tx, businessId, EXPORT_ROWS),
     );
@@ -2074,6 +2125,100 @@ export class ReportsController {
       ]),
     );
     sendCsv(reply, `rekoda-stock-${csvDate(new Date())}.csv`, csv);
+  }
+
+  /**
+   * Take your books out of Rekoda (PR-118, migration 0114).
+   *
+   * **This route is never metered, on any plan, ever.** The exports above
+   * are a product feature and are priced like one; this is a different
+   * thing wearing similar clothes. Leaving with your own records is a
+   * right, and the moment it matters most is exactly the moment a metered
+   * export would refuse: a lapsed subscription, where `REPORT_EXPORTS`
+   * sells zero. A merchant who cannot get their data out is a merchant
+   * held hostage by a billing state, which is not a business Rekoda is in.
+   *
+   * Owner only, because this is the whole business in one file, and the
+   * owner is who a portability right belongs to.
+   *
+   * Two limits, and both are about the estate rather than the merchant: one
+   * request in flight per business, and a gap between requests. Neither
+   * refuses the merchant anything, they only stop a loop; the refusal says
+   * exactly when to come back.
+   *
+   * What it contains: every record the dashboard shows, in the same shape
+   * the CSVs already carry, plus the four statements. What it does NOT
+   * contain is raw customer PII: no name, phone or email rides an export,
+   * here or anywhere else, because the web tier holds no vault key and a
+   * bulk decrypt route is precisely the thing PR-111 refused to build. The
+   * documented path for a merchant's own customer contact details is the
+   * privacy gateway, one record at a time, on the record's own page.
+   */
+  @Get('portability.json')
+  @Roles('owner')
+  async portability(@Req() request: AuthedRequest, @Res() reply: CsvReply): Promise<void> {
+    const auth = request.auth!;
+    const businessId = auth.businessId;
+    const now = new Date();
+
+    const started = await withBusiness(this.db, businessId, (tx) =>
+      portabilityRepo.begin(tx, businessId, `user:${auth.userId}`, PORTABILITY_GAP_SECONDS, now),
+    );
+    if ('refused' in started) {
+      throw new HttpException(
+        started.refused === 'in_flight'
+          ? 'A data export is already running for this business. Wait for it to finish.'
+          : `Your last data export was very recent. Try again after ${started.retryAt.toISOString()}.`,
+        429,
+      );
+    }
+
+    let body: string;
+    try {
+      const bundle = await withBusiness(this.db, businessId, async (tx) => ({
+        invoices: (await reportsRepo.invoicesFor(tx, businessId, EXPORT_ROWS)).rows,
+        receipts: (await reportsRepo.receiptsFor(tx, businessId, EXPORT_ROWS)).rows,
+        spend: (await spendRepo.spendFor(tx, businessId, EXPORT_ROWS)).rows,
+        stock: (await stockRepo.stockList(tx, businessId, EXPORT_ROWS)).rows,
+        audit: (await reportsRepo.auditFor(tx, businessId, EXPORT_ROWS)).rows,
+      }));
+      body = JSON.stringify(
+        {
+          format: 'rekoda.portability.v1',
+          generatedAt: now.toISOString(),
+          business: { id: businessId, name: auth.businessName },
+          /* Said in the file itself, because the file outlives this page
+           * and whoever opens it in two years will want to know. */
+          notes: [
+            'Every record this business holds, as Rekoda holds it.',
+            'Amounts are integer kobo. Divide by 100 for naira.',
+            'Customer and supplier contact details are not included: they are ' +
+              'released one record at a time, on the record, and never in bulk.',
+          ],
+          ...bundle,
+        },
+        null,
+        2,
+      );
+    } catch (error) {
+      /* The slot is freed even when the read fails, or one bad export
+       * would lock a merchant out of their own data until somebody
+       * noticed. */
+      await withBusiness(this.db, businessId, (tx) =>
+        portabilityRepo.abandon(tx, businessId, started.id),
+      );
+      throw error;
+    }
+
+    await withBusiness(this.db, businessId, (tx) =>
+      portabilityRepo.complete(tx, businessId, started.id, Buffer.byteLength(body), new Date()),
+    );
+
+    reply
+      .header('content-type', 'application/json; charset=utf-8')
+      .header('content-disposition', `attachment; filename="rekoda-data-${csvDate(now)}.json"`)
+      .header('cache-control', 'no-store')
+      .send(body);
   }
 
   /**
