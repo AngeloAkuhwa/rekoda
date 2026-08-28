@@ -1010,7 +1010,7 @@ describe('the away assistant (spec Appendix D; W4, PR-090)', () => {
     expect(stubSender.connectionTexts).toHaveLength(0);
   });
 
-  it('the daily ceiling holds: past it, the assistant stays quiet', async () => {
+  it('past the ceiling the assistant hands off rather than going silent', async () => {
     await seedAssistantMerchant('PN-AWAY-3', { limit: 1 });
 
     await ask('PN-AWAY-3', 'wamid.AWAY.3A', 'wig price?');
@@ -1018,17 +1018,50 @@ describe('the away assistant (spec Appendix D; W4, PR-090)', () => {
     await ask('PN-AWAY-3', 'wamid.AWAY.3B', 'and the wig again?');
     expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
 
+    /* The answer, then the handoff: beyond the merchant's own line a
+     * human takes over, and the customer is TOLD so (PR-091). */
+    expect(stubSender.connectionTexts).toHaveLength(2);
+    expect(stubSender.connectionTexts[0]!.text).toContain('wig');
+    expect(stubSender.connectionTexts[1]!.text).toContain('reply to you personally');
+  });
+
+  it('hands off what the shelf cannot answer, and says it is doing so, once (PR-091)', async () => {
+    await seedAssistantMerchant('PN-AWAY-4');
+
+    await ask('PN-AWAY-4', 'wamid.AWAY.4A', 'when do you open tomorrow?');
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+
+    /* The customer hears a person will reply — no guess, no filler — on
+     * the merchant's own number. */
+    expect(stubSender.connectionTexts).toHaveLength(1);
+    expect(stubSender.connectionTexts[0]).toMatchObject({
+      to: `+${CUSTOMER_WA}`,
+      phoneNumberId: 'PN-AWAY-4',
+      text: 'Thanks for your message. Someone from the shop will reply to you personally.',
+    });
+    /* And the merchant hears a customer is waiting, in their own thread,
+     * with no customer identity riding the notice (F.3). */
+    const notice = stubSender.sent.find((m) => m.text.includes('could not answer'));
+    expect(notice?.to).toBe('+2348030002240');
+    expect(notice?.text).toContain('waiting on your business WhatsApp');
+    expect(notice?.text).not.toMatch(/234909/);
+
+    /* A second unanswerable message the same day repeats NOTHING: the
+     * promise was made, and a machine restating it is a machine stalling. */
+    await ask('PN-AWAY-4', 'wamid.AWAY.4B', 'hello? are you there?');
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
     expect(stubSender.connectionTexts).toHaveLength(1);
   });
 
-  it('declines what the shelf cannot answer, leaving the handoff to PR-091', async () => {
-    await seedAssistantMerchant('PN-AWAY-4');
+  it('an assistant nobody enabled hands off nothing either', async () => {
+    await seedAssistantMerchant('PN-AWAY-5', { enabled: false });
 
-    await ask('PN-AWAY-4', 'wamid.AWAY.4', 'when do you open tomorrow?');
+    await ask('PN-AWAY-5', 'wamid.AWAY.5', 'when do you open tomorrow?');
     expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
 
-    /* No guess, no filler: what this path cannot answer it does not answer. */
+    /* The merchant handles their own WhatsApp; Rekoda adds no noise. */
     expect(stubSender.connectionTexts).toHaveLength(0);
+    expect(stubSender.sent.find((m) => m.text.includes('could not answer'))).toBeUndefined();
   });
 });
 

@@ -575,6 +575,32 @@ export function catalogueOrderNoLink(invoiceNumber: string, amountK: number): Re
   );
 }
 
+/* ── W4: the away assistant's handoff ────────────────────────────────────── */
+
+/**
+ * The handoff, said out loud (spec §5.2; W4, PR-091): "it hands off,
+ * every time, and says it is doing so." Sent to the CUSTOMER on the
+ * merchant's own number when the assistant cannot answer — once per
+ * customer per day, because a promise repeated after every message reads
+ * as a machine stalling. No Rekoda branding: to the customer the sender
+ * IS the business, and the promise is the merchant's to keep.
+ */
+export function assistantHandoff(): Reply {
+  return reply('Thanks for your message. Someone from the shop will reply to you personally.');
+}
+
+/**
+ * The merchant's side of the same handoff: a customer is waiting on a
+ * human. Deliberately nameless — the customer's identity never rides a
+ * Rekoda notification (F.3); the merchant's own WhatsApp shows them who.
+ */
+export function assistantHandoffNotice(): Reply {
+  return reply(
+    'A customer asked something I could not answer. Their message is waiting ' +
+      'on your business WhatsApp. I told them someone will reply personally.',
+  );
+}
+
 /** The latest invoice settled between the ask and the mint. Scoped to that
  * invoice only: another may still be open, and "who owes me" is the answer. */
 export function paymentLinkSettled(invoiceNumber: string): Reply {

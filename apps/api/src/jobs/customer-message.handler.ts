@@ -15,7 +15,7 @@
  * never placed in a payload — F.3's list is absolute.
  */
 import { Logger } from '@nestjs/common';
-import { composeShelfAnswer, lagosDay, shelfMatches, type ShelfItem } from '@rekoda/core';
+import { composeShelfAnswer, lagosDay, replies, shelfMatches, type ShelfItem } from '@rekoda/core';
 import { normaliseParticipant, InvalidPhoneError } from '@rekoda/core/identity';
 import { redactForLog } from '@rekoda/core/privacy';
 import { participantIndexFor, PARTICIPANT_INDEX_KEY_VERSION } from '@rekoda/core/vault';
@@ -24,11 +24,12 @@ import {
   catalogueRepo,
   conversationsRepo,
   events,
+  identity,
   ordersRepo,
   stockRepo,
   wabaRepo,
 } from '@rekoda/db';
-import type { TenantDb } from '@rekoda/db';
+import type { Db, TenantDb } from '@rekoda/db';
 import type { ApiConfig } from '../config.js';
 import type { CommandBus } from '../commands/command-bus.service.js';
 import {
@@ -38,6 +39,7 @@ import {
 } from '../commands/order-commands.js';
 import type { PrivacyGateway } from '../privacy/gateway.service.js';
 import { openPayload } from '../privacy/payload-vault.js';
+import type { ReplySender } from '../replies/reply.service.js';
 import type { CustomerTexts } from './payment-link.handler.js';
 import { describeFailure, type JobContext, type JobHandler } from './runner.js';
 
@@ -50,6 +52,10 @@ export interface CustomerMessageDeps {
   commandPlaceOrder: boolean;
   /** The metered door into the customer's thread (PR-061; W4, PR-090). */
   customerTexts: CustomerTexts;
+  /** The merchant's own thread, for the handoff notice (W4, PR-091). */
+  replySender: ReplySender;
+  /** For the owner's WhatsApp number, a question that lives above the tenant. */
+  db: Db;
 }
 
 export function customerMessageHandler(deps: CustomerMessageDeps): JobHandler {
@@ -161,13 +167,13 @@ export function customerMessageHandler(deps: CustomerMessageDeps): JobHandler {
       return;
     }
 
-    /* THE AWAY ASSISTANT (spec Appendix D; W4, PR-090): a text the shelf
-     * can answer gets an answer, when the merchant enabled it and the
-     * day's ceiling for this customer has room. Deterministic on purpose
-     * — no model in the customer channel — and it composes TEXT only:
-     * the assistant holds no command surface at all, which is Appendix
-     * D's "never HIGH_RISK" in its strongest form. What it cannot answer
-     * it leaves alone; the handoff is PR-091's work. */
+    /* THE AWAY ASSISTANT (spec Appendix D; W4, PR-090/091): a text the
+     * shelf can answer gets an answer, when the merchant enabled it and
+     * the day's ceiling for this customer has room. Deterministic on
+     * purpose — no model in the customer channel — and it composes TEXT
+     * only: the assistant holds no command surface at all, which is
+     * Appendix D's "never HIGH_RISK" in its strongest form. Everything it
+     * cannot answer HANDS OFF, and says it is doing so (PR-091). */
     if (inbound.messageType === 'text' && (inbound.text ?? '').trim().length > 0) {
       const note = await maybeAssistantAnswer(
         tx,
@@ -181,8 +187,67 @@ export function customerMessageHandler(deps: CustomerMessageDeps): JobHandler {
       return;
     }
 
-    await events.markProcessed(tx, eventId, null, businessId);
+    /* A voice note, an image, an empty text: the assistant cannot answer
+     * any of these, and "cannot answer" is exactly what the handoff is
+     * for — every time, not just when the words looked like a question. */
+    const settings = await wabaRepo.assistantSettingsFor(tx, businessId);
+    const note = settings.enabled
+      ? await handoffToHuman(tx, deps, businessId, participant, blindIndex)
+      : null;
+    await events.markProcessed(tx, eventId, note, businessId);
   };
+}
+
+/**
+ * The handoff (spec §5.2; W4, PR-091): "it hands off, every time, and
+ * says it is doing so." Two messages, one moment: the customer hears a
+ * person will reply, on the merchant's own number; the merchant hears a
+ * customer is waiting, in their own thread. Once per customer per day —
+ * a promise repeated after every message reads as a machine stalling —
+ * enforced by the same atomic claim the answer ceiling uses, under its
+ * own key with a ceiling of one.
+ */
+async function handoffToHuman(
+  tx: TenantDb,
+  deps: CustomerMessageDeps,
+  businessId: string,
+  participant: string,
+  customerHash: string,
+): Promise<string | null> {
+  const log = new Logger('CustomerMessageJob');
+
+  const claimed = await wabaRepo.claimAssistantReply(tx, {
+    businessId,
+    customerHash: `handoff:${customerHash}`,
+    day: lagosDay(new Date()),
+    limit: 1,
+  });
+  if (!claimed) return 'handoff already said today';
+
+  try {
+    const sent = await deps.customerTexts.sendCustomerText(
+      businessId,
+      { to: participant, text: replies.assistantHandoff().text },
+      tx,
+    );
+    if (sent.outcome !== 'sent') {
+      log.log(`handoff not delivered: ${sent.outcome}`);
+      return `handoff not delivered: ${sent.outcome}`;
+    }
+  } catch (error: unknown) {
+    log.warn(`handoff send failed: ${redactForLog(describeFailure(error))}`);
+    return 'handoff send failed';
+  }
+
+  /* The merchant's side. STOP is honoured — this is a message they did
+   * not ask for by name — and a merchant who opted out still has the
+   * customer's message waiting in their own WhatsApp, which is where the
+   * notice was pointing anyway. */
+  const to = await identity.ownerPhoneFor(deps.db, businessId);
+  if (to && !(await identity.optedOutAt(deps.db, to))) {
+    await deps.replySender.send(tx, { businessId, to, reply: replies.assistantHandoffNotice() });
+  }
+  return 'handed off to a human';
 }
 
 /**
@@ -212,7 +277,10 @@ async function maybeAssistantAnswer(
   const matched = shelfMatches(text, shelf.rows).filter(
     (item): item is typeof item & { unitPriceK: number } => item.unitPriceK !== null,
   );
-  if (matched.length === 0) return null;
+  if (matched.length === 0) {
+    /* Not a question the shelf can answer: a human's, said out loud. */
+    return handoffToHuman(tx, deps, businessId, participant, customerHash);
+  }
 
   const held = await stockRepo.onHandByIds(
     tx,
@@ -228,7 +296,7 @@ async function maybeAssistantAnswer(
     };
   });
   const answer = composeShelfAnswer(items);
-  if (!answer) return null;
+  if (!answer) return handoffToHuman(tx, deps, businessId, participant, customerHash);
 
   const claimed = await wabaRepo.claimAssistantReply(tx, {
     businessId,
@@ -237,8 +305,10 @@ async function maybeAssistantAnswer(
     limit: settings.dailyReplyLimit,
   });
   if (!claimed) {
-    log.log('assistant stayed quiet: the daily ceiling for this customer is reached');
-    return 'assistant limit reached';
+    /* Beyond the configured limits IS "the assistant cannot": the ceiling
+     * was the merchant's own line, and past it a human takes over. */
+    log.log('assistant ceiling reached: handing off');
+    return handoffToHuman(tx, deps, businessId, participant, customerHash);
   }
 
   try {

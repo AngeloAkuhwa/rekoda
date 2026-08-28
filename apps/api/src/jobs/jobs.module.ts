@@ -92,6 +92,8 @@ export function buildRunner(
       commandBus: deps.commandBus,
       commandPlaceOrder: deps.config.commandPlaceOrder,
       customerTexts,
+      replySender: deps.replySender,
+      db: appDb,
     }),
   );
   runner.register(

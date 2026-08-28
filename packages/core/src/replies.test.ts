@@ -99,6 +99,8 @@ const ALL: Record<string, readonly replies.Reply[]> = {
   ],
   catalogueOrderDelivered: [replies.catalogueOrderDelivered('INV-2026-000041', NAIRA_MILLIONS)],
   catalogueOrderNoLink: [replies.catalogueOrderNoLink('INV-2026-000041', NAIRA_MILLIONS)],
+  assistantHandoff: [replies.assistantHandoff()],
+  assistantHandoffNotice: [replies.assistantHandoffNotice()],
   paymentLinkSettled: [replies.paymentLinkSettled('INV-2026-000041')],
   paymentLinkUnavailable: [replies.paymentLinkUnavailable()],
   paymentLinkNothingOwed: [replies.paymentLinkNothingOwed()],
@@ -244,6 +246,8 @@ describe('every reply', () => {
     replies.dashboardUnavailable(),
     replies.paymentLinkUnavailable(),
     replies.paymentLinkNeedsConnection(),
+    replies.assistantHandoff(),
+    replies.assistantHandoffNotice(),
   ];
 
   it('never claims a record was saved when none was', () => {
