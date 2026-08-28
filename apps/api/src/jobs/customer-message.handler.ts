@@ -15,10 +15,19 @@
  * never placed in a payload — F.3's list is absolute.
  */
 import { Logger } from '@nestjs/common';
+import { composeShelfAnswer, lagosDay, shelfMatches, type ShelfItem } from '@rekoda/core';
 import { normaliseParticipant, InvalidPhoneError } from '@rekoda/core/identity';
+import { redactForLog } from '@rekoda/core/privacy';
 import { participantIndexFor, PARTICIPANT_INDEX_KEY_VERSION } from '@rekoda/core/vault';
 import { extractInboundEvents, metaWebhookBody, type InboundEvent } from '@rekoda/contracts';
-import { catalogueRepo, conversationsRepo, events, ordersRepo, wabaRepo } from '@rekoda/db';
+import {
+  catalogueRepo,
+  conversationsRepo,
+  events,
+  ordersRepo,
+  stockRepo,
+  wabaRepo,
+} from '@rekoda/db';
 import type { TenantDb } from '@rekoda/db';
 import type { ApiConfig } from '../config.js';
 import type { CommandBus } from '../commands/command-bus.service.js';
@@ -29,7 +38,8 @@ import {
 } from '../commands/order-commands.js';
 import type { PrivacyGateway } from '../privacy/gateway.service.js';
 import { openPayload } from '../privacy/payload-vault.js';
-import type { JobContext, JobHandler } from './runner.js';
+import type { CustomerTexts } from './payment-link.handler.js';
+import { describeFailure, type JobContext, type JobHandler } from './runner.js';
 
 export interface CustomerMessageDeps {
   config: ApiConfig;
@@ -38,6 +48,8 @@ export interface CustomerMessageDeps {
   commandBus: CommandBus;
   /** The A1 rollout flag for `PlaceOrder`. */
   commandPlaceOrder: boolean;
+  /** The metered door into the customer's thread (PR-061; W4, PR-090). */
+  customerTexts: CustomerTexts;
 }
 
 export function customerMessageHandler(deps: CustomerMessageDeps): JobHandler {
@@ -149,8 +161,103 @@ export function customerMessageHandler(deps: CustomerMessageDeps): JobHandler {
       return;
     }
 
+    /* THE AWAY ASSISTANT (spec Appendix D; W4, PR-090): a text the shelf
+     * can answer gets an answer, when the merchant enabled it and the
+     * day's ceiling for this customer has room. Deterministic on purpose
+     * — no model in the customer channel — and it composes TEXT only:
+     * the assistant holds no command surface at all, which is Appendix
+     * D's "never HIGH_RISK" in its strongest form. What it cannot answer
+     * it leaves alone; the handoff is PR-091's work. */
+    if (inbound.messageType === 'text' && (inbound.text ?? '').trim().length > 0) {
+      const note = await maybeAssistantAnswer(
+        tx,
+        deps,
+        businessId,
+        participant,
+        blindIndex,
+        inbound.text ?? '',
+      );
+      await events.markProcessed(tx, eventId, note, businessId);
+      return;
+    }
+
     await events.markProcessed(tx, eventId, null, businessId);
   };
+}
+
+/**
+ * The assistant's one move: price and availability off the merchant's own
+ * rows, inside the window the customer's message just opened, against the
+ * configured ceiling. The claim happens BEFORE the send because the limit
+ * is the invariant: a slot occasionally spent on a send the door refused
+ * is honest; a ceiling the assistant can slip past is not.
+ */
+async function maybeAssistantAnswer(
+  tx: TenantDb,
+  deps: CustomerMessageDeps,
+  businessId: string,
+  participant: string,
+  customerHash: string,
+  text: string,
+): Promise<string | null> {
+  const log = new Logger('CustomerMessageJob');
+
+  const settings = await wabaRepo.assistantSettingsFor(tx, businessId);
+  if (!settings.enabled) return null;
+
+  const shelf = await catalogueRepo.sellableCatalogueFor(tx, businessId, {
+    page: 1,
+    pageSize: 500,
+  });
+  const matched = shelfMatches(text, shelf.rows).filter(
+    (item): item is typeof item & { unitPriceK: number } => item.unitPriceK !== null,
+  );
+  if (matched.length === 0) return null;
+
+  const held = await stockRepo.onHandByIds(
+    tx,
+    businessId,
+    matched.map((item) => item.id),
+  );
+  const items: ShelfItem[] = matched.map((item) => {
+    const counted = held.get(item.id);
+    return {
+      name: item.name,
+      unitPriceK: item.unitPriceK,
+      onHand: counted && counted.counted ? counted.onHand : null,
+    };
+  });
+  const answer = composeShelfAnswer(items);
+  if (!answer) return null;
+
+  const claimed = await wabaRepo.claimAssistantReply(tx, {
+    businessId,
+    customerHash,
+    day: lagosDay(new Date()),
+    limit: settings.dailyReplyLimit,
+  });
+  if (!claimed) {
+    log.log('assistant stayed quiet: the daily ceiling for this customer is reached');
+    return 'assistant limit reached';
+  }
+
+  try {
+    const sent = await deps.customerTexts.sendCustomerText(
+      businessId,
+      { to: participant, text: answer },
+      tx,
+    );
+    if (sent.outcome !== 'sent') {
+      log.log(`assistant answer not delivered: ${sent.outcome}`);
+      return `assistant answer not delivered: ${sent.outcome}`;
+    }
+  } catch (error: unknown) {
+    /* The conversation record stands either way: a failed automated reply
+     * must never roll back the customer's own message. */
+    log.warn(`assistant answer failed: ${redactForLog(describeFailure(error))}`);
+    return 'assistant answer failed';
+  }
+  return 'assistant answered';
 }
 
 /**

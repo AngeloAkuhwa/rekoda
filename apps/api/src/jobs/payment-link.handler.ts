@@ -12,11 +12,14 @@ import type {
 } from '../channels/waba-templates.service.js';
 import { describeFailure, type JobContext, type JobHandler } from './runner.js';
 
-/** The one door PR-089 needs from the WABA send-time machinery (PR-061). */
+/** The one door PR-089/PR-090 need from the WABA send-time machinery (PR-061). */
 export interface CustomerTexts {
   sendCustomerText(
     businessId: string,
     input: SendCustomerTextInput,
+    /** A caller mid-transaction passes its tx so its own uncommitted
+     * window touch is visible; the send then commits with its work. */
+    outerTx?: TenantDb,
   ): Promise<SendCustomerTextOutcome>;
 }
 

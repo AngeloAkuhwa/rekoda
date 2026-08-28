@@ -729,6 +729,13 @@
       "when": 1787411787000,
       "tag": "0103_waba_catalogue",
       "breakpoints": true
+    },
+    {
+      "idx": 104,
+      "version": "7",
+      "when": 1787411847000,
+      "tag": "0104_away_assistant",
+      "breakpoints": true
     }
   ]
 }

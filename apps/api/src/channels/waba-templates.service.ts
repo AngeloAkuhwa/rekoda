@@ -37,6 +37,7 @@ import {
   wabaRepo,
   withBusiness,
   type Db,
+  type TenantDb,
 } from '@rekoda/db';
 import { CONFIG, type ApiConfig } from '../config.js';
 import { DB } from '../db/db.module.js';
@@ -233,12 +234,17 @@ export class WabaTemplateService {
   async sendCustomerText(
     businessId: string,
     input: SendCustomerTextInput,
+    outerTx?: TenantDb,
   ): Promise<SendCustomerTextOutcome> {
     if (!this.config.connectionKey) {
       return { outcome: 'unavailable', reason: 'connection_key_missing' };
     }
 
-    return withBusiness(this.db, businessId, async (tx): Promise<SendCustomerTextOutcome> => {
+    /* A caller mid-transaction (the customer-message job, PR-090) passes
+     * its own tx so the window its OWN uncommitted touch opened is
+     * visible; everything this method writes then commits or rolls back
+     * with the caller's work. Standalone callers keep the managed shape. */
+    const work = async (tx: TenantDb): Promise<SendCustomerTextOutcome> => {
       if (await entitlementsRepo.requireEntitlement(tx, businessId, 'REKODA_INTEGRATE')) {
         return { outcome: 'not_entitled' };
       }
@@ -340,6 +346,7 @@ export class WabaTemplateService {
         }
         throw error;
       }
-    });
+    };
+    return outerTx ? work(outerTx) : withBusiness(this.db, businessId, work);
   }
 }

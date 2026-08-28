@@ -7,7 +7,16 @@
  * code branch.
  */
 import { sql } from 'drizzle-orm';
-import { bigint, index, pgTable, text, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
+import {
+  bigint,
+  index,
+  integer,
+  pgTable,
+  text,
+  timestamp,
+  uniqueIndex,
+  uuid,
+} from 'drizzle-orm/pg-core';
 import { businesses } from './tenancy.js';
 
 const id = () =>
@@ -123,4 +132,40 @@ export const wabaServiceWindows = pgTable(
   (t) => [
     uniqueIndex('waba_windows_customer_ux').on(t.businessId, t.wabaConnectionId, t.customerHash),
   ],
+);
+
+/**
+ * The away assistant's configured limits (spec Appendix D; W4, PR-090).
+ * OFF by default; the daily ceiling is per customer per Lagos day, and 0
+ * means zero replies, never unlimited.
+ */
+export const awayAssistantSettings = pgTable(
+  'away_assistant_settings',
+  {
+    id: id(),
+    businessId: uuid('business_id')
+      .notNull()
+      .references(() => businesses.id),
+    enabled: integer('enabled').notNull().default(0),
+    dailyReplyLimit: integer('daily_reply_limit').notNull().default(5),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('away_assistant_settings_ux').on(t.businessId)],
+);
+
+/** The meter the ceiling is enforced against: one row per customer per day. */
+export const awayAssistantReplies = pgTable(
+  'away_assistant_replies',
+  {
+    id: id(),
+    businessId: uuid('business_id')
+      .notNull()
+      .references(() => businesses.id),
+    /** The blind index the thread routes by, never a raw number (F.3/F.4). */
+    customerHash: text('customer_hash').notNull(),
+    day: text('day').notNull(),
+    replies: integer('replies').notNull().default(0),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('away_assistant_replies_ux').on(t.businessId, t.customerHash, t.day)],
 );

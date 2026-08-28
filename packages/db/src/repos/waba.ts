@@ -8,6 +8,8 @@
 import { and, eq, sql } from 'drizzle-orm';
 import type { Db, TenantDb } from '../client.js';
 import {
+  awayAssistantReplies,
+  awayAssistantSettings,
   wabaCatalogueItems,
   wabaConnections,
   wabaServiceWindows,
@@ -591,4 +593,105 @@ export async function catalogueSyncStateFor(
     pendingCount: pending.length,
     lastSyncedAt: row?.last ? new Date(row.last) : null,
   };
+}
+
+/* ── the away assistant's configured limits (spec Appendix D; W4, PR-090) ── */
+
+export interface AwayAssistantSettings {
+  enabled: boolean;
+  /** Automated replies per customer per Lagos day. 0 means zero. */
+  dailyReplyLimit: number;
+}
+
+const ASSISTANT_DEFAULTS: AwayAssistantSettings = { enabled: false, dailyReplyLimit: 5 };
+
+/**
+ * The merchant's own switch and ceiling. A business with no row has the
+ * defaults — OFF — because an assistant nobody enabled answers nobody.
+ */
+export async function assistantSettingsFor(
+  tx: TenantDb,
+  businessId: string,
+): Promise<AwayAssistantSettings> {
+  const rows = await tx
+    .select({
+      enabled: awayAssistantSettings.enabled,
+      dailyReplyLimit: awayAssistantSettings.dailyReplyLimit,
+    })
+    .from(awayAssistantSettings)
+    .where(eq(awayAssistantSettings.businessId, businessId))
+    .limit(1);
+  const row = rows[0];
+  if (!row) return ASSISTANT_DEFAULTS;
+  return { enabled: row.enabled === 1, dailyReplyLimit: row.dailyReplyLimit };
+}
+
+/** The merchant flips the switch or moves the ceiling. Upsert: one row per business. */
+export async function setAssistantSettings(
+  tx: TenantDb,
+  businessId: string,
+  input: AwayAssistantSettings,
+): Promise<AwayAssistantSettings> {
+  if (!Number.isInteger(input.dailyReplyLimit) || input.dailyReplyLimit < 0) {
+    throw new RangeError('setAssistantSettings: dailyReplyLimit must be a non-negative integer');
+  }
+  await tx
+    .insert(awayAssistantSettings)
+    .values({
+      businessId,
+      enabled: input.enabled ? 1 : 0,
+      dailyReplyLimit: input.dailyReplyLimit,
+    })
+    .onConflictDoUpdate({
+      target: [awayAssistantSettings.businessId],
+      set: {
+        enabled: input.enabled ? 1 : 0,
+        dailyReplyLimit: input.dailyReplyLimit,
+        updatedAt: sql`now()`,
+      },
+    });
+  return input;
+}
+
+/**
+ * Claim one automated reply against the day's ceiling, atomically.
+ *
+ * The increment and the comparison happen in ONE statement, so two
+ * messages racing cannot both slip under the limit. A refusal writes
+ * nothing: the meter records replies that were actually permitted, and 0
+ * means zero — the very first claim under a nought ceiling refuses.
+ */
+export async function claimAssistantReply(
+  tx: TenantDb,
+  input: { businessId: string; customerHash: string; day: string; limit: number },
+): Promise<boolean> {
+  if (input.limit <= 0) return false;
+  const rows = await tx.execute<{ id: string }>(sql`
+    INSERT INTO away_assistant_replies (business_id, customer_hash, day, replies)
+    VALUES (${input.businessId}::uuid, ${input.customerHash}, ${input.day}, 1)
+    ON CONFLICT (business_id, customer_hash, day)
+    DO UPDATE SET replies = away_assistant_replies.replies + 1, updated_at = now()
+      WHERE away_assistant_replies.replies < ${input.limit}
+    RETURNING id
+  `);
+  return [...rows].length === 1;
+}
+
+/** What the meter holds for one customer on one day. */
+export async function assistantRepliesUsed(
+  tx: TenantDb,
+  input: { businessId: string; customerHash: string; day: string },
+): Promise<number> {
+  const rows = await tx
+    .select({ replies: awayAssistantReplies.replies })
+    .from(awayAssistantReplies)
+    .where(
+      and(
+        eq(awayAssistantReplies.businessId, input.businessId),
+        eq(awayAssistantReplies.customerHash, input.customerHash),
+        eq(awayAssistantReplies.day, input.day),
+      ),
+    )
+    .limit(1);
+  return rows[0]?.replies ?? 0;
 }

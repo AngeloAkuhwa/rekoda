@@ -314,3 +314,149 @@ describe('templates and the service window (§24, §4.2)', () => {
     ).toBe(false);
   });
 });
+
+describe('the away assistant limits (spec Appendix D; W4, PR-090)', () => {
+  it('a business nobody configured has the assistant OFF', async () => {
+    const businessId = await seedBusiness();
+    const settings = await withBusiness(db, businessId, (tx) =>
+      wabaRepo.assistantSettingsFor(tx, businessId),
+    );
+    expect(settings).toEqual({ enabled: false, dailyReplyLimit: 5 });
+  });
+
+  it('the merchant flips the switch and moves the ceiling; a re-set updates the one row', async () => {
+    const businessId = await seedBusiness();
+    await withBusiness(db, businessId, (tx) =>
+      wabaRepo.setAssistantSettings(tx, businessId, { enabled: true, dailyReplyLimit: 2 }),
+    );
+    expect(
+      await withBusiness(db, businessId, (tx) => wabaRepo.assistantSettingsFor(tx, businessId)),
+    ).toEqual({ enabled: true, dailyReplyLimit: 2 });
+
+    await withBusiness(db, businessId, (tx) =>
+      wabaRepo.setAssistantSettings(tx, businessId, { enabled: false, dailyReplyLimit: 0 }),
+    );
+    expect(
+      await withBusiness(db, businessId, (tx) => wabaRepo.assistantSettingsFor(tx, businessId)),
+    ).toEqual({ enabled: false, dailyReplyLimit: 0 });
+    const rows = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ n: string }>(
+        sql`SELECT COUNT(*) AS n FROM away_assistant_settings WHERE business_id = ${businessId}::uuid`,
+      ),
+    );
+    expect([...rows][0]!.n).toBe('1');
+  });
+
+  it('refuses a negative or fractional ceiling', async () => {
+    const businessId = await seedBusiness();
+    await expect(
+      withBusiness(db, businessId, (tx) =>
+        wabaRepo.setAssistantSettings(tx, businessId, { enabled: true, dailyReplyLimit: -1 }),
+      ),
+    ).rejects.toThrow(RangeError);
+    await expect(
+      withBusiness(db, businessId, (tx) =>
+        wabaRepo.setAssistantSettings(tx, businessId, { enabled: true, dailyReplyLimit: 1.5 }),
+      ),
+    ).rejects.toThrow(RangeError);
+  });
+
+  it('claims up to the ceiling and refuses the reply past it', async () => {
+    const businessId = await seedBusiness();
+    const claim = () =>
+      withBusiness(db, businessId, (tx) =>
+        wabaRepo.claimAssistantReply(tx, {
+          businessId,
+          customerHash: 'hash-ada',
+          day: '2026-08-27',
+          limit: 2,
+        }),
+      );
+    expect(await claim()).toBe(true);
+    expect(await claim()).toBe(true);
+    expect(await claim()).toBe(false);
+    expect(
+      await withBusiness(db, businessId, (tx) =>
+        wabaRepo.assistantRepliesUsed(tx, {
+          businessId,
+          customerHash: 'hash-ada',
+          day: '2026-08-27',
+        }),
+      ),
+    ).toBe(2);
+  });
+
+  it('0 means zero: the very first claim refuses, and the meter records nothing', async () => {
+    const businessId = await seedBusiness();
+    expect(
+      await withBusiness(db, businessId, (tx) =>
+        wabaRepo.claimAssistantReply(tx, {
+          businessId,
+          customerHash: 'hash-ada',
+          day: '2026-08-27',
+          limit: 0,
+        }),
+      ),
+    ).toBe(false);
+    expect(
+      await withBusiness(db, businessId, (tx) =>
+        wabaRepo.assistantRepliesUsed(tx, {
+          businessId,
+          customerHash: 'hash-ada',
+          day: '2026-08-27',
+        }),
+      ),
+    ).toBe(0);
+  });
+
+  it('the ceiling is per customer per day: a new day and a new customer both start fresh', async () => {
+    const businessId = await seedBusiness();
+    const claim = (customerHash: string, day: string) =>
+      withBusiness(db, businessId, (tx) =>
+        wabaRepo.claimAssistantReply(tx, { businessId, customerHash, day, limit: 1 }),
+      );
+    expect(await claim('hash-ada', '2026-08-27')).toBe(true);
+    expect(await claim('hash-ada', '2026-08-27')).toBe(false);
+    expect(await claim('hash-ada', '2026-08-28')).toBe(true);
+    expect(await claim('hash-ngozi', '2026-08-27')).toBe(true);
+  });
+
+  it('nobody may DELETE the meter: it is evidence of what an automation sent', async () => {
+    const businessId = await seedBusiness();
+    await withBusiness(db, businessId, (tx) =>
+      wabaRepo.claimAssistantReply(tx, {
+        businessId,
+        customerHash: 'hash-ada',
+        day: '2026-08-27',
+        limit: 5,
+      }),
+    );
+    /* Drizzle wraps the driver error; the Postgres code is the durable fact. */
+    const refused = await withBusiness(db, businessId, (tx) =>
+      tx.execute(sql`DELETE FROM away_assistant_replies WHERE business_id = ${businessId}::uuid`),
+    ).then(
+      () => ({}),
+      (error: unknown) => {
+        for (let e: unknown = error, depth = 0; e && depth < 5; depth++) {
+          const candidate = e as { code?: string; message?: string; cause?: unknown };
+          if (candidate.code === '42501') return candidate;
+          e = candidate.cause;
+        }
+        return {};
+      },
+    );
+    expect(refused).toMatchObject({
+      code: '42501',
+      message: expect.stringContaining('permission denied'),
+    });
+    expect(
+      await withBusiness(db, businessId, (tx) =>
+        wabaRepo.assistantRepliesUsed(tx, {
+          businessId,
+          customerHash: 'hash-ada',
+          day: '2026-08-27',
+        }),
+      ),
+    ).toBe(1);
+  });
+});

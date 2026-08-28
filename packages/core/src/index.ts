@@ -27,6 +27,7 @@ export * from './csv.js';
 export * from './xlsx.js';
 export * from './periods.js';
 export * from './recurring.js';
+export * from './assistant.js';
 export * from './images.js';
 export * from './orders.js';
 export * from './expenses.js';

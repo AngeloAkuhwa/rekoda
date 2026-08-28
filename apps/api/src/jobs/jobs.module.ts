@@ -79,6 +79,10 @@ export function buildRunner(
   options?: { idleMs?: number; concurrency?: number },
 ): JobRunner {
   const runner = new JobRunner(workerDb, appDb, options);
+  /* Constructed here rather than injected: buildRunner already holds every
+   * dependency the service needs, and threading it through RunnerDeps would
+   * make each test re-declare what this line derives. */
+  const customerTexts = new WabaTemplateService(appDb, deps.config, deps.sender, deps.gateway);
   runner.register(JobKind.InboundMessage, inboundMessageHandler({ ...deps, db: appDb }));
   runner.register(
     JobKind.CustomerMessage,
@@ -87,6 +91,7 @@ export function buildRunner(
       gateway: deps.gateway,
       commandBus: deps.commandBus,
       commandPlaceOrder: deps.config.commandPlaceOrder,
+      customerTexts,
     }),
   );
   runner.register(
@@ -119,10 +124,7 @@ export function buildRunner(
     paymentLinkHandler({
       paymentIntents: deps.paymentIntents,
       replySender: deps.replySender,
-      /* Constructed here rather than injected: buildRunner already holds
-       * every dependency the service needs, and threading it through
-       * RunnerDeps would make each test re-declare what this line derives. */
-      customerTexts: new WabaTemplateService(appDb, deps.config, deps.sender, deps.gateway),
+      customerTexts,
       db: appDb,
       config: deps.config,
     }),

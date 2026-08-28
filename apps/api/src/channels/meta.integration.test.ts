@@ -920,6 +920,118 @@ describe('the W3 completion gate: catalogue to receipt (spec §3.2; PR-089)', ()
   });
 });
 
+describe('the away assistant (spec Appendix D; W4, PR-090)', () => {
+  const CUSTOMER_WA = '2349097778888';
+
+  async function seedAssistantMerchant(
+    phoneNumberId: string,
+    opts: { enabled?: boolean; limit?: number } = {},
+  ) {
+    const user = await identity.upsertUserByPhone(db, '+2348030002240');
+    const business = await identity.createBusinessWithOwner(db, {
+      name: 'Ada Fashion',
+      businessType: null,
+      ownerUserId: user.id,
+    });
+    const businessId = business.id;
+    await billingRepo.setPlan(db, {
+      businessId,
+      plan: 'integrate',
+      expiresAt: null,
+      actor: 'operator:test',
+    });
+    await withBusiness(db, businessId, async (tx) => {
+      await wabaRepo.connectWaba(tx, {
+        businessId,
+        wabaId: `waba-${phoneNumberId}`,
+        phoneNumberId,
+        accessTokenCipher: encryptFacet(
+          'EAAG-merchant-token',
+          deps.config.connectionKey,
+          `${businessId}:waba_token`,
+        ),
+        tokenTail: '4821',
+      });
+      await catalogueRepo.createProduct(tx, businessId, { name: 'wig', unitPriceK: 150_000 });
+      const wig = (await stockRepo.productByName(tx, businessId, 'wig'))!;
+      await stockRepo.recordDelivery(tx, {
+        businessId,
+        product: wig,
+        quantity: 4,
+        costK: 100_000,
+        sourceType: 'chat',
+      });
+      await usageRepo.creditBonus(tx, businessId, usagePeriod(new Date()), 'SERVICE_MESSAGE', 5);
+      await wabaRepo.setAssistantSettings(tx, businessId, {
+        enabled: opts.enabled ?? true,
+        dailyReplyLimit: opts.limit ?? 3,
+      });
+    });
+    return businessId;
+  }
+
+  const ask = (phoneNumberId: string, wamid: string, text: string) =>
+    post(messagePayload(CUSTOMER_WA, wamid, text, phoneNumberId));
+
+  it('answers price and availability off the merchant’s own rows, inside the window', async () => {
+    const businessId = await seedAssistantMerchant('PN-AWAY-1');
+
+    expect((await ask('PN-AWAY-1', 'wamid.AWAY.1', 'How much is the wig?')).statusCode).toBe(200);
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+
+    expect(stubSender.connectionTexts).toHaveLength(1);
+    expect(stubSender.connectionTexts[0]).toMatchObject({
+      to: `+${CUSTOMER_WA}`,
+      phoneNumberId: 'PN-AWAY-1',
+      text: 'wig: ₦1,500. In stock.',
+    });
+    /* Metered like every customer send, and counted against the ceiling. */
+    const used = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ n: string }>(
+        sql`SELECT COALESCE(SUM(replies), 0) AS n FROM away_assistant_replies WHERE business_id = ${businessId}::uuid`,
+      ),
+    );
+    expect([...used][0]!.n).toBe('1');
+    /* Text only: the assistant transacted nothing (Appendix D, absolute). */
+    const ledger = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ n: string }>(
+        sql`SELECT COUNT(*) AS n FROM ledger_entries WHERE business_id = ${businessId}::uuid`,
+      ),
+    );
+    expect([...ledger][0]!.n).toBe('0');
+  });
+
+  it('an assistant nobody enabled answers nobody', async () => {
+    await seedAssistantMerchant('PN-AWAY-2', { enabled: false });
+
+    await ask('PN-AWAY-2', 'wamid.AWAY.2', 'How much is the wig?');
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+
+    expect(stubSender.connectionTexts).toHaveLength(0);
+  });
+
+  it('the daily ceiling holds: past it, the assistant stays quiet', async () => {
+    await seedAssistantMerchant('PN-AWAY-3', { limit: 1 });
+
+    await ask('PN-AWAY-3', 'wamid.AWAY.3A', 'wig price?');
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+    await ask('PN-AWAY-3', 'wamid.AWAY.3B', 'and the wig again?');
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+
+    expect(stubSender.connectionTexts).toHaveLength(1);
+  });
+
+  it('declines what the shelf cannot answer, leaving the handoff to PR-091', async () => {
+    await seedAssistantMerchant('PN-AWAY-4');
+
+    await ask('PN-AWAY-4', 'wamid.AWAY.4', 'when do you open tomorrow?');
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+
+    /* No guess, no filler: what this path cannot answer it does not answer. */
+    expect(stubSender.connectionTexts).toHaveLength(0);
+  });
+});
+
 describe('phoneNumberId → BusinessId routing (spec §24; PR-059)', () => {
   async function seedMerchant(phone: string, name: string) {
     const user = await identity.upsertUserByPhone(db, phone);
