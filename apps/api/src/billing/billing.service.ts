@@ -17,16 +17,15 @@ import {
   addMonth,
   addOnReference,
   addOnPack,
-  allowanceFor,
   billingState,
   GRACE_DAYS,
   packsFor,
   planChangeCharge,
-  planPriceK,
   subscriptionReference,
   usagePeriod,
   USAGE_UNITS,
 } from '@rekoda/core';
+import { meterAllowances, planPriceKFor } from './plan-terms.js';
 import type {
   BillingCancelResponse,
   BillingOverviewResponse,
@@ -52,6 +51,30 @@ export class BillingService {
   ) {}
 
   /**
+   * The two prices a plan change is priced from, off the catalogue.
+   *
+   * `from` resolves through the grandfathering pin - what the merchant
+   * actually pays today - and `to` deliberately does not: they are buying
+   * the new plan NOW, so the version currently on sale is the one that
+   * prices it (the pin belongs to the old plan, so the stale-pin rule
+   * already answers this). Undefined on the constant path, where
+   * `planChangeCharge` falls back to the pre-BL2 table.
+   */
+  private async changePricesK(
+    tx: TenantDb,
+    businessId: string,
+    from: string,
+    to: string,
+    now: Date,
+  ): Promise<{ from: number; to: number } | undefined> {
+    if (!this.config.planCatalogueReads) return undefined;
+    return {
+      from: await planPriceKFor(this.config, tx, businessId, from, now),
+      to: await planPriceKFor(this.config, tx, businessId, to, now),
+    };
+  }
+
+  /**
    * Everything the billing page shows, in one read.
    *
    * The plan comes from `planFor` rather than the raw column, so a lapsed
@@ -69,16 +92,17 @@ export class BillingService {
       const chargeRows = charges.rows;
 
       const byUnit = new Map(counters.map((row) => [row.unit, row]));
+      const allowances = await meterAllowances(this.config, tx, businessId, plan, now);
       return {
         plan,
-        priceK: planPriceK(plan),
+        priceK: await planPriceKFor(this.config, tx, businessId, plan, now),
         status: statusOf(plan, subscription, now),
         pendingPlan: subscription?.pendingPlan ?? null,
         period,
         units: USAGE_UNITS.map((unit) => ({
           unit,
           used: byUnit.get(unit)?.used ?? 0,
-          allowance: allowanceFor(plan, unit),
+          allowance: allowances[unit],
           bonus: byUnit.get(unit)?.bonus ?? 0,
         })),
         packs: packsFor(plan).map((pack) => ({
@@ -118,6 +142,7 @@ export class BillingService {
         cycleStart: subscription?.cycleStartedAt ?? now,
         renewsAt: subscription?.planExpiresAt ?? addMonth(now),
         now,
+        pricesK: await this.changePricesK(tx, businessId, from, to, now),
       });
       return {
         from,
@@ -188,6 +213,7 @@ export class BillingService {
         cycleStart: subscription?.cycleStartedAt ?? now,
         renewsAt,
         now,
+        pricesK: await this.changePricesK(tx, businessId, from, to, now),
       });
 
       if (charge.kind === 'downgrade' || charge.kind === 'same') {

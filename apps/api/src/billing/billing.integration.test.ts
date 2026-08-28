@@ -14,7 +14,7 @@
  *     and expiring is an ACT with an audit row rather than a date comparison.
  */
 import { randomBytes } from 'node:crypto';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { addMonth, GRACE_DAYS, PLAN_PRICES_K, usagePeriod } from '@rekoda/core';
 import {
   billingCancelResponse,
@@ -25,13 +25,20 @@ import {
   createDb,
   identity,
   marginRepo,
+  planCatalogueRepo,
   quotaRepo,
   subscriptionsRepo,
   usageRepo,
   withBusiness,
   type Db,
 } from '@rekoda/db';
-import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
+import {
+  migrate,
+  requireUrls,
+  resetPlanCatalogue,
+  truncateAll,
+  type Urls,
+} from '@rekoda/db/testing';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { sweepGracePeriods } from './grace-sweep.js';
 import { sweepRenewals } from './renewal-sweep.js';
@@ -43,6 +50,9 @@ let urls: Urls;
 let app: NestFastifyApplication;
 let db: Db;
 let workerDb: Db;
+let ownerDb: Db;
+let config: ApiConfig;
+let closeOwner: () => Promise<void>;
 let closeDb: () => Promise<void>;
 let closeWorker: () => Promise<void>;
 
@@ -66,12 +76,15 @@ beforeAll(async () => {
 
   ({ db, close: closeDb } = createDb(urls.app, { max: 4 }));
   ({ db: workerDb, close: closeWorker } = createDb(urls.worker, { max: 4 }));
+  ({ db: ownerDb, close: closeOwner } = createDb(urls.owner, { max: 2 }));
+  config = app.get<ApiConfig>(CONFIG);
 });
 
 afterAll(async () => {
   await app?.close();
   await closeDb?.();
   await closeWorker?.();
+  await closeOwner?.();
 });
 
 beforeEach(async () => {
@@ -519,7 +532,7 @@ describe('cancelling the subscription', () => {
     expect(await cancel(auth)).toEqual({ state: 'scheduled', endsAt: renewsAt.toISOString() });
 
     /* The sweep applies the cancellation instead of raising a renewal. */
-    expect(await sweepRenewals({ workerDb, appDb: db }, new Date())).toEqual({
+    expect(await sweepRenewals({ workerDb, appDb: db, config }, new Date())).toEqual({
       raised: 0,
       skipped: 1,
     });
@@ -544,7 +557,7 @@ describe('cancelling the subscription', () => {
 });
 
 describe('the renewal sweep', () => {
-  const raise = (now: Date) => sweepRenewals({ workerDb, appDb: db }, now);
+  const raise = (now: Date) => sweepRenewals({ workerDb, appDb: db, config }, now);
 
   it('raises nothing while a cycle is still running', async () => {
     const { businessId } = await onboard('+2348177100022');
@@ -866,5 +879,61 @@ describe('the grace period', () => {
     // `expired` grants zero of everything, and the gate reads that plan.
     const plan = await withBusiness(db, businessId, (tx) => usageRepo.planFor(tx, businessId));
     expect(plan).toBe('expired');
+  });
+});
+
+describe('grandfathering through the catalogue (BL2, PR-100)', () => {
+  /* These tests version the catalogue, which truncateAll deliberately does
+   * not touch. Put version 1 back before the next test reads it. */
+  afterEach(async () => {
+    await resetPlanCatalogue(urls);
+  });
+
+  it('a new version does not move a pinned merchant: overview and renewal stay as sold', async () => {
+    const { businessId, auth } = await onboard('+2348177100061');
+    /* Sold Chat, cycle already over: due for renewal. applyCycle pinned the
+     * business to the version on sale at the cycle start. */
+    const cycleStart = new Date(Date.now() - 30 * 86_400_000);
+    await putOnPlan(businessId, 'chat', cycleStart, new Date(Date.now() - 3_600_000));
+
+    /* Chat v2 goes on sale: fewer AI actions at a higher price. */
+    await planCatalogueRepo.publishPlanVersion(ownerDb, {
+      planId: 'chat',
+      name: 'Rekoda Chat',
+      seats: 1,
+      effectiveFrom: new Date(),
+      entitlements: ['REKODA_CHAT'],
+      allowances: { AI_ACTIONS: 300, DOCUMENT_GENERATION: 100 },
+      prices: [{ currency: 'NGN', billingInterval: 'monthly', amountMinor: 1_490_000 }],
+    });
+
+    /* The billing page still quotes what this merchant was sold... */
+    const overview = await overviewOf(auth);
+    expect(overview.priceK).toBe(990_000);
+    expect(overview.units.find((row) => row.unit === 'AI_ACTIONS')?.allowance).toBe(400);
+
+    /* ...and the renewal is raised at the pinned price, not the new one.
+     * This is pricing-model.md commercial rule 5 running as code. */
+    expect(await sweepRenewals({ workerDb, appDb: db, config }, new Date())).toEqual({
+      raised: 1,
+      skipped: 0,
+    });
+    const charges = await withBusiness(db, businessId, (tx) =>
+      subscriptionsRepo.chargesFor(tx, businessId),
+    );
+    const renewal = charges.rows.find((charge) => charge.kind === 'renewal');
+    expect(renewal?.amountK).toBe(990_000);
+  });
+
+  it('the data path and the constant path quote one another exactly', async () => {
+    /* The cutover's validation: with the catalogue unversioned, the flag
+     * must not be observable. Every figure the overview quotes agrees. */
+    const { businessId } = await onboard('+2348177100062');
+    const onData = new BillingService({ ...config, planCatalogueReads: true }, db);
+    const onConstants = new BillingService({ ...config, planCatalogueReads: false }, db);
+    const data = await onData.overview(businessId);
+    const constants = await onConstants.overview(businessId);
+    expect(data.priceK).toBe(constants.priceK);
+    expect(data.units).toEqual(constants.units);
   });
 });

@@ -1,11 +1,12 @@
 /**
  * The plan catalogue (canonical spec §30, migration 0105). BL2's step A.
  *
- * Readers answer the three questions billing will ask: which version of a
- * plan is (or was) current, what that version costs in a currency over an
- * interval, and what it sells. Nothing in production calls them yet - the
- * PR-100 cutover moves the allowance and price readers here after proving
- * the data equals the constants.
+ * Readers answer the three questions billing asks: which version of a plan
+ * is (or was) current, what that version costs in a currency over an
+ * interval, and what it sells. Since PR-100 these are the application's
+ * commercial reads - the meter, the seat gate, the billing page and the
+ * renewal sweep all resolve through `versionForBusiness`, so a grandfathered
+ * merchant is metered and billed by the version they were sold.
  *
  * The catalogue is platform reference data, identical for every tenant, so
  * readers take a plain `Db` for the same reason the entitlements catalogue
@@ -17,6 +18,14 @@
 import { sql } from 'drizzle-orm';
 import type { EntitlementKey, UsageUnit } from '@rekoda/core';
 import type { Db, TenantDb } from '../client.js';
+
+/**
+ * Catalogue readers work on either connection shape: the tables have no RLS,
+ * so a pinned transaction and a plain pool answer identically, and a caller
+ * mid-transaction must not be forced to open a second connection to learn a
+ * price.
+ */
+type AnyDb = Db | TenantDb;
 
 export type BillingInterval = 'monthly' | 'annual';
 
@@ -63,7 +72,11 @@ const VERSION_COLUMNS = sql`id, plan_id, version, name, seats, effective_from, e
  * plan id is unknown - the caller decides what stingy means for its
  * question, this function does not guess.
  */
-export async function planVersionAt(db: Db, planId: string, at: Date): Promise<PlanVersion | null> {
+export async function planVersionAt(
+  db: AnyDb,
+  planId: string,
+  at: Date,
+): Promise<PlanVersion | null> {
   const rows = await db.execute<VersionRow>(sql`
     SELECT ${VERSION_COLUMNS} FROM plan_versions
     WHERE plan_id = ${planId}
@@ -77,7 +90,7 @@ export async function planVersionAt(db: Db, planId: string, at: Date): Promise<P
 }
 
 /** One version by id: what a grandfathering pin dereferences to. */
-export async function planVersionById(db: Db, id: string): Promise<PlanVersion | null> {
+export async function planVersionById(db: AnyDb, id: string): Promise<PlanVersion | null> {
   const rows = await db.execute<VersionRow>(sql`
     SELECT ${VERSION_COLUMNS} FROM plan_versions WHERE id = ${id}::uuid
   `);
@@ -93,7 +106,7 @@ export async function planVersionById(db: Db, id: string): Promise<PlanVersion |
  * nothing in a currency nobody priced.
  */
 export async function priceAt(
-  db: Db,
+  db: AnyDb,
   planVersionId: string,
   currency: string,
   billingInterval: BillingInterval,
@@ -118,7 +131,7 @@ export async function priceAt(
  * map is not sold on that version: zero, never unlimited.
  */
 export async function allowancesOf(
-  db: Db,
+  db: AnyDb,
   planVersionId: string,
 ): Promise<Partial<Record<UsageUnit, number>>> {
   const rows = await db.execute<{ unit: string; allowance: number }>(sql`
@@ -132,7 +145,7 @@ export async function allowancesOf(
 }
 
 /** What a version grants, sorted, against the PR-012 catalogue keys. */
-export async function entitlementsOf(db: Db, planVersionId: string): Promise<EntitlementKey[]> {
+export async function entitlementsOf(db: AnyDb, planVersionId: string): Promise<EntitlementKey[]> {
   const rows = await db.execute<{ entitlement_key: string }>(sql`
     SELECT entitlement_key FROM plan_version_entitlements
     WHERE plan_version_id = ${planVersionId}::uuid
@@ -147,6 +160,110 @@ export async function pinnedPlanVersion(tx: TenantDb, businessId: string): Promi
     SELECT plan_version_id FROM businesses WHERE id = ${businessId}::uuid
   `);
   return [...rows][0]?.plan_version_id ?? null;
+}
+
+/**
+ * The one resolution rule for "which version governs this business":
+ * the grandfathering pin, when it points at a version OF THE PLAN THE
+ * BUSINESS IS EFFECTIVELY ON; otherwise the version of that plan currently
+ * in force.
+ *
+ * `plan` is the caller's EFFECTIVE plan (from `planFor`, so a lapsed trial
+ * arrives as `expired`), and the pin is deliberately checked against it: a
+ * pin belongs to the plan the merchant bought, so the moment the effective
+ * plan differs - a lapse, a downgrade taking effect - the pin is stale and
+ * must not answer. It stays in place for the day they resume, but a business
+ * on `expired` meters as `expired`, never as the Complete version its pin
+ * remembers.
+ *
+ * Null when no version of `plan` is in force, which for every caller here
+ * means the stingy direction: no allowance, no seats, no price.
+ */
+export async function versionForBusiness(
+  tx: TenantDb,
+  businessId: string,
+  plan: string,
+  at: Date,
+): Promise<PlanVersion | null> {
+  const stamp = at.toISOString();
+  const rows = await tx.execute<VersionRow>(sql`
+    SELECT ${VERSION_COLUMNS} FROM plan_versions
+    WHERE id = COALESCE(
+      (SELECT pv.id
+       FROM businesses b JOIN plan_versions pv ON pv.id = b.plan_version_id
+       WHERE b.id = ${businessId}::uuid AND pv.plan_id = ${plan}),
+      (SELECT id FROM plan_versions
+       WHERE plan_id = ${plan}
+         AND effective_from <= ${stamp}::timestamptz
+         AND (effective_to IS NULL OR effective_to > ${stamp}::timestamptz)
+       ORDER BY version DESC
+       LIMIT 1)
+    )
+  `);
+  const row = [...rows][0];
+  return row ? shapeVersion(row) : null;
+}
+
+/**
+ * One unit's allowance for one business, in SOLD units, resolved through the
+ * pin rule above in a single statement - this sits directly in front of the
+ * metering gate, which is the hottest commercial read in the product.
+ *
+ * Zero when the unit has no row, and zero when no version answers at all: an
+ * unknown or corrupted plan value must never mean capacity. (The constant it
+ * replaces fell back to the trial allowance there; data falls back to
+ * nothing, which is the stingier of the two safe directions.)
+ */
+export async function soldAllowanceFor(
+  tx: TenantDb,
+  businessId: string,
+  plan: string,
+  unit: UsageUnit,
+  at: Date,
+): Promise<number> {
+  const stamp = at.toISOString();
+  const rows = await tx.execute<{ allowance: number }>(sql`
+    SELECT av.allowance FROM allowance_versions av
+    WHERE av.unit = ${unit}
+      AND av.plan_version_id = COALESCE(
+        (SELECT pv.id
+         FROM businesses b JOIN plan_versions pv ON pv.id = b.plan_version_id
+         WHERE b.id = ${businessId}::uuid AND pv.plan_id = ${plan}),
+        (SELECT id FROM plan_versions
+         WHERE plan_id = ${plan}
+           AND effective_from <= ${stamp}::timestamptz
+           AND (effective_to IS NULL OR effective_to > ${stamp}::timestamptz)
+         ORDER BY version DESC
+         LIMIT 1)
+      )
+  `);
+  return [...rows][0]?.allowance ?? 0;
+}
+
+/** Everything the billing page needs about a business's version, in one read. */
+export interface CommercialTerms {
+  version: PlanVersion | null;
+  /** 0 when no version answers: a business nobody sold anything grows nothing. */
+  seats: number;
+  /** Sold units; absent means not sold. Empty when no version answers. */
+  allowances: Partial<Record<UsageUnit, number>>;
+  /** Monthly NGN price in kobo. 0 when no version or no stated price. */
+  monthlyPriceK: number;
+}
+
+export async function commercialTermsFor(
+  tx: TenantDb,
+  businessId: string,
+  plan: string,
+  at: Date,
+): Promise<CommercialTerms> {
+  const version = await versionForBusiness(tx, businessId, plan, at);
+  if (!version) return { version: null, seats: 0, allowances: {}, monthlyPriceK: 0 };
+  const [allowances, price] = await Promise.all([
+    allowancesOf(tx, version.id),
+    priceAt(tx, version.id, 'NGN', 'monthly', at),
+  ]);
+  return { version, seats: version.seats, allowances, monthlyPriceK: price ?? 0 };
 }
 
 /* ── catalogue maintenance ────────────────────────────────────────────────

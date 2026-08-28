@@ -296,6 +296,17 @@ export interface ApiConfig {
    * how an operator admits it is not.
    */
   metaWabaRegisteredInNigeria: boolean;
+  /**
+   * BL2 cutover flag (spec §30, build plan §10 step D): on, commercial terms
+   * (allowances, seats, prices) read from the plan catalogue through the
+   * grandfathering pin; off, the pre-BL2 constants in `@rekoda/core`.
+   *
+   * Defaults ON because the cutover is the required state - the constants
+   * are the DRIFTED shape §30 names - and rollback is this one variable set
+   * to `0`, no deploy. The old path is deleted only after the catalogue has
+   * soaked (step E, with the add-ons slice).
+   */
+  planCatalogueReads: boolean;
   /** R2. All four empty means documents are rendered but not stored. */
   r2AccountId: string;
   r2AccessKeyId: string;
@@ -633,6 +644,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     metaRetentionTemplateLocale: env['META_RETENTION_TEMPLATE_LOCALE'] ?? 'en',
     metaServiceReplyCostMicros: Number(env['META_SERVICE_REPLY_COST_MICROS'] ?? 0),
     metaWabaRegisteredInNigeria: env['META_WABA_REGISTERED_IN_NIGERIA'] !== 'false',
+    planCatalogueReads: env['REKODA_PLAN_CATALOGUE_READS'] !== '0',
     r2AccountId: env['R2_ACCOUNT_ID'] ?? '',
     r2AccessKeyId: env['R2_ACCESS_KEY_ID'] ?? '',
     r2SecretAccessKey: env['R2_SECRET_ACCESS_KEY'] ?? '',

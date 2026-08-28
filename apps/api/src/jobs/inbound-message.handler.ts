@@ -1,6 +1,5 @@
 import { Logger } from '@nestjs/common';
 import {
-  allowanceFor,
   gateExpense,
   gatePayment,
   daysOverdue,
@@ -47,6 +46,7 @@ import {
   type TenantDb,
 } from '@rekoda/db';
 import type { ApiConfig } from '../config.js';
+import { meterAllowance } from '../billing/plan-terms.js';
 import { LINK_MINUTES, mintDashboardLink } from '../auth/dashboard-link.js';
 import type { Interpreter } from '../ai/interpreter.service.js';
 import type { IdentityLinkProposal, PrivacyGateway } from '../privacy/gateway.service.js';
@@ -441,7 +441,7 @@ async function readReceiptPhoto(
    * not held across a network call.
    */
   const period = usagePeriod(new Date());
-  const allowance = allowanceFor(plan, 'DOCUMENTS_UNDERSTOOD');
+  const allowance = await meterAllowance(deps.config, tx, businessId, plan, 'DOCUMENTS_UNDERSTOOD');
   const granted = await withBusiness(deps.db, businessId, (own) =>
     usageRepo.consumeUnit(own, businessId, period, 'DOCUMENTS_UNDERSTOOD', allowance),
   );
@@ -599,7 +599,7 @@ async function transcribeVoiceNote(
    * because the counter must not be held across a network call.
    */
   const period = usagePeriod(new Date());
-  const allowance = allowanceFor(plan, 'VOICE_MINUTES');
+  const allowance = await meterAllowance(deps.config, tx, businessId, plan, 'VOICE_MINUTES');
   const granted = await withBusiness(deps.db, businessId, (own) =>
     usageRepo.consumeUnit(own, businessId, period, 'VOICE_MINUTES', allowance, seconds),
   );
@@ -1122,7 +1122,13 @@ async function confirmPendingDraft(
      * used all 0 invoices this month", which is true of the number and
      * useless about the reason. */
     if (plan === 'expired') return replies.trialEnded();
-    const allowance = allowanceFor(plan, 'DOCUMENT_GENERATION');
+    const allowance = await meterAllowance(
+      deps.config,
+      tx,
+      businessId,
+      plan,
+      'DOCUMENT_GENERATION',
+    );
     const granted = await withBusiness(deps.db, businessId, (own) =>
       usageRepo.consumeUnit(own, businessId, period, 'DOCUMENT_GENERATION', allowance),
     );
@@ -1146,7 +1152,13 @@ async function confirmPendingDraft(
         await refundDocument(deps, businessId, period);
         return replies.ordersNotInPlan();
       }
-      const orderAllowance = allowanceFor(plan, 'CATALOGUE_ORDERS');
+      const orderAllowance = await meterAllowance(
+        deps.config,
+        tx,
+        businessId,
+        plan,
+        'CATALOGUE_ORDERS',
+      );
       const orderGranted = await withBusiness(deps.db, businessId, (own) =>
         usageRepo.consumeUnit(own, businessId, period, 'CATALOGUE_ORDERS', orderAllowance),
       );
@@ -1877,7 +1889,7 @@ async function interpretedReply(
     return replies.chatNotInPlan();
   }
 
-  const monthlyMessages = allowanceFor(plan, 'AI_ACTIONS');
+  const monthlyMessages = await meterAllowance(deps.config, tx, businessId, plan, 'AI_ACTIONS');
   const period = usagePeriod(new Date());
 
   /**

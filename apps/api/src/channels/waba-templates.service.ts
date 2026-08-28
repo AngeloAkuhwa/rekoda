@@ -17,13 +17,7 @@
  * added to this file.
  */
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import {
-  allowanceFor,
-  templateUnitFor,
-  usagePeriod,
-  type TemplateCategory,
-  type UsageUnit,
-} from '@rekoda/core';
+import { templateUnitFor, usagePeriod, type TemplateCategory, type UsageUnit } from '@rekoda/core';
 import { normaliseParticipant, InvalidPhoneError } from '@rekoda/core/identity';
 import {
   decryptFacet,
@@ -40,6 +34,7 @@ import {
   type TenantDb,
 } from '@rekoda/db';
 import { CONFIG, type ApiConfig } from '../config.js';
+import { meterAllowance } from '../billing/plan-terms.js';
 import { DB } from '../db/db.module.js';
 import { PrivacyGateway } from '../privacy/gateway.service.js';
 import { MESSAGE_SENDER } from './sender.tokens.js';
@@ -148,7 +143,7 @@ export class WabaTemplateService {
         businessId,
         period,
         unit,
-        allowanceFor(plan, unit),
+        await meterAllowance(this.config, tx, businessId, plan, unit),
       );
       /* §4.3 rule 4: the refusal consumed nothing — the atomic consume
        * writes no row when it refuses. */
@@ -290,7 +285,7 @@ export class WabaTemplateService {
         businessId,
         period,
         unit,
-        allowanceFor(plan, unit),
+        await meterAllowance(this.config, tx, businessId, plan, unit),
       );
       if (!allowed) return { outcome: 'allowance_exhausted', unit };
 

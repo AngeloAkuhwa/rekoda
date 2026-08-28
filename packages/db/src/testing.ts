@@ -101,6 +101,39 @@ export async function truncateAll(urls: Urls): Promise<void> {
 }
 
 /**
+ * Restore the plan catalogue to its seeded version-1 state, as the owner.
+ *
+ * The catalogue is deliberately NOT in `truncateAll`: it is reference data
+ * migration 0105 seeds once, like the entitlements catalogue. A test that
+ * publishes a successor version or repricess therefore puts the catalogue
+ * back with this - successor versions go, appended price rows go, every
+ * seed row reopens - so the next test file starts from version 1 exactly
+ * as a fresh database would.
+ */
+export async function resetPlanCatalogue(urls: Urls): Promise<void> {
+  const sql = postgres(urls.owner, { max: 1, onnotice: () => {} });
+  try {
+    await sql.unsafe(`
+      UPDATE businesses SET plan_version_id = NULL
+        WHERE plan_version_id IN (SELECT id FROM plan_versions WHERE version > 1);
+      DELETE FROM plan_version_entitlements
+        WHERE plan_version_id IN (SELECT id FROM plan_versions WHERE version > 1);
+      DELETE FROM allowance_versions
+        WHERE plan_version_id IN (SELECT id FROM plan_versions WHERE version > 1);
+      DELETE FROM plan_prices
+        WHERE plan_version_id IN (SELECT id FROM plan_versions WHERE version > 1);
+      DELETE FROM plan_versions WHERE version > 1;
+      DELETE FROM plan_prices p USING plan_versions v
+        WHERE v.id = p.plan_version_id AND p.effective_from <> v.effective_from;
+      UPDATE plan_prices SET effective_to = NULL WHERE effective_to IS NOT NULL;
+      UPDATE plan_versions SET effective_to = NULL WHERE effective_to IS NOT NULL;
+    `);
+  } finally {
+    await sql.end();
+  }
+}
+
+/**
  * Time-travel for Pay-with-Transfer tests: age every live intent of one
  * business past its expiry, as the owner. The suites cannot reach the tables
  * directly (apps/api deliberately owns no SQL), and "the account lapsed" is

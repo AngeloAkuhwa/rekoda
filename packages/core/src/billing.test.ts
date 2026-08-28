@@ -336,3 +336,62 @@ describe('which packs a plan may buy', () => {
     }
   });
 });
+
+describe('catalogue prices through planChangeCharge (BL2)', () => {
+  const cycle = {
+    cycleStart: at('2026-08-01T00:00:00Z'),
+    renewsAt: at('2026-08-31T00:00:00Z'),
+    now: at('2026-08-16T00:00:00Z'),
+  };
+
+  it('prices the difference from the prices it is handed, not the constants', () => {
+    /* A grandfathered merchant pays 9,900 for chat while the catalogue
+     * sells integrate at a repriced 25,000: the proration must use BOTH
+     * figures as handed, or the charge mixes two price lists. */
+    const charge = planChangeCharge({
+      from: 'chat',
+      to: 'integrate',
+      ...cycle,
+      pricesK: { from: 990_000, to: 2_500_000 },
+    });
+    expect(charge.kind).toBe('upgrade');
+    /* 15 of 30 days remain on a 1,510,000 difference. */
+    expect(charge.amountK).toBe(Math.floor((1_510_000 * 15) / 30));
+  });
+
+  it('classifies from the same prices too: data can invert the constant ladder', () => {
+    /* If the catalogue ever prices integrate BELOW the merchant's pinned
+     * chat price, the move is a downgrade - free, at renewal - whatever
+     * the constant table would have said. */
+    const charge = planChangeCharge({
+      from: 'chat',
+      to: 'integrate',
+      ...cycle,
+      pricesK: { from: 990_000, to: 500_000 },
+    });
+    expect(charge.kind).toBe('downgrade');
+    expect(charge.amountK).toBe(0);
+  });
+
+  it('two different plans priced identically move as a downgrade, never as "same"', () => {
+    const charge = planChangeCharge({
+      from: 'chat',
+      to: 'integrate',
+      ...cycle,
+      pricesK: { from: 990_000, to: 990_000 },
+    });
+    expect(charge.kind).toBe('downgrade');
+    expect(charge.effectiveFrom).toBe('next_renewal');
+  });
+
+  it('absent prices fall back to the constant table unchanged', () => {
+    const withData = planChangeCharge({
+      from: 'chat',
+      to: 'complete',
+      ...cycle,
+      pricesK: { from: 990_000, to: 2_990_000 },
+    });
+    const withConstants = planChangeCharge({ from: 'chat', to: 'complete', ...cycle });
+    expect(withData).toEqual(withConstants);
+  });
+});

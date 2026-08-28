@@ -1,4 +1,4 @@
-import { seatsFor } from '@rekoda/core';
+import { seatLimit as seatLimitFor } from '../billing/plan-terms.js';
 import {
   BadRequestException,
   Body,
@@ -256,11 +256,13 @@ export class BusinessController {
     }
 
     const businessId = request.auth!.businessId;
-    /* The plan's seat table, from the same core table the pricing page
-     * quotes. Enforced here and not in the repo's SQL, so the refusal can
-     * name the plan and the way out. */
-    const plan = await withBusiness(this.db, businessId, (tx) => usageRepo.planFor(tx, businessId));
-    const seatLimit = seatsFor(plan);
+    /* The plan's seat count, from the same catalogue the billing page
+     * quotes, through the grandfathering pin. Enforced here and not in the
+     * repo's SQL, so the refusal can name the plan and the way out. */
+    const { plan, seatLimit } = await withBusiness(this.db, businessId, async (tx) => {
+      const held = await usageRepo.planFor(tx, businessId);
+      return { plan: held, seatLimit: await seatLimitFor(this.config, tx, businessId, held) };
+    });
 
     try {
       return toWire(

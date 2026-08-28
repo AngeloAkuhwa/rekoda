@@ -447,7 +447,9 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
     this.renewalTimer = setInterval(() => {
       if (this.sweepingRenewals) return;
       this.sweepingRenewals = true;
-      this.exclusively('renewal', () => sweepRenewals({ workerDb, appDb: this.appDb }))
+      this.exclusively('renewal', () =>
+        sweepRenewals({ workerDb, appDb: this.appDb, config: this.config }),
+      )
         .catch((error: unknown) => {
           this.log.warn(`renewal sweep failed: ${redactForLog(describeFailure(error))}`);
         })

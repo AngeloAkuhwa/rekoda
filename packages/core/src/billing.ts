@@ -31,12 +31,27 @@ export type PlanChangeKind =
  * merchant is charged depends only on whether the new plan costs more.
  */
 export function planChangeKind(from: string, to: string): PlanChangeKind {
-  const fromK = PLAN_PRICES_K[from as PlanId] ?? 0;
-  const toK = PLAN_PRICES_K[to as PlanId] ?? 0;
+  return kindFromPrices(
+    from,
+    to,
+    PLAN_PRICES_K[from as PlanId] ?? 0,
+    PLAN_PRICES_K[to as PlanId] ?? 0,
+  );
+}
+
+/**
+ * The classification itself, over whichever prices the caller holds - the
+ * constants above, or the catalogue's (BL2). One extra rule the constant
+ * table never needed: two DIFFERENT paid plans priced identically move as a
+ * downgrade (at renewal, uncharged) rather than reading as "same" and never
+ * moving at all. No two paid plans share a price today, but data can say
+ * anything and the safe direction is the one that charges nothing now.
+ */
+function kindFromPrices(from: string, to: string, fromK: number, toK: number): PlanChangeKind {
+  if (from === to) return 'same';
   if (fromK === 0) return toK === 0 ? 'same' : 'first_purchase';
   if (toK > fromK) return 'upgrade';
-  if (toK < fromK) return 'downgrade';
-  return 'same';
+  return 'downgrade';
 }
 
 /* ── what it costs today ──────────────────────────────────────────────────── */
@@ -75,9 +90,20 @@ export function planChangeCharge(input: {
   /** When that cycle renews. */
   renewsAt: Date;
   now: Date;
+  /**
+   * Prices from the plan catalogue (BL2): what the merchant pays today for
+   * their current plan (their pinned version's price) and what the new plan
+   * costs today. Absent falls back to the pre-BL2 constants - the retained
+   * old path, not an equal alternative.
+   */
+  pricesK?: { from: number; to: number } | undefined;
 }): PlanChangeCharge {
-  const kind = planChangeKind(input.from, input.to);
-  const toK = PLAN_PRICES_K[input.to as PlanId] ?? 0;
+  const toK = input.pricesK ? input.pricesK.to : (PLAN_PRICES_K[input.to as PlanId] ?? 0);
+  const fromNowK = input.pricesK ? input.pricesK.from : (PLAN_PRICES_K[input.from as PlanId] ?? 0);
+  /* Classified over the SAME prices the amounts use: a kind decided by the
+   * constants while the catalogue prices the difference could call a move an
+   * upgrade and then charge a negative proration for it. */
+  const kind = kindFromPrices(input.from, input.to, fromNowK, toK);
 
   if (kind === 'same') {
     return { kind, amountK: 0, effectiveFrom: 'now', renewsAt: input.renewsAt };
@@ -98,8 +124,7 @@ export function planChangeCharge(input: {
     };
   }
 
-  const fromK = PLAN_PRICES_K[input.from as PlanId] ?? 0;
-  const differenceK = toK - fromK;
+  const differenceK = toK - fromNowK;
   const total = wholeDaysBetween(input.cycleStart, input.renewsAt);
   const remaining = wholeDaysBetween(input.now, input.renewsAt);
 

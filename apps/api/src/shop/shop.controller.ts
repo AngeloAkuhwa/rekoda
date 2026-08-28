@@ -48,7 +48,8 @@ import {
   type SaveShopResponse,
   type ShopSettingsResponse,
 } from '@rekoda/contracts';
-import { allowanceFor, postCostOfSale, sniffImageType, usagePeriod } from '@rekoda/core';
+import { postCostOfSale, sniffImageType, usagePeriod } from '@rekoda/core';
+import { meterAllowance } from '../billing/plan-terms.js';
 import {
   catalogueRepo,
   entitlementsRepo,
@@ -304,23 +305,23 @@ export class PublicShopController {
      * transactions, refunded on every path that delivers nothing. */
     const period = usagePeriod(new Date());
     const plan = await withBusiness(this.db, businessId, (tx) => usageRepo.planFor(tx, businessId));
-    const orderGranted = await withBusiness(this.db, businessId, (own) =>
+    const orderGranted = await withBusiness(this.db, businessId, async (own) =>
       usageRepo.consumeUnit(
         own,
         businessId,
         period,
         'CATALOGUE_ORDERS',
-        allowanceFor(plan, 'CATALOGUE_ORDERS'),
+        await meterAllowance(this.config, own, businessId, plan, 'CATALOGUE_ORDERS'),
       ),
     );
     if (!orderGranted) return { outcome: 'closed' };
-    const documentGranted = await withBusiness(this.db, businessId, (own) =>
+    const documentGranted = await withBusiness(this.db, businessId, async (own) =>
       usageRepo.consumeUnit(
         own,
         businessId,
         period,
         'DOCUMENT_GENERATION',
-        allowanceFor(plan, 'DOCUMENT_GENERATION'),
+        await meterAllowance(this.config, own, businessId, plan, 'DOCUMENT_GENERATION'),
       ),
     );
     if (!documentGranted) {

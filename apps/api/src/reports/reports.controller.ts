@@ -42,7 +42,6 @@ interface FileReply {
 }
 import {
   postCostOfSale,
-  allowanceFor,
   buildBalanceSheet,
   buildCashflowStatement,
   buildProfitAndLoss,
@@ -149,6 +148,7 @@ import {
 } from '@rekoda/db';
 import { SessionGuard, type AuthedRequest } from '../auth/session.guard.js';
 import { CONFIG, type ApiConfig } from '../config.js';
+import { meterAllowance } from '../billing/plan-terms.js';
 import { CommandBus } from '../commands/command-bus.service.js';
 import {
   issueInvoiceWork,
@@ -885,7 +885,9 @@ export class ReportsController {
      * Its own short transaction, refunded on every path that issues nothing. */
     const period = usagePeriod(new Date());
     const plan = await withBusiness(this.db, businessId, (tx) => usageRepo.planFor(tx, businessId));
-    const allowance = allowanceFor(plan, 'DOCUMENT_GENERATION');
+    const allowance = await withBusiness(this.db, businessId, (tx) =>
+      meterAllowance(this.config, tx, businessId, plan, 'DOCUMENT_GENERATION'),
+    );
     const granted = await withBusiness(this.db, businessId, (own) =>
       usageRepo.consumeUnit(own, businessId, period, 'DOCUMENT_GENERATION', allowance),
     );

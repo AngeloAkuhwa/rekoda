@@ -27,15 +27,18 @@
  */
 import { Logger } from '@nestjs/common';
 import { randomBytes } from 'node:crypto';
-import { addMonth, planPriceK, subscriptionReference } from '@rekoda/core';
+import { addMonth, subscriptionReference } from '@rekoda/core';
 import { redactForLog } from '@rekoda/core/privacy';
 import { subscriptionsRepo, withBusiness, type Db } from '@rekoda/db';
+import { planPriceKFor, type PlanTermsConfig } from './plan-terms.js';
 
 export interface RenewalSweepDeps {
   /** `rekoda_worker` - "whose cycle ended" names no tenant, which is the point. */
   workerDb: Db;
   /** `rekoda_app` - the charge and the clock are written under a tenant pin. */
   appDb: Db;
+  /** The catalogue flag: a renewal is priced by the merchant's PINNED version. */
+  config: PlanTermsConfig;
 }
 
 export interface RenewalSweepResult {
@@ -85,12 +88,18 @@ export async function sweepRenewals(
         continue;
       }
 
-      const amountK = planPriceK(plan);
       const anchorDay =
         business.renewalAnchorDay ?? new Date(business.renewsAt.getTime() + 3_600_000).getUTCDate();
 
       try {
         const opened = await withBusiness(deps.appDb, business.businessId, async (tx) => {
+          /* The pinned version's price, which is the grandfathering promise
+           * kept where it matters: a launch merchant renews at launch
+           * pricing after a repricing, because their pin still points at
+           * the version whose price rows never changed. A scheduled
+           * downgrade is a different plan, so the stale-pin rule prices it
+           * at the version on sale today. */
+          const amountK = await planPriceKFor(deps.config, tx, business.businessId, plan, now);
           const reference = subscriptionReference(now, randomBytes);
           const id = await subscriptionsRepo.openCharge(tx, {
             businessId: business.businessId,

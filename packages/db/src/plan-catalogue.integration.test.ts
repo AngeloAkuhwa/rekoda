@@ -22,7 +22,7 @@ import {
   withBusiness,
   type Db,
 } from './index.js';
-import { migrate, requireUrls, truncateAll, type Urls } from './testing.js';
+import { migrate, requireUrls, resetPlanCatalogue, truncateAll, type Urls } from './testing.js';
 
 let urls: Urls;
 let db: Db;
@@ -42,38 +42,9 @@ afterAll(async () => {
   await closeOwner?.();
 });
 
-/**
- * The catalogue is deliberately NOT in truncateAll: it is reference data the
- * migration seeds once, like the entitlements catalogue. Tests that version
- * it therefore put it back: successor versions go, appended price rows go,
- * and every seed row reopens.
- */
-async function resetCatalogue(): Promise<void> {
-  await ownerDb.execute(sql`
-    DELETE FROM plan_version_entitlements
-    WHERE plan_version_id IN (SELECT id FROM plan_versions WHERE version > 1)
-  `);
-  await ownerDb.execute(sql`
-    DELETE FROM allowance_versions
-    WHERE plan_version_id IN (SELECT id FROM plan_versions WHERE version > 1)
-  `);
-  await ownerDb.execute(sql`
-    DELETE FROM plan_prices
-    WHERE plan_version_id IN (SELECT id FROM plan_versions WHERE version > 1)
-  `);
-  await ownerDb.execute(sql`DELETE FROM plan_versions WHERE version > 1`);
-  await ownerDb.execute(sql`
-    DELETE FROM plan_prices p
-    USING plan_versions v
-    WHERE v.id = p.plan_version_id AND p.effective_from <> v.effective_from
-  `);
-  await ownerDb.execute(sql`UPDATE plan_prices SET effective_to = NULL`);
-  await ownerDb.execute(sql`UPDATE plan_versions SET effective_to = NULL`);
-}
-
 beforeEach(async () => {
   await truncateAll(urls);
-  await resetCatalogue();
+  await resetPlanCatalogue(urls);
 });
 
 let seq = 0;
@@ -265,5 +236,135 @@ describe('the plan catalogue (BL2, PR-099)', () => {
       expect(error).not.toBeNull();
       expect(pgCode(error)).toBe('42501');
     }
+  });
+});
+
+describe('the cutover resolution rule (BL2, PR-100)', () => {
+  it('applyCycle pins on purchase, keeps the pin on renewal, re-pins on a plan change', async () => {
+    const businessId = await seedBusiness('trial');
+    const chatV1 = await planCatalogueRepo.planVersionAt(db, 'chat', new Date());
+
+    /* First purchase: pinned to the version on sale today. */
+    const cycle = {
+      cycleStartedAt: new Date(),
+      renewsAt: new Date(Date.now() + 30 * 86_400_000),
+      anchorDay: 15,
+    };
+    await withBusiness(db, businessId, (tx) =>
+      subscriptionsRepo.applyCycle(tx, businessId, { plan: 'chat', ...cycle }),
+    );
+    const afterPurchase = await withBusiness(db, businessId, (tx) =>
+      planCatalogueRepo.pinnedPlanVersion(tx, businessId),
+    );
+    expect(afterPurchase).toBe(chatV1!.id);
+
+    /* Chat moves on; the renewal must NOT move the merchant with it, or
+     * grandfathering ends at the first cycle. */
+    await planCatalogueRepo.publishPlanVersion(ownerDb, {
+      planId: 'chat',
+      name: 'Rekoda Chat',
+      seats: 1,
+      effectiveFrom: new Date(),
+      entitlements: ['REKODA_CHAT'],
+      allowances: { AI_ACTIONS: 300 },
+      prices: [{ currency: 'NGN', billingInterval: 'monthly', amountMinor: 1_490_000 }],
+    });
+    await withBusiness(db, businessId, (tx) =>
+      subscriptionsRepo.applyCycle(tx, businessId, { plan: 'chat', ...cycle }),
+    );
+    const afterRenewal = await withBusiness(db, businessId, (tx) =>
+      planCatalogueRepo.pinnedPlanVersion(tx, businessId),
+    );
+    expect(afterRenewal).toBe(chatV1!.id);
+
+    /* An upgrade is a new sale: pinned to the new plan's current version. */
+    const completeV1 = await planCatalogueRepo.planVersionAt(db, 'complete', new Date());
+    await withBusiness(db, businessId, (tx) =>
+      subscriptionsRepo.applyCycle(tx, businessId, { plan: 'complete', ...cycle }),
+    );
+    const afterUpgrade = await withBusiness(db, businessId, (tx) =>
+      planCatalogueRepo.pinnedPlanVersion(tx, businessId),
+    );
+    expect(afterUpgrade).toBe(completeV1!.id);
+  });
+
+  it('a pinned merchant meters by the version they were sold; a new sale gets the new version', async () => {
+    const grandfathered = await seedBusiness('trial');
+    const cycle = {
+      cycleStartedAt: new Date(),
+      renewsAt: new Date(Date.now() + 30 * 86_400_000),
+      anchorDay: 15,
+    };
+    await withBusiness(db, grandfathered, (tx) =>
+      subscriptionsRepo.applyCycle(tx, grandfathered, { plan: 'chat', ...cycle }),
+    );
+
+    await planCatalogueRepo.publishPlanVersion(ownerDb, {
+      planId: 'chat',
+      name: 'Rekoda Chat',
+      seats: 1,
+      effectiveFrom: new Date(),
+      entitlements: ['REKODA_CHAT'],
+      allowances: { AI_ACTIONS: 300, DOCUMENT_GENERATION: 100 },
+      prices: [{ currency: 'NGN', billingInterval: 'monthly', amountMinor: 1_490_000 }],
+    });
+
+    /* The pinned merchant still holds the 400 they were sold... */
+    const pinnedAllowance = await withBusiness(db, grandfathered, (tx) =>
+      planCatalogueRepo.soldAllowanceFor(tx, grandfathered, 'chat', 'AI_ACTIONS', new Date()),
+    );
+    expect(pinnedAllowance).toBe(400);
+
+    /* ...and a merchant sold Chat TODAY holds the 300 on sale today. The
+     * cycle start is NOW, after the publish: the pin follows the version in
+     * force when the cycle was sold, which is the version being bought. */
+    const fresh = await seedBusiness('trial');
+    await withBusiness(db, fresh, (tx) =>
+      subscriptionsRepo.applyCycle(tx, fresh, {
+        plan: 'chat',
+        ...cycle,
+        cycleStartedAt: new Date(),
+      }),
+    );
+    const freshAllowance = await withBusiness(db, fresh, (tx) =>
+      planCatalogueRepo.soldAllowanceFor(tx, fresh, 'chat', 'AI_ACTIONS', new Date()),
+    );
+    expect(freshAllowance).toBe(300);
+  });
+
+  it('a stale pin does not answer: an expired business meters as expired', async () => {
+    const businessId = await seedBusiness('trial');
+    await withBusiness(db, businessId, (tx) =>
+      subscriptionsRepo.applyCycle(tx, businessId, {
+        plan: 'complete',
+        cycleStartedAt: new Date(),
+        renewsAt: new Date(Date.now() + 30 * 86_400_000),
+        anchorDay: 15,
+      }),
+    );
+
+    /* The pin belongs to Complete; the effective plan says expired. The pin
+     * must not hand a lapsed business Complete's allowances. */
+    const version = await withBusiness(db, businessId, (tx) =>
+      planCatalogueRepo.versionForBusiness(tx, businessId, 'expired', new Date()),
+    );
+    expect(version!.planId).toBe('expired');
+    const allowance = await withBusiness(db, businessId, (tx) =>
+      planCatalogueRepo.soldAllowanceFor(tx, businessId, 'expired', 'AI_ACTIONS', new Date()),
+    );
+    expect(allowance).toBe(0);
+
+    /* An unknown plan value answers nothing at all: stingier than the
+     * constant's trial fallback, and deliberately so. */
+    const unknown = await withBusiness(db, businessId, (tx) =>
+      planCatalogueRepo.soldAllowanceFor(
+        tx,
+        businessId,
+        'platinum-unlimited',
+        'AI_ACTIONS',
+        new Date(),
+      ),
+    );
+    expect(unknown).toBe(0);
   });
 });
