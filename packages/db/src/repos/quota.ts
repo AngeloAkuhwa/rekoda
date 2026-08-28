@@ -16,6 +16,7 @@ import { and, eq, sql } from 'drizzle-orm';
 import type { Db, TenantDb } from '../client.js';
 import { withBusiness } from '../client.js';
 import { aiQuotaCounters, usageEvents } from '../schema/ops.js';
+import { recordCostEvent, type CostType } from './platform-costs.js';
 
 export type Queryable = Db | TenantDb;
 
@@ -158,6 +159,36 @@ export interface UsageRecord {
   nairaEquivalentK: number;
   billingPeriod: string;
   meta?: Record<string, unknown>;
+  /**
+   * The provider's own id for this charge, when the caller has one. It
+   * becomes the cost fact's idempotency key; absent, the telemetry row's
+   * own id stands in, which gives the cost fact exactly the retry
+   * semantics the telemetry already has.
+   */
+  reference?: string;
+}
+
+/**
+ * Which §29 cost class a spend belongs to. Derived from who charged us,
+ * with one override: a vision read is OCR whatever model performed it,
+ * because "what does document understanding cost" is a question the cost
+ * model asks by class, not by vendor.
+ */
+function costTypeFor(provider: UsageRecord['provider'], usageType: string): CostType {
+  if (/ocr|vision/i.test(usageType)) return 'OCR';
+  switch (provider) {
+    case 'meta':
+    case 'twilio':
+      return 'MESSAGING';
+    case 'anthropic':
+    case 'openai':
+    case 'stt':
+      return 'AI_INFERENCE';
+    case 'storage':
+      return 'STORAGE';
+    case 'paystack':
+      return 'PAYMENT_FEE';
+  }
 }
 
 /**
@@ -167,16 +198,39 @@ export interface UsageRecord {
  * margin view that flatters.
  */
 export async function recordUsage(tx: TenantDb, usage: UsageRecord): Promise<void> {
-  await tx.insert(usageEvents).values({
-    businessId: usage.businessId,
-    provider: usage.provider,
-    usageType: usage.usageType,
-    quantity: usage.quantity,
-    providerCostMicros: usage.providerCostMicros,
-    nairaEquivalentK: usage.nairaEquivalentK,
-    billingPeriod: usage.billingPeriod,
-    meta: (usage.meta ?? null) as never,
-  });
+  const inserted = await tx
+    .insert(usageEvents)
+    .values({
+      businessId: usage.businessId,
+      provider: usage.provider,
+      usageType: usage.usageType,
+      quantity: usage.quantity,
+      providerCostMicros: usage.providerCostMicros,
+      nairaEquivalentK: usage.nairaEquivalentK,
+      billingPeriod: usage.billingPeriod,
+      meta: (usage.meta ?? null) as never,
+    })
+    .returning({ id: usageEvents.id });
+
+  /* Real money gets an immutable fact (spec §29, COST-1). The telemetry
+   * row above is mutable in practice and was never a financial record; the
+   * cost event is append-only and is what the margin model stands on. An
+   * unpriced call (a timeout nobody could cost) writes telemetry only -
+   * zero is not a charge, and the provider's invoice will say what it was. */
+  if (usage.nairaEquivalentK > 0) {
+    await recordCostEvent(tx, {
+      provider: usage.provider,
+      providerProduct: usage.usageType,
+      businessId: usage.businessId,
+      costType: costTypeFor(usage.provider, usage.usageType),
+      amountMinor: usage.nairaEquivalentK,
+      currency: 'NGN',
+      externalReference: usage.reference ?? `usage:${inserted[0]!.id}`,
+      incurredAt: new Date(),
+      source: 'DERIVED_FROM_RATE_CARD',
+      actualOrEstimated: 'ESTIMATED',
+    });
+  }
 }
 
 export interface UsageTotals {
