@@ -1,11 +1,11 @@
 import { Logger } from '@nestjs/common';
 import { replies } from '@rekoda/core';
 import { redactForLog } from '@rekoda/core/privacy';
-import { decryptFacet } from '@rekoda/core/vault';
-import { customersRepo, identity, issueRepo, type Db, type TenantDb } from '@rekoda/db';
+import { identity, issueRepo, type Db, type TenantDb } from '@rekoda/db';
 import type { ApiConfig } from '../config.js';
 import type { PaymentIntentsService } from '../payments/payment-intents.service.js';
 import type { ReplySender } from '../replies/reply.service.js';
+import type { CustomerThreadRouter } from '../channels/customer-route.service.js';
 import type {
   SendCustomerTextInput,
   SendCustomerTextOutcome,
@@ -28,6 +28,8 @@ export interface PaymentLinkDeps {
   replySender: ReplySender;
   /** The customer's thread on the merchant's own WABA (spec §3.2; PR-089). */
   customerTexts: CustomerTexts;
+  /** THE routing decision, shared with every cross-product journey (X1, PR-092). */
+  customerRoute: CustomerThreadRouter;
   /** For the owner's WhatsApp number, a question that lives above the tenant. */
   db: Db;
   config: ApiConfig;
@@ -146,19 +148,22 @@ async function catalogueCheckout(
   const checkoutUrl = outcome?.state === 'ready' ? outcome.checkoutUrl : null;
   const amountK = outcome?.state === 'ready' ? outcome.amountK : invoice.balanceDueK;
 
-  /* The customer, in the thread their cart opened. The raw number exists in
-   * memory for the length of this send — decrypted at this authorised
-   * boundary exactly as the mint decrypts their email — and any failure in
-   * this leg must not cost the merchant their own message: a checkout that
-   * cannot reach the customer falls back to a forwardable link. */
+  /* The customer, in the thread their cart opened — through THE route
+   * every cross-product delivery asks (X1, PR-092). The raw number exists
+   * in memory for the length of this send, and any failure in this leg
+   * must not cost the merchant their own message: a checkout that cannot
+   * reach the customer falls back to a forwardable link. */
   let customerSent = false;
-  const phone = invoice.customerId
-    ? await customerPhone(deps, tx, businessId, invoice.customerId)
+  const route = invoice.customerId
+    ? await deps.customerRoute.routeFor(tx, businessId, invoice.customerId)
     : null;
-  if (phone) {
+  if (route && route.state !== 'reachable') {
+    log.log(`customer checkout not routed: ${route.state}`);
+  }
+  if (route?.state === 'reachable') {
     try {
       const sent = await deps.customerTexts.sendCustomerText(businessId, {
-        to: phone,
+        to: route.phone,
         text: replies.catalogueCheckout(invoice.invoiceNumber, amountK, checkoutUrl).text,
       });
       customerSent = sent.outcome === 'sent';
@@ -187,21 +192,4 @@ async function catalogueCheckout(
         ? replies.paymentLinkReady(invoice.invoiceNumber, amountK, checkoutUrl)
         : replies.catalogueOrderNoLink(invoice.invoiceNumber, amountK);
   await deps.replySender.send(tx, { businessId, to, reply });
-}
-
-/**
- * The customer's real phone, or null. Decrypted HERE — the same authorised
- * boundary as `PaymentIntentsService.customerEmail` — held in memory for the
- * send and never stored, logged or placed in a payload (F.3).
- */
-async function customerPhone(
-  deps: PaymentLinkDeps,
-  tx: TenantDb,
-  businessId: string,
-  customerId: string,
-): Promise<string | null> {
-  const facets = await customersRepo.identityFacetsFor(tx, businessId, customerId);
-  const phoneFacet = facets.find((f) => f.facet === 'phone');
-  if (!phoneFacet) return null;
-  return decryptFacet(phoneFacet.ciphertext, deps.config.vaultKey, `${businessId}:phone`);
 }

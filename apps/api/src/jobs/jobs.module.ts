@@ -46,6 +46,7 @@ import { CommandsModule } from '../commands/commands.module.js';
 import { CommandBus } from '../commands/command-bus.service.js';
 import { MESSAGE_SENDER } from '../channels/sender.tokens.js';
 import { WabaTemplateService } from '../channels/waba-templates.service.js';
+import { CustomerThreadRouter } from '../channels/customer-route.service.js';
 import { SPEECH_TO_TEXT, type SpeechToText } from '../ai/stt.js';
 import { TEXT_EXTRACTION, type TextExtraction } from '../ai/ocr.js';
 import type { MessageSender } from '../channels/sender.js';
@@ -127,6 +128,7 @@ export function buildRunner(
       paymentIntents: deps.paymentIntents,
       replySender: deps.replySender,
       customerTexts,
+      customerRoute: new CustomerThreadRouter(deps.config),
       db: appDb,
       config: deps.config,
     }),

@@ -1065,6 +1065,99 @@ describe('the away assistant (spec Appendix D; W4, PR-090)', () => {
   });
 });
 
+describe('one customer, both products (spec §5.3 X2; X1, PR-092)', () => {
+  it('a Chat sale and a WABA order for the same phone land on ONE customer, one ledger, one AR', async () => {
+    const user = await identity.upsertUserByPhone(db, '+2348030002250');
+    const business = await identity.createBusinessWithOwner(db, {
+      name: 'Ada Fashion',
+      businessType: null,
+      ownerUserId: user.id,
+    });
+    const businessId = business.id;
+    const wigId = await withBusiness(db, businessId, async (tx) => {
+      await wabaRepo.connectWaba(tx, {
+        businessId,
+        wabaId: 'waba-X2',
+        phoneNumberId: 'PN-X2',
+        accessTokenCipher: 'cipher-for-tests',
+        tokenTail: '4821',
+      });
+      const wig = await catalogueRepo.createProduct(tx, businessId, {
+        name: 'wig',
+        unitPriceK: 150_000,
+      });
+      return wig.id;
+    });
+
+    /* Week one: Chat records a walk-in sale to Chidi, anchored on the
+     * phone the privacy gateway folds every identity onto. */
+    const chidi = await deps.gateway.resolveStorefrontCustomer(
+      businessId,
+      'Chidi',
+      '+2349097776666',
+    );
+    await withBusiness(db, businessId, (tx) =>
+      issueRepo.issueSale(tx, {
+        businessId,
+        customerId: chidi!.customerId,
+        customerToken: chidi!.token,
+        items: [{ name: 'wig', quantity: 1, unitPriceK: 150_000 }],
+        subtotalK: 150_000,
+        discountK: 0,
+        deliveryFeeK: 0,
+        vatK: 0,
+        totalK: 150_000,
+        paidK: 0,
+        balanceDueK: 150_000,
+        method: 'transfer',
+        sourceType: 'chat',
+        sourceId: 'draft-x2',
+        actor: 'owner',
+      }),
+    );
+
+    /* Week two: the SAME phone sends a cart on the merchant's WABA. */
+    await post(
+      orderPayload('2349097776666', 'wamid.X2.1', 'PN-X2', [{ retailerId: wigId, quantity: 2 }]),
+    );
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+
+    /* ONE customer record: neither product holds its own customer table,
+     * and identity resolved through the gateway in both directions. */
+    const customers = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ n: string; id: string }>(
+        sql`SELECT COUNT(*) AS n, MIN(id::text) AS id FROM customers WHERE business_id = ${businessId}::uuid`,
+      ),
+    );
+    expect([...customers][0]!.n).toBe('1');
+    expect([...customers][0]!.id).toBe(chidi!.customerId);
+
+    /* Both invoices hang off that one record — the Chat sale and the
+     * validated WABA order. */
+    const invoices = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ customer_id: string; source_type: string; balance_due_k: string }>(
+        sql`SELECT customer_id, source_type, balance_due_k::bigint AS balance_due_k
+            FROM invoices WHERE business_id = ${businessId}::uuid ORDER BY created_at`,
+      ),
+    );
+    const rows = [...invoices];
+    expect(rows).toHaveLength(2);
+    expect(rows.map((r) => r.source_type).sort()).toEqual(['chat', 'waba_catalogue']);
+    expect(rows.every((r) => r.customer_id === chidi!.customerId)).toBe(true);
+
+    /* ONE ledger, ONE AR balance: the receivable is the sum of both,
+     * in one account, not a figure per product. */
+    const ar = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ k: string }>(sql`
+        SELECT COALESCE(SUM(e.debit_k - e.credit_k), 0)::bigint AS k
+        FROM ledger_entries e JOIN accounts a ON a.id = e.account_id
+        WHERE e.business_id = ${businessId}::uuid AND a.system_role = 'ACCOUNTS_RECEIVABLE'
+      `),
+    );
+    expect(Number([...ar][0]!.k)).toBe(150_000 + 300_000);
+  });
+});
+
 describe('phoneNumberId → BusinessId routing (spec §24; PR-059)', () => {
   async function seedMerchant(phone: string, name: string) {
     const user = await identity.upsertUserByPhone(db, phone);
