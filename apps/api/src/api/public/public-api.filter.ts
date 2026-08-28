@@ -46,6 +46,19 @@ export class QuotaExhaustedException extends HttpException {
   }
 }
 
+/**
+ * Marks a refusal as "this key may not write", which is `forbidden`.
+ *
+ * Not a new code: a sandbox key IS a credential that may not do this, which
+ * is exactly what `forbidden` already means. Inventing `sandbox_write` would
+ * make a v1 client learn a code for a distinction the message already makes.
+ */
+export class SandboxWriteException extends HttpException {
+  constructor(message: string) {
+    super(message, HttpStatus.FORBIDDEN);
+  }
+}
+
 @Catch()
 export class PublicApiExceptionFilter implements ExceptionFilter {
   private readonly log = new Logger(PublicApiExceptionFilter.name);

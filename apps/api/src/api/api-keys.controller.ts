@@ -85,6 +85,9 @@ export class ApiKeysController {
     const outcome = await this.keys.mintKey(request.auth!.businessId, applicationId, {
       label: parsed.data.label ?? null,
       expiresAt: parsed.data.expiresAt ? new Date(parsed.data.expiresAt) : null,
+      /* Live unless the caller asked for the sandbox: the default is the
+       * one somebody has to opt out of, and that is the real one. */
+      mode: parsed.data.mode ?? 'live',
     });
 
     if ('reason' in outcome) {

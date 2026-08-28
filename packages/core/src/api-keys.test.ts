@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   API_KEY_PREFIX,
   issueApiKey,
+  mayWrite,
+  modeOfPrefix,
   parseApiKey,
   rateWindowStart,
   retryAfterSeconds,
@@ -35,7 +37,7 @@ describe('parsing', () => {
   it('accepts a token it minted and recovers its prefix', () => {
     const issued = issueApiKey(counting);
     const parsed = parseApiKey(issued.token);
-    expect(parsed).toEqual({ prefix: issued.prefix, tokenHash: issued.tokenHash });
+    expect(parsed).toEqual({ prefix: issued.prefix, mode: 'live', tokenHash: issued.tokenHash });
   });
 
   it('refuses anything that is not shaped like a key, without hashing it', () => {
@@ -43,13 +45,39 @@ describe('parsing', () => {
       '',
       'rk_live_',
       'rk_live_zzzzzzzz_' + 'a'.repeat(64),
-      'rk_test_00010203_' + 'a'.repeat(64),
+      /* A world this API does not have. `rk_live_` and `rk_test_` are the
+       * two; a third prefix is not a key. */
+      'rk_demo_00010203_' + 'a'.repeat(64),
       issueApiKey(counting).token.slice(0, -1),
       issueApiKey(counting).token + 'a',
       'Bearer ' + issueApiKey(counting).token,
     ]) {
       expect(parseApiKey(bad)).toBeNull();
     }
+  });
+});
+
+describe('the two worlds', () => {
+  it('mints each mode with its own recognisable prefix', () => {
+    expect(issueApiKey(counting, 'live').prefix.startsWith('rk_live_')).toBe(true);
+    expect(issueApiKey(counting, 'test').prefix.startsWith('rk_test_')).toBe(true);
+    /* Live by default: the safe direction is the one somebody has to ask
+     * for by name, and the real books are what a plain mint means. */
+    expect(issueApiKey(counting).prefix.startsWith('rk_live_')).toBe(true);
+  });
+
+  it('reads the mode back off a token, both ways', () => {
+    for (const mode of ['live', 'test'] as const) {
+      const issued = issueApiKey(counting, mode);
+      expect(parseApiKey(issued.token)?.mode).toBe(mode);
+      expect(modeOfPrefix(issued.prefix)).toBe(mode);
+    }
+    expect(modeOfPrefix('sk_live_00010203')).toBeNull();
+  });
+
+  it('lets only the live world write', () => {
+    expect(mayWrite('live')).toBe(true);
+    expect(mayWrite('test')).toBe(false);
   });
 });
 

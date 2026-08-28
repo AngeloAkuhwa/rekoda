@@ -157,18 +157,26 @@ export async function insertKey(
   return toKeyRow([...rows][0]!);
 }
 
-/** Live keys an application holds. The count the mint cap is checked against. */
+/**
+ * Live keys an application holds, in ONE world. The mint cap's count.
+ *
+ * Scoped by prefix since PR-114: a sandbox key and a production key are
+ * different credentials for different purposes, and a developer holding
+ * four test keys should still be able to rotate the live one.
+ */
 export async function liveKeyCount(
   tx: TenantDb,
   businessId: string,
   applicationId: string,
   now: Date,
+  modePrefix: string,
 ): Promise<number> {
   const rows = await tx.execute<{ live: number }>(sql`
     SELECT count(*)::int AS live
       FROM api_keys
      WHERE business_id = ${businessId}
        AND application_id = ${applicationId}
+       AND prefix LIKE ${`${modePrefix}%`}
        AND revoked_at IS NULL
        AND (expires_at IS NULL OR expires_at > ${now.toISOString()}::timestamptz)
   `);

@@ -47,6 +47,7 @@ export class PublicV1Controller {
       businessName,
       applicationId: caller.applicationId,
       keyPrefix: caller.keyPrefix,
+      mode: caller.mode,
       rateLimitPerMinute: caller.rateLimitPerMinute,
     });
   }

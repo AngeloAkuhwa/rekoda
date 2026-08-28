@@ -35,6 +35,7 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { computeMoneyFromKobo } from '@rekoda/core';
+import { mayWrite } from '@rekoda/core/api-keys';
 import { publicApi } from '@rekoda/contracts';
 import { merchantApiRepo, withBusiness, type Db } from '@rekoda/db';
 import { CommandBus } from '../../commands/command-bus.service.js';
@@ -44,7 +45,11 @@ import { DB } from '../../db/db.module.js';
 import { ApiKeyGuard, type ApiKeyedRequest } from '../api-key.guard.js';
 /* The entitlement refusal shares the guard's exception, so a per-command
  * refusal and a per-surface one answer the same public code. */
-import { NotEntitledException, PublicApiExceptionFilter } from './public-api.filter.js';
+import {
+  NotEntitledException,
+  PublicApiExceptionFilter,
+  SandboxWriteException,
+} from './public-api.filter.js';
 import type { CommandOutcome } from '../../commands/command-bus.service.js';
 
 @Controller('api/v1')
@@ -161,6 +166,7 @@ export class MerchantV1Controller {
   ): Promise<publicApi.v1.RecordSaleResponse> {
     const parsed = publicApi.v1.recordSaleRequest.safeParse(body);
     if (!parsed.success) throw new BadRequestException(firstIssue(parsed.error));
+    refuseSandboxWrite(request);
 
     const businessId = request.api!.businessId;
     const money = computeMoneyFromKobo({
@@ -231,6 +237,7 @@ export class MerchantV1Controller {
   ): Promise<publicApi.v1.RecordPaymentResponse> {
     const parsed = publicApi.v1.recordPaymentRequest.safeParse(body);
     if (!parsed.success) throw new BadRequestException(firstIssue(parsed.error));
+    refuseSandboxWrite(request);
 
     const businessId = request.api!.businessId;
     const input: RecordPaymentInput = {
@@ -300,6 +307,29 @@ export class MerchantV1Controller {
       throw new BadRequestException('this Idempotency-Key already answered a different request');
     }
     throw new Error(`${command} refused unexpectedly: ${run.outcome}`);
+  }
+}
+
+/**
+ * The sandbox's one rule, in one place (PR-114).
+ *
+ * A test key resolves to the merchant's real business and reads their real
+ * books, which is what makes it useful: an integrator proves their paging,
+ * their signature handling and their error handling against real shapes.
+ * What it may never do is write, and the refusal lives here rather than in
+ * each handler so "the sandbox is read-only" stays a property of the mode
+ * instead of a habit of whoever adds the next route.
+ *
+ * The body is validated FIRST, deliberately: a developer testing against
+ * the sandbox should learn that their payload is wrong before they learn
+ * that their key cannot write, because the first is the thing they can fix
+ * without changing anything else.
+ */
+function refuseSandboxWrite(request: ApiKeyedRequest): void {
+  if (!mayWrite(request.api!.mode)) {
+    throw new SandboxWriteException(
+      'this is a test key: it reads the books and writes nothing. Use a live key to record.',
+    );
   }
 }
 

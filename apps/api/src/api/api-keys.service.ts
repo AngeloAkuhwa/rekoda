@@ -17,9 +17,12 @@
 import { randomBytes } from 'node:crypto';
 import { Inject, Injectable } from '@nestjs/common';
 import {
+  API_KEY_PREFIXES,
   DEFAULT_RATE_LIMIT_PER_MINUTE,
   MAX_LIVE_KEYS_PER_APPLICATION,
   issueApiKey,
+  modeOfPrefix,
+  type ApiKeyMode,
   parseApiKey,
   rateWindowStart,
   retryAfterSeconds,
@@ -59,6 +62,8 @@ export interface ApiCaller {
   businessId: string;
   applicationId: string;
   keyPrefix: string;
+  /** `test` reads the same books and writes nothing (PR-114). */
+  mode: ApiKeyMode;
   rateLimitPerMinute: number;
 }
 
@@ -128,20 +133,29 @@ export class ApiKeysService {
 
       /* The month's capacity, last (spec §27: API usage is metered).
        *
+       * A SANDBOX call is exempt. A merchant who bought the API bought it
+       * to run their business, and a developer proving their wiring should
+       * not be spending that month's capacity to do it — a sandbox that
+       * costs real units is one nobody uses twice. The per-minute ceiling
+       * still applies, so free does not mean unbounded.
+       *
        * The plan allowance is ZERO on every plan, and that is canon rather
        * than an omission: §27 puts the API in no plan, so capacity is what
        * the API product credited as bonus for this month. `consumeUnit`
        * reads `allowance + bonus`, so a merchant who bought the product
        * spends what they bought and one who has not is refused here rather
        * than at some later, more expensive point. */
-      const granted = await usageRepo.consumeUnit(
-        tx,
-        key.businessId,
-        usagePeriod(now),
-        'API_REQUEST_UNITS',
-        await this.apiAllowance(tx, key.businessId, 'API_REQUEST_UNITS'),
-      );
-      if (!granted) return { ok: false, failure: { reason: 'quota_exhausted' } } as const;
+      const mode = modeOfPrefix(key.prefix) ?? 'live';
+      if (mode === 'live') {
+        const granted = await usageRepo.consumeUnit(
+          tx,
+          key.businessId,
+          usagePeriod(now),
+          'API_REQUEST_UNITS',
+          await this.apiAllowance(tx, key.businessId, 'API_REQUEST_UNITS'),
+        );
+        if (!granted) return { ok: false, failure: { reason: 'quota_exhausted' } } as const;
+      }
 
       /* Housekeeping rides the request that earned it: the closed windows
        * for this one key, and `last_used_at` at most once a minute. Both are
@@ -158,6 +172,7 @@ export class ApiKeysService {
           businessId: key.businessId,
           applicationId: key.applicationId,
           keyPrefix: key.prefix,
+          mode,
           rateLimitPerMinute: key.rateLimitPerMinute,
         },
       } as const;
@@ -228,7 +243,7 @@ export class ApiKeysService {
   async mintKey(
     businessId: string,
     applicationId: string,
-    input: { label: string | null; expiresAt: Date | null },
+    input: { label: string | null; expiresAt: Date | null; mode: ApiKeyMode },
     now = new Date(),
   ): Promise<CreateApiKeyResponse | MintRefusal> {
     return withBusiness(this.db, businessId, async (tx) => {
@@ -236,12 +251,20 @@ export class ApiKeysService {
       if (!application) return { reason: 'unknown_application' } as const;
       if (application.status !== 'active') return { reason: 'application_disabled' } as const;
 
-      const live = await apiKeysRepo.liveKeyCount(tx, businessId, applicationId, now);
+      /* The cap is per WORLD: four test keys must not stop a rotation of
+       * the live one. */
+      const live = await apiKeysRepo.liveKeyCount(
+        tx,
+        businessId,
+        applicationId,
+        now,
+        API_KEY_PREFIXES[input.mode],
+      );
       if (live >= MAX_LIVE_KEYS_PER_APPLICATION) {
         return { reason: 'too_many_keys', limit: MAX_LIVE_KEYS_PER_APPLICATION } as const;
       }
 
-      const issued = issueApiKey(this.random);
+      const issued = issueApiKey(this.random, input.mode);
       const row = await apiKeysRepo.insertKey(tx, {
         businessId,
         applicationId,
@@ -292,6 +315,7 @@ function viewKey(row: apiKeysRepo.ApiKeyRow): ApiKeyView {
     id: row.id,
     applicationId: row.applicationId,
     prefix: row.prefix,
+    mode: modeOfPrefix(row.prefix) ?? 'live',
     label: row.label,
     rateLimitPerMinute: row.rateLimitPerMinute,
     lastUsedAt: row.lastUsedAt?.toISOString() ?? null,

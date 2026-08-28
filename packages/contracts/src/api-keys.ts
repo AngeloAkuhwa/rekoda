@@ -23,11 +23,20 @@ export const apiApplicationView = z.object({
 });
 export type ApiApplicationView = z.infer<typeof apiApplicationView>;
 
+export const API_KEY_MODES = ['live', 'test'] as const;
+
 export const apiKeyView = z.object({
   id: z.string().uuid(),
   applicationId: z.string().uuid(),
   /** The public half. Enough to recognise a key, useless as a credential. */
   prefix: z.string(),
+  /**
+   * Which world this key belongs to. Derivable from the prefix and stated
+   * anyway, because a dashboard that makes somebody parse a string to know
+   * whether they are about to touch real books has failed at the one thing
+   * that matters here.
+   */
+  mode: z.enum(API_KEY_MODES),
   label: z.string().nullable(),
   rateLimitPerMinute: z.number().int().positive(),
   lastUsedAt: isoDate.nullable(),
@@ -44,6 +53,8 @@ export type CreateApiApplicationRequest = z.infer<typeof createApiApplicationReq
 
 export const createApiKeyRequest = z.object({
   label: z.string().trim().min(1).max(80).nullish(),
+  /** Defaults to `live`: the safe direction is the one that says so. */
+  mode: z.enum(API_KEY_MODES).optional(),
   /** Optional expiry. A key that must outlive a contract can say so. */
   expiresAt: isoDate.nullish(),
 });

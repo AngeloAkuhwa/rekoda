@@ -19,6 +19,13 @@ export const publicIdentityResponse = z.object({
   applicationId: z.string().uuid(),
   /** The public half of the presented key. Useless as a credential. */
   keyPrefix: z.string(),
+  /**
+   * `live` or `test`. Added in v1 (PR-114) as an additive change: a
+   * sandbox key reads the same books and writes nothing, so the one
+   * question a developer must be able to answer before their first write
+   * is which of the two they are holding.
+   */
+  mode: z.enum(['live', 'test']),
   rateLimitPerMinute: z.number().int().positive(),
 });
 export type PublicIdentityResponse = z.infer<typeof publicIdentityResponse>;

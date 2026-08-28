@@ -35,6 +35,7 @@ describe('the v1 wire shape', () => {
         'businessId:string,' +
         'businessName:string,' +
         'keyPrefix:string,' +
+        'mode:enum(live|test),' +
         'rateLimitPerMinute:number' +
         '}',
     );
