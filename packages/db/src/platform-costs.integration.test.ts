@@ -191,6 +191,45 @@ describe('the platform-cost subledger (COST-1, PR-102)', () => {
     ]);
   });
 
+  it('a pinned tenant cannot attribute a cost to another business (PR-106)', async () => {
+    const mine = await seedBusiness();
+    const other = await seedBusiness();
+    /* Under the app pin, an INSERT naming another tenant's business_id is
+     * refused by the trigger - the row is immutable and unattributable, so
+     * a cross-tenant write would poison the margin model permanently. */
+    const wrong = await withBusiness(db, mine, (tx) =>
+      quotaRepo.recordUsage(tx, {
+        businessId: other,
+        provider: 'anthropic',
+        usageType: 'llm_call',
+        quantity: 1,
+        providerCostMicros: 2_000,
+        nairaEquivalentK: 900,
+        billingPeriod: '2026-08',
+      }),
+    ).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    expect(wrong).not.toBeNull();
+
+    /* The pinned tenant's own cost still records. */
+    await withBusiness(db, mine, (tx) =>
+      quotaRepo.recordUsage(tx, {
+        businessId: mine,
+        provider: 'anthropic',
+        usageType: 'llm_call',
+        quantity: 1,
+        providerCostMicros: 2_000,
+        nairaEquivalentK: 900,
+        billingPeriod: '2026-08',
+      }),
+    );
+    const { from, to } = window();
+    expect((await platformCostsRepo.costsForBusiness(workerDb, mine, from, to)).length).toBe(1);
+    expect((await platformCostsRepo.costsForBusiness(workerDb, other, from, to)).length).toBe(0);
+  });
+
   it('append-only is a database property: no UPDATE, no DELETE, and no app read', async () => {
     const businessId = await seedBusiness();
     await withBusiness(db, businessId, (tx) =>

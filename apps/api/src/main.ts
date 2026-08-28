@@ -122,19 +122,32 @@ export async function createApp(): Promise<NestFastifyApplication> {
    *
    * The two webhook routes are exempt from the per-IP limiter above, so this
    * `onRequest` guard is what keeps an anonymous flood from being free: a
-   * Content-Length over the cap is refused with 413 before the body is
-   * parsed or a signature computed. A caller who lies about Content-Length
-   * still hits the adapter's bodyLimit, so the actual read is bounded either
-   * way; this just makes the honest-header case cheap to reject.
+   * body over the cap is refused before it is parsed or a signature computed.
+   *
+   * The cap is only meaningful if it cannot be sidestepped by omitting the
+   * header. The global adapter bodyLimit is 2 MB - sixteen times this cap -
+   * so a chunked request with no Content-Length would otherwise buffer and
+   * JSON-parse 2 MB on the one unauthenticated surface, per request, uncounted.
+   * Meta and Paystack are well-behaved clients that always declare a length;
+   * a webhook that does not is refused with 411, and one that overstates the
+   * cap with 413. A caller cannot understate it either - the length is
+   * required to be present AND in range before the body is read.
    */
   app
     .getHttpAdapter()
     .getInstance()
     .addHook('onRequest', (request, reply, done) => {
       const url = (request.url ?? '').split('?')[0] ?? '';
-      if (WEBHOOK_PATHS.has(url)) {
-        const declared = Number(request.headers['content-length'] ?? 0);
-        if (declared > WEBHOOK_MAX_BYTES) {
+      /* POST only: the GET on these paths is Meta's subscription handshake,
+       * which carries no body and no Content-Length by design. */
+      if (WEBHOOK_PATHS.has(url) && request.method === 'POST') {
+        const header = request.headers['content-length'];
+        if (header === undefined) {
+          void reply.code(411).send({ statusCode: 411, error: 'Length Required' });
+          return;
+        }
+        const declared = Number(header);
+        if (!Number.isFinite(declared) || declared > WEBHOOK_MAX_BYTES) {
           void reply.code(413).send({ statusCode: 413, error: 'Payload Too Large' });
           return;
         }

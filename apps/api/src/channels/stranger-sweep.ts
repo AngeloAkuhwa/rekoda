@@ -124,7 +124,13 @@ function senderOf(
   }
   const parsed = metaWebhookBody.safeParse(opened);
   if (!parsed.success) return null;
-  const [inbound] = extractInboundEvents(parsed.data);
+  /* THIS event, by its wamid, not the body's first: the foreign-WABA guard
+   * this feeds decides whether to contact a number, and deciding it against
+   * a batched body's first event could pitch a stranger the sweep was
+   * written never to contact. */
+  const inbound = extractInboundEvents(parsed.data).find(
+    (candidate) => candidate.kind === 'message' && candidate.externalId === externalId,
+  );
   if (!inbound || inbound.kind !== 'message') return null;
   try {
     return { from: normalisePhone(inbound.from), phoneNumberId: inbound.phoneNumberId };

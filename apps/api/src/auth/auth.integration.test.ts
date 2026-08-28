@@ -11,7 +11,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { billingRepo, createDb, identity, sql, withBusiness, type Db } from '@rekoda/db';
 import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
-import { MAX_FAILURES_PER_WINDOW, AuthService } from './auth.service.js';
+import { MAX_FAILURES_PER_WINDOW, MAX_REQUESTS_PER_WINDOW, AuthService } from './auth.service.js';
 import { AuthController, BusinessController } from './auth.controller.js';
 import { SessionGuard } from './session.guard.js';
 import { RolesGuard } from './roles.guard.js';
@@ -359,6 +359,28 @@ describe('OTP defences', () => {
     await requestCode(phone);
     const second = (await post('/v1/auth/otp/request', { phone })).json() as { status: string };
     expect(second.status).toBe('resend_too_soon');
+  });
+
+  it('caps minted codes per phone per hour, so pacing past the cooldown does not flood', async () => {
+    // A caller who never guesses wrong, only asks, pacing past the 60s
+    // cooldown each time: the failure counter never trips, so only the mint
+    // cap bounds the authentication templates Rekoda is made to send.
+    const phone = '08031299999';
+    const service = app.get(AuthService);
+    const start = Date.now();
+
+    for (let round = 0; round < MAX_REQUESTS_PER_WINDOW; round++) {
+      const at = new Date(start + round * 61_000);
+      expect((await service.requestOtp(phone, at)).status).toBe('sent');
+    }
+
+    // The sixth ask, still well inside the hour, is refused - and refused as
+    // `locked_out`, indistinguishable from the wrong-guess lockout.
+    const sixth = await service.requestOtp(
+      phone,
+      new Date(start + MAX_REQUESTS_PER_WINDOW * 61_000),
+    );
+    expect(sixth.status).toBe('locked_out');
   });
 
   it('answers identically whether or not a number has a pending sign-in', async () => {

@@ -193,7 +193,16 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
       return;
     }
 
-    const [inbound] = extractInboundEvents(body.data);
+    /* One webhook body can carry several events - several messages, possibly
+     * to different businesses - and this job is for ONE, named by its wamid.
+     * Taking events[0] processed a DIFFERENT tenant's message under this
+     * tenant when a batched body's first event was not ours: the wrong
+     * customer tokenised into this business, the wrong reply sent, and our
+     * own message dropped when the global provider-id unique made its job a
+     * no-op. Selected by externalId, exactly as the customer handler does. */
+    const inbound = extractInboundEvents(body.data).find(
+      (candidate) => candidate.kind === 'message' && candidate.externalId === event.externalId,
+    );
     if (!inbound || inbound.kind !== 'message') {
       await events.markProcessed(tx, eventId, null, businessId);
       return;

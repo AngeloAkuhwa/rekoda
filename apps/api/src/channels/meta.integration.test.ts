@@ -261,6 +261,22 @@ describe('webhook body ceiling', () => {
     const res = await post({ object: 'whatsapp_business_account', entry: [] });
     expect(res.statusCode).toBe(200);
   });
+
+  /**
+   * The cap is only real if it cannot be sidestepped by dropping the header.
+   * A chunked request with no Content-Length would otherwise reach the 2 MB
+   * global bodyLimit - sixteen times the webhook cap - on the one
+   * unauthenticated surface. Real providers always declare a length; a
+   * webhook that does not is refused with 411 before the body is read.
+   */
+  it('refuses a webhook with no Content-Length with 411, before parsing', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/webhooks/meta',
+      headers: { 'content-type': 'application/json', 'transfer-encoding': 'chunked' },
+    });
+    expect(res.statusCode).toBe(411);
+  });
 });
 
 describe('the subscription handshake', () => {

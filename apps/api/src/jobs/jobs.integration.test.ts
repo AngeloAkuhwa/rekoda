@@ -384,6 +384,58 @@ describe('the chat surface enforces roles', () => {
     return stubSender.sent[stubSender.sent.length - 1]?.text ?? '';
   }
 
+  it("processes THIS job's message out of a multi-event body, not the first", async () => {
+    // One webhook body, two text messages from two different numbers - the
+    // shape a batched Meta delivery has. The stored payload is the whole
+    // body, and this job is for the SECOND message. Before the fix the
+    // handler read events[0] and answered the FIRST sender; now it selects
+    // by wamid and answers the one this job is for.
+    const businessId = await seedBusiness('Batch Ltd', '+2348140019001');
+    const first = { waId: '2348140019011', wamid: 'wamid.batchA' };
+    const second = { waId: '2348140019012', wamid: 'wamid.batchB' };
+    const message = (m: { waId: string; wamid: string }) => ({
+      id: m.wamid,
+      from: m.waId,
+      timestamp: '1700000000',
+      type: 'text' as const,
+      text: { body: 'who owes me' },
+    });
+    const body = {
+      object: 'whatsapp_business_account',
+      entry: [
+        {
+          id: 'WABA',
+          changes: [
+            {
+              field: 'messages',
+              value: {
+                messaging_product: 'whatsapp',
+                metadata: { display_phone_number: '15550001', phone_number_id: 'PNID' },
+                contacts: [
+                  { profile: { name: 'A' }, wa_id: first.waId },
+                  { profile: { name: 'B' }, wa_id: second.waId },
+                ],
+                messages: [message(first), message(second)],
+              },
+            },
+          ],
+        },
+      ],
+    };
+    const recorded = await eventsRepo.recordEvent(appDb, {
+      provider: 'meta',
+      eventType: 'message.text',
+      externalId: second.wamid,
+      payload: sealPayload(body, config.vaultKey, 'meta', second.wamid),
+      businessId,
+    });
+    await enqueue(businessId, 'inbound.message', { eventId: recorded.id });
+    await buildRunner(workerDb, appDb, deps).runOnce();
+
+    const last = stubSender.sent[stubSender.sent.length - 1];
+    expect(last?.to).toBe(second.waId);
+  });
+
   it('refuses a write command from an accountant, after the model names it one', async () => {
     const businessId = await seedBusiness('Role Gate Ltd', '+2348140010001');
     await memberOf(businessId, '+2348140010002', 'accountant');

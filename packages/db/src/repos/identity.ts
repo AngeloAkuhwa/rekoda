@@ -102,6 +102,21 @@ export async function failuresSince(q: Queryable, phone: string, since: Date): P
   return Number(rows[0]?.total ?? 0);
 }
 
+/**
+ * How many codes were MINTED for this number since `since` - the count the
+ * per-phone hourly cap reads. Distinct from `failuresSince`, which sums wrong
+ * GUESSES: a request-only flood (ask, never answer) never increments
+ * `attempts`, so counting guesses can never bound the messages a caller can
+ * make Rekoda send. This counts the rows themselves, one per minted code.
+ */
+export async function challengesSince(q: Queryable, phone: string, since: Date): Promise<number> {
+  const rows = await q
+    .select({ total: sql<string>`count(*)` })
+    .from(otpChallenges)
+    .where(and(eq(otpChallenges.phone, phone), gt(otpChallenges.createdAt, since)));
+  return Number(rows[0]?.total ?? 0);
+}
+
 export async function insertChallenge(
   q: Queryable,
   challenge: Omit<OtpChallengeRow, 'id' | 'createdAt'>,

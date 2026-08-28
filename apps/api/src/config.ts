@@ -465,6 +465,39 @@ function required(env: NodeJS.ProcessEnv, key: string, minLength = 0): string {
   return value;
 }
 
+/**
+ * A 32-byte AES key, as 64 hex characters. Validating the SHAPE at boot, not
+ * just the length, is the difference between a misconfiguration caught by an
+ * operator at startup and one discovered by a merchant at a money path: a
+ * 64-character passphrase clears a length check, boots clean, and then
+ * throws `VaultError` from the vault's own `^[0-9a-f]{64}$` gate at the first
+ * encrypt - which is exactly the vault key's contract, enforced one layer
+ * too late to be a configuration error.
+ */
+function requiredHexKey(env: NodeJS.ProcessEnv, key: string): string {
+  const value = required(env, key, 64);
+  if (!/^[0-9a-f]{64}$/i.test(value)) {
+    throw new ConfigError(`${key} must be 64 hex characters (openssl rand -hex 32)`);
+  }
+  return value;
+}
+
+/**
+ * An OPTIONAL hex key: empty means the capability it protects is off (the
+ * call sites all guard on truthiness), but a NON-empty value must be a real
+ * key. `CONNECTION_KEY` guards the highest-value secrets in the estate -
+ * merchants' Paystack keys, WABA tokens, settlement account numbers - and a
+ * `changeme` there previously booted clean and failed at onboarding.
+ */
+function optionalHexKey(env: NodeJS.ProcessEnv, key: string): string {
+  const value = env[key];
+  if (!value) return '';
+  if (!/^[0-9a-f]{64}$/i.test(value)) {
+    throw new ConfigError(`${key}, when set, must be 64 hex characters (openssl rand -hex 32)`);
+  }
+  return value;
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
   const isProduction = env['NODE_ENV'] === 'production';
 
@@ -530,8 +563,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
      * real message instead of at boot. 64 hex characters = 32 bytes, which is
      * what `openssl rand -hex 32` produces and what AES-256 needs.
      */
-    vaultKey: required(env, 'VAULT_KEY', 64),
-    matchKey: required(env, 'MATCH_KEY', 64),
+    vaultKey: requiredHexKey(env, 'VAULT_KEY'),
+    matchKey: requiredHexKey(env, 'MATCH_KEY'),
     corsOrigins: (env['REKODA_CORS_ORIGINS'] ?? 'http://localhost:3000')
       .split(',')
       .map((s) => s.trim())
@@ -632,7 +665,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     paystackPlatformConfirmed: env['REKODA_PAYSTACK_PLATFORM_CONFIRMED'] === '1',
     monoSecretKey: env['MONO_SECRET_KEY'] ?? '',
     monoBaseUrl: env['MONO_BASE_URL'] ?? 'https://api.withmono.com',
-    connectionKey: env['CONNECTION_KEY'] ?? '',
+    connectionKey: optionalHexKey(env, 'CONNECTION_KEY'),
     metaAccessToken: env['META_ACCESS_TOKEN'] ?? '',
     metaPhoneNumberId: env['META_PHONE_NUMBER_ID'] ?? '',
     metaGraphVersion: env['META_GRAPH_VERSION'] ?? 'v21.0',
