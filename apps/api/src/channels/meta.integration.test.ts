@@ -66,6 +66,7 @@ import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { ContainerAudioProbe } from '../ai/audio-duration.js';
 import { CommandBus } from '../commands/command-bus.service.js';
 import { RiskPolicyService } from '../risk/risk-policy.service.js';
+import { SecurityMetrics } from './security-metrics.service.js';
 
 const APP_SECRET = 'meta-app-secret-for-tests';
 const VERIFY_TOKEN = 'meta-verify-token-for-tests';
@@ -329,6 +330,16 @@ describe('signature verification', () => {
     const res = await post(messagePayload('2348031234567', 'wamid.A4'), { corrupt: true });
     expect(res.statusCode).toBe(401);
     expect(await events.eventCount(db)).toBe(0);
+  });
+
+  it('counts a rejected signature so the ops alarm can fire (PR-108)', async () => {
+    // The DB `badSignatures` is a structural zero (rejection is pre-persist);
+    // the live counter is what an operator polling /v1/ops/health reads.
+    const security = app.get(SecurityMetrics);
+    const before = security.rejectedSignatures('meta');
+    const res = await post(messagePayload('2348031234567', 'wamid.A5'), { secret: 'not-ours' });
+    expect(res.statusCode).toBe(401);
+    expect(security.rejectedSignatures('meta')).toBe(before + 1);
   });
 });
 

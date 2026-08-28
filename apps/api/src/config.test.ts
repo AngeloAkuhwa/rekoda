@@ -6,7 +6,7 @@
  * silently sends a merchant's money message to a model nobody picked.
  */
 import { describe, expect, it } from 'vitest';
-import { loadConfig } from './config.js';
+import { isProductionEnv, loadConfig } from './config.js';
 
 const BASE = {
   DATABASE_URL: 'postgres://x@127.0.0.1:5432/x',
@@ -185,5 +185,41 @@ describe('the voice length limit', () => {
         VOICE_NOTE_MAX_DURATION_SECONDS: value,
       }),
     ).toThrow(/VOICE_NOTE_MAX_DURATION_SECONDS/);
+  });
+});
+
+describe('production hardening fails closed on NODE_ENV (PR-108)', () => {
+  it('treats unset, development and test as non-production', () => {
+    expect(isProductionEnv({})).toBe(false);
+    expect(isProductionEnv({ NODE_ENV: 'development' })).toBe(false);
+    expect(isProductionEnv({ NODE_ENV: 'test' })).toBe(false);
+    expect(isProductionEnv({ NODE_ENV: '' })).toBe(false);
+  });
+
+  it('treats production - and anything UNRECOGNISED - as production', () => {
+    expect(isProductionEnv({ NODE_ENV: 'production' })).toBe(true);
+    // The finding: a typo used to skip every production requirement.
+    expect(isProductionEnv({ NODE_ENV: 'prod' })).toBe(true);
+    expect(isProductionEnv({ NODE_ENV: 'Production' })).toBe(true);
+    expect(isProductionEnv({ NODE_ENV: 'staging' })).toBe(true);
+  });
+
+  it('so REKODA_REVEAL_OTP is refused under a typo`d production env', () => {
+    expect(() => loadConfig({ ...BASE, NODE_ENV: 'prod', REKODA_REVEAL_OTP: '1' })).toThrow(
+      /REKODA_REVEAL_OTP/,
+    );
+  });
+});
+
+describe('encryption keys are shape-validated at boot (PR-106)', () => {
+  it('refuses a vault key that is the right length but not hex', () => {
+    expect(() => loadConfig({ ...BASE, VAULT_KEY: 'z'.repeat(64) })).toThrow(/VAULT_KEY/);
+  });
+
+  it('accepts an empty CONNECTION_KEY (the capability is off) but not a bad one', () => {
+    expect(loadConfig({ ...BASE }).connectionKey).toBe('');
+    expect(() => loadConfig({ ...BASE, CONNECTION_KEY: 'changeme' })).toThrow(/CONNECTION_KEY/);
+    const good = 'c'.repeat(64);
+    expect(loadConfig({ ...BASE, CONNECTION_KEY: good }).connectionKey).toBe(good);
   });
 });

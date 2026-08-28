@@ -8,6 +8,7 @@ import { HealthController } from './health/health.controller.js';
 import { OpsController } from './health/ops.controller.js';
 import { MetaWebhookController } from './channels/meta.controller.js';
 import { MetaIngressService } from './channels/meta.service.js';
+import { SecurityMetricsModule } from './channels/security-metrics.module.js';
 import { JobsModule } from './jobs/jobs.module.js';
 import { BillingModule } from './billing/billing.module.js';
 import { PaymentsModule } from './payments/payments.module.js';
@@ -21,6 +22,7 @@ import { CommandsModule } from './commands/commands.module.js';
 
 @Module({
   imports: [
+    SecurityMetricsModule,
     BillingModule,
     CatalogueModule,
     DbModule,

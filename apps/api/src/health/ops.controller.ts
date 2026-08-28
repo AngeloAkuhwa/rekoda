@@ -38,6 +38,7 @@ import {
   type Margin,
 } from '@rekoda/core';
 import { CONFIG, type ApiConfig } from '../config.js';
+import { SecurityMetrics } from '../channels/security-metrics.service.js';
 import { DB, WORKER_DB } from '../db/db.module.js';
 
 /**
@@ -74,6 +75,7 @@ export class OpsController {
      * a process without one says so instead of guessing.
      */
     @Inject(WORKER_DB) private readonly workerDb: Db | null,
+    @Inject(SecurityMetrics) private readonly security: SecurityMetrics,
   ) {}
 
   @Get('health')
@@ -82,6 +84,16 @@ export class OpsController {
     queue: Awaited<ReturnType<typeof jobsRepo.queueHealth>> | null;
     meta: Awaited<ReturnType<typeof events.eventHealth>>;
     paystack: Awaited<ReturnType<typeof events.eventHealth>>;
+    /**
+     * Webhook signatures rejected THIS process since it started (S1, PR-108).
+     *
+     * The `badSignatures` inside `meta`/`paystack` above reads a column no
+     * code ever writes - signatures are rejected before persistence, so it
+     * is a structural zero. This is the counter that actually moves: a
+     * nonzero is a probe, or a secret rotation silently 401-ing real
+     * traffic. Per process, so poll every replica and alarm on any nonzero.
+     */
+    rejectedSignatures: { meta: number; paystack: number };
   }> {
     this.assertOperator(secret);
 
@@ -90,7 +102,15 @@ export class OpsController {
       events.eventHealth(this.db, 'meta'),
       events.eventHealth(this.db, 'paystack'),
     ]);
-    return { queue, meta, paystack };
+    return {
+      queue,
+      meta,
+      paystack,
+      rejectedSignatures: {
+        meta: this.security.rejectedSignatures('meta'),
+        paystack: this.security.rejectedSignatures('paystack'),
+      },
+    };
   }
 
   /**

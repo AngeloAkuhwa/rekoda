@@ -17,6 +17,7 @@ import { redactForLog } from '@rekoda/core/privacy';
 import { extractInboundEvents, metaWebhookBody } from '@rekoda/contracts';
 import { CONFIG, type ApiConfig } from '../config.js';
 import { MetaIngressService } from './meta.service.js';
+import { SecurityMetrics } from './security-metrics.service.js';
 
 /** Fastify hands us the raw body via the hook registered in main.ts. */
 interface RawBodyRequest {
@@ -30,6 +31,7 @@ export class MetaWebhookController {
   constructor(
     @Inject(CONFIG) private readonly config: ApiConfig,
     @Inject(MetaIngressService) private readonly ingress: MetaIngressService,
+    @Inject(SecurityMetrics) private readonly security: SecurityMetrics,
   ) {}
 
   /**
@@ -89,6 +91,7 @@ export class MetaWebhookController {
        * anyone an unbounded write into our database. The signature IS the
        * admission check.
        */
+      this.security.rejectedSignature('meta');
       this.log.warn('rejected a Meta webhook with an invalid signature');
       throw new UnauthorizedException('invalid signature');
     }

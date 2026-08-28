@@ -498,8 +498,27 @@ function optionalHexKey(env: NodeJS.ProcessEnv, key: string): string {
   return value;
 }
 
+/**
+ * Whether to apply production hardening - and it FAILS CLOSED.
+ *
+ * The old test was `NODE_ENV === 'production'`, which meant `NODE_ENV=prod`,
+ * `Production`, `staging`, or any typo skipped every production requirement:
+ * the trusted-proxy rule that stops a forged X-Forwarded-For, the ban on
+ * returning live OTP codes, the required Meta secrets. Hardening now applies
+ * UNLESS the environment is explicitly one of the known non-production
+ * values, so an unrecognised NODE_ENV is treated as production rather than
+ * as development. Unset is development (tests and local dev delete it), which
+ * is the one non-production state that carries no name.
+ */
+const NON_PRODUCTION_ENVS = new Set(['development', 'test']);
+export function isProductionEnv(env: NodeJS.ProcessEnv): boolean {
+  const value = env['NODE_ENV'];
+  if (value === undefined || value === '') return false;
+  return !NON_PRODUCTION_ENVS.has(value);
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
-  const isProduction = env['NODE_ENV'] === 'production';
+  const isProduction = isProductionEnv(env);
 
   const revealOtp = env['REKODA_REVEAL_OTP'] === '1';
   if (revealOtp && isProduction) {

@@ -6,15 +6,17 @@ import rateLimit from '@fastify/rate-limit';
 import { FastifyAdapter, type NestFastifyApplication } from '@nestjs/platform-fastify';
 import { AppModule } from './app.module.js';
 import { MAX_IMAGE_BYTES } from '@rekoda/core';
-import { CONFIG, loadConfig, type ApiConfig } from './config.js';
+import { CONFIG, isProductionEnv, loadConfig, type ApiConfig } from './config.js';
 
 function trustedProxies(): boolean | string[] {
   const raw = process.env['REKODA_TRUSTED_PROXIES']?.trim();
   if (!raw) {
     /* Trust-all is a development-only default: it believes any
      * X-Forwarded-For, which lets a direct caller reset every per-IP bucket
-     * with a spoofed header per request. Production must name its proxies. */
-    if (process.env['NODE_ENV'] === 'production') {
+     * with a spoofed header per request. Production must name its proxies -
+     * and "production" is anything not explicitly dev or test, so a typo'd
+     * NODE_ENV fails CLOSED into requiring the proxy list rather than open. */
+    if (isProductionEnv(process.env)) {
       throw new Error(
         'REKODA_TRUSTED_PROXIES is required in production: set it to your ' +
           'proxy/load-balancer addresses or CIDRs, or the per-IP rate limit ' +
