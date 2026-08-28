@@ -3545,3 +3545,93 @@ describe('customer and supplier statements (D1, PR-096)', () => {
     expect(body.closingK).toBe(11_000_000);
   });
 });
+
+describe('exports on the kernel (D1, PR-098)', () => {
+  it('a customer statement downloads as the same story the page tells, closing row included', async () => {
+    const ada = await onboard('+2348055500063');
+    const customer = await customersRepo.createCustomerWithIdentities(
+      db,
+      ada.businessId,
+      'CHI98',
+      [],
+    );
+    const sale = await withBusiness(db, ada.businessId, (tx) =>
+      issueRepo.issueSale(tx, {
+        businessId: ada.businessId,
+        customerId: customer.id,
+        customerToken: 'CHI98',
+        items: [{ name: 'gown', quantity: 1, unitPriceK: 8_000_000 }],
+        subtotalK: 8_000_000,
+        discountK: 0,
+        deliveryFeeK: 0,
+        vatK: 0,
+        totalK: 8_000_000,
+        paidK: 0,
+        balanceDueK: 8_000_000,
+        method: 'transfer',
+        sourceType: 'chat',
+        sourceId: 'draft-x98',
+        actor: 'owner',
+      }),
+    );
+    await withBusiness(db, ada.businessId, (tx) =>
+      settleRepo.recordMerchantPayment(tx, {
+        businessId: ada.businessId,
+        invoiceId: sale.invoiceId,
+        amountK: 3_000_000,
+        method: 'transfer',
+        sourceType: 'chat',
+        sourceId: 'pay-x98',
+        actor: 'owner',
+      }),
+    );
+
+    const res = await app.inject({
+      method: 'GET',
+      url: `/v1/reports/customers/${customer.id}/statement.csv`,
+      headers: ada.auth,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['content-type']).toContain('text/csv');
+    const lines = res.body.trim().split(/\r?\n/);
+    expect(lines[0]).toBe('Date,Entry,Reference,Amount,Balance');
+    expect(lines[1]).toContain('invoice');
+    expect(lines[1]).toContain('80000.00');
+    expect(lines[2]).toContain('payment');
+    expect(lines[lines.length - 1]).toContain('Balance now');
+    expect(lines[lines.length - 1]).toContain('50000.00');
+    expect(res.body).not.toContain('Chidi');
+  });
+
+  it('a supplier statement downloads over bills and payments', async () => {
+    const ada = await onboard('+2348055500064');
+    const { supplierId } = await withBusiness(db, ada.businessId, (tx) =>
+      suppliersRepo.findOrCreateSupplier(tx, ada.businessId, {
+        nameCipher: 'cipher-mama-98',
+        matchKey: 'mk-mama-98',
+      }),
+    );
+    await withBusiness(db, ada.businessId, (tx) =>
+      spendRepo.recordPurchase(tx, {
+        businessId: ada.businessId,
+        description: 'bales',
+        amountK: 20_000_000,
+        paidK: 5_000_000,
+        sourceType: 'chat',
+        sourceId: 'purch-x98',
+        supplierId,
+      }),
+    );
+
+    const res = await app.inject({
+      method: 'GET',
+      url: `/v1/reports/suppliers/${supplierId}/statement.csv`,
+      headers: ada.auth,
+    });
+    expect(res.statusCode).toBe(200);
+    const lines = res.body.trim().split(/\r?\n/);
+    expect(lines[1]).toContain('bill');
+    expect(lines[1]).toContain('150000.00');
+    expect(lines[lines.length - 1]).toContain('150000.00');
+  });
+});

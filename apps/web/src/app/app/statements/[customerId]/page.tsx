@@ -87,7 +87,9 @@ export default async function CustomerStatementPage({
               </table>
             </div>
             <p className="rk-fineprint">
-              Balance now: <Money kobo={statement.closingK} />
+              Balance now: <Money kobo={statement.closingK} />. Download it as a file from{' '}
+              <a href={`/app/export`}>exports</a> to send with &quot;please reconcile and pay the
+              balance&quot;.
             </p>
           </>
         )}

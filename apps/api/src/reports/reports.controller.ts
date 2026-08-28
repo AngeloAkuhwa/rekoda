@@ -1919,6 +1919,53 @@ export class ReportsController {
     sendCsv(reply, `rekoda-invoices-${csvDate(now)}.csv`, csv);
   }
 
+  /**
+   * A customer's statement as a file (D1, PR-098): the accountant
+   * deliverable behind "please reconcile and pay the balance". The same
+   * read the statement page renders, in the same order, with the same
+   * closing balance — one derivation, two presentations. Numbers and
+   * figures only: no name rides an export any more than a page.
+   *
+   * REPORT_EXPORTS is not consumed here yet, deliberately: the unit is
+   * sold on no plan until the pricing decision assigns its figure, and 0
+   * means zero — metering today would remove a working capability rather
+   * than price one. The gate arrives with BL2's allowances-as-data.
+   */
+  @Get('customers/:customerId/statement.csv')
+  async customerStatementCsv(
+    @Req() request: AuthedRequest,
+    @Param('customerId') customerId: string,
+    @Res() reply: CsvReply,
+  ): Promise<void> {
+    const businessId = request.auth!.businessId;
+    const statement = await withBusiness(this.db, businessId, (tx) =>
+      partyStatementsRepo.customerStatementFor(tx, businessId, customerId),
+    );
+    sendCsv(
+      reply,
+      `rekoda-customer-statement-${csvDate(new Date())}.csv`,
+      partyStatementCsv(statement),
+    );
+  }
+
+  /** The supplier mirror: bills raised, payments made, balance owed. */
+  @Get('suppliers/:supplierId/statement.csv')
+  async supplierStatementCsv(
+    @Req() request: AuthedRequest,
+    @Param('supplierId') supplierId: string,
+    @Res() reply: CsvReply,
+  ): Promise<void> {
+    const businessId = request.auth!.businessId;
+    const statement = await withBusiness(this.db, businessId, (tx) =>
+      partyStatementsRepo.supplierStatementFor(tx, businessId, supplierId),
+    );
+    sendCsv(
+      reply,
+      `rekoda-supplier-statement-${csvDate(new Date())}.csv`,
+      partyStatementCsv(statement),
+    );
+  }
+
   @Get('expenses.csv')
   async expensesCsv(@Req() request: AuthedRequest, @Res() reply: CsvReply): Promise<void> {
     const businessId = request.auth!.businessId;
@@ -2091,6 +2138,28 @@ function requirePeriod(period: string | undefined): string {
 }
 
 /** All four, from one set of sums, so the JSON and the PDF cannot disagree. */
+/** One statement, one spreadsheet shape (PR-098): the running balance the
+ * page shows, with the closing balance as its own labelled row so a file
+ * opened cold still answers the only question it is sent to answer. */
+function partyStatementCsv(statement: partyStatementsRepo.PartyStatement): string {
+  return toCsv(
+    ['Date', 'Entry', 'Reference', 'Amount', 'Balance'],
+    [
+      ...(statement.openingK !== 0
+        ? [['', 'Opening balance', '', '', csvKobo(statement.openingK)]]
+        : []),
+      ...statement.entries.map((entry) => [
+        entry.on,
+        entry.kind,
+        entry.reference,
+        csvKobo(entry.amountK),
+        csvKobo(entry.balanceK),
+      ]),
+      ['', 'Balance now', '', '', csvKobo(statement.closingK)],
+    ],
+  );
+}
+
 /** A YYYY-MM-DD the query actually sent, or null. Garbage is null too:
  * an unreadable window is the whole account, never an error page. */
 function dayOrNull(value?: string): string | null {
