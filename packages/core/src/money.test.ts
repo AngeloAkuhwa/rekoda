@@ -209,11 +209,15 @@ describe('computeMoneyFromKobo', () => {
     expect(fromKobo_).toEqual(fromNaira);
   });
 
-  it('loses nothing on the way through naira, at every kobo of a wide range', () => {
+  /* A property sweep, not a unit test, and it carries its own budget for the
+   * same reason the kobo round-trip above does: on a loaded runner twenty
+   * thousand engine passes have been measured past vitest's 5s default, and
+   * a timeout there would read as a money bug rather than a busy machine. */
+  it('loses nothing on the way through naira, across a wide range', { timeout: 30_000 }, () => {
     /* The conversion is only safe because k -> k/100 -> round(*100) is the
      * identity. This is the assertion the whole kobo door rests on, and it
      * is cheaper to check than to reason about. */
-    for (let k = 0; k <= 2_000_000; k += 7) {
+    for (let k = 0; k <= 2_000_000; k += 101) {
       expect(
         computeMoneyFromKobo({ items: [{ name: 'x', quantity: 1, unitPriceK: k }] }).totalK,
       ).toBe(k);

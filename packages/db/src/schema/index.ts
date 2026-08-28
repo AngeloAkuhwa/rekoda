@@ -1,5 +1,6 @@
 export * from './tenancy.js';
 export * from './api.js';
+export * from './webhooks.js';
 export * from './privacy.js';
 export * from './commerce.js';
 export * from './finance.js';

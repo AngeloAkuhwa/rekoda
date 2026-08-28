@@ -42,6 +42,9 @@ import { sweepEvidence, sweepRetention } from '../privacy/retention-sweep.js';
 import { sweepRecurring } from '../spend/recurring-sweep.js';
 import { sweepDepreciation } from '../spend/depreciation-sweep.js';
 import { OutboxDispatcher } from '../commands/outbox-dispatcher.js';
+import { webhookFanOut, type OutboxFanOut } from '../webhooks/fan-out.js';
+import { deliverWebhooks } from '../webhooks/delivery.sweep.js';
+import { HttpWebhookSender } from '../webhooks/sender.js';
 import { CommandsModule } from '../commands/commands.module.js';
 import { CommandBus } from '../commands/command-bus.service.js';
 import { MESSAGE_SENDER } from '../channels/sender.tokens.js';
@@ -155,50 +158,55 @@ export function buildRunner(
  * missing from the other cannot happen. Event types arrive with the commands
  * that emit them, each PR adding its `register` call here.
  */
-export function buildOutboxDispatcher(): OutboxDispatcher {
+export function buildOutboxDispatcher(fanOut: OutboxFanOut = async () => {}): OutboxDispatcher {
   const dispatcher = new OutboxDispatcher();
 
-  /* PR-021's facts. Delivery today is to ZERO subscribers, and delivering to
-   * nobody succeeds — the handler exists so the event is a delivered fact
-   * rather than a dead alarm. PR-112 (webhooks) replaces these bodies with
-   * fan-out to whatever the merchant subscribed; the type names are already
-   * the contract. */
-  dispatcher.register('sale.recorded', async () => {});
-  dispatcher.register('invoice.issued', async () => {});
+  /* Since PR-112 every handler is the SAME function: fan-out to whatever
+   * the merchant subscribed. What differs between `sale.recorded` and
+   * `period.closed` is the payload the command already wrote, not how it
+   * reaches a subscriber, so a handler per type would be nineteen copies of
+   * one idea. The registry stays explicit because it is also the LIST — an
+   * event type absent from it fails and retries rather than vanishing.
+   *
+   * The default is the old empty body: a caller that passes no fan-out
+   * delivers to nobody, which is what every command suite wants and what
+   * production did before this PR. */
+  dispatcher.register('sale.recorded', fanOut);
+  dispatcher.register('invoice.issued', fanOut);
 
-  /* PR-022's facts, same contract: zero subscribers today, webhooks later. */
-  dispatcher.register('payment.recorded', async () => {});
-  dispatcher.register('payment.confirmed', async () => {});
+  /* PR-022's facts. */
+  dispatcher.register('payment.recorded', fanOut);
+  dispatcher.register('payment.confirmed', fanOut);
 
   /* PR-023's facts. */
-  dispatcher.register('expense.recorded', async () => {});
-  dispatcher.register('purchase.recorded', async () => {});
+  dispatcher.register('expense.recorded', fanOut);
+  dispatcher.register('purchase.recorded', fanOut);
 
   /* PR-024's facts. */
-  dispatcher.register('journal.posted', async () => {});
-  dispatcher.register('period.closed', async () => {});
+  dispatcher.register('journal.posted', fanOut);
+  dispatcher.register('period.closed', fanOut);
 
   /* PR-083's fact. */
-  dispatcher.register('books.opened', async () => {});
+  dispatcher.register('books.opened', fanOut);
 
   /* PR-088's facts: what validation decided, either way. */
-  dispatcher.register('order.validated', async () => {});
-  dispatcher.register('order.rejected', async () => {});
+  dispatcher.register('order.validated', fanOut);
+  dispatcher.register('order.rejected', fanOut);
 
   /* PR-025's fact. */
-  dispatcher.register('order.placed', async () => {});
+  dispatcher.register('order.placed', fanOut);
 
   /* PR-026's facts. */
-  dispatcher.register('financial_transactions.ingested', async () => {});
-  dispatcher.register('reconciliation.confirmed', async () => {});
+  dispatcher.register('financial_transactions.ingested', fanOut);
+  dispatcher.register('reconciliation.confirmed', fanOut);
 
   /* PR-027's facts. */
-  dispatcher.register('inventory.adjusted', async () => {});
-  dispatcher.register('data.erased', async () => {});
+  dispatcher.register('inventory.adjusted', fanOut);
+  dispatcher.register('data.erased', fanOut);
 
   /* PR-028's facts. */
-  dispatcher.register('invoice.voided', async () => {});
-  dispatcher.register('period.reopened', async () => {});
+  dispatcher.register('invoice.voided', fanOut);
+  dispatcher.register('period.reopened', fanOut);
 
   return dispatcher;
 }
@@ -237,6 +245,8 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
   private sweepingRetention = false;
   private outboxTimer: NodeJS.Timeout | null = null;
   private dispatchingOutbox = false;
+  private webhookTimer: NodeJS.Timeout | null = null;
+  private sendingWebhooks = false;
 
   constructor(
     @Inject(CONFIG) private readonly config: ApiConfig,
@@ -548,7 +558,7 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
      * the batch claim is one query when the table is empty, which is almost
      * always.
      */
-    const dispatcher = buildOutboxDispatcher();
+    const dispatcher = buildOutboxDispatcher(webhookFanOut(workerDb));
     this.outboxTimer = setInterval(() => {
       if (this.dispatchingOutbox) return;
       this.dispatchingOutbox = true;
@@ -562,6 +572,30 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
         });
     }, 2_000);
     this.outboxTimer.unref();
+
+    /**
+     * Sending what fan-out queued (PR-112).
+     *
+     * Its own timer rather than a step inside the dispatcher, because the
+     * send is a request to an address a merchant chose: a slow endpoint
+     * inside the outbox pass would dam every other merchant's facts behind
+     * one merchant's outage. Five seconds, and no advisory lock for the
+     * same reason the outbox has none — the lease makes concurrent senders
+     * safe, so extra replicas speed delivery instead of wasting passes.
+     */
+    const webhookSender = new HttpWebhookSender();
+    this.webhookTimer = setInterval(() => {
+      if (this.sendingWebhooks) return;
+      this.sendingWebhooks = true;
+      deliverWebhooks({ worker: workerDb, vaultKey: this.config.vaultKey, sender: webhookSender })
+        .catch((error: unknown) => {
+          this.log.warn(`webhook pass failed: ${redactForLog(describeFailure(error))}`);
+        })
+        .finally(() => {
+          this.sendingWebhooks = false;
+        });
+    }, 5_000);
+    this.webhookTimer.unref();
   }
 
   /**
@@ -593,6 +627,7 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
     if (this.feedTimer) clearInterval(this.feedTimer);
     if (this.strangerTimer) clearInterval(this.strangerTimer);
     if (this.outboxTimer) clearInterval(this.outboxTimer);
+    if (this.webhookTimer) clearInterval(this.webhookTimer);
     await this.runner?.stop();
   }
 }

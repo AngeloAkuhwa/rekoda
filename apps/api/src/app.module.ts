@@ -20,11 +20,13 @@ import { ShopModule } from './shop/shop.module.js';
 import { RiskModule } from './risk/risk.module.js';
 import { CommandsModule } from './commands/commands.module.js';
 import { ApiModule } from './api/api.module.js';
+import { WebhooksModule } from './webhooks/webhooks.module.js';
 
 @Module({
   imports: [
     SecurityMetricsModule,
     ApiModule,
+    WebhooksModule,
     BillingModule,
     CatalogueModule,
     DbModule,

@@ -154,6 +154,9 @@ describe('what an accountant may do', () => {
       /* Minting an API key is standing access to the whole business that
        * outlives every sign-out. Owner only (spec §27). */
       ['/v1/api-keys/applications', { name: 'Accountant app' }],
+      /* A webhook endpoint is a standing copy of the books going somewhere
+       * the owner chose, and it outlives every sign-out (spec §26). */
+      ['/v1/webhooks', { url: 'https://accountant.test/hook' }],
     ] as const;
     for (const [url, payload] of doors) {
       expect((await post(url, payload, accountant)).statusCode, url).toBe(403);
@@ -182,6 +185,7 @@ describe('what a delegate may do', () => {
       ['/v1/billing/plan', { plan: 'complete' }],
       ['/v1/shop-settings', {}],
       ['/v1/api-keys/applications', { name: 'Delegate app' }],
+      ['/v1/webhooks', { url: 'https://delegate.test/hook' }],
     ] as const;
     for (const [url, payload] of doors) {
       expect((await post(url, payload, delegate)).statusCode, url).toBe(403);
@@ -200,6 +204,9 @@ describe('what the owner may do', () => {
     // so "past the guard" here is simply "anything but 403".
     expect((await post('/v1/shop-settings', {}, owner)).statusCode).not.toBe(403);
     expect((await post('/v1/api-keys/applications', { name: 'Owner app' }, owner)).statusCode).toBe(
+      200,
+    );
+    expect((await post('/v1/webhooks', { url: 'https://owner.test/hook' }, owner)).statusCode).toBe(
       200,
     );
   });
