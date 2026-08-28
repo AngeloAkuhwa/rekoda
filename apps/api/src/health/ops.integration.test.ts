@@ -12,11 +12,14 @@ import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import {
   billingRepo,
   createDb,
+  customersRepo,
   events,
   identity,
+  issueRepo,
   jobsRepo,
   planCatalogueRepo,
   quotaRepo,
+  sql,
   subscriptionsRepo,
   withBusiness,
   type Db,
@@ -679,5 +682,104 @@ describe('the exception queue', () => {
         )
       ).statusCode,
     ).toBe(404);
+  });
+});
+
+/**
+ * Spec §31's invariants as live probes (S1, PR-104): zero forever on a
+ * healthy estate, and the first nonzero carries the business id.
+ */
+describe('financial integrity probes', () => {
+  const probe = (headers: Record<string, string> = {}) =>
+    app.inject({ method: 'GET', url: '/v1/ops/financial-integrity', headers });
+
+  async function merchant(phone: string): Promise<string> {
+    const user = await identity.upsertUserByPhone(db, phone);
+    const business = await identity.createBusinessWithOwner(db, {
+      name: 'Probe Shop',
+      businessType: null,
+      ownerUserId: user.id,
+    });
+    return business.id;
+  }
+
+  async function saleFor(businessId: string, paidK: number, totalK = 50_000) {
+    const customer = await customersRepo.createCustomerWithIdentities(db, businessId, 'CHI', []);
+    return withBusiness(db, businessId, (tx) =>
+      issueRepo.issueSale(tx, {
+        businessId,
+        customerId: customer.id,
+        customerToken: 'CHI',
+        items: [{ name: 'wig', quantity: 1, unitPriceK: totalK }],
+        subtotalK: totalK,
+        discountK: 0,
+        deliveryFeeK: 0,
+        vatK: 0,
+        totalK,
+        paidK,
+        balanceDueK: totalK - paidK,
+        method: 'cash',
+        sourceType: 'chat',
+        sourceId: `probe-${paidK}-${totalK}`,
+        actor: 'owner',
+      }),
+    );
+  }
+
+  it('is shut without the operator secret', async () => {
+    expect((await probe()).statusCode).toBe(403);
+  });
+
+  it('answers all zero over a clean estate, every business scanned', async () => {
+    const businessId = await merchant('+2348030000211');
+    /* A properly paid sale: the invoice, the payment AND the allocation,
+     * which is exactly what invariant 3 demands to see. */
+    await saleFor(businessId, 50_000);
+
+    const body = await probe({ 'x-rekoda-operator-secret': OPERATOR_SECRET }).then((r) => r.json());
+    expect(body.scanned).toBe(1);
+    expect(body.estateComplete).toBe(true);
+    expect(body.totals).toEqual({
+      unbalancedJournals: 0,
+      paidWithoutSettlement: 0,
+      settlementDrift: 0,
+      deadOutboxEvents: 0,
+      undispatchedOutbox: 0,
+    });
+    expect(body.violations).toEqual([]);
+  });
+
+  it('surfaces a paid invoice with no money trail, by id and count only', async () => {
+    const clean = await merchant('+2348030000212');
+    await saleFor(clean, 50_000);
+    const broken = await merchant('+2348030000213');
+    await saleFor(broken, 0);
+    /* The violation no constraint prevents: a status that says paid with
+     * no allocation and no applied credit behind it. Written as the owner
+     * because the application has no path that can do this - which is the
+     * point of watching for it. */
+    await ownerDb.execute(sql`
+      UPDATE invoices SET status = 'paid'
+      WHERE business_id = ${broken}::uuid
+    `);
+
+    const body = await probe({ 'x-rekoda-operator-secret': OPERATOR_SECRET }).then((r) => r.json());
+    expect(body.totals.paidWithoutSettlement).toBe(1);
+    expect(body.violations).toEqual([{ businessId: broken, paidWithoutSettlement: 1 }]);
+  });
+
+  it('keeps a dead outbox announcement visible, with its age', async () => {
+    const businessId = await merchant('+2348030000214');
+    await ownerDb.execute(sql`
+      INSERT INTO outbox_events (business_id, type, payload, occurred_at, attempts, max_attempts)
+      VALUES (${businessId}::uuid, 'sale.recorded', '{}'::jsonb,
+              now() - interval '90 minutes', 8, 8)
+    `);
+
+    const body = await probe({ 'x-rekoda-operator-secret': OPERATOR_SECRET }).then((r) => r.json());
+    expect(body.totals.deadOutboxEvents).toBe(1);
+    expect(body.totals.undispatchedOutbox).toBe(1);
+    expect(body.oldestUndispatchedMinutes).toBeGreaterThanOrEqual(89);
+    expect(body.violations).toEqual([{ businessId, deadOutboxEvents: 1 }]);
   });
 });

@@ -21,6 +21,7 @@ import {
   events,
   jobsRepo,
   marginRepo,
+  observabilityRepo,
   settleRepo,
   subscriptionsRepo,
   withBusiness,
@@ -155,6 +156,105 @@ export class OpsController {
               ? ('approaching_cap' as const)
               : ('collecting' as const),
       })),
+    };
+  }
+
+  /**
+   * Spec §31's invariants, running as probes (S1, PR-104).
+   *
+   * Every integrity count here should be zero forever: unbalanced journals
+   * (invariant 2, the belt checking PR-039's trigger), paid invoices with
+   * no money trail (invariant 3, which no constraint enforces), settlements
+   * whose explanation stopped adding up (invariant 5), and dead outbox
+   * events - §26 promises a dead announcement is visible, and this is
+   * where. The first nonzero is an incident with a business id attached.
+   *
+   * The sweep runs per tenant under the tenant pin, deliberately: the
+   * worker credential reads whole tables only where a migration argued for
+   * a policy, and an estate-wide probe is not worth widening that boundary.
+   * `estateComplete` says whether the page covered everybody, because an
+   * integrity report that silently truncated would be the exact failure
+   * this endpoint exists to prevent.
+   */
+  @Get('financial-integrity')
+  async financialIntegrity(
+    @Headers('x-rekoda-operator-secret') secret: string | undefined,
+  ): Promise<{
+    scanned: number;
+    estateComplete: boolean;
+    totals: {
+      unbalancedJournals: number;
+      paidWithoutSettlement: number;
+      settlementDrift: number;
+      deadOutboxEvents: number;
+      undispatchedOutbox: number;
+    };
+    /** Minutes, worst tenant. Null when every announcement is delivered. */
+    oldestUndispatchedMinutes: number | null;
+    /** Ids only, with their nonzero integrity counts. Empty is the goal. */
+    violations: Array<
+      { businessId: string } & Partial<
+        Pick<
+          Awaited<ReturnType<typeof observabilityRepo.financialProbesFor>>,
+          'unbalancedJournals' | 'paidWithoutSettlement' | 'settlementDrift' | 'deadOutboxEvents'
+        >
+      >
+    >;
+  }> {
+    this.assertOperator(secret);
+    if (!this.workerDb) {
+      throw new ServiceUnavailableException(
+        'financial integrity needs the worker credential (WORKER_DATABASE_URL); poll a process that holds one',
+      );
+    }
+
+    const SWEEP_CAP = 500;
+    const ids = await observabilityRepo.sweepBusinessIds(this.workerDb, SWEEP_CAP);
+    const totals = {
+      unbalancedJournals: 0,
+      paidWithoutSettlement: 0,
+      settlementDrift: 0,
+      deadOutboxEvents: 0,
+      undispatchedOutbox: 0,
+    };
+    let oldest: number | null = null;
+    const violations: Array<{
+      businessId: string;
+      unbalancedJournals?: number;
+      paidWithoutSettlement?: number;
+      settlementDrift?: number;
+      deadOutboxEvents?: number;
+    }> = [];
+
+    for (const businessId of ids) {
+      const probes = await withBusiness(this.db, businessId, (tx) =>
+        observabilityRepo.financialProbesFor(tx),
+      );
+      totals.unbalancedJournals += probes.unbalancedJournals;
+      totals.paidWithoutSettlement += probes.paidWithoutSettlement;
+      totals.settlementDrift += probes.settlementDrift;
+      totals.deadOutboxEvents += probes.deadOutboxEvents;
+      totals.undispatchedOutbox += probes.undispatchedOutbox;
+      if (probes.oldestUndispatchedMinutes !== null) {
+        oldest = Math.max(oldest ?? 0, probes.oldestUndispatchedMinutes);
+      }
+
+      const broken: (typeof violations)[number] = { businessId };
+      if (probes.unbalancedJournals > 0) broken.unbalancedJournals = probes.unbalancedJournals;
+      if (probes.paidWithoutSettlement > 0) {
+        broken.paidWithoutSettlement = probes.paidWithoutSettlement;
+      }
+      if (probes.settlementDrift > 0) broken.settlementDrift = probes.settlementDrift;
+      if (probes.deadOutboxEvents > 0) broken.deadOutboxEvents = probes.deadOutboxEvents;
+      if (Object.keys(broken).length > 1) violations.push(broken);
+    }
+
+    return {
+      scanned: ids.length,
+      estateComplete: ids.length < SWEEP_CAP,
+      totals,
+      oldestUndispatchedMinutes: oldest,
+      violations,
     };
   }
 
