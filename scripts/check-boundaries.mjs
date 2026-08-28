@@ -125,6 +125,38 @@ function commandLayerViolations(rel, body) {
   return found;
 }
 
+/**
+ * Spec §27: "Public contracts must not expose Drizzle table shapes. Contracts
+ * live in packages/contracts and are versioned independently of the schema."
+ *
+ * Independence is a claim about imports before it is a claim about anything
+ * else: a contract that can name a table type is one refactor away from
+ * BEING the table type, and the day it is, a migration silently reshapes
+ * somebody else's integration. The freeze test in
+ * packages/contracts/src/public/v1/shape.test.ts guards the shapes; this
+ * guards the reach.
+ */
+const CONTRACTS_DIR = 'packages/contracts/src/';
+const SCHEMA_SPECIFIER = /^(@rekoda\/db(\/.*)?|drizzle-orm(\/.*)?)$/;
+
+function contractViolations(rel, body) {
+  if (!rel.startsWith(CONTRACTS_DIR)) return [];
+  const found = [];
+  for (const [, spec] of body.matchAll(SPECIFIER)) {
+    if (!SCHEMA_SPECIFIER.test(spec)) continue;
+    found.push({
+      rel,
+      spec,
+      rule: {
+        name: 'schema types in a wire contract',
+        reason:
+          'contracts are versioned independently of the schema (spec §27); describe the wire shape in zod rather than importing a table type',
+      },
+    });
+  }
+  return found;
+}
+
 const SKIP_DIRS = new Set(['node_modules', 'dist', '.next', '.turbo', 'migrations', '.git']);
 const SOURCE = /\.(ts|tsx|mts|cts|mjs|js)$/;
 
@@ -158,6 +190,7 @@ for (const dir of ['apps', 'packages']) {
     }
     if (!isTestOrConfig) violations.push(...aiAdapterViolations(rel, body));
     if (!isTestOrConfig) violations.push(...commandLayerViolations(rel, body));
+    if (!isTestOrConfig) violations.push(...contractViolations(rel, body));
   }
 }
 

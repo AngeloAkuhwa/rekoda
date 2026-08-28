@@ -67,20 +67,3 @@ export const apiApplicationListResponse = z.object({
   keys: z.array(apiKeyView),
 });
 export type ApiApplicationListResponse = z.infer<typeof apiApplicationListResponse>;
-
-/**
- * What an authenticated API call sees about itself.
- *
- * The smallest useful response, and it exists so a developer can prove their
- * key works before writing anything that depends on it. It names the business
- * the key speaks for, so a key pasted into the wrong environment fails loudly
- * rather than writing into the wrong books.
- */
-export const apiIdentityResponse = z.object({
-  businessId: z.string().uuid(),
-  businessName: z.string(),
-  applicationId: z.string().uuid(),
-  keyPrefix: z.string(),
-  rateLimitPerMinute: z.number().int().positive(),
-});
-export type ApiIdentityResponse = z.infer<typeof apiIdentityResponse>;

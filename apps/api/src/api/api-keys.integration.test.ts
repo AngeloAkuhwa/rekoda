@@ -179,7 +179,7 @@ describe('authenticating', () => {
     await grantApi(businessId);
     const { token, applicationId } = await mint(auth, 'Integration');
 
-    const response = await get('/v1/api/identity', asKey(token));
+    const response = await get('/api/v1/identity', asKey(token));
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({
       businessId,
@@ -193,7 +193,7 @@ describe('authenticating', () => {
     const { auth } = await onboard('+2348190000011', 'Unentitled Co');
     const { token } = await mint(auth, 'Integration');
 
-    const response = await get('/v1/api/identity', asKey(token));
+    const response = await get('/api/v1/identity', asKey(token));
     expect(response.statusCode).toBe(403);
   });
 
@@ -201,16 +201,16 @@ describe('authenticating', () => {
     const { businessId, auth } = await onboard('+2348190000012', 'Refusals Co');
     await grantApi(businessId);
     const { token, keyId } = await mint(auth, 'Integration');
-    expect((await get('/v1/api/identity', asKey(token))).statusCode).toBe(200);
+    expect((await get('/api/v1/identity', asKey(token))).statusCode).toBe(200);
 
     await post(`/v1/api-keys/keys/${keyId}/revoke`, {}, auth);
-    expect((await get('/v1/api/identity', asKey(token))).statusCode).toBe(401);
+    expect((await get('/api/v1/identity', asKey(token))).statusCode).toBe(401);
 
-    expect((await get('/v1/api/identity', asKey('rk_live_deadbeef_nope'))).statusCode).toBe(401);
-    expect((await get('/v1/api/identity', {})).statusCode).toBe(401);
+    expect((await get('/api/v1/identity', asKey('rk_live_deadbeef_nope'))).statusCode).toBe(401);
+    expect((await get('/api/v1/identity', {})).statusCode).toBe(401);
     /* The merchant's own session is not an API credential, and the API key
      * is not a session. Neither door opens with the other's key. */
-    expect((await get('/v1/api/identity', auth)).statusCode).toBe(401);
+    expect((await get('/api/v1/identity', auth)).statusCode).toBe(401);
     expect((await get('/v1/api-keys', asKey(token))).statusCode).toBe(401);
   });
 
@@ -220,10 +220,10 @@ describe('authenticating', () => {
     const { token, applicationId } = await mint(auth, 'Integration');
 
     await post(`/v1/api-keys/applications/${applicationId}/disable`, {}, auth);
-    expect((await get('/v1/api/identity', asKey(token))).statusCode).toBe(401);
+    expect((await get('/api/v1/identity', asKey(token))).statusCode).toBe(401);
 
     await post(`/v1/api-keys/applications/${applicationId}/enable`, {}, auth);
-    expect((await get('/v1/api/identity', asKey(token))).statusCode).toBe(200);
+    expect((await get('/api/v1/identity', asKey(token))).statusCode).toBe(200);
   });
 
   it('gives each business its own tenant, and no way to ask for another', async () => {
@@ -233,7 +233,7 @@ describe('authenticating', () => {
     await grantApi(second.businessId);
     const firstKey = await mint(first.auth, 'Integration');
 
-    const seen = (await get('/v1/api/identity', asKey(firstKey.token))).json() as {
+    const seen = (await get('/api/v1/identity', asKey(firstKey.token))).json() as {
       businessId: string;
     };
     expect(seen.businessId).toBe(first.businessId);
@@ -253,7 +253,7 @@ describe('authenticating', () => {
     const before = (await get('/v1/api-keys', auth)).json() as { keys: { lastUsedAt: null }[] };
     expect(before.keys[0]!.lastUsedAt).toBeNull();
 
-    await get('/v1/api/identity', asKey(token));
+    await get('/api/v1/identity', asKey(token));
 
     const after = (await get('/v1/api-keys', auth)).json() as {
       keys: { lastUsedAt: string | null }[];
@@ -276,18 +276,21 @@ describe('the rate limit', () => {
     );
 
     for (let i = 0; i < 3; i += 1) {
-      expect((await get('/v1/api/identity', asKey(busy.token))).statusCode).toBe(200);
+      expect((await get('/api/v1/identity', asKey(busy.token))).statusCode).toBe(200);
     }
 
-    const refused = await get('/v1/api/identity', asKey(busy.token));
+    const refused = await get('/api/v1/identity', asKey(busy.token));
     expect(refused.statusCode).toBe(429);
-    const body = refused.json() as { retryAfterSeconds: number };
-    expect(body.retryAfterSeconds).toBeGreaterThan(0);
-    expect(body.retryAfterSeconds).toBeLessThanOrEqual(60);
+    /* The public envelope, not Nest's body: the shape is PR-110's, and the
+     * ceiling this suite is about is what fills it in. */
+    const body = refused.json() as { error: { code: string; retryAfterSeconds: number } };
+    expect(body.error.code).toBe('rate_limited');
+    expect(body.error.retryAfterSeconds).toBeGreaterThan(0);
+    expect(body.error.retryAfterSeconds).toBeLessThanOrEqual(60);
 
     /* The other key of the same business is untouched. One noisy
      * integration must not spend another's headroom. */
-    expect((await get('/v1/api/identity', asKey(quiet.token))).statusCode).toBe(200);
+    expect((await get('/api/v1/identity', asKey(quiet.token))).statusCode).toBe(200);
   });
 
   it('spends no room on a key that is refused before the ceiling is reached', async () => {
@@ -296,7 +299,7 @@ describe('the rate limit', () => {
 
     // No entitlement: three attempts, all 403.
     for (let i = 0; i < 3; i += 1) {
-      expect((await get('/v1/api/identity', asKey(token))).statusCode).toBe(403);
+      expect((await get('/api/v1/identity', asKey(token))).statusCode).toBe(403);
     }
 
     const windows = await withBusiness(db, businessId, (tx) =>

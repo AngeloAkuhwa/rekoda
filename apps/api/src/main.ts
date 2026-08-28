@@ -6,6 +6,7 @@ import rateLimit from '@fastify/rate-limit';
 import { FastifyAdapter, type NestFastifyApplication } from '@nestjs/platform-fastify';
 import { AppModule } from './app.module.js';
 import { MAX_IMAGE_BYTES } from '@rekoda/core';
+import { publicApi } from '@rekoda/contracts';
 import { CONFIG, isProductionEnv, loadConfig, type ApiConfig } from './config.js';
 
 function trustedProxies(): boolean | string[] {
@@ -157,6 +158,42 @@ export async function createApp(): Promise<NestFastifyApplication> {
       done();
     });
 
+  /**
+   * Every public-API response says which version answered it, and says so
+   * whatever happened (canonical spec §27).
+   *
+   * `onSend` rather than an interceptor or a filter, because those two miss
+   * each other's cases: an interceptor never runs when a guard refuses, and
+   * a filter never runs on success. A version header that is present on 200
+   * and absent on 401 is worse than none, since an integrator debugging a
+   * refusal is exactly who needs to know which version they reached.
+   *
+   * The same hook carries the retirement notice. The day a version is
+   * deprecated, `PUBLIC_API_RETIREMENTS` gains a row and every client
+   * learns it from the responses they are already making, on the standard
+   * `Deprecation` and `Sunset` headers.
+   */
+  app
+    .getHttpAdapter()
+    .getInstance()
+    .addHook('onSend', (request, reply, payload, done) => {
+      const path = (request.url ?? '').split('?')[0] ?? '';
+      if (path === '/api' || path.startsWith('/api/')) {
+        const version = path.split('/')[2] ?? '';
+        const served = publicApi.isPublicApiVersion(version)
+          ? version
+          : publicApi.CURRENT_PUBLIC_API_VERSION;
+        void reply.header(publicApi.v1.PUBLIC_VERSION_HEADER, served);
+
+        const retirement = publicApi.PUBLIC_API_RETIREMENTS[served];
+        if (retirement) {
+          void reply.header('deprecation', retirement.deprecatedAt);
+          void reply.header('sunset', retirement.sunsetAt);
+        }
+      }
+      done(null, payload);
+    });
+
   await app.register(rateLimit, {
     global: true,
     max: config.rateLimitMax,
@@ -173,11 +210,26 @@ export async function createApp(): Promise<NestFastifyApplication> {
       request.url === '/webhooks/meta' ||
       request.url === '/webhooks/paystack',
     keyGenerator: (request) => request.ip,
-    errorResponseBuilder: () => ({
-      statusCode: 429,
-      error: 'Too Many Requests',
-      message: 'Too many requests. Try again shortly.',
-    }),
+    /* The public API gets the public envelope. A client that branches on
+     * `error.code` must not meet a different body just because the refusal
+     * came from the per-IP limiter rather than from its key's ceiling. */
+    errorResponseBuilder: (request, context) => {
+      const path = (request.url ?? '').split('?')[0] ?? '';
+      if (path === '/api' || path.startsWith('/api/')) {
+        return publicApi.v1.publicErrorResponse.parse({
+          error: {
+            code: 'rate_limited',
+            message: 'too many requests, try again shortly',
+            retryAfterSeconds: Math.max(1, Math.ceil(Number(context.ttl ?? 60_000) / 1_000)),
+          },
+        });
+      }
+      return {
+        statusCode: 429,
+        error: 'Too Many Requests',
+        message: 'Too many requests. Try again shortly.',
+      };
+    },
   });
 
   // No ValidationPipe: request shapes are parsed with the zod schemas in

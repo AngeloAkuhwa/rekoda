@@ -13,7 +13,6 @@
  * the key was real.
  */
 import {
-  ForbiddenException,
   HttpException,
   HttpStatus,
   Inject,
@@ -22,6 +21,7 @@ import {
 } from '@nestjs/common';
 import type { CanActivate, ExecutionContext } from '@nestjs/common';
 import { ApiKeysService, type ApiCaller } from './api-keys.service.js';
+import { NotEntitledException } from './public/public-api.filter.js';
 
 export interface ApiKeyedRequest {
   headers: Record<string, string | string[] | undefined>;
@@ -50,7 +50,7 @@ export class ApiKeyGuard implements CanActivate {
          * into anything — they already hold a working key — and the merchant
          * reading their integration's logs needs to know the answer is
          * "buy the API", not "your key is broken". */
-        throw new ForbiddenException('this business does not have the Rekoda API entitlement');
+        throw new NotEntitledException('this business does not have the Rekoda API entitlement');
       case 'rate_limited':
         throw new HttpException(
           {
