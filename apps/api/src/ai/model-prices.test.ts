@@ -16,6 +16,7 @@ import {
   parseModelPrices,
   registerRuntimeModelPrices,
   UnpricedModel,
+  assertRolesArePriced,
 } from './model-prices.js';
 
 const FX = 1_450;
@@ -119,5 +120,29 @@ describe('the boot check', () => {
     for (const model of ['claude-haiku-4-5', 'claude-sonnet-5', 'claude-opus-5']) {
       expect(() => assertModelIsPriced(model, true)).not.toThrow();
     }
+  });
+});
+
+describe('the whole ensemble is priced at boot (ADR 0031)', () => {
+  it('refuses when ANY configured role names an unpriced model', () => {
+    /* The interpreter being priced is not enough: a classifier or an
+     * escalation model with no price would report its every call as free,
+     * which is precisely the outcome the margin view exists to prevent. */
+    expect(() => assertRolesArePriced(['claude-sonnet-5', 'gpt-nonexistent-tier'], true)).toThrow(
+      UnpricedModel,
+    );
+  });
+
+  it('passes a fully-priced ensemble, deduplicating shared models', () => {
+    expect(() =>
+      assertRolesArePriced(
+        ['claude-sonnet-5', 'claude-haiku-4-5', 'claude-sonnet-5', 'claude-opus-5'],
+        true,
+      ),
+    ).not.toThrow();
+  });
+
+  it('stays quiet with no key, because no key means no calls to misprice', () => {
+    expect(() => assertRolesArePriced(['completely-unknown-model'], false)).not.toThrow();
   });
 });

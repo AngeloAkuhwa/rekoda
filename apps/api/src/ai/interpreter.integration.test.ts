@@ -117,9 +117,10 @@ describe('a good call', () => {
     ).interpret(businessId, 'CUSTOMER_7K2 bought wigs');
 
     /* Costed on the model that actually reads the message. The default is
-     * Haiku: 1M in at $1 + 1M out at $5 = $6 = 6,000,000 micro-USD. */
+     * Sonnet 5 (ADR 0031): 1M in at $2 + 1M out at $10 = $12 = 12,000,000
+     * micro-USD, at the permanent list rate. */
     const row = await usageRows(businessId);
-    expect(row).toMatchObject({ calls: 1, providerCostMicros: 6_000_000 });
+    expect(row).toMatchObject({ calls: 1, providerCostMicros: 12_000_000 });
     expect(row.nairaEquivalentK).toBeGreaterThan(0);
   });
 });

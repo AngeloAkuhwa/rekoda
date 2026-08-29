@@ -124,3 +124,20 @@ export function assertModelIsPriced(model: string, hasApiKey: boolean): void {
   }
   new Logger('ModelPrices').log(`costing "${model}" as family "${modelFamily(model)}"`);
 }
+
+/**
+ * The same refusal, over every configured token role at once (ADR 0031 §4).
+ *
+ * The interpreter was the only model checked at boot, which was right when
+ * it was the only model called. The classifier, vision and escalation roles
+ * each spend provider money on their own id, and a role whose model has no
+ * price is a role whose every call reports as free — so boot sweeps the
+ * whole ensemble. The transcriber is deliberately NOT in this sweep: it is
+ * priced per minute of audio, not per token, and its price is validated by
+ * the mechanism that owns duration pricing.
+ */
+export function assertRolesArePriced(models: readonly string[], hasApiKey: boolean): void {
+  for (const model of new Set(models)) {
+    assertModelIsPriced(model, hasApiKey);
+  }
+}

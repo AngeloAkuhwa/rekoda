@@ -337,18 +337,22 @@ class ConfigError extends Error {}
  */
 const DEFAULT_MODEL: Record<'anthropic' | 'openai', string | null> = {
   /**
-   * Haiku reads the merchant's sentence, not Sonnet.
+   * Sonnet reads the merchant's sentence (ADR 0031, accuracy-first).
    *
-   * The interpreter's job is one extraction from one short message, under
-   * forced tool use against a strict schema, with the arithmetic done
-   * afterwards by code that does not trust the answer. That is what the small
-   * model is for, and it costs a third of Sonnet's input and output. At the
-   * volumes in pricing-model.md the difference is the gap between the model
-   * eating a third of a subscription and eating a rounding error.
+   * ADR 0023 put Haiku here on cost grounds, and its reasoning about the
+   * SHAPE of the job still holds: one extraction, forced tool use, strict
+   * schema, arithmetic recomputed by code that does not trust the answer.
+   * What changed is the launch priority and the price. The product optimises
+   * for avoiding harmful financial mistakes rather than for answering
+   * cheaply, a misread amount that survives the schema is the one error no
+   * gate downstream can catch, and Sonnet 5's permanent $2/$10 rate closed
+   * most of the gap that justified the small model. Haiku keeps the
+   * CLASSIFIER role, where a cheap answer avoids a costlier call and a
+   * mistake costs a retry rather than a wrong draft.
    *
    * Escalation stays on Opus for the messages that genuinely need it.
    */
-  anthropic: 'claude-haiku-4-5',
+  anthropic: 'claude-sonnet-5',
   openai: null,
 };
 

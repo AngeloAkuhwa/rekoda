@@ -4,7 +4,7 @@ import { AnthropicTransport } from './anthropic.transport.js';
 import { OpenAiTransport } from './openai.transport.js';
 import { Interpreter } from './interpreter.service.js';
 import { MODEL_TRANSPORT, ProviderUnreachable, type ModelTransport } from './transport.js';
-import { assertModelIsPriced, registerRuntimeModelPrices } from './model-prices.js';
+import { assertRolesArePriced, registerRuntimeModelPrices } from './model-prices.js';
 import { SPEECH_TO_TEXT, type SpeechToText } from './stt.js';
 import { TEXT_EXTRACTION, type TextExtraction } from './ocr.js';
 import { AUDIO_METADATA_PROBE, ContainerAudioProbe } from './audio-duration.js';
@@ -55,8 +55,21 @@ class NoTransportConfigured implements ModelTransport {
          * than at the first invoice. */
         registerRuntimeModelPrices(config.aiModelPrices ?? undefined);
 
+        /* EVERY token-priced role, not just the interpreter. The classifier,
+         * vision and escalation models each spend provider money on their
+         * own id, and a role whose model has no price is a role whose every
+         * call reports as free. The transcriber is deliberately absent: it
+         * is priced per MINUTE, not per token, and its price is validated
+         * where that mechanism lives. */
+        const tokenRoles = [
+          config.aiModelDefault,
+          config.aiModelClassifier,
+          config.aiModelVision,
+          config.aiModelEscalation,
+        ];
+
         if (config.aiProvider === 'openai') {
-          assertModelIsPriced(config.aiModelDefault, Boolean(config.openaiApiKey));
+          assertRolesArePriced(tokenRoles, Boolean(config.openaiApiKey));
           /* `aiBaseUrl` is what makes this an OPENAI-COMPATIBLE transport
            * rather than an OpenAI one: DeepSeek weights on a US host, Groq,
            * Together, OpenRouter all speak this wire format. Undefined means
@@ -65,7 +78,7 @@ class NoTransportConfigured implements ModelTransport {
             ? new OpenAiTransport(config.openaiApiKey, undefined, config.aiBaseUrl ?? undefined)
             : new NoTransportConfigured();
         }
-        assertModelIsPriced(config.aiModelDefault, Boolean(config.anthropicApiKey));
+        assertRolesArePriced(tokenRoles, Boolean(config.anthropicApiKey));
         return config.anthropicApiKey
           ? new AnthropicTransport(config.anthropicApiKey, undefined, config.aiBaseUrl ?? undefined)
           : new NoTransportConfigured();

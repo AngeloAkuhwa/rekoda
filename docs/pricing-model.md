@@ -195,9 +195,10 @@ which is exactly when someone needs it most.
 >   the table; OTP cost roughly doubles
 >   against the original model and the margin band absorbs it. **Launch
 >   requirement: the WABA must be registered in Nigeria.**
-> - **Model rows now carry conservative ceilings:** Sonnet modelled at
->   $3/$15 per MTok (published figures vary by generation; we cost the
->   ceiling), Opus escalation added at $5/$25. Haiku $1/$5 confirmed.
+> - **Model rows carry the permanent list rates:** Sonnet 5 at $2/$10 per
+>   MTok (the introductory rate became the standing list price; earlier
+>   revisions of this table costed a $3/$15 ceiling), Opus escalation at
+>   $5/$25. Haiku $1/$5 confirmed.
 > - **Integrate voice corrected the same day:** the plan ladder walked
 >   backwards (Chat had 60 voice minutes, Integrate had none); Integrate now
 >   carries the same 3,600 seconds. Complete's "120 minutes = Chat +
@@ -214,7 +215,7 @@ which is exactly when someone needs it most.
 | In-window service replies  | currently ₦0 Meta-side  | —                  | **Chargeable from 1 Oct 2026; re-run maths when rates publish ~1 Sep** |
 | OpenAI transcription       | $0.0045/min             | ~₦6.53/min         | Benchmark only — STT is self-hosted (ADR 0005)                         |
 | Claude Haiku 4.5           | $1/$5 per MTok          | ~₦2–4/call         | Trivial classification                                                 |
-| Claude Sonnet              | $3/$15 per MTok ceiling | ~₦12/call          | **Runtime default** (ADR 0007); costed at ceiling per 24 Aug rule      |
+| Claude Sonnet 5            | $2/$10 per MTok         | ~₦8/call           | **Interpreter default** (ADR 0031, accuracy-first) and the vision reader |
 | Claude Opus 5              | $5/$25 per MTok         | ~₦20/call          | Escalation role only — rare by design                                  |
 | Claude Fable 5             | $10/$50 per MTok        | ~₦40/call          | Build-time & evals, escalation flag only                               |
 | Paystack local card        | 1.5% + ₦100, cap ₦2,000 | merchant-borne     | Never absorbed into subscription                                       |

@@ -13,11 +13,11 @@ import { usagePeriod } from './allowances.js';
 const FX = 1_450; // PLANNING_FX_NGN_PER_USD
 
 describe('pricing a call', () => {
-  it('prices a Sonnet call at the STANDARD published rate', () => {
-    /* 1M in at $3, 1M out at $15 = $18. The standard rate, deliberately not
-     * the $2/$10 introductory one that lapses on 31 August 2026: a table that
-     * switched itself on a date would flatter the margin by 50% for a while
-     * and then correct without anybody knowing which number a decision used. */
+  it('prices a Sonnet call at the permanent published rate', () => {
+    /* 1M in at $2, 1M out at $10 = $12. $2/$10 began as an introductory rate
+     * and became Sonnet 5's standing list price; the table follows the
+     * vendor's page. Rows written under the earlier $3/$15 entry keep the
+     * cost they recorded — this prices future calls, never rewrites rows. */
     const cost = costOfCall(
       'claude-sonnet-5',
       {
@@ -26,15 +26,16 @@ describe('pricing a call', () => {
       },
       FX,
     );
-    expect(cost.usdMicros).toBe(18_000_000);
+    expect(cost.usdMicros).toBe(12_000_000);
     expect(cost.priced).toBe(true);
-    // $18 × ₦1,450 = ₦26,100 = 2,610,000 kobo.
-    expect(cost.nairaKobo).toBe(2_610_000);
+    // $12 × ₦1,450 = ₦17,400 = 1,740,000 kobo.
+    expect(cost.nairaKobo).toBe(1_740_000);
   });
 
   it('prices a realistic single call in whole kobo', () => {
-    /* The interpreter's real shape, on the model that actually reads it:
-     * 1,800 in and 220 out on Haiku. 1,800 × $1/MTok + 220 × $5/MTok. */
+    /* The classifier's real shape: 1,800 in and 220 out on Haiku.
+     * 1,800 × $1/MTok + 220 × $5/MTok. (The interpreter itself reads on
+     * Sonnet since ADR 0031; this pins the cheap tier's arithmetic.) */
     const cost = costOfCall(
       'claude-haiku-4-5',
       {
@@ -70,8 +71,8 @@ describe('pricing a call', () => {
       FX,
     );
 
-    expect(write.usdMicros).toBe(3_750_000); // 1.25× input
-    expect(read.usdMicros).toBe(300_000); // 0.10× input
+    expect(write.usdMicros).toBe(2_500_000); // 1.25× input (5-minute cache)
+    expect(read.usdMicros).toBe(200_000); // 0.10× input
   });
 
   it('prices Haiku below Sonnet below Fable', () => {
@@ -117,8 +118,8 @@ describe('the FX rate is recorded, not re-derived', () => {
     // Which is why the rate is an argument. Re-deriving a past row's naira
     // cost from today's FX would silently rewrite history.
     expect(later).toBeGreaterThan(atLaunch);
-    // 1M input on Sonnet at $3/MTok = $3 × ₦1,450 = ₦4,350 = 435,000 kobo.
-    expect(atLaunch).toBe(435_000);
+    // 1M input on Sonnet at $2/MTok = $2 × ₦1,450 = ₦2,900 = 290,000 kobo.
+    expect(atLaunch).toBe(290_000);
   });
 });
 

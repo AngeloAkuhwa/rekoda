@@ -66,7 +66,10 @@ describe('picking a provider', () => {
 describe('the default model follows the provider', () => {
   it('ships one for Anthropic, by EXACT id and never an alias', () => {
     const model = loadConfig({ ...BASE, ANTHROPIC_API_KEY: 'k' }).aiModelDefault;
-    expect(model).toBe('claude-haiku-4-5');
+    /* Sonnet, not Haiku, since ADR 0031: the interpreter is accuracy-first,
+     * because a misread amount that survives the schema is the one error no
+     * downstream gate can catch. Haiku keeps the classifier role. */
+    expect(model).toBe('claude-sonnet-5');
     /* An alias that silently moves tiers takes the price with it: cost
      * telemetry keys on the family, so last month's rate would be reported
      * against this month's bill. */
