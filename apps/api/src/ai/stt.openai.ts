@@ -55,14 +55,16 @@ export class OpenAiSpeechToText implements SpeechToText {
     }
 
     const text = typeof response.text === 'string' ? response.text.trim() : '';
-    if (!text) throw new TranscriptionUnavailable('transcriber returned no text');
+    // The provider answered: these failures were BILLED, and the ceilings
+    // that bound spend need to know that.
+    if (!text) throw new TranscriptionUnavailable('transcriber returned no text', { billed: true });
 
     const duration = Number(response.duration);
     if (!Number.isFinite(duration) || duration <= 0) {
       /* No duration means no honest meter reading. Refused rather than
        * guessed: billing a merchant off an estimate is the one thing the
        * voice_seconds contract forbids, and whisper-1 always reports one. */
-      throw new TranscriptionUnavailable('transcriber reported no duration');
+      throw new TranscriptionUnavailable('transcriber reported no duration', { billed: true });
     }
 
     return {

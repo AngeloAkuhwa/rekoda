@@ -60,10 +60,18 @@ export class TranscriptionUnavailable extends Error {
    * reconciliation row for these so the invoice has something to tie to.
    */
   readonly maybeBilled: boolean;
+  /**
+   * True when the provider ANSWERED — billed — and the answer was still
+   * unusable (no text, no duration). Certain spend, unlike `maybeBilled`;
+   * the daily seconds ceiling keeps its reservation for both, because the
+   * ceiling bounds spend, not success.
+   */
+  readonly billed: boolean;
 
-  constructor(message: string, opts?: { maybeBilled?: boolean }) {
+  constructor(message: string, opts?: { maybeBilled?: boolean; billed?: boolean }) {
     super(message);
     this.maybeBilled = opts?.maybeBilled ?? false;
+    this.billed = opts?.billed ?? false;
   }
 }
 

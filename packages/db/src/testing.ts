@@ -80,6 +80,8 @@ export async function truncateAll(urls: Urls): Promise<void> {
         doc_counters,
         command_drafts,
         ai_quota_counters, ai_global_counters,
+        doc_extraction_counters, doc_extraction_global_counters,
+        voice_second_counters, voice_global_counters,
         usage_events, usage_counters, pending_confirmations, idempotency_records,
         evidence_legal_holds, outbox_events,
         payment_verification_claims, payment_verification_revocations,

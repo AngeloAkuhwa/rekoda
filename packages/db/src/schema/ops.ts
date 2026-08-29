@@ -305,6 +305,32 @@ export const docExtractionCounters = pgTable(
   (t) => [primaryKey({ columns: [t.businessId, t.day] })],
 );
 
+/** The platform's vision day (A4). One integer per day; no RLS on purpose. */
+export const docExtractionGlobalCounters = pgTable('doc_extraction_global_counters', {
+  day: date('day').primaryKey(),
+  extractions: integer('extractions').notNull().default(0),
+});
+
+/**
+ * Per-business daily transcription SECONDS (A4). Operational, not the
+ * monthly voice allowance: this is the brake on a runaway day.
+ */
+export const voiceSecondCounters = pgTable(
+  'voice_second_counters',
+  {
+    businessId: businessId(),
+    day: date('day').notNull(),
+    seconds: integer('seconds').notNull().default(0),
+  },
+  (t) => [primaryKey({ columns: [t.businessId, t.day] })],
+);
+
+/** The platform's transcription day (A4). */
+export const voiceGlobalCounters = pgTable('voice_global_counters', {
+  day: date('day').primaryKey(),
+  seconds: integer('seconds').notNull().default(0),
+});
+
 /**
  * The model's interpretation of one message, before anybody agrees to it
  * (CG2, CG5). A draft is not a document: no number, no ledger entry, nothing

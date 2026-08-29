@@ -3634,6 +3634,58 @@ describe('a voice note', () => {
   });
 
   /**
+   * The DAILY voice ceilings (remediation A4): reserved race-safe before
+   * the transcriber, distinct from the monthly allowance.
+   */
+  it('refuses a note past the business voice day, before any transcriber call', async () => {
+    const business = await seedMerchant('+2348031234567');
+    arrangeAudio(8);
+    stubStt.answerWith({ text: 'Ada bought 3 wigs for 150k', seconds: 8, confidence: 0.9 });
+    stubTransport.replyWith(A_SPOKEN_SALE);
+
+    const runnerWith = (perDay: number) =>
+      buildRunner(workerDb, db, {
+        ...deps,
+        config: { ...deps.config, voiceSecondsPerBusinessPerDay: perDay },
+      });
+
+    // 8 seconds fit a 10-second day once.
+    await post(voicePayload('2348031234567', 'wamid.V50'));
+    let runner = runnerWith(10);
+    let worked = await runner.runOnce();
+    while (worked) worked = await runner.runOnce();
+    expect(stubStt.calls).toHaveLength(1);
+
+    // The second 8-second note does not fit the remaining 2 seconds.
+    await post(voicePayload('2348031234567', 'wamid.V51'));
+    runner = runnerWith(10);
+    worked = await runner.runOnce();
+    while (worked) worked = await runner.runOnce();
+
+    expect(stubStt.calls).toHaveLength(1);
+    expect(stubSender.lastText).toContain('as many voice minutes today');
+    // And the monthly meter was never touched for the refused note.
+    expect(await voiceUsed(business.id)).toBe(8);
+  });
+
+  it('answers a platform-full voice day as busy, not as the merchant`s limit', async () => {
+    await seedMerchant('+2348031234567');
+    arrangeAudio(8);
+    stubStt.answerWith({ text: 'should never be reached', seconds: 8, confidence: 1 });
+
+    await post(voicePayload('2348031234567', 'wamid.V52'));
+    const runner = buildRunner(workerDb, db, {
+      ...deps,
+      config: { ...deps.config, voiceSecondsGlobalPerDay: 5 },
+    });
+    let worked = await runner.runOnce();
+    while (worked) worked = await runner.runOnce();
+
+    expect(stubStt.calls).toHaveLength(0);
+    expect(stubSender.lastText).not.toContain('midnight');
+  });
+
+  /**
    * The limit's exact edge (AI hardening item 6). A boundary nobody tested
    * drifts: "at most two minutes" and "under two minutes" differ by one
    * voice note, and the merchant sent that note.
@@ -4363,6 +4415,24 @@ describe('a receipt photo', () => {
     await post(photoPayload('2348031234567', 'wamid.P18'));
     await drainWithDailyLimit(2);
     expect(stubOcr.calls).toHaveLength(2);
+  });
+
+  it('answers a platform-full document day as busy, not as the merchant`s limit', async () => {
+    await seedMerchant('+2348031234567');
+    arrangePhoto();
+    stubOcr.answerWith({ text: 'should never be reached', confidence: 1 });
+
+    await post(photoPayload('2348031234567', 'wamid.P40'));
+    const runner = buildRunner(workerDb, db, {
+      ...deps,
+      config: { ...deps.config, aiDocExtractionsGlobalPerDay: 0 },
+    });
+    let worked = await runner.runOnce();
+    while (worked) worked = await runner.runOnce();
+
+    expect(stubOcr.calls).toHaveLength(0);
+    /* Rekoda's busy day, not the merchant's ceiling: no "midnight". */
+    expect(stubSender.lastText).not.toContain('as many as I can read in one day');
   });
 
   /**

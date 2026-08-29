@@ -191,6 +191,20 @@ export interface ApiConfig {
   aiCallsPerBusinessPerDay: number;
   aiCallsGlobalPerDay: number;
   /**
+   * The PLATFORM's document-reading day (remediation A4): the backstop
+   * behind the per-business ceiling, so a thousand tenants at their own
+   * limits still cannot make one day cost more than this many reads.
+   */
+  aiDocExtractionsGlobalPerDay: number;
+  /**
+   * Hard daily transcription ceilings, in SECONDS (remediation A4).
+   * Operational brakes, distinct from the monthly voice allowance the
+   * merchant bought: the monthly meter is commercial, these bound what a
+   * single runaway day can cost, per business and platform-wide.
+   */
+  voiceSecondsPerBusinessPerDay: number;
+  voiceSecondsGlobalPerDay: number;
+  /**
    * The longest voice note Rekoda will transcribe, in seconds
    * (docs/rekoda-chat-v1.md §2). Configuration, never application logic:
    * the commercial limit varies by plan, environment and future pricing.
@@ -723,6 +737,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
      */
     aiCallsPerBusinessPerDay: Number(env['AI_DAILY_CALLS_PER_BUSINESS'] ?? 60),
     aiCallsGlobalPerDay: Number(env['AI_DAILY_CALLS_GLOBAL'] ?? 5_000),
+    /* 2,000 reads/day platform-wide is roughly ₦16,000 of vision at the
+     * planning rate: absorbable while someone investigates. */
+    aiDocExtractionsGlobalPerDay: Number(env['AI_DOC_EXTRACTIONS_GLOBAL'] ?? 2_000),
+    /* 30 minutes a day per business (the largest plan carries 120/month),
+     * 10 hours a day platform-wide (~$3.60 at $0.006/min). Generous for
+     * every legitimate day; a wall for a scripted one. */
+    voiceSecondsPerBusinessPerDay: Number(env['VOICE_SECONDS_PER_BUSINESS_PER_DAY'] ?? 1_800),
+    voiceSecondsGlobalPerDay: Number(env['VOICE_SECONDS_GLOBAL_PER_DAY'] ?? 36_000),
     voiceNoteMaxDurationSeconds: voiceWindowSeconds(env),
     aiDualExtractThresholdK: Number(env['AI_DUAL_EXTRACT_THRESHOLD_K'] ?? 50_000_000),
     aiDocExtractionsPerBusinessPerDay: Number(env['AI_DOC_EXTRACTIONS_PER_BUSINESS'] ?? 25),

@@ -131,18 +131,25 @@ export async function releaseAiCall(
   });
 }
 
-export type DocExtractionReservation = { ok: true; extractions: number } | { ok: false };
+export interface MediaLimits {
+  perBusinessPerDay: number;
+  /** The platform-wide backstop for the same day (remediation A4). */
+  globalPerDay: number;
+}
+
+export type MediaReservation =
+  { ok: true; used: number } | { ok: false; refusedBy: 'business' | 'platform' };
 
 /**
- * Take one document-extraction slot from today's ceiling, or take nothing
- * (AI hardening item 4 — `AI_DOC_EXTRACTIONS_PER_BUSINESS`, enforced).
+ * Take one document-extraction slot from today's ceilings, or take nothing
+ * (AI hardening item 4 + remediation A4 — `AI_DOC_EXTRACTIONS_PER_BUSINESS`
+ * and `AI_DOC_EXTRACTIONS_GLOBAL`, both enforced).
  *
  * Same statement shape as `reserveAiCall` and for the same reason: the limit
  * lives in the WHERE clause, so two photographs arriving together cannot
- * both take the last slot. No global twin — the platform-wide backstop on
- * model spend is `ai_global_counters`, and a vision read that gets past this
- * ceiling still reserves there via the interpreter path's ceilings when it
- * becomes a model call.
+ * both take the last slot. Both ceilings in ONE transaction: a platform
+ * refusal after the tenant allowed rolls the tenant's increment back, so a
+ * merchant never loses a slot to a busy platform.
  *
  * OPERATIONAL, not commercial: this is the per-day brake on hosted vision
  * spend, separate from the monthly `documents_understood` allowance the
@@ -151,23 +158,41 @@ export type DocExtractionReservation = { ok: true; extractions: number } | { ok:
 export async function reserveDocExtraction(
   db: Db,
   businessId: string,
-  perBusinessPerDay: number,
+  limits: MediaLimits,
   at: Date = new Date(),
-): Promise<DocExtractionReservation> {
-  if (perBusinessPerDay < 1) return { ok: false };
+): Promise<MediaReservation> {
+  if (limits.perBusinessPerDay < 1) return { ok: false, refusedBy: 'business' };
+  if (limits.globalPerDay < 1) return { ok: false, refusedBy: 'platform' };
   const day = lagosDay(at);
 
-  return withBusiness<DocExtractionReservation>(db, businessId, async (tx) => {
-    const rows = await tx.execute<{ extractions: number }>(sql`
+  return withBusiness<MediaReservation>(db, businessId, async (tx) => {
+    const mine = await tx.execute<{ extractions: number }>(sql`
       INSERT INTO doc_extraction_counters (business_id, day, extractions)
       VALUES (${businessId}::uuid, ${day}::date, 1)
       ON CONFLICT (business_id, day) DO UPDATE
         SET extractions = doc_extraction_counters.extractions + 1
-        WHERE doc_extraction_counters.extractions < ${perBusinessPerDay}
+        WHERE doc_extraction_counters.extractions < ${limits.perBusinessPerDay}
       RETURNING extractions
     `);
-    const extractions = [...rows][0]?.extractions;
-    return extractions === undefined ? { ok: false } : { ok: true, extractions };
+    const extractions = [...mine][0]?.extractions;
+    if (extractions === undefined) return { ok: false, refusedBy: 'business' as const };
+
+    const platform = await tx.execute<{ extractions: number }>(sql`
+      INSERT INTO doc_extraction_global_counters (day, extractions)
+      VALUES (${day}::date, 1)
+      ON CONFLICT (day) DO UPDATE
+        SET extractions = doc_extraction_global_counters.extractions + 1
+        WHERE doc_extraction_global_counters.extractions < ${limits.globalPerDay}
+      RETURNING extractions
+    `);
+    if ([...platform][0]?.extractions === undefined) throw new PlatformCeilingReached();
+
+    return { ok: true, used: extractions };
+  }).catch((error: unknown): MediaReservation => {
+    if (error instanceof PlatformCeilingReached) {
+      return { ok: false, refusedBy: 'platform' as const };
+    }
+    throw error;
   });
 }
 
@@ -187,6 +212,88 @@ export async function releaseDocExtraction(
     await tx.execute(sql`
       UPDATE doc_extraction_counters SET extractions = GREATEST(0, extractions - 1)
       WHERE business_id = ${businessId}::uuid AND day = ${day}::date
+    `);
+    await tx.execute(sql`
+      UPDATE doc_extraction_global_counters SET extractions = GREATEST(0, extractions - 1)
+      WHERE day = ${day}::date
+    `);
+  });
+}
+
+/**
+ * Take a voice note's SECONDS from both daily ceilings, or take nothing
+ * (remediation A4 — `VOICE_SECONDS_PER_BUSINESS_PER_DAY` and
+ * `VOICE_SECONDS_GLOBAL_PER_DAY`).
+ *
+ * Seconds, not calls, because seconds are what the provider bills and what
+ * the local probe measured before anything was spent. The monthly
+ * `voice_seconds` allowance remains the COMMERCIAL meter; this pair is the
+ * operational brake on a runaway day — hosted transcription without a hard
+ * daily ceiling is a cost-abuse route.
+ *
+ * The INSERT path cannot be covered by the conflict WHERE, so a note longer
+ * than either whole-day limit is refused up front rather than being the one
+ * note per day that slips through.
+ */
+export async function reserveVoiceSeconds(
+  db: Db,
+  businessId: string,
+  seconds: number,
+  limits: MediaLimits,
+  at: Date = new Date(),
+): Promise<MediaReservation> {
+  if (seconds < 1) return { ok: false, refusedBy: 'business' };
+  if (seconds > limits.perBusinessPerDay) return { ok: false, refusedBy: 'business' };
+  if (seconds > limits.globalPerDay) return { ok: false, refusedBy: 'platform' };
+  const day = lagosDay(at);
+
+  return withBusiness<MediaReservation>(db, businessId, async (tx) => {
+    const mine = await tx.execute<{ seconds: number }>(sql`
+      INSERT INTO voice_second_counters (business_id, day, seconds)
+      VALUES (${businessId}::uuid, ${day}::date, ${seconds})
+      ON CONFLICT (business_id, day) DO UPDATE
+        SET seconds = voice_second_counters.seconds + ${seconds}
+        WHERE voice_second_counters.seconds + ${seconds} <= ${limits.perBusinessPerDay}
+      RETURNING seconds
+    `);
+    const used = [...mine][0]?.seconds;
+    if (used === undefined) return { ok: false, refusedBy: 'business' as const };
+
+    const platform = await tx.execute<{ seconds: number }>(sql`
+      INSERT INTO voice_global_counters (day, seconds)
+      VALUES (${day}::date, ${seconds})
+      ON CONFLICT (day) DO UPDATE
+        SET seconds = voice_global_counters.seconds + ${seconds}
+        WHERE voice_global_counters.seconds + ${seconds} <= ${limits.globalPerDay}
+      RETURNING seconds
+    `);
+    if ([...platform][0]?.seconds === undefined) throw new PlatformCeilingReached();
+
+    return { ok: true, used };
+  }).catch((error: unknown): MediaReservation => {
+    if (error instanceof PlatformCeilingReached) {
+      return { ok: false, refusedBy: 'platform' as const };
+    }
+    throw error;
+  });
+}
+
+/** The voice twin of `releaseDocExtraction`: unreached provider only. */
+export async function releaseVoiceSeconds(
+  db: Db,
+  businessId: string,
+  seconds: number,
+  at: Date = new Date(),
+): Promise<void> {
+  const day = lagosDay(at);
+  await withBusiness(db, businessId, async (tx) => {
+    await tx.execute(sql`
+      UPDATE voice_second_counters SET seconds = GREATEST(0, seconds - ${seconds})
+      WHERE business_id = ${businessId}::uuid AND day = ${day}::date
+    `);
+    await tx.execute(sql`
+      UPDATE voice_global_counters SET seconds = GREATEST(0, seconds - ${seconds})
+      WHERE day = ${day}::date
     `);
   });
 }

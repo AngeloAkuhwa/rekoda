@@ -232,6 +232,22 @@ export function dailyDocumentLimit(limit: number): Reply {
 }
 
 /**
+ * The DAILY voice ceiling, distinct from the monthly plan allowance.
+ *
+ * Same shape as `dailyDocumentLimit` and for the same reason: a merchant
+ * who hits this may have plan minutes left, so "upgrade" is the wrong
+ * door. The counter rolls at midnight, and typing still works right now.
+ */
+export function dailyVoiceLimit(): Reply {
+  return reply(
+    'You have sent as many voice minutes today as I can listen to in one day. ' +
+      'The counter starts again at midnight.\n\n' +
+      'Nothing is lost. You can type what happened instead and I will record ' +
+      'it straight away.',
+  );
+}
+
+/**
  * A photograph that read fine and is clearly not a business document.
  *
  * Said only when the classifier is CONFIDENT the page holds no transaction

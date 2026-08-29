@@ -534,12 +534,21 @@ async function readReceiptPhoto(
    * two concurrent photographs cannot both take the last slot.
    */
   const dailyLimit = deps.config.aiDocExtractionsPerBusinessPerDay;
-  const daily = await quotaRepo.reserveDocExtraction(deps.db, businessId, dailyLimit);
+  const daily = await quotaRepo.reserveDocExtraction(deps.db, businessId, {
+    perBusinessPerDay: dailyLimit,
+    globalPerDay: deps.config.aiDocExtractionsGlobalPerDay,
+  });
   if (!daily.ok) {
+    /* The platform backstop refusing is Rekoda's busy day, not the
+     * merchant's limit — the sentence must not tell them to wait for
+     * midnight when trying again in an hour may work. */
     await deps.replySender.send(tx, {
       businessId,
       to: inbound.from,
-      reply: replies.dailyDocumentLimit(dailyLimit),
+      reply:
+        daily.refusedBy === 'business'
+          ? replies.dailyDocumentLimit(dailyLimit)
+          : replies.busyRightNow(),
     });
     return null;
   }
@@ -742,6 +751,27 @@ async function transcribeVoiceNote(
   }
 
   /**
+   * The DAILY operational ceilings, before the monthly unit (remediation
+   * A4): exactly the seconds the note runs, reserved race-safe against a
+   * per-business day and the platform's day. The monthly allowance below
+   * is what the merchant bought; this pair bounds what a runaway 24 hours
+   * can make Rekoda spend on hosted transcription.
+   */
+  const dailyVoice = await quotaRepo.reserveVoiceSeconds(deps.db, businessId, seconds, {
+    perBusinessPerDay: deps.config.voiceSecondsPerBusinessPerDay,
+    globalPerDay: deps.config.voiceSecondsGlobalPerDay,
+  });
+  if (!dailyVoice.ok) {
+    await deps.replySender.send(tx, {
+      businessId,
+      to: inbound.from,
+      reply:
+        dailyVoice.refusedBy === 'business' ? replies.dailyVoiceLimit() : replies.busyRightNow(),
+    });
+    return null;
+  }
+
+  /**
    * Exactly the seconds the note runs, taken atomically before the
    * transcriber is called. Its own short transaction, like the message unit,
    * because the counter must not be held across a network call.
@@ -752,6 +782,9 @@ async function transcribeVoiceNote(
     usageRepo.consumeUnit(own, businessId, period, 'VOICE_MINUTES', allowance, seconds),
   );
   if (!granted) {
+    // The plan refused after the day allowed: no provider was reached, so
+    // the daily seconds go back too.
+    await quotaRepo.releaseVoiceSeconds(deps.db, businessId, seconds);
     await deps.replySender.send(tx, {
       businessId,
       to: inbound.from,
@@ -764,11 +797,18 @@ async function transcribeVoiceNote(
   try {
     transcript = await deps.stt.transcribe(audio.bytes, audio.mimeType);
   } catch (error) {
-    /* An outage, not the merchant's fault, so the seconds go back. The reason
-     * is logged without the audio and without their words. */
+    /* An outage, not the merchant's fault, so THEIR seconds go back. The
+     * reason is logged without the audio and without their words. */
     await withBusiness(deps.db, businessId, (own) =>
       usageRepo.refundUnit(own, businessId, period, 'VOICE_MINUTES', seconds),
     );
+    /* The DAILY ceiling follows the money, not the merchant: released only
+     * when the provider was never reached; kept when the call was billed
+     * (an answered-but-unusable response) or may have been (a timeout). */
+    const failure = error instanceof TranscriptionUnavailable ? error : null;
+    if (!failure?.billed && !failure?.maybeBilled) {
+      await quotaRepo.releaseVoiceSeconds(deps.db, businessId, seconds);
+    }
     /* A hosted transcription that TIMED OUT may still be on the invoice.
      * Zero with `priced: false` is the row reconciliation ties to. The
      * merchant's seconds went back above: Rekoda's timeout, Rekoda's cost. */
