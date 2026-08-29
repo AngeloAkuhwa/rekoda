@@ -36,7 +36,30 @@ export const billingChargeView = z.object({
 });
 
 export const billingUnitView = z.object({
-  unit: z.enum(['messages', 'voice_seconds', 'documents', 'documents_understood', 'orders']),
+  /**
+   * The canonical seventeen (spec 4.2). Written out rather than imported so
+   * the wire contract stays a literal that any client can read without
+   * depending on the pricing engine.
+   */
+  unit: z.enum([
+    'AI_ACTIONS',
+    'VOICE_MINUTES',
+    'DOCUMENT_GENERATION',
+    'DOCUMENTS_UNDERSTOOD',
+    'SERVICE_MESSAGE',
+    'UTILITY_TEMPLATE',
+    'AUTH_TEMPLATE',
+    'AUTH_INTL_TEMPLATE',
+    'MARKETING_TEMPLATE',
+    'CATALOGUE_ORDERS',
+    'PAYMENT_CONNECTIONS',
+    'FINANCIAL_ACCOUNT_CONNECTIONS',
+    'ACCOUNTANT_USERS',
+    'REPORT_EXPORTS',
+    'API_REQUEST_UNITS',
+    'API_APPLICATIONS',
+    'WEBHOOK_DELIVERIES',
+  ]),
   used: z.number().int().nonnegative(),
   /** The plan's own allowance, before anything bought. */
   allowance: z.number().int().nonnegative(),
@@ -52,6 +75,21 @@ export const billingPackView = z.object({
   priceK: kobo,
 });
 
+/**
+ * A recurring add-on this business holds (PR-117).
+ *
+ * Distinct from a pack, and the page says so in as many words: a pack is
+ * one month's top-up, an add-on is a subscription that grants the same
+ * thing every month until it is ended. `endsAt` is a cancellation that has
+ * not taken effect yet - the merchant paid for the month and keeps it.
+ */
+export const billingAddOnView = z.object({
+  addOnId: z.string(),
+  name: z.string(),
+  startedAt: isoDate,
+  endsAt: isoDate.nullable(),
+});
+
 export const billingOverviewResponse = z.object({
   plan: z.string(),
   priceK: kobo,
@@ -61,6 +99,8 @@ export const billingOverviewResponse = z.object({
   period: z.string().regex(/^\d{4}-\d{2}$/),
   units: z.array(billingUnitView),
   packs: z.array(billingPackView),
+  /** Recurring add-ons held right now. Empty for most businesses. */
+  addOns: z.array(billingAddOnView),
   /**
    * Every charge on this account, which is not `charges.length`.
    *

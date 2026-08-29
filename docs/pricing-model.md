@@ -70,15 +70,28 @@ confirmed).
 
 _Connect your WhatsApp shop. Rekoda handles the money trail automatically._
 1 business · 1 WhatsApp Business number/WABA · 1 catalogue · 1 Paystack
-connection · owner + 2 delegates · **800 messages** · **60 voice minutes** ·
-**300 catalogue orders** · **500 document generations** · 100 utility
-templates · unlimited reports · automatic order capture → customer records →
-invoices → payment verification → receipts → inventory → reconciliation, with
-unmatched/short-payment/exception detection. Voice carries the same hour Chat
-has: the ladder never walks backwards, so a Chat merchant who opens a shop
-keeps every habit they built. (Corrected 24 Aug 2026 — this section previously
-said "no voice bookkeeping" and "200 orders" while the enforced allowance was
-already 300; `packages/core/src/allowances.ts` is the single source of truth.)
+connection · owner + 2 delegates · **300 catalogue orders** · **500 document
+generations** · 100 utility templates · unlimited reports · automatic order
+capture → customer records → invoices → payment verification → receipts →
+inventory → reconciliation, with unmatched/short-payment/exception detection.
+
+**Integrate is the customer-facing half.** It does not include recording by
+message: no merchant messaging, no voice notes, no photographed receipts.
+Those are Chat, and **Complete is both** — which is the point of Complete
+existing. A merchant who wants to run their shop automatically *and* tell
+Rekoda about the rest of the business buys Complete.
+
+> **Corrected 26 Aug 2026 (owner decision).** This plan previously carried
+> 800 messages, 60 voice minutes and 100 documents understood — a full
+> merchant-side allowance set larger than Chat's. That made Integrate a
+> superset of Chat and left Complete selling nothing but volume, which
+> contradicts the canonical rule that Complete is the entitlement PAIR
+> (spec §3.3). The merchant-side allowances are now zero and the entitlement
+> gate refuses those capabilities, so the page and the product agree.
+>
+> The accepted cost: a Chat merchant moving to Integrate loses merchant-side
+> recording. The ladder walks backwards for that one move, deliberately.
+> `packages/core/src/allowances.ts` remains the single source of truth.
 
 ### Rekoda Complete — ₦29,900/month
 
@@ -89,22 +102,52 @@ Chat + Integrate combined: **1,200 messages** · **120 voice minutes** ·
 documents. This is the plan growing merchants should land on — offline and
 online reality in one consolidated financial position.
 
-## Add-on packs (launch overage model)
+## Add-ons and packs (launch overage model)
 
-| Add-on                                  | Price            |
-| --------------------------------------- | ---------------- |
-| +100 WhatsApp messages                  | ₦2,500           |
-| +30 voice minutes                       | ₦1,500           |
-| +50 document generations                | ₦2,000           |
-| +50 Integrate orders + related capacity | ₦5,000           |
-| Extra accountant/delegate               | ₦1,500/month     |
-| Additional WhatsApp number              | Custom initially |
+Two different things, and the difference is not cosmetic (owner ruling, 28
+August 2026). A **pack** is a one-off block of a CONSUMABLE unit: bought
+inside a month, spent inside that month, gone. An **add-on** is a recurring
+subscription that grants the same thing every month for as long as it is
+held, which is the only shape that can express standing CAPACITY, because a
+seat or an API application is held rather than spent.
+
+One-off packs:
+
+| Pack                                    | Price  |
+| --------------------------------------- | ------ |
+| +100 WhatsApp messages                  | ₦2,500 |
+| +30 voice minutes                       | ₦1,500 |
+| +50 document generations                | ₦2,000 |
+| +50 Integrate orders + related capacity | ₦5,000 |
+| +25,000 API requests                    | ₦10,000 |
+| +25,000 webhook deliveries              | ₦5,000 |
+
+Recurring add-ons:
+
+| Add-on                     | Price            | What it grants                                                        |
+| -------------------------- | ---------------- | --------------------------------------------------------------------- |
+| Extra accountant/delegate  | ₦1,500/month     | +1 accountant seat                                                    |
+| Developer API Starter      | ₦25,000/month    | the REKODA_API entitlement, 1 application, 25,000 requests, 25,000 webhook deliveries |
+| One extra API application  | ₦5,000/month     | +1 application                                                        |
+| Additional WhatsApp number | Custom initially | a further number, handled as a conversation                           |
+
+There is deliberately no pack of API applications. "Fifty more applications,
+once" is not a sentence about standing capacity, and the catalogue is
+constrained so it cannot be written.
 
 No unlimited CONSUMABLE usage at launch — real merchant behaviour is unknown,
 and packs protect against the ₦9,900-payer who scripts 30,000 messages.
-Reports are not a consumable: a PDF or a workbook costs compute and costs no
-provider a naira, and metering the one habit worth encouraging would be
-charging a merchant to look at their own accounts (ADR 0024).
+
+**Exports are metered from 28 August 2026, and data portability never is.**
+This supersedes ADR 0024's "reports are not a consumable", and the reasoning
+that produced that line still stands where it belongs: nobody should be
+charged to look at their own accounts. What changed is the recognition that
+a generated PDF or workbook is a produced artefact with a real cost, so it
+gets a generous monthly allowance (10 on trial, 50 on Chat, 100 on
+Integrate, 200 on Complete) rather than none. Taking YOUR OWN DATA out of
+Rekoda is a separate right, not a product feature, and is never counted
+against any allowance — including for an expired or downgraded business,
+which is exactly when someone needs it most.
 
 > **Payment-processing fee, confirmed 19 Aug 2026.** Collection runs on
 > **Pay with Transfer**, charged at Nigeria's **local rate: 1.5% + ₦100, capped
@@ -125,7 +168,7 @@ charging a merchant to look at their own accounts (ADR 0024).
 > | Twilio ₦7.25/msg both directions for Chat                          | **ADR 0002/0011** — Chat is Meta-direct; Twilio applies to the Integrate WABA path only                                                              |
 > | Free-form replies and utility templates free inside the 24h window | **ADR 0011** — Meta charges for **every service message from 1 Oct 2026**, flat, no volume discount (~₦10/outbound in Nigeria)                       |
 > | Twilio Verify ~₦80+/OTP                                            | **ADR 0002** — OTP over Rekoda's own WhatsApp number (~₦10), SMS fallback only                                                                       |
-> | OpenAI transcription ~₦6.53/min                                    | **ADR 0027** (24 Aug) — hosted transcription IS the launch configuration, costed at a $0.006/min ceiling; ADR 0008's sidecar retained behind STT_URL |
+> | OpenAI transcription ~₦6.53/min                                    | **ADR 0027/0032** — OpenAI IS the launch transcriber, costed at a $0.006/min ceiling via `AI_TRANSCRIPTION_PRICES`; no self-hosted sidecar exists (ADR 0032) |
 > | Azure hosting ₦75–150k/month                                       | **ADR 0006** — Hetzner + Cloudflare + R2, **~₦30–40k/month** at launch                                                                               |
 > | Nightly `pg_dump` backups                                          | **ADR 0010** — continuous WAL archiving (PITR)                                                                                                       |
 >
@@ -141,13 +184,21 @@ charging a merchant to look at their own accounts (ADR 0024).
 >   research time. Planning FX **held at ₦1,450/$**, now a ~7.7% buffer.
 > - **Meta authentication (NG) was WRONG below:** the 2026 rate is
 >   **$0.0145** per conversation (not ~$0.0067) for a Nigeria-registered
->   WABA, and **$0.0750 — eleven times more — when the WABA is registered
->   outside Nigeria**. Corrected in the table; OTP cost roughly doubles
+>   WABA, and **$0.0750 when the WABA is registered outside Nigeria** —
+>   roughly **5.2 times** the corrected domestic rate **at rate card
+>   `meta-ng-2026-08`**. (An earlier draft said "eleven times more", which was
+>   the ratio against the superseded ~$0.0067 estimate on the line above it,
+>   not against the $0.0145 it now sits beside. Corrected 26 Aug 2026.) Every
+>   such multiple in this document is an effective-dated observation, never a
+>   constant: the application derives ratios from `ProviderCostSchedule` so a
+>   Meta repricing moves them without anybody editing a number. Corrected in
+>   the table; OTP cost roughly doubles
 >   against the original model and the margin band absorbs it. **Launch
 >   requirement: the WABA must be registered in Nigeria.**
-> - **Model rows now carry conservative ceilings:** Sonnet modelled at
->   $3/$15 per MTok (published figures vary by generation; we cost the
->   ceiling), Opus escalation added at $5/$25. Haiku $1/$5 confirmed.
+> - **Model rows carry the permanent list rates:** Sonnet 5 at $2/$10 per
+>   MTok (the introductory rate became the standing list price; earlier
+>   revisions of this table costed a $3/$15 ceiling), Opus escalation at
+>   $5/$25. Haiku $1/$5 confirmed.
 > - **Integrate voice corrected the same day:** the plan ladder walked
 >   backwards (Chat had 60 voice minutes, Integrate had none); Integrate now
 >   carries the same 3,600 seconds. Complete's "120 minutes = Chat +
@@ -159,12 +210,12 @@ charging a merchant to look at their own accounts (ADR 0024).
 | -------------------------- | ----------------------- | ------------------ | ---------------------------------------------------------------------- |
 | Twilio WhatsApp            | $0.005/msg each way     | ₦7.25/msg          | Integrate path only — see ADR 0002                                     |
 | Meta utility template (NG) | ~$0.0067                | ₦9.72              | Only when required                                                     |
-| Meta authentication (NG)   | $0.0145 (NG-registered) | ₦21.03             | OTP. **$0.0750 if the WABA is registered outside Nigeria — 11x trap**  |
+| Meta authentication (NG)   | $0.0145 (NG-registered) | ₦21.03             | OTP. **$0.0750 if the WABA is registered outside Nigeria** (rate card `meta-ng-2026-08`) |
 | Meta marketing (NG)        | ~$0.0516                | ₦74.82             | **Excluded from V1 entirely**                                          |
 | In-window service replies  | currently ₦0 Meta-side  | —                  | **Chargeable from 1 Oct 2026; re-run maths when rates publish ~1 Sep** |
-| OpenAI transcription       | $0.0045/min             | ~₦6.53/min         | Benchmark only — STT is self-hosted (ADR 0005)                         |
+| OpenAI transcription       | $0.006/min ceiling      | ~₦8.70/min         | Launch configuration (ADR 0027); actual rate supplied at deploy via `AI_TRANSCRIPTION_PRICES`, recorded per call in `usage_events` |
 | Claude Haiku 4.5           | $1/$5 per MTok          | ~₦2–4/call         | Trivial classification                                                 |
-| Claude Sonnet              | $3/$15 per MTok ceiling | ~₦12/call          | **Runtime default** (ADR 0007); costed at ceiling per 24 Aug rule      |
+| Claude Sonnet 5            | $2/$10 per MTok         | ~₦8/call           | **Interpreter default** (ADR 0031, accuracy-first) and the vision reader |
 | Claude Opus 5              | $5/$25 per MTok         | ~₦20/call          | Escalation role only — rare by design                                  |
 | Claude Fable 5             | $10/$50 per MTok        | ~₦40/call          | Build-time & evals, escalation flag only                               |
 | Paystack local card        | 1.5% + ₦100, cap ₦2,000 | merchant-borne     | Never absorbed into subscription                                       |

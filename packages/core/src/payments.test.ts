@@ -8,12 +8,15 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  estimateProviderFeeMinor,
   isTerminalIntentStatus,
   judgeProviderPayment,
   paymentReference,
   PAYMENT_REFERENCE_PATTERN,
   splitFees,
   type ExpectedPayment,
+  capabilityBlockers,
+  resolvePaymentProvider,
 } from './payments.js';
 
 const EXPECTED: ExpectedPayment = {
@@ -198,4 +201,210 @@ describe('terminal intents', () => {
       expect(isTerminalIntentStatus(status)).toBe(false);
     },
   );
+});
+
+describe('the provider resolver (§17, §18; PR-068)', () => {
+  /**
+   * A platform capability on its three axes (PR-119). `open()` is the
+   * everyday case; a closed axis is named individually, because that is
+   * the whole reason the axes are separate.
+   */
+  const cap = (
+    providerType: string,
+    axes: {
+      technicalSupport?: boolean;
+      commercialApproval?: boolean;
+      complianceApproval?: boolean;
+      technicalNote?: string;
+      commercialNote?: string;
+      complianceNote?: string;
+    } = {},
+  ) => {
+    const technicalSupport = axes.technicalSupport ?? true;
+    const commercialApproval = axes.commercialApproval ?? true;
+    const complianceApproval = axes.complianceApproval ?? true;
+    return {
+      providerType,
+      capability: 'COLLECT' as const,
+      technicalSupport,
+      commercialApproval,
+      complianceApproval,
+      technicalNote: axes.technicalNote ?? null,
+      commercialNote: axes.commercialNote ?? null,
+      complianceNote: axes.complianceNote ?? null,
+      /* The database generates this; here it is derived the same way, and
+       * the test below proves the resolver reads it rather than guessing. */
+      productionEnabled: technicalSupport && commercialApproval && complianceApproval,
+    };
+  };
+  const conn = (
+    connectionId: string,
+    providerType: string,
+    productionEnabled: boolean,
+    connectedAtMs = 0,
+  ) => ({ connectionId, providerType, productionEnabled, connectedAtMs });
+
+  it('picks from capability and compliance, never a hardcoded default', () => {
+    const outcome = resolvePaymentProvider(
+      'COLLECT',
+      [conn('c-mono', 'mono', true, 1), conn('c-pst', 'paystack', true, 2)],
+      [
+        cap('paystack'),
+        cap('mono', {
+          commercialApproval: false,
+          commercialNote: 'OPEN COMMERCIAL: Mono production terms',
+        }),
+      ],
+    );
+    /* Mono is OLDER but blocked at the platform — capability decides. */
+    expect(outcome).toEqual({ resolved: true, connectionId: 'c-pst', providerType: 'paystack' });
+  });
+
+  it('refuses with the blocker BY NAME when no capable provider remains', () => {
+    const outcome = resolvePaymentProvider(
+      'COLLECT',
+      [conn('c-mono', 'mono', true)],
+      [
+        cap('mono', {
+          commercialApproval: false,
+          commercialNote: 'OPEN COMMERCIAL: Mono production terms',
+        }),
+      ],
+    );
+    expect(outcome).toEqual({
+      resolved: false,
+      reason: 'no_capable_provider',
+      detail: ['OPEN COMMERCIAL: Mono production terms'],
+    });
+  });
+
+  it("refuses when the merchant's own axes do not derive production-enabled", () => {
+    const outcome = resolvePaymentProvider(
+      'COLLECT',
+      [conn('c-pst', 'paystack', false)],
+      [cap('paystack')],
+    );
+    expect(outcome).toEqual({
+      resolved: false,
+      reason: 'not_production_enabled',
+      providerTypes: ['paystack'],
+    });
+  });
+
+  it('a working sandbox is one axis, and one axis never opens production', () => {
+    /* The owner's sentence of 28 Aug 2026, as a property: "do not let
+     * sandbox works turn that boolean on". Passing tests set
+     * `technicalSupport`; production still needs two more signatures, and
+     * the refusal names both of the people who have not given theirs. */
+    const sandboxOnly = cap('kuda', {
+      commercialApproval: false,
+      commercialNote: 'OPEN COMMERCIAL: Kuda production commercial terms',
+      complianceApproval: false,
+      complianceNote: 'OPEN COMPLIANCE: Kuda regulatory approval',
+    });
+    expect(sandboxOnly.technicalSupport).toBe(true);
+    expect(sandboxOnly.productionEnabled).toBe(false);
+
+    const outcome = resolvePaymentProvider(
+      'COLLECT',
+      [conn('c-kuda', 'kuda', true)],
+      [sandboxOnly],
+    );
+    expect(outcome).toEqual({
+      resolved: false,
+      reason: 'no_capable_provider',
+      detail: [
+        'OPEN COMMERCIAL: Kuda production commercial terms',
+        'OPEN COMPLIANCE: Kuda regulatory approval',
+      ],
+    });
+  });
+
+  it('names every closed axis, because a merchant told one at a time waits twice', () => {
+    expect(capabilityBlockers(cap('paystack'))).toEqual([]);
+    expect(
+      capabilityBlockers(
+        cap('mono', { commercialApproval: false, commercialNote: 'terms unsigned' }),
+      ),
+    ).toEqual(['terms unsigned']);
+    expect(
+      capabilityBlockers(
+        cap('nobody', {
+          technicalSupport: false,
+          commercialApproval: false,
+          complianceApproval: false,
+        }),
+      ),
+    ).toEqual([
+      'nobody: no adapter',
+      'nobody: no commercial approval',
+      'nobody: no compliance approval',
+    ]);
+  });
+
+  it('no connection is its own refusal, and seniority breaks a tie deterministically', () => {
+    expect(resolvePaymentProvider('COLLECT', [], [cap('paystack')])).toEqual({
+      resolved: false,
+      reason: 'no_connection',
+    });
+    const tie = resolvePaymentProvider(
+      'COLLECT',
+      [conn('c-new', 'paystack', true, 200), conn('c-old', 'paystack', true, 100)],
+      [cap('paystack')],
+    );
+    expect(tie).toEqual({ resolved: true, connectionId: 'c-old', providerType: 'paystack' });
+  });
+});
+
+describe('estimateProviderFeeMinor (§19.1, §24; PR-072)', () => {
+  /* Paystack's local-card pricing as the schedule observes it:
+   * 1.5% + N100, capped N2,000, the N100 waived below N2,500. */
+  const localCard = {
+    percentPpm: 15_000,
+    flatMinor: 10_000,
+    capMinor: 200_000,
+    waiveFlatUnderMinor: 250_000,
+  };
+
+  it('derives percentage plus flat from the observation', () => {
+    /* N100,000: 1.5% is N1,500, plus the N100 flat. */
+    expect(estimateProviderFeeMinor(localCard, 10_000_000)).toBe(160_000);
+  });
+
+  it('caps the WHOLE fee, not just the percentage', () => {
+    /* N1,000,000: 1.5% alone is N15,000; the card says N2,000 and stops. */
+    expect(estimateProviderFeeMinor(localCard, 100_000_000)).toBe(200_000);
+  });
+
+  it('waives the flat part below the threshold, and only below it', () => {
+    /* N2,000 is under N2,500: percentage only. */
+    expect(estimateProviderFeeMinor(localCard, 200_000)).toBe(3_000);
+    /* N2,500 exactly is NOT under the threshold: the flat fee applies. */
+    expect(estimateProviderFeeMinor(localCard, 250_000)).toBe(13_750);
+  });
+
+  it('rounds the percentage UP — every cost modelled at or above market', () => {
+    /* 1 kobo at 1.5% is 0.015 kobo; the estimate says 1, never 0. */
+    expect(estimateProviderFeeMinor({ ...localCard, waiveFlatUnderMinor: null }, 1)).toBe(10_001);
+  });
+
+  it('an uncapped rate is honoured as uncapped', () => {
+    expect(
+      estimateProviderFeeMinor(
+        { percentPpm: 10_000, flatMinor: 0, capMinor: null, waiveFlatUnderMinor: null },
+        100_000_000,
+      ),
+    ).toBe(1_000_000);
+  });
+
+  it('the transfer card: 1% capped N300', () => {
+    const transfer = {
+      percentPpm: 10_000,
+      flatMinor: 0,
+      capMinor: 30_000,
+      waiveFlatUnderMinor: null,
+    };
+    expect(estimateProviderFeeMinor(transfer, 2_000_000)).toBe(20_000);
+    expect(estimateProviderFeeMinor(transfer, 5_000_000)).toBe(30_000);
+  });
 });

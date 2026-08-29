@@ -18,6 +18,7 @@ import { redactForLog } from '@rekoda/core/privacy';
 import { JobQueue, JobKind } from './queue.service.js';
 import { JobRunner, describeFailure } from './runner.js';
 import { inboundMessageHandler, type InboundMessageDeps } from './inbound-message.handler.js';
+import { customerMessageHandler } from './customer-message.handler.js';
 import { renderDocumentHandler } from './render-document.handler.js';
 import { deliverDocumentHandler } from './deliver-document.handler.js';
 import { paymentLinkHandler } from './payment-link.handler.js';
@@ -35,11 +36,20 @@ import { BANK_FEED, type BankFeedPort } from '../bank/feed.port.js';
 import { sweepBankFeeds } from '../bank/feed-sync.js';
 import { sweepUnknownSenders } from '../channels/stranger-sweep.js';
 import { sweepGracePeriods } from '../billing/grace-sweep.js';
+import { AUDIO_METADATA_PROBE, type AudioMetadataProbe } from '../ai/audio-duration.js';
 import { sweepRenewals } from '../billing/renewal-sweep.js';
-import { sweepRetention } from '../privacy/retention-sweep.js';
+import { sweepEvidence, sweepRetention } from '../privacy/retention-sweep.js';
 import { sweepRecurring } from '../spend/recurring-sweep.js';
 import { sweepDepreciation } from '../spend/depreciation-sweep.js';
+import { OutboxDispatcher } from '../commands/outbox-dispatcher.js';
+import { webhookFanOut, type OutboxFanOut } from '../webhooks/fan-out.js';
+import { deliverWebhooks } from '../webhooks/delivery.sweep.js';
+import { HttpWebhookSender } from '../webhooks/sender.js';
+import { CommandsModule } from '../commands/commands.module.js';
+import { CommandBus } from '../commands/command-bus.service.js';
 import { MESSAGE_SENDER } from '../channels/sender.tokens.js';
+import { WabaTemplateService } from '../channels/waba-templates.service.js';
+import { CustomerThreadRouter } from '../channels/customer-route.service.js';
 import { SPEECH_TO_TEXT, type SpeechToText } from '../ai/stt.js';
 import { TEXT_EXTRACTION, type TextExtraction } from '../ai/ocr.js';
 import type { MessageSender } from '../channels/sender.js';
@@ -60,7 +70,10 @@ import type { DocumentStorage } from '../documents/storage.js';
  * a test whose deps type drifts from `buildRunner`'s is a test that stops
  * covering a handler the moment one is added.
  */
-export interface RunnerDeps extends Omit<InboundMessageDeps, 'db'> {
+export interface RunnerDeps extends Omit<
+  InboundMessageDeps,
+  'db' | 'customerRoute' | 'customerTexts'
+> {
   storage: DocumentStorage;
   sender: MessageSender;
   paymentProvider: PaymentProviderPort;
@@ -73,7 +86,27 @@ export function buildRunner(
   options?: { idleMs?: number; concurrency?: number },
 ): JobRunner {
   const runner = new JobRunner(workerDb, appDb, options);
-  runner.register(JobKind.InboundMessage, inboundMessageHandler({ ...deps, db: appDb }));
+  /* Constructed here rather than injected: buildRunner already holds every
+   * dependency the service needs, and threading it through RunnerDeps would
+   * make each test re-declare what this line derives. */
+  const customerTexts = new WabaTemplateService(appDb, deps.config, deps.sender, deps.gateway);
+  const customerRoute = new CustomerThreadRouter(deps.config);
+  runner.register(
+    JobKind.InboundMessage,
+    inboundMessageHandler({ ...deps, db: appDb, customerTexts, customerRoute }),
+  );
+  runner.register(
+    JobKind.CustomerMessage,
+    customerMessageHandler({
+      config: deps.config,
+      gateway: deps.gateway,
+      commandBus: deps.commandBus,
+      commandPlaceOrder: deps.config.commandPlaceOrder,
+      customerTexts,
+      replySender: deps.replySender,
+      db: appDb,
+    }),
+  );
   runner.register(
     JobKind.RenderDocument,
     renderDocumentHandler({ storage: deps.storage, db: appDb }),
@@ -89,7 +122,11 @@ export function buildRunner(
   );
   runner.register(
     JobKind.ProcessPaymentEvent,
-    processPaymentEventHandler({ provider: deps.paymentProvider, config: deps.config }),
+    processPaymentEventHandler({
+      provider: deps.paymentProvider,
+      config: deps.config,
+      commandBus: deps.commandBus,
+    }),
   );
   runner.register(
     JobKind.ProcessBillingCharge,
@@ -100,6 +137,8 @@ export function buildRunner(
     paymentLinkHandler({
       paymentIntents: deps.paymentIntents,
       replySender: deps.replySender,
+      customerTexts,
+      customerRoute,
       db: appDb,
       config: deps.config,
     }),
@@ -109,6 +148,67 @@ export function buildRunner(
     graduationNudgeHandler({ replySender: deps.replySender, db: appDb }),
   );
   return runner;
+}
+
+/**
+ * Builds the outbox dispatcher with every handler production registers.
+ *
+ * Exported for the same reason as `buildRunner`: the integration test runs
+ * this function, not a parallel registry, so a handler present in one and
+ * missing from the other cannot happen. Event types arrive with the commands
+ * that emit them, each PR adding its `register` call here.
+ */
+export function buildOutboxDispatcher(fanOut: OutboxFanOut = async () => {}): OutboxDispatcher {
+  const dispatcher = new OutboxDispatcher();
+
+  /* Since PR-112 every handler is the SAME function: fan-out to whatever
+   * the merchant subscribed. What differs between `sale.recorded` and
+   * `period.closed` is the payload the command already wrote, not how it
+   * reaches a subscriber, so a handler per type would be nineteen copies of
+   * one idea. The registry stays explicit because it is also the LIST — an
+   * event type absent from it fails and retries rather than vanishing.
+   *
+   * The default is the old empty body: a caller that passes no fan-out
+   * delivers to nobody, which is what every command suite wants and what
+   * production did before this PR. */
+  dispatcher.register('sale.recorded', fanOut);
+  dispatcher.register('invoice.issued', fanOut);
+
+  /* PR-022's facts. */
+  dispatcher.register('payment.recorded', fanOut);
+  dispatcher.register('payment.confirmed', fanOut);
+
+  /* PR-023's facts. */
+  dispatcher.register('expense.recorded', fanOut);
+  dispatcher.register('purchase.recorded', fanOut);
+
+  /* PR-024's facts. */
+  dispatcher.register('journal.posted', fanOut);
+  dispatcher.register('period.closed', fanOut);
+
+  /* PR-083's fact. */
+  dispatcher.register('books.opened', fanOut);
+
+  /* PR-088's facts: what validation decided, either way. */
+  dispatcher.register('order.validated', fanOut);
+  dispatcher.register('order.rejected', fanOut);
+
+  /* PR-025's fact. */
+  dispatcher.register('order.placed', fanOut);
+
+  /* PR-026's facts. */
+  dispatcher.register('financial_transactions.ingested', fanOut);
+  dispatcher.register('reconciliation.confirmed', fanOut);
+
+  /* PR-027's facts. */
+  dispatcher.register('inventory.adjusted', fanOut);
+  dispatcher.register('data.erased', fanOut);
+
+  /* PR-028's facts. */
+  dispatcher.register('invoice.voided', fanOut);
+  dispatcher.register('period.reopened', fanOut);
+
+  return dispatcher;
 }
 
 /**
@@ -143,6 +243,10 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
   private sweepingDepreciation = false;
   private retentionTimer: NodeJS.Timeout | null = null;
   private sweepingRetention = false;
+  private outboxTimer: NodeJS.Timeout | null = null;
+  private dispatchingOutbox = false;
+  private webhookTimer: NodeJS.Timeout | null = null;
+  private sendingWebhooks = false;
 
   constructor(
     @Inject(CONFIG) private readonly config: ApiConfig,
@@ -159,6 +263,8 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
     @Inject(BANK_FEED) private readonly bankFeed: BankFeedPort,
     @Inject(SPEECH_TO_TEXT) private readonly stt: SpeechToText,
     @Inject(TEXT_EXTRACTION) private readonly ocr: TextExtraction,
+    @Inject(AUDIO_METADATA_PROBE) private readonly audioProbe: AudioMetadataProbe,
+    @Inject(CommandBus) private readonly commandBus: CommandBus,
   ) {}
 
   onModuleInit(): void {
@@ -181,6 +287,8 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
         paymentIntents: this.paymentIntents,
         stt: this.stt,
         ocr: this.ocr,
+        audioProbe: this.audioProbe,
+        commandBus: this.commandBus,
       },
       { concurrency: this.config.workerConcurrency },
     );
@@ -247,6 +355,8 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
           appDb: this.appDb,
           connectionKey: this.config.connectionKey,
           paystackBaseUrl: this.config.paystackBaseUrl,
+          commandBus: this.commandBus,
+          commandConfirmPayment: this.config.commandConfirmPayment,
         }),
       )
         .catch((error: unknown) => {
@@ -269,7 +379,13 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
       if (this.sweepingFeeds) return;
       this.sweepingFeeds = true;
       this.exclusively('bank-feeds', () =>
-        sweepBankFeeds({ workerDb, appDb: this.appDb, feed: this.bankFeed }),
+        sweepBankFeeds({
+          workerDb,
+          appDb: this.appDb,
+          feed: this.bankFeed,
+          commandBus: this.commandBus,
+          commandIngestFinancialTransaction: this.config.commandIngestFinancialTransaction,
+        }),
       )
         .catch((error: unknown) => {
           this.log.warn(`bank feed sweep failed: ${redactForLog(describeFailure(error))}`);
@@ -295,6 +411,7 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
           sender: this.sender,
           vaultKey: this.config.vaultKey,
           matchKey: this.config.matchKey,
+          metaPhoneNumberId: this.config.metaPhoneNumberId,
         }),
       )
         .catch((error: unknown) => {
@@ -316,7 +433,12 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
       if (this.sweepingGrace) return;
       this.sweepingGrace = true;
       this.exclusively('grace', () =>
-        sweepGracePeriods({ workerDb, appDb: this.appDb, sender: this.sender }),
+        sweepGracePeriods({
+          workerDb,
+          appDb: this.appDb,
+          sender: this.sender,
+          fxNairaPerUsd: this.config.planningFxNairaPerUsd,
+        }),
       )
         .catch((error: unknown) => {
           this.log.warn(`grace sweep failed: ${redactForLog(describeFailure(error))}`);
@@ -335,7 +457,9 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
     this.renewalTimer = setInterval(() => {
       if (this.sweepingRenewals) return;
       this.sweepingRenewals = true;
-      this.exclusively('renewal', () => sweepRenewals({ workerDb, appDb: this.appDb }))
+      this.exclusively('renewal', () =>
+        sweepRenewals({ workerDb, appDb: this.appDb, config: this.config }),
+      )
         .catch((error: unknown) => {
           this.log.warn(`renewal sweep failed: ${redactForLog(describeFailure(error))}`);
         })
@@ -354,7 +478,18 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
       if (this.sweepingRetention) return;
       this.sweepingRetention = true;
       this.exclusively('retention', () =>
-        sweepRetention({ workerDb, appDb: this.appDb, sender: this.sender }),
+        sweepRetention({
+          workerDb,
+          appDb: this.appDb,
+          sender: this.sender,
+          fxNairaPerUsd: this.config.planningFxNairaPerUsd,
+        }).then(async (swept) => {
+          /* The evidence clocks ride the same timer: one schedule, one
+           * heartbeat, and the page that publishes both periods is describing
+           * one sweep pass rather than two that can drift apart. */
+          await sweepEvidence({ workerDb, appDb: this.appDb });
+          return swept;
+        }),
       )
         .catch((error: unknown) => {
           this.log.warn(`retention sweep failed: ${redactForLog(describeFailure(error))}`);
@@ -375,7 +510,14 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
     this.recurringTimer = setInterval(() => {
       if (this.sweepingRecurring) return;
       this.sweepingRecurring = true;
-      this.exclusively('recurring', () => sweepRecurring({ workerDb, appDb: this.appDb }))
+      this.exclusively('recurring', () =>
+        sweepRecurring({
+          workerDb,
+          appDb: this.appDb,
+          commandBus: this.commandBus,
+          commandRecordExpense: this.config.commandRecordExpense,
+        }),
+      )
         .catch((error: unknown) => {
           this.log.warn(`recurring sweep failed: ${redactForLog(describeFailure(error))}`);
         })
@@ -406,6 +548,59 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
         });
     }, 3_600_000);
     this.depreciationTimer.unref();
+
+    /**
+     * The outbox rides the pump's fast clock, because what it carries is a
+     * consequence somebody committed and is now waiting on. The lease
+     * (`FOR UPDATE SKIP LOCKED` plus `reclaimStalled`) already makes
+     * concurrent dispatchers safe, so no advisory lock here: every replica
+     * drains, and adding workers speeds delivery instead of wasting passes —
+     * the batch claim is one query when the table is empty, which is almost
+     * always.
+     */
+    const dispatcher = buildOutboxDispatcher(webhookFanOut(workerDb));
+    this.outboxTimer = setInterval(() => {
+      if (this.dispatchingOutbox) return;
+      this.dispatchingOutbox = true;
+      dispatcher
+        .runOnce(workerDb)
+        .catch((error: unknown) => {
+          this.log.warn(`outbox pass failed: ${redactForLog(describeFailure(error))}`);
+        })
+        .finally(() => {
+          this.dispatchingOutbox = false;
+        });
+    }, 2_000);
+    this.outboxTimer.unref();
+
+    /**
+     * Sending what fan-out queued (PR-112).
+     *
+     * Its own timer rather than a step inside the dispatcher, because the
+     * send is a request to an address a merchant chose: a slow endpoint
+     * inside the outbox pass would dam every other merchant's facts behind
+     * one merchant's outage. Five seconds, and no advisory lock for the
+     * same reason the outbox has none — the lease makes concurrent senders
+     * safe, so extra replicas speed delivery instead of wasting passes.
+     */
+    const webhookSender = new HttpWebhookSender();
+    this.webhookTimer = setInterval(() => {
+      if (this.sendingWebhooks) return;
+      this.sendingWebhooks = true;
+      deliverWebhooks({
+        worker: workerDb,
+        vaultKey: this.config.vaultKey,
+        sender: webhookSender,
+        planCatalogueReads: this.config.planCatalogueReads,
+      })
+        .catch((error: unknown) => {
+          this.log.warn(`webhook pass failed: ${redactForLog(describeFailure(error))}`);
+        })
+        .finally(() => {
+          this.sendingWebhooks = false;
+        });
+    }, 5_000);
+    this.webhookTimer.unref();
   }
 
   /**
@@ -436,12 +631,14 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
     if (this.transferTimer) clearInterval(this.transferTimer);
     if (this.feedTimer) clearInterval(this.feedTimer);
     if (this.strangerTimer) clearInterval(this.strangerTimer);
+    if (this.outboxTimer) clearInterval(this.outboxTimer);
+    if (this.webhookTimer) clearInterval(this.webhookTimer);
     await this.runner?.stop();
   }
 }
 
 @Module({
-  imports: [AiModule, RepliesModule, DocumentsModule, PaymentsModule, BankModule],
+  imports: [AiModule, RepliesModule, DocumentsModule, PaymentsModule, BankModule, CommandsModule],
   providers: [JobQueue, JobRunnerLifecycle, PrivacyGateway],
   exports: [JobQueue, PrivacyGateway],
 })

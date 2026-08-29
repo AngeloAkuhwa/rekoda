@@ -5,6 +5,7 @@ import { isOwner } from '@/lib/permissions';
 import { AppNav } from '../AppNav';
 import { SignOutButton } from '../SignOutButton';
 import { SettingsForm } from './SettingsForm';
+import { heldBy } from '@/lib/capabilities';
 
 export const metadata: Metadata = {
   title: 'Settings',
@@ -34,7 +35,7 @@ export default async function SettingsPage() {
         <SignOutButton />
       </header>
 
-      <AppNav active="settings" />
+      <AppNav active="settings" held={heldBy(identity)} />
 
       <div className="rk-card">
         <h2>Your business</h2>
@@ -54,6 +55,23 @@ export default async function SettingsPage() {
           </p>
         )}
       </div>
+
+      {owner ? (
+        <div className="rk-card">
+          <h2>Take your books with you</h2>
+          <p className="rk-fineprint">
+            One file with every record this business holds: invoices, receipts, spending, stock and
+            the audit trail. It is yours, so it never counts against your monthly downloads and it
+            keeps working if your plan lapses. Customer contact details are not in it: those are
+            released one record at a time, on the record itself.
+          </p>
+          <p>
+            <a className="rk-btn rk-btn-quiet" href="/app/export/data" download>
+              Download everything
+            </a>
+          </p>
+        </div>
+      ) : null}
 
       <div className="rk-card">
         <h2>Your plan, your money, your team</h2>

@@ -16,8 +16,15 @@
 import { randomBytes } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
-import { billingRepo, createDb, type Db } from '@rekoda/db';
-import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
+import { billingRepo, createDb, usageRepo, withBusiness, type Db } from '@rekoda/db';
+import { usagePeriod } from '@rekoda/core';
+import {
+  grantCapacityAddOn,
+  migrate,
+  requireUrls,
+  truncateAll,
+  type Urls,
+} from '@rekoda/db/testing';
 
 const SECRET = 'roles-secret-at-least-32-characters-long';
 
@@ -102,6 +109,12 @@ async function team(seed: string): Promise<{
     actor: 'operator:roles-suite',
   });
 
+  /* The API units are sold with the API product, never with a plan (spec
+   * §27), so the owner's application door below opens only once capacity
+   * exists. Applications are HELD rather than spent (PR-116), so the
+   * capacity arrives as an add-on holding, not a monthly credit. */
+  await grantCapacityAddOn(urls, created.businessId, 'API_APPLICATIONS', 5);
+
   await post('/v1/businesses/members', { phone: accountantPhone, role: 'accountant' }, owner);
   await post('/v1/businesses/members', { phone: delegatePhone, role: 'delegate' }, owner);
 
@@ -151,6 +164,12 @@ describe('what an accountant may do', () => {
       ['/v1/billing/packs', { packId: 'docs-100' }],
       ['/v1/catalogue/product', {}],
       ['/v1/shop-settings', {}],
+      /* Minting an API key is standing access to the whole business that
+       * outlives every sign-out. Owner only (spec §27). */
+      ['/v1/api-keys/applications', { name: 'Accountant app' }],
+      /* A webhook endpoint is a standing copy of the books going somewhere
+       * the owner chose, and it outlives every sign-out (spec §26). */
+      ['/v1/webhooks', { url: 'https://accountant.test/hook' }],
     ] as const;
     for (const [url, payload] of doors) {
       expect((await post(url, payload, accountant)).statusCode, url).toBe(403);
@@ -178,6 +197,8 @@ describe('what a delegate may do', () => {
       ['/v1/bank/statement/forget', {}],
       ['/v1/billing/plan', { plan: 'complete' }],
       ['/v1/shop-settings', {}],
+      ['/v1/api-keys/applications', { name: 'Delegate app' }],
+      ['/v1/webhooks', { url: 'https://delegate.test/hook' }],
     ] as const;
     for (const [url, payload] of doors) {
       expect((await post(url, payload, delegate)).statusCode, url).toBe(403);
@@ -195,5 +216,11 @@ describe('what the owner may do', () => {
     // The shop route answers a bad body with {outcome: 'bad_slug'} and 200,
     // so "past the guard" here is simply "anything but 403".
     expect((await post('/v1/shop-settings', {}, owner)).statusCode).not.toBe(403);
+    expect((await post('/v1/api-keys/applications', { name: 'Owner app' }, owner)).statusCode).toBe(
+      200,
+    );
+    expect((await post('/v1/webhooks', { url: 'https://owner.test/hook' }, owner)).statusCode).toBe(
+      200,
+    );
   });
 });

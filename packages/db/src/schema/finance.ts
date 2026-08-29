@@ -12,11 +12,14 @@ import { sql } from 'drizzle-orm';
 import {
   bigint,
   boolean,
+  char,
   date,
   index,
   integer,
   jsonb,
+  numeric,
   pgTable,
+  smallint,
   text,
   timestamp,
   uniqueIndex,
@@ -146,6 +149,21 @@ export const payments = pgTable(
     settlementStatus: text('settlement_status'),
     /** The provider's effective settlement date, stamped by the polling sweep. */
     settledAt: timestamp('settled_at', { withTimezone: true }),
+    /* ── provenance (spec §6.2–6.3, migration 0058) ──────────────────────
+     * How this payment's truth was established, and on what instrument.
+     * Nullable on every historical row, which is honest: nothing has been
+     * established about them yet, and PR-006's approved backfill is the
+     * only thing allowed to say otherwise.
+     *
+     * `initialConfirmationSource` is SET ONCE, enforced by a BEFORE UPDATE
+     * trigger in the database rather than by this comment. Correction is a
+     * PaymentVerification, never a rewrite; the single exemption is the
+     * named rollback function in rekoda_private, reachable by no
+     * application role. */
+    initialConfirmationSource: text('initial_confirmation_source'),
+    paymentMethod: text('payment_method'),
+    evidenceBasis: text('evidence_basis'),
+    paymentEvidenceId: uuid('payment_evidence_id'),
     createdAt: createdAt(),
   },
   (t) => [
@@ -178,6 +196,13 @@ export const paymentAllocations = pgTable(
       .notNull()
       .references(() => invoices.id),
     amountK: kobo('amount_k').notNull(),
+    /** §14.2 (PR-049): a reversal row negates its original exactly; the
+     * trigger in 0078 holds the shape, and these columns carry it. */
+    currency: char('currency', { length: 3 }).notNull().default('NGN'),
+    reversalOfId: uuid('reversal_of_id'),
+    reason: text('reason'),
+    sourceType: text('source_type'),
+    sourceId: text('source_id'),
     createdAt: createdAt(),
   },
   (t) => [index('alloc_payment_ix').on(t.paymentId), index('alloc_invoice_ix').on(t.invoiceId)],
@@ -281,6 +306,16 @@ export const ledgerTransactions = pgTable(
     sourceId: text('source_id'),
     /** One-shot key a dashboard journal brings. Null on every other posting. */
     clientRef: text('client_ref'),
+    /** §16 invariant: equals the business's own currency; a PR-039 trigger
+     * enforces it. Kobo columns everywhere are this currency's minor unit. */
+    functionalCurrency: char('functional_currency', { length: 3 }).notNull().default('NGN'),
+    /** §9.4: what kind of financial event this entry records. Partial
+     * unique with (sourceType, sourceId) when set; null on history and on
+     * writers whose purpose is not yet in the vocabulary. */
+    postingPurpose: text('posting_purpose'),
+    /** The ledger-level dedupe key (PR-040) for writers whose event
+     * identity is not (sourceType, sourceId) shaped. Partial unique. */
+    postingKey: text('posting_key'),
     createdAt: createdAt(),
   },
   (t) => [
@@ -299,17 +334,36 @@ export const ledgerEntries = pgTable(
     transactionId: uuid('transaction_id')
       .notNull()
       .references(() => ledgerTransactions.id),
-    /** Account key from @rekoda/core ACCOUNTS (CASH, SALES_REVENUE, …). */
-    account: text('account').notNull(),
+    /** The chart row this entry moves (PR-031…034). The composite FK to
+     * `accounts (business_id, id)` lives in migration 0063; another
+     * tenant's account is unrepresentable. */
+    accountId: uuid('account_id').notNull(),
+    /** debitFunctionalMinor / creditFunctionalMinor (§16): always the
+     * entry's functional currency. Kobo IS the NGN minor unit. */
     debitK: kobo('debit_k').notNull().default(0),
     creditK: kobo('credit_k').notNull().default(0),
+    /** What the money actually was (§16). Same-currency lines carry their
+     * functional amount here and no snapshot; the FX requirement — snapshot
+     * REQUIRED exactly when currencies differ — lands with PR-038. */
+    transactionCurrency: char('transaction_currency', { length: 3 }).notNull().default('NGN'),
+    transactionAmountMinor: bigint('transaction_amount_minor', { mode: 'number' }).notNull(),
+    exchangeRateSnapshotId: uuid('exchange_rate_snapshot_id'),
+    /** §12.2 subledger dimensions: additional context, never the only
+     * route. NULL is truthful for history and for postings whose source
+     * is not commerce. */
+    orderId: uuid('order_id'),
+    invoiceId: uuid('invoice_id'),
     createdAt: createdAt(),
   },
   (t) => [
     index('ledger_entries_tx_ix').on(t.transactionId),
-    index('ledger_entries_account_ix').on(t.businessId, t.account),
-    /* The statement schedules: business + account + a month of created_at. */
-    index('ledger_entries_business_account_created_ix').on(t.businessId, t.account, t.createdAt),
+    /* The statement schedules: business + account + a month of created_at;
+     * by prefix, every business+account balance read too. */
+    index('ledger_entries_business_account_id_created_ix').on(
+      t.businessId,
+      t.accountId,
+      t.createdAt,
+    ),
     /* The overview cards and cashflow chart: a created_at window with the
      * account only in FILTER clauses, which no account-pinned index serves. */
     index('ledger_entries_business_created_ix').on(t.businessId, t.createdAt),
@@ -347,6 +401,12 @@ export const bankStatementLines = pgTable(
     bankRef: text('bank_ref'),
     /** Stops a re-upload duplicating. Computed in @rekoda/core. */
     fingerprint: text('fingerprint').notNull(),
+    /** §22.3 (PR-073): which connection produced this line. Null for
+     * uploads — their identity is the fingerprint. */
+    financialAccountConnectionId: uuid('financial_account_connection_id'),
+    /** The provider's own id for the movement, scoped to the connection
+     * above by a partial unique — never assumed globally unique. */
+    externalTransactionId: text('external_transaction_id'),
     importedAt: timestamp('imported_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
@@ -379,8 +439,15 @@ export const bankLineMatches = pgTable(
     transactionId: uuid('transaction_id')
       .notNull()
       .references(() => ledgerTransactions.id),
-    /** `auto` when the rule was certain, `manual` when a person decided. */
+    /** `auto` when the rule was certain, `manual` when a person decided.
+     * No `ai` value exists: AI can explain, never decide (§22.1). */
     decidedBy: text('decided_by').notNull(),
+    /** Which §22.1 tier decided it: 1 exact reference, 2 strong
+     * deterministic, 4 manual. Tier 3 (suggested) is never applied, so a
+     * tier-3 match is unrepresentable (migration 0096). */
+    tier: smallint('tier').notNull(),
+    /** The person's sentence, required exactly when a person decided. */
+    reason: text('reason'),
     matchedAt: timestamp('matched_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
@@ -390,24 +457,24 @@ export const bankLineMatches = pgTable(
 );
 
 /**
- * The live bank feed's standing authorisation (migration 0045, ADR 0012).
+ * FinancialAccountConnection (spec §18, §22.3; migration 0095, PR-073).
  *
- * The second door into `bank_statement_lines`: an aggregator the merchant
- * authorised reads their account and Rekoda pulls what moved. This row holds
- * only the fact of the link — provider, opaque account reference, a label —
- * never credentials, tokens or the account number. One row per business,
- * because V1 has one BANK ledger account to reconcile against.
+ * The FEED side's connection entity, bound to the ONE place money sits
+ * that it reads (`financial_accounts`, composite FK in the migration).
+ * Replaces `bank_feed_connections`, which 0095 backfilled from and froze;
+ * identifiers a connection produces are scoped to it, never global.
  */
-export const bankFeedConnections = pgTable(
-  'bank_feed_connections',
+export const financialAccountConnections = pgTable(
+  'financial_account_connections',
   {
     id: id(),
     businessId: businessId(),
-    provider: text('provider').notNull(),
+    financialAccountId: uuid('financial_account_id').notNull(),
+    providerType: text('provider_type').notNull(),
     /** The aggregator's id for the linked account. Opaque and theirs. */
-    accountRef: text('account_ref').notNull(),
-    bankName: text('bank_name').notNull(),
-    accountLast4: text('account_last4').notNull(),
+    externalAccountId: text('external_account_id').notNull(),
+    bankName: text('bank_name').notNull().default(''),
+    accountLast4: text('account_last4').notNull().default(''),
     /** linked | unlinked. Unlinked keeps the row: lapsed is not never-was. */
     status: text('status').notNull().default('linked'),
     /** The last Lagos day a sync ran, so the next fetch knows where to start. */
@@ -415,7 +482,14 @@ export const bankFeedConnections = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [uniqueIndex('bank_feed_business_ux').on(t.businessId)],
+  (t) => [
+    uniqueIndex('financial_account_connections_account_ux').on(t.businessId, t.financialAccountId),
+    uniqueIndex('financial_account_connections_identity_ux').on(
+      t.businessId,
+      t.providerType,
+      t.externalAccountId,
+    ),
+  ],
 );
 
 /**
@@ -443,6 +517,9 @@ export const supplierPayments = pgTable(
       .notNull()
       .references(() => ledgerTransactions.id),
     paidOn: date('paid_on').notNull(),
+    /** Which bill this settled (0098, PR-077) — beside expenseId, not
+     * replacing it: the ageing still reads the expense attribution. */
+    billId: uuid('bill_id'),
     /** One-shot key the pay form brings, so a resubmission pays once. */
     clientRef: text('client_ref'),
     recordedAt: timestamp('recorded_at', { withTimezone: true }).notNull().defaultNow(),
@@ -452,6 +529,46 @@ export const supplierPayments = pgTable(
     uniqueIndex('supplier_payments_client_ref_ux')
       .on(t.businessId, t.clientRef)
       .where(sql`${t.clientRef} IS NOT NULL`),
+  ],
+);
+
+/**
+ * A bill: the mirror of an invoice, pointing the other way (spec §8;
+ * migration 0098, PR-077). One per spend row whose posting raised
+ * ACCOUNTS_PAYABLE; the balance is GENERATED and the status is
+ * CHECK-bound to the money, so a lifecycle that disagrees with the
+ * ledger cannot be written.
+ */
+export const bills = pgTable(
+  'bills',
+  {
+    id: id(),
+    businessId: businessId(),
+    /** Who is owed. Nullable: an unaddressed debt is still a debt. */
+    supplierId: uuid('supplier_id'),
+    expenseId: uuid('expense_id').notNull(),
+    /** BILL-2026-000041, on its own doc_counters kind. */
+    billNumber: text('bill_number').notNull(),
+    /** The supplier's own reference, when the merchant has one. */
+    supplierReference: text('supplier_reference'),
+    status: text('status').notNull().default('open'),
+    /** The CREDIT portion the posting raised — not the whole purchase. */
+    totalK: kobo('total_k').notNull(),
+    paidK: kobo('paid_k').notNull().default(0),
+    /** GENERATED ALWAYS AS (total_k - paid_k) in the database. */
+    balanceDueK: kobo('balance_due_k'),
+    billedOn: date('billed_on').notNull(),
+    /** Nullable, honestly: Rekoda never invents terms nobody set. */
+    dueDate: date('due_date'),
+    ledgerTransactionId: uuid('ledger_transaction_id'),
+    sourceType: text('source_type').notNull(),
+    sourceId: text('source_id'),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    uniqueIndex('bills_number_ux').on(t.businessId, t.billNumber),
+    uniqueIndex('bills_expense_ux').on(t.businessId, t.expenseId),
+    index('bills_business_status_ix').on(t.businessId, t.status),
   ],
 );
 
@@ -552,3 +669,209 @@ export const recurringEntries = pgTable(
       .where(sql`${t.clientRef} IS NOT NULL`),
   ],
 );
+
+/* ── accounting periods (spec §8; migration 0067, PR-036) ── */
+
+/**
+ * A closed month as a row. A month never closed has no row at all; a
+ * reopened month keeps its row with status 'open', because the fact that it
+ * was once closed is history and history is kept. The watermark the ledger
+ * triggers enforce is DERIVED: MAX(period) over rows with status 'closed'.
+ */
+export const accountingPeriods = pgTable(
+  'accounting_periods',
+  {
+    id: uuid('id')
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    businessId: uuid('business_id')
+      .notNull()
+      .references(() => businesses.id),
+    /** Lagos month, YYYY-MM. */
+    period: char('period', { length: 7 }).notNull(),
+    status: text('status').notNull(), // closed | open
+    closedAt: timestamp('closed_at', { withTimezone: true }).notNull().defaultNow(),
+    closedBy: text('closed_by').notNull(),
+    reopenedAt: timestamp('reopened_at', { withTimezone: true }),
+    reopenedBy: text('reopened_by'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('accounting_periods_business_period_ux').on(t.businessId, t.period)],
+);
+
+/* ── exchange rate snapshots (spec §16, Appendix A.1; migration 0069) ── */
+
+/**
+ * A market fact, not tenant data: no businessId, no RLS. Immutable once
+ * written (UPDATE/DELETE revoked in 0069); `effectiveAt` is the moment the
+ * rate applies to, never fetch time; a MANUAL_OVERRIDE carries who decided
+ * and why, by CHECK.
+ */
+export const exchangeRateSnapshots = pgTable('exchange_rate_snapshots', {
+  id: uuid('id')
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  baseCurrency: char('base_currency', { length: 3 }).notNull(),
+  quoteCurrency: char('quote_currency', { length: 3 }).notNull(),
+  /** Full provider precision, never rounded — a decimal string. */
+  rate: numeric('rate').notNull(),
+  effectiveAt: timestamp('effective_at', { withTimezone: true }).notNull(),
+  fetchedAt: timestamp('fetched_at', { withTimezone: true }).notNull().defaultNow(),
+  source: text('source').notNull(), // PROVIDER | MANUAL_OVERRIDE | INHERITED
+  providerName: text('provider_name').notNull(),
+  providerReference: text('provider_reference'),
+  actorId: text('actor_id'),
+  reason: text('reason'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+/* ── journal drafts (spec §9.1; migration 0072, PR-041) ── */
+
+/**
+ * The EDITABLE half of §9.1's two pairs. A draft is a proposal: lines cite
+ * chart accounts directly, edits are ordinary UPDATEs, and a never-posted
+ * draft may be discarded. `postedJournalId` (UNIQUE where set) records
+ * which immutable entry it became; PR-042's trigger makes a posted draft
+ * read-only so the approval trail keeps describing what was approved.
+ */
+export const journalDrafts = pgTable(
+  'journal_drafts',
+  {
+    id: uuid('id')
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    businessId: uuid('business_id')
+      .notNull()
+      .references(() => businesses.id),
+    memo: text('memo').notNull(),
+    createdBy: text('created_by').notNull(),
+    postedJournalId: uuid('posted_journal_id'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('journal_drafts_posted_ux')
+      .on(t.postedJournalId)
+      .where(sql`${t.postedJournalId} IS NOT NULL`),
+  ],
+);
+
+export const journalDraftLines = pgTable('journal_draft_lines', {
+  id: uuid('id')
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  businessId: uuid('business_id')
+    .notNull()
+    .references(() => businesses.id),
+  draftId: uuid('draft_id').notNull(),
+  accountId: uuid('account_id').notNull(),
+  debitK: kobo('debit_k').notNull().default(0),
+  creditK: kobo('credit_k').notNull().default(0),
+  position: integer('position').notNull().default(0),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+/* ── receivable recognition policy (spec §12.3, §12.5; migration 0074) ── */
+
+/**
+ * Versioned, forward-looking, append-only (0074 revokes UPDATE/DELETE).
+ * Resolution is BY DATE, so historical accounting never changes because a
+ * policy changed later. Absence means ON_ISSUE_UNCONDITIONAL.
+ */
+export const receivableRecognitionPolicies = pgTable('receivable_recognition_policies', {
+  id: uuid('id')
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  businessId: uuid('business_id')
+    .notNull()
+    .references(() => businesses.id),
+  policy: text('policy').notNull(), // ON_ISSUE_UNCONDITIONAL | ON_FULFILMENT | NONE
+  effectiveFrom: date('effective_from').notNull(),
+  createdBy: text('created_by').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+/* ── revenue recognition events + review items (§12.2, §12.5; 0075) ── */
+
+/**
+ * What has been recognised, per order. §12.2's revenueRecognisedToDate is
+ * the SUM of these rows, read at posting time, never cached. Idempotent by
+ * the §12.5 quadruple (NULL order lines pinned to a sentinel in 0075's
+ * unique index). Append-only.
+ */
+export const revenueRecognitionEvents = pgTable('revenue_recognition_events', {
+  id: uuid('id')
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  businessId: uuid('business_id')
+    .notNull()
+    .references(() => businesses.id),
+  orderId: uuid('order_id').notNull(),
+  orderLineId: uuid('order_line_id'),
+  sourceType: text('source_type').notNull(),
+  sourceId: text('source_id').notNull(),
+  /** REVENUE only. Never gross. Never VAT-inclusive. */
+  amountMinor: bigint('amount_minor', { mode: 'number' }).notNull(),
+  ledgerTransactionId: uuid('ledger_transaction_id').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
+ * §12.2's REQUIRES_REVIEW queue: machine-readable reason, full context at
+ * the moment of refusal, resolution recorded — never deleted.
+ */
+export const recognitionReviewItems = pgTable('recognition_review_items', {
+  id: uuid('id')
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  businessId: uuid('business_id')
+    .notNull()
+    .references(() => businesses.id),
+  orderId: uuid('order_id'),
+  reviewReason: text('review_reason').notNull(),
+  sourceType: text('source_type').notNull(),
+  sourceId: text('source_id').notNull(),
+  context: jsonb('context').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  resolvedAt: timestamp('resolved_at', { withTimezone: true }),
+  resolvedBy: text('resolved_by'),
+});
+
+/* ── customer credit subledger (spec §14.1; migration 0077) ── */
+
+/** A balance the business owes a customer. Append-only. */
+export const customerCredits = pgTable('customer_credits', {
+  id: uuid('id')
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  businessId: uuid('business_id')
+    .notNull()
+    .references(() => businesses.id),
+  customerId: uuid('customer_id').notNull(),
+  amountMinor: bigint('amount_minor', { mode: 'number' }).notNull(),
+  currency: char('currency', { length: 3 }).notNull().default('NGN'),
+  sourceType: text('source_type').notNull(),
+  sourceId: text('source_id').notNull(),
+  reason: text('reason'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+/** That balance, applied to an invoice. Append-only; §14.2's reversal
+ * constraints arrive with PR-049 and govern `reversalOfId`. */
+export const customerCreditApplications = pgTable('customer_credit_applications', {
+  id: uuid('id')
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  businessId: uuid('business_id')
+    .notNull()
+    .references(() => businesses.id),
+  customerCreditId: uuid('customer_credit_id').notNull(),
+  invoiceId: uuid('invoice_id').notNull(),
+  amountMinor: bigint('amount_minor', { mode: 'number' }).notNull(),
+  currency: char('currency', { length: 3 }).notNull().default('NGN'),
+  reversalOfId: uuid('reversal_of_id'),
+  reason: text('reason'),
+  sourceType: text('source_type').notNull(),
+  sourceId: text('source_id').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});

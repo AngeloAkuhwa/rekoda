@@ -1,6 +1,6 @@
 import { Logger } from '@nestjs/common';
 import { redactForLog } from '@rekoda/core/privacy';
-import { billingPeriod, replies } from '@rekoda/core';
+import { billingPeriod, messageCostK, replies } from '@rekoda/core';
 import {
   conversationsRepo,
   identity,
@@ -114,10 +114,10 @@ export function deliverDocumentHandler(deps: DeliverDocumentDeps): JobHandler {
       await quotaRepo.recordUsage(tx, {
         businessId,
         provider: 'meta',
-        usageType: 'message_out',
+        usageType: 'SERVICE_MESSAGE',
         quantity: 1,
         providerCostMicros: costMicros,
-        nairaEquivalentK: Math.round((costMicros * deps.config.planningFxNairaPerUsd) / 10_000),
+        nairaEquivalentK: messageCostK(costMicros, deps.config.planningFxNairaPerUsd),
         billingPeriod: billingPeriod(new Date()),
         meta: { window: 'service', kind: 'media', documentKind: stored.kind },
       });

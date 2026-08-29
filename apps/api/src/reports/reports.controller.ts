@@ -13,8 +13,10 @@ import {
   Controller,
   Get,
   HttpCode,
+  HttpException,
   Inject,
   Post,
+  Param,
   Query,
   Req,
   Res,
@@ -41,14 +43,15 @@ interface FileReply {
 }
 import {
   postCostOfSale,
-  allowanceFor,
   buildBalanceSheet,
   buildCashflowStatement,
   buildProfitAndLoss,
   buildTrialBalance,
+  collectionStatusFor,
   csvDate,
   csvKobo,
   daysOverdue,
+  paymentStatusFor,
   buildXlsx,
   describeActor,
   EXPENSE_CATEGORY_LABELS,
@@ -57,7 +60,6 @@ import {
   STOCK_CATEGORY,
   UNATTRIBUTED_SALE_LABEL,
   describeAuditEvent,
-  isAccountKey,
   lagosDay,
   lagosNoon,
   nextDueAfter,
@@ -69,6 +71,7 @@ import {
 } from '@rekoda/core';
 import { FontsMissing, renderStatementsPdf } from '../documents/pdf.js';
 import type {
+  PartyStatementResponse,
   ReportsActivityResponse,
   ReportsAuditResponse,
   ReportsCashflowResponse,
@@ -131,6 +134,7 @@ import {
   issueRepo,
   jobsRepo,
   ordersRepo,
+  portabilityRepo,
   openingRepo,
   stocktakeRepo,
   closeRepo,
@@ -142,8 +146,30 @@ import {
   stockRepo,
   withBusiness,
   type Db,
+  partyStatementsRepo,
 } from '@rekoda/db';
 import { SessionGuard, type AuthedRequest } from '../auth/session.guard.js';
+import { CONFIG, type ApiConfig } from '../config.js';
+import { meterAllowance } from '../billing/plan-terms.js';
+import { CommandBus } from '../commands/command-bus.service.js';
+import {
+  issueInvoiceWork,
+  QuoteAlreadyTaken,
+  type IssueInvoiceInput,
+  type IssuedInvoice,
+} from '../commands/sale-commands.js';
+import { recordPaymentWork, type RecordPaymentInput } from '../commands/payment-commands.js';
+import { recordPurchaseWork, type RecordPurchaseCmdInput } from '../commands/spend-commands.js';
+import {
+  closePeriodWork,
+  postJournalWork,
+  recordOpeningBalancesWork,
+  reopenPeriodWork,
+  type ClosePeriodInput,
+  type PostJournalInput,
+  type ReopenPeriodInput,
+} from '../commands/ledger-commands.js';
+import { voidReceiptWork, type VoidReceiptInput } from '../commands/sale-commands.js';
 import { Roles, RolesGuard } from '../auth/roles.guard.js';
 import { DB } from '../db/db.module.js';
 import { PrivacyGateway } from '../privacy/gateway.service.js';
@@ -168,6 +194,16 @@ const XLSX_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.s
 const EXPORT_ROWS = 10_000;
 
 /**
+ * The gap between one merchant's data-portability exports (PR-118).
+ *
+ * Ten minutes is not a rationing device: nobody legitimately needs a
+ * complete copy of their books twice inside ten minutes, and the whole
+ * estate reads for one business when they ask. A merchant who genuinely
+ * wants two waits, and is told exactly how long.
+ */
+const PORTABILITY_GAP_SECONDS = 600;
+
+/**
  * A page number from a query string. One-based because merchants count from
  * one; anything unparseable is page one, because a mangled link should show
  * the register, not an error.
@@ -189,11 +225,6 @@ function isDuplicateOn(error: unknown, constraint: string): boolean {
   return pg?.code === '23505' && (pg.constraint_name ?? pg.constraint ?? '').includes(constraint);
 }
 
-/** The quoted->confirmed transition was already taken by a racing convert. */
-class QuoteAlreadyTaken extends Error {
-  override readonly name = 'QuoteAlreadyTaken';
-}
-
 function isDuplicateClientRef(error: unknown): boolean {
   return isDuplicateOn(error, 'payments_rekoda_reference');
 }
@@ -203,8 +234,40 @@ function isDuplicateClientRef(error: unknown): boolean {
 export class ReportsController {
   constructor(
     @Inject(DB) private readonly db: Db,
+    @Inject(CONFIG) private readonly config: ApiConfig,
     private readonly gateway: PrivacyGateway,
+    private readonly commandBus: CommandBus,
   ) {}
+
+  /**
+   * Take one REPORT_EXPORTS unit, or say why not (PR-118).
+   *
+   * Every route that PRODUCES A FILE goes through here, and nothing else
+   * does. An export is a produced artefact with a real cost, which is what
+   * the 28 August owner ruling recognised; reading the same figures on a
+   * page is not, and never passes through this method.
+   *
+   * The refusal is a 429 rather than a 403, and says what to do: the
+   * merchant is not forbidden, they have used this month's exports, and
+   * either next month or a bigger plan fixes it. `expired` sells zero, so
+   * a lapsed business is refused here and sent to the portability export
+   * below, which is the route that must never be metered.
+   */
+  private async takeExport(businessId: string): Promise<void> {
+    const period = usagePeriod(new Date());
+    const granted = await withBusiness(this.db, businessId, async (tx) => {
+      const plan = await usageRepo.planFor(tx, businessId);
+      const allowance = await meterAllowance(this.config, tx, businessId, plan, 'REPORT_EXPORTS');
+      return usageRepo.consumeUnit(tx, businessId, period, 'REPORT_EXPORTS', allowance);
+    });
+    if (!granted) {
+      throw new HttpException(
+        "You have used this month's downloads. Your books are still here to read, " +
+          'and Settings has a full data export that never counts against this.',
+        429,
+      );
+    }
+  }
 
   @Get('overview')
   async overview(@Req() request: AuthedRequest): Promise<ReportsOverviewResponse> {
@@ -214,6 +277,47 @@ export class ReportsController {
       ageing: await reportsRepo.ageingFor(tx, businessId),
     }));
     return { period: usagePeriod(new Date()), ...overview, ageing };
+  }
+
+  /**
+   * One customer's account with the business (D1, PR-096): dated entries
+   * with a running balance, closing exactly where the balances page
+   * stands. Readable by every member — an accountant sent to reconcile a
+   * customer's account is the whole reason the page exists — and carrying
+   * document numbers and figures only, never a name: the web tier holds
+   * no vault key, and the statement is quoted down the phone by number.
+   */
+  @Get('customers/:customerId/statement')
+  async customerStatement(
+    @Req() request: AuthedRequest,
+    @Param('customerId') customerId: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ): Promise<PartyStatementResponse> {
+    const businessId = request.auth!.businessId;
+    return withBusiness(this.db, businessId, (tx) =>
+      partyStatementsRepo.customerStatementFor(tx, businessId, customerId, {
+        from: dayOrNull(from),
+        to: dayOrNull(to),
+      }),
+    );
+  }
+
+  /** The mirror for a supplier: bills raised, payments made, balance owed. */
+  @Get('suppliers/:supplierId/statement')
+  async supplierStatement(
+    @Req() request: AuthedRequest,
+    @Param('supplierId') supplierId: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ): Promise<PartyStatementResponse> {
+    const businessId = request.auth!.businessId;
+    return withBusiness(this.db, businessId, (tx) =>
+      partyStatementsRepo.supplierStatementFor(tx, businessId, supplierId, {
+        from: dayOrNull(from),
+        to: dayOrNull(to),
+      }),
+    );
   }
 
   @Get('cashflow')
@@ -299,7 +403,7 @@ export class ReportsController {
         totalExpensesK: prior.totalExpensesK,
         netProfitK: prior.netProfitK,
         lines: Object.fromEntries(
-          [...prior.income, ...prior.expenses].map((line) => [line.account, line.amountK]),
+          [...prior.income, ...prior.expenses].map((line) => [line.code, line.amountK]),
         ),
       },
     };
@@ -314,9 +418,12 @@ export class ReportsController {
    * file the chat assistant has been pointing at the dashboard INSTEAD of,
    * because it did not exist.
    *
-   * Not metered. It costs compute and no provider a naira, and locking a
-   * merchant out of their own accounts to protect a report allowance would
-   * be the wrong trade in both directions.
+   * Metered, one `REPORT_EXPORTS` unit, since the owner priced the unit on
+   * 28 August 2026 (PR-117). A generated file is a produced artefact with a
+   * real cost, which is what changed; what did not change is that nobody
+   * should be locked out of their own accounts, which is why the allowance
+   * is generous, why READING the same figures on a page costs nothing, and
+   * why the portability export below is never counted at all.
    */
   @Get('statements.pdf')
   async statementsPdf(
@@ -326,6 +433,7 @@ export class ReportsController {
   ): Promise<void> {
     const period = requirePeriod(periodParam);
     const auth = request.auth!;
+    await this.takeExport(auth.businessId);
     const [sums, schedule, revenue] = await Promise.all([
       this.sumsFor(auth.businessId, period),
       this.expenseScheduleFor(auth.businessId, period),
@@ -375,6 +483,7 @@ export class ReportsController {
   ): Promise<void> {
     const period = requirePeriod(periodParam);
     const auth = request.auth!;
+    await this.takeExport(auth.businessId);
     const [sums, schedule, revenue] = await Promise.all([
       this.sumsFor(auth.businessId, period),
       this.expenseScheduleFor(auth.businessId, period),
@@ -434,22 +543,14 @@ export class ReportsController {
     };
   }
 
-  /** Per-account sums for one month, with any account the chart does not know
-   * dropped. An unknown key means a write path bypassed the posting builders,
-   * and the trial balance's own `balanced` flag is what exposes the damage. */
+  /** Per-account sums for one month, with the account's OWN chart metadata
+   * (D1, PR-095): the chart in the database is the authority, and no
+   * account — provisioned, custom or seeded — is dropped for being unknown
+   * to a private table. */
   private async sumsFor(businessId: string, period: string): Promise<AccountSums[]> {
-    const rows = await withBusiness(this.db, businessId, (tx) =>
+    return withBusiness(this.db, businessId, (tx) =>
       reportsRepo.accountSumsFor(tx, businessId, period),
     );
-    return rows
-      .filter((r) => isAccountKey(r.account))
-      .map((r) => ({
-        account: r.account as AccountSums['account'],
-        periodDebitK: r.periodDebitK,
-        periodCreditK: r.periodCreditK,
-        cumulativeDebitK: r.cumulativeDebitK,
-        cumulativeCreditK: r.cumulativeCreditK,
-      }));
   }
 
   /** The invoice register — numbers and figures only, never a customer name. */
@@ -479,15 +580,58 @@ export class ReportsController {
       throw new BadRequestException('invoiceNumber and a reason of at least 4 characters');
     }
     const businessId = request.auth!.businessId;
-    return withBusiness(this.db, businessId, (tx) =>
-      issueRepo.voidInvoice(
+    const input: VoidReceiptInput = {
+      businessId,
+      invoiceNumber: parsed.data.invoiceNumber,
+      reason: parsed.data.reason,
+      actor: `user:${request.auth!.userId}`,
+    };
+    return withBusiness(this.db, businessId, async (tx) => {
+      if (!this.config.commandVoidReceipt) return voidReceiptWork(tx, input);
+
+      /* Appendix D's two-step. The first call carries no confirmationId, so
+       * the bus answers `confirm_first`; a confirmation is opened naming the
+       * consequence and handed back for the merchant to read. The second
+       * call claims it and voids. */
+      const run = await this.commandBus.run(
         tx,
-        businessId,
-        parsed.data.invoiceNumber,
-        parsed.data.reason,
-        `user:${request.auth!.userId}`,
-      ),
-    );
+        {
+          businessId,
+          command: 'VoidReceipt',
+          payload: input,
+          subject: `invoice:${input.invoiceNumber}`,
+          confirmationId: parsed.data.confirmationId ?? null,
+          actor: input.actor,
+          ingress: 'DASHBOARD',
+        },
+        () => voidReceiptWork(tx, input),
+      );
+      if (run.outcome === 'confirm_first') {
+        const opened = await this.commandBus.riskPolicy.ask(tx, {
+          businessId,
+          command: 'VoidReceipt',
+          subject: `invoice:${input.invoiceNumber}`,
+          actor: input.actor,
+          ingress: 'DASHBOARD',
+          consequence:
+            `${input.invoiceNumber} will be voided and its posting reversed. ` +
+            'The number stays used, and the record of the void is permanent.',
+          reason: input.reason,
+        });
+        return { outcome: 'confirm', confirmationId: opened.id, consequence: opened.consequence };
+      }
+      if (
+        run.outcome === 'confirmation_expired' ||
+        run.outcome === 'confirmation_already_used' ||
+        run.outcome === 'confirmation_invalid'
+      ) {
+        return { outcome: 'confirmation_lapsed' };
+      }
+      if (run.outcome !== 'done') {
+        throw new Error(`VoidReceipt refused unexpectedly: ${run.outcome}`);
+      }
+      return run.result;
+    });
   }
 
   /**
@@ -556,29 +700,46 @@ export class ReportsController {
       throw new BadRequestException('invoiceNumber, a positive amount in kobo, and a method');
     }
     const businessId = request.auth!.businessId;
-    let outcome: Awaited<ReturnType<typeof settleRepo.recordPaymentByNumber>>;
+    const input: RecordPaymentInput = {
+      businessId,
+      invoice: { number: parsed.data.invoiceNumber },
+      amountK: parsed.data.amountK,
+      method: parsed.data.method,
+      sourceType: 'dashboard',
+      sourceId: parsed.data.invoiceNumber,
+      actor: `user:${request.auth!.userId}`,
+      clientRef: parsed.data.clientRef ?? null,
+      /* A form, not a message (spec E.7). */
+      evidenceBasis: 'NOT_A_MESSAGE',
+    };
+    let outcome: Awaited<ReturnType<typeof recordPaymentWork>>;
     try {
       outcome = await withBusiness(this.db, businessId, async (tx) => {
-        const done = await settleRepo.recordPaymentByNumber(tx, {
-          businessId,
-          invoiceNumber: parsed.data.invoiceNumber,
-          amountK: parsed.data.amountK,
-          method: parsed.data.method,
-          actor: `user:${request.auth!.userId}`,
-          clientRef: parsed.data.clientRef ?? null,
-        });
-        /* The same render the chat path enqueues, in the same transaction, so
-         * paper and record commit together. A receipt a merchant can see in
-         * the register but never open is worse than no receipt at all. */
-        if (done.outcome === 'recorded') {
-          await jobsRepo.enqueue(tx, {
-            businessId,
-            kind: 'document.render',
-            payload: { receiptId: done.receiptId },
-            singletonKey: `receipt:${done.receiptId}`,
-          });
+        /* The A1 rollout seam (spec §25): the work books the payment,
+         * enqueues the receipt's paper and announces it; the flag decides
+         * whether the bus's gates wrap the call. */
+        if (this.config.commandRecordPayment) {
+          const run = await this.commandBus.run(
+            tx,
+            {
+              businessId,
+              command: 'RecordPayment',
+              payload: input,
+              actor: input.actor,
+              ingress: 'DASHBOARD',
+              /* The form's one-shot key, when the form brought one. Absent
+               * means the caller accepts a retry may run again — the same
+               * honesty the clientRef-less path always had. */
+              idempotencyKey: input.clientRef ? `payrec:${input.clientRef}` : null,
+            },
+            () => recordPaymentWork(tx, input),
+          );
+          if (run.outcome !== 'done') {
+            throw new Error(`RecordPayment refused unexpectedly: ${run.outcome}`);
+          }
+          return run.result;
         }
-        return done;
+        return recordPaymentWork(tx, input);
       });
     } catch (error) {
       /* The clientRef met payments_rekoda_reference_ux: this exact form was
@@ -620,7 +781,16 @@ export class ReportsController {
       invoices: list.rows.map((r) => ({
         invoiceNumber: r.invoiceNumber,
         status: r.status,
+        /* E.3's derived dimensions (PR-084). Settled = payments PLUS
+         * applied credits, which is exactly what the balance already nets;
+         * a voided document settled nothing, whatever its balance says. */
+        paymentStatus: paymentStatusFor(
+          r.totalK,
+          r.status === 'voided' ? 0 : r.totalK - r.balanceDueK,
+        ),
+        collectionStatus: collectionStatusFor(r.dueDate, r.balanceDueK, now),
         dueDate: r.dueDate?.toISOString() ?? null,
+        customerId: r.customerId,
         daysOverdue: daysOverdue(r.dueDate, r.balanceDueK, now),
         totalK: r.totalK,
         paidK: r.paidK,
@@ -762,82 +932,58 @@ export class ReportsController {
      * Its own short transaction, refunded on every path that issues nothing. */
     const period = usagePeriod(new Date());
     const plan = await withBusiness(this.db, businessId, (tx) => usageRepo.planFor(tx, businessId));
-    const allowance = allowanceFor(plan, 'documents');
+    const allowance = await withBusiness(this.db, businessId, (tx) =>
+      meterAllowance(this.config, tx, businessId, plan, 'DOCUMENT_GENERATION'),
+    );
     const granted = await withBusiness(this.db, businessId, (own) =>
-      usageRepo.consumeUnit(own, businessId, period, 'documents', allowance),
+      usageRepo.consumeUnit(own, businessId, period, 'DOCUMENT_GENERATION', allowance),
     );
     if (!granted) return { outcome: 'exhausted', allowance };
 
     try {
       return await withBusiness(this.db, businessId, async (tx) => {
-        const items = quote.lines.map((line) => ({
-          name: line.name,
-          quantity: line.quantity,
-          unitPriceK: line.unitPriceK,
-        }));
-        const issued = await issueRepo.issueSale(tx, {
+        const input: IssueInvoiceInput = {
           businessId,
+          quoteId: quote.id,
           customerId: quote.customerId,
-          customerToken: null,
-          items,
-          subtotalK: quote.totalK,
-          discountK: 0,
-          deliveryFeeK: 0,
-          vatK: 0,
+          items: quote.lines.map((line) => ({
+            name: line.name,
+            quantity: line.quantity,
+            unitPriceK: line.unitPriceK,
+          })),
           totalK: quote.totalK,
-          paidK: 0,
-          balanceDueK: quote.totalK,
-          method: 'transfer',
-          sourceType: 'quote',
-          sourceId: quote.id,
-          saleSource: null,
           dueDate: quote.validUntil ? lagosNoon(quote.validUntil) : null,
           actor: `user:${request.auth!.userId}`,
-        });
+        };
 
-        /* The same statement that confirms attaches the invoice; a loser in
-         * this race rolls the whole issue back and answers with the winner's
-         * invoice instead of minting a second one. */
-        const marked = await ordersRepo.markOrder(
-          tx,
-          businessId,
-          quote.id,
-          'quoted',
-          'confirmed',
-          issued.invoiceId,
-        );
-        if (marked !== 'marked') throw new QuoteAlreadyTaken();
-
-        await jobsRepo.enqueue(tx, {
-          businessId,
-          kind: 'document.render',
-          payload: { invoiceId: issued.invoiceId },
-          singletonKey: issued.invoiceId,
-        });
-        await jobsRepo.enqueue(tx, {
-          businessId,
-          kind: 'payment.link',
-          payload: { invoiceId: issued.invoiceId },
-          singletonKey: `link:${issued.invoiceId}`,
-        });
-
-        const moved = await stockRepo.recordSaleMovements(
-          tx,
-          businessId,
-          items,
-          issued.invoiceNumber,
-        );
-        if (moved.costK > 0) {
-          await issueRepo.writePosting(
+        /* The A1 rollout seam (spec §25). Same work function either way —
+         * the flag decides whether the command bus's gates run around it,
+         * and off is exactly the path this endpoint always took. */
+        let issued: IssuedInvoice;
+        if (this.config.commandIssueInvoice) {
+          const run = await this.commandBus.run(
             tx,
-            businessId,
-            postCostOfSale({
-              memo: `Cost of goods on ${issued.invoiceNumber}`,
-              costK: moved.costK,
-            }),
-            'invoice',
-            issued.invoiceNumber,
+            {
+              businessId,
+              command: 'IssueInvoice',
+              payload: input,
+              actor: input.actor,
+              ingress: 'DASHBOARD',
+              /* One quote, one invoice: a retry that lost its response is
+               * handed the first answer instead of a second conversion. */
+              idempotencyKey: `quote-convert:${quote.id}`,
+            },
+            () => issueInvoiceWork(tx, input),
           );
+          if (run.outcome !== 'done') {
+            /* Unreachable by construction — IssueInvoice is STANDARD and
+             * ungated — so reaching it is a bug worth a loud error rather
+             * than a quiet wrong answer. */
+            throw new Error(`IssueInvoice refused unexpectedly: ${run.outcome}`);
+          }
+          issued = run.result;
+        } else {
+          issued = await issueInvoiceWork(tx, input);
         }
 
         return {
@@ -849,7 +995,7 @@ export class ReportsController {
       });
     } catch (error) {
       await withBusiness(this.db, businessId, (own) =>
-        usageRepo.refundUnit(own, businessId, period, 'documents'),
+        usageRepo.refundUnit(own, businessId, period, 'DOCUMENT_GENERATION'),
       );
       if (error instanceof QuoteAlreadyTaken) {
         const taken = await withBusiness(this.db, businessId, (tx) =>
@@ -983,27 +1129,45 @@ export class ReportsController {
           : { outcome: 'already_received' as const };
       }
 
-      const recorded = await spendRepo.recordPurchase(tx, {
+      const input: RecordPurchaseCmdInput = {
         businessId,
         description: `Purchase order ${poNumber}`,
         amountK: po.totalK,
         paidK: parsed.data.paidK,
         sourceType: 'purchase_order',
         sourceId: po.id,
-      });
-
-      let linesArrived = 0;
-      for (const line of po.lines) {
-        const product = await stockRepo.findOrCreateProduct(tx, businessId, line.name);
-        await stockRepo.recordDelivery(tx, {
-          businessId,
-          product,
+        /* Every line arrives with the money: receiving a PO is exactly the
+         * counted delivery the chat purchase describes, line by line. */
+        arrivals: po.lines.map((line) => ({
+          product: line.name,
           quantity: line.quantity,
           costK: line.lineTotalK,
-          sourceType: 'purchase_order',
-          sourceId: po.id,
-        });
-        linesArrived += 1;
+        })),
+      };
+
+      /* The A1 rollout seam (spec §25). */
+      let recorded: Awaited<ReturnType<typeof recordPurchaseWork>>;
+      if (this.config.commandRecordPurchase) {
+        const run = await this.commandBus.run(
+          tx,
+          {
+            businessId,
+            command: 'RecordPurchase',
+            payload: input,
+            actor: `user:${request.auth!.userId}`,
+            ingress: 'DASHBOARD',
+            /* One PO, one receipt of goods: the status machine above is the
+             * first net, this key is the second. */
+            idempotencyKey: `po-receive:${po.id}`,
+          },
+          () => recordPurchaseWork(tx, input),
+        );
+        if (run.outcome !== 'done') {
+          throw new Error(`RecordPurchase refused unexpectedly: ${run.outcome}`);
+        }
+        recorded = run.result;
+      } else {
+        recorded = await recordPurchaseWork(tx, input);
       }
 
       return {
@@ -1011,7 +1175,7 @@ export class ReportsController {
         poNumber,
         totalK: po.totalK,
         owedK: recorded.owedK,
-        linesArrived,
+        linesArrived: recorded.arrived.length,
       };
     });
   }
@@ -1372,25 +1536,60 @@ export class ReportsController {
     if (!parsed.success) {
       throw new BadRequestException('a day, and what was in cash, in the bank and on the shelf');
     }
-    const { asAt, cashK, bankK, stockK } = parsed.data;
-    if (cashK + bankK + stockK === 0) return { outcome: 'nothing_to_open' };
+    const { asAt, cashK, bankK, stockK, stock, receivables } = parsed.data;
+    const holdsAnything =
+      cashK + bankK + stockK > 0 || (stock?.length ?? 0) > 0 || (receivables?.length ?? 0) > 0;
+    if (!holdsAnything) return { outcome: 'nothing_to_open' };
     /* A balance dated tomorrow is a typo, and one accepted would sit outside
      * every period the merchant can look at until the day arrives. */
     if (asAt > lagosDay(new Date())) return { outcome: 'not_yet' };
 
     const businessId = request.auth!.businessId;
+    const input = {
+      businessId,
+      asAt,
+      cashK,
+      bankK,
+      stockK,
+      ...(stock ? { stock } : {}),
+      ...(receivables ? { receivables } : {}),
+      actor: `user:${request.auth!.userId}`,
+    };
     try {
-      const recorded = await withBusiness(this.db, businessId, (tx) =>
-        openingRepo.recordOpeningBalances(tx, {
-          businessId,
-          asAt,
-          cashK,
-          bankK,
-          stockK,
-          actor: `user:${request.auth!.userId}`,
-        }),
-      );
-      return { outcome: 'recorded', asAt, equityK: recorded.equityK };
+      /* The A1 rollout seam (spec §25; the 1.29 deferral discharged): a
+       * setup act is a financial write like any other, so it goes through
+       * the one door. Once-only stays the database's decision either way. */
+      const recorded = await withBusiness(this.db, businessId, async (tx) => {
+        if (this.config.commandOpeningBalances) {
+          const run = await this.commandBus.run(
+            tx,
+            {
+              businessId,
+              command: 'RecordOpeningBalances',
+              payload: input,
+              actor: input.actor,
+              ingress: 'DASHBOARD',
+              idempotencyKey: `opening:${asAt}`,
+            },
+            () => recordOpeningBalancesWork(tx, input),
+          );
+          if (run.outcome !== 'done') {
+            throw new Error(`RecordOpeningBalances refused unexpectedly: ${run.outcome}`);
+          }
+          return run.result;
+        }
+        return recordOpeningBalancesWork(tx, input);
+      });
+      return {
+        outcome: 'recorded',
+        asAt,
+        equityK: recorded.equityK,
+        stockValueK: recorded.stockValueK,
+        invoices: recorded.invoices.map((minted) => ({
+          invoiceNumber: minted.invoiceNumber,
+          amountK: minted.amountK,
+        })),
+      };
     } catch (error) {
       /* Classified OUTSIDE the transaction, which is the point of the throw:
        * a unique violation aborts the transaction, so returning an outcome
@@ -1402,6 +1601,12 @@ export class ReportsController {
        * clean and the outcome can be returned rather than raised. */
       if (error instanceof closeRepo.PeriodClosed) {
         return { outcome: 'period_closed', closedThrough: error.closedThrough };
+      }
+      /* The repo's own refusals (a shelf stated twice, a stranger's
+       * customer, an opening whose lines add to nothing): the caller's
+       * mistake, said as one, never a 500. The transaction rolled back. */
+      if (error instanceof RangeError) {
+        throw new BadRequestException(error.message);
       }
       throw error;
     }
@@ -1490,19 +1695,41 @@ export class ReportsController {
     }
 
     const businessId = request.auth!.businessId;
+    const input: PostJournalInput = {
+      businessId,
+      memo,
+      amountK,
+      intoAccount,
+      outOfAccount,
+      ...(occurredOn === undefined ? {} : { occurredAt: lagosNoon(occurredOn) }),
+      actor: `user:${request.auth!.userId}`,
+      clientRef: parsed.data.clientRef ?? null,
+    };
     try {
-      const recorded = await withBusiness(this.db, businessId, (tx) =>
-        journalRepo.recordJournal(tx, {
-          businessId,
-          memo,
-          amountK,
-          intoAccount,
-          outOfAccount,
-          ...(occurredOn === undefined ? {} : { occurredAt: lagosNoon(occurredOn) }),
-          actor: `user:${request.auth!.userId}`,
-          clientRef: parsed.data.clientRef ?? null,
-        }),
-      );
+      /* The A1 rollout seam (spec §25). A `PeriodClosed` throw rolls the
+       * whole transaction back — claim, counter and all — and is mapped to
+       * its outcome out here, exactly as before. */
+      const recorded = await withBusiness(this.db, businessId, async (tx) => {
+        if (this.config.commandPostJournal) {
+          const run = await this.commandBus.run(
+            tx,
+            {
+              businessId,
+              command: 'PostJournal',
+              payload: input,
+              actor: input.actor,
+              ingress: 'DASHBOARD',
+              idempotencyKey: input.clientRef ? `journal:${input.clientRef}` : null,
+            },
+            () => postJournalWork(tx, input),
+          );
+          if (run.outcome !== 'done') {
+            throw new Error(`PostJournal refused unexpectedly: ${run.outcome}`);
+          }
+          return run.result;
+        }
+        return postJournalWork(tx, input);
+      });
       return { outcome: 'recorded', journalNumber: recorded.journalNumber };
     } catch (error) {
       /* Nothing was written before this threw, so the transaction rolled back
@@ -1539,13 +1766,34 @@ export class ReportsController {
     if (!parsed.success) throw new BadRequestException('the month to close through');
 
     const businessId = request.auth!.businessId;
-    return withBusiness(this.db, businessId, (tx) =>
-      closeRepo.closeBooks(tx, {
-        businessId,
-        through: parsed.data.through,
-        actor: `user:${request.auth!.userId}`,
-      }),
-    );
+    const input: ClosePeriodInput = {
+      businessId,
+      through: parsed.data.through,
+      actor: `user:${request.auth!.userId}`,
+    };
+    return withBusiness(this.db, businessId, async (tx) => {
+      /* The A1 rollout seam (spec §25). Refusals here are outcomes that
+       * write nothing, so no key is needed: a retried close simply answers
+       * `already_closed`, which is the truthful replay. */
+      if (this.config.commandClosePeriod) {
+        const run = await this.commandBus.run(
+          tx,
+          {
+            businessId,
+            command: 'ClosePeriod',
+            payload: input,
+            actor: input.actor,
+            ingress: 'DASHBOARD',
+          },
+          () => closePeriodWork(tx, input),
+        );
+        if (run.outcome !== 'done') {
+          throw new Error(`ClosePeriod refused unexpectedly: ${run.outcome}`);
+        }
+        return run.result;
+      }
+      return closePeriodWork(tx, input);
+    });
   }
 
   /**
@@ -1567,13 +1815,56 @@ export class ReportsController {
     if (!parsed.success) throw new BadRequestException('the month to reopen from');
 
     const businessId = request.auth!.businessId;
-    return withBusiness(this.db, businessId, (tx) =>
-      closeRepo.reopenBooks(tx, {
-        businessId,
-        from: parsed.data.from,
-        actor: `user:${request.auth!.userId}`,
-      }),
-    );
+    const input: ReopenPeriodInput = {
+      businessId,
+      from: parsed.data.from,
+      actor: `user:${request.auth!.userId}`,
+    };
+    return withBusiness(this.db, businessId, async (tx) => {
+      if (!this.config.commandReopenPeriod) return reopenPeriodWork(tx, input);
+
+      /* Appendix D's two-step: reported figures becoming movable again is
+       * HIGH_RISK, so the first call opens the confirmation naming what
+       * comes open, and the second claims it and reopens. */
+      const run = await this.commandBus.run(
+        tx,
+        {
+          businessId,
+          command: 'ReopenAccountingPeriod',
+          payload: input,
+          subject: `reopen:${input.from}`,
+          confirmationId: parsed.data.confirmationId ?? null,
+          actor: input.actor,
+          ingress: 'DASHBOARD',
+        },
+        () => reopenPeriodWork(tx, input),
+      );
+      if (run.outcome === 'confirm_first') {
+        const opened = await this.commandBus.riskPolicy.ask(tx, {
+          businessId,
+          command: 'ReopenAccountingPeriod',
+          subject: `reopen:${input.from}`,
+          actor: input.actor,
+          ingress: 'DASHBOARD',
+          consequence:
+            `${input.from} opens back up, and so does every month after it. ` +
+            'Statements you already sent can change until you close again.',
+          reason: 'merchant asked to reopen from the dashboard',
+        });
+        return { outcome: 'confirm', confirmationId: opened.id, consequence: opened.consequence };
+      }
+      if (
+        run.outcome === 'confirmation_expired' ||
+        run.outcome === 'confirmation_already_used' ||
+        run.outcome === 'confirmation_invalid'
+      ) {
+        return { outcome: 'confirmation_lapsed' };
+      }
+      if (run.outcome !== 'done') {
+        throw new Error(`ReopenAccountingPeriod refused unexpectedly: ${run.outcome}`);
+      }
+      return run.result;
+    });
   }
 
   /**
@@ -1654,6 +1945,7 @@ export class ReportsController {
   @Get('invoices.csv')
   async invoicesCsv(@Req() request: AuthedRequest, @Res() reply: CsvReply): Promise<void> {
     const businessId = request.auth!.businessId;
+    await this.takeExport(businessId);
     const now = new Date();
     const list = await withBusiness(this.db, businessId, (tx) =>
       reportsRepo.invoicesFor(tx, businessId, EXPORT_ROWS),
@@ -1677,9 +1969,56 @@ export class ReportsController {
     sendCsv(reply, `rekoda-invoices-${csvDate(now)}.csv`, csv);
   }
 
+  /**
+   * A customer's statement as a file (D1, PR-098): the accountant
+   * deliverable behind "please reconcile and pay the balance". The same
+   * read the statement page renders, in the same order, with the same
+   * closing balance — one derivation, two presentations. Numbers and
+   * figures only: no name rides an export any more than a page.
+   *
+   * One `REPORT_EXPORTS` unit, like every other produced file (PR-118).
+   */
+  @Get('customers/:customerId/statement.csv')
+  async customerStatementCsv(
+    @Req() request: AuthedRequest,
+    @Param('customerId') customerId: string,
+    @Res() reply: CsvReply,
+  ): Promise<void> {
+    const businessId = request.auth!.businessId;
+    await this.takeExport(businessId);
+    const statement = await withBusiness(this.db, businessId, (tx) =>
+      partyStatementsRepo.customerStatementFor(tx, businessId, customerId),
+    );
+    sendCsv(
+      reply,
+      `rekoda-customer-statement-${csvDate(new Date())}.csv`,
+      partyStatementCsv(statement),
+    );
+  }
+
+  /** The supplier mirror: bills raised, payments made, balance owed. */
+  @Get('suppliers/:supplierId/statement.csv')
+  async supplierStatementCsv(
+    @Req() request: AuthedRequest,
+    @Param('supplierId') supplierId: string,
+    @Res() reply: CsvReply,
+  ): Promise<void> {
+    const businessId = request.auth!.businessId;
+    await this.takeExport(businessId);
+    const statement = await withBusiness(this.db, businessId, (tx) =>
+      partyStatementsRepo.supplierStatementFor(tx, businessId, supplierId),
+    );
+    sendCsv(
+      reply,
+      `rekoda-supplier-statement-${csvDate(new Date())}.csv`,
+      partyStatementCsv(statement),
+    );
+  }
+
   @Get('expenses.csv')
   async expensesCsv(@Req() request: AuthedRequest, @Res() reply: CsvReply): Promise<void> {
     const businessId = request.auth!.businessId;
+    await this.takeExport(businessId);
     const list = await withBusiness(this.db, businessId, (tx) =>
       spendRepo.spendFor(tx, businessId, EXPORT_ROWS),
     );
@@ -1709,6 +2048,7 @@ export class ReportsController {
   @Get('receipts.csv')
   async receiptsCsv(@Req() request: AuthedRequest, @Res() reply: CsvReply): Promise<void> {
     const businessId = request.auth!.businessId;
+    await this.takeExport(businessId);
     const list = await withBusiness(this.db, businessId, (tx) =>
       reportsRepo.receiptsFor(tx, businessId, EXPORT_ROWS),
     );
@@ -1736,6 +2076,7 @@ export class ReportsController {
   @Get('audit.csv')
   async auditCsv(@Req() request: AuthedRequest, @Res() reply: CsvReply): Promise<void> {
     const businessId = request.auth!.businessId;
+    await this.takeExport(businessId);
     const { list, members } = await withBusiness(this.db, businessId, async (tx) => ({
       list: await reportsRepo.auditFor(tx, businessId, EXPORT_ROWS),
       members: await identity.membersOf(tx, businessId),
@@ -1767,6 +2108,7 @@ export class ReportsController {
   @Get('stock.csv')
   async stockCsv(@Req() request: AuthedRequest, @Res() reply: CsvReply): Promise<void> {
     const businessId = request.auth!.businessId;
+    await this.takeExport(businessId);
     const list = await withBusiness(this.db, businessId, (tx) =>
       stockRepo.stockList(tx, businessId, EXPORT_ROWS),
     );
@@ -1783,6 +2125,100 @@ export class ReportsController {
       ]),
     );
     sendCsv(reply, `rekoda-stock-${csvDate(new Date())}.csv`, csv);
+  }
+
+  /**
+   * Take your books out of Rekoda (PR-118, migration 0114).
+   *
+   * **This route is never metered, on any plan, ever.** The exports above
+   * are a product feature and are priced like one; this is a different
+   * thing wearing similar clothes. Leaving with your own records is a
+   * right, and the moment it matters most is exactly the moment a metered
+   * export would refuse: a lapsed subscription, where `REPORT_EXPORTS`
+   * sells zero. A merchant who cannot get their data out is a merchant
+   * held hostage by a billing state, which is not a business Rekoda is in.
+   *
+   * Owner only, because this is the whole business in one file, and the
+   * owner is who a portability right belongs to.
+   *
+   * Two limits, and both are about the estate rather than the merchant: one
+   * request in flight per business, and a gap between requests. Neither
+   * refuses the merchant anything, they only stop a loop; the refusal says
+   * exactly when to come back.
+   *
+   * What it contains: every record the dashboard shows, in the same shape
+   * the CSVs already carry, plus the four statements. What it does NOT
+   * contain is raw customer PII: no name, phone or email rides an export,
+   * here or anywhere else, because the web tier holds no vault key and a
+   * bulk decrypt route is precisely the thing PR-111 refused to build. The
+   * documented path for a merchant's own customer contact details is the
+   * privacy gateway, one record at a time, on the record's own page.
+   */
+  @Get('portability.json')
+  @Roles('owner')
+  async portability(@Req() request: AuthedRequest, @Res() reply: CsvReply): Promise<void> {
+    const auth = request.auth!;
+    const businessId = auth.businessId;
+    const now = new Date();
+
+    const started = await withBusiness(this.db, businessId, (tx) =>
+      portabilityRepo.begin(tx, businessId, `user:${auth.userId}`, PORTABILITY_GAP_SECONDS, now),
+    );
+    if ('refused' in started) {
+      throw new HttpException(
+        started.refused === 'in_flight'
+          ? 'A data export is already running for this business. Wait for it to finish.'
+          : `Your last data export was very recent. Try again after ${started.retryAt.toISOString()}.`,
+        429,
+      );
+    }
+
+    let body: string;
+    try {
+      const bundle = await withBusiness(this.db, businessId, async (tx) => ({
+        invoices: (await reportsRepo.invoicesFor(tx, businessId, EXPORT_ROWS)).rows,
+        receipts: (await reportsRepo.receiptsFor(tx, businessId, EXPORT_ROWS)).rows,
+        spend: (await spendRepo.spendFor(tx, businessId, EXPORT_ROWS)).rows,
+        stock: (await stockRepo.stockList(tx, businessId, EXPORT_ROWS)).rows,
+        audit: (await reportsRepo.auditFor(tx, businessId, EXPORT_ROWS)).rows,
+      }));
+      body = JSON.stringify(
+        {
+          format: 'rekoda.portability.v1',
+          generatedAt: now.toISOString(),
+          business: { id: businessId, name: auth.businessName },
+          /* Said in the file itself, because the file outlives this page
+           * and whoever opens it in two years will want to know. */
+          notes: [
+            'Every record this business holds, as Rekoda holds it.',
+            'Amounts are integer kobo. Divide by 100 for naira.',
+            'Customer and supplier contact details are not included: they are ' +
+              'released one record at a time, on the record, and never in bulk.',
+          ],
+          ...bundle,
+        },
+        null,
+        2,
+      );
+    } catch (error) {
+      /* The slot is freed even when the read fails, or one bad export
+       * would lock a merchant out of their own data until somebody
+       * noticed. */
+      await withBusiness(this.db, businessId, (tx) =>
+        portabilityRepo.abandon(tx, businessId, started.id),
+      );
+      throw error;
+    }
+
+    await withBusiness(this.db, businessId, (tx) =>
+      portabilityRepo.complete(tx, businessId, started.id, Buffer.byteLength(body), new Date()),
+    );
+
+    reply
+      .header('content-type', 'application/json; charset=utf-8')
+      .header('content-disposition', `attachment; filename="rekoda-data-${csvDate(now)}.json"`)
+      .header('cache-control', 'no-store')
+      .send(body);
   }
 
   /**
@@ -1849,6 +2285,34 @@ function requirePeriod(period: string | undefined): string {
 }
 
 /** All four, from one set of sums, so the JSON and the PDF cannot disagree. */
+/** One statement, one spreadsheet shape (PR-098): the running balance the
+ * page shows, with the closing balance as its own labelled row so a file
+ * opened cold still answers the only question it is sent to answer. */
+function partyStatementCsv(statement: partyStatementsRepo.PartyStatement): string {
+  return toCsv(
+    ['Date', 'Entry', 'Reference', 'Amount', 'Balance'],
+    [
+      ...(statement.openingK !== 0
+        ? [['', 'Opening balance', '', '', csvKobo(statement.openingK)]]
+        : []),
+      ...statement.entries.map((entry) => [
+        entry.on,
+        entry.kind,
+        entry.reference,
+        csvKobo(entry.amountK),
+        csvKobo(entry.balanceK),
+      ]),
+      ['', 'Balance now', '', '', csvKobo(statement.closingK)],
+    ],
+  );
+}
+
+/** A YYYY-MM-DD the query actually sent, or null. Garbage is null too:
+ * an unreadable window is the whole account, never an error page. */
+function dayOrNull(value?: string): string | null {
+  return value && /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : null;
+}
+
 function buildAll(sums: AccountSums[]) {
   return {
     trialBalance: buildTrialBalance(sums),

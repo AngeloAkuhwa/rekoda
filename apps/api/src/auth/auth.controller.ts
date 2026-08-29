@@ -1,4 +1,4 @@
-import { seatsFor } from '@rekoda/core';
+import { seatLimit as seatLimitFor } from '../billing/plan-terms.js';
 import {
   BadRequestException,
   Body,
@@ -6,6 +6,7 @@ import {
   ForbiddenException,
   Inject,
   Delete,
+  Patch,
   Get,
   Headers,
   HttpCode,
@@ -24,6 +25,7 @@ import { DB } from '../db/db.module.js';
 import { InvalidPhoneError, normalisePhone } from '@rekoda/core/identity';
 import {
   createBusinessRequest,
+  changeMemberRoleRequest,
   inviteMemberRequest,
   magicRedeemRequest,
   requestOtpRequest,
@@ -254,15 +256,24 @@ export class BusinessController {
     }
 
     const businessId = request.auth!.businessId;
-    /* The plan's seat table, from the same core table the pricing page
-     * quotes. Enforced here and not in the repo's SQL, so the refusal can
-     * name the plan and the way out. */
-    const plan = await withBusiness(this.db, businessId, (tx) => usageRepo.planFor(tx, businessId));
-    const seatLimit = seatsFor(plan);
+    /* The plan's seat count, from the same catalogue the billing page
+     * quotes, through the grandfathering pin. Enforced here and not in the
+     * repo's SQL, so the refusal can name the plan and the way out. */
+    const { plan, seatLimit } = await withBusiness(this.db, businessId, async (tx) => {
+      const held = await usageRepo.planFor(tx, businessId);
+      return { plan: held, seatLimit: await seatLimitFor(this.config, tx, businessId, held) };
+    });
 
     try {
       return toWire(
-        await identity.inviteMember(this.db, businessId, phone, parsed.data.role, seatLimit),
+        await identity.inviteMember(
+          this.db,
+          businessId,
+          phone,
+          parsed.data.role,
+          seatLimit,
+          `user:${request.auth!.userId}`,
+        ),
       );
     } catch (error) {
       if (error instanceof identity.AlreadyAMember) {
@@ -294,9 +305,45 @@ export class BusinessController {
     const businessId = request.auth!.businessId;
     try {
       const removed = await withBusiness(this.db, businessId, (tx) =>
-        identity.removeMember(tx, businessId, userId),
+        identity.removeMember(tx, businessId, userId, `user:${request.auth!.userId}`),
       );
       return { removed };
+    } catch (error) {
+      if (error instanceof identity.CannotRemoveOwner) {
+        throw new BadRequestException(error.message);
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Change what a member is (D1, PR-094). Owner-only like every other
+   * membership act; seat-neutral because accountant and delegate draw
+   * from one pool; the owner's own role is not assignable.
+   */
+  @Patch('members/:userId')
+  @HttpCode(200)
+  @UseGuards(SessionGuard, RolesGuard)
+  @Roles('owner')
+  async changeMemberRole(
+    @Req() request: AuthedRequest,
+    @Param('userId') userId: string,
+    @Body() body: unknown,
+  ): Promise<{ changed: boolean }> {
+    const parsed = changeMemberRoleRequest.safeParse(body);
+    if (!parsed.success) throw new BadRequestException('role must be accountant or delegate');
+    const businessId = request.auth!.businessId;
+    try {
+      const changed = await withBusiness(this.db, businessId, (tx) =>
+        identity.changeMemberRole(
+          tx,
+          businessId,
+          userId,
+          parsed.data.role,
+          `user:${request.auth!.userId}`,
+        ),
+      );
+      return { changed };
     } catch (error) {
       if (error instanceof identity.CannotRemoveOwner) {
         throw new BadRequestException(error.message);

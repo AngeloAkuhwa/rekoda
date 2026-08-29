@@ -9,6 +9,7 @@ import {
   planChangeCharge,
   planChangeKind,
 } from './billing.js';
+import { isConsumable } from './allowances.js';
 
 const at = (iso: string) => new Date(iso);
 
@@ -275,7 +276,7 @@ describe('add-on packs', () => {
   it('count voice in seconds, because that is what the meter counts', () => {
     /* 30 minutes. A pack measured in minutes against a meter measured in
      * seconds is a sixtyfold error waiting for somebody to make it. */
-    expect(addOnPack('voice_30min')?.unit).toBe('voice_seconds');
+    expect(addOnPack('voice_30min')?.unit).toBe('VOICE_MINUTES');
     expect(addOnPack('voice_30min')?.quantity).toBe(30 * 60);
   });
 
@@ -288,11 +289,21 @@ describe('add-on packs', () => {
     expect(addOnPack('messages_1000000')).toBeNull();
   });
 
-  it('every pack names a real usage unit', () => {
+  it('every pack names a real usage unit, and never a held one', () => {
     for (const pack of ADD_ON_PACKS) {
-      expect(['messages', 'voice_seconds', 'documents', 'orders']).toContain(pack.unit);
+      expect([
+        'AI_ACTIONS',
+        'VOICE_MINUTES',
+        'DOCUMENT_GENERATION',
+        'CATALOGUE_ORDERS',
+        'API_REQUEST_UNITS',
+        'WEBHOOK_DELIVERIES',
+      ]).toContain(pack.unit);
       expect(pack.quantity).toBeGreaterThan(0);
       expect(pack.priceK).toBeGreaterThan(0);
+      /* A pack credits one month's bonus, so it can only ever sell a
+       * consumable. Capacity is sold as a recurring add-on (PR-116). */
+      expect(isConsumable(pack.unit)).toBe(true);
     }
   });
 });
@@ -322,8 +333,16 @@ describe('which packs a plan may buy', () => {
     }
   });
 
-  it('sells everything to Complete, which does everything', () => {
-    expect(packsFor('complete')).toHaveLength(ADD_ON_PACKS.length);
+  it('sells Complete every pack its plan has a ceiling for', () => {
+    /* Every merchant-side consumable, which is all of them except the two
+     * API packs: no PLAN sells API units (§27), so this plan-only path
+     * offers them to nobody and the data path answers from the grants. */
+    expect(packsFor('complete').map((pack) => pack.id)).toEqual([
+      'messages_100',
+      'voice_30min',
+      'documents_50',
+      'orders_50',
+    ]);
   });
 
   it('always sells messages and documents, which every plan uses', () => {
@@ -332,5 +351,64 @@ describe('which packs a plan may buy', () => {
       expect(ids).toContain('messages_100');
       expect(ids).toContain('documents_50');
     }
+  });
+});
+
+describe('catalogue prices through planChangeCharge (BL2)', () => {
+  const cycle = {
+    cycleStart: at('2026-08-01T00:00:00Z'),
+    renewsAt: at('2026-08-31T00:00:00Z'),
+    now: at('2026-08-16T00:00:00Z'),
+  };
+
+  it('prices the difference from the prices it is handed, not the constants', () => {
+    /* A grandfathered merchant pays 9,900 for chat while the catalogue
+     * sells integrate at a repriced 25,000: the proration must use BOTH
+     * figures as handed, or the charge mixes two price lists. */
+    const charge = planChangeCharge({
+      from: 'chat',
+      to: 'integrate',
+      ...cycle,
+      pricesK: { from: 990_000, to: 2_500_000 },
+    });
+    expect(charge.kind).toBe('upgrade');
+    /* 15 of 30 days remain on a 1,510,000 difference. */
+    expect(charge.amountK).toBe(Math.floor((1_510_000 * 15) / 30));
+  });
+
+  it('classifies from the same prices too: data can invert the constant ladder', () => {
+    /* If the catalogue ever prices integrate BELOW the merchant's pinned
+     * chat price, the move is a downgrade - free, at renewal - whatever
+     * the constant table would have said. */
+    const charge = planChangeCharge({
+      from: 'chat',
+      to: 'integrate',
+      ...cycle,
+      pricesK: { from: 990_000, to: 500_000 },
+    });
+    expect(charge.kind).toBe('downgrade');
+    expect(charge.amountK).toBe(0);
+  });
+
+  it('two different plans priced identically move as a downgrade, never as "same"', () => {
+    const charge = planChangeCharge({
+      from: 'chat',
+      to: 'integrate',
+      ...cycle,
+      pricesK: { from: 990_000, to: 990_000 },
+    });
+    expect(charge.kind).toBe('downgrade');
+    expect(charge.effectiveFrom).toBe('next_renewal');
+  });
+
+  it('absent prices fall back to the constant table unchanged', () => {
+    const withData = planChangeCharge({
+      from: 'chat',
+      to: 'complete',
+      ...cycle,
+      pricesK: { from: 990_000, to: 2_990_000 },
+    });
+    const withConstants = planChangeCharge({ from: 'chat', to: 'complete', ...cycle });
+    expect(withData).toEqual(withConstants);
   });
 });

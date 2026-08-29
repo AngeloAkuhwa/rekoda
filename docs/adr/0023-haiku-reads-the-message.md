@@ -1,6 +1,10 @@
 # 0023 — Haiku reads the merchant's message; exact model ids, prices as configuration
 
-**Status:** Accepted
+**Status:** Accepted — **the default interpreter model and the $3/$15 Sonnet
+price entry are superseded by [0031](0031-sonnet-reads-the-message.md)**
+(29 Aug 2026, accuracy-first launch): Sonnet 5 reads the merchant's message,
+and $2/$10 is its permanent list rate. The exact-ids rule and
+prices-as-configuration stand, and 0031 leans on both.
 **Date:** 2026-08-21
 **Corrected:** 2026-08-21 — as first written, this ADR claimed the Chat
 subscription "is now ₦3,500". That was wrong: it is ₦9,900 and always has been

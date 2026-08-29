@@ -41,6 +41,9 @@ import { LocalStorage } from '../documents/r2.storage.js';
 import { ReplySender } from '../replies/reply.service.js';
 import { loadConfig, type ApiConfig } from '../config.js';
 import { sealPayload } from '../privacy/payload-vault.js';
+import { ContainerAudioProbe } from '../ai/audio-duration.js';
+import { CommandBus } from '../commands/command-bus.service.js';
+import { RiskPolicyService } from '../risk/risk-policy.service.js';
 
 const RUN_SALT = randomBytes(16).toString('hex');
 
@@ -92,6 +95,8 @@ beforeAll(async () => {
     paymentIntents: new PaymentIntentsService(config, appDb, new StubPaymentProvider()),
     stt: stubStt,
     ocr: stubOcr,
+    audioProbe: new ContainerAudioProbe(),
+    commandBus: new CommandBus(new RiskPolicyService()),
   };
 });
 
@@ -333,7 +338,7 @@ describe('the chat surface enforces roles', () => {
     phone: string,
     role: 'accountant' | 'delegate',
   ): Promise<void> {
-    await identity.inviteMember(appDb, businessId, phone, role, 3);
+    await identity.inviteMember(appDb, businessId, phone, role, 3, 'user:test-owner');
   }
 
   async function saysOverChat(businessId: string, phone: string, text: string): Promise<string> {
@@ -378,6 +383,58 @@ describe('the chat surface enforces roles', () => {
     await runner.runOnce();
     return stubSender.sent[stubSender.sent.length - 1]?.text ?? '';
   }
+
+  it("processes THIS job's message out of a multi-event body, not the first", async () => {
+    // One webhook body, two text messages from two different numbers - the
+    // shape a batched Meta delivery has. The stored payload is the whole
+    // body, and this job is for the SECOND message. Before the fix the
+    // handler read events[0] and answered the FIRST sender; now it selects
+    // by wamid and answers the one this job is for.
+    const businessId = await seedBusiness('Batch Ltd', '+2348140019001');
+    const first = { waId: '2348140019011', wamid: 'wamid.batchA' };
+    const second = { waId: '2348140019012', wamid: 'wamid.batchB' };
+    const message = (m: { waId: string; wamid: string }) => ({
+      id: m.wamid,
+      from: m.waId,
+      timestamp: '1700000000',
+      type: 'text' as const,
+      text: { body: 'who owes me' },
+    });
+    const body = {
+      object: 'whatsapp_business_account',
+      entry: [
+        {
+          id: 'WABA',
+          changes: [
+            {
+              field: 'messages',
+              value: {
+                messaging_product: 'whatsapp',
+                metadata: { display_phone_number: '15550001', phone_number_id: 'PNID' },
+                contacts: [
+                  { profile: { name: 'A' }, wa_id: first.waId },
+                  { profile: { name: 'B' }, wa_id: second.waId },
+                ],
+                messages: [message(first), message(second)],
+              },
+            },
+          ],
+        },
+      ],
+    };
+    const recorded = await eventsRepo.recordEvent(appDb, {
+      provider: 'meta',
+      eventType: 'message.text',
+      externalId: second.wamid,
+      payload: sealPayload(body, config.vaultKey, 'meta', second.wamid),
+      businessId,
+    });
+    await enqueue(businessId, 'inbound.message', { eventId: recorded.id });
+    await buildRunner(workerDb, appDb, deps).runOnce();
+
+    const last = stubSender.sent[stubSender.sent.length - 1];
+    expect(last?.to).toBe(second.waId);
+  });
 
   it('refuses a write command from an accountant, after the model names it one', async () => {
     const businessId = await seedBusiness('Role Gate Ltd', '+2348140010001');

@@ -59,6 +59,34 @@ export function normalisePhone(input: string): string {
   return `+234${national}`;
 }
 
+/**
+ * A conversation PARTICIPANT'S number, normalised for identity (Appendix F).
+ *
+ * `normalisePhone` above is deliberately Nigerian: it validates the people
+ * who sign in to Rekoda. A merchant's CUSTOMER on their WABA is under no
+ * such constraint — Meta hands over a wa_id from anywhere — and refusing a
+ * London customer would silently drop a real conversation. Nigerian numbers
+ * still take `normalisePhone`'s canonical form, so one person hashes to one
+ * value whether Meta produced the digits or a merchant typed them; anything
+ * else is E.164-lenient. Same law as every normaliser here: the same value
+ * must normalise identically forever, or a returning customer becomes a
+ * new one.
+ */
+export function normaliseParticipant(input: string): string {
+  try {
+    return normalisePhone(input);
+  } catch {
+    /* Not a Nigerian mobile — the international path below decides. */
+  }
+  let digits = input.replace(/[\s()\-.]/g, '').replace(/^\+/, '');
+  if (digits.startsWith('00')) digits = digits.slice(2);
+  // E.164: 8–15 digits, and a wa_id always leads with a country code.
+  if (!/^[1-9]\d{7,14}$/.test(digits)) {
+    throw new InvalidPhoneError(`not a phone number: ${input}`);
+  }
+  return `+${digits}`;
+}
+
 /* ────────────────────────────── hashing ──────────────────────────── */
 
 /**

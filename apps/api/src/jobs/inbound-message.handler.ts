@@ -1,6 +1,5 @@
 import { Logger } from '@nestjs/common';
 import {
-  allowanceFor,
   gateExpense,
   gatePayment,
   daysOverdue,
@@ -19,6 +18,11 @@ import {
   replies,
   routeMessage,
   usagePeriod,
+  billingPeriod,
+  costOfCall,
+  costOfTranscription,
+  transcriptDurationsDisagree,
+  type AiModelRole,
   type DeterministicIntent,
   type Reply,
 } from '@rekoda/core';
@@ -31,6 +35,7 @@ import {
   conversationsRepo,
   withBusiness,
   customersRepo,
+  entitlementsRepo,
   events,
   identity,
   issueRepo,
@@ -39,12 +44,15 @@ import {
   reportsRepo,
   settleRepo,
   spendRepo,
+  riskRepo,
   stockRepo,
   usageRepo,
+  quotaRepo,
   type Db,
   type TenantDb,
 } from '@rekoda/db';
 import type { ApiConfig } from '../config.js';
+import { meterAllowance } from '../billing/plan-terms.js';
 import { LINK_MINUTES, mintDashboardLink } from '../auth/dashboard-link.js';
 import type { Interpreter } from '../ai/interpreter.service.js';
 import type { IdentityLinkProposal, PrivacyGateway } from '../privacy/gateway.service.js';
@@ -53,9 +61,35 @@ import type { PaymentIntentsService } from '../payments/payment-intents.service.
 import { openPayload } from '../privacy/payload-vault.js';
 import { redactForLog } from '@rekoda/core/privacy';
 import { describeFailure, JobDeferred, type JobContext, type JobHandler } from './runner.js';
-import type { SpeechToText, Transcript } from '../ai/stt.js';
-import type { TextExtraction } from '../ai/ocr.js';
+import { TranscriptionUnavailable, type SpeechToText, type Transcript } from '../ai/stt.js';
+import type { AudioMetadataProbe } from '../ai/audio-duration.js';
+import { TextExtractionUnavailable, type ExtractionUsage, type TextExtraction } from '../ai/ocr.js';
+import type { CommandBus } from '../commands/command-bus.service.js';
+import { recordSaleWork, type RecordSaleInput } from '../commands/sale-commands.js';
+import {
+  recordPaymentEvidenceWork,
+  recordPaymentWork,
+  type RecordPaymentInput,
+  type RecordPaymentResult,
+} from '../commands/payment-commands.js';
+import {
+  recordExpenseWork,
+  recordPurchaseWork,
+  type RecordExpenseCmdInput,
+  type RecordPurchaseCmdInput,
+} from '../commands/spend-commands.js';
+import { placeOrderWork, type PlaceOrderCmdInput } from '../commands/order-commands.js';
+import { adjustInventoryWork, type AdjustInventoryInput } from '../commands/stock-commands.js';
+import { eraseDataWork } from '../commands/privacy-commands.js';
 import type { MessageSender } from '../channels/sender.js';
+import type { CustomerThreadRouter } from '../channels/customer-route.service.js';
+import type { CustomerTexts } from './payment-link.handler.js';
+
+/** The MERCHANT thread identity, stated at the ingress (Appendix F.2).
+ * This ingress hears the merchant talking to Rekoda; customer threads
+ * arrive with their own stated identity when Integrate routing lands. */
+const merchantThread = (businessId: string) =>
+  ({ kind: 'MERCHANT', businessId, channel: 'meta' }) as const;
 
 const paymentLog = new Logger('InboundMessageJob');
 
@@ -67,16 +101,29 @@ export interface InboundMessageDeps {
   paymentIntents: PaymentIntentsService;
   /** Fetches media a merchant sent, and delivers the OTP template. */
   sender: MessageSender;
-  /** The AfriSpeech sidecar (ADR 0008), or something that refuses honestly. */
+  /** The OpenAI transcriber (ADR 0032), or something that refuses honestly. */
   stt: SpeechToText;
   /**
-   * The self-hosted OCR sidecar (ADR 0024), or something that refuses
+   * How long a voice note runs, read from the bytes before any provider is
+   * called. A port, because an ffprobe service answers the same question and
+   * a deployment that would rather run one should not have to touch this
+   * file.
+   */
+  audioProbe: AudioMetadataProbe;
+  /**
+   * The Claude vision reader (ADR 0024/0032), or something that refuses
    * honestly. Never a vision model: see `ocr.ts` for why there is no such
    * option and must not be one.
    */
   ocr: TextExtraction;
   /** The app pool, for the rows that live ABOVE tenancy: users' consent state. */
   db: Db;
+  /** The one bus every ingress converges on (spec §25). */
+  commandBus: CommandBus;
+  /** THE cross-product routing decision (X1, PR-092). */
+  customerRoute: CustomerThreadRouter;
+  /** The metered door into a customer's thread (PR-061), for X1 delivery. */
+  customerTexts: CustomerTexts;
 }
 
 /**
@@ -152,7 +199,16 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
       return;
     }
 
-    const [inbound] = extractInboundEvents(body.data);
+    /* One webhook body can carry several events - several messages, possibly
+     * to different businesses - and this job is for ONE, named by its wamid.
+     * Taking events[0] processed a DIFFERENT tenant's message under this
+     * tenant when a batched body's first event was not ours: the wrong
+     * customer tokenised into this business, the wrong reply sent, and our
+     * own message dropped when the global provider-id unique made its job a
+     * no-op. Selected by externalId, exactly as the customer handler does. */
+    const inbound = extractInboundEvents(body.data).find(
+      (candidate) => candidate.kind === 'message' && candidate.externalId === event.externalId,
+    );
     if (!inbound || inbound.kind !== 'message') {
       await events.markProcessed(tx, eventId, null, businessId);
       return;
@@ -184,13 +240,17 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
         return;
       }
     } else if (inbound.messageType !== 'text') {
-      const recorded = await conversationsRepo.recordInbound(tx, {
-        businessId,
-        channel: 'meta',
-        kind: 'media',
-        body: `[${inbound.messageType} message]`,
-        providerMessageId: inbound.externalId,
-      });
+      const recorded = await conversationsRepo.recordInbound(
+        tx,
+        {
+          businessId,
+          channel: 'meta',
+          kind: 'media',
+          body: `[${inbound.messageType} message]`,
+          providerMessageId: inbound.externalId,
+        },
+        merchantThread(businessId),
+      );
       if (recorded.isNew) {
         await deps.replySender.send(tx, {
           businessId,
@@ -236,13 +296,17 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
             route.route === 'deterministic' ? describeIntent(route.intent) : tokenised!.text,
           ),
         }
-      : await conversationsRepo.recordInbound(tx, {
-          businessId,
-          channel: 'meta',
-          kind: 'text',
-          body: route.route === 'deterministic' ? describeIntent(route.intent) : tokenised!.text,
-          providerMessageId: inbound.externalId,
-        });
+      : await conversationsRepo.recordInbound(
+          tx,
+          {
+            businessId,
+            channel: 'meta',
+            kind: 'text',
+            body: route.route === 'deterministic' ? describeIntent(route.intent) : tokenised!.text,
+            providerMessageId: inbound.externalId,
+          },
+          merchantThread(businessId),
+        );
 
     /**
      * `isNew` is what stops a re-run — a reclaimed job, a redelivered webhook
@@ -252,6 +316,34 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
     if (!message.isNew) {
       await events.markProcessed(tx, eventId, null, businessId);
       return;
+    }
+
+    /**
+     * THE CLASSIFIER GATE (docs/ai-model-strategy.md §1, AI hardening
+     * item 1): a cheap read, only where it avoids expensive ones, which
+     * means ONLY here — extracted document text about to meet the
+     * interpreter. A page with words and no transaction (a meme, a chat
+     * screenshot) would otherwise buy a full interpretation and, being
+     * gibberish to a bookkeeper, quite possibly an Opus escalation after
+     * it. Typed messages and voice notes never pass through this: for them
+     * the classifier would be a mandatory toll that saves nothing.
+     *
+     * FAIL OPEN: only a CONFIDENT `junk` answer skips the interpreter, and
+     * the merchant's monthly message unit is untouched either way — the
+     * gate sits before the meter on purpose, because a photo of a poster
+     * should not cost a message to be told it is a poster.
+     */
+    if (read && route.route === 'model') {
+      const kind = await deps.interpreter.classifyDocument(businessId, tokenised!.text);
+      if (kind === 'junk') {
+        await deps.replySender.send(tx, {
+          businessId,
+          to: inbound.from,
+          reply: replies.notABusinessDocument(),
+        });
+        await events.markProcessed(tx, eventId, null, businessId);
+        return;
+      }
     }
 
     /* Mutable copy: a mention resolved during interpretation adds its token
@@ -277,6 +369,8 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
             tokenised!.link,
             inbound.from,
             liveTokens!,
+            // Extracted-document text qualifies for dual extraction (item 9).
+            read !== null,
           );
 
     if (answer) {
@@ -305,6 +399,45 @@ function isReceiptPhoto(inbound: { messageType: string; imageId: string | null }
 }
 
 /**
+ * One `usage_events` row per hosted vision read (AI hardening item 7) —
+ * written for the read that produced text AND for the read that billed
+ * tokens and produced nothing, because both are on the invoice.
+ */
+async function recordVisionRead(
+  deps: InboundMessageDeps,
+  businessId: string,
+  usage: ExtractionUsage,
+  messageId: string,
+  log: Logger,
+  extra?: { reason?: string },
+): Promise<void> {
+  const cost = costOfCall(usage.model, usage.tokens, deps.config.planningFxNairaPerUsd);
+  if (!cost.priced) {
+    log.error(`no price for vision model "${usage.model}" — recorded at zero`);
+  }
+  await withBusiness(deps.db, businessId, (own) =>
+    quotaRepo.recordUsage(own, {
+      businessId,
+      provider: usage.provider,
+      usageType: 'ocr_vision',
+      quantity: 1,
+      providerCostMicros: cost.usdMicros,
+      nairaEquivalentK: cost.nairaKobo,
+      billingPeriod: billingPeriod(new Date()),
+      meta: {
+        role: 'vision' satisfies AiModelRole,
+        model: usage.model,
+        purpose: 'document_extraction',
+        priced: cost.priced,
+        messageId,
+        ...(extra?.reason ? { reason: extra.reason } : {}),
+        ...usage.tokens,
+      },
+    }),
+  );
+}
+
+/**
  * A photograph, turned into text by the configured reader, or an honest answer.
  *
  * Returns null when there is nothing to interpret, having already replied:
@@ -314,7 +447,7 @@ function isReceiptPhoto(inbound: { messageType: string; imageId: string | null }
  * extraction, PII tokenisation, then a reasoning model - and ADR 0027 chose
  * which engine performs the extraction step at launch: the vision model as
  * a transcription-only processor, named on /ai-privacy, with the OCR
- * sidecar one env var away. Either way the REASONING model only ever sees
+ * only engine (ADR 0032). Either way the REASONING model only ever sees
  * tokenised text, because the gateway tokenises text and cannot tokenise an
  * image.
  *
@@ -330,19 +463,37 @@ async function readReceiptPhoto(
   inbound: { externalId: string; from: string; imageId: string | null; caption: string | null },
   log: Logger,
 ): Promise<{ text: string; messageId: string } | null> {
-  const recorded = await conversationsRepo.recordInbound(tx, {
-    businessId,
-    channel: 'meta',
-    kind: 'media',
-    body: '[receipt photo]',
-    providerMessageId: inbound.externalId,
-  });
+  const recorded = await conversationsRepo.recordInbound(
+    tx,
+    {
+      businessId,
+      channel: 'meta',
+      kind: 'media',
+      body: '[receipt photo]',
+      providerMessageId: inbound.externalId,
+    },
+    merchantThread(businessId),
+  );
   /* A redelivered webhook must not read, meter and answer twice. */
   if (!recorded.isNew) return null;
 
   const plan = await usageRepo.planFor(tx, businessId);
   if (plan === 'expired') {
     await deps.replySender.send(tx, { businessId, to: inbound.from, reply: replies.trialEnded() });
+    return null;
+  }
+
+  /* ENTITLEMENT BEFORE ANY PROVIDER IS TOUCHED (spec §4.3, rules 1 and 2).
+   * Reading a receipt is a Chat capability. An Integrate-only merchant who
+   * photographs one is refused here, which is before the media fetch and a
+   * long way before the OCR engine: the refusal costs Rekoda nothing and
+   * costs the merchant nothing, so there is no unit to give back. */
+  if (await entitlementsRepo.requireEntitlement(tx, businessId, 'REKODA_CHAT')) {
+    await deps.replySender.send(tx, {
+      businessId,
+      to: inbound.from,
+      reply: replies.chatNotInPlan(),
+    });
     return null;
   }
 
@@ -359,14 +510,110 @@ async function readReceiptPhoto(
     return null;
   }
 
+  /**
+   * Metered BEFORE the engine reads the page (spec §4.3, rule 3).
+   *
+   * This used to charge afterwards, on the reasoning that a page nobody
+   * could read is a page nobody should pay for. That reasoning is right
+   * about the refund and wrong about the order: it let an exhausted merchant
+   * spend Rekoda's OCR budget on every photograph they sent, because the
+   * refusal only arrived after the engine had already run. The unit is taken
+   * first and given back on every path that reads nothing, which is the same
+   * outcome for the merchant and a different one for the bill.
+   *
+   * Its own short transaction, like every other unit here, so the counter is
+   * not held across a network call.
+   */
+  /**
+   * The DAILY operational ceiling, before the monthly unit (AI hardening
+   * item 4). `AI_DOC_EXTRACTIONS_PER_BUSINESS` bounds what one tenant can
+   * make Rekoda spend on vision reads in a Lagos day, whatever their plan
+   * says about the month — the monthly allowance is what they bought, this
+   * is the brake on a runaway day. Race-safe for the same reason the AI
+   * call ceiling is: the limit lives in the statement's WHERE clause, so
+   * two concurrent photographs cannot both take the last slot.
+   */
+  const dailyLimit = deps.config.aiDocExtractionsPerBusinessPerDay;
+  const daily = await quotaRepo.reserveDocExtraction(deps.db, businessId, {
+    perBusinessPerDay: dailyLimit,
+    globalPerDay: deps.config.aiDocExtractionsGlobalPerDay,
+  });
+  if (!daily.ok) {
+    /* The platform backstop refusing is Rekoda's busy day, not the
+     * merchant's limit — the sentence must not tell them to wait for
+     * midnight when trying again in an hour may work. */
+    await deps.replySender.send(tx, {
+      businessId,
+      to: inbound.from,
+      reply:
+        daily.refusedBy === 'business'
+          ? replies.dailyDocumentLimit(dailyLimit)
+          : replies.busyRightNow(),
+    });
+    return null;
+  }
+
+  const period = usagePeriod(new Date());
+  const allowance = await meterAllowance(deps.config, tx, businessId, plan, 'DOCUMENTS_UNDERSTOOD');
+  const granted = await withBusiness(deps.db, businessId, (own) =>
+    usageRepo.consumeUnit(own, businessId, period, 'DOCUMENTS_UNDERSTOOD', allowance),
+  );
+  if (!granted) {
+    // The plan refused after the day allowed: no provider was reached, so
+    // the daily slot goes back too.
+    await quotaRepo.releaseDocExtraction(deps.db, businessId);
+    await deps.replySender.send(tx, {
+      businessId,
+      to: inbound.from,
+      reply: replies.allowanceExhausted(allowance, 'DOCUMENTS_UNDERSTOOD'),
+    });
+    return null;
+  }
+
   let extracted;
   try {
     extracted = await deps.ocr.extract(image.bytes, image.mimeType);
-  } catch {
-    /* Our failure, not the merchant's, and nothing metered. The image is
-     * dropped here and goes nowhere else: no vision model, no retry against a
-     * hosted engine, no exception "just this once". */
+  } catch (error) {
+    /* Our failure, not the merchant's, so THEIR unit goes back. The image
+     * is dropped here and goes nowhere else: no vision model, no retry
+     * against a hosted engine, no exception "just this once". */
     log.warn('the OCR engine could not be reached');
+    const failure = error instanceof TextExtractionUnavailable ? error : null;
+    if (failure?.usage) {
+      /* The engine answered, billed us, and read nothing usable. Real
+       * money: a priced row, and the daily slot stays counted — the
+       * ceiling bounds spend, not success. */
+      await recordVisionRead(deps, businessId, failure.usage, recorded.id, log, {
+        reason: 'the page had no legible text',
+      });
+    } else if (failure?.maybeBilled) {
+      /* A hosted read that TIMED OUT may still be on the invoice. Zero
+       * with `priced: false` is the row reconciliation ties to, and the
+       * daily slot stays counted for the same reason as above. */
+      await withBusiness(deps.db, businessId, (own) =>
+        quotaRepo.recordUsage(own, {
+          businessId,
+          provider: 'anthropic',
+          usageType: 'ocr_vision',
+          quantity: 1,
+          providerCostMicros: 0,
+          nairaEquivalentK: 0,
+          billingPeriod: billingPeriod(new Date()),
+          meta: {
+            role: 'vision' satisfies AiModelRole,
+            priced: false,
+            reason: 'timed out after the request went out; possibly billed',
+            messageId: recorded.id,
+          },
+        }),
+      );
+    } else {
+      // The provider was never reached: nothing spent, the daily slot back.
+      await quotaRepo.releaseDocExtraction(deps.db, businessId);
+    }
+    await withBusiness(deps.db, businessId, (own) =>
+      usageRepo.refundUnit(own, businessId, period, 'DOCUMENTS_UNDERSTOOD'),
+    );
     await deps.replySender.send(tx, {
       businessId,
       to: inbound.from,
@@ -375,24 +622,12 @@ async function readReceiptPhoto(
     return null;
   }
 
-  /**
-   * Metered as a document UNDERSTOOD, which is the unit that exists for
-   * exactly this and has never been consumed by anything. Charged after the
-   * work, like voice seconds, because a page nobody could read is a page
-   * nobody should pay for.
-   */
-  const period = usagePeriod(new Date());
-  const allowance = allowanceFor(plan, 'documents_understood');
-  const granted = await withBusiness(deps.db, businessId, (own) =>
-    usageRepo.consumeUnit(own, businessId, period, 'documents_understood', allowance),
-  );
-  if (!granted) {
-    await deps.replySender.send(tx, {
-      businessId,
-      to: inbound.from,
-      reply: replies.allowanceExhausted(allowance, 'documents_understood'),
-    });
-    return null;
+  /* WHAT THE READ COST, recorded whatever becomes of the text (item 7 of
+   * the AI hardening plan; same contract as the interpreter's rows). Only
+   * hosted engines report usage; a result with no usage envelope (a
+   * stub) writes no row. `ocr_vision` matches the OCR cost class. */
+  if (extracted.usage) {
+    await recordVisionRead(deps, businessId, extracted.usage, recorded.id, log);
   }
 
   /* The caption is what the merchant TYPED, and it says what the photograph
@@ -415,7 +650,7 @@ async function readReceiptPhoto(
  * transcriber, and left to the garbage collector. A merchant's voice is the
  * most identifying thing they can send us; ADR 0027 names the launch
  * transcriber (a hosted processor, on /ai-privacy in those words) and keeps
- * the sidecar one env var away, and the transcript walks the same gateway
+ * exactly one engine (ADR 0032), and the transcript walks the same gateway
  * every typed sentence walks before any reasoning model sees it.
  */
 async function transcribeVoiceNote(
@@ -425,13 +660,17 @@ async function transcribeVoiceNote(
   inbound: { externalId: string; from: string; audioId: string | null },
   log: Logger,
 ): Promise<{ transcript: Transcript; messageId: string } | null> {
-  const recorded = await conversationsRepo.recordInbound(tx, {
-    businessId,
-    channel: 'meta',
-    kind: 'voice',
-    body: '[voice note]',
-    providerMessageId: inbound.externalId,
-  });
+  const recorded = await conversationsRepo.recordInbound(
+    tx,
+    {
+      businessId,
+      channel: 'meta',
+      kind: 'voice',
+      body: '[voice note]',
+      providerMessageId: inbound.externalId,
+    },
+    merchantThread(businessId),
+  );
   /* A redelivered webhook must not transcribe, meter and answer twice. The
    * body is replaced with the transcript below only on the first pass. */
   if (!recorded.isNew) return null;
@@ -439,6 +678,19 @@ async function transcribeVoiceNote(
   const plan = await usageRepo.planFor(tx, businessId);
   if (plan === 'expired') {
     await deps.replySender.send(tx, { businessId, to: inbound.from, reply: replies.trialEnded() });
+    return null;
+  }
+
+  /* ENTITLEMENT BEFORE ANY PROVIDER IS TOUCHED (spec §4.3, rules 1 and 2).
+   * Speaking to Rekoda is a Chat capability, and an Integrate-only merchant
+   * refused here never reaches the transcriber. Nothing was reserved, so
+   * there is nothing to give back. */
+  if (await entitlementsRepo.requireEntitlement(tx, businessId, 'REKODA_CHAT')) {
+    await deps.replySender.send(tx, {
+      businessId,
+      to: inbound.from,
+      reply: replies.chatNotInPlan(),
+    });
     return null;
   }
 
@@ -455,12 +707,131 @@ async function transcribeVoiceNote(
     return null;
   }
 
+  /**
+   * MEASURED before anything is spent (spec §4.3 rules 2 and 3, journey C3).
+   *
+   * The webhook does not carry a duration and the media endpoint does not
+   * either, which was once read as "only the transcriber knows" and turned
+   * the merchant's length limit into a reservation window. That was wrong:
+   * the bytes are already here, and a container that stores audio stores how
+   * much of it there is. Reading it locally costs nothing and makes the limit
+   * a limit again.
+   *
+   * The order below is the whole point. Measure, refuse if it is too long,
+   * take exactly the seconds it runs, and only then call a provider. A note
+   * that is refused reaches no transcriber at all, which is what stops a
+   * merchant with no allowance left from spending Rekoda's transcription
+   * budget one voice note at a time.
+   */
+  const seconds = await deps.audioProbe.duration(audio.bytes, audio.mimeType);
+  if (seconds === null) {
+    /* Unreadable is not zero. A caller that treats the two alike transcribes
+     * for free, and the recovery for the two is not the same: this one asks
+     * the merchant to send it again, and nothing has been metered or spent. */
+    log.warn('a voice note arrived in a container we could not measure');
+    await deps.replySender.send(tx, {
+      businessId,
+      to: inbound.from,
+      reply: replies.voiceUnreadable(),
+    });
+    return null;
+  }
+
+  const maxSeconds = deps.config.voiceNoteMaxDurationSeconds;
+  if (seconds > maxSeconds) {
+    /* The commercial limit, enforced where it protects money rather than
+     * where it merely reports it. Nothing is metered: the merchant did not
+     * use anything, they were told to send it differently. */
+    await deps.replySender.send(tx, {
+      businessId,
+      to: inbound.from,
+      reply: replies.voiceTooLong(maxSeconds),
+    });
+    return null;
+  }
+
+  /**
+   * The DAILY operational ceilings, before the monthly unit (remediation
+   * A4): exactly the seconds the note runs, reserved race-safe against a
+   * per-business day and the platform's day. The monthly allowance below
+   * is what the merchant bought; this pair bounds what a runaway 24 hours
+   * can make Rekoda spend on hosted transcription.
+   */
+  const dailyVoice = await quotaRepo.reserveVoiceSeconds(deps.db, businessId, seconds, {
+    perBusinessPerDay: deps.config.voiceSecondsPerBusinessPerDay,
+    globalPerDay: deps.config.voiceSecondsGlobalPerDay,
+  });
+  if (!dailyVoice.ok) {
+    await deps.replySender.send(tx, {
+      businessId,
+      to: inbound.from,
+      reply:
+        dailyVoice.refusedBy === 'business' ? replies.dailyVoiceLimit() : replies.busyRightNow(),
+    });
+    return null;
+  }
+
+  /**
+   * Exactly the seconds the note runs, taken atomically before the
+   * transcriber is called. Its own short transaction, like the message unit,
+   * because the counter must not be held across a network call.
+   */
+  const period = usagePeriod(new Date());
+  const allowance = await meterAllowance(deps.config, tx, businessId, plan, 'VOICE_MINUTES');
+  const granted = await withBusiness(deps.db, businessId, (own) =>
+    usageRepo.consumeUnit(own, businessId, period, 'VOICE_MINUTES', allowance, seconds),
+  );
+  if (!granted) {
+    // The plan refused after the day allowed: no provider was reached, so
+    // the daily seconds go back too.
+    await quotaRepo.releaseVoiceSeconds(deps.db, businessId, seconds);
+    await deps.replySender.send(tx, {
+      businessId,
+      to: inbound.from,
+      reply: replies.allowanceExhausted(allowance, 'VOICE_MINUTES'),
+    });
+    return null;
+  }
+
   let transcript: Transcript;
   try {
     transcript = await deps.stt.transcribe(audio.bytes, audio.mimeType);
-  } catch {
-    /* An outage, not the merchant's fault, and nothing metered. The reason is
-     * logged without the audio and without their words. */
+  } catch (error) {
+    /* An outage, not the merchant's fault, so THEIR seconds go back. The
+     * reason is logged without the audio and without their words. */
+    await withBusiness(deps.db, businessId, (own) =>
+      usageRepo.refundUnit(own, businessId, period, 'VOICE_MINUTES', seconds),
+    );
+    /* The DAILY ceiling follows the money, not the merchant: released only
+     * when the provider was never reached; kept when the call was billed
+     * (an answered-but-unusable response) or may have been (a timeout). */
+    const failure = error instanceof TranscriptionUnavailable ? error : null;
+    if (!failure?.billed && !failure?.maybeBilled) {
+      await quotaRepo.releaseVoiceSeconds(deps.db, businessId, seconds);
+    }
+    /* A hosted transcription that TIMED OUT may still be on the invoice.
+     * Zero with `priced: false` is the row reconciliation ties to. The
+     * merchant's seconds went back above: Rekoda's timeout, Rekoda's cost. */
+    if (error instanceof TranscriptionUnavailable && error.maybeBilled) {
+      await withBusiness(deps.db, businessId, (own) =>
+        quotaRepo.recordUsage(own, {
+          businessId,
+          provider: 'openai',
+          usageType: 'transcription',
+          quantity: seconds,
+          providerCostMicros: 0,
+          nairaEquivalentK: 0,
+          billingPeriod: billingPeriod(new Date()),
+          meta: {
+            role: 'transcriber' satisfies AiModelRole,
+            priced: false,
+            reason: 'timed out after the audio went out; possibly billed',
+            localSeconds: seconds,
+            messageId: recorded.id,
+          },
+        }),
+      );
+    }
     log.warn('the transcriber could not be reached');
     await deps.replySender.send(tx, {
       businessId,
@@ -470,24 +841,57 @@ async function transcribeVoiceNote(
     return null;
   }
 
-  /**
-   * Metered AFTER the work, unlike messages, because the unit is seconds and
-   * nobody knows how many there are until the sidecar says so. Consumed in
-   * its own transaction for the same reason the message unit is: the counter
-   * must not be held across a network call.
-   */
-  const period = usagePeriod(new Date());
-  const allowance = allowanceFor(plan, 'voice_seconds');
-  const granted = await withBusiness(deps.db, businessId, (own) =>
-    usageRepo.consumeUnit(own, businessId, period, 'voice_seconds', allowance, transcript.seconds),
-  );
-  if (!granted) {
-    await deps.replySender.send(tx, {
-      businessId,
-      to: inbound.from,
-      reply: replies.allowanceExhausted(allowance, 'voice_seconds'),
-    });
-    return null;
+  /* WHAT THE TRANSCRIPTION COST (item 7). Only the hosted transcriber
+   * reports usage; a result with no usage envelope (a stub) writes no
+   * row. BOTH durations go on the row: the local probe's (what the
+   * allowance reserved on) and the provider's (what the bill runs on) —
+   * recorded for audit without storing a byte of audio. */
+  /* THE CROSS-CHECK (AI hardening item 5): the container's own timestamps
+   * and the provider's decoder measured the same audio, and the allowance
+   * was charged on the first while the bill runs on the second. A second
+   * or two apart is codec rounding; more means one of the meters is wrong,
+   * which is worth a loud log and a flag on the row — never the audio, and
+   * never a guess about which number to trust. */
+  const durationsDisagree = transcriptDurationsDisagree(seconds, transcript.seconds);
+  if (durationsDisagree) {
+    log.warn(
+      `voice durations disagree: the container says ${seconds}s, ` +
+        `the transcriber says ${transcript.seconds}s`,
+    );
+  }
+
+  if (transcript.usage) {
+    const cost = costOfTranscription(
+      transcript.usage.model,
+      transcript.seconds,
+      deps.config.planningFxNairaPerUsd,
+    );
+    if (!cost.priced) {
+      log.error(
+        `no per-minute price for transcriber "${transcript.usage.model}" — recorded at zero`,
+      );
+    }
+    await withBusiness(deps.db, businessId, (own) =>
+      quotaRepo.recordUsage(own, {
+        businessId,
+        provider: transcript.usage!.provider,
+        usageType: 'transcription',
+        quantity: transcript.seconds,
+        providerCostMicros: cost.usdMicros,
+        nairaEquivalentK: cost.nairaKobo,
+        billingPeriod: billingPeriod(new Date()),
+        meta: {
+          role: 'transcriber' satisfies AiModelRole,
+          model: transcript.usage!.model,
+          purpose: 'voice_transcription',
+          priced: cost.priced,
+          localSeconds: seconds,
+          providerSeconds: transcript.seconds,
+          ...(durationsDisagree ? { durationMismatch: true } : {}),
+          messageId: recorded.id,
+        },
+      }),
+    );
   }
 
   return { transcript, messageId: recorded.id };
@@ -560,17 +964,71 @@ async function deterministicReply(
         if (!(await conversationsRepo.claimDraft(tx, pending.id))) {
           return replies.alreadyConfirmed();
         }
-        const erased = await customersRepo.eraseAllIdentities(tx, businessId, 'chat');
-        return replies.erasureDone(erased);
+        /* The A1 rollout seam (spec §25, Appendix D). The exact phrase was
+         * typed twice — the router IS the phrase check — and the pending
+         * confirmation opened at the first ask records what the merchant was
+         * told. If it lapsed (or the flag flipped between asks), one is
+         * opened now recording the same consequence, claimed in the same
+         * transaction: the two-message phrase mechanism already did the
+         * waiting. */
+        if (deps.config.commandEraseData) {
+          const subject = `draft:${pending.id}`;
+          const open = (await riskRepo.openConfirmationsFor(tx, businessId)).find(
+            (c) => c.command === 'EraseData' && c.subject === subject,
+          );
+          const confirmation =
+            open ??
+            (await deps.commandBus.riskPolicy.ask(tx, {
+              businessId,
+              command: 'EraseData',
+              subject,
+              actor: 'system',
+              ingress: 'CHAT',
+              consequence:
+                'Every customer contact detail for this business will be permanently deleted.',
+              reason: 'merchant asked by exact phrase, twice',
+            }));
+          const run = await deps.commandBus.run(
+            tx,
+            {
+              businessId,
+              command: 'EraseData',
+              payload: { sourceType: 'chat' },
+              subject,
+              confirmationId: confirmation.id,
+              actor: 'system',
+              ingress: 'CHAT',
+            },
+            () => eraseDataWork(tx, { businessId, sourceType: 'chat' }),
+          );
+          if (run.outcome !== 'done') return replies.erasureKept();
+          return replies.erasureDone(run.result.erased);
+        }
+        const erased = await eraseDataWork(tx, { businessId, sourceType: 'chat' });
+        return replies.erasureDone(erased.erased);
       }
       const discarded = await conversationsRepo.supersedePendingDrafts(tx, businessId);
-      await conversationsRepo.recordDraft(tx, {
+      const parked = await conversationsRepo.recordDraft(tx, {
         businessId,
         conversationMessageId: ctx.messageId,
         intent: 'EraseData',
         command: { intent: 'EraseData' },
         model: null,
       });
+      /* Appendix D: the confirmation is opened when the merchant is SHOWN
+       * the consequence, so the record says what they agreed to. */
+      if (deps.config.commandEraseData && parked.isNew) {
+        await deps.commandBus.riskPolicy.ask(tx, {
+          businessId,
+          command: 'EraseData',
+          subject: `draft:${parked.id}`,
+          actor: 'system',
+          ingress: 'CHAT',
+          consequence:
+            'Every customer contact detail for this business will be permanently deleted.',
+          reason: 'merchant asked by exact phrase',
+        });
+      }
       return replies.confirmErasure(discarded);
     }
     case 'number':
@@ -793,8 +1251,47 @@ async function paymentDetailsReply(
   }
 
   switch (outcome.state) {
-    case 'ready':
+    case 'ready': {
+      /* THE COMPLETE JOURNEY (spec §5.3; X1, PR-093): the ask came from
+       * Chat, the delivery goes through Integrate — into the customer's
+       * own thread on the merchant's WABA, through the same routing
+       * decision and the same metered door every cross-product delivery
+       * uses. ONE intent was minted above; when the customer pays it,
+       * the pipeline books ONE payment, ONE allocation, ONE receipt.
+       * Every unreachable rung falls back to today's Chat shape: the
+       * merchant gets the forwardable link in their own hands, which is
+       * exactly what §3.1 says a Chat-only business gets by design. */
+      if (invoice.customerId) {
+        const route = await deps.customerRoute.routeFor(tx, businessId, invoice.customerId);
+        if (route.state === 'reachable') {
+          try {
+            const sent = await deps.customerTexts.sendCustomerText(
+              businessId,
+              {
+                to: route.phone,
+                text: replies.paymentDetailsForCustomer(
+                  invoice.invoiceNumber,
+                  outcome.amountK,
+                  outcome.checkoutUrl,
+                ).text,
+              },
+              tx,
+            );
+            if (sent.outcome === 'sent') {
+              return replies.paymentDetailsDelivered(invoice.invoiceNumber, outcome.amountK);
+            }
+            paymentLog.log(`cross-product delivery not made: ${sent.outcome}`);
+          } catch (error) {
+            paymentLog.warn(
+              `cross-product delivery failed: ${redactForLog(describeFailure(error))}`,
+            );
+          }
+        } else {
+          paymentLog.log(`cross-product delivery not routed: ${route.state}`);
+        }
+      }
       return replies.paymentLinkReady(invoice.invoiceNumber, outcome.amountK, outcome.checkoutUrl);
+    }
     case 'connection_not_active':
       return replies.paymentLinkNeedsConnection();
     case 'requires_customer_information':
@@ -889,11 +1386,17 @@ async function confirmPendingDraft(
      * used all 0 invoices this month", which is true of the number and
      * useless about the reason. */
     if (plan === 'expired') return replies.trialEnded();
-    const allowance = allowanceFor(plan, 'documents');
-    const granted = await withBusiness(deps.db, businessId, (own) =>
-      usageRepo.consumeUnit(own, businessId, period, 'documents', allowance),
+    const allowance = await meterAllowance(
+      deps.config,
+      tx,
+      businessId,
+      plan,
+      'DOCUMENT_GENERATION',
     );
-    if (!granted) return replies.allowanceExhausted(allowance, 'documents');
+    const granted = await withBusiness(deps.db, businessId, (own) =>
+      usageRepo.consumeUnit(own, businessId, period, 'DOCUMENT_GENERATION', allowance),
+    );
+    if (!granted) return replies.allowanceExhausted(allowance, 'DOCUMENT_GENERATION');
     documentTaken = true;
 
     /* An order costs its own unit ON TOP of the document, because automatic
@@ -905,15 +1408,27 @@ async function confirmPendingDraft(
      * upgrade — and a zero allowance gets the sentence about the plan, not
      * "you have used all 0 orders". */
     if (command.intent === 'RecordOrder') {
-      const orderAllowance = allowanceFor(plan, 'orders');
+      /* The entitlement decides, not the allowance. Before PR-013 this read
+       * `orderAllowance === 0` and inferred the product boundary from a
+       * quantity, which only works for capabilities that happen to be
+       * counted. Asked BEFORE the consume so a refusal takes nothing. */
+      if (await entitlementsRepo.requireEntitlement(tx, businessId, 'REKODA_INTEGRATE')) {
+        await refundDocument(deps, businessId, period);
+        return replies.ordersNotInPlan();
+      }
+      const orderAllowance = await meterAllowance(
+        deps.config,
+        tx,
+        businessId,
+        plan,
+        'CATALOGUE_ORDERS',
+      );
       const orderGranted = await withBusiness(deps.db, businessId, (own) =>
-        usageRepo.consumeUnit(own, businessId, period, 'orders', orderAllowance),
+        usageRepo.consumeUnit(own, businessId, period, 'CATALOGUE_ORDERS', orderAllowance),
       );
       if (!orderGranted) {
         await refundDocument(deps, businessId, period);
-        return orderAllowance === 0
-          ? replies.ordersNotInPlan()
-          : replies.allowanceExhausted(orderAllowance, 'orders');
+        return replies.allowanceExhausted(orderAllowance, 'CATALOGUE_ORDERS');
       }
       orderTaken = true;
     }
@@ -942,9 +1457,10 @@ async function confirmPendingDraft(
     await customersRepo.linkCustomers(tx, businessId, proposal.survivorId, proposal.orphanId);
   }
 
-  if (command.intent === 'RecordExpense') return confirmExpense(tx, businessId, draft.id, command);
+  if (command.intent === 'RecordExpense')
+    return confirmExpense(deps, tx, businessId, draft.id, command);
   if (command.intent === 'RecordPurchase')
-    return confirmPurchase(tx, businessId, draft.id, command);
+    return confirmPurchase(deps, tx, businessId, draft.id, command);
   if (command.intent === 'EraseData') {
     // Erasure confirms ONLY with the exact phrase. A "yes" is "anything
     // else" in the confirmation copy's terms, and anything else keeps the data.
@@ -954,7 +1470,7 @@ async function confirmPendingDraft(
     /* Refunds its own unit on every path that answers without issuing a
      * receipt: an invoice settled from under the merchant, or a payment we
      * could not place, must not cost them a document they never got. */
-    return confirmPayment(tx, businessId, draft.id, command, () =>
+    return confirmPayment(deps, tx, businessId, draft, command, () =>
       documentTaken ? refundDocument(deps, businessId, period) : Promise.resolve(),
     );
   }
@@ -963,10 +1479,10 @@ async function confirmPendingDraft(
      * count produces nothing to send and must not cost the merchant one of
      * the documents they are allowed to generate. */
     if (documentTaken) await refundDocument(deps, businessId, period);
-    return confirmStockChange(tx, businessId, command as never);
+    return confirmStockChange(deps, tx, businessId, draft.id, command as never);
   }
   if (command.intent === 'RecordOrder') {
-    return confirmOrder(tx, businessId, draft.id, command as never, async () => {
+    return confirmOrder(deps, tx, businessId, draft.id, command as never, async () => {
       /* Every no-order path gives BOTH units back: no invoice came out, so
        * neither the document nor the order capture was delivered. */
       if (documentTaken) await refundDocument(deps, businessId, period);
@@ -996,7 +1512,7 @@ async function confirmPendingDraft(
     quantity: item.quantity,
     unitPriceK: Math.round(item.unitPrice * 100),
   }));
-  const issued = await issueRepo.issueSale(tx, {
+  const input: RecordSaleInput = {
     businessId,
     /* The person, not just their pseudonym. The gateway resolved a customer
      * row before the model ever saw this message and the sale used to throw
@@ -1028,72 +1544,44 @@ async function confirmPendingDraft(
       new Date(),
     ),
     actor: 'system',
-  });
+  };
 
-  /**
-   * Enqueued INSIDE the same transaction as the sale (MASTER-PLAN §5.3.5 step
-   * 9). The invoice and "render its PDF" commit together, so there is no
-   * window where a document exists that nothing will ever produce paper for —
-   * and a rollback takes the job with it rather than leaving one pointing at
-   * an invoice that was never issued.
-   *
-   * The singleton key is the invoice id: a re-enqueue cannot produce two PDFs
-   * with two storage keys for one sale.
-   */
-  await jobsRepo.enqueue(tx, {
-    businessId,
-    kind: 'document.render',
-    payload: { invoiceId: issued.invoiceId },
-    singletonKey: issued.invoiceId,
-  });
+  /* The A1 rollout seam (spec §25). Same work function either way — the flag
+   * decides whether the command bus's gates run around it. Off is exactly
+   * the path this handler always took, which is what makes the flag a
+   * rollback and not a second implementation. */
+  if (deps.config.commandRecordSale) {
+    const run = await deps.commandBus.run(
+      tx,
+      {
+        businessId,
+        command: 'RecordSale',
+        payload: input,
+        actor: 'system',
+        ingress: 'CHAT',
+        /* The claimed draft: one draft, one yes, one sale. The claim above
+         * already guarantees single execution; this key is the second net,
+         * and it makes the replay answer the same reply. */
+        idempotencyKey: `draft:${draft.id}`,
+      },
+      () => recordSaleWork(tx, input),
+    );
+    if (run.outcome !== 'done') {
+      /* Unreachable by construction — RecordSale is STANDARD and ungated —
+       * so reaching it is a bug. The unit goes back and the merchant hears
+       * "not yet" rather than silence. */
+      if (documentTaken) await refundDocument(deps, businessId, period);
+      return replies.notYet('Recording that sale');
+    }
+    if (run.replayed && documentTaken) {
+      /* The first run already paid for this invoice. */
+      await refundDocument(deps, businessId, period);
+    }
+    return replies.issued(run.result.invoiceNumber, run.result.totalK, run.result.balanceDueK);
+  }
 
-  /**
-   * Stock comes off the shelf in the same transaction as the invoice.
-   *
-   * Only for lines naming something the shop ALREADY counts. A sale of
-   * something never counted must not create a product and then report it as
-   * minus three: a merchant who has not told Rekoda they stock something has
-   * not asked Rekoda to count it, and a stock figure that appears uninvited
-   * is a stock figure nobody trusts.
-   */
-  const movements = await stockRepo.recordSaleMovements(
-    tx,
-    businessId,
-    items,
-    issued.invoiceNumber,
-  );
-  await postCostOfGoods(tx, businessId, issued.invoiceNumber, movements);
-
+  const issued = await recordSaleWork(tx, input);
   return replies.issued(issued.invoiceNumber, money.totalK, money.balanceDueK);
-}
-
-/**
- * What the goods a sale took off the shelf cost.
- *
- * A SECOND posting beside the sale, in the same transaction, and the
- * separation is the point. A sale is a fact about money and is known exactly;
- * what the goods cost is an estimate from a costing method and is known only
- * for products the merchant has told Rekoda about. Two postings means a sale
- * whose cost is unknown still records the sale.
- *
- * Nothing is written when nothing that moved had a cost, which is not the
- * same as the goods having been free. The statements say how much revenue
- * that was rather than reporting a gross margin that assumes it.
- */
-async function postCostOfGoods(
-  tx: TenantDb,
-  businessId: string,
-  invoiceNumber: string,
-  movements: { costK: number },
-): Promise<void> {
-  if (movements.costK <= 0) return;
-  await issueRepo.writePosting(
-    tx,
-    businessId,
-    postCostOfSale({ memo: `Cost of goods on ${invoiceNumber}`, costK: movements.costK }),
-    'invoice',
-    invoiceNumber,
-  );
 }
 
 /**
@@ -1113,6 +1601,7 @@ async function postCostOfGoods(
  * customer is quoted for bales that are already spoken for.
  */
 async function confirmOrder(
+  deps: InboundMessageDeps,
   tx: TenantDb,
   businessId: string,
   draftId: string,
@@ -1136,9 +1625,10 @@ async function confirmOrder(
     return replies.arithmeticQuestion(question);
   }
 
-  const placed = await ordersRepo.placeOrder(tx, {
+  const input: PlaceOrderCmdInput = {
     businessId,
     customerId: await customerIdFor(tx, businessId, customerTokenOf(command as never)),
+    customerToken: customerTokenOf(command as never),
     lines: order.lines.map((line) => ({
       productId: line.productId,
       name: line.name,
@@ -1149,78 +1639,46 @@ async function confirmOrder(
     totalK: order.totalK,
     sourceType: 'chat',
     sourceId: draftId,
-  });
-
-  const items = order.lines.map((line) => ({
-    name: line.name,
-    quantity: line.quantity,
-    unitPriceK: line.unitPriceK,
-  }));
-  const issued = await issueRepo.issueSale(tx, {
-    businessId,
-    customerId: await customerIdFor(tx, businessId, customerTokenOf(command as never)),
-    customerToken: customerTokenOf(command as never),
-    items,
-    subtotalK: order.totalK,
-    discountK: 0,
-    deliveryFeeK: 0,
-    vatK: 0,
-    totalK: order.totalK,
-    /* Nothing is paid. A customer asked and the merchant agreed to supply;
-     * the money is the next event, not this one. */
-    paidK: 0,
-    balanceDueK: order.totalK,
-    method: 'transfer',
-    sourceType: 'chat',
-    sourceId: draftId,
     /* Where the sale happened is not knowable from a forwarded message: the
      * customer wrote it somewhere, and guessing which app would be Rekoda
      * inventing a channel the merchant never named. */
     saleSource: null,
-    /* A forwarded order carries no agreed due date. What the customer said
-     * about timing is about DELIVERY, not payment, and reading it as a
-     * payment date would put somebody on the debtors list on a day nobody
-     * agreed. */
-    dueDate: null,
+    /* The invoice cites the confirmed draft, as it always has. */
+    invoiceSourceId: draftId,
     actor: 'system',
-  });
+  };
 
-  /* The invoice id goes on the order in the same statement that confirms it.
-   * A confirmed order with nothing attached would be a row claiming a
-   * document exists with no way to find it, and the register would be back to
-   * matching orders and invoices by eye. */
-  await ordersRepo.markOrder(tx, businessId, placed.id, 'placed', 'confirmed', issued.invoiceId);
+  /* The A1 rollout seam (spec §25). The bus enforces REKODA_INTEGRATE too —
+   * the ingress already refused before taking units, and a second door
+   * refusing is the matrix holding, not a duplicate. */
+  let placed: Awaited<ReturnType<typeof placeOrderWork>>;
+  if (deps.config.commandRecordOrder) {
+    const run = await deps.commandBus.run(
+      tx,
+      {
+        businessId,
+        command: 'RecordOrder',
+        payload: input,
+        actor: 'system',
+        ingress: 'CHAT',
+        idempotencyKey: `draft:${draftId}`,
+      },
+      () => placeOrderWork(tx, input),
+    );
+    if (run.outcome === 'not_entitled') {
+      await refund();
+      return replies.ordersNotInPlan();
+    }
+    if (run.outcome !== 'done') {
+      await refund();
+      return replies.notYet('Recording that order');
+    }
+    placed = run.result;
+  } else {
+    placed = await placeOrderWork(tx, input);
+  }
 
-  await jobsRepo.enqueue(tx, {
-    businessId,
-    kind: 'document.render',
-    payload: { invoiceId: issued.invoiceId },
-    singletonKey: issued.invoiceId,
-  });
-
-  /**
-   * And a payable link, if this shop can take one.
-   *
-   * Enqueued unconditionally rather than gated on a connection read here: the
-   * job decides, and it stays silent when there is nothing to offer. That
-   * keeps one place deciding what a merchant hears about payment links, and
-   * it means the day a shop connects Paystack their next order carries a URL
-   * with no code change anywhere.
-   *
-   * The singleton key is the invoice: a re-enqueue cannot mint two intents
-   * for one obligation.
-   */
-  await jobsRepo.enqueue(tx, {
-    businessId,
-    kind: 'payment.link',
-    payload: { invoiceId: issued.invoiceId },
-    singletonKey: `link:${issued.invoiceId}`,
-  });
-
-  const moved = await stockRepo.recordSaleMovements(tx, businessId, items, issued.invoiceNumber);
-  await postCostOfGoods(tx, businessId, issued.invoiceNumber, moved);
-
-  return replies.orderRaised(placed.orderNumber, issued.invoiceNumber, order.totalK);
+  return replies.orderRaised(placed.orderNumber, placed.invoiceNumber, order.totalK);
 }
 
 /**
@@ -1234,8 +1692,10 @@ async function confirmOrder(
  * disagrees with.
  */
 async function confirmStockChange(
+  deps: InboundMessageDeps,
   tx: TenantDb,
   businessId: string,
+  draftId: string,
   command: StructuredBusinessCommand & { intent: 'AdjustInventory' },
 ): Promise<Reply> {
   const product = await stockRepo.findOrCreateProduct(tx, businessId, command.productMention);
@@ -1244,14 +1704,56 @@ async function confirmStockChange(
    * gate says why in the merchant's own terms; nothing is written. */
   if (gate.gate === 'CG1') return replies.arithmeticQuestion(gate.question);
 
-  await stockRepo.recordMovement(tx, {
+  const destructive = gate.quantityDelta < 0;
+  const input: AdjustInventoryInput = {
     businessId,
     productId: product.id,
     delta: gate.quantityDelta,
-    reason: 'adjustment',
     sourceType: 'chat',
-    sourceId: null,
-  });
+    sourceId: draftId,
+  };
+
+  /* The A1 rollout seam (spec §25, Appendix D). Adding stock is STANDARD;
+   * writing it OFF is D.2's destructive adjustment and must claim the
+   * confirmation the preview opened. A lapsed one gets a fresh preview, not
+   * a shrug: five minutes is the window a decision about disappearing stock
+   * stays warm. */
+  if (deps.config.commandAdjustInventory) {
+    let confirmationId: string | null = null;
+    if (destructive) {
+      const open = (await riskRepo.openConfirmationsFor(tx, businessId)).find(
+        (c) => c.command === 'AdjustInventory' && c.subject === `draft:${draftId}`,
+      );
+      if (!open) return replies.confirmationLapsed('that stock change');
+      confirmationId = open.id;
+    }
+    const run = await deps.commandBus.run(
+      tx,
+      {
+        businessId,
+        command: 'AdjustInventory',
+        payload: input,
+        subject: `draft:${draftId}`,
+        ...(destructive ? { context: { destructive: true } } : {}),
+        confirmationId,
+        actor: 'system',
+        ingress: 'CHAT',
+        idempotencyKey: `draft:${draftId}`,
+      },
+      () => adjustInventoryWork(tx, input),
+    );
+    if (
+      run.outcome === 'confirm_first' ||
+      run.outcome === 'confirmation_expired' ||
+      run.outcome === 'confirmation_already_used' ||
+      run.outcome === 'confirmation_invalid'
+    ) {
+      return replies.confirmationLapsed('that stock change');
+    }
+    if (run.outcome !== 'done') return replies.notYet('Updating that stock count');
+  } else {
+    await adjustInventoryWork(tx, input);
+  }
   return replies.stockSaved(product.name, gate.quantityDelta, gate.onHandAfter);
 }
 
@@ -1261,6 +1763,7 @@ async function confirmStockChange(
  * No render job follows — there is no paper to make.
  */
 async function confirmExpense(
+  deps: InboundMessageDeps,
   tx: TenantDb,
   businessId: string,
   draftId: string,
@@ -1270,7 +1773,7 @@ async function confirmExpense(
   if (gate.gate !== 'CG2') return replies.arithmeticQuestion(gate.question);
 
   const description = String(command['description'] ?? '');
-  await spendRepo.recordExpense(tx, {
+  const input: RecordExpenseCmdInput = {
     businessId,
     description,
     category: typeof command['category'] === 'string' ? command['category'] : null,
@@ -1278,7 +1781,27 @@ async function confirmExpense(
     method: command['paymentMethod'] === 'transfer' ? 'transfer' : 'cash',
     sourceType: 'chat',
     sourceId: draftId,
-  });
+  };
+
+  /* The A1 rollout seam (spec §25): same work either way; the flag decides
+   * whether the bus's gates wrap the call. */
+  if (deps.config.commandRecordExpense) {
+    const run = await deps.commandBus.run(
+      tx,
+      {
+        businessId,
+        command: 'RecordExpense',
+        payload: input,
+        actor: 'system',
+        ingress: 'CHAT',
+        idempotencyKey: `draft:${draftId}`,
+      },
+      () => recordExpenseWork(tx, input),
+    );
+    if (run.outcome !== 'done') return replies.notYet('Recording that expense');
+  } else {
+    await recordExpenseWork(tx, input);
+  }
   return replies.expenseSaved(gate.amountK, description);
 }
 
@@ -1290,6 +1813,7 @@ async function confirmExpense(
  * reference the vault can open, never as a name.
  */
 async function confirmPurchase(
+  deps: InboundMessageDeps,
   tx: TenantDb,
   businessId: string,
   draftId: string,
@@ -1299,7 +1823,18 @@ async function confirmPurchase(
   if (gate.gate !== 'CG2') return replies.arithmeticQuestion(gate.question);
 
   const supplierId = typeof command['supplierId'] === 'string' ? command['supplierId'] : null;
-  const recorded = await spendRepo.recordPurchase(tx, {
+
+  /**
+   * A purchase is a delivery too, when the merchant counted one. Carried on
+   * the command input so the goods land in the SAME transaction as the
+   * money. Only when they named a countable thing AND a number: inferring a
+   * quantity from an amount would put a stock count in their books that
+   * nobody took. The arrival's cost is the gate's amount — the merchant
+   * named a thing, a number of it and an amount; that is a unit cost, and
+   * it is the only one they have given us.
+   */
+  const arriving = purchaseArrival(command as never);
+  const input: RecordPurchaseCmdInput = {
     businessId,
     description: String(command['description'] ?? ''),
     amountK: gate.amountK,
@@ -1307,37 +1842,36 @@ async function confirmPurchase(
     sourceType: 'chat',
     sourceId: draftId,
     supplierId,
-  });
+    arrivals: arriving
+      ? [{ product: arriving.productMention, quantity: arriving.quantity, costK: gate.amountK }]
+      : [],
+  };
 
-  /**
-   * A purchase is a delivery too, when the merchant counted one.
-   *
-   * Same transaction as the money, so a shop can never hold the payment
-   * without the goods. Only when they named a countable thing AND a number:
-   * inferring a quantity from an amount would put a stock count in their
-   * books that nobody took.
-   */
-  const arriving = purchaseArrival(command as never);
-  if (arriving) {
-    const product = await stockRepo.findOrCreateProduct(tx, businessId, arriving.productMention);
-    /* And it moves what this product is reckoned to cost. The merchant named
-     * a thing, a number of it and an amount; that is a unit cost, and it is
-     * the only one they have given us. */
-    await stockRepo.recordDelivery(tx, {
-      businessId,
-      product,
-      quantity: arriving.quantity,
-      costK: gate.amountK,
-      sourceType: 'chat',
-      sourceId: draftId,
-    });
-    return replies.purchaseSaved(gate.amountK, recorded.owedK, {
-      name: product.name,
-      onHand: product.onHand + arriving.quantity,
-    });
+  /* The A1 rollout seam (spec §25). */
+  let recorded: Awaited<ReturnType<typeof recordPurchaseWork>>;
+  if (deps.config.commandRecordPurchase) {
+    const run = await deps.commandBus.run(
+      tx,
+      {
+        businessId,
+        command: 'RecordPurchase',
+        payload: input,
+        actor: 'system',
+        ingress: 'CHAT',
+        idempotencyKey: `draft:${draftId}`,
+      },
+      () => recordPurchaseWork(tx, input),
+    );
+    if (run.outcome !== 'done') return replies.notYet('Recording that purchase');
+    recorded = run.result;
+  } else {
+    recorded = await recordPurchaseWork(tx, input);
   }
 
-  return replies.purchaseSaved(gate.amountK, recorded.owedK);
+  const landed = recorded.arrived[0];
+  return landed
+    ? replies.purchaseSaved(gate.amountK, recorded.owedK, landed)
+    : replies.purchaseSaved(gate.amountK, recorded.owedK);
 }
 
 /**
@@ -1427,9 +1961,10 @@ async function answerQuery(
  * gate runs again on the fresh figure for the same reason.
  */
 async function confirmPayment(
+  deps: InboundMessageDeps,
   tx: TenantDb,
   businessId: string,
-  draftId: string,
+  draft: { id: string; messageKind: string | null },
   command: Record<string, unknown>,
   refundDocumentUnit: () => Promise<void>,
 ): Promise<Reply> {
@@ -1453,43 +1988,110 @@ async function confirmPayment(
     return replies.arithmeticQuestion(gate.question);
   }
 
-  /* The gate read the balance without a lock; the write takes one. If a
-   * provider payment settled the invoice in between, the write refuses.
-   * Caught here because the alternative is what it used to do: throw, fail
-   * the job, retry to exhaustion, and leave the merchant who typed "yes"
-   * with no answer at all. */
-  let recorded: Awaited<ReturnType<typeof settleRepo.recordMerchantPayment>>;
-  try {
-    recorded = await settleRepo.recordMerchantPayment(tx, {
+  /* How the merchant's assertion reached us (spec E.7) — from the DRAFTING
+   * message's kind, never guessed. Context for a human, not a trust grade:
+   * the payment stays MERCHANT_ATTESTED whichever way it was said. */
+  const basis =
+    draft.messageKind === 'voice'
+      ? 'SPOKEN'
+      : draft.messageKind === 'media'
+        ? 'SAW_AN_IMAGE'
+        : draft.messageKind === 'text'
+          ? 'TYPED'
+          : null;
+
+  /* A screenshot came with the claim: the evidence row records that an image
+   * was SHOWN (§6.1 — it proves nothing), born RESOLVED because the
+   * attestation it accompanies resolves it in this same transaction. */
+  let paymentEvidenceId: string | null = null;
+  if (basis === 'SAW_AN_IMAGE') {
+    const evidenceInput = {
       businessId,
-      invoiceId: invoice.id,
-      amountK: gate.amountK,
-      method: command['paymentMethod'] === 'cash' ? 'cash' : 'transfer',
-      sourceType: 'chat',
-      sourceId: draftId,
-      actor: 'system',
-    });
-  } catch (error) {
-    if (error instanceof settleRepo.AlreadySettled) {
-      await refundDocumentUnit();
-      return replies.paymentAlreadySettled(invoice.invoiceNumber);
+      source: 'chat_image',
+      claimedAmountK: gate.amountK,
+      resolution: { state: 'RESOLVED', at: new Date() } as const,
+    };
+    if (deps.config.commandRecordPayment) {
+      const run = await deps.commandBus.run(
+        tx,
+        {
+          businessId,
+          command: 'RecordPaymentEvidence',
+          payload: evidenceInput,
+          actor: 'system',
+          ingress: 'CHAT',
+          idempotencyKey: `evidence:${draft.id}`,
+        },
+        () => recordPaymentEvidenceWork(tx, evidenceInput),
+      );
+      paymentEvidenceId = run.outcome === 'done' ? run.result.evidenceId : null;
+    } else {
+      paymentEvidenceId = (await recordPaymentEvidenceWork(tx, evidenceInput)).evidenceId;
     }
-    if (error instanceof settleRepo.BalanceMoved) {
-      await refundDocumentUnit();
-      return replies.paymentBalanceMoved(error.invoiceNumber, error.balanceDueK, error.excessK);
-    }
-    throw error;
   }
 
-  /* The receipt gets the same render-then-deliver treatment a verified
-   * payment's does, enqueued in this transaction so paper and record commit
-   * together. */
-  await jobsRepo.enqueue(tx, {
+  const input: RecordPaymentInput = {
     businessId,
-    kind: 'document.render',
-    payload: { receiptId: recorded.receiptId },
-    singletonKey: `receipt:${recorded.receiptId}`,
-  });
+    invoice: { id: invoice.id },
+    amountK: gate.amountK,
+    method: command['paymentMethod'] === 'cash' ? 'cash' : 'transfer',
+    sourceType: 'chat',
+    sourceId: draft.id,
+    actor: 'system',
+    evidenceBasis: basis,
+    paymentEvidenceId,
+  };
+
+  /* The A1 rollout seam (spec §25): the work books the payment, enqueues the
+   * receipt's paper and announces it; the flag decides whether the bus's
+   * gates wrap the call. Refusals come back as OUTCOMES, which is what lets
+   * the idempotency snapshot complete beside them — a retried refusal
+   * replays as the same refusal instead of a claim stuck "running". */
+  let recorded: RecordPaymentResult;
+  if (deps.config.commandRecordPayment) {
+    const run = await deps.commandBus.run(
+      tx,
+      {
+        businessId,
+        command: 'RecordPayment',
+        payload: input,
+        actor: 'system',
+        ingress: 'CHAT',
+        idempotencyKey: `draft:${draft.id}`,
+      },
+      () => recordPaymentWork(tx, input),
+    );
+    if (run.outcome !== 'done') {
+      /* Unreachable by construction — RecordPayment is STANDARD and ungated. */
+      await refundDocumentUnit();
+      return replies.notYet('Recording that payment');
+    }
+    if (run.replayed && run.result.outcome === 'recorded') {
+      /* The first run already paid for this receipt. */
+      await refundDocumentUnit();
+    }
+    recorded = run.result;
+  } else {
+    recorded = await recordPaymentWork(tx, input);
+  }
+
+  if (recorded.outcome === 'already_settled') {
+    await refundDocumentUnit();
+    return replies.paymentAlreadySettled(invoice.invoiceNumber);
+  }
+  if (recorded.outcome === 'balance_moved') {
+    await refundDocumentUnit();
+    return replies.paymentBalanceMoved(
+      recorded.invoiceNumber,
+      recorded.balanceDueK,
+      recorded.excessK,
+    );
+  }
+  if (recorded.outcome !== 'recorded') {
+    /* `not_found` cannot happen on the id path; honest fallback, unit back. */
+    await refundDocumentUnit();
+    return replies.paymentNoOpenInvoice();
+  }
 
   /* Every figure here comes from the WRITE, never from the gate. The gate
    * read the balance without a lock, so its amount is what we hoped to post;
@@ -1527,6 +2129,8 @@ async function interpretedReply(
    * holds the token.
    */
   tokens: Map<string, string>,
+  /** True when this text was extracted from a photographed document. */
+  fromDocument = false,
 ): Promise<Reply> {
   /**
    * The MONTHLY meter (docs/metering-v1.md), checked before the model is
@@ -1542,7 +2146,16 @@ async function interpretedReply(
    * refuses; what changes is what the merchant is told. */
   if (plan === 'expired') return replies.trialEnded();
 
-  const monthlyMessages = allowanceFor(plan, 'messages');
+  /* ENTITLEMENT BEFORE METER, and before the model is paid for (spec §4.3,
+   * rules 1 to 3). An Integrate-only merchant holds the customer-facing half
+   * and not this one, and refusing here means no unit is taken and no
+   * provider is called — so there is nothing to refund and no path where the
+   * meter can drift. */
+  if (await entitlementsRepo.requireEntitlement(tx, businessId, 'REKODA_CHAT')) {
+    return replies.chatNotInPlan();
+  }
+
+  const monthlyMessages = await meterAllowance(deps.config, tx, businessId, plan, 'AI_ACTIONS');
   const period = usagePeriod(new Date());
 
   /**
@@ -1561,7 +2174,11 @@ async function interpretedReply(
   const granted = retrying || (await consumeMessage(deps, businessId, period, monthlyMessages));
   if (!granted) return replies.allowanceExhausted(monthlyMessages);
 
-  const interpreted = await deps.interpreter.interpret(businessId, safeText);
+  const interpreted = await deps.interpreter.interpret(
+    businessId,
+    safeText,
+    fromDocument ? { document: true } : undefined,
+  );
 
   /**
    * The meter only moves when the product worked. If the model never ran
@@ -1586,6 +2203,14 @@ async function interpretedReply(
   }
   if (interpreted.outcome === 'unavailable') return replies.busyRightNow();
   if (interpreted.outcome === 'unusable') return replies.couldNotRead();
+  /* Two independent readers disagreed on a high-value document (item 9).
+   * Nothing was drafted from either reading; the merchant states the
+   * figures and the typed sentence walks the ordinary confirm gate. The
+   * message unit was already refunded above with the other non-command
+   * outcomes. */
+  if (interpreted.outcome === 'disagreement') {
+    return replies.extractionDisagreement(interpreted.fields);
+  }
 
   /**
    * The role rule, applied where the intent is first known.
@@ -1672,7 +2297,7 @@ async function interpretedReply(
     stored = { ...command, supplierMention: null, supplierId: supplier?.supplierId ?? null };
   }
 
-  await conversationsRepo.recordDraft(tx, {
+  const draft = await conversationsRepo.recordDraft(tx, {
     businessId,
     conversationMessageId,
     intent: command.intent,
@@ -1680,6 +2305,26 @@ async function interpretedReply(
     model: deps.config.aiModelDefault,
     identityLink: answered.linkAsked ? link : null,
   });
+
+  /* Appendix D: a preview that shows stock DISAPPEARING opens the
+   * confirmation the yes will claim, recording the exact consequence the
+   * merchant read. Additions stay STANDARD and open nothing. */
+  if (deps.config.commandAdjustInventory && command.intent === 'AdjustInventory' && draft.isNew) {
+    const product = await stockRepo.productByName(tx, businessId, command.productMention);
+    const gate = gateStockChange(command, product?.onHand ?? 0);
+    if (gate.gate === 'CG2' && gate.quantityDelta < 0) {
+      await deps.commandBus.riskPolicy.ask(tx, {
+        businessId,
+        command: 'AdjustInventory',
+        subject: `draft:${draft.id}`,
+        actor: 'system',
+        ingress: 'CHAT',
+        consequence: gate.preview,
+        reason: 'stock written off by merchant count',
+        context: { destructive: true },
+      });
+    }
+  }
 
   return answered.reply;
 }
@@ -1861,14 +2506,14 @@ function consumeMessage(
   allowance: number,
 ): Promise<boolean> {
   return withBusiness(deps.db, businessId, (tx) =>
-    usageRepo.consumeUnit(tx, businessId, period, 'messages', allowance),
+    usageRepo.consumeUnit(tx, businessId, period, 'AI_ACTIONS', allowance),
   );
 }
 
 /** Put an order unit back. Same standalone transaction as taking one. */
 function refundOrder(deps: InboundMessageDeps, businessId: string, period: string): Promise<void> {
   return withBusiness(deps.db, businessId, (tx) =>
-    usageRepo.refundUnit(tx, businessId, period, 'orders'),
+    usageRepo.refundUnit(tx, businessId, period, 'CATALOGUE_ORDERS'),
   );
 }
 
@@ -1879,7 +2524,7 @@ function refundDocument(
   period: string,
 ): Promise<void> {
   return withBusiness(deps.db, businessId, (tx) =>
-    usageRepo.refundUnit(tx, businessId, period, 'documents'),
+    usageRepo.refundUnit(tx, businessId, period, 'DOCUMENT_GENERATION'),
   );
 }
 
@@ -1889,7 +2534,7 @@ function refundMessage(
   period: string,
 ): Promise<void> {
   return withBusiness(deps.db, businessId, (tx) =>
-    usageRepo.refundUnit(tx, businessId, period, 'messages'),
+    usageRepo.refundUnit(tx, businessId, period, 'AI_ACTIONS'),
   );
 }
 

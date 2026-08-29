@@ -8,10 +8,10 @@
  */
 import { randomBytes } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { billingRepo, createDb, identity, withBusiness, type Db } from '@rekoda/db';
+import { billingRepo, createDb, identity, sql, withBusiness, type Db } from '@rekoda/db';
 import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
-import { MAX_FAILURES_PER_WINDOW, AuthService } from './auth.service.js';
+import { MAX_FAILURES_PER_WINDOW, MAX_REQUESTS_PER_WINDOW, AuthService } from './auth.service.js';
 import { AuthController, BusinessController } from './auth.controller.js';
 import { SessionGuard } from './session.guard.js';
 import { RolesGuard } from './roles.guard.js';
@@ -359,6 +359,28 @@ describe('OTP defences', () => {
     await requestCode(phone);
     const second = (await post('/v1/auth/otp/request', { phone })).json() as { status: string };
     expect(second.status).toBe('resend_too_soon');
+  });
+
+  it('caps minted codes per phone per hour, so pacing past the cooldown does not flood', async () => {
+    // A caller who never guesses wrong, only asks, pacing past the 60s
+    // cooldown each time: the failure counter never trips, so only the mint
+    // cap bounds the authentication templates Rekoda is made to send.
+    const phone = '08031299999';
+    const service = app.get(AuthService);
+    const start = Date.now();
+
+    for (let round = 0; round < MAX_REQUESTS_PER_WINDOW; round++) {
+      const at = new Date(start + round * 61_000);
+      expect((await service.requestOtp(phone, at)).status).toBe('sent');
+    }
+
+    // The sixth ask, still well inside the hour, is refused - and refused as
+    // `locked_out`, indistinguishable from the wrong-guess lockout.
+    const sixth = await service.requestOtp(
+      phone,
+      new Date(start + MAX_REQUESTS_PER_WINDOW * 61_000),
+    );
+    expect(sixth.status).toBe('locked_out');
   });
 
   it('answers identically whether or not a number has a pending sign-in', async () => {
@@ -811,6 +833,102 @@ describe('the team an owner can build', () => {
     /* Two rows for one person is not richer access, it is a role that depends
      * on which row a query reads first. */
     expect((await post('/v1/businesses/members', body, owner.auth)).statusCode).toBe(409);
+  });
+
+  /* Who can see the books is an audited fact (D1, PR-094): every grant,
+   * every change and every revocation names its actor, and the member's
+   * PHONE stays out of the row — audit rows travel into exports. */
+  it('audits the grant, the role change and the revocation, each with its actor', async () => {
+    const owner = await ownerOf('+2348140000012');
+    const invited = (
+      await post(
+        '/v1/businesses/members',
+        { phone: '+2348149990030', role: 'accountant' },
+        owner.auth,
+      )
+    ).json() as { userId: string };
+
+    const changed = await app.inject({
+      method: 'PATCH',
+      url: `/v1/businesses/members/${invited.userId}`,
+      headers: owner.auth,
+      payload: { role: 'delegate' },
+    });
+    expect(changed.statusCode).toBe(200);
+    expect(changed.json()).toEqual({ changed: true });
+    const members = (await team(owner.auth)).json() as {
+      members: Array<{ userId: string; role: string }>;
+    };
+    expect(members.members.find((m) => m.userId === invited.userId)?.role).toBe('delegate');
+
+    /* Same role again changes nothing, and writes no row that would claim
+     * it did. */
+    const again = await app.inject({
+      method: 'PATCH',
+      url: `/v1/businesses/members/${invited.userId}`,
+      headers: owner.auth,
+      payload: { role: 'delegate' },
+    });
+    expect(again.json()).toEqual({ changed: false });
+
+    await app.inject({
+      method: 'DELETE',
+      url: `/v1/businesses/members/${invited.userId}`,
+      headers: owner.auth,
+    });
+
+    const trail = await withBusiness(db, owner.businessId, (tx) =>
+      tx.execute<{ action: string; actor: string; new_value: unknown; old_value: unknown }>(sql`
+        SELECT action, actor, new_value, old_value
+        FROM audit_events
+        WHERE business_id = ${owner.businessId}::uuid AND entity = 'membership'
+        ORDER BY created_at
+      `),
+    );
+    const rows = [...trail];
+    expect(rows.map((r) => r.action)).toEqual(['invited', 'role_changed', 'removed']);
+    expect(rows.every((r) => r.actor.startsWith('user:'))).toBe(true);
+    expect(rows[0]!.new_value).toEqual({ role: 'accountant' });
+    expect(rows[1]!.new_value).toEqual({ role: 'delegate' });
+    expect(rows[2]!.old_value).toEqual({ role: 'delegate' });
+    expect(JSON.stringify(rows)).not.toContain('2348149990030');
+  });
+
+  it('the owner cannot be demoted, and an accountant cannot change roles at all', async () => {
+    const owner = await ownerOf('+2348140000013');
+    const me = (
+      await app.inject({ method: 'GET', url: '/v1/auth/me', headers: owner.auth })
+    ).json() as { userId: string };
+
+    const demoted = await app.inject({
+      method: 'PATCH',
+      url: `/v1/businesses/members/${me.userId}`,
+      headers: owner.auth,
+      payload: { role: 'delegate' },
+    });
+    expect(demoted.statusCode).toBe(400);
+    expect((demoted.json() as { message: string }).message).toContain('owner');
+
+    const invited = (
+      await post(
+        '/v1/businesses/members',
+        { phone: '+2348149990031', role: 'accountant' },
+        owner.auth,
+      )
+    ).json() as { userId: string };
+    const requested = (await post('/v1/auth/otp/request', { phone: '+2348149990031' })).json() as {
+      devCode?: string;
+    };
+    const signedIn = (
+      await post('/v1/auth/otp/verify', { phone: '+2348149990031', code: requested.devCode })
+    ).json() as { sessionToken: string };
+    const refused = await app.inject({
+      method: 'PATCH',
+      url: `/v1/businesses/members/${invited.userId}`,
+      headers: { authorization: `Bearer ${signedIn.sessionToken}` },
+      payload: { role: 'delegate' },
+    });
+    expect(refused.statusCode).toBe(403);
   });
 
   it('refuses a role nobody may hand out, and a phone that is not one', async () => {

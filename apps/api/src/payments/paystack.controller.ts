@@ -17,6 +17,7 @@ import { events, type Db } from '@rekoda/db';
 import { CONFIG, type ApiConfig } from '../config.js';
 import { DB } from '../db/db.module.js';
 import { sealPayload } from '../privacy/payload-vault.js';
+import { SecurityMetrics } from '../channels/security-metrics.service.js';
 
 interface RawBodyRequest {
   rawBody?: Buffer;
@@ -52,6 +53,7 @@ export class PaystackWebhookController {
   constructor(
     @Inject(CONFIG) private readonly config: ApiConfig,
     @Inject(DB) private readonly db: Db,
+    @Inject(SecurityMetrics) private readonly security: SecurityMetrics,
   ) {}
 
   @Post()
@@ -71,6 +73,7 @@ export class PaystackWebhookController {
        * rejected, which is the safe direction for a deployment that has not
        * turned payments on.
        */
+      this.security.rejectedSignature('paystack');
       this.log.warn('rejected a Paystack webhook with an invalid signature');
       throw new UnauthorizedException('invalid signature');
     }

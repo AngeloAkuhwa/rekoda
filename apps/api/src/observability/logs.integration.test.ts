@@ -33,6 +33,9 @@ import { LocalStorage } from '../documents/r2.storage.js';
 import { ReplySender } from '../replies/reply.service.js';
 import { buildRunner, type RunnerDeps } from '../jobs/jobs.module.js';
 import { loadConfig, type ApiConfig } from '../config.js';
+import { ContainerAudioProbe } from '../ai/audio-duration.js';
+import { CommandBus } from '../commands/command-bus.service.js';
+import { RiskPolicyService } from '../risk/risk-policy.service.js';
 
 /** Everything the application tried to write, whatever the level. */
 class CapturingLogger implements LoggerService {
@@ -130,6 +133,8 @@ beforeAll(async () => {
     paymentIntents: new PaymentIntentsService(config, db, new StubPaymentProvider()),
     stt: stubStt,
     ocr: stubOcr,
+    audioProbe: new ContainerAudioProbe(),
+    commandBus: new CommandBus(new RiskPolicyService()),
   };
 });
 

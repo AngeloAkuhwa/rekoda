@@ -40,6 +40,7 @@ import {
   voidInvoiceResponse,
 } from '@rekoda/contracts';
 import {
+  customersRepo,
   jobsRepo,
   ordersRepo,
   usageRepo,
@@ -49,6 +50,7 @@ import {
   paymentsHub,
   settleRepo,
   spendRepo,
+  suppliersRepo,
   stockRepo,
   withBusiness,
   type Db,
@@ -279,6 +281,10 @@ describe('the registers (§5.3.7)', () => {
     expect(invoices.invoices[0]).toMatchObject({
       invoiceNumber,
       status: 'partially_paid',
+      /* Appendix E.3's dimensions, derived at read (PR-084): part settled,
+       * nothing being chased — no due date was ever agreed. */
+      paymentStatus: 'PARTIALLY_PAID',
+      collectionStatus: 'CURRENT',
       totalK: 15_000_000,
       paidK: 6_000_000,
       balanceDueK: 9_000_000,
@@ -408,7 +414,7 @@ describe('the spend register', () => {
       expect(recordAssetResponse.parse(res.json())).toMatchObject({ owedK: 0 });
 
       const after = await statementsOf(auth);
-      const equipment = after.balanceSheet.assets.find((l) => l.account === 'EQUIPMENT');
+      const equipment = after.balanceSheet.assets.find((l) => l.code === '1300');
       expect(equipment?.amountK).toBe(45_000_000);
       /* The whole reason ADR 0026 exists: profit does not move. */
       expect(after.profitAndLoss.totalExpensesK).toBe(before.profitAndLoss.totalExpensesK);
@@ -477,9 +483,7 @@ describe('the spend register', () => {
       ).toMatchObject({ outcome: 'withdrawn', reversedK: 45_000_000 });
 
       const after = await statementsOf(auth);
-      expect(after.balanceSheet.assets.find((l) => l.account === 'EQUIPMENT')?.amountK ?? 0).toBe(
-        0,
-      );
+      expect(after.balanceSheet.assets.find((l) => l.code === '1300')?.amountK ?? 0).toBe(0);
       expect(after.balanceSheet.balanced).toBe(true);
     });
 
@@ -511,12 +515,8 @@ describe('the spend register', () => {
       });
 
       const after = await statementsOf(auth);
-      expect(after.balanceSheet.assets.find((l) => l.account === 'EQUIPMENT')?.amountK ?? 0).toBe(
-        0,
-      );
-      expect(
-        after.profitAndLoss.expenses.find((l) => l.account === 'DISPOSAL_RESULT')?.amountK,
-      ).toBe(25_000_000);
+      expect(after.balanceSheet.assets.find((l) => l.code === '1300')?.amountK ?? 0).toBe(0);
+      expect(after.profitAndLoss.expenses.find((l) => l.code === '6200')?.amountK).toBe(25_000_000);
       expect(after.balanceSheet.balanced).toBe(true);
 
       const spend = reportsExpensesResponse.parse(
@@ -994,11 +994,19 @@ describe('recording a payment from the dashboard', () => {
  * other, and the pair of refusals below is what proves there is no gap.
  */
 describe('crediting an invoice', () => {
+  let creditCustomerSeq = 0;
   async function paidSale(businessId: string) {
+    creditCustomerSeq += 1;
+    const customer = await customersRepo.createCustomerWithIdentities(
+      db,
+      businessId,
+      `CUSTOMER_CN${creditCustomerSeq}`,
+      [],
+    );
     return withBusiness(db, businessId, async (tx) => {
       const sale = await issueRepo.issueSale(tx, {
         businessId,
-        customerId: null,
+        customerId: customer.id,
         customerToken: 'CUSTOMER_7K2',
         items: [{ name: 'wig', quantity: 1, unitPriceK: 15_000_000 }],
         subtotalK: 15_000_000,
@@ -1032,16 +1040,17 @@ describe('crediting an invoice', () => {
       outcome: 'credited',
       invoiceNumber,
       amountK: 9_000_000,
-      balanceDueK: 0,
-      owedToCustomerK: 0,
+      /* §14.1: an unapplied credit reduces no invoice. */
+      balanceDueK: 9_000_000,
+      /* The whole credit is owed to the customer until applied. */
+      owedToCustomerK: 9_000_000,
     });
 
     const register = reportsInvoicesResponse.parse(
       (await app.inject({ method: 'GET', url: '/v1/reports/invoices', headers: auth })).json(),
     );
-    expect(register.invoices[0]).toMatchObject({ balanceDueK: 0, creditedK: 9_000_000 });
-    /* Nothing is outstanding any more, so it leaves the ageing. */
-    expect(register.outstandingK).toBe(0);
+    expect(register.invoices[0]).toMatchObject({ balanceDueK: 9_000_000, creditedK: 9_000_000 });
+    expect(register.outstandingK).toBe(9_000_000);
     expect(res.body).not.toContain('CUSTOMER_');
   });
 
@@ -1058,7 +1067,7 @@ describe('crediting an invoice', () => {
         )
       ).json(),
     );
-    expect(outcome).toMatchObject({ owedToCustomerK: 6_000_000 });
+    expect(outcome).toMatchObject({ owedToCustomerK: 15_000_000 });
   });
 
   /* The pair must leave no invoice without a path, and give none two. */
@@ -1341,7 +1350,7 @@ describe('the four statements (ADR 0015)', () => {
     expect(statements.trialBalance.balanced).toBe(true);
     expect(statements.balanceSheet.balanced).toBe(true);
     // Cash went negative (an expense with no income): it crosses to credit.
-    const cash = statements.trialBalance.rows.find((r) => r.account === 'CASH');
+    const cash = statements.trialBalance.rows.find((r) => r.code === '1000');
     expect(cash?.creditK).toBe(1_200_000);
 
     /* And the schedule underneath it, labelled the way the statement is:
@@ -1464,7 +1473,13 @@ describe('what the business was already holding', () => {
           stockK: 0,
         })
       ).json(),
-    ).toEqual({ outcome: 'recorded', asAt: '2026-07-31', equityK: 20_000_000 });
+    ).toEqual({
+      outcome: 'recorded',
+      asAt: '2026-07-31',
+      equityK: 20_000_000,
+      stockValueK: 0,
+      invoices: [],
+    });
 
     const after = reportsStatementsResponse.parse(
       (await app.inject({ method: 'GET', url: '/v1/reports/statements', headers: auth })).json(),
@@ -1476,7 +1491,65 @@ describe('what the business was already holding', () => {
       cashK: 20_000_000,
       bankK: 0,
       stockK: 0,
+      receivablesK: 0,
     });
+  });
+
+  /**
+   * The kernel shapes (PR-083), through the same door: receivables become
+   * open invoices the response names, counted stock becomes products, and
+   * a shelf stated twice — a value AND lines — is refused at the border.
+   */
+  it('opens with invoices behind the debts and products behind the shelf', async () => {
+    const { auth, businessId } = await onboard('+2348177000027');
+    const customer = await customersRepo.createCustomerWithIdentities(
+      db,
+      businessId,
+      'CUSTOMER_OB1',
+      [],
+    );
+
+    const res = (
+      await open(auth, {
+        asAt: '2026-07-31',
+        cashK: 1_000_000,
+        bankK: 0,
+        stockK: 0,
+        stock: [{ name: 'ankara', quantity: 10, unitCostK: 150_000 }],
+        receivables: [{ customerId: customer.id, amountK: 3_000_000 }],
+      })
+    ).json() as {
+      outcome: string;
+      equityK: number;
+      stockValueK: number;
+      invoices: { invoiceNumber: string; amountK: number }[];
+    };
+    expect(res.outcome).toBe('recorded');
+    expect(res.equityK).toBe(5_500_000);
+    expect(res.stockValueK).toBe(1_500_000);
+    expect(res.invoices).toEqual([
+      { invoiceNumber: expect.stringMatching(/^INV-2026-/), amountK: 3_000_000 },
+    ]);
+
+    const shelf = await withBusiness(db, businessId, (tx) =>
+      stockRepo.productByName(tx, businessId, 'ankara'),
+    );
+    expect(shelf).toMatchObject({ onHand: 10, unitCostK: 150_000 });
+  });
+
+  it('refuses a shelf stated twice: a value and counted lines together', async () => {
+    const { auth } = await onboard('+2348177000028');
+    expect(
+      (
+        await open(auth, {
+          asAt: '2026-07-31',
+          cashK: 0,
+          bankK: 0,
+          stockK: 1_000_000,
+          stock: [{ name: 'ankara', quantity: 1, unitCostK: 100 }],
+        })
+      ).statusCode,
+    ).toBe(400);
   });
 
   /**
@@ -2610,8 +2683,8 @@ describe('a correction written by hand', () => {
     );
     expect(seen.balanceSheet.balanced).toBe(true);
     expect(seen.profitAndLoss.netProfitK).toBe(0);
-    const bank = seen.balanceSheet.assets.find((a) => a.account === 'BANK_PAYSTACK');
-    const cash = seen.balanceSheet.assets.find((a) => a.account === 'CASH');
+    const bank = seen.balanceSheet.assets.find((a) => a.code === '1010');
+    const cash = seen.balanceSheet.assets.find((a) => a.code === '1000');
     expect(bank?.amountK).toBe(5_000_000);
     expect(cash?.amountK).toBe(-5_000_000);
   });
@@ -2696,16 +2769,22 @@ describe('one-shot keys on the owner writes', () => {
     const statements = reportsStatementsResponse.parse(
       (await app.inject({ method: 'GET', url: '/v1/reports/statements', headers: auth })).json(),
     );
-    const bank = statements.trialBalance.rows.find((row) => row.account === 'BANK_PAYSTACK');
+    const bank = statements.trialBalance.rows.find((row) => row.code === '1010');
     expect(bank?.debitK).toBe(500_000);
   });
 
   it('a resubmitted credit note credits once', async () => {
     const { auth, businessId } = await onboard('+2348177000201');
+    const dupCustomer = await customersRepo.createCustomerWithIdentities(
+      db,
+      businessId,
+      'CUSTOMER_DUP1',
+      [],
+    );
     const invoiceNumber = await withBusiness(db, businessId, async (tx) => {
       const sale = await issueRepo.issueSale(tx, {
         businessId,
-        customerId: null,
+        customerId: dupCustomer.id,
         customerToken: 'CUSTOMER_7K2',
         items: [{ name: 'wig', quantity: 1, unitPriceK: 15_000_000 }],
         subtotalK: 15_000_000,
@@ -2942,7 +3021,7 @@ describe('quotes, and what converting one does', () => {
     const usage = await withBusiness(db, businessId, (tx) =>
       usageRepo.usageFor(tx, businessId, usagePeriod(new Date())),
     );
-    expect(usage.find((r) => r.unit === 'documents')?.used).toBe(1);
+    expect(usage.find((r) => r.unit === 'DOCUMENT_GENERATION')?.used).toBe(1);
   });
 
   it('a second convert is handed the first one`s invoice, and pays nothing', async () => {
@@ -2967,7 +3046,7 @@ describe('quotes, and what converting one does', () => {
     const usage = await withBusiness(db, businessId, (tx) =>
       usageRepo.usageFor(tx, businessId, usagePeriod(new Date())),
     );
-    expect(usage.find((r) => r.unit === 'documents')?.used).toBe(1);
+    expect(usage.find((r) => r.unit === 'DOCUMENT_GENERATION')?.used).toBe(1);
   });
 
   it('refuses a dead offer: expired converts nothing, withdrawn converts nothing', async () => {
@@ -3001,7 +3080,7 @@ describe('quotes, and what converting one does', () => {
     const usage = await withBusiness(db, businessId, (tx) =>
       usageRepo.usageFor(tx, businessId, usagePeriod(new Date())),
     );
-    expect(usage.find((r) => r.unit === 'documents')?.used ?? 0).toBe(0);
+    expect(usage.find((r) => r.unit === 'DOCUMENT_GENERATION')?.used ?? 0).toBe(0);
   });
 });
 
@@ -3115,7 +3194,7 @@ describe('purchase orders, and what receiving one does', () => {
     const usage = await withBusiness(db, businessId, (tx) =>
       usageRepo.usageFor(tx, businessId, usagePeriod(new Date())),
     );
-    expect(usage.find((r) => r.unit === 'documents')?.used ?? 0).toBe(0);
+    expect(usage.find((r) => r.unit === 'DOCUMENT_GENERATION')?.used ?? 0).toBe(0);
   });
 
   it('a second receive books nothing twice', async () => {
@@ -3357,5 +3436,202 @@ describe('the debtors page asks for the whole register', () => {
     expect(full.rows).toHaveLength(8);
     expect(full.count).toBe(8);
     expect(full.totalK).toBe(8 * 50_000);
+  });
+});
+
+describe('customer and supplier statements (D1, PR-096)', () => {
+  it('serves a customer statement whose closing balance is the balances page', async () => {
+    const ada = await onboard('+2348055500061');
+    const customer = await customersRepo.createCustomerWithIdentities(
+      db,
+      ada.businessId,
+      'CHI96',
+      [],
+    );
+    const sale = await withBusiness(db, ada.businessId, (tx) =>
+      issueRepo.issueSale(tx, {
+        businessId: ada.businessId,
+        customerId: customer.id,
+        customerToken: 'CHI96',
+        items: [{ name: 'gown', quantity: 1, unitPriceK: 8_000_000 }],
+        subtotalK: 8_000_000,
+        discountK: 0,
+        deliveryFeeK: 0,
+        vatK: 0,
+        totalK: 8_000_000,
+        paidK: 0,
+        balanceDueK: 8_000_000,
+        method: 'transfer',
+        sourceType: 'chat',
+        sourceId: 'draft-st',
+        actor: 'owner',
+      }),
+    );
+    await withBusiness(db, ada.businessId, (tx) =>
+      settleRepo.recordMerchantPayment(tx, {
+        businessId: ada.businessId,
+        invoiceId: sale.invoiceId,
+        amountK: 3_000_000,
+        method: 'transfer',
+        sourceType: 'chat',
+        sourceId: 'pay-st',
+        actor: 'owner',
+      }),
+    );
+
+    const res = await app.inject({
+      method: 'GET',
+      url: `/v1/reports/customers/${customer.id}/statement`,
+      headers: ada.auth,
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as {
+      openingK: number;
+      closingK: number;
+      entries: Array<{ kind: string; amountK: number; balanceK: number; reference: string }>;
+    };
+    expect(body.entries.map((e) => [e.kind, e.amountK, e.balanceK])).toEqual([
+      ['invoice', 8_000_000, 8_000_000],
+      ['payment', -3_000_000, 5_000_000],
+    ]);
+    expect(body.closingK).toBe(5_000_000);
+    /* Numbers and figures only: no customer name crosses this wire. */
+    expect(JSON.stringify(body)).not.toContain('Chidi');
+  });
+
+  it('serves a supplier statement over bills and payments, and refuses no member', async () => {
+    const ada = await onboard('+2348055500062');
+    const { supplierId } = await withBusiness(db, ada.businessId, (tx) =>
+      suppliersRepo.findOrCreateSupplier(tx, ada.businessId, {
+        nameCipher: 'cipher-mama',
+        matchKey: 'mk-mama-96',
+      }),
+    );
+    const purchase = await withBusiness(db, ada.businessId, (tx) =>
+      spendRepo.recordPurchase(tx, {
+        businessId: ada.businessId,
+        description: 'bales',
+        amountK: 20_000_000,
+        paidK: 5_000_000,
+        sourceType: 'chat',
+        sourceId: 'purch-st',
+        supplierId,
+      }),
+    );
+    await withBusiness(db, ada.businessId, (tx) =>
+      spendRepo.paySupplier(tx, {
+        businessId: ada.businessId,
+        expenseId: purchase.expenseId,
+        amountK: 4_000_000,
+        method: 'transfer',
+        actor: 'owner',
+      }),
+    );
+
+    const res = await app.inject({
+      method: 'GET',
+      url: `/v1/reports/suppliers/${supplierId}/statement`,
+      headers: ada.auth,
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as {
+      closingK: number;
+      entries: Array<{ kind: string; amountK: number }>;
+    };
+    expect(body.entries.map((e) => [e.kind, e.amountK])).toEqual([
+      ['bill', 15_000_000],
+      ['supplier_payment', -4_000_000],
+    ]);
+    expect(body.closingK).toBe(11_000_000);
+  });
+});
+
+describe('exports on the kernel (D1, PR-098)', () => {
+  it('a customer statement downloads as the same story the page tells, closing row included', async () => {
+    const ada = await onboard('+2348055500063');
+    const customer = await customersRepo.createCustomerWithIdentities(
+      db,
+      ada.businessId,
+      'CHI98',
+      [],
+    );
+    const sale = await withBusiness(db, ada.businessId, (tx) =>
+      issueRepo.issueSale(tx, {
+        businessId: ada.businessId,
+        customerId: customer.id,
+        customerToken: 'CHI98',
+        items: [{ name: 'gown', quantity: 1, unitPriceK: 8_000_000 }],
+        subtotalK: 8_000_000,
+        discountK: 0,
+        deliveryFeeK: 0,
+        vatK: 0,
+        totalK: 8_000_000,
+        paidK: 0,
+        balanceDueK: 8_000_000,
+        method: 'transfer',
+        sourceType: 'chat',
+        sourceId: 'draft-x98',
+        actor: 'owner',
+      }),
+    );
+    await withBusiness(db, ada.businessId, (tx) =>
+      settleRepo.recordMerchantPayment(tx, {
+        businessId: ada.businessId,
+        invoiceId: sale.invoiceId,
+        amountK: 3_000_000,
+        method: 'transfer',
+        sourceType: 'chat',
+        sourceId: 'pay-x98',
+        actor: 'owner',
+      }),
+    );
+
+    const res = await app.inject({
+      method: 'GET',
+      url: `/v1/reports/customers/${customer.id}/statement.csv`,
+      headers: ada.auth,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['content-type']).toContain('text/csv');
+    const lines = res.body.trim().split(/\r?\n/);
+    expect(lines[0]).toBe('Date,Entry,Reference,Amount,Balance');
+    expect(lines[1]).toContain('invoice');
+    expect(lines[1]).toContain('80000.00');
+    expect(lines[2]).toContain('payment');
+    expect(lines[lines.length - 1]).toContain('Balance now');
+    expect(lines[lines.length - 1]).toContain('50000.00');
+    expect(res.body).not.toContain('Chidi');
+  });
+
+  it('a supplier statement downloads over bills and payments', async () => {
+    const ada = await onboard('+2348055500064');
+    const { supplierId } = await withBusiness(db, ada.businessId, (tx) =>
+      suppliersRepo.findOrCreateSupplier(tx, ada.businessId, {
+        nameCipher: 'cipher-mama-98',
+        matchKey: 'mk-mama-98',
+      }),
+    );
+    await withBusiness(db, ada.businessId, (tx) =>
+      spendRepo.recordPurchase(tx, {
+        businessId: ada.businessId,
+        description: 'bales',
+        amountK: 20_000_000,
+        paidK: 5_000_000,
+        sourceType: 'chat',
+        sourceId: 'purch-x98',
+        supplierId,
+      }),
+    );
+
+    const res = await app.inject({
+      method: 'GET',
+      url: `/v1/reports/suppliers/${supplierId}/statement.csv`,
+      headers: ada.auth,
+    });
+    expect(res.statusCode).toBe(200);
+    const lines = res.body.trim().split(/\r?\n/);
+    expect(lines[1]).toContain('bill');
+    expect(lines[1]).toContain('150000.00');
+    expect(lines[lines.length - 1]).toContain('150000.00');
   });
 });

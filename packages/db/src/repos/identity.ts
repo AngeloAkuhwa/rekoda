@@ -23,6 +23,8 @@ import {
   users,
 } from '../schema/tenancy.js';
 import { auditEvents } from '../schema/ops.js';
+import { seedChartOfAccounts } from './accounts.js';
+import { seedTaxModel } from './tax.js';
 
 /** Either a pool handle or a transaction — every read below accepts both. */
 export type Queryable = Db | TenantDb;
@@ -95,6 +97,21 @@ export async function liveChallengeFor(
 export async function failuresSince(q: Queryable, phone: string, since: Date): Promise<number> {
   const rows = await q
     .select({ total: sql<string>`coalesce(sum(${otpChallenges.attempts}), 0)` })
+    .from(otpChallenges)
+    .where(and(eq(otpChallenges.phone, phone), gt(otpChallenges.createdAt, since)));
+  return Number(rows[0]?.total ?? 0);
+}
+
+/**
+ * How many codes were MINTED for this number since `since` - the count the
+ * per-phone hourly cap reads. Distinct from `failuresSince`, which sums wrong
+ * GUESSES: a request-only flood (ask, never answer) never increments
+ * `attempts`, so counting guesses can never bound the messages a caller can
+ * make Rekoda send. This counts the rows themselves, one per minted code.
+ */
+export async function challengesSince(q: Queryable, phone: string, since: Date): Promise<number> {
+  const rows = await q
+    .select({ total: sql<string>`count(*)` })
     .from(otpChallenges)
     .where(and(eq(otpChallenges.phone, phone), gt(otpChallenges.createdAt, since)));
   return Number(rows[0]?.total ?? 0);
@@ -231,6 +248,16 @@ export async function createBusinessWithOwner(db: Db, input: NewBusiness): Promi
     if (!row) throw new Error('createBusinessWithOwner: insert returned no row');
 
     await tx.insert(memberships).values({ businessId, userId: input.ownerUserId, role: 'owner' });
+
+    /* The chart of accounts arrives WITH the business (PR-030): the engine
+     * may rely on every seeded role existing, so there is no window where a
+     * business exists and its chart does not. */
+    await seedChartOfAccounts(tx, businessId);
+
+    /* The tax model arrives with the business too (§13, PR-078): codes,
+     * treatments, point policies and the published rate history, so no
+     * caller ever reaches for a hardcoded rate. */
+    await seedTaxModel(tx, businessId);
 
     return {
       id: row.id,
@@ -636,6 +663,8 @@ export async function inviteMember(
    * decision lives in core, and this file stays SQL.
    */
   seatLimit: number,
+  /** Who granted the access, `user:<id>` — an access change is an audited act. */
+  actor: string,
 ): Promise<TeamMember> {
   const user = await upsertUserByPhone(db, phone);
   return withBusiness(db, businessId, async (tx) => {
@@ -665,6 +694,19 @@ export async function inviteMember(
       .insert(memberships)
       .values({ businessId, userId: user.id, role })
       .returning({ createdAt: memberships.createdAt });
+
+    /* §42.13: who can see and touch the books is an audited fact. The
+     * phone stays out of the row — the membership's user id is the
+     * durable identity, and audit rows travel into exports. */
+    await tx.insert(auditEvents).values({
+      businessId,
+      actor,
+      entity: 'membership',
+      entityId: user.id,
+      action: 'invited',
+      newValue: { role },
+      sourceType: 'dashboard',
+    });
     return {
       userId: user.id,
       phone: user.phone,
@@ -691,6 +733,8 @@ export async function removeMember(
   tx: TenantDb,
   businessId: string,
   userId: string,
+  /** Who revoked the access, `user:<id>` — an access change is an audited act. */
+  actor: string,
 ): Promise<boolean> {
   const removed = await tx
     .delete(memberships)
@@ -701,8 +745,19 @@ export async function removeMember(
         ne(memberships.role, 'owner'),
       ),
     )
-    .returning({ id: memberships.userId });
-  if (removed.length === 1) return true;
+    .returning({ role: memberships.role });
+  if (removed.length === 1) {
+    await tx.insert(auditEvents).values({
+      businessId,
+      actor,
+      entity: 'membership',
+      entityId: userId,
+      action: 'removed',
+      oldValue: { role: removed[0]!.role },
+      sourceType: 'dashboard',
+    });
+    return true;
+  }
 
   const owner = await tx
     .select({ role: memberships.role })
@@ -710,6 +765,61 @@ export async function removeMember(
     .where(and(eq(memberships.businessId, businessId), eq(memberships.userId, userId)))
     .limit(1);
   if (owner[0]?.role === 'owner') throw new CannotRemoveOwner('the owner cannot be removed');
+  return false;
+}
+
+/**
+ * Change what a member is, without the remove-and-reinvite dance that
+ * would briefly leave them with nothing (D1, PR-094). Seat-neutral by
+ * construction — accountant and delegate draw from the same seat pool —
+ * and the OWNER's role is not a role anybody assigns: a business whose
+ * owner became a delegate has nobody who can administer it, which is the
+ * same argument `removeMember` makes.
+ *
+ * Returns false when there is nothing to change: no such member, or the
+ * member already holds that role (an audit row claiming a change that
+ * changed nothing would be a lie).
+ */
+export async function changeMemberRole(
+  tx: TenantDb,
+  businessId: string,
+  userId: string,
+  role: 'accountant' | 'delegate',
+  actor: string,
+): Promise<boolean> {
+  const changed = await tx
+    .update(memberships)
+    .set({ role })
+    .where(
+      and(
+        eq(memberships.businessId, businessId),
+        eq(memberships.userId, userId),
+        ne(memberships.role, 'owner'),
+        ne(memberships.role, role),
+      ),
+    )
+    .returning({ id: memberships.userId });
+  if (changed.length === 1) {
+    await tx.insert(auditEvents).values({
+      businessId,
+      actor,
+      entity: 'membership',
+      entityId: userId,
+      action: 'role_changed',
+      newValue: { role },
+      sourceType: 'dashboard',
+    });
+    return true;
+  }
+
+  const existing = await tx
+    .select({ role: memberships.role })
+    .from(memberships)
+    .where(and(eq(memberships.businessId, businessId), eq(memberships.userId, userId)))
+    .limit(1);
+  if (existing[0]?.role === 'owner') {
+    throw new CannotRemoveOwner('the owner cannot be given another role');
+  }
   return false;
 }
 

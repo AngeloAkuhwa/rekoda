@@ -89,8 +89,16 @@ export default function PrivacyPage() {
                   <strong>Your payment provider</strong>: your own account, which you control.
                 </li>
                 <li>
-                  <strong>An AI provider</strong> sees your message text with customer identities
-                  already replaced by tokens. See <a href="/ai-privacy">AI &amp; privacy</a>.
+                  <strong>Anthropic</strong>, our reasoning AI provider, sees your message text with
+                  supported customer identifiers already replaced by tokens. When document reading
+                  is enabled, it also receives photographed receipts and invoices, solely to read
+                  them into text. See <a href="/ai-privacy">AI &amp; privacy</a>.
+                </li>
+                <li>
+                  <strong>OpenAI</strong>, our transcription provider, receives your voice notes
+                  when voice transcription is enabled, solely to turn them into text. The audio is
+                  not kept, and the text is protected like any typed message before AI reasons about
+                  it.
                 </li>
               </ul>
               <p>
@@ -142,6 +150,17 @@ export default function PrivacyPage() {
                       <td>Long enough to come back or export. Not forever.</td>
                     </tr>
                     <tr>
+                      <td>Payment screenshots customers send</td>
+                      <td>
+                        Until the claim is settled or {RETENTION.evidenceResolutionDays} days pass
+                        unanswered, then the image is deleted {RETENTION.evidenceRawDays} days later
+                      </td>
+                      <td>
+                        A screenshot proves a claim was made, never a payment. The claim and its
+                        outcome stay with your books; the picture does not need to.
+                      </td>
+                    </tr>
+                    <tr>
                       <td>Customer names, phones and addresses</td>
                       <td>While you need them, or until you ask us to erase them</td>
                       <td>Encrypted separately from the books throughout.</td>
@@ -171,12 +190,20 @@ export default function PrivacyPage() {
           id: 'rights',
           heading: 'Your rights',
           body: (
-            <p>
-              You can ask for a copy of your data, ask us to correct it, or ask us to delete it, see{' '}
-              <a href="/data-deletion">Delete my data</a>. You can withdraw consent at any time by
-              replying <strong>STOP</strong> on WhatsApp, which ends the messages without destroying
-              the books you may still need.
-            </p>
+            <>
+              <p>
+                You do not have to ask for a copy of your data. Sign in and download it: Settings
+                has one file with every record your business holds. It is your data, so it never
+                counts against your monthly downloads, and it keeps working if your subscription
+                lapses.
+              </p>
+              <p>
+                You can also ask us to correct your data, or ask us to delete it, see{' '}
+                <a href="/data-deletion">Delete my data</a>. You can withdraw consent at any time by
+                replying <strong>STOP</strong> on WhatsApp, which ends the messages without
+                destroying the books you may still need.
+              </p>
+            </>
           ),
         },
         {

@@ -145,6 +145,53 @@ export function matchKeyFor(
 }
 
 /**
+ * The current participant-index key generation (spec F.3). New writes use
+ * this; rotation introduces the next version ALONGSIDE it, re-indexes, and
+ * proves completeness by count before the old generation retires.
+ */
+export const PARTICIPANT_INDEX_KEY_VERSION = 'V1';
+
+/**
+ * The blind index a customer thread is looked up by (spec F.2, F.4).
+ *
+ * Two HMAC levels, deliberately. The first derives key material scoped to
+ * (businessId, channelAccountId, keyVersion) — F.4's rule made literal: the
+ * key itself is per merchant and per channel asset, not merely the message,
+ * so the same person messaging two merchants produces two values that no
+ * amount of cross-table joining can relate. The second keys the normalised
+ * participant id under that scoped key. `HMAC(globalKey, phoneNumber)` is
+ * the FORBIDDEN shape — a cross-business correlation table nobody asked
+ * for — and this function exists so nobody writes it inline.
+ *
+ * The raw participant id goes in and never comes out: not thrown, not
+ * logged, not embedded in the digest's inputs anywhere recoverable.
+ */
+export function participantIndexFor(
+  hexMatchKey: string,
+  input: {
+    businessId: string;
+    channelAccountId: string;
+    keyVersion: string;
+    normalisedParticipant: string;
+  },
+): string {
+  const master = keyBuffer(hexMatchKey, 'MATCH_KEY');
+  if (!input.normalisedParticipant) {
+    throw new VaultError('cannot derive a participant index from an empty value');
+  }
+  // Length-prefixed, same reason as matchKeyFor: no two scopes may collide.
+  const scope = [input.businessId, input.channelAccountId, input.keyVersion]
+    .map((part) => `${part.length}:${part}`)
+    .join('|');
+  const scopedKey = createHmac('sha256', master)
+    .update(`participant-key:${scope}`, 'utf8')
+    .digest();
+  return createHmac('sha256', scopedKey)
+    .update(`${input.normalisedParticipant.length}:${input.normalisedParticipant}`, 'utf8')
+    .digest('base64url');
+}
+
+/**
  * A match key for someone who has no tenant: a stranger messaging the number.
  *
  * `matchKeyFor` is business-scoped on purpose — two businesses must never be

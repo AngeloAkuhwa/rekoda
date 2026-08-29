@@ -27,6 +27,10 @@ import { sweepBankFeeds } from './feed-sync.js';
 import { MonoProvider } from './mono.provider.js';
 import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
+import { CommandBus } from '../commands/command-bus.service.js';
+import { RiskPolicyService } from '../risk/risk-policy.service.js';
+
+const testBus = new CommandBus(new RiskPolicyService());
 
 let urls: Urls;
 let app: NestFastifyApplication;
@@ -266,9 +270,25 @@ describe('the live bank feed', () => {
     const { db: workerDb, close: closeWorker } = createDb(urls.worker, { max: 2 });
     try {
       const feed = new MonoProvider(process.env['MONO_SECRET_KEY']!, process.env['MONO_BASE_URL']!);
-      expect(await sweepBankFeeds({ workerDb, appDb: db, feed })).toBe(2);
+      expect(
+        await sweepBankFeeds({
+          workerDb,
+          appDb: db,
+          feed,
+          commandBus: testBus,
+          commandIngestFinancialTransaction: false,
+        }),
+      ).toBe(2);
       /* A second pass re-covers the overlap and imports nothing twice. */
-      expect(await sweepBankFeeds({ workerDb, appDb: db, feed })).toBe(0);
+      expect(
+        await sweepBankFeeds({
+          workerDb,
+          appDb: db,
+          feed,
+          commandBus: testBus,
+          commandIngestFinancialTransaction: false,
+        }),
+      ).toBe(0);
     } finally {
       await closeWorker();
     }

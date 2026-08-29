@@ -14,8 +14,8 @@
  *     and expiring is an ACT with an audit row rather than a date comparison.
  */
 import { randomBytes } from 'node:crypto';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { addMonth, GRACE_DAYS, PLAN_PRICES_K } from '@rekoda/core';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { addMonth, GRACE_DAYS, PLAN_PRICES_K, usagePeriod } from '@rekoda/core';
 import {
   billingCancelResponse,
   billingOverviewResponse,
@@ -24,12 +24,21 @@ import {
 import {
   createDb,
   identity,
+  marginRepo,
+  planCatalogueRepo,
+  quotaRepo,
   subscriptionsRepo,
   usageRepo,
   withBusiness,
   type Db,
 } from '@rekoda/db';
-import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
+import {
+  migrate,
+  requireUrls,
+  resetPlanCatalogue,
+  truncateAll,
+  type Urls,
+} from '@rekoda/db/testing';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { sweepGracePeriods } from './grace-sweep.js';
 import { sweepRenewals } from './renewal-sweep.js';
@@ -41,6 +50,9 @@ let urls: Urls;
 let app: NestFastifyApplication;
 let db: Db;
 let workerDb: Db;
+let ownerDb: Db;
+let config: ApiConfig;
+let closeOwner: () => Promise<void>;
 let closeDb: () => Promise<void>;
 let closeWorker: () => Promise<void>;
 
@@ -64,12 +76,15 @@ beforeAll(async () => {
 
   ({ db, close: closeDb } = createDb(urls.app, { max: 4 }));
   ({ db: workerDb, close: closeWorker } = createDb(urls.worker, { max: 4 }));
+  ({ db: ownerDb, close: closeOwner } = createDb(urls.owner, { max: 2 }));
+  config = app.get<ApiConfig>(CONFIG);
 });
 
 afterAll(async () => {
   await app?.close();
   await closeDb?.();
   await closeWorker?.();
+  await closeOwner?.();
 });
 
 beforeEach(async () => {
@@ -228,6 +243,7 @@ describe('paying, and the gate in front of it', () => {
         reference: answer.reference,
         providerReference: 'ps_upgrade',
         when: now,
+        config,
       }),
     );
 
@@ -352,6 +368,7 @@ describe('a charge the provider confirmed', () => {
         reference: 'RKD-SUB-20260815-AAAAAA',
         providerReference: 'ps_1',
         when: now,
+        config,
       }),
     );
     expect(applied).toBe('applied');
@@ -368,6 +385,7 @@ describe('a charge the provider confirmed', () => {
         reference: 'RKD-SUB-20260815-AAAAAA',
         providerReference: 'ps_1',
         when: new Date('2026-08-15T10:05:00Z'),
+        config,
       }),
     );
     expect(replay).toBe('already_settled');
@@ -394,12 +412,13 @@ describe('a charge the provider confirmed', () => {
         reference: 'RKD-PACK-20260815-BBBBBB',
         providerReference: 'ps_2',
         when: now,
+        config,
       }),
     );
 
     const overview = await overviewOf(auth);
     expect(overview.plan).toBe('chat');
-    const messages = overview.units.find((unit) => unit.unit === 'messages');
+    const messages = overview.units.find((unit) => unit.unit === 'AI_ACTIONS');
     expect(messages?.bonus).toBe(100);
     expect(messages?.used).toBe(0); // bought capacity is not consumption
   });
@@ -426,7 +445,7 @@ describe('the cycle a payment starts', () => {
       }),
     );
     await withBusiness(db, businessId, (tx) =>
-      applySettledCharge(tx, { businessId, reference, providerReference: 'ps_x', when }),
+      applySettledCharge(tx, { businessId, reference, providerReference: 'ps_x', when, config }),
     );
     return withBusiness(db, businessId, (tx) => subscriptionsRepo.subscriptionFor(tx, businessId));
   }
@@ -517,7 +536,7 @@ describe('cancelling the subscription', () => {
     expect(await cancel(auth)).toEqual({ state: 'scheduled', endsAt: renewsAt.toISOString() });
 
     /* The sweep applies the cancellation instead of raising a renewal. */
-    expect(await sweepRenewals({ workerDb, appDb: db }, new Date())).toEqual({
+    expect(await sweepRenewals({ workerDb, appDb: db, config }, new Date())).toEqual({
       raised: 0,
       skipped: 1,
     });
@@ -542,7 +561,7 @@ describe('cancelling the subscription', () => {
 });
 
 describe('the renewal sweep', () => {
-  const raise = (now: Date) => sweepRenewals({ workerDb, appDb: db }, now);
+  const raise = (now: Date) => sweepRenewals({ workerDb, appDb: db, config }, now);
 
   it('raises nothing while a cycle is still running', async () => {
     const { businessId } = await onboard('+2348177100022');
@@ -664,6 +683,7 @@ describe('the renewal sweep', () => {
         reference: charge!.reference,
         providerReference: 'ps_renewal',
         when: new Date(),
+        config,
       }),
     );
 
@@ -692,10 +712,49 @@ describe('the grace period', () => {
 
   const dayAfterFailure = (days: number) => new Date(FAILED_AT.getTime() + days * 86_400_000);
 
+  /**
+   * The sweep sent a chargeable Meta template and recorded nothing, so the
+   * margin view saw a merchant who cost nothing in the month Rekoda paid to
+   * warn them seven times. Spec §24 separates the categories precisely so
+   * this class of cost is visible.
+   */
+  it('records the billing reminder as the utility template Rekoda paid for', async () => {
+    const { businessId } = await failedMerchant('+2348177100030');
+    const sender = new StubSender();
+    const deps = { workerDb, appDb: db, sender, fxNairaPerUsd: 1_450 };
+
+    await sweepGracePeriods(deps, dayAfterFailure(1));
+    expect(sender.billingNotices).toHaveLength(1);
+
+    const rows = await marginRepo.costByUsageType(workerDb, usagePeriod(new Date()));
+    const utility = rows.find(
+      (row) => row.provider === 'meta' && row.usageType === 'UTILITY_TEMPLATE',
+    );
+    expect(utility?.events).toBe(1);
+    /* ₦9.72 at planning FX, from the external cost stack in pricing-model.md. */
+    expect(utility?.costK).toBe(972);
+
+    const own = await withBusiness(db, businessId, (tx) => quotaRepo.usageTotals(tx, 'meta'));
+    expect(own.calls).toBeGreaterThanOrEqual(1);
+  });
+
+  /* A reminder that never left costs nothing, so nothing is recorded. */
+  it('records no cost when the template is missing and the notice never sends', async () => {
+    await failedMerchant('+2348177100031');
+    const sender = new StubSender();
+    sender.failWith();
+    const deps = { workerDb, appDb: db, sender, fxNairaPerUsd: 1_450 };
+
+    await sweepGracePeriods(deps, dayAfterFailure(1));
+
+    const rows = await marginRepo.costByUsageType(workerDb, usagePeriod(new Date()));
+    expect(rows.find((row) => row.usageType === 'UTILITY_TEMPLATE')).toBeUndefined();
+  });
+
   it('sends one reminder on day 1 and none the same day twice', async () => {
     const { auth } = await failedMerchant('+2348177100010');
     const sender = new StubSender();
-    const deps = { workerDb, appDb: db, sender };
+    const deps = { workerDb, appDb: db, sender, fxNairaPerUsd: 1_450 };
 
     const first = await sweepGracePeriods(deps, dayAfterFailure(1));
     expect(first).toEqual({ reminded: 1, expired: 0 });
@@ -716,7 +775,7 @@ describe('the grace period', () => {
   it('says nothing between reminders once each has been sent', async () => {
     await failedMerchant('+2348177100011');
     const sender = new StubSender();
-    const deps = { workerDb, appDb: db, sender };
+    const deps = { workerDb, appDb: db, sender, fxNairaPerUsd: 1_450 };
 
     expect((await sweepGracePeriods(deps, dayAfterFailure(0))).reminded).toBe(0);
     expect((await sweepGracePeriods(deps, dayAfterFailure(1))).reminded).toBe(1);
@@ -731,7 +790,7 @@ describe('the grace period', () => {
   it('sends a missed day-one warning late instead of staying silent until day five', async () => {
     await failedMerchant('+2348177100015');
     const sender = new StubSender();
-    const deps = { workerDb, appDb: db, sender };
+    const deps = { workerDb, appDb: db, sender, fxNairaPerUsd: 1_450 };
 
     /* The sweep was down through all of day one. Its first pass lands on day
      * two: the merchant still gets the first warning, once, with the days
@@ -750,7 +809,10 @@ describe('the grace period', () => {
     await identity.setOptOut(db, '+2348177100012', new Date());
 
     const sender = new StubSender();
-    const swept = await sweepGracePeriods({ workerDb, appDb: db, sender }, dayAfterFailure(1));
+    const swept = await sweepGracePeriods(
+      { workerDb, appDb: db, sender, fxNairaPerUsd: 1_450 },
+      dayAfterFailure(1),
+    );
     expect(swept.reminded).toBe(1);
     expect(sender.billingNotices).toEqual([]);
   });
@@ -758,7 +820,7 @@ describe('the grace period', () => {
   it('expires on day SEVEN, not day six', async () => {
     const { auth } = await failedMerchant('+2348177100013');
     const sender = new StubSender();
-    const deps = { workerDb, appDb: db, sender };
+    const deps = { workerDb, appDb: db, sender, fxNairaPerUsd: 1_450 };
 
     expect((await sweepGracePeriods(deps, dayAfterFailure(GRACE_DAYS - 1))).expired).toBe(0);
     expect((await overviewOf(auth)).plan).toBe('chat');
@@ -780,7 +842,7 @@ describe('the grace period', () => {
   it('leaves the books readable after expiry', async () => {
     const { auth } = await failedMerchant('+2348177100014');
     await sweepGracePeriods(
-      { workerDb, appDb: db, sender: new StubSender() },
+      { workerDb, appDb: db, sender: new StubSender(), fxNairaPerUsd: 1_450 },
       dayAfterFailure(GRACE_DAYS),
     );
 
@@ -796,7 +858,7 @@ describe('the grace period', () => {
   it('stops reminding the moment a cycle is paid for', async () => {
     const { businessId } = await failedMerchant('+2348177100015');
     const sender = new StubSender();
-    const deps = { workerDb, appDb: db, sender };
+    const deps = { workerDb, appDb: db, sender, fxNairaPerUsd: 1_450 };
 
     await sweepGracePeriods(deps, dayAfterFailure(1));
     expect(sender.billingNotices).toHaveLength(1);
@@ -815,12 +877,129 @@ describe('the grace period', () => {
   it('an allowance a merchant no longer has is refused after expiry', async () => {
     const { businessId } = await failedMerchant('+2348177100016');
     await sweepGracePeriods(
-      { workerDb, appDb: db, sender: new StubSender() },
+      { workerDb, appDb: db, sender: new StubSender(), fxNairaPerUsd: 1_450 },
       dayAfterFailure(GRACE_DAYS),
     );
 
     // `expired` grants zero of everything, and the gate reads that plan.
     const plan = await withBusiness(db, businessId, (tx) => usageRepo.planFor(tx, businessId));
     expect(plan).toBe('expired');
+  });
+});
+
+describe('grandfathering through the catalogue (BL2, PR-100)', () => {
+  /* These tests version the catalogue, which truncateAll deliberately does
+   * not touch. Put version 1 back before the next test reads it. */
+  afterEach(async () => {
+    await resetPlanCatalogue(urls);
+  });
+
+  it('a new version does not move a pinned merchant: overview and renewal stay as sold', async () => {
+    const { businessId, auth } = await onboard('+2348177100061');
+    /* Sold Chat, cycle already over: due for renewal. applyCycle pinned the
+     * business to the version on sale at the cycle start. */
+    const cycleStart = new Date(Date.now() - 30 * 86_400_000);
+    await putOnPlan(businessId, 'chat', cycleStart, new Date(Date.now() - 3_600_000));
+
+    /* Chat v2 goes on sale: fewer AI actions at a higher price. */
+    await planCatalogueRepo.publishPlanVersion(ownerDb, {
+      planId: 'chat',
+      name: 'Rekoda Chat',
+      seats: 1,
+      effectiveFrom: new Date(),
+      entitlements: ['REKODA_CHAT'],
+      allowances: { AI_ACTIONS: 300, DOCUMENT_GENERATION: 100 },
+      prices: [{ currency: 'NGN', billingInterval: 'monthly', amountMinor: 1_490_000 }],
+    });
+
+    /* The billing page still quotes what this merchant was sold... */
+    const overview = await overviewOf(auth);
+    expect(overview.priceK).toBe(990_000);
+    expect(overview.units.find((row) => row.unit === 'AI_ACTIONS')?.allowance).toBe(400);
+
+    /* ...and the renewal is raised at the pinned price, not the new one.
+     * This is pricing-model.md commercial rule 5 running as code. */
+    expect(await sweepRenewals({ workerDb, appDb: db, config }, new Date())).toEqual({
+      raised: 1,
+      skipped: 0,
+    });
+    const charges = await withBusiness(db, businessId, (tx) =>
+      subscriptionsRepo.chargesFor(tx, businessId),
+    );
+    const renewal = charges.rows.find((charge) => charge.kind === 'renewal');
+    expect(renewal?.amountK).toBe(990_000);
+  });
+
+  it('the data path and the constant path quote one another exactly', async () => {
+    /* The cutover's validation: with the catalogue unversioned, the flag
+     * must not be observable. Every figure the overview quotes agrees. */
+    const { businessId } = await onboard('+2348177100062');
+    const onData = new BillingService({ ...config, planCatalogueReads: true }, db);
+    const onConstants = new BillingService({ ...config, planCatalogueReads: false }, db);
+    const data = await onData.overview(businessId);
+    const constants = await onConstants.overview(businessId);
+    expect(data.priceK).toBe(constants.priceK);
+    expect(data.units).toEqual(constants.units);
+  });
+
+  it('a pack repricing between purchase and settlement credits what was bought', async () => {
+    const { businessId } = await onboard('+2348177100063');
+    await putOnPlan(
+      businessId,
+      'chat',
+      new Date(Date.now() - 5 * 86_400_000),
+      new Date(Date.now() + 25 * 86_400_000),
+    );
+
+    const answer = await confirmedBilling().buyPack(businessId, 'messages_100');
+    if (answer.state !== 'payment_required') throw new Error('expected a payable pack');
+    expect(answer.amountK).toBe(250_000);
+
+    /* The pack is resized and repriced before the webhook lands. */
+    await planCatalogueRepo.publishUsagePack(ownerDb, {
+      packId: 'messages_100',
+      label: '250 extra WhatsApp messages',
+      unit: 'AI_ACTIONS',
+      quantity: 250,
+      priceMinor: 500_000,
+      currency: 'NGN',
+      effectiveFrom: new Date(),
+    });
+
+    await withBusiness(db, businessId, (tx) =>
+      applySettledCharge(tx, {
+        businessId,
+        reference: answer.reference,
+        providerReference: 'ps_pack_v1',
+        when: new Date(),
+        config,
+      }),
+    );
+
+    /* Credited: the 100 messages of the version the charge was opened
+     * under, not the 250 on sale by the time the provider confirmed. */
+    const counters = await withBusiness(db, businessId, (tx) =>
+      usageRepo.usageFor(tx, businessId, usagePeriod(new Date())),
+    );
+    expect(counters.find((row) => row.unit === 'AI_ACTIONS')?.bonus).toBe(100);
+  });
+
+  it('a pack is offered exactly where its unit is sold: Integrate is not sold Chat overage', async () => {
+    const { businessId } = await onboard('+2348177100064');
+    await putOnPlan(
+      businessId,
+      'integrate',
+      new Date(Date.now() - 5 * 86_400_000),
+      new Date(Date.now() + 25 * 86_400_000),
+    );
+
+    const overview = await confirmedBilling().overview(businessId);
+    const offered = overview.packs.map((pack) => pack.id).sort();
+    /* Integrate sells documents and orders; it holds no REKODA_CHAT, so
+     * message and voice packs would be capacity the gate refuses. */
+    expect(offered).toEqual(['documents_50', 'orders_50']);
+
+    const refused = await confirmedBilling().buyPack(businessId, 'messages_100');
+    expect(refused).toEqual({ state: 'unavailable', reason: 'not_available_on_plan' });
   });
 });

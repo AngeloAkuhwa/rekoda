@@ -41,14 +41,26 @@ const ALL: Record<string, readonly replies.Reply[]> = {
   optedIn: [replies.optedIn()],
   cancelled: [replies.cancelled()],
   confirmErasure: [replies.confirmErasure(), replies.confirmErasure(4)],
+  confirmationLapsed: [replies.confirmationLapsed('that stock change')],
   erasureNotYours: [replies.erasureNotYours()],
   erasureDone: [replies.erasureDone(0), replies.erasureDone(12)],
   erasureKept: [replies.erasureKept()],
   viewOnlyRole: [replies.viewOnlyRole()],
   strayNumber: [replies.strayNumber()],
   clarification: [replies.clarification('Which invoice was that payment against?')],
-  allowanceExhausted: [replies.allowanceExhausted(50), replies.allowanceExhausted(3, 'documents')],
+  allowanceExhausted: [
+    replies.allowanceExhausted(50),
+    replies.allowanceExhausted(3, 'DOCUMENT_GENERATION'),
+  ],
+  dailyDocumentLimit: [replies.dailyDocumentLimit(25), replies.dailyDocumentLimit(5)],
+  dailyVoiceLimit: [replies.dailyVoiceLimit()],
+  notABusinessDocument: [replies.notABusinessDocument()],
+  extractionDisagreement: [
+    replies.extractionDisagreement(['statedTotal']),
+    replies.extractionDisagreement(['statedTotal', 'items.0.quantity', 'items.0.unitPrice']),
+  ],
   ordersNotInPlan: [replies.ordersNotInPlan()],
+  chatNotInPlan: [replies.chatNotInPlan()],
   trialEnded: [replies.trialEnded()],
   upgradeRequested: [replies.upgradeRequested()],
   quotaReachedForBusiness: [replies.quotaReachedForBusiness()],
@@ -84,6 +96,26 @@ const ALL: Record<string, readonly replies.Reply[]> = {
       'https://checkout.paystack.com/0123456789abcdefghijklmnop',
     ),
   ],
+  catalogueCheckout: [
+    replies.catalogueCheckout(
+      'INV-2026-000041',
+      NAIRA_MILLIONS,
+      'https://checkout.paystack.com/0123456789abcdefghijklmnop',
+    ),
+    replies.catalogueCheckout('INV-2026-000041', NAIRA_MILLIONS, null),
+  ],
+  catalogueOrderDelivered: [replies.catalogueOrderDelivered('INV-2026-000041', NAIRA_MILLIONS)],
+  catalogueOrderNoLink: [replies.catalogueOrderNoLink('INV-2026-000041', NAIRA_MILLIONS)],
+  assistantHandoff: [replies.assistantHandoff()],
+  assistantHandoffNotice: [replies.assistantHandoffNotice()],
+  paymentDetailsForCustomer: [
+    replies.paymentDetailsForCustomer(
+      'INV-2026-000041',
+      NAIRA_MILLIONS,
+      'https://checkout.paystack.com/0123456789abcdefghijklmnop',
+    ),
+  ],
+  paymentDetailsDelivered: [replies.paymentDetailsDelivered('INV-2026-000041', NAIRA_MILLIONS)],
   paymentLinkSettled: [replies.paymentLinkSettled('INV-2026-000041')],
   paymentLinkUnavailable: [replies.paymentLinkUnavailable()],
   paymentLinkNothingOwed: [replies.paymentLinkNothingOwed()],
@@ -106,6 +138,8 @@ const ALL: Record<string, readonly replies.Reply[]> = {
   reminderReady: [replies.reminderReady('INV-2026-000041')],
   reminderNothingToChase: [replies.reminderNothingToChase('INV-2026-000041')],
   voiceUnavailable: [replies.voiceUnavailable()],
+  voiceTooLong: [replies.voiceTooLong(120), replies.voiceTooLong(90), replies.voiceTooLong(60)],
+  voiceUnreadable: [replies.voiceUnreadable()],
   salesAnswer: [
     replies.salesAnswer({
       label: 'this month',
@@ -227,6 +261,8 @@ describe('every reply', () => {
     replies.dashboardUnavailable(),
     replies.paymentLinkUnavailable(),
     replies.paymentLinkNeedsConnection(),
+    replies.assistantHandoff(),
+    replies.assistantHandoffNotice(),
   ];
 
   it('never claims a record was saved when none was', () => {

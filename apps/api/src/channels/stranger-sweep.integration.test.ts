@@ -38,9 +38,9 @@ beforeEach(async () => {
   sender.reset();
 });
 
-const deps = () => ({ workerDb, sender, vaultKey, matchKey });
+const deps = () => ({ workerDb, sender, vaultKey, matchKey, metaPhoneNumberId: 'PNID' });
 
-function messageBody(from: string, wamid: string, text = 'hello') {
+function messageBody(from: string, wamid: string, text = 'hello', phoneNumberId = 'PNID') {
   return {
     object: 'whatsapp_business_account',
     entry: [
@@ -51,7 +51,7 @@ function messageBody(from: string, wamid: string, text = 'hello') {
             field: 'messages',
             value: {
               messaging_product: 'whatsapp',
-              metadata: { phone_number_id: 'PNID' },
+              metadata: { phone_number_id: phoneNumberId },
               messages: [
                 { id: wamid, from, timestamp: '1700000000', type: 'text', text: { body: text } },
               ],
@@ -64,12 +64,17 @@ function messageBody(from: string, wamid: string, text = 'hello') {
 }
 
 /** An event as the webhook stores one: sealed, unattributed, unprocessed. */
-async function arrive(from: string, wamid: string, eventType = 'message.text') {
+async function arrive(
+  from: string,
+  wamid: string,
+  eventType = 'message.text',
+  phoneNumberId = 'PNID',
+) {
   return events.recordEvent(workerDb, {
     provider: 'meta',
     eventType,
     externalId: wamid,
-    payload: sealPayload(messageBody(from, wamid), vaultKey, 'meta', wamid),
+    payload: sealPayload(messageBody(from, wamid, 'hello', phoneNumberId), vaultKey, 'meta', wamid),
     businessId: null,
   });
 }
@@ -96,6 +101,18 @@ describe('sweeping unknown senders', () => {
 
     expect(answered).toBe(0);
     expect(sender.sent).toHaveLength(0);
+  });
+
+  it("never greets a customer of somebody's WABA (PR-059): not our relationship", async () => {
+    await arrive('2348035555555', 'wamid.foreign.1', 'message.text', 'PN-NOT-OURS');
+
+    const answered = await sweepUnknownSenders(deps());
+
+    expect(answered).toBe(0);
+    expect(sender.sent).toHaveLength(0);
+    /* Marked with a reason, not left pending: the refusal is recorded once
+     * and the backlog cannot grow forever. */
+    expect(await events.unattributedEvents(workerDb, 'meta')).toHaveLength(0);
   });
 
   it('sends one greeting for a backlog of ten messages from one person', async () => {

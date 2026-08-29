@@ -117,6 +117,15 @@ export const meResponse = z.object({
   businessType: z.string().nullable(),
   plan: z.string(),
   role: z.string(),
+  /**
+   * The entitlements this business actually holds, RESOLVED by the server.
+   *
+   * Not derived from `plan` on the client. A support-issued MANUAL_GRANT is a
+   * real entitlement the gate honours, and a frontend deriving from the plan
+   * name alone would hide a capability the server would happily allow. The
+   * page and the gate read one answer.
+   */
+  entitlements: z.array(z.string()),
 });
 export type MeResponse = z.infer<typeof meResponse>;
 
@@ -156,6 +165,12 @@ export const inviteMemberRequest = z.object({
   role: invitableRole,
 });
 export type InviteMemberRequest = z.infer<typeof inviteMemberRequest>;
+
+/** Change a member's role (D1, PR-094). The owner's role is not assignable. */
+export const changeMemberRoleRequest = z.object({
+  role: invitableRole,
+});
+export type ChangeMemberRoleRequest = z.infer<typeof changeMemberRoleRequest>;
 
 export const teamMember = z.object({
   userId: z.string().uuid(),

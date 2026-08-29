@@ -61,3 +61,10 @@ __pycache__/
 # Playwright
 apps/web/test-results/
 apps/web/playwright-report/
+Rekoda_Canonical_Development_Reference_Bundle.zip
+
+# R0A-i provenance reports — production records, never in source control.
+# They belong in private audit storage: business ids, payment ids, amounts.
+r0a-i-*.txt
+r0a-i-*.csv
+r0a-i-report*

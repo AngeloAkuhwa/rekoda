@@ -27,6 +27,7 @@ import {
   schema,
   stockRepo,
   usageRepo,
+  entitlementsRepo,
   withBusiness,
   type Db,
 } from '@rekoda/db';
@@ -189,6 +190,40 @@ describe('the settings a merchant sees first', () => {
     await seedCatalogue(businessId, auth);
     expect((await publish(auth, 'Ada Fashion')).json()).toEqual({ outcome: 'bad_slug' });
     expect((await publish(auth, 'ad')).json()).toEqual({ outcome: 'bad_slug' });
+  });
+
+  /**
+   * The two doors of the same capability, asked the same question.
+   *
+   * Publishing compared plan names while the order endpoint next door asked
+   * `requireEntitlement`. A support-issued grant of REKODA_INTEGRATE was
+   * therefore honoured when a customer placed an order and ignored when the
+   * merchant tried to publish the shop that order would have come from.
+   */
+  it('lets a granted Chat business publish, because the grant is real', async () => {
+    const { businessId, auth } = await onboard('+2348177400020');
+    await seedCatalogue(businessId, auth);
+    await billingRepo.setPlan(db, {
+      businessId,
+      plan: 'chat',
+      expiresAt: null,
+      actor: 'operator:test',
+    });
+    expect((await publish(auth, 'ada-granted-shop')).json()).toEqual({
+      outcome: 'needs_integrate',
+    });
+
+    await withBusiness(db, businessId, (tx) =>
+      entitlementsRepo.grant(tx, {
+        businessId,
+        entitlementKey: 'REKODA_INTEGRATE',
+        source: 'MANUAL_GRANT',
+        grantedBy: 'operator:support',
+      }),
+    );
+
+    const granted = (await publish(auth, 'ada-granted-shop')).json();
+    expect(granted).not.toEqual({ outcome: 'needs_integrate' });
   });
 
   it('keeps publishing behind Integrate, and keeps drafts open to every plan', async () => {
@@ -570,8 +605,8 @@ describe('a customer orders from the shop (fix-plan 6, M5b)', () => {
     const usage = await withBusiness(db, businessId, (tx) =>
       usageRepo.usageFor(tx, businessId, usagePeriod(new Date())),
     );
-    expect(usage.find((r) => r.unit === 'orders')?.used).toBe(1);
-    expect(usage.find((r) => r.unit === 'documents')?.used).toBe(1);
+    expect(usage.find((r) => r.unit === 'CATALOGUE_ORDERS')?.used).toBe(1);
+    expect(usage.find((r) => r.unit === 'DOCUMENT_GENERATION')?.used).toBe(1);
 
     /* A resubmitted checkout books nothing twice. */
     const again = publicOrderResponse.parse(
@@ -588,8 +623,8 @@ describe('a customer orders from the shop (fix-plan 6, M5b)', () => {
     const usageAfter = await withBusiness(db, businessId, (tx) =>
       usageRepo.usageFor(tx, businessId, usagePeriod(new Date())),
     );
-    expect(usageAfter.find((r) => r.unit === 'orders')?.used).toBe(1);
-    expect(usageAfter.find((r) => r.unit === 'documents')?.used).toBe(1);
+    expect(usageAfter.find((r) => r.unit === 'CATALOGUE_ORDERS')?.used).toBe(1);
+    expect(usageAfter.find((r) => r.unit === 'DOCUMENT_GENERATION')?.used).toBe(1);
   });
 
   it('a de-listed item, a bad phone and a dead slug each get a sentence, and book nothing', async () => {
@@ -639,8 +674,8 @@ describe('a customer orders from the shop (fix-plan 6, M5b)', () => {
     const usage = await withBusiness(db, businessId, (tx) =>
       usageRepo.usageFor(tx, businessId, usagePeriod(new Date())),
     );
-    expect(usage.find((r) => r.unit === 'orders')?.used ?? 0).toBe(0);
-    expect(usage.find((r) => r.unit === 'documents')?.used ?? 0).toBe(0);
+    expect(usage.find((r) => r.unit === 'CATALOGUE_ORDERS')?.used ?? 0).toBe(0);
+    expect(usage.find((r) => r.unit === 'DOCUMENT_GENERATION')?.used ?? 0).toBe(0);
   });
 
   it('a plan with no order capture answers closed, and spends nothing', async () => {
@@ -671,7 +706,7 @@ describe('a customer orders from the shop (fix-plan 6, M5b)', () => {
     const usage = await withBusiness(db, businessId, (tx) =>
       usageRepo.usageFor(tx, businessId, usagePeriod(new Date())),
     );
-    expect(usage.find((r) => r.unit === 'orders')?.used ?? 0).toBe(0);
+    expect(usage.find((r) => r.unit === 'CATALOGUE_ORDERS')?.used ?? 0).toBe(0);
   });
 });
 
@@ -812,7 +847,7 @@ describe('the storefront cannot be farmed (fix-plan 7, H7b)', () => {
     const usage = await withBusiness(db, businessId, (tx) =>
       usageRepo.usageFor(tx, businessId, usagePeriod(new Date())),
     );
-    expect(usage.find((r) => r.unit === 'orders')?.used).toBe(3);
+    expect(usage.find((r) => r.unit === 'CATALOGUE_ORDERS')?.used).toBe(3);
     expect(await customersOf(businessId)).toHaveLength(3);
   });
 });

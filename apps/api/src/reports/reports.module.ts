@@ -5,6 +5,7 @@ import { DbModule } from '../db/db.module.js';
 import { PrivacyGateway } from '../privacy/gateway.service.js';
 import { RepliesModule } from '../replies/replies.module.js';
 import { ReportsController } from './reports.controller.js';
+import { CommandsModule } from '../commands/commands.module.js';
 
 /**
  * Flat providers rather than an AuthModule import, matching PaymentsModule:
@@ -12,7 +13,7 @@ import { ReportsController } from './reports.controller.js';
  * declares the controller using them.
  */
 @Module({
-  imports: [DbModule, RepliesModule],
+  imports: [DbModule, RepliesModule, CommandsModule],
   controllers: [ReportsController],
   providers: [AuthService, SessionGuard, PrivacyGateway],
 })

@@ -84,3 +84,98 @@ export function verifyPaystackSignature(
   if (a.length !== b.length) return false;
   return timingSafeEqual(a, b);
 }
+
+/* ─────────────────── outbound: what Rekoda signs (PR-112) ─────────────── */
+
+/**
+ * Rekoda's own signature header, on every webhook it sends.
+ *
+ * `t=<unix seconds>,v1=<hex hmac>` — the shape the industry converged on,
+ * and it converged on it for a reason worth restating. The timestamp is
+ * INSIDE the signed material, so a captured delivery cannot be replayed a
+ * week later against a verifier that checks the age: an attacker who moves
+ * `t` invalidates `v1`, and one who keeps `t` fails the age check. Signing
+ * the body alone would leave replay entirely to the receiver's memory.
+ *
+ * `v1` is a version on the SCHEME, not on the payload. If the algorithm ever
+ * changes, a `v2=` is added beside it for a transition period rather than
+ * `v1` quietly meaning something else.
+ */
+export const WEBHOOK_SIGNATURE_HEADER = 'rekoda-signature';
+export const WEBHOOK_TIMESTAMP_HEADER = 'rekoda-timestamp';
+
+/** How far out of date a delivery may be before a verifier should refuse it. */
+export const WEBHOOK_REPLAY_WINDOW_SECONDS = 300;
+
+/** Sign a body for one moment. The timestamp is part of what is signed. */
+export function signWebhook(rawBody: string, secret: string, at: Date): string {
+  const seconds = Math.floor(at.getTime() / 1000);
+  const digest = createHmac('sha256', secret).update(`${seconds}.${rawBody}`, 'utf8').digest('hex');
+  return `t=${seconds},v1=${digest}`;
+}
+
+/**
+ * The verification a merchant's own endpoint performs, written here so the
+ * documentation can quote working code rather than describe it.
+ *
+ * Two checks, and both are load-bearing: the digest must match, and the
+ * timestamp must be recent. A verifier that skips the second accepts a
+ * replay of a real, correctly signed delivery forever.
+ */
+export function verifyRekodaSignature(
+  rawBody: Buffer | string,
+  header: string | undefined,
+  secret: string,
+  now: Date,
+  windowSeconds = WEBHOOK_REPLAY_WINDOW_SECONDS,
+): boolean {
+  if (!header || !secret) return false;
+
+  const parts = new Map(
+    header.split(',').map((part) => {
+      const [key, value] = part.split('=');
+      return [key?.trim() ?? '', value?.trim() ?? ''] as const;
+    }),
+  );
+  const seconds = Number(parts.get('t'));
+  const presented = parts.get('v1');
+  if (!Number.isFinite(seconds) || !presented) return false;
+
+  const age = Math.abs(Math.floor(now.getTime() / 1000) - seconds);
+  if (age > windowSeconds) return false;
+
+  const body = typeof rawBody === 'string' ? rawBody : rawBody.toString('utf8');
+  const expected = createHmac('sha256', secret).update(`${seconds}.${body}`, 'utf8').digest('hex');
+
+  const a = Buffer.from(expected, 'utf8');
+  const b = Buffer.from(presented, 'utf8');
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
+}
+
+/**
+ * When to try again, by attempt number.
+ *
+ * Exponential with a ceiling: 1 minute, 5, 25, 2 hours, 10 hours, then a day.
+ * Six attempts spread over roughly a day and a half, which outlasts an
+ * ordinary outage on the merchant's side without hammering an endpoint that
+ * is down for good. Past the last attempt a delivery is dead and visible.
+ */
+export const WEBHOOK_BACKOFF_SECONDS = [60, 300, 1_500, 7_200, 36_000, 86_400] as const;
+
+export function nextAttemptAt(attempts: number, from: Date): Date {
+  const index = Math.min(Math.max(attempts, 1), WEBHOOK_BACKOFF_SECONDS.length) - 1;
+  return new Date(from.getTime() + WEBHOOK_BACKOFF_SECONDS[index]! * 1_000);
+}
+
+/**
+ * Does this endpoint want this fact?
+ *
+ * An EMPTY subscription means everything. A merchant who has not thought
+ * about which events they want should receive them all rather than silently
+ * receive none, because "I registered a webhook and nothing arrives" is the
+ * worst first experience a developer platform can offer.
+ */
+export function wantsEvent(subscribed: readonly string[], type: string): boolean {
+  return subscribed.length === 0 || subscribed.includes(type);
+}

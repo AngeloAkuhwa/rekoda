@@ -9,13 +9,18 @@
  * that was quietly dropped is exactly a silently free model.
  */
 import { describe, expect, it } from 'vitest';
-import { costOfCall, modelFamily } from '@rekoda/core';
+import { costOfCall, costOfTranscription, modelFamily } from '@rekoda/core';
 import {
   assertModelIsPriced,
+  assertTranscriberIsPriced,
   BadModelPrices,
+  BadTranscriptionPrices,
   parseModelPrices,
+  parseTranscriptionPrices,
   registerRuntimeModelPrices,
+  registerRuntimeTranscriptionPrices,
   UnpricedModel,
+  assertRolesArePriced,
 } from './model-prices.js';
 
 const FX = 1_450;
@@ -119,5 +124,76 @@ describe('the boot check', () => {
     for (const model of ['claude-haiku-4-5', 'claude-sonnet-5', 'claude-opus-5']) {
       expect(() => assertModelIsPriced(model, true)).not.toThrow();
     }
+  });
+});
+
+describe('the whole ensemble is priced at boot (ADR 0031)', () => {
+  it('refuses when ANY configured role names an unpriced model', () => {
+    /* The interpreter being priced is not enough: a classifier or an
+     * escalation model with no price would report its every call as free,
+     * which is precisely the outcome the margin view exists to prevent. */
+    expect(() => assertRolesArePriced(['claude-sonnet-5', 'gpt-nonexistent-tier'], true)).toThrow(
+      UnpricedModel,
+    );
+  });
+
+  it('passes a fully-priced ensemble, deduplicating shared models', () => {
+    expect(() =>
+      assertRolesArePriced(
+        ['claude-sonnet-5', 'claude-haiku-4-5', 'claude-sonnet-5', 'claude-opus-5'],
+        true,
+      ),
+    ).not.toThrow();
+  });
+
+  it('stays quiet with no key, because no key means no calls to misprice', () => {
+    expect(() => assertRolesArePriced(['completely-unknown-model'], false)).not.toThrow();
+  });
+});
+
+describe('per-minute transcription prices', () => {
+  it('parses a valid price and prices a real call with it', () => {
+    registerRuntimeTranscriptionPrices('{"test-transcriber":{"perMinuteMicros":6000}}');
+    // Two minutes at $0.006/min = $0.012 = 12,000 micros.
+    expect(costOfTranscription('test-transcriber', 120, FX).usdMicros).toBe(12_000);
+  });
+
+  it('refuses invalid JSON rather than skipping it', () => {
+    expect(() => parseTranscriptionPrices('not json')).toThrow(BadTranscriptionPrices);
+  });
+
+  it('refuses a price without a positive perMinuteMicros', () => {
+    for (const bad of [
+      '{"m":{}}',
+      '{"m":{"perMinuteMicros":0}}',
+      '{"m":{"perMinuteMicros":-5}}',
+      '{"m":{"perMinuteMicros":"6000"}}',
+      '["not-an-object"]',
+    ]) {
+      expect(() => parseTranscriptionPrices(bad)).toThrow(BadTranscriptionPrices);
+    }
+  });
+
+  it('treats an empty value as no prices, not as an error', () => {
+    expect(parseTranscriptionPrices(undefined)).toEqual({});
+    expect(parseTranscriptionPrices('  ')).toEqual({});
+  });
+});
+
+describe('the hosted transcriber must be priced at boot', () => {
+  it('refuses a hosted transcriber with no per-minute price', () => {
+    expect(() => assertTranscriberIsPriced('never-priced-transcriber', true)).toThrow(
+      UnpricedModel,
+    );
+  });
+
+  it('accepts a hosted transcriber once its price is registered', () => {
+    registerRuntimeTranscriptionPrices('{"priced-transcriber":{"perMinuteMicros":4500}}');
+    expect(() => assertTranscriberIsPriced('priced-transcriber', true)).not.toThrow();
+  });
+
+  it('stays quiet when hosted transcription is not the active configuration', () => {
+    /* Voice disabled makes no transcriptions — nothing to misprice. */
+    expect(() => assertTranscriberIsPriced('never-priced-transcriber', false)).not.toThrow();
   });
 });

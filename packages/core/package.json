@@ -10,6 +10,10 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
+    "./api-keys": {
+      "types": "./dist/api-keys.d.ts",
+      "default": "./dist/api-keys.js"
+    },
     "./identity": {
       "types": "./dist/identity.d.ts",
       "default": "./dist/identity.js"

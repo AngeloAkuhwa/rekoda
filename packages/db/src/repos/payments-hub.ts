@@ -11,8 +11,23 @@
  */
 import { and, eq, inArray, not, sql } from 'drizzle-orm';
 import type { Db, TenantDb } from '../client.js';
-import { INTENT_STATUSES, type ConnectionStatus, type PaymentIntentStatus } from '@rekoda/core';
-import { paymentConnections, paymentIntents } from '../schema/payments-hub.js';
+import {
+  INTENT_STATUSES,
+  resolvePaymentProvider,
+  type ConnectionStatus,
+  type PaymentIntentStatus,
+  type PlatformCapability,
+  type ProviderCapabilityKind,
+  type ResolveProviderOutcome,
+} from '@rekoda/core';
+import {
+  paymentAttempts,
+  paymentConnections,
+  paymentIntents,
+  providerCapabilities,
+  providerCostSchedules,
+} from '../schema/payments-hub.js';
+import { provisionConnectionAccounts } from './accounts.js';
 
 const TERMINAL: readonly PaymentIntentStatus[] = ['succeeded', 'failed', 'expired', 'cancelled'];
 
@@ -54,6 +69,11 @@ export interface ConnectionRow {
  * state transition on the same row, never a second row — two rows would be two
  * settlement destinations with nobody able to say which is live.
  */
+
+/** "paystack" → "Paystack", for the account names a merchant reads. */
+const providerLabel = (providerType: string): string =>
+  providerType.charAt(0).toUpperCase() + providerType.slice(1);
+
 export async function upsertConnection(
   tx: TenantDb,
   input: ConnectionInput,
@@ -68,6 +88,9 @@ export async function upsertConnection(
       settlementAccountLast4: input.settlementAccountLast4 ?? null,
       settlementAccountName: input.settlementAccountName ?? null,
       status: 'pending_provider_creation',
+      /* §19 (PR-056): the platform subaccount model tells paystack the
+       * subaccount pays; the economic bearer stays the merchant. */
+      ...(input.providerType === 'paystack' ? { providerFeePayer: 'subaccount' } : {}),
     })
     .onConflictDoUpdate({
       target: [paymentConnections.businessId, paymentConnections.providerType],
@@ -97,6 +120,14 @@ export async function upsertConnection(
 
   const row = rows[0];
   if (!row) throw new Error('upsertConnection: upsert returned no row');
+
+  /* §11.2 (PR-053): the connection's own money-in-flight accounts, born
+   * with it. Idempotent, so a reconnect provisions nothing twice. */
+  await provisionConnectionAccounts(tx, {
+    businessId: input.businessId,
+    paymentConnectionId: row.id,
+    providerLabel: providerLabel(input.providerType),
+  });
   return row;
 }
 
@@ -489,7 +520,7 @@ export async function storeMerchantKey(
     merchantKeyTail: string;
   },
 ): Promise<void> {
-  await tx
+  const rows = await tx
     .insert(paymentConnections)
     .values({
       businessId: input.businessId,
@@ -499,6 +530,14 @@ export async function storeMerchantKey(
       keyMode: 'merchant_key',
       status: 'active',
       kycStatus: 'not_required',
+      /* §17.1/§17.2 (PR-052): their own key, their own arrangement — the
+       * axes and attributes say so, and production derives from them. */
+      operationalStatus: 'ACTIVE',
+      commercialStatus: 'AGREED',
+      representation: 'DIRECT_MERCHANT',
+      credentialSource: 'MERCHANT_SUPPLIED',
+      /* §19: on the merchant's own key, the account itself pays. */
+      ...(input.providerType === 'paystack' ? { providerFeePayer: 'account' } : {}),
     })
     .onConflictDoUpdate({
       target: [paymentConnections.businessId, paymentConnections.providerType],
@@ -507,9 +546,22 @@ export async function storeMerchantKey(
         merchantKeyTail: input.merchantKeyTail,
         keyMode: 'merchant_key',
         status: 'active',
+        operationalStatus: 'ACTIVE',
+        commercialStatus: 'AGREED',
+        representation: 'DIRECT_MERCHANT',
+        credentialSource: 'MERCHANT_SUPPLIED',
         updatedAt: new Date(),
       },
-    });
+    })
+    .returning({ id: paymentConnections.id });
+
+  const stored = rows[0];
+  if (!stored) throw new Error('storeMerchantKey: upsert returned no row');
+  await provisionConnectionAccounts(tx, {
+    businessId: input.businessId,
+    paymentConnectionId: stored.id,
+    providerLabel: providerLabel(input.providerType),
+  });
 }
 
 /** The vault blob of the merchant's key, for the adapter factory. */
@@ -643,4 +695,227 @@ export async function claimGraduationNudge(
     )
     .returning({ id: paymentConnections.id });
   return rows.length === 1;
+}
+
+/* ── payment attempts (spec §6.1, §22.3; PR-054) ────────────────────────── */
+
+export type RecordAttemptOutcome =
+  | { outcome: 'recorded'; id: string }
+  /* §22.3's unique: a redelivered provider callback is the same try. */
+  | { outcome: 'already_recorded'; id: string };
+
+export async function recordPaymentAttempt(
+  tx: TenantDb,
+  input: {
+    businessId: string;
+    paymentIntentId: string;
+    paymentConnectionId: string;
+    providerAttemptId: string;
+    method?: string;
+  },
+): Promise<RecordAttemptOutcome> {
+  const rows = await tx
+    .insert(paymentAttempts)
+    .values({
+      businessId: input.businessId,
+      paymentIntentId: input.paymentIntentId,
+      paymentConnectionId: input.paymentConnectionId,
+      providerAttemptId: input.providerAttemptId,
+      ...(input.method ? { method: input.method } : {}),
+    })
+    .onConflictDoNothing()
+    .returning({ id: paymentAttempts.id });
+  const row = rows[0];
+  if (row) return { outcome: 'recorded', id: row.id };
+  const standing = await tx
+    .select({ id: paymentAttempts.id })
+    .from(paymentAttempts)
+    .where(
+      and(
+        eq(paymentAttempts.businessId, input.businessId),
+        eq(paymentAttempts.paymentConnectionId, input.paymentConnectionId),
+        eq(paymentAttempts.providerAttemptId, input.providerAttemptId),
+      ),
+    )
+    .limit(1);
+  if (!standing[0]) throw new Error('recordPaymentAttempt: conflict row vanished');
+  return { outcome: 'already_recorded', id: standing[0].id };
+}
+
+/** A try resolves once: INITIATED → SUCCEEDED | FAILED | ABANDONED. */
+export async function resolvePaymentAttempt(
+  tx: TenantDb,
+  input: {
+    businessId: string;
+    attemptId: string;
+    status: 'SUCCEEDED' | 'FAILED' | 'ABANDONED';
+    failureReason?: string;
+  },
+): Promise<'resolved' | 'not_found' | 'already_resolved'> {
+  const rows = await tx
+    .update(paymentAttempts)
+    .set({
+      status: input.status,
+      ...(input.failureReason ? { failureReason: input.failureReason } : {}),
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(paymentAttempts.businessId, input.businessId),
+        eq(paymentAttempts.id, input.attemptId),
+        eq(paymentAttempts.status, 'INITIATED'),
+      ),
+    )
+    .returning({ id: paymentAttempts.id });
+  if (rows.length === 1) return 'resolved';
+  const exists = await tx
+    .select({ id: paymentAttempts.id })
+    .from(paymentAttempts)
+    .where(
+      and(
+        eq(paymentAttempts.businessId, input.businessId),
+        eq(paymentAttempts.id, input.attemptId),
+      ),
+    )
+    .limit(1);
+  return exists[0] ? 'already_resolved' : 'not_found';
+}
+
+export async function attemptsForIntent(tx: TenantDb, businessId: string, paymentIntentId: string) {
+  return tx
+    .select()
+    .from(paymentAttempts)
+    .where(
+      and(
+        eq(paymentAttempts.businessId, businessId),
+        eq(paymentAttempts.paymentIntentId, paymentIntentId),
+      ),
+    )
+    .orderBy(paymentAttempts.createdAt);
+}
+
+/* ── the provider resolver, over real rows (spec §17, §18; PR-068) ──────── */
+
+/**
+ * The platform's standing on each provider and port: three independent
+ * axes and the production flag the database derives from them (0115).
+ *
+ * `production_enabled` is read here and never written anywhere. It is a
+ * generated column precisely so that opening production requires setting
+ * three separate axes, and no UPDATE in this codebase can shortcut that.
+ */
+export async function platformCapabilities(db: Db | TenantDb): Promise<PlatformCapability[]> {
+  const rows = await db
+    .select({
+      providerType: providerCapabilities.providerType,
+      capability: providerCapabilities.capability,
+      technicalSupport: providerCapabilities.technicalSupport,
+      technicalNote: providerCapabilities.technicalNote,
+      commercialApproval: providerCapabilities.commercialApproval,
+      commercialNote: providerCapabilities.commercialNote,
+      complianceApproval: providerCapabilities.complianceApproval,
+      complianceNote: providerCapabilities.complianceNote,
+      productionEnabled: providerCapabilities.productionEnabled,
+    })
+    .from(providerCapabilities);
+  return rows as PlatformCapability[];
+}
+
+/**
+ * Which of this business's connections serves a need, from capability and
+ * compliance and nothing else. The pure decision lives in @rekoda/core;
+ * this reads the two layers it decides over — the platform capability
+ * table and the merchant's own connections with their derived
+ * `production_enabled` — and hands them across.
+ */
+export async function resolveProviderConnection(
+  tx: TenantDb,
+  businessId: string,
+  need: ProviderCapabilityKind,
+): Promise<ResolveProviderOutcome> {
+  const connections = await tx
+    .select({
+      connectionId: paymentConnections.id,
+      providerType: paymentConnections.providerType,
+      productionEnabled: paymentConnections.productionEnabled,
+      createdAt: paymentConnections.createdAt,
+    })
+    .from(paymentConnections)
+    .where(eq(paymentConnections.businessId, businessId));
+  const capabilities = await platformCapabilities(tx);
+  return resolvePaymentProvider(
+    need,
+    connections.map((c) => ({
+      connectionId: c.connectionId,
+      providerType: c.providerType,
+      productionEnabled: c.productionEnabled === true,
+      connectedAtMs: c.createdAt?.getTime() ?? 0,
+    })),
+    capabilities,
+  );
+}
+
+/* ── provider cost schedules (spec §17, §19.1, §24, §29; PR-072) ────────── */
+
+/** One effective-dated observation of a published provider rate card. */
+export interface CostScheduleRow {
+  id: string;
+  providerType: string;
+  costType: string;
+  providerProduct: string;
+  /** Which published card the observation came from. */
+  version: string;
+  /** ISO date the card took effect. */
+  effectiveFrom: string;
+  basis: 'PER_UNIT' | 'PERCENT_PLUS_FLAT';
+  unitPriceMicros: number | null;
+  percentPpm: number | null;
+  flatMinor: number | null;
+  capMinor: number | null;
+  waiveFlatUnderMinor: number | null;
+  currency: string;
+}
+
+/**
+ * The observation IN FORCE for a provider's product on a date: the latest
+ * card at or before it (§24 — a rate is an effective-dated observation,
+ * so "what does this cost" is always a question about a date). Null when
+ * no card had been observed yet by then — an honest "we do not know what
+ * this cost", never a guess backdated from a later card.
+ */
+export async function costScheduleInForce(
+  db: Db | TenantDb,
+  providerType: string,
+  providerProduct: string,
+  onDate: string,
+): Promise<CostScheduleRow | null> {
+  const rows = await db
+    .select()
+    .from(providerCostSchedules)
+    .where(
+      and(
+        eq(providerCostSchedules.providerType, providerType),
+        eq(providerCostSchedules.providerProduct, providerProduct),
+        sql`${providerCostSchedules.effectiveFrom} <= ${onDate}::date`,
+      ),
+    )
+    .orderBy(sql`${providerCostSchedules.effectiveFrom} DESC`)
+    .limit(1);
+  const row = rows[0];
+  if (!row) return null;
+  return {
+    id: row.id,
+    providerType: row.providerType,
+    costType: row.costType,
+    providerProduct: row.providerProduct,
+    version: row.version,
+    effectiveFrom: row.effectiveFrom,
+    basis: row.basis as CostScheduleRow['basis'],
+    unitPriceMicros: row.unitPriceMicros,
+    percentPpm: row.percentPpm,
+    flatMinor: row.flatMinor,
+    capMinor: row.capMinor,
+    waiveFlatUnderMinor: row.waiveFlatUnderMinor,
+    currency: row.currency,
+  };
 }

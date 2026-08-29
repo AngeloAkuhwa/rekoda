@@ -42,17 +42,33 @@ export async function consumeUnit(
    * insert, and the loser is re-judged by the conflict arm — the database
    * decides, as everywhere else in this codebase.
    */
+  /**
+   * EVERY number is cast. This is not defensive decoration.
+   *
+   * `SELECT $1, $2 WHERE $3 <= $4` gives PostgreSQL no type context, so it
+   * resolves the unknown parameters as TEXT and compares them as text. Text
+   * says `'9' <= '600'` is FALSE, because it reads the nine before it reads
+   * anything else. A merchant sending a nine-second voice note against a
+   * six-hundred-second allowance was told they had used all six hundred.
+   *
+   * It hid for as long as it did because almost every consume spends ONE
+   * unit, and `'1' <= '600'` happens to be true. It only bites where the
+   * amount is a quantity rather than a tally, and where its first digit
+   * sorts above the ceiling's: 7, 8, 9, 70 to 99, 700 upward. Voice is the
+   * only unit that spends that way today, which is exactly where it
+   * surfaced.
+   */
   const rows = await tx.execute<{ used: number }>(sql`
     INSERT INTO usage_counters (business_id, period, unit, used)
-    SELECT ${businessId}::uuid, ${period}, ${unit}, ${n}
-    WHERE ${n} <= ${allowance}
+    SELECT ${businessId}::uuid, ${period}::char(7), ${unit}::text, ${n}::int
+    WHERE ${n}::int <= ${allowance}::int
        OR EXISTS (
             SELECT 1 FROM usage_counters
             WHERE business_id = ${businessId}::uuid
-              AND period = ${period} AND unit = ${unit})
+              AND period = ${period}::char(7) AND unit = ${unit}::text)
     ON CONFLICT (business_id, period, unit) DO UPDATE
-      SET used = usage_counters.used + ${n}, updated_at = now()
-      WHERE usage_counters.used + ${n} <= ${allowance} + usage_counters.bonus
+      SET used = usage_counters.used + ${n}::int, updated_at = now()
+      WHERE usage_counters.used + ${n}::int <= ${allowance}::int + usage_counters.bonus
     RETURNING used
   `);
   return [...rows].length === 1;

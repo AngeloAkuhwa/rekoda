@@ -160,8 +160,15 @@ describe('fetching transactions', () => {
           amountK: 850_000,
           narration: 'TRF FROM ADA',
           bankRef: 'txn_1',
+          externalTransactionId: 'txn_1',
         },
-        { postedOn: '2026-08-21', amountK: -5_000, narration: 'POS CHARGE', bankRef: 'txn_2' },
+        {
+          postedOn: '2026-08-21',
+          amountK: -5_000,
+          narration: 'POS CHARGE',
+          bankRef: 'txn_2',
+          externalTransactionId: 'txn_2',
+        },
       ],
     });
     /* Mono spells the start day DD-MM-YYYY; the adapter owns that spelling. */

@@ -72,15 +72,47 @@ export const inventoryMovements = pgTable(
       .notNull()
       .references(() => products.id),
     delta: integer('delta').notNull(),
-    reason: text('reason').notNull(), // sale | purchase | adjustment | reservation | release
+    reason: text('reason').notNull(), // sale | purchase | adjustment | reservation | release | return | supplier_return | opening
     sourceType: text('source_type').notNull(),
     sourceId: text('source_id'),
+    /** The unit cost APPLIED to this movement (Appendix B): the receipt
+     * cost on the way in, the issue cost on the way out. Null on
+     * historical rows that never recorded one — honest, not zero. */
+    unitCostK: bigint('unit_cost_k', { mode: 'number' }),
     createdAt: createdAt(),
   },
   (t) => [
     index('inv_moves_product_ix').on(t.productId),
     index('inv_moves_business_ix').on(t.businessId),
   ],
+);
+
+/**
+ * GoodsReturn (spec §14.3; Appendix B.2a; migration 0101, PR-080).
+ * Physical disposition decides the accounting: only RESALABLE re-enters
+ * sellable stock, DAMAGED/QUARANTINED rows ARE the holding location, and
+ * SCRAPPED is gone. Append-only.
+ */
+export const goodsReturns = pgTable(
+  'goods_returns',
+  {
+    id: id(),
+    businessId: businessId(),
+    productId: uuid('product_id').notNull(),
+    invoiceId: uuid('invoice_id'),
+    quantity: integer('quantity').notNull(),
+    disposition: text('disposition').notNull(),
+    /** Per unit, from the outbound movement. Null: original issue was
+     * never costed — an honest unknown, never a reconstruction. */
+    originalIssueCostK: bigint('original_issue_cost_k', { mode: 'number' }),
+    /** TOTAL supported value on a damaged/quarantined return. */
+    salvageValueK: bigint('salvage_value_k', { mode: 'number' }),
+    ledgerTransactionId: uuid('ledger_transaction_id'),
+    sourceType: text('source_type').notNull(),
+    sourceId: text('source_id'),
+    createdAt: createdAt(),
+  },
+  (t) => [index('goods_returns_business_ix').on(t.businessId, t.createdAt)],
 );
 
 export const suppliers = pgTable(

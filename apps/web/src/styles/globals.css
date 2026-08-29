@@ -1884,3 +1884,44 @@ a.rk-sr-only:focus-visible {
   font-size: var(--rk-text-lg);
   font-variant-numeric: tabular-nums;
 }
+/* What a plan switch changes, shown above what it costs. Both lists read as
+   facts rather than warnings: a merchant moving from Chat to Integrate is
+   making a decision, not suffering an outage. */
+.rk-switch-impact {
+  margin: 0 0 1.25rem;
+}
+
+.rk-switch-impact h3 {
+  font-size: 0.9375rem;
+  letter-spacing: 0.02em;
+  margin: 0.75rem 0 0.375rem;
+  text-transform: uppercase;
+  color: var(--rk-ink-soft);
+}
+
+.rk-switch-impact ul,
+.rk-shared-note ul {
+  margin: 0 0 0.5rem;
+  padding-left: 1.25rem;
+}
+
+.rk-switch-impact li,
+.rk-shared-note li {
+  margin-bottom: 0.25rem;
+}
+
+/* Said once, under the plan table, because the alternative reading is that
+   the cheapest plan is the one with the books in it. */
+.rk-shared-note {
+  border-top: 1px solid var(--rk-rule);
+  margin-top: 1.25rem;
+  padding-top: 1rem;
+}
+
+.rk-shared-note h3 {
+  font-size: 0.9375rem;
+  letter-spacing: 0.02em;
+  margin: 0 0 0.5rem;
+  text-transform: uppercase;
+  color: var(--rk-ink-soft);
+}

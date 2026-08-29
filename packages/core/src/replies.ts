@@ -187,13 +187,122 @@ export function ordersNotInPlan(): Reply {
   );
 }
 
-export function allowanceExhausted(allowance: number, unit: UsageUnit = 'messages'): Reply {
+/**
+ * A merchant on the Integrate plan messaged Rekoda to record something.
+ *
+ * Their plan is the customer-facing half: orders arriving from their shop
+ * book themselves. Talking to Rekoda about the rest of the business is the
+ * Chat half, and Complete is both. Same shape as `ordersNotInPlan` and for
+ * the same reason: "you have used all 0 messages" is true of the number and
+ * useless about the reason.
+ */
+export function chatNotInPlan(): Reply {
+  return reply(
+    'Recording by message is part of the Chat plan. Your Integrate shop is still working ' +
+      'and orders are still booking themselves. Nothing here was lost.\n\n' +
+      'Reply *upgrade* to add Chat and keep one set of books for both.',
+  );
+}
+
+export function allowanceExhausted(allowance: number, unit: UsageUnit = 'AI_ACTIONS'): Reply {
   return reply(
     `You have used all ${allowance} ${UNIT_WORDS[unit]} in your plan this month. ` +
       'Nothing is lost. Your records are safe, and *who owes me*, *payment details* and ' +
       'your dashboard still work.\n\n' +
       'Reply *upgrade* and we will move you to a bigger plan.',
   );
+}
+
+/**
+ * The DAILY document ceiling, distinct from the monthly plan allowance.
+ *
+ * A merchant who hits this has scans left in their plan — the sentence must
+ * not say "upgrade", because upgrading fixes the wrong limit. It says when
+ * the door reopens (midnight, the Lagos day the counter rolls on) and what
+ * still works right now, because a photograph they cannot send is a sale
+ * they can still type.
+ */
+export function dailyDocumentLimit(limit: number): Reply {
+  return reply(
+    `You have sent ${limit} documents today, which is as many as I can read in ` +
+      'one day. The counter starts again at midnight.\n\n' +
+      'Nothing is lost. You can still type the amounts and I will record them ' +
+      'straight away.',
+  );
+}
+
+/**
+ * The DAILY voice ceiling, distinct from the monthly plan allowance.
+ *
+ * Same shape as `dailyDocumentLimit` and for the same reason: a merchant
+ * who hits this may have plan minutes left, so "upgrade" is the wrong
+ * door. The counter rolls at midnight, and typing still works right now.
+ */
+export function dailyVoiceLimit(): Reply {
+  return reply(
+    'You have sent as many voice minutes today as I can listen to in one day. ' +
+      'The counter starts again at midnight.\n\n' +
+      'Nothing is lost. You can type what happened instead and I will record ' +
+      'it straight away.',
+  );
+}
+
+/**
+ * A photograph that read fine and is clearly not a business document.
+ *
+ * Said only when the classifier is CONFIDENT the page holds no transaction
+ * — a meme, a chat screenshot, a poster. Anything less than confident goes
+ * to the interpreter instead, so a blurry real receipt never gets this
+ * sentence. The door stays open in the same breath: whatever the photo was
+ * about, the sale it may have accompanied can still be typed.
+ */
+export function notABusinessDocument(): Reply {
+  return reply(
+    'I read that photo, but it does not look like a receipt, invoice or ' +
+      'statement I can record from.\n\n' +
+      'If there is a sale or expense behind it, type it (for example ' +
+      '"sold 2 bags 15k") and I will record it straight away.',
+  );
+}
+
+/**
+ * Two independent readings of a high-value document disagreed.
+ *
+ * Neither reading is shown as "the" answer, because choosing one is
+ * exactly what this reply exists to refuse. The merchant is told WHICH
+ * details conflicted, in their words rather than field paths, and asked to
+ * state the figures themselves — a typed sentence then walks the ordinary
+ * preview-and-confirm gate like any other.
+ */
+export function extractionDisagreement(fields: readonly string[]): Reply {
+  const named = [...new Set(fields.map(fieldInMerchantWords))];
+  const listed =
+    named.length === 1
+      ? named[0]!
+      : `${named.slice(0, -1).join(', ')} and ${named[named.length - 1]!}`;
+  return reply(
+    'Because this document is a large one, I read it twice to be safe, and my two ' +
+      `readings do not agree about ${listed}. I have not recorded anything.\n\n` +
+      'Please type the details (for example "sold 1 generator 650k, paid 300k") and I ' +
+      'will show you a preview to confirm.',
+  );
+}
+
+/** Field paths said the way a merchant would say them. */
+function fieldInMerchantWords(path: string): string {
+  if (path.includes('unitPrice')) return 'a unit price';
+  if (path.includes('quantity')) return 'a quantity';
+  if (path.includes('name')) return 'an item name';
+  if (path === 'items') return 'how many items there are';
+  if (path.includes('statedTotal')) return 'the total';
+  if (path.includes('reportedPayment')) return 'the amount paid';
+  if (path.includes('amount')) return 'the amount';
+  if (path.includes('discount')) return 'the discount';
+  if (path.includes('deliveryFee')) return 'the delivery fee';
+  if (path.includes('customer')) return 'who the customer is';
+  if (path.includes('intent')) return 'what kind of entry this is';
+  if (path.includes('paymentMethod')) return 'how it was paid';
+  return 'one of the details';
 }
 
 /**
@@ -205,11 +314,23 @@ export function allowanceExhausted(allowance: number, unit: UsageUnit = 'message
  * which plan would fix it.
  */
 const UNIT_WORDS: Record<UsageUnit, string> = {
-  messages: 'messages',
-  voice_seconds: 'seconds of voice notes',
-  documents: 'invoices and receipts',
-  documents_understood: 'document scans',
-  orders: 'orders',
+  AI_ACTIONS: 'messages',
+  VOICE_MINUTES: 'seconds of voice notes',
+  DOCUMENT_GENERATION: 'invoices and receipts',
+  DOCUMENTS_UNDERSTOOD: 'document scans',
+  SERVICE_MESSAGE: 'replies inside the 24-hour window',
+  UTILITY_TEMPLATE: 'order and payment updates',
+  AUTH_TEMPLATE: 'login codes',
+  AUTH_INTL_TEMPLATE: 'international login codes',
+  MARKETING_TEMPLATE: 'marketing messages',
+  CATALOGUE_ORDERS: 'orders',
+  PAYMENT_CONNECTIONS: 'payment connections',
+  FINANCIAL_ACCOUNT_CONNECTIONS: 'bank connections',
+  ACCOUNTANT_USERS: 'accountant logins',
+  REPORT_EXPORTS: 'report downloads',
+  API_REQUEST_UNITS: 'API requests',
+  API_APPLICATIONS: 'API applications',
+  WEBHOOK_DELIVERIES: 'webhook deliveries',
 };
 
 /**
@@ -486,6 +607,121 @@ export function paymentLinkReady(
   );
 }
 
+/* ── W3: the catalogue order's checkout and its merchant notice ──────────── */
+
+/**
+ * The checkout message a CUSTOMER receives in their own thread on the
+ * merchant's WABA, right after their cart survived server-side validation
+ * (spec §3.2; PR-089). This is the first figure they see, and it is the
+ * server's figure: the validated invoice total, never anything their
+ * device claimed. When the payable link could not be raised, the
+ * confirmation still carries the total and promises the details, because
+ * an order that vanished into silence is an order placed twice.
+ *
+ * The copy never names Rekoda: this message goes out on the merchant's
+ * own number, and to the customer the sender IS the business.
+ */
+export function catalogueCheckout(
+  invoiceNumber: string,
+  amountK: number,
+  checkoutUrl: string | null,
+): Reply {
+  if (checkoutUrl) {
+    return reply(
+      `Order confirmed ✅ ${invoiceNumber}: ${formatKobo(amountK)}.\n` +
+        `Pay securely here: ${checkoutUrl}`,
+    );
+  }
+  return reply(
+    `Order confirmed ✅ ${invoiceNumber}: ${formatKobo(amountK)}.\n` +
+      'Payment details will follow shortly.',
+  );
+}
+
+/**
+ * The merchant's notice of a validated WhatsApp order whose payment link
+ * already reached the customer. Deliberately NOT `paymentLinkReady`: that
+ * copy says "forward it", and forwarding a link the customer already holds
+ * would read as a system that does not know what it just did.
+ */
+export function catalogueOrderDelivered(invoiceNumber: string, amountK: number): Reply {
+  return reply(
+    `New WhatsApp order ✅ ${invoiceNumber} for ${formatKobo(amountK)}.\n` +
+      'The payment link is with your customer. I will tell you the moment ' +
+      'the money lands, and the receipt follows by itself.',
+  );
+}
+
+/**
+ * The merchant's notice when no payable link could be raised for a
+ * validated WhatsApp order. The order is real and the merchant must hear
+ * about it either way; what they do next is collect the money their own
+ * way and record it, or fix what blocked the link.
+ */
+export function catalogueOrderNoLink(invoiceNumber: string, amountK: number): Reply {
+  return reply(
+    `New WhatsApp order ✅ ${invoiceNumber} for ${formatKobo(amountK)}.\n` +
+      'I could not raise a payment link for it. Collect the payment your ' +
+      'usual way and tell me when it lands, or ask *send payment details* ' +
+      'once the customer has an email on file.',
+  );
+}
+
+/* ── X1: payment details delivered across products (PR-093) ──────────────── */
+
+/**
+ * The payment details as the CUSTOMER receives them, in their own thread
+ * on the merchant's WABA (spec §5.3; X1). The figure and the link, no
+ * greeting theatre, no Rekoda: to the customer the sender is the
+ * business asking to be paid.
+ */
+export function paymentDetailsForCustomer(
+  invoiceNumber: string,
+  amountK: number,
+  checkoutUrl: string,
+): Reply {
+  return reply(`${invoiceNumber}: ${formatKobo(amountK)} due.\nPay securely here: ${checkoutUrl}`);
+}
+
+/**
+ * What the merchant hears when the delivery LANDED: not "forward it" —
+ * the system knows what it just did — but where it went and what happens
+ * next. The Complete journey's one visible seam.
+ */
+export function paymentDetailsDelivered(invoiceNumber: string, amountK: number): Reply {
+  return reply(
+    `Sent ✅ payment details for ${invoiceNumber} (${formatKobo(amountK)}) to your ` +
+      "customer's WhatsApp. I will tell you the moment the money lands, and the " +
+      'receipt follows by itself.',
+  );
+}
+
+/* ── W4: the away assistant's handoff ────────────────────────────────────── */
+
+/**
+ * The handoff, said out loud (spec §5.2; W4, PR-091): "it hands off,
+ * every time, and says it is doing so." Sent to the CUSTOMER on the
+ * merchant's own number when the assistant cannot answer — once per
+ * customer per day, because a promise repeated after every message reads
+ * as a machine stalling. No Rekoda branding: to the customer the sender
+ * IS the business, and the promise is the merchant's to keep.
+ */
+export function assistantHandoff(): Reply {
+  return reply('Thanks for your message. Someone from the shop will reply to you personally.');
+}
+
+/**
+ * The merchant's side of the same handoff: a customer is waiting on a
+ * human. Deliberately nameless — the customer's identity never rides a
+ * Rekoda notification (F.3); the merchant's own WhatsApp shows them who.
+ */
+export function assistantHandoffNotice(): Reply {
+  return reply(
+    'A customer asked something I could not answer. Their message is waiting ' +
+      'on your business WhatsApp. I told them someone will reply personally.',
+  );
+}
+
 /** The latest invoice settled between the ask and the mint. Scoped to that
  * invoice only: another may still be open, and "who owes me" is the answer. */
 export function paymentLinkSettled(invoiceNumber: string): Reply {
@@ -638,6 +874,45 @@ export function voiceUnavailable(): Reply {
   return reply(
     'I could not listen to that voice note just now. Type it instead and I will ' +
       'record it, or send the voice note again in a minute.',
+  );
+}
+
+/**
+ * The note is longer than this plan will transcribe.
+ *
+ * Said BEFORE any transcriber is called, which is the whole point: the limit
+ * is cost protection, and a limit enforced after the spend protects nothing.
+ * The merchant is told the number rather than left to guess at it, and told
+ * what to do about it in the same breath, because "too long" without a
+ * length is a wall and "send it in shorter parts" is a door.
+ */
+export function voiceTooLong(maxSeconds: number): Reply {
+  const minutes = Math.floor(maxSeconds / 60);
+  const limit =
+    minutes >= 1 && maxSeconds % 60 === 0
+      ? `${minutes} ${minutes === 1 ? 'minute' : 'minutes'}`
+      : `${maxSeconds} seconds`;
+  return reply(
+    `That voice note is longer than ${limit}, which is as much as I can listen ` +
+      'to at once.\n\nPlease send it again in shorter parts and I will record ' +
+      'every one of them.',
+  );
+}
+
+/**
+ * The audio arrived and could not be read.
+ *
+ * Distinct from `voiceUnavailable`, which is the transcriber being down. This
+ * is the file itself: a container Rekoda cannot measure, and measuring it is
+ * what stands between a merchant and a bill nobody agreed to. Nothing was
+ * metered and nothing was sent anywhere, so asking again is a real recovery
+ * rather than a polite way of saying no.
+ */
+export function voiceUnreadable(): Reply {
+  return reply(
+    'Something about that voice note did not come through properly, so I did not ' +
+      'want to guess at it.\n\nPlease record it again and send it, or type it and ' +
+      'I will record it straight away.',
   );
 }
 
@@ -856,9 +1131,9 @@ export function linkQuestion(survivorToken: string, orphanToken: string): string
  *
  * OUR failure, so it says so and costs the merchant nothing: no allowance
  * moved. What it does NOT do is offer a second route for the photograph.
- * ADR 0024 fixed the pipeline at self-hosted OCR precisely so that a bad day
- * for our sidecar never becomes a day a customer's address reaches a model
- * provider. Typing the amount is the way forward, and it is one line.
+ * ADR 0024 fixed the pipeline — extraction, then the gateway, then a
+ * reasoning model — precisely so that a bad day for the reader never
+ * becomes a silent reroute of a customer's page somewhere else. Typing the amount is the way forward, and it is one line.
  */
 export function photoUnavailable(): Reply {
   return reply(
@@ -1026,6 +1301,20 @@ export function stockList(rows: StockLine[], count: number, outOfStock: number):
 }
 
 /** A stock change saved, with the figure that matters after it. */
+/**
+ * A high-risk confirmation went stale between the preview and the yes.
+ *
+ * Five minutes is the window a decision about disappearing stock or money
+ * stays warm (Appendix D). Asking again is the safety working, and the copy
+ * says what to do rather than what went wrong internally.
+ */
+export function confirmationLapsed(what: string): Reply {
+  return reply(
+    `That took a little too long, so I did not save ${what}. ` +
+      'Send it again and I will show you a fresh preview.',
+  );
+}
+
 export function stockSaved(name: string, delta: number, onHand: number): Reply {
   const moved = delta > 0 ? `Added ${delta} ${name}.` : `Removed ${Math.abs(delta)} ${name}.`;
   const left = onHand === 0 ? `You have none left.` : `You now have ${onHand}.`;

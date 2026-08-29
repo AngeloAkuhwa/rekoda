@@ -6,7 +6,7 @@
  * silently sends a merchant's money message to a model nobody picked.
  */
 import { describe, expect, it } from 'vitest';
-import { loadConfig } from './config.js';
+import { isProductionEnv, loadConfig } from './config.js';
 
 const BASE = {
   DATABASE_URL: 'postgres://x@127.0.0.1:5432/x',
@@ -66,7 +66,10 @@ describe('picking a provider', () => {
 describe('the default model follows the provider', () => {
   it('ships one for Anthropic, by EXACT id and never an alias', () => {
     const model = loadConfig({ ...BASE, ANTHROPIC_API_KEY: 'k' }).aiModelDefault;
-    expect(model).toBe('claude-haiku-4-5');
+    /* Sonnet, not Haiku, since ADR 0031: the interpreter is accuracy-first,
+     * because a misread amount that survives the schema is the one error no
+     * downstream gate can catch. Haiku keeps the classifier role. */
+    expect(model).toBe('claude-sonnet-5');
     /* An alias that silently moves tiers takes the price with it: cost
      * telemetry keys on the family, so last month's rate would be reported
      * against this month's bill. */
@@ -135,14 +138,17 @@ describe('the role ensemble (docs/ai-model-strategy.md)', () => {
     expect(config.aiModelClassifier).toMatch(/haiku/);
     expect(config.aiModelVision).toMatch(/claude/);
     expect(config.aiModelEscalation).toMatch(/opus/);
-    // ADR 0027 reversed ADR 0008's default: hosted transcription is the
-    // launch configuration, and whisper-1 specifically because it reports
-    // the audio DURATION the voice_seconds meter bills from. The sidecar
-    // stays one env var away (STT_URL); this assertion keeps the default
+    // ADR 0032: OpenAI is the launch transcriber, explicitly and only —
+    // whisper-1 specifically because it reports the audio DURATION the
+    // VOICE_MINUTES meter bills from. This assertion keeps the default
     // and the privacy pages describing the same engine.
     expect(config.aiModelTranscriber).toBe('whisper-1');
     // Dual-extraction threshold is configuration, defaulting to ₦500,000.
     expect(config.aiDualExtractThresholdK).toBe(50_000_000);
+    /* The verifier has NO default on purpose: it must be a second vendor's
+     * model, and this repository will not guess another vendor's id or
+     * price. Null means dual extraction is off until a deployment opts in. */
+    expect(config.aiModelVisionVerifier).toBeNull();
   });
 
   it('lets any role be re-pointed by env without touching code', () => {
@@ -151,8 +157,113 @@ describe('the role ensemble (docs/ai-model-strategy.md)', () => {
       ANTHROPIC_API_KEY: 'k',
       AI_MODEL_CLASSIFIER: 'claude-sonnet-latest',
       AI_MODEL_TRANSCRIBER: 'whisper-1',
+      AI_MODEL_VISION_VERIFIER: 'gpt-test-verifier',
     });
     expect(config.aiModelClassifier).toBe('claude-sonnet-latest');
     expect(config.aiModelTranscriber).toBe('whisper-1');
+    expect(config.aiModelVisionVerifier).toBe('gpt-test-verifier');
+  });
+});
+
+describe('media features are explicit (ADR 0032, remediation R3)', () => {
+  it('defaults both media features OFF, needing no media credentials at all', () => {
+    const config = loadConfig(BASE);
+    expect(config.voiceTranscriptionEnabled).toBe(false);
+    expect(config.imageAiEnabled).toBe(false);
+  });
+
+  it('REFUSES voice transcription enabled without the OpenAI key', () => {
+    /* The startup failure the remediation demands: a deployment that
+     * promises voice and cannot deliver it fails in front of the operator,
+     * never in front of a merchant. */
+    expect(() => loadConfig({ ...BASE, VOICE_TRANSCRIPTION_ENABLED: '1' })).toThrow(
+      /OPENAI_API_KEY/,
+    );
+    expect(() => loadConfig({ ...BASE, VOICE_TRANSCRIPTION_ENABLED: 'true' })).toThrow(
+      /OPENAI_API_KEY/,
+    );
+  });
+
+  it('REFUSES image AI enabled without the Anthropic key', () => {
+    expect(() => loadConfig({ ...BASE, IMAGE_AI_ENABLED: '1' })).toThrow(/ANTHROPIC_API_KEY/);
+  });
+
+  it('accepts each feature when its provider key is present', () => {
+    const config = loadConfig({
+      ...BASE,
+      ANTHROPIC_API_KEY: 'k',
+      OPENAI_API_KEY: 'k',
+      VOICE_TRANSCRIPTION_ENABLED: '1',
+      IMAGE_AI_ENABLED: 'true',
+    });
+    expect(config.voiceTranscriptionEnabled).toBe(true);
+    expect(config.imageAiEnabled).toBe(true);
+  });
+});
+
+/**
+ * The voice limit stopped being decorative when it became what every note is
+ * measured against before the transcriber runs. A mistyped value would
+ * otherwise refuse every voice note as too long, and be chased as a metering
+ * bug rather than a typo.
+ */
+describe('the voice length limit', () => {
+  it('defaults to two minutes', () => {
+    expect(loadConfig({ ...BASE, ANTHROPIC_API_KEY: 'k' }).voiceNoteMaxDurationSeconds).toBe(120);
+  });
+
+  it('takes an explicit value', () => {
+    const config = loadConfig({
+      ...BASE,
+      ANTHROPIC_API_KEY: 'k',
+      VOICE_NOTE_MAX_DURATION_SECONDS: '45',
+    });
+    expect(config.voiceNoteMaxDurationSeconds).toBe(45);
+  });
+
+  it.each(['0', '-30', 'two minutes', '90.5', ''])('refuses %s at boot', (value) => {
+    expect(() =>
+      loadConfig({
+        ...BASE,
+        ANTHROPIC_API_KEY: 'k',
+        VOICE_NOTE_MAX_DURATION_SECONDS: value,
+      }),
+    ).toThrow(/VOICE_NOTE_MAX_DURATION_SECONDS/);
+  });
+});
+
+describe('production hardening fails closed on NODE_ENV (PR-108)', () => {
+  it('treats unset, development and test as non-production', () => {
+    expect(isProductionEnv({})).toBe(false);
+    expect(isProductionEnv({ NODE_ENV: 'development' })).toBe(false);
+    expect(isProductionEnv({ NODE_ENV: 'test' })).toBe(false);
+    expect(isProductionEnv({ NODE_ENV: '' })).toBe(false);
+  });
+
+  it('treats production - and anything UNRECOGNISED - as production', () => {
+    expect(isProductionEnv({ NODE_ENV: 'production' })).toBe(true);
+    // The finding: a typo used to skip every production requirement.
+    expect(isProductionEnv({ NODE_ENV: 'prod' })).toBe(true);
+    expect(isProductionEnv({ NODE_ENV: 'Production' })).toBe(true);
+    expect(isProductionEnv({ NODE_ENV: 'staging' })).toBe(true);
+  });
+
+  it('so REKODA_REVEAL_OTP is refused under a typo`d production env', () => {
+    expect(() => loadConfig({ ...BASE, NODE_ENV: 'prod', REKODA_REVEAL_OTP: '1' })).toThrow(
+      /REKODA_REVEAL_OTP/,
+    );
+  });
+});
+
+describe('encryption keys are shape-validated at boot (PR-106)', () => {
+  it('refuses a vault key that is the right length but not hex', () => {
+    expect(() => loadConfig({ ...BASE, VAULT_KEY: 'z'.repeat(64) })).toThrow(/VAULT_KEY/);
+  });
+
+  it('accepts an empty CONNECTION_KEY (the capability is off) but not a bad one', () => {
+    expect(loadConfig({ ...BASE }).connectionKey).toBe('');
+    expect(() => loadConfig({ ...BASE, CONNECTION_KEY: 'changeme' })).toThrow(/CONNECTION_KEY/);
+    const good = 'c'.repeat(64);
+    expect(loadConfig({ ...BASE, CONNECTION_KEY: good }).connectionKey).toBe(good);
   });
 });

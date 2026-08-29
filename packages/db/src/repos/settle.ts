@@ -32,7 +32,7 @@ import {
   lagosYear,
 } from '@rekoda/core';
 import { documentHash } from '@rekoda/core/documents';
-import { applyPayment } from '@rekoda/core';
+import { applyPayment, normalisePaymentMethod } from '@rekoda/core';
 import type { Db, TenantDb } from '../client.js';
 import { auditEvents } from '../schema/ops.js';
 import {
@@ -44,7 +44,10 @@ import {
   receipts,
   reconciliations,
 } from '../schema/finance.js';
-import { nextDocumentNumber, writePosting } from './issue.js';
+import { accountByRole } from './accounts.js';
+import { accountIdsForKeys, nextDocumentNumber, writePosting } from './issue.js';
+import { appendVerification } from './provenance.js';
+import { recordPaymentAttempt, resolvePaymentAttempt } from './payments-hub.js';
 
 /** The same rekoda_reference booked twice — the terminal-intent gate's job,
  * and this error firing means that gate was bypassed. Callers treat it as
@@ -71,6 +74,13 @@ export interface BookVerifiedPaymentInput {
   feePolicy: FeePolicy;
   /** cash | transfer | pos | unknown — already normalised by the adapter. */
   method: string;
+  /**
+   * The connection the money arrived on, for the provider claim identity of
+   * spec §6.5: businessId + paymentConnectionId + providerTransactionReference.
+   * Optional because a connection row can be missing in degraded states; the
+   * identity then falls back to providerType, which still names the rail.
+   */
+  paymentConnectionId?: string | null;
   actor: string;
   /** The external event that carried the confirmation, for the audit trail.
    * For a polled confirmation there is no event: the provider's own
@@ -131,6 +141,11 @@ export async function bookVerifiedPayment(
         settlementStatus: 'pending',
         sourceType: input.sourceType ?? 'webhook',
         sourceId: input.eventId,
+        /* Provenance at birth (spec §6.2–6.3): the provider confirmed this
+         * server-side, and the instrument travels separately so a POS payment
+         * no longer has to pretend to be a transfer. */
+        initialConfirmationSource: 'PROVIDER_VERIFIED',
+        paymentMethod: normalisePaymentMethod(input.method),
       })
       .returning({ id: payments.id });
     const payment = paymentRows[0];
@@ -142,6 +157,43 @@ export async function bookVerifiedPayment(
     }
     throw error;
   }
+
+  /* The try this confirmation answers (§6.1, PR-055): recorded against
+   * the connection when one is known, resolved SUCCEEDED — a redelivered
+   * webhook lands on the same attempt row — and linked into the
+   * verification so the §6.5 chain runs provider event → attempt →
+   * payment → verification without a gap. */
+  let paymentAttemptId: string | null = null;
+  if (input.paymentConnectionId) {
+    const attempt = await recordPaymentAttempt(tx, {
+      businessId: input.businessId,
+      paymentIntentId: input.intent.id,
+      paymentConnectionId: input.paymentConnectionId,
+      providerAttemptId: input.providerRef,
+      method: input.method,
+    });
+    await resolvePaymentAttempt(tx, {
+      businessId: input.businessId,
+      attemptId: attempt.id,
+      status: 'SUCCEEDED',
+    });
+    paymentAttemptId = attempt.id;
+  }
+
+  /* The verification and its claim, canonical order, same transaction, no
+   * external work between them (spec §6.5). The claim's identity is the
+   * provider's own transaction on this connection, so a second intent
+   * carrying the same provider transaction aborts here rather than booking
+   * the same money twice. */
+  await appendVerification(tx, {
+    businessId: input.businessId,
+    paymentId,
+    source: 'PROVIDER_VERIFIED',
+    providerSourceIdentity: `${input.paymentConnectionId ?? input.providerType}:${input.providerRef}`,
+    paymentAttemptId,
+    providerReference: input.providerRef,
+    actorId: input.actor,
+  });
 
   /* No invoice — an intent minted without an obligation to settle. The money
    * is real and recorded; what it MEANS is a human's question. */
@@ -255,33 +307,85 @@ export async function bookVerifiedPayment(
   const receipt = receiptRows[0];
   if (!receipt) throw new Error('bookVerifiedPayment: receipt insert returned no row');
 
-  /* 5 ── the books. Only the allocated portion posts; see the file comment. */
-  const posting = postProviderPayment({
-    memo: `Payment ${input.intent.reference} → ${invoice.invoice_number}`,
-    allocatedK,
-    providerFeeK: input.providerFeeK,
-    feePolicy: input.feePolicy,
-  });
+  /* 5 ── the books. Only the allocated portion posts; see the file comment.
+   *
+   * WHERE it posts changed with PR-065 (spec §21.1, invariant 10): a
+   * provider-verified payment is money the PROVIDER holds on its way to the
+   * merchant, so when the connection's clearing account exists, the debit
+   * lands THERE — gross, fee untouched — and the settlement posting
+   * (postSettlement, from ACTUAL §20 data) later moves clearing → bank and
+   * recognises the real fees. Expensing the webhook's fee here AND the
+   * settlement's components would double-count; the settlement's numbers
+   * are the authoritative ones (§20). The legacy bank-and-fee posting
+   * remains only for the degraded case with no resolvable clearing account,
+   * where claiming money is "at the provider" would name an account that
+   * does not exist. */
+  const memo = `Payment ${input.intent.reference} → ${invoice.invoice_number}`;
+  const clearing = input.paymentConnectionId
+    ? await accountByRole(
+        tx,
+        input.businessId,
+        'PAYMENT_PROVIDER_CLEARING',
+        input.paymentConnectionId,
+      )
+    : null;
+
   const txRows = await tx
     .insert(ledgerTransactions)
     .values({
       businessId: input.businessId,
-      memo: posting.memo,
+      memo,
       sourceType: input.sourceType ?? 'webhook',
       sourceId: input.eventId,
+      /* §9.4's headline case: a retried webhook cannot produce a second
+       * balanced journal even if every layer above it fails — the partial
+       * unique on (source_type, source_id, posting_purpose) holds it. */
+      postingPurpose: 'PAYMENT_CONFIRMATION',
     })
     .returning({ id: ledgerTransactions.id });
   const ledgerTx = txRows[0];
   if (!ledgerTx) throw new Error('bookVerifiedPayment: ledger transaction insert returned no row');
-  await tx.insert(ledgerEntries).values(
-    posting.lines.map((line) => ({
-      businessId: input.businessId,
-      transactionId: ledgerTx.id,
-      account: line.account,
-      debitK: line.debitK,
-      creditK: line.creditK,
-    })),
-  );
+
+  if (clearing) {
+    const arIds = await accountIdsForKeys(tx, input.businessId, ['ACCOUNTS_RECEIVABLE']);
+    await tx.insert(ledgerEntries).values(
+      [
+        { accountId: clearing.id, debitK: allocatedK, creditK: 0 },
+        { accountId: arIds.get('ACCOUNTS_RECEIVABLE')!, debitK: 0, creditK: allocatedK },
+      ].map((entry) => ({
+        businessId: input.businessId,
+        transactionId: ledgerTx.id,
+        accountId: entry.accountId,
+        debitK: entry.debitK,
+        creditK: entry.creditK,
+        /* Same-currency posting (§16): see writePosting. */
+        transactionAmountMinor: entry.debitK + entry.creditK,
+      })),
+    );
+  } else {
+    const posting = postProviderPayment({
+      memo,
+      allocatedK,
+      providerFeeK: input.providerFeeK,
+      feePolicy: input.feePolicy,
+    });
+    const entryAccountIds = await accountIdsForKeys(
+      tx,
+      input.businessId,
+      posting.lines.map((line) => line.account),
+    );
+    await tx.insert(ledgerEntries).values(
+      posting.lines.map((line) => ({
+        businessId: input.businessId,
+        transactionId: ledgerTx.id,
+        accountId: entryAccountIds.get(line.account)!,
+        debitK: line.debitK,
+        creditK: line.creditK,
+        /* Same-currency posting (§16): see writePosting. */
+        transactionAmountMinor: line.debitK + line.creditK,
+      })),
+    );
+  }
 
   /* 6 ── how the money answered the obligation. */
   const reconciliation =
@@ -319,6 +423,32 @@ export async function bookVerifiedPayment(
  * that arrived and was deliberately not booked (wrong currency, late after
  * expiry, a verify miss). This is the admin exception queue's raw material.
  */
+/**
+ * Whether an exception for this expectation is already on file (PR-064):
+ * a sweep that re-polls every ten minutes must not turn one disagreement
+ * into a hundred rows.
+ */
+export async function hasException(
+  tx: TenantDb,
+  businessId: string,
+  expectationKind: string,
+  expectationId: string,
+): Promise<boolean> {
+  const rows = await tx
+    .select({ id: reconciliations.id })
+    .from(reconciliations)
+    .where(
+      and(
+        eq(reconciliations.businessId, businessId),
+        eq(reconciliations.status, 'EXCEPTION'),
+        eq(reconciliations.expectationKind, expectationKind),
+        eq(reconciliations.expectationId, expectationId),
+      ),
+    )
+    .limit(1);
+  return rows.length === 1;
+}
+
 export async function recordException(
   tx: TenantDb,
   input: {
@@ -529,6 +659,32 @@ export async function markSettlements(
   return rows.length;
 }
 
+/**
+ * The verified payments behind a set of references (PR-064): what a §20
+ * settlement's items are made of. Verified only — an unverified payment
+ * has no business inside a provider payout.
+ */
+export async function paymentsByReferences(
+  tx: TenantDb,
+  businessId: string,
+  references: string[],
+): Promise<Array<{ id: string; amountK: number; reference: string }>> {
+  if (references.length === 0) return [];
+  const rows = await tx
+    .select({ id: payments.id, amountK: payments.amountK, reference: payments.rekodaReference })
+    .from(payments)
+    .where(
+      and(
+        eq(payments.businessId, businessId),
+        eq(payments.verified, 1),
+        inArray(payments.rekodaReference, references),
+      ),
+    );
+  return rows.filter((r): r is { id: string; amountK: number; reference: string } =>
+    Boolean(r.reference),
+  );
+}
+
 export interface ReconciliationReadback {
   id: string;
   status: string;
@@ -631,6 +787,15 @@ export interface RecordMerchantPaymentInput {
    * must end up with ONE receipt, not two.
    */
   clientRef?: string | null;
+  /**
+   * How the merchant's assertion reached us — TYPED · SPOKEN · SAW_AN_IMAGE ·
+   * NOT_A_MESSAGE (spec E.7). Context for a human, never a trust grade, and
+   * never guessed: absent when the ingress cannot honestly say.
+   */
+  evidenceBasis?: string | null;
+  /** The PaymentEvidence row this attestation cites, when an image came with
+   * the claim. The evidence proves nothing; the link says it was shown. */
+  paymentEvidenceId?: string | null;
 }
 
 export interface RecordedPayment {
@@ -724,10 +889,38 @@ export async function recordMerchantPayment(
       ...(input.clientRef ? { rekodaReference: `manual:${input.clientRef}` } : {}),
       sourceType: input.sourceType,
       sourceId: input.sourceId,
+      /* The merchant confirmed it, with recorded semantics. The instrument
+       * never changes the source (journeys §5.1): MERCHANT_ATTESTED + POS is
+       * representable now, which it was not while the source carried it. */
+      initialConfirmationSource: 'MERCHANT_ATTESTED',
+      paymentMethod: normalisePaymentMethod(input.method),
+      ...(input.evidenceBasis ? { evidenceBasis: input.evidenceBasis } : {}),
+      ...(input.paymentEvidenceId ? { paymentEvidenceId: input.paymentEvidenceId } : {}),
     })
     .returning({ id: payments.id });
   const paymentId = paymentRows[0]?.id;
   if (!paymentId) throw new Error('recordMerchantPayment: payment insert returned no row');
+
+  /* The explicit confirmation action is the claim identity (spec §6.5):
+   * the confirmed draft for chat, the form's one-shot key for the dashboard.
+   * A dashboard submission with no client key gets the payment row itself as
+   * its action, which is honest — no external confirmation identity existed
+   * — and keeps the claims-mirror-verifications reconstruction a bijection.
+   * The invoice number is deliberately NOT the identity: a second partial
+   * payment against the same invoice is a second confirmation, not a retry
+   * of the first. */
+  await appendVerification(tx, {
+    businessId: input.businessId,
+    paymentId,
+    source: 'MERCHANT_ATTESTED',
+    confirmationEventId:
+      input.sourceType === 'chat'
+        ? `chat:${input.sourceId}`
+        : input.clientRef
+          ? `${input.sourceType}:ref:${input.clientRef}`
+          : `payment:${paymentId}`,
+    actorId: input.actor,
+  });
 
   await tx.insert(paymentAllocations).values({
     businessId: input.businessId,
@@ -786,6 +979,12 @@ export async function recordMerchantPayment(
     }),
     input.sourceType,
     input.sourceId,
+    /* No posting_purpose here, deliberately: two partial payments on one
+     * invoice legitimately share (sourceType, sourceId) — the dashboard
+     * sends the invoice number — and the claim identity is the clientRef,
+     * enforced at the payments layer. §9.4's ledger guard belongs to
+     * writers whose source pair names exactly one event, like the webhook
+     * path above. */
   );
 
   await tx.insert(auditEvents).values({
@@ -849,6 +1048,7 @@ export async function recordPaymentByNumber(
     method: 'cash' | 'transfer';
     actor: string;
     clientRef?: string | null;
+    evidenceBasis?: string | null;
   },
 ): Promise<RecordPaymentOutcome> {
   const rows = await tx.execute<{ id: string }>(sql`
@@ -865,6 +1065,7 @@ export async function recordPaymentByNumber(
       businessId: input.businessId,
       invoiceId: found.id,
       clientRef: input.clientRef ?? null,
+      evidenceBasis: input.evidenceBasis ?? null,
       amountK: input.amountK,
       method: input.method,
       sourceType: 'dashboard',
@@ -951,4 +1152,72 @@ export async function collectedByBusiness(
     LIMIT ${limit}
   `);
   return [...rows].map((r) => ({ businessId: r.business_id, collectedK: Number(r.total) }));
+}
+
+/* ── §14.2: one full reversal per allocation (PR-049) ───────────────────── */
+
+export type ReverseAllocationOutcome =
+  | { outcome: 'reversed'; id: string }
+  | { outcome: 'not_found' }
+  | { outcome: 'already_reversed' }
+  | { outcome: 'is_a_reversal' };
+
+/**
+ * A human matched money to the wrong invoice: the correction is a row that
+ * negates the original exactly, never an edit — and a partial change of
+ * mind is this, then a fresh allocation of the correct amount. The 0078
+ * trigger holds the shape; this is the front door with the good outcomes.
+ */
+export async function reverseAllocation(
+  tx: TenantDb,
+  input: {
+    businessId: string;
+    allocationId: string;
+    reason: string;
+    sourceType: string;
+    sourceId: string;
+  },
+): Promise<ReverseAllocationOutcome> {
+  const rows = await tx
+    .select()
+    .from(paymentAllocations)
+    .where(
+      and(
+        eq(paymentAllocations.businessId, input.businessId),
+        eq(paymentAllocations.id, input.allocationId),
+      ),
+    )
+    .limit(1);
+  const original = rows[0];
+  if (!original) return { outcome: 'not_found' };
+  if (original.reversalOfId !== null) return { outcome: 'is_a_reversal' };
+  const standing = await tx
+    .select({ id: paymentAllocations.id })
+    .from(paymentAllocations)
+    .where(
+      and(
+        eq(paymentAllocations.businessId, input.businessId),
+        eq(paymentAllocations.reversalOfId, input.allocationId),
+      ),
+    )
+    .limit(1);
+  if (standing[0]) return { outcome: 'already_reversed' };
+
+  const inserted = await tx
+    .insert(paymentAllocations)
+    .values({
+      businessId: input.businessId,
+      paymentId: original.paymentId,
+      invoiceId: original.invoiceId,
+      amountK: -original.amountK,
+      currency: original.currency,
+      reversalOfId: original.id,
+      reason: input.reason,
+      sourceType: input.sourceType,
+      sourceId: input.sourceId,
+    })
+    .returning({ id: paymentAllocations.id });
+  const row = inserted[0];
+  if (!row) throw new Error('reverseAllocation: insert returned no row');
+  return { outcome: 'reversed', id: row.id };
 }

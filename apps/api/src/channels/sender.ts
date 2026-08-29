@@ -95,8 +95,57 @@ export interface OutboundRetentionNotice {
   deletesOn: string;
 }
 
+/**
+ * A merchant's own template, sent on the MERCHANT'S OWN WABA (spec §24;
+ * PR-060). Unlike every other send in this port, the credential travels
+ * with the call: Rekoda's token sends on Rekoda's number, and a merchant's
+ * template sends on the merchant's `phoneNumberId` under the merchant's
+ * token, decrypted for the length of this one request.
+ */
+export interface OutboundTemplate {
+  to: string;
+  /** WHICH channel asset dispatches this — the merchant's number, never ours. */
+  phoneNumberId: string;
+  /** The merchant's WABA token, already decrypted. Never logged, never stored. */
+  accessToken: string;
+  name: string;
+  language: string;
+  /** Body placeholder values, in order. Rehydrated like any message text. */
+  parameters: string[];
+}
+
+/**
+ * A free-form reply INSIDE a customer's 24-hour window, on the merchant's
+ * own WABA (spec §24; PR-061). Same travelling credential as
+ * `OutboundTemplate`, and only sendable while the window the CUSTOMER
+ * opened is still running — outside it, Meta rejects free-form text
+ * (131047) and the only thing that can reach them is a template.
+ */
+export interface OutboundConnectionText {
+  to: string;
+  phoneNumberId: string;
+  /** The merchant's WABA token, already decrypted. Never logged, never stored. */
+  accessToken: string;
+  /** Fully rehydrated, for the length of this one request. */
+  text: string;
+}
+
 export interface MessageSender {
   send(message: OutboundMessage): Promise<SendResult>;
+  /**
+   * A free-form text on a merchant's own WABA, inside the service window.
+   * The window check is the CALLER'S duty (it needs the database); this
+   * method just carries the credential the way `sendTemplate` does.
+   */
+  sendOnConnection(message: OutboundConnectionText): Promise<SendResult>;
+  /**
+   * Send a merchant's approved template on their own WABA. Separate from
+   * the named platform templates below for the same reason those are
+   * separate from `send`: different credential, different number,
+   * different rules, and hiding that would make Integrate look shipped
+   * while every send went out on Rekoda's number.
+   */
+  sendTemplate(template: OutboundTemplate): Promise<SendResult>;
   /** Download media by Meta's id. Throws `SendFailed` when it cannot. */
   fetchMedia(mediaId: string): Promise<InboundMedia>;
   /**

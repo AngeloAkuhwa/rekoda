@@ -12,6 +12,7 @@ import { canRecordTrade, isOwner } from '@/lib/permissions';
 import { CancelQuoteForm, ConvertQuoteForm, CreateQuoteForm, type OpenQuote } from './QuoteForms';
 import { RecordPaymentForm, type PayableInvoice } from './RecordPaymentForm';
 import { SignOutButton } from '../SignOutButton';
+import { heldBy } from '@/lib/capabilities';
 
 export const metadata: Metadata = {
   title: 'Invoices',
@@ -88,7 +89,7 @@ export default async function InvoicesPage({
         <SignOutButton />
       </header>
 
-      <AppNav active="invoices" />
+      <AppNav active="invoices" held={heldBy(identity)} />
 
       {/* Above the register, because an order is what an invoice comes FROM.
           A merchant looking for "did that order ever get billed" is looking
@@ -254,6 +255,7 @@ export default async function InvoicesPage({
                     <th className="rk-num">Paid</th>
                     <th className="rk-num">Credited</th>
                     <th className="rk-num">Balance</th>
+                    <th>Account</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -288,6 +290,17 @@ export default async function InvoicesPage({
                           'settled'
                         ) : (
                           <Money kobo={invoice.balanceDueK} />
+                        )}
+                      </td>
+                      {/* The whole account, not just this row: a receipt says
+                          one payment was accepted, the statement says where
+                          the account stands (spec §15; PR-097). Only for
+                          invoices anchored to a customer record. */}
+                      <td>
+                        {invoice.customerId ? (
+                          <a href={`/app/statements/${invoice.customerId}`}>Statement</a>
+                        ) : (
+                          ''
                         )}
                       </td>
                     </tr>

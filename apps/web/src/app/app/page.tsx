@@ -14,6 +14,7 @@ import { AppNav } from './AppNav';
 import { PLAN_NAMES } from '@/lib/plans';
 import { CashflowChart } from './CashflowChart';
 import { SignOutButton } from './SignOutButton';
+import { heldBy } from '@/lib/capabilities';
 
 export const metadata: Metadata = {
   title: 'Your dashboard',
@@ -81,7 +82,7 @@ export default async function DashboardPage() {
         <SignOutButton />
       </header>
 
-      <AppNav active="overview" />
+      <AppNav active="overview" held={heldBy(identity)} />
 
       {overview.exceptionsOpen > 0 ? (
         <a href="/app/payments" className="rk-attention-strip">
@@ -341,9 +342,21 @@ function StatTile({
 
 /** The units, in merchant words. Same vocabulary as the WhatsApp reply. */
 const UNIT_LABELS: Record<UsageUnit, string> = {
-  messages: 'messages',
-  voice_seconds: 'seconds of voice notes',
-  documents: 'invoices and receipts',
-  documents_understood: 'document scans',
-  orders: 'orders',
+  AI_ACTIONS: 'messages',
+  VOICE_MINUTES: 'seconds of voice notes',
+  DOCUMENT_GENERATION: 'invoices and receipts',
+  DOCUMENTS_UNDERSTOOD: 'document scans',
+  SERVICE_MESSAGE: 'replies inside the 24-hour window',
+  UTILITY_TEMPLATE: 'order and payment updates',
+  AUTH_TEMPLATE: 'login codes',
+  AUTH_INTL_TEMPLATE: 'international login codes',
+  MARKETING_TEMPLATE: 'marketing messages',
+  CATALOGUE_ORDERS: 'orders',
+  PAYMENT_CONNECTIONS: 'payment connections',
+  FINANCIAL_ACCOUNT_CONNECTIONS: 'bank connections',
+  ACCOUNTANT_USERS: 'accountant logins',
+  REPORT_EXPORTS: 'report downloads',
+  API_REQUEST_UNITS: 'API requests',
+  API_APPLICATIONS: 'API applications',
+  WEBHOOK_DELIVERIES: 'webhook deliveries',
 };

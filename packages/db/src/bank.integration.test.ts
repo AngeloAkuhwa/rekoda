@@ -362,16 +362,16 @@ describe('pairing the two sides', () => {
 
     await withBusiness(db, businessId, (tx) =>
       tx.execute(sql`
-        INSERT INTO bank_line_matches (business_id, line_id, transaction_id, decided_by)
-        VALUES (${businessId}::uuid, ${lines[0]!.id}::uuid, ${txId}::uuid, 'manual')
+        INSERT INTO bank_line_matches (business_id, line_id, transaction_id, decided_by, tier, reason)
+        VALUES (${businessId}::uuid, ${lines[0]!.id}::uuid, ${txId}::uuid, 'manual', 4, 'testing')
       `),
     );
 
     await expect(
       withBusiness(db, businessId, (tx) =>
         tx.execute(sql`
-          INSERT INTO bank_line_matches (business_id, line_id, transaction_id, decided_by)
-          VALUES (${businessId}::uuid, ${lines[1]!.id}::uuid, ${txId}::uuid, 'manual')
+          INSERT INTO bank_line_matches (business_id, line_id, transaction_id, decided_by, tier, reason)
+          VALUES (${businessId}::uuid, ${lines[1]!.id}::uuid, ${txId}::uuid, 'manual', 4, 'testing')
         `),
       ),
     ).rejects.toBeTruthy();
@@ -438,6 +438,7 @@ describe('pairing the two sides', () => {
           lineId: line.id,
           transactionId: one,
           actor: 'user:1',
+          reason: 'testing the pairing by hand',
         }),
       ),
     ).toEqual({ outcome: 'matched' });
@@ -470,6 +471,7 @@ describe('pairing the two sides', () => {
           lineId: line.id,
           transactionId: posting,
           actor: 'user:1',
+          reason: 'testing the pairing by hand',
         }),
       ),
     ).toEqual({ outcome: 'refused', reason: 'amounts_differ' });
@@ -496,6 +498,7 @@ describe('pairing the two sides', () => {
           lineId: line.id,
           transactionId: posting,
           actor: 'user:1',
+          reason: 'testing the pairing by hand',
         }),
       ),
     ).toEqual({ outcome: 'matched' });
@@ -510,7 +513,13 @@ describe('pairing the two sides', () => {
     const line = lines.find((l) => l.amountK === 15_000_000)!;
     const by = (lineId: string, transactionId: string) =>
       withBusiness(db, businessId, (tx) =>
-        bankRepo.matchByHand(tx, { businessId, lineId, transactionId, actor: 'user:1' }),
+        bankRepo.matchByHand(tx, {
+          businessId,
+          lineId,
+          transactionId,
+          actor: 'user:1',
+          reason: 'testing the pairing by hand',
+        }),
       );
 
     expect(await by(line.id, posting)).toEqual({ outcome: 'matched' });
@@ -579,6 +588,7 @@ describe('pairing the two sides', () => {
           lineId: line.id,
           transactionId: bolasPosting,
           actor: 'user:1',
+          reason: 'testing the pairing by hand',
         }),
       ),
     ).toEqual({ outcome: 'refused', reason: 'no_such_movement' });
@@ -746,6 +756,7 @@ describe('the statement page a merchant works from', () => {
           lineId: line.id,
           transactionId: movement.transactionId,
           actor: 'user:1',
+          reason: 'testing the pairing by hand',
         });
       }
     });

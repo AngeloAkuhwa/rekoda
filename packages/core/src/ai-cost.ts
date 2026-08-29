@@ -11,6 +11,18 @@
  * the way out, same as the ledger.
  */
 
+/**
+ * WHY a model was called, carried on every cost row it produces.
+ *
+ * The margin view's first question is not "what did Anthropic cost" but
+ * "what does reading receipts cost" — and provider alone cannot answer it
+ * once one provider serves several jobs. Every `usage_events` row an AI
+ * call writes carries one of these in its meta, so the grouping exists in
+ * the data rather than in somebody's memory of which model did what.
+ */
+export type AiModelRole =
+  'classifier' | 'interpreter' | 'vision' | 'vision_verifier' | 'escalation' | 'transcriber';
+
 /** Token counts as Anthropic reports them. */
 export interface TokenUsage {
   inputTokens: number;
@@ -38,30 +50,34 @@ export interface ModelPrice {
  * `claude-haiku-*` bills at the haiku rate. Configuration names an exact id
  * (see config.ts) and this table costs whichever family it belongs to.
  *
- * ALWAYS THE STANDARD RATE, never a promotional one. Introductory pricing
- * expires on a date nobody will remember, and a margin view that quietly
- * flatters by 50% the morning it lapses is worse than one that was
- * pessimistic all along. Costing above the invoice is a margin surprise in
- * the safe direction; costing below it is the other kind.
+ * ALWAYS THE PERMANENT LIST RATE, never a promotional one. Introductory
+ * pricing expires on a date nobody will remember, and a margin view that
+ * quietly flatters the morning it lapses is worse than one that was
+ * pessimistic all along. When a promotional rate BECOMES the list rate (as
+ * Sonnet 5's did), the table follows the vendor's page, dated in the family
+ * comment.
  */
 export const MODEL_PRICES: Readonly<Record<string, ModelPrice>> = {
   /**
-   * $3 / $15 per MTok — the STANDARD rate.
+   * $2 / $10 per MTok — Sonnet 5's PERMANENT list price.
    *
-   * Introductory pricing of $2 / $10 runs to 31 August 2026. Deliberately not
-   * used here: a table that switched itself on a date would report a 50%
-   * better margin for ten days and then correct without anybody noticing
-   * which of the two numbers a decision was made on.
+   * An earlier revision of this table held $3 / $15 with a note that $2/$10
+   * was introductory and would lapse on 1 September 2026. Anthropic made
+   * $2/$10 the standing Sonnet 5 rate, so the caution is now just a 50%
+   * overstatement of every vision and interpreter call. Rows already written
+   * keep the cost that was recorded when they were written — this table
+   * prices FUTURE calls, never rewrites history.
    *
-   * No longer the interpreter default; vision still reads receipts with it.
+   * The interpreter default (ADR 0031, accuracy-first) and the vision
+   * reader.
    */
   sonnet: {
-    inputMicrosPerMTok: 3_000_000,
-    outputMicrosPerMTok: 15_000_000,
-    cacheWriteMicrosPerMTok: 3_750_000, // 1.25× input
-    cacheReadMicrosPerMTok: 300_000, // 0.10× input
+    inputMicrosPerMTok: 2_000_000,
+    outputMicrosPerMTok: 10_000_000,
+    cacheWriteMicrosPerMTok: 2_500_000, // 1.25× input (5-minute cache)
+    cacheReadMicrosPerMTok: 200_000, // 0.10× input
   },
-  // $1 / $5 per MTok. The interpreter default (ADR 0007) and the classifier.
+  // $1 / $5 per MTok. The classifier (ADR 0031 moved the interpreter to Sonnet).
   haiku: {
     inputMicrosPerMTok: 1_000_000,
     outputMicrosPerMTok: 5_000_000,
@@ -152,6 +168,60 @@ export function costOfCall(modelId: string, usage: TokenUsage, fxNairaPerUsd: nu
     microsFor(usage.cacheReadTokens ?? 0, price.cacheReadMicrosPerMTok);
 
   // USD micros → naira → kobo. 1 USD micro = fx/1e6 naira = fx/1e4 kobo.
+  const nairaKobo = Math.round((usdMicros * fxNairaPerUsd) / 10_000);
+  return { usdMicros, nairaKobo, priced: true };
+}
+
+/**
+ * What a minute of hosted transcription costs.
+ *
+ * Its own shape rather than a row in `ModelPrice`, because forcing a
+ * per-minute rate into per-MTok fields would make every number in the table
+ * mean something different depending on which row you were reading. A
+ * margin view whose units change per row is a margin view that gets
+ * misread.
+ */
+export interface TranscriptionPrice {
+  /** micro-USD per MINUTE of audio. $0.006/min is 6_000. */
+  readonly perMinuteMicros: number;
+}
+
+/**
+ * Supplied at runtime like the OpenAI token prices, and for the same reason:
+ * the price belongs to whoever holds the invoice, and a stale compiled-in
+ * rate becomes a margin somebody acts on. Keyed by EXACT model id, not
+ * family — there are few transcription models and their ids do not sprout
+ * dated suffixes the way chat models' do.
+ */
+const transcriptionPrices = new Map<string, TranscriptionPrice>();
+
+export function registerTranscriptionPrice(model: string, price: TranscriptionPrice): void {
+  transcriptionPrices.set(model.toLowerCase(), price);
+}
+
+/** Whether a boot-time check can promise this model's calls will be priced. */
+export function hasTranscriptionPrice(model: string): boolean {
+  return transcriptionPrices.has(model.toLowerCase());
+}
+
+/**
+ * Cost a transcription call, pro-rated to the second.
+ *
+ * Seconds rather than minutes on the way in, because seconds are what the
+ * provider reports and what the voice meter counts — converting to minutes
+ * at the call site would be one more place to round in the wrong direction.
+ * Unknown models cost zero with `priced: false`, same contract as
+ * `costOfCall`: a zero that admits it.
+ */
+export function costOfTranscription(
+  model: string,
+  seconds: number,
+  fxNairaPerUsd: number,
+): CallCost {
+  const price = transcriptionPrices.get(model.toLowerCase());
+  if (!price) return { usdMicros: 0, nairaKobo: 0, priced: false };
+
+  const usdMicros = Math.round((Math.max(0, seconds) * price.perMinuteMicros) / 60);
   const nairaKobo = Math.round((usdMicros * fxNairaPerUsd) / 10_000);
   return { usdMicros, nairaKobo, priced: true };
 }

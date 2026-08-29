@@ -50,6 +50,14 @@ export const ACCOUNTS = {
   },
   ACCOUNTS_PAYABLE: { code: '2000', name: 'Accounts Payable', type: 'liability' },
   VAT_PAYABLE: { code: '2100', name: 'VAT Payable', type: 'liability' },
+  /**
+   * What the business owes its CUSTOMERS (§14.1; PR-081). A credit note
+   * lands here, never as a negative receivable: an unapplied credit
+   * reduces no invoice until it is explicitly applied, and a liability
+   * that used to hide inside AR gets its own line. Backed by the same
+   * 2300 the chart seed has carried since PR-030.
+   */
+  CUSTOMER_CREDIT: { code: '2300', name: 'Customer credits', type: 'liability' },
   OWNERS_EQUITY: { code: '3000', name: "Owner's Equity", type: 'equity' },
   SALES_REVENUE: { code: '4000', name: 'Sales Revenue', type: 'income' },
   COGS: { code: '5000', name: 'Cost of Goods Sold', type: 'expense' },
@@ -74,6 +82,15 @@ export const ACCOUNTS = {
 } as const satisfies Record<string, { code: string; name: string; type: AccountType }>;
 
 export type AccountKey = keyof typeof ACCOUNTS;
+
+/**
+ * The inverse of the chart: display code back to legacy key (F1, PR-033).
+ * Readers now filter and group the ledger by the chart row's CODE through
+ * `account_id`; consumers that still speak in keys map back through this.
+ */
+export const KEY_BY_CODE = Object.fromEntries(
+  Object.entries(ACCOUNTS).map(([key, value]) => [value.code, key]),
+) as Record<string, AccountKey>;
 export type AccountType = 'asset' | 'liability' | 'equity' | 'income' | 'expense';
 
 /** For rows read back from storage, where `account` arrives as a string. */
@@ -87,6 +104,14 @@ export interface LedgerLine {
   readonly account: AccountKey;
   readonly debitK: Kobo;
   readonly creditK: Kobo;
+  /**
+   * §12.3's subledger dimension, where the writer knows it: an
+   * ACCOUNTS_RECEIVABLE line answers "which invoice" or it answers to
+   * nobody. Optional because most builders post one aggregate line per
+   * account; the writers that keep per-document lines (opening
+   * receivables) carry the reference through to the entry row.
+   */
+  readonly invoiceId?: string;
 }
 
 export interface Posting {
@@ -118,6 +143,12 @@ export function assertBalanced(posting: Posting): void {
     if (line.debitK > 0 && line.creditK > 0) {
       throw new UnbalancedPostingError(posting.memo, line.debitK, line.creditK);
     }
+    /* §10: exactly one side per line. A 0/0 line says nothing and would be
+     * refused by the database CHECK (0070); refuse it here first, where
+     * the message can name the bug. */
+    if (line.debitK === 0 && line.creditK === 0) {
+      throw new UnbalancedPostingError(posting.memo, line.debitK, line.creditK);
+    }
     debits += line.debitK;
     credits += line.creditK;
   }
@@ -125,6 +156,24 @@ export function assertBalanced(posting: Posting): void {
     throw new UnbalancedPostingError(posting.memo, debits, credits);
   }
 }
+
+/**
+ * §9.4's posting purposes. What kind of financial event a journal entry
+ * records — the third leg of the ledger-level idempotency key, so a retried
+ * webhook cannot produce a second balanced journal even if every layer
+ * above it fails.
+ */
+export const POSTING_PURPOSES = [
+  'PAYMENT_CONFIRMATION',
+  'REVENUE_RECOGNITION',
+  'SETTLEMENT',
+  'CHARGEBACK',
+  'REFUND',
+  'TAX_POINT',
+  'REVERSAL',
+  'CORRECTION',
+] as const;
+export type PostingPurpose = (typeof POSTING_PURPOSES)[number];
 
 const line = (account: AccountKey, debitK: Kobo, creditK: Kobo): LedgerLine => ({
   account,
@@ -167,7 +216,7 @@ export function postSale(args: {
   const lines: LedgerLine[] = [];
   if (args.paidK > 0) lines.push(line(cashOrBank(args.method ?? 'transfer'), args.paidK, 0));
   if (receivableK > 0) lines.push(line('ACCOUNTS_RECEIVABLE', receivableK, 0));
-  lines.push(line('SALES_REVENUE', 0, args.totalK - vatK));
+  if (args.totalK - vatK > 0) lines.push(line('SALES_REVENUE', 0, args.totalK - vatK));
   if (vatK > 0) lines.push(line('VAT_PAYABLE', 0, vatK));
   const posting = { memo: args.memo, lines };
   assertBalanced(posting);
@@ -208,21 +257,45 @@ export function postOpeningBalances(args: {
   cashK?: Kobo;
   bankK?: Kobo;
   stockK?: Kobo;
+  /**
+   * What customers already owed, one line PER INVOICE (spec §12.3): an
+   * ACCOUNTS_RECEIVABLE line carries the invoice it collects against or
+   * the debtors page and the ledger become two answers to one question.
+   * The invoices are minted by the caller in the same transaction — an
+   * opening receivable figure with no document behind it is refused by
+   * the contract, not modelled here.
+   */
+  receivables?: readonly { invoiceId: string; amountK: Kobo }[];
 }): Posting {
   const cashK = args.cashK ?? 0;
   const bankK = args.bankK ?? 0;
   const stockK = args.stockK ?? 0;
+  const receivables = args.receivables ?? [];
   if (cashK < 0 || bankK < 0 || stockK < 0) {
     throw new RangeError('opening balances cannot be negative');
   }
-  const equityK = cashK + bankK + stockK;
+  for (const r of receivables) {
+    /* An opening invoice of nothing is not a debt, and a negative one is a
+     * credit note wearing the wrong clothes. */
+    if (r.amountK <= 0) throw new RangeError('an opening receivable must be owed something');
+  }
+  const receivablesK = receivables.reduce((sum, r) => sum + r.amountK, 0);
+  const equityK = cashK + bankK + stockK + receivablesK;
   if (equityK === 0) throw new RangeError('opening balances of nothing are not an entry');
 
   const lines: LedgerLine[] = [];
   if (cashK > 0) lines.push(line('CASH', cashK, 0));
   if (bankK > 0) lines.push(line('BANK', bankK, 0));
   if (stockK > 0) lines.push(line('INVENTORY', stockK, 0));
-  lines.push(line('OWNERS_EQUITY', 0, equityK));
+  for (const r of receivables) {
+    lines.push({
+      account: 'ACCOUNTS_RECEIVABLE',
+      debitK: r.amountK,
+      creditK: 0,
+      invoiceId: r.invoiceId,
+    });
+  }
+  if (equityK > 0) lines.push(line('OWNERS_EQUITY', 0, equityK));
 
   const posting = { memo: args.memo, lines };
   assertBalanced(posting);
@@ -355,11 +428,30 @@ export function postCreditNote(args: { memo: string; amountK: Kobo; vatK?: Kobo 
   if (args.amountK <= 0 || vatK < 0 || vatK > args.amountK) {
     throw new UnbalancedPostingError(args.memo, args.amountK, vatK);
   }
+  /* §14.1 (PR-081): the credit CREATES A CUSTOMER CREDIT — a liability
+   * to the customer — and reduces no invoice until explicitly applied.
+   * The receivable is untouched here; postCreditApplication moves it. */
   const lines: LedgerLine[] = [line('SALES_REVENUE', args.amountK - vatK, 0)];
   if (vatK > 0) lines.push(line('VAT_PAYABLE', vatK, 0));
-  lines.push(line('ACCOUNTS_RECEIVABLE', 0, args.amountK));
+  lines.push(line('CUSTOMER_CREDIT', 0, args.amountK));
 
   const posting = { memo: args.memo, lines };
+  assertBalanced(posting);
+  return posting;
+}
+
+/**
+ * §14.1's EXPLICIT act, on the books: an applied credit settles the
+ * invoice's receivable out of the liability the credit note created.
+ */
+export function postCreditApplication(args: { memo: string; amountK: Kobo }): Posting {
+  if (args.amountK <= 0) {
+    throw new UnbalancedPostingError(args.memo, args.amountK, 0);
+  }
+  const posting = {
+    memo: args.memo,
+    lines: [line('CUSTOMER_CREDIT', args.amountK, 0), line('ACCOUNTS_RECEIVABLE', 0, args.amountK)],
+  };
   assertBalanced(posting);
   return posting;
 }
@@ -414,6 +506,7 @@ export const ACCOUNT_PICKER_LABELS: Record<AccountKey, string> = {
   INVENTORY: 'Stock on the shelf',
   ACCOUNTS_PAYABLE: 'Money you owe suppliers',
   VAT_PAYABLE: 'VAT you are holding',
+  CUSTOMER_CREDIT: 'Money you owe customers back',
   OWNERS_EQUITY: 'Your own money in the business',
   SALES_REVENUE: 'Sales',
   COGS: 'Cost of goods sold',

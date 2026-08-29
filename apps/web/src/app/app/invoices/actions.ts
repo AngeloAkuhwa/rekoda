@@ -16,6 +16,8 @@ import { readSessionToken } from '@/server/session-cookies';
 export interface VoidFormState {
   error?: string;
   done?: string;
+  /** The API named the consequence and waits for the merchant to agree. */
+  confirm?: { confirmationId: string; consequence: string; invoiceNumber: string; reason: string };
 }
 
 /**
@@ -41,9 +43,23 @@ async function voidInvoiceActionUnguarded(
   if (!invoiceNumber) return { error: 'Pick an invoice to void.' };
   if (reason.length < 4) return { error: 'Say why, in a few words. It goes on the record.' };
 
-  const outcome = await voidInvoice(token, invoiceNumber, reason);
+  const confirmationId = String(formData.get('confirmationId') ?? '').trim() || undefined;
+  const outcome = await voidInvoice(token, invoiceNumber, reason, confirmationId);
   if (!outcome) return { error: 'That did not go through. Nothing was changed.' };
 
+  if (outcome.outcome === 'confirm') {
+    return {
+      confirm: {
+        confirmationId: outcome.confirmationId,
+        consequence: outcome.consequence,
+        invoiceNumber,
+        reason,
+      },
+    };
+  }
+  if (outcome.outcome === 'confirmation_lapsed') {
+    return { error: 'That took a little too long. Submit it again to start over.' };
+  }
   if (outcome.outcome === 'not_found') return { error: 'No invoice with that number.' };
   if (outcome.outcome === 'already_void') {
     return { error: `${invoiceNumber} was already voided. Nothing changed.` };
@@ -125,17 +141,23 @@ async function creditInvoiceActionUnguarded(
     };
   }
 
+  if (outcome.outcome === 'no_customer') {
+    return {
+      error:
+        `${invoiceNumber} does not name a customer, so there is nobody to owe the credit to. ` +
+        'Record the customer on the sale first, or correct it with a journal.',
+    };
+  }
+
   revalidatePath('/app/invoices');
 
-  /* Credited past what was still owed means the money is now going the other
-   * way, and a merchant needs telling in a sentence rather than left to read
-   * it off a negative balance. */
-  const owed =
-    outcome.owedToCustomerK > 0
-      ? ` You now owe the customer ${formatNaira(outcome.owedToCustomerK)}.`
-      : '';
+  /* §14.1: the whole credit is owed to the customer until it is applied
+   * or paid out, and the invoice balance has not moved. Say both. */
   return {
-    done: `${outcome.creditNoteNumber} issued against ${outcome.invoiceNumber}.` + owed,
+    done:
+      `${outcome.creditNoteNumber} issued against ${outcome.invoiceNumber}. ` +
+      `You now owe the customer ${formatNaira(outcome.owedToCustomerK)}; ` +
+      'the invoice balance is unchanged until you apply the credit or pay it back.',
   };
 }
 

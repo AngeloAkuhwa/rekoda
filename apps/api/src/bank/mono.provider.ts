@@ -122,6 +122,9 @@ export class MonoProvider implements BankFeedPort {
         amountK: row.type === 'debit' ? -magnitude : magnitude,
         narration: row.narration ?? '',
         bankRef: row.id ?? null,
+        /* Mono's transaction id, doing double duty: the label above and
+         * the §22.3 connection-scoped identity below. */
+        externalTransactionId: row.id ?? null,
       });
     }
     return { state: 'ok', transactions };

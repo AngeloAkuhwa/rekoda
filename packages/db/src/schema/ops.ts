@@ -35,10 +35,43 @@ export const conversations = pgTable(
     id: id(),
     businessId: businessId(),
     channel: text('channel').notNull(), // meta | twilio | simulator
+    /** Appendix F: MERCHANT | CUSTOMER | LEGACY_THREAD. NOT NULL since
+     * 0087 — every thread is classified at birth, none may dodge F.2. */
+    conversationKind: text('conversation_kind').notNull(),
+    /** WHICH merchant channel asset (phoneNumberId / WABA). Never who is
+     * writing — F.5 keeps those identities apart. */
+    channelAccountId: text('channel_account_id'),
+    /** ADVISORY only (F.7): never the routing key, never unique. */
+    externalConversationId: text('external_conversation_id'),
+    /** Business- and channel-scoped keyed lookup token. NEVER raw. */
+    participantBlindIndex: text('participant_blind_index'),
+    participantIndexKeyVersion: text('participant_index_key_version'),
+    /** Resolved through the privacy gateway. */
+    customerId: uuid('customer_id'),
+    status: text('status').notNull().default('open'),
     createdAt: createdAt(),
   },
-  // One thread per business per channel — see migration 0006.
-  (t) => [uniqueIndex('conversations_business_channel_ux').on(t.businessId, t.channel)],
+  /* F.2's two identities, two constraints (migration 0087, which replaced
+   * 0006's broad one-thread-per-channel unique): exactly one MERCHANT
+   * thread per business per channel, and one CUSTOMER thread per
+   * (business, channel, asset, blind index, key version). The NULL
+   * exclusion on the customer unique is explicit — a customer row without
+   * an identity is already unrepresentable via the CHECK in 0087, but the
+   * index predicate says so on its own rather than leaning on it. */
+  (t) => [
+    uniqueIndex('conversations_merchant_ux')
+      .on(t.businessId, t.channel)
+      .where(sql`conversation_kind = 'MERCHANT'`),
+    uniqueIndex('conversations_customer_ux')
+      .on(
+        t.businessId,
+        t.channel,
+        t.channelAccountId,
+        t.participantBlindIndex,
+        t.participantIndexKeyVersion,
+      )
+      .where(sql`conversation_kind = 'CUSTOMER' AND participant_blind_index IS NOT NULL`),
+  ],
 );
 
 export const conversationMessages = pgTable(
@@ -161,7 +194,15 @@ export const usageEvents = pgTable(
     id: id(),
     businessId: businessId(),
     provider: text('provider').notNull(), // meta | twilio | anthropic | openai | stt | storage | paystack
-    usageType: text('usage_type').notNull(), // message_in | message_out | template | llm_call | stt_seconds | pdf | excel …
+    /**
+     * What was bought. Outbound messages carry their Meta CATEGORY here
+     * (SERVICE_MESSAGE, UTILITY_TEMPLATE, AUTH_TEMPLATE, AUTH_INTL_TEMPLATE,
+     * MARKETING_TEMPLATE) rather than a single `message_out`, because spec
+     * §24 separates them: utility and marketing differ by roughly eightfold
+     * and one bucket hides the largest variable in plan margin. Everything
+     * else keeps its own word: llm_call | stt_seconds | pdf | excel …
+     */
+    usageType: text('usage_type').notNull(),
     quantity: bigint('quantity', { mode: 'number' }).notNull(),
     /** Provider cost in micro-units of `costCurrency` (USD micros for AI). */
     providerCostMicros: bigint('provider_cost_micros', { mode: 'number' }).notNull().default(0),
@@ -243,6 +284,51 @@ export const aiQuotaCounters = pgTable(
 export const aiGlobalCounters = pgTable('ai_global_counters', {
   day: date('day').primaryKey(),
   calls: integer('calls').notNull().default(0),
+});
+
+/**
+ * Per-business daily document-extraction reservations (AI hardening item 4).
+ *
+ * The OPERATIONAL brake on vision spend, distinct from the monthly
+ * `documents_understood` allowance the merchant bought: that one meters the
+ * product, this one bounds what a single day can cost before somebody looks.
+ * Same mechanism as `aiQuotaCounters` for the same reason — the limit lives
+ * in the statement's WHERE clause, never in a read-then-decide.
+ */
+export const docExtractionCounters = pgTable(
+  'doc_extraction_counters',
+  {
+    businessId: businessId(),
+    day: date('day').notNull(),
+    extractions: integer('extractions').notNull().default(0),
+  },
+  (t) => [primaryKey({ columns: [t.businessId, t.day] })],
+);
+
+/** The platform's vision day (A4). One integer per day; no RLS on purpose. */
+export const docExtractionGlobalCounters = pgTable('doc_extraction_global_counters', {
+  day: date('day').primaryKey(),
+  extractions: integer('extractions').notNull().default(0),
+});
+
+/**
+ * Per-business daily transcription SECONDS (A4). Operational, not the
+ * monthly voice allowance: this is the brake on a runaway day.
+ */
+export const voiceSecondCounters = pgTable(
+  'voice_second_counters',
+  {
+    businessId: businessId(),
+    day: date('day').notNull(),
+    seconds: integer('seconds').notNull().default(0),
+  },
+  (t) => [primaryKey({ columns: [t.businessId, t.day] })],
+);
+
+/** The platform's transcription day (A4). */
+export const voiceGlobalCounters = pgTable('voice_global_counters', {
+  day: date('day').primaryKey(),
+  seconds: integer('seconds').notNull().default(0),
 });
 
 /**

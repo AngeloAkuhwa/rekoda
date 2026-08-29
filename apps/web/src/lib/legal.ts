@@ -10,6 +10,12 @@ import { RETENTION } from '@rekoda/core';
  * unset renders as a visible badge saying so, rather than as blank space or a
  * plausible-looking lie.
  *
+ * The badge is a development affordance, not a production state: a
+ * production server refuses to start without the mandatory values
+ * (`legal-gate.mjs`, wired into `next.config.mjs` — remediation R8), so the
+ * only place a badge can render is an environment where it is telling a
+ * developer the truth.
+ *
  * See MASTER-PLAN §5.2.4.
  */
 export interface LegalFact {
@@ -37,7 +43,7 @@ export const LEGAL = {
  * today, every day, tells the reader nothing and quietly erases the real
  * revision history.
  */
-export const POLICY_LAST_UPDATED = '19 August 2026';
+export const POLICY_LAST_UPDATED = '29 August 2026';
 
 /** Retention that survives an erasure request, and the law that requires it. */
 export const FINANCIAL_RETENTION_YEARS = RETENTION.financialYears;

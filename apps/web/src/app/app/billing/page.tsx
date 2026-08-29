@@ -3,12 +3,14 @@ import { isOwner } from '@/lib/permissions';
 import { Money } from '@/components/ui/Money';
 import { PendingButton } from '@/components/ui/PendingButton';
 import { CancelForm } from './CancelForm';
-import { PLANS, PLAN_NAMES } from '@/lib/plans';
+import { PLANS, PLAN_NAMES, SHARED_ACROSS_PLANS } from '@/lib/plans';
+import { capabilityWords, entitlementsForPlan, planSwitch } from '@rekoda/core';
 import { billingOverview, billingQuote } from '@/server/api';
 import { requireSessionWithToken } from '@/server/guards';
 import { AppNav } from '../AppNav';
 import { SignOutButton } from '../SignOutButton';
 import { buyPack, confirmPlanChange } from './actions';
+import { heldBy } from '@/lib/capabilities';
 
 export const metadata: Metadata = {
   title: 'Billing',
@@ -19,11 +21,23 @@ export const metadata: Metadata = {
    different ways ("documents read" here, "document scans" there) makes a
    merchant wonder if they are two meters. */
 const UNIT_LABELS: Record<string, string> = {
-  messages: 'messages',
-  voice_seconds: 'seconds of voice notes',
-  documents: 'invoices and receipts',
-  documents_understood: 'document scans',
-  orders: 'orders',
+  AI_ACTIONS: 'messages',
+  VOICE_MINUTES: 'seconds of voice notes',
+  DOCUMENT_GENERATION: 'invoices and receipts',
+  DOCUMENTS_UNDERSTOOD: 'document scans',
+  SERVICE_MESSAGE: 'replies inside the 24-hour window',
+  UTILITY_TEMPLATE: 'order and payment updates',
+  AUTH_TEMPLATE: 'login codes',
+  AUTH_INTL_TEMPLATE: 'international login codes',
+  MARKETING_TEMPLATE: 'marketing messages',
+  CATALOGUE_ORDERS: 'orders',
+  PAYMENT_CONNECTIONS: 'payment connections',
+  FINANCIAL_ACCOUNT_CONNECTIONS: 'bank connections',
+  ACCOUNTANT_USERS: 'accountant logins',
+  REPORT_EXPORTS: 'report downloads',
+  API_REQUEST_UNITS: 'API requests',
+  API_APPLICATIONS: 'API applications',
+  WEBHOOK_DELIVERIES: 'webhook deliveries',
 };
 
 const CHARGE_LABELS: Record<string, string> = {
@@ -105,7 +119,7 @@ export default async function BillingPage({
         <SignOutButton />
       </header>
 
-      <AppNav active="billing" />
+      <AppNav active="billing" held={heldBy(identity)} />
 
       {overview.status.state === 'grace' ? (
         <div className="rk-attention-strip" role="status">
@@ -221,6 +235,45 @@ export default async function BillingPage({
       {proposed ? (
         <div className="rk-card">
           <h2>Moving to {PLAN_NAMES[proposed.to] ?? proposed.to}</h2>
+
+          {/* ── what changes, before what it costs ──
+              A plan change is a SWITCH: Chat to Integrate both gains and
+              loses, and a merchant must never learn what they gave up from a
+              refusal a week later (owner decision, 26 Aug 2026). Shown above
+              the money on purpose. The figure is the easy part; the
+              capability is the decision. */}
+          {(() => {
+            const change = planSwitch(overview.plan, proposed.to, entitlementsForPlan);
+            if (change.gained.length === 0 && change.lost.length === 0) return null;
+            return (
+              <div className="rk-switch-impact">
+                {change.gained.length > 0 ? (
+                  <>
+                    <h3>What you gain</h3>
+                    <ul>
+                      {change.gained.map((capability) => (
+                        <li key={capability}>{capabilityWords(capability)}</li>
+                      ))}
+                    </ul>
+                  </>
+                ) : null}
+                {change.lost.length > 0 ? (
+                  <>
+                    <h3>What you lose</h3>
+                    <ul>
+                      {change.lost.map((capability) => (
+                        <li key={capability}>{capabilityWords(capability)}</li>
+                      ))}
+                    </ul>
+                    <p className="rk-fineprint">
+                      Nothing you recorded is deleted. Your books, invoices, receipts, customers and
+                      reports stay exactly as they are, and your dashboard keeps working.
+                    </p>
+                  </>
+                ) : null}
+              </div>
+            );
+          })()}
           {proposed.kind === 'downgrade' ? (
             <p>
               Nothing to pay today. You keep {PLAN_NAMES[proposed.from] ?? proposed.from} until{' '}
@@ -240,7 +293,7 @@ export default async function BillingPage({
             <form action={confirmPlanChange}>
               <input type="hidden" name="plan" value={proposed.to} />
               <PendingButton pendingLabel="Confirming…">
-                {proposed.amountK === 0 ? 'Confirm the change' : 'Confirm and pay'}
+                {proposed.amountK === 0 ? 'Confirm the switch' : 'Confirm and pay'}
               </PendingButton>{' '}
               <a href="/app/billing" className="rk-period-link">
                 Not now
@@ -283,12 +336,55 @@ export default async function BillingPage({
               </tbody>
             </table>
           </div>
+          <div className="rk-shared-note">
+            <h3>On every plan</h3>
+            <ul>
+              {SHARED_ACROSS_PLANS.map((line) => (
+                <li key={line}>{line}</li>
+              ))}
+            </ul>
+          </div>
           <p className="rk-fineprint">
             Moving up starts now and you pay only for the days left in this month. Moving down
             starts at your next renewal, so you keep what you already paid for.
           </p>
         </div>
       )}
+
+      {/* ── recurring add-ons held ── */}
+      {overview.addOns.length > 0 ? (
+        <div className="rk-card">
+          <h2>What you also subscribe to</h2>
+          <div className="rk-table-scroll">
+            <table className="rk-table">
+              <thead>
+                <tr>
+                  <th>Add-on</th>
+                  <th>Since</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {overview.addOns.map((addOn) => (
+                  <tr key={addOn.addOnId}>
+                    <td>{addOn.name}</td>
+                    <td>{new Date(addOn.startedAt).toLocaleDateString('en-NG')}</td>
+                    <td>
+                      {addOn.endsAt
+                        ? `Ends ${new Date(addOn.endsAt).toLocaleDateString('en-NG')}`
+                        : 'Renews monthly'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="rk-fineprint">
+            These renew every month alongside your plan. To change one, message us and we will
+            handle it on your next renewal.
+          </p>
+        </div>
+      ) : null}
 
       {/* ── add-on packs ── */}
       {overview.packs.length > 0 ? (

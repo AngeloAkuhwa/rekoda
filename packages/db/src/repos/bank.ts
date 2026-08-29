@@ -13,9 +13,20 @@
  * rule's.
  */
 import { and, eq, sql } from 'drizzle-orm';
-import { fingerprintLines, matchStatement, type BankStatementLine } from '@rekoda/core';
+import {
+  fingerprintLines,
+  matchStatement,
+  paymentReferencesIn,
+  type BankStatementLine,
+} from '@rekoda/core';
 import type { Db, TenantDb } from '../client.js';
-import { bankFeedConnections, bankLineMatches, bankStatementLines } from '../schema/finance.js';
+import { codeOf } from './accounts.js';
+import {
+  bankLineMatches,
+  bankStatementLines,
+  financialAccountConnections,
+} from '../schema/finance.js';
+import { financialAccounts } from '../schema/accounts.js';
 import { auditEvents } from '../schema/ops.js';
 
 export interface ImportedStatement {
@@ -41,12 +52,20 @@ export async function importStatementLines(
   tx: TenantDb,
   input: {
     businessId: string;
-    lines: readonly BankStatementLine[];
+    lines: readonly (BankStatementLine & { externalTransactionId?: string | null })[];
     actor: string;
+    /** §22.3 (PR-073): the feed connection the lines came through. Absent
+     * for uploads, whose identity stays the fingerprint alone. */
+    connectionId?: string | null;
     /** Test seam: rows per INSERT, so a test can prove the chunk walk. */
     chunkRows?: number;
   },
 ): Promise<ImportedStatement> {
+  /* With PR-073 the DO NOTHING absorbs conflicts on BOTH identities: the
+   * fingerprint (same content re-imported through any door) and the
+   * partial provider-identity unique (the same external id re-polled
+   * through the same connection, even if the provider reworded the
+   * narration in between). */
   const keyed = fingerprintLines(input.lines);
   if (keyed.length === 0) return { imported: 0, duplicates: 0 };
 
@@ -72,6 +91,11 @@ export async function importStatementLines(
           narration: line.narration,
           bankRef: line.bankRef,
           fingerprint: line.fingerprint,
+          /* §22.3: identity travels as a pair or not at all — an external
+           * id with no connection to scope it is the global identifier
+           * the constraint forbids. */
+          financialAccountConnectionId: input.connectionId ?? null,
+          externalTransactionId: input.connectionId ? (line.externalTransactionId ?? null) : null,
         })),
       )
       .onConflictDoNothing()
@@ -140,7 +164,9 @@ export async function bankPositionFor(tx: TenantDb, businessId: string): Promise
     SELECT
       (SELECT COALESCE(SUM(e.debit_k) - SUM(e.credit_k), 0)
          FROM ledger_entries e
-        WHERE e.business_id = ${businessId}::uuid AND e.account = 'BANK')::bigint AS ledger_k,
+         JOIN accounts acc ON acc.id = e.account_id
+        WHERE e.business_id = ${businessId}::uuid
+          AND acc.code = ${codeOf('BANK')})::bigint AS ledger_k,
       (SELECT COALESCE(SUM(l.amount_k), 0)
          FROM bank_statement_lines l
         WHERE l.business_id = ${businessId}::uuid)::bigint AS statement_k,
@@ -320,6 +346,18 @@ export interface Reconciliation {
    * pair the lines that provably cannot be.
    */
   pairable: number;
+  /** Tier-3 proposals (§22.1): a reference agrees, the amounts do not.
+   * Shown to a person, never applied. */
+  suggested: number;
+  /** The proposals themselves, enriched for the review screen. */
+  proposals: {
+    lineId: string;
+    transactionId: string;
+    why: 'reference_found_amount_differs';
+    movementAmountK: number;
+    movementOccurredOn: string;
+    movementMemo: string;
+  }[];
   /** Lines more than one posting fits, waiting on a person. */
   ambiguous: number;
   /** Lines nothing in the books explains: money nobody recorded. */
@@ -352,24 +390,42 @@ export interface Reconciliation {
 async function bankMovements(
   tx: TenantDb,
   businessId: string,
-): Promise<{ transactionId: string; occurredOn: string; amountK: number }[]> {
+): Promise<
+  {
+    transactionId: string;
+    occurredOn: string;
+    amountK: number;
+    reference: string | null;
+    memo: string;
+  }[]
+> {
   const rows = await tx.execute<{
     transaction_id: string;
     occurred_on: string;
     amount_k: string;
+    memo: string | null;
   }>(sql`
     SELECT e.transaction_id,
            (e.created_at AT TIME ZONE 'Africa/Lagos')::date::text AS occurred_on,
-           (SUM(e.debit_k) - SUM(e.credit_k))::bigint AS amount_k
+           (SUM(e.debit_k) - SUM(e.credit_k))::bigint AS amount_k,
+           max(lt.memo) AS memo
     FROM ledger_entries e
-    WHERE e.business_id = ${businessId}::uuid AND e.account = 'BANK'
+    JOIN accounts acc ON acc.id = e.account_id
+    JOIN ledger_transactions lt ON lt.id = e.transaction_id
+    WHERE e.business_id = ${businessId}::uuid AND acc.code = ${codeOf('BANK')}
     GROUP BY e.transaction_id, (e.created_at AT TIME ZONE 'Africa/Lagos')::date
     HAVING SUM(e.debit_k) - SUM(e.credit_k) <> 0
   `);
+  /* Only the extracted reference reaches the rule, never the memo itself:
+   * tier 1 matches on the identity §9 minted, and nothing else in a memo
+   * is the matcher's to read (§22.1). */
   return [...rows].map((r) => ({
     transactionId: r.transaction_id,
     occurredOn: r.occurred_on,
     amountK: Number(r.amount_k),
+    reference: paymentReferencesIn(r.memo ?? '')[0] ?? null,
+    /* For the review screen's proposal cards, never for the rule. */
+    memo: r.memo ?? '',
   }));
 }
 
@@ -408,7 +464,13 @@ export async function reconcile(
   const openMovements = movements.filter((m) => !matchedTx.has(m.transactionId));
 
   const result = matchStatement(
-    open.map((l) => ({ id: l.id, postedOn: l.postedOn, amountK: l.amountK })),
+    open.map((l) => ({
+      id: l.id,
+      postedOn: l.postedOn,
+      amountK: l.amountK,
+      /* Only the references the bank text carried, never the text (§22.1). */
+      references: paymentReferencesIn(`${l.narration} ${l.bankRef ?? ''}`),
+    })),
     openMovements,
   );
 
@@ -427,6 +489,7 @@ export async function reconcile(
           lineId: m.lineId,
           transactionId: m.transactionId,
           decidedBy: 'auto',
+          tier: m.tier,
         })),
       )
       .onConflictDoNothing()
@@ -442,6 +505,18 @@ export async function reconcile(
   return {
     matched: existing.length + claimed,
     pairable: result.matched.length - claimed,
+    suggested: result.suggestions.length,
+    proposals: result.suggestions.map((sug) => {
+      const movement = movementById.get(sug.transactionId);
+      return {
+        lineId: sug.lineId,
+        transactionId: sug.transactionId,
+        why: sug.why,
+        movementAmountK: movement?.amountK ?? 0,
+        movementOccurredOn: movement?.occurredOn ?? '',
+        movementMemo: movement?.memo ?? '',
+      };
+    }),
     ambiguous: result.ambiguous.length,
     unmatchedLines: result.unmatchedLines.length,
     unmatchedMovements: result.unmatchedMovements.length,
@@ -525,9 +600,10 @@ export async function openMovements(
            (SUM(e.debit_k) - SUM(e.credit_k))::bigint AS amount_k,
            MIN(t.memo) AS memo
     FROM ledger_entries e
+    JOIN accounts acc ON acc.id = e.account_id
     JOIN ledger_transactions t ON t.id = e.transaction_id
     WHERE e.business_id = ${businessId}::uuid
-      AND e.account = 'BANK'${onlyIds}
+      AND acc.code = ${codeOf('BANK')}${onlyIds}
       AND NOT EXISTS (
         SELECT 1 FROM bank_line_matches m
          WHERE m.business_id = ${businessId}::uuid
@@ -557,15 +633,28 @@ export async function matchesFor(
    * rather than with the page.
    */
   lineIds: readonly string[],
-): Promise<{ lineId: string; transactionId: string; decidedBy: string; memo: string }[]> {
+): Promise<
+  {
+    lineId: string;
+    transactionId: string;
+    decidedBy: string;
+    /** Which §22.1 tier decided it: 1, 2 or 4. */
+    tier: number;
+    /** The person's sentence on a tier-4 match; null on auto tiers. */
+    reason: string | null;
+    memo: string;
+  }[]
+> {
   if (lineIds.length === 0) return [];
   const rows = await tx.execute<{
     line_id: string;
     transaction_id: string;
     decided_by: string;
+    tier: number;
+    reason: string | null;
     memo: string;
   }>(sql`
-    SELECT m.line_id, m.transaction_id, m.decided_by, t.memo
+    SELECT m.line_id, m.transaction_id, m.decided_by, m.tier, m.reason, t.memo
     FROM bank_line_matches m
     JOIN ledger_transactions t ON t.id = m.transaction_id
     WHERE m.business_id = ${businessId}::uuid
@@ -578,8 +667,43 @@ export async function matchesFor(
     lineId: r.line_id,
     transactionId: r.transaction_id,
     decidedBy: r.decided_by,
+    tier: r.tier,
+    reason: r.reason,
     memo: r.memo,
   }));
+}
+
+/** One line, with whether anything already claims it — the classify
+ * door's pre-check (§22.2), read before a journal is minted for it. */
+export async function lineFor(
+  tx: TenantDb,
+  businessId: string,
+  lineId: string,
+): Promise<(BankLine & { matched: boolean }) | null> {
+  const rows = await tx.execute<{
+    id: string;
+    posted_on: string;
+    amount_k: string;
+    narration: string;
+    bank_ref: string | null;
+    match_id: string | null;
+  }>(sql`
+    SELECT l.id, l.posted_on::text AS posted_on, l.amount_k, l.narration, l.bank_ref,
+           m.id AS match_id
+    FROM bank_statement_lines l
+    LEFT JOIN bank_line_matches m ON m.business_id = l.business_id AND m.line_id = l.id
+    WHERE l.business_id = ${businessId}::uuid AND l.id = ${lineId}::uuid
+  `);
+  const row = [...rows][0];
+  if (!row) return null;
+  return {
+    id: row.id,
+    postedOn: row.posted_on,
+    amountK: Number(row.amount_k),
+    narration: row.narration,
+    bankRef: row.bank_ref,
+    matched: row.match_id !== null,
+  };
 }
 
 /** Why a hand-made match was refused, in terms the page can explain. */
@@ -608,7 +732,15 @@ export type MatchByHandOutcome =
  */
 export async function matchByHand(
   tx: TenantDb,
-  input: { businessId: string; lineId: string; transactionId: string; actor: string },
+  input: {
+    businessId: string;
+    lineId: string;
+    transactionId: string;
+    actor: string;
+    /** §22.1 tier 4: a person decides, WITH A REASON RECORDED. Non-empty;
+     * the constraint refuses a manual match without one. */
+    reason: string;
+  },
 ): Promise<MatchByHandOutcome> {
   const [line] = await tx
     .select({ id: bankStatementLines.id, amountK: bankStatementLines.amountK })
@@ -655,6 +787,8 @@ export async function matchByHand(
       lineId: input.lineId,
       transactionId: input.transactionId,
       decidedBy: 'manual',
+      tier: 4,
+      reason: input.reason,
     })
     .onConflictDoNothing()
     .returning({ id: bankLineMatches.id });
@@ -669,7 +803,11 @@ export async function matchByHand(
     entity: 'bank_line_match',
     entityId: input.lineId,
     action: 'matched',
-    newValue: { transactionId: input.transactionId, decidedBy: 'manual' } as never,
+    newValue: {
+      transactionId: input.transactionId,
+      decidedBy: 'manual',
+      reason: input.reason,
+    } as never,
     sourceType: 'dashboard',
   });
   return { outcome: 'matched' };
@@ -720,6 +858,8 @@ export interface FeedConnection {
   accountRef: string;
   bankName: string;
   accountLast4: string;
+  /** The place money sits that this connection reads (0061, PR-073). */
+  financialAccountId: string;
   /** linked | unlinked. Unlinked keeps the row: lapsed is not never-was. */
   status: string;
   /** `YYYY-MM-DD`, or null before the first sync. */
@@ -732,16 +872,17 @@ export async function feedConnectionFor(
 ): Promise<FeedConnection | null> {
   const rows = await tx
     .select({
-      id: bankFeedConnections.id,
-      provider: bankFeedConnections.provider,
-      accountRef: bankFeedConnections.accountRef,
-      bankName: bankFeedConnections.bankName,
-      accountLast4: bankFeedConnections.accountLast4,
-      status: bankFeedConnections.status,
-      lastSyncedOn: bankFeedConnections.lastSyncedOn,
+      id: financialAccountConnections.id,
+      financialAccountId: financialAccountConnections.financialAccountId,
+      provider: financialAccountConnections.providerType,
+      accountRef: financialAccountConnections.externalAccountId,
+      bankName: financialAccountConnections.bankName,
+      accountLast4: financialAccountConnections.accountLast4,
+      status: financialAccountConnections.status,
+      lastSyncedOn: financialAccountConnections.lastSyncedOn,
     })
-    .from(bankFeedConnections)
-    .where(eq(bankFeedConnections.businessId, businessId))
+    .from(financialAccountConnections)
+    .where(eq(financialAccountConnections.businessId, businessId))
     .limit(1);
   return rows[0] ?? null;
 }
@@ -766,21 +907,42 @@ export async function linkFeed(
     actor: string;
   },
 ): Promise<void> {
+  /* The connection reads ONE place money sits (§22.3, migration 0095).
+   * V1 has exactly one 'bank' financial account per business, seeded at
+   * creation; a business without one is a seeding defect worth an error,
+   * never a silently connection-less feed. */
+  const accounts = await tx
+    .select({ id: financialAccounts.id })
+    .from(financialAccounts)
+    .where(
+      and(eq(financialAccounts.businessId, input.businessId), eq(financialAccounts.kind, 'bank')),
+    )
+    .orderBy(financialAccounts.createdAt)
+    .limit(1);
+  const financialAccountId = accounts[0]?.id;
+  if (!financialAccountId) {
+    throw new Error('linkFeed: this business has no bank financial account to connect');
+  }
+
   await tx
-    .insert(bankFeedConnections)
+    .insert(financialAccountConnections)
     .values({
       businessId: input.businessId,
-      provider: input.provider,
-      accountRef: input.accountRef,
+      financialAccountId,
+      providerType: input.provider,
+      externalAccountId: input.accountRef,
       bankName: input.bankName,
       accountLast4: input.accountLast4,
       status: 'linked',
     })
     .onConflictDoUpdate({
-      target: [bankFeedConnections.businessId],
+      target: [
+        financialAccountConnections.businessId,
+        financialAccountConnections.financialAccountId,
+      ],
       set: {
-        provider: input.provider,
-        accountRef: input.accountRef,
+        providerType: input.provider,
+        externalAccountId: input.accountRef,
         bankName: input.bankName,
         accountLast4: input.accountLast4,
         status: 'linked',
@@ -803,9 +965,9 @@ export async function linkFeed(
 /** A sync ran and covered up to this Lagos day. */
 export async function markFeedSynced(tx: TenantDb, businessId: string, day: string): Promise<void> {
   await tx
-    .update(bankFeedConnections)
+    .update(financialAccountConnections)
     .set({ lastSyncedOn: day, updatedAt: new Date() })
-    .where(eq(bankFeedConnections.businessId, businessId));
+    .where(eq(financialAccountConnections.businessId, businessId));
 }
 
 /**
@@ -819,12 +981,15 @@ export async function markFeedUnlinked(
   actor: string,
 ): Promise<void> {
   const marked = await tx
-    .update(bankFeedConnections)
+    .update(financialAccountConnections)
     .set({ status: 'unlinked', updatedAt: new Date() })
     .where(
-      and(eq(bankFeedConnections.businessId, businessId), eq(bankFeedConnections.status, 'linked')),
+      and(
+        eq(financialAccountConnections.businessId, businessId),
+        eq(financialAccountConnections.status, 'linked'),
+      ),
     )
-    .returning({ accountRef: bankFeedConnections.accountRef });
+    .returning({ accountRef: financialAccountConnections.externalAccountId });
 
   if (marked.length > 0) {
     await tx.insert(auditEvents).values({
@@ -840,7 +1005,7 @@ export async function markFeedUnlinked(
 
 /**
  * Every business with a LINKED feed, across tenants — the background
- * sweep's worklist (`sweep_read_bank_feeds`, migration 0049). Worker
+ * sweep's worklist (`sweep_read_feed_connections`, migration 0095). Worker
  * connection only; ids, nothing else.
  */
 export async function linkedFeedBusinesses(
@@ -848,9 +1013,9 @@ export async function linkedFeedBusinesses(
   limit = 500,
 ): Promise<Array<{ businessId: string }>> {
   return workerDb
-    .select({ businessId: bankFeedConnections.businessId })
-    .from(bankFeedConnections)
-    .where(eq(bankFeedConnections.status, 'linked'))
-    .orderBy(bankFeedConnections.updatedAt)
+    .select({ businessId: financialAccountConnections.businessId })
+    .from(financialAccountConnections)
+    .where(eq(financialAccountConnections.status, 'linked'))
+    .orderBy(financialAccountConnections.updatedAt)
     .limit(limit);
 }

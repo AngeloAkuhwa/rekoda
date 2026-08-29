@@ -163,6 +163,55 @@ export function computeMoney(draft: MoneyDraft): MoneyBlock {
 }
 
 /**
+ * The same engine, for a caller that already speaks kobo.
+ *
+ * `computeMoney` takes naira because a HUMAN speaks naira: that is the one
+ * boundary where naira are legal, and the `Naira` suffixes exist so nobody
+ * loses track of which side of it they are on. The public API is the other
+ * kind of caller — a program, which sends integer minor units and would be
+ * ill-served by a float — so it gets its own door into the same room.
+ *
+ * A conversion, never a second arithmetic. Every figure goes through
+ * `fromKobo` into the naira draft and back through `toKobo` inside
+ * `computeMoney`, and `Math.round(k / 100 * 100) === k` for every safe
+ * integer, which `money.test.ts` pins rather than assumes. Reimplementing
+ * the equation here for the sake of skipping two divisions is how two
+ * versions of "what a sale totals" come to exist.
+ */
+export interface KoboItem {
+  readonly name: string;
+  readonly quantity: number;
+  readonly unitPriceK: Kobo;
+}
+
+export interface KoboDraft {
+  readonly items: readonly KoboItem[];
+  readonly discountK?: Kobo;
+  readonly deliveryFeeK?: Kobo;
+  readonly serviceChargeK?: Kobo;
+  readonly vatK?: Kobo;
+  /** Total as STATED by the caller. May disagree with the arithmetic. */
+  readonly statedTotalK?: Kobo;
+  readonly amountPaidK?: Kobo;
+}
+
+export function computeMoneyFromKobo(draft: KoboDraft): MoneyBlock {
+  return computeMoney({
+    items: draft.items.map((item) => ({
+      name: item.name,
+      quantity: item.quantity,
+      unitPriceNaira: fromKobo(item.unitPriceK),
+    })),
+    discountNaira: fromKobo(draft.discountK ?? 0),
+    deliveryFeeNaira: fromKobo(draft.deliveryFeeK ?? 0),
+    serviceChargeNaira: fromKobo(draft.serviceChargeK ?? 0),
+    vatAmountNaira: fromKobo(draft.vatK ?? 0),
+    statedTotalNaira: fromKobo(draft.statedTotalK ?? 0),
+    amountPaidNaira: fromKobo(draft.amountPaidK ?? 0),
+  });
+}
+
+/**
  * True when the document balances. Either the equation holds exactly, or the
  * human's stated total was accepted within tolerance (mismatch=false) — in
  * which case the stated figure is authoritative and small rounding drift in

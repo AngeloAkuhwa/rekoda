@@ -18,7 +18,7 @@
  */
 import { Logger } from '@nestjs/common';
 import { PAYMENT_REFERENCE_PATTERN } from '@rekoda/core';
-import { paymentsHub, settleRepo, withBusiness, type Db } from '@rekoda/db';
+import { paymentsHub, settleRepo, settlementsRepo, withBusiness, type Db } from '@rekoda/db';
 import type { PaymentProviderPort, ProviderSettlement } from './provider.port.js';
 
 export interface SweepDeps {
@@ -75,5 +75,147 @@ async function applySettlement(deps: SweepDeps, settlement: ProviderSettlement):
       `settlement ${settlement.settlementId}: ${stamped} payment(s) now ${settlement.status}`,
     );
   }
+
+  await ingestSettlement(deps, settlement, references, byBusiness);
   return stamped;
+}
+
+/**
+ * The §20 row behind the stamps (PR-064): the payout itself, with the
+ * payments it covered and the SIGNED components that explain its gap.
+ *
+ * Recorded ONLY when the batch is attributable as a whole — one business,
+ * every covered reference resolved to it, and the provider actually stated
+ * its totals. A batch that spans tenants or carries foreign traffic has a
+ * gross that belongs to nobody in particular, and decomposing it would be
+ * estimation — §20 forbids exactly that for authoritative data. What is
+ * skipped is LOGGED, never silently capped.
+ */
+async function ingestSettlement(
+  deps: SweepDeps,
+  settlement: ProviderSettlement,
+  references: string[],
+  byBusiness: Map<string, string[]>,
+): Promise<void> {
+  if (settlement.grossK === null || settlement.netK === null) return;
+  const grossK = settlement.grossK;
+  const netK = settlement.netK;
+
+  if (byBusiness.size !== 1) {
+    if (byBusiness.size > 1) {
+      log.warn(
+        `settlement ${settlement.settlementId} spans ${byBusiness.size} businesses; §20 row not recorded`,
+      );
+    }
+    return;
+  }
+  const [businessId, refs] = [...byBusiness.entries()][0]!;
+  if (refs.length !== references.length) {
+    log.warn(
+      `settlement ${settlement.settlementId} carries traffic beyond one tenant's; §20 row not recorded`,
+    );
+    return;
+  }
+
+  /**
+   * Where the provider itemises, its components stand. Where it states
+   * only totals, the totals PROVE one component — the gap — and the note
+   * says how it was derived. Provider-stated arithmetic, never a rate
+   * card.
+   */
+  const components: settlementsRepo.SettlementComponentInput[] = settlement.components?.length
+    ? settlement.components
+    : grossK === netK
+      ? []
+      : [
+          grossK > netK
+            ? {
+                kind: 'PROCESSING_FEE',
+                direction: 'DEDUCTION',
+                amountK: grossK - netK,
+                note: 'gross − net as reported by the provider',
+              }
+            : {
+                kind: 'ADJUSTMENT',
+                direction: 'ADDITION',
+                amountK: netK - grossK,
+                note: 'net − gross as reported by the provider',
+              },
+        ];
+
+  await withBusiness(deps.appDb, businessId, async (tx) => {
+    const connection = await paymentsHub.connectionFor(tx, businessId, deps.provider.providerType);
+    if (!connection) return;
+
+    const covered = await settleRepo.paymentsByReferences(tx, businessId, refs);
+    const outcome = await settlementsRepo.recordSettlement(tx, {
+      businessId,
+      paymentConnectionId: connection.id,
+      providerSettlementId: settlement.settlementId,
+      status:
+        settlement.status === 'settled'
+          ? 'SETTLED'
+          : settlement.status === 'failed'
+            ? 'FAILED'
+            : 'PENDING',
+      ...(settlement.currency ? { currency: settlement.currency } : {}),
+      grossK,
+      netK,
+      settledAt: settlement.settledAtIso ? new Date(settlement.settledAtIso) : null,
+      items: covered.map((payment) => ({ paymentId: payment.id, amountK: payment.amountK })),
+      components,
+    });
+
+    /* Both refusals become EXCEPTIONS a human can see, not log lines a
+     * human will not: the provider's own report disagreeing with itself,
+     * or with what it reported before, is precisely the reconciliation
+     * queue's business. */
+    if (outcome.outcome === 'recorded') {
+      /* The books (PR-065, §21.1): a SETTLED payout moves clearing → bank
+       * and recognises the ACTUAL fees, from the row just recorded and
+       * nothing else. Idempotent by posting purpose; a payout that cannot
+       * post yet (reserves/chargebacks await their PRs, or the items do
+       * not reconcile to gross — invariant 5) surfaces as an exception. */
+      const posting = await settlementsRepo.postSettlement(tx, businessId, outcome.id);
+      if (
+        !posting.posted &&
+        (posting.reason === 'items_do_not_reconcile' || posting.reason === 'unpostable_components')
+      ) {
+        const already = await settleRepo.hasException(
+          tx,
+          businessId,
+          'settlement',
+          settlement.settlementId,
+        );
+        if (!already) {
+          await settleRepo.recordException(tx, {
+            businessId,
+            reason: `settlement_${posting.reason}`,
+            expectationKind: 'settlement',
+            expectationId: settlement.settlementId,
+            amountK: grossK,
+          });
+        }
+      }
+    }
+
+    if (outcome.outcome === 'incoherent_report' || outcome.outcome === 'conflicting_report') {
+      /* Once per settlement, however often the sweep re-polls it. */
+      const already = await settleRepo.hasException(
+        tx,
+        businessId,
+        'settlement',
+        settlement.settlementId,
+      );
+      if (!already) {
+        await settleRepo.recordException(tx, {
+          businessId,
+          reason: `settlement_${outcome.outcome}`,
+          expectationKind: 'settlement',
+          expectationId: settlement.settlementId,
+          amountK: grossK,
+        });
+      }
+    }
+  });
 }

@@ -57,13 +57,13 @@ function spend(
   businessId: string,
   provider: quotaRepo.UsageRecord['provider'],
   nairaEquivalentK: number,
-  options: { quantity?: number; period?: string } = {},
+  options: { quantity?: number; period?: string; usageType?: string } = {},
 ): Promise<void> {
   return withBusiness(appDb, businessId, (tx) =>
     quotaRepo.recordUsage(tx, {
       businessId,
       provider,
-      usageType: 'test',
+      usageType: options.usageType ?? 'test',
       quantity: options.quantity ?? 1,
       providerCostMicros: 0,
       nairaEquivalentK,
@@ -237,5 +237,70 @@ describe('the privilege boundary 0019 draws', () => {
     await workerDb.execute(sql`UPDATE businesses SET plan = 'trial'`);
     const rows = await marginRepo.costByBusiness(workerDb, PERIOD);
     expect(rows.find((r) => r.businessId === shop)?.plan).toBe('complete');
+  });
+});
+
+/**
+ * The breakdown spec §24 exists for.
+ *
+ * Utility and marketing differ by roughly eightfold, and the specification
+ * calls that difference the largest variable in plan margin. Grouped by
+ * provider alone it is invisible: the Meta total moves and nothing says
+ * whether the mix went one way or the other.
+ */
+describe('cost by usage type', () => {
+  it('separates the message categories a provider total hides', async () => {
+    const shop = await seedBusiness('Category Split', '+2348030000120', 'complete');
+    await spend(shop, 'meta', 972, { usageType: 'UTILITY_TEMPLATE' });
+    await spend(shop, 'meta', 972, { usageType: 'UTILITY_TEMPLATE' });
+    await spend(shop, 'meta', 7_482, { usageType: 'MARKETING_TEMPLATE' });
+    await spend(shop, 'meta', 0, { usageType: 'SERVICE_MESSAGE' });
+
+    const rows = await marginRepo.costByUsageType(workerDb, PERIOD);
+    const byType = new Map(rows.map((r) => [r.usageType, r]));
+
+    expect(byType.get('UTILITY_TEMPLATE')?.costK).toBe(1_944);
+    expect(byType.get('UTILITY_TEMPLATE')?.events).toBe(2);
+    expect(byType.get('MARKETING_TEMPLATE')?.costK).toBe(7_482);
+    expect(byType.get('SERVICE_MESSAGE')?.costK).toBe(0);
+    expect(byType.get('SERVICE_MESSAGE')?.events).toBe(1);
+
+    /* And the provider total still agrees with the parts, or one of the two
+     * reports is lying and an operator has no way to tell which. */
+    const meta = (await marginRepo.costByProvider(workerDb, PERIOD)).find(
+      (r) => r.provider === 'meta',
+    );
+    const partsK = rows
+      .filter((r) => r.provider === 'meta')
+      .reduce((total, row) => total + row.costK, 0);
+    expect(partsK).toBe(meta?.costK);
+  });
+
+  it("keeps one provider's categories apart from another's", async () => {
+    const shop = await seedBusiness('Two Providers', '+2348030000121', 'complete');
+    await spend(shop, 'meta', 972, { usageType: 'UTILITY_TEMPLATE' });
+    await spend(shop, 'anthropic', 1_200, { usageType: 'llm_call' });
+
+    const rows = await marginRepo.costByUsageType(workerDb, PERIOD);
+    const utility = rows.find((r) => r.provider === 'meta' && r.usageType === 'UTILITY_TEMPLATE');
+    const llm = rows.find((r) => r.provider === 'anthropic' && r.usageType === 'llm_call');
+    expect(utility?.costK).toBe(972);
+    expect(llm?.costK).toBe(1_200);
+  });
+
+  it('ranks the costliest first, which is the question an operator opens with', async () => {
+    const shop = await seedBusiness('Ranked', '+2348030000122', 'complete');
+    await spend(shop, 'meta', 100, { usageType: 'SERVICE_MESSAGE' });
+    await spend(shop, 'meta', 9_000, { usageType: 'MARKETING_TEMPLATE' });
+    await spend(shop, 'meta', 2_000, { usageType: 'AUTH_TEMPLATE' });
+
+    const rows = (await marginRepo.costByUsageType(workerDb, PERIOD)).filter(
+      (r) => r.provider === 'meta',
+    );
+    expect(rows.map((r) => r.usageType)).toEqual([
+      'MARKETING_TEMPLATE',
+      'AUTH_TEMPLATE',
+      'SERVICE_MESSAGE',
+    ]);
   });
 });

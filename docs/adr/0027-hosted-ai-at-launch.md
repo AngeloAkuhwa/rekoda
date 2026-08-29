@@ -1,6 +1,6 @@
 # 0027 — Hosted AI at launch, and the privacy pages tell the truth about it
 
-**Status:** Accepted
+**Status:** Accepted; the "sidecar stays one env var away" clause is **superseded by [0032](0032-launch-media-architecture.md)** (2026-08-29) — the sidecar code and configuration are removed, and hosted OpenAI STT + Claude vision are the launch architecture outright.
 **Date:** 2026-08-24
 **Supersedes (in part):** 0008's "self-hosted only" transcriber stance and
 0024 C9's "self-hosted OCR only" engine choice. The PIPELINES both ADRs

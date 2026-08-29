@@ -18,20 +18,28 @@
  * of its own, so "all of it or none of it" is the caller's transaction, not a
  * property this file has to remember to preserve.
  */
-import { and, eq, sql, desc } from 'drizzle-orm';
+import { and, eq, sql, desc, inArray } from 'drizzle-orm';
 import {
+  ACCOUNTS,
   formatDocumentNumber,
-  isAccountKey,
+  KEY_BY_CODE,
   lagosYear,
   postCreditNote,
   postSale,
   reversal,
   type LedgerLine,
   type Posting,
+  type PostingPurpose,
+  taxPointFor,
+  lagosDay,
+  postCreditApplication,
 } from '@rekoda/core';
 import { snapshotHash, type DocumentSnapshot } from '@rekoda/core/documents';
+import { normalisePaymentMethod } from '@rekoda/core';
 import type { TenantDb } from '../client.js';
 import { auditEvents, documents } from '../schema/ops.js';
+import { accounts } from '../schema/accounts.js';
+import { codeOf } from './accounts.js';
 import {
   creditNotes,
   invoiceItems,
@@ -40,8 +48,12 @@ import {
   ledgerTransactions,
   paymentAllocations,
   payments,
+  customerCredits,
 } from '../schema/finance.js';
 import { assertPeriodOpen } from './close.js';
+import { appendVerification } from './provenance.js';
+import { recordTaxEvent, taxStandingFor } from './tax.js';
+import { applyCustomerCredit, grantCustomerCredit } from './customer-credits.js';
 
 export interface IssueItem {
   name: string;
@@ -103,7 +115,15 @@ export interface IssuedSale {
 export async function nextDocumentNumber(
   tx: TenantDb,
   businessId: string,
-  docType: 'invoice' | 'receipt' | 'credit_note' | 'order' | 'quote' | 'purchase_order' | 'journal',
+  docType:
+    | 'invoice'
+    | 'receipt'
+    | 'credit_note'
+    | 'order'
+    | 'quote'
+    | 'purchase_order'
+    | 'journal'
+    | 'bill',
   year: number,
 ): Promise<string> {
   const rows = await tx.execute<{ last_seq: number }>(sql`
@@ -157,6 +177,13 @@ export async function writePosting(
      * unique violation the endpoint classifies instead of a second posting.
      */
     clientRef?: string | null;
+    /** §9.4: the kind of financial event, joining the ledger-level
+     * idempotency key. Stamp it wherever the (sourceType, sourceId) pair
+     * identifies exactly one event of this kind. */
+    postingPurpose?: PostingPurpose;
+    /** The ledger-level dedupe key for writers whose event identity is
+     * not (sourceType, sourceId) shaped. */
+    postingKey?: string;
   } = {},
 ): Promise<string> {
   /* Refused here as well as by the trigger behind it (migration 0034), and
@@ -177,23 +204,93 @@ export async function writePosting(
       ...(opts.occurredAt ? { createdAt: opts.occurredAt } : {}),
       ...(opts.reversesId ? { reversesId: opts.reversesId } : {}),
       ...(opts.clientRef ? { clientRef: opts.clientRef } : {}),
+      ...(opts.postingPurpose ? { postingPurpose: opts.postingPurpose } : {}),
+      ...(opts.postingKey ? { postingKey: opts.postingKey } : {}),
     })
     .returning({ id: ledgerTransactions.id });
 
   const transaction = inserted[0];
   if (!transaction) throw new Error('writePosting: ledger transaction insert returned no row');
 
+  const accountIds = await accountIdsForKeys(
+    tx,
+    businessId,
+    posting.lines.map((line) => line.account),
+  );
   await tx.insert(ledgerEntries).values(
     posting.lines.map((line) => ({
       businessId,
       transactionId: transaction.id,
-      account: line.account,
+      accountId: accountIds.get(line.account)!,
       debitK: line.debitK,
       creditK: line.creditK,
+      /* Same-currency posting (§16): the transaction amount IS the
+       * functional amount — exactly one of debit/credit is non-zero, so
+       * the sum is the amount. Currency rides the NGN default until the
+       * FX plumbing (PR-038) gives writers something else to say. */
+      transactionAmountMinor: line.debitK + line.creditK,
+      /* §12.3: the subledger dimension rides the line where the builder
+       * knew it — an opening AR line names the invoice it collects against. */
+      ...(line.invoiceId ? { invoiceId: line.invoiceId } : {}),
       ...(opts.occurredAt ? { createdAt: opts.occurredAt } : {}),
     })),
   );
   return transaction.id;
+}
+
+/**
+ * The DUAL WRITE's resolver (PR-031): each legacy text key maps to the
+ * seeded chart row that kept its CODE — the seed carried every key over on
+ * its existing code precisely so this lookup is a join, not a judgement.
+ *
+ * A missing row THROWS. The seed guarantees presence at business creation
+ * and migration 0062 guarantees it for the estate, so absence here means an
+ * invariant broke — and a posting written half-linked would poison the
+ * PR-032 backfill's validation quietly.
+ */
+export async function accountIdsForKeys(
+  tx: TenantDb,
+  businessId: string,
+  keys: readonly string[],
+): Promise<Map<string, string>> {
+  const wanted = [...new Set(keys)];
+  const codes = wanted.map((key) => {
+    const entry = (ACCOUNTS as Record<string, { code: string }>)[key];
+    if (!entry) throw new Error(`accountIdsForKeys: unknown ledger key ${key}`);
+    return { key, code: entry.code };
+  });
+  const rows = await tx
+    .select({ id: accounts.id, code: accounts.code, active: accounts.active })
+    .from(accounts)
+    .where(
+      and(
+        eq(accounts.businessId, businessId),
+        inArray(
+          accounts.code,
+          codes.map((c) => c.code),
+        ),
+      ),
+    );
+  const byCode = new Map(rows.map((r) => [r.code, r]));
+  const out = new Map<string, string>();
+  for (const { key, code } of codes) {
+    const found = byCode.get(code);
+    if (!found) {
+      throw new Error(
+        `accountIdsForKeys: no chart account with code ${code} for ${key} — the seed is missing`,
+      );
+    }
+    /* The key-based paths resolve by CODE, so a deactivated seed account is
+     * a dead end until the posting-policy engine (PR-037+) resolves by
+     * ROLE. Migration 0066's trigger would refuse the insert anyway; this
+     * is the same refusal, a sentence earlier and clearer. */
+    if (!found.active) {
+      throw new Error(`accountIdsForKeys: account with code ${code} (${key}) is deactivated`);
+    }
+    const id = found.id;
+    out.set(key, id);
+  }
+  return out;
 }
 
 /**
@@ -297,12 +394,27 @@ export async function issueSale(tx: TenantDb, input: IssueSaleInput): Promise<Is
         verified: 0,
         sourceType: input.sourceType,
         sourceId: input.sourceId,
+        /* Provenance at birth (spec §6.2–6.3). The merchant said money
+         * arrived with the sale; that is attestation, whatever the
+         * instrument was. */
+        initialConfirmationSource: 'MERCHANT_ATTESTED',
+        paymentMethod: normalisePaymentMethod(input.method),
       })
       .returning({ id: payments.id });
 
     const payment = paymentRows[0];
     if (!payment) throw new Error('issueSale: payment insert returned no row');
     paymentId = payment.id;
+
+    /* The confirmed draft is the confirmation action, and its claim stops a
+     * retried job attesting twice for one yes (spec §6.5). */
+    await appendVerification(tx, {
+      businessId: input.businessId,
+      paymentId,
+      source: 'MERCHANT_ATTESTED',
+      confirmationEventId: `${input.sourceType}:${input.sourceId}`,
+      actorId: input.actor,
+    });
 
     await tx.insert(paymentAllocations).values({
       businessId: input.businessId,
@@ -342,6 +454,42 @@ export async function issueSale(tx: TenantDb, input: IssueSaleInput): Promise<Is
     .update(invoices)
     .set({ ledgerTransactionId })
     .where(and(eq(invoices.businessId, input.businessId), eq(invoices.id, invoice.id)));
+
+  /* The SEPARATED tax calculator's record (§13, PR-079). The recognition
+   * engine and this write read the same document state and never fuse:
+   * the event is written only when the code's OWN point policy says the
+   * moment has occurred — for the seeded ON_INVOICE_ISSUE codes that is
+   * now, and for a merchant configured ON_PAYMENT_RECEIPT it is not,
+   * whatever this posting just did. The §13 unique absorbs retries. The
+   * basis is the document's non-tax value; documents that never stated a
+   * separate taxable base carry the honest complement, total less tax. */
+  if (input.vatK > 0) {
+    const standing = await taxStandingFor(
+      tx,
+      input.businessId,
+      'STANDARD_RATE',
+      lagosDay(issuedAt),
+    );
+    const taxPoint = standing
+      ? taxPointFor(standing.pointPolicy as Parameters<typeof taxPointFor>[0], {
+          issuedAt,
+          paidAt: null,
+          fulfilledAt: null,
+        })
+      : null;
+    if (standing && taxPoint) {
+      await recordTaxEvent(tx, {
+        businessId: input.businessId,
+        taxCodeId: standing.taxCodeId,
+        basisMinor: input.totalK - input.vatK,
+        taxMinor: input.vatK,
+        sourceType: 'invoice',
+        sourceId: invoice.id,
+        occurredAt: taxPoint,
+        journalId: ledgerTransactionId,
+      });
+    }
+  }
 
   await tx.insert(auditEvents).values({
     businessId: input.businessId,
@@ -511,12 +659,14 @@ async function reverseCostOfSale(
 ): Promise<void> {
   const posted = await tx.execute<{
     transaction_id: string;
-    account: string;
+    account_code: string;
     debit_k: string;
     credit_k: string;
   }>(sql`
-    SELECT e.transaction_id, e.account, e.debit_k::bigint AS debit_k, e.credit_k::bigint AS credit_k
+    SELECT e.transaction_id, acc.code AS account_code,
+           e.debit_k::bigint AS debit_k, e.credit_k::bigint AS credit_k
     FROM ledger_entries e
+    JOIN accounts acc ON acc.id = e.account_id
     JOIN ledger_transactions t
       ON t.id = e.transaction_id AND t.business_id = e.business_id
     WHERE e.business_id = ${businessId}::uuid
@@ -525,16 +675,19 @@ async function reverseCostOfSale(
       AND t.reverses_id IS NULL
       AND EXISTS (
         SELECT 1 FROM ledger_entries c
-        WHERE c.transaction_id = t.id AND c.business_id = e.business_id AND c.account = 'COGS'
+        JOIN accounts ca ON ca.id = c.account_id
+        WHERE c.transaction_id = t.id AND c.business_id = e.business_id
+          AND ca.code = ${codeOf('COGS')}
       )
   `);
 
   const byTransaction = new Map<string, LedgerLine[]>();
   for (const row of posted) {
-    if (!isAccountKey(row.account)) continue;
+    const account = KEY_BY_CODE[row.account_code];
+    if (!account) continue;
     const lines = byTransaction.get(row.transaction_id) ?? [];
     lines.push({
-      account: row.account,
+      account,
       debitK: Number(row.debit_k),
       creditK: Number(row.credit_k),
     });
@@ -562,14 +715,23 @@ export async function ledgerEntriesFor(
   tx: TenantDb,
   businessId: string,
 ): Promise<Array<{ account: string; debitK: number; creditK: number }>> {
-  return tx
+  const rows = await tx
     .select({
-      account: ledgerEntries.account,
+      code: accounts.code,
       debitK: ledgerEntries.debitK,
       creditK: ledgerEntries.creditK,
     })
     .from(ledgerEntries)
+    .innerJoin(accounts, eq(accounts.id, ledgerEntries.accountId))
     .where(eq(ledgerEntries.businessId, businessId));
+  /* By KEY where the seed knows the code, so every consumer built on the
+   * seventeen-key vocabulary keeps reading; by CODE where it does not, so a
+   * post-seed account can never silently vanish from a trial balance. */
+  return rows.map((r) => ({
+    account: KEY_BY_CODE[r.code] ?? r.code,
+    debitK: r.debitK,
+    creditK: r.creditK,
+  }));
 }
 
 /** How many invoices this business has. Row-level security does the scoping. */
@@ -681,13 +843,19 @@ export async function latestDocumentFor(
 export async function latestOpenInvoice(
   tx: TenantDb,
   businessId: string,
-): Promise<{ id: string; invoiceNumber: string; balanceDueK: number } | null> {
+): Promise<{
+  id: string;
+  invoiceNumber: string;
+  balanceDueK: number;
+  customerId: string | null;
+} | null> {
   const rows = await tx.execute<{
     id: string;
     invoice_number: string;
     balance_due_k: string;
+    customer_id: string | null;
   }>(sql`
-    SELECT id, invoice_number, balance_due_k::bigint AS balance_due_k
+    SELECT id, invoice_number, balance_due_k::bigint AS balance_due_k, customer_id
     FROM invoices
     WHERE business_id = ${businessId}::uuid AND status IN ('issued', 'partially_paid')
     ORDER BY created_at DESC
@@ -699,6 +867,7 @@ export async function latestOpenInvoice(
     id: row.id,
     invoiceNumber: row.invoice_number,
     balanceDueK: Number(row.balance_due_k),
+    customerId: row.customer_id,
   };
 }
 
@@ -714,6 +883,7 @@ export async function invoiceForPayment(
   balanceDueK: number;
   currency: string;
   customerId: string | null;
+  sourceType: string;
 } | null> {
   const rows = await tx
     .select({
@@ -723,6 +893,7 @@ export async function invoiceForPayment(
       balanceDueK: invoices.balanceDueK,
       currency: invoices.currency,
       customerId: invoices.customerId,
+      sourceType: invoices.sourceType,
     })
     .from(invoices)
     .where(and(eq(invoices.businessId, businessId), eq(invoices.id, invoiceId)))
@@ -923,17 +1094,23 @@ export type CreditOutcome =
       creditNoteNumber: string;
       invoiceNumber: string;
       amountK: number;
-      /** What the customer still owes after it. Never below zero. */
+      /** What the customer still owes on the INVOICE — unchanged by the
+       * credit (§14.1): an unapplied credit reduces no invoice. */
       balanceDueK: number;
-      /** What the merchant now owes the CUSTOMER, when the credit went past
-       *  what was outstanding. Zero in the ordinary case. */
+      /** What the merchant now owes the CUSTOMER: the whole credit,
+       * until it is explicitly applied or paid out. */
       owedToCustomerK: number;
+      /** The CustomerCredit the note created (§14.1). */
+      customerCreditId: string;
     }
   | { outcome: 'not_found' }
   /** Withdrawn invoices have no value left to credit. */
   | { outcome: 'voided' }
   /** Nothing has been paid, so the void is the right instrument, not this. */
   | { outcome: 'unpaid' }
+  /** §14.1 owes VALUE TO A CUSTOMER; an invoice with nobody on it has
+   * nobody to owe. */
+  | { outcome: 'no_customer' }
   /** Would take back more than the invoice was ever worth. */
   | { outcome: 'exceeds_invoice'; creditableK: number };
 
@@ -973,6 +1150,7 @@ export async function issueCreditNote(
   const rows = await tx
     .select({
       id: invoices.id,
+      customerId: invoices.customerId,
       status: invoices.status,
       totalK: invoices.totalK,
       paidK: invoices.paidK,
@@ -995,6 +1173,7 @@ export async function issueCreditNote(
   if (!invoice) return { outcome: 'not_found' };
   if (invoice.status === 'voided') return { outcome: 'voided' };
   if (Number(invoice.paidK) === 0) return { outcome: 'unpaid' };
+  if (!invoice.customerId) return { outcome: 'no_customer' };
 
   const totalK = Number(invoice.totalK);
   const creditableK = totalK - Number(invoice.creditedK);
@@ -1022,10 +1201,12 @@ export async function issueCreditNote(
 
   /* The claim. Two credits racing meet here and only one passes, because the
    * ceiling is checked by the same statement that moves it. */
+  /* §14.1: the invoice's BALANCE is untouched — an unapplied credit
+   * reduces no invoice. Only the over-credit ceiling moves, and it is
+   * still checked by the same statement that moves it. */
   const claimed = await tx.execute<{ id: string }>(sql`
     UPDATE invoices
        SET credited_k = credited_k + ${input.amountK},
-           balance_due_k = GREATEST(balance_due_k - ${input.amountK}, 0),
            status = CASE WHEN credited_k + ${input.amountK} >= total_k THEN 'credited' ELSE status END
      WHERE id = ${invoice.id}::uuid
        AND business_id = ${input.businessId}::uuid
@@ -1074,6 +1255,57 @@ export async function issueCreditNote(
     createdAt: issuedAt,
   });
 
+  /* §14.1: the credit note CREATES a customer credit. The unique on
+   * (sourceType, sourceId) makes a retried note owe nobody twice. */
+  const granted = await grantCustomerCredit(tx, {
+    businessId: input.businessId,
+    customerId: invoice.customerId!,
+    amountMinor: input.amountK,
+    sourceType: 'credit_note',
+    sourceId: creditNoteNumber,
+    reason: input.reason,
+  });
+  let customerCreditId: string;
+  if (granted.outcome === 'granted') {
+    customerCreditId = granted.id;
+  } else {
+    const existing = await tx
+      .select({ id: customerCredits.id })
+      .from(customerCredits)
+      .where(
+        and(
+          eq(customerCredits.businessId, input.businessId),
+          eq(customerCredits.sourceType, 'credit_note'),
+          eq(customerCredits.sourceId, creditNoteNumber),
+        ),
+      )
+      .limit(1);
+    customerCreditId = existing[0]!.id;
+  }
+
+  /* §13's reversal side (promised in PR-079): VAT given back is the same
+   * tax fact with the sign turned, deduped by the same §13 unique. */
+  if (vatK > 0) {
+    const standing = await taxStandingFor(
+      tx,
+      input.businessId,
+      'STANDARD_RATE',
+      lagosDay(issuedAt),
+    );
+    if (standing) {
+      await recordTaxEvent(tx, {
+        businessId: input.businessId,
+        taxCodeId: standing.taxCodeId,
+        basisMinor: -(input.amountK - vatK),
+        taxMinor: -vatK,
+        sourceType: 'credit_note',
+        sourceId: creditNoteNumber,
+        occurredAt: issuedAt,
+        journalId: ledgerTransactionId,
+      });
+    }
+  }
+
   await tx.insert(auditEvents).values({
     businessId: input.businessId,
     actor: input.actor,
@@ -1090,20 +1322,148 @@ export async function issueCreditNote(
     sourceType: 'dashboard',
   });
 
-  const balanceDueK = Math.max(Number(invoice.balanceDueK) - input.amountK, 0);
-  /* Credited past what was still owed means the money is now going the other
-   * way. The receivable carries it as a negative; this is the same fact said
-   * in a sentence the merchant can act on. */
-  const owedToCustomerK = Math.max(input.amountK - Number(invoice.balanceDueK), 0);
-
+  /* §14.1: the invoice balance is what it was, and the WHOLE credit is
+   * owed to the customer until it is explicitly applied or paid out. */
   return {
     outcome: 'credited',
     creditNoteNumber,
     invoiceNumber: input.invoiceNumber,
     amountK: input.amountK,
-    balanceDueK,
-    owedToCustomerK,
+    balanceDueK: Number(invoice.balanceDueK),
+    owedToCustomerK: input.amountK,
+    customerCreditId,
   };
+}
+
+export type ApplyCreditOutcomeAtInvoice =
+  | {
+      outcome: 'applied';
+      invoiceNumber: string;
+      amountK: number;
+      balanceDueK: number;
+      remainingCreditK: number;
+    }
+  | { outcome: 'not_found' }
+  | { outcome: 'voided' }
+  /** The invoice owes less than the application asked to settle. */
+  | { outcome: 'exceeds_balance'; balanceDueK: number }
+  | { outcome: 'no_such_credit' }
+  | { outcome: 'insufficient_credit'; remainingCreditK: number };
+
+/**
+ * §14.1's EXPLICIT act: apply a customer credit to an invoice. The
+ * subledger row is the fact, the posting settles the receivable out of
+ * the liability, and the invoice's balance moves HERE — the one place
+ * it may (an unapplied credit reduces no invoice).
+ */
+export async function applyCreditToInvoice(
+  tx: TenantDb,
+  input: {
+    businessId: string;
+    customerCreditId: string;
+    invoiceNumber: string;
+    amountK: number;
+    actor: string;
+  },
+): Promise<ApplyCreditOutcomeAtInvoice> {
+  const rows = await tx
+    .select({
+      id: invoices.id,
+      status: invoices.status,
+      balanceDueK: invoices.balanceDueK,
+      sourceType: invoices.sourceType,
+      sourceId: invoices.sourceId,
+    })
+    .from(invoices)
+    .where(
+      and(
+        eq(invoices.businessId, input.businessId),
+        eq(invoices.invoiceNumber, input.invoiceNumber),
+      ),
+    )
+    .limit(1);
+  const invoice = rows[0];
+  if (!invoice) return { outcome: 'not_found' };
+  if (invoice.status === 'voided') return { outcome: 'voided' };
+
+  /* The balance claim first, by the same statement that checks it: two
+   * applications racing on one invoice meet at the WHERE. */
+  const claimed = await tx.execute<{ balance_due_k: string }>(sql`
+    UPDATE invoices
+       SET balance_due_k = balance_due_k - ${input.amountK},
+           status = CASE WHEN balance_due_k - ${input.amountK} = 0 THEN 'paid'
+                         ELSE 'partially_paid' END
+     WHERE id = ${invoice.id}::uuid
+       AND business_id = ${input.businessId}::uuid
+       AND balance_due_k >= ${input.amountK}
+    RETURNING balance_due_k
+  `);
+  const after = [...claimed][0];
+  if (!after) {
+    return { outcome: 'exceeds_balance', balanceDueK: Number(invoice.balanceDueK) };
+  }
+
+  const applied = await applyCustomerCredit(tx, {
+    businessId: input.businessId,
+    customerCreditId: input.customerCreditId,
+    invoiceId: invoice.id,
+    amountMinor: input.amountK,
+    sourceType: 'credit_application',
+    sourceId: `${input.invoiceNumber}:${input.customerCreditId}`,
+  });
+  if (applied.outcome !== 'applied') {
+    /* Roll the whole application back: a balance moved for a credit that
+     * did not stretch would be a silent gift. */
+    throw new CreditApplicationRefused(
+      applied.outcome === 'not_found' ? 'no_such_credit' : 'insufficient_credit',
+      applied.outcome === 'insufficient_credit' ? applied.remainingMinor : 0,
+    );
+  }
+
+  const ledgerTransactionId = await writePosting(
+    tx,
+    input.businessId,
+    postCreditApplication({
+      memo: `Credit applied to ${input.invoiceNumber}`,
+      amountK: input.amountK,
+    }),
+    invoice.sourceType,
+    invoice.sourceId ?? input.invoiceNumber,
+  );
+
+  await tx.insert(auditEvents).values({
+    businessId: input.businessId,
+    actor: input.actor,
+    entity: 'invoice',
+    entityId: invoice.id,
+    action: 'credit_applied',
+    newValue: {
+      invoiceNumber: input.invoiceNumber,
+      amountK: input.amountK,
+      customerCreditId: input.customerCreditId,
+      ledgerTransactionId,
+    } as never,
+    sourceType: 'dashboard',
+  });
+
+  return {
+    outcome: 'applied',
+    invoiceNumber: input.invoiceNumber,
+    amountK: input.amountK,
+    balanceDueK: Number(after.balance_due_k),
+    remainingCreditK: applied.remainingMinor,
+  };
+}
+
+/** Thrown to roll back a balance claim whose credit did not stretch;
+ * callers translate it back into the refusal outcome. */
+export class CreditApplicationRefused extends Error {
+  constructor(
+    public readonly refusal: 'no_such_credit' | 'insufficient_credit',
+    public readonly remainingCreditK: number,
+  ) {
+    super(`credit application refused: ${refusal}`);
+  }
 }
 
 /** VAT already given back, at the same proportional rule used above. */

@@ -4,7 +4,7 @@ import { TranscriptionUnavailable, type SpeechToText, type Transcript } from './
  * A transcriber that answers from a script.
  *
  * The behaviour worth testing on the voice path belongs to the code AROUND
- * the sidecar — that audio is never stored, that seconds are metered against
+ * the transcriber — that audio is never stored, that seconds are metered against
  * the allowance, that the transcript goes through the same tokenising and the
  * same gates a typed sentence does. None of that needs a real model, and a
  * real one in CI would be slow, non-deterministic and impossible without a
@@ -27,7 +27,7 @@ export class StubSpeechToText implements SpeechToText {
     this.failure = null;
   }
 
-  failWith(error: Error = new TranscriptionUnavailable('stub sidecar down')): void {
+  failWith(error: Error = new TranscriptionUnavailable('stub transcriber down')): void {
     this.failure = error;
   }
 

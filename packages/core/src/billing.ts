@@ -31,12 +31,27 @@ export type PlanChangeKind =
  * merchant is charged depends only on whether the new plan costs more.
  */
 export function planChangeKind(from: string, to: string): PlanChangeKind {
-  const fromK = PLAN_PRICES_K[from as PlanId] ?? 0;
-  const toK = PLAN_PRICES_K[to as PlanId] ?? 0;
+  return kindFromPrices(
+    from,
+    to,
+    PLAN_PRICES_K[from as PlanId] ?? 0,
+    PLAN_PRICES_K[to as PlanId] ?? 0,
+  );
+}
+
+/**
+ * The classification itself, over whichever prices the caller holds - the
+ * constants above, or the catalogue's (BL2). One extra rule the constant
+ * table never needed: two DIFFERENT paid plans priced identically move as a
+ * downgrade (at renewal, uncharged) rather than reading as "same" and never
+ * moving at all. No two paid plans share a price today, but data can say
+ * anything and the safe direction is the one that charges nothing now.
+ */
+function kindFromPrices(from: string, to: string, fromK: number, toK: number): PlanChangeKind {
+  if (from === to) return 'same';
   if (fromK === 0) return toK === 0 ? 'same' : 'first_purchase';
   if (toK > fromK) return 'upgrade';
-  if (toK < fromK) return 'downgrade';
-  return 'same';
+  return 'downgrade';
 }
 
 /* ── what it costs today ──────────────────────────────────────────────────── */
@@ -75,9 +90,20 @@ export function planChangeCharge(input: {
   /** When that cycle renews. */
   renewsAt: Date;
   now: Date;
+  /**
+   * Prices from the plan catalogue (BL2): what the merchant pays today for
+   * their current plan (their pinned version's price) and what the new plan
+   * costs today. Absent falls back to the pre-BL2 constants - the retained
+   * old path, not an equal alternative.
+   */
+  pricesK?: { from: number; to: number } | undefined;
 }): PlanChangeCharge {
-  const kind = planChangeKind(input.from, input.to);
-  const toK = PLAN_PRICES_K[input.to as PlanId] ?? 0;
+  const toK = input.pricesK ? input.pricesK.to : (PLAN_PRICES_K[input.to as PlanId] ?? 0);
+  const fromNowK = input.pricesK ? input.pricesK.from : (PLAN_PRICES_K[input.from as PlanId] ?? 0);
+  /* Classified over the SAME prices the amounts use: a kind decided by the
+   * constants while the catalogue prices the difference could call a move an
+   * upgrade and then charge a negative proration for it. */
+  const kind = kindFromPrices(input.from, input.to, fromNowK, toK);
 
   if (kind === 'same') {
     return { kind, amountK: 0, effectiveFrom: 'now', renewsAt: input.renewsAt };
@@ -98,8 +124,7 @@ export function planChangeCharge(input: {
     };
   }
 
-  const fromK = PLAN_PRICES_K[input.from as PlanId] ?? 0;
-  const differenceK = toK - fromK;
+  const differenceK = toK - fromNowK;
   const total = wholeDaysBetween(input.cycleStart, input.renewsAt);
   const remaining = wholeDaysBetween(input.now, input.renewsAt);
 
@@ -216,29 +241,47 @@ export const ADD_ON_PACKS: readonly AddOnPack[] = [
   {
     id: 'messages_100',
     label: '100 extra WhatsApp messages',
-    unit: 'messages',
+    unit: 'AI_ACTIONS',
     quantity: 100,
     priceK: 250_000,
   },
   {
     id: 'voice_30min',
     label: '30 extra voice minutes',
-    unit: 'voice_seconds',
+    unit: 'VOICE_MINUTES',
     quantity: 1_800,
     priceK: 150_000,
   },
   {
     id: 'documents_50',
     label: '50 extra document generations',
-    unit: 'documents',
+    unit: 'DOCUMENT_GENERATION',
     quantity: 50,
     priceK: 200_000,
   },
   {
     id: 'orders_50',
     label: '50 extra Integrate orders',
-    unit: 'orders',
+    unit: 'CATALOGUE_ORDERS',
     quantity: 50,
+    priceK: 500_000,
+  },
+  /* The two API consumables (PR-117, owner figures of 28 Aug 2026). There
+   * is no pack of API applications: capacity is held, so it is sold as the
+   * recurring `api_application_extra` add-on and migration 0112 stops the
+   * catalogue expressing a pack of one. */
+  {
+    id: 'api_requests_25k',
+    label: '25,000 extra API requests',
+    unit: 'API_REQUEST_UNITS',
+    quantity: 25_000,
+    priceK: 1_000_000,
+  },
+  {
+    id: 'webhook_deliveries_25k',
+    label: '25,000 extra webhook deliveries',
+    unit: 'WEBHOOK_DELIVERIES',
+    quantity: 25_000,
     priceK: 500_000,
   },
 ];
@@ -267,11 +310,18 @@ export function addOnPack(id: string): AddOnPack | null {
  * since the ladder fix every paid plan carries a voice allowance, and a
  * merchant with an allowance to exhaust must have the overage path that
  * goes with it.
+ *
+ * The two API packs are offered to NOBODY here. They top up a product no
+ * plan sells (§27), so who may buy them depends on which add-on a business
+ * HOLDS, which this plan-only rollback path cannot see. Offering them to
+ * every paid plan would sell requests to merchants with no key to spend
+ * them with; the data path answers properly, from the grants.
  */
 export function packsFor(plan: string): AddOnPack[] {
   if ((PLAN_PRICES_K[plan as PlanId] ?? 0) === 0) return [];
   return ADD_ON_PACKS.filter((pack) => {
-    if (pack.unit === 'orders') return plan === 'integrate' || plan === 'complete';
+    if (pack.unit === 'CATALOGUE_ORDERS') return plan === 'integrate' || plan === 'complete';
+    if (pack.unit === 'API_REQUEST_UNITS' || pack.unit === 'WEBHOOK_DELIVERIES') return false;
     return true;
   });
 }

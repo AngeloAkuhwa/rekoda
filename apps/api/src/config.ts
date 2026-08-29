@@ -75,6 +75,31 @@ export interface ApiConfig {
   /** Concurrent job lanes per worker process. SKIP LOCKED makes N lanes safe. */
   workerConcurrency: number;
   /**
+   * A1 rollout flags (spec §25), one per command, default OFF.
+   *
+   * The flag decides which path an ingress takes to the SAME work function:
+   * on, the command bus (entitlement → risk → idempotency → work); off, the
+   * work called directly, which is exactly what the ingress did before the
+   * command existed. Rollback is a flag flip, per command, with no deploy.
+   */
+  commandRecordSale: boolean;
+  commandIssueInvoice: boolean;
+  commandRecordPayment: boolean;
+  commandConfirmPayment: boolean;
+  commandRecordExpense: boolean;
+  commandRecordPurchase: boolean;
+  commandPostJournal: boolean;
+  commandClosePeriod: boolean;
+  commandOpeningBalances: boolean;
+  commandPlaceOrder: boolean;
+  commandRecordOrder: boolean;
+  commandIngestFinancialTransaction: boolean;
+  commandConfirmReconciliation: boolean;
+  commandAdjustInventory: boolean;
+  commandEraseData: boolean;
+  commandVoidReceipt: boolean;
+  commandReopenPeriod: boolean;
+  /**
    * Which provider interprets a merchant's message.
    *
    * Not a failover pair: extraction quality IS the product experience
@@ -98,6 +123,16 @@ export interface ApiConfig {
   aiModelEscalation: string;
   aiModelTranscriber: string;
   /**
+   * The independent second reader for documents at or above
+   * `AI_DUAL_EXTRACT_THRESHOLD_K` (item 9 of the AI hardening plan). Null
+   * disables dual extraction: there is no default because the verifier
+   * must come from a DIFFERENT provider than the primary reader, and this
+   * repository will not guess a second vendor's model id or price. Set it
+   * together with an OPENAI_API_KEY and an AI_MODEL_PRICES entry for its
+   * family, or boot refuses.
+   */
+  aiModelVisionVerifier: string | null;
+  /**
    * An OpenAI-COMPATIBLE endpoint, when it is not OpenAI's own.
    *
    * Groq, Together, OpenRouter and DeepSeek weights on a US host all speak
@@ -119,38 +154,67 @@ export interface ApiConfig {
    */
   aiModelPrices: string | null;
   /**
-   * The self-hosted transcription sidecar (ADR 0005/0008), now optional
-   * (ADR 0027).
+   * Per-minute prices for hosted transcription models, as JSON keyed by
+   * exact model id:
    *
-   * Set, it selects the AfriSpeech sidecar and audio stays on our machine —
-   * the day a deployment runs it, /ai-privacy may say the stronger sentence
-   * again. Null selects the hosted transcriber when an OpenAI key exists
-   * (the launch configuration, named on /ai-privacy), and with neither a
-   * voice note gets an honest sentence rather than being sent somewhere the
-   * privacy page does not mention.
+   *   AI_TRANSCRIPTION_PRICES='{"whisper-1":{"perMinuteMicros":6000}}'
+   *
+   * Required whenever voice transcription is enabled — boot refuses
+   * otherwise, for the same reason token roles must be priced: a
+   * transcriber with no price is a transcriber whose every call reports
+   * as free.
    */
-  sttUrl: string | null;
+  aiTranscriptionPrices: string | null;
   /**
-   * The self-hosted OCR sidecar (ADR 0024 C9), now optional (ADR 0027).
+   * Whether voice notes are transcribed at all (ADR 0032, remediation R3).
    *
-   * Set, it selects the sidecar and the image stays on our machine. Null
-   * selects the vision model as a transcription-only processor when an
-   * Anthropic key exists — the launch configuration, chosen at boot and
-   * named on /ai-privacy, never a fallback taken at request time. The
-   * REASONING model still only ever sees tokenised text either way, because
-   * the gateway tokenises text and cannot tokenise an image, and a request
-   * that cannot reach its configured engine is refused, not rerouted.
+   * The launch transcriber is OpenAI, explicitly and only: there is no
+   * self-hosted sidecar in the launch architecture and no fallback between
+   * engines. Enabled without OPENAI_API_KEY, boot REFUSES — a deployment
+   * that promises voice and cannot deliver it should fail in front of the
+   * operator, not in front of a merchant. Disabled (the default), voice
+   * notes get an honest sentence and no OpenAI credential needs to exist.
    */
-  ocrUrl: string | null;
+  voiceTranscriptionEnabled: boolean;
+  /**
+   * Whether photographed documents are read at all (ADR 0032, R3).
+   *
+   * The launch reader is Anthropic Claude vision as a transcription-only
+   * processor. Enabled without ANTHROPIC_API_KEY, boot refuses; disabled
+   * (the default), a photograph is answered honestly and goes nowhere.
+   * The REASONING model still only ever sees tokenised text either way,
+   * and a request that cannot reach the configured engine is refused,
+   * never rerouted.
+   */
+  imageAiEnabled: boolean;
   /** Daily ceilings. The thing on the other side of these is a bill. */
   aiCallsPerBusinessPerDay: number;
   aiCallsGlobalPerDay: number;
   /**
+   * The PLATFORM's document-reading day (remediation A4): the backstop
+   * behind the per-business ceiling, so a thousand tenants at their own
+   * limits still cannot make one day cost more than this many reads.
+   */
+  aiDocExtractionsGlobalPerDay: number;
+  /**
+   * Hard daily transcription ceilings, in SECONDS (remediation A4).
+   * Operational brakes, distinct from the monthly voice allowance the
+   * merchant bought: the monthly meter is commercial, these bound what a
+   * single runaway day can cost, per business and platform-wide.
+   */
+  voiceSecondsPerBusinessPerDay: number;
+  voiceSecondsGlobalPerDay: number;
+  /**
    * The longest voice note Rekoda will transcribe, in seconds
    * (docs/rekoda-chat-v1.md §2). Configuration, never application logic:
-   * the commercial limit varies by plan, environment and future pricing,
-   * and an over-length note gets a natural reply, not a silent failure.
-   * Consumed by the voice slice; declared now so it cannot be hard-coded.
+   * the commercial limit varies by plan, environment and future pricing.
+   *
+   * A REJECTION limit, enforced before any transcription provider is called.
+   * The webhook does not carry a duration and the media endpoint does not
+   * either, but the bytes are downloaded before anything is spent and the
+   * container says how long it is: `AudioMetadataProbe` reads it. A note past
+   * this never reaches a provider, which is what makes the number cost
+   * protection rather than cost reporting.
    */
   voiceNoteMaxDurationSeconds: number;
   /**
@@ -249,6 +313,34 @@ export interface ApiConfig {
    * the one number that needs changing.
    */
   metaServiceReplyCostMicros: number;
+  /**
+   * Where Rekoda's own WABA is registered, which decides the authentication
+   * rate every sign-in code is billed at.
+   *
+   * A Nigeria-registered WABA pays $0.0145 per authentication conversation
+   * and one registered anywhere else pays $0.0750 for the identical message
+   * (docs/pricing-model.md). That is over five times the cost of the single
+   * most expensive message Rekoda sends, on the busiest path it has, and the
+   * same document carries it as a launch requirement.
+   *
+   * Defaults to true because that is the launch requirement, not because it
+   * is the safe direction: a deployment that moved the WABA and did not set
+   * this would under-report its own OTP bill by a factor of five, so the
+   * default is the state the business is required to be in and the flag is
+   * how an operator admits it is not.
+   */
+  metaWabaRegisteredInNigeria: boolean;
+  /**
+   * BL2 cutover flag (spec §30, build plan §10 step D): on, commercial terms
+   * (allowances, seats, prices) read from the plan catalogue through the
+   * grandfathering pin; off, the pre-BL2 constants in `@rekoda/core`.
+   *
+   * Defaults ON because the cutover is the required state - the constants
+   * are the DRIFTED shape §30 names - and rollback is this one variable set
+   * to `0`, no deploy. The old path is deleted only after the catalogue has
+   * soaked (step E, with the add-ons slice).
+   */
+  planCatalogueReads: boolean;
   /** R2. All four empty means documents are rendered but not stored. */
   r2AccountId: string;
   r2AccessKeyId: string;
@@ -279,18 +371,22 @@ class ConfigError extends Error {}
  */
 const DEFAULT_MODEL: Record<'anthropic' | 'openai', string | null> = {
   /**
-   * Haiku reads the merchant's sentence, not Sonnet.
+   * Sonnet reads the merchant's sentence (ADR 0031, accuracy-first).
    *
-   * The interpreter's job is one extraction from one short message, under
-   * forced tool use against a strict schema, with the arithmetic done
-   * afterwards by code that does not trust the answer. That is what the small
-   * model is for, and it costs a third of Sonnet's input and output. At the
-   * volumes in pricing-model.md the difference is the gap between the model
-   * eating a third of a subscription and eating a rounding error.
+   * ADR 0023 put Haiku here on cost grounds, and its reasoning about the
+   * SHAPE of the job still holds: one extraction, forced tool use, strict
+   * schema, arithmetic recomputed by code that does not trust the answer.
+   * What changed is the launch priority and the price. The product optimises
+   * for avoiding harmful financial mistakes rather than for answering
+   * cheaply, a misread amount that survives the schema is the one error no
+   * gate downstream can catch, and Sonnet 5's permanent $2/$10 rate closed
+   * most of the gap that justified the small model. Haiku keeps the
+   * CLASSIFIER role, where a cheap answer avoids a costlier call and a
+   * mistake costs a retry rather than a wrong draft.
    *
    * Escalation stays on Opus for the messages that genuinely need it.
    */
-  anthropic: 'claude-haiku-4-5',
+  anthropic: 'claude-sonnet-5',
   openai: null,
 };
 
@@ -299,13 +395,11 @@ const DEFAULT_MODEL: Record<'anthropic' | 'openai', string | null> = {
  * ROLE, and each role has its own model — nothing anywhere says "call
  * Sonnet", it says "call the classifier". The reasoning roles default to the
  * Claude family (vision + native PDF + strict tools is where extraction
- * lives). The transcriber defaults to HOSTED whisper-1 (ADR 0027): the
- * launch decision is hosted AI end to end, and whisper-1 is the
- * transcription model that reports the audio DURATION, which the
- * voice_seconds meter takes as the provider's number rather than an
- * estimate. Setting `STT_URL` swaps in the self-hosted AfriSpeech sidecar
- * (ADR 0008) unchanged — the hardening move stays one env var away, and
- * /ai-privacy describes whichever engine a deployment runs.
+ * lives). The transcriber defaults to whisper-1 on OpenAI (ADR 0032): the
+ * launch architecture is hosted AI end to end with exactly one engine per
+ * job, and whisper-1 is the transcription model that reports the audio
+ * DURATION, which the voice_seconds meter takes as the provider's number
+ * rather than an estimate.
  */
 const ROLE_DEFAULTS = {
   classifier: 'claude-haiku-4-5',
@@ -341,6 +435,24 @@ function webUrl(env: NodeJS.ProcessEnv): string | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * The voice length limit, which now gates a capability rather than merely
+ * describing one.
+ *
+ * A blank or mistyped value used to be harmless; since this is the limit a
+ * note is measured against before the transcriber runs, a NaN or a zero would
+ * refuse every voice note as too long, which reads to a merchant as the
+ * product being broken and to an engineer as a metering bug rather than a
+ * typo. Boot is the right place to say so.
+ */
+function voiceWindowSeconds(env: NodeJS.ProcessEnv): number {
+  const seconds = Number(env['VOICE_NOTE_MAX_DURATION_SECONDS'] ?? 120);
+  if (!Number.isInteger(seconds) || seconds <= 0) {
+    throw new ConfigError('VOICE_NOTE_MAX_DURATION_SECONDS must be a positive whole number');
+  }
+  return seconds;
 }
 
 function operatorSecret(env: NodeJS.ProcessEnv, isProduction: boolean): string | null {
@@ -389,13 +501,89 @@ function required(env: NodeJS.ProcessEnv, key: string, minLength = 0): string {
   return value;
 }
 
+/**
+ * A 32-byte AES key, as 64 hex characters. Validating the SHAPE at boot, not
+ * just the length, is the difference between a misconfiguration caught by an
+ * operator at startup and one discovered by a merchant at a money path: a
+ * 64-character passphrase clears a length check, boots clean, and then
+ * throws `VaultError` from the vault's own `^[0-9a-f]{64}$` gate at the first
+ * encrypt - which is exactly the vault key's contract, enforced one layer
+ * too late to be a configuration error.
+ */
+function requiredHexKey(env: NodeJS.ProcessEnv, key: string): string {
+  const value = required(env, key, 64);
+  if (!/^[0-9a-f]{64}$/i.test(value)) {
+    throw new ConfigError(`${key} must be 64 hex characters (openssl rand -hex 32)`);
+  }
+  return value;
+}
+
+/**
+ * An OPTIONAL hex key: empty means the capability it protects is off (the
+ * call sites all guard on truthiness), but a NON-empty value must be a real
+ * key. `CONNECTION_KEY` guards the highest-value secrets in the estate -
+ * merchants' Paystack keys, WABA tokens, settlement account numbers - and a
+ * `changeme` there previously booted clean and failed at onboarding.
+ */
+function optionalHexKey(env: NodeJS.ProcessEnv, key: string): string {
+  const value = env[key];
+  if (!value) return '';
+  if (!/^[0-9a-f]{64}$/i.test(value)) {
+    throw new ConfigError(`${key}, when set, must be 64 hex characters (openssl rand -hex 32)`);
+  }
+  return value;
+}
+
+/**
+ * Whether to apply production hardening - and it FAILS CLOSED.
+ *
+ * The old test was `NODE_ENV === 'production'`, which meant `NODE_ENV=prod`,
+ * `Production`, `staging`, or any typo skipped every production requirement:
+ * the trusted-proxy rule that stops a forged X-Forwarded-For, the ban on
+ * returning live OTP codes, the required Meta secrets. Hardening now applies
+ * UNLESS the environment is explicitly one of the known non-production
+ * values, so an unrecognised NODE_ENV is treated as production rather than
+ * as development. Unset is development (tests and local dev delete it), which
+ * is the one non-production state that carries no name.
+ */
+const NON_PRODUCTION_ENVS = new Set(['development', 'test']);
+export function isProductionEnv(env: NodeJS.ProcessEnv): boolean {
+  const value = env['NODE_ENV'];
+  if (value === undefined || value === '') return false;
+  return !NON_PRODUCTION_ENVS.has(value);
+}
+
+/** Boolean env flags accept the repo's `1` convention and plain `true`. */
+function flag(value: string | undefined): boolean {
+  return value === '1' || value === 'true';
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
-  const isProduction = env['NODE_ENV'] === 'production';
+  const isProduction = isProductionEnv(env);
 
   const revealOtp = env['REKODA_REVEAL_OTP'] === '1';
   if (revealOtp && isProduction) {
     throw new ConfigError(
       'REKODA_REVEAL_OTP must never be set in production — it returns live OTP codes to any caller',
+    );
+  }
+
+  /**
+   * A media feature switched ON with no provider to serve it is a promise
+   * the deployment cannot keep (ADR 0032, remediation R3): the failure
+   * belongs in front of the operator at startup, not in front of a merchant
+   * mid-message. Disabled features need no credentials at all.
+   */
+  if (flag(env['VOICE_TRANSCRIPTION_ENABLED']) && !env['OPENAI_API_KEY']) {
+    throw new ConfigError(
+      'VOICE_TRANSCRIPTION_ENABLED is set but OPENAI_API_KEY is not. The launch transcriber ' +
+        'is OpenAI, explicitly: supply the key, or disable voice transcription.',
+    );
+  }
+  if (flag(env['IMAGE_AI_ENABLED']) && !env['ANTHROPIC_API_KEY']) {
+    throw new ConfigError(
+      'IMAGE_AI_ENABLED is set but ANTHROPIC_API_KEY is not. The launch document reader ' +
+        'is Anthropic Claude vision, explicitly: supply the key, or disable image AI.',
     );
   }
 
@@ -454,8 +642,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
      * real message instead of at boot. 64 hex characters = 32 bytes, which is
      * what `openssl rand -hex 32` produces and what AES-256 needs.
      */
-    vaultKey: required(env, 'VAULT_KEY', 64),
-    matchKey: required(env, 'MATCH_KEY', 64),
+    vaultKey: requiredHexKey(env, 'VAULT_KEY'),
+    matchKey: requiredHexKey(env, 'MATCH_KEY'),
     corsOrigins: (env['REKODA_CORS_ORIGINS'] ?? 'http://localhost:3000')
       .split(',')
       .map((s) => s.trim())
@@ -496,6 +684,23 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
      * a handler transaction. Raise it with the pool, not instead of it.
      */
     workerConcurrency: Math.max(1, Number(env['REKODA_WORKER_CONCURRENCY'] ?? 4)),
+    commandRecordSale: env['REKODA_COMMAND_RECORD_SALE'] === '1',
+    commandIssueInvoice: env['REKODA_COMMAND_ISSUE_INVOICE'] === '1',
+    commandRecordPayment: env['REKODA_COMMAND_RECORD_PAYMENT'] === '1',
+    commandConfirmPayment: env['REKODA_COMMAND_CONFIRM_PAYMENT'] === '1',
+    commandRecordExpense: env['REKODA_COMMAND_RECORD_EXPENSE'] === '1',
+    commandRecordPurchase: env['REKODA_COMMAND_RECORD_PURCHASE'] === '1',
+    commandPostJournal: env['REKODA_COMMAND_POST_JOURNAL'] === '1',
+    commandClosePeriod: env['REKODA_COMMAND_CLOSE_PERIOD'] === '1',
+    commandOpeningBalances: env['REKODA_COMMAND_OPENING_BALANCES'] === '1',
+    commandPlaceOrder: env['REKODA_COMMAND_PLACE_ORDER'] === '1',
+    commandRecordOrder: env['REKODA_COMMAND_RECORD_ORDER'] === '1',
+    commandIngestFinancialTransaction: env['REKODA_COMMAND_INGEST_FINANCIAL_TRANSACTION'] === '1',
+    commandConfirmReconciliation: env['REKODA_COMMAND_CONFIRM_RECONCILIATION'] === '1',
+    commandAdjustInventory: env['REKODA_COMMAND_ADJUST_INVENTORY'] === '1',
+    commandEraseData: env['REKODA_COMMAND_ERASE_DATA'] === '1',
+    commandVoidReceipt: env['REKODA_COMMAND_VOID_RECEIPT'] === '1',
+    commandReopenPeriod: env['REKODA_COMMAND_REOPEN_PERIOD'] === '1',
     /**
      * Optional. The deterministic router answers most messages
      * without a model, so a missing key degrades the product rather than
@@ -517,10 +722,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     aiModelVision: env['AI_MODEL_VISION'] ?? ROLE_DEFAULTS.vision,
     aiModelEscalation: env['AI_MODEL_ESCALATION'] ?? ROLE_DEFAULTS.escalation,
     aiModelTranscriber: env['AI_MODEL_TRANSCRIBER'] ?? ROLE_DEFAULTS.transcriber,
+    aiModelVisionVerifier: env['AI_MODEL_VISION_VERIFIER'] || null,
     aiBaseUrl: env['AI_BASE_URL'] || null,
     aiModelPrices: env['AI_MODEL_PRICES'] || null,
-    sttUrl: env['STT_URL'] || null,
-    ocrUrl: env['OCR_URL'] || null,
+    aiTranscriptionPrices: env['AI_TRANSCRIPTION_PRICES'] || null,
+    voiceTranscriptionEnabled: flag(env['VOICE_TRANSCRIPTION_ENABLED']),
+    imageAiEnabled: flag(env['IMAGE_AI_ENABLED']),
     /**
      * Defaults are a ceiling, not a target. At ~₦8 a call (pricing-model.md),
      * 60 per merchant is about ₦480 a day against a subscription, and 5,000
@@ -530,7 +737,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
      */
     aiCallsPerBusinessPerDay: Number(env['AI_DAILY_CALLS_PER_BUSINESS'] ?? 60),
     aiCallsGlobalPerDay: Number(env['AI_DAILY_CALLS_GLOBAL'] ?? 5_000),
-    voiceNoteMaxDurationSeconds: Number(env['VOICE_NOTE_MAX_DURATION_SECONDS'] ?? 120),
+    /* 2,000 reads/day platform-wide is roughly ₦16,000 of vision at the
+     * planning rate: absorbable while someone investigates. */
+    aiDocExtractionsGlobalPerDay: Number(env['AI_DOC_EXTRACTIONS_GLOBAL'] ?? 2_000),
+    /* 30 minutes a day per business (the largest plan carries 120/month),
+     * 10 hours a day platform-wide (~$3.60 at $0.006/min). Generous for
+     * every legitimate day; a wall for a scripted one. */
+    voiceSecondsPerBusinessPerDay: Number(env['VOICE_SECONDS_PER_BUSINESS_PER_DAY'] ?? 1_800),
+    voiceSecondsGlobalPerDay: Number(env['VOICE_SECONDS_GLOBAL_PER_DAY'] ?? 36_000),
+    voiceNoteMaxDurationSeconds: voiceWindowSeconds(env),
     aiDualExtractThresholdK: Number(env['AI_DUAL_EXTRACT_THRESHOLD_K'] ?? 50_000_000),
     aiDocExtractionsPerBusinessPerDay: Number(env['AI_DOC_EXTRACTIONS_PER_BUSINESS'] ?? 25),
     planningFxNairaPerUsd: Number(env['PLANNING_FX_NGN_PER_USD'] ?? 1_450),
@@ -539,7 +754,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     paystackPlatformConfirmed: env['REKODA_PAYSTACK_PLATFORM_CONFIRMED'] === '1',
     monoSecretKey: env['MONO_SECRET_KEY'] ?? '',
     monoBaseUrl: env['MONO_BASE_URL'] ?? 'https://api.withmono.com',
-    connectionKey: env['CONNECTION_KEY'] ?? '',
+    connectionKey: optionalHexKey(env, 'CONNECTION_KEY'),
     metaAccessToken: env['META_ACCESS_TOKEN'] ?? '',
     metaPhoneNumberId: env['META_PHONE_NUMBER_ID'] ?? '',
     metaGraphVersion: env['META_GRAPH_VERSION'] ?? 'v21.0',
@@ -550,6 +765,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     metaRetentionTemplate: env['META_RETENTION_TEMPLATE'] || null,
     metaRetentionTemplateLocale: env['META_RETENTION_TEMPLATE_LOCALE'] ?? 'en',
     metaServiceReplyCostMicros: Number(env['META_SERVICE_REPLY_COST_MICROS'] ?? 0),
+    metaWabaRegisteredInNigeria: env['META_WABA_REGISTERED_IN_NIGERIA'] !== 'false',
+    planCatalogueReads: env['REKODA_PLAN_CATALOGUE_READS'] !== '0',
     r2AccountId: env['R2_ACCOUNT_ID'] ?? '',
     r2AccessKeyId: env['R2_ACCESS_KEY_ID'] ?? '',
     r2SecretAccessKey: env['R2_SECRET_ACCESS_KEY'] ?? '',

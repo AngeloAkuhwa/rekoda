@@ -138,7 +138,9 @@ describe('booking outcomes (§21–25)', () => {
     // …and NEVER out of revenue. Read back from the database, not the input.
     const revenue = await one<{ credit: number }>(
       businessId,
-      sql`SELECT coalesce(sum(credit_k), 0)::bigint AS credit FROM ledger_entries WHERE account = 'SALES_REVENUE'`,
+      sql`SELECT coalesce(sum(e.credit_k), 0)::bigint AS credit
+           FROM ledger_entries e JOIN accounts a ON a.id = e.account_id
+           WHERE a.code = '4000'`,
     );
     expect(Number(revenue?.credit)).toBe(15_000_000);
 
@@ -198,7 +200,9 @@ describe('booking outcomes (§21–25)', () => {
     // And the ledger holds the allocated portion, not the gross.
     const bank = await one<{ d: number }>(
       businessId,
-      sql`SELECT coalesce(sum(debit_k), 0)::bigint AS d FROM ledger_entries WHERE account = 'BANK_PAYSTACK'`,
+      sql`SELECT coalesce(sum(e.debit_k), 0)::bigint AS d
+           FROM ledger_entries e JOIN accounts a ON a.id = e.account_id
+           WHERE a.code = '1010'`,
     );
     expect(Number(bank?.d)).toBe(15_000_000);
   });
@@ -489,6 +493,9 @@ describe('recording a merchant-reported payment', () => {
     );
   }
 
+  /* Each recorded payment is its own confirmation and carries its own draft
+   * id, as the chat flow does: one draft, one yes, one attestation. */
+  let paySeq = 0;
   const record = (businessId: string, invoiceId: string, amountK: number) =>
     withBusiness(db, businessId, (tx) =>
       settleRepo.recordMerchantPayment(tx, {
@@ -497,7 +504,7 @@ describe('recording a merchant-reported payment', () => {
         amountK,
         method: 'cash',
         sourceType: 'chat',
-        sourceId: 'draft-pay',
+        sourceId: `draft-pay-${++paySeq}`,
         actor: 'system',
       }),
     );
@@ -688,5 +695,54 @@ describe('one merchant counting their payments', () => {
     const seen = await withBusiness(db, businessId, (tx) => settleRepo.paymentsFor(tx));
     expect(seen.rows[0]?.amountK).toBe(9_000_000);
     expect(seen.count).toBe(2);
+  });
+});
+
+describe('the verification knows its try (§6.5; PR-055)', () => {
+  it('a connection-known confirmation records a SUCCEEDED attempt and links it', async () => {
+    const businessId = await seedBusiness();
+    const { intent } = await seedObligation(businessId, 15_000_000);
+    const connection = await withBusiness(db, businessId, (tx) =>
+      paymentsHub.upsertConnection(tx, { businessId, providerType: 'paystack' }),
+    );
+
+    await withBusiness(db, businessId, (tx) =>
+      book(tx, businessId, intent, 15_000_000, {
+        paymentConnectionId: connection.id,
+        providerRef: 'pst-linked-1',
+      }),
+    );
+
+    const rows = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{
+        attempt_id: string | null;
+        status: string;
+        provider_attempt_id: string;
+      }>(sql`
+        SELECT v.payment_attempt_id AS attempt_id, a.status, a.provider_attempt_id
+        FROM payment_verifications v
+        JOIN payment_attempts a ON a.id = v.payment_attempt_id
+        WHERE v.business_id = ${businessId}::uuid AND v.source = 'PROVIDER_VERIFIED'
+      `),
+    );
+    const row = [...rows][0];
+    expect(row).toBeTruthy();
+    expect(row!.status).toBe('SUCCEEDED');
+    expect(row!.provider_attempt_id).toBe('pst-linked-1');
+  });
+
+  it('a confirmation with no known connection still verifies, attempt-less and honest', async () => {
+    const businessId = await seedBusiness();
+    const { intent } = await seedObligation(businessId, 15_000_000);
+    await withBusiness(db, businessId, (tx) =>
+      book(tx, businessId, intent, 15_000_000, { providerRef: 'pst-bare-1' }),
+    );
+    const rows = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ payment_attempt_id: string | null }>(sql`
+        SELECT payment_attempt_id FROM payment_verifications
+        WHERE business_id = ${businessId}::uuid AND source = 'PROVIDER_VERIFIED'
+      `),
+    );
+    expect([...rows][0]!.payment_attempt_id).toBeNull();
   });
 });

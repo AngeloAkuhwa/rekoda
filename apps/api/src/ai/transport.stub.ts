@@ -49,6 +49,19 @@ export class StubTransport implements ModelTransport {
     this.requests.length = 0;
   }
 
+  /**
+   * Script the next calls VERBATIM, first to last, the last repeating.
+   *
+   * `replyWith` wraps its argument as `{ command }`, which is the
+   * interpreter's tool shape and nobody else's — the classifier answers
+   * `{ type }` and a sequence test needs a failure followed by a success.
+   */
+  script(...replies: Array<ModelReply | Error>): void {
+    this.replies.length = 0;
+    this.replies.push(...replies);
+    this.requests.length = 0;
+  }
+
   /** Forget what has been asked. A suite sharing one stub needs this per test. */
   reset(): void {
     this.requests.length = 0;

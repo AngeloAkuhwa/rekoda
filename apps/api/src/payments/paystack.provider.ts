@@ -164,6 +164,12 @@ export class PaystackProvider implements PaymentProviderPort {
             SETTLEMENT_STATUS[s.status] === 'settled'
               ? (s.settlement_date ?? s.effective_date ?? null)
               : null,
+          /* Kobo, verbatim from GET /settlement (§20): total_amount is
+           * what the covered payments summed to, effective_amount what
+           * left after Paystack's deductions. Absent on old rows → null,
+           * and null means "nothing authoritative to record". */
+          grossK: typeof s.total_amount === 'number' ? s.total_amount : null,
+          netK: typeof s.effective_amount === 'number' ? s.effective_amount : null,
         });
       }
       /* Stop when the pager says this was the last page, or the page came

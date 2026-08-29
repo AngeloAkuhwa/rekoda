@@ -20,11 +20,14 @@ import {
   schema,
   usageRepo,
   stockRepo,
+  wabaRepo,
   withBusiness,
+  sql,
   type Db,
   suppliersRepo,
 } from '@rekoda/db';
-import { PLAN_ALLOWANCES, replies, usagePeriod } from '@rekoda/core';
+import { placeCatalogueOrderWork, validateCatalogueOrderWork } from '../commands/order-commands.js';
+import { PLAN_ALLOWANCES, allowanceFor, replies, usagePeriod } from '@rekoda/core';
 import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -39,19 +42,35 @@ import {
   settleRepo,
   spendRepo,
 } from '@rekoda/db';
-import { decryptFacet, encryptFacet, matchKeyFor } from '@rekoda/core/vault';
+import {
+  decryptFacet,
+  encryptFacet,
+  matchKeyFor,
+  participantIndexFor,
+  PARTICIPANT_INDEX_KEY_VERSION,
+} from '@rekoda/core/vault';
 import { PrivacyGateway } from '../privacy/gateway.service.js';
+import { sealPayload } from '../privacy/payload-vault.js';
+import { pumpPaystackEvents } from '../payments/paystack-pump.js';
 import { Interpreter } from '../ai/interpreter.service.js';
 import { StubTransport } from '../ai/transport.stub.js';
 import { StubSender } from '../channels/sender.stub.js';
 import { StubTextExtraction } from '../ai/ocr.stub.js';
 import { StubSpeechToText } from '../ai/stt.stub.js';
+import { TextExtractionUnavailable } from '../ai/ocr.js';
+import { TranscriptionUnavailable } from '../ai/stt.js';
+import { registerTranscriptionPrice } from '@rekoda/core';
 import { StubPaymentProvider } from '../payments/provider.stub.js';
 import { PaymentIntentsService } from '../payments/payment-intents.service.js';
 import { LocalStorage } from '../documents/r2.storage.js';
 import { ReplySender } from '../replies/reply.service.js';
 import { loadConfig, type ApiConfig } from '../config.js';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
+import { ContainerAudioProbe } from '../ai/audio-duration.js';
+import { CommandBus } from '../commands/command-bus.service.js';
+import { RiskPolicyService } from '../risk/risk-policy.service.js';
+import { SecurityMetrics } from './security-metrics.service.js';
+import { meterAllowance } from '../billing/plan-terms.js';
 
 const APP_SECRET = 'meta-app-secret-for-tests';
 const VERIFY_TOKEN = 'meta-verify-token-for-tests';
@@ -83,9 +102,17 @@ beforeAll(async () => {
   process.env['REKODA_WEB_URL'] = 'https://books.example.test';
   process.env['META_APP_SECRET'] = APP_SECRET;
   process.env['META_VERIFY_TOKEN'] = VERIFY_TOKEN;
+  /* Rekoda's own Chat number (PR-059): the fixtures below arrive on PNID,
+   * so pinning it makes the routing decision explicit — anything else is a
+   * merchant's WABA or a refusal, never a guess. */
+  process.env['META_PHONE_NUMBER_ID'] = 'PNID';
   // 64 hex characters each, derived per run rather than written down.
   process.env['VAULT_KEY'] = randomBytes(32).toString('hex');
   process.env['MATCH_KEY'] = randomBytes(32).toString('hex');
+  /* The merchant-WABA credential key (PR-058): the W3 gate sends into a
+   * customer's thread on the merchant's own number, which needs the stored
+   * token to decrypt. */
+  process.env['CONNECTION_KEY'] = randomBytes(32).toString('hex');
   delete process.env['NODE_ENV'];
 
   const { createApp } = await import('../main.js');
@@ -112,10 +139,15 @@ beforeAll(async () => {
     storage: new LocalStorage(storageRoot),
     sender: stubSender,
     config,
-    paymentProvider: new StubPaymentProvider(),
+    /* ONE stub for both the mint and the verify: the W3 gate scripts a
+     * verification against the same provider the checkout was raised on,
+     * which is exactly how production holds them together. */
+    paymentProvider: intentsProvider,
     paymentIntents: new PaymentIntentsService(config, db, intentsProvider),
     stt: stubStt,
     ocr: stubOcr,
+    audioProbe: new ContainerAudioProbe(),
+    commandBus: new CommandBus(new RiskPolicyService()),
   };
 });
 
@@ -139,7 +171,12 @@ beforeEach(async () => {
   intentsProvider.reset();
 });
 
-function messagePayload(waId: string, wamid: string, text = 'Ada bought 3 wigs for 150k') {
+function messagePayload(
+  waId: string,
+  wamid: string,
+  text = 'Ada bought 3 wigs for 150k',
+  phoneNumberId = 'PNID',
+) {
   return {
     object: 'whatsapp_business_account',
     entry: [
@@ -150,7 +187,7 @@ function messagePayload(waId: string, wamid: string, text = 'Ada bought 3 wigs f
             field: 'messages',
             value: {
               messaging_product: 'whatsapp',
-              metadata: { phone_number_id: 'PNID' },
+              metadata: { phone_number_id: phoneNumberId },
               messages: [
                 {
                   id: wamid,
@@ -229,6 +266,22 @@ describe('webhook body ceiling', () => {
     const res = await post({ object: 'whatsapp_business_account', entry: [] });
     expect(res.statusCode).toBe(200);
   });
+
+  /**
+   * The cap is only real if it cannot be sidestepped by dropping the header.
+   * A chunked request with no Content-Length would otherwise reach the 2 MB
+   * global bodyLimit - sixteen times the webhook cap - on the one
+   * unauthenticated surface. Real providers always declare a length; a
+   * webhook that does not is refused with 411 before the body is read.
+   */
+  it('refuses a webhook with no Content-Length with 411, before parsing', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/webhooks/meta',
+      headers: { 'content-type': 'application/json', 'transfer-encoding': 'chunked' },
+    });
+    expect(res.statusCode).toBe(411);
+  });
 });
 
 describe('the subscription handshake', () => {
@@ -282,6 +335,16 @@ describe('signature verification', () => {
     expect(res.statusCode).toBe(401);
     expect(await events.eventCount(db)).toBe(0);
   });
+
+  it('counts a rejected signature so the ops alarm can fire (PR-108)', async () => {
+    // The DB `badSignatures` is a structural zero (rejection is pre-persist);
+    // the live counter is what an operator polling /v1/ops/health reads.
+    const security = app.get(SecurityMetrics);
+    const before = security.rejectedSignatures('meta');
+    const res = await post(messagePayload('2348031234567', 'wamid.A5'), { secret: 'not-ours' });
+    expect(res.statusCode).toBe(401);
+    expect(security.rejectedSignatures('meta')).toBe(before + 1);
+  });
 });
 
 describe('idempotency', () => {
@@ -320,6 +383,1147 @@ describe('idempotency', () => {
       ],
     });
     expect(await events.eventCount(db)).toBe(3);
+  });
+});
+
+/* Shared by the cart describe (PR-087/088) and the W3 gate (PR-089). */
+function orderPayload(
+  waId: string,
+  wamid: string,
+  phoneNumberId: string,
+  items: Array<{ retailerId: string; quantity: number; liedPriceK?: number }>,
+) {
+  return {
+    object: 'whatsapp_business_account',
+    entry: [
+      {
+        id: 'WABA',
+        changes: [
+          {
+            field: 'messages',
+            value: {
+              messaging_product: 'whatsapp',
+              metadata: { phone_number_id: phoneNumberId },
+              messages: [
+                {
+                  id: wamid,
+                  from: waId,
+                  timestamp: '1700000000',
+                  type: 'order',
+                  order: {
+                    catalog_id: 'cat-golden',
+                    product_items: items.map((item) => ({
+                      product_retailer_id: item.retailerId,
+                      quantity: item.quantity,
+                      /* The customer's device claims a price. It is a lie,
+                       * and the parser never lets it in the door. */
+                      item_price: item.liedPriceK ?? 1,
+                      currency: 'NGN',
+                    })),
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      },
+    ],
+  };
+}
+
+describe('a catalogue cart becomes an order (spec §3.2; W3, PR-087)', () => {
+  async function seedCommerceMerchant(phone: string, phoneNumberId: string) {
+    const user = await identity.upsertUserByPhone(db, phone);
+    const business = await identity.createBusinessWithOwner(db, {
+      name: 'Ada Fashion',
+      businessType: null,
+      ownerUserId: user.id,
+    });
+    await withBusiness(db, business.id, (tx) =>
+      wabaRepo.connectWaba(tx, {
+        businessId: business.id,
+        wabaId: `waba-${phoneNumberId}`,
+        phoneNumberId,
+        accessTokenCipher: 'cipher-for-tests',
+        tokenTail: '4821',
+      }),
+    );
+    const wig = await withBusiness(db, business.id, (tx) =>
+      catalogueRepo.createProduct(tx, business.id, { name: 'wig', unitPriceK: 150_000 }),
+    );
+    return { businessId: business.id, wigId: wig.id };
+  }
+
+  const ordersOf = (businessId: string) =>
+    withBusiness(db, businessId, (tx) =>
+      tx.execute<{
+        order_number: string;
+        status: string;
+        total_k: string;
+        external_ref: string | null;
+        customer_id: string | null;
+        invoice_id: string | null;
+      }>(sql`
+        SELECT order_number, status, total_k::bigint AS total_k, external_ref,
+               customer_id, invoice_id
+        FROM orders WHERE business_id = ${businessId}::uuid
+      `),
+    );
+
+  it('prices the cart off the merchant’s own rows, never off the message', async () => {
+    const { businessId, wigId } = await seedCommerceMerchant('+2348030002221', 'PN-CART-1');
+
+    /* The device claims each wig costs 1 kobo. */
+    expect(
+      (
+        await post(
+          orderPayload('2349097771111', 'wamid.CART.1', 'PN-CART-1', [
+            { retailerId: wigId, quantity: 2, liedPriceK: 1 },
+          ]),
+        )
+      ).statusCode,
+    ).toBe(200);
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+
+    const placed = [...(await ordersOf(businessId))];
+    expect(placed).toHaveLength(1);
+    expect(placed[0]).toMatchObject({
+      /* PLACED then VALIDATED in the same transaction (PR-088): the
+       * §5.2 validation ran against the real catalogue and real shelf
+       * before any figure could be shown. */
+      status: 'validated',
+      external_ref: 'meta:wamid.CART.1',
+      /* 2 × the MERCHANT'S 150,000 — the claimed 1 kobo never existed. */
+      total_k: '300000',
+    });
+    /* The customer exists, anchored on their own phone. */
+    expect(placed[0]!.customer_id).not.toBeNull();
+    /* Validation issued the invoice: a receivable exists NOW, not before. */
+    expect(placed[0]!.invoice_id).not.toBeNull();
+    const invoice = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ total_k: string; balance_due_k: string; source_type: string }>(sql`
+        SELECT total_k::bigint AS total_k, balance_due_k::bigint AS balance_due_k, source_type
+        FROM invoices WHERE business_id = ${businessId}::uuid
+      `),
+    );
+    expect([...invoice]).toEqual([
+      { total_k: '300000', balance_due_k: '300000', source_type: 'waba_catalogue' },
+    ]);
+
+    /* The lines carry the shelf's names and prices. */
+    const lines = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ name: string; unit_price_k: string; quantity: number }>(sql`
+        SELECT name, unit_price_k::bigint AS unit_price_k, quantity::int AS quantity
+        FROM order_items WHERE business_id = ${businessId}::uuid
+      `),
+    );
+    expect([...lines]).toEqual([{ name: 'wig', unit_price_k: '150000', quantity: 2 }]);
+
+    /* The announcement went out with the fact. */
+    const announced = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ n: string }>(sql`
+        SELECT COUNT(*) AS n FROM outbox_events
+        WHERE business_id = ${businessId}::uuid AND type = 'order.placed'
+      `),
+    );
+    expect([...announced][0]!.n).toBe('1');
+
+    /* And the cart landed on the CUSTOMER's thread as a fact, priceless. */
+    const recorded = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ n: string }>(sql`
+        SELECT COUNT(*) AS n FROM conversation_messages
+        WHERE business_id = ${businessId}::uuid AND body = '[order message]'
+      `),
+    );
+    expect([...recorded][0]!.n).toBe('1');
+  });
+
+  it('a redelivered webhook places nothing twice', async () => {
+    const { businessId, wigId } = await seedCommerceMerchant('+2348030002222', 'PN-CART-2');
+    const payload = orderPayload('2349097772222', 'wamid.CART.2', 'PN-CART-2', [
+      { retailerId: wigId, quantity: 1 },
+    ]);
+
+    await post(payload);
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+    await post(payload);
+    await buildRunner(workerDb, db, deps).runOnce();
+
+    expect([...(await ordersOf(businessId))]).toHaveLength(1);
+  });
+
+  it('refuses a cart the counted shelf cannot serve, leaving the order visibly cancelled', async () => {
+    const { businessId, wigId } = await seedCommerceMerchant('+2348030002224', 'PN-CART-4');
+    await withBusiness(db, businessId, async (tx) => {
+      const wig = (await stockRepo.productByName(tx, businessId, 'wig'))!;
+      await stockRepo.recordDelivery(tx, {
+        businessId,
+        product: wig,
+        quantity: 1,
+        costK: 20_000,
+        sourceType: 'chat',
+      });
+    });
+
+    await post(
+      orderPayload('2349097774444', 'wamid.CART.4', 'PN-CART-4', [
+        { retailerId: wigId, quantity: 3 },
+      ]),
+    );
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+
+    /* The request stands, visibly refused; nothing financial exists. */
+    const refused = [...(await ordersOf(businessId))];
+    expect(refused).toHaveLength(1);
+    expect(refused[0]).toMatchObject({ status: 'cancelled', invoice_id: null });
+    const ledger = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ n: string }>(
+        sql`SELECT COUNT(*) AS n FROM ledger_entries WHERE business_id = ${businessId}::uuid`,
+      ),
+    );
+    expect([...ledger][0]!.n).toBe('0');
+  });
+
+  it('a counted shelf serves the cart, commits the goods, and the fee lands as a record', async () => {
+    const { businessId, wigId } = await seedCommerceMerchant('+2348030002225', 'PN-CART-5');
+    await withBusiness(db, businessId, async (tx) => {
+      const wig = (await stockRepo.productByName(tx, businessId, 'wig'))!;
+      await stockRepo.recordDelivery(tx, {
+        businessId,
+        product: wig,
+        quantity: 5,
+        costK: 100_000,
+        sourceType: 'chat',
+      });
+      await paymentsHub.upsertConnection(tx, { businessId, providerType: 'paystack' });
+    });
+
+    await post(
+      orderPayload('2349097775555', 'wamid.CART.5', 'PN-CART-5', [
+        { retailerId: wigId, quantity: 2 },
+      ]),
+    );
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+
+    /* Goods committed at their cost: 2 off the shelf, COGS 2 × 20,000. */
+    const shelf = await withBusiness(db, businessId, (tx) =>
+      stockRepo.productByName(tx, businessId, 'wig'),
+    );
+    expect(shelf).toMatchObject({ onHand: 3 });
+    const cogs = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ k: string }>(sql`
+        SELECT COALESCE(SUM(e.debit_k), 0)::bigint AS k
+        FROM ledger_entries e JOIN accounts a ON a.id = e.account_id
+        WHERE e.business_id = ${businessId}::uuid AND a.code = '5000'
+      `),
+    );
+    expect([...cogs][0]!.k).toBe('40000');
+
+    /* §19.1: the provider's expected fee is a RECORD — estimated from the
+     * observed rate card (1% capped ₦300), merchant-borne, resolved to
+     * actual by settlement. 1% of 300,000 kobo = 3,000. */
+    const charges = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{
+        type: string;
+        amount_minor: string;
+        beneficiary: string;
+        economic_bearer: string;
+        actual_or_estimated: string;
+      }>(sql`
+        SELECT type, amount_minor::bigint AS amount_minor, beneficiary, economic_bearer,
+               actual_or_estimated
+        FROM payment_charges WHERE business_id = ${businessId}::uuid
+      `),
+    );
+    expect([...charges]).toEqual([
+      {
+        type: 'PAYMENT_PROCESSING',
+        amount_minor: '3000',
+        beneficiary: 'PROVIDER',
+        economic_bearer: 'MERCHANT',
+        actual_or_estimated: 'ESTIMATED',
+      },
+    ]);
+  });
+
+  it('a price moved between placement and validation refuses rather than re-quotes', async () => {
+    const { businessId, wigId } = await seedCommerceMerchant('+2348030002226', 'PN-CART-6');
+
+    const rejected = await withBusiness(db, businessId, async (tx) => {
+      const placed = await placeCatalogueOrderWork(tx, {
+        businessId,
+        customerId: null,
+        lines: [
+          { productId: wigId, name: 'wig', quantity: 1, unitPriceK: 150_000, lineTotalK: 150_000 },
+        ],
+        totalK: 150_000,
+        externalRef: 'meta:wamid.CART.6',
+        sourceId: 'wamid.CART.6',
+      });
+      /* The merchant moves the price while the order sits PLACED. */
+      await catalogueRepo.editProduct(tx, businessId, wigId, { unitPriceK: 175_000 });
+      return validateCatalogueOrderWork(tx, {
+        businessId,
+        orderId: placed.orderId,
+        actor: 'customer:waba',
+      });
+    });
+    expect(rejected).toEqual({ outcome: 'rejected', reason: 'price_changed' });
+    expect([...(await ordersOf(businessId))][0]).toMatchObject({
+      status: 'cancelled',
+      invoice_id: null,
+    });
+  });
+
+  it('refuses the WHOLE cart when it names an item the shelf does not sell', async () => {
+    const { businessId, wigId } = await seedCommerceMerchant('+2348030002223', 'PN-CART-3');
+
+    await post(
+      orderPayload('2349097773333', 'wamid.CART.3', 'PN-CART-3', [
+        { retailerId: wigId, quantity: 1 },
+        { retailerId: '00000000-0000-4000-8000-000000000000', quantity: 1 },
+      ]),
+    );
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+
+    /* No partial order: a customer shown an order they did not compose
+     * would pay for a guess. The message still landed on their thread. */
+    expect([...(await ordersOf(businessId))]).toHaveLength(0);
+  });
+});
+
+describe('the W3 completion gate: catalogue to receipt (spec §3.2; PR-089)', () => {
+  const OWNER = '+2348030002230';
+  const CUSTOMER_WA = '2349097779999';
+
+  /**
+   * The whole storefront, stood up the way production stands it up: a
+   * merchant on the Integrate plan with a CONNECTED WABA whose token
+   * actually decrypts, a counted shelf, an ACTIVE Paystack connection
+   * (which provisions its own clearing account, PR-053), and SERVICE
+   * capacity granted as a bonus because SERVICE_MESSAGE is sold on no
+   * plan until the pricing decision, and 0 means zero.
+   */
+  async function seedGateMerchant(
+    phoneNumberId: string,
+    opts: { email?: boolean; capacity?: boolean } = {},
+  ) {
+    const user = await identity.upsertUserByPhone(db, OWNER);
+    const business = await identity.createBusinessWithOwner(db, {
+      name: 'Ada Fashion',
+      businessType: null,
+      ownerUserId: user.id,
+    });
+    const businessId = business.id;
+    await billingRepo.setPlan(db, {
+      businessId,
+      plan: 'integrate',
+      expiresAt: null,
+      actor: 'operator:test',
+    });
+
+    const wigId = await withBusiness(db, businessId, async (tx) => {
+      await wabaRepo.connectWaba(tx, {
+        businessId,
+        wabaId: `waba-${phoneNumberId}`,
+        phoneNumberId,
+        accessTokenCipher: encryptFacet(
+          'EAAG-merchant-token',
+          deps.config.connectionKey,
+          `${businessId}:waba_token`,
+        ),
+        tokenTail: '4821',
+      });
+      const wig = await catalogueRepo.createProduct(tx, businessId, {
+        name: 'wig',
+        unitPriceK: 150_000,
+      });
+      const shelfRow = (await stockRepo.productByName(tx, businessId, 'wig'))!;
+      await stockRepo.recordDelivery(tx, {
+        businessId,
+        product: shelfRow,
+        quantity: 5,
+        costK: 100_000,
+        sourceType: 'chat',
+      });
+      const connection = await paymentsHub.upsertConnection(tx, {
+        businessId,
+        providerType: 'paystack',
+        settlementAccountLast4: '4821',
+      });
+      await paymentsHub.setConnectionState(tx, connection.id, {
+        status: 'active',
+        externalSubaccountId: 'ACCT_live1',
+      });
+      const period = usagePeriod(new Date());
+      if (opts.capacity === false) {
+        /* Spend the month, rather than assume the plan sells none. Integrate
+         * sells 5,000 SERVICE_MESSAGE since PR-117, so "no capacity" is now
+         * a merchant who has USED theirs, which is the state the fallback
+         * below actually exists for. The figure is read rather than
+         * retyped, so a repricing does not silently stop exhausting it. */
+        const sold = await meterAllowance(
+          deps.config,
+          tx,
+          businessId,
+          'integrate',
+          'SERVICE_MESSAGE',
+        );
+        if (sold > 0) {
+          await usageRepo.consumeUnit(tx, businessId, period, 'SERVICE_MESSAGE', sold, sold);
+        }
+      } else {
+        await usageRepo.creditBonus(tx, businessId, period, 'SERVICE_MESSAGE', 5);
+      }
+      return wig.id;
+    });
+
+    /* The customer exists BEFORE the cart, the way a repeat buyer does —
+     * same phone anchor the webhook resolves, so the cart lands on this
+     * very record. The email is what the Paystack mint needs; it is on
+     * file because the merchant saved it, never invented. */
+    const resolved = await deps.gateway.resolveStorefrontCustomer(
+      businessId,
+      'Chidi',
+      `+${CUSTOMER_WA}`,
+    );
+    if (!resolved) throw new Error('fixture: customer did not resolve');
+    if (opts.email !== false) {
+      await customersRepo.addIdentityFacet(db, businessId, resolved.customerId, {
+        facet: 'email',
+        ciphertext: encryptFacet('chidi@example.com', deps.config.vaultKey, `${businessId}:email`),
+        matchKey: null,
+      });
+    }
+    return { businessId, wigId };
+  }
+
+  async function drainAll(): Promise<number> {
+    const runner = buildRunner(workerDb, db, deps);
+    let ran = 0;
+    while (await runner.runOnce()) ran += 1;
+    return ran;
+  }
+
+  const invoiceOf = async (businessId: string) => {
+    const rows = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{
+        id: string;
+        invoice_number: string;
+        status: string;
+        total_k: string;
+        balance_due_k: string;
+      }>(sql`
+        SELECT id, invoice_number, status, total_k::bigint AS total_k,
+               balance_due_k::bigint AS balance_due_k
+        FROM invoices WHERE business_id = ${businessId}::uuid
+      `),
+    );
+    return [...rows][0] ?? null;
+  };
+
+  const roleBalance = async (businessId: string, role: string) => {
+    const rows = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ k: string }>(sql`
+        SELECT COALESCE(SUM(e.debit_k - e.credit_k), 0)::bigint AS k
+        FROM ledger_entries e JOIN accounts a ON a.id = e.account_id
+        WHERE e.business_id = ${businessId}::uuid AND a.system_role = ${role}
+      `),
+    );
+    return Number([...rows][0]!.k);
+  };
+
+  it('an order from the catalogue reaches a receipt in the merchant thread, books correct end to end', async () => {
+    const { businessId, wigId } = await seedGateMerchant('PN-GATE-1');
+
+    /* 1 ── the cart, through the real webhook ingress. */
+    expect(
+      (
+        await post(
+          orderPayload(CUSTOMER_WA, 'wamid.GATE.1', 'PN-GATE-1', [
+            { retailerId: wigId, quantity: 2 },
+          ]),
+        )
+      ).statusCode,
+    ).toBe(200);
+    await drainAll();
+
+    /* 2 ── validated, invoiced, and the CHECKOUT is with the customer, in
+     * their own thread on the merchant's number: the server's figure and
+     * the payable link, nothing their device claimed. */
+    const invoice = await invoiceOf(businessId);
+    expect(invoice).toMatchObject({ status: 'issued', total_k: '300000', balance_due_k: '300000' });
+    expect(stubSender.connectionTexts).toHaveLength(1);
+    expect(stubSender.connectionTexts[0]).toMatchObject({
+      to: `+${CUSTOMER_WA}`,
+      phoneNumberId: 'PN-GATE-1',
+      accessToken: 'EAAG-merchant-token',
+    });
+    expect(stubSender.connectionTexts[0]!.text).toContain(invoice!.invoice_number);
+    expect(stubSender.connectionTexts[0]!.text).toContain('₦3,000');
+    expect(stubSender.connectionTexts[0]!.text).toMatch(/https:\/\/checkout\.stub\/RKD-PAY-/);
+
+    /* The merchant's notice says the link is WITH the customer, not
+     * "forward it": the system knows what it just did. */
+    const notice = stubSender.sent.find((m) => m.text.includes('New WhatsApp order'));
+    expect(notice?.to).toBe(OWNER);
+    expect(notice?.text).toContain(invoice!.invoice_number);
+    expect(notice?.text).toContain('with your customer');
+
+    /* 3 ── the customer pays: charge.success on the SAME reference the
+     * checkout was raised with, verified server-side (§6.3) before one
+     * kobo is booked. */
+    const intent = await withBusiness(db, businessId, (tx) =>
+      paymentsHub.liveIntentForInvoice(tx, businessId, invoice!.id),
+    );
+    expect(intent).not.toBeNull();
+    intentsProvider.willVerify(intent!.reference, { amountK: 300_000, providerFeeK: 4_500 });
+    const body = {
+      event: 'charge.success',
+      data: {
+        id: 77_001,
+        reference: intent!.reference,
+        amount: 300_000,
+        currency: 'NGN',
+        status: 'success',
+        customer: { email: 'chidi@example.com' },
+      },
+    };
+    await events.recordEvent(db, {
+      provider: 'paystack',
+      eventType: body.event,
+      externalId: `77001:${body.event}`,
+      payload: sealPayload(body, deps.config.vaultKey, 'paystack', `77001:${body.event}`),
+      businessId: null,
+    });
+    expect(await pumpPaystackEvents({ workerDb, appDb: db, vaultKey: deps.config.vaultKey })).toBe(
+      1,
+    );
+    await drainAll();
+
+    /* 4 ── the gate: paid, receipted, and the receipt lands in the
+     * MERCHANT'S OWN THREAD with the confirmed figure (§3.2's last line). */
+    expect(await invoiceOf(businessId)).toMatchObject({ status: 'paid', balance_due_k: '0' });
+    const delivered = stubSender.lastDocument;
+    expect(delivered?.to).toBe(OWNER);
+    expect(delivered?.caption).toContain('Money in ✅ ₦3,000 confirmed for');
+    expect(delivered?.caption).toContain(invoice!.invoice_number);
+    expect(delivered?.bytes.subarray(0, 5).toString()).toBe('%PDF-');
+
+    /* 5 ── the accounting, held to §21.1 invariant 10: the money is where
+     * the books say it is. Gross parks in the CONNECTION'S clearing
+     * account (settlement moves it to bank with ACTUAL fees, §20); the
+     * receivable opened by the invoice is cleared by the payment; no bank,
+     * no fee expense yet; the §19.1 estimate is still a RECORD awaiting
+     * its settlement. */
+    expect(await roleBalance(businessId, 'PAYMENT_PROVIDER_CLEARING')).toBe(300_000);
+    expect(await roleBalance(businessId, 'ACCOUNTS_RECEIVABLE')).toBe(0);
+    const charges = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ actual_or_estimated: string }>(
+        sql`SELECT actual_or_estimated FROM payment_charges WHERE business_id = ${businessId}::uuid`,
+      ),
+    );
+    expect([...charges].map((c) => c.actual_or_estimated)).toEqual(['ESTIMATED']);
+  });
+
+  it('no email on file: the customer still hears the order stands, the merchant hears no link exists', async () => {
+    const { businessId, wigId } = await seedGateMerchant('PN-GATE-2', { email: false });
+
+    await post(
+      orderPayload(CUSTOMER_WA, 'wamid.GATE.2', 'PN-GATE-2', [{ retailerId: wigId, quantity: 1 }]),
+    );
+    await drainAll();
+
+    /* §37 "missing customer email" is a product state, not an error: no
+     * link is invented, the order's confirmation still carries the
+     * server's figure, and the merchant hears the order landed. */
+    const invoice = await invoiceOf(businessId);
+    expect(invoice).toMatchObject({ status: 'issued', total_k: '150000' });
+    expect(stubSender.connectionTexts).toHaveLength(1);
+    expect(stubSender.connectionTexts[0]!.text).toContain('Payment details will follow');
+    expect(stubSender.connectionTexts[0]!.text).not.toContain('http');
+    const notice = stubSender.sent.find((m) => m.text.includes('New WhatsApp order'));
+    expect(notice?.to).toBe(OWNER);
+    expect(notice?.text).toContain('could not raise a payment link');
+  });
+
+  it('capacity at zero: the checkout falls back to a forwardable link in the merchant thread', async () => {
+    const { businessId, wigId } = await seedGateMerchant('PN-GATE-3', { capacity: false });
+
+    await post(
+      orderPayload(CUSTOMER_WA, 'wamid.GATE.3', 'PN-GATE-3', [{ retailerId: wigId, quantity: 1 }]),
+    );
+    await drainAll();
+
+    /* The month's SERVICE_MESSAGE is spent, and spent means spent: the
+     * customer leg refuses without consuming, and the link falls back to
+     * the merchant to forward — the money can still move. */
+    const invoice = await invoiceOf(businessId);
+    expect(invoice).toMatchObject({ status: 'issued' });
+    expect(stubSender.connectionTexts).toHaveLength(0);
+    const forwardable = stubSender.sent.find((m) => m.text.includes('Payment link for'));
+    expect(forwardable?.to).toBe(OWNER);
+    expect(forwardable?.text).toContain('Forward it to your customer');
+    expect(forwardable?.text).toMatch(/https:\/\/checkout\.stub\/RKD-PAY-/);
+  });
+});
+
+describe('the away assistant (spec Appendix D; W4, PR-090)', () => {
+  const CUSTOMER_WA = '2349097778888';
+
+  async function seedAssistantMerchant(
+    phoneNumberId: string,
+    opts: { enabled?: boolean; limit?: number } = {},
+  ) {
+    const user = await identity.upsertUserByPhone(db, '+2348030002240');
+    const business = await identity.createBusinessWithOwner(db, {
+      name: 'Ada Fashion',
+      businessType: null,
+      ownerUserId: user.id,
+    });
+    const businessId = business.id;
+    await billingRepo.setPlan(db, {
+      businessId,
+      plan: 'integrate',
+      expiresAt: null,
+      actor: 'operator:test',
+    });
+    await withBusiness(db, businessId, async (tx) => {
+      await wabaRepo.connectWaba(tx, {
+        businessId,
+        wabaId: `waba-${phoneNumberId}`,
+        phoneNumberId,
+        accessTokenCipher: encryptFacet(
+          'EAAG-merchant-token',
+          deps.config.connectionKey,
+          `${businessId}:waba_token`,
+        ),
+        tokenTail: '4821',
+      });
+      await catalogueRepo.createProduct(tx, businessId, { name: 'wig', unitPriceK: 150_000 });
+      const wig = (await stockRepo.productByName(tx, businessId, 'wig'))!;
+      await stockRepo.recordDelivery(tx, {
+        businessId,
+        product: wig,
+        quantity: 4,
+        costK: 100_000,
+        sourceType: 'chat',
+      });
+      await usageRepo.creditBonus(tx, businessId, usagePeriod(new Date()), 'SERVICE_MESSAGE', 5);
+      await wabaRepo.setAssistantSettings(tx, businessId, {
+        enabled: opts.enabled ?? true,
+        dailyReplyLimit: opts.limit ?? 3,
+      });
+    });
+    return businessId;
+  }
+
+  const ask = (phoneNumberId: string, wamid: string, text: string) =>
+    post(messagePayload(CUSTOMER_WA, wamid, text, phoneNumberId));
+
+  it('answers price and availability off the merchant’s own rows, inside the window', async () => {
+    const businessId = await seedAssistantMerchant('PN-AWAY-1');
+
+    expect((await ask('PN-AWAY-1', 'wamid.AWAY.1', 'How much is the wig?')).statusCode).toBe(200);
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+
+    expect(stubSender.connectionTexts).toHaveLength(1);
+    expect(stubSender.connectionTexts[0]).toMatchObject({
+      to: `+${CUSTOMER_WA}`,
+      phoneNumberId: 'PN-AWAY-1',
+      text: 'wig: ₦1,500. In stock.',
+    });
+    /* Metered like every customer send, and counted against the ceiling. */
+    const used = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ n: string }>(
+        sql`SELECT COALESCE(SUM(replies), 0) AS n FROM away_assistant_replies WHERE business_id = ${businessId}::uuid`,
+      ),
+    );
+    expect([...used][0]!.n).toBe('1');
+    /* Text only: the assistant transacted nothing (Appendix D, absolute). */
+    const ledger = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ n: string }>(
+        sql`SELECT COUNT(*) AS n FROM ledger_entries WHERE business_id = ${businessId}::uuid`,
+      ),
+    );
+    expect([...ledger][0]!.n).toBe('0');
+  });
+
+  it('an assistant nobody enabled answers nobody', async () => {
+    await seedAssistantMerchant('PN-AWAY-2', { enabled: false });
+
+    await ask('PN-AWAY-2', 'wamid.AWAY.2', 'How much is the wig?');
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+
+    expect(stubSender.connectionTexts).toHaveLength(0);
+  });
+
+  it('past the ceiling the assistant hands off rather than going silent', async () => {
+    await seedAssistantMerchant('PN-AWAY-3', { limit: 1 });
+
+    await ask('PN-AWAY-3', 'wamid.AWAY.3A', 'wig price?');
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+    await ask('PN-AWAY-3', 'wamid.AWAY.3B', 'and the wig again?');
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+
+    /* The answer, then the handoff: beyond the merchant's own line a
+     * human takes over, and the customer is TOLD so (PR-091). */
+    expect(stubSender.connectionTexts).toHaveLength(2);
+    expect(stubSender.connectionTexts[0]!.text).toContain('wig');
+    expect(stubSender.connectionTexts[1]!.text).toContain('reply to you personally');
+  });
+
+  it('hands off what the shelf cannot answer, and says it is doing so, once (PR-091)', async () => {
+    await seedAssistantMerchant('PN-AWAY-4');
+
+    await ask('PN-AWAY-4', 'wamid.AWAY.4A', 'when do you open tomorrow?');
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+
+    /* The customer hears a person will reply — no guess, no filler — on
+     * the merchant's own number. */
+    expect(stubSender.connectionTexts).toHaveLength(1);
+    expect(stubSender.connectionTexts[0]).toMatchObject({
+      to: `+${CUSTOMER_WA}`,
+      phoneNumberId: 'PN-AWAY-4',
+      text: 'Thanks for your message. Someone from the shop will reply to you personally.',
+    });
+    /* And the merchant hears a customer is waiting, in their own thread,
+     * with no customer identity riding the notice (F.3). */
+    const notice = stubSender.sent.find((m) => m.text.includes('could not answer'));
+    expect(notice?.to).toBe('+2348030002240');
+    expect(notice?.text).toContain('waiting on your business WhatsApp');
+    expect(notice?.text).not.toMatch(/234909/);
+
+    /* A second unanswerable message the same day repeats NOTHING: the
+     * promise was made, and a machine restating it is a machine stalling. */
+    await ask('PN-AWAY-4', 'wamid.AWAY.4B', 'hello? are you there?');
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+    expect(stubSender.connectionTexts).toHaveLength(1);
+  });
+
+  it('an assistant nobody enabled hands off nothing either', async () => {
+    await seedAssistantMerchant('PN-AWAY-5', { enabled: false });
+
+    await ask('PN-AWAY-5', 'wamid.AWAY.5', 'when do you open tomorrow?');
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+
+    /* The merchant handles their own WhatsApp; Rekoda adds no noise. */
+    expect(stubSender.connectionTexts).toHaveLength(0);
+    expect(stubSender.sent.find((m) => m.text.includes('could not answer'))).toBeUndefined();
+  });
+});
+
+describe('one customer, both products (spec §5.3 X2; X1, PR-092)', () => {
+  it('a Chat sale and a WABA order for the same phone land on ONE customer, one ledger, one AR', async () => {
+    const user = await identity.upsertUserByPhone(db, '+2348030002250');
+    const business = await identity.createBusinessWithOwner(db, {
+      name: 'Ada Fashion',
+      businessType: null,
+      ownerUserId: user.id,
+    });
+    const businessId = business.id;
+    const wigId = await withBusiness(db, businessId, async (tx) => {
+      await wabaRepo.connectWaba(tx, {
+        businessId,
+        wabaId: 'waba-X2',
+        phoneNumberId: 'PN-X2',
+        accessTokenCipher: 'cipher-for-tests',
+        tokenTail: '4821',
+      });
+      const wig = await catalogueRepo.createProduct(tx, businessId, {
+        name: 'wig',
+        unitPriceK: 150_000,
+      });
+      return wig.id;
+    });
+
+    /* Week one: Chat records a walk-in sale to Chidi, anchored on the
+     * phone the privacy gateway folds every identity onto. */
+    const chidi = await deps.gateway.resolveStorefrontCustomer(
+      businessId,
+      'Chidi',
+      '+2349097776666',
+    );
+    await withBusiness(db, businessId, (tx) =>
+      issueRepo.issueSale(tx, {
+        businessId,
+        customerId: chidi!.customerId,
+        customerToken: chidi!.token,
+        items: [{ name: 'wig', quantity: 1, unitPriceK: 150_000 }],
+        subtotalK: 150_000,
+        discountK: 0,
+        deliveryFeeK: 0,
+        vatK: 0,
+        totalK: 150_000,
+        paidK: 0,
+        balanceDueK: 150_000,
+        method: 'transfer',
+        sourceType: 'chat',
+        sourceId: 'draft-x2',
+        actor: 'owner',
+      }),
+    );
+
+    /* Week two: the SAME phone sends a cart on the merchant's WABA. */
+    await post(
+      orderPayload('2349097776666', 'wamid.X2.1', 'PN-X2', [{ retailerId: wigId, quantity: 2 }]),
+    );
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+
+    /* ONE customer record: neither product holds its own customer table,
+     * and identity resolved through the gateway in both directions. */
+    const customers = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ n: string; id: string }>(
+        sql`SELECT COUNT(*) AS n, MIN(id::text) AS id FROM customers WHERE business_id = ${businessId}::uuid`,
+      ),
+    );
+    expect([...customers][0]!.n).toBe('1');
+    expect([...customers][0]!.id).toBe(chidi!.customerId);
+
+    /* Both invoices hang off that one record — the Chat sale and the
+     * validated WABA order. */
+    const invoices = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ customer_id: string; source_type: string; balance_due_k: string }>(
+        sql`SELECT customer_id, source_type, balance_due_k::bigint AS balance_due_k
+            FROM invoices WHERE business_id = ${businessId}::uuid ORDER BY created_at`,
+      ),
+    );
+    const rows = [...invoices];
+    expect(rows).toHaveLength(2);
+    expect(rows.map((r) => r.source_type).sort()).toEqual(['chat', 'waba_catalogue']);
+    expect(rows.every((r) => r.customer_id === chidi!.customerId)).toBe(true);
+
+    /* ONE ledger, ONE AR balance: the receivable is the sum of both,
+     * in one account, not a figure per product. */
+    const ar = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ k: string }>(sql`
+        SELECT COALESCE(SUM(e.debit_k - e.credit_k), 0)::bigint AS k
+        FROM ledger_entries e JOIN accounts a ON a.id = e.account_id
+        WHERE e.business_id = ${businessId}::uuid AND a.system_role = 'ACCOUNTS_RECEIVABLE'
+      `),
+    );
+    expect(Number([...ar][0]!.k)).toBe(150_000 + 300_000);
+  });
+});
+
+describe('send payment details across products (spec §5.3 X1; PR-093)', () => {
+  const OWNER = '+2348030002260';
+  const CUSTOMER_PHONE = '+2349097775577';
+
+  async function seedComplete(
+    phoneNumberId: string,
+    opts: { plan?: 'complete' | 'chat'; windowOpen?: boolean } = {},
+  ) {
+    const user = await identity.upsertUserByPhone(db, OWNER);
+    const business = await identity.createBusinessWithOwner(db, {
+      name: 'Ada Fashion',
+      businessType: null,
+      ownerUserId: user.id,
+    });
+    const businessId = business.id;
+    await billingRepo.setPlan(db, {
+      businessId,
+      plan: opts.plan ?? 'complete',
+      expiresAt: null,
+      actor: 'operator:test',
+    });
+    let connectionId = '';
+    await withBusiness(db, businessId, async (tx) => {
+      const connected = await wabaRepo.connectWaba(tx, {
+        businessId,
+        wabaId: `waba-${phoneNumberId}`,
+        phoneNumberId,
+        accessTokenCipher: encryptFacet(
+          'EAAG-merchant-token',
+          deps.config.connectionKey,
+          `${businessId}:waba_token`,
+        ),
+        tokenTail: '4821',
+      });
+      if (connected.outcome === 'connected') connectionId = connected.id;
+      const connection = await paymentsHub.upsertConnection(tx, {
+        businessId,
+        providerType: 'paystack',
+        settlementAccountLast4: '4821',
+      });
+      await paymentsHub.setConnectionState(tx, connection.id, {
+        status: 'active',
+        externalSubaccountId: 'ACCT_live1',
+      });
+      await usageRepo.creditBonus(tx, businessId, usagePeriod(new Date()), 'SERVICE_MESSAGE', 5);
+    });
+
+    /* Chidi: phone-anchored through the gateway, email on file for the
+     * mint, and (usually) a service window their last message opened. */
+    const chidi = await deps.gateway.resolveStorefrontCustomer(businessId, 'Chidi', CUSTOMER_PHONE);
+    await customersRepo.addIdentityFacet(db, businessId, chidi!.customerId, {
+      facet: 'email',
+      ciphertext: encryptFacet('chidi@example.com', deps.config.vaultKey, `${businessId}:email`),
+      matchKey: null,
+    });
+    if (opts.windowOpen !== false) {
+      const blindIndex = participantIndexFor(deps.config.matchKey, {
+        businessId,
+        channelAccountId: phoneNumberId,
+        keyVersion: PARTICIPANT_INDEX_KEY_VERSION,
+        normalisedParticipant: CUSTOMER_PHONE,
+      });
+      await withBusiness(db, businessId, (tx) =>
+        wabaRepo.touchServiceWindow(tx, {
+          businessId,
+          wabaConnectionId: connectionId,
+          customerHash: blindIndex,
+        }),
+      );
+    }
+
+    await withBusiness(db, businessId, (tx) =>
+      issueRepo.issueSale(tx, {
+        businessId,
+        customerId: chidi!.customerId,
+        customerToken: chidi!.token,
+        items: [{ name: 'gown', quantity: 1, unitPriceK: 8_000_000 }],
+        subtotalK: 8_000_000,
+        discountK: 0,
+        deliveryFeeK: 0,
+        vatK: 0,
+        totalK: 8_000_000,
+        paidK: 0,
+        balanceDueK: 8_000_000,
+        method: 'transfer',
+        sourceType: 'chat',
+        sourceId: 'draft-x1',
+        actor: 'owner',
+      }),
+    );
+    return businessId;
+  }
+
+  async function ask(wamid: string) {
+    await post(messagePayload(OWNER.slice(1), wamid, 'send payment details'));
+    const runner = buildRunner(workerDb, db, deps);
+    let worked = await runner.runOnce();
+    expect(worked).toBe(true);
+    while (worked) worked = await runner.runOnce();
+  }
+
+  const intentCount = (businessId: string) =>
+    withBusiness(db, businessId, (tx) =>
+      tx
+        .execute<{
+          n: string;
+        }>(sql`SELECT COUNT(*) AS n FROM payment_intents WHERE business_id = ${businessId}::uuid`)
+        .then((rows) => Number([...rows][0]!.n)),
+    );
+
+  it('a Complete business delivers into the customer thread: one intent, said plainly to both sides', async () => {
+    const businessId = await seedComplete('PN-X1-1');
+
+    await ask('wamid.X1.1');
+
+    /* The customer holds the details, in their own thread on the
+     * merchant's number: the figure and the link, nothing else. */
+    expect(stubSender.connectionTexts).toHaveLength(1);
+    expect(stubSender.connectionTexts[0]).toMatchObject({
+      to: CUSTOMER_PHONE,
+      phoneNumberId: 'PN-X1-1',
+      accessToken: 'EAAG-merchant-token',
+    });
+    expect(stubSender.connectionTexts[0]!.text).toContain('₦80,000 due');
+    expect(stubSender.connectionTexts[0]!.text).toMatch(/https:\/\/checkout\.stub\/RKD-PAY-/);
+
+    /* The merchant hears where it WENT, never "forward it". */
+    expect(stubSender.lastText).toContain('Sent ✅ payment details for INV');
+    expect(stubSender.lastText).not.toContain('Forward it');
+
+    /* ONE intent. A second ask reuses it — one obligation, one reference
+     * — so when Chidi pays there is exactly one thing to reconcile. */
+    expect(await intentCount(businessId)).toBe(1);
+    await ask('wamid.X1.2');
+    expect(await intentCount(businessId)).toBe(1);
+    const first = stubSender.connectionTexts[0]!.text;
+    const second = stubSender.connectionTexts[1]!.text;
+    expect(second).toBe(first);
+  });
+
+  it('a Chat-only business gets the details in their own hands, and nothing enters the customer thread', async () => {
+    await seedComplete('PN-X1-2', { plan: 'chat' });
+
+    await ask('wamid.X1.3');
+
+    expect(stubSender.connectionTexts).toHaveLength(0);
+    expect(stubSender.lastText).toMatch(/Payment link for INV-\d{4}-000001/);
+    expect(stubSender.lastText).toContain('Forward it to your customer');
+  });
+
+  it('a closed window falls back to the forwardable link rather than a send Meta will refuse', async () => {
+    await seedComplete('PN-X1-3', { windowOpen: false });
+
+    await ask('wamid.X1.4');
+
+    expect(stubSender.connectionTexts).toHaveLength(0);
+    expect(stubSender.lastText).toContain('Forward it to your customer');
+  });
+});
+
+describe('phoneNumberId → BusinessId routing (spec §24; PR-059)', () => {
+  async function seedMerchant(phone: string, name: string) {
+    const user = await identity.upsertUserByPhone(db, phone);
+    return identity.createBusinessWithOwner(db, { name, businessType: null, ownerUserId: user.id });
+  }
+
+  async function connectWabaFor(businessId: string, phoneNumberId: string) {
+    return withBusiness(db, businessId, (tx) =>
+      wabaRepo.connectWaba(tx, {
+        businessId,
+        wabaId: `waba-${phoneNumberId}`,
+        phoneNumberId,
+        accessTokenCipher: 'cipher-for-tests',
+        tokenTail: '4821',
+      }),
+    );
+  }
+
+  it("routes a customer's message to the WABA's owner and onto the customer's own thread", async () => {
+    const merchant = await seedMerchant('+2348030001111', 'Ada Fashion');
+    await connectWabaFor(merchant.id, 'PN-ADA-1');
+
+    const res = await post(
+      messagePayload('2349097775555', 'wamid.CUST.1', 'do you have the bone straight?', 'PN-ADA-1'),
+    );
+    expect(res.statusCode).toBe(200);
+
+    /* The job is the customer handler's, never the interpreter's. */
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+    expect(stubTransport.requests).toHaveLength(0);
+
+    const expectedIndex = participantIndexFor(deps.config.matchKey, {
+      businessId: merchant.id,
+      channelAccountId: 'PN-ADA-1',
+      keyVersion: PARTICIPANT_INDEX_KEY_VERSION,
+      normalisedParticipant: '+2349097775555',
+    });
+    const thread = await withBusiness(db, merchant.id, (tx) =>
+      conversationsRepo.messagesForThread(tx, {
+        kind: 'CUSTOMER',
+        businessId: merchant.id,
+        channel: 'meta',
+        channelAccountId: 'PN-ADA-1',
+        participantBlindIndex: expectedIndex,
+        participantIndexKeyVersion: PARTICIPANT_INDEX_KEY_VERSION,
+      }),
+    );
+    expect(thread).toHaveLength(1);
+    expect(thread[0]!.body).toBe('do you have the bone straight?');
+
+    /* The raw number never landed in the conversation index (F.3/F.4). */
+    const raw = await withBusiness(db, merchant.id, (tx) =>
+      tx.execute<{ n: number }>(sql`
+        SELECT count(*)::int AS n FROM conversations
+        WHERE participant_blind_index LIKE '%2349097775555%'
+      `),
+    );
+    expect([...raw][0]!.n).toBe(0);
+
+    /* And the merchant's own Chat thread heard nothing. */
+    const merchantThread = await withBusiness(db, merchant.id, (tx) =>
+      conversationsRepo.messagesForThread(tx, {
+        kind: 'MERCHANT',
+        businessId: merchant.id,
+        channel: 'meta',
+      }),
+    );
+    expect(merchantThread).toHaveLength(0);
+  });
+
+  it("a customer's message OPENS their 24-hour window (§24; PR-061)", async () => {
+    const merchant = await seedMerchant('+2348030005555', 'Efe Fabrics');
+    await connectWabaFor(merchant.id, 'PN-EFE-1');
+
+    await post(messagePayload('2349097778888', 'wamid.WIN.1', 'good evening', 'PN-EFE-1'));
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+
+    /* Keyed by the SAME F.4-scoped blind index the thread routes by, and
+     * expiring 24 hours out by its own clock. */
+    const hash = participantIndexFor(deps.config.matchKey, {
+      businessId: merchant.id,
+      channelAccountId: 'PN-EFE-1',
+      keyVersion: PARTICIPANT_INDEX_KEY_VERSION,
+      normalisedParticipant: '+2349097778888',
+    });
+    const open = await withBusiness(db, merchant.id, async (tx) => {
+      const connection = await wabaRepo.wabaConnectionFor(tx, merchant.id);
+      return wabaRepo.serviceWindowOpen(tx, {
+        businessId: merchant.id,
+        wabaConnectionId: connection!.id,
+        customerHash: hash,
+      });
+    });
+    expect(open).toBe(true);
+  });
+
+  it('an unknown phoneNumberId is refused, never guessed by the sender (§24, pinned)', async () => {
+    /* The sender IS a merchant — the exact person a sender-based fallback
+     * would misfile. Their customer-of-somebody message must not become
+     * their own bookkeeping. */
+    const merchant = await seedMerchant('+2348030002222', 'Bola Threads');
+
+    const res = await post(
+      messagePayload('2348030002222', 'wamid.UNROUTED.1', 'sold 3 wigs', 'PN-NOBODY'),
+    );
+    expect(res.statusCode).toBe(200);
+
+    /* Stored, durably, attributed to nobody; no job to run. */
+    expect(await events.unattributedEvents(workerDb, 'meta')).toHaveLength(1);
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(false);
+    const heard = await withBusiness(db, merchant.id, (tx) =>
+      conversationsRepo.messagesFor(tx, merchant.id),
+    );
+    expect(heard).toHaveLength(0);
+  });
+
+  it('a revoked connection refuses like an unknown number', async () => {
+    const merchant = await seedMerchant('+2348030003333', 'Chidi Stores');
+    await connectWabaFor(merchant.id, 'PN-CHIDI-1');
+    await withBusiness(db, merchant.id, async (tx) => {
+      const connection = await wabaRepo.wabaConnectionFor(tx, merchant.id);
+      await wabaRepo.markWabaStatus(tx, {
+        businessId: merchant.id,
+        connectionId: connection!.id,
+        status: 'REVOKED',
+      });
+    });
+
+    await post(messagePayload('2349097776666', 'wamid.REVOKED.1', 'hello', 'PN-CHIDI-1'));
+
+    expect(await events.unattributedEvents(workerDb, 'meta')).toHaveLength(1);
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(false);
+  });
+
+  it('two customers on one WABA get two threads; the same customer returns to theirs', async () => {
+    const merchant = await seedMerchant('+2348030004444', 'Ngozi Beauty');
+    await connectWabaFor(merchant.id, 'PN-NGOZI-1');
+
+    await post(
+      messagePayload('2349091110001', 'wamid.TWO.1', 'price of the 22 inch?', 'PN-NGOZI-1'),
+    );
+    await post(messagePayload('2349091110002', 'wamid.TWO.2', 'is the shop open?', 'PN-NGOZI-1'));
+    await post(messagePayload('2349091110001', 'wamid.TWO.3', 'and in brown?', 'PN-NGOZI-1'));
+    const runner = buildRunner(workerDb, db, deps);
+    while (await runner.runOnce()) {
+      /* drain the queue */
+    }
+
+    const threads = await withBusiness(db, merchant.id, (tx) =>
+      tx.execute<{ id: string; n: number }>(sql`
+        SELECT c.id, count(m.id)::int AS n
+        FROM conversations c LEFT JOIN conversation_messages m ON m.conversation_id = c.id
+        WHERE c.conversation_kind = 'CUSTOMER'
+        GROUP BY c.id ORDER BY n DESC
+      `),
+    );
+    const counts = [...threads].map((t) => t.n);
+    expect(counts).toEqual([2, 1]);
   });
 });
 
@@ -554,7 +1758,11 @@ describe('what the model understood', () => {
     const [event] = await events.unprocessedEvents(db, 'meta');
     const runner = buildRunner(workerDb, db, deps);
     expect(await runner.runOnce()).toBe(true);
-    expect(stubTransport.requests).toHaveLength(1);
+    /* TWO calls for one sentence is the escalation working, not a double
+     * charge: the suite's default reply is Unclear, which buys one bounded
+     * retry on the escalation model. The claim under test is that a RERUN
+     * adds nothing to either. */
+    expect(stubTransport.requests).toHaveLength(2);
 
     /**
      * Exactly what a reclaimed lock produces: the same event, queued again.
@@ -570,7 +1778,7 @@ describe('what the model understood', () => {
     );
     expect(await runner.runOnce()).toBe(true);
 
-    expect(stubTransport.requests).toHaveLength(1);
+    expect(stubTransport.requests).toHaveLength(2);
     const drafts = await withBusiness(db, business.id, (tx) =>
       conversationsRepo.draftsFor(tx, business.id),
     );
@@ -740,6 +1948,45 @@ describe("the plan's own example, end to end", () => {
     const credits = entries.reduce((n, e) => n + e.creditK, 0);
     expect(debits).toBe(credits);
     expect(debits).toBe(15_000_000);
+  });
+
+  /**
+   * The same yes, with the RecordSale rollout flag ON (PR-021): the identical
+   * record comes out, because the flag changes which gates run around the
+   * work and never the work. What the bus adds is visible in the database —
+   * the idempotency claim it took for the draft, snapshot completed in the
+   * same transaction as the sale it answers for.
+   */
+  it('the RecordSale flag routes the same yes through the command bus', async () => {
+    const business = await seedMerchant('+2348031234567', 'Ada Fashion');
+    stubTransport.replyWith(THE_SALE);
+
+    const flagged = { ...deps, config: { ...deps.config, commandRecordSale: true } };
+    async function sendFlagged(text: string, wamid: string) {
+      await post(messagePayload('2348031234567', wamid, text));
+      const runner = buildRunner(workerDb, db, flagged);
+      let worked = await runner.runOnce();
+      expect(worked).toBe(true);
+      while (worked) worked = await runner.runOnce();
+    }
+
+    await sendFlagged('Ada bought 3 wigs for 150k, paid 100k', 'wamid.SALE');
+    await sendFlagged('yes', 'wamid.YES');
+
+    expect(stubSender.lastText).toMatch(/Saved ✅ INV-\d{4}-000001 for ₦150,000/);
+    expect(await invoiceCount(business.id)).toBe(1);
+
+    const claims = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ key: string; command_name: string; response_snapshot: unknown }>(
+        sql`SELECT key, command_name, response_snapshot FROM idempotency_records
+            WHERE business_id = ${business.id}::uuid`,
+      ),
+    );
+    const claim = [...claims][0];
+    expect([...claims]).toHaveLength(1);
+    expect(claim?.command_name).toBe('RecordSale');
+    expect(claim?.key).toMatch(/^draft:/);
+    expect(claim?.response_snapshot).toMatchObject({ invoiceNumber: 'INV-2026-000001' });
   });
 
   it('renders and stores the PDF, and it opens', async () => {
@@ -920,14 +2167,14 @@ describe("the plan's own example, end to end", () => {
 
   it('closes an exhausted month with a doorway, not a wall (metering-v1 §3)', async () => {
     const business = await seedMerchant('+2348031234567', 'Ada Fashion');
-    const allowance = PLAN_ALLOWANCES.trial.messages;
+    const allowance = PLAN_ALLOWANCES.trial.AI_ACTIONS;
     // The whole trial allowance, spent the atomic way fifty messages would.
     await withBusiness(db, business.id, (tx) =>
       usageRepo.consumeUnit(
         tx,
         business.id,
         usagePeriod(new Date()),
-        'messages',
+        'AI_ACTIONS',
         allowance,
         allowance,
       ),
@@ -1401,6 +2648,38 @@ describe('consent (STOP/START) and erasure, as facts not sentences', () => {
   });
 
   /**
+   * The same two asks with the EraseData flag ON (PR-027): identical
+   * deletion, and the Appendix D machinery underneath — the first ask opened
+   * a pending confirmation recording the consequence, the second claimed it
+   * through the command bus.
+   */
+  it('erasure under the flag opens a confirmation the second ask claims', async () => {
+    const business = await seedMerchant('+2348031234567', 'Ada Fashion');
+    await customersRepo.createCustomerWithIdentities(db, business.id, 'CUSTOMER_T9', [
+      { facet: 'phone', ciphertext: 'sealed-phone', matchKey: 'mk-phone-9' },
+    ]);
+    const flagged = { ...deps, config: { ...deps.config, commandEraseData: true } };
+
+    await post(messagePayload('2348031234567', 'wamid.DELF1', 'delete my data'));
+    expect(await buildRunner(workerDb, db, flagged).runOnce()).toBe(true);
+    expect(stubSender.lastText).toContain('Reply *DELETE MY DATA* again');
+
+    await post(messagePayload('2348031234567', 'wamid.DELF2', 'delete my data'));
+    expect(await buildRunner(workerDb, db, flagged).runOnce()).toBe(true);
+    expect(stubSender.lastText).toContain('deleted (1 record)');
+
+    const confirmations = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ command: string; claimed_at: Date | null }>(
+        sql`SELECT command, claimed_at FROM pending_confirmations
+            WHERE business_id = ${business.id}::uuid`,
+      ),
+    );
+    expect([...confirmations]).toHaveLength(1);
+    expect([...confirmations][0]?.command).toBe('EraseData');
+    expect([...confirmations][0]?.claimed_at).not.toBeNull();
+  });
+
+  /**
    * Owner only. This deletes every customer's contact details for the whole
    * business in one irreversible statement, which is not a thing an
    * accountant or a delegate should be able to do from a phone.
@@ -1583,7 +2862,7 @@ describe('metering the things that cost money', () => {
     // Burn the trial's 25 documents, leaving the allowance exactly spent.
     const period = usagePeriod(new Date());
     await withBusiness(db, business.id, (tx) =>
-      usageRepo.consumeUnit(tx, business.id, period, 'documents', 25, 25),
+      usageRepo.consumeUnit(tx, business.id, period, 'DOCUMENT_GENERATION', 25, 25),
     );
 
     stubTransport.replyWith(A_SALE);
@@ -1913,12 +3192,12 @@ describe('chasing an overdue invoice', () => {
 });
 
 /**
- * A voice note, end to end (ADR 0005, ADR 0008).
+ * A voice note, end to end (ADR 0032).
  *
  * The claim that matters most here is a NEGATIVE one: the audio is fetched,
- * transcribed and dropped. "Audio never leaves Rekoda" is a promise made out
- * loud on the privacy page, and the only way it stays true is if there is
- * nowhere for the audio to leave from.
+ * handed to the ONE configured transcriber, and dropped. "Rekoda does not
+ * keep the audio" is a promise made out loud on the privacy page, and the
+ * only way it stays true is if there is nowhere for the audio to persist.
  */
 describe('a voice note', () => {
   const A_SPOKEN_SALE = {
@@ -1977,10 +3256,91 @@ describe('a voice note', () => {
     while (worked) worked = await runner.runOnce();
   }
 
-  /** Audio the provider will hand back for `media-1`. */
-  function arrangeAudio(bytes = Buffer.from('OggS-fake-audio')) {
-    stubSender.media.set('media-1', { bytes, mimeType: 'audio/ogg' });
+  /**
+   * Audio the provider will hand back for `media-1`, of a REAL length.
+   *
+   * A single Ogg page whose granule position says how many samples it holds,
+   * at Opus's 48 kHz. It has to be measurable now: the handler reads the
+   * duration out of these bytes before it calls anything, so a placeholder
+   * buffer is no longer a voice note, it is an unreadable file.
+   */
+  function arrangeAudio(seconds = 5) {
+    stubSender.media.set('media-1', { bytes: oggOf(seconds), mimeType: 'audio/ogg' });
   }
+
+  function oggOf(seconds: number): Buffer {
+    const page = Buffer.alloc(28);
+    page.write('OggS', 0, 'ascii');
+    page.writeBigUInt64LE(BigInt(seconds * 48_000), 6);
+    page.writeUInt32LE(1, 14);
+    page.writeUInt8(1, 26);
+    return page;
+  }
+
+  /** Move a business onto a plan, through the repository that owns the write. */
+  async function moveToPlan(businessId: string, plan: 'chat' | 'integrate' | 'complete') {
+    await billingRepo.setPlan(db, {
+      businessId,
+      plan,
+      expiresAt: null,
+      actor: 'operator:test-plan',
+    });
+  }
+
+  const voiceUsed = async (businessId: string) => {
+    const rows = await withBusiness(db, businessId, (tx) =>
+      usageRepo.usageFor(tx, businessId, usagePeriod(new Date())),
+    );
+    return rows.find((row) => row.unit === 'VOICE_MINUTES')?.used ?? 0;
+  };
+
+  /**
+   * Spec §4.3 rule 2: nothing that costs money at a provider is dispatched
+   * before authorisation. An Integrate-only merchant holds the customer-side
+   * half of the product and not this one, and the transcriber is a bill.
+   */
+  it('never reaches the transcriber for a merchant whose plan has no Chat', async () => {
+    const business = await seedMerchant('+2348031234567');
+    await moveToPlan(business.id, 'integrate');
+    arrangeAudio();
+    stubStt.answerWith({ text: 'should never be reached', seconds: 9, confidence: 1 });
+
+    await post(voicePayload('2348031234567', 'wamid.V20'));
+    await drain();
+
+    expect(stubStt.calls).toHaveLength(0);
+    expect(await voiceUsed(business.id)).toBe(0);
+    expect(stubSender.lastText).toContain('part of the Chat plan');
+  });
+
+  /**
+   * Spec §4.3 rule 3, the case that used to leak: metering after the work
+   * meant an exhausted merchant could send Rekoda's transcription budget a
+   * voice note at a time and only be refused afterwards.
+   */
+  it('never reaches the transcriber once the voice allowance is gone', async () => {
+    const business = await seedMerchant('+2348031234567');
+    const allowance = allowanceFor('trial', 'VOICE_MINUTES');
+    await withBusiness(db, business.id, (tx) =>
+      usageRepo.consumeUnit(
+        tx,
+        business.id,
+        usagePeriod(new Date()),
+        'VOICE_MINUTES',
+        allowance,
+        allowance,
+      ),
+    );
+    arrangeAudio();
+    stubStt.answerWith({ text: 'should never be reached', seconds: 9, confidence: 1 });
+
+    await post(voicePayload('2348031234567', 'wamid.V21'));
+    await drain();
+
+    expect(stubStt.calls).toHaveLength(0);
+    expect(await voiceUsed(business.id)).toBe(allowance);
+    expect(stubSender.lastText).toContain('seconds of voice notes');
+  });
 
   it('turns speech into the same preview a typed sentence would get', async () => {
     await seedMerchant('+2348031234567');
@@ -2019,7 +3379,7 @@ describe('a voice note', () => {
    */
   it('keeps the transcript and never the audio', async () => {
     const business = await seedMerchant('+2348031234567');
-    arrangeAudio(Buffer.from('OggS-secret-voice-of-ada'));
+    arrangeAudio(9);
     stubStt.answerWith({ text: 'Ada bought 3 wigs for 150k', seconds: 5, confidence: 0.9 });
     stubTransport.replyWith(A_SPOKEN_SALE);
 
@@ -2032,15 +3392,25 @@ describe('a voice note', () => {
     const dump = JSON.stringify(rows);
     expect(dump).not.toContain('OggS');
     expect(dump).not.toContain('secret-voice');
-    // The audio went to the sidecar and nowhere else.
+    // The audio went to the configured transcriber and nowhere else.
     expect(stubStt.calls).toHaveLength(1);
     expect(stubStt.calls[0]?.mimeType).toBe('audio/ogg');
   });
 
-  it('meters the seconds the sidecar reports, not our guess at them', async () => {
+  /**
+   * The AUDIO is the source of truth for the length, not the transcriber.
+   *
+   * It used to be the transcriber's number, which meant the merchant could only
+   * be charged after the spend. Reading it from the container first is what
+   * lets the charge happen before the provider is called, and the number is
+   * the same number either way: the audio says seventeen seconds and
+   * seventeen is what is taken.
+   */
+  it('meters the seconds the AUDIO says, before the transcriber is called', async () => {
     const business = await seedMerchant('+2348031234567');
-    arrangeAudio();
-    stubStt.answerWith({ text: 'Ada bought 3 wigs for 150k', seconds: 17, confidence: 0.9 });
+    arrangeAudio(17);
+    /* Deliberately disagrees with the audio. The container wins. */
+    stubStt.answerWith({ text: 'Ada bought 3 wigs for 150k', seconds: 900, confidence: 0.9 });
     stubTransport.replyWith(A_SPOKEN_SALE);
 
     await post(voicePayload('2348031234567', 'wamid.V4'));
@@ -2050,7 +3420,72 @@ describe('a voice note', () => {
     const rows = await withBusiness(db, business.id, (tx) =>
       usageRepo.usageFor(tx, business.id, period),
     );
-    expect(rows.find((r) => r.unit === 'voice_seconds')?.used).toBe(17);
+    expect(rows.find((r) => r.unit === 'VOICE_MINUTES')?.used).toBe(17);
+  });
+
+  /**
+   * The commercial limit, enforced where it protects money.
+   *
+   * `VOICE_NOTE_MAX_DURATION_SECONDS` is a rejection limit, not a budget: a
+   * note past it never reaches a transcription provider at all. That is the
+   * whole reason it exists, and the reason it is checked here rather than
+   * after a bill has been incurred.
+   */
+  it('refuses a note past the limit without calling the transcriber', async () => {
+    const business = await seedMerchant('+2348031234567');
+    arrangeAudio(300);
+    stubStt.answerWith({ text: 'should never be reached', seconds: 300, confidence: 1 });
+
+    await post(voicePayload('2348031234567', 'wamid.V30'));
+    await drain();
+
+    expect(stubStt.calls).toHaveLength(0);
+    expect(stubSender.lastText).toContain('shorter parts');
+    const rows = await withBusiness(db, business.id, (tx) =>
+      usageRepo.usageFor(tx, business.id, usagePeriod(new Date())),
+    );
+    expect(rows.find((r) => r.unit === 'VOICE_MINUTES')?.used ?? 0).toBe(0);
+  });
+
+  /* Exactly at the limit is inside it, which is what a limit means. */
+  it('accepts a note exactly at the limit', async () => {
+    const business = await seedMerchant('+2348031234567');
+    arrangeAudio(120);
+    stubStt.answerWith({ text: 'Ada bought 3 wigs for 150k', seconds: 120, confidence: 0.9 });
+    stubTransport.replyWith(A_SPOKEN_SALE);
+
+    await post(voicePayload('2348031234567', 'wamid.V31'));
+    await drain();
+
+    expect(stubStt.calls).toHaveLength(1);
+    const rows = await withBusiness(db, business.id, (tx) =>
+      usageRepo.usageFor(tx, business.id, usagePeriod(new Date())),
+    );
+    expect(rows.find((r) => r.unit === 'VOICE_MINUTES')?.used).toBe(120);
+  });
+
+  /**
+   * Unreadable is not zero and not "send it anyway". Nothing was measured, so
+   * nothing is metered and no provider is called; the merchant is asked to
+   * send it again, which is a real recovery rather than a polite refusal.
+   */
+  it('asks for the note again when the audio cannot be measured', async () => {
+    const business = await seedMerchant('+2348031234567');
+    stubSender.media.set('media-1', {
+      bytes: Buffer.from('this is not an ogg stream'),
+      mimeType: 'audio/ogg',
+    });
+    stubStt.answerWith({ text: 'should never be reached', seconds: 4, confidence: 1 });
+
+    await post(voicePayload('2348031234567', 'wamid.V32'));
+    await drain();
+
+    expect(stubStt.calls).toHaveLength(0);
+    expect(stubSender.lastText).toContain('record it again');
+    const rows = await withBusiness(db, business.id, (tx) =>
+      usageRepo.usageFor(tx, business.id, usagePeriod(new Date())),
+    );
+    expect(rows.find((r) => r.unit === 'VOICE_MINUTES')?.used ?? 0).toBe(0);
   });
 
   /* Our failure, so it costs the merchant nothing and says what to do. */
@@ -2067,7 +3502,7 @@ describe('a voice note', () => {
     const rows = await withBusiness(db, business.id, (tx) =>
       usageRepo.usageFor(tx, business.id, period),
     );
-    expect(rows.find((r) => r.unit === 'voice_seconds')?.used ?? 0).toBe(0);
+    expect(rows.find((r) => r.unit === 'VOICE_MINUTES')?.used ?? 0).toBe(0);
   });
 
   it('answers honestly when the audio cannot be fetched', async () => {
@@ -2098,7 +3533,220 @@ describe('a voice note', () => {
     const rows = await withBusiness(db, business.id, (tx) =>
       usageRepo.usageFor(tx, business.id, period),
     );
-    expect(rows.find((r) => r.unit === 'voice_seconds')?.used).toBe(5);
+    expect(rows.find((r) => r.unit === 'VOICE_MINUTES')?.used).toBe(5);
+  });
+
+  /**
+   * Item 7 of the AI hardening plan: a HOSTED transcription is provider
+   * money, and provider money appears in usage_events — priced per minute,
+   * role-tagged, carrying BOTH durations: the local probe's (what the
+   * allowance reserved on) and the provider's (what the bill runs on).
+   */
+  it('puts a hosted transcription on the books with both durations', async () => {
+    const business = await seedMerchant('+2348031234567');
+    arrangeAudio(17);
+    registerTranscriptionPrice('whisper-test', { perMinuteMicros: 6_000 });
+    stubStt.answerWith({
+      text: 'Ada bought 3 wigs for 150k',
+      seconds: 18, // The provider's own count, one second apart from the probe's.
+      confidence: null,
+      usage: { provider: 'openai', model: 'whisper-test' },
+    });
+    stubTransport.replyWith(A_SPOKEN_SALE);
+
+    await post(voicePayload('2348031234567', 'wamid.V30'));
+    await drain();
+
+    const rows = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{
+        provider: string;
+        quantity: number;
+        provider_cost_micros: number;
+        meta: Record<string, unknown>;
+      }>(sql`
+        SELECT provider, quantity, provider_cost_micros, meta FROM usage_events
+        WHERE business_id = ${business.id}::uuid AND usage_type = 'transcription'
+      `),
+    );
+    const row = [...rows][0]!;
+    expect(row).toBeDefined();
+    expect(row.provider).toBe('openai');
+    expect(Number(row.quantity)).toBe(18);
+    // 18 seconds at $0.006/min: 18 × 6,000 / 60 = 1,800 micros.
+    expect(Number(row.provider_cost_micros)).toBe(1_800);
+    expect(row.meta).toMatchObject({
+      role: 'transcriber',
+      model: 'whisper-test',
+      priced: true,
+      localSeconds: 17,
+      providerSeconds: 18,
+    });
+  });
+
+  it('writes no transcription cost row when the engine reports no usage', async () => {
+    const business = await seedMerchant('+2348031234567');
+    arrangeAudio(5);
+    // No usage envelope: nothing to price, so no cost row.
+    stubStt.answerWith({ text: 'Ada bought 3 wigs for 150k', seconds: 5, confidence: 0.9 });
+    stubTransport.replyWith(A_SPOKEN_SALE);
+
+    await post(voicePayload('2348031234567', 'wamid.V31'));
+    await drain();
+
+    const rows = await withBusiness(db, business.id, (tx) =>
+      tx.execute(sql`
+        SELECT 1 FROM usage_events
+        WHERE business_id = ${business.id}::uuid AND usage_type = 'transcription'
+      `),
+    );
+    expect([...rows]).toHaveLength(0);
+  });
+
+  it('leaves a priced:false trail when a hosted transcription times out mid-flight', async () => {
+    const business = await seedMerchant('+2348031234567');
+    arrangeAudio(9);
+    stubStt.failWith(
+      new TranscriptionUnavailable('transcription timed out', { maybeBilled: true }),
+    );
+
+    await post(voicePayload('2348031234567', 'wamid.V32'));
+    await drain();
+
+    /* The merchant's seconds went back — Rekoda's timeout, Rekoda's cost — */
+    const period = usagePeriod(new Date());
+    const usage = await withBusiness(db, business.id, (tx) =>
+      usageRepo.usageFor(tx, business.id, period),
+    );
+    expect(usage.find((r) => r.unit === 'VOICE_MINUTES')?.used ?? 0).toBe(0);
+
+    /* — and the maybe-billed call is on the books at zero, admitting it,
+     * so reconciliation against the invoice has a row to tie to. */
+    const rows = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ provider_cost_micros: number; meta: Record<string, unknown> }>(sql`
+        SELECT provider_cost_micros, meta FROM usage_events
+        WHERE business_id = ${business.id}::uuid AND usage_type = 'transcription'
+      `),
+    );
+    const row = [...rows][0]!;
+    expect(row).toBeDefined();
+    expect(Number(row.provider_cost_micros)).toBe(0);
+    expect(row.meta).toMatchObject({ role: 'transcriber', priced: false, localSeconds: 9 });
+  });
+
+  /**
+   * The DAILY voice ceilings (remediation A4): reserved race-safe before
+   * the transcriber, distinct from the monthly allowance.
+   */
+  it('refuses a note past the business voice day, before any transcriber call', async () => {
+    const business = await seedMerchant('+2348031234567');
+    arrangeAudio(8);
+    stubStt.answerWith({ text: 'Ada bought 3 wigs for 150k', seconds: 8, confidence: 0.9 });
+    stubTransport.replyWith(A_SPOKEN_SALE);
+
+    const runnerWith = (perDay: number) =>
+      buildRunner(workerDb, db, {
+        ...deps,
+        config: { ...deps.config, voiceSecondsPerBusinessPerDay: perDay },
+      });
+
+    // 8 seconds fit a 10-second day once.
+    await post(voicePayload('2348031234567', 'wamid.V50'));
+    let runner = runnerWith(10);
+    let worked = await runner.runOnce();
+    while (worked) worked = await runner.runOnce();
+    expect(stubStt.calls).toHaveLength(1);
+
+    // The second 8-second note does not fit the remaining 2 seconds.
+    await post(voicePayload('2348031234567', 'wamid.V51'));
+    runner = runnerWith(10);
+    worked = await runner.runOnce();
+    while (worked) worked = await runner.runOnce();
+
+    expect(stubStt.calls).toHaveLength(1);
+    expect(stubSender.lastText).toContain('as many voice minutes today');
+    // And the monthly meter was never touched for the refused note.
+    expect(await voiceUsed(business.id)).toBe(8);
+  });
+
+  it('answers a platform-full voice day as busy, not as the merchant`s limit', async () => {
+    await seedMerchant('+2348031234567');
+    arrangeAudio(8);
+    stubStt.answerWith({ text: 'should never be reached', seconds: 8, confidence: 1 });
+
+    await post(voicePayload('2348031234567', 'wamid.V52'));
+    const runner = buildRunner(workerDb, db, {
+      ...deps,
+      config: { ...deps.config, voiceSecondsGlobalPerDay: 5 },
+    });
+    let worked = await runner.runOnce();
+    while (worked) worked = await runner.runOnce();
+
+    expect(stubStt.calls).toHaveLength(0);
+    expect(stubSender.lastText).not.toContain('midnight');
+  });
+
+  /**
+   * The limit's exact edge (AI hardening item 6). A boundary nobody tested
+   * drifts: "at most two minutes" and "under two minutes" differ by one
+   * voice note, and the merchant sent that note.
+   */
+  it('accepts a note exactly AT the duration limit', async () => {
+    await seedMerchant('+2348031234567');
+    arrangeAudio(120); // VOICE_NOTE_MAX_DURATION_SECONDS defaults to 120
+    stubStt.answerWith({ text: 'Ada bought 3 wigs for 150k', seconds: 120, confidence: 0.9 });
+    stubTransport.replyWith(A_SPOKEN_SALE);
+
+    await post(voicePayload('2348031234567', 'wamid.V40'));
+    await drain();
+
+    expect(stubStt.calls).toHaveLength(1);
+  });
+
+  it('rejects a note ONE second over the limit, reaching no transcriber', async () => {
+    const business = await seedMerchant('+2348031234567');
+    arrangeAudio(121);
+    stubStt.answerWith({ text: 'should never be reached', seconds: 121, confidence: 1 });
+
+    await post(voicePayload('2348031234567', 'wamid.V41'));
+    await drain();
+
+    expect(stubStt.calls).toHaveLength(0);
+    expect(stubSender.lastText).toContain('shorter parts');
+    expect(await voiceUsed(business.id)).toBe(0);
+  });
+
+  it('flags a duration disagreement on the cost row without touching the meter', async () => {
+    const business = await seedMerchant('+2348031234567');
+    arrangeAudio(10);
+    registerTranscriptionPrice('whisper-test', { perMinuteMicros: 6_000 });
+    /* The provider claims triple the container's reading. Neither number is
+     * silently preferred: the allowance stays charged on the local one, the
+     * cost runs on the provider's, and the row says they disagreed. */
+    stubStt.answerWith({
+      text: 'Ada bought 3 wigs for 150k',
+      seconds: 30,
+      confidence: null,
+      usage: { provider: 'openai', model: 'whisper-test' },
+    });
+    stubTransport.replyWith(A_SPOKEN_SALE);
+
+    await post(voicePayload('2348031234567', 'wamid.V42'));
+    await drain();
+
+    expect(await voiceUsed(business.id)).toBe(10);
+    const rows = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ quantity: number; meta: Record<string, unknown> }>(sql`
+        SELECT quantity, meta FROM usage_events
+        WHERE business_id = ${business.id}::uuid AND usage_type = 'transcription'
+      `),
+    );
+    const row = [...rows][0]!;
+    expect(Number(row.quantity)).toBe(30);
+    expect(row.meta).toMatchObject({
+      durationMismatch: true,
+      localSeconds: 10,
+      providerSeconds: 30,
+    });
   });
 
   /* A photo with no media id is not a receipt anybody can read. */
@@ -2354,6 +4002,86 @@ describe('a receipt photo', () => {
     stubSender.media.set('photo-1', { bytes, mimeType: 'image/jpeg' });
   }
 
+  /** Move a business onto a plan, through the repository that owns the write. */
+  async function movePhotoMerchantToPlan(
+    businessId: string,
+    plan: 'chat' | 'integrate' | 'complete',
+  ) {
+    await billingRepo.setPlan(db, {
+      businessId,
+      plan,
+      expiresAt: null,
+      actor: 'operator:test-plan',
+    });
+  }
+
+  const readsUsed = async (businessId: string) => {
+    const rows = await withBusiness(db, businessId, (tx) =>
+      usageRepo.usageFor(tx, businessId, usagePeriod(new Date())),
+    );
+    return rows.find((row) => row.unit === 'DOCUMENTS_UNDERSTOOD')?.used ?? 0;
+  };
+
+  /** Spec §4.3 rule 2: reading a receipt is a Chat capability, and a bill. */
+  it('never reaches the OCR engine for a merchant whose plan has no Chat', async () => {
+    const business = await seedMerchant('+2348031234567');
+    await movePhotoMerchantToPlan(business.id, 'integrate');
+    arrangePhoto();
+    stubOcr.answerWith({ text: 'should never be reached', confidence: 1 });
+
+    await post(photoPayload('2348031234567', 'wamid.P20'));
+    await drain();
+
+    expect(stubOcr.calls).toHaveLength(0);
+    expect(await readsUsed(business.id)).toBe(0);
+    expect(stubSender.lastText).toContain('part of the Chat plan');
+  });
+
+  /**
+   * Spec §4.3 rule 3, the case that used to leak: charging after the engine
+   * had already read the page meant an exhausted merchant could spend
+   * Rekoda's OCR budget one photograph at a time.
+   */
+  it('never reaches the OCR engine once the document allowance is gone', async () => {
+    const business = await seedMerchant('+2348031234567');
+    const allowance = allowanceFor('trial', 'DOCUMENTS_UNDERSTOOD');
+    await withBusiness(db, business.id, (tx) =>
+      usageRepo.consumeUnit(
+        tx,
+        business.id,
+        usagePeriod(new Date()),
+        'DOCUMENTS_UNDERSTOOD',
+        allowance,
+        allowance,
+      ),
+    );
+    arrangePhoto();
+    stubOcr.answerWith({ text: 'should never be reached', confidence: 1 });
+
+    await post(photoPayload('2348031234567', 'wamid.P21'));
+    await drain();
+
+    expect(stubOcr.calls).toHaveLength(0);
+    expect(await readsUsed(business.id)).toBe(allowance);
+    expect(stubSender.lastText).toContain('document scans');
+  });
+
+  /**
+   * Taking the unit first only moves the order, never the price: a page
+   * nobody could read is still a page nobody pays for.
+   */
+  it('gives the unit back when the engine cannot be reached', async () => {
+    const business = await seedMerchant('+2348031234567');
+    arrangePhoto();
+    stubOcr.failWith();
+
+    await post(photoPayload('2348031234567', 'wamid.P22'));
+    await drain();
+
+    expect(stubOcr.calls).toHaveLength(1);
+    expect(await readsUsed(business.id)).toBe(0);
+  });
+
   it('takes the SAME path a typed sentence takes, gates included', async () => {
     await seedMerchant('+2348031234567');
     arrangePhoto();
@@ -2383,7 +4111,7 @@ describe('a receipt photo', () => {
     const dump = JSON.stringify(rows);
     expect(dump).not.toContain('JFIF');
     expect(dump).not.toContain('secret-photo');
-    // The bytes went to OUR sidecar and nowhere else.
+    // The bytes went to the configured reader and nowhere else.
     expect(stubOcr.calls).toHaveLength(1);
     expect(stubOcr.calls[0]?.mimeType).toBe('image/jpeg');
   });
@@ -2407,7 +4135,7 @@ describe('a receipt photo', () => {
     const rows = await withBusiness(db, business.id, (tx) =>
       usageRepo.usageFor(tx, business.id, period),
     );
-    expect(rows.find((r) => r.unit === 'documents_understood')?.used ?? 0).toBe(0);
+    expect(rows.find((r) => r.unit === 'DOCUMENTS_UNDERSTOOD')?.used ?? 0).toBe(0);
   });
 
   it('answers honestly when the image cannot be fetched, and reads nothing', async () => {
@@ -2435,7 +4163,7 @@ describe('a receipt photo', () => {
     const rows = await withBusiness(db, business.id, (tx) =>
       usageRepo.usageFor(tx, business.id, period),
     );
-    expect(rows.find((r) => r.unit === 'documents_understood')?.used).toBe(1);
+    expect(rows.find((r) => r.unit === 'DOCUMENTS_UNDERSTOOD')?.used).toBe(1);
   });
 
   it('puts the caption in front of the page, because it says what the page is for', async () => {
@@ -2468,7 +4196,396 @@ describe('a receipt photo', () => {
     const rows = await withBusiness(db, business.id, (tx) =>
       usageRepo.usageFor(tx, business.id, period),
     );
-    expect(rows.find((r) => r.unit === 'documents_understood')?.used).toBe(1);
+    expect(rows.find((r) => r.unit === 'DOCUMENTS_UNDERSTOOD')?.used).toBe(1);
+  });
+
+  /**
+   * Item 7 of the AI hardening plan: a HOSTED read is provider money, and
+   * provider money appears in usage_events — costed from the engine's own
+   * token counts, tagged with the role the margin view groups by.
+   */
+  it('puts a hosted read on the books: one ocr_vision row, priced and role-tagged', async () => {
+    const business = await seedMerchant('+2348031234567');
+    arrangePhoto();
+    stubOcr.answerWith({
+      text: 'TOTAL 12,000 diesel',
+      confidence: null,
+      usage: {
+        provider: 'anthropic',
+        model: 'claude-sonnet-5',
+        tokens: { inputTokens: 1_500, outputTokens: 80 },
+      },
+    });
+    stubTransport.replyWith(A_PHOTOGRAPHED_EXPENSE);
+
+    await post(photoPayload('2348031234567', 'wamid.P8'));
+    await drain();
+
+    const rows = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{
+        provider: string;
+        provider_cost_micros: number;
+        meta: Record<string, unknown>;
+      }>(sql`
+        SELECT provider, provider_cost_micros, meta FROM usage_events
+        WHERE business_id = ${business.id}::uuid AND usage_type = 'ocr_vision'
+      `),
+    );
+    const row = [...rows][0]!;
+    expect(row).toBeDefined();
+    expect(row.provider).toBe('anthropic');
+    // 1,500 in at $2/MTok + 80 out at $10/MTok = 3,000 + 800 micros.
+    expect(Number(row.provider_cost_micros)).toBe(3_800);
+    expect(row.meta).toMatchObject({
+      role: 'vision',
+      model: 'claude-sonnet-5',
+      priced: true,
+      inputTokens: 1_500,
+      outputTokens: 80,
+    });
+  });
+
+  it('writes no ocr_vision cost row when the reader reports no usage', async () => {
+    const business = await seedMerchant('+2348031234567');
+    arrangePhoto();
+    // No usage envelope: nothing to price, so no cost row.
+    stubOcr.answerWith({ text: 'TOTAL 12,000 diesel', confidence: 0.9 });
+    stubTransport.replyWith(A_PHOTOGRAPHED_EXPENSE);
+
+    await post(photoPayload('2348031234567', 'wamid.P9'));
+    await drain();
+
+    const rows = await withBusiness(db, business.id, (tx) =>
+      tx.execute(sql`
+        SELECT 1 FROM usage_events
+        WHERE business_id = ${business.id}::uuid AND usage_type = 'ocr_vision'
+      `),
+    );
+    expect([...rows]).toHaveLength(0);
+  });
+
+  it('leaves a priced:false trail when a hosted read times out mid-flight', async () => {
+    const business = await seedMerchant('+2348031234567');
+    arrangePhoto();
+    stubOcr.failWith(new TextExtractionUnavailable('extraction timed out', { maybeBilled: true }));
+
+    await post(photoPayload('2348031234567', 'wamid.P10'));
+    await drain();
+
+    /* The merchant's unit went back — Rekoda's timeout, Rekoda's cost — */
+    const period = usagePeriod(new Date());
+    const usage = await withBusiness(db, business.id, (tx) =>
+      usageRepo.usageFor(tx, business.id, period),
+    );
+    expect(usage.find((r) => r.unit === 'DOCUMENTS_UNDERSTOOD')?.used ?? 0).toBe(0);
+
+    /* — and the maybe-billed call is on the books at zero, admitting it. */
+    const rows = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ provider_cost_micros: number; meta: Record<string, unknown> }>(sql`
+        SELECT provider_cost_micros, meta FROM usage_events
+        WHERE business_id = ${business.id}::uuid AND usage_type = 'ocr_vision'
+      `),
+    );
+    const row = [...rows][0]!;
+    expect(row).toBeDefined();
+    expect(Number(row.provider_cost_micros)).toBe(0);
+    expect(row.meta).toMatchObject({ role: 'vision', priced: false });
+  });
+
+  /** The same jobs, run under a tighter daily document ceiling. */
+  async function drainWithDailyLimit(limit: number) {
+    const runner = buildRunner(workerDb, db, {
+      ...deps,
+      config: { ...deps.config, aiDocExtractionsPerBusinessPerDay: limit },
+    });
+    let worked = await runner.runOnce();
+    while (worked) worked = await runner.runOnce();
+  }
+
+  /**
+   * AI hardening item 4: `AI_DOC_EXTRACTIONS_PER_BUSINESS`, enforced. The
+   * daily ceiling is operational, not commercial — the merchant may have
+   * monthly scans left, and the refusal must say "today", not "upgrade".
+   */
+  it('refuses the photograph past the daily ceiling, before any engine is called', async () => {
+    const business = await seedMerchant('+2348031234567');
+    arrangePhoto();
+    stubOcr.answerWith({ text: 'TOTAL 12,000 diesel', confidence: 0.9 });
+    stubTransport.replyWith(A_PHOTOGRAPHED_EXPENSE);
+
+    await post(photoPayload('2348031234567', 'wamid.P11'));
+    await drainWithDailyLimit(1);
+    expect(stubOcr.calls).toHaveLength(1);
+
+    await post(photoPayload('2348031234567', 'wamid.P12'));
+    await drainWithDailyLimit(1);
+
+    /* The second photograph reached no engine and consumed no monthly unit
+     * — the day is full, and the merchant is told when it reopens. */
+    expect(stubOcr.calls).toHaveLength(1);
+    expect(stubSender.lastText).toContain('as many as I can read in one day');
+    const period = usagePeriod(new Date());
+    const rows = await withBusiness(db, business.id, (tx) =>
+      usageRepo.usageFor(tx, business.id, period),
+    );
+    expect(rows.find((r) => r.unit === 'DOCUMENTS_UNDERSTOOD')?.used).toBe(1);
+  });
+
+  it('returns the daily slot when the engine was never reached', async () => {
+    await seedMerchant('+2348031234567');
+    arrangePhoto();
+    stubOcr.failWith(); // connection refused: nothing spent, nothing billed
+
+    await post(photoPayload('2348031234567', 'wamid.P13'));
+    await drainWithDailyLimit(1);
+    expect(stubSender.lastText).toContain('could not read that photo');
+
+    /* The slot went back, so the retry fits under the same limit of one. */
+    stubOcr.answerWith({ text: 'TOTAL 12,000 diesel', confidence: 0.9 });
+    stubTransport.replyWith(A_PHOTOGRAPHED_EXPENSE);
+    await post(photoPayload('2348031234567', 'wamid.P14'));
+    await drainWithDailyLimit(1);
+    expect(stubOcr.calls).toHaveLength(2);
+  });
+
+  it('keeps the daily slot when the engine billed us for an unreadable page', async () => {
+    const business = await seedMerchant('+2348031234567');
+    arrangePhoto();
+    stubOcr.failWith(
+      new TextExtractionUnavailable('the page had no legible text', {
+        usage: {
+          provider: 'anthropic',
+          model: 'claude-sonnet-5',
+          tokens: { inputTokens: 1_500, outputTokens: 5 },
+        },
+      }),
+    );
+
+    await post(photoPayload('2348031234567', 'wamid.P15'));
+    await drainWithDailyLimit(1);
+    expect(stubSender.lastText).toContain('could not read that photo');
+
+    /* Provider money was spent reading nothing: a PRICED row exists — */
+    const rows = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ provider_cost_micros: number; meta: Record<string, unknown> }>(sql`
+        SELECT provider_cost_micros, meta FROM usage_events
+        WHERE business_id = ${business.id}::uuid AND usage_type = 'ocr_vision'
+      `),
+    );
+    const row = [...rows][0]!;
+    expect(row).toBeDefined();
+    // 1,500 in at $2/MTok + 5 out at $10/MTok = 3,000 + 50 micros.
+    expect(Number(row.provider_cost_micros)).toBe(3_050);
+    expect(row.meta).toMatchObject({ role: 'vision', priced: true });
+
+    /* — and the day of one stays spent: the ceiling bounds spend, not
+     * success, so the next photograph is refused without an engine call. */
+    stubOcr.answerWith({ text: 'TOTAL 12,000 diesel', confidence: 0.9 });
+    await post(photoPayload('2348031234567', 'wamid.P16'));
+    await drainWithDailyLimit(1);
+    expect(stubOcr.calls).toHaveLength(1);
+    expect(stubSender.lastText).toContain('as many as I can read in one day');
+
+    /* The merchant's own monthly unit went back both times: Rekoda's
+     * engine trouble is never their bill. */
+    const period = usagePeriod(new Date());
+    const usage = await withBusiness(db, business.id, (tx) =>
+      usageRepo.usageFor(tx, business.id, period),
+    );
+    expect(usage.find((r) => r.unit === 'DOCUMENTS_UNDERSTOOD')?.used ?? 0).toBe(0);
+  });
+
+  it('does not double-charge the daily ceiling for a redelivered webhook', async () => {
+    await seedMerchant('+2348031234567');
+    arrangePhoto();
+    stubOcr.answerWith({ text: 'TOTAL 12,000 diesel', confidence: 0.9 });
+    stubTransport.replyWith(A_PHOTOGRAPHED_EXPENSE);
+
+    /* The same wamid twice: idempotency stops the duplicate before any
+     * meter, so a limit of one still has room for nothing — but the FIRST
+     * delivery went through and the duplicate consumed no second slot. */
+    await post(photoPayload('2348031234567', 'wamid.P17'));
+    await drainWithDailyLimit(2);
+    await post(photoPayload('2348031234567', 'wamid.P17'));
+    await drainWithDailyLimit(2);
+    expect(stubOcr.calls).toHaveLength(1);
+
+    /* Room for exactly one more under the limit of two proves the
+     * duplicate never reserved. */
+    await post(photoPayload('2348031234567', 'wamid.P18'));
+    await drainWithDailyLimit(2);
+    expect(stubOcr.calls).toHaveLength(2);
+  });
+
+  it('answers a platform-full document day as busy, not as the merchant`s limit', async () => {
+    await seedMerchant('+2348031234567');
+    arrangePhoto();
+    stubOcr.answerWith({ text: 'should never be reached', confidence: 1 });
+
+    await post(photoPayload('2348031234567', 'wamid.P40'));
+    const runner = buildRunner(workerDb, db, {
+      ...deps,
+      config: { ...deps.config, aiDocExtractionsGlobalPerDay: 0 },
+    });
+    let worked = await runner.runOnce();
+    while (worked) worked = await runner.runOnce();
+
+    expect(stubOcr.calls).toHaveLength(0);
+    /* Rekoda's busy day, not the merchant's ceiling: no "midnight". */
+    expect(stubSender.lastText).not.toContain('as many as I can read in one day');
+  });
+
+  /**
+   * The classifier gate (AI hardening item 1): the ONE place a cheap read
+   * avoids expensive ones. Confident junk skips the interpreter entirely;
+   * anything less proceeds as if no classifier existed.
+   */
+  it('lets the classifier stop a junk page before the interpreter is paid for', async () => {
+    const business = await seedMerchant('+2348031234567');
+    arrangePhoto();
+    stubOcr.answerWith({ text: 'when the beat drops and nobody is ready', confidence: 0.9 });
+    stubTransport.script({
+      toolInput: { type: 'junk' },
+      usage: { inputTokens: 400, outputTokens: 12 },
+      stopReason: 'tool_use',
+    });
+
+    await post(photoPayload('2348031234567', 'wamid.P20'));
+    await drain();
+
+    /* ONE model call — the classifier — and the honest sentence. */
+    expect(stubTransport.requests).toHaveLength(1);
+    expect(stubTransport.requests[0]!.toolName).toBe('classify_document');
+    expect(stubSender.lastText).toContain('does not look like a receipt');
+
+    /* The merchant's monthly message unit was never consumed: being told a
+     * poster is a poster is not a bookkeeping action they paid for. */
+    const period = usagePeriod(new Date());
+    const rows = await withBusiness(db, business.id, (tx) =>
+      usageRepo.usageFor(tx, business.id, period),
+    );
+    expect(rows.find((r) => r.unit === 'AI_ACTIONS')?.used ?? 0).toBe(0);
+  });
+
+  /**
+   * Dual extraction end to end (AI hardening item 9): a photographed
+   * document worth ₦750,000 is read twice, and when the readers disagree
+   * on money the merchant gets the review sentence and NO draft exists to
+   * say yes to.
+   */
+  it('blocks a high-value extraction disagreement from ever becoming a draft', async () => {
+    const business = await seedMerchant('+2348031234567');
+    arrangePhoto();
+    stubOcr.answerWith({ text: 'INVOICE generator diesel 750,000', confidence: 0.9 });
+    const bigExpense = { ...A_PHOTOGRAPHED_EXPENSE, amount: 750_000 };
+    stubTransport.script(
+      // The classifier's turn: not junk, proceed.
+      {
+        toolInput: { type: 'unsure' },
+        usage: { inputTokens: 400, outputTokens: 12 },
+        stopReason: 'tool_use',
+      },
+      // The interpreter's reading.
+      {
+        toolInput: { command: bigExpense },
+        usage: { inputTokens: 1_800, outputTokens: 120 },
+        stopReason: 'tool_use',
+      },
+    );
+    // The INDEPENDENT reader disagrees on the amount by ₦90,000.
+    const verifierTransport = new StubTransport([
+      {
+        toolInput: { command: { ...bigExpense, amount: 660_000 } },
+        usage: { inputTokens: 1_800, outputTokens: 120 },
+        stopReason: 'tool_use',
+      },
+    ]);
+    const dualConfig = { ...deps.config, aiModelVisionVerifier: 'gpt-test-verifier' };
+    const dualDeps = {
+      ...deps,
+      config: dualConfig,
+      interpreter: new Interpreter(db, dualConfig, stubTransport, verifierTransport),
+    };
+
+    await post(photoPayload('2348031234567', 'wamid.P30'));
+    const runner = buildRunner(workerDb, db, dualDeps);
+    let worked = await runner.runOnce();
+    while (worked) worked = await runner.runOnce();
+
+    expect(verifierTransport.requests).toHaveLength(1);
+    expect(stubSender.lastText).toContain('do not agree about the amount');
+    expect(stubSender.lastText).toContain('not recorded anything');
+    const drafts = await withBusiness(db, business.id, (tx) =>
+      conversationsRepo.draftsFor(tx, business.id),
+    );
+    expect(drafts).toHaveLength(0);
+  });
+
+  it('previews normally when both high-value readings agree', async () => {
+    await seedMerchant('+2348031234567');
+    arrangePhoto();
+    stubOcr.answerWith({ text: 'INVOICE generator diesel 750,000', confidence: 0.9 });
+    const bigExpense = { ...A_PHOTOGRAPHED_EXPENSE, amount: 750_000 };
+    stubTransport.script(
+      {
+        toolInput: { type: 'unsure' },
+        usage: { inputTokens: 400, outputTokens: 12 },
+        stopReason: 'tool_use',
+      },
+      {
+        toolInput: { command: bigExpense },
+        usage: { inputTokens: 1_800, outputTokens: 120 },
+        stopReason: 'tool_use',
+      },
+    );
+    const verifierTransport = new StubTransport([
+      {
+        toolInput: { command: bigExpense },
+        usage: { inputTokens: 1_800, outputTokens: 120 },
+        stopReason: 'tool_use',
+      },
+    ]);
+    const dualConfig = { ...deps.config, aiModelVisionVerifier: 'gpt-test-verifier' };
+    const dualDeps = {
+      ...deps,
+      config: dualConfig,
+      interpreter: new Interpreter(db, dualConfig, stubTransport, verifierTransport),
+    };
+
+    await post(photoPayload('2348031234567', 'wamid.P31'));
+    const runner = buildRunner(workerDb, db, dualDeps);
+    let worked = await runner.runOnce();
+    while (worked) worked = await runner.runOnce();
+
+    expect(verifierTransport.requests).toHaveLength(1);
+    expect(stubSender.lastText).toContain('Reply *yes*');
+  });
+
+  it('proceeds to the interpreter when the classifier is anything but sure', async () => {
+    await seedMerchant('+2348031234567');
+    arrangePhoto();
+    stubOcr.answerWith({ text: 'TOTAL 12,000 diesel', confidence: 0.9 });
+    stubTransport.script(
+      {
+        toolInput: { type: 'unsure' },
+        usage: { inputTokens: 400, outputTokens: 12 },
+        stopReason: 'tool_use',
+      },
+      {
+        toolInput: { command: A_PHOTOGRAPHED_EXPENSE },
+        usage: { inputTokens: 1_800, outputTokens: 120 },
+        stopReason: 'tool_use',
+      },
+    );
+
+    await post(photoPayload('2348031234567', 'wamid.P21'));
+    await drain();
+
+    /* Classifier first, interpreter second — fail open, never a blocker. */
+    expect(stubTransport.requests).toHaveLength(2);
+    expect(stubTransport.requests[0]!.toolName).toBe('classify_document');
+    expect(stubTransport.requests[1]!.toolName).toBe('record_business_command');
+    expect(stubSender.lastText).toContain('Reply *yes*');
   });
 });
 
@@ -2712,6 +4829,52 @@ describe('a payment the merchant reports (RecordPayment)', () => {
     while (worked) worked = await runner.runOnce();
   }
 
+  /**
+   * The same yes with the RecordPayment rollout flag ON (PR-022): identical
+   * receipt and ledger, because the flag changes which gates run around the
+   * work and never the work. What the bus adds is in the database — the
+   * completed claim for the draft — and what the work always adds now is
+   * spec E.7's basis: this payment was TYPED.
+   */
+  it('the RecordPayment flag routes the same yes through the command bus', async () => {
+    const business = await seedMerchant('+2348031234567');
+    await issueUnpaidInvoice('wamid.PF');
+
+    const flagged = { ...deps, config: { ...deps.config, commandRecordPayment: true } };
+    async function drainFlagged() {
+      const runner = buildRunner(workerDb, db, flagged);
+      let worked = await runner.runOnce();
+      while (worked) worked = await runner.runOnce();
+    }
+
+    stubTransport.replyWith(paymentOf({ amount: 60_000 }));
+    await post(messagePayload('2348031234567', 'wamid.PF-pay', 'Ada paid 60k'));
+    await drainFlagged();
+    await post(messagePayload('2348031234567', 'wamid.PF-confirm', 'yes'));
+    await drainFlagged();
+
+    expect(stubSender.lastText).toContain('RCT-');
+    expect(stubSender.lastText).toContain('₦60,000');
+
+    const claims = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ key: string; command_name: string }>(
+        sql`SELECT key, command_name FROM idempotency_records
+            WHERE business_id = ${business.id}::uuid AND command_name = 'RecordPayment'`,
+      ),
+    );
+    expect([...claims]).toHaveLength(1);
+    expect([...claims][0]?.key).toMatch(/^draft:/);
+
+    const stamped = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ evidence_basis: string | null; initial_confirmation_source: string }>(
+        sql`SELECT evidence_basis, initial_confirmation_source FROM payments
+            WHERE business_id = ${business.id}::uuid`,
+      ),
+    );
+    expect([...stamped][0]?.evidence_basis).toBe('TYPED');
+    expect([...stamped][0]?.initial_confirmation_source).toBe('MERCHANT_ATTESTED');
+  });
+
   /** Issue a ₦150,000 invoice with nothing paid, through the chat path. */
   async function issueUnpaidInvoice(wamid: string) {
     stubTransport.replyWith(A_SALE_FOR_PAYMENT);
@@ -2946,7 +5109,7 @@ describe('a payment the merchant reports (RecordPayment)', () => {
     const after = await withBusiness(db, business.id, (tx) =>
       usageRepo.usageFor(tx, business.id, period),
     );
-    expect(usedOf(after, 'documents') - usedOf(before, 'documents')).toBe(1);
+    expect(usedOf(after, 'DOCUMENT_GENERATION') - usedOf(before, 'DOCUMENT_GENERATION')).toBe(1);
   });
 
   it('gives the unit back when the payment could not be placed', async () => {
@@ -2985,7 +5148,7 @@ describe('a payment the merchant reports (RecordPayment)', () => {
     const after = await withBusiness(db, business.id, (tx) =>
       usageRepo.usageFor(tx, business.id, period),
     );
-    expect(usedOf(after, 'documents')).toBe(usedOf(before, 'documents'));
+    expect(usedOf(after, 'DOCUMENT_GENERATION')).toBe(usedOf(before, 'DOCUMENT_GENERATION'));
   });
 
   /**
@@ -3125,6 +5288,62 @@ describe('counting stock', () => {
     expect(stubSender.lastText).toContain('Added 20 bags of rice');
     expect(stubSender.lastText).toContain('You now have 20');
     expect((await onHand(business.id, 'bags of rice'))?.onHand).toBe(20);
+  });
+
+  /**
+   * The destructive half under the flag (PR-027, Appendix D.2): a preview
+   * that shows stock DISAPPEARING opens a pending confirmation recording the
+   * exact consequence, and the yes claims it through the command bus. The
+   * addition before it opens nothing, because adding stock is STANDARD.
+   */
+  it('a write-off under the flag opens a confirmation the yes then claims', async () => {
+    const business = await seedMerchant('+2348031234567');
+    const flagged = { ...deps, config: { ...deps.config, commandAdjustInventory: true } };
+    async function sayFlagged(wamid: string, command: Record<string, unknown>, text: string) {
+      stubTransport.replyWith(command);
+      await post(messagePayload('2348031234567', wamid, text));
+      const runner = buildRunner(workerDb, db, flagged);
+      let worked = await runner.runOnce();
+      while (worked) worked = await runner.runOnce();
+    }
+    async function plainFlagged(wamid: string, text: string) {
+      await post(messagePayload('2348031234567', wamid, text));
+      const runner = buildRunner(workerDb, db, flagged);
+      let worked = await runner.runOnce();
+      while (worked) worked = await runner.runOnce();
+    }
+
+    await sayFlagged('wamid.SD1', adjust('bags of rice', 20), 'add 20 bags of rice');
+    await plainFlagged('wamid.SD2', 'yes');
+    /* Adding stock opened NO confirmation: STANDARD stays cheap. */
+    const afterAdd = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ n: string }>(
+        sql`SELECT count(*)::text AS n FROM pending_confirmations
+            WHERE business_id = ${business.id}::uuid`,
+      ),
+    );
+    expect(Number([...afterAdd][0]?.n)).toBe(0);
+
+    await sayFlagged('wamid.SD3', adjust('bags of rice', -15), '15 bags got water damage');
+    expect(stubSender.lastText).toContain('Removing 15 bags of rice');
+    await plainFlagged('wamid.SD4', 'yes');
+
+    expect(stubSender.lastText).toContain('Removed 15 bags of rice');
+    expect((await onHand(business.id, 'bags of rice'))?.onHand).toBe(5);
+
+    /* The confirmation exists, was CLAIMED by the yes, and recorded the
+     * consequence the merchant read. */
+    const confirmations = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ command: string; consequence: string; claimed_at: Date | null }>(
+        sql`SELECT command, consequence, claimed_at FROM pending_confirmations
+            WHERE business_id = ${business.id}::uuid`,
+      ),
+    );
+    const row = [...confirmations][0];
+    expect([...confirmations]).toHaveLength(1);
+    expect(row?.command).toBe('AdjustInventory');
+    expect(row?.consequence).toContain('Removing 15 bags of rice');
+    expect(row?.claimed_at).not.toBeNull();
   });
 
   it('adds onto a count that is already there', async () => {
@@ -3275,7 +5494,7 @@ describe('counting stock', () => {
     const rows = await withBusiness(db, business.id, (tx) =>
       usageRepo.usageFor(tx, business.id, usagePeriod(new Date())),
     );
-    const documents = rows.find((r) => r.unit === 'documents');
+    const documents = rows.find((r) => r.unit === 'DOCUMENT_GENERATION');
     expect(documents?.used ?? 0).toBe(0);
   });
 });
@@ -3647,6 +5866,40 @@ describe('a forwarded order', () => {
     expect(stock.rows.find((p) => p.name === 'Ankara bale')?.onHand).toBe(8);
   });
 
+  /**
+   * The persistence boundary (launch remediation R5): the customer's
+   * delivery words are echoed to the merchant ONCE and never stored. The
+   * contract has said so since RecordOrder existed; this pins that the
+   * stored draft actually honours it — through the central
+   * sanitizeCommandForPersistence boundary, not a call-site if.
+   */
+  it('echoes the delivery note once and stores a draft WITHOUT it (R5)', async () => {
+    const business = await seedMerchant('+2348031234567');
+    await seedCatalogue(business.id);
+    stubTransport.replyWith(THE_ORDER);
+
+    await send('please I want 2 ankara bale, deliver to Lekki on Friday', 'wamid.ORDERNOTE');
+
+    // Said once, to the merchant, from the LIVE command.
+    expect(stubSender.lastText).toContain('They also said: deliver to Lekki on Friday');
+
+    /* Never written down. The stored draft keeps every bookkeeping field
+     * and none of the customer's words. */
+    const drafts = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ command: Record<string, unknown> }>(sql`
+        SELECT command FROM command_drafts WHERE business_id = ${business.id}::uuid
+      `),
+    );
+    const stored = JSON.stringify([...drafts].map((row) => row.command));
+    expect(stored).not.toContain('Lekki');
+    expect(stored).not.toContain('Friday');
+    expect(stored).toContain('Ankara bale');
+
+    // And the sanitised draft still confirms into a real invoice.
+    await send('yes', 'wamid.ORDERNOTEYES');
+    expect(await invoiceCount(business.id)).toBe(1);
+  });
+
   it('meters the order: a confirmed order consumes one orders unit on top of the document', async () => {
     const business = await seedMerchant('+2348031234567');
     await seedCatalogue(business.id);
@@ -3658,8 +5911,8 @@ describe('a forwarded order', () => {
     const rows = await withBusiness(db, business.id, (tx) =>
       usageRepo.usageFor(tx, business.id, usagePeriod(new Date())),
     );
-    expect(rows.find((r) => r.unit === 'orders')?.used).toBe(1);
-    expect(rows.find((r) => r.unit === 'documents')?.used).toBe(1);
+    expect(rows.find((r) => r.unit === 'CATALOGUE_ORDERS')?.used).toBe(1);
+    expect(rows.find((r) => r.unit === 'DOCUMENT_GENERATION')?.used).toBe(1);
   });
 
   it('refuses capture on a plan without orders, keeps the quote, and gives the document back', async () => {
@@ -3690,8 +5943,8 @@ describe('a forwarded order', () => {
     const rows = await withBusiness(db, business.id, (tx) =>
       usageRepo.usageFor(tx, business.id, usagePeriod(new Date())),
     );
-    expect(rows.find((r) => r.unit === 'documents')?.used ?? 0).toBe(0);
-    expect(rows.find((r) => r.unit === 'orders')?.used ?? 0).toBe(0);
+    expect(rows.find((r) => r.unit === 'DOCUMENT_GENERATION')?.used ?? 0).toBe(0);
+    expect(rows.find((r) => r.unit === 'CATALOGUE_ORDERS')?.used ?? 0).toBe(0);
   });
 
   /**

@@ -1,5 +1,15 @@
 # Rekoda V1 — Engineering Review & Delivery Plan (v2)
 
+> **Media-architecture supersession (ADR 0032, 29 Aug 2026).** Sections of
+> this document describing self-hosted STT/OCR sidecars, `services/stt`,
+> `STT_URL`, `STT_FALLBACK`, `OCR_URL` or the "audio never leaves Rekoda"
+> posture are HISTORICAL and do not describe the current production
+> media-processing architecture. The launch architecture is OpenAI for
+> voice transcription and Anthropic Claude for reasoning and vision, with
+> no self-hosted media sidecars — see
+> [ADR 0032](adr/0032-launch-media-architecture.md).
+
+
 **Prepared for:** Angelo Akuhwa
 **Date:** 19 August 2026 · v2 — revised after your feedback: no Azure, strongest affordable AI, STT clarified (no hardware), UI inventory + SEO/content plan added.
 **Inputs reviewed:** _Rekoda V1 Complete Product and Architecture Specification_ + the commercial/pricing model (₦9,900 / ₦19,900 / ₦29,900), against the research and the working VoiceReceipt codebase.
@@ -41,7 +51,7 @@ Detecting that "Ada" in a raw sentence is a person **is itself a language task**
 3. **New, never-seen names: minimise, then vault.** A brand-new name reaches the LLM once, under Anthropic's no-training API terms; the result is vaulted and tokenised forever after.
 4. **Voice: Rekoda-controlled STT from day one** — see §5, and no, this does not mean buying hardware.
 
-Marketing must say what is true — as amended by ADR 0027: _identities are tokenised; voice notes and receipt photos go only to the processors named on /ai-privacy, under API terms that exclude training, solely to become text; that text is tokenised before any reasoning model sees it (ADR 0027)._ The stronger "audio never leaves our infrastructure" sentence returns only when a deployment actually runs the sidecars. Never "AI never sees any name ever."
+Marketing must say what is true — as amended by ADR 0032: _supported customer identifiers are tokenised; voice notes and receipt photos go only to the processors named on /ai-privacy (OpenAI for transcription, Anthropic for vision), under API terms that exclude training, solely to become text; that text is tokenised before any reasoning model sees it._ There is no self-hosted media path in the launch architecture and the "audio never leaves our infrastructure" sentence is retired (ADR 0032). Never "AI never sees any name ever" and never "all PII".
 
 ### F4 — The ledger must be double-entry, and the spec doesn't say so
 
@@ -152,7 +162,7 @@ To be completely clear about what "self-hosted faster-whisper in a sidecar conta
 | Jobs             | **pg-boss** (Postgres-backed)                                                                      | Transactional enqueue in the same commit as the business event; no Redis to operate. BullMQ later only if throughput demands                               |
 | Web              | **Next.js 15 (App Router)**                                                                        | One app: marketing + `/business/*` + `/admin/*` + legal; SSR for SEO and fast first paint on Nigerian mobile                                               |
 | Monorepo         | **pnpm + Turborepo**                                                                               | `packages/core` (pure domain, zero framework imports, most-tested code), `packages/db`, `packages/contracts` (zod), `apps/api`, `apps/web`, `services/stt` |
-| STT              | **hosted whisper-1 at launch (ADR 0027)**; faster-whisper sidecar retained (§5)                    | Sidecar restores "audio never leaves our infra" when volume justifies its ops; selection is boot config, never a runtime fallback                          |
+| STT              | **OpenAI whisper-1, opt-in (ADR 0032)**                                                            | The only transcriber; no self-hosted engine exists, and enabling voice without the OpenAI key refuses to boot                                              |
 | AI               | **Anthropic SDK, Sonnet-default router** (§4)                                                      | Best affordable results; strict schemas; prompt caching                                                                                                    |
 | PDF / Excel      | **PDFKit (ported engine) + exceljs**                                                               | Templates, fonts, image pipeline already commercial-grade                                                                                                  |
 | Payments         | Paystack (Rekoda billing; merchant-key model for Integrate per F5)                                 |                                                                                                                                                            |

@@ -19,8 +19,8 @@ import {
   verifyOtp,
   type RandomSource,
 } from '@rekoda/core/identity';
-import { replies } from '@rekoda/core';
-import { identity, type Db } from '@rekoda/db';
+import { authTemplateCategory, MESSAGE_COST_MICROS, replies } from '@rekoda/core';
+import { entitlementsRepo, identity, withBusiness, type Db } from '@rekoda/db';
 import type {
   MeResponse,
   MembershipSummary,
@@ -40,6 +40,15 @@ export const RESEND_COOLDOWN_MS = 60 * 1_000;
 /** Wrong guesses tolerated per number per window, across all its challenges. */
 export const MAX_FAILURES_PER_WINDOW = 15;
 export const FAILURE_WINDOW_MS = 60 * 60 * 1_000;
+/**
+ * Codes MINTED per number per hour (MASTER-PLAN: "rate-limit per phone,
+ * 5/hour"). The 60-second cooldown alone caps a caller at 60 messages an
+ * hour to a number they do not control, each an authentication template
+ * billed to Rekoda; the failure counter never trips on a request-only flood
+ * because asking never records a wrong guess. This bounds the sends
+ * themselves, which is the cost the cooldown does not.
+ */
+export const MAX_REQUESTS_PER_WINDOW = 5;
 /** Minimum age before a session's rolling expiry is written back. */
 export const SESSION_REFRESH_FLOOR_MS = 24 * 60 * 60 * 1_000;
 
@@ -71,6 +80,18 @@ export class AuthService {
     const response = await identity.withPhoneLock(this.db, phone, async (tx) => {
       const since = new Date(now.getTime() - FAILURE_WINDOW_MS);
       if ((await identity.failuresSince(tx, phone, since)) >= MAX_FAILURES_PER_WINDOW) {
+        return { status: 'locked_out', phone } as const;
+      }
+
+      /**
+       * The per-phone hourly mint cap, checked BEFORE the cooldown so a
+       * caller pacing themselves at 61-second intervals still hits it at the
+       * sixth code rather than the sixtieth. `locked_out` deliberately, not a
+       * distinct status: the two are indistinguishable to a caller, and a
+       * "too many requests" that a "too many wrong guesses" does not match
+       * would confirm which of the two a number is in.
+       */
+      if ((await identity.challengesSince(tx, phone, since)) >= MAX_REQUESTS_PER_WINDOW) {
         return { status: 'locked_out', phone } as const;
       }
 
@@ -117,6 +138,28 @@ export class AuthService {
        * the business number, so there is no service window to reply inside
        * and Meta rejects free-form text to it (131047). */
       await this.sender.sendAuthCode({ to: phone, code });
+
+      /**
+       * The most expensive message Rekoda sends, and the one its cost
+       * telemetry cannot hold.
+       *
+       * `usage_events.business_id` is NOT NULL with a foreign key, and a
+       * phone asking for a sign-in code has no business yet: that is what
+       * signing in is for. Spec §29 anticipated exactly this shape and put
+       * it in `PlatformCostEvent`, whose `businessId` is nullable because
+       * "some costs are not attributable to one merchant". Until BL2 builds
+       * that, inventing a business to hang the row on would be a lie in a
+       * financial baseline, so the cost is logged and left unattributed.
+       *
+       * The category is logged with it because the difference between the
+       * two authentication rates is fivefold, and an operator reading a
+       * spike needs to know which one they are paying.
+       */
+      const category = authTemplateCategory(this.config.metaWabaRegisteredInNigeria);
+      this.log.log(
+        `sign-in code delivered as ${category}, ` +
+          `${MESSAGE_COST_MICROS[category]} USD micros, unattributed until PlatformCostEvent`,
+      );
     } catch {
       // The reason is logged without the code — the one string that must
       // never reach a log store beside the phone number it unlocks.
@@ -294,6 +337,14 @@ export class AuthService {
     const user = await identity.findUserById(this.db, row.userId);
     if (!user) throw new SessionInvalid('session points at a user that no longer exists');
 
+    /* Resolved rather than derived. The dashboard hides what the merchant
+     * cannot use (spec §4.1) and it must hide it against the same answer the
+     * gate refuses on, or a support-issued grant becomes invisible to the
+     * person it was issued for. */
+    const held = await withBusiness(this.db, business.id, (tx) =>
+      entitlementsRepo.resolve(tx, business.id),
+    );
+
     return {
       userId: row.userId,
       phone: user.phone,
@@ -302,6 +353,7 @@ export class AuthService {
       businessType: business.businessType,
       plan: business.plan,
       role: membership.role,
+      entitlements: held,
     };
   }
 

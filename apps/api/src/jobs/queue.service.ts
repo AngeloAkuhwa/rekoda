@@ -6,6 +6,15 @@ import { DB } from '../db/db.module.js';
 export const JobKind = {
   /** An inbound WhatsApp message has been stored and needs understanding. */
   InboundMessage: 'inbound.message',
+  /**
+   * A customer wrote to a MERCHANT'S own WABA (spec §24; PR-059).
+   *
+   * Its own kind rather than a branch inside `inbound.message`, because the
+   * two must never share a code path: that handler interprets the text as
+   * the merchant's bookkeeping commands, and a customer saying "sold my old
+   * phone" must not be able to write a sale into the merchant's books.
+   */
+  CustomerMessage: 'customer.message',
   /** An issued invoice needs its PDF rendered and stored. */
   RenderDocument: 'document.render',
   /** A stored PDF needs to reach the merchant. */

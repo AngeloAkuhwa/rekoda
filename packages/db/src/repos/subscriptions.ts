@@ -74,6 +74,16 @@ export async function subscriptionFor(
  * rather than a separate call: a cycle that has been paid for is not in
  * grace, and leaving that to a second statement is leaving room for a
  * merchant who paid to keep receiving reminders.
+ *
+ * The grandfathering pin (spec §30) is part of the fact too, with one rule:
+ * a cycle applied for the plan the pin already belongs to KEEPS the pin -
+ * that is grandfathering, and a renewal that re-pinned to the current
+ * version would end it on the first cycle. A cycle for a different plan
+ * (upgrade, first purchase, a downgrade taking effect) pins to the version
+ * of the new plan in force at the cycle start, because that is the version
+ * the merchant is being sold today. A cycle that started BEFORE the
+ * catalogue existed pins the plan's earliest version: pre-catalogue terms
+ * were the constants, and version 1 is those constants as data.
  */
 export async function applyCycle(
   tx: TenantDb,
@@ -87,11 +97,29 @@ export async function applyCycle(
     pendingPlan?: string | null;
   },
 ): Promise<void> {
+  const startStamp = cycle.cycleStartedAt.toISOString();
   await tx.execute(sql`
     UPDATE businesses SET
       plan = ${cycle.plan},
+      plan_version_id = CASE
+        WHEN plan_version_id IS NOT NULL AND EXISTS (
+          SELECT 1 FROM plan_versions pv
+          WHERE pv.id = plan_version_id AND pv.plan_id = ${cycle.plan})
+          THEN plan_version_id
+        ELSE COALESCE(
+          (SELECT id FROM plan_versions
+           WHERE plan_id = ${cycle.plan}
+             AND effective_from <= ${startStamp}::timestamptz
+             AND (effective_to IS NULL OR effective_to > ${startStamp}::timestamptz)
+           ORDER BY version DESC
+           LIMIT 1),
+          (SELECT id FROM plan_versions
+           WHERE plan_id = ${cycle.plan}
+           ORDER BY version
+           LIMIT 1))
+      END,
       plan_expires_at = ${cycle.renewsAt.toISOString()}::timestamptz,
-      cycle_started_at = ${cycle.cycleStartedAt.toISOString()}::timestamptz,
+      cycle_started_at = ${startStamp}::timestamptz,
       renewal_anchor_day = ${cycle.anchorDay},
       pending_plan = ${cycle.pendingPlan ?? null},
       payment_failed_at = NULL,

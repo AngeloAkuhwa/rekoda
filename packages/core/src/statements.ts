@@ -3,22 +3,35 @@
  * sheet, cash flow — assembled here as pure functions over per-account
  * debit/credit sums the database supplies.
  *
- * The split of labour is the same as the document layouts: SQL aggregates,
- * this module decides what the figures MEAN, and the API/web tiers only
- * carry the result. Keeping the assembly pure is what lets the accounting
- * identities (debits = credits, assets = liabilities + equity) be tested
- * against hand arithmetic with no database in the room.
+ * VERSION TWO, ON THE KERNEL (D1, PR-095): the rows carry the account's
+ * OWN metadata — code, name, type, system role — read from the business's
+ * chart, and the assembly is driven by TYPE and ROLE rather than a fixed
+ * key table. That is the difference between a statement and a template:
+ * a connection-scoped clearing account provisioned last week (PR-053), a
+ * second bank, an account an accountant adds later — every one of them
+ * appears, because the chart in the DATABASE is the authority and this
+ * module no longer keeps a private copy to disagree with it. Version one
+ * dropped any account its table did not know, which meant money the
+ * ledger demonstrably held could vanish from a balance sheet that then
+ * failed to balance.
  *
- * Labels stay in the merchant's language on screen ("money actually
- * received"); the statement structure underneath is the standard one an
- * accountant expects (ADR 0015: one ledger, two lenses).
+ * The split of labour is unchanged: SQL aggregates, this module decides
+ * what the figures MEAN, and the API/web tiers only carry the result.
+ * Keeping the assembly pure is what lets the accounting identities
+ * (debits = credits, assets = liabilities + equity) be tested against
+ * hand arithmetic with no database in the room.
  */
-import { ACCOUNTS, type AccountKey } from './ledger.js';
+
+export type StatementAccountType = 'asset' | 'liability' | 'equity' | 'income' | 'expense';
 
 /** Per-account sums the database supplies: for the period, and all time up
- * to the period's end. Absent accounts mean zero movement. */
+ * to the period's end, with the account's own chart metadata. Absent
+ * accounts mean zero movement. */
 export interface AccountSums {
-  readonly account: AccountKey;
+  readonly code: string;
+  readonly name: string;
+  readonly type: StatementAccountType;
+  readonly systemRole: string | null;
   readonly periodDebitK: number;
   readonly periodCreditK: number;
   readonly cumulativeDebitK: number;
@@ -26,24 +39,19 @@ export interface AccountSums {
 }
 
 export interface StatementLine {
-  readonly account: AccountKey;
   readonly code: string;
   readonly name: string;
   readonly amountK: number;
 }
 
-const byCode = (a: StatementLine, b: StatementLine) => (a.code < b.code ? -1 : 1);
+const byCode = (a: { code: string }, b: { code: string }) => (a.code < b.code ? -1 : 1);
 
-function sums(rows: readonly AccountSums[]): Map<AccountKey, AccountSums> {
-  return new Map(rows.map((r) => [r.account, r]));
-}
+const debitNormal = (type: StatementAccountType) => type === 'asset' || type === 'expense';
 
 /** Natural balance: debits minus credits for debit-normal accounts (assets,
  * expenses), credits minus debits for the rest. */
 function cumulativeBalanceK(row: AccountSums): number {
-  const type = ACCOUNTS[row.account].type;
-  const debitNormal = type === 'asset' || type === 'expense';
-  return debitNormal
+  return debitNormal(row.type)
     ? row.cumulativeDebitK - row.cumulativeCreditK
     : row.cumulativeCreditK - row.cumulativeDebitK;
 }
@@ -51,7 +59,6 @@ function cumulativeBalanceK(row: AccountSums): number {
 /* ── trial balance ───────────────────────────────────────────────────────── */
 
 export interface TrialBalanceRowV1 {
-  readonly account: AccountKey;
   readonly code: string;
   readonly name: string;
   readonly debitK: number;
@@ -74,22 +81,19 @@ export function buildTrialBalance(rows: readonly AccountSums[]): TrialBalance {
   const out: TrialBalanceRowV1[] = [];
   for (const row of rows) {
     if (row.cumulativeDebitK === 0 && row.cumulativeCreditK === 0) continue;
-    const meta = ACCOUNTS[row.account];
-    const debitNormal = meta.type === 'asset' || meta.type === 'expense';
     const balance = cumulativeBalanceK(row);
     // A balance on the account's natural side sits in its natural column; a
     // negative one crosses over, so neither column ever carries a negative.
     const onNaturalSide = balance >= 0;
     const magnitude = Math.abs(balance);
     out.push({
-      account: row.account,
-      code: meta.code,
-      name: meta.name,
-      debitK: debitNormal === onNaturalSide ? magnitude : 0,
-      creditK: debitNormal === onNaturalSide ? 0 : magnitude,
+      code: row.code,
+      name: row.name,
+      debitK: debitNormal(row.type) === onNaturalSide ? magnitude : 0,
+      creditK: debitNormal(row.type) === onNaturalSide ? 0 : magnitude,
     });
   }
-  out.sort((a, b) => (a.code < b.code ? -1 : 1));
+  out.sort(byCode);
   const totalDebitK = out.reduce((n, r) => n + r.debitK, 0);
   const totalCreditK = out.reduce((n, r) => n + r.creditK, 0);
   return { rows: out, totalDebitK, totalCreditK, balanced: totalDebitK === totalCreditK };
@@ -123,8 +127,7 @@ export interface ProfitAndLoss {
    *
    * The line every accountant looks for first, because revenue minus the cost
    * of what was sold is the only number that says whether the trade itself
-   * works. It sat inside "Total expenses" beside rent and diesel until COGS
-   * had anything posted to it, which made gross profit unreadable.
+   * works. Identified by the COGS role, never by a code convention.
    */
   readonly costOfSalesK: number;
   /** Revenue less the cost of the goods that earned it. */
@@ -138,18 +141,19 @@ export interface ProfitAndLoss {
 export function buildProfitAndLoss(rows: readonly AccountSums[]): ProfitAndLoss {
   const income: StatementLine[] = [];
   const expenses: StatementLine[] = [];
+  const cogsCodes = new Set<string>();
   let costOfSalesK = 0;
   for (const row of rows) {
-    const meta = ACCOUNTS[row.account];
-    if (meta.type === 'income') {
+    if (row.type === 'income') {
       const amountK = row.periodCreditK - row.periodDebitK;
-      if (amountK !== 0)
-        income.push({ account: row.account, code: meta.code, name: meta.name, amountK });
-    } else if (meta.type === 'expense') {
+      if (amountK !== 0) income.push({ code: row.code, name: row.name, amountK });
+    } else if (row.type === 'expense') {
       const amountK = row.periodDebitK - row.periodCreditK;
-      if (row.account === 'COGS') costOfSalesK += amountK;
-      if (amountK !== 0)
-        expenses.push({ account: row.account, code: meta.code, name: meta.name, amountK });
+      if (row.systemRole === 'COGS') {
+        costOfSalesK += amountK;
+        cogsCodes.add(row.code);
+      }
+      if (amountK !== 0) expenses.push({ code: row.code, name: row.name, amountK });
     }
   }
   income.sort(byCode);
@@ -159,7 +163,7 @@ export function buildProfitAndLoss(rows: readonly AccountSums[]): ProfitAndLoss 
   return {
     income,
     expenses,
-    operatingExpenses: expenses.filter((l) => l.account !== 'COGS'),
+    operatingExpenses: expenses.filter((l) => !cogsCodes.has(l.code)),
     totalIncomeK,
     totalExpensesK,
     costOfSalesK,
@@ -187,33 +191,40 @@ export interface BalanceSheet {
 /**
  * Positions as at the period end. Retained earnings is derived — all income
  * minus all expenses since the beginning — because profit that has not been
- * drawn IS equity, and no posting writes it anywhere else.
+ * drawn IS equity, and no posting writes it anywhere else. It lands on the
+ * chart's own RETAINED_EARNINGS account, added to anything posted there.
  */
 export function buildBalanceSheet(rows: readonly AccountSums[]): BalanceSheet {
   const assets: StatementLine[] = [];
   const liabilities: StatementLine[] = [];
   const equity: StatementLine[] = [];
   let retainedK = 0;
+  let retainedHome: { code: string; name: string } | null = null;
 
   for (const row of rows) {
-    const meta = ACCOUNTS[row.account];
     const balance = cumulativeBalanceK(row);
-    if (meta.type === 'income' || meta.type === 'expense') {
-      retainedK += meta.type === 'income' ? balance : -balance;
+    if (row.type === 'income' || row.type === 'expense') {
+      retainedK += row.type === 'income' ? balance : -balance;
+      continue;
+    }
+    if (row.systemRole === 'RETAINED_EARNINGS') {
+      /* Whatever was POSTED to retained earnings joins the derived figure
+       * on the one line, so the statement never shows the account twice. */
+      retainedHome = { code: row.code, name: row.name };
+      retainedK += balance;
       continue;
     }
     if (balance === 0) continue;
-    const line = { account: row.account, code: meta.code, name: meta.name, amountK: balance };
-    if (meta.type === 'asset') assets.push(line);
-    else if (meta.type === 'liability') liabilities.push(line);
+    const line = { code: row.code, name: row.name, amountK: balance };
+    if (row.type === 'asset') assets.push(line);
+    else if (row.type === 'liability') liabilities.push(line);
     else equity.push(line);
   }
 
   if (retainedK !== 0) {
     equity.push({
-      account: 'OWNERS_EQUITY',
-      code: ACCOUNTS.OWNERS_EQUITY.code,
-      name: 'Retained Earnings',
+      code: retainedHome?.code ?? '3100',
+      name: retainedHome?.name ?? 'Retained earnings',
       amountK: retainedK,
     });
   }
@@ -244,10 +255,11 @@ export interface CashflowStatement {
   readonly closingK: number;
 }
 
-/* Both bank accounts (ADR 0025). A merchant's cash position is what they can
- * spend, and money sitting at the provider waiting to settle is still theirs.
- * Splitting the account changed where money is recorded, never what counts. */
-const CASH_KEYS: readonly AccountKey[] = ['CASH', 'BANK', 'BANK_PAYSTACK'];
+/* A merchant's cash position is what they can spend, and money sitting at
+ * the provider waiting to settle is still theirs (ADR 0025): every CASH
+ * and BANK account, and every connection's clearing account (PR-053/065),
+ * however many of each the chart holds. */
+const CASH_ROLES = new Set(['CASH', 'BANK', 'PAYMENT_PROVIDER_CLEARING']);
 
 /**
  * Direct method, merchant labels: what you started the period with, what
@@ -255,13 +267,11 @@ const CASH_KEYS: readonly AccountKey[] = ['CASH', 'BANK', 'BANK_PAYSTACK'];
  * other three so the statement cannot disagree with itself.
  */
 export function buildCashflowStatement(rows: readonly AccountSums[]): CashflowStatement {
-  const map = sums(rows);
   let inK = 0;
   let outK = 0;
   let closingK = 0;
-  for (const key of CASH_KEYS) {
-    const row = map.get(key);
-    if (!row) continue;
+  for (const row of rows) {
+    if (!row.systemRole || !CASH_ROLES.has(row.systemRole)) continue;
     inK += row.periodDebitK;
     outK += row.periodCreditK;
     closingK += row.cumulativeDebitK - row.cumulativeCreditK;

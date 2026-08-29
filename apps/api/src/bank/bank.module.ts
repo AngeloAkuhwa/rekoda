@@ -7,6 +7,7 @@ import { RepliesModule } from '../replies/replies.module.js';
 import { BankController } from './bank.controller.js';
 import { BANK_FEED } from './feed.port.js';
 import { MonoProvider } from './mono.provider.js';
+import { CommandsModule } from '../commands/commands.module.js';
 
 /**
  * Flat providers, matching ReportsModule: guards resolve in the module that
@@ -21,7 +22,7 @@ import { MonoProvider } from './mono.provider.js';
  * is how the controller answers honestly instead of the app refusing to boot.
  */
 @Module({
-  imports: [DbModule, RepliesModule],
+  imports: [DbModule, RepliesModule, CommandsModule],
   controllers: [BankController],
   providers: [
     {

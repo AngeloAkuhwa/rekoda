@@ -2,15 +2,13 @@ import OpenAI, { toFile } from 'openai';
 import { TranscriptionUnavailable, type SpeechToText, type Transcript } from './stt.js';
 
 /**
- * Hosted transcription, behind the same port as the sidecar (ADR 0027).
+ * The transcriber (ADR 0032): OpenAI, the launch architecture's only one.
  *
- * The launch configuration: audio goes to OpenAI's transcription API as a
- * processor, under API terms that exclude training on inputs, solely to come
- * back as text — and that text is tokenised by the privacy gateway before
- * any reasoning model sees it. The AfriSpeech sidecar remains a supported
- * configuration behind `STT_URL` for the self-hosted hardening move; what
- * changed is which of the two a fresh deployment gets, and /ai-privacy says
- * so in the same words.
+ * Audio goes to OpenAI's transcription API as a processor, under API terms
+ * that exclude training on inputs, solely to come back as text — and that
+ * text is tokenised by the privacy gateway before any reasoning model sees
+ * it. There is no self-hosted engine and no fallback; /ai-privacy names
+ * this processor in the same words.
  *
  * `whisper-1` is the default on purpose: it is the transcription model that
  * REPORTS THE AUDIO DURATION (`verbose_json`), and `voice_seconds` is an
@@ -48,18 +46,25 @@ export class OpenAiSpeechToText implements SpeechToText {
         response_format: 'verbose_json',
       })) as { text?: unknown; duration?: unknown };
     } catch (error) {
-      throw new TranscriptionUnavailable(describe(error));
+      /* A timeout may have been billed — the audio went out and the work
+       * may have finished after we stopped waiting. Flagged so the caller
+       * writes a reconciliation row; everything else billed nothing. */
+      throw new TranscriptionUnavailable(describe(error), {
+        maybeBilled: isTimeout(error),
+      });
     }
 
     const text = typeof response.text === 'string' ? response.text.trim() : '';
-    if (!text) throw new TranscriptionUnavailable('transcriber returned no text');
+    // The provider answered: these failures were BILLED, and the ceilings
+    // that bound spend need to know that.
+    if (!text) throw new TranscriptionUnavailable('transcriber returned no text', { billed: true });
 
     const duration = Number(response.duration);
     if (!Number.isFinite(duration) || duration <= 0) {
       /* No duration means no honest meter reading. Refused rather than
        * guessed: billing a merchant off an estimate is the one thing the
        * voice_seconds contract forbids, and whisper-1 always reports one. */
-      throw new TranscriptionUnavailable('transcriber reported no duration');
+      throw new TranscriptionUnavailable('transcriber reported no duration', { billed: true });
     }
 
     return {
@@ -69,6 +74,9 @@ export class OpenAiSpeechToText implements SpeechToText {
        * to anybody who speaks quickly. */
       seconds: Math.max(1, Math.ceil(duration)),
       confidence: null,
+      /* Who charged us and on which rate card. The duration the cost is
+       * computed from is `seconds` above — the provider's own number. */
+      usage: { provider: 'openai', model: this.model },
     };
   }
 }
@@ -87,4 +95,10 @@ function describe(error: unknown): string {
   if (error instanceof Error && error.name === 'AbortError') return 'transcription timed out';
   if (error instanceof OpenAI.APIError) return `transcriber answered ${error.status}`;
   return error instanceof Error ? error.name : 'unknown transport failure';
+}
+
+/** A request that went out and never came back — the maybe-billed case. */
+function isTimeout(error: unknown): boolean {
+  if (error instanceof OpenAI.APIConnectionTimeoutError) return true;
+  return error instanceof Error && error.name === 'AbortError';
 }

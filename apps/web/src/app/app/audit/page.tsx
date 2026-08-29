@@ -5,6 +5,7 @@ import { requireSessionWithToken } from '@/server/guards';
 import { AppNav } from '../AppNav';
 import { exportCaption } from '@/lib/export-caption';
 import { SignOutButton } from '../SignOutButton';
+import { heldBy } from '@/lib/capabilities';
 
 export const metadata: Metadata = {
   title: 'Audit trail',
@@ -24,7 +25,7 @@ export const metadata: Metadata = {
  * merchant it is kept for.
  */
 export default async function AuditPage() {
-  const { token } = await requireSessionWithToken();
+  const { identity, token } = await requireSessionWithToken();
   const { events, count } = await reportsAudit(token);
 
   return (
@@ -37,7 +38,7 @@ export default async function AuditPage() {
         <SignOutButton />
       </header>
 
-      <AppNav active="audit" />
+      <AppNav active="audit" held={heldBy(identity)} />
 
       <div className="rk-card">
         <h2>Every recorded change</h2>

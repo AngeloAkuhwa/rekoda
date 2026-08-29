@@ -9,8 +9,14 @@
 import { Logger } from '@nestjs/common';
 import { lagosDay } from '@rekoda/core';
 import { bankRepo, withBusiness, type Db } from '@rekoda/db';
+import type { Ingress } from '@rekoda/core';
 import { MonoApiError } from './mono.provider.js';
 import type { BankFeedPort } from './feed.port.js';
+import type { CommandBus } from '../commands/command-bus.service.js';
+import {
+  ingestFinancialTransactionsWork,
+  type IngestFinancialTransactionsInput,
+} from '../commands/bank-commands.js';
 
 /**
  * How far back the FIRST sync reaches. Ninety days is what aggregators
@@ -44,9 +50,18 @@ export type FeedSyncOutcome =
  * and free — see SYNC_OVERLAP_DAYS.
  */
 export async function syncFeedOnce(
-  deps: { db: Db; feed: BankFeedPort },
+  deps: {
+    db: Db;
+    feed: BankFeedPort;
+    /** The one bus every ingress converges on (spec §25). */
+    commandBus: CommandBus;
+    /** The A1 rollout flag for `IngestFinancialTransaction`. */
+    commandIngestFinancialTransaction: boolean;
+  },
   businessId: string,
   actor: string,
+  /** Which door asked: the dashboard button or the background sweep. */
+  ingress: Ingress = 'AUTOMATION',
 ): Promise<FeedSyncOutcome> {
   if (!deps.feed.configured) return { outcome: 'not_configured' };
 
@@ -75,14 +90,41 @@ export async function syncFeedOnce(
   }
 
   const stored = await withBusiness(deps.db, businessId, async (tx) => {
-    const result = await bankRepo.importStatementLines(tx, {
+    const input: IngestFinancialTransactionsInput = {
       businessId,
       /* `row` exists so a CSV's skipped row can be named; a feed has no
        * rows, so the position in the fetch stands in. It is not part of
        * the fingerprint, so it can never split a duplicate. */
       lines: fetched.transactions.map((t, i) => ({ ...t, row: i + 1 })),
       actor,
-    });
+      source: 'bank_feed',
+      /* §22.3: the lines carry the identity of the connection that
+       * produced them. */
+      connectionId: connection.id,
+    };
+    /* The A1 rollout seam (spec §25): the same import the CSV door takes,
+     * through the same command. No idempotency key — the fingerprint dedupe
+     * IS the import's identity, and a retried pull counts duplicates. */
+    let result: Awaited<ReturnType<typeof ingestFinancialTransactionsWork>>;
+    if (deps.commandIngestFinancialTransaction) {
+      const run = await deps.commandBus.run(
+        tx,
+        {
+          businessId,
+          command: 'IngestFinancialTransaction',
+          payload: { source: input.source, count: input.lines.length },
+          actor,
+          ingress,
+        },
+        () => ingestFinancialTransactionsWork(tx, input),
+      );
+      if (run.outcome !== 'done') {
+        throw new Error(`IngestFinancialTransaction refused unexpectedly: ${run.outcome}`);
+      }
+      result = run.result;
+    } else {
+      result = await ingestFinancialTransactionsWork(tx, input);
+    }
     await bankRepo.markFeedSynced(tx, businessId, today);
     return result;
   });
@@ -95,6 +137,10 @@ export interface FeedSweepDeps {
   /** `rekoda_app` — every sync runs under a tenant pin. */
   appDb: Db;
   feed: BankFeedPort;
+  /** The one bus every ingress converges on (spec §25). */
+  commandBus: CommandBus;
+  /** The A1 rollout flag for `IngestFinancialTransaction`. */
+  commandIngestFinancialTransaction: boolean;
 }
 
 const sweepLog = new Logger('BankFeedSweep');
@@ -112,9 +158,15 @@ export async function sweepBankFeeds(deps: FeedSweepDeps): Promise<number> {
   for (const { businessId } of linked) {
     try {
       const outcome = await syncFeedOnce(
-        { db: deps.appDb, feed: deps.feed },
+        {
+          db: deps.appDb,
+          feed: deps.feed,
+          commandBus: deps.commandBus,
+          commandIngestFinancialTransaction: deps.commandIngestFinancialTransaction,
+        },
         businessId,
         'system:bank-feed',
+        'AUTOMATION',
       );
       if (outcome.outcome === 'synced') imported += outcome.imported;
       /* `unlinked` marks its own row inside syncFeedOnce; the page tells

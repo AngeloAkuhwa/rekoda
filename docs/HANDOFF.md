@@ -1,5 +1,15 @@
 # Rekoda — Session Handoff & Project Memory
 
+> **Media-architecture supersession (ADR 0032, 29 Aug 2026).** Sections of
+> this document describing self-hosted STT/OCR sidecars, `services/stt`,
+> `STT_URL`, `STT_FALLBACK`, `OCR_URL` or the "audio never leaves Rekoda"
+> posture are HISTORICAL and do not describe the current production
+> media-processing architecture. The launch architecture is OpenAI for
+> voice transcription and Anthropic Claude for reasoning and vision, with
+> no self-hosted media sidecars — see
+> [ADR 0032](adr/0032-launch-media-architecture.md).
+
+
 **Purpose:** this file lets any new session (human or Claude) resume the
 project with zero context loss. Read this first, then the documents it
 points to. Keep it updated at the end of every working session — it is the

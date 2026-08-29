@@ -10,24 +10,38 @@ invoices, receipts, customer balances, inventory, a double-entry ledger, and
 happened when money moved.
 
 ```
-  HUMAN SAYS IT                SYSTEM SEES IT
-       │                            │
-  Rekoda Chat               Rekoda Integrate
-  (text · voice)         (catalogue · Paystack)
-       └─────────────┬──────────────┘
-                     ▼
-              BUSINESS EVENT
-                     ▼
-             PRIVACY GATEWAY        ← customer PII tokenised; audio never leaves Rekoda
-                     ▼
-      DETERMINISTIC FINANCIAL CORE  ← AI never computes money
-                     ▼
-              RECONCILIATION
-                     ▼
-             FINANCIAL TRUTH
-          │          │         │
-      WhatsApp   Dashboard   PDF / Excel
+  WhatsApp / User
+        │
+        ▼
+    Rekoda API
+        │
+        ├────────────────────────┬──────────────────────┐
+        ▼                        ▼                      ▼
+  Text / structured        Voice note             Document photo
+        │                        │                      │
+        │                  OpenAI STT            Claude vision
+        │               (transcription only)  (reads the page into text)
+        │                        │                      │
+        └────────────────────────┴──────────┬───────────┘
+                                            ▼
+                    PRIVACY GATEWAY  ← supported customer identifiers
+                                       tokenised before reasoning
+                                            ▼
+                    Anthropic Claude (reasoning; never computes money)
+                                            ▼
+                    Validated Rekoda command → CONFIRMATION GATE
+                                            ▼
+             DETERMINISTIC FINANCIAL CORE → ledger / invoice / receipt
+                                            ▼
+                                     RECONCILIATION
 ```
+
+The three input paths are deliberately not identical (ADR 0032): typed text
+is tokenised before any model sees it; a voice note must reach OpenAI as
+audio to become text; a photographed document must reach Claude vision as
+pixels to be read. Raw media is processed transiently and never persisted;
+the transcript or extracted text then walks the same gateway typed text
+walks before the reasoning model sees anything.
 
 ## Status
 
@@ -107,7 +121,7 @@ green tick as one that proved something.
 
 TypeScript end-to-end. **NestJS** (Fastify) API · **Next.js 15** web ·
 **PostgreSQL 16** with row-level security + **Drizzle** · **pg-boss** jobs ·
-self-hosted **faster-whisper** STT sidecar · **Anthropic** (Sonnet-default router) ·
+**OpenAI** transcription (voice, opt-in) · **Anthropic** Claude (reasoning + vision) ·
 **PDFKit**/exceljs documents · **Paystack** billing · pnpm + Turborepo monorepo ·
 Hetzner + Cloudflare + R2 hosting.
 
@@ -120,8 +134,12 @@ packages/core     Pure domain: money, ledger, reconciliation (no framework, no I
 packages/db       Drizzle schema, migrations, RLS policies, seeds
 packages/contracts  zod schemas shared API ↔ web
 packages/shared   Branded types, utilities
-services/stt      faster-whisper sidecar (containerised)
 ```
+
+There is no self-hosted STT or OCR service in the launch architecture
+(ADR 0032): OpenAI transcribes, Claude reads and reasons, and each media
+feature is an explicit opt-in that refuses to boot without its provider
+key.
 
 ## Engineering standards
 

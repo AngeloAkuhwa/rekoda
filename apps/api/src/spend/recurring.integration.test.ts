@@ -9,16 +9,22 @@
  *   - a schedule anchored on the 31st produces exactly one entry in February,
  *     on the 28th, and returns to the 31st afterwards;
  *   - a sweep run twice on the same day raises one entry, not two;
- *   - a stopped schedule raises nothing, and what it already raised stays.
+ *   - a stopped schedule raises nothing, and what it already raised stays;
+ *   - a raise carries its §9.4 posting key, and one due in a CLOSED month
+ *     lands on the first open day instead of wedging (PR-082).
  */
 import { randomBytes } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { reportsExpensesResponse } from '@rekoda/contracts';
 import { lagosDay, nextDueAfter } from '@rekoda/core';
-import { createDb, type Db } from '@rekoda/db';
+import { closeRepo, createDb, spendRepo, sql, withBusiness, type Db } from '@rekoda/db';
 import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { sweepRecurring } from './recurring-sweep.js';
+import { CommandBus } from '../commands/command-bus.service.js';
+import { RiskPolicyService } from '../risk/risk-policy.service.js';
+
+const testBus = new CommandBus(new RiskPolicyService());
 
 let urls: Urls;
 let app: NestFastifyApplication;
@@ -90,7 +96,8 @@ const registerOf = async (auth: Record<string, string>) =>
     (await app.inject({ method: 'GET', url: '/v1/reports/expenses', headers: auth })).json(),
   );
 
-const sweep = (now: Date) => sweepRecurring({ workerDb, appDb: db }, now);
+const sweep = (now: Date) =>
+  sweepRecurring({ workerDb, appDb: db, commandBus: testBus, commandRecordExpense: false }, now);
 
 /** Noon Lagos on a given day, so no test result turns on the hour. */
 const at = (day: string) => new Date(`${day}T11:00:00Z`);
@@ -202,7 +209,7 @@ describe('setting one up', () => {
 describe('the sweep', () => {
   /** A schedule due tomorrow, reached by sweeping from that day onward. */
   async function scheduleFor(phone: string, anchorDay: number) {
-    const { auth } = await onboard(phone);
+    const { auth, businessId } = await onboard(phone);
     const created = (
       await post(
         '/v1/reports/expenses/recurring',
@@ -216,7 +223,7 @@ describe('the sweep', () => {
         auth,
       )
     ).json() as { id: string; firstDueOn: string };
-    return { auth, ...created };
+    return { auth, businessId, ...created };
   }
 
   it('raises nothing before the day, and one entry on it', async () => {
@@ -341,6 +348,85 @@ describe('the sweep', () => {
       .sort();
     const second = nextDueAfter(firstDueOn, 1);
     expect(days).toEqual([firstDueOn, second, nextDueAfter(second, 1)]);
+  });
+
+  /**
+   * §9.4 at the ledger itself (PR-082). The claim and the command key both
+   * protect the normal path; this is the defence in depth the spec asks
+   * for — a writer that bypasses the bus entirely still cannot raise one
+   * month's rent twice, because the posting carries the raise's identity
+   * and `ledger_tx_posting_key_ux` refuses a second one.
+   */
+  it('stamps the raise on the posting, and the ledger refuses it twice', async () => {
+    const { businessId, id, firstDueOn } = await scheduleFor('+2348177200016', 1);
+    await sweep(at(firstDueOn));
+
+    const keys = await withBusiness(db, businessId, async (tx) => {
+      const rows = await tx.execute<{ posting_key: string | null }>(sql`
+        SELECT posting_key FROM ledger_transactions
+        WHERE business_id = ${businessId}::uuid AND source_type = 'recurring'
+      `);
+      return [...rows].map((r) => r.posting_key);
+    });
+    expect(keys).toEqual([`recurring:${id}:${firstDueOn}`]);
+
+    /* The bypass: the same raise straight into the repo, no bus, no claim. */
+    await expect(
+      withBusiness(db, businessId, (tx) =>
+        spendRepo.recordExpense(tx, {
+          businessId,
+          description: 'Shop rent',
+          category: 'Rent',
+          amountK: 15_000_000,
+          method: 'transfer',
+          sourceType: 'recurring',
+          sourceId: `${id}:${firstDueOn}`,
+          postingKey: `recurring:${id}:${firstDueOn}`,
+        }),
+      ),
+    ).rejects.toThrow(/ledger_transactions/);
+  });
+
+  /**
+   * The wedge (PR-082). Rent fell due in a month whose books have since
+   * closed; dating it there is a posting the kernel refuses forever, and
+   * before this the sweep retried it daily until the end of time. It lands
+   * on day one of the earliest open month instead, saying which day it was
+   * really for, and the open months still get their own entries on their
+   * own days.
+   */
+  it('raises a closed month’s entry on the first open day, named for its due day', async () => {
+    const { auth, businessId, firstDueOn } = await scheduleFor('+2348177200017', 1);
+    const secondDueOn = nextDueAfter(firstDueOn, 1);
+    const thirdDueOn = nextDueAfter(secondDueOn, 1);
+
+    /* Close the first due month, judged from a clock two months on. */
+    const closed = await withBusiness(db, businessId, (tx) =>
+      closeRepo.closeBooks(tx, {
+        businessId,
+        through: firstDueOn.slice(0, 7),
+        actor: 'user:test',
+        now: at(thirdDueOn),
+      }),
+    );
+    expect(closed.outcome).toBe('closed');
+
+    expect(await sweep(at(thirdDueOn))).toEqual({ raised: 3, skipped: 0 });
+
+    const entries = (await registerOf(auth)).entries
+      .map((entry) => ({
+        description: entry.description,
+        day: lagosDay(new Date(entry.recordedAt)),
+      }))
+      .sort((a, b) =>
+        a.day === b.day ? a.description.localeCompare(b.description) : a.day < b.day ? -1 : 1,
+      );
+    expect(entries).toEqual([
+      { description: 'Shop rent', day: secondDueOn },
+      /* The displaced raise: dated the first open day, named for its own. */
+      { description: `Shop rent (due ${firstDueOn})`, day: secondDueOn },
+      { description: 'Shop rent', day: thirdDueOn },
+    ]);
   });
 
   it('leaves one merchant’s schedule out of another’s books', async () => {

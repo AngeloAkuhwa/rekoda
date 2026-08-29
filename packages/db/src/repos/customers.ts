@@ -136,6 +136,20 @@ export class IdentityConflict extends Error {}
  * Null for a token nobody has seen, which is not an error: a merchant can
  * name somebody the gateway has never tokenised.
  */
+/** The inverse read: the pseudonymous token a customer row carries. */
+export async function tokenForCustomer(
+  tx: TenantDb,
+  businessId: string,
+  customerId: string,
+): Promise<string | null> {
+  const rows = await tx
+    .select({ token: customers.token })
+    .from(customers)
+    .where(and(eq(customers.businessId, businessId), eq(customers.id, customerId)))
+    .limit(1);
+  return rows[0]?.token ?? null;
+}
+
 export async function customerIdForToken(
   tx: TenantDb,
   businessId: string,

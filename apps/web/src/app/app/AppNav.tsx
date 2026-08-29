@@ -1,6 +1,18 @@
+import type { Capability } from '@rekoda/core';
+
 /**
  * The dashboard's section navigation. Plain anchors, server-rendered:
  * these are page loads, not client-side route state.
+ *
+ * A tab is hidden when the merchant's plan does not carry the capability
+ * behind it. Hidden, not greyed: the operational surface is where somebody
+ * works, and a permanent row of things they cannot use is an advertisement
+ * they did not ask for. The full matrix lives on the billing page, and
+ * anybody who arrives at the page itself gets `EntitlementRefusal`.
+ *
+ * The gate is a CAPABILITY and never a plan name. `plan === 'integrate'` in a
+ * navigation component is the shape that rots: it names a product, in a
+ * layout, about a route.
  */
 const TABS = [
   { key: 'overview', href: '/app', label: 'Overview' },
@@ -11,7 +23,9 @@ const TABS = [
   { key: 'debtors', href: '/app/debtors', label: 'Debtors' },
   { key: 'expenses', href: '/app/expenses', label: 'Expenses' },
   { key: 'stock', href: '/app/stock', label: 'Stock' },
-  { key: 'catalogue', href: '/app/catalogue', label: 'Catalogue' },
+  /* The catalogue a merchant's BUYERS browse, so it belongs to Integrate.
+     Everything around it in this list is the shared control plane. */
+  { key: 'catalogue', href: '/app/catalogue', label: 'Catalogue', needs: 'CATALOGUE' },
   { key: 'reports', href: '/app/reports', label: 'Reports' },
   /* Beside Reports rather than last. Both answer "is this true", and a tab
      added to the end of twelve is one a merchant scrolls past without ever
@@ -29,10 +43,16 @@ const TABS = [
 
 export type AppTab = (typeof TABS)[number]['key'];
 
-export function AppNav({ active }: { active: AppTab }) {
+export function AppNav({ active, held }: { active: AppTab; held?: readonly Capability[] }) {
+  /* Undefined rather than empty when a caller has not resolved capabilities
+     yet: hiding every gated tab because a page forgot to pass them would be
+     a worse failure than showing one too many. */
+  const visible = TABS.filter(
+    (tab) => !('needs' in tab) || held === undefined || held.includes(tab.needs as Capability),
+  );
   return (
     <nav className="rk-appnav" aria-label="Dashboard sections">
-      {TABS.map((tab) => (
+      {visible.map((tab) => (
         <a
           key={tab.key}
           href={tab.href}

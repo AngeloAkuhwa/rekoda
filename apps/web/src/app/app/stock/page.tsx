@@ -5,6 +5,7 @@ import { Money } from '@/components/ui/Money';
 import { AppNav } from '../AppNav';
 import { exportCaption } from '@/lib/export-caption';
 import { SignOutButton } from '../SignOutButton';
+import { heldBy } from '@/lib/capabilities';
 
 export const metadata: Metadata = {
   title: 'Stock',
@@ -25,7 +26,7 @@ export const metadata: Metadata = {
  * question, and mixing the two is how a shop reads a profit that is not there.
  */
 export default async function StockPage() {
-  const { token } = await requireSessionWithToken();
+  const { identity, token } = await requireSessionWithToken();
   const { products, total, outOfStock, withoutCost } = await reportsStock(token);
 
   return (
@@ -38,7 +39,7 @@ export default async function StockPage() {
         <SignOutButton />
       </header>
 
-      <AppNav active="stock" />
+      <AppNav active="stock" held={heldBy(identity)} />
 
       <div className="rk-card">
         <h2>Stock register</h2>

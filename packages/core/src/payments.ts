@@ -64,6 +64,22 @@ export type SettlementStatus =
 
 export type FeePolicy = 'customer_bearing' | 'merchant_bearing' | 'platform_bearing';
 
+/** §19: who ends up out of pocket. Rekoda's concept — never the provider's. */
+export const ECONOMIC_FEE_BEARERS = ['MERCHANT', 'CUSTOMER', 'REKODA', 'SHARED'] as const;
+export type EconomicFeeBearer = (typeof ECONOMIC_FEE_BEARERS)[number];
+
+/** What each blended fee policy always meant economically. One place. */
+export function bearerOfFeePolicy(policy: FeePolicy): EconomicFeeBearer {
+  switch (policy) {
+    case 'customer_bearing':
+      return 'CUSTOMER';
+    case 'platform_bearing':
+      return 'REKODA';
+    case 'merchant_bearing':
+      return 'MERCHANT';
+  }
+}
+
 /* ── the Rekoda reference (payments-v1 §9) ────────────────────────────────── */
 
 /**
@@ -112,6 +128,18 @@ export function mintReference(prefix: string, at: Date, random: RandomBytes): st
 }
 
 export const PAYMENT_REFERENCE_PATTERN = /^RKD-PAY-\d{8}-[0-9A-HJKMNP-TV-Z]{6}$/;
+
+/**
+ * Every Rekoda payment reference a free text carries (§9, §22.1 tier 1).
+ *
+ * Case-insensitive and normalised to the minted casing, because a bank's
+ * narration processor may fold case; the alphabet stays the minted one
+ * (no I, L, O, U), so a reference read over a phone still scans.
+ */
+export function paymentReferencesIn(text: string): string[] {
+  const found = text.toUpperCase().match(/RKD-PAY-\d{8}-[0-9A-HJKMNP-TV-Z]{6}/g);
+  return found ? [...new Set(found)] : [];
+}
 
 /**
  * The graduation gate (ADR 0019, fix-plan 6 M5d). A Paystack Starter
@@ -269,4 +297,176 @@ export function splitFees(input: FeeSplitInput): FeeSplit {
         platformAbsorbsK: input.providerFeeK,
       };
   }
+}
+
+/* ── the provider resolver (spec §17, §18; PR-068) ─────────────────────── */
+
+/** §18's three ports. A provider that does two things has two rows. */
+export type ProviderCapabilityKind = 'COLLECT' | 'FEED' | 'PAYOUT';
+
+/**
+ * What the PLATFORM may do with one provider on one port, on three
+ * independent axes (PR-119, owner ruling 28 Aug 2026).
+ *
+ * They are independent because they fail independently and are cleared by
+ * different people on different timescales, which is the same argument
+ * §17.1 makes for a connection's four statuses. A single blended status
+ * could not express "the adapter is written and tested, the terms are
+ * signed, and legal has not finished" - it rendered as BLOCKED with a
+ * sentence, and nobody could see which axis was outstanding.
+ *
+ * `productionEnabled` is DERIVED from all three by the database (migration
+ * 0115 generates the column), so a working sandbox can never open
+ * production: passing tests sets `technicalSupport` alone, and one axis is
+ * never enough.
+ */
+export interface PlatformCapability {
+  providerType: string;
+  capability: ProviderCapabilityKind;
+  /** An adapter exists for this port and passes its sandbox tests. */
+  technicalSupport: boolean;
+  /** There is a signed production arrangement with the provider. */
+  commercialApproval: boolean;
+  /** Permitted under Rekoda's own policy and the applicable regulation. */
+  complianceApproval: boolean;
+  /** All three, decided by the database rather than recomputed here. */
+  productionEnabled: boolean;
+  /** Why each closed axis is closed, in the words whoever closed it used. */
+  technicalNote?: string | null;
+  commercialNote?: string | null;
+  complianceNote?: string | null;
+}
+
+/**
+ * The closed axes of one capability, named, for a refusal a person can act
+ * on. Empty when nothing is blocking.
+ */
+export function capabilityBlockers(capability: PlatformCapability): string[] {
+  const blockers: string[] = [];
+  if (!capability.technicalSupport) {
+    blockers.push(capability.technicalNote ?? `${capability.providerType}: no adapter`);
+  }
+  if (!capability.commercialApproval) {
+    blockers.push(
+      capability.commercialNote ?? `${capability.providerType}: no commercial approval`,
+    );
+  }
+  if (!capability.complianceApproval) {
+    blockers.push(
+      capability.complianceNote ?? `${capability.providerType}: no compliance approval`,
+    );
+  }
+  return blockers;
+}
+
+export interface CandidateConnection {
+  connectionId: string;
+  providerType: string;
+  /** The §17.1 derivation: all four axes must permit it. */
+  productionEnabled: boolean;
+  /** For deterministic seniority when more than one connection is eligible. */
+  connectedAtMs: number;
+}
+
+export type ResolveProviderOutcome =
+  | { resolved: true; connectionId: string; providerType: string }
+  /** The business holds no connection at all for this need. */
+  | { resolved: false; reason: 'no_connection' }
+  /** Connections exist, but no provider among them may do this on the
+   * platform — the detail carries the blockers by name. */
+  | { resolved: false; reason: 'no_capable_provider'; detail: string[] }
+  /** A capable provider exists, but that merchant's own connection does
+   * not derive production-enabled: their §17.1 axes are the refusal. */
+  | { resolved: false; reason: 'not_production_enabled'; providerTypes: string[] };
+
+/**
+ * Which provider serves this need, decided from CAPABILITY and COMPLIANCE
+ * and NOTHING else (§18: production availability is capability and
+ * compliance gated; the build plan's slice test says it plainer — never a
+ * hardcoded default).
+ *
+ * Two layers gate together: the PLATFORM may offer the provider
+ * (ProviderCapability, the OPEN COMMERCIAL/COMPLIANCE table) and THIS
+ * merchant's connection derives production-enabled (§17.1's four axes).
+ * When more than one connection survives both gates, the OLDEST wins —
+ * seniority is deterministic and merchant-explicable, where any
+ * preference list would quietly be the hardcoded default coming back in.
+ */
+export function resolvePaymentProvider(
+  need: ProviderCapabilityKind,
+  connections: CandidateConnection[],
+  capabilities: PlatformCapability[],
+): ResolveProviderOutcome {
+  if (connections.length === 0) return { resolved: false, reason: 'no_connection' };
+
+  const capable = new Set(
+    capabilities
+      .filter((c) => c.capability === need && c.productionEnabled)
+      .map((c) => c.providerType),
+  );
+  const withCapableProvider = connections.filter((c) => capable.has(c.providerType));
+  if (withCapableProvider.length === 0) {
+    /* Every closed axis, not the first one. A merchant told "commercial
+     * approval is outstanding" who then waits for it, only to be refused
+     * again for compliance, has been told the truth twice and helped
+     * neither time. */
+    const blockers = capabilities
+      .filter(
+        (c) =>
+          c.capability === need &&
+          !c.productionEnabled &&
+          connections.some((connection) => connection.providerType === c.providerType),
+      )
+      .flatMap(capabilityBlockers);
+    return { resolved: false, reason: 'no_capable_provider', detail: blockers };
+  }
+
+  const eligible = withCapableProvider
+    .filter((c) => c.productionEnabled)
+    .sort((a, b) => a.connectedAtMs - b.connectedAtMs);
+  const winner = eligible[0];
+  if (!winner) {
+    return {
+      resolved: false,
+      reason: 'not_production_enabled',
+      providerTypes: withCapableProvider.map((c) => c.providerType),
+    };
+  }
+  return { resolved: true, connectionId: winner.connectionId, providerType: winner.providerType };
+}
+
+/* ── provider fee estimation from a rate observation (§19.1, §24; PR-072) ── */
+
+/**
+ * A PERCENT_PLUS_FLAT rate as one `ProviderCostSchedule` row states it:
+ * a percentage of the amount plus a flat fee, the whole thing optionally
+ * capped, the flat part optionally waived below a threshold. This is the
+ * shape Paystack's collection pricing actually has, and the fields are
+ * the observation's — an estimate never carries a number the row cannot
+ * justify.
+ */
+export interface PercentPlusFlatRate {
+  /** Parts-per-million of the amount (15000 = 1.5%). */
+  percentPpm: number;
+  flatMinor: number;
+  /** The whole fee is capped here; null means uncapped. */
+  capMinor: number | null;
+  /** The flat part is waived below this amount; null means never. */
+  waiveFlatUnderMinor: number | null;
+}
+
+/**
+ * What a provider will charge on an amount, DERIVED from the observation
+ * in force — the §19.1 ESTIMATED figure, whose row id rides along as
+ * `providerCostScheduleId` so the estimate can always name its source.
+ * Rounded UP on the percentage, per the planning rule the rate cards
+ * are recorded under: model every cost at or above market.
+ */
+export function estimateProviderFeeMinor(rate: PercentPlusFlatRate, amountMinor: number): number {
+  const flat =
+    rate.waiveFlatUnderMinor !== null && amountMinor < rate.waiveFlatUnderMinor
+      ? 0
+      : rate.flatMinor;
+  const fee = Math.ceil((amountMinor * rate.percentPpm) / 1_000_000) + flat;
+  return rate.capMinor === null ? fee : Math.min(fee, rate.capMinor);
 }

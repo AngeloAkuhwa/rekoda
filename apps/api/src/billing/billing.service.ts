@@ -16,17 +16,20 @@ import { randomBytes } from 'node:crypto';
 import {
   addMonth,
   addOnReference,
-  addOnPack,
-  allowanceFor,
   billingState,
   GRACE_DAYS,
-  packsFor,
   planChangeCharge,
-  planPriceK,
   subscriptionReference,
   usagePeriod,
   USAGE_UNITS,
 } from '@rekoda/core';
+import {
+  meterAllowances,
+  packOffer,
+  packsForBusiness,
+  planPriceKFor,
+  type PlanTermsConfig,
+} from './plan-terms.js';
 import type {
   BillingCancelResponse,
   BillingOverviewResponse,
@@ -34,7 +37,14 @@ import type {
   BillingQuoteResponse,
   BillingStateView,
 } from '@rekoda/contracts';
-import { subscriptionsRepo, usageRepo, withBusiness, type Db, type TenantDb } from '@rekoda/db';
+import {
+  addOnsRepo,
+  subscriptionsRepo,
+  usageRepo,
+  withBusiness,
+  type Db,
+  type TenantDb,
+} from '@rekoda/db';
 import { CONFIG, type ApiConfig } from '../config.js';
 import { DB } from '../db/db.module.js';
 
@@ -50,6 +60,30 @@ export class BillingService {
     @Inject(CONFIG) private readonly config: ApiConfig,
     @Inject(DB) private readonly db: Db,
   ) {}
+
+  /**
+   * The two prices a plan change is priced from, off the catalogue.
+   *
+   * `from` resolves through the grandfathering pin - what the merchant
+   * actually pays today - and `to` deliberately does not: they are buying
+   * the new plan NOW, so the version currently on sale is the one that
+   * prices it (the pin belongs to the old plan, so the stale-pin rule
+   * already answers this). Undefined on the constant path, where
+   * `planChangeCharge` falls back to the pre-BL2 table.
+   */
+  private async changePricesK(
+    tx: TenantDb,
+    businessId: string,
+    from: string,
+    to: string,
+    now: Date,
+  ): Promise<{ from: number; to: number } | undefined> {
+    if (!this.config.planCatalogueReads) return undefined;
+    return {
+      from: await planPriceKFor(this.config, tx, businessId, from, now),
+      to: await planPriceKFor(this.config, tx, businessId, to, now),
+    };
+  }
 
   /**
    * Everything the billing page shows, in one read.
@@ -69,24 +103,34 @@ export class BillingService {
       const chargeRows = charges.rows;
 
       const byUnit = new Map(counters.map((row) => [row.unit, row]));
+      const allowances = await meterAllowances(this.config, tx, businessId, plan, now);
       return {
         plan,
-        priceK: planPriceK(plan),
+        priceK: await planPriceKFor(this.config, tx, businessId, plan, now),
         status: statusOf(plan, subscription, now),
         pendingPlan: subscription?.pendingPlan ?? null,
         period,
         units: USAGE_UNITS.map((unit) => ({
           unit,
           used: byUnit.get(unit)?.used ?? 0,
-          allowance: allowanceFor(plan, unit),
+          allowance: allowances[unit],
           bonus: byUnit.get(unit)?.bonus ?? 0,
         })),
-        packs: packsFor(plan).map((pack) => ({
+        packs: (await packsForBusiness(this.config, tx, businessId, plan, now)).map((pack) => ({
           id: pack.id,
           label: pack.label,
           unit: pack.unit,
           quantity: pack.quantity,
           priceK: pack.priceK,
+        })),
+        /* What they hold, not what they could buy. A merchant paying
+         * ₦25,000 a month for the API should see it named on the page they
+         * go to when they wonder what they are paying for (PR-117). */
+        addOns: (await addOnsRepo.heldBy(tx, businessId, now)).map((held) => ({
+          addOnId: held.addOnId,
+          name: held.name,
+          startedAt: held.startedAt.toISOString(),
+          endsAt: held.endsAt?.toISOString() ?? null,
         })),
         chargesTotal: charges.count,
         charges: chargeRows.map((charge) => ({
@@ -118,6 +162,7 @@ export class BillingService {
         cycleStart: subscription?.cycleStartedAt ?? now,
         renewsAt: subscription?.planExpiresAt ?? addMonth(now),
         now,
+        pricesK: await this.changePricesK(tx, businessId, from, to, now),
       });
       return {
         from,
@@ -188,6 +233,7 @@ export class BillingService {
         cycleStart: subscription?.cycleStartedAt ?? now,
         renewsAt,
         now,
+        pricesK: await this.changePricesK(tx, businessId, from, to, now),
       });
 
       if (charge.kind === 'downgrade' || charge.kind === 'same') {
@@ -269,12 +315,12 @@ export class BillingService {
     | { state: 'payment_required'; reference: string; amountK: number }
     | { state: 'unavailable'; reason: string }
   > {
-    const pack = addOnPack(packId);
-    if (!pack) return { state: 'unavailable', reason: 'unknown_pack' };
-
     return withBusiness(this.db, businessId, async (tx) => {
+      const pack = await packOffer(this.config, tx, packId, now);
+      if (!pack) return { state: 'unavailable' as const, reason: 'unknown_pack' };
       const plan = await usageRepo.planFor(tx, businessId, now);
-      if (!packsFor(plan).some((candidate) => candidate.id === pack.id)) {
+      const offered = await packsForBusiness(this.config, tx, businessId, plan, now);
+      if (!offered.some((candidate) => candidate.id === pack.id)) {
         return { state: 'unavailable' as const, reason: 'not_available_on_plan' };
       }
       if (!this.config.paystackPlatformConfirmed) {
@@ -322,7 +368,13 @@ export class BillingService {
  */
 export async function applySettledCharge(
   tx: TenantDb,
-  input: { businessId: string; reference: string; providerReference: string; when: Date },
+  input: {
+    businessId: string;
+    reference: string;
+    providerReference: string;
+    when: Date;
+    config: PlanTermsConfig;
+  },
 ): Promise<'applied' | 'already_settled'> {
   const charge = await subscriptionsRepo.settleCharge(tx, {
     reference: input.reference,
@@ -333,7 +385,10 @@ export async function applySettledCharge(
   if (!charge) return 'already_settled';
 
   if (charge.kind === 'add_on' && charge.packId) {
-    const pack = addOnPack(charge.packId);
+    /* The version in force when the charge was OPENED, not when the webhook
+     * arrived: a pack repriced or resized between purchase and settlement
+     * still credits exactly what was bought and paid for. */
+    const pack = await packOffer(input.config, tx, charge.packId, charge.createdAt);
     if (pack) {
       await usageRepo.creditBonus(
         tx,

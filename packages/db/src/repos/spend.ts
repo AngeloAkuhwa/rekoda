@@ -21,8 +21,9 @@
 import { and, eq, sql } from 'drizzle-orm';
 import {
   categoriseExpense,
-  isAccountKey,
+  KEY_BY_CODE,
   lagosDay,
+  lagosYear,
   postExpense,
   postJournal,
   postPurchase,
@@ -33,9 +34,11 @@ import {
 } from '@rekoda/core';
 import type { TenantDb } from '../client.js';
 import { auditEvents } from '../schema/ops.js';
-import { expenses, ledgerEntries, supplierPayments } from '../schema/finance.js';
+import { accounts } from '../schema/accounts.js';
+import { codeOf } from './accounts.js';
+import { bills, expenses, ledgerEntries, supplierPayments } from '../schema/finance.js';
 import { inventoryMovements } from '../schema/commerce.js';
-import { writePosting } from './issue.js';
+import { nextDocumentNumber, writePosting } from './issue.js';
 
 export interface RecordExpenseInput {
   businessId: string;
@@ -52,6 +55,16 @@ export interface RecordExpenseInput {
    * catches up in November; left unset by everything a merchant does live.
    */
   recordedAt?: Date;
+  /**
+   * §9.4's ledger-level dedupe key, for a caller whose expense IS one
+   * financial event with a name of its own. The recurring sweep passes the
+   * raise (`recurring:{scheduleId}:{dueOn}`) — the same identity the
+   * command layer dedupes on, now backed by `ledger_tx_posting_key_ux` at
+   * the ledger itself, so a writer that bypasses the bus still cannot raise
+   * one month's rent twice. Live merchant paths leave it unset: two
+   * identical sentences on one day are two expenses, not a retry.
+   */
+  postingKey?: string;
 }
 
 export interface RecordPurchaseInput {
@@ -72,6 +85,9 @@ export interface RecordedSpend {
   ledgerTransactionId: string;
   /** For purchases: what remains owed to the supplier. Always 0 for expenses. */
   owedK: number;
+  /** The bill the credit portion raised (spec §8; PR-077). Null when the
+   * purchase was fully paid — nothing owed mints no document. */
+  billNumber: string | null;
 }
 
 export async function recordExpense(
@@ -92,7 +108,10 @@ export async function recordExpense(
     posting,
     input.sourceType,
     input.sourceId,
-    input.recordedAt ? { occurredAt: input.recordedAt } : {},
+    {
+      ...(input.recordedAt ? { occurredAt: input.recordedAt } : {}),
+      ...(input.postingKey ? { postingKey: input.postingKey } : {}),
+    },
   );
 
   const rows = await tx
@@ -121,7 +140,7 @@ export async function recordExpense(
   const row = rows[0];
   if (!row) throw new Error('recordExpense: insert returned no row');
 
-  return { expenseId: row.id, ledgerTransactionId, owedK: 0 };
+  return { expenseId: row.id, ledgerTransactionId, owedK: 0, billNumber: null };
 }
 
 export async function recordPurchase(
@@ -162,7 +181,28 @@ export async function recordPurchase(
   const row = rows[0];
   if (!row) throw new Error('recordPurchase: insert returned no row');
 
-  return { expenseId: row.id, ledgerTransactionId, owedK: input.amountK - input.paidK };
+  /* The bill lifecycle (spec §8; PR-077): the credit portion becomes a
+   * DOCUMENT, in the same transaction that raised the payable. Fully-paid
+   * purchases mint nothing — no debt, no bill. */
+  const owedK = input.amountK - input.paidK;
+  let billNumber: string | null = null;
+  if (owedK > 0) {
+    const now = new Date();
+    billNumber = await nextDocumentNumber(tx, input.businessId, 'bill', lagosYear(now));
+    await tx.insert(bills).values({
+      businessId: input.businessId,
+      supplierId: input.supplierId ?? null,
+      expenseId: row.id,
+      billNumber,
+      totalK: owedK,
+      billedOn: lagosDay(now),
+      ledgerTransactionId,
+      sourceType: input.sourceType,
+      sourceId: input.sourceId,
+    });
+  }
+
+  return { expenseId: row.id, ledgerTransactionId, owedK, billNumber };
 }
 
 /* ── read-backs (tests and, later, the dashboard's expense list) ─────────── */
@@ -281,9 +321,10 @@ export async function spendFor(
     WHERE business_id = ${businessId}::uuid
   `);
   const payable = await tx.execute<{ payable_k: string }>(sql`
-    SELECT COALESCE(SUM(credit_k) - SUM(debit_k), 0)::bigint AS payable_k
-    FROM ledger_entries
-    WHERE business_id = ${businessId}::uuid AND account = 'ACCOUNTS_PAYABLE'
+    SELECT COALESCE(SUM(le.credit_k) - SUM(le.debit_k), 0)::bigint AS payable_k
+    FROM ledger_entries le
+    JOIN accounts acc ON acc.id = le.account_id
+    WHERE le.business_id = ${businessId}::uuid AND acc.code = ${codeOf('ACCOUNTS_PAYABLE')}
   `);
   const t = [...totals][0];
   return {
@@ -374,23 +415,25 @@ export async function voidExpense(
 
   const lines = await tx
     .select({
-      account: ledgerEntries.account,
+      accountCode: accounts.code,
       debitK: ledgerEntries.debitK,
       creditK: ledgerEntries.creditK,
     })
     .from(ledgerEntries)
+    .innerJoin(accounts, eq(accounts.id, ledgerEntries.accountId))
     .where(
       and(
         eq(ledgerEntries.businessId, businessId),
         eq(ledgerEntries.transactionId, entry.ledgerTransactionId),
       ),
     );
-  /* An unknown account key would mean a write path bypassed the posting
-   * builders. Reversing what we cannot name is worse than refusing. */
+  /* An account outside the seeded map would mean a write path bypassed the
+   * posting builders. Reversing what we cannot name is worse than refusing. */
   const posted: LedgerLine[] = [];
   for (const l of lines) {
-    if (!isAccountKey(l.account)) return { outcome: 'no_posting' };
-    posted.push({ account: l.account, debitK: Number(l.debitK), creditK: Number(l.creditK) });
+    const account = KEY_BY_CODE[l.accountCode];
+    if (!account) return { outcome: 'no_posting' };
+    posted.push({ account, debitK: Number(l.debitK), creditK: Number(l.creditK) });
   }
   if (posted.length === 0) return { outcome: 'no_posting' };
 
@@ -415,6 +458,14 @@ export async function voidExpense(
     .set({ status: 'voided' })
     .where(and(eq(expenses.id, entry.id), eq(expenses.status, 'recorded')))
     .returning({ id: expenses.id });
+
+  /* Its bill, if the purchase raised one, is voided with it (PR-077):
+   * the reversal above already took the payable off the books, and a
+   * bill left open would report a debt the ledger no longer carries. */
+  await tx
+    .update(bills)
+    .set({ status: 'voided' })
+    .where(and(eq(bills.businessId, businessId), eq(bills.expenseId, expenseId)));
   if (marked.length !== 1) return { outcome: 'already_void' };
 
   await writePosting(
@@ -561,9 +612,10 @@ export async function payableAgeingFor(
       JOIN ledger_entries le
         ON le.transaction_id = e.ledger_transaction_id
        AND le.business_id = e.business_id
+      JOIN accounts acc ON acc.id = le.account_id
       WHERE e.business_id = ${businessId}::uuid
         AND e.status = 'recorded'
-        AND le.account = 'ACCOUNTS_PAYABLE'
+        AND acc.code = ${codeOf('ACCOUNTS_PAYABLE')}
       GROUP BY e.id, e.created_at
       HAVING SUM(le.credit_k - le.debit_k) > 0
     ),
@@ -588,10 +640,11 @@ export async function payableAgeingFor(
       COALESCE(SUM(owed_k) FILTER (WHERE days_owed BETWEEN 61 AND 90), 0)::bigint AS d61_90_k,
       COALESCE(SUM(owed_k) FILTER (WHERE days_owed > 90), 0)::bigint              AS d90_plus_k,
       COALESCE(SUM(owed_k), 0)::bigint                                            AS linked_k,
-      (SELECT COALESCE(SUM(credit_k) - SUM(debit_k), 0)
-         FROM ledger_entries
-        WHERE business_id = ${businessId}::uuid
-          AND account = 'ACCOUNTS_PAYABLE')::bigint                               AS balance_k
+      (SELECT COALESCE(SUM(le2.credit_k) - SUM(le2.debit_k), 0)
+         FROM ledger_entries le2
+         JOIN accounts acc2 ON acc2.id = le2.account_id
+        WHERE le2.business_id = ${businessId}::uuid
+          AND acc2.code = ${codeOf('ACCOUNTS_PAYABLE')})::bigint                  AS balance_k
     FROM settled
   `);
   const row = [...rows][0];
@@ -627,9 +680,10 @@ async function owedOn(tx: TenantDb, businessId: string, expenseId: string): Prom
       (COALESCE(
         (SELECT SUM(le.credit_k) - SUM(le.debit_k)
            FROM ledger_entries le
+           JOIN accounts acc ON acc.id = le.account_id
           WHERE le.business_id = e.business_id
             AND le.transaction_id = e.ledger_transaction_id
-            AND le.account = 'ACCOUNTS_PAYABLE'), 0)
+            AND acc.code = ${codeOf('ACCOUNTS_PAYABLE')}), 0)
        - COALESCE(
         (SELECT SUM(sp.amount_k) FROM supplier_payments sp
           WHERE sp.business_id = e.business_id AND sp.expense_id = e.id), 0)
@@ -716,6 +770,26 @@ export async function paySupplier(
     { occurredAt: at },
   );
 
+  /* The bill's lifecycle follows the money it already agrees with: the
+   * FOR UPDATE above serialises settlements per purchase, so the read
+   * and the stamp cannot race another payment on the same debt. */
+  const billRows = await tx
+    .select({ id: bills.id, totalK: bills.totalK, paidK: bills.paidK })
+    .from(bills)
+    .where(and(eq(bills.businessId, input.businessId), eq(bills.expenseId, input.expenseId)))
+    .limit(1);
+  const bill = billRows[0] ?? null;
+  if (bill) {
+    const paidK = bill.paidK + input.amountK;
+    await tx
+      .update(bills)
+      .set({
+        paidK,
+        status: paidK >= bill.totalK ? 'paid' : 'partially_paid',
+      })
+      .where(and(eq(bills.businessId, input.businessId), eq(bills.id, bill.id)));
+  }
+
   await tx.insert(supplierPayments).values({
     businessId: input.businessId,
     expenseId: input.expenseId,
@@ -723,6 +797,7 @@ export async function paySupplier(
     method: input.method,
     ledgerTransactionId,
     paidOn: lagosDay(at),
+    billId: bill?.id ?? null,
     ...(input.clientRef ? { clientRef: input.clientRef } : {}),
   });
 
@@ -778,9 +853,10 @@ export async function outstandingPurchases(
     JOIN ledger_entries le
       ON le.transaction_id = e.ledger_transaction_id
      AND le.business_id = e.business_id
+    JOIN accounts acc ON acc.id = le.account_id
     WHERE e.business_id = ${businessId}::uuid
       AND e.status = 'recorded'
-      AND le.account = 'ACCOUNTS_PAYABLE'
+      AND acc.code = ${codeOf('ACCOUNTS_PAYABLE')}
     GROUP BY e.id, e.description, e.created_at, e.amount_k
     HAVING COALESCE(SUM(le.credit_k) - SUM(le.debit_k), 0)
              - COALESCE(
@@ -795,5 +871,67 @@ export async function outstandingPurchases(
     purchasedOn: r.purchased_on,
     amountK: Number(r.amount_k),
     owedK: Number(r.owed_k),
+  }));
+}
+
+/* ── the bill register (spec §8; PR-077) ─────────────────────────────────── */
+
+export interface BillRow {
+  id: string;
+  billNumber: string;
+  supplierId: string | null;
+  expenseId: string;
+  status: string;
+  totalK: number;
+  paidK: number;
+  /** GENERATED in the database: always total less paid. */
+  balanceDueK: number;
+  billedOn: string;
+  dueDate: string | null;
+  description: string;
+}
+
+/** The payable side's register, newest first. */
+export async function billsFor(
+  tx: TenantDb,
+  businessId: string,
+  options: { status?: string; limit?: number } = {},
+): Promise<BillRow[]> {
+  const rows = await tx.execute<{
+    id: string;
+    bill_number: string;
+    supplier_id: string | null;
+    expense_id: string;
+    status: string;
+    total_k: string;
+    paid_k: string;
+    balance_due_k: string;
+    billed_on: string;
+    due_date: string | null;
+    description: string;
+  }>(sql`
+    SELECT b.id, b.bill_number, b.supplier_id, b.expense_id, b.status,
+           b.total_k, b.paid_k, b.balance_due_k,
+           b.billed_on::text AS billed_on, b.due_date::text AS due_date,
+           e.description
+    FROM bills b
+    JOIN expenses e ON e.business_id = b.business_id AND e.id = b.expense_id
+    WHERE b.business_id = ${businessId}::uuid
+      ${options.status ? sql`AND b.status = ${options.status}` : sql``}
+    ORDER BY b.created_at DESC
+    LIMIT ${options.limit ?? 200}
+  `);
+  return [...rows].map((r) => ({
+    id: r.id,
+    billNumber: r.bill_number,
+    supplierId: r.supplier_id,
+    expenseId: r.expense_id,
+    status: r.status,
+    totalK: Number(r.total_k),
+    paidK: Number(r.paid_k),
+    balanceDueK: Number(r.balance_due_k),
+    billedOn: r.billed_on,
+    dueDate: r.due_date,
+    description: r.description,
   }));
 }

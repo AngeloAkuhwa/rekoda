@@ -22,6 +22,11 @@ const EXPORTS: Readonly<Record<string, string>> = {
   workbook: 'statements.xlsx',
   audit: 'audit.csv',
   stock: 'stock.csv',
+  /* Not one of the exports above, and deliberately alongside them: taking
+   * your own books out is a right rather than a product feature, so the API
+   * never meters it (PR-118). It travels the same pipe because the reason
+   * for the pipe is the session token, not the file. */
+  data: 'portability.json',
 };
 
 export async function GET(
@@ -51,6 +56,17 @@ export async function GET(
   });
 
   if (!upstream.ok) {
+    /* A 429 is the API saying something the merchant can act on: this
+     * month's downloads are spent, or a data export is already running.
+     * Flattening it into "could not build your export" would turn a
+     * sentence with a next step in it into a shrug. */
+    if (upstream.status === 429) {
+      const said = await upstream
+        .json()
+        .then((body: { message?: string }) => body.message)
+        .catch(() => undefined);
+      return new NextResponse(said ?? "You have used this month's downloads.", { status: 429 });
+    }
     return new NextResponse('Could not build your export. Try again in a moment.', {
       status: upstream.status === 401 ? 401 : 502,
     });

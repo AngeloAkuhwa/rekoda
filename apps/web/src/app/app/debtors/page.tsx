@@ -4,6 +4,7 @@ import { reportsDebtors } from '@/server/api';
 import { requireSessionWithToken } from '@/server/guards';
 import { AppNav } from '../AppNav';
 import { SignOutButton } from '../SignOutButton';
+import { heldBy } from '@/lib/capabilities';
 
 export const metadata: Metadata = {
   title: 'Debtors',
@@ -20,7 +21,7 @@ export const metadata: Metadata = {
  * that might be open on a market stall's counter.
  */
 export default async function DebtorsPage() {
-  const { token } = await requireSessionWithToken();
+  const { identity, token } = await requireSessionWithToken();
   const debtors = await reportsDebtors(token, true);
 
   return (
@@ -33,7 +34,7 @@ export default async function DebtorsPage() {
         <SignOutButton />
       </header>
 
-      <AppNav active="debtors" />
+      <AppNav active="debtors" held={heldBy(identity)} />
 
       <div className="rk-card">
         <h2>Outstanding, oldest debt first</h2>

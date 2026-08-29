@@ -20,10 +20,57 @@ import {
 
 const K = (naira: number) => naira * 100;
 
+/* Statements v2 (PR-095) take the account's own chart metadata; these
+ * fixtures state it inline, the way the database chart supplies it. */
+type Sums = Pick<
+  AccountSums,
+  'periodDebitK' | 'periodCreditK' | 'cumulativeDebitK' | 'cumulativeCreditK'
+>;
+const META: Record<
+  string,
+  { code: string; name: string; type: AccountSums['type']; role: string | null }
+> = {
+  CASH: { code: '1000', name: 'Cash on Hand', type: 'asset', role: 'CASH' },
+  BANK_PAYSTACK: { code: '1010', name: 'Bank (Paystack settlements)', type: 'asset', role: 'BANK' },
+  ACCOUNTS_RECEIVABLE: {
+    code: '1100',
+    name: 'Accounts Receivable',
+    type: 'asset',
+    role: 'ACCOUNTS_RECEIVABLE',
+  },
+  INVENTORY: { code: '1200', name: 'Inventory', type: 'asset', role: 'INVENTORY_ASSET' },
+  ACCOUNTS_PAYABLE: {
+    code: '2000',
+    name: 'Accounts Payable',
+    type: 'liability',
+    role: 'ACCOUNTS_PAYABLE',
+  },
+  SALES_REVENUE: { code: '4000', name: 'Sales Revenue', type: 'income', role: 'SALES_REVENUE' },
+  EXPENSES: {
+    code: '6000',
+    name: 'Operating Expenses',
+    type: 'expense',
+    role: 'OPERATING_EXPENSES',
+  },
+  COGS: { code: '5000', name: 'Cost of Goods Sold', type: 'expense', role: 'COGS' },
+  CLEARING: {
+    code: '1015',
+    name: 'Paystack clearing',
+    type: 'asset',
+    role: 'PAYMENT_PROVIDER_CLEARING',
+  },
+};
+const row = (key: keyof typeof META, sums: Sums): AccountSums => ({
+  code: META[key]!.code,
+  name: META[key]!.name,
+  type: META[key]!.type,
+  systemRole: META[key]!.role,
+  ...sums,
+});
+
 /** period = this month; cumulative = prior month + this month. */
 const ROWS: AccountSums[] = [
-  {
-    account: 'CASH',
+  row('CASH', {
     // This month in: 40,000 sale cash + 20,000... no — stock paid OUT 20,000.
     // In: 40,000. Out: 12,000 expense + 20,000 stock.
     periodDebitK: K(40_000),
@@ -31,49 +78,43 @@ const ROWS: AccountSums[] = [
     // Prior month: 62,000 in, 28,000 out.
     cumulativeDebitK: K(40_000 + 62_000),
     cumulativeCreditK: K(32_000 + 28_000),
-  },
-  {
-    account: 'BANK_PAYSTACK',
+  }),
+  row('BANK_PAYSTACK', {
     periodDebitK: K(49_250), // 50,000 less the 750 fee, banked
     periodCreditK: 0,
     cumulativeDebitK: K(49_250),
     cumulativeCreditK: 0,
-  },
-  {
-    account: 'ACCOUNTS_RECEIVABLE',
+  }),
+  row('ACCOUNTS_RECEIVABLE', {
     periodDebitK: K(110_000), // 150,000 − 40,000 paid at the counter
     periodCreditK: K(50_000), // settled by the provider payment
     cumulativeDebitK: K(110_000),
     cumulativeCreditK: K(50_000),
-  },
-  {
-    account: 'INVENTORY',
+  }),
+  row('INVENTORY', {
     periodDebitK: K(50_000),
     periodCreditK: 0,
     cumulativeDebitK: K(50_000),
     cumulativeCreditK: 0,
-  },
-  {
-    account: 'ACCOUNTS_PAYABLE',
+  }),
+  row('ACCOUNTS_PAYABLE', {
     periodDebitK: 0,
     periodCreditK: K(30_000),
     cumulativeDebitK: 0,
     cumulativeCreditK: K(30_000),
-  },
-  {
-    account: 'SALES_REVENUE',
+  }),
+  row('SALES_REVENUE', {
     periodDebitK: 0,
     periodCreditK: K(150_000),
     cumulativeDebitK: 0,
     cumulativeCreditK: K(150_000 + 62_000),
-  },
-  {
-    account: 'EXPENSES',
+  }),
+  row('EXPENSES', {
     periodDebitK: K(12_000 + 750), // fuel + the provider fee, merchant-borne
     periodCreditK: 0,
     cumulativeDebitK: K(12_750 + 28_000),
     cumulativeCreditK: 0,
-  },
+  }),
 ];
 
 describe('trial balance', () => {
@@ -90,19 +131,18 @@ describe('trial balance', () => {
       expect(row.creditK).toBeGreaterThanOrEqual(0);
       expect(row.debitK === 0 || row.creditK === 0).toBe(true);
     }
-    expect(tb.rows.find((r) => r.account === 'CASH')?.debitK).toBe(K(42_000));
-    expect(tb.rows.find((r) => r.account === 'ACCOUNTS_PAYABLE')?.creditK).toBe(K(30_000));
+    expect(tb.rows.find((r) => r.code === META.CASH!.code)?.debitK).toBe(K(42_000));
+    expect(tb.rows.find((r) => r.code === META.ACCOUNTS_PAYABLE!.code)?.creditK).toBe(K(30_000));
   });
 
   it('a balance driven negative crosses to the other column', () => {
     const overdrawn = buildTrialBalance([
-      {
-        account: 'CASH',
+      row('CASH', {
         periodDebitK: 0,
         periodCreditK: K(5_000),
         cumulativeDebitK: K(1_000),
         cumulativeCreditK: K(6_000),
-      },
+      }),
     ]);
     const cash = overdrawn.rows[0]!;
     expect(cash.debitK).toBe(0);
@@ -141,13 +181,12 @@ describe('profit and loss (the period, accrual)', () => {
   it('separates the cost of goods from the cost of running the shop', () => {
     const withCost = buildProfitAndLoss([
       ...ROWS,
-      {
-        account: 'COGS',
+      row('COGS', {
         periodDebitK: K(60_000),
         periodCreditK: 0,
         cumulativeDebitK: K(60_000),
         cumulativeCreditK: 0,
-      },
+      }),
     ]);
     expect(withCost.costOfSalesK).toBe(K(60_000));
     expect(withCost.grossProfitK).toBe(K(90_000));
@@ -167,15 +206,15 @@ describe('balance sheet (as at period end)', () => {
   });
 
   it('carries cash, bank, receivables and stock as assets', () => {
-    const byAccount = Object.fromEntries(bs.assets.map((a) => [a.account, a.amountK]));
-    expect(byAccount['CASH']).toBe(K(42_000));
-    expect(byAccount['BANK_PAYSTACK']).toBe(K(49_250));
-    expect(byAccount['ACCOUNTS_RECEIVABLE']).toBe(K(60_000));
-    expect(byAccount['INVENTORY']).toBe(K(50_000));
+    const byAccount = Object.fromEntries(bs.assets.map((a) => [a.code, a.amountK]));
+    expect(byAccount[META.CASH!.code]).toBe(K(42_000));
+    expect(byAccount[META.BANK_PAYSTACK!.code]).toBe(K(49_250));
+    expect(byAccount[META.ACCOUNTS_RECEIVABLE!.code]).toBe(K(60_000));
+    expect(byAccount[META.INVENTORY!.code]).toBe(K(50_000));
   });
 
   it('derives retained earnings from lifetime income minus expenses', () => {
-    const retained = bs.equity.find((e) => e.name === 'Retained Earnings');
+    const retained = bs.equity.find((e) => e.name === 'Retained earnings');
     // (150,000 + 62,000) − (12,750 + 28,000)
     expect(retained?.amountK).toBe(K(171_250));
   });
@@ -202,5 +241,50 @@ describe('an empty book', () => {
     expect(buildProfitAndLoss([]).netProfitK).toBe(0);
     expect(buildBalanceSheet([]).balanced).toBe(true);
     expect(buildCashflowStatement([])).toEqual({ openingK: 0, inK: 0, outK: 0, closingK: 0 });
+  });
+});
+
+describe('the kernel chart drives the statements (D1, PR-095)', () => {
+  /* A sale on credit, then the provider verifies the payment: DR clearing,
+   * CR receivable. Version one's fixed table did not know the provisioned
+   * clearing account and dropped it, which made money the ledger held
+   * vanish from the sheet. The chart is the authority now. */
+  const rows: AccountSums[] = [
+    row('CLEARING', {
+      periodDebitK: K(50_000),
+      periodCreditK: 0,
+      cumulativeDebitK: K(50_000),
+      cumulativeCreditK: 0,
+    }),
+    row('ACCOUNTS_RECEIVABLE', {
+      periodDebitK: K(50_000),
+      periodCreditK: K(50_000),
+      cumulativeDebitK: K(50_000),
+      cumulativeCreditK: K(50_000),
+    }),
+    row('SALES_REVENUE', {
+      periodDebitK: 0,
+      periodCreditK: K(50_000),
+      cumulativeDebitK: 0,
+      cumulativeCreditK: K(50_000),
+    }),
+  ];
+
+  it('a connection-scoped clearing account stands on the balance sheet', () => {
+    const bs = buildBalanceSheet(rows);
+    expect(bs.assets.find((a) => a.code === '1015')?.amountK).toBe(K(50_000));
+    expect(bs.balanced).toBe(true);
+  });
+
+  it('money at the provider is still the merchant`s money in the cash view', () => {
+    const cf = buildCashflowStatement(rows);
+    expect(cf.inK).toBe(K(50_000));
+    expect(cf.closingK).toBe(K(50_000));
+  });
+
+  it('the trial balance carries every account the ledger moved', () => {
+    const tb = buildTrialBalance(rows);
+    expect(tb.rows.map((r) => r.code)).toContain('1015');
+    expect(tb.balanced).toBe(true);
   });
 });

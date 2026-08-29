@@ -5,16 +5,21 @@ import multipart from '@fastify/multipart';
 import rateLimit from '@fastify/rate-limit';
 import { FastifyAdapter, type NestFastifyApplication } from '@nestjs/platform-fastify';
 import { AppModule } from './app.module.js';
+import { DB, WORKER_DB } from './db/db.module.js';
+import { bootChecks, type Db } from '@rekoda/db';
 import { MAX_IMAGE_BYTES } from '@rekoda/core';
-import { CONFIG, loadConfig, type ApiConfig } from './config.js';
+import { publicApi } from '@rekoda/contracts';
+import { CONFIG, isProductionEnv, loadConfig, type ApiConfig } from './config.js';
 
 function trustedProxies(): boolean | string[] {
   const raw = process.env['REKODA_TRUSTED_PROXIES']?.trim();
   if (!raw) {
     /* Trust-all is a development-only default: it believes any
      * X-Forwarded-For, which lets a direct caller reset every per-IP bucket
-     * with a spoofed header per request. Production must name its proxies. */
-    if (process.env['NODE_ENV'] === 'production') {
+     * with a spoofed header per request. Production must name its proxies -
+     * and "production" is anything not explicitly dev or test, so a typo'd
+     * NODE_ENV fails CLOSED into requiring the proxy list rather than open. */
+    if (isProductionEnv(process.env)) {
       throw new Error(
         'REKODA_TRUSTED_PROXIES is required in production: set it to your ' +
           'proxy/load-balancer addresses or CIDRs, or the per-IP rate limit ' +
@@ -94,6 +99,22 @@ export async function createApp(): Promise<NestFastifyApplication> {
   const config = app.get<ApiConfig>(CONFIG);
 
   /**
+   * Production invariants, before a single request is served (remediation
+   * A5/A6). The role check makes FORCE ROW LEVEL SECURITY real — a
+   * credential that can bypass RLS turns every policy decorative — and the
+   * key fingerprints refuse a process holding the wrong VAULT_KEY or
+   * MATCH_KEY, which would otherwise split the estate: old secrets
+   * unreadable, new ones written under an impostor. Both fail the boot,
+   * loudly, in front of the operator.
+   */
+  const db = app.get<Db>(DB);
+  await bootChecks.assertRoleCannotBypassRls(db, 'application');
+  const workerDb = app.get<Db | null>(WORKER_DB);
+  if (workerDb) await bootChecks.assertRoleCannotBypassRls(workerDb, 'worker');
+  await bootChecks.assertKeyUnchanged(db, 'VAULT_KEY', config.vaultKey);
+  await bootChecks.assertKeyUnchanged(db, 'MATCH_KEY', config.matchKey);
+
+  /**
    * Product photos, and nothing else.
    *
    * The ceiling is set here rather than per route so that a body larger than
@@ -122,24 +143,73 @@ export async function createApp(): Promise<NestFastifyApplication> {
    *
    * The two webhook routes are exempt from the per-IP limiter above, so this
    * `onRequest` guard is what keeps an anonymous flood from being free: a
-   * Content-Length over the cap is refused with 413 before the body is
-   * parsed or a signature computed. A caller who lies about Content-Length
-   * still hits the adapter's bodyLimit, so the actual read is bounded either
-   * way; this just makes the honest-header case cheap to reject.
+   * body over the cap is refused before it is parsed or a signature computed.
+   *
+   * The cap is only meaningful if it cannot be sidestepped by omitting the
+   * header. The global adapter bodyLimit is 2 MB - sixteen times this cap -
+   * so a chunked request with no Content-Length would otherwise buffer and
+   * JSON-parse 2 MB on the one unauthenticated surface, per request, uncounted.
+   * Meta and Paystack are well-behaved clients that always declare a length;
+   * a webhook that does not is refused with 411, and one that overstates the
+   * cap with 413. A caller cannot understate it either - the length is
+   * required to be present AND in range before the body is read.
    */
   app
     .getHttpAdapter()
     .getInstance()
     .addHook('onRequest', (request, reply, done) => {
       const url = (request.url ?? '').split('?')[0] ?? '';
-      if (WEBHOOK_PATHS.has(url)) {
-        const declared = Number(request.headers['content-length'] ?? 0);
-        if (declared > WEBHOOK_MAX_BYTES) {
+      /* POST only: the GET on these paths is Meta's subscription handshake,
+       * which carries no body and no Content-Length by design. */
+      if (WEBHOOK_PATHS.has(url) && request.method === 'POST') {
+        const header = request.headers['content-length'];
+        if (header === undefined) {
+          void reply.code(411).send({ statusCode: 411, error: 'Length Required' });
+          return;
+        }
+        const declared = Number(header);
+        if (!Number.isFinite(declared) || declared > WEBHOOK_MAX_BYTES) {
           void reply.code(413).send({ statusCode: 413, error: 'Payload Too Large' });
           return;
         }
       }
       done();
+    });
+
+  /**
+   * Every public-API response says which version answered it, and says so
+   * whatever happened (canonical spec §27).
+   *
+   * `onSend` rather than an interceptor or a filter, because those two miss
+   * each other's cases: an interceptor never runs when a guard refuses, and
+   * a filter never runs on success. A version header that is present on 200
+   * and absent on 401 is worse than none, since an integrator debugging a
+   * refusal is exactly who needs to know which version they reached.
+   *
+   * The same hook carries the retirement notice. The day a version is
+   * deprecated, `PUBLIC_API_RETIREMENTS` gains a row and every client
+   * learns it from the responses they are already making, on the standard
+   * `Deprecation` and `Sunset` headers.
+   */
+  app
+    .getHttpAdapter()
+    .getInstance()
+    .addHook('onSend', (request, reply, payload, done) => {
+      const path = (request.url ?? '').split('?')[0] ?? '';
+      if (path === '/api' || path.startsWith('/api/')) {
+        const version = path.split('/')[2] ?? '';
+        const served = publicApi.isPublicApiVersion(version)
+          ? version
+          : publicApi.CURRENT_PUBLIC_API_VERSION;
+        void reply.header(publicApi.v1.PUBLIC_VERSION_HEADER, served);
+
+        const retirement = publicApi.PUBLIC_API_RETIREMENTS[served];
+        if (retirement) {
+          void reply.header('deprecation', retirement.deprecatedAt);
+          void reply.header('sunset', retirement.sunsetAt);
+        }
+      }
+      done(null, payload);
     });
 
   await app.register(rateLimit, {
@@ -158,11 +228,26 @@ export async function createApp(): Promise<NestFastifyApplication> {
       request.url === '/webhooks/meta' ||
       request.url === '/webhooks/paystack',
     keyGenerator: (request) => request.ip,
-    errorResponseBuilder: () => ({
-      statusCode: 429,
-      error: 'Too Many Requests',
-      message: 'Too many requests. Try again shortly.',
-    }),
+    /* The public API gets the public envelope. A client that branches on
+     * `error.code` must not meet a different body just because the refusal
+     * came from the per-IP limiter rather than from its key's ceiling. */
+    errorResponseBuilder: (request, context) => {
+      const path = (request.url ?? '').split('?')[0] ?? '';
+      if (path === '/api' || path.startsWith('/api/')) {
+        return publicApi.v1.publicErrorResponse.parse({
+          error: {
+            code: 'rate_limited',
+            message: 'too many requests, try again shortly',
+            retryAfterSeconds: Math.max(1, Math.ceil(Number(context.ttl ?? 60_000) / 1_000)),
+          },
+        });
+      }
+      return {
+        statusCode: 429,
+        error: 'Too Many Requests',
+        message: 'Too many requests. Try again shortly.',
+      };
+    },
   });
 
   // No ValidationPipe: request shapes are parsed with the zod schemas in

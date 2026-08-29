@@ -28,6 +28,14 @@
  */
 
 /** A span of the original text that must not leave the vault. */
+/**
+ * The tokenisation policy the gateway currently enforces, recorded on every
+ * AI usage row (spec Appendix C.4 observability): a reader of last month's
+ * telemetry must be able to say which rules were in force when a text was
+ * declared safe, without archaeology through git history.
+ */
+export const PRIVACY_POLICY_VERSION = 'tokenise-v1';
+
 export interface PiiSpan {
   readonly start: number;
   readonly end: number;

@@ -24,7 +24,8 @@
 import { lagosYear, postJournal, type AccountKey } from '@rekoda/core';
 import type { TenantDb } from '../client.js';
 import { auditEvents } from '../schema/ops.js';
-import { nextDocumentNumber, writePosting } from './issue.js';
+import { accountIdsForKeys, nextDocumentNumber, writePosting } from './issue.js';
+import { recordPostedDraft } from './journal-drafts.js';
 
 /** What the ledger calls an entry a person wrote rather than an event. */
 export const JOURNAL_SOURCE = 'journal';
@@ -76,6 +77,27 @@ export async function recordJournal(tx: TenantDb, input: JournalInput): Promise<
     journalNumber,
     { occurredAt: at, clientRef: input.clientRef ?? null },
   );
+
+  /* §9.1's editable half, for a one-step form: entry and approval are the
+   * same act, so the draft is born already posted — the approval trail
+   * records what was approved beside what was booked, and PR-042's lock
+   * keeps it saying so. */
+  const draftAccountIds = await accountIdsForKeys(
+    tx,
+    input.businessId,
+    posting.lines.map((line) => line.account),
+  );
+  await recordPostedDraft(tx, {
+    businessId: input.businessId,
+    memo: `${journalNumber}: ${input.memo}`,
+    createdBy: input.actor,
+    postedJournalId: ledgerTransactionId,
+    lines: posting.lines.map((line) => ({
+      accountId: draftAccountIds.get(line.account)!,
+      debitK: line.debitK,
+      creditK: line.creditK,
+    })),
+  });
 
   await tx.insert(auditEvents).values({
     businessId: input.businessId,

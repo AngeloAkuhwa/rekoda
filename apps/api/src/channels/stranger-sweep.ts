@@ -13,6 +13,8 @@ export interface StrangerSweepDeps {
   sender: MessageSender;
   vaultKey: string;
   matchKey: string;
+  /** Rekoda's own Chat number id; '' when the deployment has not pinned one. */
+  metaPhoneNumberId: string;
 }
 
 /**
@@ -56,9 +58,23 @@ export async function sweepUnknownSenders(deps: StrangerSweepDeps, limit = 25): 
         continue;
       }
 
-      const from = senderOf(event.payload, deps.vaultKey, event.externalId);
-      if (!from) {
+      const opened = senderOf(event.payload, deps.vaultKey, event.externalId);
+      if (!opened) {
         await events.markProcessed(deps.workerDb, event.id, 'no_sender');
+        continue;
+      }
+      const { from, phoneNumberId } = opened;
+
+      /**
+       * A message that arrived on somebody's WABA is NOT a stranger writing
+       * to Rekoda — it is a customer of a merchant whose connection we do
+       * not hold (PR-059 refused to route it). Greeting them with a Rekoda
+       * signup pitch, from a number they never messaged, would be spam
+       * wearing the wrong relationship. Marked with a reason so the
+       * exception queue counts what the refusal left behind.
+       */
+      if (phoneNumberId && deps.metaPhoneNumberId && phoneNumberId !== deps.metaPhoneNumberId) {
+        await events.markProcessed(deps.workerDb, event.id, 'foreign_waba');
         continue;
       }
 
@@ -94,8 +110,12 @@ export async function sweepUnknownSenders(deps: StrangerSweepDeps, limit = 25): 
   return answered;
 }
 
-/** The sender's number from a sealed payload, or null if it will not open. */
-function senderOf(payload: unknown, vaultKey: string, externalId: string): string | null {
+/** The sender and receiving number from a sealed payload, or null. */
+function senderOf(
+  payload: unknown,
+  vaultKey: string,
+  externalId: string,
+): { from: string; phoneNumberId: string | null } | null {
   let opened: unknown;
   try {
     opened = openPayload(payload, vaultKey, 'meta', externalId);
@@ -104,10 +124,16 @@ function senderOf(payload: unknown, vaultKey: string, externalId: string): strin
   }
   const parsed = metaWebhookBody.safeParse(opened);
   if (!parsed.success) return null;
-  const [inbound] = extractInboundEvents(parsed.data);
+  /* THIS event, by its wamid, not the body's first: the foreign-WABA guard
+   * this feeds decides whether to contact a number, and deciding it against
+   * a batched body's first event could pitch a stranger the sweep was
+   * written never to contact. */
+  const inbound = extractInboundEvents(parsed.data).find(
+    (candidate) => candidate.kind === 'message' && candidate.externalId === externalId,
+  );
   if (!inbound || inbound.kind !== 'message') return null;
   try {
-    return normalisePhone(inbound.from);
+    return { from: normalisePhone(inbound.from), phoneNumberId: inbound.phoneNumberId };
   } catch {
     return null;
   }

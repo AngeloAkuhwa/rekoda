@@ -1,0 +1,12 @@
+# Findings gitleaks may skip, each one a HISTORICAL false positive pinned to
+# the exact commit, file, rule and line it was reported at. Never allowlist a
+# real credential here: a leaked secret is rotated (docs/runbooks/
+# key-rotation.md) and the history is dealt with, not waved through.
+#
+# The live occurrence of each entry below also carries an inline
+# `gitleaks:allow` comment, so future edits of the line stay clean without
+# growing this file.
+
+# Test fixture in the API-key suite: a self-describing constant
+# ('api-keys-secret-at-least-32-characters'), never a real key.
+4393b0e353d50e831217cb4190afb5f1d9dfc7f8:apps/api/src/api/api-keys.integration.test.ts:generic-api-key:21

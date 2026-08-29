@@ -6,6 +6,7 @@ import { PrivacyGateway } from '../privacy/gateway.service.js';
 import { MerchantTransferService } from '../payments/merchant-transfer.service.js';
 import { DocumentsModule } from '../documents/documents.module.js';
 import { RepliesModule } from '../replies/replies.module.js';
+import { CommandsModule } from '../commands/commands.module.js';
 import {
   PublicShopController,
   PublicShopIndexController,
@@ -19,7 +20,7 @@ import {
  * sender, not because a shop sends anything.
  */
 @Module({
-  imports: [DbModule, DocumentsModule, RepliesModule],
+  imports: [DbModule, DocumentsModule, RepliesModule, CommandsModule],
   controllers: [PublicShopIndexController, PublicShopController, ShopSettingsController],
   providers: [AuthService, SessionGuard, PrivacyGateway, MerchantTransferService],
 })

@@ -10,17 +10,206 @@ Merchants never see tokens or "AI credits" (pricing-model commercial rule 3).
 They see the concrete units the plans already advertise, and those units are
 now ENFORCED, not decorative:
 
-| Unit                   | What counts                                                                                                                             | Trial | Chat  | Integrate | Complete |
-| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------- | ----- | ----- | --------- | -------- |
-| `messages`             | A message the model had to interpret. Router-served turns (greetings, _help_, _who owes me_, confirmations) are FREE and never metered. | 50    | 400   | 800       | 1,200    |
-| `voice_seconds`        | Seconds of voice notes transcribed                                                                                                      | 600   | 3,600 | 0         | 7,200    |
-| `documents`            | Financial documents GENERATED (invoices, receipts)                                                                                      | 25    | 100   | 500       | 750      |
-| `documents_understood` | Uploaded documents READ by the vision role (the new cost class; pricing-model "Known gap")                                              | 10    | 50    | 100       | 200      |
-| `orders`               | Catalogue orders captured (Integrate/Complete)                                                                                          | 0     | 0     | 300\*     | 300      |
+The vocabulary is the canonical seventeen (`REKODA_CANONICAL_SPEC` §4.2).
+Five of them are metered today; the other twelve exist so the counter can
+hold them the day a consumer does. A unit nothing consumes sells zero on
+every plan, because capacity the product cannot spend is capacity the
+pricing page must not promise.
 
-\*Integrate's order allowance mirrors Complete until telemetry says otherwise.
+| Unit                   | What counts                                                                                                                             | Trial | Chat | Integrate | Complete |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------- | ----- | ---- | --------- | -------- |
+| `AI_ACTIONS`           | A message the model had to interpret. Router-served turns (greetings, _help_, _who owes me_, confirmations) are FREE and never metered. | 50    | 400  | 0         | 1,200    |
+| `VOICE_MINUTES`        | Minutes of voice notes transcribed. Sold in minutes, counted in seconds (see below).                                                    | 10    | 60   | 0         | 120      |
+| `DOCUMENT_GENERATION`  | Financial documents GENERATED (invoices, receipts)                                                                                      | 25    | 100  | 500       | 750      |
+| `DOCUMENTS_UNDERSTOOD` | Uploaded documents READ by the vision role (the new cost class; pricing-model "Known gap")                                              | 10    | 50   | 0         | 200      |
+| `CATALOGUE_ORDERS`     | Catalogue orders captured (Integrate/Complete)                                                                                          | 10    | 0    | 300       | 300      |
+
+`SERVICE_MESSAGE` and `REPORT_EXPORTS` got their figures from the owner on
+28 August 2026 (PR-117, migration 0113):
+
+| Unit              | What counts                                                     | Trial | Chat | Integrate | Complete |
+| ----------------- | --------------------------------------------------------------- | ----- | ---- | --------- | -------- |
+| `SERVICE_MESSAGE` | A free-form reply to a customer outside the 24-hour window       | 250   | 0    | 5,000     | 5,000    |
+| `REPORT_EXPORTS`  | One unit per file PRODUCED: the statements PDF, the workbook, and each CSV. Reading the same figures on a page costs nothing, and data portability is never counted (below) | 10 | 50 | 100 | 200 |
+
+Chat sells no `SERVICE_MESSAGE` by decision, not omission: a Chat merchant
+talks to their customers from their own phone, and the plan sells them the
+assistant rather than an outbound channel of their own. Integrate and
+Complete run the storefront conversation, which is where the
+outside-the-window replies actually happen.
+
+The ten still with no plan allowance: `UTILITY_TEMPLATE` (Chat, Integrate
+and Complete have figures; trial and expired do not), `AUTH_TEMPLATE`,
+`AUTH_INTL_TEMPLATE`, `MARKETING_TEMPLATE`, `PAYMENT_CONNECTIONS`,
+`FINANCIAL_ACCOUNT_CONNECTIONS`, `ACCOUNTANT_USERS`, `API_REQUEST_UNITS`,
+`API_APPLICATIONS` and `WEBHOOK_DELIVERIES`. The last three are zero on
+every plan on purpose (below); the rest get their figure in the PR that
+wires their consumer, not before.
+
+### The two kinds of unit (owner ruling, 28 August 2026)
+
+The seventeen are not all the same kind of thing, and treating them as one
+kind produced a real defect. `UNIT_KIND` in `@rekoda/core` names the two.
+
+A **`CONSUMABLE_MONTHLY`** unit is SPENT and RESET. Sending a message,
+generating a document, making an API request: something was used up, the
+allowance returns next month, and a usage pack tops it up within the month
+it was bought. Thirteen units are of this kind, and only these may go
+through `consumeUnit`.
+
+A **`CAPACITY`** unit is HELD, not spent. A merchant does not consume an API
+application or an accountant seat; they are permitted to maintain some
+number of them at once. The ceiling is answered by counting how many
+currently exist, so disabling one frees the slot the same day, and a month
+boundary means nothing to it. Four units are of this kind:
+`ACCOUNTANT_USERS`, `PAYMENT_CONNECTIONS`, `FINANCIAL_ACCOUNT_CONNECTIONS`
+and `API_APPLICATIONS`.
+
+Three consequences, each enforced rather than documented:
+
+1. A capacity unit never reaches `consumeUnit`, `refundUnit` or
+   `creditBonus`. `scripts/check-boundaries.mjs` refuses the call in source,
+   and it is the one boundary rule tests are not exempt from: a suite that
+   credits a month's bonus to buy capacity is asserting the wrong model
+   however green it runs.
+2. A capacity unit is sold as a RECURRING add-on, never as a one-off pack.
+   "Fifty more applications, once" is not a sentence about standing
+   capacity, and a pack credits a single month's bonus, which cannot express
+   a permanent seat. Migration 0112 narrows `usage_packs.unit` to the
+   thirteen consumables so the catalogue cannot express one.
+3. `usage_counters.used` means "spent this period", so a capacity unit never
+   writes a counter row at all. A row there would be a lie about what
+   happened.
+
+The two questions are read through two functions, `meterAllowance` and
+`standingCapacity`, and each REFUSES the other's units rather than quietly
+answering: a silent answer is how the confusion returns.
+
+Where a capacity ceiling and a monthly allowance both come from beyond the
+plan, they come from `add_on_grants` (migration 0112): a held add-on grants
+an entitlement, standing capacity, or monthly units, at the version it was
+sold at. Ending the holding ends all three, with nothing to un-copy.
+
+### The three API units keep a plan allowance of zero, on purpose (PR-113)
+
+PR-113 wired their consumers, and the figure it wrote is zero on every plan.
+That is canon rather than an omission: spec §27 says the public API "is a
+separate commercial entitlement … not automatically included with Chat,
+Integrate or Complete", so a plan that sold API capacity would contradict the
+sentence that defines the product.
+
+What a merchant buys therefore arrives from the API product rather than the
+plan, and the two consumables and the one capacity unit arrive differently
+(PR-116). `API_REQUEST_UNITS` and `WEBHOOK_DELIVERIES` are consumables: they
+arrive as a monthly grant from the held add-on, or as `bonus` from a top-up
+pack bought inside one month. `API_APPLICATIONS` is capacity: it arrives as
+a standing grant from the held add-on, and never as a pack.
+
+The product, as approved on 28 August 2026 and seeded by migration 0113:
+
+| What is sold              | Shape             | Price         | Grants                                                              |
+| ------------------------- | ----------------- | ------------- | ------------------------------------------------------------------- |
+| Developer API Starter     | recurring add-on  | ₦25,000/month | `REKODA_API`, 1 application, 25,000 requests, 25,000 deliveries |
+| One extra API application | recurring add-on  | ₦5,000/month  | +1 application (capacity)                                           |
+| `api_requests_25k`        | one-off pack      | ₦10,000       | +25,000 requests this month                                         |
+| `webhook_deliveries_25k`  | one-off pack      | ₦5,000        | +25,000 deliveries this month                                       |
+
+The ceiling every API consume reads is `allowance + grants + bonus`, so:
+
+- a business without the `REKODA_API` entitlement is refused at the gate,
+  before any meter is touched;
+- a business with the entitlement and no capacity is refused at the meter,
+  with the public code `quota_exhausted` — a 429 with no `Retry-After`,
+  because waiting will not help and buying will;
+- a business that bought capacity spends exactly what it bought.
+
+The three consume like this:
+
+| Unit | Kind | How the ceiling is enforced |
+| --- | --- | --- |
+| `API_REQUEST_UNITS` | consumable | one taken per authenticated request, after the per-minute key ceiling so a flood cannot burn a month faster than that ceiling allows; never given back, because the request was served |
+| `WEBHOOK_DELIVERIES` | consumable | one taken per delivery, before the send; refunded on every attempt that delivered nothing, so a merchant's own outage is not billed six times |
+| `API_APPLICATIONS` | capacity | nothing is taken: registration counts the ACTIVE applications and refuses the one past the ceiling. Disabling an application frees its slot immediately |
+
+PR-113 metered `API_APPLICATIONS` as a monthly tally, which meant a merchant
+who registered their applications and then deleted every one of them still
+could not register another until the month turned over. The correction is
+PR-116, and the row above is the corrected behaviour.
+
+A delivery refused at the ceiling is an ordinary failed attempt rather than a
+lost fact: the backoff spreads six attempts over more than a day, so capacity
+bought inside that window still delivers, and the reason is readable in the
+merchant's delivery log.
+
+### Data portability is a right, and rights are not metered (PR-118)
+
+`GET /v1/reports/portability.json` hands a business every record it holds,
+in one file, and it is **never metered, on any plan, ever**. `expired` sells
+zero `REPORT_EXPORTS`, so every export above refuses a lapsed business,
+which is exactly the moment leaving with your own records matters most. A
+merchant who cannot get their data out is held hostage by a billing state.
+
+The two limits on it are about the estate, not the merchant: one request in
+flight per business (a partial unique index, because two simultaneous
+requests would both read "none in flight"), and ten minutes between
+requests. Both refusals say when to come back. Every request leaves a row in
+`portability_exports` whether or not it succeeded, because "who took a
+complete copy of these books, and when" is a question a security review
+asks.
+
+It carries no raw customer PII: no name, phone or email rides an export,
+here or anywhere else, because the web tier holds no vault key and a bulk
+decrypt route is exactly what §27's public API refused to become. Contact
+details are released one record at a time, on the record, through the
+privacy gateway.
+
+### The five message categories are Rekoda's cost, not the merchant's
+
+The five WhatsApp categories are metered, just not against an allowance. They
+name what Rekoda pays Meta, they are written to `usage_events`, and the
+margin view totals them by category (ADR 0029).
+
+Every outbound message today is Rekoda talking to the merchant on Rekoda's
+own number: a reply to something they said, a sign-in code, a notice that
+their card failed. Charging a merchant's allowance for a billing reminder
+would bill them for being told their payment failed, and the reply to their
+own message was already paid for as an `AI_ACTION`. Commercial rule 3 of
+`pricing-model.md` says the same thing in the other direction: template fees
+are "tracked internally per business".
+
+The allowance side is early rather than absent. When a merchant's own WABA
+lands in W1/W2 they message their OWN customer, the category is chosen at
+send time, and metering it against their plan is right, because then it is
+their message.
+
+| Category | Rekoda's cost | What sends it |
+|---|---|---|
+| `SERVICE_MESSAGE` | ₦0 today, chargeable 1 Oct 2026 | Every reply and document, inside the 24-hour window |
+| `UTILITY_TEMPLATE` | ₦9.72 | Grace-period and retention notices |
+| `AUTH_TEMPLATE` | ₦21.03 | Sign-in codes, Nigeria-registered WABA |
+| `AUTH_INTL_TEMPLATE` | ₦108.75 | The same code, WABA registered elsewhere |
+| `MARKETING_TEMPLATE` | ₦74.82 | Nothing. Commercial rule 2 excludes it from V1 |
+
+The rate card lives in `@rekoda/core`'s `messaging.ts`, sourced from the
+external cost stack in `pricing-model.md`.
+
+Integrate carries no merchant-side capacity because it holds
+`REKODA_INTEGRATE` and not `REKODA_CHAT` (owner decision, 26 August 2026):
+the entitlement gate refuses those capabilities before the meter is reached,
+so an allowance for them would never be spendable.
+
 All numbers are the pricing model's planning figures; the first-50-merchants
 checkpoint re-examines every one against real P50/P95 usage.
+
+### Voice is sold in minutes and counted in seconds
+
+`VOICE_MINUTES` is the only unit whose merchant word and countable increment
+differ. A voice note is not a whole number of minutes, and rounding each one
+up would cost a merchant sending twenty-second notes three times the capacity
+they were sold. So `usage_counters.used` holds SECONDS, the plan table holds
+MINUTES, and `UNIT_SCALE` in `@rekoda/core` holds the ratio between them.
+`allowanceFor` applies it, so every consume site is handed the ceiling in the
+same units the column counts in.
 
 ## 2. The enforcement shape (no gaps means no read-then-write)
 
@@ -39,6 +228,62 @@ The database decides; a loser learns it was refused. Two simultaneous
 messages cannot both take the last unit, the same way two "yes" taps cannot
 issue two invoices. There is no code path that increments without checking
 and no path that checks without incrementing.
+
+### 2.1 Order: authorisation before the bill
+
+Spec §4.3 fixes the order and this is where it is enforced:
+
+```
+entitlement  →  allowance  →  THEN the provider that costs money
+```
+
+A capability the plan does not hold is refused before the media is even
+fetched, so an Integrate-only merchant's voice note never reaches the
+transcriber and their photograph never reaches the OCR engine. A capability
+the plan holds but the allowance no longer covers is refused before the same
+call, for the same reason: metering after the work is done means an exhausted
+merchant spends Rekoda's provider budget one message at a time and only
+learns afterwards.
+
+Where the work fails, the unit goes back. That part never changed: a page
+nobody could read is still a page nobody pays for. What changed is that the
+refund is now a compensation for a unit already taken, rather than a decision
+not to take one.
+
+### 2.2 Voice: measured before it is spent
+
+Everything the meter counts is known before it is spent, voice included. That
+was not obvious: neither the WhatsApp webhook nor the media endpoint reports a
+duration, and the first implementation concluded that only the transcriber
+knows and turned the merchant's length limit into a reservation window.
+
+That was wrong, and it is worth writing down why. The media binary is
+downloaded before anything is spent, and a container that stores audio stores
+how much of it there is. `AudioMetadataProbe` reads it in process, for the five
+containers Meta accepts:
+
+```
+entitlement  →  download  →  read the length from the audio
+             →  over the limit?  refuse, no provider called
+             →  unreadable?      ask for it again, no provider called
+             →  take exactly the seconds it runs
+             →  transcribe
+```
+
+`VOICE_NOTE_MAX_DURATION_SECONDS` is therefore a real rejection limit rather
+than a budget, which is what makes it cost protection: a note past it never
+reaches a transcription provider at all. That matters most against the case a
+budget cannot defend, which is a merchant with no allowance left sending a
+long note every few seconds.
+
+Unreadable is never treated as zero. A caller that cannot tell "silent" from
+"could not be measured" transcribes the second one for free, and the recovery
+for the two is not the same. The merchant is asked to record it again;
+nothing was metered and nothing was sent anywhere.
+
+The audio is the source of truth for the length, not the transcriber's
+report. They should agree, and where they do not, the number the merchant is
+charged is the one that was checked against their allowance before the spend.
 
 **Layered backstops stay layered.** Monthly allowances sit ON TOP of the
 existing daily AI ceilings (per business and global) and per-IP rate limits.
@@ -67,11 +312,11 @@ against telemetry, not guessed now.
 ## 5. Wiring order
 
 1. **Now**: the counter table, the atomic gate, plan allowances in
-   `@rekoda/core`, the exhaustion reply, and enforcement on the `messages`
+   `@rekoda/core`, the exhaustion reply, and enforcement on the `AI_ACTIONS`
    unit (the interpreter path).
-2. **With each capability slice**: voice wires `voice_seconds`, document
-   upload wires `documents_understood` (the rekoda-chat-v1 gate), document
-   generation wires `documents`, Integrate order capture wires `orders`.
+2. **With each capability slice**: voice wires `VOICE_MINUTES`, document
+   upload wires `DOCUMENTS_UNDERSTOOD` (the rekoda-chat-v1 gate), document
+   generation wires `DOCUMENT_GENERATION`, Integrate order capture wires `CATALOGUE_ORDERS`.
    A capability PR that spends a unit class without wiring its consume call
    does not merge.
 3. **M4**: top-up purchase and plan upgrade as billing transactions crediting

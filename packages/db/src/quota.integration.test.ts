@@ -249,3 +249,211 @@ describe('usage telemetry', () => {
     expect([...seen][0]).toMatchObject({ n: 0 });
   });
 });
+
+/** Doc limits with a roomy platform day, so business-level tests stay pure. */
+const DOC = (perBusinessPerDay: number) => ({ perBusinessPerDay, globalPerDay: 10_000 });
+
+describe('the document-extraction daily ceiling (AI hardening item 4)', () => {
+  it('allows extractions up to the limit and refuses the next one', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348070000001');
+
+    for (let i = 1; i <= 3; i++) {
+      const r = await quotaRepo.reserveDocExtraction(db, businessId, DOC(3));
+      expect(r).toMatchObject({ ok: true, used: i });
+    }
+    expect(await quotaRepo.reserveDocExtraction(db, businessId, DOC(3))).toEqual({
+      ok: false,
+      refusedBy: 'business',
+    });
+  });
+
+  it('lets exactly FIVE of twenty simultaneous photographs through a limit of five', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348070000001');
+
+    /* The assertion the counter exists for: read-then-decide lets all twenty
+     * through, and the thing on the other side is a vision bill. */
+    const results = await Promise.all(
+      Array.from({ length: 20 }, () => quotaRepo.reserveDocExtraction(db, businessId, DOC(5))),
+    );
+
+    expect(results.filter((r) => r.ok)).toHaveLength(5);
+    expect(results.filter((r) => !r.ok)).toHaveLength(15);
+  });
+
+  it('does not spend one business`s ceiling on another', async () => {
+    const ada = await seedBusiness('Ada Fashion', '+2348070000001');
+    const bola = await seedBusiness('Bola Electronics', '+2348070000002');
+
+    await quotaRepo.reserveDocExtraction(db, ada, DOC(1));
+    expect(await quotaRepo.reserveDocExtraction(db, ada, DOC(1))).toEqual({
+      ok: false,
+      refusedBy: 'business',
+    });
+    expect(await quotaRepo.reserveDocExtraction(db, bola, DOC(1))).toMatchObject({ ok: true });
+  });
+
+  it('refuses a limit of zero rather than allowing the first photograph through', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348070000001');
+    expect(await quotaRepo.reserveDocExtraction(db, businessId, DOC(0))).toEqual({
+      ok: false,
+      refusedBy: 'business',
+    });
+  });
+
+  it('starts fresh on a new Lagos day', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348070000001');
+    const today = new Date('2026-08-20T12:00:00Z');
+    const tomorrow = new Date('2026-08-21T12:00:00Z');
+
+    expect(await quotaRepo.reserveDocExtraction(db, businessId, DOC(1), today)).toMatchObject({
+      ok: true,
+    });
+    expect(await quotaRepo.reserveDocExtraction(db, businessId, DOC(1), today)).toEqual({
+      ok: false,
+      refusedBy: 'business',
+    });
+    expect(await quotaRepo.reserveDocExtraction(db, businessId, DOC(1), tomorrow)).toMatchObject({
+      ok: true,
+    });
+  });
+
+  it('returns the slot when the provider was never reached, and never mints extras', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348070000001');
+
+    expect(await quotaRepo.reserveDocExtraction(db, businessId, DOC(1))).toMatchObject({
+      ok: true,
+    });
+    await quotaRepo.releaseDocExtraction(db, businessId);
+    expect(await quotaRepo.reserveDocExtraction(db, businessId, DOC(1))).toMatchObject({
+      ok: true,
+    });
+
+    /* A double release must not push the counter below zero — that would be
+     * a free extra slot the next photograph silently takes. */
+    await quotaRepo.releaseDocExtraction(db, businessId);
+    await quotaRepo.releaseDocExtraction(db, businessId);
+    expect(await quotaRepo.reserveDocExtraction(db, businessId, DOC(1))).toMatchObject({
+      ok: true,
+    });
+    expect(await quotaRepo.reserveDocExtraction(db, businessId, DOC(1))).toEqual({
+      ok: false,
+      refusedBy: 'business',
+    });
+  });
+});
+
+describe('the PLATFORM media ceilings (remediation A4)', () => {
+  it('stops every business once the platform document day is spent', async () => {
+    const ada = await seedBusiness('Ada Fashion', '+2348070000001');
+    const bola = await seedBusiness('Bola Electronics', '+2348070000002');
+    const limits = { perBusinessPerDay: 10, globalPerDay: 2 };
+
+    expect(await quotaRepo.reserveDocExtraction(db, ada, limits)).toMatchObject({ ok: true });
+    expect(await quotaRepo.reserveDocExtraction(db, bola, limits)).toMatchObject({ ok: true });
+    expect(await quotaRepo.reserveDocExtraction(db, ada, limits)).toEqual({
+      ok: false,
+      refusedBy: 'platform',
+    });
+  });
+
+  it('does NOT charge a business for a read the platform refused', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348070000001');
+    const tight = { perBusinessPerDay: 10, globalPerDay: 1 };
+
+    expect(await quotaRepo.reserveDocExtraction(db, businessId, tight)).toMatchObject({
+      ok: true,
+    });
+    expect(await quotaRepo.reserveDocExtraction(db, businessId, tight)).toEqual({
+      ok: false,
+      refusedBy: 'platform',
+    });
+
+    /* The rollback returned the tenant increment: with the platform limit
+     * lifted, the business still has nine of its ten. */
+    const roomy = { perBusinessPerDay: 10, globalPerDay: 100 };
+    for (let i = 0; i < 9; i++) {
+      expect(await quotaRepo.reserveDocExtraction(db, businessId, roomy)).toMatchObject({
+        ok: true,
+      });
+    }
+    expect(await quotaRepo.reserveDocExtraction(db, businessId, roomy)).toEqual({
+      ok: false,
+      refusedBy: 'business',
+    });
+  });
+});
+
+describe('the daily voice-seconds ceilings (remediation A4)', () => {
+  const LIMITS = { perBusinessPerDay: 100, globalPerDay: 10_000 };
+
+  it('reserves exactly the seconds a note runs and refuses past the day', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348070000001');
+
+    expect(await quotaRepo.reserveVoiceSeconds(db, businessId, 60, LIMITS)).toMatchObject({
+      ok: true,
+      used: 60,
+    });
+    expect(await quotaRepo.reserveVoiceSeconds(db, businessId, 40, LIMITS)).toMatchObject({
+      ok: true,
+      used: 100,
+    });
+    // The day is exactly full: one more second does not fit.
+    expect(await quotaRepo.reserveVoiceSeconds(db, businessId, 1, LIMITS)).toEqual({
+      ok: false,
+      refusedBy: 'business',
+    });
+  });
+
+  it('refuses a single note longer than the whole day, even on a fresh day', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348070000001');
+    /* The INSERT path has no conflicting row for the WHERE to test — a
+     * fresh day would otherwise let one over-long note through. */
+    expect(await quotaRepo.reserveVoiceSeconds(db, businessId, 101, LIMITS)).toEqual({
+      ok: false,
+      refusedBy: 'business',
+    });
+  });
+
+  it('cannot overspend under concurrency: parallel notes stop at the ceiling', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348070000001');
+
+    // Ten 30-second notes against a 100-second day: at most three fit.
+    const results = await Promise.all(
+      Array.from({ length: 10 }, () => quotaRepo.reserveVoiceSeconds(db, businessId, 30, LIMITS)),
+    );
+    expect(results.filter((r) => r.ok)).toHaveLength(3);
+  });
+
+  it('stops the whole platform at the global day, without charging the business', async () => {
+    const ada = await seedBusiness('Ada Fashion', '+2348070000001');
+    const bola = await seedBusiness('Bola Electronics', '+2348070000002');
+    const tight = { perBusinessPerDay: 1_000, globalPerDay: 90 };
+
+    expect(await quotaRepo.reserveVoiceSeconds(db, ada, 60, tight)).toMatchObject({ ok: true });
+    expect(await quotaRepo.reserveVoiceSeconds(db, bola, 60, tight)).toEqual({
+      ok: false,
+      refusedBy: 'platform',
+    });
+
+    // Bola's own day is untouched by the platform refusal.
+    const roomy = { perBusinessPerDay: 1_000, globalPerDay: 10_000 };
+    expect(await quotaRepo.reserveVoiceSeconds(db, bola, 1_000, roomy)).toMatchObject({
+      ok: true,
+      used: 1_000,
+    });
+  });
+
+  it('releases seconds only as far as zero, never into free time', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348070000001');
+
+    expect(await quotaRepo.reserveVoiceSeconds(db, businessId, 80, LIMITS)).toMatchObject({
+      ok: true,
+    });
+    await quotaRepo.releaseVoiceSeconds(db, businessId, 80);
+    await quotaRepo.releaseVoiceSeconds(db, businessId, 80); // double release
+    expect(await quotaRepo.reserveVoiceSeconds(db, businessId, 100, LIMITS)).toMatchObject({
+      ok: true,
+      used: 100,
+    });
+  });
+});

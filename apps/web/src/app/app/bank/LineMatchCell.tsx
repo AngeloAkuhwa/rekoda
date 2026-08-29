@@ -2,7 +2,12 @@
 
 import { useActionState } from 'react';
 import { Button } from '@/components/ui/Button';
-import { matchLineAction, unmatchLineAction, type StatementState } from './actions';
+import {
+  classifyLineAction,
+  matchLineAction,
+  unmatchLineAction,
+  type StatementState,
+} from './actions';
 
 export interface Candidate {
   transactionId: string;
@@ -34,7 +39,15 @@ export function LineMatchCell({
   /** The line in a person's words ("12 Aug, TRF FROM ADA"), so the buttons in
    * this cell can say WHICH line they act on when read out of the table. */
   lineLabel: string;
-  matchedTo: { memo: string; decidedBy: 'auto' | 'manual' } | null;
+  matchedTo: {
+    memo: string;
+    decidedBy: 'auto' | 'manual';
+    /** Which §22.1 tier decided it: 1 exact reference, 2 strong
+     * deterministic, 4 manual. */
+    tier?: number;
+    /** The person's sentence on a manual match. */
+    reason?: string | null;
+  } | null;
   candidates: readonly Candidate[];
   /**
    * Presentation of the role matrix: pairing is owner and accountant work.
@@ -58,18 +71,14 @@ export function LineMatchCell({
       return (
         <div className="rk-match">
           <span>{matchedTo.memo}</span>
-          <span className="rk-fineprint">
-            {matchedTo.decidedBy === 'manual' ? 'Matched by hand' : 'Rekoda matched this'}
-          </span>
+          <span className="rk-fineprint">{decidedLabel(matchedTo, 'Matched by hand')}</span>
         </div>
       );
     }
     return (
       <div className="rk-match">
         <span>{matchedTo.memo}</span>
-        <span className="rk-fineprint">
-          {matchedTo.decidedBy === 'manual' ? 'You matched this' : 'Rekoda matched this'}
-        </span>
+        <span className="rk-fineprint">{decidedLabel(matchedTo, 'You matched this')}</span>
         {state.error ? (
           <p className="rk-fineprint" role="alert">
             {state.error}
@@ -95,11 +104,7 @@ export function LineMatchCell({
   }
 
   if (candidates.length === 0) {
-    return (
-      <span className="rk-fineprint">
-        Nothing in your books for this amount. Record it, then match it.
-      </span>
-    );
+    return <ClassifyCell lineId={lineId} lineLabel={lineLabel} />;
   }
 
   return (
@@ -121,6 +126,15 @@ export function LineMatchCell({
             </option>
           ))}
         </select>
+        {/* §22.1 tier 4: a person decides, with a reason recorded. Optional
+            here; left blank, the record says it was paired on this screen. */}
+        <input
+          type="text"
+          name="reason"
+          maxLength={300}
+          placeholder="Why these are the same money (optional)"
+          aria-label={`Why ${lineLabel} matches the chosen entry`}
+        />
         <Button
           type="submit"
           variant="ghost"
@@ -128,6 +142,74 @@ export function LineMatchCell({
           aria-label={`Match ${lineLabel} to the chosen entry`}
         >
           {matching ? 'Matching…' : 'This one'}
+        </Button>
+      </form>
+    </div>
+  );
+}
+
+/**
+ * What one decided match should say about itself: whose judgement it was,
+ * and — for a person's — their recorded reason (§22.1 tier 4).
+ */
+function decidedLabel(
+  matchedTo: { decidedBy: 'auto' | 'manual'; tier?: number; reason?: string | null },
+  manualWord: string,
+): string {
+  if (matchedTo.decidedBy === 'manual') {
+    return matchedTo.reason ? `${manualWord}: ${matchedTo.reason}` : manualWord;
+  }
+  return matchedTo.tier === 1
+    ? 'Rekoda matched this by its payment reference'
+    : 'Rekoda matched this';
+}
+
+/**
+ * §22.2's WHEN, on the line it is about. Nothing in the books explains
+ * this money, and the merchant says what it WAS: owner capital, a supplier
+ * refund, their own cash moving. One submit posts the entry that judgement
+ * implies and pairs it — Rekoda never decides this silently.
+ */
+function ClassifyCell({ lineId, lineLabel }: { lineId: string; lineLabel: string }) {
+  const [state, classify, classifying] = useActionState<StatementState, FormData>(
+    classifyLineAction,
+    {},
+  );
+  return (
+    <div className="rk-match">
+      <span className="rk-fineprint">
+        Nothing in your books for this amount. Record it and match it, or say what it was:
+      </span>
+      {state.error ? (
+        <p className="rk-fineprint" role="alert">
+          {state.error}
+        </p>
+      ) : null}
+      {state.done ? <p className="rk-fineprint">{state.done}</p> : null}
+      <form action={classify} className="rk-match-pick">
+        <input type="hidden" name="lineId" value={lineId} />
+        <label className="rk-sr-only" htmlFor={`c-${lineId}`}>
+          What this money was
+        </label>
+        <select id={`c-${lineId}`} name="classification" defaultValue="OWNER_CAPITAL">
+          <option value="OWNER_CAPITAL">Owner capital (my own money in or out)</option>
+          <option value="SUPPLIER_REFUND">Supplier refund</option>
+          <option value="INTERNAL_TRANSFER">Cash transfer (till and bank)</option>
+        </select>
+        <input
+          type="text"
+          name="note"
+          maxLength={300}
+          placeholder="In your own words (optional)"
+          aria-label={`Your words for ${lineLabel}`}
+        />
+        <Button
+          type="submit"
+          variant="ghost"
+          disabled={classifying}
+          aria-label={`Record ${lineLabel} as what you chose`}
+        >
+          {classifying ? 'Recording…' : 'That is what it was'}
         </Button>
       </form>
     </div>

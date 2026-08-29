@@ -31,8 +31,17 @@ export interface Product {
   active: boolean;
 }
 
-/** Why the stock moved. `adjustment` is the merchant counting their own shelf. */
-export type MovementReason = 'sale' | 'purchase' | 'adjustment' | 'reservation' | 'release';
+/** Why the stock moved. `adjustment` is the merchant counting their own
+ * shelf; `opening` is what the shelf already held on day one (PR-083). */
+export type MovementReason =
+  | 'sale'
+  | 'purchase'
+  | 'adjustment'
+  | 'reservation'
+  | 'release'
+  | 'return'
+  | 'supplier_return'
+  | 'opening';
 
 export interface StockMovement {
   businessId: string;
@@ -41,6 +50,9 @@ export interface StockMovement {
   reason: MovementReason;
   sourceType: string;
   sourceId?: string | null;
+  /** The unit cost APPLIED to this movement (Appendix B): receipt cost
+   * inbound, issue cost outbound. Null when nobody has ever costed it. */
+  unitCostK?: number | null;
 }
 
 /**
@@ -151,6 +163,7 @@ export async function recordMovement(tx: TenantDb, movement: StockMovement): Pro
     reason: movement.reason,
     sourceType: movement.sourceType,
     sourceId: movement.sourceId ?? null,
+    unitCostK: movement.unitCostK ?? null,
   });
 }
 
@@ -174,6 +187,13 @@ export async function recordDelivery(
     costK: number;
     sourceType: string;
     sourceId?: string | null;
+    /**
+     * How this arrival should be remembered. 'purchase' for goods bought;
+     * 'opening' for stock the business already held on the day it started
+     * with Rekoda (PR-083) — same lock, same weighted average, different
+     * history.
+     */
+    reason?: 'purchase' | 'opening';
   },
 ): Promise<number> {
   /**
@@ -209,9 +229,12 @@ export async function recordDelivery(
     businessId: input.businessId,
     productId: input.product.id,
     delta: input.quantity,
-    reason: 'purchase',
+    reason: input.reason ?? 'purchase',
     sourceType: input.sourceType,
     sourceId: input.sourceId ?? null,
+    /* The receipt's own per-unit cost rides the movement (Appendix B),
+     * which is what a supplier return later reverses at. */
+    unitCostK: Math.round(input.costK / input.quantity),
   });
 
   await tx
@@ -286,6 +309,9 @@ export async function recordSaleMovements(
       reason: 'sale',
       sourceType: 'invoice',
       sourceId,
+      /* The ORIGINAL ISSUE COST, carried on the outbound movement
+       * (Appendix B) — what a customer return restores at. */
+      unitCostK: product.unitCostK,
     });
     moved += 1;
 
@@ -377,4 +403,30 @@ export async function stockList(
     outOfStock: list[0]?.out_n ?? 0,
     withoutCost: list[0]?.nocost_n ?? 0,
   };
+}
+
+/**
+ * On-hand per product, with whether the shelf was ever counted (W3,
+ * PR-088). The validator refuses an order the counted shelf cannot serve;
+ * a product with no movement history is not stock-tracked, and inventing
+ * an empty shelf for it would refuse a service nobody counts.
+ */
+export async function onHandByIds(
+  tx: TenantDb,
+  businessId: string,
+  ids: readonly string[],
+): Promise<Map<string, { onHand: number; counted: boolean }>> {
+  if (ids.length === 0) return new Map();
+  const rows = await tx.execute<{ id: string; on_hand: string; counted: boolean }>(sql`
+    SELECT p.id,
+           COALESCE((SELECT SUM(m.delta) FROM inventory_movements m WHERE m.product_id = p.id), 0) AS on_hand,
+           EXISTS (SELECT 1 FROM inventory_movements m WHERE m.product_id = p.id) AS counted
+    FROM products p
+    WHERE p.business_id = ${businessId}::uuid
+      AND p.id IN (${sql.join(
+        ids.map((id) => sql`${id}::uuid`),
+        sql`, `,
+      )})
+  `);
+  return new Map([...rows].map((r) => [r.id, { onHand: Number(r.on_hand), counted: r.counted }]));
 }

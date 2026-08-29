@@ -48,7 +48,14 @@ const NOTE = Buffer.from('not-really-ogg-bytes');
 describe('transcribing a voice note through the hosted API', () => {
   it('sends the configured model and answers with the provider`s own duration, rounded up', async () => {
     const transcript = await stt().transcribe(NOTE, 'audio/ogg');
-    expect(transcript).toEqual({ text: 'sold 3 wigs to ada', seconds: 13, confidence: null });
+    expect(transcript).toEqual({
+      text: 'sold 3 wigs to ada',
+      seconds: 13,
+      confidence: null,
+      /* Who charged us and on which rate card, so the caller can price the
+       * call — the duration it prices from is `seconds` above. */
+      usage: { provider: 'openai', model: 'whisper-1' },
+    });
     // The multipart form named the model and carried the file.
     expect(lastBody).toContain('whisper-1');
     expect(lastBody).toContain('note.ogg');
@@ -87,8 +94,24 @@ describe('transcribing a voice note through the hosted API', () => {
       res.writeHead(503, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ error: { message: 'overloaded' } }));
     };
-    await expect(stt().transcribe(NOTE, 'audio/ogg')).rejects.toBeInstanceOf(
-      TranscriptionUnavailable,
-    );
+    await expect(stt().transcribe(NOTE, 'audio/ogg')).rejects.toMatchObject({
+      name: 'TranscriptionUnavailable',
+      /* An answered error billed nothing — no reconciliation row for it. */
+      maybeBilled: false,
+    });
+  });
+
+  it('flags a timeout as possibly billed, because the work may have finished', async () => {
+    respond = (res) => {
+      setTimeout(() => {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ text: 'too late', duration: 3 }));
+      }, 500);
+    };
+    const impatient = new OpenAiSpeechToText('sk-test', 'whisper-1', 100, baseUrl);
+    await expect(impatient.transcribe(NOTE, 'audio/ogg')).rejects.toMatchObject({
+      name: 'TranscriptionUnavailable',
+      maybeBilled: true,
+    });
   });
 });

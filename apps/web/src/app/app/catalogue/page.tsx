@@ -18,6 +18,9 @@ import {
 } from './CatalogueForms';
 import { ShopForm } from './ShopForm';
 import { canRecordTrade, isOwner } from '@/lib/permissions';
+import { can, heldBy } from '@/lib/capabilities';
+import { EntitlementRefusal } from '@/components/ui/EntitlementRefusal';
+import { refusalFor } from '@rekoda/core';
 
 export const metadata: Metadata = {
   title: 'Catalogue',
@@ -41,6 +44,29 @@ export const metadata: Metadata = {
  */
 export default async function CataloguePage() {
   const { identity, token } = await requireSessionWithToken();
+
+  /**
+   * The catalogue is what a merchant's BUYERS browse, so it belongs to
+   * Integrate. The nav hides it already; this is the merchant who arrived by
+   * bookmark or by typing the path, and they get the refusal rather than an
+   * empty page that looks broken (owner decision, 26 Aug 2026).
+   */
+  if (!can(identity, 'CATALOGUE')) {
+    return (
+      <section className="rk-container rk-dash">
+        <header className="rk-dash-head">
+          <div>
+            <p className="rk-eyebrow">Catalogue</p>
+            <h1>What you sell, and for how much</h1>
+          </div>
+          <SignOutButton />
+        </header>
+        <AppNav active="catalogue" held={heldBy(identity)} />
+        <EntitlementRefusal refusal={refusalFor('CATALOGUE', identity.plan)} />
+      </section>
+    );
+  }
+
   const [{ products, total, listed: listedCount, hidden: hiddenCount, unpriced }, settings] =
     await Promise.all([catalogue(token), shopSettings(token)]);
 
@@ -65,7 +91,7 @@ export default async function CataloguePage() {
         <SignOutButton />
       </header>
 
-      <AppNav active="catalogue" />
+      <AppNav active="catalogue" held={heldBy(identity)} />
 
       {/* Only when there is something to fix. A banner reading "0 without a
           price" teaches a merchant to scroll past the thing that will matter

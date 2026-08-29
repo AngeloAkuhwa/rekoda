@@ -10,6 +10,7 @@
  * could happen, it is a value the caller would have to construct by hand.
  */
 import { and, desc, eq, sql } from 'drizzle-orm';
+import { sanitizeCommandForPersistence } from '@rekoda/core';
 import type { TenantDb } from '../client.js';
 import { commandDrafts, conversationMessages, conversations } from '../schema/ops.js';
 
@@ -20,9 +21,10 @@ export type MessageKind = 'text' | 'voice' | 'media' | 'interactive';
 /**
  * The business's thread on this channel, creating it the first time.
  *
- * `ON CONFLICT DO NOTHING` against `conversations_business_channel_ux`
- * (migration 0006) rather than select-then-insert: two messages arriving
- * together would otherwise both find no thread and both create one.
+ * `ON CONFLICT DO NOTHING` against `conversations_merchant_ux` (F.2's
+ * partial merchant unique, migration 0087) rather than select-then-insert:
+ * two messages arriving together would otherwise both find no thread and
+ * both create one.
  */
 export async function threadFor(
   tx: TenantDb,
@@ -31,8 +33,17 @@ export async function threadFor(
 ): Promise<string> {
   const inserted = await tx
     .insert(conversations)
-    .values({ businessId, channel })
-    .onConflictDoNothing({ target: [conversations.businessId, conversations.channel] })
+    /* Classified at birth (F.6, PR-058a-2): every thread this function
+     * mints is the merchant talking to Rekoda, so the backfill's tail
+     * only ever shrinks. Customer threads arrive through
+     * `resolveThread`, never through here. The conflict target is the
+     * PARTIAL merchant unique (058a-4), so the race lands on the same
+     * row it always did. */
+    .values({ businessId, channel, conversationKind: 'MERCHANT' })
+    .onConflictDoNothing({
+      target: [conversations.businessId, conversations.channel],
+      where: sql`conversation_kind = 'MERCHANT'`,
+    })
     .returning({ id: conversations.id });
 
   const created = inserted[0];
@@ -41,12 +52,110 @@ export async function threadFor(
   const existing = await tx
     .select({ id: conversations.id })
     .from(conversations)
-    .where(and(eq(conversations.businessId, businessId), eq(conversations.channel, channel)))
+    .where(
+      and(
+        eq(conversations.businessId, businessId),
+        eq(conversations.channel, channel),
+        eq(conversations.conversationKind, 'MERCHANT'),
+      ),
+    )
     .limit(1);
 
   const row = existing[0];
   if (!row) throw new Error('threadFor: conflict reported but no existing thread found');
   return row.id;
+}
+
+/* ── the thread resolver (Appendix F.2; PR-058a-3) ─────────────────────── */
+
+/**
+ * Which thread a message belongs to, stated as an identity rather than
+ * assumed from a channel. MERCHANT is the old world, verbatim; CUSTOMER is
+ * F.2's routing key — businessId + channel + channelAccountId +
+ * participantBlindIndex — which can RESOLVE today and can only CREATE once
+ * 058a-4 replaces the broad unique with the two partial constraints.
+ */
+export type ThreadTarget =
+  | { kind: 'MERCHANT'; businessId: string; channel: Channel }
+  | {
+      kind: 'CUSTOMER';
+      businessId: string;
+      channel: Channel;
+      channelAccountId: string;
+      participantBlindIndex: string;
+      participantIndexKeyVersion: string;
+      customerId?: string | null;
+    };
+
+export async function resolveThread(tx: TenantDb, target: ThreadTarget): Promise<string> {
+  if (target.kind === 'MERCHANT') {
+    /* The old rule was CORRECT for merchant threads: exactly one per
+     * business per channel. Same function, same row. */
+    return threadFor(tx, target.businessId, target.channel);
+  }
+
+  const rows = await tx
+    .select({ id: conversations.id })
+    .from(conversations)
+    .where(
+      and(
+        eq(conversations.businessId, target.businessId),
+        eq(conversations.channel, target.channel),
+        eq(conversations.conversationKind, 'CUSTOMER'),
+        eq(conversations.channelAccountId, target.channelAccountId),
+        eq(conversations.participantBlindIndex, target.participantBlindIndex),
+        eq(conversations.participantIndexKeyVersion, target.participantIndexKeyVersion),
+      ),
+    )
+    .limit(1);
+  const row = rows[0];
+  if (row) return row.id;
+
+  /* Enabled by 058a-4's partial constraints: a new customer's first
+   * message mints their thread, and the F.2 unique makes the race land
+   * every writer on one row. */
+  const inserted = await tx
+    .insert(conversations)
+    .values({
+      businessId: target.businessId,
+      channel: target.channel,
+      conversationKind: 'CUSTOMER',
+      channelAccountId: target.channelAccountId,
+      participantBlindIndex: target.participantBlindIndex,
+      participantIndexKeyVersion: target.participantIndexKeyVersion,
+      ...(target.customerId ? { customerId: target.customerId } : {}),
+    })
+    .onConflictDoNothing({
+      target: [
+        conversations.businessId,
+        conversations.channel,
+        conversations.channelAccountId,
+        conversations.participantBlindIndex,
+        conversations.participantIndexKeyVersion,
+      ],
+      where: sql`conversation_kind = 'CUSTOMER' AND participant_blind_index IS NOT NULL`,
+    })
+    .returning({ id: conversations.id });
+  const created = inserted[0];
+  if (created) return created.id;
+
+  const raced = await tx
+    .select({ id: conversations.id })
+    .from(conversations)
+    .where(
+      and(
+        eq(conversations.businessId, target.businessId),
+        eq(conversations.channel, target.channel),
+        eq(conversations.conversationKind, 'CUSTOMER'),
+        eq(conversations.channelAccountId, target.channelAccountId),
+        eq(conversations.participantBlindIndex, target.participantBlindIndex),
+        eq(conversations.participantIndexKeyVersion, target.participantIndexKeyVersion),
+      ),
+    )
+    .limit(1);
+  const winner = raced[0];
+  if (!winner) throw new Error('resolveThread: conflict reported but no thread found');
+  return winner.id;
 }
 
 export interface InboundMessage {
@@ -69,8 +178,12 @@ export interface InboundMessage {
 export async function recordInbound(
   tx: TenantDb,
   message: InboundMessage,
+  thread?: ThreadTarget,
 ): Promise<{ id: string; isNew: boolean }> {
-  const conversationId = await threadFor(tx, message.businessId, message.channel);
+  const conversationId = await resolveThread(
+    tx,
+    thread ?? { kind: 'MERCHANT', businessId: message.businessId, channel: message.channel },
+  );
 
   const inserted = await tx
     .insert(conversationMessages)
@@ -127,6 +240,37 @@ export async function messagesFor(
     .limit(limit);
 }
 
+/**
+ * The messages of ONE thread (PR-058a-3): resolved by identity, scoped by
+ * conversation. For a MERCHANT target this returns exactly what
+ * `messagesFor` returns today — one business, one thread — which is the
+ * flag-equivalence the cutover stands on.
+ */
+export async function messagesForThread(
+  tx: TenantDb,
+  target: ThreadTarget,
+  limit = 50,
+): Promise<StoredMessage[]> {
+  const conversationId = await resolveThread(tx, target);
+  return tx
+    .select({
+      id: conversationMessages.id,
+      direction: conversationMessages.direction,
+      kind: conversationMessages.kind,
+      body: conversationMessages.body,
+      providerMessageId: conversationMessages.providerMessageId,
+    })
+    .from(conversationMessages)
+    .where(
+      and(
+        eq(conversationMessages.businessId, target.businessId),
+        eq(conversationMessages.conversationId, conversationId),
+      ),
+    )
+    .orderBy(conversationMessages.createdAt)
+    .limit(limit);
+}
+
 /** Count of threads, for the health surface. */
 export async function threadCount(tx: TenantDb): Promise<number> {
   const rows = await tx.execute<{ n: number }>(sql`SELECT count(*)::int AS n FROM conversations`);
@@ -154,6 +298,12 @@ export interface DraftRow {
   state: string;
   command: unknown;
   identityLink?: unknown;
+  /**
+   * How the DRAFTING message arrived — text | voice | media | interactive.
+   * Spec E.7's evidenceBasis is derived from this at confirmation time: a
+   * payment drafted from a photo was seen, not typed, and the record says so.
+   */
+  messageKind: string | null;
 }
 
 /**
@@ -174,7 +324,12 @@ export async function recordDraft(
       businessId: draft.businessId,
       conversationMessageId: draft.conversationMessageId,
       intent: draft.intent,
-      command: draft.command as never,
+      /* THE persistence boundary (R5): every draft write passes through the
+       * central transient-field policy, HERE, at the only INSERT into
+       * command_drafts — never at whichever call site remembered. The
+       * preview the merchant reads is built from the live command before
+       * this line, so "echoed once, never stored" holds in both halves. */
+      command: sanitizeCommandForPersistence(draft.command) as never,
       model: draft.model,
       identityLink: (draft.identityLink ?? null) as never,
     })
@@ -203,8 +358,13 @@ export async function draftsFor(tx: TenantDb, businessId: string): Promise<Draft
       intent: commandDrafts.intent,
       state: commandDrafts.state,
       command: commandDrafts.command,
+      messageKind: conversationMessages.kind,
     })
     .from(commandDrafts)
+    .leftJoin(
+      conversationMessages,
+      eq(conversationMessages.id, commandDrafts.conversationMessageId),
+    )
     .where(eq(commandDrafts.businessId, businessId))
     .orderBy(commandDrafts.createdAt);
 }
@@ -225,8 +385,12 @@ export interface OutboundMessageInput {
 export async function recordOutbound(
   tx: TenantDb,
   message: OutboundMessageInput,
+  thread?: ThreadTarget,
 ): Promise<{ id: string }> {
-  const conversationId = await threadFor(tx, message.businessId, message.channel);
+  const conversationId = await resolveThread(
+    tx,
+    thread ?? { kind: 'MERCHANT', businessId: message.businessId, channel: message.channel },
+  );
   const rows = await tx
     .insert(conversationMessages)
     .values({
@@ -271,8 +435,13 @@ export async function pendingDraft(tx: TenantDb, businessId: string): Promise<Dr
       state: commandDrafts.state,
       command: commandDrafts.command,
       identityLink: commandDrafts.identityLink,
+      messageKind: conversationMessages.kind,
     })
     .from(commandDrafts)
+    .leftJoin(
+      conversationMessages,
+      eq(conversationMessages.id, commandDrafts.conversationMessageId),
+    )
     .where(and(eq(commandDrafts.businessId, businessId), eq(commandDrafts.state, 'pending')))
     .orderBy(desc(commandDrafts.createdAt))
     .limit(1);

@@ -14,6 +14,8 @@ import {
   issueRepo,
   paymentsHub,
   settleRepo,
+  settlementsRepo,
+  sql,
   withBusiness,
   type Db,
 } from '@rekoda/db';
@@ -59,6 +61,13 @@ async function seedVerifiedPayment(phone: string) {
   const reference = paymentReference(new Date(), (n) => randomBytes(n));
 
   await withBusiness(appDb, businessId, async (tx) => {
+    /* The provider connection the payout lands against (§20 ingestion
+     * names it), and the rail the verification is booked THROUGH so the
+     * gross parks in that connection's clearing account (PR-065). */
+    const connection = await paymentsHub.upsertConnection(tx, {
+      businessId,
+      providerType: 'paystack',
+    });
     const sale = await issueRepo.issueSale(tx, {
       businessId,
       customerId: null,
@@ -101,6 +110,7 @@ async function seedVerifiedPayment(phone: string) {
       method: 'transfer',
       actor: 'test',
       eventId: `event-${randomBytes(4).toString('hex')}`,
+      paymentConnectionId: connection.id,
     });
   });
   return { businessId, reference };
@@ -165,5 +175,139 @@ describe('the settlement sweep (§26–28)', () => {
   it('lets a provider outage surface as an error — never an invented empty day', async () => {
     provider.failNextSettlementsWith(new Error('ECONNRESET'));
     await expect(sweepSettlements(deps())).rejects.toThrow('ECONNRESET');
+  });
+});
+
+describe('§20 ingestion: the payout itself, behind the stamps (PR-064)', () => {
+  async function settlementRows(businessId: string) {
+    return withBusiness(appDb, businessId, (tx) => settlementsRepo.settlementsFor(tx, businessId));
+  }
+
+  async function exceptionCount(businessId: string): Promise<number> {
+    const rows = await withBusiness(appDb, businessId, (tx) =>
+      tx.execute<{ n: number }>(sql`
+        SELECT count(*)::int AS n FROM reconciliations
+        WHERE business_id = ${businessId}::uuid AND status = 'EXCEPTION'
+          AND expectation_kind = 'settlement'
+      `),
+    );
+    return [...rows][0]!.n;
+  }
+
+  it('records the payout with its covered payment and the component its totals prove', async () => {
+    const { businessId, reference } = await seedVerifiedPayment('+2348160000010');
+    provider.willSettle({
+      references: [reference],
+      grossK: 15_000_000,
+      netK: 14_776_250,
+    });
+
+    await sweepSettlements(deps());
+
+    const rows = await settlementRows(businessId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ status: 'SETTLED', grossK: 15_000_000, netK: 14_776_250 });
+    const detail = await withBusiness(appDb, businessId, (tx) =>
+      settlementsRepo.settlementById(tx, businessId, rows[0]!.id),
+    );
+    expect(detail!.items).toHaveLength(1);
+    expect(detail!.items[0]!.amountK).toBe(15_000_000);
+    /* The provider stated totals, not an itemisation: the gap is the one
+     * component the totals PROVE, and the note says so. */
+    expect(detail!.components).toEqual([
+      {
+        kind: 'PROCESSING_FEE',
+        direction: 'DEDUCTION',
+        amountK: 223_750,
+        note: 'gross − net as reported by the provider',
+      },
+    ]);
+
+    /* Invariant 5 closes end to end: the payout posted, the clearing
+     * account is explainable at zero, the bank holds the net and the
+     * fees are the ACTUAL deductions. */
+    const balances = await withBusiness(appDb, businessId, (tx) =>
+      tx.execute<{ code: string; n: number }>(sql`
+        SELECT a.code, coalesce(sum(e.debit_k - e.credit_k), 0)::int AS n
+        FROM ledger_entries e JOIN accounts a ON a.id = e.account_id
+        WHERE e.business_id = ${businessId}::uuid AND a.code IN ('1015', '1010', '6050')
+        GROUP BY a.code
+      `),
+    );
+    const byCode = new Map([...balances].map((b) => [b.code, b.n]));
+    expect(byCode.get('1015') ?? 0).toBe(0);
+    expect(byCode.get('1010')).toBe(14_776_250);
+    expect(byCode.get('6050')).toBe(223_750);
+
+    /* Re-polling is a refresh, not a second payout or doubled detail. */
+    await sweepSettlements(deps());
+    expect(await settlementRows(businessId)).toHaveLength(1);
+    const again = await withBusiness(appDb, businessId, (tx) =>
+      settlementsRepo.settlementById(tx, businessId, rows[0]!.id),
+    );
+    expect(again!.items).toHaveLength(1);
+    expect(again!.components).toHaveLength(1);
+  });
+
+  it('a re-report with DIFFERENT numbers becomes ONE exception, not an overwrite or a flood', async () => {
+    const { businessId, reference } = await seedVerifiedPayment('+2348160000011');
+    provider.willSettle({
+      settlementId: 'stl-conflict',
+      references: [reference],
+      grossK: 15_000_000,
+      netK: 15_000_000,
+    });
+    await sweepSettlements(deps());
+
+    provider.reset();
+    provider.willSettle({
+      settlementId: 'stl-conflict',
+      references: [reference],
+      grossK: 14_000_000,
+      netK: 14_000_000,
+    });
+    await sweepSettlements(deps());
+    await sweepSettlements(deps());
+
+    const rows = await settlementRows(businessId);
+    expect(rows[0]).toMatchObject({ grossK: 15_000_000 });
+    expect(await exceptionCount(businessId)).toBe(1);
+  });
+
+  it('a provider that states no totals gets stamps and no invented settlement', async () => {
+    const { businessId, reference } = await seedVerifiedPayment('+2348160000012');
+    provider.willSettle({ references: [reference] });
+
+    await sweepSettlements(deps());
+
+    expect((await settlementState(businessId))?.settlementStatus).toBe('settled');
+    expect(await settlementRows(businessId)).toHaveLength(0);
+  });
+
+  it('a batch that spans tenants, or carries foreign traffic, stamps but records no payout', async () => {
+    const a = await seedVerifiedPayment('+2348160000013');
+    const b = await seedVerifiedPayment('+2348160000014');
+    provider.willSettle({
+      references: [a.reference, b.reference],
+      grossK: 30_000_000,
+      netK: 30_000_000,
+    });
+    const c = await seedVerifiedPayment('+2348160000015');
+    provider.willSettle({
+      settlementId: 'stl-foreign',
+      references: [c.reference, 'FOREIGN-REF-9'],
+      grossK: 20_000_000,
+      netK: 20_000_000,
+    });
+
+    await sweepSettlements(deps());
+
+    /* The batch gross belongs to nobody in particular; decomposing it
+     * would be estimation, which §20 forbids for authoritative data. */
+    expect(await settlementRows(a.businessId)).toHaveLength(0);
+    expect(await settlementRows(b.businessId)).toHaveLength(0);
+    expect(await settlementRows(c.businessId)).toHaveLength(0);
+    expect((await settlementState(a.businessId))?.settlementStatus).toBe('settled');
+    expect((await settlementState(c.businessId))?.settlementStatus).toBe('settled');
   });
 });

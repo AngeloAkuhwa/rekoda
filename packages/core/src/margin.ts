@@ -12,12 +12,14 @@
  * percentage that has been through binary floating point is a percentage that
  * can disagree with itself between two screens.
  */
-import { planPriceK } from './allowances.js';
-
 export interface MarginInput {
-  /** The plan the business is on today, whatever it was during the period. */
-  plan: string;
-  /** Provider cost for the period, in kobo, summed from `usage_events`. */
+  /**
+   * What this merchant pays, in kobo. Since BL2 the caller reads it from the
+   * plan catalogue through the grandfathering pin - no commercial price
+   * lives in this module, which is the slice's completion gate.
+   */
+  revenueK: number;
+  /** Platform cost for the period, in kobo, from `platform_cost_events`. */
   costK: number;
 }
 
@@ -38,7 +40,7 @@ export interface Margin {
 }
 
 export function margin(input: MarginInput): Margin {
-  const revenueK = planPriceK(input.plan);
+  const revenueK = Math.max(0, Math.round(input.revenueK));
   const costK = Math.max(0, Math.round(input.costK));
   return {
     revenueK,
@@ -52,9 +54,11 @@ export function margin(input: MarginInput): Margin {
  * The same arithmetic over a whole cohort, from parts that were counted
  * rather than listed.
  *
- * Revenue comes from a plan census (how many businesses sit on each plan)
- * and cost from a single summed total, because both are exact over the whole
- * estate. Adding up a page of rows would give a number that looked right and
+ * Each census row arrives with its revenue already summed from the
+ * catalogue - a plan is no longer one price, because two merchants on the
+ * same plan can sit pinned to two differently priced versions, and only the
+ * database knows which. Cost stays a single summed total. Both are exact
+ * over the whole estate; adding up a page of rows would give a number that
  * quietly shrank the day there were more merchants than the page holds.
  *
  * Trials contribute their cost and no revenue, which is the truthful shape:
@@ -63,10 +67,14 @@ export function margin(input: MarginInput): Margin {
 export interface PlanCount {
   plan: string;
   businesses: number;
+  /** Of those, how many are priced above zero. */
+  paying: number;
+  /** What the plan's businesses pay per month between them, in kobo. */
+  revenueK: number;
 }
 
 export function estateMargin(census: readonly PlanCount[], costK: number): Margin {
-  const revenueK = census.reduce((sum, row) => sum + planPriceK(row.plan) * row.businesses, 0);
+  const revenueK = census.reduce((sum, row) => sum + row.revenueK, 0);
   const cost = Math.max(0, Math.round(costK));
   return {
     revenueK,
@@ -76,9 +84,9 @@ export function estateMargin(census: readonly PlanCount[], costK: number): Margi
   };
 }
 
-/** How many of the counted businesses are on a plan that earns anything. */
+/** How many of the counted businesses pay anything at all. */
 export function payingCount(census: readonly PlanCount[]): number {
-  return census.reduce((sum, row) => sum + (planPriceK(row.plan) > 0 ? row.businesses : 0), 0);
+  return census.reduce((sum, row) => sum + row.paying, 0);
 }
 
 /** Every business counted, whatever plan they are on. */

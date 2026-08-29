@@ -20,18 +20,27 @@
  */
 import { sql } from 'drizzle-orm';
 import {
+  ACCOUNTS,
   isExpenseCategory,
   isSaleSource,
   type ExpenseCategory,
   type SaleSource,
 } from '@rekoda/core';
+import type { AccountKey } from '@rekoda/core';
 import type { TenantDb } from '../client.js';
+import { codeOf } from './accounts.js';
 
 /** Accounts whose movement IS "money in / money out" under the cash lens. */
 /* All three, since ADR 0025 split the bank. Money waiting to settle at the
  * provider is still the merchant's money; the split changed where it is
  * recorded, never whether it counts. */
-const CASH_ACCOUNTS = sql`'CASH', 'BANK', 'BANK_PAYSTACK'`;
+/* By chart CODE through account_id (PR-033) for the seeded three, plus the
+ * PAYMENT_PROVIDER_CLEARING role wherever it appears (PR-095): money a
+ * provider verifiably holds for the merchant is still their money, however
+ * many connections hold it. */
+const CASH_CODES = sql.raw(
+  `'${ACCOUNTS.CASH.code}', '${ACCOUNTS.BANK.code}', '${ACCOUNTS.BANK_PAYSTACK.code}'`,
+);
 
 export interface Overview {
   /** Cash that arrived this Lagos month, in kobo. */
@@ -58,12 +67,16 @@ export async function overviewFor(tx: TenantDb, businessId: string): Promise<Ove
     sales_k: string;
   }>(sql`
     SELECT
-      COALESCE(SUM(e.debit_k)  FILTER (WHERE e.account IN (${CASH_ACCOUNTS})), 0)::bigint AS money_in_k,
-      COALESCE(SUM(e.debit_k)  FILTER (WHERE e.account = 'BANK_PAYSTACK'
-                                         AND t.source_type = 'webhook'), 0)::bigint      AS verified_in_k,
-      COALESCE(SUM(e.credit_k) FILTER (WHERE e.account IN (${CASH_ACCOUNTS})), 0)::bigint AS money_out_k,
-      COALESCE(SUM(e.credit_k) FILTER (WHERE e.account = 'SALES_REVENUE'), 0)::bigint     AS sales_k
+      COALESCE(SUM(e.debit_k)  FILTER (WHERE acc.code IN (${CASH_CODES})
+                                         OR acc.system_role = 'PAYMENT_PROVIDER_CLEARING'), 0)::bigint AS money_in_k,
+      COALESCE(SUM(e.debit_k)  FILTER (WHERE (acc.code = ${codeOf('BANK_PAYSTACK')}
+                                         OR acc.system_role = 'PAYMENT_PROVIDER_CLEARING')
+                                         AND t.source_type = 'webhook'), 0)::bigint  AS verified_in_k,
+      COALESCE(SUM(e.credit_k) FILTER (WHERE acc.code IN (${CASH_CODES})
+                                         OR acc.system_role = 'PAYMENT_PROVIDER_CLEARING'), 0)::bigint AS money_out_k,
+      COALESCE(SUM(e.credit_k) FILTER (WHERE acc.code = ${codeOf('SALES_REVENUE')}), 0)::bigint AS sales_k
     FROM ledger_entries e
+    JOIN accounts acc ON acc.id = e.account_id
     JOIN ledger_transactions t ON t.id = e.transaction_id
     WHERE e.business_id = ${businessId}::uuid
       AND e.created_at >= date_trunc('month', now() + interval '1 hour') - interval '1 hour'
@@ -77,9 +90,10 @@ export async function overviewFor(tx: TenantDb, businessId: string): Promise<Ove
   `);
 
   const apRows = await tx.execute<{ ap_k: string }>(sql`
-    SELECT COALESCE(SUM(credit_k) - SUM(debit_k), 0)::bigint AS ap_k
-    FROM ledger_entries
-    WHERE business_id = ${businessId}::uuid AND account = 'ACCOUNTS_PAYABLE'
+    SELECT COALESCE(SUM(e.credit_k) - SUM(e.debit_k), 0)::bigint AS ap_k
+    FROM ledger_entries e
+    JOIN accounts acc ON acc.id = e.account_id
+    WHERE e.business_id = ${businessId}::uuid AND acc.code = ${codeOf('ACCOUNTS_PAYABLE')}
   `);
 
   const exceptionRows = await tx.execute<{ n: number }>(sql`
@@ -119,9 +133,12 @@ export async function cashflowFor(
   const rows = await tx.execute<{ period: string; in_k: string; out_k: string }>(sql`
     SELECT
       to_char(date_trunc('month', e.created_at + interval '1 hour'), 'YYYY-MM') AS period,
-      COALESCE(SUM(e.debit_k)  FILTER (WHERE e.account IN (${CASH_ACCOUNTS})), 0)::bigint AS in_k,
-      COALESCE(SUM(e.credit_k) FILTER (WHERE e.account IN (${CASH_ACCOUNTS})), 0)::bigint AS out_k
+      COALESCE(SUM(e.debit_k)  FILTER (WHERE acc.code IN (${CASH_CODES})
+                                         OR acc.system_role = 'PAYMENT_PROVIDER_CLEARING'), 0)::bigint AS in_k,
+      COALESCE(SUM(e.credit_k) FILTER (WHERE acc.code IN (${CASH_CODES})
+                                         OR acc.system_role = 'PAYMENT_PROVIDER_CLEARING'), 0)::bigint AS out_k
     FROM ledger_entries e
+    JOIN accounts acc ON acc.id = e.account_id
     WHERE e.business_id = ${businessId}::uuid
       AND e.created_at >= date_trunc('month', now() + interval '1 hour')
                           - make_interval(months => ${months - 1}) - interval '1 hour'
@@ -372,7 +389,10 @@ export async function activityFor(
 }
 
 export interface AccountSumsRow {
-  account: string;
+  code: string;
+  name: string;
+  type: 'asset' | 'liability' | 'equity' | 'income' | 'expense';
+  systemRole: string | null;
   periodDebitK: number;
   periodCreditK: number;
   cumulativeDebitK: number;
@@ -390,7 +410,10 @@ export async function accountSumsFor(
   period: string,
 ): Promise<AccountSumsRow[]> {
   const rows = await tx.execute<{
-    account: string;
+    account_code: string;
+    account_name: string;
+    account_type: string;
+    system_role: string | null;
     period_debit_k: string;
     period_credit_k: string;
     cumulative_debit_k: string;
@@ -408,18 +431,27 @@ export async function accountSumsFor(
              (((${period} || '-01')::date + interval '1 month')::timestamptz
                - interval '1 hour') AS pend
     )
-    SELECT e.account,
+    SELECT acc.code AS account_code, acc.name AS account_name, acc.type AS account_type,
+      acc.system_role,
       COALESCE(SUM(e.debit_k)  FILTER (WHERE e.created_at >= b.pstart), 0)::bigint AS period_debit_k,
       COALESCE(SUM(e.credit_k) FILTER (WHERE e.created_at >= b.pstart), 0)::bigint AS period_credit_k,
       COALESCE(SUM(e.debit_k), 0)::bigint  AS cumulative_debit_k,
       COALESCE(SUM(e.credit_k), 0)::bigint AS cumulative_credit_k
-    FROM ledger_entries e, bounds b
+    FROM ledger_entries e
+    JOIN accounts acc ON acc.id = e.account_id, bounds b
     WHERE e.business_id = ${businessId}::uuid AND e.created_at < b.pend
-    GROUP BY e.account
-    ORDER BY e.account
+    GROUP BY acc.code, acc.name, acc.type, acc.system_role
+    ORDER BY acc.code
   `);
+  /* Every account the ledger moved, with ITS OWN chart metadata (D1,
+   * PR-095): the chart in the database is the authority, and no account —
+   * provisioned, custom or seeded — is dropped for being unknown to a
+   * private table. */
   return [...rows].map((r) => ({
-    account: r.account,
+    code: r.account_code,
+    name: r.account_name,
+    type: r.account_type as AccountSumsRow['type'],
+    systemRole: r.system_role,
     periodDebitK: Number(r.period_debit_k),
     periodCreditK: Number(r.period_credit_k),
     cumulativeDebitK: Number(r.cumulative_debit_k),
@@ -483,9 +515,10 @@ export async function expenseScheduleFor(
     ),
     movement AS (
       SELECT e.transaction_id, SUM(e.debit_k - e.credit_k) AS amount_k
-      FROM ledger_entries e, bounds b
+      FROM ledger_entries e
+      JOIN accounts acc ON acc.id = e.account_id, bounds b
       WHERE e.business_id = ${businessId}::uuid
-        AND e.account = 'EXPENSES'
+        AND acc.code = ${codeOf('EXPENSES')}
         AND e.created_at >= b.pstart AND e.created_at < b.pend
       GROUP BY e.transaction_id
     )
@@ -588,9 +621,10 @@ export async function revenueScheduleFor(
     ),
     movement AS (
       SELECT e.transaction_id, SUM(e.credit_k - e.debit_k) AS amount_k
-      FROM ledger_entries e, bounds b
+      FROM ledger_entries e
+      JOIN accounts acc ON acc.id = e.account_id, bounds b
       WHERE e.business_id = ${businessId}::uuid
-        AND e.account = 'SALES_REVENUE'
+        AND acc.code = ${codeOf('SALES_REVENUE')}
         AND e.created_at >= b.pstart AND e.created_at < b.pend
       GROUP BY e.transaction_id
     )
@@ -650,6 +684,8 @@ export interface InvoiceListRow {
   issuedAt: Date;
   /** When the money was agreed to arrive. Null when nobody said. */
   dueDate: Date | null;
+  /** An opaque reference for the statement page, never a name (PR-097). */
+  customerId: string | null;
 }
 
 export interface InvoiceList {
@@ -679,10 +715,11 @@ export async function invoicesFor(
     balance_due_k: string;
     credited_k: string;
     issued_at: Date;
+    customer_id: string | null;
   }>(sql`
     SELECT invoice_number, status, due_date, total_k::bigint AS total_k, paid_k::bigint AS paid_k,
            balance_due_k::bigint AS balance_due_k, credited_k::bigint AS credited_k,
-           created_at AS issued_at
+           created_at AS issued_at, customer_id
     FROM invoices
     WHERE business_id = ${businessId}::uuid
     ORDER BY created_at DESC
@@ -706,6 +743,7 @@ export async function invoicesFor(
       creditedK: Number(r.credited_k),
       issuedAt: new Date(r.issued_at),
       dueDate: r.due_date === null ? null : new Date(r.due_date),
+      customerId: r.customer_id,
     })),
     count: t?.n ?? 0,
     outstandingK: Number(t?.outstanding_k ?? 0),

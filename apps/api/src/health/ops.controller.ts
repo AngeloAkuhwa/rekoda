@@ -21,6 +21,7 @@ import {
   events,
   jobsRepo,
   marginRepo,
+  observabilityRepo,
   settleRepo,
   subscriptionsRepo,
   withBusiness,
@@ -37,6 +38,7 @@ import {
   type Margin,
 } from '@rekoda/core';
 import { CONFIG, type ApiConfig } from '../config.js';
+import { SecurityMetrics } from '../channels/security-metrics.service.js';
 import { DB, WORKER_DB } from '../db/db.module.js';
 
 /**
@@ -73,6 +75,7 @@ export class OpsController {
      * a process without one says so instead of guessing.
      */
     @Inject(WORKER_DB) private readonly workerDb: Db | null,
+    @Inject(SecurityMetrics) private readonly security: SecurityMetrics,
   ) {}
 
   @Get('health')
@@ -81,6 +84,16 @@ export class OpsController {
     queue: Awaited<ReturnType<typeof jobsRepo.queueHealth>> | null;
     meta: Awaited<ReturnType<typeof events.eventHealth>>;
     paystack: Awaited<ReturnType<typeof events.eventHealth>>;
+    /**
+     * Webhook signatures rejected THIS process since it started (S1, PR-108).
+     *
+     * The `badSignatures` inside `meta`/`paystack` above reads a column no
+     * code ever writes - signatures are rejected before persistence, so it
+     * is a structural zero. This is the counter that actually moves: a
+     * nonzero is a probe, or a secret rotation silently 401-ing real
+     * traffic. Per process, so poll every replica and alarm on any nonzero.
+     */
+    rejectedSignatures: { meta: number; paystack: number };
   }> {
     this.assertOperator(secret);
 
@@ -89,7 +102,15 @@ export class OpsController {
       events.eventHealth(this.db, 'meta'),
       events.eventHealth(this.db, 'paystack'),
     ]);
-    return { queue, meta, paystack };
+    return {
+      queue,
+      meta,
+      paystack,
+      rejectedSignatures: {
+        meta: this.security.rejectedSignatures('meta'),
+        paystack: this.security.rejectedSignatures('paystack'),
+      },
+    };
   }
 
   /**
@@ -158,6 +179,105 @@ export class OpsController {
     };
   }
 
+  /**
+   * Spec §31's invariants, running as probes (S1, PR-104).
+   *
+   * Every integrity count here should be zero forever: unbalanced journals
+   * (invariant 2, the belt checking PR-039's trigger), paid invoices with
+   * no money trail (invariant 3, which no constraint enforces), settlements
+   * whose explanation stopped adding up (invariant 5), and dead outbox
+   * events - §26 promises a dead announcement is visible, and this is
+   * where. The first nonzero is an incident with a business id attached.
+   *
+   * The sweep runs per tenant under the tenant pin, deliberately: the
+   * worker credential reads whole tables only where a migration argued for
+   * a policy, and an estate-wide probe is not worth widening that boundary.
+   * `estateComplete` says whether the page covered everybody, because an
+   * integrity report that silently truncated would be the exact failure
+   * this endpoint exists to prevent.
+   */
+  @Get('financial-integrity')
+  async financialIntegrity(
+    @Headers('x-rekoda-operator-secret') secret: string | undefined,
+  ): Promise<{
+    scanned: number;
+    estateComplete: boolean;
+    totals: {
+      unbalancedJournals: number;
+      paidWithoutSettlement: number;
+      settlementDrift: number;
+      deadOutboxEvents: number;
+      undispatchedOutbox: number;
+    };
+    /** Minutes, worst tenant. Null when every announcement is delivered. */
+    oldestUndispatchedMinutes: number | null;
+    /** Ids only, with their nonzero integrity counts. Empty is the goal. */
+    violations: Array<
+      { businessId: string } & Partial<
+        Pick<
+          Awaited<ReturnType<typeof observabilityRepo.financialProbesFor>>,
+          'unbalancedJournals' | 'paidWithoutSettlement' | 'settlementDrift' | 'deadOutboxEvents'
+        >
+      >
+    >;
+  }> {
+    this.assertOperator(secret);
+    if (!this.workerDb) {
+      throw new ServiceUnavailableException(
+        'financial integrity needs the worker credential (WORKER_DATABASE_URL); poll a process that holds one',
+      );
+    }
+
+    const SWEEP_CAP = 500;
+    const ids = await observabilityRepo.sweepBusinessIds(this.workerDb, SWEEP_CAP);
+    const totals = {
+      unbalancedJournals: 0,
+      paidWithoutSettlement: 0,
+      settlementDrift: 0,
+      deadOutboxEvents: 0,
+      undispatchedOutbox: 0,
+    };
+    let oldest: number | null = null;
+    const violations: Array<{
+      businessId: string;
+      unbalancedJournals?: number;
+      paidWithoutSettlement?: number;
+      settlementDrift?: number;
+      deadOutboxEvents?: number;
+    }> = [];
+
+    for (const businessId of ids) {
+      const probes = await withBusiness(this.db, businessId, (tx) =>
+        observabilityRepo.financialProbesFor(tx),
+      );
+      totals.unbalancedJournals += probes.unbalancedJournals;
+      totals.paidWithoutSettlement += probes.paidWithoutSettlement;
+      totals.settlementDrift += probes.settlementDrift;
+      totals.deadOutboxEvents += probes.deadOutboxEvents;
+      totals.undispatchedOutbox += probes.undispatchedOutbox;
+      if (probes.oldestUndispatchedMinutes !== null) {
+        oldest = Math.max(oldest ?? 0, probes.oldestUndispatchedMinutes);
+      }
+
+      const broken: (typeof violations)[number] = { businessId };
+      if (probes.unbalancedJournals > 0) broken.unbalancedJournals = probes.unbalancedJournals;
+      if (probes.paidWithoutSettlement > 0) {
+        broken.paidWithoutSettlement = probes.paidWithoutSettlement;
+      }
+      if (probes.settlementDrift > 0) broken.settlementDrift = probes.settlementDrift;
+      if (probes.deadOutboxEvents > 0) broken.deadOutboxEvents = probes.deadOutboxEvents;
+      if (Object.keys(broken).length > 1) violations.push(broken);
+    }
+
+    return {
+      scanned: ids.length,
+      estateComplete: ids.length < SWEEP_CAP,
+      totals,
+      oldestUndispatchedMinutes: oldest,
+      violations,
+    };
+  }
+
   @Get('margin')
   async marginReport(
     @Headers('x-rekoda-operator-secret') secret: string | undefined,
@@ -171,7 +291,22 @@ export class OpsController {
      * the estate outgrows the page of rows below it.
      */
     total: Margin & { businesses: number; paying: number; spending: number; events: number };
+    /**
+     * The period's money by §29 cost class, straight off the append-only
+     * subledger (COST-1). ESTIMATED rows are rate-card derivations; ACTUAL
+     * rows are the provider's own word, and the day they disagree with the
+     * telemetry below is the day the subledger is doing its job.
+     */
+    byCostType: Awaited<ReturnType<typeof marginRepo.costEventsByType>>;
     byProvider: Awaited<ReturnType<typeof marginRepo.costByProvider>>;
+    /**
+     * The same period split by what was actually bought: which message
+     * category, which model role. Spec §24 separates the message categories
+     * because utility and marketing differ by roughly eightfold, and grouped
+     * by provider alone that shift is invisible - the Meta total moves and
+     * nothing says which way the mix went.
+     */
+    byUsageType: Awaited<ReturnType<typeof marginRepo.costByUsageType>>;
     /** The costliest merchants, capped. `total` covers the ones not here. */
     businesses: Array<
       Margin & { businessId: string; plan: string; events: number; createdAt: string }
@@ -196,13 +331,21 @@ export class OpsController {
       throw new BadRequestException('period must be YYYY-MM');
     }
 
-    const [rows, byProvider, availablePeriods, census, totals] = await Promise.all([
-      marginRepo.costByBusiness(this.workerDb, wanted),
-      marginRepo.costByProvider(this.workerDb, wanted),
-      marginRepo.meteredPeriods(this.workerDb),
-      marginRepo.planCensus(this.workerDb),
-      marginRepo.periodTotals(this.workerDb, wanted),
-    ]);
+    /* Money from the subledger and the catalogue; units from telemetry.
+     * `platform_cost_events` carries the figures (BL2's gate: margin
+     * reconstructs per merchant from PlatformCostEvent), the catalogue
+     * prices each business through its grandfathering pin, and
+     * `usage_events` stays underneath as the what-was-bought detail. */
+    const [rows, byCostType, byProvider, byUsageType, availablePeriods, census, totals] =
+      await Promise.all([
+        marginRepo.marginByBusiness(this.workerDb, wanted),
+        marginRepo.costEventsByType(this.workerDb, wanted),
+        marginRepo.costByProvider(this.workerDb, wanted),
+        marginRepo.costByUsageType(this.workerDb, wanted),
+        marginRepo.meteredPeriods(this.workerDb),
+        marginRepo.revenueCensus(this.workerDb),
+        marginRepo.costEventTotals(this.workerDb, wanted),
+      ]);
 
     return {
       period: wanted,
@@ -214,13 +357,15 @@ export class OpsController {
         spending: totals.spending,
         events: totals.events,
       },
+      byCostType,
       byProvider,
+      byUsageType,
       businesses: rows.map((row) => ({
         businessId: row.businessId,
         plan: row.plan,
         events: row.events,
         createdAt: row.createdAt.toISOString(),
-        ...margin({ plan: row.plan, costK: row.costK }),
+        ...margin({ revenueK: row.revenueK, costK: row.costK }),
       })),
     };
   }
