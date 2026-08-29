@@ -5,7 +5,15 @@ Drill cadence: monthly, and before any migration touching financial tables.
 
 ## What is backed up
 
-| Data                                                    | Method                                  | Frequency         | Destination             |
+> **Honesty note (pre-launch).** The table below is the intended
+> PRODUCTION backup design. As of 29 August 2026 none of it is enabled or
+> evidenced: no B2 tooling, timer or configuration exists in this
+> repository, and no production server exists to run it. What exists and
+> runs today is the automated restore drill in CI (below). Enabling this
+> design is a launch task; when it happens, this note is replaced by the
+> evidence (timer unit, bucket name, first verified upload date).
+
+| Data                                                    | Method (planned)                        | Frequency (planned) | Destination (planned)   |
 | ------------------------------------------------------- | --------------------------------------- | ----------------- | ----------------------- |
 | Postgres (everything: ledger, vault ciphertexts, audit) | `pg_dump -Fc`                           | nightly 02:00 WAT | Backblaze B2, encrypted |
 | Generated documents                                     | R2 is primary storage; lifecycle-copied | continuous        | R2 + B2 mirror          |
@@ -16,10 +24,12 @@ environment — so an exfiltrated backup alone exposes no customer identity.
 Corollary: **losing VAULT_KEY loses the vault.** The key custody procedure
 (who holds copies, where) is part of this runbook's checklist, not optional.
 
-## Backup (automated; verify weekly)
+## Backup (production procedure; to be installed at deploy, then verified weekly)
 
 ```bash
-# On the server — installed as a systemd timer at deploy (M0 compose ships it):
+# On the server — to be installed as a systemd timer at first deploy.
+# NOT YET SHIPPED: no timer unit or compose service exists in the repo;
+# writing and enabling it is part of the launch deploy checklist.
 pg_dump "$DATABASE_URL" -Fc -f /backups/rekoda-$(date +%F).dump
 openssl enc -aes-256-cbc -pbkdf2 -salt \
   -in /backups/rekoda-$(date +%F).dump \

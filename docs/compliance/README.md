@@ -27,6 +27,7 @@
   and is referenced.
 - **Honest hosting disclosure**: voice notes and business documents are
   processed by hosted providers (OpenAI, Anthropic) — the pack says so
-  plainly, matching `/ai-privacy` and ADR 0032. Absolute claims like
-  "audio never leaves Rekoda" are banned here for the same reason they
-  were removed from the public pages.
+  plainly, matching `/ai-privacy` and ADR 0032. Absolute claims that
+  media never leaves the platform are banned here for the same reason
+  they were removed from the public pages
+  (`scripts/check-retired-claims.mjs` enforces this).

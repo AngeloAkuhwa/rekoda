@@ -83,10 +83,12 @@ jobs:
       - name: UI copy reads human
         if: steps.ws.outputs.present == 'true'
         run: node scripts/check-ui-copy.mjs
+      - name: Retired claims stay retired
+        if: steps.ws.outputs.present == 'true'
+        run: node scripts/check-retired-claims.mjs
       - name: Docs-only repository — nothing to build yet
         if: steps.ws.outputs.present == 'false'
         run: echo "No pnpm workspace yet (pre-M0). Skipping build steps."
-
 
   # Integration tests need a REAL PostgreSQL: row-level security, advisory locks
   # and ON CONFLICT races have no meaningful in-memory imitation, and a mock of

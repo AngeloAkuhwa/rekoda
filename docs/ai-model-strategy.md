@@ -139,10 +139,14 @@ where two different models fail differently, so agreement carries signal:
   are re-extracted by `classifier` (Haiku) in the same half-price batch;
   disagreeing rows land in `requires_review`, never auto-post. Cost per
   statement: single-digit naira.
-- supplier invoices above a configurable threshold
-  (`AI_DUAL_EXTRACT_THRESHOLD_K`, default ₦500,000): same dual-extract,
-  same rule — agreement proceeds to the normal confirmation gate,
-  disagreement asks the merchant.
+- documents above a configurable threshold
+  (`AI_DUAL_EXTRACT_THRESHOLD_K`, default ₦500,000): as built (PR-126),
+  the independent verifier (`AI_MODEL_VISION_VERIFIER`, a different
+  vendor) re-derives the structured command from the TOKENISED EXTRACTED
+  TEXT — the image itself goes only to the primary vision reader, so the
+  second vendor never receives raw media. Same rule: agreement proceeds
+  to the normal confirmation gate, disagreement asks the merchant,
+  naming the conflicting fields.
 
 The shape to hold: **a validator model is an exception-finder on high-stakes
 documents, never a toll booth on every message.**

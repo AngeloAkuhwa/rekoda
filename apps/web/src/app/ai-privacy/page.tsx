@@ -81,8 +81,8 @@ export default function AiPrivacyPage() {
                 Your audio is sent to OpenAI, a transcription processor, for one purpose only: to
                 come back as the sentence you spoke. Under the API terms we use, what we send is not
                 used to train their models. The sentence is then treated exactly like a typed
-                message: names, phone numbers and addresses are replaced by tokens before any AI
-                reasons about it, and we do not keep the audio.
+                message: recognised customer names, phone numbers and other supported identifiers
+                are replaced by tokens before any AI reasons about it, and we do not keep the audio.
               </p>
               <p>
                 An earlier version of this page said transcription ran only on infrastructure we
@@ -104,8 +104,9 @@ export default function AiPrivacyPage() {
                 The picture is sent to Anthropic with a single instruction: transcribe what the
                 paper says, word for word, and nothing else. Under the API terms we use, what we
                 send is not used to train their models, and we do not keep the picture. The AI that
-                does your bookkeeping never sees it: it sees the transcribed text, with names, phone
-                numbers and addresses already replaced by tokens, exactly as a typed message is.
+                does your bookkeeping never sees it: it sees the transcribed text, with recognised
+                customer names, phone numbers and other supported identifiers already replaced by
+                tokens, exactly as a typed message is.
               </p>
               <p>
                 There is no quiet rerouting. If the reader is busy or cannot make out the page, we
