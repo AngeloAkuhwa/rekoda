@@ -170,7 +170,7 @@ import {
   type ReopenPeriodInput,
 } from '../commands/ledger-commands.js';
 import { voidReceiptWork, type VoidReceiptInput } from '../commands/sale-commands.js';
-import { Roles, RolesGuard } from '../auth/roles.guard.js';
+import { AllMembers, Roles, RolesGuard } from '../auth/roles.guard.js';
 import { DB } from '../db/db.module.js';
 import { PrivacyGateway } from '../privacy/gateway.service.js';
 
@@ -426,6 +426,7 @@ export class ReportsController {
    * why the portability export below is never counted at all.
    */
   @Get('statements.pdf')
+  @AllMembers()
   async statementsPdf(
     @Req() request: AuthedRequest,
     @Res() reply: FileReply,
@@ -476,6 +477,7 @@ export class ReportsController {
    * tabs in one file is what a CSV per statement cannot be.
    */
   @Get('statements.xlsx')
+  @AllMembers()
   async statementsXlsx(
     @Req() request: AuthedRequest,
     @Res() reply: FileReply,
@@ -1240,8 +1242,19 @@ export class ReportsController {
    * "Accountant" would defeat the one question the page exists to answer.
    * A member who has since been removed keeps their raw actor, because an id
    * support can look up beats "somebody".
+   *
+   * NOT readable by a delegate, and this is the one export whose audience
+   * is narrower than the rest. Two things are in here that no other report
+   * carries: the owner's control actions (voids, credits, journals, book
+   * closes, opening balances) and, through the labels above, every
+   * colleague's role and phone tail. A delegate records the day's trade;
+   * "who corrected what, and whose number is whose" is not part of that
+   * job, and a shared shop phone is the normal case rather than the
+   * exception. The accountant keeps it because auditing the books is
+   * literally the work they were invited to do.
    */
   @Get('audit')
+  @Roles('owner', 'accountant')
   async audit(@Req() request: AuthedRequest): Promise<ReportsAuditResponse> {
     const businessId = request.auth!.businessId;
     const { list, members } = await withBusiness(this.db, businessId, async (tx) => ({
@@ -1943,6 +1956,7 @@ export class ReportsController {
    * earning it. Everything, not the page: see EXPORT_ROWS.
    */
   @Get('invoices.csv')
+  @AllMembers()
   async invoicesCsv(@Req() request: AuthedRequest, @Res() reply: CsvReply): Promise<void> {
     const businessId = request.auth!.businessId;
     await this.takeExport(businessId);
@@ -1979,6 +1993,7 @@ export class ReportsController {
    * One `REPORT_EXPORTS` unit, like every other produced file (PR-118).
    */
   @Get('customers/:customerId/statement.csv')
+  @AllMembers()
   async customerStatementCsv(
     @Req() request: AuthedRequest,
     @Param('customerId') customerId: string,
@@ -1998,6 +2013,7 @@ export class ReportsController {
 
   /** The supplier mirror: bills raised, payments made, balance owed. */
   @Get('suppliers/:supplierId/statement.csv')
+  @AllMembers()
   async supplierStatementCsv(
     @Req() request: AuthedRequest,
     @Param('supplierId') supplierId: string,
@@ -2016,6 +2032,7 @@ export class ReportsController {
   }
 
   @Get('expenses.csv')
+  @AllMembers()
   async expensesCsv(@Req() request: AuthedRequest, @Res() reply: CsvReply): Promise<void> {
     const businessId = request.auth!.businessId;
     await this.takeExport(businessId);
@@ -2046,6 +2063,7 @@ export class ReportsController {
   }
 
   @Get('receipts.csv')
+  @AllMembers()
   async receiptsCsv(@Req() request: AuthedRequest, @Res() reply: CsvReply): Promise<void> {
     const businessId = request.auth!.businessId;
     await this.takeExport(businessId);
@@ -2074,6 +2092,10 @@ export class ReportsController {
    * take away. Actors resolve exactly as the page resolves them.
    */
   @Get('audit.csv')
+  /* Same audience as the page it downloads (`GET audit` above): owner and
+   * accountant only. A file is the easier thing to keep after someone
+   * leaves, so if anything the download deserves the tighter door. */
+  @Roles('owner', 'accountant')
   async auditCsv(@Req() request: AuthedRequest, @Res() reply: CsvReply): Promise<void> {
     const businessId = request.auth!.businessId;
     await this.takeExport(businessId);
@@ -2106,6 +2128,7 @@ export class ReportsController {
    * costs and what it sells for, which is a stock take's starting sheet.
    */
   @Get('stock.csv')
+  @AllMembers()
   async stockCsv(@Req() request: AuthedRequest, @Res() reply: CsvReply): Promise<void> {
     const businessId = request.auth!.businessId;
     await this.takeExport(businessId);

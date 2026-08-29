@@ -89,7 +89,7 @@ export default async function InvoicesPage({
         <SignOutButton />
       </header>
 
-      <AppNav active="invoices" held={heldBy(identity)} />
+      <AppNav active="invoices" held={heldBy(identity)} role={identity.role} />
 
       {/* Above the register, because an order is what an invoice comes FROM.
           A merchant looking for "did that order ever get billed" is looking

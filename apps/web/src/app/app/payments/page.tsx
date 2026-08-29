@@ -51,7 +51,7 @@ export default async function PaymentsPage() {
         <SignOutButton />
       </header>
 
-      <AppNav active="payments" held={heldBy(identity)} />
+      <AppNav active="payments" held={heldBy(identity)} role={identity.role} />
 
       {/* ── the settlement connection (§3–5) ── */}
       {connection.status === 'active' ? (

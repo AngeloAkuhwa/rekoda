@@ -39,7 +39,7 @@ export default async function StockPage() {
         <SignOutButton />
       </header>
 
-      <AppNav active="stock" held={heldBy(identity)} />
+      <AppNav active="stock" held={heldBy(identity)} role={identity.role} />
 
       <div className="rk-card">
         <h2>Stock register</h2>

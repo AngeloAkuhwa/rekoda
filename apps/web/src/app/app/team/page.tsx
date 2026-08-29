@@ -41,7 +41,7 @@ export default async function TeamPage() {
           </div>
           <SignOutButton />
         </header>
-        <AppNav active="team" held={heldBy(identity)} />
+        <AppNav active="team" held={heldBy(identity)} role={identity.role} />
         <div className="rk-card">
           <p className="rk-dash-empty-line">
             Only the business owner can see and change who has access. Ask them if you need somebody
@@ -65,7 +65,7 @@ export default async function TeamPage() {
         <SignOutButton />
       </header>
 
-      <AppNav active="team" held={heldBy(identity)} />
+      <AppNav active="team" held={heldBy(identity)} role={identity.role} />
 
       <div className="rk-card">
         <h2>People with access</h2>

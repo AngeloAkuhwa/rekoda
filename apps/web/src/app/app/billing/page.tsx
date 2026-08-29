@@ -119,7 +119,7 @@ export default async function BillingPage({
         <SignOutButton />
       </header>
 
-      <AppNav active="billing" held={heldBy(identity)} />
+      <AppNav active="billing" held={heldBy(identity)} role={identity.role} />
 
       {overview.status.state === 'grace' ? (
         <div className="rk-attention-strip" role="status">

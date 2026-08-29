@@ -34,7 +34,7 @@ export default async function DebtorsPage() {
         <SignOutButton />
       </header>
 
-      <AppNav active="debtors" held={heldBy(identity)} />
+      <AppNav active="debtors" held={heldBy(identity)} role={identity.role} />
 
       <div className="rk-card">
         <h2>Outstanding, oldest debt first</h2>

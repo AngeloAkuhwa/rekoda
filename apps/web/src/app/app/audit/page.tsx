@@ -6,6 +6,7 @@ import { AppNav } from '../AppNav';
 import { exportCaption } from '@/lib/export-caption';
 import { SignOutButton } from '../SignOutButton';
 import { heldBy } from '@/lib/capabilities';
+import { canReadAudit } from '@/lib/permissions';
 
 export const metadata: Metadata = {
   title: 'Audit trail',
@@ -26,6 +27,36 @@ export const metadata: Metadata = {
  */
 export default async function AuditPage() {
   const { identity, token } = await requireSessionWithToken();
+
+  /* The nav hides this tab from a delegate, but a URL can still be typed
+     or bookmarked from a day when it was theirs. The API refuses either
+     way; this is the difference between being told why and meeting a
+     stack trace. */
+  if (!canReadAudit(identity.role)) {
+    return (
+      <section className="rk-container rk-dash">
+        <header className="rk-dash-head">
+          <div>
+            <p className="rk-eyebrow">Audit trail</p>
+            <h1>Who changed what</h1>
+          </div>
+          <SignOutButton />
+        </header>
+
+        <AppNav active="audit" held={heldBy(identity)} role={identity.role} />
+
+        <div className="rk-card">
+          <h2>This one is for the owner and the accountant</h2>
+          <p className="rk-fineprint">
+            The audit trail records who corrected what, and it names your colleagues by role and
+            phone. Everything you record yourself is on the pages you already use, and the owner can
+            open this for you if you need it.
+          </p>
+        </div>
+      </section>
+    );
+  }
+
   const { events, count } = await reportsAudit(token);
 
   return (
@@ -38,7 +69,7 @@ export default async function AuditPage() {
         <SignOutButton />
       </header>
 
-      <AppNav active="audit" held={heldBy(identity)} />
+      <AppNav active="audit" held={heldBy(identity)} role={identity.role} />
 
       <div className="rk-card">
         <h2>Every recorded change</h2>

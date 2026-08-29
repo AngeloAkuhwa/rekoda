@@ -53,7 +53,7 @@ export default async function BankPage() {
         <SignOutButton />
       </header>
 
-      <AppNav active="bank" held={heldBy(identity)} />
+      <AppNav active="bank" held={heldBy(identity)} role={identity.role} />
 
       {started ? (
         <div className="rk-card rk-dash-card">

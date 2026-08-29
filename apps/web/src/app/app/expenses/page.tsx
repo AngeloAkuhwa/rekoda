@@ -97,7 +97,7 @@ export default async function ExpensesPage({
         <SignOutButton />
       </header>
 
-      <AppNav active="expenses" held={heldBy(identity)} />
+      <AppNav active="expenses" held={heldBy(identity)} role={identity.role} />
 
       <div className="rk-stat-grid">
         <SpendStat

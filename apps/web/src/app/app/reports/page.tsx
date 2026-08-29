@@ -87,7 +87,7 @@ export default async function ReportsPage({
         <SignOutButton />
       </header>
 
-      <AppNav active="reports" held={heldBy(identity)} />
+      <AppNav active="reports" held={heldBy(identity)} role={identity.role} />
 
       <div className="rk-period-row">
         <a

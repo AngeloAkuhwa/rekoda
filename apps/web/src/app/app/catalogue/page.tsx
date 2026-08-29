@@ -61,7 +61,7 @@ export default async function CataloguePage() {
           </div>
           <SignOutButton />
         </header>
-        <AppNav active="catalogue" held={heldBy(identity)} />
+        <AppNav active="catalogue" held={heldBy(identity)} role={identity.role} />
         <EntitlementRefusal refusal={refusalFor('CATALOGUE', identity.plan)} />
       </section>
     );
@@ -91,7 +91,7 @@ export default async function CataloguePage() {
         <SignOutButton />
       </header>
 
-      <AppNav active="catalogue" held={heldBy(identity)} />
+      <AppNav active="catalogue" held={heldBy(identity)} role={identity.role} />
 
       {/* Only when there is something to fix. A banner reading "0 without a
           price" teaches a merchant to scroll past the thing that will matter

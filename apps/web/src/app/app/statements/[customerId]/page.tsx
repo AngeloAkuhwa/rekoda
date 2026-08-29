@@ -45,7 +45,7 @@ export default async function CustomerStatementPage({
         <SignOutButton />
       </header>
 
-      <AppNav active="invoices" held={heldBy(identity)} />
+      <AppNav active="invoices" held={heldBy(identity)} role={identity.role} />
 
       <div className="rk-card">
         <h2>Statement of account</h2>
