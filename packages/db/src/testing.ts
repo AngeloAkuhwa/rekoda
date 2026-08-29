@@ -87,6 +87,7 @@ export async function truncateAll(urls: Urls): Promise<void> {
         payment_verification_claims, payment_verification_revocations,
         payment_verifications, payment_evidence,
         jobs,
+        key_fingerprints,
         webhook_deliveries, webhook_endpoints,
         api_key_rate_windows, api_keys, api_applications,
         conversation_messages, conversations,

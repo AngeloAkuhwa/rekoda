@@ -25,6 +25,8 @@
  * script origin can load, `object-src` and `base-uri` are closed, the site
  * cannot be framed, and form posts cannot be redirected off-origin.
  */
+import { assertLegalIdentityConfigured } from './legal-gate.mjs';
+
 const isProduction = process.env.NODE_ENV === 'production';
 
 const csp = [
@@ -90,4 +92,13 @@ const nextConfig = {
   },
 };
 
-export default nextConfig;
+/**
+ * Phase-aware export so the legal-facts gate (remediation R8) runs exactly
+ * once, at production server start, and never during `next build` — CI
+ * builds without the real company values, which are supplied to the
+ * deployment environment and never committed.
+ */
+export default function configForPhase(phase) {
+  assertLegalIdentityConfigured(phase, process.env);
+  return nextConfig;
+}

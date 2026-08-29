@@ -32,6 +32,41 @@ must be a real key. Generate one with:
 openssl rand -hex 32
 ```
 
+## Fingerprint enrolment at boot (remediation A6)
+
+A wrong `VAULT_KEY` or `MATCH_KEY` does not error — it decrypts nothing and
+encrypts new secrets under a key the old data does not share. So the API
+refuses to start with a key the database was not enrolled with:
+
+- On **first boot** against a database, the process records a non-secret
+  fingerprint of each key in `key_fingerprints` (SHA-256 over a versioned
+  domain separator, truncated to 16 hex chars — safe to store and to log,
+  useless for recovering the key).
+- On **every later boot** it recomputes and compares. A mismatch aborts
+  startup with `KeyFingerprintMismatch`, naming both fingerprints (never a
+  key) so you can tell which side is wrong.
+
+**If you see `KeyFingerprintMismatch` and did not intend a rotation**, the
+deployed secret is wrong — a paste error, a stale secret store, or a restore
+pointed at the wrong environment. Fix the deployed value; do not touch the
+table.
+
+**If it is a deliberate rotation**, the application roles cannot update the
+enrolled row (they hold INSERT and SELECT only — migration 0120). In the
+same change that re-wraps the data (see below), update the fingerprint as
+the owner:
+
+```sql
+-- as the owner role, inside the rotation window
+UPDATE key_fingerprints
+   SET fingerprint = '<new fingerprint>', created_at = now()
+ WHERE key_name = 'VAULT_KEY';
+```
+
+The new fingerprint is printed by the failed boot attempt ("this process
+holds ..."), or computed as the first 16 hex chars of
+`sha256("rekoda-key-fingerprint-v1:" + key)`.
+
 ## Low-cost rotation (stateless keys)
 
 `META_APP_SECRET`, Paystack secret, `REKODA_OPERATOR_SECRET`, `OTP_PEPPER`:

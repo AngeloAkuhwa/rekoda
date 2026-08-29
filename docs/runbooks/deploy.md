@@ -26,6 +26,27 @@ docker compose up -d                        # atomic swap
 curl -fsS https://rekoda.app/health         # must return ok
 ```
 
+## What a production boot refuses (remediation R8, A5, A6)
+
+Both processes validate their environment before serving anything, and each
+failure below is a one-line startup error naming the variable — never a
+stack trace at the first real request:
+
+- **API**: every required env var is shape-checked (`loadConfig`); the
+  database roles must not be SUPERUSER or BYPASSRLS (A5 — never point the
+  app at an owner URL, even "temporarily"); `VAULT_KEY` and `MATCH_KEY`
+  must match the fingerprints the database was enrolled with (A6 — see
+  key-rotation.md "Fingerprint enrolment"); `REKODA_TRUSTED_PROXIES` must
+  be set.
+- **Web** (`next start`): every mandatory legal fact
+  (`NEXT_PUBLIC_LEGAL_*`, privacy and support emails) must be set, or the
+  server refuses to serve policy pages with placeholder badges (R8). The
+  real values come from the owner and are never committed; `next build`
+  in CI passes without them.
+
+A refused boot is the control working. Fix the environment; do not patch
+the check out.
+
 Migration discipline: **expand → deploy → contract.** A migration in the
 same release as the code that needs it must be backward-compatible with the
 previous release (additive columns/tables). Destructive contractions ship

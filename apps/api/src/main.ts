@@ -5,6 +5,8 @@ import multipart from '@fastify/multipart';
 import rateLimit from '@fastify/rate-limit';
 import { FastifyAdapter, type NestFastifyApplication } from '@nestjs/platform-fastify';
 import { AppModule } from './app.module.js';
+import { DB, WORKER_DB } from './db/db.module.js';
+import { bootChecks, type Db } from '@rekoda/db';
 import { MAX_IMAGE_BYTES } from '@rekoda/core';
 import { publicApi } from '@rekoda/contracts';
 import { CONFIG, isProductionEnv, loadConfig, type ApiConfig } from './config.js';
@@ -95,6 +97,22 @@ export async function createApp(): Promise<NestFastifyApplication> {
    * having now: it turns an unbounded spend into a bounded one.
    */
   const config = app.get<ApiConfig>(CONFIG);
+
+  /**
+   * Production invariants, before a single request is served (remediation
+   * A5/A6). The role check makes FORCE ROW LEVEL SECURITY real — a
+   * credential that can bypass RLS turns every policy decorative — and the
+   * key fingerprints refuse a process holding the wrong VAULT_KEY or
+   * MATCH_KEY, which would otherwise split the estate: old secrets
+   * unreadable, new ones written under an impostor. Both fail the boot,
+   * loudly, in front of the operator.
+   */
+  const db = app.get<Db>(DB);
+  await bootChecks.assertRoleCannotBypassRls(db, 'application');
+  const workerDb = app.get<Db | null>(WORKER_DB);
+  if (workerDb) await bootChecks.assertRoleCannotBypassRls(workerDb, 'worker');
+  await bootChecks.assertKeyUnchanged(db, 'VAULT_KEY', config.vaultKey);
+  await bootChecks.assertKeyUnchanged(db, 'MATCH_KEY', config.matchKey);
 
   /**
    * Product photos, and nothing else.

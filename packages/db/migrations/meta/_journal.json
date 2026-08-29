@@ -841,6 +841,13 @@
       "when": 1787412747000,
       "tag": "0119_media_daily_ceilings",
       "breakpoints": true
+    },
+    {
+      "idx": 120,
+      "version": "7",
+      "when": 1787412807000,
+      "tag": "0120_key_fingerprints",
+      "breakpoints": true
     }
   ]
 }
