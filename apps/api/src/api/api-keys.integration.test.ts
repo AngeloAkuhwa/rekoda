@@ -25,7 +25,7 @@ import {
   type Urls,
 } from '@rekoda/db/testing';
 
-const SECRET = 'api-keys-secret-at-least-32-characters';
+const SECRET = 'api-keys-secret-at-least-32-characters'; // gitleaks:allow - test fixture, not a credential
 
 let urls: Urls;
 let app: NestFastifyApplication;

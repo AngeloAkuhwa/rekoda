@@ -32,12 +32,12 @@ describe('missingLegalVars', () => {
     expect(missingLegalVars({})).toEqual([...MANDATORY_LEGAL_VARS]);
   });
 
-  it('treats whitespace as unset — it renders the same badge absence does', () => {
+  it('treats whitespace as unset: it renders the same badge absence does', () => {
     const env = { ...COMPLETE, NEXT_PUBLIC_LEGAL_RC_NUMBER: '   ' };
     expect(missingLegalVars(env)).toEqual(['NEXT_PUBLIC_LEGAL_RC_NUMBER']);
   });
 
-  it('does not demand the NDPR auditor — that filing has its own honest copy', () => {
+  it('does not demand the NDPR auditor, whose filing has its own honest copy', () => {
     expect(MANDATORY_LEGAL_VARS).not.toContain('NEXT_PUBLIC_NDPR_AUDITOR');
   });
 });
@@ -56,11 +56,11 @@ describe('assertLegalIdentityConfigured', () => {
     expect(() => assertLegalIdentityConfigured('phase-production-server', COMPLETE)).not.toThrow();
   });
 
-  it('lets `next build` proceed without the values — CI never holds them', () => {
+  it('lets `next build` proceed without the values (CI never holds them)', () => {
     expect(() => assertLegalIdentityConfigured('phase-production-build', {})).not.toThrow();
   });
 
-  it('leaves development alone — badges are the honest rendering there', () => {
+  it('leaves development alone: badges are the honest rendering there', () => {
     expect(() => assertLegalIdentityConfigured('phase-development-server', {})).not.toThrow();
   });
 });
