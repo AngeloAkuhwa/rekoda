@@ -10,6 +10,7 @@
  * could happen, it is a value the caller would have to construct by hand.
  */
 import { and, desc, eq, sql } from 'drizzle-orm';
+import { sanitizeCommandForPersistence } from '@rekoda/core';
 import type { TenantDb } from '../client.js';
 import { commandDrafts, conversationMessages, conversations } from '../schema/ops.js';
 
@@ -323,7 +324,12 @@ export async function recordDraft(
       businessId: draft.businessId,
       conversationMessageId: draft.conversationMessageId,
       intent: draft.intent,
-      command: draft.command as never,
+      /* THE persistence boundary (R5): every draft write passes through the
+       * central transient-field policy, HERE, at the only INSERT into
+       * command_drafts — never at whichever call site remembered. The
+       * preview the merchant reads is built from the live command before
+       * this line, so "echoed once, never stored" holds in both halves. */
+      command: sanitizeCommandForPersistence(draft.command) as never,
       model: draft.model,
       identityLink: (draft.identityLink ?? null) as never,
     })

@@ -262,6 +262,83 @@ describe('the deletion function', () => {
       ),
     ).rejects.toThrow();
   });
+
+  /**
+   * The tenant boundary on USERS (launch remediation R9, migration 0118).
+   *
+   * The original function ended with a global "delete users with no
+   * memberships" sweep — tidy-looking, and a tenant-boundary violation: a
+   * retention run for one business could delete a completely unrelated
+   * person who happened to be between phone verification and creating
+   * their first business. The corrected function may only ever evaluate
+   * the users the TARGET business brought to the run.
+   */
+  it('NEVER deletes an unrelated user who merely has no membership yet (R9)', async () => {
+    const businessId = await abandonedTrial(120);
+    await warn(businessId, daysAgo(40));
+
+    /* Somebody mid-onboarding: phone verified, user row created, no
+     * business yet. The exact person the global sweep used to delete. */
+    const onboarding = await identity.upsertUserByPhone(appDb, '+2348169999901');
+
+    expect(
+      await retentionRepo.deleteForRetention(workerDb, businessId, daysAgo(90)),
+    ).toBeGreaterThan(0);
+
+    const rows = await workerDb.execute<{ n: number }>(sql`
+      SELECT count(*)::int AS n FROM users WHERE id = ${onboarding.id}::uuid
+    `);
+    expect(Number([...rows][0]?.n)).toBe(1);
+  });
+
+  it('keeps an owner whose OTHER business still trades (R9)', async () => {
+    const doomed = await abandonedTrial(120);
+    await warn(doomed, daysAgo(40));
+    const owner = await workerDb.execute<{ owner_user_id: string }>(sql`
+      SELECT owner_user_id FROM businesses WHERE id = ${doomed}::uuid
+    `);
+    const ownerId = [...owner][0]!.owner_user_id;
+
+    // The same person runs a second, living business.
+    const second = await identity.createBusinessWithOwner(appDb, {
+      name: 'Second Shop',
+      businessType: null,
+      ownerUserId: ownerId,
+    });
+
+    await retentionRepo.deleteForRetention(workerDb, doomed, daysAgo(90));
+
+    const user = await workerDb.execute<{ n: number }>(sql`
+      SELECT count(*)::int AS n FROM users WHERE id = ${ownerId}::uuid
+    `);
+    expect(Number([...user][0]?.n)).toBe(1);
+    const shop = await workerDb.execute<{ n: number }>(sql`
+      SELECT count(*)::int AS n FROM businesses WHERE id = ${second.id}::uuid
+    `);
+    expect(Number([...shop][0]?.n)).toBe(1);
+  });
+
+  it('cannot touch another business, its owner, or its people (R9)', async () => {
+    const doomed = await abandonedTrial(120);
+    await warn(doomed, daysAgo(40));
+    // A different merchant, mid-trial, completely unrelated.
+    const bystander = await abandonedTrial(2);
+    const bystanderOwner = await workerDb.execute<{ owner_user_id: string }>(sql`
+      SELECT owner_user_id FROM businesses WHERE id = ${bystander}::uuid
+    `);
+    const bystanderOwnerId = [...bystanderOwner][0]!.owner_user_id;
+
+    await retentionRepo.deleteForRetention(workerDb, doomed, daysAgo(90));
+
+    const shop = await workerDb.execute<{ n: number }>(sql`
+      SELECT count(*)::int AS n FROM businesses WHERE id = ${bystander}::uuid
+    `);
+    expect(Number([...shop][0]?.n)).toBe(1);
+    const user = await workerDb.execute<{ n: number }>(sql`
+      SELECT count(*)::int AS n FROM users WHERE id = ${bystanderOwnerId}::uuid
+    `);
+    expect(Number([...user][0]?.n)).toBe(1);
+  });
 });
 
 /** A month of real trading, so the deletion has something to miss. */

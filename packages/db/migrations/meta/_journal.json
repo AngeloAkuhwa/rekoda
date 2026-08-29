@@ -827,6 +827,13 @@
       "when": 1787412627000,
       "tag": "0117_doc_extraction_counters",
       "breakpoints": true
+    },
+    {
+      "idx": 118,
+      "version": "7",
+      "when": 1787412687000,
+      "tag": "0118_tenant_scoped_retention_users",
+      "breakpoints": true
     }
   ]
 }

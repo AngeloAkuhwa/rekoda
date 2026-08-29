@@ -5796,6 +5796,40 @@ describe('a forwarded order', () => {
     expect(stock.rows.find((p) => p.name === 'Ankara bale')?.onHand).toBe(8);
   });
 
+  /**
+   * The persistence boundary (launch remediation R5): the customer's
+   * delivery words are echoed to the merchant ONCE and never stored. The
+   * contract has said so since RecordOrder existed; this pins that the
+   * stored draft actually honours it — through the central
+   * sanitizeCommandForPersistence boundary, not a call-site if.
+   */
+  it('echoes the delivery note once and stores a draft WITHOUT it (R5)', async () => {
+    const business = await seedMerchant('+2348031234567');
+    await seedCatalogue(business.id);
+    stubTransport.replyWith(THE_ORDER);
+
+    await send('please I want 2 ankara bale, deliver to Lekki on Friday', 'wamid.ORDERNOTE');
+
+    // Said once, to the merchant, from the LIVE command.
+    expect(stubSender.lastText).toContain('They also said: deliver to Lekki on Friday');
+
+    /* Never written down. The stored draft keeps every bookkeeping field
+     * and none of the customer's words. */
+    const drafts = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ command: Record<string, unknown> }>(sql`
+        SELECT command FROM command_drafts WHERE business_id = ${business.id}::uuid
+      `),
+    );
+    const stored = JSON.stringify([...drafts].map((row) => row.command));
+    expect(stored).not.toContain('Lekki');
+    expect(stored).not.toContain('Friday');
+    expect(stored).toContain('Ankara bale');
+
+    // And the sanitised draft still confirms into a real invoice.
+    await send('yes', 'wamid.ORDERNOTEYES');
+    expect(await invoiceCount(business.id)).toBe(1);
+  });
+
   it('meters the order: a confirmed order consumes one orders unit on top of the document', async () => {
     const business = await seedMerchant('+2348031234567');
     await seedCatalogue(business.id);
