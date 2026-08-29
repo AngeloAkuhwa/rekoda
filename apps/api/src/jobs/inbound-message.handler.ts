@@ -369,6 +369,8 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
             tokenised!.link,
             inbound.from,
             liveTokens!,
+            // Extracted-document text qualifies for dual extraction (item 9).
+            read !== null,
           );
 
     if (answer) {
@@ -2088,6 +2090,8 @@ async function interpretedReply(
    * holds the token.
    */
   tokens: Map<string, string>,
+  /** True when this text was extracted from a photographed document. */
+  fromDocument = false,
 ): Promise<Reply> {
   /**
    * The MONTHLY meter (docs/metering-v1.md), checked before the model is
@@ -2131,7 +2135,11 @@ async function interpretedReply(
   const granted = retrying || (await consumeMessage(deps, businessId, period, monthlyMessages));
   if (!granted) return replies.allowanceExhausted(monthlyMessages);
 
-  const interpreted = await deps.interpreter.interpret(businessId, safeText);
+  const interpreted = await deps.interpreter.interpret(
+    businessId,
+    safeText,
+    fromDocument ? { document: true } : undefined,
+  );
 
   /**
    * The meter only moves when the product worked. If the model never ran
@@ -2156,6 +2164,14 @@ async function interpretedReply(
   }
   if (interpreted.outcome === 'unavailable') return replies.busyRightNow();
   if (interpreted.outcome === 'unusable') return replies.couldNotRead();
+  /* Two independent readers disagreed on a high-value document (item 9).
+   * Nothing was drafted from either reading; the merchant states the
+   * figures and the typed sentence walks the ordinary confirm gate. The
+   * message unit was already refunded above with the other non-command
+   * outcomes. */
+  if (interpreted.outcome === 'disagreement') {
+    return replies.extractionDisagreement(interpreted.fields);
+  }
 
   /**
    * The role rule, applied where the intent is first known.

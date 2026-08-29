@@ -123,6 +123,16 @@ export interface ApiConfig {
   aiModelEscalation: string;
   aiModelTranscriber: string;
   /**
+   * The independent second reader for documents at or above
+   * `AI_DUAL_EXTRACT_THRESHOLD_K` (item 9 of the AI hardening plan). Null
+   * disables dual extraction: there is no default because the verifier
+   * must come from a DIFFERENT provider than the primary reader, and this
+   * repository will not guess a second vendor's model id or price. Set it
+   * together with an OPENAI_API_KEY and an AI_MODEL_PRICES entry for its
+   * family, or boot refuses.
+   */
+  aiModelVisionVerifier: string | null;
+  /**
    * An OpenAI-COMPATIBLE endpoint, when it is not OpenAI's own.
    *
    * Groq, Together, OpenRouter and DeepSeek weights on a US host all speak
@@ -678,6 +688,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     aiModelVision: env['AI_MODEL_VISION'] ?? ROLE_DEFAULTS.vision,
     aiModelEscalation: env['AI_MODEL_ESCALATION'] ?? ROLE_DEFAULTS.escalation,
     aiModelTranscriber: env['AI_MODEL_TRANSCRIBER'] ?? ROLE_DEFAULTS.transcriber,
+    aiModelVisionVerifier: env['AI_MODEL_VISION_VERIFIER'] || null,
     aiBaseUrl: env['AI_BASE_URL'] || null,
     aiModelPrices: env['AI_MODEL_PRICES'] || null,
     aiTranscriptionPrices: env['AI_TRANSCRIPTION_PRICES'] || null,

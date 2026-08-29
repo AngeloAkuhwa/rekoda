@@ -4397,6 +4397,100 @@ describe('a receipt photo', () => {
     expect(rows.find((r) => r.unit === 'AI_ACTIONS')?.used ?? 0).toBe(0);
   });
 
+  /**
+   * Dual extraction end to end (AI hardening item 9): a photographed
+   * document worth ₦750,000 is read twice, and when the readers disagree
+   * on money the merchant gets the review sentence and NO draft exists to
+   * say yes to.
+   */
+  it('blocks a high-value extraction disagreement from ever becoming a draft', async () => {
+    const business = await seedMerchant('+2348031234567');
+    arrangePhoto();
+    stubOcr.answerWith({ text: 'INVOICE generator diesel 750,000', confidence: 0.9 });
+    const bigExpense = { ...A_PHOTOGRAPHED_EXPENSE, amount: 750_000 };
+    stubTransport.script(
+      // The classifier's turn: not junk, proceed.
+      {
+        toolInput: { type: 'unsure' },
+        usage: { inputTokens: 400, outputTokens: 12 },
+        stopReason: 'tool_use',
+      },
+      // The interpreter's reading.
+      {
+        toolInput: { command: bigExpense },
+        usage: { inputTokens: 1_800, outputTokens: 120 },
+        stopReason: 'tool_use',
+      },
+    );
+    // The INDEPENDENT reader disagrees on the amount by ₦90,000.
+    const verifierTransport = new StubTransport([
+      {
+        toolInput: { command: { ...bigExpense, amount: 660_000 } },
+        usage: { inputTokens: 1_800, outputTokens: 120 },
+        stopReason: 'tool_use',
+      },
+    ]);
+    const dualConfig = { ...deps.config, aiModelVisionVerifier: 'gpt-test-verifier' };
+    const dualDeps = {
+      ...deps,
+      config: dualConfig,
+      interpreter: new Interpreter(db, dualConfig, stubTransport, verifierTransport),
+    };
+
+    await post(photoPayload('2348031234567', 'wamid.P30'));
+    const runner = buildRunner(workerDb, db, dualDeps);
+    let worked = await runner.runOnce();
+    while (worked) worked = await runner.runOnce();
+
+    expect(verifierTransport.requests).toHaveLength(1);
+    expect(stubSender.lastText).toContain('do not agree about the amount');
+    expect(stubSender.lastText).toContain('not recorded anything');
+    const drafts = await withBusiness(db, business.id, (tx) =>
+      conversationsRepo.draftsFor(tx, business.id),
+    );
+    expect(drafts).toHaveLength(0);
+  });
+
+  it('previews normally when both high-value readings agree', async () => {
+    await seedMerchant('+2348031234567');
+    arrangePhoto();
+    stubOcr.answerWith({ text: 'INVOICE generator diesel 750,000', confidence: 0.9 });
+    const bigExpense = { ...A_PHOTOGRAPHED_EXPENSE, amount: 750_000 };
+    stubTransport.script(
+      {
+        toolInput: { type: 'unsure' },
+        usage: { inputTokens: 400, outputTokens: 12 },
+        stopReason: 'tool_use',
+      },
+      {
+        toolInput: { command: bigExpense },
+        usage: { inputTokens: 1_800, outputTokens: 120 },
+        stopReason: 'tool_use',
+      },
+    );
+    const verifierTransport = new StubTransport([
+      {
+        toolInput: { command: bigExpense },
+        usage: { inputTokens: 1_800, outputTokens: 120 },
+        stopReason: 'tool_use',
+      },
+    ]);
+    const dualConfig = { ...deps.config, aiModelVisionVerifier: 'gpt-test-verifier' };
+    const dualDeps = {
+      ...deps,
+      config: dualConfig,
+      interpreter: new Interpreter(db, dualConfig, stubTransport, verifierTransport),
+    };
+
+    await post(photoPayload('2348031234567', 'wamid.P31'));
+    const runner = buildRunner(workerDb, db, dualDeps);
+    let worked = await runner.runOnce();
+    while (worked) worked = await runner.runOnce();
+
+    expect(verifierTransport.requests).toHaveLength(1);
+    expect(stubSender.lastText).toContain('Reply *yes*');
+  });
+
   it('proceeds to the interpreter when the classifier is anything but sure', async () => {
     await seedMerchant('+2348031234567');
     arrangePhoto();

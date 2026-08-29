@@ -557,3 +557,172 @@ describe('classifying a document', () => {
     ).rejects.toBeInstanceOf(RawProtectedFieldError);
   });
 });
+
+/* ── high-value dual extraction (AI hardening item 9) ───────────────────── */
+
+const A_BIG_SALE = {
+  intent: 'RecordSale',
+  customer: { kind: 'token', token: 'CUSTOMER_7K2' },
+  items: [{ name: 'generator', quantity: 1, unitPrice: 650_000 }],
+  statedTotal: 650_000,
+  reportedPayment: 300_000,
+  paymentMethod: 'transfer',
+  discount: null,
+  deliveryFee: null,
+  dueDescription: null,
+};
+
+const reads = (command: unknown): import('./transport.js').ModelReply => ({
+  toolInput: { command },
+  usage: { inputTokens: 1_800, outputTokens: 120 },
+  stopReason: 'tool_use',
+});
+
+describe('high-value dual extraction', () => {
+  const dualConfig = (): ApiConfig => ({
+    ...config,
+    aiModelVisionVerifier: 'gpt-test-verifier',
+    aiDualExtractThresholdK: 50_000_000, // ₦500,000
+  });
+
+  it('verifies a qualifying document on the INDEPENDENT transport and proceeds on agreement', async () => {
+    const businessId = await seedBusiness();
+    const primary = new StubTransport([reads(A_BIG_SALE)]);
+    const verifier = new StubTransport([reads(A_BIG_SALE)]);
+
+    const result = await new Interpreter(db, dualConfig(), primary, verifier).interpret(
+      businessId,
+      'INVOICE CUSTOMER_7K2 generator 650,000',
+      { document: true },
+    );
+
+    expect(result).toMatchObject({ outcome: 'command' });
+    expect(primary.requests).toHaveLength(1);
+    expect(verifier.requests).toHaveLength(1);
+    expect(verifier.requests[0]!.model).toBe('gpt-test-verifier');
+  });
+
+  it('turns a monetary disagreement into review, never a choice between models', async () => {
+    const businessId = await seedBusiness();
+    const primary = new StubTransport([reads(A_BIG_SALE)]);
+    const verifier = new StubTransport([reads({ ...A_BIG_SALE, statedTotal: 560_000 })]);
+
+    const result = await new Interpreter(db, dualConfig(), primary, verifier).interpret(
+      businessId,
+      'INVOICE CUSTOMER_7K2 generator 650,000',
+      { document: true },
+    );
+
+    expect(result).toMatchObject({ outcome: 'disagreement' });
+    if (result.outcome !== 'disagreement') throw new Error('unreachable');
+    expect(result.fields).toContain('statedTotal');
+    /* No third model was asked to manufacture certainty. */
+    expect(primary.requests).toHaveLength(1);
+    expect(verifier.requests).toHaveLength(1);
+  });
+
+  it('records the verifier call under its own role AND its own provider', async () => {
+    const businessId = await seedBusiness();
+    const verifier = new StubTransport([reads(A_BIG_SALE)]);
+    await new Interpreter(
+      db,
+      dualConfig(),
+      new StubTransport([reads(A_BIG_SALE)]),
+      verifier,
+    ).interpret(businessId, 'INVOICE CUSTOMER_7K2 generator 650,000', { document: true });
+
+    const rows = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ provider: string; meta: Record<string, unknown> }>(
+        sql`SELECT provider, meta FROM usage_events WHERE business_id = ${businessId}::uuid ORDER BY created_at`,
+      ),
+    );
+    const all = [...rows];
+    expect(all).toHaveLength(2);
+    expect(all[1]!.provider).toBe('openai');
+    expect(all[1]!.meta).toMatchObject({
+      role: 'vision_verifier',
+      model: 'gpt-test-verifier',
+      purpose: 'verify_document_extraction',
+      verifies: config.aiModelDefault,
+    });
+  });
+
+  it('never runs for a document below the threshold, or for typed text at any value', async () => {
+    const businessId = await seedBusiness();
+    const small = {
+      ...A_BIG_SALE,
+      items: [{ name: 'wig', quantity: 1, unitPrice: 4_000 }],
+      statedTotal: 4_000,
+      reportedPayment: null,
+    };
+
+    const verifier = new StubTransport([reads(small)]);
+    const belowThreshold = await new Interpreter(
+      db,
+      dualConfig(),
+      new StubTransport([reads(small)]),
+      verifier,
+    ).interpret(businessId, 'receipt wig 4k', { document: true });
+    expect(belowThreshold).toMatchObject({ outcome: 'command' });
+    expect(verifier.requests).toHaveLength(0);
+
+    /* A TYPED ₦650,000 sale is not a document extraction: the merchant said
+     * it themselves and will confirm it themselves. */
+    const typedVerifier = new StubTransport([reads(A_BIG_SALE)]);
+    const typed = await new Interpreter(
+      db,
+      dualConfig(),
+      new StubTransport([reads(A_BIG_SALE)]),
+      typedVerifier,
+    ).interpret(businessId, 'sold CUSTOMER_7K2 one generator 650k');
+    expect(typed).toMatchObject({ outcome: 'command' });
+    expect(typedVerifier.requests).toHaveLength(0);
+  });
+
+  it('proceeds UNVERIFIED to the ordinary confirm gate when the verifier is down', async () => {
+    const businessId = await seedBusiness();
+    const verifier = new StubTransport([new ProviderUnreachable('verifier down')]);
+
+    const result = await new Interpreter(
+      db,
+      dualConfig(),
+      new StubTransport([reads(A_BIG_SALE)]),
+      verifier,
+    ).interpret(businessId, 'INVOICE CUSTOMER_7K2 generator 650,000', { document: true });
+
+    /* Fail open, because every write still needs the merchant's yes: the
+     * confirmation gate is the floor and dual extraction is defence in
+     * depth above it. The verifier's unreached slot went back. */
+    expect(result).toMatchObject({ outcome: 'command' });
+    const counted = await withBusiness(db, businessId, (tx) =>
+      quotaRepo.callsToday(tx, businessId),
+    );
+    expect(counted).toBe(1);
+  });
+
+  it('proceeds UNVERIFIED when the verifier fails the schema, still without a third call', async () => {
+    const businessId = await seedBusiness();
+    const verifier = new StubTransport([reads({ intent: 'Nonsense' })]);
+
+    const result = await new Interpreter(
+      db,
+      dualConfig(),
+      new StubTransport([reads(A_BIG_SALE)]),
+      verifier,
+    ).interpret(businessId, 'INVOICE CUSTOMER_7K2 generator 650,000', { document: true });
+
+    expect(result).toMatchObject({ outcome: 'command' });
+    expect(verifier.requests).toHaveLength(1);
+  });
+
+  it('does nothing when no verifier is configured: dual extraction is opt-in', async () => {
+    const businessId = await seedBusiness();
+    const result = await new Interpreter(
+      db,
+      config, // aiModelVisionVerifier is null here
+      new StubTransport([reads(A_BIG_SALE)]),
+      null,
+    ).interpret(businessId, 'INVOICE CUSTOMER_7K2 generator 650,000', { document: true });
+    expect(result).toMatchObject({ outcome: 'command' });
+  });
+});

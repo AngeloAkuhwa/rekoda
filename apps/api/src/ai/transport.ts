@@ -43,6 +43,16 @@ export interface ModelTransport {
  */
 export const MODEL_TRANSPORT = Symbol('ModelTransport');
 
+/**
+ * The INDEPENDENT second reader for high-value documents (AI hardening
+ * item 9). Its own token rather than a mode on MODEL_TRANSPORT, because
+ * independence is the entire value: a verifier that shares the primary's
+ * transport shares its failure modes, its provider, and its blind spots.
+ * Resolves to null when no verifier is configured — dual extraction is
+ * opt-in until the verifying provider is chosen and priced.
+ */
+export const VERIFIER_TRANSPORT = Symbol('VerifierTransport');
+
 /** Raised when the provider could not be reached at all — no tokens were billed. */
 export class ProviderUnreachable extends Error {
   override readonly name = 'ProviderUnreachable';

@@ -54,6 +54,10 @@ const ALL: Record<string, readonly replies.Reply[]> = {
   ],
   dailyDocumentLimit: [replies.dailyDocumentLimit(25), replies.dailyDocumentLimit(5)],
   notABusinessDocument: [replies.notABusinessDocument()],
+  extractionDisagreement: [
+    replies.extractionDisagreement(['statedTotal']),
+    replies.extractionDisagreement(['statedTotal', 'items.0.quantity', 'items.0.unitPrice']),
+  ],
   ordersNotInPlan: [replies.ordersNotInPlan()],
   chatNotInPlan: [replies.chatNotInPlan()],
   trialEnded: [replies.trialEnded()],

@@ -146,6 +146,10 @@ describe('the role ensemble (docs/ai-model-strategy.md)', () => {
     expect(config.aiModelTranscriber).toBe('whisper-1');
     // Dual-extraction threshold is configuration, defaulting to ₦500,000.
     expect(config.aiDualExtractThresholdK).toBe(50_000_000);
+    /* The verifier has NO default on purpose: it must be a second vendor's
+     * model, and this repository will not guess another vendor's id or
+     * price. Null means dual extraction is off until a deployment opts in. */
+    expect(config.aiModelVisionVerifier).toBeNull();
   });
 
   it('lets any role be re-pointed by env without touching code', () => {
@@ -154,9 +158,11 @@ describe('the role ensemble (docs/ai-model-strategy.md)', () => {
       ANTHROPIC_API_KEY: 'k',
       AI_MODEL_CLASSIFIER: 'claude-sonnet-latest',
       AI_MODEL_TRANSCRIBER: 'whisper-1',
+      AI_MODEL_VISION_VERIFIER: 'gpt-test-verifier',
     });
     expect(config.aiModelClassifier).toBe('claude-sonnet-latest');
     expect(config.aiModelTranscriber).toBe('whisper-1');
+    expect(config.aiModelVisionVerifier).toBe('gpt-test-verifier');
   });
 });
 

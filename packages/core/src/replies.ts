@@ -250,6 +250,46 @@ export function notABusinessDocument(): Reply {
 }
 
 /**
+ * Two independent readings of a high-value document disagreed.
+ *
+ * Neither reading is shown as "the" answer, because choosing one is
+ * exactly what this reply exists to refuse. The merchant is told WHICH
+ * details conflicted, in their words rather than field paths, and asked to
+ * state the figures themselves — a typed sentence then walks the ordinary
+ * preview-and-confirm gate like any other.
+ */
+export function extractionDisagreement(fields: readonly string[]): Reply {
+  const named = [...new Set(fields.map(fieldInMerchantWords))];
+  const listed =
+    named.length === 1
+      ? named[0]!
+      : `${named.slice(0, -1).join(', ')} and ${named[named.length - 1]!}`;
+  return reply(
+    'Because this document is a large one, I read it twice to be safe, and my two ' +
+      `readings do not agree about ${listed}. I have not recorded anything.\n\n` +
+      'Please type the details (for example "sold 1 generator 650k, paid 300k") and I ' +
+      'will show you a preview to confirm.',
+  );
+}
+
+/** Field paths said the way a merchant would say them. */
+function fieldInMerchantWords(path: string): string {
+  if (path.includes('unitPrice')) return 'a unit price';
+  if (path.includes('quantity')) return 'a quantity';
+  if (path.includes('name')) return 'an item name';
+  if (path === 'items') return 'how many items there are';
+  if (path.includes('statedTotal')) return 'the total';
+  if (path.includes('reportedPayment')) return 'the amount paid';
+  if (path.includes('amount')) return 'the amount';
+  if (path.includes('discount')) return 'the discount';
+  if (path.includes('deliveryFee')) return 'the delivery fee';
+  if (path.includes('customer')) return 'who the customer is';
+  if (path.includes('intent')) return 'what kind of entry this is';
+  if (path.includes('paymentMethod')) return 'how it was paid';
+  return 'one of the details';
+}
+
+/**
  * Each unit said the way a merchant would say it.
  *
  * The doorway reply names what ran out, and "you have used all 25 documents"

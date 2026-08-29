@@ -33,6 +33,7 @@ export * from './orders.js';
 export * from './expenses.js';
 export * from './costing.js';
 export * from './ai-cost.js';
+export * from './extraction-compare.js';
 export * from './margin.js';
 export * from './billing.js';
 export * from './retention.js';

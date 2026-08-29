@@ -1,5 +1,11 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
-import { billingPeriod, costOfCall, type AiModelRole } from '@rekoda/core';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
+import {
+  billingPeriod,
+  commandValueK,
+  costOfCall,
+  divergentFields,
+  type AiModelRole,
+} from '@rekoda/core';
 import { PRIVACY_POLICY_VERSION, detectStructuralPii, redactForLog } from '@rekoda/core/privacy';
 import {
   businessCommandToolSchema,
@@ -20,6 +26,7 @@ import {
 import { SYSTEM_PROMPT, TOOL_DESCRIPTION, TOOL_NAME } from './prompt.js';
 import {
   MODEL_TRANSPORT,
+  VERIFIER_TRANSPORT,
   ProviderUnreachable,
   type ModelReply,
   type ModelTransport,
@@ -47,7 +54,14 @@ export type Interpretation =
   /** A ceiling refused before anything was spent. */
   | { outcome: 'refused'; refusedBy: 'business' | 'platform' }
   /** The provider could not be reached. Nothing was billed; the slot is back. */
-  | { outcome: 'unavailable'; reason: string };
+  | { outcome: 'unavailable'; reason: string }
+  /**
+   * Two independent readers disagreed on a high-value document (item 9).
+   * Neither reading is chosen, no third model is asked, and nothing
+   * becomes a draft: the merchant sees which fields conflict and states
+   * the figures themselves. `fields` holds canonical paths, never values.
+   */
+  | { outcome: 'disagreement'; fields: string[] };
 
 /** One reserved, recorded model call — or the reason it did not happen. */
 type ModelCall =
@@ -88,6 +102,10 @@ export class Interpreter {
     @Inject(DB) private readonly db: Db,
     @Inject(CONFIG) private readonly config: ApiConfig,
     @Inject(MODEL_TRANSPORT) private readonly transport: ModelTransport,
+    /** The independent second reader, or null when dual extraction is off. */
+    @Optional()
+    @Inject(VERIFIER_TRANSPORT)
+    private readonly verifier: ModelTransport | null = null,
   ) {}
 
   /**
@@ -96,7 +114,11 @@ export class Interpreter {
    * the few places in this codebase where the comment IS the contract, and it
    * is why the gateway runs in the handler rather than here.
    */
-  async interpret(businessId: string, safeText: string): Promise<Interpretation> {
+  async interpret(
+    businessId: string,
+    safeText: string,
+    opts?: { document?: boolean },
+  ): Promise<Interpretation> {
     this.refuseRawPii(safeText);
 
     const primary = await this.callModel(businessId, {
@@ -116,7 +138,7 @@ export class Interpreter {
     const first = this.parseCommandReply(primary.reply);
 
     const reason = escalationReasonFor(first, primary.reply.stopReason);
-    if (!reason) return first;
+    if (!reason) return this.verifyIfHighValue(businessId, safeText, first, opts);
 
     /**
      * ONE bounded retry, on the model reserved for exactly this. The quota
@@ -146,7 +168,73 @@ export class Interpreter {
      * the schema, or still Unclear when the primary was too, falls back to
      * the primary's outcome — uncertainty becomes the merchant's question,
      * never a third call and never a guessed command. */
-    return retried.outcome === 'command' ? retried : first;
+    const settled = retried.outcome === 'command' ? retried : first;
+    return this.verifyIfHighValue(businessId, safeText, settled, opts);
+  }
+
+  /**
+   * The dual-extraction gate (AI hardening item 9): a document whose money
+   * reaches `AI_DUAL_EXTRACT_THRESHOLD_K` is read a second time by an
+   * INDEPENDENT provider, and the two readings are compared field by field
+   * with no tolerance on amounts. Agreement proceeds to the ordinary
+   * confirmation gate; disagreement becomes a review outcome that names
+   * the conflicting fields — never a choice between models, never a third
+   * model to break the tie.
+   *
+   * When the verifier is configured but cannot answer — quota refused,
+   * provider down, output that fails the schema — the document proceeds
+   * UNVERIFIED to the same confirmation gate every write already passes,
+   * with a loud log: every financial write remains a draft until the
+   * merchant confirms it, so the confirmation gate is the floor and dual
+   * extraction is defence in depth above it, not a gate that takes the
+   * whole document path down with the second vendor's outage.
+   */
+  private async verifyIfHighValue(
+    businessId: string,
+    safeText: string,
+    settled: Interpretation,
+    opts?: { document?: boolean },
+  ): Promise<Interpretation> {
+    if (!opts?.document || settled.outcome !== 'command') return settled;
+    if (settled.command.intent === 'Unclear' || settled.command.intent === 'Query') {
+      return settled;
+    }
+    const verifierModel = this.config.aiModelVisionVerifier;
+    if (!this.verifier || !verifierModel) return settled;
+    if (commandValueK(settled.command) < this.config.aiDualExtractThresholdK) return settled;
+
+    const verification = await this.callModel(businessId, {
+      model: verifierModel,
+      role: 'vision_verifier',
+      system: SYSTEM_PROMPT,
+      userText: safeText,
+      toolName: TOOL_NAME,
+      toolDescription: TOOL_DESCRIPTION,
+      toolSchema: this.toolSchema,
+      maxTokens: 1_024,
+      purpose: 'verify_document_extraction',
+      transport: this.verifier,
+      provider: 'openai',
+      extraMeta: { verifies: this.config.aiModelDefault },
+    });
+    if (verification.kind !== 'ok') {
+      this.log.warn('a high-value document proceeds UNVERIFIED: the verifier was unavailable');
+      return settled;
+    }
+
+    const independent = this.parseCommandReply(verification.reply);
+    if (independent.outcome !== 'command') {
+      this.log.warn('a high-value document proceeds UNVERIFIED: the verifier failed the schema');
+      return settled;
+    }
+
+    const fields = divergentFields(settled.command, independent.command);
+    if (fields.length === 0) return settled;
+
+    this.log.warn(
+      `high-value extraction disagreement on ${fields.length} field(s): ${fields.join(', ')}`,
+    );
+    return { outcome: 'disagreement', fields };
   }
 
   /**
@@ -210,6 +298,10 @@ export class Interpreter {
       toolSchema: Record<string, unknown>;
       maxTokens: number;
       purpose: string;
+      /** The independent verifier passes its own; everyone else the default. */
+      transport?: ModelTransport;
+      /** Who charges for this call, when it is not the primary provider. */
+      provider?: 'anthropic' | 'openai';
       extraMeta?: Record<string, unknown>;
     },
   ): Promise<ModelCall> {
@@ -224,7 +316,7 @@ export class Interpreter {
 
     let reply: ModelReply;
     try {
-      reply = await this.transport.send({
+      reply = await (request.transport ?? this.transport).send({
         model: request.model,
         system: request.system,
         userText: request.userText,
@@ -243,7 +335,7 @@ export class Interpreter {
          * nothing would put a real cost outside the margin view entirely.
          * Zero tokens with `priced: false` says "this happened and we cannot
          * price it", which is a row somebody can reconcile. */
-        await this.recordUnpricedCall(businessId, request.model, request.role, error.message);
+        await this.recordUnpricedCall(businessId, request, error.message);
         return { kind: 'unavailable', reason: error.message };
       }
       throw error;
@@ -282,6 +374,7 @@ export class Interpreter {
       model: string;
       role: AiModelRole;
       purpose: string;
+      provider?: 'anthropic' | 'openai';
       extraMeta?: Record<string, unknown>;
     },
     reply: ModelReply,
@@ -297,8 +390,9 @@ export class Interpreter {
       quotaRepo.recordUsage(tx, {
         businessId,
         // The provider that actually answered. Hard-coding one meant the
-        // margin view attributed every OpenAI call to Anthropic.
-        provider: this.config.aiProvider,
+        // margin view attributed every OpenAI call to Anthropic; the
+        // verifier overrides it because independence includes the invoice.
+        provider: request.provider ?? this.config.aiProvider,
         usageType: 'llm_call',
         quantity: 1,
         providerCostMicros: cost.usdMicros,
@@ -333,20 +427,24 @@ export class Interpreter {
    */
   private async recordUnpricedCall(
     businessId: string,
-    model: string,
-    role: AiModelRole,
+    request: { model: string; role: AiModelRole; provider?: 'anthropic' | 'openai' },
     reason: string,
   ): Promise<void> {
     await withBusiness(this.db, businessId, (tx: TenantDb) =>
       quotaRepo.recordUsage(tx, {
         businessId,
-        provider: this.config.aiProvider,
+        provider: request.provider ?? this.config.aiProvider,
         usageType: 'llm_failed',
         quantity: 1,
         providerCostMicros: 0,
         nairaEquivalentK: 0,
         billingPeriod: billingPeriod(new Date()),
-        meta: { role, model, priced: false, reason: redactForLog(reason) },
+        meta: {
+          role: request.role,
+          model: request.model,
+          priced: false,
+          reason: redactForLog(reason),
+        },
       }),
     );
   }

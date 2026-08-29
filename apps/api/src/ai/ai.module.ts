@@ -3,8 +3,14 @@ import { CONFIG, type ApiConfig } from '../config.js';
 import { AnthropicTransport } from './anthropic.transport.js';
 import { OpenAiTransport } from './openai.transport.js';
 import { Interpreter } from './interpreter.service.js';
-import { MODEL_TRANSPORT, ProviderUnreachable, type ModelTransport } from './transport.js';
 import {
+  MODEL_TRANSPORT,
+  VERIFIER_TRANSPORT,
+  ProviderUnreachable,
+  type ModelTransport,
+} from './transport.js';
+import {
+  assertModelIsPriced,
   assertRolesArePriced,
   assertTranscriberIsPriced,
   registerRuntimeModelPrices,
@@ -18,9 +24,10 @@ import { VisionTextExtraction } from './ocr.vision.js';
 import { HttpSpeechToText, NoSpeechToTextConfigured } from './stt.http.js';
 import { OpenAiSpeechToText } from './stt.openai.js';
 
-// Re-exported for convenience; the token itself is defined in transport.ts so
-// that this module and the service it provides do not import each other.
-export { MODEL_TRANSPORT };
+// Re-exported for convenience; the tokens themselves are defined in
+// transport.ts so that this module and the service it provides do not import
+// each other.
+export { MODEL_TRANSPORT, VERIFIER_TRANSPORT };
 
 /**
  * A transport that refuses rather than one that is absent.
@@ -90,6 +97,40 @@ class NoTransportConfigured implements ModelTransport {
       },
     },
     /**
+     * The INDEPENDENT second reader for high-value documents (item 9).
+     *
+     * Always OpenAI-side, never a second handle on the primary transport:
+     * a verifier from the same provider shares the primary's blind spots,
+     * and agreement between two calls to one vendor is not verification.
+     * Deliberately does NOT reuse `aiBaseUrl` — that URL belongs to the
+     * primary provider, and pointing the verifier at it would quietly
+     * collapse the independence this token exists for.
+     *
+     * Null when unset: dual extraction is opt-in until the verifying model
+     * is chosen and priced. Configured without its key or without a price,
+     * boot refuses — a protection that silently does not run is worse than
+     * one that is honestly absent.
+     */
+    {
+      provide: VERIFIER_TRANSPORT,
+      inject: [CONFIG],
+      useFactory: (config: ApiConfig): ModelTransport | null => {
+        const model = config.aiModelVisionVerifier;
+        if (!model) return null;
+        if (!config.openaiApiKey) {
+          throw new Error(
+            'AI_MODEL_VISION_VERIFIER is set but OPENAI_API_KEY is not. The verifier is a ' +
+              'second, independent provider by design; supply its key or unset the verifier.',
+          );
+        }
+        /* Idempotent re-registration: factory order is not guaranteed, and
+         * the price check below needs the runtime table populated. */
+        registerRuntimeModelPrices(config.aiModelPrices ?? undefined);
+        assertModelIsPriced(model, true);
+        return new OpenAiTransport(config.openaiApiKey);
+      },
+    },
+    /**
      * The transcriber, and WHERE it points decides what /ai-privacy may say.
      *
      * Three explicit configurations, never a silent fallback between them
@@ -154,6 +195,13 @@ class NoTransportConfigured implements ModelTransport {
     { provide: AUDIO_METADATA_PROBE, useClass: ContainerAudioProbe },
     Interpreter,
   ],
-  exports: [Interpreter, MODEL_TRANSPORT, SPEECH_TO_TEXT, TEXT_EXTRACTION, AUDIO_METADATA_PROBE],
+  exports: [
+    Interpreter,
+    MODEL_TRANSPORT,
+    VERIFIER_TRANSPORT,
+    SPEECH_TO_TEXT,
+    TEXT_EXTRACTION,
+    AUDIO_METADATA_PROBE,
+  ],
 })
 export class AiModule {}
