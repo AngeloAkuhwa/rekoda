@@ -232,6 +232,24 @@ export function dailyDocumentLimit(limit: number): Reply {
 }
 
 /**
+ * A photograph that read fine and is clearly not a business document.
+ *
+ * Said only when the classifier is CONFIDENT the page holds no transaction
+ * — a meme, a chat screenshot, a poster. Anything less than confident goes
+ * to the interpreter instead, so a blurry real receipt never gets this
+ * sentence. The door stays open in the same breath: whatever the photo was
+ * about, the sale it may have accompanied can still be typed.
+ */
+export function notABusinessDocument(): Reply {
+  return reply(
+    'I read that photo, but it does not look like a receipt, invoice or ' +
+      'statement I can record from.\n\n' +
+      'If there is a sale or expense behind it, type it (for example ' +
+      '"sold 2 bags 15k") and I will record it straight away.',
+  );
+}
+
+/**
  * Each unit said the way a merchant would say it.
  *
  * The doorway reply names what ran out, and "you have used all 25 documents"

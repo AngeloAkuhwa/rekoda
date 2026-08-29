@@ -138,11 +138,13 @@ describe('a call that produced nothing usable', () => {
     expect(result.outcome).toBe('unusable');
 
     /**
-     * The call still burned tokens. A margin view that counts only the
-     * successes is a margin view that flatters — and the failures are exactly
-     * the calls worth noticing.
+     * Both calls still burned tokens — the primary AND the escalation its
+     * schema failure triggered (the stub answers the retry with the same
+     * garbage). A margin view that counts only the successes is a margin
+     * view that flatters — and the failures are exactly the calls worth
+     * noticing.
      */
-    expect((await usageRows(businessId)).calls).toBe(1);
+    expect((await usageRows(businessId)).calls).toBe(2);
   });
 
   it('rejects an intent nobody defined', async () => {
@@ -316,5 +318,242 @@ describe('the adapter boundary (spec Appendix C.4)', () => {
     const serialised = JSON.stringify(row.meta);
     expect(serialised).not.toContain('bought wigs');
     expect(serialised).not.toContain('CUSTOMER_7K2');
+  });
+});
+
+/* ── bounded escalation (AI hardening item 3) ───────────────────────────── */
+
+const USAGE = { inputTokens: 1_800, outputTokens: 120 };
+const GOOD: import('./transport.js').ModelReply = {
+  toolInput: { command: A_SALE },
+  usage: USAGE,
+  stopReason: 'tool_use',
+};
+const GARBAGE: import('./transport.js').ModelReply = {
+  toolInput: { command: { intent: 'Nonsense' } },
+  usage: USAGE,
+  stopReason: 'tool_use',
+};
+const UNCLEAR: import('./transport.js').ModelReply = {
+  toolInput: { command: { intent: 'Unclear', clarification: 'How many wigs was that?' } },
+  usage: USAGE,
+  stopReason: 'tool_use',
+};
+const TRUNCATED: import('./transport.js').ModelReply = {
+  toolInput: null,
+  usage: USAGE,
+  stopReason: 'max_tokens',
+};
+
+describe('bounded escalation', () => {
+  it('retries a schema failure ONCE on the escalation model, and uses its answer', async () => {
+    const businessId = await seedBusiness();
+    const transport = new StubTransport([GARBAGE, GOOD]);
+
+    const result = await new Interpreter(db, config, transport).interpret(
+      businessId,
+      'CUSTOMER_7K2 bought 3 wigs for 150k',
+    );
+
+    expect(result).toMatchObject({ outcome: 'command' });
+    expect(transport.requests).toHaveLength(2);
+    expect(transport.requests[0]!.model).toBe(config.aiModelDefault);
+    expect(transport.requests[1]!.model).toBe(config.aiModelEscalation);
+  });
+
+  it('records the escalation under its own role, with the reason on the row', async () => {
+    const businessId = await seedBusiness();
+    const transport = new StubTransport([GARBAGE, GOOD]);
+    await new Interpreter(db, config, transport).interpret(businessId, 'CUSTOMER_7K2 bought wigs');
+
+    const rows = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ meta: Record<string, unknown> }>(
+        sql`SELECT meta FROM usage_events WHERE business_id = ${businessId}::uuid ORDER BY created_at`,
+      ),
+    );
+    const metas = [...rows].map((r) => r.meta);
+    expect(metas).toHaveLength(2);
+    expect(metas[0]).toMatchObject({ role: 'interpreter', model: config.aiModelDefault });
+    expect(metas[1]).toMatchObject({
+      role: 'escalation',
+      model: config.aiModelEscalation,
+      escalationReason: 'schema_failure',
+      escalatedFrom: config.aiModelDefault,
+    });
+  });
+
+  it('escalates an Unclear once, and a still-Unclear escalation asks the merchant', async () => {
+    const businessId = await seedBusiness();
+    const transport = new StubTransport([UNCLEAR, UNCLEAR]);
+
+    const result = await new Interpreter(db, config, transport).interpret(
+      businessId,
+      'that thing from yesterday, make it two',
+    );
+
+    /* TWO calls, never a third: uncertainty after escalation becomes the
+     * merchant's focused question, not another model. */
+    expect(transport.requests).toHaveLength(2);
+    expect(result).toMatchObject({ outcome: 'command' });
+    if (result.outcome !== 'command' || result.command.intent !== 'Unclear') {
+      throw new Error('expected the Unclear to stand');
+    }
+    expect(result.command.clarification).toContain('How many');
+  });
+
+  it('never converts uncertainty into a guess: still-unusable falls back honestly', async () => {
+    const businessId = await seedBusiness();
+    const transport = new StubTransport([GARBAGE, GARBAGE]);
+
+    const result = await new Interpreter(db, config, transport).interpret(
+      businessId,
+      'CUSTOMER_7K2 bought wigs',
+    );
+
+    expect(transport.requests).toHaveLength(2);
+    expect(result).toMatchObject({ outcome: 'unusable' });
+  });
+
+  it('does NOT escalate a max_tokens truncation: same ceiling, pricier model', async () => {
+    const businessId = await seedBusiness();
+    const transport = new StubTransport([TRUNCATED, GOOD]);
+
+    const result = await new Interpreter(db, config, transport).interpret(
+      businessId,
+      'CUSTOMER_7K2 bought wigs',
+    );
+
+    /* The GOOD reply was never asked for: a truncated answer is a transport
+     * configuration fault, and Opus hits the same 1,024-token ceiling. */
+    expect(transport.requests).toHaveLength(1);
+    expect(result).toMatchObject({ outcome: 'unusable' });
+  });
+
+  it('consumes a quota slot per call, and a refused escalation keeps the first answer', async () => {
+    const businessId = await seedBusiness();
+    const transport = new StubTransport([GARBAGE, GOOD]);
+    const tight = { ...config, aiCallsPerBusinessPerDay: 1 };
+
+    const result = await new Interpreter(db, tight, transport).interpret(
+      businessId,
+      'CUSTOMER_7K2 bought wigs',
+    );
+
+    /* The ceiling refused the SECOND call: one transport request, and the
+     * merchant gets the primary's honest outcome rather than a harder
+     * failure because escalation was out of budget. */
+    expect(transport.requests).toHaveLength(1);
+    expect(result).toMatchObject({ outcome: 'unusable' });
+    const counted = await withBusiness(db, businessId, (tx) =>
+      quotaRepo.callsToday(tx, businessId),
+    );
+    expect(counted).toBe(1);
+  });
+
+  it('returns the first answer when the escalation provider is unreachable', async () => {
+    const businessId = await seedBusiness();
+    const transport = new StubTransport([GARBAGE, new ProviderUnreachable('socket dropped')]);
+
+    const result = await new Interpreter(db, config, transport).interpret(
+      businessId,
+      'CUSTOMER_7K2 bought wigs',
+    );
+
+    expect(result).toMatchObject({ outcome: 'unusable' });
+    /* The escalation slot went back — an unreachable provider must not
+     * spend the merchant's allowance. One reserved call stands. */
+    const counted = await withBusiness(db, businessId, (tx) =>
+      quotaRepo.callsToday(tx, businessId),
+    );
+    expect(counted).toBe(1);
+  });
+});
+
+/* ── the classifier role (AI hardening item 1) ──────────────────────────── */
+
+describe('classifying a document', () => {
+  const classified = (type: string): import('./transport.js').ModelReply => ({
+    toolInput: { type },
+    usage: { inputTokens: 400, outputTokens: 12 },
+    stopReason: 'tool_use',
+  });
+
+  it('asks the CLASSIFIER model and returns its confident answer', async () => {
+    const businessId = await seedBusiness();
+    const transport = new StubTransport([classified('junk')]);
+
+    const kind = await new Interpreter(db, config, transport).classifyDocument(
+      businessId,
+      'lyrics lyrics lyrics',
+    );
+
+    expect(kind).toBe('junk');
+    expect(transport.requests).toHaveLength(1);
+    expect(transport.requests[0]!.model).toBe(config.aiModelClassifier);
+    expect(transport.requests[0]!.toolName).toBe('classify_document');
+  });
+
+  it('records the call under the classifier role', async () => {
+    const businessId = await seedBusiness();
+    await new Interpreter(db, config, new StubTransport([classified('receipt')])).classifyDocument(
+      businessId,
+      'MAMA NKECHI STORES TOTAL 4,500',
+    );
+
+    const rows = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ meta: Record<string, unknown> }>(
+        sql`SELECT meta FROM usage_events WHERE business_id = ${businessId}::uuid`,
+      ),
+    );
+    expect([...rows][0]!.meta).toMatchObject({
+      role: 'classifier',
+      model: config.aiModelClassifier,
+      purpose: 'classify_document',
+    });
+  });
+
+  it('fails OPEN: an unreachable classifier is an unsure classifier', async () => {
+    const businessId = await seedBusiness();
+    const transport = new StubTransport([new ProviderUnreachable('down')]);
+
+    const kind = await new Interpreter(db, config, transport).classifyDocument(
+      businessId,
+      'TOTAL 4,500',
+    );
+
+    expect(kind).toBe('unsure');
+    // And the reserved slot went back: nothing was spent.
+    const counted = await withBusiness(db, businessId, (tx) =>
+      quotaRepo.callsToday(tx, businessId),
+    );
+    expect(counted).toBe(0);
+  });
+
+  it('fails OPEN on a malformed answer and on a refused ceiling', async () => {
+    const businessId = await seedBusiness();
+    const malformed = await new Interpreter(
+      db,
+      config,
+      new StubTransport([classified('banana')]),
+    ).classifyDocument(businessId, 'TOTAL 4,500');
+    expect(malformed).toBe('unsure');
+
+    const tight = { ...config, aiCallsPerBusinessPerDay: 0 };
+    const refused = await new Interpreter(
+      db,
+      tight,
+      new StubTransport([classified('junk')]),
+    ).classifyDocument(businessId, 'TOTAL 4,500');
+    expect(refused).toBe('unsure');
+  });
+
+  it('refuses raw PII exactly as the interpreter does', async () => {
+    const businessId = await seedBusiness();
+    await expect(
+      new Interpreter(db, config, new StubTransport([classified('receipt')])).classifyDocument(
+        businessId,
+        'call 08031234567 for delivery',
+      ),
+    ).rejects.toBeInstanceOf(RawProtectedFieldError);
   });
 });

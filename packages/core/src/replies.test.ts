@@ -53,6 +53,7 @@ const ALL: Record<string, readonly replies.Reply[]> = {
     replies.allowanceExhausted(3, 'DOCUMENT_GENERATION'),
   ],
   dailyDocumentLimit: [replies.dailyDocumentLimit(25), replies.dailyDocumentLimit(5)],
+  notABusinessDocument: [replies.notABusinessDocument()],
   ordersNotInPlan: [replies.ordersNotInPlan()],
   chatNotInPlan: [replies.chatNotInPlan()],
   trialEnded: [replies.trialEnded()],

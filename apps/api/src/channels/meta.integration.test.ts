@@ -1758,7 +1758,11 @@ describe('what the model understood', () => {
     const [event] = await events.unprocessedEvents(db, 'meta');
     const runner = buildRunner(workerDb, db, deps);
     expect(await runner.runOnce()).toBe(true);
-    expect(stubTransport.requests).toHaveLength(1);
+    /* TWO calls for one sentence is the escalation working, not a double
+     * charge: the suite's default reply is Unclear, which buys one bounded
+     * retry on the escalation model. The claim under test is that a RERUN
+     * adds nothing to either. */
+    expect(stubTransport.requests).toHaveLength(2);
 
     /**
      * Exactly what a reclaimed lock produces: the same event, queued again.
@@ -1774,7 +1778,7 @@ describe('what the model understood', () => {
     );
     expect(await runner.runOnce()).toBe(true);
 
-    expect(stubTransport.requests).toHaveLength(1);
+    expect(stubTransport.requests).toHaveLength(2);
     const drafts = await withBusiness(db, business.id, (tx) =>
       conversationsRepo.draftsFor(tx, business.id),
     );
@@ -4359,6 +4363,65 @@ describe('a receipt photo', () => {
     await post(photoPayload('2348031234567', 'wamid.P18'));
     await drainWithDailyLimit(2);
     expect(stubOcr.calls).toHaveLength(2);
+  });
+
+  /**
+   * The classifier gate (AI hardening item 1): the ONE place a cheap read
+   * avoids expensive ones. Confident junk skips the interpreter entirely;
+   * anything less proceeds as if no classifier existed.
+   */
+  it('lets the classifier stop a junk page before the interpreter is paid for', async () => {
+    const business = await seedMerchant('+2348031234567');
+    arrangePhoto();
+    stubOcr.answerWith({ text: 'when the beat drops and nobody is ready', confidence: 0.9 });
+    stubTransport.script({
+      toolInput: { type: 'junk' },
+      usage: { inputTokens: 400, outputTokens: 12 },
+      stopReason: 'tool_use',
+    });
+
+    await post(photoPayload('2348031234567', 'wamid.P20'));
+    await drain();
+
+    /* ONE model call — the classifier — and the honest sentence. */
+    expect(stubTransport.requests).toHaveLength(1);
+    expect(stubTransport.requests[0]!.toolName).toBe('classify_document');
+    expect(stubSender.lastText).toContain('does not look like a receipt');
+
+    /* The merchant's monthly message unit was never consumed: being told a
+     * poster is a poster is not a bookkeeping action they paid for. */
+    const period = usagePeriod(new Date());
+    const rows = await withBusiness(db, business.id, (tx) =>
+      usageRepo.usageFor(tx, business.id, period),
+    );
+    expect(rows.find((r) => r.unit === 'AI_ACTIONS')?.used ?? 0).toBe(0);
+  });
+
+  it('proceeds to the interpreter when the classifier is anything but sure', async () => {
+    await seedMerchant('+2348031234567');
+    arrangePhoto();
+    stubOcr.answerWith({ text: 'TOTAL 12,000 diesel', confidence: 0.9 });
+    stubTransport.script(
+      {
+        toolInput: { type: 'unsure' },
+        usage: { inputTokens: 400, outputTokens: 12 },
+        stopReason: 'tool_use',
+      },
+      {
+        toolInput: { command: A_PHOTOGRAPHED_EXPENSE },
+        usage: { inputTokens: 1_800, outputTokens: 120 },
+        stopReason: 'tool_use',
+      },
+    );
+
+    await post(photoPayload('2348031234567', 'wamid.P21'));
+    await drain();
+
+    /* Classifier first, interpreter second — fail open, never a blocker. */
+    expect(stubTransport.requests).toHaveLength(2);
+    expect(stubTransport.requests[0]!.toolName).toBe('classify_document');
+    expect(stubTransport.requests[1]!.toolName).toBe('record_business_command');
+    expect(stubSender.lastText).toContain('Reply *yes*');
   });
 });
 

@@ -318,6 +318,34 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
       return;
     }
 
+    /**
+     * THE CLASSIFIER GATE (docs/ai-model-strategy.md §1, AI hardening
+     * item 1): a cheap read, only where it avoids expensive ones, which
+     * means ONLY here — extracted document text about to meet the
+     * interpreter. A page with words and no transaction (a meme, a chat
+     * screenshot) would otherwise buy a full interpretation and, being
+     * gibberish to a bookkeeper, quite possibly an Opus escalation after
+     * it. Typed messages and voice notes never pass through this: for them
+     * the classifier would be a mandatory toll that saves nothing.
+     *
+     * FAIL OPEN: only a CONFIDENT `junk` answer skips the interpreter, and
+     * the merchant's monthly message unit is untouched either way — the
+     * gate sits before the meter on purpose, because a photo of a poster
+     * should not cost a message to be told it is a poster.
+     */
+    if (read && route.route === 'model') {
+      const kind = await deps.interpreter.classifyDocument(businessId, tokenised!.text);
+      if (kind === 'junk') {
+        await deps.replySender.send(tx, {
+          businessId,
+          to: inbound.from,
+          reply: replies.notABusinessDocument(),
+        });
+        await events.markProcessed(tx, eventId, null, businessId);
+        return;
+      }
+    }
+
     /* Mutable copy: a mention resolved during interpretation adds its token
      * here so the SAME table serves the outbound rehydration below. */
     const liveTokens = tokenised ? new Map(tokenised.tokens) : null;
