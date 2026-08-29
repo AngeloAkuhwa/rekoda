@@ -44,9 +44,8 @@ export default function DataDeletionPage() {
           heading: 'What happens, and how fast',
           body: (
             <p>
-              We acknowledge within 48 hours and complete the deletion within 30 days, which is what
-              the NDPA allows. You get a written confirmation listing what was deleted and what was
-              kept.
+              We acknowledge within 48 hours and complete the deletion within 30 days. You get a
+              written confirmation listing what was deleted and what was kept.
             </p>
           ),
         },

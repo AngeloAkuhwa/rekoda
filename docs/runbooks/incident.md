@@ -57,10 +57,12 @@ drains.
 
 ## Comms
 
-An incident that touched merchant money or data is an NDPA matter. Draft
-from the template in `docs/legal/` (owner-blocked on real business facts,
-task 40) and do not send merchant-facing comms that name a specific
-customer's data without the owner's sign-off.
+An incident that touched merchant money or data is a privacy matter, not
+just an operational one: switch to `privacy-security-incident.md`, whose
+Phase C holds the notification decision points (NDPC, data subjects,
+providers) — those are DPCO/legal decisions, never made from this runbook.
+Do not send merchant-facing comms that name a specific customer's data
+without the owner's sign-off.
 
 ## Escalation to a restore
 
