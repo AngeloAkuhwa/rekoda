@@ -34,6 +34,12 @@ let closeDb: () => Promise<void>;
 beforeAll(async () => {
   urls = requireUrls();
   await migrate(urls);
+  /* Truncate BEFORE resetting the catalogue: `resetPlanCatalogue`
+   * deletes the `test_%` add-ons a previous suite may have invented,
+   * and a business still holding one makes that a foreign-key
+   * violation. The suites run serially in one process, so "a previous
+   * suite" is an ordinary state here, not a rare one. */
+  await truncateAll(urls);
   await resetPlanCatalogue(urls);
   ({ db, close: closeDb } = createDb(urls.app, { max: 4 }));
 
