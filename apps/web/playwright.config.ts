@@ -123,6 +123,11 @@ export default defineConfig({
       env: {
         REKODA_API_URL: `http://127.0.0.1:${API_PORT}`,
         REKODA_E2E_REVEAL_OTP: '1',
+        // The suite serves the production build without company facts, so
+        // the legal pages render their honest "not set yet" badges. Only
+        // this harness may skip the R8 boot gate (legal-gate.mjs); a real
+        // deployment setting this has disabled a launch control.
+        REKODA_E2E_PLACEHOLDER_LEGAL: '1',
         // Pinned so the robots/sitemap assertions test the real canonical
         // host rather than whatever the local default happens to be.
         NEXT_PUBLIC_SITE_URL: 'https://rekoda.app',

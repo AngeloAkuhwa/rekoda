@@ -54,11 +54,20 @@ export function missingLegalVars(env) {
  * Refuse to start a production server whose legal pages would render
  * placeholder badges.
  *
+ * One deliberate exception: the e2e suite serves the PRODUCTION build (that
+ * is the point of it) against a database and environment that hold no
+ * company facts, where the badges are the honest rendering under test.
+ * `playwright.config.ts` sets REKODA_E2E_PLACEHOLDER_LEGAL=1 on its own web
+ * server and nothing else may: a real deployment that sets it has disabled
+ * a launch gate, which is why deploy.md names the variable as forbidden
+ * there rather than keeping it a secret.
+ *
  * @param {string} phase - the Next.js phase constant this config load is for.
  * @param {Record<string, string | undefined>} env
  */
 export function assertLegalIdentityConfigured(phase, env) {
   if (phase !== 'phase-production-server') return;
+  if (env.REKODA_E2E_PLACEHOLDER_LEGAL === '1') return;
   const missing = missingLegalVars(env);
   if (missing.length === 0) return;
   throw new Error(

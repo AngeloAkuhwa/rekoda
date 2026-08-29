@@ -45,7 +45,10 @@ stack trace at the first real request:
   in CI passes without them.
 
 A refused boot is the control working. Fix the environment; do not patch
-the check out.
+the check out. In particular, `REKODA_E2E_PLACEHOLDER_LEGAL` exists for
+the Playwright suite alone (it serves the production build without
+company facts, by design) and must NEVER be set on a real deployment —
+setting it there disables the legal-facts gate.
 
 Migration discipline: **expand → deploy → contract.** A migration in the
 same release as the code that needs it must be backward-compatible with the

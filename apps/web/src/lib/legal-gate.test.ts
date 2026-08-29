@@ -63,6 +63,26 @@ describe('assertLegalIdentityConfigured', () => {
   it('leaves development alone: badges are the honest rendering there', () => {
     expect(() => assertLegalIdentityConfigured('phase-development-server', {})).not.toThrow();
   });
+
+  it('lets the e2e harness serve the production build against badges', () => {
+    /* playwright.config.ts is the only place that may set this: the suite's
+     * whole point is serving the production build, and CI holds no facts. */
+    expect(() =>
+      assertLegalIdentityConfigured('phase-production-server', {
+        REKODA_E2E_PLACEHOLDER_LEGAL: '1',
+      }),
+    ).not.toThrow();
+  });
+
+  it('accepts no value for the e2e escape hatch except the literal 1', () => {
+    for (const value of ['true', 'yes', '0', '']) {
+      expect(() =>
+        assertLegalIdentityConfigured('phase-production-server', {
+          REKODA_E2E_PLACEHOLDER_LEGAL: value,
+        }),
+      ).toThrowError(/refusing to serve/);
+    }
+  });
 });
 
 describe('the gate and the page agree on what a fact is', () => {
