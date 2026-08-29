@@ -10,9 +10,9 @@ import { TextExtractionUnavailable, type ExtractedText, type TextExtraction } fr
  * Anthropic as a processor, under API terms that exclude training on
  * inputs, with ONE job — transcribe what the paper says, verbatim. The
  * transcript then walks the same gateway every typed sentence walks before
- * any model is asked to reason about it. The self-hosted OCR sidecar
- * remains a supported configuration behind `OCR_URL` for the hardening
- * move; /ai-privacy describes whichever one a deployment runs.
+ * any model is asked to reason about it. This is the launch
+ * architecture's only reader (ADR 0032): no self-hosted engine, no
+ * fallback, and /ai-privacy names this processor.
  */
 const TRANSCRIBE_SYSTEM =
   'You transcribe documents. Output every piece of text visible in the image, ' +

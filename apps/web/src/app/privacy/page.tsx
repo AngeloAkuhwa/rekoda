@@ -89,8 +89,16 @@ export default function PrivacyPage() {
                   <strong>Your payment provider</strong>: your own account, which you control.
                 </li>
                 <li>
-                  <strong>An AI provider</strong> sees your message text with customer identities
-                  already replaced by tokens. See <a href="/ai-privacy">AI &amp; privacy</a>.
+                  <strong>Anthropic</strong>, our reasoning AI provider, sees your message text with
+                  supported customer identifiers already replaced by tokens. When document reading
+                  is enabled, it also receives photographed receipts and invoices, solely to read
+                  them into text. See <a href="/ai-privacy">AI &amp; privacy</a>.
+                </li>
+                <li>
+                  <strong>OpenAI</strong>, our transcription provider, receives your voice notes
+                  when voice transcription is enabled, solely to turn them into text. The audio is
+                  not kept, and the text is protected like any typed message before AI reasons about
+                  it.
                 </li>
               </ul>
               <p>

@@ -1,6 +1,6 @@
 # 0008 — STT baseline is an AfriSpeech-tuned Whisper, not stock Whisper
 
-**Status:** Accepted
+**Status:** **Superseded by [0032](0032-launch-media-architecture.md)** (2026-08-29). The AfriSpeech sidecar is not part of the launch architecture; this document is preserved as the record of the accent-accuracy analysis, which remains relevant to any future transcription benchmark.
 **Date:** 2026-08-19
 **Refines:** [0005](0005-pii-gateway-scope.md) (layer 4 — voice)
 

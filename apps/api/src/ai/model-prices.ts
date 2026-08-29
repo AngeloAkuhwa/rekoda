@@ -196,9 +196,8 @@ export function registerRuntimeTranscriptionPrices(raw: string | undefined): voi
 /**
  * Refuse to boot a hosted transcriber we cannot cost.
  *
- * Only when hosted transcription is actually the active configuration: the
- * sidecar spends no provider money per call, and a deployment with no
- * transcriber at all makes no transcriptions to misprice. This is the
+ * Only when voice transcription is actually enabled: a deployment with
+ * voice off makes no transcriptions to misprice. This is the
  * per-minute twin of `assertModelIsPriced`, and exists so the exemption in
  * `assertRolesArePriced` is a relocation of the check, never a hole in it.
  */

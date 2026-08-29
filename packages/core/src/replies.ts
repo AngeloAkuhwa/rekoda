@@ -1115,9 +1115,9 @@ export function linkQuestion(survivorToken: string, orphanToken: string): string
  *
  * OUR failure, so it says so and costs the merchant nothing: no allowance
  * moved. What it does NOT do is offer a second route for the photograph.
- * ADR 0024 fixed the pipeline at self-hosted OCR precisely so that a bad day
- * for our sidecar never becomes a day a customer's address reaches a model
- * provider. Typing the amount is the way forward, and it is one line.
+ * ADR 0024 fixed the pipeline — extraction, then the gateway, then a
+ * reasoning model — precisely so that a bad day for the reader never
+ * becomes a silent reroute of a customer's page somewhere else. Typing the amount is the way forward, and it is one line.
  */
 export function photoUnavailable(): Reply {
   return reply(

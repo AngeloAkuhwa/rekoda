@@ -16,12 +16,10 @@ import {
   registerRuntimeModelPrices,
   registerRuntimeTranscriptionPrices,
 } from './model-prices.js';
-import { SPEECH_TO_TEXT, type SpeechToText } from './stt.js';
-import { TEXT_EXTRACTION, type TextExtraction } from './ocr.js';
+import { NoSpeechToTextConfigured, SPEECH_TO_TEXT, type SpeechToText } from './stt.js';
+import { NoTextExtractionConfigured, TEXT_EXTRACTION, type TextExtraction } from './ocr.js';
 import { AUDIO_METADATA_PROBE, ContainerAudioProbe } from './audio-duration.js';
-import { HttpTextExtraction, NoTextExtractionConfigured } from './ocr.http.js';
 import { VisionTextExtraction } from './ocr.vision.js';
-import { HttpSpeechToText, NoSpeechToTextConfigured } from './stt.http.js';
 import { OpenAiSpeechToText } from './stt.openai.js';
 
 // Re-exported for convenience; the tokens themselves are defined in
@@ -131,27 +129,24 @@ class NoTransportConfigured implements ModelTransport {
       },
     },
     /**
-     * The transcriber, and WHERE it points decides what /ai-privacy may say.
+     * The transcriber: OpenAI, explicitly, or nothing (ADR 0032).
      *
-     * Three explicit configurations, never a silent fallback between them
-     * (ADR 0027): `STT_URL` names the self-hosted AfriSpeech sidecar and
-     * audio stays on infrastructure we run; otherwise an OpenAI key selects
-     * hosted transcription — audio to a processor, back as text, tokenised
-     * before any reasoning model sees it — which is the launch
-     * configuration; and with neither, voice notes are answered honestly
-     * rather than sent anywhere by default.
+     * Voice is an opt-in feature with exactly one engine. There is no
+     * self-hosted sidecar in the launch architecture, no second engine to
+     * fall back to, and no way to enable voice without the key — config
+     * validation refuses that boot. Disabled, voice notes are answered
+     * honestly rather than sent anywhere. What /ai-privacy says about
+     * audio is exactly what this factory does.
      */
     {
       provide: SPEECH_TO_TEXT,
       inject: [CONFIG],
       useFactory: (config: ApiConfig): SpeechToText => {
-        if (config.sttUrl) return new HttpSpeechToText(config.sttUrl);
-        if (config.openaiApiKey) {
+        if (config.voiceTranscriptionEnabled && config.openaiApiKey) {
           /* Price before transport, per-minute edition: hosted transcription
            * spends provider money on every note, and a transcriber with no
            * registered rate is a transcriber whose every call reports as
-           * free. The sidecar branch above needs no price — its per-call
-           * provider cost is genuinely zero. */
+           * free. */
           registerRuntimeTranscriptionPrices(config.aiTranscriptionPrices ?? undefined);
           assertTranscriberIsPriced(config.aiModelTranscriber, true);
           return new OpenAiSpeechToText(config.openaiApiKey, config.aiModelTranscriber);
@@ -160,26 +155,24 @@ class NoTransportConfigured implements ModelTransport {
       },
     },
     /**
-     * The text reader, and WHERE it points decides what /ai-privacy may say.
+     * The document reader: Claude vision, explicitly, or nothing (ADR 0032).
      *
      * ADR 0024 fixed the PIPELINE — photo, then text extraction, then the
-     * PII gateway, then a reasoning model — and that shape is untouched.
-     * What ADR 0027 changed is which engine may perform the extraction
-     * step: `OCR_URL` selects the self-hosted sidecar; otherwise an
-     * Anthropic key selects the vision model as a transcription-only
-     * processor, which is the launch configuration. These are CONFIGURED
-     * engines chosen at boot, never a fallback taken at request time — a
-     * request that cannot reach its configured engine is refused, not
+     * PII gateway, then a reasoning model — and that shape is untouched:
+     * the reasoning model only ever sees tokenised text, because the
+     * gateway tokenises text and cannot tokenise an image. The extraction
+     * engine is Claude vision as a transcription-only processor, opt-in
+     * and single: no sidecar, no fallback taken at request time — a
+     * request that cannot reach the configured engine is refused, not
      * rerouted, because a boundary with a runtime fallback is not a
-     * boundary. With neither, a photograph is answered honestly and goes
+     * boundary. Disabled, a photograph is answered honestly and goes
      * nowhere.
      */
     {
       provide: TEXT_EXTRACTION,
       inject: [CONFIG],
       useFactory: (config: ApiConfig): TextExtraction => {
-        if (config.ocrUrl) return new HttpTextExtraction(config.ocrUrl);
-        if (config.anthropicApiKey) {
+        if (config.imageAiEnabled && config.anthropicApiKey) {
           return new VisionTextExtraction(config.anthropicApiKey, config.aiModelVision);
         }
         return new NoTextExtractionConfigured();
@@ -190,7 +183,7 @@ class NoTransportConfigured implements ModelTransport {
      *
      * In process and with no configuration, because it parses containers
      * rather than calling anything. A deployment that would rather run an
-     * ffprobe sidecar swaps the provider here and touches nothing else.
+     * ffprobe service swaps the provider here and touches nothing else.
      */
     { provide: AUDIO_METADATA_PROBE, useClass: ContainerAudioProbe },
     Interpreter,

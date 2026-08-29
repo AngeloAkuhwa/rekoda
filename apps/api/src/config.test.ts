@@ -138,10 +138,9 @@ describe('the role ensemble (docs/ai-model-strategy.md)', () => {
     expect(config.aiModelClassifier).toMatch(/haiku/);
     expect(config.aiModelVision).toMatch(/claude/);
     expect(config.aiModelEscalation).toMatch(/opus/);
-    // ADR 0027 reversed ADR 0008's default: hosted transcription is the
-    // launch configuration, and whisper-1 specifically because it reports
-    // the audio DURATION the VOICE_MINUTES meter bills from. The sidecar
-    // stays one env var away (STT_URL); this assertion keeps the default
+    // ADR 0032: OpenAI is the launch transcriber, explicitly and only —
+    // whisper-1 specifically because it reports the audio DURATION the
+    // VOICE_MINUTES meter bills from. This assertion keeps the default
     // and the privacy pages describing the same engine.
     expect(config.aiModelTranscriber).toBe('whisper-1');
     // Dual-extraction threshold is configuration, defaulting to ₦500,000.
@@ -163,6 +162,42 @@ describe('the role ensemble (docs/ai-model-strategy.md)', () => {
     expect(config.aiModelClassifier).toBe('claude-sonnet-latest');
     expect(config.aiModelTranscriber).toBe('whisper-1');
     expect(config.aiModelVisionVerifier).toBe('gpt-test-verifier');
+  });
+});
+
+describe('media features are explicit (ADR 0032, remediation R3)', () => {
+  it('defaults both media features OFF, needing no media credentials at all', () => {
+    const config = loadConfig(BASE);
+    expect(config.voiceTranscriptionEnabled).toBe(false);
+    expect(config.imageAiEnabled).toBe(false);
+  });
+
+  it('REFUSES voice transcription enabled without the OpenAI key', () => {
+    /* The startup failure the remediation demands: a deployment that
+     * promises voice and cannot deliver it fails in front of the operator,
+     * never in front of a merchant. */
+    expect(() => loadConfig({ ...BASE, VOICE_TRANSCRIPTION_ENABLED: '1' })).toThrow(
+      /OPENAI_API_KEY/,
+    );
+    expect(() => loadConfig({ ...BASE, VOICE_TRANSCRIPTION_ENABLED: 'true' })).toThrow(
+      /OPENAI_API_KEY/,
+    );
+  });
+
+  it('REFUSES image AI enabled without the Anthropic key', () => {
+    expect(() => loadConfig({ ...BASE, IMAGE_AI_ENABLED: '1' })).toThrow(/ANTHROPIC_API_KEY/);
+  });
+
+  it('accepts each feature when its provider key is present', () => {
+    const config = loadConfig({
+      ...BASE,
+      ANTHROPIC_API_KEY: 'k',
+      OPENAI_API_KEY: 'k',
+      VOICE_TRANSCRIPTION_ENABLED: '1',
+      IMAGE_AI_ENABLED: 'true',
+    });
+    expect(config.voiceTranscriptionEnabled).toBe(true);
+    expect(config.imageAiEnabled).toBe(true);
   });
 });
 

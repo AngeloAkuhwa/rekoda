@@ -5,7 +5,7 @@ import { canonical } from '@/lib/site';
 export const metadata: Metadata = {
   title: 'AI & privacy',
   description:
-    'What Rekoda sends to each AI processor and what it never sends: customer identities are tokenised before any model reasons about your business, and money is never computed by a model.',
+    'What Rekoda sends to each AI processor and what it never sends: supported customer identifiers are tokenised before any model reasons about your business, and money is never computed by a model.',
   alternates: { canonical: canonical('/ai-privacy') },
 };
 
@@ -36,14 +36,20 @@ export default function AiPrivacyPage() {
         },
         {
           id: 'tokenisation',
-          heading: 'Customer identities are replaced before any AI reasons about your business',
+          heading:
+            'Supported customer identifiers are replaced before any AI reasons about your business',
           body: (
             <>
               <p>
-                Phone numbers, emails and bank details are swapped for meaningless tokens before a
-                message reaches the AI that does your bookkeeping, and so is every customer name
-                Rekoda already knows. The model sees <code>CUSTOMER_7</code>, not Ada, and not her
-                number. The real values stay in an encrypted store that the model layer cannot read.
+                Rekoda detects and tokenises supported personal identifiers before text reaches the
+                AI that does your bookkeeping: recognised customer names, phone numbers, email
+                addresses and supported financial identifiers are swapped for meaningless tokens.
+                The model sees <code>CUSTOMER_7</code>, not Ada, and not her number. The real values
+                stay in an encrypted store that the model layer cannot read. This is a precise
+                promise about those supported identifiers, not a claim that every possible piece of
+                personal information in free text is always detected: something unusual you type
+                into a message, such as a full street address in an unexpected format, may reach the
+                model as written.
               </p>
               <p>
                 One step works on raw material and cannot be tokenised first: turning a voice note
@@ -81,11 +87,10 @@ export default function AiPrivacyPage() {
               <p>
                 An earlier version of this page said transcription ran only on infrastructure we
                 run, and promised that if that changed, this page would change first and name the
-                provider. This is that change, kept in those words. Rekoda can still be configured
-                to transcribe on machines we run instead, and when a deployment is, audio never
-                leaves our infrastructure; this page describes the configuration actually running.
-                There is no automatic switching between the two: which processor handles your audio
-                is fixed when the system starts, never chosen per message.
+                provider. This is that change, kept in those words: OpenAI is the transcription
+                processor, it is the only one, and there is no automatic switching to anywhere else.
+                If voice transcription is switched off for a deployment, voice notes are answered
+                with an honest sentence and the audio is sent nowhere at all.
               </p>
             </>
           ),
@@ -105,9 +110,8 @@ export default function AiPrivacyPage() {
               <p>
                 There is no quiet rerouting. If the reader is busy or cannot make out the page, we
                 tell you and ask you to type the amount, rather than trying somewhere else you were
-                never told about. As with voice, Rekoda can be configured to read documents on
-                machines we run instead, and which reader a deployment uses is fixed when the system
-                starts; this page describes the one actually running.
+                never told about. Anthropic is the document reader, it is the only one, and which
+                features are on is fixed when the system starts, never chosen per message.
               </p>
             </>
           ),

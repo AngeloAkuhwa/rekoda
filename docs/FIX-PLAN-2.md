@@ -1,5 +1,15 @@
 # Fix plan 2 — the second full-system sweep (23 Aug 2026)
 
+> **Media-architecture supersession (ADR 0032, 29 Aug 2026).** Sections of
+> this document describing self-hosted STT/OCR sidecars, `services/stt`,
+> `STT_URL`, `STT_FALLBACK`, `OCR_URL` or the "audio never leaves Rekoda"
+> posture are HISTORICAL and do not describe the current production
+> media-processing architecture. The launch architecture is OpenAI for
+> voice transcription and Anthropic Claude for reasoning and vision, with
+> no self-hosted media sidecars — see
+> [ADR 0032](adr/0032-launch-media-architecture.md).
+
+
 _A three-lane adversarial audit of the post-remediation codebase (HEAD 3cd6437,
 all of PRs #124-#131 merged). This plan is the standing contract for closing
 its findings: one batch per PR, each planned here, each shipped with a test

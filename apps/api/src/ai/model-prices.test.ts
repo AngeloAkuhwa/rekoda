@@ -193,8 +193,7 @@ describe('the hosted transcriber must be priced at boot', () => {
   });
 
   it('stays quiet when hosted transcription is not the active configuration', () => {
-    /* The sidecar spends no provider money per call, and no transcriber at
-     * all makes no transcriptions — neither has anything to misprice. */
+    /* Voice disabled makes no transcriptions — nothing to misprice. */
     expect(() => assertTranscriberIsPriced('never-priced-transcriber', false)).not.toThrow();
   });
 });

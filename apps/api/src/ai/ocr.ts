@@ -1,28 +1,24 @@
 /**
- * Reading a photograph of a receipt (ADR 0024, decision C9).
+ * Reading a photograph of a receipt (ADR 0024 pipeline, ADR 0032 engine).
  *
- * A port, for the sharpest reason any port here has: this seam IS the privacy
- * boundary. The pipeline Angelo chose is
+ * A port, for the sharpest reason any port here has: this seam IS the
+ * boundary between raw pixels and text the gateway can protect. The
+ * pipeline is
  *
- *     receipt photo -> self-hosted OCR -> PII tokenisation -> model
+ *     document photo -> extraction (Claude vision) -> PII tokenisation -> reasoning model
  *
- * and the reason is mechanical rather than aesthetic. The privacy gateway
- * tokenises TEXT and cannot tokenise an image, so a photograph sent to a model
- * provider would put a customer's name, phone and address in front of a third
- * party intact. Running OCR first, inside infrastructure we control, produces
- * exactly the input type the gateway already knows how to protect.
+ * and the mechanics matter: the privacy gateway tokenises TEXT and cannot
+ * tokenise an image, so the extraction step necessarily works on the raw
+ * page — the launch architecture sends it to Anthropic as a
+ * transcription-only processor, /ai-privacy says so in plain words, and
+ * the REASONING model still only ever sees the tokenised transcript.
  *
- * THERE IS NO RAW-IMAGE FALLBACK. Not when OCR is slow, not when it is down,
- * not when a photograph is hard to read. ADR 0024 says it plainly: a privacy
- * boundary that acquires an exception the first time it is inconvenient was
- * never a boundary. If visual layout ever matters, the route is OCR bounding
- * boxes, redact the regions holding personal data, then send the redacted
- * image - never the original.
- *
- * That is why the failure type below exists and why the handler answers with
- * it. "We could not read it" is a sentence a merchant can act on. Sending
- * their customer's address to an American model provider because our sidecar
- * was busy is not.
+ * THERE IS NO FALLBACK ENGINE. Not when the reader is slow, not when it
+ * is down, not when a photograph is hard to read: a request that cannot
+ * reach the ONE configured engine is refused, never rerouted somewhere
+ * the privacy page does not name — a boundary that acquires an exception
+ * the first time it is inconvenient was never a boundary. "We could not
+ * read it" is a sentence a merchant can act on.
  */
 export interface ExtractedText {
   /**
@@ -42,9 +38,8 @@ export interface ExtractedText {
   /**
    * What the HOSTED engine consumed, when a hosted engine did the reading.
    *
-   * Absent for the self-hosted sidecar — its per-call provider cost is
-   * genuinely zero, and a zero-cost row per page would drown the rows that
-   * mean money — and absent for stubs. Present, it is what the caller needs
+   * Absent for stubs, which spend nothing. Present, it is what the
+   * caller needs
    * to write the `usage_events` row that puts hosted OCR inside the margin
    * view instead of outside it.
    */
@@ -102,3 +97,17 @@ export class TextExtractionUnavailable extends Error {
 }
 
 export const TEXT_EXTRACTION = Symbol('TextExtraction');
+
+/**
+ * Document reading is not enabled in this deployment.
+ *
+ * Refuses with the type the caller already handles: a photograph is
+ * answered honestly and its bytes go nowhere. This class is also what
+ * keeps the no-fallback rule real — there is no branch anywhere that
+ * sends the image somewhere else when reading is off or failing.
+ */
+export class NoTextExtractionConfigured implements TextExtraction {
+  extract(): Promise<never> {
+    return Promise.reject(new TextExtractionUnavailable('image AI is not enabled'));
+  }
+}

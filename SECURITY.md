@@ -17,25 +17,39 @@ not test against production merchant data.
    row-level security enforces it again at the database — a missed `WHERE`
    clause returns zero rows, not another tenant's ledger.
 2. **Customer PII lives in an encrypted vault** and travels as opaque tokens
-   (`CUSTOMER_X81`) everywhere else, including to AI providers. Rehydration
-   happens only in the authorised output layer. Voice audio is transcribed on
-   Rekoda-controlled infrastructure and never sent to third parties.
-3. **Secrets are never committed.** CI runs a secret scanner on every push.
+   (`CUSTOMER_X81`) through the text path: supported personal identifiers
+   (recognised customer names, phone numbers, email addresses and supported
+   financial identifiers) are detected and tokenised before any reasoning
+   model reads a message, and rehydration happens only in the authorised
+   output layer. Anthropic Claude is the hosted reasoning provider.
+3. **Media takes a dedicated, disclosed processing path.** Voice notes are
+   processed transiently: when voice transcription is enabled, the audio is
+   securely sent to Rekoda's configured transcription provider, currently
+   OpenAI, solely for transcription. Supported document photographs are
+   securely sent to Anthropic Claude solely to be read into text. Rekoda
+   does not intentionally retain the raw media after processing; the
+   transcript or extracted text then enters the same tokenisation flow as
+   typed text before any reasoning model sees it. Both providers operate
+   under API terms that exclude training on inputs, over encrypted
+   transport, and are documented as service providers/subprocessors. There
+   is no self-hosted transcription or OCR service in the launch
+   architecture, and no silent fallback between engines (ADR 0032).
+4. **Secrets are never committed.** CI runs a secret scanner on every push.
    Provider credentials supplied by merchants (e.g. Paystack keys) are
    encrypted at rest with AES-256-GCM under a key that lives only in the
    environment.
-4. **All webhooks are signature-verified** (Meta `X-Hub-Signature-256`,
+5. **All webhooks are signature-verified** (Meta `X-Hub-Signature-256`,
    Twilio `X-Twilio-Signature`, Paystack HMAC-SHA512) and processed
    idempotently — a replayed or forged delivery cannot create a second
    financial record.
-5. **Money is integer kobo and double-entry.** Financial mutations are
+6. **Money is integer kobo and double-entry.** Financial mutations are
    transactional, auditable (append-only audit events), and never performed
    by AI output without deterministic validation.
-6. **Authentication is passwordless**: phone-verified OTP, single-use
+7. **Authentication is passwordless**: phone-verified OTP, single-use
    hashed magic links with short TTLs, HTTP-only session cookies,
    constant-time comparisons. Magic-link tokens are never logged and are
    invalidated on first use.
-7. **Least privilege everywhere**: fine-grained access tokens with expiry,
+8. **Least privilege everywhere**: fine-grained access tokens with expiry,
    role-scoped dashboard permissions (owner vs accountant), and admin
    actions written to their own audit trail.
 

@@ -2,15 +2,13 @@ import OpenAI, { toFile } from 'openai';
 import { TranscriptionUnavailable, type SpeechToText, type Transcript } from './stt.js';
 
 /**
- * Hosted transcription, behind the same port as the sidecar (ADR 0027).
+ * The transcriber (ADR 0032): OpenAI, the launch architecture's only one.
  *
- * The launch configuration: audio goes to OpenAI's transcription API as a
- * processor, under API terms that exclude training on inputs, solely to come
- * back as text — and that text is tokenised by the privacy gateway before
- * any reasoning model sees it. The AfriSpeech sidecar remains a supported
- * configuration behind `STT_URL` for the self-hosted hardening move; what
- * changed is which of the two a fresh deployment gets, and /ai-privacy says
- * so in the same words.
+ * Audio goes to OpenAI's transcription API as a processor, under API terms
+ * that exclude training on inputs, solely to come back as text — and that
+ * text is tokenised by the privacy gateway before any reasoning model sees
+ * it. There is no self-hosted engine and no fallback; /ai-privacy names
+ * this processor in the same words.
  *
  * `whisper-1` is the default on purpose: it is the transcription model that
  * REPORTS THE AUDIO DURATION (`verbose_json`), and `voice_seconds` is an

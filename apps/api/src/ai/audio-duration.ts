@@ -14,7 +14,7 @@
  * is what makes it cost protection rather than cost reporting.
  *
  * A PORT, because the parsing below is one implementation of a question that
- * has several: an ffprobe sidecar answers it too, and a deployment that would
+ * has several: an ffprobe service answers it too, and a deployment that would
  * rather run one should not have to touch the handler.
  */
 export interface AudioMetadataProbe {
@@ -203,7 +203,7 @@ function aacSeconds(bytes: Buffer): number | null {
 
 /**
  * The probe Rekoda ships: the five containers Meta accepts for audio, read in
- * process, with no sidecar to deploy and no binary to trust.
+ * process, with no extra service to deploy and no binary to trust.
  *
  * The mime type chooses the reader and the bytes decide the answer. A mime
  * type nobody recognises returns null rather than guessing, because a wrong

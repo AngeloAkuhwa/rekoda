@@ -1933,6 +1933,8 @@ APPROVED SPECIALIST PROCESSOR
 
 The self-hosted OCR sidecar remains a supported configuration and is the hardening move. `/ai-privacy` describes whichever configuration a deployment actually runs, and that page is generated from configuration rather than written by hand, so it cannot drift from the truth.
 
+> **Amended by ADR 0032 (owner directive, 29 Aug 2026):** the sentence above is superseded. There is NO self-hosted OCR or STT configuration in the launch architecture; the sidecar code and configuration are removed, Claude vision is the only document reader and OpenAI the only transcriber, each an explicit opt-in that refuses to boot without its key. Self-hosting returns only through a new ADR.
+
 ### C.3 The invariant that does not bend
 
 > **The reasoning model receives tokenised context. Always.** The specialist-processor exception covers transcription and covers nothing else. A model asked to reason, decide, classify or advise never receives untokenised personal data, whatever surface the request came from and whatever the merchant asked for.

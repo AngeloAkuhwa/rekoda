@@ -4,7 +4,7 @@ import { TextExtractionUnavailable, type ExtractedText, type TextExtraction } fr
  * An OCR engine that answers from a script.
  *
  * The behaviour worth testing on the receipt path belongs to the code AROUND
- * the sidecar: that the image is never stored, that the text goes through the
+ * the reader: that the image is never stored, that the text goes through the
  * gateway before any model sees it, and above all that a failure produces an
  * honest reply rather than a second route for the photograph. None of that
  * needs a real engine.
@@ -26,7 +26,7 @@ export class StubTextExtraction implements TextExtraction {
     this.failure = null;
   }
 
-  failWith(error: Error = new TextExtractionUnavailable('stub sidecar down')): void {
+  failWith(error: Error = new TextExtractionUnavailable('stub reader down')): void {
     this.failure = error;
   }
 

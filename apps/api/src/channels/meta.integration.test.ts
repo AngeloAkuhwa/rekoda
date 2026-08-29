@@ -3192,12 +3192,12 @@ describe('chasing an overdue invoice', () => {
 });
 
 /**
- * A voice note, end to end (ADR 0005, ADR 0008).
+ * A voice note, end to end (ADR 0032).
  *
  * The claim that matters most here is a NEGATIVE one: the audio is fetched,
- * transcribed and dropped. "Audio never leaves Rekoda" is a promise made out
- * loud on the privacy page, and the only way it stays true is if there is
- * nowhere for the audio to leave from.
+ * handed to the ONE configured transcriber, and dropped. "Rekoda does not
+ * keep the audio" is a promise made out loud on the privacy page, and the
+ * only way it stays true is if there is nowhere for the audio to persist.
  */
 describe('a voice note', () => {
   const A_SPOKEN_SALE = {
@@ -3392,21 +3392,21 @@ describe('a voice note', () => {
     const dump = JSON.stringify(rows);
     expect(dump).not.toContain('OggS');
     expect(dump).not.toContain('secret-voice');
-    // The audio went to the sidecar and nowhere else.
+    // The audio went to the configured transcriber and nowhere else.
     expect(stubStt.calls).toHaveLength(1);
     expect(stubStt.calls[0]?.mimeType).toBe('audio/ogg');
   });
 
   /**
-   * The AUDIO is the source of truth for the length, not the sidecar.
+   * The AUDIO is the source of truth for the length, not the transcriber.
    *
-   * It used to be the sidecar's number, which meant the merchant could only
+   * It used to be the transcriber's number, which meant the merchant could only
    * be charged after the spend. Reading it from the container first is what
    * lets the charge happen before the provider is called, and the number is
    * the same number either way: the audio says seventeen seconds and
    * seventeen is what is taken.
    */
-  it('meters the seconds the AUDIO says, before the sidecar is called', async () => {
+  it('meters the seconds the AUDIO says, before the transcriber is called', async () => {
     const business = await seedMerchant('+2348031234567');
     arrangeAudio(17);
     /* Deliberately disagrees with the audio. The container wins. */
@@ -3583,10 +3583,10 @@ describe('a voice note', () => {
     });
   });
 
-  it('writes no transcription cost row for a sidecar transcript', async () => {
+  it('writes no transcription cost row when the engine reports no usage', async () => {
     const business = await seedMerchant('+2348031234567');
     arrangeAudio(5);
-    // No usage envelope: the sidecar spends no provider money per call.
+    // No usage envelope: nothing to price, so no cost row.
     stubStt.answerWith({ text: 'Ada bought 3 wigs for 150k', seconds: 5, confidence: 0.9 });
     stubTransport.replyWith(A_SPOKEN_SALE);
 
@@ -4059,7 +4059,7 @@ describe('a receipt photo', () => {
     const dump = JSON.stringify(rows);
     expect(dump).not.toContain('JFIF');
     expect(dump).not.toContain('secret-photo');
-    // The bytes went to OUR sidecar and nowhere else.
+    // The bytes went to the configured reader and nowhere else.
     expect(stubOcr.calls).toHaveLength(1);
     expect(stubOcr.calls[0]?.mimeType).toBe('image/jpeg');
   });
@@ -4193,10 +4193,10 @@ describe('a receipt photo', () => {
     });
   });
 
-  it('writes no ocr_vision cost row for a sidecar read', async () => {
+  it('writes no ocr_vision cost row when the reader reports no usage', async () => {
     const business = await seedMerchant('+2348031234567');
     arrangePhoto();
-    // No usage envelope: the sidecar spends no provider money per call.
+    // No usage envelope: nothing to price, so no cost row.
     stubOcr.answerWith({ text: 'TOTAL 12,000 diesel', confidence: 0.9 });
     stubTransport.replyWith(A_PHOTOGRAPHED_EXPENSE);
 

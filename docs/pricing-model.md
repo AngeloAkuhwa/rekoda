@@ -168,7 +168,7 @@ which is exactly when someone needs it most.
 > | Twilio ₦7.25/msg both directions for Chat                          | **ADR 0002/0011** — Chat is Meta-direct; Twilio applies to the Integrate WABA path only                                                              |
 > | Free-form replies and utility templates free inside the 24h window | **ADR 0011** — Meta charges for **every service message from 1 Oct 2026**, flat, no volume discount (~₦10/outbound in Nigeria)                       |
 > | Twilio Verify ~₦80+/OTP                                            | **ADR 0002** — OTP over Rekoda's own WhatsApp number (~₦10), SMS fallback only                                                                       |
-> | OpenAI transcription ~₦6.53/min                                    | **ADR 0027** (24 Aug) — hosted transcription IS the launch configuration, costed at a $0.006/min ceiling; ADR 0008's sidecar retained behind STT_URL |
+> | OpenAI transcription ~₦6.53/min                                    | **ADR 0027/0032** — OpenAI IS the launch transcriber, costed at a $0.006/min ceiling via `AI_TRANSCRIPTION_PRICES`; no self-hosted sidecar exists (ADR 0032) |
 > | Azure hosting ₦75–150k/month                                       | **ADR 0006** — Hetzner + Cloudflare + R2, **~₦30–40k/month** at launch                                                                               |
 > | Nightly `pg_dump` backups                                          | **ADR 0010** — continuous WAL archiving (PITR)                                                                                                       |
 >

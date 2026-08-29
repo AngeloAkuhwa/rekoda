@@ -9,10 +9,10 @@ rules that keep it safe and swappable.
 
 The Claude API accepts text, images and PDFs. It accepts **no audio** — so a
 voice note can never be a single-vendor pipeline no matter how good any one
-model is. Rekoda's answer to audio is self-hosted (ADR 0005/0008, see §7),
-which makes the ensemble three-legged by construction: a self-hosted
-transcriber, the Claude family for reasoning and vision, and OpenAI as the
-switchable second reasoning provider (ADR 0007) and STT benchmark comparator.
+model is. Rekoda's answer to audio is OpenAI transcription (ADR 0032),
+which makes the ensemble two-vendor by construction: OpenAI for
+transcription (and as the switchable second reasoning provider, ADR 0007),
+and the Claude family for reasoning and vision.
 This strategy extends the existing provider-neutral transport from "one
 interchangeable brain" to **one role-addressed ensemble**.
 
@@ -25,7 +25,7 @@ interpreter". Defaults, chosen from current capability and price
 
 | Role          | Default model                                                                           | Price in/out per MTok                   | Job                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | ------------- | --------------------------------------------------------------------------------------- | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `transcriber` | hosted `whisper-1` (ADR 0027); `afrispeech-whisper-medium-all` sidecar behind `STT_URL` | per-minute, ceiling $0.006/min          | Voice note → text. ADR 0027 made hosted transcription the launch configuration — whisper-1 because it reports the DURATION the voice_seconds meter bills from — with the AfriSpeech sidecar retained one env var away for the accuracy + "audio never leaves Rekoda" hardening move (generic models run 30–45% WER on African-accented English; the M3 benchmark comparator exists to make that call with data). Selection is boot config, never a silent fallback. |
+| `transcriber` | OpenAI `whisper-1` (ADR 0032), opt-in via `VOICE_TRANSCRIPTION_ENABLED` | per-minute via `AI_TRANSCRIPTION_PRICES` | Voice note → text. OpenAI is the launch architecture's ONLY transcriber — whisper-1 because it reports the DURATION the voice_seconds meter bills from. No self-hosted engine exists and there is no fallback; enabling voice without the OpenAI key refuses to boot. (Generic models run 30–45% WER on African-accented English; the M3 benchmark remains the instrument for any future accuracy decision, which would arrive through a new ADR.) |
 | `classifier`  | Claude Haiku 4.5                                                                        | $1 / $5                                 | Document-type detection ("is this a receipt, an invoice, a statement?"), routing, and formatting §16 answers from deterministic query results. High volume, low nuance.                                                                                                                                                                                                                                                                                             |
 | `interpreter` | Claude Sonnet 5                                                                         | $2 / $10 (permanent list rate)          | Text or transcript → StructuredBusinessCommand. The existing interpreter role.                                                                                                                                                                                                                                                                                                                                                                                      |
 | `vision`      | Claude Sonnet 5                                                                         | $2 / $10                                | Receipts, handwritten bills, POS slips, photos (image blocks); supplier invoices and bank statements (native PDF document blocks, 32 MB / 600 pages) **with citations enabled**, so every extracted figure is pinned to the page that says it.                                                                                                                                                                                                                      |
@@ -100,8 +100,9 @@ Two rules make the ladder safe:
 Defaults above are the best current choice on paper; the sales pitch is not
 the measurement. Before the voice and document slices ship:
 
-- **Voice bench**: ADR 0008's M3 benchmark is the authority — three
-  self-hosted candidates head-to-head plus the hosted comparator, gated on
+- **Voice bench**: ADR 0008's M3 benchmark design remains the authority
+  for any future transcription comparison — candidate engines head-to-head
+  against the current OpenAI transcriber, gated on
   ENTITY-LEVEL accuracy (amount, quantity, name-string closeness for the
   fuzzy match), because the metric that pays is "did the books come out
   right", not WER.
@@ -148,6 +149,9 @@ documents, never a toll booth on every message.**
 
 ## 7. STT: the launch call, twice corrected on the record
 
+> **Historical section.** It records how the decision moved; the current
+> architecture is ADR 0032 — OpenAI transcription, no self-hosted engines.
+
 This section has now swung both ways, and both swings are kept on the record
 because each was right about something.
 
@@ -157,19 +161,20 @@ never leaves Rekoda" as the trust page's strongest sentence) and accuracy
 (generic models measure 30–45% WER on African-accented English, above 70% on
 entity-rich utterances, which is every Rekoda voice note).
 
-**ADR 0027 (24 Aug 2026) is the owner's launch decision, and it stands:**
-hosted `whisper-1` at launch, because a one-person operation should not
-carry sidecar ops for a scale it does not have — with three conditions that
-keep ADR 0008's substance alive rather than discarding it:
+**ADR 0027 (24 Aug 2026) chose hosted `whisper-1` at launch, and ADR 0032
+(29 Aug 2026) finished the move:** the sidecar code, configuration and
+tests are REMOVED, not parked. What survives of ADR 0008's substance:
 
 1. the trust page changed FIRST, in the words it promised, and names the
-   processor — the strong sentence is retired until a deployment earns it;
-2. the AfriSpeech sidecar stays one env var away (`STT_URL`), selection at
-   boot, never a silent runtime fallback;
-3. the M3 benchmark comparator remains the instrument that decides WHEN the
-   sidecar's accuracy case justifies its ops cost, on ADR 0008's gate
-   metric — entity-level accuracy (amount, quantity, name-string
-   closeness), not WER.
+   processor — the strong sentence is retired;
+2. there is exactly one engine per media job, selected at boot, with no
+   runtime fallback — enabling voice without the OpenAI key refuses to
+   start;
+3. the M3 benchmark comparator remains the instrument for any FUTURE
+   transcription-accuracy decision, on ADR 0008's gate metric —
+   entity-level accuracy (amount, quantity, name-string closeness), not
+   WER — and self-hosting would return only through a new ADR and a
+   deliberate implementation.
 
 ## 8. What this changes in code, and when
 

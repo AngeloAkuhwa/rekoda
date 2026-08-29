@@ -159,36 +159,34 @@ export interface ApiConfig {
    *
    *   AI_TRANSCRIPTION_PRICES='{"whisper-1":{"perMinuteMicros":6000}}'
    *
-   * Required whenever hosted transcription is the active configuration
-   * (OPENAI_API_KEY set, STT_URL unset) — boot refuses otherwise, for the
-   * same reason token roles must be priced: a transcriber with no price is
-   * a transcriber whose every call reports as free.
+   * Required whenever voice transcription is enabled — boot refuses
+   * otherwise, for the same reason token roles must be priced: a
+   * transcriber with no price is a transcriber whose every call reports
+   * as free.
    */
   aiTranscriptionPrices: string | null;
   /**
-   * The self-hosted transcription sidecar (ADR 0005/0008), now optional
-   * (ADR 0027).
+   * Whether voice notes are transcribed at all (ADR 0032, remediation R3).
    *
-   * Set, it selects the AfriSpeech sidecar and audio stays on our machine —
-   * the day a deployment runs it, /ai-privacy may say the stronger sentence
-   * again. Null selects the hosted transcriber when an OpenAI key exists
-   * (the launch configuration, named on /ai-privacy), and with neither a
-   * voice note gets an honest sentence rather than being sent somewhere the
-   * privacy page does not mention.
+   * The launch transcriber is OpenAI, explicitly and only: there is no
+   * self-hosted sidecar in the launch architecture and no fallback between
+   * engines. Enabled without OPENAI_API_KEY, boot REFUSES — a deployment
+   * that promises voice and cannot deliver it should fail in front of the
+   * operator, not in front of a merchant. Disabled (the default), voice
+   * notes get an honest sentence and no OpenAI credential needs to exist.
    */
-  sttUrl: string | null;
+  voiceTranscriptionEnabled: boolean;
   /**
-   * The self-hosted OCR sidecar (ADR 0024 C9), now optional (ADR 0027).
+   * Whether photographed documents are read at all (ADR 0032, R3).
    *
-   * Set, it selects the sidecar and the image stays on our machine. Null
-   * selects the vision model as a transcription-only processor when an
-   * Anthropic key exists — the launch configuration, chosen at boot and
-   * named on /ai-privacy, never a fallback taken at request time. The
-   * REASONING model still only ever sees tokenised text either way, because
-   * the gateway tokenises text and cannot tokenise an image, and a request
-   * that cannot reach its configured engine is refused, not rerouted.
+   * The launch reader is Anthropic Claude vision as a transcription-only
+   * processor. Enabled without ANTHROPIC_API_KEY, boot refuses; disabled
+   * (the default), a photograph is answered honestly and goes nowhere.
+   * The REASONING model still only ever sees tokenised text either way,
+   * and a request that cannot reach the configured engine is refused,
+   * never rerouted.
    */
-  ocrUrl: string | null;
+  imageAiEnabled: boolean;
   /** Daily ceilings. The thing on the other side of these is a bill. */
   aiCallsPerBusinessPerDay: number;
   aiCallsGlobalPerDay: number;
@@ -383,13 +381,11 @@ const DEFAULT_MODEL: Record<'anthropic' | 'openai', string | null> = {
  * ROLE, and each role has its own model — nothing anywhere says "call
  * Sonnet", it says "call the classifier". The reasoning roles default to the
  * Claude family (vision + native PDF + strict tools is where extraction
- * lives). The transcriber defaults to HOSTED whisper-1 (ADR 0027): the
- * launch decision is hosted AI end to end, and whisper-1 is the
- * transcription model that reports the audio DURATION, which the
- * voice_seconds meter takes as the provider's number rather than an
- * estimate. Setting `STT_URL` swaps in the self-hosted AfriSpeech sidecar
- * (ADR 0008) unchanged — the hardening move stays one env var away, and
- * /ai-privacy describes whichever engine a deployment runs.
+ * lives). The transcriber defaults to whisper-1 on OpenAI (ADR 0032): the
+ * launch architecture is hosted AI end to end with exactly one engine per
+ * job, and whisper-1 is the transcription model that reports the audio
+ * DURATION, which the voice_seconds meter takes as the provider's number
+ * rather than an estimate.
  */
 const ROLE_DEFAULTS = {
   classifier: 'claude-haiku-4-5',
@@ -543,6 +539,11 @@ export function isProductionEnv(env: NodeJS.ProcessEnv): boolean {
   return !NON_PRODUCTION_ENVS.has(value);
 }
 
+/** Boolean env flags accept the repo's `1` convention and plain `true`. */
+function flag(value: string | undefined): boolean {
+  return value === '1' || value === 'true';
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
   const isProduction = isProductionEnv(env);
 
@@ -550,6 +551,25 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
   if (revealOtp && isProduction) {
     throw new ConfigError(
       'REKODA_REVEAL_OTP must never be set in production — it returns live OTP codes to any caller',
+    );
+  }
+
+  /**
+   * A media feature switched ON with no provider to serve it is a promise
+   * the deployment cannot keep (ADR 0032, remediation R3): the failure
+   * belongs in front of the operator at startup, not in front of a merchant
+   * mid-message. Disabled features need no credentials at all.
+   */
+  if (flag(env['VOICE_TRANSCRIPTION_ENABLED']) && !env['OPENAI_API_KEY']) {
+    throw new ConfigError(
+      'VOICE_TRANSCRIPTION_ENABLED is set but OPENAI_API_KEY is not. The launch transcriber ' +
+        'is OpenAI, explicitly: supply the key, or disable voice transcription.',
+    );
+  }
+  if (flag(env['IMAGE_AI_ENABLED']) && !env['ANTHROPIC_API_KEY']) {
+    throw new ConfigError(
+      'IMAGE_AI_ENABLED is set but ANTHROPIC_API_KEY is not. The launch document reader ' +
+        'is Anthropic Claude vision, explicitly: supply the key, or disable image AI.',
     );
   }
 
@@ -692,8 +712,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     aiBaseUrl: env['AI_BASE_URL'] || null,
     aiModelPrices: env['AI_MODEL_PRICES'] || null,
     aiTranscriptionPrices: env['AI_TRANSCRIPTION_PRICES'] || null,
-    sttUrl: env['STT_URL'] || null,
-    ocrUrl: env['OCR_URL'] || null,
+    voiceTranscriptionEnabled: flag(env['VOICE_TRANSCRIPTION_ENABLED']),
+    imageAiEnabled: flag(env['IMAGE_AI_ENABLED']),
     /**
      * Defaults are a ceiling, not a target. At ~₦8 a call (pricing-model.md),
      * 60 per merchant is about ₦480 a day against a subscription, and 5,000

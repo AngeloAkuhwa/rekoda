@@ -101,17 +101,17 @@ export interface InboundMessageDeps {
   paymentIntents: PaymentIntentsService;
   /** Fetches media a merchant sent, and delivers the OTP template. */
   sender: MessageSender;
-  /** The AfriSpeech sidecar (ADR 0008), or something that refuses honestly. */
+  /** The OpenAI transcriber (ADR 0032), or something that refuses honestly. */
   stt: SpeechToText;
   /**
    * How long a voice note runs, read from the bytes before any provider is
-   * called. A port, because an ffprobe sidecar answers the same question and
+   * called. A port, because an ffprobe service answers the same question and
    * a deployment that would rather run one should not have to touch this
    * file.
    */
   audioProbe: AudioMetadataProbe;
   /**
-   * The self-hosted OCR sidecar (ADR 0024), or something that refuses
+   * The Claude vision reader (ADR 0024/0032), or something that refuses
    * honestly. Never a vision model: see `ocr.ts` for why there is no such
    * option and must not be one.
    */
@@ -447,7 +447,7 @@ async function recordVisionRead(
  * extraction, PII tokenisation, then a reasoning model - and ADR 0027 chose
  * which engine performs the extraction step at launch: the vision model as
  * a transcription-only processor, named on /ai-privacy, with the OCR
- * sidecar one env var away. Either way the REASONING model only ever sees
+ * only engine (ADR 0032). Either way the REASONING model only ever sees
  * tokenised text, because the gateway tokenises text and cannot tokenise an
  * image.
  *
@@ -615,9 +615,8 @@ async function readReceiptPhoto(
 
   /* WHAT THE READ COST, recorded whatever becomes of the text (item 7 of
    * the AI hardening plan; same contract as the interpreter's rows). Only
-   * hosted engines report usage — the sidecar's per-call provider cost is
-   * genuinely zero and writes no row. `ocr_vision` matches the OCR cost
-   * class however the read was performed. */
+   * hosted engines report usage; a result with no usage envelope (a
+   * stub) writes no row. `ocr_vision` matches the OCR cost class. */
   if (extracted.usage) {
     await recordVisionRead(deps, businessId, extracted.usage, recorded.id, log);
   }
@@ -642,7 +641,7 @@ async function readReceiptPhoto(
  * transcriber, and left to the garbage collector. A merchant's voice is the
  * most identifying thing they can send us; ADR 0027 names the launch
  * transcriber (a hosted processor, on /ai-privacy in those words) and keeps
- * the sidecar one env var away, and the transcript walks the same gateway
+ * exactly one engine (ADR 0032), and the transcript walks the same gateway
  * every typed sentence walks before any reasoning model sees it.
  */
 async function transcribeVoiceNote(
@@ -803,8 +802,8 @@ async function transcribeVoiceNote(
   }
 
   /* WHAT THE TRANSCRIPTION COST (item 7). Only the hosted transcriber
-   * reports usage; the sidecar writes no row because its per-call provider
-   * cost is zero. BOTH durations go on the row: the local probe's (what the
+   * reports usage; a result with no usage envelope (a stub) writes no
+   * row. BOTH durations go on the row: the local probe's (what the
    * allowance reserved on) and the provider's (what the bill runs on) —
    * recorded for audit without storing a byte of audio. */
   /* THE CROSS-CHECK (AI hardening item 5): the container's own timestamps

@@ -1,6 +1,6 @@
 # 0005 — Privacy gateway: deterministic-first tokenisation, self-hosted STT
 
-**Status:** Accepted
+**Status:** Accepted; the self-hosted STT portion is **superseded by [0032](0032-launch-media-architecture.md)** (2026-08-29) — the launch transcriber is OpenAI, and no self-hosted STT service exists. The tokenisation gateway this ADR designed is unchanged and current.
 **Date:** 2026-08-19
 
 ## Context
