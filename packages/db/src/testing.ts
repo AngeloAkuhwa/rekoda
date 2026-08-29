@@ -67,6 +67,7 @@ export async function truncateAll(urls: Urls): Promise<void> {
         refunds, payment_reversals, chargebacks,
         settlement_components, settlement_items, settlements,
         payment_charges, payment_attempts, payment_intents, payment_connections,
+        customer_message_optouts,
         waba_service_windows, waba_templates, waba_connections,
         documents,
         audit_events,

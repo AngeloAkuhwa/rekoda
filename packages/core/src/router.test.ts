@@ -7,7 +7,12 @@
  * books of someone who asked to delete one invoice.
  */
 import { describe, expect, it } from 'vitest';
-import { routeMessage, staysLocal, type DeterministicIntent } from './router.js';
+import {
+  customerConsentIntent,
+  routeMessage,
+  staysLocal,
+  type DeterministicIntent,
+} from './router.js';
 
 function intentOf(message: string): DeterministicIntent | null {
   const route = routeMessage(message);
@@ -106,6 +111,37 @@ describe('the regulatory keywords', () => {
   it('does not let politeness turn a sentence into an opt-out', () => {
     // Filler stripping is deliberately not applied to these.
     expect(goesToModel('please stop')).toBe(true);
+  });
+});
+
+describe('the same keywords, read on a customer thread (PR-135)', () => {
+  /* `customerConsentIntent` is the customer-side reading of the SAME table.
+   * It has to be exactly as tight: a customer asking a shop a question that
+   * happens to contain "stop" must not be silenced, and one who writes STOP
+   * must be, on every spelling the merchant path already honours. */
+  it.each(['STOP', 'stop', 'Stop.', ' STOP ', 'unsubscribe', 'QUIT', 'stop all'])(
+    '%j is a customer opt-out',
+    (message) => {
+      expect(customerConsentIntent(message)).toBe('stop');
+    },
+  );
+
+  it.each(['START', 'start', 'subscribe', 'unstop'])('%j is a customer opt-in', (message) => {
+    expect(customerConsentIntent(message)).toBe('start');
+  });
+
+  it('reads nothing into an ordinary customer message', () => {
+    expect(customerConsentIntent('do you have red shoes')).toBeNull();
+    expect(customerConsentIntent('please stop')).toBeNull();
+    expect(customerConsentIntent('when do you start selling again')).toBeNull();
+    expect(customerConsentIntent('')).toBeNull();
+  });
+
+  it('is not a general router: a sale is not a consent change', () => {
+    /* The merchant router would call this a model message. Here it is
+     * simply "no consent intent", which is the only question asked. */
+    expect(customerConsentIntent('sold 2 wigs 15k')).toBeNull();
+    expect(customerConsentIntent('delete my data')).toBeNull();
   });
 });
 

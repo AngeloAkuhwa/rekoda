@@ -14,6 +14,7 @@ import {
   usageRepo,
   conversationsRepo,
   createDb,
+  customerConsentRepo,
   identity,
   sql,
   wabaRepo,
@@ -386,5 +387,107 @@ describe('the sends are the health check (§24; PR-062)', () => {
     expect(row!.status).toBe('CONNECTED');
     expect(row!.healthReason).toBeNull();
     expect(row!.lastHealthyAt).not.toBeNull();
+  });
+});
+
+describe('a customer who said STOP is not reachable by any route (PR-135)', () => {
+  const CUSTOMER = '+2349098886666';
+
+  const hashFor = (businessId: string, phoneNumberId: string) =>
+    participantIndexFor(config.matchKey, {
+      businessId,
+      channelAccountId: phoneNumberId,
+      keyVersion: PARTICIPANT_INDEX_KEY_VERSION,
+      normalisedParticipant: CUSTOMER,
+    });
+
+  /** What the inbound handler writes; here it is set up directly. */
+  const refuse = (businessId: string, phoneNumberId: string, at: Date | null) =>
+    withBusiness(db, businessId, (tx) =>
+      customerConsentRepo.setCustomerOptOut(
+        tx,
+        {
+          businessId,
+          channelAccountId: phoneNumberId,
+          customerHash: hashFor(businessId, phoneNumberId),
+          indexKeyVersion: PARTICIPANT_INDEX_KEY_VERSION,
+        },
+        at,
+      ),
+    );
+
+  const openWindow = (businessId: string, connectionId: string, phoneNumberId: string) =>
+    withBusiness(db, businessId, (tx) =>
+      wabaRepo.touchServiceWindow(tx, {
+        businessId,
+        wabaConnectionId: connectionId,
+        customerHash: hashFor(businessId, phoneNumberId),
+      }),
+    );
+
+  it('a TEMPLATE is refused before the meter moves', async () => {
+    const { businessId, connectionId, phoneNumberId } = await seedMerchant('integrate');
+    await registerTemplate(businessId, connectionId, 'payment_reminder', 'UTILITY');
+    await refuse(businessId, phoneNumberId, new Date());
+
+    /* The template is the PROACTIVE route, and it is the one that has to
+     * refuse: a window is something the customer opened, but a template
+     * needs no permission from them at all except this one. */
+    const outcome = await service.sendTemplate(businessId, {
+      to: CUSTOMER,
+      name: 'payment_reminder',
+    });
+
+    expect(outcome).toEqual({ outcome: 'suppressed' });
+    expect(await used(businessId, 'UTILITY_TEMPLATE')).toBe(0);
+  });
+
+  it('FREE-FORM is refused even with the window wide open', async () => {
+    const { businessId, connectionId, phoneNumberId } = await seedMerchant('integrate');
+    await openWindow(businessId, connectionId, phoneNumberId);
+    await refuse(businessId, phoneNumberId, new Date());
+
+    /* An open window is Meta saying the shop MAY reply. Consent is the
+     * customer saying it may not, and the customer's answer wins. */
+    const outcome = await service.sendCustomerText(businessId, {
+      to: CUSTOMER,
+      text: 'Your order is ready for pickup',
+    });
+
+    expect(outcome).toEqual({ outcome: 'suppressed' });
+    expect(sender.connectionTexts).toHaveLength(0);
+    expect(await used(businessId, 'SERVICE_MESSAGE')).toBe(0);
+  });
+
+  it('START makes them reachable again, on both routes', async () => {
+    const { businessId, connectionId, phoneNumberId } = await seedMerchant('integrate');
+    await registerTemplate(businessId, connectionId, 'payment_reminder', 'UTILITY');
+    await openWindow(businessId, connectionId, phoneNumberId);
+    await refuse(businessId, phoneNumberId, new Date());
+    await refuse(businessId, phoneNumberId, null);
+
+    expect(
+      await service.sendTemplate(businessId, { to: CUSTOMER, name: 'payment_reminder' }),
+    ).toEqual({ outcome: 'sent', unit: 'UTILITY_TEMPLATE' });
+    expect(
+      await service.sendCustomerText(businessId, { to: CUSTOMER, text: 'On its way' }),
+    ).toEqual({ outcome: 'sent', unit: 'SERVICE_MESSAGE' });
+  });
+
+  it('binds to the shop that was told, not to the person', async () => {
+    const ada = await seedMerchant('integrate');
+    const bola = await seedMerchant('integrate');
+    await registerTemplate(ada.businessId, ada.connectionId, 'payment_reminder', 'UTILITY');
+    await registerTemplate(bola.businessId, bola.connectionId, 'payment_reminder', 'UTILITY');
+    await refuse(ada.businessId, ada.phoneNumberId, new Date());
+
+    /* The same human being. Ada was told to stop; Bola was not, and Bola
+     * has no way to learn that anybody was. */
+    expect(
+      await service.sendTemplate(ada.businessId, { to: CUSTOMER, name: 'payment_reminder' }),
+    ).toEqual({ outcome: 'suppressed' });
+    expect(
+      await service.sendTemplate(bola.businessId, { to: CUSTOMER, name: 'payment_reminder' }),
+    ).toEqual({ outcome: 'sent', unit: 'UTILITY_TEMPLATE' });
   });
 });

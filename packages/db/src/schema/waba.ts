@@ -169,3 +169,41 @@ export const awayAssistantReplies = pgTable(
   },
   (t) => [uniqueIndex('away_assistant_replies_ux').on(t.businessId, t.customerHash, t.day)],
 );
+
+/**
+ * A customer who asked a merchant's shop to stop messaging them (PR-135).
+ *
+ * Deliberately NOT `users.opted_out_at`: that column is about what Rekoda
+ * sends a MERCHANT, keyed by a verified phone number. This is about what a
+ * MERCHANT'S SHOP sends one of its customers, and it is keyed the way every
+ * other per-customer fact here is - the participant blind index, scoped to
+ * the business and the WABA number - so no raw number is stored and the
+ * same person reaching two shops stays two unrelated rows.
+ *
+ * `optedOutAt` NULL means "may be messaged". START clears it rather than
+ * deleting the row: that the person once asked is itself worth keeping.
+ */
+export const customerMessageOptouts = pgTable(
+  'customer_message_optouts',
+  {
+    id: id(),
+    businessId: uuid('business_id')
+      .notNull()
+      .references(() => businesses.id),
+    channelAccountId: text('channel_account_id').notNull(),
+    /** The blind index the thread routes by, never a raw number (F.3/F.4). */
+    customerHash: text('customer_hash').notNull(),
+    indexKeyVersion: text('index_key_version').notNull(),
+    optedOutAt: timestamp('opted_out_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('customer_message_optouts_ux').on(
+      t.businessId,
+      t.channelAccountId,
+      t.customerHash,
+      t.indexKeyVersion,
+    ),
+  ],
+);

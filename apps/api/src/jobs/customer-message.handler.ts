@@ -15,7 +15,14 @@
  * never placed in a payload — F.3's list is absolute.
  */
 import { Logger } from '@nestjs/common';
-import { composeShelfAnswer, lagosDay, replies, shelfMatches, type ShelfItem } from '@rekoda/core';
+import {
+  composeShelfAnswer,
+  customerConsentIntent,
+  lagosDay,
+  replies,
+  shelfMatches,
+  type ShelfItem,
+} from '@rekoda/core';
 import { normaliseParticipant, InvalidPhoneError } from '@rekoda/core/identity';
 import { redactForLog } from '@rekoda/core/privacy';
 import { participantIndexFor, PARTICIPANT_INDEX_KEY_VERSION } from '@rekoda/core/vault';
@@ -23,6 +30,7 @@ import { extractInboundEvents, metaWebhookBody, type InboundEvent } from '@rekod
 import {
   catalogueRepo,
   conversationsRepo,
+  customerConsentRepo,
   events,
   identity,
   ordersRepo,
@@ -157,6 +165,33 @@ export function customerMessageHandler(deps: CustomerMessageDeps): JobHandler {
       customerHash: blindIndex,
     });
 
+    /* STOP, FROM THE PERSON IT IS ABOUT (PR-135).
+     *
+     * The same words the merchant path recognises, read on the customer's
+     * thread and written to a different fact: this is "shop, stop messaging
+     * me", never "Rekoda, stop messaging my books". The merchant's own
+     * `users.opted_out_at` is not reachable from this handler at all, so a
+     * customer cannot silence somebody else's bookkeeping, and a merchant
+     * writing STOP to Rekoda cannot suppress their own shop's customers -
+     * that message arrives on the MERCHANT handler and never gets here.
+     *
+     * It answers before the assistant and before the cart: a person asking
+     * to be left alone gets that, not a price list.
+     */
+    if (inbound.messageType === 'text') {
+      const intent = customerConsentIntent(inbound.text ?? '');
+      if (intent) {
+        const note = await recordConsentChange(tx, deps, businessId, participant, intent, {
+          businessId,
+          channelAccountId: phoneNumberId,
+          customerHash: blindIndex,
+          indexKeyVersion: PARTICIPANT_INDEX_KEY_VERSION,
+        });
+        await events.markProcessed(tx, eventId, note, businessId);
+        return;
+      }
+    }
+
     /* A CART from the catalogue becomes an ORDER (spec §3.2; W3, PR-087)
      * — through the same PlaceOrder command every other door uses, and
      * never through the merchant-operations command set: a customer's
@@ -196,6 +231,67 @@ export function customerMessageHandler(deps: CustomerMessageDeps): JobHandler {
       : null;
     await events.markProcessed(tx, eventId, note, businessId);
   };
+}
+
+/**
+ * Honour a customer's STOP or START, and say so (PR-135).
+ *
+ * The ORDER of the two moves is the whole design, and it is deliberately
+ * opposite in each direction, so that neither needs a way past the
+ * suppression check `sendCustomerText` now performs:
+ *
+ *   STOP  - acknowledge FIRST, then record. At the moment of the send the
+ *           person is still reachable, so the last message they get is the
+ *           ordinary door, not an exception carved into it.
+ *   START - record FIRST, then acknowledge. Recording is what MAKES them
+ *           reachable; acknowledging before it would be refused.
+ *
+ * The record never depends on the send. A shop's WABA being revoked, out
+ * of window, out of quota or simply broken must not turn "stop messaging
+ * me" into nothing happening, so the send is attempted, its outcome is
+ * noted, and the consent write happens regardless.
+ *
+ * Neither direction reaches the away assistant, and neither consumes an
+ * assistant slot: a person who asked to be left alone is not a customer
+ * enquiry, and the reply they get is a legal acknowledgement rather than
+ * an automated answer to a question.
+ */
+async function recordConsentChange(
+  tx: TenantDb,
+  deps: CustomerMessageDeps,
+  businessId: string,
+  participant: string,
+  intent: 'stop' | 'start',
+  key: customerConsentRepo.CustomerConsentKey,
+): Promise<string> {
+  const log = new Logger('CustomerMessageJob');
+  const reply = intent === 'stop' ? replies.customerOptedOut() : replies.customerOptedIn();
+
+  const acknowledge = async (): Promise<void> => {
+    try {
+      const sent = await deps.customerTexts.sendCustomerText(
+        businessId,
+        { to: participant, text: reply.text },
+        tx,
+      );
+      if (sent.outcome !== 'sent')
+        log.log(`consent acknowledgement not delivered: ${sent.outcome}`);
+    } catch (error: unknown) {
+      /* Never rethrown: the consent write below is the obligation, and a
+       * job that died here would retry the whole message. */
+      log.warn(`consent acknowledgement failed: ${redactForLog(describeFailure(error))}`);
+    }
+  };
+
+  if (intent === 'stop') {
+    await acknowledge();
+    await customerConsentRepo.setCustomerOptOut(tx, key, new Date());
+    return 'customer opted out of shop messages';
+  }
+
+  await customerConsentRepo.setCustomerOptOut(tx, key, null);
+  await acknowledge();
+  return 'customer opted back in to shop messages';
 }
 
 /**
