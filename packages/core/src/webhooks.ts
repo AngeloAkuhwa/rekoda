@@ -163,6 +163,18 @@ export function verifyRekodaSignature(
  */
 export const WEBHOOK_BACKOFF_SECONDS = [60, 300, 1_500, 7_200, 36_000, 86_400] as const;
 
+/**
+ * How many endpoints one business may register (PR-134).
+ *
+ * Every business event fans out to EVERY matching endpoint, and each
+ * delivery is retried up to six times, so the endpoint count multiplies
+ * the estate's outbound volume directly. Ten is far above what an
+ * integration needs and low enough that a compromised owner account cannot
+ * turn one business into a thousand-destination amplifier. Raising it is a
+ * commercial decision, not an incident-time one.
+ */
+export const MAX_WEBHOOK_ENDPOINTS_PER_BUSINESS = 10;
+
 export function nextAttemptAt(attempts: number, from: Date): Date {
   const index = Math.min(Math.max(attempts, 1), WEBHOOK_BACKOFF_SECONDS.length) - 1;
   return new Date(from.getTime() + WEBHOOK_BACKOFF_SECONDS[index]! * 1_000);

@@ -31,6 +31,7 @@ import {
 } from '@rekoda/contracts';
 import { Roles, RolesGuard } from '../auth/roles.guard.js';
 import { SessionGuard, type AuthedRequest } from '../auth/session.guard.js';
+import { WebhookDestinationRefused } from './destination.js';
 import { WebhooksService } from './webhooks.service.js';
 
 @Controller('v1/webhooks')
@@ -53,11 +54,22 @@ export class WebhooksController {
     const parsed = createWebhookEndpointRequest.safeParse(body);
     if (!parsed.success) throw new BadRequestException('an https URL, and optionally a name');
 
-    const created = await this.webhooks.register(request.auth!.businessId, {
-      url: parsed.data.url,
-      description: parsed.data.description ?? null,
-      eventTypes: parsed.data.eventTypes ?? [],
-    });
+    let created: WebhookSecretResponse;
+    try {
+      created = await this.webhooks.register(request.auth!.businessId, {
+        url: parsed.data.url,
+        description: parsed.data.description ?? null,
+        eventTypes: parsed.data.eventTypes ?? [],
+      });
+    } catch (error) {
+      /* A refused destination or a full endpoint list is the merchant's to
+       * fix, so it answers 400 with the reason rather than 500. The reason
+       * never names an address (destination.ts). */
+      if (error instanceof WebhookDestinationRefused) {
+        throw new BadRequestException(error.message);
+      }
+      throw error;
+    }
     /* Parsed on the way out: this body carries the signing secret and is
      * the only place it ever appears. */
     return webhookSecretResponse.parse(created);

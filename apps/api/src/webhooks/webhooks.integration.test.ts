@@ -16,6 +16,7 @@ import { publicApi, type WebhookSecretResponse } from '@rekoda/contracts';
 import { verifyRekodaSignature, WEBHOOK_SIGNATURE_HEADER } from '@rekoda/core/webhooks';
 import { createDb, sql, usageRepo, webhooksRepo, withBusiness, type Db } from '@rekoda/db';
 import { usagePeriod } from '@rekoda/core';
+import { MAX_WEBHOOK_ENDPOINTS_PER_BUSINESS } from '@rekoda/core/webhooks';
 import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
 import { buildOutboxDispatcher } from '../jobs/jobs.module.js';
 import { webhookFanOut } from './fan-out.js';
@@ -148,6 +149,59 @@ describe('registering an endpoint', () => {
     expect(
       (await post('/v1/webhooks', { url: 'http://example.test/hook' }, shop.auth)).statusCode,
     ).toBe(400);
+  });
+
+  /**
+   * Server-side request forgery, refused at the door (PR-134).
+   *
+   * Registration is where a merchant can still fix it. The address is
+   * checked again inside the connection (destination.ts), which is what
+   * holds against a name that turns inward later.
+   */
+  it('refuses an endpoint pointed at the estate itself', async () => {
+    const shop = await onboard('+2348193000010', 'Forgery Co');
+    const inside = [
+      'https://169.254.169.254/latest/meta-data/', // cloud metadata
+      'https://127.0.0.1/hook', // loopback
+      'https://[::1]/hook', // loopback, v6
+      'https://[fd00:ec2::254]/hook', // AWS metadata, v6
+      'https://10.0.0.5/hook', // RFC1918
+      'https://192.168.1.1/hook', // RFC1918
+      'https://localhost/hook', // the name for loopback
+      'https://db.internal/hook', // an internal suffix
+      'https://user:pass@example.test/hook', // credentials smuggled in the URL
+    ];
+    for (const url of inside) {
+      const answer = await post('/v1/webhooks', { url }, shop.auth);
+      expect(answer.statusCode, url).toBe(400);
+      /* The refusal must not report what is or is not there: that would be
+       * the network-mapping oracle this guard exists to close. */
+      expect(answer.body, url).not.toContain('169.254');
+      expect(answer.body, url).not.toContain('127.0.0.1');
+    }
+
+    /* And nothing was created by any of it. */
+    const listed = (await get('/v1/webhooks', shop.auth)).json() as { endpoints: unknown[] };
+    expect(listed.endpoints).toHaveLength(0);
+  });
+
+  it('keeps a business to a countable number of endpoints', async () => {
+    const shop = await onboard('+2348193000011', 'Fan Out Co');
+    for (let n = 0; n < MAX_WEBHOOK_ENDPOINTS_PER_BUSINESS; n++) {
+      expect(
+        (await post('/v1/webhooks', { url: `https://example.test/hook-${n}` }, shop.auth))
+          .statusCode,
+        `endpoint ${n}`,
+      ).toBe(200);
+    }
+    /* One past the cap is refused, and says what to do about it. */
+    const refused = await post(
+      '/v1/webhooks',
+      { url: 'https://example.test/one-too-many' },
+      shop.auth,
+    );
+    expect(refused.statusCode).toBe(400);
+    expect(refused.body).toContain('remove one');
   });
 
   it('stores the secret encrypted, bound to its own endpoint', async () => {
