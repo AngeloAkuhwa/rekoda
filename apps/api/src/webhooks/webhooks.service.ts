@@ -12,6 +12,7 @@
  */
 import { randomBytes } from 'node:crypto';
 import { Inject, Injectable } from '@nestjs/common';
+import { MAX_WEBHOOK_ENDPOINTS_PER_BUSINESS } from '@rekoda/core/webhooks';
 import { encryptFacet } from '@rekoda/core/vault';
 import type {
   WebhookDeliveryView,
@@ -22,6 +23,7 @@ import { publicApi } from '@rekoda/contracts';
 import { webhooksRepo, withBusiness, type Db } from '@rekoda/db';
 import { CONFIG, type ApiConfig } from '../config.js';
 import { DB } from '../db/db.module.js';
+import { WebhookDestinationRefused, assertRegistrableUrl } from './destination.js';
 
 /** 32 bytes of secret, hex. The same strength as a session token. */
 const SECRET_BYTES = 32;
@@ -37,9 +39,24 @@ export class WebhooksService {
     businessId: string,
     input: { url: string; description: string | null; eventTypes: readonly string[] },
   ): Promise<WebhookSecretResponse> {
+    /* Before anything is minted: a URL that can never be right is refused
+     * here, where the merchant is still looking at the form, rather than
+     * by a delivery that fails an hour later (PR-134). The address itself
+     * is checked again at connect time, which is the check that holds. */
+    assertRegistrableUrl(input.url);
+
     const signingSecret = randomBytes(SECRET_BYTES).toString('hex');
 
     return withBusiness(this.db, businessId, async (tx) => {
+      /* Counted inside the transaction, so two simultaneous registrations
+       * cannot both read nine and both write a tenth. */
+      const existing = await webhooksRepo.endpointsFor(tx, businessId);
+      if (existing.length >= MAX_WEBHOOK_ENDPOINTS_PER_BUSINESS) {
+        throw new WebhookDestinationRefused(
+          `a business may keep ${MAX_WEBHOOK_ENDPOINTS_PER_BUSINESS} endpoints; ` +
+            'remove one you no longer use to add another',
+        );
+      }
       /* Sealed with a placeholder id first would be a lie, so the row is
        * created with a secret bound to nothing, then immediately rebound to
        * its own id. One transaction, so no window exists where an endpoint
