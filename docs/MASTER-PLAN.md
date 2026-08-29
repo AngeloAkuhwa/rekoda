@@ -1110,6 +1110,14 @@ Flow: `/start` → phone entry → **OTP over WhatsApp** → business creation �
 - Roles: `owner` (everything), `accountant` (read + exports, no settings/integrations/deletes),
   `delegate` (configurable). Enforce with a Nest guard reading the session's membership —
   and remember RLS is the net, not the mechanism.
+  - Exports carry the same matrix as the pages they come from, with two
+    narrower doors: the whole-business portability file is the owner's, and
+    the AUDIT TRAIL (page and CSV) is the owner's and the accountant's. The
+    trail carries the owner's corrections and every colleague's role beside
+    a phone tail, which is not a delegate's work. Every file-producing route
+    now declares its audience explicitly, because `RolesGuard` reads a route
+    with no decorator as open to all members: `export-authorization.test.ts`
+    fails the build if one ships undeclared.
 
 ### 5.2.3 Onboarding (spec §12)
 

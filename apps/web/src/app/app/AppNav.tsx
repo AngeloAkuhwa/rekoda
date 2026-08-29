@@ -1,4 +1,5 @@
 import type { Capability } from '@rekoda/core';
+import { canReadAudit } from '@/lib/permissions';
 
 /**
  * The dashboard's section navigation. Plain anchors, server-rendered:
@@ -43,13 +44,29 @@ const TABS = [
 
 export type AppTab = (typeof TABS)[number]['key'];
 
-export function AppNav({ active, held }: { active: AppTab; held?: readonly Capability[] }) {
+export function AppNav({
+  active,
+  held,
+  role,
+}: {
+  active: AppTab;
+  held?: readonly Capability[];
+  role?: string;
+}) {
   /* Undefined rather than empty when a caller has not resolved capabilities
      yet: hiding every gated tab because a page forgot to pass them would be
-     a worse failure than showing one too many. */
-  const visible = TABS.filter(
-    (tab) => !('needs' in tab) || held === undefined || held.includes(tab.needs as Capability),
-  );
+     a worse failure than showing one too many. `role` follows the same rule
+     for the same reason. */
+  const visible = TABS.filter((tab) => {
+    if ('needs' in tab && held !== undefined && !held.includes(tab.needs as Capability)) {
+      return false;
+    }
+    /* The one tab gated by ROLE rather than by plan: the audit trail is the
+       owner's and the accountant's (permissions.canReadAudit). A delegate
+       who sees the tab is being offered a page the API will refuse. */
+    if (tab.key === 'audit' && role !== undefined && !canReadAudit(role)) return false;
+    return true;
+  });
   return (
     <nav className="rk-appnav" aria-label="Dashboard sections">
       {visible.map((tab) => (

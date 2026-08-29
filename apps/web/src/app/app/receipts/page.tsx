@@ -39,7 +39,7 @@ export default async function ReceiptsPage({
         <SignOutButton />
       </header>
 
-      <AppNav active="receipts" held={heldBy(identity)} />
+      <AppNav active="receipts" held={heldBy(identity)} role={identity.role} />
 
       <div className="rk-card">
         <h2>Receipt register</h2>

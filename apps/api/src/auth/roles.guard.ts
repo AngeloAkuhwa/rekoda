@@ -14,6 +14,21 @@ export type Role = 'owner' | 'accountant' | 'delegate';
 export const ROLES_KEY = 'rekoda:roles';
 export const Roles = (...roles: Role[]) => SetMetadata(ROLES_KEY, roles);
 
+/** Every role there is, in one place, so "all of them" cannot drift. */
+export const EVERY_ROLE: readonly Role[] = ['owner', 'accountant', 'delegate'];
+
+/**
+ * Deliberately readable by every member of the business.
+ *
+ * Identical metadata to `@Roles('owner', 'accountant', 'delegate')`, and
+ * that is the point: this guard treats a route with NO metadata as open
+ * (see `canActivate`), so "open to everyone" and "somebody forgot" look
+ * exactly alike in a diff. This decorator makes the first one say so out
+ * loud, which lets a test insist that every export declares one or the
+ * other rather than trusting the author to remember.
+ */
+export const AllMembers = () => Roles(...EVERY_ROLE);
+
 /**
  * Role enforcement at the application edge (spec §35, MASTER-PLAN 5.2.2).
  *

@@ -82,7 +82,7 @@ export default async function DashboardPage() {
         <SignOutButton />
       </header>
 
-      <AppNav active="overview" held={heldBy(identity)} />
+      <AppNav active="overview" held={heldBy(identity)} role={identity.role} />
 
       {overview.exceptionsOpen > 0 ? (
         <a href="/app/payments" className="rk-attention-strip">

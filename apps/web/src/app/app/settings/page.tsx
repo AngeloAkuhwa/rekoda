@@ -35,7 +35,7 @@ export default async function SettingsPage() {
         <SignOutButton />
       </header>
 
-      <AppNav active="settings" held={heldBy(identity)} />
+      <AppNav active="settings" held={heldBy(identity)} role={identity.role} />
 
       <div className="rk-card">
         <h2>Your business</h2>

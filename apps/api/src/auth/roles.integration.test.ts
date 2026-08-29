@@ -88,6 +88,7 @@ async function team(seed: string): Promise<{
   owner: Record<string, string>;
   accountant: Record<string, string>;
   delegate: Record<string, string>;
+  businessId: string;
 }> {
   const ownerPhone = `+23481402${seed}1`;
   const accountantPhone = `+23481402${seed}2`;
@@ -122,6 +123,7 @@ async function team(seed: string): Promise<{
     owner,
     accountant: await signIn(accountantPhone),
     delegate: await signIn(delegatePhone),
+    businessId: created.businessId,
   };
 }
 
@@ -222,5 +224,93 @@ describe('what the owner may do', () => {
     expect((await post('/v1/webhooks', { url: 'https://owner.test/hook' }, owner)).statusCode).toBe(
       200,
     );
+  });
+});
+
+/**
+ * Who may DOWNLOAD what.
+ *
+ * The read matrix above is about pages. This is about FILES, and the two
+ * are not the same question: a file outlives the session that fetched it,
+ * leaves with whoever fetched it, and is the thing still on a laptop after
+ * a delegate stops working in the shop.
+ *
+ * Until now nine of the ten exports carried no `@Roles` at all, which
+ * `RolesGuard` reads as "every member" - correct for most of them and
+ * wrong for the audit trail. Every export now says who it is for, and
+ * these are the doors.
+ */
+describe('who may download an export', () => {
+  /** The day's work: any member who can see the page can take the file. */
+  const EVERY_MEMBER = [
+    '/v1/reports/statements.pdf?period=2026-08',
+    '/v1/reports/statements.xlsx?period=2026-08',
+    '/v1/reports/invoices.csv',
+    '/v1/reports/expenses.csv',
+    '/v1/reports/receipts.csv',
+    '/v1/reports/stock.csv',
+  ] as const;
+
+  it('hands the day-to-day exports to every member', async () => {
+    const { owner, accountant, delegate } = await team('0106');
+    const who = [
+      ['owner', owner],
+      ['accountant', accountant],
+      ['delegate', delegate],
+    ] as const;
+    for (const url of EVERY_MEMBER) {
+      for (const [role, headers] of who) {
+        /* Not-403 rather than 200 on purpose, in this file's house style:
+         * 403 proves the guard refused, and a metered export answering 429
+         * would be billing talking, not authorisation. */
+        expect((await get(url, headers)).statusCode, `${role} ${url}`).not.toBe(403);
+      }
+    }
+  });
+
+  it('keeps the audit trail from the delegate, on the page and in the file', async () => {
+    const { owner, accountant, delegate } = await team('0107');
+    /* The trail carries the owner's corrections and every colleague's role
+     * and phone tail. A delegate records trade; this is not their work. */
+    expect((await get('/v1/reports/audit.csv', delegate)).statusCode).toBe(403);
+    expect((await get('/v1/reports/audit', delegate)).statusCode).toBe(403);
+    /* And the two who audit the books keep both surfaces. */
+    expect((await get('/v1/reports/audit.csv', owner)).statusCode).not.toBe(403);
+    expect((await get('/v1/reports/audit', owner)).statusCode).not.toBe(403);
+    expect((await get('/v1/reports/audit.csv', accountant)).statusCode).not.toBe(403);
+    expect((await get('/v1/reports/audit', accountant)).statusCode).not.toBe(403);
+  });
+
+  it('keeps the whole business in one file to the owner', async () => {
+    const { owner, accountant, delegate } = await team('0108');
+    expect((await get('/v1/reports/portability.json', accountant)).statusCode).toBe(403);
+    expect((await get('/v1/reports/portability.json', delegate)).statusCode).toBe(403);
+    expect((await get('/v1/reports/portability.json', owner)).statusCode).not.toBe(403);
+  });
+
+  it('cannot be aimed at another business by asking', async () => {
+    /* Every export takes its tenant from the session and nothing else. The
+     * deeper proof that a tenant cannot read another's rows is the forced
+     * RLS suite in packages/db; what belongs HERE is that the caller has no
+     * say in the matter, so a supplied businessId changes nothing. */
+    const mine = await team('0109');
+    const theirs = await team('0110');
+
+    const plain = await get('/v1/reports/invoices.csv', mine.owner);
+    const aimed = await get(`/v1/reports/invoices.csv?businessId=${theirs.businessId}`, mine.owner);
+    expect(aimed.statusCode).toBe(plain.statusCode);
+    expect(aimed.body).toBe(plain.body);
+
+    /* And the same on the owner-only whole-business export, where getting
+     * it wrong would hand over everything at once. Asked ONCE: portability
+     * keeps a deliberate gap between exports (PORTABILITY_GAP_SECONDS), so
+     * a second call in the same breath is refused by that control rather
+     * than by anything this test is about. */
+    const aimedExport = await get(
+      `/v1/reports/portability.json?businessId=${theirs.businessId}`,
+      mine.owner,
+    );
+    expect(aimedExport.statusCode).not.toBe(403);
+    expect(aimedExport.body).not.toContain(theirs.businessId);
   });
 });

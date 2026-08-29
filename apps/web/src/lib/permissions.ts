@@ -34,3 +34,15 @@ export function canRecordTrade(role: string): boolean {
 export function canReconcileBank(role: string): boolean {
   return role === 'owner' || role === 'accountant';
 }
+
+/**
+ * The audit trail, on the page and as a download. Owners and accountants.
+ *
+ * Narrower than the other reports because of what is in it rather than
+ * what it is: the owner's corrections, and every colleague's role beside
+ * the last four digits of their number. Auditing the books is the work an
+ * accountant was invited to do; a delegate records the day's trade.
+ */
+export function canReadAudit(role: string): boolean {
+  return role === 'owner' || role === 'accountant';
+}
