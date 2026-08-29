@@ -57,6 +57,9 @@ import { StubTransport } from '../ai/transport.stub.js';
 import { StubSender } from '../channels/sender.stub.js';
 import { StubTextExtraction } from '../ai/ocr.stub.js';
 import { StubSpeechToText } from '../ai/stt.stub.js';
+import { TextExtractionUnavailable } from '../ai/ocr.js';
+import { TranscriptionUnavailable } from '../ai/stt.js';
+import { registerTranscriptionPrice } from '@rekoda/core';
 import { StubPaymentProvider } from '../payments/provider.stub.js';
 import { PaymentIntentsService } from '../payments/payment-intents.service.js';
 import { LocalStorage } from '../documents/r2.storage.js';
@@ -3529,6 +3532,103 @@ describe('a voice note', () => {
     expect(rows.find((r) => r.unit === 'VOICE_MINUTES')?.used).toBe(5);
   });
 
+  /**
+   * Item 7 of the AI hardening plan: a HOSTED transcription is provider
+   * money, and provider money appears in usage_events — priced per minute,
+   * role-tagged, carrying BOTH durations: the local probe's (what the
+   * allowance reserved on) and the provider's (what the bill runs on).
+   */
+  it('puts a hosted transcription on the books with both durations', async () => {
+    const business = await seedMerchant('+2348031234567');
+    arrangeAudio(17);
+    registerTranscriptionPrice('whisper-test', { perMinuteMicros: 6_000 });
+    stubStt.answerWith({
+      text: 'Ada bought 3 wigs for 150k',
+      seconds: 18, // The provider's own count, one second apart from the probe's.
+      confidence: null,
+      usage: { provider: 'openai', model: 'whisper-test' },
+    });
+    stubTransport.replyWith(A_SPOKEN_SALE);
+
+    await post(voicePayload('2348031234567', 'wamid.V30'));
+    await drain();
+
+    const rows = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{
+        provider: string;
+        quantity: number;
+        provider_cost_micros: number;
+        meta: Record<string, unknown>;
+      }>(sql`
+        SELECT provider, quantity, provider_cost_micros, meta FROM usage_events
+        WHERE business_id = ${business.id}::uuid AND usage_type = 'transcription'
+      `),
+    );
+    const row = [...rows][0]!;
+    expect(row).toBeDefined();
+    expect(row.provider).toBe('openai');
+    expect(Number(row.quantity)).toBe(18);
+    // 18 seconds at $0.006/min: 18 × 6,000 / 60 = 1,800 micros.
+    expect(Number(row.provider_cost_micros)).toBe(1_800);
+    expect(row.meta).toMatchObject({
+      role: 'transcriber',
+      model: 'whisper-test',
+      priced: true,
+      localSeconds: 17,
+      providerSeconds: 18,
+    });
+  });
+
+  it('writes no transcription cost row for a sidecar transcript', async () => {
+    const business = await seedMerchant('+2348031234567');
+    arrangeAudio(5);
+    // No usage envelope: the sidecar spends no provider money per call.
+    stubStt.answerWith({ text: 'Ada bought 3 wigs for 150k', seconds: 5, confidence: 0.9 });
+    stubTransport.replyWith(A_SPOKEN_SALE);
+
+    await post(voicePayload('2348031234567', 'wamid.V31'));
+    await drain();
+
+    const rows = await withBusiness(db, business.id, (tx) =>
+      tx.execute(sql`
+        SELECT 1 FROM usage_events
+        WHERE business_id = ${business.id}::uuid AND usage_type = 'transcription'
+      `),
+    );
+    expect([...rows]).toHaveLength(0);
+  });
+
+  it('leaves a priced:false trail when a hosted transcription times out mid-flight', async () => {
+    const business = await seedMerchant('+2348031234567');
+    arrangeAudio(9);
+    stubStt.failWith(
+      new TranscriptionUnavailable('transcription timed out', { maybeBilled: true }),
+    );
+
+    await post(voicePayload('2348031234567', 'wamid.V32'));
+    await drain();
+
+    /* The merchant's seconds went back — Rekoda's timeout, Rekoda's cost — */
+    const period = usagePeriod(new Date());
+    const usage = await withBusiness(db, business.id, (tx) =>
+      usageRepo.usageFor(tx, business.id, period),
+    );
+    expect(usage.find((r) => r.unit === 'VOICE_MINUTES')?.used ?? 0).toBe(0);
+
+    /* — and the maybe-billed call is on the books at zero, admitting it,
+     * so reconciliation against the invoice has a row to tie to. */
+    const rows = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ provider_cost_micros: number; meta: Record<string, unknown> }>(sql`
+        SELECT provider_cost_micros, meta FROM usage_events
+        WHERE business_id = ${business.id}::uuid AND usage_type = 'transcription'
+      `),
+    );
+    const row = [...rows][0]!;
+    expect(row).toBeDefined();
+    expect(Number(row.provider_cost_micros)).toBe(0);
+    expect(row.meta).toMatchObject({ role: 'transcriber', priced: false, localSeconds: 9 });
+  });
+
   /* A photo with no media id is not a receipt anybody can read. */
   it('answers an image with no media id with the honest capability line', async () => {
     await seedMerchant('+2348031234567');
@@ -3977,6 +4077,99 @@ describe('a receipt photo', () => {
       usageRepo.usageFor(tx, business.id, period),
     );
     expect(rows.find((r) => r.unit === 'DOCUMENTS_UNDERSTOOD')?.used).toBe(1);
+  });
+
+  /**
+   * Item 7 of the AI hardening plan: a HOSTED read is provider money, and
+   * provider money appears in usage_events — costed from the engine's own
+   * token counts, tagged with the role the margin view groups by.
+   */
+  it('puts a hosted read on the books: one ocr_vision row, priced and role-tagged', async () => {
+    const business = await seedMerchant('+2348031234567');
+    arrangePhoto();
+    stubOcr.answerWith({
+      text: 'TOTAL 12,000 diesel',
+      confidence: null,
+      usage: {
+        provider: 'anthropic',
+        model: 'claude-sonnet-5',
+        tokens: { inputTokens: 1_500, outputTokens: 80 },
+      },
+    });
+    stubTransport.replyWith(A_PHOTOGRAPHED_EXPENSE);
+
+    await post(photoPayload('2348031234567', 'wamid.P8'));
+    await drain();
+
+    const rows = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{
+        provider: string;
+        provider_cost_micros: number;
+        meta: Record<string, unknown>;
+      }>(sql`
+        SELECT provider, provider_cost_micros, meta FROM usage_events
+        WHERE business_id = ${business.id}::uuid AND usage_type = 'ocr_vision'
+      `),
+    );
+    const row = [...rows][0]!;
+    expect(row).toBeDefined();
+    expect(row.provider).toBe('anthropic');
+    // 1,500 in at $2/MTok + 80 out at $10/MTok = 3,000 + 800 micros.
+    expect(Number(row.provider_cost_micros)).toBe(3_800);
+    expect(row.meta).toMatchObject({
+      role: 'vision',
+      model: 'claude-sonnet-5',
+      priced: true,
+      inputTokens: 1_500,
+      outputTokens: 80,
+    });
+  });
+
+  it('writes no ocr_vision cost row for a sidecar read', async () => {
+    const business = await seedMerchant('+2348031234567');
+    arrangePhoto();
+    // No usage envelope: the sidecar spends no provider money per call.
+    stubOcr.answerWith({ text: 'TOTAL 12,000 diesel', confidence: 0.9 });
+    stubTransport.replyWith(A_PHOTOGRAPHED_EXPENSE);
+
+    await post(photoPayload('2348031234567', 'wamid.P9'));
+    await drain();
+
+    const rows = await withBusiness(db, business.id, (tx) =>
+      tx.execute(sql`
+        SELECT 1 FROM usage_events
+        WHERE business_id = ${business.id}::uuid AND usage_type = 'ocr_vision'
+      `),
+    );
+    expect([...rows]).toHaveLength(0);
+  });
+
+  it('leaves a priced:false trail when a hosted read times out mid-flight', async () => {
+    const business = await seedMerchant('+2348031234567');
+    arrangePhoto();
+    stubOcr.failWith(new TextExtractionUnavailable('extraction timed out', { maybeBilled: true }));
+
+    await post(photoPayload('2348031234567', 'wamid.P10'));
+    await drain();
+
+    /* The merchant's unit went back — Rekoda's timeout, Rekoda's cost — */
+    const period = usagePeriod(new Date());
+    const usage = await withBusiness(db, business.id, (tx) =>
+      usageRepo.usageFor(tx, business.id, period),
+    );
+    expect(usage.find((r) => r.unit === 'DOCUMENTS_UNDERSTOOD')?.used ?? 0).toBe(0);
+
+    /* — and the maybe-billed call is on the books at zero, admitting it. */
+    const rows = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ provider_cost_micros: number; meta: Record<string, unknown> }>(sql`
+        SELECT provider_cost_micros, meta FROM usage_events
+        WHERE business_id = ${business.id}::uuid AND usage_type = 'ocr_vision'
+      `),
+    );
+    const row = [...rows][0]!;
+    expect(row).toBeDefined();
+    expect(Number(row.provider_cost_micros)).toBe(0);
+    expect(row.meta).toMatchObject({ role: 'vision', priced: false });
   });
 });
 

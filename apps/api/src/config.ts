@@ -144,6 +144,18 @@ export interface ApiConfig {
    */
   aiModelPrices: string | null;
   /**
+   * Per-minute prices for hosted transcription models, as JSON keyed by
+   * exact model id:
+   *
+   *   AI_TRANSCRIPTION_PRICES='{"whisper-1":{"perMinuteMicros":6000}}'
+   *
+   * Required whenever hosted transcription is the active configuration
+   * (OPENAI_API_KEY set, STT_URL unset) — boot refuses otherwise, for the
+   * same reason token roles must be priced: a transcriber with no price is
+   * a transcriber whose every call reports as free.
+   */
+  aiTranscriptionPrices: string | null;
+  /**
    * The self-hosted transcription sidecar (ADR 0005/0008), now optional
    * (ADR 0027).
    *
@@ -668,6 +680,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     aiModelTranscriber: env['AI_MODEL_TRANSCRIBER'] ?? ROLE_DEFAULTS.transcriber,
     aiBaseUrl: env['AI_BASE_URL'] || null,
     aiModelPrices: env['AI_MODEL_PRICES'] || null,
+    aiTranscriptionPrices: env['AI_TRANSCRIPTION_PRICES'] || null,
     sttUrl: env['STT_URL'] || null,
     ocrUrl: env['OCR_URL'] || null,
     /**

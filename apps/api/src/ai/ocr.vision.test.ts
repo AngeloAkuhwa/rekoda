@@ -66,6 +66,13 @@ describe('reading a photographed receipt through the vision model', () => {
     const extracted = await reader().extract(PHOTO, 'image/jpeg');
     expect(extracted.text).toContain('MAMA NKECHI STORES');
     expect(extracted.confidence).toBeNull();
+    /* The bill for the read travels WITH the text, so the caller can write
+     * the cost row that puts hosted OCR inside the margin view. */
+    expect(extracted.usage).toEqual({
+      provider: 'anthropic',
+      model: 'claude-sonnet-5',
+      tokens: { inputTokens: 100, outputTokens: 20 },
+    });
 
     const sent = JSON.parse(lastBody) as {
       model: string;
@@ -100,8 +107,25 @@ describe('reading a photographed receipt through the vision model', () => {
       res.writeHead(529, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ type: 'error', error: { type: 'overloaded_error', message: 'x' } }));
     };
-    await expect(reader().extract(PHOTO, 'image/jpeg')).rejects.toBeInstanceOf(
-      TextExtractionUnavailable,
-    );
+    await expect(reader().extract(PHOTO, 'image/jpeg')).rejects.toMatchObject({
+      name: 'TextExtractionUnavailable',
+      /* An answered error billed nothing — no reconciliation row for it. */
+      maybeBilled: false,
+    });
+  });
+
+  it('flags a timeout as possibly billed, because the page may have been read', async () => {
+    respond = (res) => {
+      // Answer well after the client has given up waiting.
+      setTimeout(() => {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify(message('TOO LATE')));
+      }, 500);
+    };
+    const impatient = new VisionTextExtraction('sk-ant-test', 'claude-sonnet-5', 100, baseUrl);
+    await expect(impatient.extract(PHOTO, 'image/jpeg')).rejects.toMatchObject({
+      name: 'TextExtractionUnavailable',
+      maybeBilled: true,
+    });
   });
 });

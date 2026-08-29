@@ -36,6 +36,10 @@ Env overrides: `AI_MODEL_TRANSCRIBER`, `AI_MODEL_CLASSIFIER`,
 an earlier draft of this page said `AI_MODEL_INTERPRETER`, which nothing
 reads), `AI_MODEL_VISION`, `AI_MODEL_ESCALATION`. Unset roles fall back to
 the defaults above, so a deployment that sets nothing gets this table.
+Hosted transcription is priced per minute via `AI_TRANSCRIPTION_PRICES`
+(micro-USD per minute, keyed by exact model id) — required at boot whenever
+hosted STT is the active configuration, so no transcription can report as
+free.
 
 **The classifier is a gate, never a mandatory hop.** For a single receipt
 photo, one `vision` call that classifies AND extracts is cheaper than

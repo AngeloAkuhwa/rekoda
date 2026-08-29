@@ -32,6 +32,20 @@ export interface Transcript {
    * must not be the same value to whoever reads this next.
    */
   readonly confidence: number | null;
+  /**
+   * Which HOSTED engine did the transcribing, when a hosted engine did.
+   *
+   * Absent for the sidecar (its per-call provider cost is genuinely zero)
+   * and for stubs. Present, it is what the caller needs to price the call —
+   * the duration is already on `seconds` above, so this only has to say who
+   * charged us and on which model's rate card.
+   */
+  readonly usage?: TranscriptionUsage;
+}
+
+export interface TranscriptionUsage {
+  readonly provider: 'openai';
+  readonly model: string;
 }
 
 export interface SpeechToText {
@@ -41,6 +55,17 @@ export interface SpeechToText {
 /** The sidecar could not be reached. Nothing was transcribed, nothing billed. */
 export class TranscriptionUnavailable extends Error {
   override readonly name = 'TranscriptionUnavailable';
+  /**
+   * True when a HOSTED transcriber may have billed us anyway — a timeout
+   * after the audio went out. The caller writes a `priced: false`
+   * reconciliation row for these so the invoice has something to tie to.
+   */
+  readonly maybeBilled: boolean;
+
+  constructor(message: string, opts?: { maybeBilled?: boolean }) {
+    super(message);
+    this.maybeBilled = opts?.maybeBilled ?? false;
+  }
 }
 
 export const SPEECH_TO_TEXT = Symbol('SpeechToText');

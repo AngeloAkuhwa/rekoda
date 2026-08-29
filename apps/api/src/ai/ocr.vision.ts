@@ -72,7 +72,13 @@ export class VisionTextExtraction implements TextExtraction {
         ],
       });
     } catch (error) {
-      throw new TextExtractionUnavailable(describe(error));
+      /* A timeout is the one failure where "it failed" and "it was free"
+       * can differ: the image may have been processed after we stopped
+       * waiting. Flagged so the caller writes a reconciliation row; a
+       * refused connection or a 4xx billed nothing and stays unflagged. */
+      throw new TextExtractionUnavailable(describe(error), {
+        maybeBilled: isTimeout(error),
+      });
     }
 
     const text = response.content
@@ -85,7 +91,27 @@ export class VisionTextExtraction implements TextExtraction {
     /* Null, honestly: a language model does not report a per-character
      * confidence the way an OCR engine does, and inventing one would give
      * the caller a number that means nothing. */
-    return { text, confidence: null };
+    return {
+      text,
+      confidence: null,
+      /* The bill for the read, handed to whoever will write the cost row.
+       * The response model id, not the configured one: it is the id the
+       * invoice will carry. */
+      usage: {
+        provider: 'anthropic',
+        model: response.model,
+        tokens: {
+          inputTokens: response.usage.input_tokens,
+          outputTokens: response.usage.output_tokens,
+          ...(response.usage.cache_creation_input_tokens
+            ? { cacheWriteTokens: response.usage.cache_creation_input_tokens }
+            : {}),
+          ...(response.usage.cache_read_input_tokens
+            ? { cacheReadTokens: response.usage.cache_read_input_tokens }
+            : {}),
+        },
+      },
+    };
   }
 }
 
@@ -93,4 +119,10 @@ export class VisionTextExtraction implements TextExtraction {
 function describe(error: unknown): string {
   if (error instanceof Anthropic.APIError) return `vision engine answered ${error.status}`;
   return error instanceof Error ? error.name : 'unknown transport failure';
+}
+
+/** A request that went out and never came back — the maybe-billed case. */
+function isTimeout(error: unknown): boolean {
+  if (error instanceof Anthropic.APIConnectionTimeoutError) return true;
+  return error instanceof Error && error.name === 'AbortError';
 }

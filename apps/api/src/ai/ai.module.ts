@@ -4,7 +4,12 @@ import { AnthropicTransport } from './anthropic.transport.js';
 import { OpenAiTransport } from './openai.transport.js';
 import { Interpreter } from './interpreter.service.js';
 import { MODEL_TRANSPORT, ProviderUnreachable, type ModelTransport } from './transport.js';
-import { assertRolesArePriced, registerRuntimeModelPrices } from './model-prices.js';
+import {
+  assertRolesArePriced,
+  assertTranscriberIsPriced,
+  registerRuntimeModelPrices,
+  registerRuntimeTranscriptionPrices,
+} from './model-prices.js';
 import { SPEECH_TO_TEXT, type SpeechToText } from './stt.js';
 import { TEXT_EXTRACTION, type TextExtraction } from './ocr.js';
 import { AUDIO_METADATA_PROBE, ContainerAudioProbe } from './audio-duration.js';
@@ -101,6 +106,13 @@ class NoTransportConfigured implements ModelTransport {
       useFactory: (config: ApiConfig): SpeechToText => {
         if (config.sttUrl) return new HttpSpeechToText(config.sttUrl);
         if (config.openaiApiKey) {
+          /* Price before transport, per-minute edition: hosted transcription
+           * spends provider money on every note, and a transcriber with no
+           * registered rate is a transcriber whose every call reports as
+           * free. The sidecar branch above needs no price — its per-call
+           * provider cost is genuinely zero. */
+          registerRuntimeTranscriptionPrices(config.aiTranscriptionPrices ?? undefined);
+          assertTranscriberIsPriced(config.aiModelTranscriber, true);
           return new OpenAiSpeechToText(config.openaiApiKey, config.aiModelTranscriber);
         }
         return new NoSpeechToTextConfigured();

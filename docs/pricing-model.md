@@ -213,7 +213,7 @@ which is exactly when someone needs it most.
 | Meta authentication (NG)   | $0.0145 (NG-registered) | ₦21.03             | OTP. **$0.0750 if the WABA is registered outside Nigeria** (rate card `meta-ng-2026-08`) |
 | Meta marketing (NG)        | ~$0.0516                | ₦74.82             | **Excluded from V1 entirely**                                          |
 | In-window service replies  | currently ₦0 Meta-side  | —                  | **Chargeable from 1 Oct 2026; re-run maths when rates publish ~1 Sep** |
-| OpenAI transcription       | $0.0045/min             | ~₦6.53/min         | Benchmark only — STT is self-hosted (ADR 0005)                         |
+| OpenAI transcription       | $0.006/min ceiling      | ~₦8.70/min         | Launch configuration (ADR 0027); actual rate supplied at deploy via `AI_TRANSCRIPTION_PRICES`, recorded per call in `usage_events` |
 | Claude Haiku 4.5           | $1/$5 per MTok          | ~₦2–4/call         | Trivial classification                                                 |
 | Claude Sonnet 5            | $2/$10 per MTok         | ~₦8/call           | **Interpreter default** (ADR 0031, accuracy-first) and the vision reader |
 | Claude Opus 5              | $5/$25 per MTok         | ~₦20/call          | Escalation role only — rare by design                                  |

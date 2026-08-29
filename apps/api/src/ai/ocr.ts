@@ -39,6 +39,28 @@ export interface ExtractedText {
    * amount.
    */
   readonly confidence: number | null;
+  /**
+   * What the HOSTED engine consumed, when a hosted engine did the reading.
+   *
+   * Absent for the self-hosted sidecar — its per-call provider cost is
+   * genuinely zero, and a zero-cost row per page would drown the rows that
+   * mean money — and absent for stubs. Present, it is what the caller needs
+   * to write the `usage_events` row that puts hosted OCR inside the margin
+   * view instead of outside it.
+   */
+  readonly usage?: ExtractionUsage;
+}
+
+export interface ExtractionUsage {
+  /** Who charged us for the read. Widens as verifier providers arrive. */
+  readonly provider: 'anthropic' | 'openai';
+  readonly model: string;
+  readonly tokens: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheWriteTokens?: number;
+    cacheReadTokens?: number;
+  };
 }
 
 export interface TextExtraction {
@@ -55,6 +77,19 @@ export interface TextExtraction {
  */
 export class TextExtractionUnavailable extends Error {
   override readonly name = 'TextExtractionUnavailable';
+  /**
+   * True when a HOSTED engine may have billed us anyway — a timeout after
+   * the request went out, where "the call failed" and "the call was free"
+   * are different claims. The caller writes a `priced: false` reconciliation
+   * row for these, so the invoice has something to tie to. It changes
+   * nothing about the merchant-facing answer and enables no fallback.
+   */
+  readonly maybeBilled: boolean;
+
+  constructor(message: string, opts?: { maybeBilled?: boolean }) {
+    super(message);
+    this.maybeBilled = opts?.maybeBilled ?? false;
+  }
 }
 
 export const TEXT_EXTRACTION = Symbol('TextExtraction');

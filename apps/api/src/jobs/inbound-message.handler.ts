@@ -18,6 +18,10 @@ import {
   replies,
   routeMessage,
   usagePeriod,
+  billingPeriod,
+  costOfCall,
+  costOfTranscription,
+  type AiModelRole,
   type DeterministicIntent,
   type Reply,
 } from '@rekoda/core';
@@ -42,6 +46,7 @@ import {
   riskRepo,
   stockRepo,
   usageRepo,
+  quotaRepo,
   type Db,
   type TenantDb,
 } from '@rekoda/db';
@@ -55,9 +60,9 @@ import type { PaymentIntentsService } from '../payments/payment-intents.service.
 import { openPayload } from '../privacy/payload-vault.js';
 import { redactForLog } from '@rekoda/core/privacy';
 import { describeFailure, JobDeferred, type JobContext, type JobHandler } from './runner.js';
-import type { SpeechToText, Transcript } from '../ai/stt.js';
+import { TranscriptionUnavailable, type SpeechToText, type Transcript } from '../ai/stt.js';
 import type { AudioMetadataProbe } from '../ai/audio-duration.js';
-import type { TextExtraction } from '../ai/ocr.js';
+import { TextExtractionUnavailable, type TextExtraction } from '../ai/ocr.js';
 import type { CommandBus } from '../commands/command-bus.service.js';
 import { recordSaleWork, type RecordSaleInput } from '../commands/sale-commands.js';
 import {
@@ -466,11 +471,34 @@ async function readReceiptPhoto(
   let extracted;
   try {
     extracted = await deps.ocr.extract(image.bytes, image.mimeType);
-  } catch {
+  } catch (error) {
     /* Our failure, not the merchant's, so the unit goes back. The image is
      * dropped here and goes nowhere else: no vision model, no retry against a
      * hosted engine, no exception "just this once". */
     log.warn('the OCR engine could not be reached');
+    /* A hosted read that TIMED OUT may still be on the invoice — the page
+     * may have been processed after we stopped waiting. Zero with
+     * `priced: false` is the row reconciliation ties to; the merchant's
+     * unit still goes back, because Rekoda's timeout is Rekoda's cost. */
+    if (error instanceof TextExtractionUnavailable && error.maybeBilled) {
+      await withBusiness(deps.db, businessId, (own) =>
+        quotaRepo.recordUsage(own, {
+          businessId,
+          provider: 'anthropic',
+          usageType: 'ocr_vision',
+          quantity: 1,
+          providerCostMicros: 0,
+          nairaEquivalentK: 0,
+          billingPeriod: billingPeriod(new Date()),
+          meta: {
+            role: 'vision' satisfies AiModelRole,
+            priced: false,
+            reason: 'timed out after the request went out; possibly billed',
+            messageId: recorded.id,
+          },
+        }),
+      );
+    }
     await withBusiness(deps.db, businessId, (own) =>
       usageRepo.refundUnit(own, businessId, period, 'DOCUMENTS_UNDERSTOOD'),
     );
@@ -480,6 +508,41 @@ async function readReceiptPhoto(
       reply: replies.photoUnavailable(),
     });
     return null;
+  }
+
+  /* WHAT THE READ COST, recorded whatever becomes of the text (item 7 of
+   * the AI hardening plan; same contract as the interpreter's rows). Only
+   * hosted engines report usage — the sidecar's per-call provider cost is
+   * genuinely zero and writes no row. `ocr_vision` matches the OCR cost
+   * class however the read was performed. */
+  if (extracted.usage) {
+    const cost = costOfCall(
+      extracted.usage.model,
+      extracted.usage.tokens,
+      deps.config.planningFxNairaPerUsd,
+    );
+    if (!cost.priced) {
+      log.error(`no price for vision model "${extracted.usage.model}" — recorded at zero`);
+    }
+    await withBusiness(deps.db, businessId, (own) =>
+      quotaRepo.recordUsage(own, {
+        businessId,
+        provider: extracted.usage!.provider,
+        usageType: 'ocr_vision',
+        quantity: 1,
+        providerCostMicros: cost.usdMicros,
+        nairaEquivalentK: cost.nairaKobo,
+        billingPeriod: billingPeriod(new Date()),
+        meta: {
+          role: 'vision' satisfies AiModelRole,
+          model: extracted.usage!.model,
+          purpose: 'document_extraction',
+          priced: cost.priced,
+          messageId: recorded.id,
+          ...extracted.usage!.tokens,
+        },
+      }),
+    );
   }
 
   /* The caption is what the merchant TYPED, and it says what the photograph
@@ -624,12 +687,35 @@ async function transcribeVoiceNote(
   let transcript: Transcript;
   try {
     transcript = await deps.stt.transcribe(audio.bytes, audio.mimeType);
-  } catch {
+  } catch (error) {
     /* An outage, not the merchant's fault, so the seconds go back. The reason
      * is logged without the audio and without their words. */
     await withBusiness(deps.db, businessId, (own) =>
       usageRepo.refundUnit(own, businessId, period, 'VOICE_MINUTES', seconds),
     );
+    /* A hosted transcription that TIMED OUT may still be on the invoice.
+     * Zero with `priced: false` is the row reconciliation ties to. The
+     * merchant's seconds went back above: Rekoda's timeout, Rekoda's cost. */
+    if (error instanceof TranscriptionUnavailable && error.maybeBilled) {
+      await withBusiness(deps.db, businessId, (own) =>
+        quotaRepo.recordUsage(own, {
+          businessId,
+          provider: 'openai',
+          usageType: 'transcription',
+          quantity: seconds,
+          providerCostMicros: 0,
+          nairaEquivalentK: 0,
+          billingPeriod: billingPeriod(new Date()),
+          meta: {
+            role: 'transcriber' satisfies AiModelRole,
+            priced: false,
+            reason: 'timed out after the audio went out; possibly billed',
+            localSeconds: seconds,
+            messageId: recorded.id,
+          },
+        }),
+      );
+    }
     log.warn('the transcriber could not be reached');
     await deps.replySender.send(tx, {
       businessId,
@@ -637,6 +723,44 @@ async function transcribeVoiceNote(
       reply: replies.voiceUnavailable(),
     });
     return null;
+  }
+
+  /* WHAT THE TRANSCRIPTION COST (item 7). Only the hosted transcriber
+   * reports usage; the sidecar writes no row because its per-call provider
+   * cost is zero. BOTH durations go on the row: the local probe's (what the
+   * allowance reserved on) and the provider's (what the bill runs on) —
+   * recorded for audit without storing a byte of audio. */
+  if (transcript.usage) {
+    const cost = costOfTranscription(
+      transcript.usage.model,
+      transcript.seconds,
+      deps.config.planningFxNairaPerUsd,
+    );
+    if (!cost.priced) {
+      log.error(
+        `no per-minute price for transcriber "${transcript.usage.model}" — recorded at zero`,
+      );
+    }
+    await withBusiness(deps.db, businessId, (own) =>
+      quotaRepo.recordUsage(own, {
+        businessId,
+        provider: transcript.usage!.provider,
+        usageType: 'transcription',
+        quantity: transcript.seconds,
+        providerCostMicros: cost.usdMicros,
+        nairaEquivalentK: cost.nairaKobo,
+        billingPeriod: billingPeriod(new Date()),
+        meta: {
+          role: 'transcriber' satisfies AiModelRole,
+          model: transcript.usage!.model,
+          purpose: 'voice_transcription',
+          priced: cost.priced,
+          localSeconds: seconds,
+          providerSeconds: transcript.seconds,
+          messageId: recorded.id,
+        },
+      }),
+    );
   }
 
   return { transcript, messageId: recorded.id };

@@ -11,6 +11,18 @@
  * the way out, same as the ledger.
  */
 
+/**
+ * WHY a model was called, carried on every cost row it produces.
+ *
+ * The margin view's first question is not "what did Anthropic cost" but
+ * "what does reading receipts cost" — and provider alone cannot answer it
+ * once one provider serves several jobs. Every `usage_events` row an AI
+ * call writes carries one of these in its meta, so the grouping exists in
+ * the data rather than in somebody's memory of which model did what.
+ */
+export type AiModelRole =
+  'classifier' | 'interpreter' | 'vision' | 'vision_verifier' | 'escalation' | 'transcriber';
+
 /** Token counts as Anthropic reports them. */
 export interface TokenUsage {
   inputTokens: number;
@@ -156,6 +168,60 @@ export function costOfCall(modelId: string, usage: TokenUsage, fxNairaPerUsd: nu
     microsFor(usage.cacheReadTokens ?? 0, price.cacheReadMicrosPerMTok);
 
   // USD micros → naira → kobo. 1 USD micro = fx/1e6 naira = fx/1e4 kobo.
+  const nairaKobo = Math.round((usdMicros * fxNairaPerUsd) / 10_000);
+  return { usdMicros, nairaKobo, priced: true };
+}
+
+/**
+ * What a minute of hosted transcription costs.
+ *
+ * Its own shape rather than a row in `ModelPrice`, because forcing a
+ * per-minute rate into per-MTok fields would make every number in the table
+ * mean something different depending on which row you were reading. A
+ * margin view whose units change per row is a margin view that gets
+ * misread.
+ */
+export interface TranscriptionPrice {
+  /** micro-USD per MINUTE of audio. $0.006/min is 6_000. */
+  readonly perMinuteMicros: number;
+}
+
+/**
+ * Supplied at runtime like the OpenAI token prices, and for the same reason:
+ * the price belongs to whoever holds the invoice, and a stale compiled-in
+ * rate becomes a margin somebody acts on. Keyed by EXACT model id, not
+ * family — there are few transcription models and their ids do not sprout
+ * dated suffixes the way chat models' do.
+ */
+const transcriptionPrices = new Map<string, TranscriptionPrice>();
+
+export function registerTranscriptionPrice(model: string, price: TranscriptionPrice): void {
+  transcriptionPrices.set(model.toLowerCase(), price);
+}
+
+/** Whether a boot-time check can promise this model's calls will be priced. */
+export function hasTranscriptionPrice(model: string): boolean {
+  return transcriptionPrices.has(model.toLowerCase());
+}
+
+/**
+ * Cost a transcription call, pro-rated to the second.
+ *
+ * Seconds rather than minutes on the way in, because seconds are what the
+ * provider reports and what the voice meter counts — converting to minutes
+ * at the call site would be one more place to round in the wrong direction.
+ * Unknown models cost zero with `priced: false`, same contract as
+ * `costOfCall`: a zero that admits it.
+ */
+export function costOfTranscription(
+  model: string,
+  seconds: number,
+  fxNairaPerUsd: number,
+): CallCost {
+  const price = transcriptionPrices.get(model.toLowerCase());
+  if (!price) return { usdMicros: 0, nairaKobo: 0, priced: false };
+
+  const usdMicros = Math.round((Math.max(0, seconds) * price.perMinuteMicros) / 60);
   const nairaKobo = Math.round((usdMicros * fxNairaPerUsd) / 10_000);
   return { usdMicros, nairaKobo, priced: true };
 }

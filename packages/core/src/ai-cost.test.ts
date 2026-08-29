@@ -7,7 +7,15 @@
  * "free".
  */
 import { describe, expect, it } from 'vitest';
-import { billingPeriod, cacheSaving, costOfCall, modelFamily } from './ai-cost.js';
+import {
+  billingPeriod,
+  cacheSaving,
+  costOfCall,
+  costOfTranscription,
+  hasTranscriptionPrice,
+  modelFamily,
+  registerTranscriptionPrice,
+} from './ai-cost.js';
 import { usagePeriod } from './allowances.js';
 
 const FX = 1_450; // PLANNING_FX_NGN_PER_USD
@@ -133,6 +141,38 @@ describe('what prompt caching is worth', () => {
 
   it('is zero for a model we cannot price', () => {
     expect(cacheSaving('unknown', 10_000)).toBe(0);
+  });
+});
+
+describe('pricing a transcription by the minute', () => {
+  it('pro-rates a registered per-minute price to the second', () => {
+    registerTranscriptionPrice('whisper-test', { perMinuteMicros: 6_000 });
+    // 90 seconds at $0.006/min = $0.009 = 9,000 micros.
+    const cost = costOfTranscription('whisper-test', 90, FX);
+    expect(cost.usdMicros).toBe(9_000);
+    expect(cost.priced).toBe(true);
+    // 9,000 micros × ₦1,450 / 10,000 = 1,305 kobo — integers all the way.
+    expect(cost.nairaKobo).toBe(1_305);
+    expect(Number.isInteger(cost.nairaKobo)).toBe(true);
+  });
+
+  it('reports an unregistered transcriber as unpriced, never as free', () => {
+    const cost = costOfTranscription('some-transcriber-nobody-priced', 120, FX);
+    expect(cost.usdMicros).toBe(0);
+    expect(cost.priced).toBe(false);
+    expect(hasTranscriptionPrice('some-transcriber-nobody-priced')).toBe(false);
+  });
+
+  it('matches the model id case-insensitively, like the token table', () => {
+    registerTranscriptionPrice('GPT-Transcribe', { perMinuteMicros: 4_500 });
+    expect(hasTranscriptionPrice('gpt-transcribe')).toBe(true);
+    // One minute exactly: the per-minute price, verbatim.
+    expect(costOfTranscription('gpt-transcribe', 60, FX).usdMicros).toBe(4_500);
+  });
+
+  it('never charges negative seconds', () => {
+    registerTranscriptionPrice('whisper-test', { perMinuteMicros: 6_000 });
+    expect(costOfTranscription('whisper-test', -5, FX).usdMicros).toBe(0);
   });
 });
 

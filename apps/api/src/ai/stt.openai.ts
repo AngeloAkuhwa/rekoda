@@ -48,7 +48,12 @@ export class OpenAiSpeechToText implements SpeechToText {
         response_format: 'verbose_json',
       })) as { text?: unknown; duration?: unknown };
     } catch (error) {
-      throw new TranscriptionUnavailable(describe(error));
+      /* A timeout may have been billed — the audio went out and the work
+       * may have finished after we stopped waiting. Flagged so the caller
+       * writes a reconciliation row; everything else billed nothing. */
+      throw new TranscriptionUnavailable(describe(error), {
+        maybeBilled: isTimeout(error),
+      });
     }
 
     const text = typeof response.text === 'string' ? response.text.trim() : '';
@@ -69,6 +74,9 @@ export class OpenAiSpeechToText implements SpeechToText {
        * to anybody who speaks quickly. */
       seconds: Math.max(1, Math.ceil(duration)),
       confidence: null,
+      /* Who charged us and on which rate card. The duration the cost is
+       * computed from is `seconds` above — the provider's own number. */
+      usage: { provider: 'openai', model: this.model },
     };
   }
 }
@@ -87,4 +95,10 @@ function describe(error: unknown): string {
   if (error instanceof Error && error.name === 'AbortError') return 'transcription timed out';
   if (error instanceof OpenAI.APIError) return `transcriber answered ${error.status}`;
   return error instanceof Error ? error.name : 'unknown transport failure';
+}
+
+/** A request that went out and never came back — the maybe-billed case. */
+function isTimeout(error: unknown): boolean {
+  if (error instanceof OpenAI.APIConnectionTimeoutError) return true;
+  return error instanceof Error && error.name === 'AbortError';
 }

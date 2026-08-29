@@ -305,6 +305,7 @@ describe('the adapter boundary (spec Appendix C.4)', () => {
     const row = [...rows][0]!;
     expect(row.provider).toBe(config.aiProvider);
     expect(row.meta).toMatchObject({
+      role: 'interpreter',
       model: config.aiModelDefault,
       purpose: 'interpret_message',
       tokenised: true,

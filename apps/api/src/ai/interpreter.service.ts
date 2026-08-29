@@ -1,5 +1,5 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import { billingPeriod, costOfCall } from '@rekoda/core';
+import { billingPeriod, costOfCall, type AiModelRole } from '@rekoda/core';
 import { PRIVACY_POLICY_VERSION, detectStructuralPii, redactForLog } from '@rekoda/core/privacy';
 import {
   businessCommandToolSchema,
@@ -162,8 +162,10 @@ export class Interpreter {
         billingPeriod: billingPeriod(new Date()),
         /* The observability contract (Appendix C.4): processor, model,
          * purpose, tokenisation status and policy version — and NEVER the
-         * prompt, the completion or a protected field. */
+         * prompt, the completion or a protected field. `role` is what the
+         * margin view groups by once several roles share a provider. */
         meta: {
+          role: 'interpreter' satisfies AiModelRole,
           model,
           purpose: 'interpret_message',
           tokenised: true,
@@ -199,7 +201,12 @@ export class Interpreter {
         providerCostMicros: 0,
         nairaEquivalentK: 0,
         billingPeriod: billingPeriod(new Date()),
-        meta: { model, priced: false, reason: redactForLog(reason) },
+        meta: {
+          role: 'interpreter' satisfies AiModelRole,
+          model,
+          priced: false,
+          reason: redactForLog(reason),
+        },
       }),
     );
   }

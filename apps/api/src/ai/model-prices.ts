@@ -1,5 +1,10 @@
 import { Logger } from '@nestjs/common';
-import { modelFamily, registerModelPrice } from '@rekoda/core';
+import {
+  hasTranscriptionPrice,
+  modelFamily,
+  registerModelPrice,
+  registerTranscriptionPrice,
+} from '@rekoda/core';
 
 /**
  * Prices `@rekoda/core` deliberately does not ship, supplied as CONFIGURATION.
@@ -140,4 +145,71 @@ export function assertRolesArePriced(models: readonly string[], hasApiKey: boole
   for (const model of new Set(models)) {
     assertModelIsPriced(model, hasApiKey);
   }
+}
+
+/**
+ * The transcriber's price, priced per MINUTE rather than per token.
+ *
+ * Same discipline as `AI_MODEL_PRICES`, same reason it is configuration: the
+ * per-minute rate belongs to whoever holds the invoice. Keyed by EXACT model
+ * id:
+ *
+ *   AI_TRANSCRIPTION_PRICES='{"whisper-1":{"perMinuteMicros":6000}}'
+ *
+ * 6_000 micro-USD is $0.006 per minute of audio.
+ */
+export class BadTranscriptionPrices extends Error {}
+
+export function parseTranscriptionPrices(
+  raw: string | undefined,
+): Record<string, { perMinuteMicros: number }> {
+  if (!raw?.trim()) return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new BadTranscriptionPrices('AI_TRANSCRIPTION_PRICES is not valid JSON');
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new BadTranscriptionPrices('AI_TRANSCRIPTION_PRICES must be an object keyed by model id');
+  }
+
+  const prices: Record<string, { perMinuteMicros: number }> = {};
+  for (const [model, value] of Object.entries(parsed as Record<string, unknown>)) {
+    const price = value as { perMinuteMicros?: unknown };
+    if (!isPositive(price?.perMinuteMicros)) {
+      throw new BadTranscriptionPrices(
+        `AI_TRANSCRIPTION_PRICES["${model}"] needs a positive "perMinuteMicros"`,
+      );
+    }
+    prices[model] = { perMinuteMicros: price.perMinuteMicros };
+  }
+  return prices;
+}
+
+export function registerRuntimeTranscriptionPrices(raw: string | undefined): void {
+  for (const [model, price] of Object.entries(parseTranscriptionPrices(raw))) {
+    registerTranscriptionPrice(model, price);
+  }
+}
+
+/**
+ * Refuse to boot a hosted transcriber we cannot cost.
+ *
+ * Only when hosted transcription is actually the active configuration: the
+ * sidecar spends no provider money per call, and a deployment with no
+ * transcriber at all makes no transcriptions to misprice. This is the
+ * per-minute twin of `assertModelIsPriced`, and exists so the exemption in
+ * `assertRolesArePriced` is a relocation of the check, never a hole in it.
+ */
+export function assertTranscriberIsPriced(model: string, hostedSttActive: boolean): void {
+  if (!hostedSttActive) return;
+  if (!hasTranscriptionPrice(model)) {
+    throw new UnpricedModel(
+      `no per-minute price is registered for transcription model "${model}". Supply one in ` +
+        `AI_TRANSCRIPTION_PRICES, e.g. {"${model}":{"perMinuteMicros":6000}} in ` +
+        'micro-USD per minute, or every transcription is recorded as free.',
+    );
+  }
+  new Logger('ModelPrices').log(`costing transcriber "${model}" per minute`);
 }
