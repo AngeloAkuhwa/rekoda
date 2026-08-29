@@ -131,6 +131,66 @@ export async function releaseAiCall(
   });
 }
 
+export type DocExtractionReservation = { ok: true; extractions: number } | { ok: false };
+
+/**
+ * Take one document-extraction slot from today's ceiling, or take nothing
+ * (AI hardening item 4 — `AI_DOC_EXTRACTIONS_PER_BUSINESS`, enforced).
+ *
+ * Same statement shape as `reserveAiCall` and for the same reason: the limit
+ * lives in the WHERE clause, so two photographs arriving together cannot
+ * both take the last slot. No global twin — the platform-wide backstop on
+ * model spend is `ai_global_counters`, and a vision read that gets past this
+ * ceiling still reserves there via the interpreter path's ceilings when it
+ * becomes a model call.
+ *
+ * OPERATIONAL, not commercial: this is the per-day brake on hosted vision
+ * spend, separate from the monthly `documents_understood` allowance the
+ * merchant bought. The caller consumes both, in that order.
+ */
+export async function reserveDocExtraction(
+  db: Db,
+  businessId: string,
+  perBusinessPerDay: number,
+  at: Date = new Date(),
+): Promise<DocExtractionReservation> {
+  if (perBusinessPerDay < 1) return { ok: false };
+  const day = lagosDay(at);
+
+  return withBusiness<DocExtractionReservation>(db, businessId, async (tx) => {
+    const rows = await tx.execute<{ extractions: number }>(sql`
+      INSERT INTO doc_extraction_counters (business_id, day, extractions)
+      VALUES (${businessId}::uuid, ${day}::date, 1)
+      ON CONFLICT (business_id, day) DO UPDATE
+        SET extractions = doc_extraction_counters.extractions + 1
+        WHERE doc_extraction_counters.extractions < ${perBusinessPerDay}
+      RETURNING extractions
+    `);
+    const extractions = [...rows][0]?.extractions;
+    return extractions === undefined ? { ok: false } : { ok: true, extractions };
+  });
+}
+
+/**
+ * Hand a document-extraction slot back — ONLY when the provider was never
+ * reached. A read that spent provider money stays counted whatever became of
+ * the text, because the ceiling bounds spend, not success. `GREATEST(0, …)`
+ * so a double release cannot mint free slots.
+ */
+export async function releaseDocExtraction(
+  db: Db,
+  businessId: string,
+  at: Date = new Date(),
+): Promise<void> {
+  const day = lagosDay(at);
+  await withBusiness(db, businessId, async (tx) => {
+    await tx.execute(sql`
+      UPDATE doc_extraction_counters SET extractions = GREATEST(0, extractions - 1)
+      WHERE business_id = ${businessId}::uuid AND day = ${day}::date
+    `);
+  });
+}
+
 /** What a business has spent today. For the honest refusal message. */
 export async function callsToday(
   tx: TenantDb,

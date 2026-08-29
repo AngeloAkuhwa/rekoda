@@ -81,37 +81,39 @@ export class VisionTextExtraction implements TextExtraction {
       });
     }
 
+    /* The bill for the read, handed to whoever will write the cost row.
+     * The response model id, not the configured one: it is the id the
+     * invoice will carry. */
+    const usage = {
+      provider: 'anthropic' as const,
+      model: response.model,
+      tokens: {
+        inputTokens: response.usage.input_tokens,
+        outputTokens: response.usage.output_tokens,
+        ...(response.usage.cache_creation_input_tokens
+          ? { cacheWriteTokens: response.usage.cache_creation_input_tokens }
+          : {}),
+        ...(response.usage.cache_read_input_tokens
+          ? { cacheReadTokens: response.usage.cache_read_input_tokens }
+          : {}),
+      },
+    };
+
     const text = response.content
       .filter((block): block is Anthropic.TextBlock => block.type === 'text')
       .map((block) => block.text)
       .join('\n')
       .trim();
-    if (!text) throw new TextExtractionUnavailable('the page had no legible text');
+    if (!text) {
+      /* An unreadable page still billed tokens — the failure carries the
+       * bill, so the caller can record what was spent reading nothing. */
+      throw new TextExtractionUnavailable('the page had no legible text', { usage });
+    }
 
     /* Null, honestly: a language model does not report a per-character
      * confidence the way an OCR engine does, and inventing one would give
      * the caller a number that means nothing. */
-    return {
-      text,
-      confidence: null,
-      /* The bill for the read, handed to whoever will write the cost row.
-       * The response model id, not the configured one: it is the id the
-       * invoice will carry. */
-      usage: {
-        provider: 'anthropic',
-        model: response.model,
-        tokens: {
-          inputTokens: response.usage.input_tokens,
-          outputTokens: response.usage.output_tokens,
-          ...(response.usage.cache_creation_input_tokens
-            ? { cacheWriteTokens: response.usage.cache_creation_input_tokens }
-            : {}),
-          ...(response.usage.cache_read_input_tokens
-            ? { cacheReadTokens: response.usage.cache_read_input_tokens }
-            : {}),
-        },
-      },
-    };
+    return { text, confidence: null, usage };
   }
 }
 

@@ -249,3 +249,71 @@ describe('usage telemetry', () => {
     expect([...seen][0]).toMatchObject({ n: 0 });
   });
 });
+
+describe('the document-extraction daily ceiling (AI hardening item 4)', () => {
+  it('allows extractions up to the limit and refuses the next one', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348070000001');
+
+    for (let i = 1; i <= 3; i++) {
+      const r = await quotaRepo.reserveDocExtraction(db, businessId, 3);
+      expect(r).toMatchObject({ ok: true, extractions: i });
+    }
+    expect(await quotaRepo.reserveDocExtraction(db, businessId, 3)).toEqual({ ok: false });
+  });
+
+  it('lets exactly FIVE of twenty simultaneous photographs through a limit of five', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348070000001');
+
+    /* The assertion the counter exists for: read-then-decide lets all twenty
+     * through, and the thing on the other side is a vision bill. */
+    const results = await Promise.all(
+      Array.from({ length: 20 }, () => quotaRepo.reserveDocExtraction(db, businessId, 5)),
+    );
+
+    expect(results.filter((r) => r.ok)).toHaveLength(5);
+    expect(results.filter((r) => !r.ok)).toHaveLength(15);
+  });
+
+  it('does not spend one business`s ceiling on another', async () => {
+    const ada = await seedBusiness('Ada Fashion', '+2348070000001');
+    const bola = await seedBusiness('Bola Electronics', '+2348070000002');
+
+    await quotaRepo.reserveDocExtraction(db, ada, 1);
+    expect(await quotaRepo.reserveDocExtraction(db, ada, 1)).toEqual({ ok: false });
+    expect(await quotaRepo.reserveDocExtraction(db, bola, 1)).toMatchObject({ ok: true });
+  });
+
+  it('refuses a limit of zero rather than allowing the first photograph through', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348070000001');
+    expect(await quotaRepo.reserveDocExtraction(db, businessId, 0)).toEqual({ ok: false });
+  });
+
+  it('starts fresh on a new Lagos day', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348070000001');
+    const today = new Date('2026-08-20T12:00:00Z');
+    const tomorrow = new Date('2026-08-21T12:00:00Z');
+
+    expect(await quotaRepo.reserveDocExtraction(db, businessId, 1, today)).toMatchObject({
+      ok: true,
+    });
+    expect(await quotaRepo.reserveDocExtraction(db, businessId, 1, today)).toEqual({ ok: false });
+    expect(await quotaRepo.reserveDocExtraction(db, businessId, 1, tomorrow)).toMatchObject({
+      ok: true,
+    });
+  });
+
+  it('returns the slot when the provider was never reached, and never mints extras', async () => {
+    const businessId = await seedBusiness('Ada Fashion', '+2348070000001');
+
+    expect(await quotaRepo.reserveDocExtraction(db, businessId, 1)).toMatchObject({ ok: true });
+    await quotaRepo.releaseDocExtraction(db, businessId);
+    expect(await quotaRepo.reserveDocExtraction(db, businessId, 1)).toMatchObject({ ok: true });
+
+    /* A double release must not push the counter below zero — that would be
+     * a free extra slot the next photograph silently takes. */
+    await quotaRepo.releaseDocExtraction(db, businessId);
+    await quotaRepo.releaseDocExtraction(db, businessId);
+    expect(await quotaRepo.reserveDocExtraction(db, businessId, 1)).toMatchObject({ ok: true });
+    expect(await quotaRepo.reserveDocExtraction(db, businessId, 1)).toEqual({ ok: false });
+  });
+});

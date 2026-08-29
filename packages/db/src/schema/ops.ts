@@ -287,6 +287,25 @@ export const aiGlobalCounters = pgTable('ai_global_counters', {
 });
 
 /**
+ * Per-business daily document-extraction reservations (AI hardening item 4).
+ *
+ * The OPERATIONAL brake on vision spend, distinct from the monthly
+ * `documents_understood` allowance the merchant bought: that one meters the
+ * product, this one bounds what a single day can cost before somebody looks.
+ * Same mechanism as `aiQuotaCounters` for the same reason — the limit lives
+ * in the statement's WHERE clause, never in a read-then-decide.
+ */
+export const docExtractionCounters = pgTable(
+  'doc_extraction_counters',
+  {
+    businessId: businessId(),
+    day: date('day').notNull(),
+    extractions: integer('extractions').notNull().default(0),
+  },
+  (t) => [primaryKey({ columns: [t.businessId, t.day] })],
+);
+
+/**
  * The model's interpretation of one message, before anybody agrees to it
  * (CG2, CG5). A draft is not a document: no number, no ledger entry, nothing
  * a customer can be shown. `command` holds tokenised content only.

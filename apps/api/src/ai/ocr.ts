@@ -85,10 +85,19 @@ export class TextExtractionUnavailable extends Error {
    * nothing about the merchant-facing answer and enables no fallback.
    */
   readonly maybeBilled: boolean;
+  /**
+   * Set when a HOSTED engine answered, billed us, and the answer was still
+   * unusable — a page with no legible text. The provider money was spent,
+   * so the caller records it and keeps the daily slot counted, exactly as
+   * it would for a successful read. Distinct from `maybeBilled`: this one
+   * is certain, and it comes with the token counts to price.
+   */
+  readonly usage?: ExtractionUsage;
 
-  constructor(message: string, opts?: { maybeBilled?: boolean }) {
+  constructor(message: string, opts?: { maybeBilled?: boolean; usage?: ExtractionUsage }) {
     super(message);
     this.maybeBilled = opts?.maybeBilled ?? false;
+    if (opts?.usage) this.usage = opts.usage;
   }
 }
 

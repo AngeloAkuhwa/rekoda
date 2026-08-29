@@ -382,3 +382,24 @@ export function templateUnitFor(category: TemplateCategory, to: string): UsageUn
       return to.startsWith('+234') ? 'AUTH_TEMPLATE' : 'AUTH_INTL_TEMPLATE';
   }
 }
+
+/**
+ * Whether the transcriber's reported duration disagrees with the local
+ * probe's beyond honest measurement error (AI hardening item 5).
+ *
+ * The two numbers measure the same audio two ways: the container's own
+ * timestamps locally, the decoder's count at the provider. They legitimately
+ * differ by a second or two of rounding and container padding; more than
+ * that means one of the meters is wrong, and both the allowance (charged on
+ * the local number) and the provider bill (run on theirs) are built on a
+ * meter. Tolerance: two seconds or 10% of the local reading, whichever is
+ * larger — wide enough for codec rounding, narrow enough that a truncated
+ * upload or a mis-parsed container cannot hide inside it.
+ */
+export function transcriptDurationsDisagree(
+  localSeconds: number,
+  providerSeconds: number,
+): boolean {
+  const tolerance = Math.max(2, Math.ceil(localSeconds * 0.1));
+  return Math.abs(providerSeconds - localSeconds) > tolerance;
+}

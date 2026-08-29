@@ -10,6 +10,7 @@ import {
   isConsumable,
   seatsFor,
   templateUnitFor,
+  transcriptDurationsDisagree,
   unitsOfKind,
   usagePeriod,
 } from './allowances.js';
@@ -260,5 +261,31 @@ describe('the two kinds of allowance', () => {
     expect(UNIT_KIND.API_REQUEST_UNITS).toBe('CONSUMABLE_MONTHLY');
     expect(UNIT_KIND.WEBHOOK_DELIVERIES).toBe('CONSUMABLE_MONTHLY');
     expect(UNIT_KIND.API_APPLICATIONS).toBe('CAPACITY');
+  });
+});
+
+describe('the transcription duration cross-check (AI hardening item 5)', () => {
+  it('accepts codec rounding: a second or two either way', () => {
+    expect(transcriptDurationsDisagree(17, 18)).toBe(false);
+    expect(transcriptDurationsDisagree(17, 15)).toBe(false);
+    expect(transcriptDurationsDisagree(5, 7)).toBe(false);
+  });
+
+  it('flags a disagreement past the tolerance, in either direction', () => {
+    // Tolerance at 17s is max(2, ceil(1.7)) = 2 — three seconds apart is real.
+    expect(transcriptDurationsDisagree(17, 20)).toBe(true);
+    expect(transcriptDurationsDisagree(17, 14)).toBe(true);
+  });
+
+  it('widens with the note, so long recordings get proportional slack', () => {
+    // Tolerance at 120s is max(2, 12) = 12.
+    expect(transcriptDurationsDisagree(120, 131)).toBe(false);
+    expect(transcriptDurationsDisagree(120, 133)).toBe(true);
+  });
+
+  it('sits exactly on the boundary without flapping', () => {
+    // At 10s the tolerance is 2: 12 agrees, 13 does not.
+    expect(transcriptDurationsDisagree(10, 12)).toBe(false);
+    expect(transcriptDurationsDisagree(10, 13)).toBe(true);
   });
 });

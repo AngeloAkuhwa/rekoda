@@ -3629,6 +3629,70 @@ describe('a voice note', () => {
     expect(row.meta).toMatchObject({ role: 'transcriber', priced: false, localSeconds: 9 });
   });
 
+  /**
+   * The limit's exact edge (AI hardening item 6). A boundary nobody tested
+   * drifts: "at most two minutes" and "under two minutes" differ by one
+   * voice note, and the merchant sent that note.
+   */
+  it('accepts a note exactly AT the duration limit', async () => {
+    await seedMerchant('+2348031234567');
+    arrangeAudio(120); // VOICE_NOTE_MAX_DURATION_SECONDS defaults to 120
+    stubStt.answerWith({ text: 'Ada bought 3 wigs for 150k', seconds: 120, confidence: 0.9 });
+    stubTransport.replyWith(A_SPOKEN_SALE);
+
+    await post(voicePayload('2348031234567', 'wamid.V40'));
+    await drain();
+
+    expect(stubStt.calls).toHaveLength(1);
+  });
+
+  it('rejects a note ONE second over the limit, reaching no transcriber', async () => {
+    const business = await seedMerchant('+2348031234567');
+    arrangeAudio(121);
+    stubStt.answerWith({ text: 'should never be reached', seconds: 121, confidence: 1 });
+
+    await post(voicePayload('2348031234567', 'wamid.V41'));
+    await drain();
+
+    expect(stubStt.calls).toHaveLength(0);
+    expect(stubSender.lastText).toContain('shorter parts');
+    expect(await voiceUsed(business.id)).toBe(0);
+  });
+
+  it('flags a duration disagreement on the cost row without touching the meter', async () => {
+    const business = await seedMerchant('+2348031234567');
+    arrangeAudio(10);
+    registerTranscriptionPrice('whisper-test', { perMinuteMicros: 6_000 });
+    /* The provider claims triple the container's reading. Neither number is
+     * silently preferred: the allowance stays charged on the local one, the
+     * cost runs on the provider's, and the row says they disagreed. */
+    stubStt.answerWith({
+      text: 'Ada bought 3 wigs for 150k',
+      seconds: 30,
+      confidence: null,
+      usage: { provider: 'openai', model: 'whisper-test' },
+    });
+    stubTransport.replyWith(A_SPOKEN_SALE);
+
+    await post(voicePayload('2348031234567', 'wamid.V42'));
+    await drain();
+
+    expect(await voiceUsed(business.id)).toBe(10);
+    const rows = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ quantity: number; meta: Record<string, unknown> }>(sql`
+        SELECT quantity, meta FROM usage_events
+        WHERE business_id = ${business.id}::uuid AND usage_type = 'transcription'
+      `),
+    );
+    const row = [...rows][0]!;
+    expect(Number(row.quantity)).toBe(30);
+    expect(row.meta).toMatchObject({
+      durationMismatch: true,
+      localSeconds: 10,
+      providerSeconds: 30,
+    });
+  });
+
   /* A photo with no media id is not a receipt anybody can read. */
   it('answers an image with no media id with the honest capability line', async () => {
     await seedMerchant('+2348031234567');
@@ -4170,6 +4234,131 @@ describe('a receipt photo', () => {
     expect(row).toBeDefined();
     expect(Number(row.provider_cost_micros)).toBe(0);
     expect(row.meta).toMatchObject({ role: 'vision', priced: false });
+  });
+
+  /** The same jobs, run under a tighter daily document ceiling. */
+  async function drainWithDailyLimit(limit: number) {
+    const runner = buildRunner(workerDb, db, {
+      ...deps,
+      config: { ...deps.config, aiDocExtractionsPerBusinessPerDay: limit },
+    });
+    let worked = await runner.runOnce();
+    while (worked) worked = await runner.runOnce();
+  }
+
+  /**
+   * AI hardening item 4: `AI_DOC_EXTRACTIONS_PER_BUSINESS`, enforced. The
+   * daily ceiling is operational, not commercial — the merchant may have
+   * monthly scans left, and the refusal must say "today", not "upgrade".
+   */
+  it('refuses the photograph past the daily ceiling, before any engine is called', async () => {
+    const business = await seedMerchant('+2348031234567');
+    arrangePhoto();
+    stubOcr.answerWith({ text: 'TOTAL 12,000 diesel', confidence: 0.9 });
+    stubTransport.replyWith(A_PHOTOGRAPHED_EXPENSE);
+
+    await post(photoPayload('2348031234567', 'wamid.P11'));
+    await drainWithDailyLimit(1);
+    expect(stubOcr.calls).toHaveLength(1);
+
+    await post(photoPayload('2348031234567', 'wamid.P12'));
+    await drainWithDailyLimit(1);
+
+    /* The second photograph reached no engine and consumed no monthly unit
+     * — the day is full, and the merchant is told when it reopens. */
+    expect(stubOcr.calls).toHaveLength(1);
+    expect(stubSender.lastText).toContain('as many as I can read in one day');
+    const period = usagePeriod(new Date());
+    const rows = await withBusiness(db, business.id, (tx) =>
+      usageRepo.usageFor(tx, business.id, period),
+    );
+    expect(rows.find((r) => r.unit === 'DOCUMENTS_UNDERSTOOD')?.used).toBe(1);
+  });
+
+  it('returns the daily slot when the engine was never reached', async () => {
+    await seedMerchant('+2348031234567');
+    arrangePhoto();
+    stubOcr.failWith(); // connection refused: nothing spent, nothing billed
+
+    await post(photoPayload('2348031234567', 'wamid.P13'));
+    await drainWithDailyLimit(1);
+    expect(stubSender.lastText).toContain('could not read that photo');
+
+    /* The slot went back, so the retry fits under the same limit of one. */
+    stubOcr.answerWith({ text: 'TOTAL 12,000 diesel', confidence: 0.9 });
+    stubTransport.replyWith(A_PHOTOGRAPHED_EXPENSE);
+    await post(photoPayload('2348031234567', 'wamid.P14'));
+    await drainWithDailyLimit(1);
+    expect(stubOcr.calls).toHaveLength(2);
+  });
+
+  it('keeps the daily slot when the engine billed us for an unreadable page', async () => {
+    const business = await seedMerchant('+2348031234567');
+    arrangePhoto();
+    stubOcr.failWith(
+      new TextExtractionUnavailable('the page had no legible text', {
+        usage: {
+          provider: 'anthropic',
+          model: 'claude-sonnet-5',
+          tokens: { inputTokens: 1_500, outputTokens: 5 },
+        },
+      }),
+    );
+
+    await post(photoPayload('2348031234567', 'wamid.P15'));
+    await drainWithDailyLimit(1);
+    expect(stubSender.lastText).toContain('could not read that photo');
+
+    /* Provider money was spent reading nothing: a PRICED row exists — */
+    const rows = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ provider_cost_micros: number; meta: Record<string, unknown> }>(sql`
+        SELECT provider_cost_micros, meta FROM usage_events
+        WHERE business_id = ${business.id}::uuid AND usage_type = 'ocr_vision'
+      `),
+    );
+    const row = [...rows][0]!;
+    expect(row).toBeDefined();
+    // 1,500 in at $2/MTok + 5 out at $10/MTok = 3,000 + 50 micros.
+    expect(Number(row.provider_cost_micros)).toBe(3_050);
+    expect(row.meta).toMatchObject({ role: 'vision', priced: true });
+
+    /* — and the day of one stays spent: the ceiling bounds spend, not
+     * success, so the next photograph is refused without an engine call. */
+    stubOcr.answerWith({ text: 'TOTAL 12,000 diesel', confidence: 0.9 });
+    await post(photoPayload('2348031234567', 'wamid.P16'));
+    await drainWithDailyLimit(1);
+    expect(stubOcr.calls).toHaveLength(1);
+    expect(stubSender.lastText).toContain('as many as I can read in one day');
+
+    /* The merchant's own monthly unit went back both times: Rekoda's
+     * engine trouble is never their bill. */
+    const period = usagePeriod(new Date());
+    const usage = await withBusiness(db, business.id, (tx) =>
+      usageRepo.usageFor(tx, business.id, period),
+    );
+    expect(usage.find((r) => r.unit === 'DOCUMENTS_UNDERSTOOD')?.used ?? 0).toBe(0);
+  });
+
+  it('does not double-charge the daily ceiling for a redelivered webhook', async () => {
+    await seedMerchant('+2348031234567');
+    arrangePhoto();
+    stubOcr.answerWith({ text: 'TOTAL 12,000 diesel', confidence: 0.9 });
+    stubTransport.replyWith(A_PHOTOGRAPHED_EXPENSE);
+
+    /* The same wamid twice: idempotency stops the duplicate before any
+     * meter, so a limit of one still has room for nothing — but the FIRST
+     * delivery went through and the duplicate consumed no second slot. */
+    await post(photoPayload('2348031234567', 'wamid.P17'));
+    await drainWithDailyLimit(2);
+    await post(photoPayload('2348031234567', 'wamid.P17'));
+    await drainWithDailyLimit(2);
+    expect(stubOcr.calls).toHaveLength(1);
+
+    /* Room for exactly one more under the limit of two proves the
+     * duplicate never reserved. */
+    await post(photoPayload('2348031234567', 'wamid.P18'));
+    await drainWithDailyLimit(2);
+    expect(stubOcr.calls).toHaveLength(2);
   });
 });
 

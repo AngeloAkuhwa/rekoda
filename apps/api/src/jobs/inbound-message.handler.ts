@@ -21,6 +21,7 @@ import {
   billingPeriod,
   costOfCall,
   costOfTranscription,
+  transcriptDurationsDisagree,
   type AiModelRole,
   type DeterministicIntent,
   type Reply,
@@ -62,7 +63,7 @@ import { redactForLog } from '@rekoda/core/privacy';
 import { describeFailure, JobDeferred, type JobContext, type JobHandler } from './runner.js';
 import { TranscriptionUnavailable, type SpeechToText, type Transcript } from '../ai/stt.js';
 import type { AudioMetadataProbe } from '../ai/audio-duration.js';
-import { TextExtractionUnavailable, type TextExtraction } from '../ai/ocr.js';
+import { TextExtractionUnavailable, type ExtractionUsage, type TextExtraction } from '../ai/ocr.js';
 import type { CommandBus } from '../commands/command-bus.service.js';
 import { recordSaleWork, type RecordSaleInput } from '../commands/sale-commands.js';
 import {
@@ -368,6 +369,45 @@ function isReceiptPhoto(inbound: { messageType: string; imageId: string | null }
 }
 
 /**
+ * One `usage_events` row per hosted vision read (AI hardening item 7) —
+ * written for the read that produced text AND for the read that billed
+ * tokens and produced nothing, because both are on the invoice.
+ */
+async function recordVisionRead(
+  deps: InboundMessageDeps,
+  businessId: string,
+  usage: ExtractionUsage,
+  messageId: string,
+  log: Logger,
+  extra?: { reason?: string },
+): Promise<void> {
+  const cost = costOfCall(usage.model, usage.tokens, deps.config.planningFxNairaPerUsd);
+  if (!cost.priced) {
+    log.error(`no price for vision model "${usage.model}" — recorded at zero`);
+  }
+  await withBusiness(deps.db, businessId, (own) =>
+    quotaRepo.recordUsage(own, {
+      businessId,
+      provider: usage.provider,
+      usageType: 'ocr_vision',
+      quantity: 1,
+      providerCostMicros: cost.usdMicros,
+      nairaEquivalentK: cost.nairaKobo,
+      billingPeriod: billingPeriod(new Date()),
+      meta: {
+        role: 'vision' satisfies AiModelRole,
+        model: usage.model,
+        purpose: 'document_extraction',
+        priced: cost.priced,
+        messageId,
+        ...(extra?.reason ? { reason: extra.reason } : {}),
+        ...usage.tokens,
+      },
+    }),
+  );
+}
+
+/**
  * A photograph, turned into text by the configured reader, or an honest answer.
  *
  * Returns null when there is nothing to interpret, having already replied:
@@ -454,12 +494,35 @@ async function readReceiptPhoto(
    * Its own short transaction, like every other unit here, so the counter is
    * not held across a network call.
    */
+  /**
+   * The DAILY operational ceiling, before the monthly unit (AI hardening
+   * item 4). `AI_DOC_EXTRACTIONS_PER_BUSINESS` bounds what one tenant can
+   * make Rekoda spend on vision reads in a Lagos day, whatever their plan
+   * says about the month — the monthly allowance is what they bought, this
+   * is the brake on a runaway day. Race-safe for the same reason the AI
+   * call ceiling is: the limit lives in the statement's WHERE clause, so
+   * two concurrent photographs cannot both take the last slot.
+   */
+  const dailyLimit = deps.config.aiDocExtractionsPerBusinessPerDay;
+  const daily = await quotaRepo.reserveDocExtraction(deps.db, businessId, dailyLimit);
+  if (!daily.ok) {
+    await deps.replySender.send(tx, {
+      businessId,
+      to: inbound.from,
+      reply: replies.dailyDocumentLimit(dailyLimit),
+    });
+    return null;
+  }
+
   const period = usagePeriod(new Date());
   const allowance = await meterAllowance(deps.config, tx, businessId, plan, 'DOCUMENTS_UNDERSTOOD');
   const granted = await withBusiness(deps.db, businessId, (own) =>
     usageRepo.consumeUnit(own, businessId, period, 'DOCUMENTS_UNDERSTOOD', allowance),
   );
   if (!granted) {
+    // The plan refused after the day allowed: no provider was reached, so
+    // the daily slot goes back too.
+    await quotaRepo.releaseDocExtraction(deps.db, businessId);
     await deps.replySender.send(tx, {
       businessId,
       to: inbound.from,
@@ -472,15 +535,22 @@ async function readReceiptPhoto(
   try {
     extracted = await deps.ocr.extract(image.bytes, image.mimeType);
   } catch (error) {
-    /* Our failure, not the merchant's, so the unit goes back. The image is
-     * dropped here and goes nowhere else: no vision model, no retry against a
-     * hosted engine, no exception "just this once". */
+    /* Our failure, not the merchant's, so THEIR unit goes back. The image
+     * is dropped here and goes nowhere else: no vision model, no retry
+     * against a hosted engine, no exception "just this once". */
     log.warn('the OCR engine could not be reached');
-    /* A hosted read that TIMED OUT may still be on the invoice — the page
-     * may have been processed after we stopped waiting. Zero with
-     * `priced: false` is the row reconciliation ties to; the merchant's
-     * unit still goes back, because Rekoda's timeout is Rekoda's cost. */
-    if (error instanceof TextExtractionUnavailable && error.maybeBilled) {
+    const failure = error instanceof TextExtractionUnavailable ? error : null;
+    if (failure?.usage) {
+      /* The engine answered, billed us, and read nothing usable. Real
+       * money: a priced row, and the daily slot stays counted — the
+       * ceiling bounds spend, not success. */
+      await recordVisionRead(deps, businessId, failure.usage, recorded.id, log, {
+        reason: 'the page had no legible text',
+      });
+    } else if (failure?.maybeBilled) {
+      /* A hosted read that TIMED OUT may still be on the invoice. Zero
+       * with `priced: false` is the row reconciliation ties to, and the
+       * daily slot stays counted for the same reason as above. */
       await withBusiness(deps.db, businessId, (own) =>
         quotaRepo.recordUsage(own, {
           businessId,
@@ -498,6 +568,9 @@ async function readReceiptPhoto(
           },
         }),
       );
+    } else {
+      // The provider was never reached: nothing spent, the daily slot back.
+      await quotaRepo.releaseDocExtraction(deps.db, businessId);
     }
     await withBusiness(deps.db, businessId, (own) =>
       usageRepo.refundUnit(own, businessId, period, 'DOCUMENTS_UNDERSTOOD'),
@@ -516,33 +589,7 @@ async function readReceiptPhoto(
    * genuinely zero and writes no row. `ocr_vision` matches the OCR cost
    * class however the read was performed. */
   if (extracted.usage) {
-    const cost = costOfCall(
-      extracted.usage.model,
-      extracted.usage.tokens,
-      deps.config.planningFxNairaPerUsd,
-    );
-    if (!cost.priced) {
-      log.error(`no price for vision model "${extracted.usage.model}" — recorded at zero`);
-    }
-    await withBusiness(deps.db, businessId, (own) =>
-      quotaRepo.recordUsage(own, {
-        businessId,
-        provider: extracted.usage!.provider,
-        usageType: 'ocr_vision',
-        quantity: 1,
-        providerCostMicros: cost.usdMicros,
-        nairaEquivalentK: cost.nairaKobo,
-        billingPeriod: billingPeriod(new Date()),
-        meta: {
-          role: 'vision' satisfies AiModelRole,
-          model: extracted.usage!.model,
-          purpose: 'document_extraction',
-          priced: cost.priced,
-          messageId: recorded.id,
-          ...extracted.usage!.tokens,
-        },
-      }),
-    );
+    await recordVisionRead(deps, businessId, extracted.usage, recorded.id, log);
   }
 
   /* The caption is what the merchant TYPED, and it says what the photograph
@@ -730,6 +777,20 @@ async function transcribeVoiceNote(
    * cost is zero. BOTH durations go on the row: the local probe's (what the
    * allowance reserved on) and the provider's (what the bill runs on) —
    * recorded for audit without storing a byte of audio. */
+  /* THE CROSS-CHECK (AI hardening item 5): the container's own timestamps
+   * and the provider's decoder measured the same audio, and the allowance
+   * was charged on the first while the bill runs on the second. A second
+   * or two apart is codec rounding; more means one of the meters is wrong,
+   * which is worth a loud log and a flag on the row — never the audio, and
+   * never a guess about which number to trust. */
+  const durationsDisagree = transcriptDurationsDisagree(seconds, transcript.seconds);
+  if (durationsDisagree) {
+    log.warn(
+      `voice durations disagree: the container says ${seconds}s, ` +
+        `the transcriber says ${transcript.seconds}s`,
+    );
+  }
+
   if (transcript.usage) {
     const cost = costOfTranscription(
       transcript.usage.model,
@@ -757,6 +818,7 @@ async function transcribeVoiceNote(
           priced: cost.priced,
           localSeconds: seconds,
           providerSeconds: transcript.seconds,
+          ...(durationsDisagree ? { durationMismatch: true } : {}),
           messageId: recorded.id,
         },
       }),

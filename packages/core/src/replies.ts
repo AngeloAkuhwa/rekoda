@@ -214,6 +214,24 @@ export function allowanceExhausted(allowance: number, unit: UsageUnit = 'AI_ACTI
 }
 
 /**
+ * The DAILY document ceiling, distinct from the monthly plan allowance.
+ *
+ * A merchant who hits this has scans left in their plan — the sentence must
+ * not say "upgrade", because upgrading fixes the wrong limit. It says when
+ * the door reopens (midnight, the Lagos day the counter rolls on) and what
+ * still works right now, because a photograph they cannot send is a sale
+ * they can still type.
+ */
+export function dailyDocumentLimit(limit: number): Reply {
+  return reply(
+    `You have sent ${limit} documents today, which is as many as I can read in ` +
+      'one day. The counter starts again at midnight.\n\n' +
+      'Nothing is lost. You can still type the amounts and I will record them ' +
+      'straight away.',
+  );
+}
+
+/**
  * Each unit said the way a merchant would say it.
  *
  * The doorway reply names what ran out, and "you have used all 25 documents"
