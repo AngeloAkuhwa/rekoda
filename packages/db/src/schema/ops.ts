@@ -152,6 +152,40 @@ export const documents = pgTable(
   ],
 );
 
+/**
+ * Objects promised to the bin but not yet taken there (PR-136).
+ *
+ * The database holds the KEY and R2 holds the bytes, so deleting a row has
+ * never deleted a file. This is the queue that closes that gap: a row is
+ * written in the SAME transaction that orphans the object, and DELETED once
+ * the object is actually gone. Nothing is marked done, so the table answers
+ * one question and an empty table is the healthy state.
+ *
+ * Deliberately outside the tenant boundary, like `retention_deletions`: the
+ * row has to outlive the business whose object it names, and it holds
+ * nothing worth isolating - an opaque key and a business id, no names, no
+ * numbers, no content. See migration 0122.
+ */
+export const pendingObjectDeletions = pgTable(
+  'pending_object_deletions',
+  {
+    id: id(),
+    /** Not a reference: the business is usually gone by the time this runs. */
+    businessId: uuid('business_id'),
+    storageKey: text('storage_key').notNull(),
+    reason: text('reason').notNull(), // business_deleted | evidence_purged
+    attempts: integer('attempts').notNull().default(0),
+    /** The provider's last refusal, for an operator reading a stuck queue. */
+    lastError: text('last_error'),
+    enqueuedAt: timestamp('enqueued_at', { withTimezone: true }).notNull().defaultNow(),
+    nextAttemptAt: timestamp('next_attempt_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('pending_object_deletions_key_ux').on(t.storageKey),
+    index('pending_object_deletions_due_ix').on(t.nextAttemptAt),
+  ],
+);
+
 /** Sequential numbering counters — bumped inside the issuing transaction. */
 export const docCounters = pgTable(
   'doc_counters',

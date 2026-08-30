@@ -189,7 +189,11 @@ describe('the deletion function', () => {
        AND t.table_type = 'BASE TABLE'
       WHERE c.table_schema = 'public'
         AND c.column_name = 'business_id'
-        AND c.table_name <> 'retention_deletions'
+        /* Two tables outlive their tenant on purpose: the receipt proving
+         * the deletion happened, and the queue of objects the deletion
+         * promised to remove from R2 (PR-136). Both are asserted on
+         * positively below rather than merely skipped here. */
+        AND c.table_name NOT IN ('retention_deletions', 'pending_object_deletions')
       ORDER BY 1
     `);
 
@@ -210,6 +214,82 @@ describe('the deletion function', () => {
     );
     expect(record?.reason).toBe('abandoned_trial');
     expect(record?.rowsDeleted).toBe(removed);
+  });
+
+  it('takes the objects with it: every storage key is queued for deletion', async () => {
+    const businessId = await abandonedTrial(120);
+    await warn(businessId, daysAgo(40));
+
+    /* One of each kind of thing Rekoda puts in the object store: a rendered
+     * document, a product photo, and the picture somebody sent of a bank
+     * transfer. All three are a KEY in a row and BYTES in R2 (ADR 0006), so
+     * all three would survive the deletion of the row without this. */
+    await withBusiness(appDb, businessId, (tx) =>
+      issueRepo.recordDocument(tx, {
+        businessId,
+        kind: 'receipt_pdf',
+        storageKey: `documents/${businessId}/receipt_pdf/deadbeef.pdf`,
+        refNumber: 'RCT-2026-000001',
+        bytes: 9,
+      }),
+    );
+
+    await withBusiness(appDb, businessId, (tx) =>
+      tx.execute(sql`
+        INSERT INTO products (business_id, name, unit_price_k, image_key)
+        VALUES (${businessId}::uuid, 'wig', 150000, ${`products/${businessId}/photo.jpg`})
+      `),
+    );
+    await withBusiness(appDb, businessId, (tx) =>
+      tx.execute(sql`
+        INSERT INTO payment_evidence
+          (business_id, source, media_ref, media_mime_type)
+        VALUES (${businessId}::uuid, 'chat',
+                ${`evidence/${businessId}/shot.png`}, 'image/png')
+      `),
+    );
+
+    expect(
+      await retentionRepo.deleteForRetention(workerDb, businessId, daysAgo(90)),
+    ).toBeGreaterThan(0);
+
+    /* The rows are gone - the scan above proves that for every table. What
+     * has to remain is the QUEUE: it is now the only thing in the estate
+     * that knows these keys, and the drain reads it after the fact. */
+    const queued = await workerDb.execute<{ storage_key: string; reason: string }>(sql`
+      SELECT storage_key, reason FROM pending_object_deletions
+       WHERE business_id = ${businessId}::uuid ORDER BY storage_key
+    `);
+    expect([...queued].map((row) => row.storage_key)).toEqual([
+      `documents/${businessId}/receipt_pdf/deadbeef.pdf`,
+      `evidence/${businessId}/shot.png`,
+      `products/${businessId}/photo.jpg`,
+    ]);
+    expect([...queued].every((row) => row.reason === 'business_deleted')).toBe(true);
+  });
+
+  it('running the deletion twice does not queue an object twice', async () => {
+    const businessId = await abandonedTrial(120);
+    await warn(businessId, daysAgo(40));
+    await withBusiness(appDb, businessId, (tx) =>
+      issueRepo.recordDocument(tx, {
+        businessId,
+        kind: 'receipt_pdf',
+        storageKey: `documents/${businessId}/receipt_pdf/cafe.pdf`,
+        refNumber: 'RCT-2026-000002',
+        bytes: 9,
+      }),
+    );
+
+    await retentionRepo.deleteForRetention(workerDb, businessId, daysAgo(90));
+    /* The second call refuses - the business is gone - and must not disturb
+     * what the first one promised. */
+    expect(await retentionRepo.deleteForRetention(workerDb, businessId, daysAgo(90))).toBe(-1);
+
+    const rows = await workerDb.execute<{ n: number }>(
+      sql`SELECT count(*)::int AS n FROM pending_object_deletions WHERE business_id = ${businessId}::uuid`,
+    );
+    expect(Number([...rows][0]?.n)).toBe(1);
   });
 
   it('takes the owner with it, but not an owner who runs something else', async () => {

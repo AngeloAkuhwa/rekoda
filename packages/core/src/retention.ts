@@ -44,6 +44,28 @@ export const RETENTION = {
   evidenceRawDays: 90,
 } as const;
 
+/**
+ * How long to wait before retrying an object deletion that failed (PR-136).
+ *
+ * A minute, five, half an hour, two hours, then six hours forever after. The
+ * shape is chosen for what actually fails here: a transient R2 error clears
+ * in seconds, so the early attempts are close together; a misconfigured
+ * bucket or a revoked credential does not clear at all, so the tail settles
+ * at a rate that keeps the promise visible without hammering a provider that
+ * is refusing us on purpose.
+ *
+ * There is no attempt at which the queue gives up. A deletion we told a
+ * merchant had happened is not something a retry budget may quietly abandon;
+ * past the last step it retries every six hours until somebody fixes it,
+ * which is what the pending count on the ops surface is for.
+ */
+export const OBJECT_DELETION_BACKOFF_SECONDS = [60, 300, 1_800, 7_200, 21_600] as const;
+
+export function objectDeletionRetryAt(attempts: number, from: Date): Date {
+  const index = Math.min(Math.max(attempts, 0), OBJECT_DELETION_BACKOFF_SECONDS.length - 1);
+  return new Date(from.getTime() + OBJECT_DELETION_BACKOFF_SECONDS[index]! * 1_000);
+}
+
 /** When a claim raised at this moment expires if nobody responds. */
 export function evidenceResolutionDeadline(raisedAt: Date): Date {
   return new Date(raisedAt.getTime() + RETENTION.evidenceResolutionDays * DAY_MS);
