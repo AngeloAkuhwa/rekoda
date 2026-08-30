@@ -192,4 +192,31 @@ describe('the credentials each half holds', () => {
 
     expect(await objectDeletionsRepo.pendingObjectDeletionCount(workerDb)).toBe(0);
   });
+
+  it('the application sees only its own tenant, and the worker sees all (R11)', async () => {
+    const ada = await seedBusiness();
+    const bola = await seedBusiness();
+    await enqueue(ada, ['ada-key']);
+    await enqueue(bola, ['bola-key']);
+
+    /* This table carried business_id with no policy, so the grant alone
+     * stood between the application role and every merchant's storage
+     * keys. Migration 0124 scopes it.
+     *
+     * The revoke that looks simpler does not work, which is why the policy
+     * is here: `enqueueObjectDeletions` ends in ON CONFLICT (storage_key),
+     * and PostgreSQL needs table-level SELECT to infer the arbiter, so
+     * taking SELECT away breaks the promise instead of tightening it. Both
+     * enqueues above succeeding is that half of the assertion. */
+    const adaSees = await withBusiness(appDb, ada, (tx) =>
+      tx.execute<{ storage_key: string }>(sql`SELECT storage_key FROM pending_object_deletions`),
+    );
+    expect([...adaSees].map((row) => row.storage_key)).toEqual(['ada-key']);
+
+    /* And the worker still sees both, which is the capability the sweep
+     * depends on: by the time it runs, these businesses are usually gone,
+     * so a tenant policy alone would match nothing and the objects would
+     * stay in the bucket forever. */
+    expect(await objectDeletionsRepo.pendingObjectDeletionCount(workerDb)).toBe(2);
+  });
 });
