@@ -36,7 +36,7 @@ import {
   withBusiness,
   type Db,
 } from '@rekoda/db';
-import { CONFIG, type ApiConfig } from '../config.js';
+import { CONFIG, isProductionEnv, type ApiConfig } from '../config.js';
 import { CommandBus } from '../commands/command-bus.service.js';
 import { confirmPaymentWork, type ConfirmPaymentInput } from '../commands/payment-commands.js';
 import { DB } from '../db/db.module.js';
@@ -463,14 +463,16 @@ async function verifyAndBook(
           ingress: 'AUTOMATION',
           idempotencyKey: `confirm:${intent.id}:${t.providerTransactionId}`,
         },
-        () => confirmPaymentWork(tx, input),
+        () => confirmPaymentWork(tx, input, { requireLiveProvider: isProductionEnv(process.env) }),
       );
       if (run.outcome !== 'done') {
         throw new Error(`ConfirmPayment refused unexpectedly: ${run.outcome}`);
       }
       booked = run.result;
     } else {
-      booked = await confirmPaymentWork(tx, input);
+      booked = await confirmPaymentWork(tx, input, {
+        requireLiveProvider: isProductionEnv(process.env),
+      });
     }
 
     /* Graduation telemetry (ADR 0019, M5d): the moment lifetime collections

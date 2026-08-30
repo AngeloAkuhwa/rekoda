@@ -181,3 +181,74 @@ describe('connecting the merchant key', () => {
     expect(view.merchantKeyTail).toBe('2222');
   });
 });
+
+describe('test money is not real money (remediation R4)', () => {
+  const liveKey = (label: string) => ['sk', 'live', label].join('_');
+
+  /** NODE_ENV is what `isProductionEnv` reads, and it reads it per call. */
+  async function inProduction<T>(fn: () => Promise<T>): Promise<T> {
+    const before = process.env['NODE_ENV'];
+    process.env['NODE_ENV'] = 'production';
+    try {
+      return await fn();
+    } finally {
+      if (before === undefined) delete process.env['NODE_ENV'];
+      else process.env['NODE_ENV'] = before;
+    }
+  }
+
+  const environmentOf = (businessId: string) =>
+    withBusiness(db, businessId, async (tx) => {
+      const connection = await paymentsHub.connectionFor(tx, businessId, 'paystack');
+      return connection?.providerEnvironment ?? null;
+    });
+
+  it('refuses a test key in production, and stores nothing', async () => {
+    const { auth, businessId } = await onboard('+2348188100010');
+    const secretKey = fakeKey('works_but_sandbox');
+
+    const outcome = submitMerchantKeyResponse.parse(
+      await inProduction(async () =>
+        (await post('/v1/payments/merchant-key', { secretKey }, auth)).json(),
+      ),
+    );
+
+    /* Paystack ACCEPTED this key: the stub answers for it, and `rejected`
+     * would have been the wrong word. The key works; its money is not real. */
+    expect(outcome).toEqual({ state: 'rejected_test_key' });
+    expect(
+      await withBusiness(db, businessId, (tx) =>
+        paymentsHub.merchantKeyCipherFor(tx, businessId, 'paystack'),
+      ),
+    ).toBeNull();
+  });
+
+  it('accepts a live key in production and records which world it belongs to', async () => {
+    const { auth, businessId } = await onboard('+2348188100011');
+
+    const outcome = submitMerchantKeyResponse.parse(
+      await inProduction(async () =>
+        (await post('/v1/payments/merchant-key', { secretKey: liveKey('real_5678') }, auth)).json(),
+      ),
+    );
+
+    expect(outcome).toEqual({ state: 'connected', merchantKeyTail: '5678' });
+    expect(await environmentOf(businessId)).toBe('LIVE');
+  });
+
+  it('allows a test key outside production, and says so on the connection', async () => {
+    const { auth, businessId } = await onboard('+2348188100012');
+
+    const outcome = submitMerchantKeyResponse.parse(
+      (
+        await post('/v1/payments/merchant-key', { secretKey: fakeKey('sandbox_4321') }, auth)
+      ).json(),
+    );
+
+    /* Sandbox is a legitimate place to work. What must never happen is a
+     * sandbox key being mistaken for real money, and the row now says which
+     * it is rather than leaving the reader to guess from a prefix. */
+    expect(outcome).toEqual({ state: 'connected', merchantKeyTail: '4321' });
+    expect(await environmentOf(businessId)).toBe('TEST');
+  });
+});

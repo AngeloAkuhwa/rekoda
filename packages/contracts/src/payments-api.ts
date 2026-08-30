@@ -48,7 +48,11 @@ export type PaymentConnectionResponse = z.infer<typeof paymentConnectionResponse
  * bank.
  */
 export const submitMerchantKeyRequest = z.object({
-  /** sk_test_… or sk_live_…; Paystack, not Rekoda, judges it. */
+  /**
+   * The merchant's own Paystack secret key. Paystack judges whether it
+   * WORKS; Rekoda judges which world it works in, because a test key works
+   * perfectly and its money is not real (remediation R4).
+   */
   secretKey: z.string().trim().min(10).max(200),
 });
 
@@ -56,6 +60,12 @@ export const submitMerchantKeyResponse = z.discriminatedUnion('state', [
   z.object({ state: z.literal('connected'), merchantKeyTail: z.string() }),
   /** Paystack refused the key: mistyped, revoked, or the wrong mode. */
   z.object({ state: z.literal('rejected') }),
+  /**
+   * Paystack accepted the key and Rekoda will not: a test key on a
+   * production deployment. Sandbox charges answer `success`, so booking one
+   * would tell a merchant a customer had paid when nobody had.
+   */
+  z.object({ state: z.literal('rejected_test_key') }),
   /** The deployment cannot hold the key safely (no CONNECTION_KEY). */
   z.object({ state: z.literal('unavailable'), reason: z.literal('connection_key_missing') }),
 ]);

@@ -115,6 +115,14 @@ async function submitMerchantKeyActionUnguarded(
         'Settings, then API Keys; a revoked or truncated key reads the same as a wrong one.',
     };
   }
+  if (outcome.state === 'rejected_test_key') {
+    return {
+      error:
+        'That is a test key. It works, but the payments it confirms are not real money, so ' +
+        'Rekoda will not mark your invoices paid with it. Copy your live key from Paystack ' +
+        'under Settings, then API Keys; it starts with sk_live_. Nothing was stored.',
+    };
+  }
   if (outcome.state === 'unavailable') {
     return { error: 'Key storage is not switched on for this deployment yet. Nothing was stored.' };
   }
