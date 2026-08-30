@@ -8,6 +8,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  consentIntentOf,
   customerConsentIntent,
   routeMessage,
   staysLocal,
@@ -142,6 +143,38 @@ describe('the same keywords, read on a customer thread (PR-135)', () => {
      * simply "no consent intent", which is the only question asked. */
     expect(customerConsentIntent('sold 2 wigs 15k')).toBeNull();
     expect(customerConsentIntent('delete my data')).toBeNull();
+  });
+});
+
+describe('a tap says what a typed word says (remediation R11)', () => {
+  const tap = (replyId: string | null, replyTitle: string | null) =>
+    consentIntentOf({ text: null, replyId, replyTitle });
+
+  it('hears the payload a merchant wired to the button', () => {
+    expect(tap('stop', 'Leave me alone')).toBe('stop');
+  });
+
+  it('hears the label the customer actually read', () => {
+    expect(tap('btn_1', 'UNSUBSCRIBE')).toBe('stop');
+  });
+
+  it('hears an opt back in from a tap', () => {
+    expect(tap('start', 'Start messages')).toBe('start');
+  });
+
+  it('still reads typed text when there is no tap', () => {
+    expect(consentIntentOf({ text: 'STOP', replyId: null, replyTitle: null })).toBe('stop');
+  });
+
+  it('reads nothing into an ordinary button', () => {
+    expect(tap('view_catalogue', 'See our prices')).toBeNull();
+    expect(consentIntentOf({ text: null, replyId: null, replyTitle: null })).toBeNull();
+  });
+
+  it('keeps the exact-match rule wherever the words arrive', () => {
+    /* The whole point of routing every candidate through the one matcher:
+     * a button reading "stop by the shop" unsubscribes nobody either. */
+    expect(tap(null, 'stop by the shop')).toBeNull();
   });
 });
 

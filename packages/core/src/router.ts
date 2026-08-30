@@ -335,6 +335,35 @@ export function customerConsentIntent(raw: string): 'stop' | 'start' | null {
 }
 
 /**
+ * The same question, asked of a message however the person sent it
+ * (remediation R11).
+ *
+ * A customer who taps a button labelled "Stop messages" has asked for the
+ * same thing as one who types the word, and WhatsApp delivers that tap with
+ * no message text at all. Reading only `text` meant the tap was not heard -
+ * the quietest possible way to keep messaging somebody who asked you not
+ * to.
+ *
+ * Every candidate goes through `customerConsentIntent`, so the vocabulary
+ * and the exact-match rule stay in ONE place: "stop by my shop" still
+ * unsubscribes nobody, whichever field it arrives in. The id is tried
+ * before the title because a merchant who wires a button to the payload
+ * `stop` means it, whatever the label above it reads.
+ */
+export function consentIntentOf(message: {
+  text: string | null;
+  replyId: string | null;
+  replyTitle: string | null;
+}): 'stop' | 'start' | null {
+  for (const candidate of [message.text, message.replyId, message.replyTitle]) {
+    if (!candidate) continue;
+    const intent = customerConsentIntent(candidate);
+    if (intent) return intent;
+  }
+  return null;
+}
+
+/**
  * Erasure. Deliberately the tightest matcher in the file.
  *
  * These are complete phrases with no room to drift, because the failure this
