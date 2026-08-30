@@ -27,8 +27,10 @@ import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing
 import { SendFailed } from '../channels/sender.js';
 import { StubSender } from '../channels/sender.stub.js';
 import { sweepRetention } from './retention-sweep.js';
-import { sweepEvidence } from './retention-sweep.js';
-import { evidenceRetentionRepo, sql } from '@rekoda/db';
+import { drainObjectDeletions, sweepEvidence } from './retention-sweep.js';
+import { evidenceRetentionRepo, objectDeletionsRepo, sql } from '@rekoda/db';
+import { NoStorageConfigured } from '../documents/r2.storage.js';
+import type { DocumentStorage, StoredObject } from '../documents/storage.js';
 
 let urls: Urls;
 let appDb: Db;
@@ -337,5 +339,134 @@ describe('the evidence sweep', () => {
     const swept = await sweepEvidence({ workerDb, appDb });
     expect(swept.expired).toBe(0);
     expect(swept.purged).toBe(0);
+  });
+});
+
+/* ── the objects, not just the rows (PR-136) ────────────────────────────── */
+
+/**
+ * A storage port that remembers, and can be told to refuse.
+ *
+ * Not `LocalStorage`: what these tests need to see is exactly WHICH keys the
+ * drain asked to delete and what it did when the answer was no, and a real
+ * filesystem makes the second half awkward to arrange honestly.
+ */
+class RecordingStorage implements DocumentStorage {
+  readonly deleted: string[] = [];
+  refuseWith: Error | null = null;
+
+  put(): Promise<StoredObject> {
+    throw new Error('not used');
+  }
+
+  get(): Promise<Buffer | null> {
+    return Promise.resolve(null);
+  }
+
+  delete(key: string): Promise<void> {
+    if (this.refuseWith) return Promise.reject(this.refuseWith);
+    this.deleted.push(key);
+    return Promise.resolve();
+  }
+}
+
+describe('deleting the objects the rows named', () => {
+  const queue = (businessId: string, keys: string[]) =>
+    withBusiness(appDb, businessId, (tx) =>
+      objectDeletionsRepo.enqueueObjectDeletions(tx, businessId, keys, 'business_deleted'),
+    );
+
+  it('deletes what was promised and empties the queue', async () => {
+    const { businessId } = await abandonedTrial(0);
+    await queue(businessId, ['documents/x/invoice_pdf/a.pdf', 'products/x/photo.jpg']);
+    const storage = new RecordingStorage();
+
+    const result = await drainObjectDeletions({ workerDb, storage });
+
+    expect(result).toEqual({ deleted: 2, failed: 0, outstanding: 0 });
+    expect([...storage.deleted].sort()).toEqual([
+      'documents/x/invoice_pdf/a.pdf',
+      'products/x/photo.jpg',
+    ]);
+  });
+
+  it('a refusal keeps the promise: the job stays, counted, with the reason', async () => {
+    const { businessId } = await abandonedTrial(0);
+    await queue(businessId, ['documents/x/invoice_pdf/b.pdf']);
+    const storage = new RecordingStorage();
+    storage.refuseWith = new Error('r2: AccessDenied');
+
+    const result = await drainObjectDeletions({ workerDb, storage });
+
+    /* The row that named this object is already gone. Dropping the job on a
+     * failure would leave the file in R2 with nothing left pointing at it,
+     * past a deletion the merchant was told had happened. */
+    expect(result).toEqual({ deleted: 0, failed: 1, outstanding: 1 });
+    const rows = await workerDb.execute<{ attempts: number; last_error: string }>(
+      sql`SELECT attempts, last_error FROM pending_object_deletions`,
+    );
+    expect([...rows][0]?.attempts).toBe(1);
+    expect([...rows][0]?.last_error).toContain('AccessDenied');
+  });
+
+  it('backs the job off rather than spinning on it', async () => {
+    const { businessId } = await abandonedTrial(0);
+    await queue(businessId, ['documents/x/invoice_pdf/c.pdf']);
+    const storage = new RecordingStorage();
+    storage.refuseWith = new Error('r2: 503');
+
+    await drainObjectDeletions({ workerDb, storage });
+    /* The next pass a minute later finds nothing due, so a provider having a
+     * bad hour is not hammered once per sweep tick. */
+    const second = await drainObjectDeletions({ workerDb, storage });
+    expect(second).toEqual({ deleted: 0, failed: 0, outstanding: 1 });
+
+    /* And when the schedule comes round, it is tried again and succeeds. */
+    storage.refuseWith = null;
+    const later = new Date(Date.now() + 3_600_000);
+    expect(await drainObjectDeletions({ workerDb, storage }, later)).toEqual({
+      deleted: 1,
+      failed: 0,
+      outstanding: 0,
+    });
+  });
+
+  it('a deployment with no bucket keeps the promise rather than losing it', async () => {
+    const { businessId } = await abandonedTrial(0);
+    await queue(businessId, ['documents/x/invoice_pdf/d.pdf']);
+
+    /* `get` on an unconfigured store answers null, honestly. `delete` must
+     * NOT answer success: that would drop a promise nobody kept, and the
+     * object would still be there the day credentials arrive. */
+    const result = await drainObjectDeletions({ workerDb, storage: new NoStorageConfigured() });
+
+    expect(result).toEqual({ deleted: 0, failed: 1, outstanding: 1 });
+  });
+
+  it('the evidence purge queues the object it just orphaned', async () => {
+    const { businessId } = await abandonedTrial(0);
+    await withBusiness(appDb, businessId, (tx) =>
+      tx.execute(sql`
+        INSERT INTO payment_evidence
+          (business_id, source, media_ref, media_mime_type, resolution_state, resolved_at)
+        VALUES (${businessId}::uuid, 'chat_image', 'evidence/purge-me.jpg', 'image/jpeg',
+                'RESOLVED',
+                ${new Date(Date.now() - (RETENTION.evidenceRawDays + 1) * 86_400_000).toISOString()})
+      `),
+    );
+
+    const swept = await sweepEvidence({ workerDb, appDb });
+    expect(swept.purgedRefs).toEqual(['evidence/purge-me.jpg']);
+
+    /* Nulling the pointer is what makes the object garbage, and after it
+     * nothing else knows the key. The queue is written in that same
+     * transaction, so the two facts cannot come apart. */
+    const storage = new RecordingStorage();
+    expect(await drainObjectDeletions({ workerDb, storage })).toEqual({
+      deleted: 1,
+      failed: 0,
+      outstanding: 0,
+    });
+    expect(storage.deleted).toEqual(['evidence/purge-me.jpg']);
   });
 });

@@ -38,7 +38,7 @@ import { sweepUnknownSenders } from '../channels/stranger-sweep.js';
 import { sweepGracePeriods } from '../billing/grace-sweep.js';
 import { AUDIO_METADATA_PROBE, type AudioMetadataProbe } from '../ai/audio-duration.js';
 import { sweepRenewals } from '../billing/renewal-sweep.js';
-import { sweepEvidence, sweepRetention } from '../privacy/retention-sweep.js';
+import { drainObjectDeletions, sweepEvidence, sweepRetention } from '../privacy/retention-sweep.js';
 import { sweepRecurring } from '../spend/recurring-sweep.js';
 import { sweepDepreciation } from '../spend/depreciation-sweep.js';
 import { OutboxDispatcher } from '../commands/outbox-dispatcher.js';
@@ -488,6 +488,11 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
            * heartbeat, and the page that publishes both periods is describing
            * one sweep pass rather than two that can drift apart. */
           await sweepEvidence({ workerDb, appDb: this.appDb });
+          /* And LAST, deliberately: both stages above delete rows and queue
+           * the objects those rows named (PR-136), so draining after them
+           * takes this pass's own work rather than leaving it for the next
+           * one six hours away. Everything it needs is already committed. */
+          await drainObjectDeletions({ workerDb, storage: this.storage });
           return swept;
         }),
       )

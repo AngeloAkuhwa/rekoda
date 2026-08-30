@@ -24,11 +24,23 @@
  *      refused, and the refusal is the system working.
  */
 import { Logger } from '@nestjs/common';
-import { RETENTION, RETENTION_NOTICE_DAYS, retentionCutoff } from '@rekoda/core';
+import {
+  RETENTION,
+  RETENTION_NOTICE_DAYS,
+  objectDeletionRetryAt,
+  retentionCutoff,
+} from '@rekoda/core';
 import { redactForLog } from '@rekoda/core/privacy';
-import { evidenceRetentionRepo, retentionRepo, withBusiness, type Db } from '@rekoda/db';
+import {
+  evidenceRetentionRepo,
+  objectDeletionsRepo,
+  retentionRepo,
+  withBusiness,
+  type Db,
+} from '@rekoda/db';
 import { SendFailed, type MessageSender } from '../channels/sender.js';
 import { recordMessageCost } from '../channels/message-cost.js';
+import type { DocumentStorage } from '../documents/storage.js';
 
 export interface RetentionSweepDeps {
   /** `rekoda_worker` - "who is due" names no tenant, and the delete function
@@ -196,11 +208,15 @@ export interface EvidenceSweepResult {
  * pin, and every pinned WHERE re-checks what discovery saw — so a legal hold
  * placed between the two is honoured.
  *
- * Returns the purged media refs rather than deleting objects itself: today no
- * writer stores evidence media yet (the writers arrive with PR-022), so the
- * pointer is the whole of the truth; the day objects exist, the caller hands
- * these refs to the storage port AFTER this commits. An orphaned object is
- * re-findable; a pointer to a deleted object is a claim that lies.
+ * The purged refs are QUEUED for deletion in the same transaction that nulls
+ * the pointer (PR-136), not deleted here. Two reasons, and both matter. The
+ * pointer must go first, because an orphaned object is re-findable while a
+ * pointer to a deleted object is a claim that lies. And once the pointer is
+ * gone nothing else in the estate knows the key, so a delete attempted here
+ * and failing would lose it: `drainObjectDeletions` performs the deletion
+ * afterwards, from a promise that survives the attempt failing.
+ *
+ * `purgedRefs` is still returned, for the caller's log and the tests.
  */
 export async function sweepEvidence(
   deps: { workerDb: Db; appDb: Db },
@@ -228,12 +244,83 @@ export async function sweepEvidence(
   for (const [businessId, ids] of byBusiness(
     await evidenceRetentionRepo.dueForPurge(deps.workerDb, cutoff),
   )) {
-    const refs = await withBusiness(deps.appDb, businessId, (tx) =>
-      evidenceRetentionRepo.purgeRaw(tx, businessId, ids, cutoff, now),
-    );
+    const refs = await withBusiness(deps.appDb, businessId, async (tx) => {
+      const purged = await evidenceRetentionRepo.purgeRaw(tx, businessId, ids, cutoff, now);
+      /* Same transaction as the nulling above: the promise to delete the
+       * object and the loss of the only pointer to it commit together, or
+       * neither happens. */
+      await objectDeletionsRepo.enqueueObjectDeletions(tx, businessId, purged, 'evidence_purged');
+      return purged;
+    });
     result.purged += refs.length;
     result.purgedRefs.push(...refs);
   }
 
+  return result;
+}
+
+/* ── keeping the other half of the promise (PR-136) ─────────────────────── */
+
+export interface ObjectDrainResult {
+  /** Objects actually gone from the store on this pass. */
+  deleted: number;
+  /** Attempts the provider refused; each stays queued with its reason. */
+  failed: number;
+  /** Still owed after this pass, including what was not yet due. */
+  outstanding: number;
+}
+
+/**
+ * Delete the objects the estate has already promised to delete.
+ *
+ * The queue is written by whatever orphaned the object, inside that same
+ * transaction; this reads it AFTER those transactions have committed and
+ * performs the deletions the database can no longer describe. Row first,
+ * object second, always: the reverse order can leave a row pointing at
+ * nothing, and this order can at worst leave an object nobody points at,
+ * which is exactly what this queue remembers.
+ *
+ * A refusal is never a reason to drop the job. The row stays with its
+ * attempt count and the provider's own words, and comes back on the schedule
+ * in `objectDeletionRetryAt` until the object is really gone. `outstanding`
+ * is the number an operator should expect to be zero.
+ *
+ * One bite of `PAGE` per pass, on the worker credential: these objects
+ * mostly belonged to businesses that no longer exist, so there is no tenant
+ * to pin and no policy that could match one.
+ */
+export async function drainObjectDeletions(
+  deps: { workerDb: Db; storage: DocumentStorage },
+  now = new Date(),
+): Promise<ObjectDrainResult> {
+  const PAGE = 200;
+  const result: ObjectDrainResult = { deleted: 0, failed: 0, outstanding: 0 };
+
+  const due = await objectDeletionsRepo.dueObjectDeletions(deps.workerDb, now, PAGE);
+  for (const job of due) {
+    try {
+      await deps.storage.delete(job.storageKey);
+      await objectDeletionsRepo.objectDeleted(deps.workerDb, job.id);
+      result.deleted += 1;
+    } catch (error: unknown) {
+      /* The key is not logged. It is an unguessable capability for as long
+       * as the object exists, and this line is the one place a failing
+       * deletion would otherwise print one into an ordinary log file. */
+      const reason = redactForLog(String(error));
+      log.warn(`object deletion refused, still queued: ${reason}`);
+      await objectDeletionsRepo.objectDeletionFailed(
+        deps.workerDb,
+        job.id,
+        reason,
+        objectDeletionRetryAt(job.attempts, now),
+      );
+      result.failed += 1;
+    }
+  }
+
+  result.outstanding = await objectDeletionsRepo.pendingObjectDeletionCount(deps.workerDb);
+  if (result.outstanding > 0) {
+    log.log(`${result.outstanding} object deletions still owed`);
+  }
   return result;
 }
