@@ -262,13 +262,54 @@ export async function sweepEvidence(
 
 /* ── keeping the other half of the promise (PR-136) ─────────────────────── */
 
+/**
+ * How much one pass may chew through (remediation R13).
+ *
+ * The drain used to take exactly 200 objects and stop, which is a
+ * launch-volume number rather than a strategy: a merchant deleting an
+ * account with two thousand documents would have waited two and a half
+ * DAYS for the last of them, at six hours a batch, while Rekoda's privacy
+ * page says the objects go with the records.
+ *
+ * So it now keeps going until the queue is empty, bounded two ways rather
+ * than one. `maxBatches` caps the work; `budgetMs` caps the time, because
+ * a slow provider makes those different limits and only the clock protects
+ * the pass from running into the next one. Whichever bites first is
+ * reported, so an operator can tell a backlog from a stall.
+ */
+const OBJECT_DRAIN = {
+  batch: 200,
+  maxBatches: 25,
+  /** Well under the six-hour cadence, and under the platform's own timeouts. */
+  budgetMs: 120_000,
+} as const;
+
 export interface ObjectDrainResult {
   /** Objects actually gone from the store on this pass. */
   deleted: number;
   /** Attempts the provider refused; each stays queued with its reason. */
   failed: number;
+  /**
+   * Objects the provider DID delete, whose row we then failed to remove
+   * (remediation R13).
+   *
+   * Counted apart from `failed` because the two are opposite facts. A
+   * refusal means the object is still there and the promise is unkept; this
+   * means the object is gone and only the bookkeeping is behind. Filed
+   * together, an operator watching `failed` would chase deletions that had
+   * already happened, and the number that is supposed to mean "we still owe
+   * these people" would be wrong in the reassuring direction.
+   *
+   * Harmless in itself: the row comes back round and deleting an absent
+   * object succeeds. Worth counting because a persistent nonzero here is a
+   * database problem wearing a storage problem's clothes.
+   */
+  rowsLeftBehind: number;
   /** Still owed after this pass, including what was not yet due. */
   outstanding: number;
+  /** How many batches this pass took, and why it stopped (remediation R13). */
+  batches: number;
+  stoppedBecause: 'drained' | 'batch_limit' | 'time_limit';
 }
 
 /**
@@ -336,34 +377,89 @@ export async function drainObjectDeletions(
   deps: { workerDb: Db; storage: DocumentStorage },
   now = new Date(),
 ): Promise<ObjectDrainResult> {
-  const PAGE = 200;
-  const result: ObjectDrainResult = { deleted: 0, failed: 0, outstanding: 0 };
+  const result: ObjectDrainResult = {
+    deleted: 0,
+    failed: 0,
+    rowsLeftBehind: 0,
+    outstanding: 0,
+    batches: 0,
+    stoppedBecause: 'drained',
+  };
+  const startedAt = Date.now();
+  /**
+   * What this pass has already handled.
+   *
+   * A row whose OBJECT was deleted but whose row delete failed keeps its
+   * past `run_at`, so the next batch reads it straight back. Without this
+   * it would be re-deleted (harmlessly, the object is absent) and counted
+   * as deleted again, every batch, until a limit bit: the drain would
+   * report hundreds of deletions that never happened, which is precisely
+   * the dishonesty this change exists to remove.
+   */
+  const handled = new Set<string>();
 
-  const due = await objectDeletionsRepo.dueObjectDeletions(deps.workerDb, now, PAGE);
-  for (const job of due) {
-    try {
-      await deps.storage.delete(job.storageKey);
-      await objectDeletionsRepo.objectDeleted(deps.workerDb, job.id);
+  for (;;) {
+    if (result.batches >= OBJECT_DRAIN.maxBatches) {
+      result.stoppedBecause = 'batch_limit';
+      break;
+    }
+    if (Date.now() - startedAt >= OBJECT_DRAIN.budgetMs) {
+      result.stoppedBecause = 'time_limit';
+      break;
+    }
+
+    const due = await objectDeletionsRepo.dueObjectDeletions(
+      deps.workerDb,
+      now,
+      OBJECT_DRAIN.batch,
+    );
+    const fresh = due.filter((job) => !handled.has(job.id));
+    /* Nothing new came back, so the queue is either empty or made up
+     * entirely of rows this pass has already done what it can with. */
+    if (fresh.length === 0) break;
+    result.batches += 1;
+
+    for (const job of fresh) {
+      handled.add(job.id);
+      try {
+        await deps.storage.delete(job.storageKey);
+      } catch (error: unknown) {
+        /* The key is not logged. It is an unguessable capability for as long
+         * as the object exists, and this line is the one place a failing
+         * deletion would otherwise print one into an ordinary log file. */
+        const reason = redactForLog(String(error));
+        log.warn(`object deletion refused, still queued: ${reason}`);
+        await objectDeletionsRepo.objectDeletionFailed(
+          deps.workerDb,
+          job.id,
+          reason,
+          objectDeletionRetryAt(job.attempts, now),
+        );
+        result.failed += 1;
+        continue;
+      }
+
+      /* Past this line the object is GONE. Whatever happens to the row, the
+       * promise has been kept, and the count has to say so. */
       result.deleted += 1;
-    } catch (error: unknown) {
-      /* The key is not logged. It is an unguessable capability for as long
-       * as the object exists, and this line is the one place a failing
-       * deletion would otherwise print one into an ordinary log file. */
-      const reason = redactForLog(String(error));
-      log.warn(`object deletion refused, still queued: ${reason}`);
-      await objectDeletionsRepo.objectDeletionFailed(
-        deps.workerDb,
-        job.id,
-        reason,
-        objectDeletionRetryAt(job.attempts, now),
-      );
-      result.failed += 1;
+      try {
+        await objectDeletionsRepo.objectDeleted(deps.workerDb, job.id);
+      } catch (error: unknown) {
+        /* Only the bookkeeping failed. Calling this a failed deletion would
+         * be the opposite of what happened; the row simply comes back round
+         * and deletes an object that is already absent, which succeeds. */
+        log.warn(`object deleted, its row was not: ${redactForLog(String(error))}`);
+        result.rowsLeftBehind += 1;
+      }
     }
   }
 
   result.outstanding = await objectDeletionsRepo.pendingObjectDeletionCount(deps.workerDb);
   if (result.outstanding > 0) {
-    log.log(`${result.outstanding} object deletions still owed`);
+    log.log(
+      `${result.outstanding} object deletions still owed ` +
+        `(${result.batches} batches, stopped: ${result.stoppedBecause})`,
+    );
   }
   return result;
 }

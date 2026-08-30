@@ -383,7 +383,14 @@ describe('deleting the objects the rows named', () => {
 
     const result = await drainObjectDeletions({ workerDb, storage });
 
-    expect(result).toEqual({ deleted: 2, failed: 0, outstanding: 0 });
+    expect(result).toEqual({
+      deleted: 2,
+      failed: 0,
+      rowsLeftBehind: 0,
+      outstanding: 0,
+      batches: 1,
+      stoppedBecause: 'drained',
+    });
     expect([...storage.deleted].sort()).toEqual([
       'documents/x/invoice_pdf/a.pdf',
       'products/x/photo.jpg',
@@ -401,7 +408,14 @@ describe('deleting the objects the rows named', () => {
     /* The row that named this object is already gone. Dropping the job on a
      * failure would leave the file in R2 with nothing left pointing at it,
      * past a deletion the merchant was told had happened. */
-    expect(result).toEqual({ deleted: 0, failed: 1, outstanding: 1 });
+    expect(result).toEqual({
+      deleted: 0,
+      failed: 1,
+      rowsLeftBehind: 0,
+      outstanding: 1,
+      batches: 1,
+      stoppedBecause: 'drained',
+    });
     const rows = await workerDb.execute<{ attempts: number; last_error: string }>(
       sql`SELECT attempts, last_error FROM pending_object_deletions`,
     );
@@ -419,7 +433,15 @@ describe('deleting the objects the rows named', () => {
     /* The next pass a minute later finds nothing due, so a provider having a
      * bad hour is not hammered once per sweep tick. */
     const second = await drainObjectDeletions({ workerDb, storage });
-    expect(second).toEqual({ deleted: 0, failed: 0, outstanding: 1 });
+    expect(second).toEqual({
+      deleted: 0,
+      failed: 0,
+      rowsLeftBehind: 0,
+      outstanding: 1,
+      /* Nothing was DUE, so no batch ran at all. */
+      batches: 0,
+      stoppedBecause: 'drained',
+    });
 
     /* And when the schedule comes round, it is tried again and succeeds. */
     storage.refuseWith = null;
@@ -427,7 +449,10 @@ describe('deleting the objects the rows named', () => {
     expect(await drainObjectDeletions({ workerDb, storage }, later)).toEqual({
       deleted: 1,
       failed: 0,
+      rowsLeftBehind: 0,
       outstanding: 0,
+      batches: 1,
+      stoppedBecause: 'drained',
     });
   });
 
@@ -440,7 +465,14 @@ describe('deleting the objects the rows named', () => {
      * object would still be there the day credentials arrive. */
     const result = await drainObjectDeletions({ workerDb, storage: new NoStorageConfigured() });
 
-    expect(result).toEqual({ deleted: 0, failed: 1, outstanding: 1 });
+    expect(result).toEqual({
+      deleted: 0,
+      failed: 1,
+      rowsLeftBehind: 0,
+      outstanding: 1,
+      batches: 1,
+      stoppedBecause: 'drained',
+    });
   });
 
   it('the evidence purge queues the object it just orphaned', async () => {
@@ -465,7 +497,10 @@ describe('deleting the objects the rows named', () => {
     expect(await drainObjectDeletions({ workerDb, storage })).toEqual({
       deleted: 1,
       failed: 0,
+      rowsLeftBehind: 0,
       outstanding: 0,
+      batches: 1,
+      stoppedBecause: 'drained',
     });
     expect(storage.deleted).toEqual(['evidence/purge-me.jpg']);
   });
@@ -538,5 +573,98 @@ describe('a retention failure must not cancel a promised deletion (R13)', () => 
 
     /* The row stays, which is the queue keeping its promise. */
     expect(await objectDeletionsRepo.pendingObjectDeletionCount(workerDb)).toBe(1);
+  });
+});
+
+describe('the drain says what it did, and stops when it should (R13)', () => {
+  const queue = (businessId: string, keys: string[]) =>
+    withBusiness(appDb, businessId, (tx) =>
+      objectDeletionsRepo.enqueueObjectDeletions(tx, businessId, keys, 'business_deleted'),
+    );
+
+  it('keeps going past one batch until the queue is empty', async () => {
+    /* The drain used to take exactly 200 and stop. A merchant deleting an
+     * account with more objects than that waited SIX HOURS per batch for the
+     * rest, while the privacy page says the objects go with the records.
+     * 250 is the smallest number that proves the loop: one batch of 200
+     * would leave 50 behind. */
+    const { businessId } = await abandonedTrial(0);
+    const keys = Array.from({ length: 250 }, (_, i) => `documents/x/invoice_pdf/${i}.pdf`);
+    await queue(businessId, keys);
+    const storage = new RecordingStorage();
+
+    const result = await drainObjectDeletions({ workerDb, storage });
+
+    expect(result.deleted).toBe(250);
+    expect(result.batches).toBe(2);
+    expect(result.stoppedBecause).toBe('drained');
+    expect(result.outstanding).toBe(0);
+    expect(storage.deleted).toHaveLength(250);
+  });
+
+  it('counts an object that IS gone as deleted, even when its row survives', async () => {
+    /* The dishonest case. The provider deleted the object; only the
+     * bookkeeping failed. Reporting that as `failed` tells an operator the
+     * promise is unkept when it has been kept, and makes `outstanding` wrong
+     * in the reassuring direction. */
+    const { businessId } = await abandonedTrial(0);
+    await queue(businessId, ['documents/x/invoice_pdf/gone.pdf']);
+    const storage = new RecordingStorage();
+
+    /* A worker connection whose row DELETE fails while everything else on it
+     * works: the narrowest way to produce the split the item describes. */
+    const brittle = new Proxy(workerDb, {
+      get(target, prop, receiver) {
+        if (prop !== 'execute') return Reflect.get(target, prop, receiver);
+        return (query: unknown) => {
+          const text = JSON.stringify(query);
+          if (text.includes('DELETE FROM pending_object_deletions')) {
+            return Promise.reject(new Error('row delete refused'));
+          }
+          return (target as Db).execute(query as never);
+        };
+      },
+    });
+
+    const result = await drainObjectDeletions({ workerDb: brittle as Db, storage });
+
+    /* The object went. That is the fact the count must carry. */
+    expect(storage.deleted).toEqual(['documents/x/invoice_pdf/gone.pdf']);
+    expect({
+      deleted: result.deleted,
+      failed: result.failed,
+      rowsLeftBehind: result.rowsLeftBehind,
+    }).toEqual({ deleted: 1, failed: 0, rowsLeftBehind: 1 });
+  });
+
+  it('does not re-count a row it already handled in the same pass', async () => {
+    /* The trap in the batching. A row whose object went but whose row delete
+     * failed keeps its past `run_at`, so the next batch reads it straight
+     * back. Without the pass remembering what it handled, the drain would
+     * re-delete an absent object and count it again every batch, reporting
+     * deletions that never happened. */
+    const { businessId } = await abandonedTrial(0);
+    await queue(businessId, ['documents/x/invoice_pdf/sticky.pdf']);
+    const storage = new RecordingStorage();
+    const brittle = new Proxy(workerDb, {
+      get(target, prop, receiver) {
+        if (prop !== 'execute') return Reflect.get(target, prop, receiver);
+        return (query: unknown) => {
+          const text = JSON.stringify(query);
+          if (text.includes('DELETE FROM pending_object_deletions')) {
+            return Promise.reject(new Error('row delete refused'));
+          }
+          return (target as Db).execute(query as never);
+        };
+      },
+    });
+
+    const result = await drainObjectDeletions({ workerDb: brittle as Db, storage });
+
+    /* Once. Not twenty-five times, which is what maxBatches would have
+     * allowed if the pass had no memory. */
+    expect(result.deleted).toBe(1);
+    expect(result.batches).toBe(1);
+    expect(storage.deleted).toEqual(['documents/x/invoice_pdf/sticky.pdf']);
   });
 });
