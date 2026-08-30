@@ -5,7 +5,7 @@ import {
   S3Client,
 } from '@aws-sdk/client-s3';
 import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
-import { dirname, join, normalize } from 'node:path';
+import { dirname, isAbsolute, join, normalize, relative } from 'node:path';
 import { StorageUnavailable, type DocumentStorage, type StoredObject } from './storage.js';
 
 /**
@@ -87,9 +87,26 @@ export class LocalStorage implements DocumentStorage {
      * checking containment stops `../../etc/passwd` from becoming a write
      * outside the root — the keys we generate could never do that, but "the
      * keys we generate" is an assumption about every future caller.
+     *
+     * The containment check asks whether the resolved path is BELOW the root,
+     * which is not the same question as whether its text begins with the
+     * root's text. It used to ask the second one, and a sibling directory
+     * whose name merely starts with the root's name walked straight through:
+     *
+     *     root  /var/data/base
+     *     key   ../base-evil/stolen.pdf
+     *     full  /var/data/base-evil/stolen.pdf   startsWith(root) === true
+     *
+     * `relative` answers the real question. A path inside the root gives a
+     * relative path that does not climb; anything else gives one starting
+     * `..`, or an absolute path when the two share no root at all. The empty
+     * string means the key resolved to the root itself, which is a directory
+     * and not an object.
      */
-    const full = normalize(join(this.root, key));
-    if (!full.startsWith(normalize(this.root))) {
+    const base = normalize(this.root);
+    const full = normalize(join(base, key));
+    const rel = relative(base, full);
+    if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) {
       throw new StorageUnavailable('refusing a key that escapes the storage root');
     }
     return full;
