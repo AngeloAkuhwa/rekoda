@@ -1,0 +1,1146 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Rekoda Merchant API",
+    "version": "1.0.0",
+    "summary": "What a program may read and write on behalf of one business.",
+    "description": "Hand written against the code, and kept honest by `scripts/check-openapi.mjs`, which fails CI when a route exists in one and not the other.\n\nThree rules shape every schema here, and they are the reason this is not generated from the database:\n\n- **Money is integer kobo.** A program sends and receives minor units; the float that would otherwise arrive is the bug this avoids.\n- **A customer is a pseudonym.** Names and phone numbers live encrypted, one facet per row. A partner integration is not a reason to turn this into a PII export, so no identity facet has a field here.\n- **No column travels verbatim.** Internals are absent, not renamed.\n\nThe API is a separate commercial entitlement: a business holds `REKODA_API` because it was granted, and holds capacity because it was bought.",
+    "license": {
+      "name": "Proprietary",
+      "url": "https://rekoda.app/terms"
+    }
+  },
+  "servers": [
+    {
+      "url": "https://api.rekoda.app",
+      "description": "Production"
+    }
+  ],
+  "security": [
+    {
+      "apiKey": []
+    }
+  ],
+  "tags": [
+    {
+      "name": "Identity",
+      "description": "Who the presented key speaks for."
+    },
+    {
+      "name": "Reads",
+      "description": "The merchant's books, as this key may see them."
+    },
+    {
+      "name": "Writes",
+      "description": "Live keys only. A test key reads the same books and writes nothing."
+    }
+  ],
+  "paths": {
+    "/api/v1/identity": {
+      "get": {
+        "operationId": "getIdentity",
+        "tags": [
+          "Identity"
+        ],
+        "summary": "Who this key speaks for",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Identity"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No credential, or one that is not usable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A live key refused: not entitled, or this key may not do this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such thing, or nothing this caller may see. The two are one answer.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The per-key ceiling, or the month's capacity.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/customers": {
+      "get": {
+        "operationId": "listCustomers",
+        "tags": [
+          "Reads"
+        ],
+        "summary": "The merchant's customers, as pseudonyms",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/cursor"
+          },
+          {
+            "$ref": "#/components/parameters/limit"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CustomerPage"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No credential, or one that is not usable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A live key refused: not entitled, or this key may not do this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such thing, or nothing this caller may see. The two are one answer.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The per-key ceiling, or the month's capacity.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/products": {
+      "get": {
+        "operationId": "listProducts",
+        "tags": [
+          "Reads"
+        ],
+        "summary": "The catalogue",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/cursor"
+          },
+          {
+            "$ref": "#/components/parameters/limit"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProductPage"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No credential, or one that is not usable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A live key refused: not entitled, or this key may not do this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such thing, or nothing this caller may see. The two are one answer.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The per-key ceiling, or the month's capacity.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/invoices": {
+      "get": {
+        "operationId": "listInvoices",
+        "tags": [
+          "Reads"
+        ],
+        "summary": "Invoices, newest first",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/cursor"
+          },
+          {
+            "$ref": "#/components/parameters/limit"
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "issued",
+                "partially_paid",
+                "paid",
+                "voided"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvoicePage"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No credential, or one that is not usable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A live key refused: not entitled, or this key may not do this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such thing, or nothing this caller may see. The two are one answer.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The per-key ceiling, or the month's capacity.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/invoices/{invoiceNumber}": {
+      "get": {
+        "operationId": "getInvoice",
+        "tags": [
+          "Reads"
+        ],
+        "summary": "One invoice",
+        "parameters": [
+          {
+            "name": "invoiceNumber",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Invoice"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No credential, or one that is not usable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A live key refused: not entitled, or this key may not do this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such thing, or nothing this caller may see. The two are one answer.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The per-key ceiling, or the month's capacity.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sales": {
+      "post": {
+        "operationId": "recordSale",
+        "tags": [
+          "Writes"
+        ],
+        "summary": "Record a sale that happened somewhere else",
+        "description": "Totals are computed here from the caller's lines rather than taken from them: a program that sends a total is a program that can send one that does not match its own items, and the merchant's books would carry whichever the caller preferred.",
+        "parameters": [
+          {
+            "name": "idempotency-key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Makes the write safe to retry. The same key returns the first answer rather than writing twice."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecordSaleRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecordSaleResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No credential, or one that is not usable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A live key refused: not entitled, or this key may not do this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such thing, or nothing this caller may see. The two are one answer.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The per-key ceiling, or the month's capacity.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/payments": {
+      "post": {
+        "operationId": "recordPayment",
+        "tags": [
+          "Writes"
+        ],
+        "summary": "Record a payment against an invoice",
+        "parameters": [
+          {
+            "name": "idempotency-key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecordPaymentRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecordPaymentResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No credential, or one that is not usable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A live key refused: not entitled, or this key may not do this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such thing, or nothing this caller may see. The two are one answer.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The per-key ceiling, or the month's capacity.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "apiKey": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "`Authorization: Bearer <key>`. Minted from the dashboard by the owner of the business; the token is shown once and stored as a SHA-256, so a lost key is replaced rather than recovered."
+      }
+    },
+    "parameters": {
+      "cursor": {
+        "name": "cursor",
+        "in": "query",
+        "required": false,
+        "schema": {
+          "type": "string"
+        },
+        "description": "The `nextCursor` from the previous page. Cursor rather than page number, because a page number over a table still being written to shows a caller the same row twice and skips another."
+      },
+      "limit": {
+        "name": "limit",
+        "in": "query",
+        "required": false,
+        "schema": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100,
+          "default": 25
+        }
+      }
+    },
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "object",
+            "required": [
+              "code",
+              "message"
+            ],
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": [
+                  "unauthenticated",
+                  "not_entitled",
+                  "forbidden",
+                  "invalid_request",
+                  "not_found",
+                  "rate_limited",
+                  "quota_exhausted",
+                  "unsupported_version",
+                  "internal"
+                ]
+              },
+              "message": {
+                "type": "string",
+                "description": "Prose for a human reading a log. Not a contract; never match on it."
+              },
+              "details": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "field",
+                    "message"
+                  ],
+                  "properties": {
+                    "field": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "description": "Field level detail for `invalid_request`."
+              },
+              "retryAfterSeconds": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Present on `rate_limited`, mirroring the Retry-After header."
+              }
+            }
+          }
+        }
+      },
+      "Identity": {
+        "type": "object",
+        "required": [
+          "businessId",
+          "businessName",
+          "applicationId",
+          "keyPrefix",
+          "mode",
+          "rateLimitPerMinute"
+        ],
+        "properties": {
+          "businessId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "businessName": {
+            "type": "string"
+          },
+          "applicationId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "keyPrefix": {
+            "type": "string",
+            "description": "The public half of the presented key. Useless as a credential."
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "live",
+              "test"
+            ]
+          },
+          "rateLimitPerMinute": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      },
+      "Customer": {
+        "type": "object",
+        "required": [
+          "id",
+          "token",
+          "createdAt"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "token": {
+            "type": "string",
+            "description": "The pseudonym the merchant's own books use. Never a name."
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "Product": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "description",
+          "unitPriceK",
+          "active",
+          "createdAt"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "unitPriceK": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0,
+            "description": "Minor units. Null when the merchant has not priced it. Not zero: those differ."
+          },
+          "active": {
+            "type": "boolean"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "Invoice": {
+        "type": "object",
+        "required": [
+          "id",
+          "invoiceNumber",
+          "customerId",
+          "status",
+          "totalK",
+          "paidK",
+          "balanceDueK",
+          "currency",
+          "dueDate",
+          "issuedAt"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "invoiceNumber": {
+            "type": "string"
+          },
+          "customerId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "issued",
+              "partially_paid",
+              "paid",
+              "voided"
+            ]
+          },
+          "totalK": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0,
+            "description": "Minor units. Kobo for NGN, never a decimal."
+          },
+          "paidK": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0,
+            "description": "Minor units. Kobo for NGN, never a decimal."
+          },
+          "balanceDueK": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0,
+            "description": "Minor units. Kobo for NGN, never a decimal."
+          },
+          "currency": {
+            "type": "string"
+          },
+          "dueDate": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "issuedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "RecordSaleRequest": {
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 50,
+            "items": {
+              "type": "object",
+              "required": [
+                "name",
+                "quantity",
+                "unitPriceK"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 120
+                },
+                "quantity": {
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                },
+                "unitPriceK": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0,
+                  "description": "Minor units. Kobo for NGN, never a decimal."
+                }
+              }
+            }
+          },
+          "customerId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "discountK": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0,
+            "description": "Minor units. Kobo for NGN, never a decimal."
+          },
+          "deliveryFeeK": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0,
+            "description": "Minor units. Kobo for NGN, never a decimal."
+          },
+          "vatK": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0,
+            "description": "Minor units. Kobo for NGN, never a decimal."
+          },
+          "amountPaidK": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0,
+            "description": "Minor units already handed over. May exceed the total; an overpayment is a fact."
+          },
+          "method": {
+            "type": "string",
+            "enum": [
+              "cash",
+              "transfer"
+            ]
+          },
+          "dueDate": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          }
+        }
+      },
+      "RecordSaleResponse": {
+        "type": "object",
+        "required": [
+          "invoiceId",
+          "invoiceNumber",
+          "totalK",
+          "balanceDueK"
+        ],
+        "properties": {
+          "invoiceId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "invoiceNumber": {
+            "type": "string"
+          },
+          "totalK": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0,
+            "description": "Minor units. Kobo for NGN, never a decimal."
+          },
+          "balanceDueK": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0,
+            "description": "Minor units. Kobo for NGN, never a decimal."
+          }
+        }
+      },
+      "RecordPaymentRequest": {
+        "type": "object",
+        "required": [
+          "invoiceNumber",
+          "amountK"
+        ],
+        "properties": {
+          "invoiceNumber": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The invoice as the merchant knows it: its number, not an internal id."
+          },
+          "amountK": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0,
+            "description": "Minor units. Kobo for NGN, never a decimal.",
+            "exclusiveMinimum": 0
+          },
+          "method": {
+            "type": "string",
+            "enum": [
+              "cash",
+              "transfer"
+            ]
+          },
+          "reference": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1,
+            "maxLength": 120,
+            "description": "The caller's own reference, carried into the record."
+          }
+        }
+      },
+      "RecordPaymentResponse": {
+        "description": "Every outcome named. A refusal is a 200 with an outcome rather than an error, because none of these is the caller doing something wrong: the invoice was already settled, or somebody else paid part of it between the read and the write. An error envelope would push two of them into a catch block where they read as failures.",
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "outcome",
+              "receiptNumber",
+              "invoiceNumber",
+              "amountK",
+              "balanceDueK",
+              "invoiceStatus"
+            ],
+            "properties": {
+              "outcome": {
+                "const": "recorded"
+              },
+              "receiptNumber": {
+                "type": "string"
+              },
+              "invoiceNumber": {
+                "type": "string"
+              },
+              "amountK": {
+                "type": "integer",
+                "format": "int64",
+                "minimum": 0,
+                "description": "Minor units. Kobo for NGN, never a decimal."
+              },
+              "balanceDueK": {
+                "type": "integer",
+                "format": "int64",
+                "minimum": 0,
+                "description": "Minor units. Kobo for NGN, never a decimal."
+              },
+              "invoiceStatus": {
+                "type": "string",
+                "enum": [
+                  "issued",
+                  "partially_paid",
+                  "paid",
+                  "voided"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "outcome"
+            ],
+            "properties": {
+              "outcome": {
+                "const": "not_found"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "outcome",
+              "invoiceNumber"
+            ],
+            "properties": {
+              "outcome": {
+                "const": "already_settled"
+              },
+              "invoiceNumber": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "outcome",
+              "invoiceNumber",
+              "balanceDueK",
+              "excessK"
+            ],
+            "properties": {
+              "outcome": {
+                "const": "balance_moved"
+              },
+              "invoiceNumber": {
+                "type": "string"
+              },
+              "balanceDueK": {
+                "type": "integer",
+                "format": "int64",
+                "minimum": 0,
+                "description": "Minor units. Kobo for NGN, never a decimal."
+              },
+              "excessK": {
+                "type": "integer",
+                "format": "int64",
+                "minimum": 0,
+                "description": "Minor units. Kobo for NGN, never a decimal."
+              }
+            }
+          }
+        ]
+      },
+      "CustomerPage": {
+        "type": "object",
+        "required": [
+          "items",
+          "nextCursor"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Customer"
+            }
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Null when the list is finished. The one thing a client must check."
+          }
+        },
+        "title": "CustomerPage"
+      },
+      "ProductPage": {
+        "type": "object",
+        "required": [
+          "items",
+          "nextCursor"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Product"
+            }
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Null when the list is finished. The one thing a client must check."
+          }
+        },
+        "title": "ProductPage"
+      },
+      "InvoicePage": {
+        "type": "object",
+        "required": [
+          "items",
+          "nextCursor"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Invoice"
+            }
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Null when the list is finished. The one thing a client must check."
+          }
+        },
+        "title": "InvoicePage"
+      }
+    }
+  }
+}
