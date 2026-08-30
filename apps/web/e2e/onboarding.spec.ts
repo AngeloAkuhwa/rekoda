@@ -416,9 +416,16 @@ test.describe('the test hook itself', () => {
  * telling them apart would tell whoever is guessing which they achieved.
  */
 test.describe('the sign-in link', () => {
+  const STALE = 'x'.repeat(43);
+
   test('a stale link explains itself and offers the way back', async ({ page }) => {
-    const response = await page.goto('/enter?t=' + 'x'.repeat(43));
+    const response = await page.goto(`/enter?t=${STALE}`);
     expect(response?.status()).toBe(200);
+
+    /* The GET no longer knows whether the token is good, and must not:
+     * finding out is what spends it (remediation R6). The merchant taps, and
+     * only then does the failure have anything to say. */
+    await page.getByRole('button', { name: 'Open my dashboard' }).click();
 
     await expect(page.getByRole('heading', { name: 'That link has expired' })).toBeVisible();
     await expect(page.getByText('dashboard', { exact: false })).toBeVisible();
@@ -430,5 +437,33 @@ test.describe('the sign-in link', () => {
     const response = await page.goto('/enter');
     expect(response?.status()).toBe(200);
     await expect(page.getByRole('heading', { name: 'That link has expired' })).toBeVisible();
+  });
+
+  /**
+   * The bug this route had, stated as a test: a GET spent a single-use
+   * credential. Any WhatsApp link preview, corporate URL scanner or mail
+   * crawler that followed the link burned it, and the person it was sent to
+   * arrived to be told it had expired on a link they had never used.
+   */
+  test('a preview crawler following the link does not spend it', async ({ page, request }) => {
+    const link = `/enter?t=${STALE}`;
+
+    /* What a preview bot does: fetch the URL, repeatedly, following nothing
+     * and submitting nothing. */
+    for (let visit = 0; visit < 3; visit += 1) {
+      const preview = await request.get(link);
+      expect(preview.status()).toBe(200);
+      /* It is offered a button, never signed in, and never told the token is
+       * spent, because nothing spent it. */
+      const body = await preview.text();
+      expect(body).toContain('Open my dashboard');
+      expect(body).not.toContain('That link has expired');
+      expect(preview.headers()['set-cookie'] ?? '').not.toContain('rk_session');
+    }
+
+    /* And the page a person then opens still offers the same button, rather
+     * than the failure a crawler would have caused. */
+    await page.goto(link);
+    await expect(page.getByRole('button', { name: 'Open my dashboard' })).toBeVisible();
   });
 });

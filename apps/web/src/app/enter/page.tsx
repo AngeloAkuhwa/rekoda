@@ -1,7 +1,6 @@
 import type { Metadata } from 'next';
-import { redirect } from 'next/navigation';
-import { redeemMagicLink } from '@/server/api';
-import { setSessionToken } from '@/server/session-cookies';
+import { Button } from '@/components/ui/Button';
+import { enterAction } from './actions';
 
 export const metadata: Metadata = {
   title: 'Signing you in',
@@ -11,16 +10,20 @@ export const metadata: Metadata = {
 /**
  * The landing point of the sign-in link Rekoda sends in chat.
  *
+ * This page CONSUMES NOTHING (remediation R6). It used to redeem the token
+ * while rendering, which meant a GET spent a single-use credential: any
+ * WhatsApp link preview, security scanner or mail crawler that followed the
+ * URL burned the merchant's link before they tapped it, and they arrived to
+ * be told it had expired. The redemption now lives in a server action, which
+ * is a POST, so only a deliberate tap spends anything and the cookie is set
+ * from a mutation rather than from a render.
+ *
  * A server component rather than a route handler, because the failure case
  * has to be a page a person can read: a merchant whose link went stale wants
  * a sentence and a way forward, not a 400.
  *
- * `dynamic` is not decoration. This route sets a cookie from a query string
- * and must never be prerendered or cached by anything, at any layer.
- *
- * On success it redirects immediately, which is also what gets the token out
- * of the address bar: the URL a merchant is left looking at, and the one that
- * lands in their history, is `/app`.
+ * `dynamic` is not decoration. This route reads a query string and must never
+ * be prerendered or cached by anything, at any layer.
  */
 export const dynamic = 'force-dynamic';
 
@@ -32,13 +35,25 @@ export default async function EnterPage({
   const params = await searchParams;
   const raw = params['t'];
   const token = typeof raw === 'string' ? raw : null;
+  const spent = params['spent'] !== undefined;
 
-  if (token) {
-    const outcome = await redeemMagicLink(token);
-    if (outcome.status === 'signed_in') {
-      await setSessionToken(outcome.sessionToken);
-      redirect('/app');
-    }
+  if (token && !spent) {
+    return (
+      <section className="rk-container rk-dash">
+        <div className="rk-card" style={{ marginTop: '4rem' }}>
+          <h1>Open your dashboard</h1>
+          <p>
+            Tap the button to finish signing in. The link is not used up until you do, so a preview
+            of this page in your chat app costs you nothing.
+          </p>
+          <form action={enterAction}>
+            <input type="hidden" name="token" value={token} />
+            <Button type="submit">Open my dashboard</Button>
+          </form>
+          <p className="rk-fineprint">Sign-in links work once and last about fifteen minutes.</p>
+        </div>
+      </section>
+    );
   }
 
   return (
