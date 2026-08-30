@@ -512,8 +512,12 @@ async function ingestCatalogueOrder(
     }
     orderId = run.result.orderId;
   } else {
-    const placed = await placeCatalogueOrderWork(tx, input);
-    orderId = placed.orderId;
+    /* Same refusal as the storefront: this branch never checked entitlement
+     * at all, so running it would take an order from a business whose plan
+     * does not carry Integrate. */
+    throw new Error(
+      'REKODA_COMMAND_PLACE_ORDER is off. The legacy catalogue order path no longer places orders.',
+    );
   }
 
   /* §5.2, in the same transaction as the placement: server-side

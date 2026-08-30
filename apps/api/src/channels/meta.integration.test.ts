@@ -692,6 +692,152 @@ describe('a catalogue cart becomes an order (spec §3.2; W3, PR-087)', () => {
   });
 });
 
+/**
+ * The WABA catalogue door and the storefront door are now the same door
+ * (remediation R2).
+ *
+ * Before this, `REKODA_COMMAND_PLACE_ORDER` was off unless an environment
+ * set it, and both ingresses kept an else branch that called the work
+ * function directly. The storefront's branch at least checked entitlement
+ * itself; the WABA branch checked nothing. Which gates a customer's order
+ * passed through depended on which door they walked in by.
+ */
+describe('every order ingress goes through PlaceOrder (remediation R2)', () => {
+  async function seedCatalogueMerchant(
+    phone: string,
+    phoneNumberId: string,
+    plan: 'integrate' | 'chat',
+  ) {
+    const user = await identity.upsertUserByPhone(db, phone);
+    const business = await identity.createBusinessWithOwner(db, {
+      name: 'Ada Fashion',
+      businessType: null,
+      ownerUserId: user.id,
+    });
+    /* A fresh trial business holds BOTH capabilities, so refusing one has to
+     * be done by pinning the plan rather than by not granting (the same find
+     * PR-025 recorded for the storefront). */
+    await billingRepo.setPlan(db, {
+      businessId: business.id,
+      plan,
+      expiresAt: null,
+      actor: 'operator:test',
+    });
+    const wig = await withBusiness(db, business.id, async (tx) => {
+      await wabaRepo.connectWaba(tx, {
+        businessId: business.id,
+        wabaId: `waba-${phoneNumberId}`,
+        phoneNumberId,
+        accessTokenCipher: 'cipher-for-tests',
+        tokenTail: '4821',
+      });
+      return catalogueRepo.createProduct(tx, business.id, { name: 'wig', unitPriceK: 150_000 });
+    });
+    return { businessId: business.id, wigId: wig.id };
+  }
+
+  const orderCount = async (businessId: string) =>
+    [
+      ...(await withBusiness(db, businessId, (tx) =>
+        tx.execute<{ n: string }>(
+          sql`SELECT count(*)::text AS n FROM orders WHERE business_id = ${businessId}::uuid`,
+        ),
+      )),
+    ][0]!.n;
+
+  it('refuses a catalogue order from a plan that does not carry Integrate, and takes nothing', async () => {
+    const { businessId, wigId } = await seedCatalogueMerchant(
+      '+2348030002261',
+      'PN-R2-REFUSE',
+      'chat',
+    );
+
+    expect(
+      (
+        await post(
+          orderPayload('2349097776111', 'wamid.R2.REFUSE', 'PN-R2-REFUSE', [
+            { retailerId: wigId, quantity: 1 },
+          ]),
+        )
+      ).statusCode,
+    ).toBe(200);
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+
+    /* §4.3 rule 1: a refused request consumes nothing. Entitlement runs
+     * before the idempotency key, so there is no claim either. */
+    expect(await orderCount(businessId)).toBe('0');
+    const claims = [
+      ...(await withBusiness(db, businessId, (tx) =>
+        tx.execute<{ n: string }>(
+          sql`SELECT count(*)::text AS n FROM idempotency_records
+               WHERE business_id = ${businessId}::uuid`,
+        ),
+      )),
+    ];
+    expect(claims[0]!.n).toBe('0');
+  });
+
+  it('claims an idempotency key for a catalogue order, which the legacy branch never did', async () => {
+    const { businessId, wigId } = await seedCatalogueMerchant(
+      '+2348030002262',
+      'PN-R2-KEY',
+      'integrate',
+    );
+
+    await post(
+      orderPayload('2349097776222', 'wamid.R2.KEY', 'PN-R2-KEY', [
+        { retailerId: wigId, quantity: 1 },
+      ]),
+    );
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+
+    expect(await orderCount(businessId)).toBe('1');
+    const claims = [
+      ...(await withBusiness(db, businessId, (tx) =>
+        tx.execute<{ key: string; command_name: string }>(
+          sql`SELECT key, command_name FROM idempotency_records
+               WHERE business_id = ${businessId}::uuid`,
+        ),
+      )),
+    ];
+    /* The webhook's own message id is the retry identity, the same one the
+     * ingress already dedupes on. */
+    expect(claims).toEqual([{ key: 'meta:wamid.R2.KEY', command_name: 'PlaceOrder' }]);
+  });
+
+  it('refuses to place through the legacy branch when the flag is switched off', async () => {
+    const { businessId, wigId } = await seedCatalogueMerchant(
+      '+2348030002263',
+      'PN-R2-LEGACY',
+      'integrate',
+    );
+
+    await post(
+      orderPayload('2349097776333', 'wamid.R2.LEGACY', 'PN-R2-LEGACY', [
+        { retailerId: wigId, quantity: 1 },
+      ]),
+    );
+    /* The branch is kept for one release so a rollback has somewhere to land.
+     * It must not quietly take an order while it waits there. */
+    expect(
+      await buildRunner(workerDb, db, {
+        ...deps,
+        config: { ...deps.config, commandPlaceOrder: false },
+      }).runOnce(),
+    ).toBe(true);
+
+    expect(await orderCount(businessId)).toBe('0');
+    const failed = [
+      ...(await withBusiness(db, businessId, (tx) =>
+        tx.execute<{ last_error: string | null }>(
+          sql`SELECT last_error FROM jobs WHERE business_id = ${businessId}::uuid`,
+        ),
+      )),
+    ];
+    expect(failed[0]?.last_error).toContain('REKODA_COMMAND_PLACE_ORDER');
+  });
+});
+
 describe('the W3 completion gate: catalogue to receipt (spec §3.2; PR-089)', () => {
   const OWNER = '+2348030002230';
   const CUSTOMER_WA = '2349097779999';

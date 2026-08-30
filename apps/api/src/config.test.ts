@@ -267,3 +267,29 @@ describe('encryption keys are shape-validated at boot (PR-106)', () => {
     expect(loadConfig({ ...BASE, CONNECTION_KEY: good }).connectionKey).toBe(good);
   });
 });
+
+describe('PlaceOrder is the default door (remediation R2)', () => {
+  it('runs the command when nothing is configured', () => {
+    /* The inverted sense is the whole point: an environment that never heard
+     * of the flag takes orders through the path that checks entitlement and
+     * claims an idempotency key. */
+    expect(loadConfig(BASE).commandPlaceOrder).toBe(true);
+  });
+
+  it('still switches off explicitly, so a rollback has somewhere to land', () => {
+    expect(loadConfig({ ...BASE, REKODA_COMMAND_PLACE_ORDER: '0' }).commandPlaceOrder).toBe(false);
+  });
+
+  it('reads 1 as on, so an environment that set it during rollout is unchanged', () => {
+    expect(loadConfig({ ...BASE, REKODA_COMMAND_PLACE_ORDER: '1' }).commandPlaceOrder).toBe(true);
+  });
+
+  it('leaves the sibling command flags off by default', () => {
+    /* Only PlaceOrder finished its rollout. If this ever fails, a flag was
+     * flipped without the proof this PR carried for its own. */
+    const config = loadConfig(BASE);
+    expect(config.commandRecordOrder).toBe(false);
+    expect(config.commandRecordSale).toBe(false);
+    expect(config.commandAdjustInventory).toBe(false);
+  });
+});

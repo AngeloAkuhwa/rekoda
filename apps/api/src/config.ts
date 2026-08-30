@@ -693,7 +693,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     commandPostJournal: env['REKODA_COMMAND_POST_JOURNAL'] === '1',
     commandClosePeriod: env['REKODA_COMMAND_CLOSE_PERIOD'] === '1',
     commandOpeningBalances: env['REKODA_COMMAND_OPENING_BALANCES'] === '1',
-    commandPlaceOrder: env['REKODA_COMMAND_PLACE_ORDER'] === '1',
+    /**
+     * On unless explicitly switched off, which is the opposite sense of its
+     * siblings. PlaceOrder finished its rollout: the storefront and the WABA
+     * catalogue both run it in production, and leaving the default at off
+     * meant an environment that forgot the variable took orders through a
+     * path with no entitlement check and no idempotency key. Absent
+     * configuration should mean the safe door, not the legacy one.
+     */
+    commandPlaceOrder: env['REKODA_COMMAND_PLACE_ORDER'] !== '0',
     commandRecordOrder: env['REKODA_COMMAND_RECORD_ORDER'] === '1',
     commandIngestFinancialTransaction: env['REKODA_COMMAND_INGEST_FINANCIAL_TRANSACTION'] === '1',
     commandConfirmReconciliation: env['REKODA_COMMAND_CONFIRM_RECONCILIATION'] === '1',
