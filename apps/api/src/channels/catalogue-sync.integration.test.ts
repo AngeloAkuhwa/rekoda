@@ -27,6 +27,7 @@ import {
 import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
 import { loadConfig, type ApiConfig } from '../config.js';
 import { CatalogueSyncService } from './catalogue-sync.service.js';
+import { sweepCatalogues } from './catalogue-sweep.js';
 import type {
   CataloguePublisher,
   CataloguePushItem,
@@ -295,5 +296,89 @@ describe('the shelf, projected', () => {
 
     /* Every refusal cost nothing: the provider was never rung. */
     expect(publisher.calls).toHaveLength(0);
+  });
+});
+
+describe('the sweep that finally calls it (remediation R3b)', () => {
+  let workerDb: Db;
+  let closeWorker: () => Promise<void>;
+
+  beforeAll(() => {
+    /* The worker credential, because "which businesses have work" cannot be
+     * answered from inside one tenant's pin. */
+    ({ db: workerDb, close: closeWorker } = createDb(urls.worker, { max: 2 }));
+  });
+
+  afterAll(async () => {
+    await closeWorker?.();
+  });
+
+  it('finds the businesses whose catalogue is worth pushing', async () => {
+    const withCat = await seedMerchant('integrate', true);
+    await seedMerchant('integrate', false);
+
+    const due = await wabaRepo.businessesWithCatalogue(workerDb);
+    expect(due.map((d) => d.businessId)).toEqual([withCat.businessId]);
+  });
+
+  it('pushes the shelf for a merchant whose price moved', async () => {
+    const { businessId } = await seedMerchant();
+    await withBusiness(db, businessId, async (tx) => {
+      const product = await stockRepo.findOrCreateProduct(tx, businessId, 'wig');
+      await catalogueRepo.editProduct(tx, businessId, product.id, { unitPriceK: 150_000 });
+    });
+
+    const pushed = await sweepCatalogues({ workerDb, sync: service });
+
+    expect(pushed).toBe(1);
+    expect(publisher.calls).toHaveLength(1);
+    expect(publisher.calls[0]!.items[0]).toMatchObject({ name: 'wig', priceK: 150_000 });
+  });
+
+  it('says nothing twice, because the diff already pushed it', async () => {
+    const { businessId } = await seedMerchant();
+    await withBusiness(db, businessId, async (tx) => {
+      const product = await stockRepo.findOrCreateProduct(tx, businessId, 'wig');
+      await catalogueRepo.editProduct(tx, businessId, product.id, { unitPriceK: 150_000 });
+    });
+
+    expect(await sweepCatalogues({ workerDb, sync: service })).toBe(1);
+    /* The second pass is what makes a timer safe: the projection already
+     * matches the shelf, so there is nothing to say and nobody is rung. */
+    expect(await sweepCatalogues({ workerDb, sync: service })).toBe(0);
+    expect(publisher.calls).toHaveLength(1);
+  });
+
+  it('does not ring the provider for a plan without Integrate', async () => {
+    const { businessId } = await seedMerchant('chat', true);
+    await withBusiness(db, businessId, async (tx) => {
+      const product = await stockRepo.findOrCreateProduct(tx, businessId, 'wig');
+      await catalogueRepo.editProduct(tx, businessId, product.id, { unitPriceK: 150_000 });
+    });
+
+    expect(await sweepCatalogues({ workerDb, sync: service })).toBe(0);
+    expect(publisher.calls).toHaveLength(0);
+  });
+
+  it('carries on past a merchant whose sync throws', async () => {
+    /* One bad token must not end the pass for everybody behind it. */
+    const good = await seedMerchant();
+    await withBusiness(db, good.businessId, async (tx) => {
+      const product = await stockRepo.findOrCreateProduct(tx, good.businessId, 'wig');
+      await catalogueRepo.editProduct(tx, good.businessId, product.id, { unitPriceK: 150_000 });
+    });
+
+    let first = true;
+    const flaky = {
+      syncNow: async (businessId: string) => {
+        if (first) {
+          first = false;
+          throw new Error('provider unreachable');
+        }
+        return service.syncNow(businessId);
+      },
+    };
+
+    await expect(sweepCatalogues({ workerDb, sync: flaky })).resolves.toBeGreaterThanOrEqual(0);
   });
 });

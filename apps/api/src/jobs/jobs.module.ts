@@ -48,6 +48,9 @@ import { HttpWebhookSender } from '../webhooks/sender.js';
 import { CommandsModule } from '../commands/commands.module.js';
 import { CommandBus } from '../commands/command-bus.service.js';
 import { MESSAGE_SENDER } from '../channels/sender.tokens.js';
+import { CatalogueSyncService } from '../channels/catalogue-sync.service.js';
+import { sweepCatalogues } from '../channels/catalogue-sweep.js';
+import { CatalogueModule } from '../channels/catalogue.module.js';
 import { WabaTemplateService } from '../channels/waba-templates.service.js';
 import { CustomerThreadRouter } from '../channels/customer-route.service.js';
 import { SPEECH_TO_TEXT, type SpeechToText } from '../ai/stt.js';
@@ -247,6 +250,8 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
   private dispatchingOutbox = false;
   private webhookTimer: NodeJS.Timeout | null = null;
   private sendingWebhooks = false;
+  private catalogueTimer: NodeJS.Timeout | null = null;
+  private syncingCatalogues = false;
 
   constructor(
     @Inject(CONFIG) private readonly config: ApiConfig,
@@ -265,6 +270,7 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
     @Inject(TEXT_EXTRACTION) private readonly ocr: TextExtraction,
     @Inject(AUDIO_METADATA_PROBE) private readonly audioProbe: AudioMetadataProbe,
     @Inject(CommandBus) private readonly commandBus: CommandBus,
+    @Inject(CatalogueSyncService) private readonly catalogueSync: CatalogueSyncService,
   ) {}
 
   onModuleInit(): void {
@@ -422,6 +428,27 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
         });
     }, 20_000);
     this.strangerTimer.unref();
+
+    /**
+     * The catalogue projection, on the slowest clock of the lot. A shelf's
+     * prices change far less often than hourly, the diff makes a pass with
+     * nothing to say cost one query per business, and the push is somebody
+     * else's API. Until this existed nothing called `syncNow` at all, so a
+     * merchant who changed a price in Rekoda went on selling at the old one
+     * through Meta.
+     */
+    this.catalogueTimer = setInterval(() => {
+      if (this.syncingCatalogues) return;
+      this.syncingCatalogues = true;
+      this.exclusively('catalogue', () => sweepCatalogues({ workerDb, sync: this.catalogueSync }))
+        .catch((error: unknown) => {
+          this.log.warn(`catalogue sweep failed: ${redactForLog(describeFailure(error))}`);
+        })
+        .finally(() => {
+          this.syncingCatalogues = false;
+        });
+    }, 3_600_000);
+    this.catalogueTimer.unref();
 
     /**
      * Grace runs on the slowest clock of the four. Its unit is a DAY, so
@@ -634,6 +661,7 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
     if (this.retentionTimer) clearInterval(this.retentionTimer);
     if (this.sweepTimer) clearInterval(this.sweepTimer);
     if (this.transferTimer) clearInterval(this.transferTimer);
+    if (this.catalogueTimer) clearInterval(this.catalogueTimer);
     if (this.feedTimer) clearInterval(this.feedTimer);
     if (this.strangerTimer) clearInterval(this.strangerTimer);
     if (this.outboxTimer) clearInterval(this.outboxTimer);
@@ -643,7 +671,15 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
 }
 
 @Module({
-  imports: [AiModule, RepliesModule, DocumentsModule, PaymentsModule, BankModule, CommandsModule],
+  imports: [
+    AiModule,
+    RepliesModule,
+    DocumentsModule,
+    PaymentsModule,
+    BankModule,
+    CommandsModule,
+    CatalogueModule,
+  ],
   providers: [JobQueue, JobRunnerLifecycle, PrivacyGateway],
   exports: [JobQueue, PrivacyGateway],
 })
