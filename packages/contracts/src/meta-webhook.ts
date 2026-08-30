@@ -62,6 +62,35 @@ const metaOrder = z.object({
     .optional(),
 });
 
+/**
+ * A tapped control, in the two shapes WhatsApp sends it (remediation R11).
+ *
+ * A template quick reply arrives as `button`; a reply to an interactive
+ * message arrives as `interactive`, wrapping either a `button_reply` or a
+ * `list_reply`. Three shapes, one meaning: a person pressed a thing that
+ * said something, and the thing it said is the message.
+ *
+ * This matters beyond convenience. A customer who taps a button labelled
+ * "Stop messages" has asked to be left alone exactly as plainly as one who
+ * types the word, and until these shapes were parsed the tap carried no
+ * text at all and went unheard.
+ */
+const metaButton = z.object({
+  payload: z.string().optional(),
+  text: z.string().optional(),
+});
+
+const metaReply = z.object({
+  id: z.string().optional(),
+  title: z.string().optional(),
+});
+
+const metaInteractive = z.object({
+  type: z.string().optional(),
+  button_reply: metaReply.optional(),
+  list_reply: metaReply.optional(),
+});
+
 const metaMessage = z.object({
   id: z.string().min(1),
   from: z.string().min(1),
@@ -71,6 +100,8 @@ const metaMessage = z.object({
   audio: metaAudio.optional(),
   image: metaImage.optional(),
   order: metaOrder.optional(),
+  button: metaButton.optional(),
+  interactive: metaInteractive.optional(),
 });
 
 const metaStatus = z.object({
@@ -149,6 +180,21 @@ export interface InboundEvent {
     readonly catalogId: string | null;
     readonly items: ReadonlyArray<{ readonly retailerId: string; readonly quantity: number }>;
   } | null;
+  /**
+   * What a person's TAP said, when they answered by pressing rather than
+   * typing (remediation R11).
+   *
+   * `id` is what the merchant configured (a payload or a reply id), `title`
+   * is what the customer actually read on the control. Both travel because
+   * neither is reliably the words: a template quick reply usually carries
+   * its label in the payload, an interactive reply always carries it in the
+   * title, and a reader looking for "STOP" has to be allowed to look in
+   * whichever one holds it.
+   */
+  readonly tappedReply: {
+    readonly id: string | null;
+    readonly title: string | null;
+  } | null;
   readonly status: string | null;
 }
 
@@ -160,6 +206,26 @@ export interface InboundEvent {
  * — refusing it earns an escalating retry storm and, eventually, a disabled
  * webhook.
  */
+/**
+ * The one place the three tap shapes collapse into one (remediation R11).
+ *
+ * Written as a reader rather than three branches at the call site so that
+ * every consumer of a tap sees the same two strings, and a fourth shape
+ * from Meta is one edit here instead of a hunt.
+ */
+function tappedReplyOf(
+  message: z.infer<typeof metaMessage>,
+): { id: string | null; title: string | null } | null {
+  const reply =
+    message.interactive?.button_reply ??
+    message.interactive?.list_reply ??
+    (message.button ? { id: message.button.payload, title: message.button.text } : undefined);
+  if (!reply) return null;
+  const id = reply.id ?? null;
+  const title = reply.title ?? null;
+  return id === null && title === null ? null : { id, title };
+}
+
 export function extractInboundEvents(body: MetaWebhookBody): InboundEvent[] {
   const events: InboundEvent[] = [];
 
@@ -188,6 +254,7 @@ export function extractInboundEvents(body: MetaWebhookBody): InboundEvent[] {
                 })),
               }
             : null,
+          tappedReply: tappedReplyOf(message),
           status: null,
         });
       }
@@ -206,6 +273,7 @@ export function extractInboundEvents(body: MetaWebhookBody): InboundEvent[] {
           imageId: null,
           caption: null,
           order: null,
+          tappedReply: null,
           status: status.status,
         });
       }

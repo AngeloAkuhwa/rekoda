@@ -17,7 +17,7 @@
 import { Logger } from '@nestjs/common';
 import {
   composeShelfAnswer,
-  customerConsentIntent,
+  consentIntentOf,
   lagosDay,
   replies,
   shelfMatches,
@@ -178,8 +178,16 @@ export function customerMessageHandler(deps: CustomerMessageDeps): JobHandler {
      * It answers before the assistant and before the cart: a person asking
      * to be left alone gets that, not a price list.
      */
-    if (inbound.messageType === 'text') {
-      const intent = customerConsentIntent(inbound.text ?? '');
+    {
+      /* Typed or tapped: `consentIntentOf` reads both, so a customer who
+       * pressed a button that said STOP is heard exactly like one who typed
+       * it. Before R11 the tap arrived with no text and fell straight past
+       * this gate into the away assistant. */
+      const intent = consentIntentOf({
+        text: inbound.text,
+        replyId: inbound.tappedReply?.id ?? null,
+        replyTitle: inbound.tappedReply?.title ?? null,
+      });
       if (intent) {
         const note = await recordConsentChange(tx, deps, businessId, participant, intent, {
           businessId,

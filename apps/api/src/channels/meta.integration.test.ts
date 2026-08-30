@@ -1486,6 +1486,113 @@ describe("a customer's own STOP (PR-135)", () => {
     expect(stubSender.connectionTexts).toHaveLength(1);
     expect(stubSender.connectionTexts[0]!.text).toContain('wig');
   });
+
+  /* ── a tap is a message too (remediation R11) ───────────────────────────
+   * WhatsApp delivers a pressed button with no `text` at all, so before
+   * this the opt-out gate never saw it and the tap fell through to the
+   * assistant, which answered a person who had just asked to be left
+   * alone. */
+  const tapPayload = (phoneNumberId: string, wamid: string, message: Record<string, unknown>) => ({
+    object: 'whatsapp_business_account',
+    entry: [
+      {
+        id: 'WABA',
+        changes: [
+          {
+            field: 'messages',
+            value: {
+              messaging_product: 'whatsapp',
+              metadata: { phone_number_id: phoneNumberId },
+              messages: [{ id: wamid, from: CUSTOMER_WA, timestamp: '1700000000', ...message }],
+            },
+          },
+        ],
+      },
+    ],
+  });
+
+  it('a tapped template button is heard as STOP', async () => {
+    const businessId = await seedShop('PN-STOP-7');
+
+    await post(
+      tapPayload('PN-STOP-7', 'wamid.STOP.C11', {
+        type: 'button',
+        button: { payload: 'stop', text: 'Stop messages' },
+      }),
+    );
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+
+    expect(stubSender.connectionTexts).toHaveLength(1);
+    expect(stubSender.connectionTexts[0]!.text).toContain('messages from this shop');
+    expect([...(await refusals(businessId))][0]!.opted_out_at).not.toBeNull();
+
+    /* And the shop is quiet, which is the whole point of hearing it. */
+    await say('PN-STOP-7', 'wamid.STOP.C12', 'How much is the wig?');
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+    expect(stubSender.connectionTexts).toHaveLength(1);
+  });
+
+  it('an interactive reply is heard, and tapping it twice changes nothing', async () => {
+    const businessId = await seedShop('PN-STOP-8');
+
+    await post(
+      tapPayload('PN-STOP-8', 'wamid.STOP.C13', {
+        type: 'interactive',
+        interactive: { type: 'button_reply', button_reply: { id: 'x', title: 'UNSUBSCRIBE' } },
+      }),
+    );
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+    const first = [...(await refusals(businessId))][0]!.opted_out_at;
+    expect(first).not.toBeNull();
+
+    await post(
+      tapPayload('PN-STOP-8', 'wamid.STOP.C14', {
+        type: 'interactive',
+        interactive: { type: 'list_reply', list_reply: { id: 'y', title: 'stop' } },
+      }),
+    );
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+
+    expect(stubSender.connectionTexts).toHaveLength(1);
+    const [row] = [...(await refusals(businessId))];
+    expect(row!.n).toBe('1');
+    expect(new Date(row!.opted_out_at!).toISOString()).toBe(new Date(first!).toISOString());
+  });
+
+  it('a tapped START opens the shop back up', async () => {
+    const businessId = await seedShop('PN-STOP-9');
+
+    await say('PN-STOP-9', 'wamid.STOP.C15', 'stop');
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+
+    await post(
+      tapPayload('PN-STOP-9', 'wamid.STOP.C16', {
+        type: 'interactive',
+        interactive: { type: 'button_reply', button_reply: { id: 'start', title: 'Yes please' } },
+      }),
+    );
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+
+    expect(stubSender.connectionTexts).toHaveLength(2);
+    expect([...(await refusals(businessId))][0]!.opted_out_at).toBeNull();
+  });
+
+  it('an ordinary button is an ordinary message', async () => {
+    const businessId = await seedShop('PN-STOP-10');
+
+    await post(
+      tapPayload('PN-STOP-10', 'wamid.STOP.C17', {
+        type: 'interactive',
+        interactive: { type: 'button_reply', button_reply: { id: 'see', title: 'See prices' } },
+      }),
+    );
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+
+    /* Nobody is silenced by pressing a button that did not say so. Reading
+     * the id as well as the title is what makes this worth asserting: a
+     * looser matcher would have found 'see' or 'prices' interesting. */
+    expect([...(await refusals(businessId))][0]!.n).toBe('0');
+  });
 });
 
 describe('one customer, both products (spec §5.3 X2; X1, PR-092)', () => {

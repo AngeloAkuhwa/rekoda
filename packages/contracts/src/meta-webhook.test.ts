@@ -169,4 +169,50 @@ describe('parsing what Meta sends', () => {
     expect(event?.messageType).toBe('audio');
     expect(event?.text).toBeNull();
   });
+  /* remediation R11: a tap is a message, in whichever of the three shapes
+   * WhatsApp chooses to send it. */
+  const tapEvent = (message: Record<string, unknown>) =>
+    extractInboundEvents(
+      metaWebhookBody.parse({ entry: [{ changes: [{ value: { messages: [message] } }] }] }),
+    )[0];
+
+  it('reads a template quick reply as the words on the button', () => {
+    const event = tapEvent({
+      id: 'wamid.BTN',
+      from: '234803',
+      type: 'button',
+      button: { payload: 'stop', text: 'Stop messages' },
+    });
+    expect(event?.tappedReply).toEqual({ id: 'stop', title: 'Stop messages' });
+  });
+
+  it('reads an interactive button reply', () => {
+    const event = tapEvent({
+      id: 'wamid.IBTN',
+      from: '234803',
+      type: 'interactive',
+      interactive: { type: 'button_reply', button_reply: { id: 'opt_out', title: 'STOP' } },
+    });
+    expect(event?.tappedReply).toEqual({ id: 'opt_out', title: 'STOP' });
+  });
+
+  it('reads a list reply', () => {
+    const event = tapEvent({
+      id: 'wamid.LIST',
+      from: '234803',
+      type: 'interactive',
+      interactive: { type: 'list_reply', list_reply: { id: 'row_3', title: 'Unsubscribe' } },
+    });
+    expect(event?.tappedReply).toEqual({ id: 'row_3', title: 'Unsubscribe' });
+  });
+
+  it('leaves tappedReply null for a message nobody tapped', () => {
+    const event = tapEvent({
+      id: 'wamid.TXT',
+      from: '234803',
+      type: 'text',
+      text: { body: 'do you have rice' },
+    });
+    expect(event?.tappedReply).toBeNull();
+  });
 });
