@@ -56,54 +56,71 @@ export async function migrate(urls: Urls): Promise<void> {
   await applyMigrations(urls.owner);
 }
 
-/** Wipe tenant and identity fixtures between tests, as the owner. */
+/**
+ * Tables the migrations own and seed. Reference data, not fixture: the plan
+ * catalogue, the entitlement keys, the provider rate cards. A test reads them
+ * and none should have to recreate them, so teardown leaves them alone.
+ *
+ * This list is the exact set the previous `TRUNCATE ... CASCADE` preserved,
+ * measured against a freshly migrated database rather than reasoned about.
+ * `seedSurvivesTeardown` in testing.integration.test.ts pins it, so a typo
+ * here fails loudly instead of quietly emptying a catalogue every test reads.
+ */
+const SEEDED_TABLES = [
+  'rekoda_migrations',
+  'entitlements',
+  'plan_versions',
+  'plan_prices',
+  'plan_version_entitlements',
+  'allowance_versions',
+  'add_ons',
+  'add_on_grants',
+  'usage_packs',
+  'provider_capabilities',
+  'provider_cost_schedules',
+] as const;
+
+/**
+ * Wipe tenant and identity fixtures between tests, as the owner.
+ *
+ * DELETE rather than TRUNCATE, and the reason is measured. `TRUNCATE` gives
+ * every table and index a NEW relfilenode, so emptying ~100 already-empty
+ * tables created a few hundred files that the next checkpoint had to fsync.
+ * One CI checkpoint was seen writing 257 buffers — two megabytes — in 41.9
+ * seconds because it was syncing 73,527 files. The suite was bound by file
+ * churn, not by data: 183.5 ms per call against 1.5 ms for the same work
+ * done with DELETE.
+ *
+ * `session_replication_role = replica` is not a shortcut around the schema's
+ * own rules, it is what makes teardown possible at all. TRUNCATE bypasses row
+ * triggers; DELETE does not, and three triggers exist specifically to refuse
+ * deletion — `journal_draft_lock`, `journal_draft_lines_lock` and
+ * `accounts_mandatory_role_guard`. Those guards protect a merchant's books,
+ * not a fixture, and a test that left a posted draft behind would otherwise
+ * make teardown fail. Replica mode also suspends foreign keys, so the order
+ * tables are emptied in stops mattering — which is why this reads the table
+ * list from the catalogue instead of maintaining one by hand. The previous
+ * list had to be extended whenever a table was added, and a table nobody
+ * remembered to add was simply never cleaned between tests.
+ *
+ * Requires the owner to be a superuser, which it is in development and in CI.
+ * If it ever is not, `SET session_replication_role` raises rather than
+ * silently leaving the guards on: a loud failure, not a quiet half-teardown.
+ */
 export async function truncateAll(urls: Urls): Promise<void> {
   const sql = postgres(urls.owner, { max: 1, onnotice: () => {} });
   try {
-    await sql.unsafe(`
-      TRUNCATE
-        retention_deletions,
-        subscription_charges,
-        refunds, payment_reversals, chargebacks,
-        settlement_components, settlement_items, settlements,
-        payment_charges, payment_attempts, payment_intents, payment_connections,
-        customer_message_optouts,
-        waba_service_windows, waba_templates, waba_connections,
-        documents,
-        audit_events,
-        journal_draft_lines, journal_drafts, receivable_recognition_policies,
-        revenue_recognition_events, recognition_review_items,
-        customer_credit_applications, customer_credits,
-        ledger_entries, ledger_transactions, accounting_periods, exchange_rate_snapshots,
-        payment_allocations, payments,
-        accounts, financial_accounts,
-        invoice_items, invoices,
-        doc_counters,
-        command_drafts,
-        ai_quota_counters, ai_global_counters,
-        doc_extraction_counters, doc_extraction_global_counters,
-        voice_second_counters, voice_global_counters,
-        usage_events, usage_counters, pending_confirmations, idempotency_records,
-        evidence_legal_holds, outbox_events,
-        payment_verification_claims, payment_verification_revocations,
-        payment_verifications, payment_evidence,
-        jobs,
-        pending_object_deletions,
-        key_fingerprints,
-        webhook_deliveries, webhook_endpoints,
-        api_key_rate_windows, api_keys, api_applications,
-        conversation_messages, conversations,
-        shops,
-        portability_exports,
-        business_add_ons,
-        business_entitlements,
-        memberships, business_connections, products,
-        customer_identities, customers,
-        external_events, stranger_contacts,
-        magic_links, sessions, otp_challenges,
-        businesses, users
-      RESTART IDENTITY CASCADE
-    `);
+    const rows = await sql<{ tablename: string }[]>`
+      SELECT tablename FROM pg_tables
+       WHERE schemaname = 'public'
+         AND NOT (tablename = ANY(${[...SEEDED_TABLES]}::text[]))
+       ORDER BY tablename
+    `;
+    if (rows.length === 0) return;
+    const deletes = rows.map((r) => `DELETE FROM "${r.tablename}";`).join('\n');
+    await sql.unsafe(
+      `SET session_replication_role = replica;\n${deletes}\nSET session_replication_role = origin;`,
+    );
   } finally {
     await sql.end();
   }
