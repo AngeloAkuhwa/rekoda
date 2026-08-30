@@ -5,7 +5,7 @@
  * and keeps the 24-hour service window per customer. Production
  * enablement waits on W0; everything here works against test numbers.
  */
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, sql } from 'drizzle-orm';
 import type { Db, TenantDb } from '../client.js';
 import {
   awayAssistantReplies,
@@ -694,4 +694,41 @@ export async function assistantRepliesUsed(
     )
     .limit(1);
   return rows[0]?.replies ?? 0;
+}
+
+/**
+ * Every business whose catalogue is worth pushing, read across tenants
+ * (PR-142).
+ *
+ * The worker credential, for the same reason `routeByPhoneNumberId` uses it:
+ * a sweep asks which businesses have work, and that question cannot be
+ * answered from inside one tenant's pin. The `worker_resolve` policy grants
+ * `rekoda_worker` exactly this read and nothing else.
+ *
+ * UNHEALTHY is included alongside CONNECTED, matching what `syncNow` already
+ * accepts: the attempt IS the health check, and a merchant whose token went
+ * stale still wants their prices to catch up once it is fixed. PENDING_SIGNUP
+ * and REVOKED have nothing to push to. A connection with no catalogue id is
+ * left out here rather than refused later, so the sweep does no work for a
+ * merchant who has not named one.
+ */
+export async function businessesWithCatalogue(
+  workerDb: Db,
+  limit = 50,
+): Promise<Array<{ businessId: string; connectionId: string }>> {
+  const rows = await workerDb
+    .select({
+      businessId: wabaConnections.businessId,
+      connectionId: wabaConnections.id,
+    })
+    .from(wabaConnections)
+    .where(
+      and(
+        isNotNull(wabaConnections.catalogueId),
+        inArray(wabaConnections.status, ['CONNECTED', 'UNHEALTHY']),
+      ),
+    )
+    .orderBy(wabaConnections.businessId)
+    .limit(limit);
+  return [...rows];
 }
