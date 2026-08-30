@@ -23,9 +23,26 @@ import { join } from 'node:path';
 
 const ROOT = new URL('..', import.meta.url).pathname;
 
-/** Surfaces that must always describe the CURRENT architecture. */
+/**
+ * Surfaces that must always describe the CURRENT architecture.
+ *
+ * The source trees are here because a retired claim does not stop being one
+ * when it moves from a page into a comment (remediation R12). The scanner
+ * was built to keep the PUBLIC surfaces honest, and it did, while the
+ * codebase kept a line describing a transcriber Rekoda does not run. The
+ * next person to read it would have believed it.
+ *
+ * `packages/db/migrations` is deliberately NOT scanned, for the same reason
+ * the historical ADRs are not. A migration is immutable once shipped, so a
+ * match there could not be fixed without editing history. That makes it a
+ * trap rather than a guard, and a guard nobody can satisfy gets deleted.
+ */
 const SCAN = [
   'apps/web/src',
+  'apps/api/src',
+  'packages/core/src',
+  'packages/db/src',
+  'packages/contracts/src',
   'README.md',
   'SECURITY.md',
   '.env.example',
