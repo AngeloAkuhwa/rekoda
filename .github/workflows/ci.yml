@@ -90,6 +90,61 @@ jobs:
         if: steps.ws.outputs.present == 'false'
         run: echo "No pnpm workspace yet (pre-M0). Skipping build steps."
 
+  # Every migration, replayed on a cluster that has never heard of us
+  # (remediation R10).
+  #
+  # The integration job below runs as `rekoda`, so a migration that names
+  # that role is green there whether or not the name is earned. Migration
+  # 0058 did exactly that: `GRANT EXECUTE ... TO rekoda` is a valid
+  # statement only where a role of that name already exists, and on a
+  # cluster provisioned with any other owner it aborted. The bug was
+  # invisible to CI precisely because CI shared the assumption.
+  #
+  # So this container is provisioned with a DIFFERENT owner and no `rekoda`
+  # role at all. It applies the migrations and stops: this asks whether the
+  # schema can be BUILT anywhere, which the suites below cannot ask because
+  # they need the database they run against to be ours.
+  migrations-portable:
+    name: Migrations (foreign owner)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          # Deliberately not `rekoda`, and deliberately unlike it: the point
+          # is a cluster where nothing we might accidentally name exists.
+          POSTGRES_USER: someone_else
+          POSTGRES_DB: someone_elses_db
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U someone_else"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://someone_else@127.0.0.1:5432/someone_elses_db
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @rekoda/db build
+      - name: Apply every migration as a foreign owner
+        run: pnpm --filter @rekoda/db migrate:apply
+      - name: No migration may depend on our owner's name
+        run: |
+          if psql "$DATABASE_URL" -tAc \
+            "SELECT 1 FROM pg_roles WHERE rolname = 'rekoda'" | grep -q 1; then
+            echo "A migration created a role named 'rekoda'." >&2
+            echo "The schema must not assume the owner is called that." >&2
+            exit 1
+          fi
+
   # Integration tests need a REAL PostgreSQL: row-level security, advisory locks
   # and ON CONFLICT races have no meaningful in-memory imitation, and a mock of
   # the thing under test would prove nothing. These suites FAIL rather than skip

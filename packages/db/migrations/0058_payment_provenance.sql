@@ -196,8 +196,24 @@ ALTER FUNCTION rekoda_private.rollback_provenance_manifest(uuid, text, text)
   OWNER TO rekoda_provenance_owner;
 REVOKE EXECUTE ON FUNCTION rekoda_private.rollback_provenance_manifest(uuid, text, text)
   FROM PUBLIC;
+/* An OPERATOR role this migration creates, never the owner's incidental
+ * username (remediation R10). This line used to read `TO rekoda`, which is
+ * only a valid statement on a cluster that happens to have a role of that
+ * name: ours does, because our owner is called `rekoda`, so the replay was
+ * green for a reason that has nothing to do with the grant being right. On
+ * a cluster provisioned with any other owner the migration aborted here.
+ *
+ * A rollback is an operator act, so it gets an operator role, and a human
+ * is granted membership out of band with their own credential. Executing
+ * also needs USAGE on the schema, which the owner only ever had by being
+ * a superuser. */
+DO $$ BEGIN
+  CREATE ROLE rekoda_operator NOLOGIN;
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+GRANT USAGE ON SCHEMA rekoda_private TO rekoda_operator;
 GRANT EXECUTE ON FUNCTION rekoda_private.rollback_provenance_manifest(uuid, text, text)
-  TO rekoda;
+  TO rekoda_operator;
 -- Never rekoda_app, never rekoda_worker. They also hold no USAGE on the
 -- schema, so the function is doubly out of their reach.
 
