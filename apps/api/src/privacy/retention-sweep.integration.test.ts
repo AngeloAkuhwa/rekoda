@@ -27,7 +27,7 @@ import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing
 import { SendFailed } from '../channels/sender.js';
 import { StubSender } from '../channels/sender.stub.js';
 import { sweepRetention } from './retention-sweep.js';
-import { drainObjectDeletions, sweepEvidence } from './retention-sweep.js';
+import { drainObjectDeletions, runRetentionPass, sweepEvidence } from './retention-sweep.js';
 import { evidenceRetentionRepo, objectDeletionsRepo, sql } from '@rekoda/db';
 import { NoStorageConfigured } from '../documents/r2.storage.js';
 import type { DocumentStorage, StoredObject } from '../documents/storage.js';
@@ -468,5 +468,75 @@ describe('deleting the objects the rows named', () => {
       outstanding: 0,
     });
     expect(storage.deleted).toEqual(['evidence/purge-me.jpg']);
+  });
+});
+
+describe('a retention failure must not cancel a promised deletion (R13)', () => {
+  const queue = (businessId: string, keys: string[]) =>
+    withBusiness(appDb, businessId, (tx) =>
+      objectDeletionsRepo.enqueueObjectDeletions(tx, businessId, keys, 'business_deleted'),
+    );
+
+  /**
+   * The three stages used to be chained through `.then`, so the first
+   * failure cancelled the rest. That made an object Rekoda had already
+   * PROMISED to delete wait six hours for an unrelated reason: an error
+   * about somebody's six-month-old records stopping a photograph being
+   * removed from a bucket. A promise to delete a person's data is exactly
+   * the wrong thing to make conditional on another job succeeding.
+   */
+  it('drains the queue even when the retention sweep throws', async () => {
+    /* Due for the WARNING stage specifically, because that is the stage
+     * that reaches the database through `appDb`. Seeded for erasure instead,
+     * the sweep only ever touches `workerDb`, never notices the broken
+     * connection, and the test proves nothing: I wrote it that way first and
+     * it passed against the old chained code. */
+    const { businessId } = await abandonedTrial(RETENTION_NOTICE_DAYS + 5);
+    await queue(businessId, ['documents/x/invoice_pdf/promised.pdf']);
+    const storage = new RecordingStorage();
+
+    /* The sweep reaches the database through `appDb`, so a connection that
+     * refuses everything is a real failure of the first stage rather than a
+     * stubbed one: the pass has to survive whatever the sweep throws, not a
+     * particular error we chose. */
+    const brokenDb = { execute: () => Promise.reject(new Error('retention exploded')) };
+
+    await runRetentionPass({
+      workerDb,
+      appDb: brokenDb as unknown as Db,
+      sender: new StubSender(),
+      fxNairaPerUsd: 1600,
+      storage,
+    });
+
+    /* The promise was kept anyway. */
+    expect(storage.deleted).toEqual(['documents/x/invoice_pdf/promised.pdf']);
+    expect(await objectDeletionsRepo.pendingObjectDeletionCount(workerDb)).toBe(0);
+  });
+
+  it('still drains when the storage itself is what fails, without throwing', async () => {
+    /* Not a regression guard for the chaining, and it would pass on the old
+     * code too: `drainObjectDeletions` catches per object, so it never threw
+     * to begin with. It pins the property the timer depends on, that a pass
+     * resolves rather than rejecting, which the per-stage catches must keep
+     * true now that they are the thing standing between a failure and an
+     * unhandled rejection in a six-hourly heartbeat. */
+    const { businessId } = await abandonedTrial(0);
+    await queue(businessId, ['documents/x/invoice_pdf/refused.pdf']);
+    const storage = new RecordingStorage();
+    storage.refuseWith = new Error('r2: AccessDenied');
+
+    await expect(
+      runRetentionPass({
+        workerDb,
+        appDb,
+        sender: new StubSender(),
+        fxNairaPerUsd: 1600,
+        storage,
+      }),
+    ).resolves.toBeUndefined();
+
+    /* The row stays, which is the queue keeping its promise. */
+    expect(await objectDeletionsRepo.pendingObjectDeletionCount(workerDb)).toBe(1);
   });
 });

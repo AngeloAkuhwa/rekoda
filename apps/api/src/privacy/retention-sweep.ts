@@ -39,6 +39,7 @@ import {
   type Db,
 } from '@rekoda/db';
 import { SendFailed, type MessageSender } from '../channels/sender.js';
+import { describeFailure } from '../jobs/runner.js';
 import { recordMessageCost } from '../channels/message-cost.js';
 import type { DocumentStorage } from '../documents/storage.js';
 
@@ -289,6 +290,48 @@ export interface ObjectDrainResult {
  * mostly belonged to businesses that no longer exist, so there is no tenant
  * to pin and no policy that could match one.
  */
+/**
+ * The three stages of one retention pass, in order, each surviving the
+ * others' failures (remediation R13).
+ *
+ * The order is deliberate and unchanged: retention and evidence delete rows
+ * and queue the objects those rows named, so draining LAST takes this pass's
+ * own work rather than leaving it for the next one six hours away.
+ *
+ * What changed is that the order is no longer also a dependency. These used
+ * to be chained through `.then`, so a retention failure meant the drain
+ * never ran at all: an error about a merchant's records six months old
+ * stopped Rekoda deleting a photograph it had already promised to delete,
+ * for six hours, for no related reason. A promise to delete somebody's
+ * data is exactly the wrong thing to make conditional on an unrelated job
+ * succeeding.
+ *
+ * Each stage reports its own failure rather than one catch describing all
+ * three, which also means the log finally names which one broke.
+ *
+ * Split into a function so the property is testable. As a chain inside a
+ * six-hourly timer it could only be asserted by reading it.
+ */
+export async function runRetentionPass(
+  deps: RetentionSweepDeps & { storage: DocumentStorage },
+): Promise<void> {
+  try {
+    await sweepRetention(deps);
+  } catch (error: unknown) {
+    log.warn(`retention sweep failed: ${redactForLog(describeFailure(error))}`);
+  }
+  try {
+    await sweepEvidence(deps);
+  } catch (error: unknown) {
+    log.warn(`evidence sweep failed: ${redactForLog(describeFailure(error))}`);
+  }
+  try {
+    await drainObjectDeletions(deps);
+  } catch (error: unknown) {
+    log.warn(`object drain failed: ${redactForLog(describeFailure(error))}`);
+  }
+}
+
 export async function drainObjectDeletions(
   deps: { workerDb: Db; storage: DocumentStorage },
   now = new Date(),
