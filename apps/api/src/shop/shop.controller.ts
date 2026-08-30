@@ -416,7 +416,13 @@ export class PublicShopController {
           }
           placed = run.result;
         } else {
-          placed = await placeOrderWork(tx, input);
+          /* The branch stays for one release so a rollback has somewhere to
+           * land, but it must not take an order: it skips entitlement and
+           * takes no idempotency key, and a shop quietly selling through it
+           * is the drift this default removes. */
+          throw new Error(
+            'REKODA_COMMAND_PLACE_ORDER is off. The legacy order path no longer places orders.',
+          );
         }
 
         return {
