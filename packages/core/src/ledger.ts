@@ -376,25 +376,46 @@ export function postPurchase(args: {
 export function postProviderPayment(args: {
   memo: string;
   allocatedK: Kobo;
+  /**
+   * Money that arrived beyond what the invoice still owed (PR-137).
+   *
+   * The asset side must show what the provider actually took, not what the
+   * invoice happened to need. Debiting only `allocatedK` and dropping the
+   * rest describes a payment that is smaller than the one the customer made,
+   * and the difference is real money with nowhere to be: the merchant's cash
+   * reads low, and what they owe the customer does not appear at all.
+   *
+   * So the excess is credited to CUSTOMER_CREDIT, the same liability a credit
+   * note creates. That is what `gates.ts` has always told the merchant would
+   * happen - "Paid over by X. I will note it as a credit." - and until now
+   * only the chat path kept the promise.
+   */
+  overpaidK?: Kobo;
   providerFeeK?: Kobo;
   feePolicy?: 'customer_bearing' | 'merchant_bearing' | 'platform_bearing';
 }): Posting {
   const feeK = args.providerFeeK ?? 0;
+  const overpaidK = args.overpaidK ?? 0;
   const policy = args.feePolicy ?? 'merchant_bearing';
-  if (args.allocatedK <= 0 || feeK < 0) {
+  if (args.allocatedK <= 0 || feeK < 0 || overpaidK < 0) {
     throw new UnbalancedPostingError(args.memo, args.allocatedK, feeK);
   }
 
+  /* What the provider actually received, which is what the asset side owes
+   * its debit to. The fee comes out of this, not out of the allocation. */
+  const receivedK = args.allocatedK + overpaidK;
+
   const lines: LedgerLine[] = [];
   if (policy === 'merchant_bearing' && feeK > 0) {
-    const settlementK = args.allocatedK - feeK;
+    const settlementK = receivedK - feeK;
     if (settlementK < 0) throw new UnbalancedPostingError(args.memo, args.allocatedK, feeK);
     if (settlementK > 0) lines.push(line('BANK_PAYSTACK', settlementK, 0));
     lines.push(line('EXPENSES', feeK, 0));
   } else {
-    lines.push(line('BANK_PAYSTACK', args.allocatedK, 0));
+    lines.push(line('BANK_PAYSTACK', receivedK, 0));
   }
   lines.push(line('ACCOUNTS_RECEIVABLE', 0, args.allocatedK));
+  if (overpaidK > 0) lines.push(line('CUSTOMER_CREDIT', 0, overpaidK));
 
   const posting = { memo: args.memo, lines };
   assertBalanced(posting);
