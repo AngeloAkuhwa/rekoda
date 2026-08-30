@@ -276,6 +276,203 @@ export interface SaleMovements {
  * Returns how many lines moved, which is what lets a caller say "3 of 5 lines
  * came off stock" rather than implying the whole sale did.
  */
+/**
+ * The shelf could not cover this order (PR-138).
+ *
+ * An exception rather than a return value at the call site, because by the
+ * time the reservation runs the invoice and order rows are already written
+ * in the same transaction: unwinding them one by one would be a second
+ * implementation of rollback. Throwing takes the whole transaction with it,
+ * which is the only version that cannot leave half an order behind.
+ */
+export class InsufficientStock extends Error {
+  override readonly name = 'InsufficientStock';
+  constructor(readonly shortfalls: readonly StockShortfall[]) {
+    /* Names and numbers only. A shortfall carries no customer and no price,
+     * so this message is safe in an ordinary log. */
+    super(
+      `insufficient stock: ${shortfalls
+        .map((s) => `${s.name} wanted ${s.wanted}, ${s.onHand} on hand`)
+        .join('; ')}`,
+    );
+  }
+}
+
+/** A line the shelf could not cover, named so a caller can say which. */
+export interface StockShortfall {
+  productId: string;
+  name: string;
+  wanted: number;
+  onHand: number;
+}
+
+export type ReserveOutcome =
+  | { outcome: 'reserved'; movements: SaleMovements }
+  | { outcome: 'insufficient'; shortfalls: StockShortfall[] };
+
+/**
+ * Take stock for a sale, atomically (PR-138).
+ *
+ * The bug this exists to close: every caller used to read on-hand with a
+ * plain SELECT, decide, and record the movements later. Two customers
+ * reaching the last item both read one, both passed, and both bought it. The
+ * storefront did not even read - it recorded the movements and let the count
+ * go negative.
+ *
+ * The fix is the one `recordDelivery` already uses a few lines above for the
+ * weighted average: take `FOR UPDATE` on the product rows FIRST, re-sum the
+ * movements under that lock, and only then decide. A second transaction
+ * wanting the same product waits at the lock and re-sums after the first
+ * commits, so it sees the decremented figure rather than the stale one.
+ *
+ * Deliberately NOT a stored balance column. `on_hand` is `SUM(delta)` and is
+ * never stored (see the top of this file): a cached count is a second answer
+ * that can disagree with the movements, and reconciling the two is a worse
+ * problem than the one being solved.
+ *
+ * Products are locked in a stable order (by id) so two multi-line orders
+ * touching the same pair cannot deadlock by taking them opposite ways.
+ *
+ * A product the shop does not TRACK is not refused: the same rule
+ * `recordSaleMovements` has always kept. A merchant who never told Rekoda
+ * they stock something has not asked Rekoda to count it, and refusing a sale
+ * on a count nobody keeps would stop shops selling what they actually have.
+ */
+export async function reserveStockForOrder(
+  tx: TenantDb,
+  businessId: string,
+  items: ReadonlyArray<{ name: string; quantity: number }>,
+  sourceId: string,
+): Promise<ReserveOutcome> {
+  /* Resolve names to products first, so the lock is taken on ids in a
+   * deterministic order rather than in whatever order the cart arrived. */
+  const wanted = new Map<string, { name: string; quantity: number }>();
+  for (const item of items) {
+    const quantity = Math.ceil(item.quantity);
+    if (quantity <= 0) continue;
+    const product = await productByName(tx, businessId, item.name);
+    if (!product) continue; // untracked: not this function's business
+    const prior = wanted.get(product.id);
+    /* The same product on two lines is ONE reservation of the total. Locking
+     * per line would check each against the full shelf and let a cart of
+     * "2 wigs" and "2 wigs" pass on a shelf holding three. */
+    wanted.set(product.id, {
+      name: product.name,
+      quantity: (prior?.quantity ?? 0) + quantity,
+    });
+  }
+  if (wanted.size === 0)
+    return { outcome: 'reserved', movements: { moved: 0, costK: 0, uncosted: 0 } };
+
+  const ids = [...wanted.keys()].sort();
+
+  const idList = sql.join(
+    ids.map((id) => sql`${id}::uuid`),
+    sql`, `,
+  );
+
+  /**
+   * TWO STATEMENTS, and the split is the whole correctness argument.
+   *
+   * Taking the lock and summing the movements in ONE statement looks tidier
+   * and is wrong under READ COMMITTED. When a blocked `FOR UPDATE` is
+   * released, PostgreSQL re-reads the LOCKED ROW at the new snapshot, but a
+   * correlated subquery in the select list still evaluates against the
+   * statement's ORIGINAL snapshot. The lock would be held honestly while the
+   * on-hand figure beside it stayed the stale one the waiter arrived with,
+   * which is exactly the race this function exists to remove. The
+   * concurrency test at two customers passes on that version by timing; at
+   * eight it sells a shelf of three to all eight.
+   *
+   * So: lock first, and nothing else.
+   */
+  const locked = await tx.execute<{ id: string; unit_cost_k: string | number | null }>(sql`
+    SELECT p.id, p.unit_cost_k
+      FROM products p
+     WHERE p.business_id = ${businessId}::uuid
+       AND p.id IN (${idList})
+     ORDER BY p.id
+       FOR UPDATE
+  `);
+
+  /* Then sum, in a NEW statement, which takes a fresh snapshot now that the
+   * rows are ours. Every committed movement is visible here, including those
+   * written by the transaction we just waited for. */
+  const sums = await tx.execute<{ product_id: string; on_hand: number }>(sql`
+    SELECT m.product_id, coalesce(sum(m.delta), 0)::int AS on_hand
+      FROM inventory_movements m
+     WHERE m.business_id = ${businessId}::uuid
+       AND m.product_id IN (${idList})
+     GROUP BY m.product_id
+  `);
+  const onHandByProduct = new Map([...sums].map((row) => [row.product_id, row.on_hand]));
+
+  /**
+   * Absence from the sums IS "never counted" (W3, PR-088).
+   *
+   * A product with no movement history is not stock-tracked, and inventing an
+   * empty shelf for it would refuse a service nobody counts - which is most
+   * of what a new merchant lists. `onHandByIds` draws exactly this
+   * distinction with an EXISTS, and the GROUP BY above gives it for free: a
+   * product with no rows is simply not in the map.
+   */
+  const held = new Map(
+    [...locked].map((row) => [
+      row.id,
+      {
+        ...row,
+        on_hand: onHandByProduct.get(row.id) ?? 0,
+        counted: onHandByProduct.has(row.id),
+      },
+    ]),
+  );
+  const shortfalls: StockShortfall[] = [];
+  for (const [productId, line] of wanted) {
+    const row = held.get(productId);
+    if (!row) continue;
+    /* Only a shelf somebody counts can be short. The movement is still
+     * recorded below either way, so an uncounted product becomes counted
+     * from its first sale, exactly as it did before. */
+    if (row.counted && row.on_hand < line.quantity) {
+      shortfalls.push({
+        productId,
+        name: line.name,
+        wanted: line.quantity,
+        onHand: row.on_hand,
+      });
+    }
+  }
+  /* All or nothing. A partial order the customer did not compose is worse
+   * than a refusal they can act on. */
+  if (shortfalls.length > 0) return { outcome: 'insufficient', shortfalls };
+
+  let moved = 0;
+  let costK = 0;
+  let uncosted = 0;
+  for (const productId of ids) {
+    const line = wanted.get(productId)!;
+    const row = held.get(productId);
+    if (!row) continue;
+    const unitCostK = row.unit_cost_k === null ? null : Number(row.unit_cost_k);
+    await recordMovement(tx, {
+      businessId,
+      productId,
+      delta: -line.quantity,
+      reason: 'sale',
+      sourceType: 'invoice',
+      sourceId,
+      /* The ORIGINAL ISSUE COST, carried on the outbound movement
+       * (Appendix B) - what a customer return restores at. */
+      unitCostK,
+    });
+    moved += 1;
+    const lineCostK = costOfQuantityK(unitCostK, line.quantity);
+    if (lineCostK === null) uncosted += 1;
+    else costK += lineCostK;
+  }
+  return { outcome: 'reserved', movements: { moved, costK, uncosted } };
+}
+
 export async function recordSaleMovements(
   tx: TenantDb,
   businessId: string,

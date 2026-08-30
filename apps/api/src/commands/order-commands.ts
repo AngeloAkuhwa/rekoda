@@ -133,12 +133,33 @@ export async function placeOrderWork(
     singletonKey: `link:${issued.invoiceId}`,
   });
 
-  const moved = await stockRepo.recordSaleMovements(
+  /**
+   * THE AUTHORITATIVE STOCK DECISION (PR-138).
+   *
+   * `validateCatalogueOrderWork` checks on-hand too, but it reads without a
+   * lock and returns before this transaction begins: it is a cheap early
+   * refusal, not a guarantee. This is the guarantee. It locks the product
+   * rows, re-sums the movements under the lock, and refuses the whole order
+   * if the shelf moved in between - which is exactly what happens when two
+   * customers reach the last item at once.
+   *
+   * Both ingresses arrive here. The storefront never checked stock at all
+   * before this, so this is where it starts.
+   */
+  const reserved = await stockRepo.reserveStockForOrder(
     tx,
     input.businessId,
     items,
     issued.invoiceNumber,
   );
+  if (reserved.outcome === 'insufficient') {
+    /* Thrown rather than returned: the invoice and the order rows above are
+     * already written in this transaction, and the only honest way to unmake
+     * them is to take the transaction down with them. The caller turns this
+     * into the same `insufficient_stock` refusal the pre-check gives. */
+    throw new stockRepo.InsufficientStock(reserved.shortfalls);
+  }
+  const moved = reserved.movements;
   if (moved.costK > 0) {
     await issueRepo.writePosting(
       tx,
@@ -393,12 +414,24 @@ export async function validateCatalogueOrderWork(
     singletonKey: `link:${issued.invoiceId}`,
   });
 
-  const moved = await stockRepo.recordSaleMovements(
+  /**
+   * Same authoritative reservation as the storefront path (PR-138).
+   *
+   * `validateCatalogueOrderWork` already refused an obviously short cart,
+   * but it read on-hand without a lock and returned before this transaction
+   * opened. Between its answer and this line another customer can take the
+   * last item; only the lock below can tell.
+   */
+  const reserved = await stockRepo.reserveStockForOrder(
     tx,
     input.businessId,
     items,
     issued.invoiceNumber,
   );
+  if (reserved.outcome === 'insufficient') {
+    throw new stockRepo.InsufficientStock(reserved.shortfalls);
+  }
+  const moved = reserved.movements;
   if (moved.costK > 0) {
     await issueRepo.writePosting(
       tx,
