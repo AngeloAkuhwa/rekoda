@@ -930,6 +930,41 @@ describe('grandfathering through the catalogue (BL2, PR-100)', () => {
     expect(renewal?.amountK).toBe(990_000);
   });
 
+  it('a merchant who joins after the repricing pays the new price', async () => {
+    /* The other half of grandfathering, and the half that keeps the fix
+     * honest (remediation R8). Pinning is only correct if it pins the
+     * people who were sold a version and nobody else: a pin that also
+     * held NEW merchants to version 1 would read as "grandfathering
+     * works" on every test above while quietly making a repricing
+     * unshippable. */
+    const { businessId: pinned, auth: pinnedAuth } = await onboard('+2348177100091');
+    await putOnPlan(
+      pinned,
+      'chat',
+      new Date(Date.now() - 30 * 86_400_000),
+      new Date(Date.now() + 86_400_000),
+    );
+
+    await planCatalogueRepo.publishPlanVersion(ownerDb, {
+      planId: 'chat',
+      name: 'Rekoda Chat',
+      seats: 1,
+      effectiveFrom: new Date(),
+      entitlements: ['REKODA_CHAT'],
+      allowances: { AI_ACTIONS: 300, DOCUMENT_GENERATION: 100 },
+      prices: [{ currency: 'NGN', billingInterval: 'monthly', amountMinor: 1_490_000 }],
+    });
+
+    const { businessId: fresh, auth: freshAuth } = await onboard('+2348177100092');
+    await putOnPlan(fresh, 'chat', new Date(), new Date(Date.now() + 30 * 86_400_000));
+
+    /* Asserted together, because either figure alone is half the claim. */
+    expect({
+      pinned: (await overviewOf(pinnedAuth)).priceK,
+      fresh: (await overviewOf(freshAuth)).priceK,
+    }).toEqual({ pinned: 990_000, fresh: 1_490_000 });
+  });
+
   it('the data path and the constant path quote one another exactly', async () => {
     /* The cutover's validation: with the catalogue unversioned, the flag
      * must not be observable. Every figure the overview quotes agrees. */
