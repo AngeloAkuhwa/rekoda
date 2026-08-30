@@ -177,7 +177,7 @@ describe('booking outcomes (§21–25)', () => {
     expect(Number(invoice?.balance_due_k)).toBe(6_000_000);
   });
 
-  it('books an overpayment conservatively: invoice settles, the excess is an EXCEPTION', async () => {
+  it('books an overpayment in full: invoice settles, the excess becomes a credit', async () => {
     const businessId = await seedBusiness();
     const { intent } = await seedObligation(businessId);
 
@@ -197,14 +197,32 @@ describe('booking outcomes (§21–25)', () => {
     expect(recon?.status).toBe('EXCEPTION');
     expect(Number(recon?.outstanding_k)).toBe(-5_000_000);
 
-    // And the ledger holds the allocated portion, not the gross.
+    /*
+     * The ledger holds the GROSS, and this assertion is a correction (PR-137).
+     *
+     * It previously read `toBe(15_000_000)` and was described as booking the
+     * overpayment "conservatively". It was not conservative: ₦50,000 of money
+     * the customer really paid sat in the `payments` row and appeared in no
+     * account, so the merchant's cash read low and the credit they owed the
+     * customer existed nowhere a statement could find it. Conservative would
+     * be recognising the liability, which is what now happens.
+     */
     const bank = await one<{ d: number }>(
       businessId,
       sql`SELECT coalesce(sum(e.debit_k), 0)::bigint AS d
            FROM ledger_entries e JOIN accounts a ON a.id = e.account_id
            WHERE a.code = '1010'`,
     );
-    expect(Number(bank?.d)).toBe(15_000_000);
+    expect(Number(bank?.d)).toBe(20_000_000);
+
+    // The excess is a liability to the customer, not a silent difference.
+    const credit = await one<{ c: number }>(
+      businessId,
+      sql`SELECT coalesce(sum(e.credit_k), 0)::bigint AS c
+           FROM ledger_entries e JOIN accounts a ON a.id = e.account_id
+           WHERE a.system_role = 'CUSTOMER_CREDIT'`,
+    );
+    expect(Number(credit?.c)).toBe(5_000_000);
   });
 
   it('flags money against an already-settled invoice as duplicate — nothing downstream fires', async () => {
@@ -277,6 +295,134 @@ describe('booking outcomes (§21–25)', () => {
     // The payment row exists — the money is real — but the books wait.
     const n = await one<{ n: number }>(businessId, sql`SELECT count(*)::int AS n FROM payments`);
     expect(n?.n).toBe(1);
+  });
+});
+
+describe('a payment larger than the invoice (PR-137)', () => {
+  /**
+   * The invariant the two audits disagreed about, settled here.
+   *
+   * Before this, `bookVerifiedPayment` clamped the posting to `allocatedK`
+   * while recording the full `confirmedAmountK` on the payment row. The two
+   * differed by exactly the overpayment, and that difference was money the
+   * ledger never saw: cash understated, and the credit owed to the customer
+   * absent from every statement. The reconciliation row already called it
+   * `overpaid`; only the books did not.
+   */
+  async function overpay(businessId: string, invoiceTotalK: number, paidK: number) {
+    const { sale, intent } = await withBusiness(db, businessId, async (tx) => {
+      const sale = await issueRepo.issueSale(tx, {
+        businessId,
+        customerId: null,
+        customerToken: 'CUSTOMER_OVER',
+        items: [{ name: 'wig', quantity: 1, unitPriceK: invoiceTotalK }],
+        subtotalK: invoiceTotalK,
+        discountK: 0,
+        deliveryFeeK: 0,
+        vatK: 0,
+        totalK: invoiceTotalK,
+        paidK: 0,
+        balanceDueK: invoiceTotalK,
+        method: 'transfer',
+        sourceType: 'chat',
+        sourceId: `over-${invoiceTotalK}-${paidK}`,
+        actor: 'system',
+      });
+      const intent = await paymentsHub.createIntent(tx, {
+        businessId,
+        reference: paymentReference(new Date(), (n) => randomBytes(n)),
+        expectedAmountK: invoiceTotalK,
+        providerType: 'paystack',
+        invoiceId: sale.invoiceId,
+      });
+      return { sale, intent };
+    });
+    const booked = await withBusiness(db, businessId, (tx) => book(tx, businessId, intent, paidK));
+    return { sale, intent, booked };
+  }
+
+  const ledgerByRole = (businessId: string) =>
+    withBusiness(db, businessId, (tx) =>
+      tx.execute<{ system_role: string; dr: number; cr: number }>(sql`
+        SELECT a.system_role, SUM(e.debit_k)::int AS dr, SUM(e.credit_k)::int AS cr
+          FROM ledger_entries e JOIN accounts a ON a.id = e.account_id
+         WHERE e.business_id = ${businessId}::uuid
+         GROUP BY a.system_role`),
+    );
+
+  it('puts the whole payment on the books, with the excess as a customer credit', async () => {
+    const businessId = await seedBusiness();
+    const { booked } = await overpay(businessId, 1_000_000, 1_200_000);
+
+    expect(booked.allocatedK).toBe(1_000_000);
+
+    const roles = new Map([...(await ledgerByRole(businessId))].map((r) => [r.system_role, r]));
+    /* The money side shows ₦12,000 because ₦12,000 arrived. */
+    expect(roles.get('BANK')?.dr).toBe(1_200_000);
+    /* The receivable is cleared by what it was owed, and no more. */
+    expect(roles.get('ACCOUNTS_RECEIVABLE')?.cr).toBe(1_000_000);
+    /* And the difference is a liability, not a rounding. */
+    expect(roles.get('CUSTOMER_CREDIT')?.cr).toBe(200_000);
+  });
+
+  it('records the same figure on the payment row and in the ledger', async () => {
+    const businessId = await seedBusiness();
+    await overpay(businessId, 1_000_000, 1_200_000);
+
+    /* The heart of the defect: these two used to differ silently. */
+    const paid = await one<{ amount_k: string }>(
+      businessId,
+      sql`SELECT amount_k FROM payments WHERE business_id = ${businessId}::uuid`,
+    );
+    const roles = new Map([...(await ledgerByRole(businessId))].map((r) => [r.system_role, r]));
+    expect(Number(paid?.amount_k)).toBe(roles.get('BANK')!.dr);
+  });
+
+  it('leaves the ledger balanced, as every posting must', async () => {
+    const businessId = await seedBusiness();
+    await overpay(businessId, 1_000_000, 1_200_000);
+
+    const totals = await one<{ dr: number; cr: number }>(
+      businessId,
+      sql`SELECT SUM(debit_k)::int AS dr, SUM(credit_k)::int AS cr
+            FROM ledger_entries WHERE business_id = ${businessId}::uuid`,
+    );
+    expect(totals?.dr).toBe(totals?.cr);
+  });
+
+  it('still flags the overpayment for a human', async () => {
+    const businessId = await seedBusiness();
+    await overpay(businessId, 1_000_000, 1_200_000);
+
+    /* Posting the money does not decide what to do with it. The exception
+     * stays: the merchant chooses refund or credit-against-next-order. */
+    const row = await one<{ status: string; reason: string; outstanding_k: string }>(
+      businessId,
+      sql`SELECT status, reason, outstanding_k FROM reconciliations
+           WHERE business_id = ${businessId}::uuid`,
+    );
+    expect(row?.status).toBe('EXCEPTION');
+    expect(row?.reason).toBe('overpaid');
+    expect(Number(row?.outstanding_k)).toBe(-200_000);
+  });
+
+  it('an exact payment creates no credit at all', async () => {
+    const businessId = await seedBusiness();
+    await overpay(businessId, 1_000_000, 1_000_000);
+
+    const roles = new Map([...(await ledgerByRole(businessId))].map((r) => [r.system_role, r]));
+    expect(roles.get('BANK')?.dr).toBe(1_000_000);
+    expect(roles.has('CUSTOMER_CREDIT')).toBe(false);
+  });
+
+  it('an underpayment is untouched by any of this', async () => {
+    const businessId = await seedBusiness();
+    const { booked } = await overpay(businessId, 1_000_000, 400_000);
+
+    expect(booked.allocatedK).toBe(400_000);
+    const roles = new Map([...(await ledgerByRole(businessId))].map((r) => [r.system_role, r]));
+    expect(roles.get('BANK')?.dr).toBe(400_000);
+    expect(roles.has('CUSTOMER_CREDIT')).toBe(false);
   });
 });
 

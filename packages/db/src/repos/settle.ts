@@ -47,6 +47,7 @@ import {
 import { accountByRole } from './accounts.js';
 import { accountIdsForKeys, nextDocumentNumber, writePosting } from './issue.js';
 import { appendVerification } from './provenance.js';
+import { grantCustomerCredit } from './customer-credits.js';
 import { recordPaymentAttempt, resolvePaymentAttempt } from './payments-hub.js';
 
 /** The same rekoda_reference booked twice — the terminal-intent gate's job,
@@ -231,6 +232,18 @@ export async function bookVerifiedPayment(
 
   const balanceK = Number(invoice.balance_due_k);
   const allocatedK = Math.min(input.confirmedAmountK, balanceK);
+  /**
+   * What arrived beyond the obligation (PR-137).
+   *
+   * Before this, the ledger was posted for `allocatedK` alone while the
+   * `payments` row recorded the full `confirmedAmountK`. The two disagreed by
+   * exactly this figure, and the difference was real money the books never
+   * showed: the merchant's cash read low, and the credit they owed the
+   * customer did not exist anywhere a statement could find it. The
+   * reconciliation row already knew (`overpaid`, negative outstanding); only
+   * the posting did not.
+   */
+  const overpaidK = Math.max(0, input.confirmedAmountK - allocatedK);
 
   /* Balance already zero: real money against a settled obligation. Recorded,
    * flagged as duplicate, and NOTHING downstream fires — no allocation, no
@@ -347,11 +360,20 @@ export async function bookVerifiedPayment(
   if (!ledgerTx) throw new Error('bookVerifiedPayment: ledger transaction insert returned no row');
 
   if (clearing) {
-    const arIds = await accountIdsForKeys(tx, input.businessId, ['ACCOUNTS_RECEIVABLE']);
+    const arIds = await accountIdsForKeys(
+      tx,
+      input.businessId,
+      overpaidK > 0 ? ['ACCOUNTS_RECEIVABLE', 'CUSTOMER_CREDIT'] : ['ACCOUNTS_RECEIVABLE'],
+    );
+    /* Clearing is debited what the PROVIDER took, so the settlement that
+     * later credits it the same gross leaves nothing behind. */
     await tx.insert(ledgerEntries).values(
       [
-        { accountId: clearing.id, debitK: allocatedK, creditK: 0 },
+        { accountId: clearing.id, debitK: allocatedK + overpaidK, creditK: 0 },
         { accountId: arIds.get('ACCOUNTS_RECEIVABLE')!, debitK: 0, creditK: allocatedK },
+        ...(overpaidK > 0
+          ? [{ accountId: arIds.get('CUSTOMER_CREDIT')!, debitK: 0, creditK: overpaidK }]
+          : []),
       ].map((entry) => ({
         businessId: input.businessId,
         transactionId: ledgerTx.id,
@@ -366,6 +388,7 @@ export async function bookVerifiedPayment(
     const posting = postProviderPayment({
       memo,
       allocatedK,
+      overpaidK,
       providerFeeK: input.providerFeeK,
       feePolicy: input.feePolicy,
     });
@@ -403,6 +426,30 @@ export async function bookVerifiedPayment(
   /** Positive: still owed. Negative: the unallocated excess a human resolves. */
   const outstandingK =
     reconciliation === 'overpaid' ? -(input.confirmedAmountK - allocatedK) : newBalanceK;
+  /**
+   * The subledger side of the overpayment (PR-137, §14.1).
+   *
+   * The ledger already carries the liability; this is what makes it a credit
+   * belonging to a NAMED customer, so it can be applied to their next invoice
+   * or refunded. Keyed on the payment id, so a retried webhook that reaches
+   * here twice owes the customer once.
+   *
+   * An invoice with no customer on it still gets the ledger liability above -
+   * the money is owed to somebody either way - but there is no subledger row
+   * to attach it to, and inventing a customer to hold it would be worse than
+   * leaving the exception queue to sort it out.
+   */
+  if (overpaidK > 0 && input.intent.customerId) {
+    await grantCustomerCredit(tx, {
+      businessId: input.businessId,
+      customerId: input.intent.customerId,
+      amountMinor: overpaidK,
+      sourceType: 'overpayment',
+      sourceId: paymentId,
+      reason: `Paid over on ${input.intent.reference}`,
+    });
+  }
+
   await recordReconciliation(tx, input, paymentId, status, reconciliation, outstandingK);
 
   await audit(tx, input, paymentId, allocatedK, bookedAt);

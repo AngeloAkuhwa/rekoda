@@ -701,3 +701,58 @@ describe('selling equipment', () => {
     expect(() => postAssetDisposal({ ...base, accumulatedK: 101 })).toThrow(RangeError);
   });
 });
+
+describe('a provider payment larger than the invoice (PR-137)', () => {
+  it('debits what arrived, not what the invoice needed', () => {
+    /* The defect this closes: the asset side was debited `allocatedK`, so a
+     * ₦12,000 payment against a ₦10,000 invoice put ₦10,000 on the books and
+     * lost ₦2,000 that the customer really paid. */
+    const posting = postProviderPayment({
+      memo: 'overpaid',
+      allocatedK: 1_000_000,
+      overpaidK: 200_000,
+    });
+    const bank = posting.lines.find((l) => l.account === 'BANK_PAYSTACK');
+    const ar = posting.lines.find((l) => l.account === 'ACCOUNTS_RECEIVABLE');
+    const credit = posting.lines.find((l) => l.account === 'CUSTOMER_CREDIT');
+
+    expect(bank?.debitK).toBe(1_200_000);
+    expect(ar?.creditK).toBe(1_000_000);
+    expect(credit?.creditK).toBe(200_000);
+  });
+
+  it('takes the provider fee out of what arrived, not out of the allocation', () => {
+    /* A merchant-borne fee is charged on the gross the provider took. Netting
+     * it against the allocation alone would understate the fee and leave the
+     * posting balanced on the wrong number. */
+    const posting = postProviderPayment({
+      memo: 'overpaid with fee',
+      allocatedK: 1_000_000,
+      overpaidK: 200_000,
+      providerFeeK: 18_000,
+      feePolicy: 'merchant_bearing',
+    });
+    const bank = posting.lines.find((l) => l.account === 'BANK_PAYSTACK');
+    const expense = posting.lines.find((l) => l.account === 'EXPENSES');
+
+    expect(bank?.debitK).toBe(1_182_000);
+    expect(expense?.debitK).toBe(18_000);
+    /* And it still balances, which `assertBalanced` inside the builder
+     * already refuses to let us get wrong. */
+    const debits = posting.lines.reduce((n, l) => n + l.debitK, 0);
+    const credits = posting.lines.reduce((n, l) => n + l.creditK, 0);
+    expect(debits).toBe(credits);
+  });
+
+  it('adds no credit line when the payment matched exactly', () => {
+    const posting = postProviderPayment({ memo: 'exact', allocatedK: 1_000_000 });
+    expect(posting.lines.find((l) => l.account === 'CUSTOMER_CREDIT')).toBeUndefined();
+    expect(posting.lines.find((l) => l.account === 'BANK_PAYSTACK')?.debitK).toBe(1_000_000);
+  });
+
+  it('refuses a negative excess rather than quietly netting it off', () => {
+    expect(() =>
+      postProviderPayment({ memo: 'bad', allocatedK: 1_000_000, overpaidK: -5 }),
+    ).toThrow();
+  });
+});
