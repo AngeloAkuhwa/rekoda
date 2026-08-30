@@ -26,6 +26,7 @@ import {
 } from '@rekoda/core/vault';
 import {
   conversationsRepo,
+  customerConsentRepo,
   entitlementsRepo,
   usageRepo,
   wabaRepo,
@@ -65,6 +66,10 @@ export type SendCustomerTextOutcome =
    * template can reach this customer. The caller selects one and goes
    * through `sendTemplate`, which is the send-time category selection. */
   | { outcome: 'window_closed' }
+  /* The customer asked this shop to stop. Not a failure and not a
+   * redirect: there is no template, no window and no retry that makes it
+   * sendable, and nothing is metered for a message nobody may receive. */
+  | { outcome: 'suppressed' }
   | { outcome: 'allowance_exhausted'; unit: 'SERVICE_MESSAGE' }
   | { outcome: 'send_failed'; unit: 'SERVICE_MESSAGE' }
   | { outcome: 'unavailable'; reason: 'connection_key_missing' | 'token_missing' };
@@ -75,6 +80,9 @@ export type SendTemplateOutcome =
   | { outcome: 'no_connection' }
   | { outcome: 'template_not_approved' }
   | { outcome: 'invalid_recipient' }
+  /* As above: a template is precisely the thing that reaches OUTSIDE the
+   * window, so this is the one that most needs the check. */
+  | { outcome: 'suppressed' }
   | { outcome: 'allowance_exhausted'; unit: UsageUnit }
   | { outcome: 'send_failed'; unit: UsageUnit }
   | { outcome: 'unavailable'; reason: 'connection_key_missing' | 'token_missing' };
@@ -129,6 +137,25 @@ export class WabaTemplateService {
       } catch (error) {
         if (error instanceof InvalidPhoneError) return { outcome: 'invalid_recipient' };
         throw error;
+      }
+
+      /* Consent before the meter (PR-135). A template is precisely the
+       * thing that reaches a customer OUTSIDE the 24-hour window, so a
+       * customer who said STOP must be refused here above all. */
+      if (
+        await customerConsentRepo.customerOptedOut(tx, {
+          businessId,
+          channelAccountId: connection.phoneNumberId,
+          customerHash: participantIndexFor(this.config.matchKey, {
+            businessId,
+            channelAccountId: connection.phoneNumberId,
+            keyVersion: PARTICIPANT_INDEX_KEY_VERSION,
+            normalisedParticipant: to,
+          }),
+          indexKeyVersion: PARTICIPANT_INDEX_KEY_VERSION,
+        })
+      ) {
+        return { outcome: 'suppressed' };
       }
 
       /* The §4.2 unit, DERIVED at send time from the registry's category
@@ -267,6 +294,20 @@ export class WabaTemplateService {
         keyVersion: PARTICIPANT_INDEX_KEY_VERSION,
         normalisedParticipant: to,
       });
+
+      /* Consent first, before the window and before the meter (PR-135).
+       * A customer who said STOP is not reachable by any route, so asking
+       * about windows or spending a unit on them would both be wrong. */
+      if (
+        await customerConsentRepo.customerOptedOut(tx, {
+          businessId,
+          channelAccountId: connection.phoneNumberId,
+          customerHash: blindIndex,
+          indexKeyVersion: PARTICIPANT_INDEX_KEY_VERSION,
+        })
+      ) {
+        return { outcome: 'suppressed' };
+      }
 
       /* The selection itself: the window answers BEFORE the meter moves.
        * A closed window consumed nothing (§4.3 rule 4) — it redirects. */

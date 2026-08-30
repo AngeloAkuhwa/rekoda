@@ -6,6 +6,8 @@ export * as apiKeysRepo from './repos/api-keys.js';
 export * as assetsRepo from './repos/assets.js';
 export * as billingRepo from './repos/billing.js';
 export * as customersRepo from './repos/customers.js';
+export * as customerConsentRepo from './repos/customer-consent.js';
+export * as objectDeletionsRepo from './repos/object-deletions.js';
 export * as entitlementsRepo from './repos/entitlements.js';
 export * as riskRepo from './repos/risk.js';
 export * as idempotencyRepo from './repos/idempotency.js';

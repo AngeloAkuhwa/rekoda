@@ -848,6 +848,20 @@
       "when": 1787412807000,
       "tag": "0120_key_fingerprints",
       "breakpoints": true
+    },
+    {
+      "idx": 121,
+      "version": "7",
+      "when": 1787412808000,
+      "tag": "0121_customer_message_optouts",
+      "breakpoints": true
+    },
+    {
+      "idx": 122,
+      "version": "7",
+      "when": 1787412809000,
+      "tag": "0122_pending_object_deletions",
+      "breakpoints": true
     }
   ]
 }

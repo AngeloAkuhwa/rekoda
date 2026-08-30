@@ -1,5 +1,10 @@
-import { GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import {
+  DeleteObjectCommand,
+  GetObjectCommand,
+  PutObjectCommand,
+  S3Client,
+} from '@aws-sdk/client-s3';
+import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join, normalize } from 'node:path';
 import { StorageUnavailable, type DocumentStorage, type StoredObject } from './storage.js';
 
@@ -53,6 +58,17 @@ export class R2Storage implements DocumentStorage {
       throw error;
     }
   }
+
+  /**
+   * S3's DELETE is already idempotent: deleting a key that is not there
+   * succeeds. That is exactly the contract the port asks for, so there is
+   * nothing to catch here - and a failure that IS raised (credentials,
+   * network, a bucket policy) must propagate, because the caller's whole job
+   * is to keep retrying until the object is really gone.
+   */
+  async delete(key: string): Promise<void> {
+    await this.client.send(new DeleteObjectCommand({ Bucket: this.bucket, Key: key }));
+  }
 }
 
 /**
@@ -94,6 +110,16 @@ export class LocalStorage implements DocumentStorage {
       throw error;
     }
   }
+
+  /** ENOENT is success: the object is not there, which is what was asked. */
+  async delete(key: string): Promise<void> {
+    try {
+      await unlink(this.resolve(key));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+      throw error;
+    }
+  }
 }
 
 /**
@@ -110,5 +136,17 @@ export class NoStorageConfigured implements DocumentStorage {
 
   get(): Promise<null> {
     return Promise.resolve(null);
+  }
+
+  /**
+   * Rejects, deliberately, where `get` resolves null.
+   *
+   * A read with no bucket has an honest empty answer. A DELETE with no bucket
+   * does not: reporting success would let the queue drop a promise it never
+   * kept, and on a deployment that later gains credentials the object would
+   * still be there with nothing left pointing at it.
+   */
+  delete(): Promise<never> {
+    return Promise.reject(new StorageUnavailable('R2 credentials are not set'));
   }
 }

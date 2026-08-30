@@ -313,6 +313,28 @@ const KEYWORDS: Readonly<Record<string, DeterministicIntent>> = {
 };
 
 /**
+ * Did a CUSTOMER ask a shop to stop, or to start again (PR-135)?
+ *
+ * The same words, and deliberately the same matching, as the merchant's
+ * STOP above: one vocabulary, so a customer who has used STOP anywhere
+ * else on WhatsApp finds it works here. What differs is entirely what the
+ * caller then DOES with it - a merchant's STOP is a global fact about
+ * Rekoda's messages to them, a customer's is a fact about one shop's
+ * messages to one person - which is why this returns the intent rather
+ * than acting, and why it is a separate function from `routeMessage`
+ * rather than a flag on it.
+ *
+ * Everything else answers null: a customer's ordinary message is the
+ * away assistant's business, not this function's.
+ */
+export function customerConsentIntent(raw: string): 'stop' | 'start' | null {
+  const keyword = KEYWORDS[normalise(raw)];
+  if (keyword?.kind === 'stop') return 'stop';
+  if (keyword?.kind === 'start') return 'start';
+  return null;
+}
+
+/**
  * Erasure. Deliberately the tightest matcher in the file.
  *
  * These are complete phrases with no room to drift, because the failure this

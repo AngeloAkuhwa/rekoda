@@ -1335,3 +1335,23 @@ export function graduationNudge(collectedK: number, capK: number): Reply {
       `Nothing changes today. This is just early notice so it never interrupts a sale.`,
   );
 }
+
+/**
+ * A customer told a merchant's shop to stop (PR-135).
+ *
+ * Deliberately different words from `optedOut()`, which a MERCHANT reads
+ * about their own books. This person is somebody's customer: they have no
+ * records with Rekoda, they did not sign up for anything, and the sentence
+ * should not imply otherwise. It names the shop's messages, not Rekoda's.
+ */
+export function customerOptedOut(): Reply {
+  return reply(
+    'Done. You will not get messages from this shop again.\n\n' +
+      'Reply *START* if you change your mind.',
+  );
+}
+
+/** And the way back. */
+export function customerOptedIn(): Reply {
+  return reply('Thank you. You will get messages from this shop again.');
+}

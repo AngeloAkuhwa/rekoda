@@ -36,6 +36,15 @@ WHERE business_id = '<id>' AND entity = 'customer_identities'
 ORDER BY created_at DESC LIMIT 5;
 ```
 
+One thing this lane deliberately does NOT remove: `customer_message_optouts`
+(PR-135). A customer who told that shop to stop messaging them is recorded
+under the participant blind index, not under a customer identity, and it
+holds no phone number to erase. Deleting those rows would resume messaging
+somebody who asked not to be messaged, which is the opposite of what an
+erasure lane is for. Both application roles have DELETE revoked on that
+table for the same reason; only lane 2, deleting the whole business, takes
+it, and only because there is no shop left to message from.
+
 ## Lane 2 — Full account deletion, on request (operator-executed)
 
 The lane behind `/data-deletion`'s 48-hour acknowledgment and 30-day
@@ -67,6 +76,28 @@ not undoable by anybody.
    only accepts abandoned trials (lane 3). This lane's deletions are
    executed as owner SQL against the named business id, and each batch is
    recorded in the incident-free change log below.
+
+   **Queue the objects BEFORE you delete the rows that name them** (PR-136).
+   Deleting a row has never deleted the file: the bytes are in R2 and the
+   database holds only the key, so once the row goes nothing left in the
+   estate knows what to delete. Run this first, in the same transaction as
+   the deletions where you can:
+
+   ```sql
+   -- as the owner, BEFORE deleting products / documents / payment_evidence
+   INSERT INTO pending_object_deletions (business_id, storage_key, reason)
+   SELECT id, storage_key, 'business_deleted' FROM documents WHERE business_id = '<id>'
+   UNION ALL SELECT id, image_key, 'business_deleted' FROM products
+     WHERE business_id = '<id>' AND image_key IS NOT NULL
+   UNION ALL SELECT id, media_ref, 'business_deleted' FROM payment_evidence
+     WHERE business_id = '<id>' AND media_ref IS NOT NULL
+   ON CONFLICT (storage_key) DO NOTHING;
+   ```
+
+   The worker's retention pass drains that queue against R2 within six
+   hours and deletes each row once the object is really gone. Do not delete
+   objects by hand: a hand-deleted object leaves no record that it went,
+   and a hand-deletion that fails halfway leaves no record of what did not.
 8. **Keep what the law keeps**: invoices, receipts, ledger entries and the
    journal survive until the financial retention period (`RETENTION.financialYears`,
    published on `/privacy#retention`) has elapsed for their year — with
@@ -95,12 +126,44 @@ SELECT business_id, reason, rows_deleted, deleted_at
 FROM retention_deletions ORDER BY deleted_at DESC LIMIT 20;
 ```
 
+The function also queues that business's R2 objects for deletion before it
+touches the rows that name them, and the same sweep pass drains the queue
+(PR-136). Both tables deliberately outlive the tenant, and both are
+excluded from the function's own delete loop for that reason.
+
+## The one number to watch: objects still owed
+
+`pending_object_deletions` holds deletions Rekoda has promised and not yet
+performed. **Empty is the healthy state**, and rows are deleted on success
+rather than marked done, so anything present is outstanding work:
+
+```sql
+SELECT reason, count(*), max(attempts) AS worst, min(enqueued_at) AS oldest
+FROM pending_object_deletions GROUP BY reason;
+
+-- what is stuck, and what R2 said about it
+SELECT attempts, last_error, enqueued_at, next_attempt_at
+FROM pending_object_deletions WHERE attempts > 0
+ORDER BY attempts DESC LIMIT 20;
+```
+
+A non-empty queue with a rising `attempts` means R2 is refusing us:
+credentials, bucket policy, or the bucket itself. Fix the cause. The queue
+never gives up and never drops a job, so nothing is lost while it is
+broken, but every hour it stays broken is an hour a merchant's documents
+outlive a deletion they were told had happened. Do not clear rows out of
+this table to make the number look better; the number is the point.
+
 ## What this runbook refuses to do
 
 - Delete financial records inside their retention period, for anyone,
   however firmly they ask. The page says so; this procedure is why the
   page is true.
 - Delete on an unverified request, however urgent it sounds.
+- Delete objects from R2 by hand, or clear rows out of
+  `pending_object_deletions` to tidy the queue. The queue is the only
+  record of what is owed; emptying it by hand converts a visible backlog
+  into a silent broken promise.
 - Improvise a retention period. Every period this runbook honours is in
   `@rekoda/core`'s `RETENTION` and published on `/privacy#retention`; if a
   case seems to need a different number, that is an owner decision and a

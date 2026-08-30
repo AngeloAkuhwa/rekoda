@@ -39,6 +39,8 @@ const ALL: Record<string, readonly replies.Reply[]> = {
   help: [replies.help()],
   optedOut: [replies.optedOut()],
   optedIn: [replies.optedIn()],
+  customerOptedOut: [replies.customerOptedOut()],
+  customerOptedIn: [replies.customerOptedIn()],
   cancelled: [replies.cancelled()],
   confirmErasure: [replies.confirmErasure(), replies.confirmErasure(4)],
   confirmationLapsed: [replies.confirmationLapsed('that stock change')],

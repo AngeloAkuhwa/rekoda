@@ -17,6 +17,19 @@ export interface DocumentStorage {
   put(key: string, body: Buffer, contentType: string): Promise<StoredObject>;
   /** For the authorised download path, and for tests to prove what was stored. */
   get(key: string): Promise<Buffer | null>;
+  /**
+   * Delete an object, for the erasure and retention paths (PR-136).
+   *
+   * MUST be idempotent: a key that is already gone is a success, not an
+   * error. The queue that drives this retries on failure, so a provider that
+   * reported "no such key" as a failure would keep a promise permanently
+   * unkeepable, and an operator would be staring at a backlog of work that
+   * was in fact already done.
+   *
+   * The bytes do not come back. Callers reach this only after the row that
+   * named the object has been deleted and committed.
+   */
+  delete(key: string): Promise<void>;
 }
 
 /**
