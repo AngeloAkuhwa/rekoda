@@ -447,3 +447,56 @@ export async function sellableByIds(
     .filter((r) => r.unitPriceK !== null)
     .map((r) => ({ id: r.id, name: r.name, unitPriceK: Number(r.unitPriceK) }));
 }
+
+/**
+ * The sellable rows a WABA catalogue cart names, by whatever identifier the
+ * merchant's Meta catalog uses for them (remediation R3).
+ *
+ * Meta's `product_retailer_id` is any non-empty string the merchant chose.
+ * Passing it to `sellableByIds` handed an arbitrary string to a uuid column,
+ * so a merchant whose catalog was built outside Rekoda did not get a refusal:
+ * they got `invalid input syntax for type uuid` and a dead job. The cast here
+ * runs the other way, column to text, so no input can raise.
+ *
+ * Two identifiers are honoured because two exist. `external_catalogue_id` is
+ * the merchant's own SKU. The product's uuid is what Rekoda itself publishes
+ * when there is no SKU, so a catalogue Rekoda pushed is one Rekoda can read
+ * back. A cart naming neither simply does not appear, and the caller refuses
+ * the whole cart exactly as it already did for a de-listed item.
+ */
+export async function sellableByRetailerIds(
+  tx: TenantDb,
+  businessId: string,
+  retailerIds: readonly string[],
+): Promise<Array<{ retailerId: string; id: string; name: string; unitPriceK: number }>> {
+  if (retailerIds.length === 0) return [];
+  const wanted = [...new Set(retailerIds)];
+  /* Bound parameters, one per id, the same list shape `reserveStockForOrder`
+   * uses. A bare array here is expanded by the driver into `($1, $2)`, which
+   * is a record and cannot be cast to text[]. */
+  const asked = sql.join(
+    wanted.map((id) => sql`(${id})`),
+    sql`, `,
+  );
+  const rows = await tx.execute<{
+    retailer_id: string;
+    id: string;
+    name: string;
+    unit_price_k: string | number | null;
+  }>(sql`
+    SELECT w.retailer_id, p.id, p.name, p.unit_price_k
+      FROM (VALUES ${asked}) AS w(retailer_id)
+      JOIN products p
+        ON p.business_id = ${businessId}::uuid
+       AND p.active = 1
+       AND (p.external_catalogue_id = w.retailer_id OR p.id::text = w.retailer_id)
+  `);
+  return [...rows]
+    .filter((r) => r.unit_price_k !== null)
+    .map((r) => ({
+      retailerId: r.retailer_id,
+      id: r.id,
+      name: r.name,
+      unitPriceK: Number(r.unit_price_k),
+    }));
+}

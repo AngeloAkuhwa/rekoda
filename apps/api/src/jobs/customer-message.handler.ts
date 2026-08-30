@@ -454,12 +454,15 @@ async function ingestCatalogueOrder(
   if (existing) return null; // Redelivered webhook: the order already stands.
 
   const wanted = inbound.order?.items ?? [];
-  const products = await catalogueRepo.sellableByIds(
+  /* Meta's retailer id is whatever string the merchant's catalog uses, which
+   * is not necessarily a Rekoda uuid. Resolving it as one turned a cart from
+   * an externally built catalog into a dead job rather than a refusal. */
+  const products = await catalogueRepo.sellableByRetailerIds(
     tx,
     businessId,
     wanted.map((item) => item.retailerId),
   );
-  const byId = new Map(products.map((p) => [p.id, p]));
+  const byId = new Map(products.map((p) => [p.retailerId, p]));
   if (wanted.some((item) => !byId.has(item.retailerId))) {
     log.warn('customer.order: cart names an item the shelf does not sell; order refused');
     return 'order refused: unknown or unsellable item';

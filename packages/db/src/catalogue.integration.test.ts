@@ -8,7 +8,7 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createDb, withBusiness, type Db } from './client.js';
-import { catalogueRepo, identity, stockRepo } from './index.js';
+import { catalogueRepo, identity, sql, stockRepo } from './index.js';
 import { migrate, requireUrls, truncateAll, type Urls } from './testing.js';
 
 let urls: Urls;
@@ -177,5 +177,98 @@ describe('what the catalogue says about the whole shop', () => {
     expect(
       await withBusiness(db, businessId, (tx) => catalogueRepo.catalogueFor(tx, businessId)),
     ).toEqual({ rows: [], count: 0, listed: 0, hidden: 0, unpriced: 0 });
+  });
+});
+
+describe('resolving a WABA cart by the retailer id Meta sent (remediation R3)', () => {
+  async function shelf(businessId: string, name: string, unitPriceK: number, sku?: string) {
+    return withBusiness(db, businessId, async (tx) => {
+      const product = await stockRepo.findOrCreateProduct(tx, businessId, name);
+      await catalogueRepo.editProduct(tx, businessId, product.id, { unitPriceK });
+      if (sku !== undefined) {
+        await tx.execute(
+          sql`UPDATE products SET external_catalogue_id = ${sku}
+               WHERE business_id = ${businessId}::uuid AND id = ${product.id}::uuid`,
+        );
+      }
+      return product.id;
+    });
+  }
+
+  it('does not raise on an id that is not a uuid', async () => {
+    const businessId = await seedBusiness('+2348120000101');
+    await shelf(businessId, 'wig', 150_000);
+
+    /* This is the bug. `inArray(products.id, ...)` handed 'BLACK-SHOE-XL' to
+     * a uuid column and PostgreSQL raised `invalid input syntax for type
+     * uuid`, so a merchant whose Meta catalog was built outside Rekoda got a
+     * dead job instead of a refusal. */
+    await expect(
+      withBusiness(db, businessId, (tx) =>
+        catalogueRepo.sellableByRetailerIds(tx, businessId, ['BLACK-SHOE-XL']),
+      ),
+    ).resolves.toEqual([]);
+  });
+
+  it("finds a product by the merchant's own SKU", async () => {
+    const businessId = await seedBusiness('+2348120000102');
+    const wigId = await shelf(businessId, 'wig', 150_000, 'BLACK-SHOE-XL');
+
+    expect(
+      await withBusiness(db, businessId, (tx) =>
+        catalogueRepo.sellableByRetailerIds(tx, businessId, ['BLACK-SHOE-XL']),
+      ),
+    ).toEqual([{ retailerId: 'BLACK-SHOE-XL', id: wigId, name: 'wig', unitPriceK: 150_000 }]);
+  });
+
+  it('still finds a product by the uuid Rekoda publishes when there is no SKU', async () => {
+    const businessId = await seedBusiness('+2348120000103');
+    const wigId = await shelf(businessId, 'wig', 150_000);
+
+    expect(
+      await withBusiness(db, businessId, (tx) =>
+        catalogueRepo.sellableByRetailerIds(tx, businessId, [wigId]),
+      ),
+    ).toEqual([{ retailerId: wigId, id: wigId, name: 'wig', unitPriceK: 150_000 }]);
+  });
+
+  it('leaves out an unpriced product, so the caller refuses the whole cart', async () => {
+    const businessId = await seedBusiness('+2348120000104');
+    const bare = await withBusiness(db, businessId, (tx) =>
+      stockRepo.findOrCreateProduct(tx, businessId, 'unpriced'),
+    );
+    await withBusiness(db, businessId, (tx) =>
+      tx.execute(
+        sql`UPDATE products SET external_catalogue_id = 'NO-PRICE'
+             WHERE business_id = ${businessId}::uuid AND id = ${bare.id}::uuid`,
+      ),
+    );
+
+    expect(
+      await withBusiness(db, businessId, (tx) =>
+        catalogueRepo.sellableByRetailerIds(tx, businessId, ['NO-PRICE']),
+      ),
+    ).toEqual([]);
+  });
+
+  it("never reaches another business's shelf, whatever id is asked for", async () => {
+    const mine = await seedBusiness('+2348120000105');
+    const theirs = await seedBusiness('+2348120000106');
+    const theirWig = await shelf(theirs, 'wig', 150_000, 'SHARED-SKU');
+
+    expect(
+      await withBusiness(db, mine, (tx) =>
+        catalogueRepo.sellableByRetailerIds(tx, mine, ['SHARED-SKU', theirWig]),
+      ),
+    ).toEqual([]);
+  });
+
+  it('asks nothing of the database for an empty cart', async () => {
+    const businessId = await seedBusiness('+2348120000107');
+    expect(
+      await withBusiness(db, businessId, (tx) =>
+        catalogueRepo.sellableByRetailerIds(tx, businessId, []),
+      ),
+    ).toEqual([]);
   });
 });

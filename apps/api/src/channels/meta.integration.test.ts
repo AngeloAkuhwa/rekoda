@@ -690,6 +690,57 @@ describe('a catalogue cart becomes an order (spec §3.2; W3, PR-087)', () => {
      * would pay for a guess. The message still landed on their thread. */
     expect([...(await ordersOf(businessId))]).toHaveLength(0);
   });
+
+  it('refuses a cart naming a SKU rather than crashing on it (remediation R3)', async () => {
+    const { businessId, wigId } = await seedCommerceMerchant('+2348030002224', 'PN-CART-4');
+
+    /* A merchant whose Meta catalog was built outside Rekoda sends their own
+     * SKU. It reached `inArray(products.id, ...)` on a uuid column, so the
+     * job died with `invalid input syntax for type uuid` and the customer
+     * heard nothing at all. A string nothing matches is a refusal. */
+    await post(
+      orderPayload('2349097773444', 'wamid.CART.4', 'PN-CART-4', [
+        { retailerId: wigId, quantity: 1 },
+        { retailerId: 'BLACK-SHOE-XL', quantity: 1 },
+      ]),
+    );
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+
+    expect([...(await ordersOf(businessId))]).toHaveLength(0);
+    /* The job finished. A crash would have left it pending for a retry that
+     * fails the same way five times. */
+    const live = [
+      ...(await withBusiness(db, businessId, (tx) =>
+        tx.execute<{ n: string }>(
+          sql`SELECT count(*)::text AS n FROM jobs
+               WHERE business_id = ${businessId}::uuid AND state <> 'done'`,
+        ),
+      )),
+    ];
+    expect(live[0]!.n).toBe('0');
+  });
+
+  it("prices a cart off the merchant's own SKU when the shelf carries one", async () => {
+    const { businessId, wigId } = await seedCommerceMerchant('+2348030002225', 'PN-CART-5');
+    await withBusiness(db, businessId, (tx) =>
+      tx.execute(
+        sql`UPDATE products SET external_catalogue_id = 'WIG-001'
+             WHERE business_id = ${businessId}::uuid AND id = ${wigId}::uuid`,
+      ),
+    );
+
+    await post(
+      orderPayload('2349097773555', 'wamid.CART.5R3', 'PN-CART-5', [
+        { retailerId: 'WIG-001', quantity: 2 },
+      ]),
+    );
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+
+    const placed = [...(await ordersOf(businessId))];
+    expect(placed).toHaveLength(1);
+    /* 2 x the merchant's own 150,000, read off their row as always. */
+    expect(placed[0]).toMatchObject({ total_k: '300000', external_ref: 'meta:wamid.CART.5R3' });
+  });
 });
 
 /**
