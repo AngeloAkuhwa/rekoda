@@ -86,6 +86,11 @@ jobs:
       - name: Retired claims stay retired
         if: steps.ws.outputs.present == 'true'
         run: node scripts/check-retired-claims.mjs
+      # Every PR that touches a route can silently make the published
+      # reference wrong, and a developer builds against that reference.
+      - name: The API reference describes the API
+        if: steps.ws.outputs.present == 'true'
+        run: node scripts/check-openapi.mjs
       - name: Docs-only repository — nothing to build yet
         if: steps.ws.outputs.present == 'false'
         run: echo "No pnpm workspace yet (pre-M0). Skipping build steps."
