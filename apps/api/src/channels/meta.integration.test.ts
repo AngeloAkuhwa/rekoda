@@ -4962,6 +4962,86 @@ describe('a receipt photo', () => {
     expect(stubTransport.requests[1]!.toolName).toBe('record_business_command');
     expect(stubSender.lastText).toContain('Reply *yes*');
   });
+
+  /**
+   * A2, the probe the fix queue gated R5 on: does a retried media job buy a
+   * second AI call and a second billed unit?
+   *
+   * The mechanism worth checking is specific. The runner makes the handler
+   * and `markDone` ONE transaction, so a throw rolls back everything the
+   * handler wrote — including the row that records the message as seen. But
+   * the meter deliberately runs on its OWN connection, because a counter must
+   * not be held open across a network call. If those two facts combine badly,
+   * a job that fails after the engine has read the page would leave the unit
+   * spent and the guard gone, and the retry would read and bill again.
+   */
+  describe('a retry must not buy a second reading (A2)', () => {
+    it('reads once and bills once, however many passes the runner makes', async () => {
+      const business = await seedMerchant('+2348031234599');
+      arrangePhoto();
+      stubOcr.answerWith({ text: 'DIESEL 12,000', confidence: 0.95 });
+
+      await post(photoPayload('2348031234599', 'wamid.A2.ONCE'));
+
+      const runner = buildRunner(workerDb, db, deps);
+      for (let pass = 0; pass < 5; pass += 1) await runner.runOnce();
+
+      expect(stubOcr.calls).toHaveLength(1);
+      expect(await readsUsed(business.id)).toBe(1);
+    });
+
+    it('does not read or bill twice when Meta redelivers the same message', async () => {
+      const business = await seedMerchant('+2348031234598');
+      arrangePhoto();
+      stubOcr.answerWith({ text: 'DIESEL 12,000', confidence: 0.95 });
+
+      /* Same wamid, twice on the wire, as a provider retry looks. */
+      await post(photoPayload('2348031234598', 'wamid.A2.REDELIVERED'));
+      await post(photoPayload('2348031234598', 'wamid.A2.REDELIVERED'));
+      await drain();
+
+      expect(stubOcr.calls).toHaveLength(1);
+      expect(await readsUsed(business.id)).toBe(1);
+    });
+
+    it('does not read or bill twice when the job fails AFTER the engine answered', async () => {
+      const business = await seedMerchant('+2348031234597');
+      arrangePhoto();
+      stubOcr.answerWith({ text: 'DIESEL 12,000', confidence: 0.95 });
+      /* The send is the last thing the handler does, so failing it fails the
+       * job with the reading already paid for. This is the shape the audit
+       * suspected, and the only one where the meter's own connection could
+       * outlive the rolled-back guard. */
+      stubSender.failWith();
+
+      await post(photoPayload('2348031234597', 'wamid.A2.LATE_FAILURE'));
+      await drain();
+
+      /* The first pass read the page and billed for it, then failed on the
+       * send. The job is not done; it is pending again behind a backoff. */
+      expect({ reads: stubOcr.calls.length, billed: await readsUsed(business.id) }).toEqual({
+        reads: 1,
+        billed: 1,
+      });
+
+      /* Bring the retry forward, which is the whole point. `drain` alone
+       * never reaches it, and a probe that stops at the line above proves
+       * nothing about retries at all. */
+      await db.execute(
+        sql`UPDATE jobs SET run_at = now() - interval '1 minute'
+             WHERE business_id = ${business.id}::uuid AND state = 'pending'`,
+      );
+      stubSender.reset();
+      await drain();
+
+      /* The retry may legitimately re-send the reply. It must not re-read the
+       * photograph or bill a second unit: the engine is what costs money. */
+      expect({ reads: stubOcr.calls.length, billed: await readsUsed(business.id) }).toEqual({
+        reads: 1,
+        billed: 1,
+      });
+    });
+  });
 });
 
 /**
