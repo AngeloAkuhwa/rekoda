@@ -417,3 +417,111 @@ describe('the announcements reach the production dispatcher', () => {
     expect(pass.delivered).toBe(1);
   });
 });
+
+describe('sandbox money never lands on real books (remediation R4)', () => {
+  async function readyToConfirm(businessId: string) {
+    const sale = await seedOpenInvoice(businessId);
+    const { intent } = await withBusiness(appDb, businessId, async (tx) => ({
+      intent: await paymentsHub.createIntent(tx, {
+        businessId,
+        reference: paymentReference(new Date(), (n) => randomBytes(n)),
+        expectedAmountK: 1_000_000,
+        providerType: 'paystack',
+        invoiceId: sale.invoiceId,
+        expiresAt: null,
+      }),
+    }));
+    const input: ConfirmPaymentInput = {
+      businessId,
+      intent: {
+        id: intent.id,
+        reference: intent.reference,
+        invoiceId: sale.invoiceId,
+        customerId: null,
+      },
+      confirmedAmountK: 1_000_000,
+      currency: 'NGN',
+      providerType: 'paystack',
+      providerRef: `TRX-${intent.reference}`,
+      providerStatus: 'success',
+      providerFeeK: 15_000,
+      feePolicy: 'merchant_bearing',
+      method: 'transfer',
+      paymentConnectionId: null,
+      actor: 'system:payments',
+      eventId: `evt-${intent.reference}`,
+    };
+    return { input, sale };
+  }
+
+  const connectKey = (businessId: string, providerEnvironment: 'LIVE' | 'TEST') =>
+    withBusiness(appDb, businessId, (tx) =>
+      paymentsHub.storeMerchantKey(tx, {
+        businessId,
+        providerType: 'paystack',
+        merchantKeyCipher: 'vault:blob',
+        merchantKeyTail: '4242',
+        providerEnvironment,
+      }),
+    );
+
+  it('refuses to book a TEST connection when the deployment is production', async () => {
+    const businessId = await seedBusiness();
+    await connectKey(businessId, 'TEST');
+    const { input } = await readyToConfirm(businessId);
+
+    /* The provider said `success`. It is telling the truth about its own
+     * sandbox, and that is exactly why the prefix check at submission is not
+     * enough on its own: this connection could have been stored before that
+     * check existed. */
+    await expect(
+      withBusiness(appDb, businessId, (tx) =>
+        confirmPaymentWork(tx, input, { requireLiveProvider: true }),
+      ),
+    ).rejects.toThrow(/TEST/);
+
+    expect(await count(businessId, 'payments')).toBe(0);
+    expect(await count(businessId, 'receipts')).toBe(0);
+  });
+
+  it('books a LIVE connection in production exactly as before', async () => {
+    const businessId = await seedBusiness();
+    await connectKey(businessId, 'LIVE');
+    const { input } = await readyToConfirm(businessId);
+
+    const booked = await withBusiness(appDb, businessId, (tx) =>
+      confirmPaymentWork(tx, input, { requireLiveProvider: true }),
+    );
+
+    expect(booked.receiptNumber).toMatch(/^RCT-/);
+    expect(await count(businessId, 'payments')).toBe(1);
+  });
+
+  it('leaves the platform subaccount path alone, which has its own live rule', async () => {
+    /* A NULL environment is not a merchant key at all. §47 already refuses a
+     * live platform key without written confirmation, and refusing here too
+     * would be answering a question nobody asked of this connection. */
+    const businessId = await seedBusiness();
+    const { input } = await readyToConfirm(businessId);
+
+    const booked = await withBusiness(appDb, businessId, (tx) =>
+      confirmPaymentWork(tx, input, { requireLiveProvider: true }),
+    );
+
+    expect(await count(businessId, 'payments')).toBe(1);
+    expect(booked.paymentId).toBeTruthy();
+  });
+
+  it('books a TEST connection outside production, because sandbox is where it belongs', async () => {
+    const businessId = await seedBusiness();
+    await connectKey(businessId, 'TEST');
+    const { input } = await readyToConfirm(businessId);
+
+    const booked = await withBusiness(appDb, businessId, (tx) =>
+      confirmPaymentWork(tx, input, { requireLiveProvider: false }),
+    );
+
+    expect(booked.paymentId).toBeTruthy();
+    expect(await count(businessId, 'payments')).toBe(1);
+  });
+});

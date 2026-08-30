@@ -16,7 +16,7 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 import { encryptFacet } from '@rekoda/core/vault';
 import { paymentsHub, settleRepo, withBusiness, type Db } from '@rekoda/db';
 import type { SubmitConnectionRequest } from '@rekoda/contracts';
-import { CONFIG, type ApiConfig } from '../config.js';
+import { CONFIG, isProductionEnv, type ApiConfig } from '../config.js';
 import { DB } from '../db/db.module.js';
 import { PAYMENT_PROVIDER, type PaymentProviderPort } from './provider.port.js';
 import { verifyPaystackKey } from './paystack.provider.js';
@@ -50,6 +50,19 @@ export type SubmitOutcome =
   | { state: 'submitted'; connection: ConnectionView; held?: 'awaiting_platform_confirmation' }
   /** Nothing stored: the deployment cannot hold the account number safely. */
   | { state: 'unavailable'; reason: 'connection_key_missing' };
+
+/**
+ * Which world a Paystack secret key's money is real in (remediation R4).
+ *
+ * Paystack's own convention, and the only signal available before a charge:
+ * `sk_live_` is real money, `sk_test_` is sandbox. Anything else is a shape
+ * we do not recognise, and an unrecognised key is treated as TEST rather than
+ * LIVE — the safe reading, since the cost of being wrong the other way is
+ * booking sandbox money against a merchant's real invoice.
+ */
+export function keyEnvironment(secretKey: string): 'LIVE' | 'TEST' {
+  return secretKey.startsWith('sk_live_') ? 'LIVE' : 'TEST';
+}
 
 @Injectable()
 export class PaymentConnectionsService {
@@ -179,6 +192,8 @@ export class PaymentConnectionsService {
   ): Promise<
     | { state: 'connected'; merchantKeyTail: string }
     | { state: 'rejected' }
+    /** A key that works, for money that is not real (remediation R4). */
+    | { state: 'rejected_test_key' }
     | { state: 'unavailable'; reason: 'connection_key_missing' }
   > {
     if (!this.config.connectionKey) {
@@ -187,6 +202,21 @@ export class PaymentConnectionsService {
 
     const verdict = await verifyPaystackKey(secretKey, this.config.paystackBaseUrl);
     if (verdict === 'invalid') return { state: 'rejected' };
+
+    /**
+     * A test key is a VALID key, which is the whole problem: Paystack answers
+     * for it, sandbox charges come back `status: "success"`, and Rekoda booked
+     * that against a real invoice as verified money. `verifyPaystackKey` can
+     * never catch this — it asks whether the key works, not which world it
+     * works in. Refusing at submission is the first of two gates; the second
+     * reads the stored environment at the moment money is booked, because a
+     * prefix check alone trusts a string.
+     */
+    const providerEnvironment = keyEnvironment(secretKey);
+    if (isProductionEnv(process.env) && providerEnvironment !== 'LIVE') {
+      this.log.warn(`business ${businessId}: refused a ${providerEnvironment} key in production`);
+      return { state: 'rejected_test_key' };
+    }
 
     const merchantKeyTail = secretKey.slice(-4);
     await withBusiness(this.db, businessId, (tx) =>
@@ -199,9 +229,12 @@ export class PaymentConnectionsService {
           `${businessId}:merchant_key`,
         ),
         merchantKeyTail,
+        providerEnvironment,
       }),
     );
-    this.log.log(`business ${businessId}: merchant key connected (ADR 0019)`);
+    this.log.log(
+      `business ${businessId}: merchant key connected, ${providerEnvironment} (ADR 0019)`,
+    );
     return { state: 'connected', merchantKeyTail };
   }
 

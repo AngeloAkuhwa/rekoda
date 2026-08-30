@@ -96,6 +96,14 @@ export const paymentConnections = pgTable(
     merchantKeyCipher: text('merchant_key_cipher'),
     merchantKeyTail: text('merchant_key_tail'),
     keyMode: text('key_mode').notNull().default('platform_subaccount'),
+    /**
+     * LIVE | TEST for a merchant-supplied key, NULL for the platform
+     * subaccount path (remediation R4). `keyMode` says whose key it is;
+     * this says which world its money is real in, and they are different
+     * questions. A Paystack test key is a VALID key, so nothing upstream
+     * of this column could tell sandbox money from real money.
+     */
+    providerEnvironment: text('provider_environment'),
     /** When the one-time approaching-the-cap nudge went out (ADR 0019,
      * migration 0048). Null until it has; never cleared. */
     graduationNudgedAt: timestamp('graduation_nudged_at', { withTimezone: true }),

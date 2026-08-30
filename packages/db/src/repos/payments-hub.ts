@@ -56,6 +56,12 @@ export interface ConnectionRow {
   feePolicy: string;
   /** platform_subaccount | merchant_key (ADR 0019, migration 0046). */
   keyMode: string;
+  /**
+   * LIVE | TEST for a merchant-supplied key, null for the platform
+   * subaccount path (remediation R4, migration 0123). `keyMode` says whose
+   * key it is; this says which world its money is real in.
+   */
+  providerEnvironment: string | null;
   /** "key ending 4821" for the card. The key itself never leaves the vault. */
   merchantKeyTail: string | null;
   /** When the one-time approaching-the-cap nudge went out (M5d). */
@@ -114,6 +120,7 @@ export async function upsertConnection(
       settlementAccountName: paymentConnections.settlementAccountName,
       feePolicy: paymentConnections.feePolicy,
       keyMode: paymentConnections.keyMode,
+      providerEnvironment: paymentConnections.providerEnvironment,
       merchantKeyTail: paymentConnections.merchantKeyTail,
       graduationNudgedAt: paymentConnections.graduationNudgedAt,
     });
@@ -148,6 +155,7 @@ export async function connectionFor(
       settlementAccountName: paymentConnections.settlementAccountName,
       feePolicy: paymentConnections.feePolicy,
       keyMode: paymentConnections.keyMode,
+      providerEnvironment: paymentConnections.providerEnvironment,
       merchantKeyTail: paymentConnections.merchantKeyTail,
       graduationNudgedAt: paymentConnections.graduationNudgedAt,
     })
@@ -518,6 +526,12 @@ export async function storeMerchantKey(
     providerType: string;
     merchantKeyCipher: string;
     merchantKeyTail: string;
+    /**
+     * Which world the key's money is real in, read off the key itself by the
+     * caller (remediation R4). Stored so the check at booking time asks the
+     * row rather than re-reading a secret.
+     */
+    providerEnvironment: 'LIVE' | 'TEST';
   },
 ): Promise<void> {
   const rows = await tx
@@ -528,6 +542,7 @@ export async function storeMerchantKey(
       merchantKeyCipher: input.merchantKeyCipher,
       merchantKeyTail: input.merchantKeyTail,
       keyMode: 'merchant_key',
+      providerEnvironment: input.providerEnvironment,
       status: 'active',
       kycStatus: 'not_required',
       /* §17.1/§17.2 (PR-052): their own key, their own arrangement — the
@@ -545,6 +560,10 @@ export async function storeMerchantKey(
         merchantKeyCipher: input.merchantKeyCipher,
         merchantKeyTail: input.merchantKeyTail,
         keyMode: 'merchant_key',
+        /* Re-submitting a key re-states which world it belongs to. A merchant
+         * moving from a test key to a live one is exactly how a connection
+         * the backfill marked TEST becomes LIVE again. */
+        providerEnvironment: input.providerEnvironment,
         status: 'active',
         operationalStatus: 'ACTIVE',
         commercialStatus: 'AGREED',

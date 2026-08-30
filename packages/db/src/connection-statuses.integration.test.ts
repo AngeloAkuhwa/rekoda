@@ -151,6 +151,7 @@ describe('provider-neutral attributes (§17.2; PR-052)', () => {
         providerType: 'paystack',
         merchantKeyCipher: 'vault:blob',
         merchantKeyTail: '4821',
+        providerEnvironment: 'LIVE',
       }),
     );
     const rows = await withBusiness(db, business.id, (tx) =>
@@ -242,6 +243,7 @@ describe('connection-scoped clearing accounts (§11.2; PR-053)', () => {
         providerType: 'monnify',
         merchantKeyCipher: 'vault:blob',
         merchantKeyTail: '9911',
+        providerEnvironment: 'LIVE',
       }),
     );
     void second;
@@ -312,6 +314,7 @@ describe('payment attempts (§6.1, §22.3; PR-054)', () => {
         providerType: 'monnify',
         merchantKeyCipher: 'vault:blob',
         merchantKeyTail: '1111',
+        providerEnvironment: 'LIVE',
       }),
     );
     const monnify = await withBusiness(db, businessId, (tx) =>
@@ -433,6 +436,7 @@ describe('economic bearer vs provider payer (§19; PR-056)', () => {
         providerType: 'paystack',
         merchantKeyCipher: 'vault:blob',
         merchantKeyTail: '2222',
+        providerEnvironment: 'LIVE',
       }),
     );
     const rows = await withBusiness(db, business.id, (tx) =>

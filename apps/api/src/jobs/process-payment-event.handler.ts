@@ -24,7 +24,7 @@ import { Logger } from '@nestjs/common';
 import { judgeProviderPayment, type FeePolicy } from '@rekoda/core';
 import { paystackWebhookBody, summarisePaystackEvent } from '@rekoda/contracts';
 import { events, jobsRepo, paymentsHub, settleRepo, type TenantDb } from '@rekoda/db';
-import type { ApiConfig } from '../config.js';
+import { isProductionEnv, type ApiConfig } from '../config.js';
 import { openPayload } from '../privacy/payload-vault.js';
 import type { PaymentProviderPort } from '../payments/provider.port.js';
 import type { CommandBus } from '../commands/command-bus.service.js';
@@ -180,7 +180,7 @@ export function processPaymentEventHandler(deps: ProcessPaymentEventDeps): JobHa
           ingress: 'AUTOMATION',
           idempotencyKey: `confirm:${intent.id}:${t.providerTransactionId}`,
         },
-        () => confirmPaymentWork(tx, input),
+        () => confirmPaymentWork(tx, input, { requireLiveProvider: isProductionEnv(process.env) }),
       );
       if (run.outcome !== 'done') {
         /* Unreachable by construction — ConfirmPayment is STANDARD and
@@ -189,7 +189,9 @@ export function processPaymentEventHandler(deps: ProcessPaymentEventDeps): JobHa
       }
       booked = run.result;
     } else {
-      booked = await confirmPaymentWork(tx, input);
+      booked = await confirmPaymentWork(tx, input, {
+        requireLiveProvider: isProductionEnv(process.env),
+      });
     }
 
     await events.markProcessed(tx, eventId, null, businessId);

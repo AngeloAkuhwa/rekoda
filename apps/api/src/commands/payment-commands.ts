@@ -18,7 +18,14 @@
  * command-transaction work — it stays behind `PaymentIntentsService` until
  * P1 (PR-054) restructures attempts.
  */
-import { evidenceRepo, jobsRepo, outboxRepo, settleRepo, type TenantDb } from '@rekoda/db';
+import {
+  evidenceRepo,
+  jobsRepo,
+  outboxRepo,
+  paymentsHub,
+  settleRepo,
+  type TenantDb,
+} from '@rekoda/db';
 
 /* ── RecordPayment (MERCHANT_ATTESTED) ──────────────────────────────────── */
 
@@ -169,10 +176,38 @@ export type ConfirmedPayment = Awaited<ReturnType<typeof settleRepo.bookVerified
  * queue and "did real money arrive" all stay with the callers — they are
  * webhook-shape questions, and an ingress owns its shape.
  */
+export class TestEnvironmentPayment extends Error {
+  constructor(readonly providerEnvironment: string) {
+    super(`refusing to book ${providerEnvironment} money on a production deployment`);
+    this.name = 'TestEnvironmentPayment';
+  }
+}
+
 export async function confirmPaymentWork(
   tx: TenantDb,
   input: ConfirmPaymentInput,
+  opts: { requireLiveProvider: boolean } = { requireLiveProvider: false },
 ): Promise<ConfirmedPayment> {
+  /**
+   * The second of R4's two gates, and the one that decides. The first refuses
+   * a test key at submission, but a prefix check only ever trusts a string:
+   * it cannot speak for a key stored before the check existed, and it is not
+   * where money is booked. This asks the connection row itself, here, at the
+   * moment a payment would become real on a merchant's books.
+   *
+   * Only merchant-supplied keys are judged. A NULL environment is the
+   * platform subaccount path, whose live-key rule is enforced separately at
+   * §47, so it passes through untouched rather than being refused for a
+   * question that was never asked of it.
+   */
+  if (opts.requireLiveProvider) {
+    const connection = await paymentsHub.connectionFor(tx, input.businessId, input.providerType);
+    const environment = connection?.providerEnvironment ?? null;
+    if (environment !== null && environment !== 'LIVE') {
+      throw new TestEnvironmentPayment(environment);
+    }
+  }
+
   const booked = await settleRepo.bookVerifiedPayment(tx, input);
 
   if (booked.receiptId) {
