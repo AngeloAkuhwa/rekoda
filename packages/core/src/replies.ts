@@ -866,9 +866,15 @@ export function reminderNothingToChase(invoiceNumber: string): Reply {
 /**
  * A voice note arrived and could not be turned into words.
  *
- * The provider was unreachable, or our own transcriber was. Either way it is
- * OUR failure, so it says so and it costs the merchant nothing: no allowance
- * moved, and the way forward is one line rather than an apology.
+ * The transcriber was unreachable, or answered with nothing usable. Either
+ * way it is OUR failure, so it says so and it costs the merchant nothing:
+ * no allowance moved, and the way forward is one line rather than an
+ * apology.
+ *
+ * This used to claim Rekoda had a transcriber of its own, a sentence left
+ * over from the sidecar ADR 0032 retired. It does not: OpenAI is the named
+ * processor, and a comment saying otherwise is drift whatever the reply
+ * text says.
  */
 export function voiceUnavailable(): Reply {
   return reply(
