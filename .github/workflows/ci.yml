@@ -120,7 +120,7 @@ jobs:
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U someone_else"
+          --health-cmd "pg_isready -U someone_else -d someone_elses_db"
           --health-interval 5s
           --health-timeout 3s
           --health-retries 10
@@ -133,7 +133,9 @@ jobs:
           node-version-file: .nvmrc
       - run: corepack enable
       - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter @rekoda/db build
+      # The whole graph, as the integration job does: @rekoda/db compiles
+      # against @rekoda/core, so building it alone fails on the import.
+      - run: pnpm turbo build
       - name: Apply every migration as a foreign owner
         run: pnpm --filter @rekoda/db migrate:apply
       - name: No migration may depend on our owner's name
