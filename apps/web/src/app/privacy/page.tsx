@@ -49,7 +49,10 @@ export default function PrivacyPage() {
                 </li>
                 <li>
                   <strong>Your customers&rsquo; details</strong>, when you give them to us so an
-                  invoice or receipt can be addressed. These are encrypted at rest.
+                  invoice or receipt can be addressed. These are encrypted at rest. Where you have
+                  connected your own WhatsApp Business number, a customer who replies{' '}
+                  <strong>STOP</strong> on that number stops receiving messages from your shop until
+                  they reply <strong>START</strong>.
                 </li>
                 <li>
                   <strong>Payment events</strong> from your own payment provider: that a payment

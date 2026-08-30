@@ -36,6 +36,15 @@ WHERE business_id = '<id>' AND entity = 'customer_identities'
 ORDER BY created_at DESC LIMIT 5;
 ```
 
+One thing this lane deliberately does NOT remove: `customer_message_optouts`
+(PR-135). A customer who told that shop to stop messaging them is recorded
+under the participant blind index, not under a customer identity, and it
+holds no phone number to erase. Deleting those rows would resume messaging
+somebody who asked not to be messaged, which is the opposite of what an
+erasure lane is for. Both application roles have DELETE revoked on that
+table for the same reason; only lane 2, deleting the whole business, takes
+it, and only because there is no shop left to message from.
+
 ## Lane 2 — Full account deletion, on request (operator-executed)
 
 The lane behind `/data-deletion`'s 48-hour acknowledgment and 30-day

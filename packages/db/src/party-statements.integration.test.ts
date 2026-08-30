@@ -135,7 +135,12 @@ describe('the customer statement', () => {
     const customerId = await seedCustomer(businessId);
     await invoiceFor(businessId, customerId, 10_000_000);
 
-    const tomorrow = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10);
+    /* Tomorrow in LAGOS, which is the day the statement itself is cut in
+     * (`created_at + interval '1 hour'`). Computing it in UTC made this
+     * test fail for the hour before UTC midnight every day: the invoice
+     * booked a moment ago is already on the next Lagos day, so a UTC
+     * "tomorrow" was the same day and carried nothing forward. */
+    const tomorrow = new Date(Date.now() + 3_600_000 + 86_400_000).toISOString().slice(0, 10);
     const statement = await withBusiness(db, businessId, (tx) =>
       partyStatementsRepo.customerStatementFor(tx, businessId, customerId, { from: tomorrow }),
     );

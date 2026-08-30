@@ -1113,6 +1113,184 @@ describe('the away assistant (spec Appendix D; W4, PR-090)', () => {
   });
 });
 
+describe("a customer's own STOP (PR-135)", () => {
+  /* The customer side of consent, kept deliberately apart from the merchant
+   * side tested above. The same words, a different fact, a different table
+   * and a different person: here it is somebody's CUSTOMER asking a shop to
+   * stop, not a merchant asking Rekoda to stop. */
+  const CUSTOMER_WA = '2349097771234';
+  const OWNER = '+2348030002270';
+
+  async function seedShop(phoneNumberId: string) {
+    const user = await identity.upsertUserByPhone(db, OWNER);
+    const business = await identity.createBusinessWithOwner(db, {
+      name: 'Ada Fashion',
+      businessType: null,
+      ownerUserId: user.id,
+    });
+    const businessId = business.id;
+    await billingRepo.setPlan(db, {
+      businessId,
+      plan: 'integrate',
+      expiresAt: null,
+      actor: 'operator:test',
+    });
+    await withBusiness(db, businessId, async (tx) => {
+      await wabaRepo.connectWaba(tx, {
+        businessId,
+        wabaId: `waba-${phoneNumberId}`,
+        phoneNumberId,
+        accessTokenCipher: encryptFacet(
+          'EAAG-merchant-token',
+          deps.config.connectionKey,
+          `${businessId}:waba_token`,
+        ),
+        tokenTail: '4821',
+      });
+      await catalogueRepo.createProduct(tx, businessId, { name: 'wig', unitPriceK: 150_000 });
+      const wig = (await stockRepo.productByName(tx, businessId, 'wig'))!;
+      await stockRepo.recordDelivery(tx, {
+        businessId,
+        product: wig,
+        quantity: 4,
+        costK: 100_000,
+        sourceType: 'chat',
+      });
+      await usageRepo.creditBonus(tx, businessId, usagePeriod(new Date()), 'SERVICE_MESSAGE', 20);
+      /* The assistant ON, so "silent afterwards" means the suppression did
+       * it and not the absence of anything to say. */
+      await wabaRepo.setAssistantSettings(tx, businessId, { enabled: true, dailyReplyLimit: 10 });
+    });
+    return businessId;
+  }
+
+  const say = (phoneNumberId: string, wamid: string, text: string) =>
+    post(messagePayload(CUSTOMER_WA, wamid, text, phoneNumberId));
+
+  const refusals = (businessId: string) =>
+    withBusiness(db, businessId, (tx) =>
+      tx.execute<{ n: string; opted_out_at: Date | null }>(sql`
+        SELECT count(*)::text AS n, max(opted_out_at) AS opted_out_at
+          FROM customer_message_optouts
+         WHERE business_id = ${businessId}::uuid
+      `),
+    );
+
+  it('STOP is acknowledged, recorded, and silences the shop afterwards', async () => {
+    const businessId = await seedShop('PN-STOP-1');
+
+    expect((await say('PN-STOP-1', 'wamid.STOP.C1', 'STOP')).statusCode).toBe(200);
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+
+    /* One acknowledgement, in the customer's own words: they are not a
+     * Rekoda user and the sentence must not pretend they are. */
+    expect(stubSender.connectionTexts).toHaveLength(1);
+    expect(stubSender.connectionTexts[0]).toMatchObject({
+      to: `+${CUSTOMER_WA}`,
+      phoneNumberId: 'PN-STOP-1',
+    });
+    expect(stubSender.connectionTexts[0]!.text).toContain('messages from this shop');
+
+    const [row] = [...(await refusals(businessId))];
+    expect(row!.n).toBe('1');
+    expect(row!.opted_out_at).not.toBeNull();
+
+    /* And the shop is quiet. The assistant would have answered this one
+     * happily a moment ago; now nothing leaves at all. */
+    await say('PN-STOP-1', 'wamid.STOP.C2', 'How much is the wig?');
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+    expect(stubSender.connectionTexts).toHaveLength(1);
+  });
+
+  it('does not opt the MERCHANT out of anything', async () => {
+    const businessId = await seedShop('PN-STOP-2');
+
+    await say('PN-STOP-2', 'wamid.STOP.C3', 'stop');
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+
+    /* The merchant's own consent flag is a different column about a
+     * different person, and a customer must not be able to reach it. */
+    expect(await identity.optedOutAt(db, OWNER)).toBeNull();
+    expect([...(await refusals(businessId))][0]!.n).toBe('1');
+  });
+
+  it('a merchant telling REKODA to stop leaves their customers reachable', async () => {
+    /* The mirror of the test above, and the reason the two facts are two
+     * tables: a merchant who stops their own notifications has not asked
+     * their shop to stop serving anybody. */
+    const businessId = await seedShop('PN-STOP-3');
+
+    await post(messagePayload(OWNER.slice(1), 'wamid.STOP.M1', 'stop'));
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+    expect(await identity.optedOutAt(db, OWNER)).not.toBeNull();
+    expect([...(await refusals(businessId))][0]!.n).toBe('0');
+
+    /* The customer still gets served. */
+    await say('PN-STOP-3', 'wamid.STOP.C4', 'How much is the wig?');
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+    expect(stubSender.connectionTexts).toHaveLength(1);
+    expect(stubSender.connectionTexts[0]!.text).toContain('wig');
+  });
+
+  it('repeating STOP changes nothing and says nothing more', async () => {
+    const businessId = await seedShop('PN-STOP-4');
+
+    await say('PN-STOP-4', 'wamid.STOP.C5', 'stop');
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+    const first = [...(await refusals(businessId))][0]!.opted_out_at;
+
+    await say('PN-STOP-4', 'wamid.STOP.C6', 'unsubscribe');
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+
+    /* The second acknowledgement is refused by the very rule the first one
+     * created: somebody who asked to be left alone is left alone, and that
+     * includes being left alone about having asked. */
+    expect(stubSender.connectionTexts).toHaveLength(1);
+    const [row] = [...(await refusals(businessId))];
+    expect(row!.n).toBe('1');
+    expect(new Date(row!.opted_out_at!).toISOString()).toBe(new Date(first!).toISOString());
+  });
+
+  it('START opens the shop back up, and is acknowledged', async () => {
+    const businessId = await seedShop('PN-STOP-5');
+
+    await say('PN-STOP-5', 'wamid.STOP.C7', 'stop');
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+    expect(stubSender.connectionTexts).toHaveLength(1);
+
+    await say('PN-STOP-5', 'wamid.STOP.C8', 'START');
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+
+    /* Recorded BEFORE the acknowledgement, which is why the acknowledgement
+     * can be sent at all: the opposite order would need a hole in the
+     * suppression check. */
+    expect(stubSender.connectionTexts).toHaveLength(2);
+    expect(stubSender.connectionTexts[1]!.text).toContain('this shop');
+
+    const [row] = [...(await refusals(businessId))];
+    /* The row stays: that they once asked is itself worth keeping. */
+    expect(row!.n).toBe('1');
+    expect(row!.opted_out_at).toBeNull();
+
+    await say('PN-STOP-5', 'wamid.STOP.C9', 'How much is the wig?');
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+    expect(stubSender.connectionTexts).toHaveLength(3);
+    expect(stubSender.connectionTexts[2]!.text).toContain('wig');
+  });
+
+  it('a question that merely contains the word is still a question', async () => {
+    await seedShop('PN-STOP-6');
+
+    await say('PN-STOP-6', 'wamid.STOP.C10', 'do you stop selling wig soon?');
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+
+    /* Over-matching here would silence a shop's paying customer for good.
+     * The handler asks the same tight recogniser the merchant path uses. */
+    expect(stubSender.connectionTexts).toHaveLength(1);
+    expect(stubSender.connectionTexts[0]!.text).toContain('wig');
+  });
+});
+
 describe('one customer, both products (spec §5.3 X2; X1, PR-092)', () => {
   it('a Chat sale and a WABA order for the same phone land on ONE customer, one ledger, one AR', async () => {
     const user = await identity.upsertUserByPhone(db, '+2348030002250');

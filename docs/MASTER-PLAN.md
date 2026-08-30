@@ -1778,8 +1778,12 @@ worst case is bounded by design rather than by how chatty a merchant is.
   (charging VAT unregistered is an offence; default OFF). Nigeria's e-invoicing mandate
   reaches small businesses **1 July 2027** — tell merchants in advance.
 - **Meta messaging policy:** opt-in is the user's first inbound message; `STOP` works on the
-  message it arrives in; **Rekoda never messages a merchant's customers on WhatsApp** — the
-  overdue digest goes privately to the merchant.
+  message it arrives in, on both sides. Rekoda sends nothing to a merchant's customers
+  from a Rekoda number: customer messages go out on the **merchant's own WABA**, only
+  where the merchant connected one and switched the feature on (away assistant, order and
+  payment messages), and the overdue digest still goes privately to the merchant. A
+  customer's `STOP` on that thread suppresses every further send from that shop on that
+  number, template sends included, until they say `START` (PR-135).
 
 ## 9.3 Meta submission (M2)
 

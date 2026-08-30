@@ -434,8 +434,11 @@ Being straight about this is what stops churn in month two:
 - **Rekoda does not file her taxes.** These are management accounts. Nigeria's
   e-invoicing mandate reaches small businesses **1 July 2027** and we will tell
   merchants before it does.
-- **Rekoda never messages her customers on WhatsApp.** Overdue digests go to
-  _her_, privately.
+- **Nothing reaches her customers from a Rekoda number.** Anything a customer
+  receives leaves on _her own_ WhatsApp Business number, and only where she
+  switched it on. Overdue digests go to _her_, privately. Any customer can
+  reply `STOP` and that shop stops messaging them, on every route, until they
+  reply `START`.
 
 ---
 
