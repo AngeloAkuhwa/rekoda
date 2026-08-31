@@ -137,7 +137,14 @@ export interface BankLine {
   id: string;
   postedOn: string;
   amountK: number;
-  narration: string;
+  /**
+   * The Rekoda references the bank's text carried, extracted at ingest.
+   *
+   * What the readers hand out in place of the narration itself. Matching
+   * only ever wanted these; the merchant only ever needed to recognise the
+   * line, which a date, an amount and a reference already do.
+   */
+  paymentReferences: readonly string[];
   bankRef: string | null;
 }
 
@@ -236,10 +243,10 @@ export async function bankLinesFor(
     id: string;
     posted_on: string;
     amount_k: string;
-    narration: string;
+    payment_references: string[] | null;
     bank_ref: string | null;
   }>(sql`
-    SELECT l.id, l.posted_on::text AS posted_on, l.amount_k, l.narration, l.bank_ref
+    SELECT l.id, l.posted_on::text AS posted_on, l.amount_k, l.payment_references, l.bank_ref
     FROM bank_statement_lines l
     WHERE l.business_id = ${businessId}::uuid
     ${order}
@@ -249,7 +256,7 @@ export async function bankLinesFor(
     id: r.id,
     postedOn: r.posted_on,
     amountK: Number(r.amount_k),
-    narration: r.narration,
+    paymentReferences: r.payment_references ?? [],
     bankRef: r.bank_ref,
   }));
 }
@@ -280,7 +287,7 @@ export async function allBankLinesFor(
     id: string;
     posted_on: string;
     amount_k: string;
-    narration: string;
+    payment_references: string[] | null;
     bank_ref: string | null;
   };
   const all: BankLine[] = [];
@@ -288,7 +295,7 @@ export async function allBankLinesFor(
   for (;;) {
     const rows: Row[] = [
       ...(await tx.execute<Row>(sql`
-      SELECT id, posted_on::text AS posted_on, amount_k, narration, bank_ref
+      SELECT id, posted_on::text AS posted_on, amount_k, payment_references, bank_ref
       FROM bank_statement_lines
       WHERE business_id = ${businessId}::uuid
         ${after === null ? sql`` : sql`AND id > ${after}::uuid`}
@@ -301,7 +308,7 @@ export async function allBankLinesFor(
         id: r.id,
         postedOn: r.posted_on,
         amountK: Number(r.amount_k),
-        narration: r.narration,
+        paymentReferences: r.payment_references ?? [],
         bankRef: r.bank_ref,
       });
     }
@@ -479,8 +486,11 @@ export async function reconcile(
       id: l.id,
       postedOn: l.postedOn,
       amountK: l.amountK,
-      /* Only the references the bank text carried, never the text (§22.1). */
-      references: paymentReferencesIn(`${l.narration} ${l.bankRef ?? ''}`),
+      /* Read, not re-derived. Ingest extracted these from the bank's text
+       * while it still had it, so this is the same set the old expression
+       * computed here on every pass, and the text it came from is now free
+       * to stop being stored (§22.1). */
+      references: l.paymentReferences,
     })),
     openMovements,
   );
@@ -695,11 +705,11 @@ export async function lineFor(
     id: string;
     posted_on: string;
     amount_k: string;
-    narration: string;
+    payment_references: string[] | null;
     bank_ref: string | null;
     match_id: string | null;
   }>(sql`
-    SELECT l.id, l.posted_on::text AS posted_on, l.amount_k, l.narration, l.bank_ref,
+    SELECT l.id, l.posted_on::text AS posted_on, l.amount_k, l.payment_references, l.bank_ref,
            m.id AS match_id
     FROM bank_statement_lines l
     LEFT JOIN bank_line_matches m ON m.business_id = l.business_id AND m.line_id = l.id
@@ -711,7 +721,7 @@ export async function lineFor(
     id: row.id,
     postedOn: row.posted_on,
     amountK: Number(row.amount_k),
-    narration: row.narration,
+    paymentReferences: row.payment_references ?? [],
     bankRef: row.bank_ref,
     matched: row.match_id !== null,
   };

@@ -275,7 +275,7 @@ export default async function BankPage() {
                 <thead>
                   <tr>
                     <th>Day</th>
-                    <th>What the bank called it</th>
+                    <th>Reference</th>
                     <th className="rk-num">Amount</th>
                     <th>In your books</th>
                   </tr>
@@ -284,11 +284,14 @@ export default async function BankPage() {
                   {lines.map((line) => (
                     <tr key={line.id}>
                       <td data-label="Day">{presentDay(line.postedOn)}</td>
-                      {/* The bank's own words, shown to the merchant who
-                            downloaded them and to nobody else. Never sent to a
-                            model, never put in a WhatsApp message. */}
-                      <td data-label="What the bank called it">
-                        {line.narration || <span className="rk-fineprint">No description</span>}
+                      {/* The reference, not the bank's description. Rekoda's
+                            own if the payer quoted one, otherwise the bank's,
+                            and a plain line when there is neither. The words a
+                            bank writes carry the payer's name, they are not
+                            what reconciles a line, and Rekoda no longer keeps
+                            them. */}
+                      <td data-label="Reference">
+                        {referenceOf(line) ?? <span className="rk-fineprint">No reference</span>}
                       </td>
                       <td className="rk-num" data-label="Amount">
                         <Money kobo={line.amountK} />
@@ -300,7 +303,7 @@ export default async function BankPage() {
                       <td data-label="In your books">
                         <LineMatchCell
                           lineId={line.id}
-                          lineLabel={`${presentDay(line.postedOn)}, ${line.narration || 'no narration'}`}
+                          lineLabel={`${presentDay(line.postedOn)}, ${referenceOf(line) ?? 'no reference'}`}
                           matchedTo={line.matchedTo}
                           candidates={openMovements.filter((m) => m.amountK === line.amountK)}
                           canPair={canReconcileBank(identity.role)}
@@ -331,6 +334,22 @@ export default async function BankPage() {
       </div>
     </section>
   );
+}
+
+/**
+ * What a merchant sees where the bank's description used to be.
+ *
+ * Rekoda's own reference first, because that is the one that pairs the line
+ * with an invoice and the one a merchant can look up. The bank's reference
+ * when the payer quoted none, because it is still something to quote back to
+ * the bank. Null when there is neither, and the caller says so plainly rather
+ * than showing an empty cell.
+ */
+function referenceOf(line: {
+  paymentReferences: readonly string[];
+  bankRef: string | null;
+}): string | null {
+  return line.paymentReferences[0] ?? line.bankRef ?? null;
 }
 
 /** `12 Aug 2026`, Lagos, from a plain calendar day. */

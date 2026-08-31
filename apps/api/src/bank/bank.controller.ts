@@ -120,9 +120,10 @@ export class BankController {
       },
     );
     const matchedBy = new Map(matches.map((m) => [m.lineId, m]));
-    /* Parsed on the way out as well as on the way in. The narration is the
-     * one field here that carries somebody's name, and the contract is the
-     * border that says which fields may cross at all. */
+    /* Parsed on the way out as well as on the way in. The contract is the
+     * border that says which fields may cross at all, and it is the reason
+     * a reader that started handing back the bank's words again would fail
+     * here rather than on somebody's screen. */
     return bankPositionResponse.parse({
       position,
       reconciliation,
