@@ -221,13 +221,46 @@ describe('not importing the same line twice', () => {
     expect(parse(csv).map((l) => l.fingerprint)).toEqual(parse(csv).map((l) => l.fingerprint));
   });
 
-  /* A narration ending in a digit must not run into the field beside it. */
-  it('does not confuse two lines whose fields merely concatenate the same', () => {
+  /**
+   * The bank's reference is what tells two same-day, same-amount lines apart
+   * now that the description is not in the key. It is also the field most
+   * likely to run into the one beside it, so the separator is what stops
+   * "REF1" and "REF" from being read as the same line.
+   */
+  it('tells two lines apart by the reference the bank gave them', () => {
     const keys = parse(
-      'Date,Description,Amount\n' +
-        '20/08/2026,"PAYMENT 1",-100.00\n' +
-        '20/08/2026,"PAYMENT",-100.00\n',
+      'Date,Description,Reference,Amount\n' +
+        '20/08/2026,PAYMENT,REF1,-100.00\n' +
+        '20/08/2026,PAYMENT,REF,-100.00\n',
     ).map((l) => l.fingerprint);
     expect(new Set(keys).size).toBe(2);
+  });
+
+  /**
+   * The limit of this key, stated so it is a known shape rather than a
+   * surprise.
+   *
+   * A CSV with no reference column gives two same-day, same-amount lines
+   * nothing to tell them apart but their position in the file. Within one
+   * file that is enough, and the case above proves it. Across two files that
+   * overlap only partially it is not: a line that was second in the first
+   * upload is first in the second, takes the number the other line had, and
+   * is read as already imported.
+   *
+   * Fixing it needs an identity for the upload itself. It must NOT be fixed
+   * by putting the bank's words back in the key, which is what made the key
+   * a derivative of the payer's name in the first place. Recorded here so
+   * the next person meets it as a decision rather than a bug.
+   */
+  it('cannot separate two bare same-day amounts arriving in different files', () => {
+    const bothLines =
+      'Date,Description,Amount\n' + '20/08/2026,ONE,-100.00\n' + '20/08/2026,ANOTHER,-100.00\n';
+    const onlySecond = 'Date,Description,Amount\n20/08/2026,ANOTHER,-100.00\n';
+
+    const first = parse(bothLines).map((l) => l.fingerprint);
+    const later = parse(onlySecond).map((l) => l.fingerprint);
+    expect(new Set(first).size).toBe(2);
+    /* The surviving line looks like the FIRST of the pair, not the second. */
+    expect(later[0]).toBe(first[0]);
   });
 });

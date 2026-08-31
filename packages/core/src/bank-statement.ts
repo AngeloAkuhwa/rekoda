@@ -425,20 +425,53 @@ function readAmount(
  * the key: the same file uploaded twice produces the same numbers, while two
  * genuine twins both survive.
  *
- * Fields are joined with a character no bank narration contains, so a
- * narration ending in a digit cannot run into the amount beside it and make
- * two different lines look like one.
+ * The narration used to be in this key, and is not any more. A SHA-256 is
+ * one-way, but it is still a deterministic derivative of the bank's words,
+ * and a minimisation that deletes the words while keeping a function of them
+ * has not really deleted anything. What replaces it is identity the movement
+ * actually has:
+ *
+ *   externalTransactionId  the provider's own id, where there is one
+ *   bankRef                the bank's structured reference
+ *   postedOn, amountK      the day and the signed movement
+ *   paymentReferences      the Rekoda references the line quoted
+ *   occurrence             the tie-break above
+ *
+ * For a connected feed this is belt and braces: migration 0095 already made
+ * `(business_id, connection_id, external_transaction_id)` unique, so a
+ * re-poll is refused by the database whatever this computes. The fingerprint
+ * carries uploads, where there is no provider id.
+ *
+ * That leaves one honest gap, and it is worth naming rather than papering
+ * over: a CSV with NO reference column, two lines on the same day for the
+ * same amount, split across two imports that overlap only partially. Their
+ * bodies are identical and only `occurrence` separates them, so the second
+ * import's line can take the first's number and be read as a duplicate. The
+ * fix for that is a real upload identity, not a hash of the payer's name.
+ * `bank-statement.test.ts` states the case so the limit is recorded rather
+ * than discovered.
+ *
+ * Fields are joined with a character no bank text contains, so a reference
+ * ending in a digit cannot run into the amount beside it and make two
+ * different lines look like one.
  */
 const SEP = String.fromCharCode(31);
 
-export function fingerprintLines<T extends BankStatementLine>(
-  lines: readonly T[],
-): readonly (T & { fingerprint: string })[] {
+export function fingerprintLines<
+  T extends BankStatementLine & {
+    externalTransactionId?: string | null;
+    paymentReferences?: readonly string[];
+  },
+>(lines: readonly T[]): readonly (T & { fingerprint: string })[] {
   const seen = new Map<string, number>();
   return lines.map((line) => {
-    const body = [line.postedOn, String(line.amountK), line.narration, line.bankRef ?? ''].join(
-      SEP,
-    );
+    const body = [
+      line.externalTransactionId ?? '',
+      line.bankRef ?? '',
+      line.postedOn,
+      String(line.amountK),
+      (line.paymentReferences ?? []).join(','),
+    ].join(SEP);
     const occurrence = (seen.get(body) ?? 0) + 1;
     seen.set(body, occurrence);
     return {
