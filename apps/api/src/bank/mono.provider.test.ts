@@ -178,6 +178,63 @@ describe('fetching transactions', () => {
     expect(requests[0]?.secKey).toBe('test_sk_mono');
   });
 
+  /**
+   * No floor, deliberately (R7).
+   *
+   * A kobo is a movement, and whether it matters is decided by what it
+   * reconciles against, never by its size. A minimum would quietly drop the
+   * test transfer a merchant sends themselves to check the connection works,
+   * and then the connection would look broken.
+   */
+  it('keeps a one-kobo movement, because size is not what makes a line relevant', async () => {
+    respond = (_req, res) =>
+      json(res, 200, {
+        data: [
+          {
+            id: 'txn_tiny',
+            narration: 'TEST TRANSFER',
+            amount: 1,
+            type: 'credit',
+            date: '2026-08-22T08:00:00.000Z',
+          },
+        ],
+      });
+
+    const fetched = await provider().fetchTransactions('acc_123', '2026-08-01');
+    expect(fetched).toMatchObject({
+      state: 'ok',
+      transactions: [{ amountK: 1 }],
+    });
+  });
+
+  /**
+   * `bankRef` survives the minimisation because reconciliation needs it and
+   * it is a structured field the provider publishes, NOT because bank
+   * references are harmless in general. That distinction only holds while
+   * the adapter keeps putting the provider's own id there, so it is asserted
+   * rather than assumed: a future adapter that fell back to the narration
+   * would move free text into a column the minimisation keeps.
+   */
+  it('fills bankRef from the provider id, never from the narration', async () => {
+    respond = (_req, res) =>
+      json(res, 200, {
+        data: [
+          {
+            id: 'txn_9',
+            narration: 'TRF FROM NGOZI ADEYEMI 08031234567',
+            amount: 40_000,
+            type: 'credit',
+            date: '2026-08-23T08:00:00.000Z',
+          },
+        ],
+      });
+
+    const fetched = await provider().fetchTransactions('acc_123', '2026-08-01');
+    const [line] = (fetched as { transactions: { bankRef: string | null }[] }).transactions;
+    expect(line?.bankRef).toBe('txn_9');
+    expect(line?.bankRef).not.toContain('NGOZI');
+  });
+
   it('lapsed consent is unlinked, not an exception', async () => {
     respond = (_req, res) => json(res, 401, { message: 'reauthorisation required' });
     expect(await provider().fetchTransactions('acc_123', '2026-08-01')).toEqual({

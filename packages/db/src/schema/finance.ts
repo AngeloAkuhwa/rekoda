@@ -399,6 +399,19 @@ export const bankStatementLines = pgTable(
      */
     narration: text('narration').notNull().default(''),
     bankRef: text('bank_ref'),
+    /**
+     * The Rekoda payment references the bank's text carried, extracted at
+     * ingest (§22.1, R7a).
+     *
+     * An array because one transfer can settle two invoices, and the matcher
+     * tries every reference a line carries before it gives up on tier 1.
+     * Empty for the ordinary line that quotes none, never null.
+     *
+     * This is the whole of what reconciliation ever wanted from the
+     * narration. Storing it here is what lets the narration itself stop
+     * being stored.
+     */
+    paymentReferences: text('payment_references').array(),
     /** Stops a re-upload duplicating. Computed in @rekoda/core. */
     fingerprint: text('fingerprint').notNull(),
     /** §22.3 (PR-073): which connection produced this line. Null for

@@ -90,6 +90,17 @@ export async function importStatementLines(
           amountK: line.amountK,
           narration: line.narration,
           bankRef: line.bankRef,
+          /* Extracted HERE, while the bank's words are still in hand and
+           * before anything is written down. `reconcile` used to run this
+           * on every pass, which is the only reason the words had to be
+           * kept at all; running it once, at the one door every line comes
+           * through, is what lets them stop being kept.
+           *
+           * Narration and `bankRef` together, joined the way the reader
+           * joined them, because a bank that puts the reference in its own
+           * reference field rather than the description is not a bank that
+           * should stop reconciling. */
+          paymentReferences: paymentReferencesIn(`${line.narration} ${line.bankRef ?? ''}`),
           fingerprint: line.fingerprint,
           /* §22.3: identity travels as a pair or not at all — an external
            * id with no connection to scope it is the global identifier
