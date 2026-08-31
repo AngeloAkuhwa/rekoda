@@ -21,6 +21,7 @@ import {
   lagosDay,
   replies,
   shelfMatches,
+  usagePeriod,
   type ShelfItem,
 } from '@rekoda/core';
 import { normaliseParticipant, InvalidPhoneError } from '@rekoda/core/identity';
@@ -31,13 +32,17 @@ import {
   catalogueRepo,
   conversationsRepo,
   customerConsentRepo,
+  entitlementsRepo,
   events,
   identity,
   ordersRepo,
   stockRepo,
+  usageRepo,
   wabaRepo,
+  withBusiness,
 } from '@rekoda/db';
 import type { Db, TenantDb } from '@rekoda/db';
+import { meterAllowance } from '../billing/plan-terms.js';
 import type { ApiConfig } from '../config.js';
 import type { CommandBus } from '../commands/command-bus.service.js';
 import {
@@ -488,6 +493,72 @@ async function ingestCatalogueOrder(
   });
   const totalK = lines.reduce((sum, line) => sum + line.lineTotalK, 0);
 
+  /* The meter, paid exactly as the storefront and the chat capture pay it:
+   * an order costs an order unit AND a document unit, because an invoice
+   * comes out of it.
+   *
+   * Until now this door alone paid neither, so the same cart was metered
+   * arriving through the shop and free arriving through WhatsApp, and a
+   * plan's order allowance was a boundary that existed on the pricing page
+   * and nowhere in the code.
+   *
+   * Priced AFTER the cart is resolved, because a cart naming something the
+   * shelf does not sell must not cost the merchant anything, and BEFORE the
+   * customer's identity enters the vault, so a refusal touches no personal
+   * data. The gate answers before the meter, so a business that cannot sell
+   * at all is told that rather than charged for finding out. The bus checks
+   * the same entitlement again below: a second refusal is the matrix
+   * holding, not a duplicate. */
+  const notEntitled = await withBusiness(deps.db, businessId, (own) =>
+    entitlementsRepo.requireEntitlement(own, businessId, 'REKODA_INTEGRATE'),
+  );
+  if (notEntitled) return 'order refused: not entitled';
+
+  const period = usagePeriod(new Date());
+  const plan = await withBusiness(deps.db, businessId, (own) => usageRepo.planFor(own, businessId));
+  const orderGranted = await withBusiness(deps.db, businessId, async (own) =>
+    usageRepo.consumeUnit(
+      own,
+      businessId,
+      period,
+      'CATALOGUE_ORDERS',
+      await meterAllowance(deps.config, own, businessId, plan, 'CATALOGUE_ORDERS'),
+    ),
+  );
+  if (!orderGranted) return 'order refused: no catalogue orders left in plan';
+
+  const documentGranted = await withBusiness(deps.db, businessId, async (own) =>
+    usageRepo.consumeUnit(
+      own,
+      businessId,
+      period,
+      'DOCUMENT_GENERATION',
+      await meterAllowance(deps.config, own, businessId, plan, 'DOCUMENT_GENERATION'),
+    ),
+  );
+  if (!documentGranted) {
+    await withBusiness(deps.db, businessId, (own) =>
+      usageRepo.refundUnit(own, businessId, period, 'CATALOGUE_ORDERS'),
+    );
+    return 'order refused: no documents left in plan';
+  }
+
+  /**
+   * One way back for both units.
+   *
+   * The same shape the chat door was rewritten into: every exit that
+   * produces no order and no invoice gives back exactly what was reserved,
+   * and no branch decides for itself which of the two that is.
+   */
+  const refundReserved = async (): Promise<void> => {
+    await withBusiness(deps.db, businessId, (own) =>
+      usageRepo.refundUnit(own, businessId, period, 'CATALOGUE_ORDERS'),
+    );
+    await withBusiness(deps.db, businessId, (own) =>
+      usageRepo.refundUnit(own, businessId, period, 'DOCUMENT_GENERATION'),
+    );
+  };
+
   /* The customer, anchored on their own phone — the same vault door every
    * identity passes through. Raw number in memory only. */
   const resolved = await deps.gateway.resolveStorefrontCustomer(businessId, '', participant);
@@ -517,8 +588,12 @@ async function ingestCatalogueOrder(
     /* A bus refusal here is a terminal fact about THIS cart, not a fault
      * to retry: a business whose Integrate entitlement lapsed mid-cart
      * takes no order, and the note says so. */
-    if (run.outcome === 'not_entitled') return 'order refused: not entitled';
+    if (run.outcome === 'not_entitled') {
+      await refundReserved();
+      return 'order refused: not entitled';
+    }
     if (run.outcome !== 'done') {
+      await refundReserved();
       throw new Error(`PlaceOrder refused unexpectedly: ${run.outcome}`);
     }
     orderId = run.result.orderId;
@@ -526,6 +601,7 @@ async function ingestCatalogueOrder(
     /* Same refusal as the storefront: this branch never checked entitlement
      * at all, so running it would take an order from a business whose plan
      * does not carry Integrate. */
+    await refundReserved();
     throw new Error(
       'REKODA_COMMAND_PLACE_ORDER is off. The legacy catalogue order path no longer places orders.',
     );
@@ -543,6 +619,9 @@ async function ingestCatalogueOrder(
     actor: 'customer:waba',
   });
   if (validated.outcome === 'rejected') {
+    /* The order is visibly CANCELLED with nothing financial behind it, so
+     * no invoice came out and neither unit was spent on anything. */
+    await refundReserved();
     log.warn(`customer.order: validation refused the cart (${validated.reason})`);
     return `order rejected: ${validated.reason}`;
   }
