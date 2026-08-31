@@ -538,6 +538,147 @@ describe('a catalogue cart becomes an order (spec §3.2; W3, PR-087)', () => {
     expect([...recorded][0]!.n).toBe('1');
   });
 
+  /**
+   * The door pays what the other doors pay.
+   *
+   * A cart arriving through WhatsApp becomes the same order and the same
+   * invoice a storefront cart becomes, and until now it was the only one of
+   * the three that cost the merchant nothing. A merchant on Integrate was
+   * metered when the order came through their shop and free when the
+   * identical order came through WhatsApp, which made the allowance a
+   * number on the pricing page rather than a boundary in the code.
+   */
+  it('consumes an order unit and a document unit, as the other doors do', async () => {
+    const { businessId, wigId } = await seedCommerceMerchant('+2348030002261', 'PN-METER-1');
+    const period = usagePeriod(new Date());
+
+    await post(
+      orderPayload('2349097776111', 'wamid.METER.1', 'PN-METER-1', [
+        { retailerId: wigId, quantity: 1 },
+      ]),
+    );
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+
+    expect([...(await ordersOf(businessId))]).toHaveLength(1);
+    const rows = await withBusiness(db, businessId, (tx) =>
+      usageRepo.usageFor(tx, businessId, period),
+    );
+    expect(rows.find((r) => r.unit === 'CATALOGUE_ORDERS')?.used).toBe(1);
+    expect(rows.find((r) => r.unit === 'DOCUMENT_GENERATION')?.used).toBe(1);
+  });
+
+  /* Idempotency and metering have to agree: Meta redelivers, and a second
+   * delivery that places no second order must not charge for one either. */
+  it('charges nothing twice for a redelivered webhook', async () => {
+    const { businessId, wigId } = await seedCommerceMerchant('+2348030002262', 'PN-METER-2');
+    const period = usagePeriod(new Date());
+    const payload = orderPayload('2349097776222', 'wamid.METER.2', 'PN-METER-2', [
+      { retailerId: wigId, quantity: 1 },
+    ]);
+
+    await post(payload);
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+    await post(payload);
+    await buildRunner(workerDb, db, deps).runOnce();
+
+    expect([...(await ordersOf(businessId))]).toHaveLength(1);
+    const rows = await withBusiness(db, businessId, (tx) =>
+      usageRepo.usageFor(tx, businessId, period),
+    );
+    expect(rows.find((r) => r.unit === 'CATALOGUE_ORDERS')?.used).toBe(1);
+    expect(rows.find((r) => r.unit === 'DOCUMENT_GENERATION')?.used).toBe(1);
+  });
+
+  /**
+   * A used-up allowance stops the order rather than taking it for free.
+   *
+   * The counter is spent through the same door the confirmation spends it,
+   * so the refusal below is the real one rather than a simulated state.
+   */
+  it('takes no order once the orders allowance is used up, and charges nothing', async () => {
+    const { businessId, wigId } = await seedCommerceMerchant('+2348030002263', 'PN-METER-3');
+    const period = usagePeriod(new Date());
+    const orderAllowance = allowanceFor('trial', 'CATALOGUE_ORDERS');
+    for (let taken = 0; taken < orderAllowance; taken += 1) {
+      expect(
+        await withBusiness(db, businessId, (tx) =>
+          usageRepo.consumeUnit(tx, businessId, period, 'CATALOGUE_ORDERS', orderAllowance),
+        ),
+      ).toBe(true);
+    }
+
+    await post(
+      orderPayload('2349097776333', 'wamid.METER.3', 'PN-METER-3', [
+        { retailerId: wigId, quantity: 1 },
+      ]),
+    );
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+
+    /* No order, no invoice, and the document unit was never taken: the
+     * refusal happens before anything is reserved beyond the order unit
+     * the counter itself refused. */
+    expect([...(await ordersOf(businessId))]).toHaveLength(0);
+    const rows = await withBusiness(db, businessId, (tx) =>
+      usageRepo.usageFor(tx, businessId, period),
+    );
+    expect(rows.find((r) => r.unit === 'CATALOGUE_ORDERS')?.used).toBe(orderAllowance);
+    expect(rows.find((r) => r.unit === 'DOCUMENT_GENERATION')?.used ?? 0).toBe(0);
+  });
+
+  /**
+   * A plan that does not sell takes nothing at all.
+   *
+   * Chat carries no `REKODA_INTEGRATE`, and the gate answers before the
+   * meter so the merchant is not charged for discovering that their plan
+   * cannot capture orders.
+   */
+  it('takes no order and charges nothing on a plan without Integrate', async () => {
+    const { businessId, wigId } = await seedCommerceMerchant('+2348030002264', 'PN-METER-4');
+    await billingRepo.setPlan(db, {
+      businessId,
+      plan: 'chat',
+      expiresAt: new Date(Date.now() + 30 * 86_400_000),
+      actor: 'operator:test',
+    });
+    const period = usagePeriod(new Date());
+
+    await post(
+      orderPayload('2349097776444', 'wamid.METER.4', 'PN-METER-4', [
+        { retailerId: wigId, quantity: 1 },
+      ]),
+    );
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+
+    expect([...(await ordersOf(businessId))]).toHaveLength(0);
+    const rows = await withBusiness(db, businessId, (tx) =>
+      usageRepo.usageFor(tx, businessId, period),
+    );
+    expect(rows.find((r) => r.unit === 'CATALOGUE_ORDERS')?.used ?? 0).toBe(0);
+    expect(rows.find((r) => r.unit === 'DOCUMENT_GENERATION')?.used ?? 0).toBe(0);
+  });
+
+  /* A cart the shelf cannot serve is refused before the meter, so a
+   * customer naming something that does not exist cannot spend the
+   * merchant's allowance. */
+  it('charges nothing for a cart naming an item the shelf does not sell', async () => {
+    const { businessId } = await seedCommerceMerchant('+2348030002265', 'PN-METER-5');
+    const period = usagePeriod(new Date());
+
+    await post(
+      orderPayload('2349097776555', 'wamid.METER.5', 'PN-METER-5', [
+        { retailerId: 'not-a-product-of-this-shop', quantity: 1 },
+      ]),
+    );
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
+
+    expect([...(await ordersOf(businessId))]).toHaveLength(0);
+    const rows = await withBusiness(db, businessId, (tx) =>
+      usageRepo.usageFor(tx, businessId, period),
+    );
+    expect(rows.find((r) => r.unit === 'CATALOGUE_ORDERS')?.used ?? 0).toBe(0);
+    expect(rows.find((r) => r.unit === 'DOCUMENT_GENERATION')?.used ?? 0).toBe(0);
+  });
+
   it('a redelivered webhook places nothing twice', async () => {
     const { businessId, wigId } = await seedCommerceMerchant('+2348030002222', 'PN-CART-2');
     const payload = orderPayload('2349097772222', 'wamid.CART.2', 'PN-CART-2', [
