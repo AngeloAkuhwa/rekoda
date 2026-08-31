@@ -273,7 +273,17 @@ describe('the sweep', () => {
    */
   it('gives a 31st schedule exactly one February entry, on the 28th', async () => {
     const { auth, firstDueOn } = await scheduleFor('+2348177200008', 31);
-    expect(firstDueOn.slice(8)).toBe('31');
+    /* The 31st of whatever month the first one falls in, or that month's last
+     * day when it has no 31st. Read from the month rather than written as
+     * "31", because the first due date is derived from today: a schedule
+     * created on 31 August first falls due on 30 September, and an assertion
+     * that only held in 31-day months turned every short month into a red
+     * build with nothing wrong. Rolling over instead of clamping still fails
+     * here, which is the property the case exists to protect. */
+    const lastOfThatMonth = new Date(
+      Date.UTC(Number(firstDueOn.slice(0, 4)), Number(firstDueOn.slice(5, 7)), 0),
+    ).getUTCDate();
+    expect(Number(firstDueOn.slice(8))).toBe(Math.min(31, lastOfThatMonth));
 
     /* Everything up to and including January, so the count below is February
      * alone rather than however many months lie between now and then. */
