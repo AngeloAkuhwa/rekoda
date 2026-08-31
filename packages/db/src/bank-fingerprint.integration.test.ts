@@ -242,10 +242,10 @@ describe('what the new identity does and does not separate', () => {
   /**
    * No derivative of the bank's words survives anywhere.
    *
-   * The narration is still stored at this point (it goes in the next
-   * change), so this is checked the only way that means anything: two lines
-   * alike in everything but their words get the same fingerprint. A hash
-   * that still had the words in it could not.
+   * Checked the only way that means anything now that the text itself is
+   * gone from the row: two lines alike in everything but the words they
+   * arrived with get the same fingerprint. A hash that still had those
+   * words in it could not.
    */
   it('stores no fingerprint that depends on what the bank wrote', async () => {
     const businessId = await seedBusiness('+2348130000007');
