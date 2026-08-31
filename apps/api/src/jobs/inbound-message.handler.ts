@@ -1379,6 +1379,20 @@ async function confirmPendingDraft(
   const period = usagePeriod(new Date());
   let documentTaken = false;
   let orderTaken = false;
+  /**
+   * The one way a reservation goes back.
+   *
+   * An order costs a document unit AND an order unit, so every exit that
+   * produces no invoice owes the merchant both. When each branch decided that
+   * for itself the two counters could drift apart: a branch that remembered
+   * only the document would leave them paying for capture they never got, and
+   * nothing about the branch would look wrong. Reading the counters at call
+   * time rather than choosing per branch makes that class of bug unwritable.
+   */
+  const refundReserved = async (): Promise<void> => {
+    if (documentTaken) await refundDocument(deps, businessId, period);
+    if (orderTaken) await refundOrder(deps, businessId, period);
+  };
   if (issuesDocument && !retrying) {
     const plan = await usageRepo.planFor(tx, businessId);
     /* A trial that lapsed between the preview and the yes is its own
@@ -1413,7 +1427,7 @@ async function confirmPendingDraft(
        * quantity, which only works for capabilities that happen to be
        * counted. Asked BEFORE the consume so a refusal takes nothing. */
       if (await entitlementsRepo.requireEntitlement(tx, businessId, 'REKODA_INTEGRATE')) {
-        await refundDocument(deps, businessId, period);
+        await refundReserved();
         return replies.ordersNotInPlan();
       }
       const orderAllowance = await meterAllowance(
@@ -1427,7 +1441,7 @@ async function confirmPendingDraft(
         usageRepo.consumeUnit(own, businessId, period, 'CATALOGUE_ORDERS', orderAllowance),
       );
       if (!orderGranted) {
-        await refundDocument(deps, businessId, period);
+        await refundReserved();
         return replies.allowanceExhausted(orderAllowance, 'CATALOGUE_ORDERS');
       }
       orderTaken = true;
@@ -1438,8 +1452,7 @@ async function confirmPendingDraft(
     /* The other "yes" won. It is issuing the invoice and it took its own
      * unit, so this one goes back: two rapid confirmations must cost one
      * document, which is how many the merchant ends up with. */
-    if (documentTaken) await refundDocument(deps, businessId, period);
-    if (orderTaken) await refundOrder(deps, businessId, period);
+    await refundReserved();
     return replies.alreadyConfirmed();
   }
   /**
@@ -1470,24 +1483,17 @@ async function confirmPendingDraft(
     /* Refunds its own unit on every path that answers without issuing a
      * receipt: an invoice settled from under the merchant, or a payment we
      * could not place, must not cost them a document they never got. */
-    return confirmPayment(deps, tx, businessId, draft, command, () =>
-      documentTaken ? refundDocument(deps, businessId, period) : Promise.resolve(),
-    );
+    return confirmPayment(deps, tx, businessId, draft, command, refundReserved);
   }
   if (command.intent === 'AdjustInventory') {
     /* No document, so the unit this confirmation reserved goes back. A stock
      * count produces nothing to send and must not cost the merchant one of
      * the documents they are allowed to generate. */
-    if (documentTaken) await refundDocument(deps, businessId, period);
+    await refundReserved();
     return confirmStockChange(deps, tx, businessId, draft.id, command as never);
   }
   if (command.intent === 'RecordOrder') {
-    return confirmOrder(deps, tx, businessId, draft.id, command as never, async () => {
-      /* Every no-order path gives BOTH units back: no invoice came out, so
-       * neither the document nor the order capture was delivered. */
-      if (documentTaken) await refundDocument(deps, businessId, period);
-      if (orderTaken) await refundOrder(deps, businessId, period);
-    });
+    return confirmOrder(deps, tx, businessId, draft.id, command as never, refundReserved);
   }
   if (command.intent !== 'RecordSale') {
     // Anything else is not actionable yet. The draft is claimed either way,
@@ -1500,7 +1506,7 @@ async function confirmPendingDraft(
     // Should be unreachable: a CG1 draft is never previewed, so nothing ever
     // invited a yes for it. Handled rather than asserted, and the unit goes
     // back with it, because no invoice comes out of this branch.
-    if (documentTaken) await refundDocument(deps, businessId, period);
+    await refundReserved();
     return replies.arithmeticQuestion(gate.question);
   }
 
@@ -1570,12 +1576,12 @@ async function confirmPendingDraft(
       /* Unreachable by construction — RecordSale is STANDARD and ungated —
        * so reaching it is a bug. The unit goes back and the merchant hears
        * "not yet" rather than silence. */
-      if (documentTaken) await refundDocument(deps, businessId, period);
+      await refundReserved();
       return replies.notYet('Recording that sale');
     }
-    if (run.replayed && documentTaken) {
+    if (run.replayed) {
       /* The first run already paid for this invoice. */
-      await refundDocument(deps, businessId, period);
+      await refundReserved();
     }
     return replies.issued(run.result.invoiceNumber, run.result.totalK, run.result.balanceDueK);
   }
@@ -1672,6 +1678,13 @@ async function confirmOrder(
     if (run.outcome !== 'done') {
       await refund();
       return replies.notYet('Recording that order');
+    }
+    if (run.replayed) {
+      /* The first run already paid for this order's document and capture.
+       * `RecordSale` has guarded its own replay since the bus landed; an
+       * order replaying and keeping both units was the same bug with no
+       * guard written for it. */
+      await refund();
     }
     placed = run.result;
   } else {

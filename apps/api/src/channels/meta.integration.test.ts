@@ -6510,6 +6510,48 @@ describe('a forwarded order', () => {
   });
 
   /**
+   * The other half of the refund, and the reachable one.
+   *
+   * A merchant with orders LEFT in their entitlement but NONE left in their
+   * allowance passes the gate above and fails the counter below, after the
+   * document unit is already spent. Two units are reserved in sequence and
+   * only one of them was taken, so only one goes back — and the branch that
+   * decides which is the same branch every other exit uses. Before the
+   * shared refund path this arithmetic lived in seven places, each free to
+   * be wrong on its own.
+   */
+  it('gives the document back when the orders allowance, not the plan, is what refuses', async () => {
+    const business = await seedMerchant('+2348031234567');
+    await seedCatalogue(business.id);
+    const period = usagePeriod(new Date());
+    const orderAllowance = allowanceFor('trial', 'CATALOGUE_ORDERS');
+
+    /* A trial month with every order already used. Spent through the same
+     * counter the confirmation spends, so the refusal below is the real one. */
+    for (let taken = 0; taken < orderAllowance; taken += 1) {
+      const granted = await withBusiness(db, business.id, (tx) =>
+        usageRepo.consumeUnit(tx, business.id, period, 'CATALOGUE_ORDERS', orderAllowance),
+      );
+      expect(granted).toBe(true);
+    }
+
+    stubTransport.replyWith(THE_ORDER);
+    await send('please I want 2 ankara bale', 'wamid.ORDERCAP');
+    await send('yes', 'wamid.ORDERCAPYES');
+
+    expect(stubSender.lastText).toContain(`You have used all ${orderAllowance} orders`);
+    expect(await invoiceCount(business.id)).toBe(0);
+
+    const rows = await withBusiness(db, business.id, (tx) =>
+      usageRepo.usageFor(tx, business.id, period),
+    );
+    /* The document unit the yes reserved came back. */
+    expect(rows.find((r) => r.unit === 'DOCUMENT_GENERATION')?.used ?? 0).toBe(0);
+    /* And the exhausted counter was not moved by the attempt. */
+    expect(rows.find((r) => r.unit === 'CATALOGUE_ORDERS')?.used).toBe(orderAllowance);
+  });
+
+  /**
    * The refusal that matters. Inventing a price would put a number in front
    * of a customer that the merchant never agreed to, so it asks instead.
    */
