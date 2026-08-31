@@ -883,6 +883,13 @@
       "when": 1787516400000,
       "tag": "0125_bank_payment_references",
       "breakpoints": true
+    },
+    {
+      "idx": 126,
+      "version": "7",
+      "when": 1787602800000,
+      "tag": "0126_bank_fingerprint_identity",
+      "breakpoints": true
     }
   ]
 }
