@@ -26,6 +26,7 @@ import { createDb, type Db } from '@rekoda/db';
 import { sweepBankFeeds } from './feed-sync.js';
 import { MonoProvider } from './mono.provider.js';
 import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
+import { Logger } from '@nestjs/common';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { CommandBus } from '../commands/command-bus.service.js';
 import { RiskPolicyService } from '../risk/risk-policy.service.js';
@@ -111,6 +112,50 @@ function monoWithTransactions(transactions: unknown[]) {
     });
   };
 }
+
+/**
+ * Everything handed to a logger while `run` is in flight.
+ *
+ * Patched at `Logger.prototype` rather than at stdout, because the property
+ * being asserted is about what the CODE passes to a log call. Where that
+ * ends up — a terminal, a file, a shipper — is a deployment question, and a
+ * test that watched stdout would pass for the wrong reason on any transport
+ * that buffers or reformats. Both streams are captured as well, so anything
+ * written around the logger is caught too.
+ */
+async function captureOutput(run: () => Promise<void>): Promise<string> {
+  const written: string[] = [];
+  const levels = ['log', 'warn', 'error', 'debug', 'verbose', 'fatal'] as const;
+  const proto = Logger.prototype as unknown as Record<string, (...args: unknown[]) => void>;
+  const original = new Map<string, (...args: unknown[]) => void>();
+  for (const level of levels) {
+    if (typeof proto[level] !== 'function') continue;
+    original.set(level, proto[level]);
+    proto[level] = (...args: unknown[]) => {
+      written.push(args.map((arg) => (typeof arg === 'string' ? arg : String(arg))).join(' '));
+    };
+  }
+
+  const realOut = process.stdout.write.bind(process.stdout);
+  const realErr = process.stderr.write.bind(process.stderr);
+  const swallow = ((chunk: unknown) => {
+    written.push(typeof chunk === 'string' ? chunk : String(chunk));
+    return true;
+  }) as typeof process.stdout.write;
+  process.stdout.write = swallow;
+  process.stderr.write = swallow;
+  try {
+    await run();
+  } finally {
+    process.stdout.write = realOut;
+    process.stderr.write = realErr;
+    for (const [level, fn] of original) proto[level] = fn;
+  }
+  return written.join('\n');
+}
+
+/** Distinctive enough that a substring match cannot be a coincidence. */
+const SENSITIVE = 'R7-SENSITIVE-NARRATION-DO-NOT-LOG';
 
 const MOVEMENTS = [
   {
@@ -202,6 +247,110 @@ describe('the live bank feed', () => {
     expect(bankFeedStateResponse.parse((await getJson('/v1/bank/feed', auth)).json())).toEqual({
       state: 'not_linked',
     });
+  });
+
+  /**
+   * The bank's words must not reach a log line (R7).
+   *
+   * They live in memory for exactly as long as it takes to pull the Rekoda
+   * references out of them, and the row written from them does not carry
+   * them. A log line is the one place that boundary could be crossed by
+   * accident: an interpolated row in a warning would put a payer's name
+   * into an operator's terminal and whatever ships that terminal onwards.
+   *
+   * The whole of stdout and stderr is searched rather than one logger,
+   * because the property is about the CONTENT the bank supplied, not about
+   * which logger might carry it. The field NAME is fair game and is not
+   * asserted against.
+   */
+  it('never lets the bank`s own words reach a log line', async () => {
+    const { auth } = await onboard('+2348188000320');
+    monoWithTransactions([
+      {
+        id: 'txn_leak_1',
+        narration: `TRF FROM ${SENSITIVE} 08031234567`,
+        amount: 24_500_00,
+        type: 'credit',
+        date: '2026-08-22T09:00:00.000Z',
+      },
+      {
+        id: 'txn_leak_2',
+        narration: `POS ${SENSITIVE} LEKKI`,
+        amount: 3_000_00,
+        type: 'debit',
+        date: '2026-08-23T09:00:00.000Z',
+      },
+    ]);
+
+    const printed = await captureOutput(async () => {
+      await post('/v1/bank/feed/connect', { exchangeCode: 'code_ok' }, auth);
+      await post('/v1/bank/feed/sync', {}, auth);
+      await getJson('/v1/bank/position', auth);
+      /* The background door as well as the request one: the sweep logs on
+       * its own account, and its own pool, exactly as the worker does. */
+      const { db: workerDb, close: closeWorker } = createDb(urls.worker, { max: 2 });
+      try {
+        await sweepBankFeeds({
+          workerDb,
+          appDb: db,
+          feed: new MonoProvider(process.env['MONO_SECRET_KEY']!, process.env['MONO_BASE_URL']!),
+          commandBus: testBus,
+          commandIngestFinancialTransaction: false,
+        });
+      } finally {
+        await closeWorker();
+      }
+    });
+
+    expect(printed).not.toContain(SENSITIVE);
+    expect(printed).not.toContain('08031234567');
+    expect(printed).not.toContain('LEKKI');
+  });
+
+  /**
+   * And on the paths that actually produce log lines.
+   *
+   * A healthy sync is quiet, so the case above could pass on a run that
+   * logged nothing at all. This one makes the provider fail after the lines
+   * are already in hand, which is where a warning gets written, and asserts
+   * the same silence about the words.
+   */
+  it('says nothing about the words when the provider fails mid-sync', async () => {
+    const { auth } = await onboard('+2348188000321');
+    monoWithTransactions([
+      {
+        id: 'txn_leak_3',
+        narration: `TRF FROM ${SENSITIVE}`,
+        amount: 5_000_00,
+        type: 'credit',
+        date: '2026-08-24T09:00:00.000Z',
+      },
+    ]);
+    await post('/v1/bank/feed/connect', { exchangeCode: 'code_ok' }, auth);
+
+    const printed = await captureOutput(async () => {
+      await post('/v1/bank/feed/sync', {}, auth);
+      /* Now the provider breaks, and the adapter warns. */
+      monoRespond = (_req, res) => json(res, 502, { message: 'upstream unavailable' });
+      await post('/v1/bank/feed/sync', {}, auth);
+      const { db: workerDb, close: closeWorker } = createDb(urls.worker, { max: 2 });
+      try {
+        /* The sweep meets the same outage and warns on its own account. */
+        await sweepBankFeeds({
+          workerDb,
+          appDb: db,
+          feed: new MonoProvider(process.env['MONO_SECRET_KEY']!, process.env['MONO_BASE_URL']!),
+          commandBus: testBus,
+          commandIngestFinancialTransaction: false,
+        }).catch(() => undefined);
+      } finally {
+        await closeWorker();
+      }
+    });
+
+    /* Something WAS logged, or this proves nothing. */
+    expect(printed.length).toBeGreaterThan(0);
+    expect(printed).not.toContain(SENSITIVE);
   });
 
   it('syncing lands the lines in the same register the upload fills, once', async () => {
