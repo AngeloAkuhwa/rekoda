@@ -890,6 +890,13 @@
       "when": 1787602800000,
       "tag": "0126_bank_fingerprint_identity",
       "breakpoints": true
+    },
+    {
+      "idx": 127,
+      "version": "7",
+      "when": 1787689200000,
+      "tag": "0127_drop_bank_narration",
+      "breakpoints": true
     }
   ]
 }

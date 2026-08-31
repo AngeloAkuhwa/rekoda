@@ -10,11 +10,8 @@
  * before any reader depends on it.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import postgres from 'postgres';
 import { sql } from 'drizzle-orm';
-import { parseBankStatement, paymentReferencesIn } from '@rekoda/core';
+import { parseBankStatement } from '@rekoda/core';
 import { createDb, withBusiness, type Db } from './client.js';
 import { bankRepo, identity } from './index.js';
 import { migrate, requireUrls, truncateAll, type Urls } from './testing.js';
@@ -164,74 +161,43 @@ describe('extracting Rekoda references at ingest', () => {
   });
 
   /**
-   * The one that guards the backfill.
+   * The backfill's own case lived here and has been removed, deliberately.
    *
-   * The migration extracts in SQL and the ingest extracts in TypeScript, and
-   * the two must agree exactly or a line that matched before the deploy
-   * stops matching after it, with the text it came from about to be deleted
-   * and no way left to recover. Two regular expressions that look equivalent
-   * in two dialects are not evidence, so this runs the migration's OWN
-   * statement — read from the file that ships, not retyped here — over rows
-   * inserted with no references, and compares every answer against
-   * `paymentReferencesIn`.
+   * It replayed migration 0125's statement over rows holding a narration and
+   * compared every answer to `paymentReferencesIn`, which is what made the
+   * SQL trustworthy before it ran against real history. Migration 0127 then
+   * dropped the column, so there is no longer a table it can run against and
+   * no SQL extraction left anywhere in the system. The guard did its job at
+   * the only moment it could, and keeping a version of it that ran against
+   * literals would preserve the shape of a check whose subject is gone.
+   *
+   * What replaces it is below: the property the backfill existed to protect,
+   * checked against the live import instead of the migration.
    */
-  it('backfills exactly what the ingest would have extracted', async () => {
-    const businessId = await seedBusiness('+2348120000007');
-    const awkward = [
-      'TRF FROM ADA OKAFOR RKD-PAY-20260812-7H3K9M THANKS',
-      'rkd-pay-20260812-7h3k9m lower cased by the bank',
-      'two RKD-PAY-20260812-7H3K9M and RKD-PAY-20260901-ABCDEF in one line',
-      'repeated RKD-PAY-20260812-7H3K9M RKD-PAY-20260812-7H3K9M',
-      'nothing to find here at all',
-      'excluded alphabet RKD-PAY-20260812-7H3K9I',
-      'too few digits RKD-PAY-2026081-7H3K9M',
-      'gluedRKD-PAY-20260812-7H3K9Mtext',
-    ];
-
-    /* Straight to the table, so the rows look like history: narration
-     * present, references never computed. */
-    await withBusiness(db, businessId, async (tx) => {
-      for (const [at, narration] of awkward.entries()) {
-        await tx.execute(sql`
-          INSERT INTO bank_statement_lines
-            (business_id, posted_on, amount_k, narration, bank_ref, fingerprint,
-             payment_references)
-          VALUES (${businessId}::uuid, ${`2026-08-${String(at + 1).padStart(2, '0')}`}::date,
-                  100000, ${narration}, NULL, ${`seed-${at}`}, NULL)
-        `);
-      }
-    });
-
-    const migrationSql = readFileSync(
-      fileURLToPath(new URL('../migrations/0125_bank_payment_references.sql', import.meta.url)),
-      'utf8',
+  it('never lets the words themselves reach the row', async () => {
+    const businessId = await seedBusiness('+2348120000009');
+    await importIt(
+      businessId,
+      `Date,Description,Amount
+18/08/2026,TRF FROM NGOZI ADEYEMI 08031234567 RKD-PAY-20260818-4T7W2N,66000.00
+`,
     );
-    const update = migrationSql.slice(
-      migrationSql.indexOf('UPDATE bank_statement_lines'),
-      migrationSql.indexOf('/* ── the gate'),
-    );
-    expect(update).toContain('regexp_matches');
 
-    /* As the owner, because the table is append-only by grant and the
-     * application role has no UPDATE on it. A backfill is migration work,
-     * and running it through the application's credentials here would prove
-     * something the deploy never does. */
-    const owner = postgres(urls.owner, { max: 1, onnotice: () => {} });
-    try {
-      await owner.unsafe(update);
-    } finally {
-      await owner.end();
-    }
-
-    const stored = await withBusiness(db, businessId, (tx) =>
-      tx.execute<{ narration: string; payment_references: string[] }>(sql`
-        SELECT narration, payment_references FROM bank_statement_lines
-        WHERE business_id = ${businessId}::uuid ORDER BY posted_on
+    /* Every column of the row, whatever they are, as text. Not a named
+     * field: a column added later would carry the payer's name just as far,
+     * and this is the assertion that would notice. */
+    const dumped = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ row: string }>(sql`
+        SELECT l::text AS row FROM bank_statement_lines l
+        WHERE l.business_id = ${businessId}::uuid
       `),
     );
-    expect([...stored]).toHaveLength(awkward.length);
-    for (const row of stored) {
-      expect(row.payment_references).toEqual(paymentReferencesIn(`${row.narration} `));
-    }
+    const row = [...dumped][0]!.row;
+
+    expect(row).not.toContain('NGOZI');
+    expect(row).not.toContain('ADEYEMI');
+    expect(row).not.toContain('08031234567');
+    /* And the one thing worth keeping from that sentence is kept. */
+    expect(row).toContain('RKD-PAY-20260818-4T7W2N');
   });
 });

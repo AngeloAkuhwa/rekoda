@@ -161,8 +161,8 @@ describe('connection-scoped line identity (§22.3)', () => {
       withBusiness(db, businessId, (tx) =>
         tx.execute(sql`
           INSERT INTO bank_statement_lines
-            (business_id, posted_on, amount_k, narration, fingerprint, external_transaction_id)
-          VALUES (${businessId}::uuid, '2026-08-20', 5000000, 'DIRECT CREDIT', 'fp_global', 'txn_global')
+            (business_id, posted_on, amount_k, fingerprint, external_transaction_id)
+          VALUES (${businessId}::uuid, '2026-08-20', 5000000, 'fp_global', 'txn_global')
         `),
       ),
     ).rejects.toThrow();

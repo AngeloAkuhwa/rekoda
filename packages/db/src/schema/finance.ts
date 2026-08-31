@@ -391,13 +391,10 @@ export const bankStatementLines = pgTable(
     postedOn: date('posted_on').notNull(),
     /** Signed kobo. Positive is money INTO the account. */
     amountK: kobo('amount_k').notNull(),
-    /**
-     * The bank's own words, which carry counterparty names.
-     *
-     * Stored because it is what makes a line matchable to an invoice, shown
-     * to the merchant who downloaded it, and never sent to a model.
-     */
-    narration: text('narration').notNull().default(''),
+    /* The bank's own words are NOT here. They carried counterparty names,
+     * reconciliation never read them, and what it did read from them is
+     * `payment_references` below (migration 0127). They still exist in
+     * memory for exactly as long as it takes to extract that. */
     bankRef: text('bank_ref'),
     /**
      * The Rekoda payment references the bank's text carried, extracted at
