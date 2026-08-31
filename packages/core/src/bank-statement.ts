@@ -13,8 +13,11 @@
  * rather than assumed.
  *
  * Narrations are carried through untouched and are never sent to a model.
- * They are what makes a line matchable to an invoice, and they are also the
- * one field in a statement that carries somebody's name.
+ * They are the one field in a statement that carries somebody's name, which
+ * is why nothing downstream keeps them: the import reads the Rekoda payment
+ * references out of them and stores those, and the row it writes has no
+ * narration on it (migration 0127). What makes a line matchable to an
+ * invoice is those references, not the sentence they arrived in.
  */
 import { createHash } from 'node:crypto';
 
@@ -24,7 +27,6 @@ export interface BankStatementLine {
   readonly postedOn: string;
   /** Signed integer kobo. Positive is money INTO the account. */
   readonly amountK: number;
-  /** The bank's own words. Stored, shown to the merchant, never modelled. */
   /**
    * The bank's description, as the file spelled it. IN MEMORY ONLY: the
    * import reads the Rekoda references out of it and writes those, never

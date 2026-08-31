@@ -51,8 +51,34 @@ const SCAN = [
   'docs/ai-launch-readiness.md',
 ];
 
-/** Each entry: the retired claim, and why it must stay retired. */
+/**
+ * Each entry: the retired claim, and why it must stay retired.
+ *
+ * `unless` is optional, and exists for a claim whose words are also the
+ * words used to DENY it. A guard that flagged "narration is never stored"
+ * would be flagging the sentence this repository now wants to be able to
+ * write, and the author would word around the guard rather than fix
+ * anything. Where a pattern has that shape, `unless` names the line that
+ * says the opposite, and the line is left alone.
+ */
 const RETIRED = [
+  {
+    /* R7 (migrations 0125 to 0127). The bank's own description is read in
+     * memory, the Rekoda references are pulled out of it, and the row keeps
+     * only those. A surface saying the narration is stored, or shown to the
+     * merchant, would be describing the model this replaced.
+     *
+     * Deliberately narrow: "narration" or "the bank's own words" within a
+     * few words of stored/shown/displayed/retained, so a sentence about
+     * anything else is out of reach. `unless` then spares every way of
+     * saying the opposite, which is what the current surfaces say. */
+    pattern:
+      /\b(narration|bank(?:'|\u2019)?s own words)\b[^.\n]{0,40}\b(stored|shown to the merchant|displayed|retained|kept on the row)\b/i,
+    unless: /\b(not|never|no longer|nothing|without|stops|stopped|instead of)\b/i,
+    reason:
+      'R7 stopped storing bank narration: the row keeps the extracted RKD-PAY references and nothing of the text (migrations 0125 to 0127)',
+  },
+
   {
     pattern: /audio never leaves/i,
     reason:
@@ -98,8 +124,10 @@ for (const root of SCAN) {
     if (file.endsWith('check-retired-claims.mjs')) continue;
     const lines = readFileSync(join(ROOT, file), 'utf8').split('\n');
     lines.forEach((line, index) => {
-      for (const { pattern, reason } of RETIRED) {
-        if (pattern.test(line)) failures.push({ file, line: index + 1, reason });
+      for (const { pattern, unless, reason } of RETIRED) {
+        if (!pattern.test(line)) continue;
+        if (unless?.test(line)) continue;
+        failures.push({ file, line: index + 1, reason });
       }
     });
   }
