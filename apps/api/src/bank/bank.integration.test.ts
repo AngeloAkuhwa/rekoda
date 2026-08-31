@@ -191,7 +191,7 @@ describe('the bank surface', () => {
     expect((await post('/v1/bank/statement', { csv: '' }, auth)).statusCode).toBe(400);
   });
 
-  it('shows the two figures apart, with the bank`s own words', async () => {
+  it('shows the two figures apart, and the line without the bank`s words', async () => {
     const { auth } = await onboard('+2348177000074');
     await post('/v1/bank/statement', { csv: AUGUST }, auth);
 
@@ -205,7 +205,14 @@ describe('the bank surface', () => {
       lines: 2,
       latestOn: '2026-08-05',
     });
-    expect(seen.lines[0]).toMatchObject({ narration: 'POS PURCHASE SHOPRITE' });
+    /* The line the merchant sees: a day, a signed amount, and whatever
+     * reference it carried. The CSV said "POS PURCHASE SHOPRITE" and quoted
+     * no Rekoda reference, so there is nothing kept from that sentence. */
+    expect(seen.lines[0]).toMatchObject({
+      postedOn: '2026-08-05',
+      amountK: -2_000_000,
+      paymentReferences: [],
+    });
   });
 
   it('takes a day back out, and lets it be imported again', async () => {
@@ -470,7 +477,11 @@ describe('pairing the two sides, end to end', () => {
     );
     const same = released.lines.find((l) => l.id === line.id)!;
     expect(same.matchedTo).toBeNull();
-    expect(same).toMatchObject({ amountK: line.amountK, narration: line.narration });
+    expect(same).toMatchObject({
+      amountK: line.amountK,
+      paymentReferences: line.paymentReferences,
+      bankRef: line.bankRef,
+    });
     expect(released.reconciliation).toMatchObject({ matched: 0, pairable: 1 });
   });
 

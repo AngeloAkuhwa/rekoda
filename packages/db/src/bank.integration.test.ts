@@ -69,7 +69,7 @@ const position = (businessId: string) =>
   withBusiness(db, businessId, (tx) => bankRepo.bankPositionFor(tx, businessId));
 
 describe('importing what the bank said', () => {
-  it('stores each line once, with the bank`s own words kept', async () => {
+  it('stores each line once, as a day and a signed amount', async () => {
     const businessId = await seedBusiness('+2348110000001');
     expect(await importIt(businessId, AUGUST)).toEqual({ imported: 2, duplicates: 0 });
 
@@ -78,7 +78,10 @@ describe('importing what the bank said', () => {
     expect(lines[0]).toMatchObject({
       postedOn: '2026-08-05',
       amountK: -2_000_000,
-      narration: 'POS PURCHASE SHOPRITE',
+      /* "POS PURCHASE SHOPRITE" quoted no Rekoda reference, so there is
+       * nothing to keep from it. The reader used to hand back the sentence
+       * itself; the day and the signed amount are the line now. */
+      paymentReferences: [],
     });
   });
 
@@ -559,7 +562,8 @@ describe('pairing the two sides', () => {
     const after = await withBusiness(db, businessId, (tx) => bankRepo.bankLinesFor(tx, businessId));
     expect(after.find((l) => l.id === line.id)).toMatchObject({
       amountK: 15_000_000,
-      narration: line.narration,
+      paymentReferences: line.paymentReferences,
+      bankRef: line.bankRef,
     });
     expect(await reconcile(businessId, false)).toMatchObject({ matched: 0, pairable: 1 });
 
@@ -749,7 +753,9 @@ describe('the statement page a merchant works from', () => {
     await withBusiness(db, businessId, async (tx) => {
       const all = await bankRepo.bankLinesFor(tx, businessId, 5_000);
       const open = await bankRepo.openMovements(tx, businessId);
-      for (const line of all.filter((l) => l.narration.startsWith('SETTLED'))) {
+      /* By amount, because the reader no longer hands back the bank's
+       * description and these three lines differ by amount anyway. */
+      for (const line of all.filter((l) => l.amountK !== 11_100_000)) {
         const movement = open.find((m) => m.amountK === line.amountK)!;
         await bankRepo.matchByHand(tx, {
           businessId,
@@ -765,7 +771,8 @@ describe('the statement page a merchant works from', () => {
       bankRepo.bankLinesFor(tx, businessId, 1, { unmatchedFirst: true }),
     );
     expect(page).toHaveLength(1);
-    expect(page[0]!.narration).toBe('THE ONE STILL OPEN');
+    /* The 111,000 line: the only one nothing was paired with. */
+    expect(page[0]!.amountK).toBe(11_100_000);
   });
 
   it('leaves the rule its own order', async () => {
@@ -783,7 +790,9 @@ describe('the statement page a merchant works from', () => {
     const plain = await withBusiness(db, businessId, (tx) =>
       bankRepo.bankLinesFor(tx, businessId, 5_000),
     );
-    expect(plain.map((l) => l.narration)).toEqual(['NEWEST', 'OLDEST']);
+    /* NEWEST then OLDEST, named by their amounts now that the description
+     * does not come back from the reader. */
+    expect(plain.map((l) => l.amountK)).toEqual([33_300_000, 11_100_000]);
   });
 });
 

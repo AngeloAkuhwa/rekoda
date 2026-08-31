@@ -212,12 +212,26 @@ describe('the live bank feed', () => {
     const synced = syncBankFeedResponse.parse((await post('/v1/bank/feed/sync', {}, auth)).json());
     expect(synced).toMatchObject({ outcome: 'synced', imported: 2, duplicates: 0 });
 
-    /* The same position the CSV upload feeds: signed kobo, narrations kept. */
-    const position = bankPositionResponse.parse((await getJson('/v1/bank/position', auth)).json());
+    /* The same position the CSV upload feeds: signed kobo, both directions,
+     * and none of the bank's words. */
+    const raw = (await getJson('/v1/bank/position', auth)).json();
+    const position = bankPositionResponse.parse(raw);
     expect(position.position.lines).toBe(2);
     expect(position.position.statementK).toBe(150_000_00 - 20_000_00);
-    const narrations = position.lines.map((l) => l.narration).sort();
-    expect(narrations).toEqual(['POS PURCHASE SHOPRITE', 'TRF FROM ADEBAYO O']);
+
+    /* The debit is still a debit and the credit still a credit: minimising
+     * what is kept about a movement never changed which way it went. */
+    expect(position.lines.map((l) => l.amountK).sort((a, b) => a - b)).toEqual([
+      -20_000_00, 150_000_00,
+    ]);
+
+    /* And the payer's name does not cross the border. Mono sent
+     * "TRF FROM ADEBAYO O"; the whole response is searched rather than one
+     * field, because a field added later would carry it just as far. */
+    const body = JSON.stringify(raw);
+    expect(body).not.toContain('ADEBAYO');
+    expect(body).not.toContain('SHOPRITE');
+    expect(body).not.toContain('narration');
 
     /* A second sync re-covers the overlap and books nothing twice. */
     const again = syncBankFeedResponse.parse((await post('/v1/bank/feed/sync', {}, auth)).json());

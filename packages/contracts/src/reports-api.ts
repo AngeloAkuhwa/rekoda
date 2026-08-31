@@ -1462,13 +1462,14 @@ export const bankPositionResponse = z.object({
       postedOn: z.string(),
       amountK: z.number().int().finite(),
       /**
-       * The bank's own words, which carry counterparty names.
+       * The Rekoda references this line quoted, extracted at ingest.
        *
-       * Crosses to the merchant who downloaded the statement and to nobody
-       * else. Never sent to a model, and never rendered into a WhatsApp
-       * message, which is plaintext on somebody's phone.
+       * The bank's own words used to cross here. They carried counterparty
+       * names, nothing downstream needed them, and reconciliation never read
+       * them: it read exactly this. Usually empty, sometimes one, and more
+       * than one when a single transfer settled several invoices.
        */
-      narration: z.string(),
+      paymentReferences: z.array(z.string()),
       bankRef: z.string().nullable(),
       /**
        * What this line was paired with, if anything.
