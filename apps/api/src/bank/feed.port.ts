@@ -25,7 +25,18 @@ export interface FeedTransaction {
   postedOn: string;
   /** SIGNED integer kobo. Positive is money INTO the account. */
   amountK: number;
-  /** The bank's own words. Stored, shown to the merchant, never modelled. */
+  /**
+   * The bank's own words. IN MEMORY ONLY.
+   *
+   * Not stored, not returned by any reader, not shown to the merchant, never
+   * modelled. It exists for the few milliseconds between the provider
+   * answering and `importStatementLines` pulling the Rekoda references out
+   * of it, and the row it writes does not carry it (migration 0127).
+   *
+   * It cannot be removed from this type: it is the only thing those
+   * references can be extracted FROM, and a provider that stopped supplying
+   * it would stop reconciling by reference altogether.
+   */
   narration: string;
   /** The aggregator's reference for the movement, when it publishes one. */
   bankRef: string | null;

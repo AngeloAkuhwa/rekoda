@@ -107,11 +107,14 @@ async function seedLegacyRows(
       );
       const occurrence = (seen.get(body) ?? 0) + 1;
       seen.set(body, occurrence);
+      /* No narration column to write to any more, and none needed: the
+       * legacy key is computed above from the parsed line, which still has
+       * the words in memory exactly as the old import did. */
       await owner`
         INSERT INTO bank_statement_lines
-          (business_id, posted_on, amount_k, narration, bank_ref, fingerprint, payment_references)
+          (business_id, posted_on, amount_k, bank_ref, fingerprint, payment_references)
         VALUES (${businessId}::uuid, ${line.postedOn}::date, ${line.amountK},
-                ${line.narration}, ${line.bankRef},
+                ${line.bankRef},
                 ${legacyFingerprint(line, occurrence)}, ARRAY[]::text[])
       `;
     }

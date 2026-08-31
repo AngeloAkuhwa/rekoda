@@ -25,6 +25,11 @@ export interface BankStatementLine {
   /** Signed integer kobo. Positive is money INTO the account. */
   readonly amountK: number;
   /** The bank's own words. Stored, shown to the merchant, never modelled. */
+  /**
+   * The bank's description, as the file spelled it. IN MEMORY ONLY: the
+   * import reads the Rekoda references out of it and writes those, never
+   * this (migration 0127).
+   */
   readonly narration: string;
   /** The bank's reference, when it publishes one. */
   readonly bankRef: string | null;

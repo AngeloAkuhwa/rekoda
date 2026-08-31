@@ -64,8 +64,8 @@ export async function importStatementLines(
   /* With PR-073 the DO NOTHING absorbs conflicts on BOTH identities: the
    * fingerprint (same content re-imported through any door) and the
    * partial provider-identity unique (the same external id re-polled
-   * through the same connection, even if the provider reworded the
-   * narration in between). */
+   * through the same connection, even if the provider reworded its
+   * description in between). */
   /* Extracted BEFORE the key is computed, and once, so the references that
    * land on the row are the same ones the fingerprint was built from. Doing
    * it twice would invite the two to drift apart, and the identity of a line
@@ -74,7 +74,10 @@ export async function importStatementLines(
    * Narration and `bankRef` together, joined the way the old reader joined
    * them, because a bank that files the reference in its own reference field
    * rather than the description is not a bank that should stop reconciling.
-   * This is the last place the bank's words are read. */
+   *
+   * This is the LAST place the bank's words exist. They arrived in memory,
+   * they are read exactly here, and the INSERT below does not carry them:
+   * after this line returns there is no narration anywhere in Rekoda. */
   const withReferences = input.lines.map((line) => ({
     ...line,
     paymentReferences: paymentReferencesIn(`${line.narration} ${line.bankRef ?? ''}`),
@@ -101,7 +104,6 @@ export async function importStatementLines(
           businessId: input.businessId,
           postedOn: line.postedOn,
           amountK: line.amountK,
-          narration: line.narration,
           bankRef: line.bankRef,
           paymentReferences: line.paymentReferences,
           fingerprint: line.fingerprint,

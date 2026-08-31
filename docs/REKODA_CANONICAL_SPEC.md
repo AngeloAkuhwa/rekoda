@@ -1392,6 +1392,12 @@ Money moving through an account is a fact. What that money *was* is a judgement,
 
 **AI can explain. Deterministic logic or an authorised human decides.** An AI-proposed match is never applied without one of the two.
 
+**What a connected feed keeps.** Tier 1 needs the Rekoda references a line quoted, not the sentence that carried them. Those references are extracted at ingest, while the provider's answer is still in memory, and only they are stored. The bank's own description is not written down: it carries the payer's name, no reader ever asked for it, and reconciliation never read it (migrations 0125 to 0127).
+
+A stored line is therefore its business, its connection, the provider's transaction id, the day, the signed amount in kobo, the bank's structured reference, the Rekoda references extracted from the text, and the identity fields that stop a re-upload duplicating it. Signed movements are kept in both directions: a debit is a movement like a credit, and the position is computed from all of them. The only line dropped at ingest is one whose amount is zero.
+
+Institution coverage is whatever Mono's financial-data product currently reaches, which is a fact about the provider rather than a promise Rekoda makes.
+
 ### 22.2 The required golden test
 
 ```

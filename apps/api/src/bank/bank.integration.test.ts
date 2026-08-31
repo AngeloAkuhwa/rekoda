@@ -5,7 +5,7 @@
  * storage in packages/db/src/bank.integration.test.ts. What this pins is the
  * border: that a stranger is refused, that an unreadable file arrives as an
  * outcome the page can explain rather than a status code, and that a
- * merchant's narrations reach that merchant and nobody else.
+ * merchant's lines reach that merchant and nobody else.
  */
 import { randomBytes } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -230,11 +230,11 @@ describe('the bank surface', () => {
   });
 
   /**
-   * The narration carries somebody's name. It reaches the merchant who
-   * downloaded the statement and it must reach nobody else, which on this
-   * surface means one tenant's lines never appearing under another's session.
+   * A statement line is still one merchant's business even now that the
+   * bank's words are gone from it: the day, the amount and the reference say
+   * who paid what, and none of it may appear under another tenant's session.
    */
-  it('is one tenant at a time, narrations included', async () => {
+  it('is one tenant at a time', async () => {
     const ada = await onboard('+2348177000076');
     const bola = await onboard('+2348177000077');
     await post('/v1/bank/statement', { csv: AUGUST }, ada.auth);
