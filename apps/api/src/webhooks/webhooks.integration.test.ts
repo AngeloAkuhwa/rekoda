@@ -73,6 +73,11 @@ function get(url: string, headers: Record<string, string> = {}) {
   return app.inject({ method: 'GET', url, headers });
 }
 
+/** The same instant one month on, for the periods a backoff can reach. */
+function nextMonth(at: Date): Date {
+  return new Date(Date.UTC(at.getUTCFullYear(), at.getUTCMonth() + 1, 1, 12));
+}
+
 /** A business with an owner session. */
 async function onboard(phone: string, name: string) {
   const requested = (await post('/v1/auth/otp/request', { phone })).json() as { devCode: string };
@@ -86,19 +91,24 @@ async function onboard(phone: string, name: string) {
       { 'x-rekoda-setup-token': verified.setupToken },
     )
   ).json() as { sessionToken: string; businessId: string };
+  const now = new Date();
   /* Deliveries are metered (spec §27's WEBHOOK_DELIVERIES) and no plan
    * sells them, so the capacity a merchant buys with the API product is
    * credited here as bonus. A business without it is refused at the meter,
-   * which is its own test below. */
-  await withBusiness(db, created.businessId, (tx) =>
-    usageRepo.creditBonus(
-      tx,
-      created.businessId,
-      usagePeriod(new Date()),
-      'WEBHOOK_DELIVERIES',
-      100,
-    ),
-  );
+   * which is its own test below.
+   *
+   * Credited for THIS month and the next, because the retry backoff spans
+   * more than half a day: a delivery that first fails late on the last day
+   * of a month makes its last attempts in the following billing period, and
+   * a merchant whose subscription renews has capacity there too. Crediting
+   * only the current period made the retry test pass on the 1st and fail on
+   * the 31st, which is a property of the calendar rather than of the code
+   * under test. */
+  for (const period of [usagePeriod(now), usagePeriod(nextMonth(now))]) {
+    await withBusiness(db, created.businessId, (tx) =>
+      usageRepo.creditBonus(tx, created.businessId, period, 'WEBHOOK_DELIVERIES', 100),
+    );
+  }
 
   return {
     businessId: created.businessId,
