@@ -14,6 +14,7 @@ import {
   Get,
   HttpCode,
   Inject,
+  Logger,
   Param,
   Post,
   Req,
@@ -30,10 +31,12 @@ import {
   type UploadImageResponse,
 } from '@rekoda/contracts';
 import { extensionFor, MAX_IMAGE_BYTES, sniffImageType } from '@rekoda/core';
-import { catalogueRepo, withBusiness, type Db } from '@rekoda/db';
+import { redactForLog } from '@rekoda/core/privacy';
+import { catalogueRepo, objectDeletionsRepo, withBusiness, type Db } from '@rekoda/db';
 import { SessionGuard, type AuthedRequest } from '../auth/session.guard.js';
 import { Roles, RolesGuard } from '../auth/roles.guard.js';
 import { DB } from '../db/db.module.js';
+import { describeFailure } from '../jobs/runner.js';
 import { DOCUMENT_STORAGE } from '../documents/documents.module.js';
 import { StorageUnavailable, type DocumentStorage } from '../documents/storage.js';
 import { productImageKey } from './image-key.js';
@@ -61,6 +64,8 @@ interface MultipartRequest extends AuthedRequest {
 @Controller('v1/catalogue')
 @UseGuards(SessionGuard, RolesGuard)
 export class CatalogueController {
+  private readonly log = new Logger(CatalogueController.name);
+
   constructor(
     @Inject(DB) private readonly db: Db,
     @Inject(DOCUMENT_STORAGE) private readonly storage: DocumentStorage,
@@ -163,13 +168,29 @@ export class CatalogueController {
   /**
    * Attach a photo.
    *
-   * Three refusals, in the order that matters. Size first, enforced by the
+   * Four refusals, in the order that matters. Size first, enforced by the
    * parser rather than by measuring afterwards, so a merchant sending a
    * hundred megabytes never gets a hundred megabytes into this process.
    * Then what the bytes ARE, read from the file itself: the `Content-Type`
    * that came with the upload is whatever a browser guessed from a filename,
    * and a document stored under a claimed image type would be served back
-   * and run in somebody's browser on our own origin. Only then the bucket.
+   * and run in somebody's browser on our own origin. Then whether the product
+   * is even this merchant's. Only then the bucket.
+   *
+   * That third refusal used to come LAST, after the bytes were already
+   * written, and nothing collected what it left behind. Two objects leaked
+   * that way. The one the request never had a home for: anyone holding a
+   * session could POST to `/v1/catalogue/<any uuid>/image` and put bytes in
+   * the bucket for free, unbounded, because the refusal arrived after the
+   * write. And the one a successful upload displaced: `setProductImage` hands
+   * back the key it replaced precisely so the caller can bin it, and the
+   * caller dropped it, so every re-upload since launch has left the old photo
+   * behind with no row naming it.
+   *
+   * So: ask first, and treat the bucket as something that must be cleaned up
+   * after rather than something that only ever grows. Neither the reorder nor
+   * the compensation is sufficient alone — the product can still be deleted
+   * between the check and the update — which is why both are here.
    */
   @Post(':id/image')
   @Roles('owner', 'delegate')
@@ -194,6 +215,13 @@ export class CatalogueController {
     if (!type) return { outcome: 'not_an_image' };
 
     const businessId = request.auth!.businessId;
+    /* Before the bucket, not after. Row-level security answers this for the
+     * tenant, so a product belonging to another shop reads as absent. */
+    const exists = await withBusiness(this.db, businessId, (tx) =>
+      catalogueRepo.productExists(tx, businessId, id),
+    );
+    if (!exists) return { outcome: 'not_found' };
+
     const key = productImageKey(businessId, extensionFor(type));
     try {
       await this.storage.put(key, bytes, type);
@@ -204,12 +232,73 @@ export class CatalogueController {
       throw error;
     }
 
-    const attached = await withBusiness(this.db, businessId, (tx) =>
-      catalogueRepo.setProductImage(tx, businessId, id, key),
-    );
-    if (attached.outcome === 'not_found') return { outcome: 'not_found' };
+    let attached: Awaited<ReturnType<typeof catalogueRepo.setProductImage>>;
+    try {
+      attached = await withBusiness(this.db, businessId, async (tx) => {
+        const result = await catalogueRepo.setProductImage(tx, businessId, id, key);
+        /* Enqueued INSIDE the transaction that orphans it, which is the
+         * queue's whole contract: if this update rolls back, the old key is
+         * still the live one and no promise to delete it survives. */
+        if (result.outcome === 'updated' && result.replacedKey && result.replacedKey !== key) {
+          await objectDeletionsRepo.enqueueObjectDeletions(
+            tx,
+            businessId,
+            [result.replacedKey],
+            'image_replaced',
+          );
+        }
+        return result;
+      });
+    } catch (error: unknown) {
+      /* The bytes are already in the bucket and nothing will ever name them.
+       * Bin them before rethrowing, or a failed upload leaves litter. */
+      await this.discard(businessId, key);
+      throw error;
+    }
+
+    if (attached.outcome === 'not_found') {
+      /* The product existed a moment ago and does not now. Rare, and the
+       * reason the check above is not the whole fix. */
+      await this.discard(businessId, key);
+      return { outcome: 'not_found' };
+    }
 
     return { outcome: 'stored', imagePath: `/v1/catalogue/${id}/image` };
+  }
+
+  /**
+   * Get rid of an object nothing points at.
+   *
+   * Tried directly first because that is one call against a bucket that is
+   * almost always up, and it leaves nothing behind to read. A provider that
+   * refuses is not allowed to end the story: the key goes on the same queue
+   * the retention and erasure paths use, so the work stays visible and is
+   * retried rather than logged and forgotten.
+   *
+   * If even the enqueue fails there is nothing honest left to do here. The
+   * caller is already returning the right answer to the merchant, and turning
+   * their correct `not_found` into a 500 because OUR bucket needs tidying
+   * would be reporting our problem as theirs. So it is logged loudly and the
+   * response stands.
+   */
+  private async discard(businessId: string, key: string): Promise<void> {
+    try {
+      await this.storage.delete(key);
+      return;
+    } catch (error: unknown) {
+      this.log.warn(
+        `orphaned object not deleted, queueing: ${redactForLog(describeFailure(error))}`,
+      );
+    }
+    try {
+      await withBusiness(this.db, businessId, (tx) =>
+        objectDeletionsRepo.enqueueObjectDeletions(tx, businessId, [key], 'upload_orphaned'),
+      );
+    } catch (error: unknown) {
+      this.log.error(
+        `orphaned object could not even be queued: ${redactForLog(describeFailure(error))}`,
+      );
+    }
   }
 
   /**
