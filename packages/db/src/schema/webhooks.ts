@@ -73,7 +73,13 @@ export const webhookDeliveries = pgTable(
     status: text('status').notNull().default('pending'), // pending | delivered | dead
     attempts: integer('attempts').notNull().default(0),
     maxAttempts: integer('max_attempts').notNull().default(6),
-    nextAttemptAt: timestamp('next_attempt_at', { withTimezone: true }).notNull().defaultNow(),
+    /** Truncated to milliseconds (0139): this column is read by a query that
+     * compares it against a JavaScript Date, which cannot express anything
+     * finer, so a microsecond remainder would hide a freshly queued row for
+     * the rest of its millisecond. */
+    nextAttemptAt: timestamp('next_attempt_at', { withTimezone: true })
+      .notNull()
+      .default(sql`date_trunc('milliseconds', now())`),
     lastStatus: integer('last_status'),
     lastError: text('last_error'),
     deliveredAt: timestamp('delivered_at', { withTimezone: true }),
