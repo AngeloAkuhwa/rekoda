@@ -7,6 +7,7 @@
  * a friendly name.
  */
 import { randomBytes } from 'node:crypto';
+import { usagePeriod } from '@rekoda/core';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import {
@@ -199,7 +200,19 @@ describe('what the operator health surface says', () => {
  * the fact that the gate in front of it is the same shut one.
  */
 describe('the margin report', () => {
-  const PERIOD = '2026-08';
+  /* The month the clock is in, not a month written down.
+   *
+   * The fixture's telemetry carries whatever period it is handed, but every
+   * MONEY figure in this report comes from `platform_cost_events`, which
+   * `recordUsage` stamps with `incurred_at: new Date()`, and the report
+   * selects that subledger by the Lagos-month window of the period asked
+   * for. A literal agreed with the clock only for as long as the clock was
+   * in that month: on the first of the next one every cost, total and
+   * `byCostType` row went to zero and five tests failed on the calendar
+   * rather than on the code. `usagePeriod` is the same Lagos-month helper
+   * the endpoint itself defaults to, so the month written and the month
+   * asked for are one month by construction. */
+  const PERIOD = usagePeriod(new Date());
 
   async function merchant(name: string, phone: string, plan: string): Promise<string> {
     const user = await identity.upsertUserByPhone(db, phone);
