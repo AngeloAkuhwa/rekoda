@@ -413,8 +413,10 @@ describe('paying a storefront order by transfer (fix-plan 6, M5c)', () => {
     const mine = report.businesses.find((b) => b.businessId === businessId);
     expect(mine).toMatchObject({ collectedK: 320_000_000, state: 'capped_risk' });
 
-    /* And never without the secret. */
-    expect((await app.inject({ method: 'GET', url: '/v1/ops/graduation' })).statusCode).toBe(403);
+    /* And never without a credential. 401, not 403: the operator guard
+     * separates "I do not know who you are" from "I know, and this scope is
+     * not yours" (ADR 0034). */
+    expect((await app.inject({ method: 'GET', url: '/v1/ops/graduation' })).statusCode).toBe(401);
   });
 
   it('a lapsed number leaves the invoice open, and the next ask mints a fresh one', async () => {
