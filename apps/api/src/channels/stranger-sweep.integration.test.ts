@@ -10,7 +10,7 @@ import { randomBytes } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { replies } from '@rekoda/core';
 import { createDb, events, identity, type Db } from '@rekoda/db';
-import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
+import { migrate, requireUrls, storedEventId, truncateAll, type Urls } from '@rekoda/db/testing';
 import { SendFailed } from './sender.js';
 import { StubSender } from './sender.stub.js';
 import { sealPayload } from '../privacy/payload-vault.js';
@@ -223,7 +223,7 @@ describe('sweeping unknown senders', () => {
       ownerUserId: user.id,
     });
     const stored = await arrive('2348031111111', 'wamid.mine');
-    expect(await events.attributeEvent(workerDb, stored.id, business.id)).toBe(true);
+    expect(await events.attributeEvent(workerDb, storedEventId(stored), business.id)).toBe(true);
 
     const answered = await sweepUnknownSenders(deps());
 

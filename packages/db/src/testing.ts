@@ -290,3 +290,17 @@ export async function agePaymentIntents(
     await sql.end();
   }
 }
+
+/**
+ * The id of an event a fixture has just stored.
+ *
+ * `recordEvent` returns an id only on the branch that stored something: a
+ * provider retry conflicts and gets no id back, because no ingress caller
+ * reads one. A fixture, though, almost always wants the id, and a duplicate
+ * where it expected a fresh row is a bug in the test rather than a case to
+ * handle. This narrows the union and says so.
+ */
+export function storedEventId(recorded: { isNew: true; id: string } | { isNew: false }): string {
+  if (!recorded.isNew) throw new Error('fixture recorded a duplicate event');
+  return recorded.id;
+}

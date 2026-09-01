@@ -27,7 +27,7 @@ import {
   withBusiness,
   type Db,
 } from '@rekoda/db';
-import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
+import { migrate, requireUrls, storedEventId, truncateAll, type Urls } from '@rekoda/db/testing';
 import { buildRunner, type RunnerDeps } from '../jobs/jobs.module.js';
 import { PrivacyGateway } from '../privacy/gateway.service.js';
 import { Interpreter } from '../ai/interpreter.service.js';
@@ -182,7 +182,7 @@ async function storeChargeSuccess(
     payload: sealPayload(body, config.vaultKey, 'paystack', `${transactionId}:${body.event}`),
     businessId: null,
   });
-  return recorded.id;
+  return storedEventId(recorded);
 }
 
 const pump = () => pumpPaystackEvents({ workerDb, appDb, vaultKey: config.vaultKey });
