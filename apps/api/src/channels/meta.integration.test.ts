@@ -3276,19 +3276,20 @@ describe('consent (STOP/START) and erasure, as facts not sentences', () => {
    * a pending confirmation recording the consequence, the second claimed it
    * through the command bus.
    */
-  it('erasure under the flag opens a confirmation the second ask claims', async () => {
+  it('erasure opens a confirmation the second ask claims, with no flag to turn it off', async () => {
     const business = await seedMerchant('+2348031234567', 'Ada Fashion');
     await customersRepo.createCustomerWithIdentities(db, business.id, 'CUSTOMER_T9', [
       { facet: 'phone', ciphertext: 'sealed-phone', matchKey: 'mk-phone-9' },
     ]);
-    const flagged = { ...deps, config: { ...deps.config, commandEraseData: true } };
-
+    /* No flag. EraseData is HIGH_RISK, so the confirmation record is part of
+     * the command and not of a rollout: this runs the default deps every
+     * deployment uses. */
     await post(messagePayload('2348031234567', 'wamid.DELF1', 'delete my data'));
-    expect(await buildRunner(workerDb, db, flagged).runOnce()).toBe(true);
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
     expect(stubSender.lastText).toContain('Reply *DELETE MY DATA* again');
 
     await post(messagePayload('2348031234567', 'wamid.DELF2', 'delete my data'));
-    expect(await buildRunner(workerDb, db, flagged).runOnce()).toBe(true);
+    expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
     expect(stubSender.lastText).toContain('deleted (1 record)');
 
     const confirmations = await withBusiness(db, business.id, (tx) =>
@@ -5994,30 +5995,24 @@ describe('counting stock', () => {
   });
 
   /**
-   * The destructive half under the flag (PR-027, Appendix D.2): a preview
-   * that shows stock DISAPPEARING opens a pending confirmation recording the
-   * exact consequence, and the yes claims it through the command bus. The
-   * addition before it opens nothing, because adding stock is STANDARD.
+   * The destructive half, on the DEFAULT configuration (PR-027, Appendix
+   * D.2): a preview that shows stock DISAPPEARING opens a pending
+   * confirmation recording the exact consequence, and the yes claims it
+   * through the command bus. The addition before it opens nothing, because
+   * adding stock is STANDARD.
+   *
+   * This used to run under `commandAdjustInventory: true`, and that was the
+   * defect it hid. The flag defaults OFF, and with it off the write-off fell
+   * to a bare `adjustInventoryWork` call: stock disappeared from a chat
+   * message with no confirmation claimed and none ever opened. The flag now
+   * governs the ADDITIVE path only; `destructive` crosses the bus whatever it
+   * says, so this suite uses the deps a real deployment runs.
    */
-  it('a write-off under the flag opens a confirmation the yes then claims', async () => {
+  it('a write-off opens a confirmation the yes then claims, with no flag on', async () => {
     const business = await seedMerchant('+2348031234567');
-    const flagged = { ...deps, config: { ...deps.config, commandAdjustInventory: true } };
-    async function sayFlagged(wamid: string, command: Record<string, unknown>, text: string) {
-      stubTransport.replyWith(command);
-      await post(messagePayload('2348031234567', wamid, text));
-      const runner = buildRunner(workerDb, db, flagged);
-      let worked = await runner.runOnce();
-      while (worked) worked = await runner.runOnce();
-    }
-    async function plainFlagged(wamid: string, text: string) {
-      await post(messagePayload('2348031234567', wamid, text));
-      const runner = buildRunner(workerDb, db, flagged);
-      let worked = await runner.runOnce();
-      while (worked) worked = await runner.runOnce();
-    }
 
-    await sayFlagged('wamid.SD1', adjust('bags of rice', 20), 'add 20 bags of rice');
-    await plainFlagged('wamid.SD2', 'yes');
+    await say('wamid.SD1', adjust('bags of rice', 20), 'add 20 bags of rice');
+    await plain('wamid.SD2', 'yes');
     /* Adding stock opened NO confirmation: STANDARD stays cheap. */
     const afterAdd = await withBusiness(db, business.id, (tx) =>
       tx.execute<{ n: string }>(
@@ -6027,9 +6022,9 @@ describe('counting stock', () => {
     );
     expect(Number([...afterAdd][0]?.n)).toBe(0);
 
-    await sayFlagged('wamid.SD3', adjust('bags of rice', -15), '15 bags got water damage');
+    await say('wamid.SD3', adjust('bags of rice', -15), '15 bags got water damage');
     expect(stubSender.lastText).toContain('Removing 15 bags of rice');
-    await plainFlagged('wamid.SD4', 'yes');
+    await plain('wamid.SD4', 'yes');
 
     expect(stubSender.lastText).toContain('Removed 15 bags of rice');
     expect((await onHand(business.id, 'bags of rice'))?.onHand).toBe(5);

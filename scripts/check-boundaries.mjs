@@ -206,6 +206,93 @@ function capacityMeterViolations(rel, body) {
   return found;
 }
 
+/**
+ * A HIGH_RISK command's ceremony is not a configuration choice (spec §25,
+ * Appendix D; `COMMAND_RISK` in @rekoda/core).
+ *
+ * The rule above guards one layer down: no ingress may call a repository
+ * WRITER directly. This one guards the layer above it. A controller that
+ * calls `reopenPeriodWork(tx, input)` has stayed inside the command layer
+ * and still skipped the confirmation, the reason, the exact phrase and the
+ * audit record that make the command HIGH_RISK. That is exactly the shape
+ * the rollout flags shipped in A1: `if (!config.commandReopenPeriod) return
+ * reopenPeriodWork(tx, input)`, which let a default deployment reopen a
+ * filed month with no ceremony at all.
+ *
+ * So a HIGH_RISK work function may only ever be HANDED to the bus. In
+ * practice that is always the thunk `() => reopenPeriodWork(tx, input)`
+ * passed as `CommandBus.run`'s second argument; a direct `await` or
+ * `return` of it is the bypass. Matching on the thunk rather than trying to
+ * recognise the bus call is deliberate: it needs no multi-line parsing and
+ * it fails closed, because every new way of calling the function directly
+ * is a way that is not `() =>`.
+ *
+ * `DORMANT` names a HIGH_RISK command that is classified and has no work
+ * function and no ingress. Those are the cheapest ones to get wrong later:
+ * nothing to review, nothing to test, and the day somebody adds a refund
+ * endpoint the tier is already declared and nothing enforces it. Naming
+ * them here means the day a dormant command appears in `apps/api/src`, this
+ * fails until whoever added it says how the ceremony is enforced.
+ *
+ * Context-elevated invocations (`AdjustInventory` when destructive,
+ * `PostJournal` when manual, `ConfirmReconciliation` when overriding,
+ * `DeactivateAccount` for a mandatory role) are deliberately NOT here. Their
+ * base tier is STANDARD, so the work function has legitimate direct callers
+ * and no static rule can tell the two apart. Their guarantee is behavioural,
+ * pinned in the integration suites.
+ */
+const DORMANT = Symbol('classified HIGH_RISK, no work function and no ingress');
+const HIGH_RISK_INGRESS = {
+  RefundPayment: DORMANT,
+  RevokePaymentVerification: DORMANT,
+  ChangePostingAccountPolicy: DORMANT,
+  DisconnectPaymentConnection: DORMANT,
+  ChangePaymentConnectionCredential: DORMANT,
+  ChangePaymentConnectionProvider: DORMANT,
+  ReopenAccountingPeriod: 'reopenPeriodWork',
+  VoidReceipt: 'voidReceiptWork',
+  EraseData: 'eraseDataWork',
+};
+
+const COMMAND_LAYER = 'apps/api/src/commands/';
+const RISK_TABLE = 'packages/core/src/risk.ts';
+
+/** The HIGH_RISK rows of `COMMAND_RISK`, read from the table itself. */
+function highRiskCommands() {
+  const body = readFileSync(join(ROOT, RISK_TABLE), 'utf8');
+  const table = body.slice(body.indexOf('COMMAND_RISK'));
+  return [...table.matchAll(/^\s*(\w+): 'HIGH_RISK',/gm)].map((m) => m[1]);
+}
+
+const dormantSightings = [];
+
+function highRiskViolations(rel, body) {
+  if (!rel.startsWith('apps/api/src/')) return [];
+  if (rel.startsWith(COMMAND_LAYER)) return [];
+  const found = [];
+
+  for (const [command, ingress] of Object.entries(HIGH_RISK_INGRESS)) {
+    if (ingress === DORMANT) {
+      if (new RegExp(`\\b${command}\\b`).test(body)) dormantSightings.push({ rel, command });
+      continue;
+    }
+    for (const match of body.matchAll(new RegExp(`\\b${ingress}\\s*\\(`, 'g'))) {
+      const before = body.slice(0, match.index).trimEnd();
+      if (before.endsWith('=>')) continue;
+      found.push({
+        rel,
+        spec: `${ingress}()`,
+        rule: {
+          verb: 'calls',
+          name: `${command}'s work function directly`,
+          reason: `${command} is HIGH_RISK (COMMAND_RISK in @rekoda/core), so its work function may only be handed to CommandBus.run as \`() => ${ingress}(...)\`; calling it directly skips the confirmation ceremony the tier exists for`,
+        },
+      });
+    }
+  }
+  return found;
+}
+
 const SKIP_DIRS = new Set(['node_modules', 'dist', '.next', '.turbo', 'migrations', '.git']);
 const SOURCE = /\.(ts|tsx|mts|cts|mjs|js)$/;
 
@@ -240,8 +327,38 @@ for (const dir of ['apps', 'packages']) {
     if (!isTestOrConfig) violations.push(...aiAdapterViolations(rel, body));
     if (!isTestOrConfig) violations.push(...commandLayerViolations(rel, body));
     if (!isTestOrConfig) violations.push(...contractViolations(rel, body));
+    if (!isTestOrConfig) violations.push(...highRiskViolations(rel, body));
     violations.push(...capacityMeterViolations(rel, body));
   }
+}
+
+/* Every HIGH_RISK command must be named above. A new one classified in
+ * `COMMAND_RISK` and left out of `HIGH_RISK_INGRESS` is a tier nobody
+ * decided how to enforce, which is the state this rule exists to end. */
+for (const command of highRiskCommands()) {
+  if (command in HIGH_RISK_INGRESS) continue;
+  violations.push({
+    rel: RISK_TABLE,
+    spec: command,
+    rule: {
+      verb: 'classifies',
+      name: 'a HIGH_RISK command with no declared enforcement',
+      reason:
+        'add it to HIGH_RISK_INGRESS in scripts/check-boundaries.mjs: either DORMANT (no work function, no ingress) or the name of the work function that must always be handed to CommandBus.run',
+    },
+  });
+}
+
+for (const { rel, command } of dormantSightings) {
+  violations.push({
+    rel,
+    spec: command,
+    rule: {
+      verb: 'reaches',
+      name: 'a HIGH_RISK command declared to have no ingress',
+      reason: `${command} is HIGH_RISK and was recorded as DORMANT in scripts/check-boundaries.mjs. Giving it an ingress means deciding how its ceremony is enforced first: add its work function to HIGH_RISK_INGRESS so the thunk rule covers it`,
+    },
+  });
 }
 
 if (violations.length > 0) {
@@ -254,4 +371,4 @@ if (violations.length > 0) {
   process.exit(1);
 }
 
-console.log(`Boundaries OK — ${RULES.length + 2} rules, no violations.`);
+console.log(`Boundaries OK — ${RULES.length + 5} rules, no violations.`);

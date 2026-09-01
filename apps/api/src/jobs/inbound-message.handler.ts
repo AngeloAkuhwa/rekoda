@@ -964,48 +964,47 @@ async function deterministicReply(
         if (!(await conversationsRepo.claimDraft(tx, pending.id))) {
           return replies.alreadyConfirmed();
         }
-        /* The A1 rollout seam (spec §25, Appendix D). The exact phrase was
-         * typed twice — the router IS the phrase check — and the pending
-         * confirmation opened at the first ask records what the merchant was
-         * told. If it lapsed (or the flag flipped between asks), one is
-         * opened now recording the same consequence, claimed in the same
-         * transaction: the two-message phrase mechanism already did the
-         * waiting. */
-        if (deps.config.commandEraseData) {
-          const subject = `draft:${pending.id}`;
-          const open = (await riskRepo.openConfirmationsFor(tx, businessId)).find(
-            (c) => c.command === 'EraseData' && c.subject === subject,
-          );
-          const confirmation =
-            open ??
-            (await deps.commandBus.riskPolicy.ask(tx, {
-              businessId,
-              command: 'EraseData',
-              subject,
-              actor: 'system',
-              ingress: 'CHAT',
-              consequence:
-                'Every customer contact detail for this business will be permanently deleted.',
-              reason: 'merchant asked by exact phrase, twice',
-            }));
-          const run = await deps.commandBus.run(
-            tx,
-            {
-              businessId,
-              command: 'EraseData',
-              payload: { sourceType: 'chat' },
-              subject,
-              confirmationId: confirmation.id,
-              actor: 'system',
-              ingress: 'CHAT',
-            },
-            () => eraseDataWork(tx, { businessId, sourceType: 'chat' }),
-          );
-          if (run.outcome !== 'done') return replies.erasureKept();
-          return replies.erasureDone(run.result.erased);
-        }
-        const erased = await eraseDataWork(tx, { businessId, sourceType: 'chat' });
-        return replies.erasureDone(erased.erased);
+        /* No rollout seam (spec §25, Appendix D). EraseData is HIGH_RISK and
+         * always crosses the bus: the phrase gate above is the router's own,
+         * and it was never the thing a flag could turn off, but the pending
+         * confirmation RECORDING what the merchant was told was. That record
+         * is the auditable half of the ceremony, so it is no longer optional.
+         *
+         * The exact phrase was typed twice, and the confirmation opened at
+         * the first ask says what they agreed to. If it lapsed, one is opened
+         * now recording the same consequence and claimed in the same
+         * transaction: the two-message mechanism already did the waiting. */
+        const subject = `draft:${pending.id}`;
+        const open = (await riskRepo.openConfirmationsFor(tx, businessId)).find(
+          (c) => c.command === 'EraseData' && c.subject === subject,
+        );
+        const confirmation =
+          open ??
+          (await deps.commandBus.riskPolicy.ask(tx, {
+            businessId,
+            command: 'EraseData',
+            subject,
+            actor: 'system',
+            ingress: 'CHAT',
+            consequence:
+              'Every customer contact detail for this business will be permanently deleted.',
+            reason: 'merchant asked by exact phrase, twice',
+          }));
+        const run = await deps.commandBus.run(
+          tx,
+          {
+            businessId,
+            command: 'EraseData',
+            payload: { sourceType: 'chat' },
+            subject,
+            confirmationId: confirmation.id,
+            actor: 'system',
+            ingress: 'CHAT',
+          },
+          () => eraseDataWork(tx, { businessId, sourceType: 'chat' }),
+        );
+        if (run.outcome !== 'done') return replies.erasureKept();
+        return replies.erasureDone(run.result.erased);
       }
       const discarded = await conversationsRepo.supersedePendingDrafts(tx, businessId);
       const parked = await conversationsRepo.recordDraft(tx, {
@@ -1017,7 +1016,7 @@ async function deterministicReply(
       });
       /* Appendix D: the confirmation is opened when the merchant is SHOWN
        * the consequence, so the record says what they agreed to. */
-      if (deps.config.commandEraseData && parked.isNew) {
+      if (parked.isNew) {
         await deps.commandBus.riskPolicy.ask(tx, {
           businessId,
           command: 'EraseData',
@@ -1731,7 +1730,11 @@ async function confirmStockChange(
    * confirmation the preview opened. A lapsed one gets a fresh preview, not
    * a shrug: five minutes is the window a decision about disappearing stock
    * stays warm. */
-  if (deps.config.commandAdjustInventory) {
+  /* Adding stock is STANDARD and the rollout flag still chooses its
+   * plumbing. Writing stock OFF is D.2's destructive adjustment, HIGH_RISK by
+   * `riskOf`, and crosses the bus whatever the flag says: configuration may
+   * choose an implementation, never whether a confirmation is required. */
+  if (destructive || deps.config.commandAdjustInventory) {
     let confirmationId: string | null = null;
     if (destructive) {
       const open = (await riskRepo.openConfirmationsFor(tx, businessId)).find(
@@ -2322,7 +2325,7 @@ async function interpretedReply(
   /* Appendix D: a preview that shows stock DISAPPEARING opens the
    * confirmation the yes will claim, recording the exact consequence the
    * merchant read. Additions stay STANDARD and open nothing. */
-  if (deps.config.commandAdjustInventory && command.intent === 'AdjustInventory' && draft.isNew) {
+  if (command.intent === 'AdjustInventory' && draft.isNew) {
     const product = await stockRepo.productByName(tx, businessId, command.productMention);
     const gate = gateStockChange(command, product?.onHand ?? 0);
     if (gate.gate === 'CG2' && gate.quantityDelta < 0) {

@@ -589,9 +589,12 @@ export class ReportsController {
       actor: `user:${request.auth!.userId}`,
     };
     return withBusiness(this.db, businessId, async (tx) => {
-      if (!this.config.commandVoidReceipt) return voidReceiptWork(tx, input);
-
-      /* Appendix D's two-step. The first call carries no confirmationId, so
+      /* No rollout seam here, deliberately. VoidReceipt is HIGH_RISK in
+       * `COMMAND_RISK`, and a flag that chose the direct path would be
+       * configuration deciding whether a confirmation is required. A flag may
+       * choose plumbing for ordinary work; it may never lower a risk tier.
+       *
+       * Appendix D's two-step. The first call carries no confirmationId, so
        * the bus answers `confirm_first`; a confirmation is opened naming the
        * consequence and handed back for the merchant to read. The second
        * call claims it and voids. */
@@ -1834,9 +1837,10 @@ export class ReportsController {
       actor: `user:${request.auth!.userId}`,
     };
     return withBusiness(this.db, businessId, async (tx) => {
-      if (!this.config.commandReopenPeriod) return reopenPeriodWork(tx, input);
-
-      /* Appendix D's two-step: reported figures becoming movable again is
+      /* No rollout seam, for the same reason as VoidReceipt above: reopening
+       * a filed month is HIGH_RISK, and the ceremony is not optional.
+       *
+       * Appendix D's two-step: reported figures becoming movable again is
        * HIGH_RISK, so the first call opens the confirmation naming what
        * comes open, and the second claims it and reopens. */
       const run = await this.commandBus.run(
