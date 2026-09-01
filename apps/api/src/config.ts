@@ -6,6 +6,8 @@
  * minimum length because a short one is a configuration mistake wearing a
  * valid-looking value.
  */
+import type { OperatorAuthConfig } from './auth/operator-identity.js';
+
 export interface ApiConfig {
   port: number;
   databaseUrl: string;
@@ -14,7 +16,13 @@ export interface ApiConfig {
   /** Signs setup grants and session-adjacent artefacts. */
   secret: string;
   /**
-   * The header credential for operator endpoints (plan changes, ops health).
+   * The DEVELOPMENT stand-in for operator identity, and only that.
+   *
+   * A shared header string cannot say WHICH person acted: the audit trail
+   * reads the same whoever holds it, and rotating it is the only way to
+   * remove anybody. Production verifies `operatorAuth` instead, and refuses
+   * to boot if this is set there — a shared secret people believe still
+   * works is worse than one that does.
    *
    * DELIBERATELY not `secret`. That one signs setup grants, so reusing it
    * here would mean every proxy access log, shell history and ops runbook
@@ -254,6 +262,14 @@ export interface ApiConfig {
    * neither.
    */
   fxMode: FxMode;
+  /**
+   * How an operator proves who they are (P0-2).
+   *
+   * `null` means no verifier is configured. In production that is a state
+   * `loadConfig` refuses to reach, so a null here is a development or test
+   * process where the legacy static secret still stands in.
+   */
+  operatorAuth: OperatorAuthConfig | null;
   /**
    * Signs Paystack webhooks AND authenticates Paystack API calls — Paystack
    * uses the secret key for both. Empty means every webhook is rejected (the
@@ -519,13 +535,76 @@ function fxMode(env: NodeJS.ProcessEnv, isProduction: boolean): FxMode {
   return mode;
 }
 
-function operatorSecret(env: NodeJS.ProcessEnv, isProduction: boolean): string | null {
-  const value = env['REKODA_OPERATOR_SECRET'];
-  if (!value) {
+/**
+ * The operator plane's identity provider, or a refusal to run without one.
+ *
+ * Provider-neutral on purpose: issuer, audience and key set are deployment
+ * facts, so Cloudflare Access, an IAP or a plain OIDC provider all satisfy
+ * this and none of them is named in the code.
+ *
+ * Production requires all three or REFUSES TO BOOT. That is the fail-closed
+ * half of the rule and it is not a runtime 503: a process that started
+ * without operator identity is a process where somebody will reach for the
+ * static secret during an incident, and an incident is exactly when
+ * estate-wide authority should be hardest to get. Outside production the
+ * absence is ordinary, and the legacy secret covers local work.
+ *
+ * Partial configuration is refused everywhere, production or not. Two of
+ * three is somebody halfway through a deployment change, and silently
+ * treating that as "no verifier" would turn a half-finished rollout into a
+ * quiet downgrade to the shared secret.
+ */
+function operatorAuth(env: NodeJS.ProcessEnv, isProduction: boolean): OperatorAuthConfig | null {
+  const issuer = env['OPERATOR_OIDC_ISSUER'];
+  const audience = env['OPERATOR_OIDC_AUDIENCE'];
+  const jwksUrl = env['OPERATOR_OIDC_JWKS_URL'];
+  const present = [issuer, audience, jwksUrl].filter(Boolean).length;
+
+  if (present === 0) {
     if (isProduction) {
-      throw new ConfigError('REKODA_OPERATOR_SECRET is required in production');
+      throw new ConfigError(
+        'the operator plane needs a verified identity in production: set ' +
+          'OPERATOR_OIDC_ISSUER, OPERATOR_OIDC_AUDIENCE and OPERATOR_OIDC_JWKS_URL. ' +
+          'REKODA_OPERATOR_SECRET is a development stand-in and is never a production fallback',
+      );
     }
     return null;
+  }
+  if (present < 3) {
+    throw new ConfigError(
+      'operator identity needs all of OPERATOR_OIDC_ISSUER, OPERATOR_OIDC_AUDIENCE and ' +
+        'OPERATOR_OIDC_JWKS_URL, or none of them',
+    );
+  }
+  for (const [name, value] of [
+    ['OPERATOR_OIDC_ISSUER', issuer],
+    ['OPERATOR_OIDC_JWKS_URL', jwksUrl],
+  ] as const) {
+    if (!/^https:\/\//.test(value!)) {
+      throw new ConfigError(`${name} must be an https URL`);
+    }
+  }
+  return {
+    issuer: issuer!,
+    audience: audience!,
+    jwksUrl: jwksUrl!,
+    /* OIDC's own claim, overridable because providers disagree about it. */
+    scopeClaim: env['OPERATOR_OIDC_SCOPE_CLAIM'] ?? 'scope',
+  };
+}
+
+function operatorSecret(env: NodeJS.ProcessEnv, isProduction: boolean): string | null {
+  const value = env['REKODA_OPERATOR_SECRET'];
+  if (!value) return null;
+  /* Set, in production, where it can no longer authorise anything. Refused
+   * rather than ignored: a secret sitting in a production environment reads
+   * as a live credential to everyone who finds it, and the one thing worse
+   * than a shared secret is a shared secret people believe still works. */
+  if (isProduction) {
+    throw new ConfigError(
+      'REKODA_OPERATOR_SECRET is a development stand-in and must not be set in production; ' +
+        'the operator plane uses OPERATOR_OIDC_* there',
+    );
   }
   if (value.length < 32) {
     throw new ConfigError('REKODA_OPERATOR_SECRET must be at least 32 characters');
@@ -819,6 +898,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     aiDocExtractionsPerBusinessPerDay: Number(env['AI_DOC_EXTRACTIONS_PER_BUSINESS'] ?? 25),
     planningFxNairaPerUsd: Number(env['PLANNING_FX_NGN_PER_USD'] ?? 1_450),
     fxMode: fxMode(env, isProduction),
+    operatorAuth: operatorAuth(env, isProduction),
     paystackSecretKey: env['PAYSTACK_SECRET_KEY'] ?? '',
     paystackBaseUrl: env['PAYSTACK_BASE_URL'] ?? 'https://api.paystack.co',
     paystackPlatformConfirmed: env['REKODA_PAYSTACK_PLATFORM_CONFIRMED'] === '1',

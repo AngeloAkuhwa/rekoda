@@ -362,7 +362,8 @@ inherits the triage instead of repeating it:
   that a cross-tenant console never quietly becomes a feature, and this earns
   its exception only because an unattributed event belongs to no tenant, so if
   no operator can see it then nobody can. There is no UI: the ops surface is
-  secret-gated rather than session-gated, so it has no place under `/app`, and
+  gated on a verified operator identity rather than a session (ADR 0034,
+  scopes `ops:read` and `ops:payment`), so it has no place under `/app`, and
   `/v1/ops/margin` has been curl-only since it shipped. A small operator
   console is the natural follow-on and a deliberate one.
 - **These read-backs are not dead code.** Every function in the two entries
@@ -577,8 +578,10 @@ makes the next addition a decision somebody writes down rather than a diff.
 2. **Two sidecars to deploy.** `STT_URL` for AfriSpeech transcription (ADR 0008) and `OCR_URL` for receipt text (ADR 0024). Both are promises the
    privacy pages make out loud, both refuse honestly while unset, and NEITHER
    may be pointed at a hosted provider without changing the page first.
-3. **Credentials.** Meta WABA, Paystack test keys, and the four secrets
-   (`REKODA_API_SECRET`, `REKODA_OPERATOR_SECRET`, `VAULT_KEY`, `MATCH_KEY`).
+3. **Credentials.** Meta WABA, Paystack test keys, the three secrets
+   (`REKODA_API_SECRET`, `VAULT_KEY`, `MATCH_KEY`), and an operator identity
+   provider (`OPERATOR_OIDC_ISSUER`, `_AUDIENCE`, `_JWKS_URL`) — production
+   refuses to boot without one, and refuses `REKODA_OPERATOR_SECRET` with it.
    Paystack stays in test mode until written confirmation (spec §47).
    `CONNECTION_KEY` is deliberately NOT `VAULT_KEY`: account numbers are
    stored as cipher plus last4 and never echoed anywhere.
@@ -755,10 +758,13 @@ flight at a time.
    **string**, so wrap it in `new Date(...)` before it reaches a caller that
    expects one.
 8. **Secrets are not interchangeable.** `REKODA_API_SECRET` signs setup grants;
-   `REKODA_OPERATOR_SECRET` is the plaintext header for operator endpoints and
-   must differ (config refuses to boot otherwise); `VAULT_KEY` seals payloads
-   and `MATCH_KEY` derives match keys, and they are deliberately not the same
-   as `CONNECTION_KEY`.
+   `REKODA_OPERATOR_SECRET` is the plaintext operator header OUTSIDE
+   production only, and must differ (config refuses to boot otherwise);
+   `VAULT_KEY` seals payloads and `MATCH_KEY` derives match keys, and they are
+   deliberately not the same as `CONNECTION_KEY`. In production the operator
+   plane holds no shared secret at all: it verifies a signed token against
+   `OPERATOR_OIDC_JWKS_URL`, so the audit trail names a person rather than
+   whoever held a string.
 9. **Never run the db and api integration suites at the same time.** They
    share one PostgreSQL and each truncates the other's fixtures, so the
    failures land in files nowhere near your change — a run once came back with

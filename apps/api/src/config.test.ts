@@ -295,6 +295,75 @@ describe('PlaceOrder is the default door (remediation R2)', () => {
 });
 
 /**
+ * The operator plane's identity (P0-2).
+ *
+ * Estate-wide authority used to be one reusable static header secret, and the
+ * audit actor was whatever the caller typed. These pin the configuration half
+ * of the replacement: production has a verified identity or it does not start,
+ * and the development stand-in cannot survive into production by accident.
+ */
+describe('operator identity configuration', () => {
+  const OIDC = {
+    OPERATOR_OIDC_ISSUER: 'https://issuer.example',
+    OPERATOR_OIDC_AUDIENCE: 'rekoda-ops',
+    OPERATOR_OIDC_JWKS_URL: 'https://issuer.example/jwks',
+  };
+  const PROD = {
+    ...BASE,
+    NODE_ENV: 'production',
+    META_APP_SECRET: 'm'.repeat(40),
+    META_VERIFY_TOKEN: 'v'.repeat(40),
+  } as NodeJS.ProcessEnv;
+
+  it('is absent by default outside production, where the secret stands in', () => {
+    expect(loadConfig(BASE).operatorAuth).toBeNull();
+  });
+
+  it('reads issuer, audience and key set, with OIDC scope as the default claim', () => {
+    expect(loadConfig({ ...BASE, ...OIDC }).operatorAuth).toEqual({
+      issuer: 'https://issuer.example',
+      audience: 'rekoda-ops',
+      jwksUrl: 'https://issuer.example/jwks',
+      scopeClaim: 'scope',
+    });
+  });
+
+  it('refuses production with no verified identity, rather than falling back', () => {
+    /* The fail-closed half. A fallback that exists is a fallback somebody
+     * reaches for during an incident, and an incident is exactly when
+     * estate-wide authority should be hardest to get. */
+    expect(() => loadConfig(PROD)).toThrow(/operator plane needs a verified identity/);
+    expect(() => loadConfig({ ...PROD, ...OIDC })).not.toThrow();
+  });
+
+  it('refuses HALF a configuration everywhere, production or not', () => {
+    /* Two of three is somebody mid-rollout. Treating it as "no verifier"
+     * would turn a half-finished deployment change into a silent downgrade
+     * to the shared secret. */
+    const { OPERATOR_OIDC_JWKS_URL: _dropped, ...partial } = OIDC;
+    expect(() => loadConfig({ ...BASE, ...partial })).toThrow(/or none of them/);
+  });
+
+  it('refuses a plaintext issuer or key set', () => {
+    expect(() =>
+      loadConfig({ ...BASE, ...OIDC, OPERATOR_OIDC_ISSUER: 'http://issuer.example' }),
+    ).toThrow(/must be an https URL/);
+    expect(() =>
+      loadConfig({ ...BASE, ...OIDC, OPERATOR_OIDC_JWKS_URL: 'http://issuer.example/jwks' }),
+    ).toThrow(/must be an https URL/);
+  });
+
+  it('refuses the development secret in production instead of ignoring it', () => {
+    /* A secret sitting in a production environment reads as a live credential
+     * to everyone who finds it, and the one thing worse than a shared secret
+     * is a shared secret people believe still works. */
+    expect(() => loadConfig({ ...PROD, ...OIDC, REKODA_OPERATOR_SECRET: 'o'.repeat(40) })).toThrow(
+      /development stand-in/,
+    );
+  });
+});
+
+/**
  * The multicurrency kill switch (ADR 0033).
  *
  * Rekoda's launch is NGN-only and the FX capability is dark. Darkness that
@@ -320,7 +389,9 @@ describe('the dark FX capability', () => {
     const PROD = {
       ...BASE,
       NODE_ENV: 'production',
-      REKODA_OPERATOR_SECRET: 'o'.repeat(40),
+      OPERATOR_OIDC_ISSUER: 'https://issuer.example',
+      OPERATOR_OIDC_AUDIENCE: 'rekoda-ops',
+      OPERATOR_OIDC_JWKS_URL: 'https://issuer.example/jwks',
       META_APP_SECRET: 'm'.repeat(40),
       META_VERIFY_TOKEN: 'v'.repeat(40),
     } as NodeJS.ProcessEnv;

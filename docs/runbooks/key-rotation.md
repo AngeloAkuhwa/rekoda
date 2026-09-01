@@ -15,7 +15,7 @@ old one** unless a step below says so explicitly — read the per-key note.
 | `META_APP_SECRET`        | The Meta webhook HMAC                                           | LOW — stateless; rotate any time                |
 | Paystack secret key      | Verifies Paystack webhooks and calls their API                 | LOW — rotate in Paystack dashboard + env        |
 | `REKODA_API_SECRET`      | Signs setup grants and session-adjacent artefacts              | MEDIUM — rotating invalidates live setup grants |
-| `REKODA_OPERATOR_SECRET` | The operator-endpoint header credential                        | LOW — rotate any time; invalidates old ops scripts |
+| `REKODA_OPERATOR_SECRET` | The operator-endpoint header credential OUTSIDE production only | LOW — rotate any time; invalidates old ops scripts. In production the operator plane verifies OIDC tokens instead (`OPERATOR_OIDC_*`) and this variable is refused at boot; removing a person there is a change at the identity provider, not a rotation here |
 | `OTP_PEPPER`             | Server-side pepper for OTP hashing                             | LOW — rotating invalidates in-flight OTPs only  |
 | `BACKUP_PASSPHRASE`      | Encrypts offsite dumps                                          | MEDIUM — old dumps still need the old passphrase |
 
@@ -69,7 +69,8 @@ holds ..."), or computed as the first 16 hex chars of
 
 ## Low-cost rotation (stateless keys)
 
-`META_APP_SECRET`, Paystack secret, `REKODA_OPERATOR_SECRET`, `OTP_PEPPER`:
+`META_APP_SECRET`, Paystack secret, `OTP_PEPPER` (and `REKODA_OPERATOR_SECRET`,
+which exists outside production only):
 
 1. Generate/obtain the new value.
 2. Set it in the environment.

@@ -3,7 +3,6 @@ import {
   BadRequestException,
   Body,
   Controller,
-  ForbiddenException,
   Inject,
   Delete,
   Patch,
@@ -18,9 +17,9 @@ import {
   UnauthorizedException,
   UseGuards,
 } from '@nestjs/common';
-import { createHash, timingSafeEqual } from 'node:crypto';
 import { usageRepo, billingRepo, identity, withBusiness, type Db } from '@rekoda/db';
 import { CONFIG, type ApiConfig } from '../config.js';
+import { OperatorGuard, OperatorScopes, type OperatorRequest } from './operator.guard.js';
 import { DB } from '../db/db.module.js';
 import { InvalidPhoneError, normalisePhone } from '@rekoda/core/identity';
 import {
@@ -355,53 +354,39 @@ export class BusinessController {
   /**
    * Move a business onto a plan. An OPERATOR action, not a merchant one:
    * an owner who could set their own plan could award themselves Complete
-   * for free, so this is gated on the deployment secret rather than on any
-   * session, and the acting operator is named in the audit trail.
+   * for free, so this is gated on a verified operator identity carrying
+   * `ops:billing` rather than on any session.
+   *
+   * The audit trail names the SUBJECT of that identity. It used to name a
+   * string in the request body, which meant the record said whatever the
+   * holder of a shared secret typed into it.
    *
    * This is the smallest thing that stops a paying merchant being stuck on
    * trial allowances. Self-service purchase (M4) replaces the caller, not
    * the audit row.
    */
   @Post('plan')
+  @UseGuards(OperatorGuard)
+  @OperatorScopes('ops:billing')
   @HttpCode(200)
-  async setPlan(
-    @Headers('x-rekoda-operator-secret') secret: string | undefined,
-    @Body() body: unknown,
-  ): Promise<{ plan: string }> {
-    const expected = this.config.operatorSecret;
-    if (!expected || !secret || !matchesSecret(secret, expected)) {
-      throw new ForbiddenException('operator secret required');
-    }
-
+  async setPlan(@Req() request: OperatorRequest, @Body() body: unknown): Promise<{ plan: string }> {
     const parsed = setPlanRequest.safeParse(body);
     if (!parsed.success) {
-      throw new BadRequestException('businessId, plan, expiresAt and actor are required');
+      throw new BadRequestException('businessId, plan and expiresAt are required');
     }
 
-    const { businessId, plan, expiresAt, actor } = parsed.data;
+    const { businessId, plan, expiresAt } = parsed.data;
     const changed = await billingRepo.setPlan(this.db, {
       businessId,
       plan,
       expiresAt: expiresAt ? new Date(expiresAt) : null,
-      actor: `operator:${actor}`,
+      /* The verified subject. This route can change any business's plan in
+       * the estate, and until now it also let the caller name themselves. */
+      actor: `operator:${request.operator!.subject}`,
     });
     if (!changed) throw new NotFoundException('no business with that id');
     return { plan };
   }
-}
-
-/**
- * Constant-time secret comparison with no length oracle.
- *
- * Comparing digests rather than the strings means the observable work is
- * identical whatever the caller sent: a raw length pre-check answered
- * faster for wrong-length guesses, which quietly told an attacker how long
- * the secret is. Hashing first costs microseconds and says nothing.
- */
-function matchesSecret(given: string, expected: string): boolean {
-  const a = createHash('sha256').update(given, 'utf8').digest();
-  const b = createHash('sha256').update(expected, 'utf8').digest();
-  return timingSafeEqual(a, b);
 }
 
 /** A member as the wire sees one. Phone included: it is the only handle an
