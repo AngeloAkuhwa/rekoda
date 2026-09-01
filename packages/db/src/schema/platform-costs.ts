@@ -19,10 +19,21 @@ export const platformCostEvents = pgTable(
       .default(sql`gen_random_uuid()`),
     provider: text('provider').notNull(),
     providerProduct: text('provider_product').notNull(),
-    /** Nullable: some costs are not attributable to one merchant. */
+    /**
+     * Nullable: some costs are not attributable to one merchant.
+     *
+     * That nullability is why the three references below need a CHECK as well
+     * as a composite key (0140). MATCH SIMPLE skips a foreign key when EITHER
+     * column is null, so without the CHECK a row could name another
+     * merchant's payment while claiming to be unattributed.
+     */
     businessId: uuid('business_id').references(() => businesses.id),
+    /** Composite FK to `payment_connections (business_id, id)` plus a CHECK
+     * that naming one requires saying whose it is; both in migration 0140. */
     paymentConnectionId: uuid('payment_connection_id'),
+    /** Composite FK to `payments (business_id, id)` plus its CHECK (0140). */
     paymentId: uuid('payment_id'),
+    /** Composite FK to `settlements (business_id, id)` plus its CHECK (0140). */
     settlementId: uuid('settlement_id'),
     /** MESSAGING · AI_INFERENCE · OCR · PAYMENT_FEE · BANK_FEED · STORAGE · TELEPHONY */
     costType: text('cost_type').notNull(),
@@ -34,6 +45,8 @@ export const platformCostEvents = pgTable(
     incurredAt: timestamp('incurred_at', { withTimezone: true }).notNull(),
     /** PROVIDER_INVOICE · PROVIDER_API · DERIVED_FROM_RATE_CARD */
     source: text('source').notNull(),
+    /** Single-column on purpose: `provider_cost_schedules` has no business_id.
+     * It is platform reference data with no tenant to carry (0140). */
     costScheduleId: uuid('cost_schedule_id'),
     /** ACTUAL · ESTIMATED */
     actualOrEstimated: text('actual_or_estimated').notNull(),
