@@ -183,7 +183,13 @@ export const pendingObjectDeletions = pgTable(
     /** The provider's last refusal, for an operator reading a stuck queue. */
     lastError: text('last_error'),
     enqueuedAt: timestamp('enqueued_at', { withTimezone: true }).notNull().defaultNow(),
-    nextAttemptAt: timestamp('next_attempt_at', { withTimezone: true }).notNull().defaultNow(),
+    /** Truncated to milliseconds (0139): this column is read by a query that
+     * compares it against a JavaScript Date, which cannot express anything
+     * finer, so a microsecond remainder would hide a freshly queued row for
+     * the rest of its millisecond. */
+    nextAttemptAt: timestamp('next_attempt_at', { withTimezone: true })
+      .notNull()
+      .default(sql`date_trunc('milliseconds', now())`),
   },
   (t) => [
     uniqueIndex('pending_object_deletions_key_ux').on(t.storageKey),
