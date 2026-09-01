@@ -15,6 +15,29 @@
 import { sql } from 'drizzle-orm';
 import type { Db, TenantDb } from '../client.js';
 
+/**
+ * The id list, as bound parameters rather than statement text.
+ *
+ * These two sweeps used to build `ARRAY['...'::uuid, ...]` by interpolating
+ * each id into the statement with hand-written quotes. It was safe by
+ * PROVENANCE rather than by construction: the ids come from the worker's own
+ * discovery SELECT a moment earlier, never from a request. Provenance is a
+ * property of today's callers, and the hand-written quoting was one caller
+ * away from being the only thing between a request and the statement.
+ *
+ * Bound, an id cannot become statement text whatever it contains, and a
+ * malformed one is a type error from PostgreSQL rather than a syntax error in
+ * a query nobody can read. Same shape `bank.ts` already uses for this.
+ *
+ * Callers guard on an empty list before they get here, so `IN ()` — which is
+ * a syntax error, not an empty match — cannot be reached.
+ */
+const idList = (ids: readonly string[]) =>
+  sql.join(
+    ids.map((id) => sql`${id}::uuid`),
+    sql`, `,
+  );
+
 /** No active hold: released holds do not count, which is the point of them. */
 const NO_ACTIVE_HOLD = sql`
   NOT EXISTS (
@@ -61,7 +84,7 @@ export async function expireEvidence(
     UPDATE payment_evidence e
     SET resolution_state = 'EXPIRED', resolved_at = ${now.toISOString()}::timestamptz
     WHERE e.business_id = ${businessId}::uuid
-      AND e.id = ANY(${sql.raw(`ARRAY[${evidenceIds.map((id) => `'${id}'::uuid`).join(',')}]`)})
+      AND e.id IN (${idList(evidenceIds)})
       AND e.resolution_state = 'UNRESOLVED'
       AND e.resolution_deadline IS NOT NULL
       AND e.resolution_deadline <= ${now.toISOString()}::timestamptz
@@ -119,7 +142,7 @@ export async function purgeRaw(
     FROM payment_evidence old
     WHERE old.id = e.id
       AND e.business_id = ${businessId}::uuid
-      AND e.id = ANY(${sql.raw(`ARRAY[${evidenceIds.map((id) => `'${id}'::uuid`).join(',')}]`)})
+      AND e.id IN (${idList(evidenceIds)})
       AND e.resolution_state IN ('RESOLVED', 'EXPIRED')
       AND e.resolved_at IS NOT NULL
       AND e.resolved_at <= ${cutoff.toISOString()}::timestamptz
