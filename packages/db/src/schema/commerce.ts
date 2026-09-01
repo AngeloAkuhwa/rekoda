@@ -139,13 +139,17 @@ export const orders = pgTable(
   {
     id: id(),
     businessId: businessId(),
-    customerId: uuid('customer_id').references(() => customers.id),
+    /** The composite FK to `customers (business_id, id)` lives in migration
+     * 0132; another tenant's customer is unrepresentable. */
+    customerId: uuid('customer_id'),
     orderNumber: text('order_number').notNull(),
     /**
      * The invoice this order became, once the merchant agreed to it.
      *
      * Null while it is still only a request, which is every order until
-     * somebody says yes (migration 0029).
+     * somebody says yes (migration 0029). The composite FK to
+     * `invoices (business_id, id)` lives in migration 0132; another tenant's
+     * invoice is unrepresentable.
      */
     invoiceId: uuid('invoice_id'),
     /**
@@ -191,10 +195,12 @@ export const orderItems = pgTable(
   {
     id: id(),
     businessId: businessId(),
-    orderId: uuid('order_id')
-      .notNull()
-      .references(() => orders.id),
-    productId: uuid('product_id').references(() => products.id),
+    /** The composite FK to `orders (business_id, id)` lives in migration
+     * 0132; another tenant's order is unrepresentable. */
+    orderId: uuid('order_id').notNull(),
+    /** The composite FK to `products (business_id, id)` lives in migration
+     * 0132; another tenant's product is unrepresentable. */
+    productId: uuid('product_id'),
     name: text('name').notNull(),
     quantity: integer('quantity').notNull(),
     unitPriceK: kobo('unit_price_k').notNull(),

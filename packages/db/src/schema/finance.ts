@@ -45,8 +45,12 @@ export const invoices = pgTable(
   {
     id: id(),
     businessId: businessId(),
-    customerId: uuid('customer_id').references(() => customers.id),
-    orderId: uuid('order_id').references(() => orders.id),
+    /** The composite FK to `customers (business_id, id)` lives in migration
+     * 0132; another tenant's customer is unrepresentable. */
+    customerId: uuid('customer_id'),
+    /** The composite FK to `orders (business_id, id)` lives in migration
+     * 0132; another tenant's order is unrepresentable. */
+    orderId: uuid('order_id'),
     invoiceNumber: text('invoice_number').notNull(),
     /**
      * issued | partially_paid | paid | voided | credited
@@ -116,9 +120,9 @@ export const invoiceItems = pgTable(
   {
     id: id(),
     businessId: businessId(),
-    invoiceId: uuid('invoice_id')
-      .notNull()
-      .references(() => invoices.id),
+    /** The composite FK to `invoices (business_id, id)` lives in migration
+     * 0132; another tenant's invoice is unrepresentable. */
+    invoiceId: uuid('invoice_id').notNull(),
     name: text('name').notNull(),
     quantity: integer('quantity').notNull(),
     unitPriceK: kobo('unit_price_k').notNull(),
@@ -276,9 +280,9 @@ export const creditNotes = pgTable(
   {
     id: id(),
     businessId: businessId(),
-    invoiceId: uuid('invoice_id')
-      .notNull()
-      .references(() => invoices.id),
+    /** The composite FK to `invoices (business_id, id)` lives in migration
+     * 0132; another tenant's invoice is unrepresentable. */
+    invoiceId: uuid('invoice_id').notNull(),
     creditNoteNumber: text('credit_note_number').notNull(),
     amountK: kobo('amount_k').notNull(),
     /** The share of the credit that was VAT. Zero when the sale carried none. */

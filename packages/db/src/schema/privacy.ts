@@ -47,9 +47,9 @@ export const customerIdentities = pgTable(
     businessId: uuid('business_id')
       .notNull()
       .references(() => businesses.id),
-    customerId: uuid('customer_id')
-      .notNull()
-      .references(() => customers.id),
+    /** The composite FK to `customers (business_id, id)` lives in migration
+     * 0132; another tenant's customer is unrepresentable. */
+    customerId: uuid('customer_id').notNull(),
     facet: text('facet').notNull(), // name | phone | email | address
     ciphertext: text('ciphertext').notNull(),
     matchKey: text('match_key'),
