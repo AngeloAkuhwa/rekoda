@@ -13,6 +13,18 @@ exemption — that is the whole point of keeping the list.
 row-level security both `ENABLE`d and `FORCE`d. The six below are the remainder
 that carry a tenant column.
 
+**This register is enforced.** `packages/db/src/rls-invariants.integration.test.ts`
+carries the same six tables as an `EXEMPT` map and fails if a table with
+`business_id` has no policy and no entry here — and fails the other way too, if an
+entry here has since gained a policy and no longer needs one. The list cannot
+quietly drift out of agreement with the database in either direction.
+
+The same suite pins the other four invariants this register depends on: RLS is
+`ENABLE`d **and** `FORCE`d wherever it is on; every `USING (true)` policy belongs
+to `rekoda_worker` and never to `rekoda_app` or `PUBLIC`; every tenant predicate is
+written identically, with only `businesses`, `memberships` and `shops` excepted by
+name; and no policy's `WITH CHECK` differs from its `USING`.
+
 **Query that produces this list** — run it after any migration that adds a table
 with `business_id`:
 
