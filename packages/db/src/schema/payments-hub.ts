@@ -128,9 +128,15 @@ export const paymentIntents = pgTable(
     businessId: uuid('business_id')
       .notNull()
       .references(() => businesses.id),
-    customerId: uuid('customer_id').references(() => customers.id),
-    orderId: uuid('order_id').references(() => orders.id),
-    invoiceId: uuid('invoice_id').references(() => invoices.id),
+    /** The composite FK to `customers (business_id, id)` lives in migration
+     * 0133; another tenant's customer is unrepresentable. */
+    customerId: uuid('customer_id'),
+    /** The composite FK to `orders (business_id, id)` lives in migration
+     * 0133; another tenant's order is unrepresentable. */
+    orderId: uuid('order_id'),
+    /** The composite FK to `invoices (business_id, id)` lives in migration
+     * 0133; another tenant's invoice is unrepresentable. */
+    invoiceId: uuid('invoice_id'),
     providerType: text('provider_type').notNull(),
     paymentConnectionId: uuid('payment_connection_id').references(() => paymentConnections.id),
     /** RKD-PAY-… — the authoritative reference, minted by Rekoda (§9). */

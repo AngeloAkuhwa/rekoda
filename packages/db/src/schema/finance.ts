@@ -136,7 +136,9 @@ export const payments = pgTable(
   {
     id: id(),
     businessId: businessId(),
-    customerId: uuid('customer_id').references(() => customers.id),
+    /** The composite FK to `customers (business_id, id)` lives in migration
+     * 0133; another tenant's customer is unrepresentable. */
+    customerId: uuid('customer_id'),
     amountK: kobo('amount_k').notNull(),
     currency: text('currency').notNull().default('NGN'),
     method: text('method').notNull().default('transfer'), // cash | transfer | pos | unknown
@@ -154,6 +156,8 @@ export const payments = pgTable(
     settlementAmountK: kobo('settlement_amount_k'),
     rekodaReference: text('rekoda_reference'),
     providerType: text('provider_type'),
+    /** The composite FK to `payment_intents (business_id, id)` lives in migration
+     * 0133; another tenant's intent is unrepresentable. */
     paymentIntentId: uuid('payment_intent_id'),
     /** The provider's native status verbatim, for audit — never trusted. */
     providerStatus: text('provider_status'),
@@ -202,12 +206,12 @@ export const paymentAllocations = pgTable(
   {
     id: id(),
     businessId: businessId(),
-    paymentId: uuid('payment_id')
-      .notNull()
-      .references(() => payments.id),
-    invoiceId: uuid('invoice_id')
-      .notNull()
-      .references(() => invoices.id),
+    /** The composite FK to `payments (business_id, id)` lives in migration
+     * 0133; another tenant's payment is unrepresentable. */
+    paymentId: uuid('payment_id').notNull(),
+    /** The composite FK to `invoices (business_id, id)` lives in migration
+     * 0133; another tenant's invoice is unrepresentable. */
+    invoiceId: uuid('invoice_id').notNull(),
     amountK: kobo('amount_k').notNull(),
     /** §14.2 (PR-049): a reversal row negates its original exactly; the
      * trigger in 0078 holds the shape, and these columns carry it. */
@@ -226,13 +230,17 @@ export const receipts = pgTable(
   {
     id: id(),
     businessId: businessId(),
-    customerId: uuid('customer_id').references(() => customers.id),
+    /** The composite FK to `customers (business_id, id)` lives in migration
+     * 0133; another tenant's customer is unrepresentable. */
+    customerId: uuid('customer_id'),
     receiptNumber: text('receipt_number').notNull(),
     /** A receipt represents a REAL recorded payment — spec rule 12. */
-    paymentId: uuid('payment_id')
-      .notNull()
-      .references(() => payments.id),
-    invoiceId: uuid('invoice_id').references(() => invoices.id),
+    /** The composite FK to `payments (business_id, id)` lives in migration
+     * 0133; another tenant's payment is unrepresentable. */
+    paymentId: uuid('payment_id').notNull(),
+    /** The composite FK to `invoices (business_id, id)` lives in migration
+     * 0133; another tenant's invoice is unrepresentable. */
+    invoiceId: uuid('invoice_id'),
     amountK: kobo('amount_k').notNull(),
     currency: text('currency').notNull().default('NGN'),
     snapshotJson: jsonb('snapshot_json'),
