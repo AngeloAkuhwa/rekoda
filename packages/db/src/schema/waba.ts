@@ -97,9 +97,12 @@ export const wabaCatalogueItems = pgTable(
     businessId: uuid('business_id')
       .notNull()
       .references(() => businesses.id),
-    wabaConnectionId: uuid('waba_connection_id')
-      .notNull()
-      .references(() => wabaConnections.id),
+    /** The composite FK to `waba_connections (business_id, id)` lives in
+     * migration 0138; another tenant's connection is unrepresentable. */
+    wabaConnectionId: uuid('waba_connection_id').notNull(),
+    /** The composite FK to `products (business_id, id)` has been here since
+     * this table was created, which is what made the single-column connection
+     * key beside it so obviously the odd one out. */
     productId: uuid('product_id').notNull(),
     /** The identity Meta knows the item by: our product id, stable. */
     retailerId: text('retailer_id').notNull(),
