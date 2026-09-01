@@ -123,6 +123,16 @@
               }
             }
           },
+          "400": {
+            "description": "A query parameter is wrong: a `cursor` this API did not issue, or a `limit` outside 1 to 100.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
           "401": {
             "description": "No credential, or one that is not usable.",
             "content": {
@@ -188,6 +198,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProductPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A query parameter is wrong: a `cursor` this API did not issue, or a `limit` outside 1 to 100.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
                 }
               }
             }
@@ -271,6 +291,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/InvoicePage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A query parameter is wrong: a `cursor` this API did not issue, a `limit` outside 1 to 100, or a `status` that is not one of the documented values.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
                 }
               }
             }
@@ -429,6 +459,16 @@
               }
             }
           },
+          "400": {
+            "description": "The body is wrong. `message` names the first field that failed and `details` carries the rest.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
           "401": {
             "description": "No credential, or one that is not usable.",
             "content": {
@@ -506,6 +546,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/RecordPaymentResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The body is wrong. `message` names the first field that failed and `details` carries the rest.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
                 }
               }
             }
