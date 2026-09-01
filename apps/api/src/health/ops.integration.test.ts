@@ -51,9 +51,10 @@ beforeAll(async () => {
   await migrate(urls);
 
   process.env['DATABASE_URL'] = urls.app;
-  // The queue spans tenants, so the endpoint needs the worker credential to
-  // count it. Given here WITHOUT REKODA_WORKER, which is the arrangement
-  // worth testing: a web process that runs no jobs still reports the queue.
+  // The queue and the event counts both span tenants, so the endpoint needs
+  // the worker credential to count either. Given here WITHOUT REKODA_WORKER,
+  // which is the arrangement worth testing: a web process that runs no jobs
+  // still reports both.
   process.env['WORKER_DATABASE_URL'] = urls.worker;
   delete process.env['REKODA_WORKER'];
   process.env['OTP_PEPPER'] = 'test-pepper-at-least-32-characters-long';
