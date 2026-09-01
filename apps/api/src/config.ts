@@ -245,7 +245,16 @@ export interface ApiConfig {
    * ceilings: the merchant is told plainly, never cut off mid-transaction.
    */
   aiDocExtractionsPerBusinessPerDay: number;
-  /** Recorded on every usage row, so a past cost is never re-derived. */
+  /**
+   * Turns Rekoda's own USD provider costs into the naira figure written to
+   * cost telemetry. Cost-model FX (canonical spec §16) and nothing else: a
+   * merchant's books never see it, and it is not an accounting rate.
+   *
+   * NOT stored on the rows it produces. `usage_events` carries
+   * `provider_cost_micros`, `cost_currency` and `naira_equivalent_k`, and no
+   * rate column; what is frozen is the RESULT, computed at write time, so a
+   * past cost is never re-derived when this constant is next changed.
+   */
   planningFxNairaPerUsd: number;
   /**
    * How much of the multicurrency capability this deployment may reach.
@@ -488,6 +497,38 @@ function voiceWindowSeconds(env: NodeJS.ProcessEnv): number {
     throw new ConfigError('VOICE_NOTE_MAX_DURATION_SECONDS must be a positive whole number');
   }
   return seconds;
+}
+
+/**
+ * The planning FX rate, refused at boot rather than carried into arithmetic.
+ *
+ * `Number(env[...] ?? 1_450)` had three ways to go wrong and the quietest was
+ * the worst. `??` only catches undefined, so `PLANNING_FX_NGN_PER_USD=` with
+ * nothing after it is an empty STRING, and `Number('')` is 0 - not NaN, not
+ * the default. Every AI call would then record a naira cost of zero, the
+ * margin report would read as pure profit, and nothing anywhere would say so.
+ * A cost telemetry that reports zero is worse than one that reports nothing,
+ * because somebody believes it.
+ *
+ * The louder failures are still failures in the wrong place. A mistyped value
+ * gives NaN, `naira_equivalent_k` is a bigint, and PostgreSQL REFUSES a NaN
+ * rather than storing one - so the write fails, inside a job, long after the
+ * process started, one cost row at a time. A negative value records negative
+ * costs and is accepted all the way down.
+ *
+ * None of that is a merchant's problem or a runtime condition to handle. It
+ * is a deployment typo, and boot is where a deployment typo belongs.
+ */
+function planningFx(env: NodeJS.ProcessEnv): number {
+  const raw = env['PLANNING_FX_NGN_PER_USD'];
+  /* Absent means the default. Present-but-blank does NOT: somebody wrote the
+   * name down and left the value off, which is a question, not a default. */
+  if (raw === undefined) return 1_450;
+  const rate = Number(raw);
+  if (!Number.isFinite(rate) || rate <= 0) {
+    throw new ConfigError('PLANNING_FX_NGN_PER_USD must be a positive number of naira per USD');
+  }
+  return rate;
 }
 
 /**
@@ -896,7 +937,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     voiceNoteMaxDurationSeconds: voiceWindowSeconds(env),
     aiDualExtractThresholdK: Number(env['AI_DUAL_EXTRACT_THRESHOLD_K'] ?? 50_000_000),
     aiDocExtractionsPerBusinessPerDay: Number(env['AI_DOC_EXTRACTIONS_PER_BUSINESS'] ?? 25),
-    planningFxNairaPerUsd: Number(env['PLANNING_FX_NGN_PER_USD'] ?? 1_450),
+    planningFxNairaPerUsd: planningFx(env),
     fxMode: fxMode(env, isProduction),
     operatorAuth: operatorAuth(env, isProduction),
     paystackSecretKey: env['PAYSTACK_SECRET_KEY'] ?? '',

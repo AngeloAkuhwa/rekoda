@@ -364,6 +364,68 @@ describe('operator identity configuration', () => {
 });
 
 /**
+ * The planning FX rate (P1).
+ *
+ * Cost telemetry's one constant, and the failure everybody would have missed
+ * is the silent one: an empty value is not a missing value, so the default
+ * never applied and every naira cost became zero.
+ */
+describe('the planning FX rate', () => {
+  const withRate = (value: string | undefined) => {
+    const env = { ...BASE } as NodeJS.ProcessEnv;
+    if (value === undefined) delete env['PLANNING_FX_NGN_PER_USD'];
+    else env['PLANNING_FX_NGN_PER_USD'] = value;
+    return () => loadConfig(env);
+  };
+
+  it('defaults when the variable is absent', () => {
+    expect(withRate(undefined)().planningFxNairaPerUsd).toBe(1_450);
+  });
+
+  it('reads a rate somebody set', () => {
+    expect(withRate('1620')().planningFxNairaPerUsd).toBe(1_620);
+    // Not an integer: a planning rate is a price, and prices have kobo.
+    expect(withRate('1620.5')().planningFxNairaPerUsd).toBe(1_620.5);
+  });
+
+  /**
+   * The quiet one, and the reason this PR exists.
+   *
+   * `Number(env[...] ?? 1_450)` used `??`, which only catches undefined. A
+   * variable written down with nothing after it is an empty STRING, and
+   * `Number('')` is 0 - so the default never applied, every AI call recorded
+   * a naira cost of zero, and the margin report read as pure profit with
+   * nothing anywhere saying otherwise.
+   */
+  it('refuses a variable set to nothing, rather than reading it as zero', () => {
+    expect(withRate('')).toThrow(/PLANNING_FX_NGN_PER_USD/);
+  });
+
+  it('refuses zero and negative rates', () => {
+    // Zero is the empty-string bug arriving by another road; negative would
+    // record negative costs and be accepted all the way to the column.
+    expect(withRate('0')).toThrow(/positive/);
+    expect(withRate('-1450')).toThrow(/positive/);
+  });
+
+  it('refuses a value that is not a number at all', () => {
+    /* This one did fail, but in the wrong place: NaN reaches
+     * `naira_equivalent_k`, which is a bigint, and PostgreSQL REFUSES a NaN
+     * rather than storing one - so the write failed inside a job, one cost
+     * row at a time, long after the process started. A deployment typo
+     * belongs at boot. */
+    expect(withRate('abc')).toThrow(/PLANNING_FX_NGN_PER_USD/);
+    expect(withRate('1,450')).toThrow(/PLANNING_FX_NGN_PER_USD/);
+  });
+
+  it('refuses an infinite rate, however it was written', () => {
+    // `Number('1e400')` is Infinity, which no arithmetic below survives.
+    expect(withRate('Infinity')).toThrow(/positive/);
+    expect(withRate('1e400')).toThrow(/positive/);
+  });
+});
+
+/**
  * The multicurrency kill switch (ADR 0033).
  *
  * Rekoda's launch is NGN-only and the FX capability is dark. Darkness that
