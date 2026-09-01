@@ -150,9 +150,9 @@ describe('what lands in the table', () => {
     const [row] = await events.unprocessedEvents(db, 'paystack');
     const stored = JSON.stringify(row?.payload);
     /**
-     * Paystack bodies carry the payer's email and phone, and external_events
-     * is the one table with row-level security deliberately off. Same rule as
-     * Meta: sealed at write, opened by the worker that processes it.
+     * Paystack bodies carry the payer's email and phone, and the worker
+     * reads external_events across every tenant. Same rule as Meta: sealed at
+     * write, opened by the worker that processes it.
      */
     expect(stored).not.toContain('adaeze.okonkwo');
     expect(stored).not.toContain('2348039998888');

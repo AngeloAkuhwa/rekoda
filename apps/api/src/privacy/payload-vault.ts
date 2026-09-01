@@ -1,10 +1,10 @@
 /**
  * Sealing an inbound provider payload before it is stored.
  *
- * `external_events` is the one table in the system with row-level security
- * deliberately switched off — an event arrives before anyone knows which
- * tenant it belongs to, and a policy keyed on `app.business_id` would reject
- * the very insert that determines it.
+ * `external_events` holds a NULLABLE tenant, because an event arrives before
+ * anyone knows whose it is. Migration 0130 gave it a policy set that handles
+ * that, but a policy scopes rows to a credential; it does not make the column
+ * a safe place to keep a message.
  *
  * That was fine while the column held routing metadata. It is not fine holding
  * a Meta webhook body, which contains the merchant's message text and the
@@ -26,11 +26,11 @@ export interface SealedPayload {
 }
 
 /**
- * The binding: a sealed blob belongs to ONE event. `external_events` is the
- * one table outside row-level security, so "copy a valid blob onto another
- * row" is exactly the move its threat model owes an answer to; with the
- * event's own identity as associated data, a moved blob fails
- * authentication instead of reading as the other event's body. The format
+ * The binding: a sealed blob belongs to ONE event. The worker credential
+ * sees every tenant's events, so "copy a valid blob onto another row" is
+ * exactly the move this threat model owes an answer to; with the event's own
+ * identity as associated data, a moved blob fails authentication instead of
+ * reading as the other event's body. The format
  * is built here and nowhere else, so seal and open cannot drift.
  */
 function eventAad(provider: string, externalId: string): string {

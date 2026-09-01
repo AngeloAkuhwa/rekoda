@@ -100,7 +100,9 @@ export class PaystackWebhookController {
       eventType: summary.eventType,
       externalId,
       // Sealed like every provider payload: Paystack bodies carry the payer's
-      // email and name, and this is the one table outside row-level security.
+      // email and name, and the worker reads this table across every tenant.
+      // The row lands unattributed — the pump resolves the reference later —
+      // which is the case migration 0130's ingress policy exists for.
       payload: sealPayload(parsed.data, this.config.vaultKey, 'paystack', externalId),
       businessId: null,
     });

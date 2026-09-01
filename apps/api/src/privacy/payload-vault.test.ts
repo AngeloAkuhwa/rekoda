@@ -1,10 +1,11 @@
 /**
  * The seal on provider payloads, and the binding that makes it a seal.
  *
- * `external_events` is the one table outside row-level security, so the
- * attack these tests pin is the database-write one: copy a valid sealed blob
- * onto another event's row. With the event identity as associated data, the
- * copy fails authentication instead of reading as the other event's body.
+ * The worker credential sees every tenant's rows in `external_events`, so
+ * the attack these tests pin is the database-write one: copy a valid sealed
+ * blob onto another event's row. With the event identity as associated data,
+ * the copy fails authentication instead of reading as the other event's
+ * body.
  */
 import { describe, expect, it } from 'vitest';
 import { VaultError } from '@rekoda/core/vault';

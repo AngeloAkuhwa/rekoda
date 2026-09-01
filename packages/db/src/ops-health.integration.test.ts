@@ -4,8 +4,8 @@
  * Three claims, none of which survives an in-memory imitation: the stranger
  * claim is a conditional UPSERT whose whole value is what happens when two
  * callers race, `queueHealth` counts across tenants and so depends on which
- * ROLE asks, and `eventHealth` reads a table deliberately outside row-level
- * security.
+ * ROLE asks, and `eventHealth` counts across tenants on the one table whose
+ * policy set is deliberately unlike every other (migration 0130).
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
@@ -318,5 +318,102 @@ describe('the exception queue an operator works', () => {
 
     await events.resolveEvent(workerDb, flagged, 'handled by hand', 'operator:ada');
     expect((await events.eventHealth(workerDb, 'meta')).flagged).toBe(0);
+  });
+});
+
+/**
+ * What migration 0130 actually bought, asserted rather than described.
+ *
+ * `external_events` is the only table with three policies, and the shape is
+ * unusual enough to be worth pinning: the ordinary tenant predicate, an
+ * estate-wide worker policy, and a narrow application policy over the rows
+ * that belong to nobody yet. Each test below fails for a different one.
+ */
+describe('external_events under its tenant policy', () => {
+  async function arrive(externalId: string, businessId: string | null) {
+    const write = (q: Db | Parameters<Parameters<typeof withBusiness>[2]>[0]) =>
+      events.recordEvent(q, {
+        provider: 'paystack',
+        eventType: 'charge.success',
+        externalId,
+        payload: { sealed: true },
+        businessId,
+      });
+    return businessId ? withBusiness(appDb, businessId, (tx) => write(tx)) : write(appDb);
+  }
+
+  it("hides one tenant's event from another tenant, on the application role", async () => {
+    const ada = await seedBusiness('+2348030000101');
+    const bola = await seedBusiness('+2348030000102');
+    const stored = storedEventId(await arrive('evt.ada', ada));
+
+    const adaSees = await withBusiness(appDb, ada, (tx) =>
+      events.eventForBusiness(tx, stored, ada),
+    );
+    const bolaSees = await withBusiness(appDb, bola, (tx) =>
+      events.eventForBusiness(tx, stored, ada),
+    );
+
+    /* Bola passes Ada's event id AND Ada's business id — the exact shape of a
+     * stray id in a job payload, which the file header calls the one way a
+     * worker could read another tenant's event. Before 0130 the belt-and-braces
+     * predicate in the query was the only thing stopping it. Now the database
+     * does, so bypassing the application check changes nothing. */
+    expect(adaSees?.id).toBe(stored);
+    expect(bolaSees).toBeNull();
+  });
+
+  it('refuses to let the application record an event for a tenant it is not pinned to', async () => {
+    const ada = await seedBusiness('+2348030000103');
+    /* A REAL second business, not an invented uuid: `business_id` carries a
+     * foreign key, so a made-up tenant would be refused for the wrong reason
+     * and the test would pass without proving anything about isolation. */
+    const bola = await seedBusiness('+2348030000105');
+
+    const refusal = await withBusiness(appDb, ada, (tx) =>
+      events.recordEvent(tx, {
+        provider: 'paystack',
+        eventType: 'charge.success',
+        externalId: 'evt.forged',
+        payload: { sealed: true },
+        businessId: bola,
+      }),
+    ).then(
+      () => null,
+      (error: Error & { cause?: unknown }) => error,
+    );
+
+    /* Drizzle wraps the driver error, so the reason lives on `cause` — and the
+     * reason is the whole point. Refused by the DATABASE, which is what makes
+     * it hold even where application validation is bypassed. */
+    expect(refusal).not.toBeNull();
+    expect(String(refusal?.cause)).toMatch(/row-level security/);
+  });
+
+  it('still takes an unattributed webhook with no tenant pinned, and dedupes the retry', async () => {
+    /* The reason the table had no policy for so long, and the case the third
+     * policy exists for: this insert happens before anyone knows whose event
+     * it is, so there is nothing to pin. */
+    const first = await arrive('evt.open', null);
+    const retry = await arrive('evt.open', null);
+
+    expect(first.isNew).toBe(true);
+    expect(retry).toEqual({ isNew: false });
+  });
+
+  it("takes the row out of the application's reach the moment the pump attributes it", async () => {
+    const ada = await seedBusiness('+2348030000104');
+    const stored = storedEventId(await arrive('evt.pending', null));
+
+    expect(await events.unattributedEvents(appDb, 'paystack')).toHaveLength(1);
+    expect(await events.attributeEvent(workerDb, stored, ada)).toBe(true);
+
+    /* Unpinned, the application now sees nothing: the row is neither its
+     * tenant's nor unattributed any more. The worker, which has to sweep the
+     * estate, still sees it. */
+    expect(await events.unattributedEvents(appDb, 'paystack')).toHaveLength(0);
+    expect(await events.eventStatus(appDb, stored)).toBeNull();
+    expect((await events.eventStatus(workerDb, stored))?.businessId).toBe(ada);
+    expect(await events.eventHealth(workerDb, 'paystack')).toMatchObject({ unprocessed: 1 });
   });
 });

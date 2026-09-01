@@ -911,6 +911,13 @@
       "when": 1787862000000,
       "tag": "0129_product_image_deletion_reasons",
       "breakpoints": true
+    },
+    {
+      "idx": 130,
+      "version": "7",
+      "when": 1788269064528,
+      "tag": "0130_external_events_tenant_policy",
+      "breakpoints": true
     }
   ]
 }

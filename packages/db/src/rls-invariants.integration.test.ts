@@ -57,7 +57,6 @@ const EXEMPT = new Map<string, string>([
   ['retention_deletions', 'the row outlives the tenant it names (0022)'],
   ['platform_cost_events', "Rekoda's own cost ledger; app holds INSERT only (0124)"],
   ['migration_manifest_items', 'no grants to either application role'],
-  ['external_events', 'nullable tenant; OPEN pre-launch item, see the register'],
 ]);
 
 describe('row-level security, across the whole schema', () => {
@@ -142,16 +141,29 @@ describe('row-level security, across the whole schema', () => {
        ORDER BY c.relname, p.polname
     `);
 
-    /* Three predicates are legitimately not the tenant one, and each is
-     * pinned by name so a fourth cannot arrive unnoticed:
+    /* Four predicates are legitimately not the tenant one, each pinned by
+     * POLICY rather than by table so a fourth cannot arrive unnoticed:
      *
-     *   businesses    its own `id` IS the tenant key
-     *   memberships   user-scoped, and read BEFORE a business can be pinned
-     *   shops         the public storefront, gated on being published
-     */
-    const KNOWN_EXCEPTIONS = new Set(['businesses', 'memberships', 'shops']);
+     *   businesses.tenant_self                       its own `id` IS the tenant key
+     *   memberships.membership_self                  read BEFORE a business can be pinned
+     *   shops.shop_public_read                       the storefront, gated on being published
+     *   external_events.app_records_unattributed_ingress
+     *                                                the unattributed backlog, which
+     *                                                belongs to no tenant yet (0130)
+     *
+     * Keyed by policy because a table-level excuse is too coarse: every one
+     * of these tables ALSO carries an ordinary tenant policy, and excusing
+     * the table would stop checking that one too. */
+    const KNOWN_EXCEPTIONS = new Set([
+      'businesses.tenant_self',
+      'memberships.membership_self',
+      'shops.shop_public_read',
+      'external_events.app_records_unattributed_ingress',
+    ]);
     const offBrand = [...rows]
-      .filter((r) => r.qual !== TENANT_PREDICATE && !KNOWN_EXCEPTIONS.has(r.relname))
+      .filter(
+        (r) => r.qual !== TENANT_PREDICATE && !KNOWN_EXCEPTIONS.has(`${r.relname}.${r.polname}`),
+      )
       .map((r) => `${r.relname}.${r.polname}: ${r.qual}`);
     expect(offBrand).toEqual([]);
   });
