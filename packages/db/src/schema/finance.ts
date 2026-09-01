@@ -269,7 +269,9 @@ export const expenses = pgTable(
     sourceId: text('source_id'),
     /** recorded | voided. A void marks the row and mirrors its posting. */
     status: text('status').notNull().default('recorded'),
-    /** The posting this entry wrote, so a void reverses what was written. */
+    /** The posting this entry wrote, so a void reverses what was written.
+     * The composite FK to `ledger_transactions (business_id, id)` lives in
+     * migration 0135; another tenant's posting is unrepresentable. */
     ledgerTransactionId: uuid('ledger_transaction_id'),
     createdAt: createdAt(),
   },
@@ -299,6 +301,8 @@ export const creditNotes = pgTable(
     vatK: kobo('vat_k').notNull().default(0),
     reason: text('reason').notNull(),
     actor: text('actor').notNull(),
+    /** The composite FK to `ledger_transactions (business_id, id)` lives in migration
+     * 0135; another tenant's posting is unrepresentable. */
     ledgerTransactionId: uuid('ledger_transaction_id'),
     snapshotJson: jsonb('snapshot_json'),
     docHash: text('doc_hash'),
@@ -469,9 +473,9 @@ export const bankLineMatches = pgTable(
     lineId: uuid('line_id')
       .notNull()
       .references(() => bankStatementLines.id, { onDelete: 'cascade' }),
-    transactionId: uuid('transaction_id')
-      .notNull()
-      .references(() => ledgerTransactions.id),
+    /** The composite FK to `ledger_transactions (business_id, id)` lives in migration
+     * 0135; another tenant's posting is unrepresentable. */
+    transactionId: uuid('transaction_id').notNull(),
     /** `auto` when the rule was certain, `manual` when a person decided.
      * No `ai` value exists: AI can explain, never decide (§22.1). */
     decidedBy: text('decided_by').notNull(),
@@ -546,9 +550,9 @@ export const supplierPayments = pgTable(
     amountK: kobo('amount_k').notNull(),
     /** `cash` or `transfer`, which decides whether CASH or BANK gave it up. */
     method: text('method').notNull(),
-    ledgerTransactionId: uuid('ledger_transaction_id')
-      .notNull()
-      .references(() => ledgerTransactions.id),
+    /** The composite FK to `ledger_transactions (business_id, id)` lives in migration
+     * 0135; another tenant's posting is unrepresentable. */
+    ledgerTransactionId: uuid('ledger_transaction_id').notNull(),
     paidOn: date('paid_on').notNull(),
     /** Which bill this settled (0098, PR-077) — beside expenseId, not
      * replacing it: the ageing still reads the expense attribution. */
@@ -623,7 +627,9 @@ export const fixedAssets = pgTable(
     usefulLifeMonths: integer('useful_life_months').notNull(),
     monthsCharged: integer('months_charged').notNull().default(0),
     boughtOn: date('bought_on').notNull(),
-    ledgerTransactionId: uuid('ledger_transaction_id').references(() => ledgerTransactions.id),
+    /** The composite FK to `ledger_transactions (business_id, id)` lives in migration
+     * 0135; another tenant's posting is unrepresentable. */
+    ledgerTransactionId: uuid('ledger_transaction_id'),
     /**
      * recorded | withdrawn | sold.
      *
@@ -665,7 +671,9 @@ export const reconciliations = pgTable(
     reason: text('reason'),
     expectationKind: text('expectation_kind'), // invoice | order | reported_payment
     expectationId: text('expectation_id'),
-    paymentId: uuid('payment_id').references(() => payments.id),
+    /** The composite FK to `payments (business_id, id)` lives in migration
+     * 0135; another tenant's payment is unrepresentable. */
+    paymentId: uuid('payment_id'),
     amountK: kobo('amount_k'),
     outstandingK: kobo('outstanding_k'),
     resolvedAt: timestamp('resolved_at', { withTimezone: true }),
