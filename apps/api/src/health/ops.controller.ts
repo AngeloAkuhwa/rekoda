@@ -90,8 +90,18 @@ export class OpsController {
   async health(): Promise<{
     /** Null when this process holds no worker credential — poll one that does. */
     queue: Awaited<ReturnType<typeof jobsRepo.queueHealth>> | null;
-    meta: Awaited<ReturnType<typeof events.eventHealth>>;
-    paystack: Awaited<ReturnType<typeof events.eventHealth>>;
+    /**
+     * Also null without the worker credential, and for a sharper reason than
+     * the queue's.
+     *
+     * These count events ACROSS every tenant, which is a question no
+     * tenant-scoped credential should be able to answer. They ran on the
+     * application role, which could answer it only because `external_events`
+     * has no row-level security — and that absence is the thing being closed.
+     * Moving them here first is what makes the policy safe to add.
+     */
+    meta: Awaited<ReturnType<typeof events.eventHealth>> | null;
+    paystack: Awaited<ReturnType<typeof events.eventHealth>> | null;
     /**
      * Webhook signatures rejected THIS process since it started (S1, PR-108).
      *
@@ -103,10 +113,11 @@ export class OpsController {
      */
     rejectedSignatures: { meta: number; paystack: number };
   }> {
+    const worker = this.workerDb;
     const [queue, meta, paystack] = await Promise.all([
-      this.workerDb ? jobsRepo.queueHealth(this.workerDb) : Promise.resolve(null),
-      events.eventHealth(this.db, 'meta'),
-      events.eventHealth(this.db, 'paystack'),
+      worker ? jobsRepo.queueHealth(worker) : Promise.resolve(null),
+      worker ? events.eventHealth(worker, 'meta') : Promise.resolve(null),
+      worker ? events.eventHealth(worker, 'paystack') : Promise.resolve(null),
     ]);
     return {
       queue,
