@@ -262,7 +262,9 @@ export const expenses = pgTable(
     category: text('category'),
     amountK: kobo('amount_k').notNull(),
     method: text('method').notNull().default('cash'),
-    supplierId: uuid('supplier_id').references(() => suppliers.id),
+    /** The composite FK to `suppliers (business_id, id)` lives in migration
+     * 0134; another tenant's supplier is unrepresentable. */
+    supplierId: uuid('supplier_id'),
     sourceType: text('source_type').notNull(),
     sourceId: text('source_id'),
     /** recorded | voided. A void marks the row and mirrors its posting. */
@@ -538,9 +540,9 @@ export const supplierPayments = pgTable(
   {
     id: id(),
     businessId: businessId(),
-    expenseId: uuid('expense_id')
-      .notNull()
-      .references(() => expenses.id),
+    /** The composite FK to `expenses (business_id, id)` lives in migration
+     * 0134; another tenant's expense is unrepresentable. */
+    expenseId: uuid('expense_id').notNull(),
     amountK: kobo('amount_k').notNull(),
     /** `cash` or `transfer`, which decides whether CASH or BANK gave it up. */
     method: text('method').notNull(),

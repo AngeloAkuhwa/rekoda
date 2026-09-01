@@ -68,9 +68,9 @@ export const inventoryMovements = pgTable(
   {
     id: id(),
     businessId: businessId(),
-    productId: uuid('product_id')
-      .notNull()
-      .references(() => products.id),
+    /** The composite FK to `products (business_id, id)` lives in migration
+     * 0134; another tenant's product is unrepresentable. */
+    productId: uuid('product_id').notNull(),
     delta: integer('delta').notNull(),
     reason: text('reason').notNull(), // sale | purchase | adjustment | reservation | release | return | supplier_return | opening
     sourceType: text('source_type').notNull(),
@@ -98,7 +98,12 @@ export const goodsReturns = pgTable(
   {
     id: id(),
     businessId: businessId(),
+    /** The composite FK to `products (business_id, id)` has been here since
+     * this table was created, which is what made the single-column invoice
+     * key beside it so obviously the odd one out. */
     productId: uuid('product_id').notNull(),
+    /** The composite FK to `invoices (business_id, id)` lives in migration
+     * 0134; another tenant's invoice is unrepresentable. */
     invoiceId: uuid('invoice_id'),
     quantity: integer('quantity').notNull(),
     disposition: text('disposition').notNull(),
