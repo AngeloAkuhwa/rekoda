@@ -357,7 +357,19 @@ describe('the golden business (§32)', () => {
     );
 
     /* 8 ── one FX transaction: dollars arrived, booked at the day's rate,
-     * functional to the kobo. */
+     * functional to the kobo.
+     *
+     * USD 15.00 is `transaction_amount_minor: 1500`, because a transaction
+     * amount is in the TRANSACTION currency's minor unit. At 1512.30 that is
+     * ₦22,684.50, and the functional columns are KOBO like every other `_k`
+     * in this schema, so the figure is 2,268,450.
+     *
+     * It read 22,685 until now: the naira amount written into a kobo column,
+     * out by a factor of a hundred. PostgreSQL accepted it because migration
+     * 0070 deliberately postponed the cross-currency numeric tolerance until
+     * the first writer that could post one, so the only thing checking this
+     * arithmetic was a person reading it. FX-03 ships that trigger, and this
+     * fixture has to be right before it does. */
     const rate = await withBusiness(db, businessId, (tx) =>
       fxRepo.recordExchangeRateSnapshot(tx, {
         baseCurrency: 'USD',
@@ -382,10 +394,10 @@ describe('the golden business (§32)', () => {
         VALUES
           (${businessId}::uuid, ${txId}::uuid,
            (SELECT id FROM accounts WHERE business_id = ${businessId}::uuid AND code = '1020'),
-           22_685, 0, 'USD', 1500, ${rate.id}::uuid),
+           2_268_450, 0, 'USD', 1500, ${rate.id}::uuid),
           (${businessId}::uuid, ${txId}::uuid,
            (SELECT id FROM accounts WHERE business_id = ${businessId}::uuid AND code = '4000'),
-           0, 22_685, 'USD', 1500, ${rate.id}::uuid)
+           0, 2_268_450, 'USD', 1500, ${rate.id}::uuid)
       `);
     });
 
@@ -745,13 +757,19 @@ describe('the golden business (§32)', () => {
 
     /* 3 · PROFIT AND LOSS: what the month earned, minus what it cost.
      * Revenue: cash sale 150,000 + credit sale 250,000 + recognised order
-     * 100,000 + FX 22,685 + VAT-sale net 40,000 + provider sale 80,000 +
+     * 100,000 + FX 2,268,450 + VAT-sale net 40,000 + provider sale 80,000 +
      * reversed sale 15,000, LESS the credit note's 20,000. Expenses: rent
      * 40,000 + depreciation 10,000 + the provider's fee 1,200; COGS nets
-     * to zero because the one costed sale came back RESALABLE. */
+     * to zero because the one costed sale came back RESALABLE.
+     *
+     * The FX line was 22,685 here and in step 8, which was the naira figure
+     * in a kobo column: USD 15.00 at 1512.30 is ₦22,684.50, and this schema
+     * counts kobo. Correcting the posting moves this total by the same
+     * 2,245,765, and the balance-sheet identity below still holds because
+     * the posting is a balanced pair. */
     const revenueK = net('income', 'credit');
     const expensesK = net('expense', 'debit');
-    expect(revenueK).toBe(637_685);
+    expect(revenueK).toBe(2_883_450);
     expect(expensesK).toBe(51_200);
     const profitK = revenueK - expensesK;
 
@@ -777,10 +795,12 @@ describe('the golden business (§32)', () => {
     );
     const flows = [...money][0]!;
     expect(Number(flows.opening)).toBe(1_500_000);
-    /* cash 523,000 + bank 1,132,685 + paystack 73,800 */
-    expect(Number(flows.closing)).toBe(1_729_485);
+    /* cash 523,000 + bank 3,378,450 + paystack 73,800. The bank account is
+     * where the corrected FX debit lands, so it carries the same 2,245,765
+     * the P&L above does. */
+    expect(Number(flows.closing)).toBe(3_975_250);
     const inMonthMovementK = Number(flows.closing) - Number(flows.opening);
-    expect(inMonthMovementK).toBe(229_485);
+    expect(inMonthMovementK).toBe(2_475_250);
 
     /* 6 · ACCOUNTS RECEIVABLE: the ledger's AR balance IS the sum of open
      * invoice balances PLUS the three receivables the payment hub raised

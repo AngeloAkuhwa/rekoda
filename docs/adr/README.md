@@ -35,5 +35,6 @@ a new ADR that supersedes the old one.
 | [0027](0027-hosted-ai-at-launch.md)                       | Hosted AI at launch, and the privacy pages tell the truth about it              | Accepted (amends 0008, 0024; amended by 0032) |
 | [0031](0031-sonnet-reads-the-message.md)                  | Sonnet reads the message                                                        | Accepted (amends 0023)            |
 | [0032](0032-launch-media-architecture.md)                 | The launch media architecture: OpenAI STT + Claude vision, no sidecars          | Accepted (amends 0005, 0008, 0024, 0027) |
+| [0033](0033-multicurrency-is-a-dark-capability.md)        | Multicurrency and embedded FX are a dark capability; the launch is NGN-only     | Accepted                          |
 
 Template: [0000-template.md](0000-template.md)

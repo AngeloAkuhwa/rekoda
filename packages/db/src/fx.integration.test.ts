@@ -159,4 +159,41 @@ describe('the FX requirement (§16, §10)', () => {
     );
     expect(refusal).toMatch(/rate is 1 by definition/);
   });
+
+  /**
+   * A business's functional currency has to look like one (0128).
+   *
+   * Every other currency column already said so. This one did not, and it is
+   * the column `ledger_tx_currency_valid` compares every posting against: a
+   * business carrying 'ngn' would have every transaction refused with an
+   * error about the transaction, while the wrong data sat somewhere else
+   * entirely.
+   */
+  it('a business currency must be three upper-case letters', async () => {
+    const businessId = await seedBusiness();
+    /* Pinned, so the UPDATE actually reaches the row. Unpinned it matches
+     * nothing under RLS and every value looks accepted, which is a test that
+     * passes while measuring an empty result set. */
+    const set = (value: string) =>
+      withBusiness(db, businessId, (tx) =>
+        tx.execute<{ id: string }>(
+          sql`UPDATE businesses SET currency = ${value}
+               WHERE id = ${businessId}::uuid RETURNING id`,
+        ),
+      ).then(
+        (rows) => ([...rows].length === 1 ? 'accepted' : 'matched nothing'),
+        (error: unknown) => (error as { cause?: { message?: string } }).cause?.message ?? 'unknown',
+      );
+
+    expect(await set('ngn')).toMatch(/businesses_currency_shape/);
+    expect(await set('Naira')).toMatch(/businesses_currency_shape/);
+    expect(await set('NG')).toMatch(/businesses_currency_shape/);
+    expect(await set('')).toMatch(/businesses_currency_shape/);
+
+    /* Shape, deliberately, and not a whitelist of one: the launch being
+     * NGN-only is a product decision (ADR 0033) enforced by there being no
+     * way to set this, not a constraint a later merchant migrates out of.
+     * `accepted` also proves the four refusals above reached a real row. */
+    expect(await set('USD')).toBe('accepted');
+  });
 });

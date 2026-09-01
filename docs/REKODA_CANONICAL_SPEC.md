@@ -1192,6 +1192,20 @@ JournalLine
 
 Statements sum functional values. **Historical transactions never use today's rate.**
 
+> **Capability status: DARK (ADR 0033, owner directive 1 September 2026).** The
+> multicurrency and FX capability defined in this section and in Appendix A is
+> under active development and is **not exposed**. Rekoda's public launch is
+> NGN-only: no merchant, customer, public API consumer, Chat flow, Integrate
+> flow, storefront flow or dashboard flow may invoke it. The first accounting
+> shape being built is NGN functional books with a foreign transaction
+> currency; a business whose whole books are kept in another currency is out
+> of scope, and `ledger_tx_currency_valid` continues to require a
+> transaction's functional currency to equal the business's. `FX_MODE`
+> defaults to `off` and production refuses to start on `live`. Live execution
+> and any non-zero Rekoda spread are **OPEN COMMERCIAL / OPEN COMPLIANCE**
+> pending the FX graduation gate. The model below is unchanged; only its
+> availability is stated here.
+
 See **Appendix A** for the rate source, fallback, staleness and override rules. Four FX concepts, kept distinct and never shared:
 
 ```
@@ -1692,6 +1706,10 @@ The appendices are canonical. They exist as appendices because they are referenc
 ---
 
 ## Appendix A — Dynamic FX
+
+> **DARK capability (ADR 0033).** Everything in this appendix is the design
+> being built to, not a feature a merchant can reach. See §16's capability
+> status note.
 
 §16 defines what the ledger stores. This defines where a rate comes from and what happens when it cannot be got.
 

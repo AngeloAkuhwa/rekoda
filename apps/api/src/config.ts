@@ -240,6 +240,21 @@ export interface ApiConfig {
   /** Recorded on every usage row, so a past cost is never re-derived. */
   planningFxNairaPerUsd: number;
   /**
+   * How much of the multicurrency capability this deployment may reach.
+   *
+   * Rekoda's launch is NGN-only (ADR 0033). The FX capability is being
+   * BUILT, in the open, against a schema that already carries immutable rate
+   * snapshots and the §16 currency invariants — and no merchant, customer,
+   * public API consumer, Chat flow or storefront route may reach it until a
+   * separate graduation decision says so.
+   *
+   * `off` is the default and the only setting production accepts today.
+   * Darkness is a mode rather than a missing menu item because a menu item is
+   * removed by a page and restored by a page, and this has to be removable by
+   * neither.
+   */
+  fxMode: FxMode;
+  /**
    * Signs Paystack webhooks AND authenticates Paystack API calls — Paystack
    * uses the secret key for both. Empty means every webhook is rejected (the
    * safe direction) and no provider call can be made. Deliberately NOT
@@ -457,6 +472,51 @@ function voiceWindowSeconds(env: NodeJS.ProcessEnv): number {
     throw new ConfigError('VOICE_NOTE_MAX_DURATION_SECONDS must be a positive whole number');
   }
   return seconds;
+}
+
+/**
+ * The four states of the dark FX capability (ADR 0033).
+ *
+ * ```
+ * off      no provider call, no executable quote, no FX anything.
+ * shadow   rates may be OBSERVED for engineering evaluation. No execution.
+ * sandbox  a provider's SANDBOX API only, for integration tests.
+ * live     the state the graduation gate opens. Not reachable yet.
+ * ```
+ *
+ * The ordering is deliberate and it is not a scale of convenience: each step
+ * adds one capability that the step before it could not perform at all.
+ */
+export const FX_MODES = ['off', 'shadow', 'sandbox', 'live'] as const;
+export type FxMode = (typeof FX_MODES)[number];
+
+/**
+ * `live` needs more than one environment variable, and today it needs a
+ * decision nobody has made.
+ *
+ * A kill switch that one typo can flip is a promise, not a control. So
+ * production refuses to START on `FX_MODE=live` while the capability is dark:
+ * not "ignores it", not "warns and continues", but fails to boot, because a
+ * process that came up with live FX believing it was configured to is exactly
+ * the accident this exists to prevent. When the FX graduation gate is
+ * complete, `live` will additionally require a named approval token and a
+ * provider capability record; the refusal below is replaced then, by the PR
+ * that opens the gate, and never by an environment change.
+ */
+function fxMode(env: NodeJS.ProcessEnv, isProduction: boolean): FxMode {
+  const raw = env['FX_MODE'] ?? 'off';
+  if (!(FX_MODES as readonly string[]).includes(raw)) {
+    throw new ConfigError(`FX_MODE must be one of ${FX_MODES.join(', ')}`);
+  }
+  const mode = raw as FxMode;
+  if (mode === 'live' && isProduction) {
+    throw new ConfigError(
+      'FX live execution has not been graduated: the multicurrency capability is dark ' +
+        '(ADR 0033), and FX_MODE=live is refused in production until the FX graduation ' +
+        'gate is complete',
+    );
+  }
+  return mode;
 }
 
 function operatorSecret(env: NodeJS.ProcessEnv, isProduction: boolean): string | null {
@@ -758,6 +818,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     aiDualExtractThresholdK: Number(env['AI_DUAL_EXTRACT_THRESHOLD_K'] ?? 50_000_000),
     aiDocExtractionsPerBusinessPerDay: Number(env['AI_DOC_EXTRACTIONS_PER_BUSINESS'] ?? 25),
     planningFxNairaPerUsd: Number(env['PLANNING_FX_NGN_PER_USD'] ?? 1_450),
+    fxMode: fxMode(env, isProduction),
     paystackSecretKey: env['PAYSTACK_SECRET_KEY'] ?? '',
     paystackBaseUrl: env['PAYSTACK_BASE_URL'] ?? 'https://api.paystack.co',
     paystackPlatformConfirmed: env['REKODA_PAYSTACK_PLATFORM_CONFIRMED'] === '1',

@@ -293,3 +293,54 @@ describe('PlaceOrder is the default door (remediation R2)', () => {
     expect(config.commandAdjustInventory).toBe(false);
   });
 });
+
+/**
+ * The multicurrency kill switch (ADR 0033).
+ *
+ * Rekoda's launch is NGN-only and the FX capability is dark. Darkness that
+ * depends on nobody setting a variable is a promise; these are the four
+ * assertions that make it a control.
+ */
+describe('the dark FX capability', () => {
+  it('is off when nothing says otherwise', () => {
+    expect(loadConfig(BASE).fxMode).toBe('off');
+  });
+
+  it('accepts the three modes engineering may use', () => {
+    expect(loadConfig({ ...BASE, FX_MODE: 'shadow' }).fxMode).toBe('shadow');
+    expect(loadConfig({ ...BASE, FX_MODE: 'sandbox' }).fxMode).toBe('sandbox');
+    /* Outside production `live` is loadable, so the state can be built and
+     * tested before the gate that opens it exists. */
+    expect(loadConfig({ ...BASE, FX_MODE: 'live' }).fxMode).toBe('live');
+  });
+
+  it('refuses to START in production on live, rather than warning', () => {
+    /* Everything production demands anyway, so the refusal under test is the
+     * FX one and not the first missing secret. */
+    const PROD = {
+      ...BASE,
+      NODE_ENV: 'production',
+      REKODA_OPERATOR_SECRET: 'o'.repeat(40),
+      META_APP_SECRET: 'm'.repeat(40),
+      META_VERIFY_TOKEN: 'v'.repeat(40),
+    } as NodeJS.ProcessEnv;
+
+    /* Off and shadow are fine in production: observing a rate moves no money
+     * and exposes nothing. */
+    expect(loadConfig(PROD).fxMode).toBe('off');
+    expect(loadConfig({ ...PROD, FX_MODE: 'shadow' }).fxMode).toBe('shadow');
+
+    /* The whole point. A deployment that came up with live FX believing it
+     * was configured to is the accident the mode exists to prevent, so this
+     * is a boot failure and not a log line. */
+    expect(() => loadConfig({ ...PROD, FX_MODE: 'live' })).toThrow(/has not been graduated/);
+  });
+
+  it('refuses a mode it does not know instead of falling back to off', () => {
+    /* Falling back would be the safe VALUE reached by the unsafe ROUTE: a
+     * typo would silently become `off`, and the day the gate opens the same
+     * typo silently becomes `off` again on a deployment that meant `live`. */
+    expect(() => loadConfig({ ...BASE, FX_MODE: 'on' })).toThrow(/FX_MODE must be one of/);
+    expect(() => loadConfig({ ...BASE, FX_MODE: 'OFF' })).toThrow(/FX_MODE must be one of/);
+  });
+});

@@ -241,6 +241,69 @@ function capacityMeterViolations(rel, body) {
  * and no static rule can tell the two apart. Their guarantee is behavioural,
  * pinned in the integration suites.
  */
+/**
+ * The multicurrency capability is DARK, and stays dark by construction
+ * (ADR 0033).
+ *
+ * Rekoda's launch is NGN-only. FX is being built now — the ledger already
+ * carries immutable rate snapshots and §16's currency invariants — and the
+ * risk is not today, because today nothing outside a test calls the FX
+ * repository at all. The risk is FX-04 through FX-10, where real provider
+ * code arrives and one `@Post('/fx/quote')` added in passing would expose a
+ * capability nobody approved.
+ *
+ * A string scan for "fx" would miss that. So this is a dependency direction
+ * instead: an INGRESS may not import the FX modules. An ingress is anything a
+ * merchant, a customer or an API consumer can reach — a controller, the
+ * public API, the storefront, the chat and WABA handlers, the web tier. The
+ * accounting engine, the command layer and the tests may.
+ *
+ * When the FX graduation gate is complete, the PR that opens it deletes this
+ * rule deliberately and says so. Nothing else should be able to.
+ */
+const FX_MODULE = /(^|\/)fx(\.js|\.ts)?$|(^|\/)fx\/|fxRepo/;
+const FX_INGRESS = [
+  /\.controller\.ts$/,
+  /^apps\/api\/src\/api\//,
+  /^apps\/api\/src\/storefront\//,
+  /^apps\/api\/src\/channels\//,
+  /^apps\/api\/src\/jobs\/(inbound-message|customer-message)\.handler\.ts$/,
+  /^apps\/web\//,
+];
+
+function darkFxViolations(rel, body) {
+  if (!FX_INGRESS.some((pattern) => pattern.test(rel))) return [];
+  const found = [];
+  for (const [, spec] of body.matchAll(SPECIFIER)) {
+    if (!FX_MODULE.test(spec)) continue;
+    found.push({
+      rel,
+      spec,
+      rule: {
+        name: 'the dark FX capability reached from an ingress',
+        reason:
+          'multicurrency is a DARK capability (ADR 0033): the launch is NGN-only and no merchant, customer, chat, storefront or public API path may reach FX until the graduation gate is complete',
+      },
+    });
+  }
+  /* The repository is reached by name as often as by specifier
+   * (`fxRepo.recordExchangeRateSnapshot(...)`), so the symbol is checked too. */
+  for (const match of body.matchAll(/\bfxRepo\s*\./g)) {
+    found.push({
+      rel,
+      spec: 'fxRepo',
+      rule: {
+        verb: 'calls',
+        name: 'the dark FX repository from an ingress',
+        reason:
+          'multicurrency is a DARK capability (ADR 0033): the launch is NGN-only and no merchant, customer, chat, storefront or public API path may reach FX until the graduation gate is complete',
+      },
+    });
+    void match;
+  }
+  return found;
+}
+
 const DORMANT = Symbol('classified HIGH_RISK, no work function and no ingress');
 const HIGH_RISK_INGRESS = {
   RefundPayment: DORMANT,
@@ -328,6 +391,7 @@ for (const dir of ['apps', 'packages']) {
     if (!isTestOrConfig) violations.push(...commandLayerViolations(rel, body));
     if (!isTestOrConfig) violations.push(...contractViolations(rel, body));
     if (!isTestOrConfig) violations.push(...highRiskViolations(rel, body));
+    if (!isTestOrConfig) violations.push(...darkFxViolations(rel, body));
     violations.push(...capacityMeterViolations(rel, body));
   }
 }
@@ -371,4 +435,4 @@ if (violations.length > 0) {
   process.exit(1);
 }
 
-console.log(`Boundaries OK — ${RULES.length + 5} rules, no violations.`);
+console.log(`Boundaries OK — ${RULES.length + 6} rules, no violations.`);
