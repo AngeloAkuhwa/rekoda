@@ -19,6 +19,7 @@ import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { publicApi } from '@rekoda/contracts';
 import { createDb, entitlementsRepo, usageRepo, withBusiness, type Db } from '@rekoda/db';
 import { usagePeriod } from '@rekoda/core';
+import { RATE_WINDOW_MS } from '@rekoda/core/api-keys';
 import {
   grantCapacityAddOn,
   migrate,
@@ -178,6 +179,19 @@ describe('the error envelope', () => {
     expect(publicApi.v1.publicErrorResponse.parse(response.json()).error.code).toBe('not_entitled');
   });
 
+  /**
+   * Wait, if and only if the current minute is nearly over.
+   *
+   * A whole second of headroom is far more than two in-process injections
+   * need, and on the ~98% of runs that start with room to spare this costs
+   * nothing at all.
+   */
+  async function settleIntoAFreshMinute(): Promise<void> {
+    const msLeft = RATE_WINDOW_MS - (Date.now() % RATE_WINDOW_MS);
+    if (msLeft > 1_000) return;
+    await new Promise((resolve) => setTimeout(resolve, msLeft + 50));
+  }
+
   it('puts the wait in the body and the header when a key hits its ceiling', async () => {
     const { token, businessId } = await entitledKey('+2348191000011', 'Ceiling Co');
     const auth = { authorization: `Bearer ${token}` };
@@ -191,6 +205,14 @@ describe('the error envelope', () => {
         sql`UPDATE api_keys SET rate_limit_per_minute = 1 WHERE business_id = ${businessId}`,
       ),
     );
+
+    /* Both calls have to land in the SAME minute, and that is not automatic.
+     * `rateWindowStart` floors the clock to a fixed 60s bucket, so two
+     * requests straddling :59.9 into :00.0 count against different windows
+     * and the second one is allowed - which reads as the ceiling being
+     * broken when it is the test that stepped over an edge. Nobody chose
+     * that instant, so wait for it to pass rather than race it. */
+    await settleIntoAFreshMinute();
 
     expect((await get('/api/v1/identity', auth)).statusCode).toBe(200);
     const refused = await get('/api/v1/identity', auth);

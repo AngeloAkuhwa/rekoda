@@ -24,6 +24,7 @@ import {
   truncateAll,
   type Urls,
 } from '@rekoda/db/testing';
+import { RATE_WINDOW_MS } from '@rekoda/core/api-keys';
 
 const SECRET = 'api-keys-secret-at-least-32-characters'; // gitleaks:allow - test fixture, not a credential
 
@@ -290,6 +291,14 @@ describe('authenticating', () => {
 });
 
 describe('the rate limit', () => {
+  /** Same guard as the public-API suite: only waits when the minute is
+   * nearly over, which on almost every run is not at all. */
+  async function settleIntoAFreshMinute(): Promise<void> {
+    const msLeft = RATE_WINDOW_MS - (Date.now() % RATE_WINDOW_MS);
+    if (msLeft > 1_000) return;
+    await new Promise((resolve) => setTimeout(resolve, msLeft + 50));
+  }
+
   it('refuses at the ceiling, counts per key, and says when to come back', async () => {
     const { businessId, auth } = await onboard('+2348190000020', 'Busy Co');
     await grantApi(businessId);
@@ -301,6 +310,13 @@ describe('the rate limit', () => {
     await withBusiness(db, businessId, (tx) =>
       tx.execute(sql`UPDATE api_keys SET rate_limit_per_minute = 3 WHERE id = ${busy.keyId}`),
     );
+
+    /* All four calls have to fall in ONE minute. `rateWindowStart` floors the
+     * clock to a fixed 60s bucket, so a run that begins near :59 spreads them
+     * over two windows, the counter restarts, and the fourth is allowed -
+     * which reads as the ceiling being broken when it is the test that
+     * stepped over an edge nobody chose. */
+    await settleIntoAFreshMinute();
 
     for (let i = 0; i < 3; i += 1) {
       expect((await get('/api/v1/identity', asKey(busy.token))).statusCode).toBe(200);
