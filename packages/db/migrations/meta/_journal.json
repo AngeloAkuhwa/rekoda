@@ -953,6 +953,13 @@
       "when": 1788277621475,
       "tag": "0135_tenant_fk_group_d",
       "breakpoints": true
+    },
+    {
+      "idx": 136,
+      "version": "7",
+      "when": 1788279106438,
+      "tag": "0136_customer_merge_indexes",
+      "breakpoints": true
     }
   ]
 }

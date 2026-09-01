@@ -1,0 +1,45 @@
+-- Four indexes on (business_id, customer_id), chosen by measurement
+-- (remediation R1, ruling 4).
+--
+-- The ruling was explicit: do NOT create fifty-four indexes blindly, and use
+-- EXPLAIN evidence on EraseData, retention, high-cardinality children, and hot
+-- joins or parent deletions. Following that, the answer is four, and three of
+-- the four named paths turn out to need nothing at all:
+--
+--   EraseData  resolves to one statement, DELETE FROM customer_identities
+--              WHERE business_id = $1, and that table already has an index
+--              leading with business_id.
+--   Retention  already has exactly the partial indexes its predicates want:
+--              payment_evidence_due_ix on (resolution_deadline) WHERE
+--              resolution_state = 'UNRESOLVED', and
+--              evidence_legal_holds_active_ix on (payment_evidence_id)
+--              WHERE released_at IS NULL, which is the NOT EXISTS the sweep
+--              runs on every pass.
+--   Businesses are never deleted. There is no DELETE FROM businesses
+--              anywhere in the codebase, so the several foreign keys pointing
+--              at it with no index cost nothing today.
+--
+-- What is left is the ONE parent delete the product actually performs:
+-- `mergeCustomers` (repos/customers.ts). It runs a history check across four
+-- tables, then deletes a customers row, which fires a referential-integrity
+-- check on every child that references customers.
+--
+-- Measured on 20,000 customers with 20,000 rows in each child:
+--
+--   history check   4.781 ms -> 0.184 ms   three Seq Scans became Index Only
+--   the DELETE      7.812 ms -> 2.563 ms   orders 1.821 -> 0.320
+--                                          payments 1.806 -> 0.161
+--                                          receipts 1.987 -> 0.186
+--
+-- The constraints NOT covered by these indexes stayed flat across the same
+-- runs (customer_credits 0.426 -> 0.460, conversations 0.339 -> 0.341), which
+-- is what makes the improvement attributable rather than noise.
+--
+-- `invoices` is absent from this list on purpose: it ALREADY carries
+-- invoices_business_customer_ix, and it was fast on both paths in every run.
+-- These four mirror it, which is also why the shape needs no justification of
+-- its own — it is the one this schema already chose.
+CREATE INDEX orders_business_customer_ix ON orders (business_id, customer_id);
+CREATE INDEX payments_business_customer_ix ON payments (business_id, customer_id);
+CREATE INDEX payment_intents_business_customer_ix ON payment_intents (business_id, customer_id);
+CREATE INDEX receipts_business_customer_ix ON receipts (business_id, customer_id);
