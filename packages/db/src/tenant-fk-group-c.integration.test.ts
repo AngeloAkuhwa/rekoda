@@ -119,10 +119,14 @@ describe('group C: the keys are declared as the ruling asked', () => {
     `);
 
     /* The whole finding in one table. `product_id` was composite from the
-     * start; `invoice_id` was not, for no reason anyone could name. */
+     * start; `invoice_id` was not, for no reason anyone could name. The
+     * ledger edge joined them in 0137, which had no foreign key at all — and
+     * this assertion is what noticed, because it lists the table's edges
+     * rather than counting them. */
     expect([...rows].map((r) => r.def)).toEqual([
       'FOREIGN KEY (business_id, invoice_id) REFERENCES invoices(business_id, id)',
       'FOREIGN KEY (business_id, product_id) REFERENCES products(business_id, id)',
+      'FOREIGN KEY (business_id, ledger_transaction_id) REFERENCES ledger_transactions(business_id, id)',
     ]);
   });
 });

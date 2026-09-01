@@ -112,6 +112,8 @@ export const goodsReturns = pgTable(
     originalIssueCostK: bigint('original_issue_cost_k', { mode: 'number' }),
     /** TOTAL supported value on a damaged/quarantined return. */
     salvageValueK: bigint('salvage_value_k', { mode: 'number' }),
+    /** The composite FK to `ledger_transactions (business_id, id)` lives in
+     * migration 0137; another tenant's posting is unrepresentable. */
     ledgerTransactionId: uuid('ledger_transaction_id'),
     sourceType: text('source_type').notNull(),
     sourceId: text('source_id'),

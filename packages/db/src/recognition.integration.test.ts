@@ -58,6 +58,19 @@ async function seedBusiness(policy?: 'ON_FULFILMENT' | 'NONE'): Promise<string> 
   return business.id;
 }
 
+/** The order's real first line, for the tests that name one (see 0137). */
+async function seedOrderLine(businessId: string, orderId: string): Promise<string> {
+  const rows = await withBusiness(db, businessId, (tx) =>
+    tx.execute<{ id: string }>(sql`
+      SELECT id FROM order_items
+       WHERE business_id = ${businessId}::uuid AND order_id = ${orderId}::uuid
+       LIMIT 1`),
+  );
+  const id = [...rows][0]?.id;
+  if (!id) throw new Error('fixture: order has no lines');
+  return id;
+}
+
 async function seedOrder(businessId: string): Promise<string> {
   const order = await withBusiness(db, businessId, (tx) =>
     ordersRepo.placeOrder(tx, {
@@ -307,7 +320,7 @@ describe('proportional recognition on partial fulfilment (§12.5; PR-047)', () =
   it('each delivery recognises only its proportion; completion carries the residual', async () => {
     const businessId = await seedBusiness('NONE');
     const orderId = await seedOrder(businessId);
-    const lineId = '33333333-3333-4333-8333-333333333333';
+    const lineId = await seedOrderLine(businessId, orderId);
     /* 100,000 over 3 units: nothing rounds up, nothing is lost. */
     const line = (deliveredToDate: number) => [
       { lineTotalMinor: 100_000, quantity: 3, deliveredToDate },
