@@ -9,6 +9,13 @@ migrations, `0000_init` through `0129`), not out of the migration files. A
 migration says what was intended; `pg_constraint` says what is there. Every count
 below is a query result, and the queries are given so they can be re-run.
 
+**Baseline.** Re-verified against `main` at `2e4fa590e5c6dec47732c908e6fff21160b84b1b`,
+migration head `0129_product_image_deletion_reasons`, no `0130+` present. Every count
+below was re-run at that commit and came back identical to the first pass: 34 gaps,
+115 tables, 200 foreign keys of which 43 composite, 54 unindexed, 89 tables both
+`ENABLE`d and `FORCE`d, 0 non-integer money columns, 0 naive timestamps, 2 non-`NO ACTION`
+deletes. Nothing in this report was revised, because nothing in the evidence moved.
+
 **Scope.** 115 tables. Structure only: constraints, keys, types, row-level
 security, delete behaviour, index coverage. What the application *does* with the
 schema is the adversarial security audit's question, not this one, and the
