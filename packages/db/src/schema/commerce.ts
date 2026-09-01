@@ -148,7 +148,22 @@ export const orders = pgTable(
      * somebody says yes (migration 0029).
      */
     invoiceId: uuid('invoice_id'),
-    status: text('status').notNull().default('placed'), // placed | confirmed | paid | cancelled
+    /**
+     * Three ways in and four ways on, closed by a CHECK in migration 0131:
+     *
+     *   placed     a customer order
+     *   quoted     a quote the merchant has offered
+     *   open       a purchase order to a supplier
+     *   confirmed  the merchant said yes, and an invoice exists
+     *   validated  a supplier delivery checked against its order
+     *   received   goods arrived against a purchase order
+     *   cancelled  from any of the three openings
+     *
+     * `paid` was named here for years and is written by nothing. Payment
+     * lives on the invoice this order became, which is what `invoiceId` is
+     * for; an order has no balance of its own to settle.
+     */
+    status: text('status').notNull().default('placed'),
     totalK: kobo('total_k').notNull(),
     currency: text('currency').notNull().default('NGN'),
     /** WhatsApp order reference (Integrate) for idempotent capture. */

@@ -48,7 +48,16 @@ export const invoices = pgTable(
     customerId: uuid('customer_id').references(() => customers.id),
     orderId: uuid('order_id').references(() => orders.id),
     invoiceNumber: text('invoice_number').notNull(),
-    status: text('status').notNull().default('issued'), // issued | partially_paid | paid | voided
+    /**
+     * issued | partially_paid | paid | voided | credited
+     *
+     * `credited` is written by `issueCreditNote` when the credit reaches the
+     * invoice total. Closed by a CHECK in migration 0131, because the money
+     * readers filter on this: the ageing, the receivables total and the four
+     * statements all ask for `status IN ('issued', 'partially_paid')`, so a
+     * value they do not recognise leaves a debt out of the books in silence.
+     */
+    status: text('status').notNull().default('issued'),
     subtotalK: kobo('subtotal_k').notNull(),
     discountK: kobo('discount_k').notNull().default(0),
     deliveryFeeK: kobo('delivery_fee_k').notNull().default(0),
@@ -630,7 +639,15 @@ export const reconciliations = pgTable(
   {
     id: id(),
     businessId: businessId(),
-    status: text('status').notNull(), // MATCHED | PARTIAL | UNMATCHED | EXCEPTION
+    /**
+     * MATCHED | PARTIAL | EXCEPTION, upper case because they arrive from the
+     * core's `ReconciliationOutcome` union and are stored as it names them.
+     *
+     * `UNMATCHED` appeared here for a long time and was never stored: the
+     * engine's comment uses the word for "zero or several candidates", which
+     * it reports as an EXCEPTION for a human. Closed by a CHECK in 0131.
+     */
+    status: text('status').notNull(),
     reason: text('reason'),
     expectationKind: text('expectation_kind'), // invoice | order | reported_payment
     expectationId: text('expectation_id'),
