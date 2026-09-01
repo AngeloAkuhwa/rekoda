@@ -904,6 +904,13 @@
       "when": 1787775600000,
       "tag": "0128_business_currency_shape",
       "breakpoints": true
+    },
+    {
+      "idx": 129,
+      "version": "7",
+      "when": 1787862000000,
+      "tag": "0129_product_image_deletion_reasons",
+      "breakpoints": true
     }
   ]
 }

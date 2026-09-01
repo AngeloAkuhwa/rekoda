@@ -18,7 +18,17 @@
 import { sql } from 'drizzle-orm';
 import type { Db, TenantDb } from '../client.js';
 
-export type ObjectDeletionReason = 'business_deleted' | 'evidence_purged';
+/**
+ * Why the object is owed to the bin.
+ *
+ * The first two are sweeps. The other two are one upload going one of two
+ * ways (0129): `image_replaced` is the photo a successful re-upload displaced,
+ * and `upload_orphaned` is bytes written for an upload that then failed, so
+ * they never had a row at all. Kept apart because a queue full of the second
+ * is a symptom and a queue full of the first is a busy shop.
+ */
+export type ObjectDeletionReason =
+  'business_deleted' | 'evidence_purged' | 'image_replaced' | 'upload_orphaned';
 
 export interface PendingObjectDeletion {
   id: string;

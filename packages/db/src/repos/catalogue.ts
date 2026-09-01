@@ -272,11 +272,42 @@ export async function editProduct(
 }
 
 /**
+ * Does this shop have that product?
+ *
+ * Read before the bucket is written, so an upload aimed at an id that is not
+ * this merchant's costs nothing: without it the bytes went to R2 first and the
+ * refusal came second, which left an object nothing would ever name and let
+ * anyone with a session fill the bucket by POSTing to random uuids.
+ *
+ * It does not make the write safe on its own - the product can still go away
+ * between this and the update - so the caller keeps a compensating delete for
+ * that race. This turns the common case from "always orphan" into "orphan only
+ * if the row vanishes in the next few milliseconds".
+ */
+export async function productExists(
+  tx: TenantDb,
+  businessId: string,
+  id: string,
+): Promise<boolean> {
+  const rows = await tx
+    .select({ id: products.id })
+    .from(products)
+    .where(and(eq(products.businessId, businessId), eq(products.id, id)))
+    .limit(1);
+  return rows.length === 1;
+}
+
+/**
  * Attach a photo, and say what it replaced.
  *
  * The old key comes back so the caller can delete the object it points at.
  * Doing that here would mean a storage call inside a database transaction,
  * which is how a slow bucket becomes a held row lock.
+ *
+ * The caller MUST do something with `replacedKey`. It went unused from the day
+ * this shipped, so every re-upload left the displaced object in the bucket
+ * with no row naming it; the fix is a queued deletion enqueued in the caller's
+ * transaction, not a storage call moved in here.
  */
 export async function setProductImage(
   tx: TenantDb,

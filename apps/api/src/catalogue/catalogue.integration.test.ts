@@ -10,16 +10,22 @@
  *   - a photo is served back with the type read from ITS OWN bytes;
  *   - one merchant cannot read or edit another's product, by id or otherwise;
  *   - hiding a product does not hide what is on the shelf, and does not make
- *     the next mention of it create a second row.
+ *     the next mention of it create a second row;
+ *   - the bucket does not accumulate objects nothing points at, whether the
+ *     upload succeeded and displaced an older photo or failed after writing.
+ *
+ * That last one is asserted against the REAL filesystem storage this suite
+ * runs on, by counting the objects actually on disk. A mocked `put` would
+ * have let every one of those leaks through.
  */
 import { randomBytes } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { catalogueResponse, createProductResponse } from '@rekoda/contracts';
 import { MAX_IMAGE_BYTES } from '@rekoda/core';
-import { catalogueRepo, createDb, stockRepo, withBusiness, type Db } from '@rekoda/db';
+import { catalogueRepo, createDb, sql, stockRepo, withBusiness, type Db } from '@rekoda/db';
 import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 
@@ -91,6 +97,49 @@ async function onboard(phone: string) {
     businessId: session.businessId,
     auth: { authorization: `Bearer ${session.sessionToken}` },
   };
+}
+
+/**
+ * Objects actually in the bucket, as storage keys.
+ *
+ * `truncateAll` empties the database between tests and the bucket is a real
+ * directory that it cannot reach, so earlier tests' photos are still on disk.
+ * Every assertion here is therefore scoped to ONE business's prefix, or
+ * compares a before and after snapshot; a bare count across the whole root
+ * would pass or fail depending on which tests ran first.
+ */
+async function objectsInBucket(businessId?: string): Promise<string[]> {
+  const found: string[] = [];
+  async function walk(dir: string): Promise<void> {
+    for (const entry of await readdir(dir, { withFileTypes: true })) {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) await walk(path);
+      else found.push(path.slice(storageRoot.length + 1));
+    }
+  }
+  await walk(storageRoot);
+  const keys = found.sort();
+  return businessId ? keys.filter((key) => key.startsWith(`catalogue/${businessId}/`)) : keys;
+}
+
+/**
+ * What this shop has promised to delete and not yet deleted.
+ *
+ * Read INSIDE the tenant pin, which is not incidental. `pending_object_deletions`
+ * is under FORCE row-level security (0124), and FORCE applies to the table
+ * owner too, so an unpinned read as the owner matches nothing and every
+ * assertion below would see an empty queue and pass for the wrong reason.
+ * Pinning it also proves the row landed under the right tenant.
+ */
+async function queuedDeletions(
+  businessId: string,
+): Promise<Array<{ key: string; reason: string }>> {
+  return withBusiness(db, businessId, async (tx) => {
+    const rows = await tx.execute<{ storage_key: string; reason: string }>(
+      sql`SELECT storage_key, reason FROM pending_object_deletions ORDER BY enqueued_at`,
+    );
+    return [...rows].map((row) => ({ key: row.storage_key, reason: row.reason }));
+  });
 }
 
 const catalogueOf = async (auth: Record<string, string>) =>
@@ -410,12 +459,83 @@ describe('the photo', () => {
     expect((await catalogueOf(auth)).products[0]!.imagePath).toBeNull();
   });
 
-  it('refuses a product that belongs to somebody else', async () => {
+  it('refuses a product that belongs to somebody else, without writing a byte', async () => {
     const { businessId } = await onboard('+2348177300015');
     const { auth: other } = await onboard('+2348177300016');
     const product = await seedProduct(businessId);
+    const before = await objectsInBucket();
 
     expect((await upload(product.id, other, JPEG)).json()).toEqual({ outcome: 'not_found' });
+
+    /* The refusal used to arrive AFTER the bytes were already in the bucket,
+     * so anyone holding a session could fill it by posting to ids that were
+     * not theirs and reading the 'not_found' back. Nothing collected what
+     * that left.
+     *
+     * What is asserted is the PROPERTY, not which of the two mechanisms
+     * delivered it: the question is asked before the write, and anything
+     * written anyway is discarded after. Either alone would satisfy this
+     * assertion, which is the point - the bucket must not grow, however
+     * that ends up being true. */
+    expect(await objectsInBucket()).toEqual(before);
+    expect(await queuedDeletions(businessId)).toEqual([]);
+  });
+
+  it('writes nothing for a product that does not exist at all', async () => {
+    const { auth } = await onboard('+2348177300019');
+    const before = await objectsInBucket();
+
+    const nowhere = '2b0f9b6a-0000-4000-8000-000000000000';
+    expect((await upload(nowhere, auth, JPEG)).json()).toEqual({ outcome: 'not_found' });
+
+    // Same leak, reached without needing another merchant's id to guess at.
+    expect(await objectsInBucket()).toEqual(before);
+  });
+
+  /**
+   * The other half of the leak, and the quieter one.
+   *
+   * `setProductImage` has always handed back the key it replaced so the
+   * caller could bin the object. The caller dropped it, so every re-upload
+   * since launch left the old photo in the bucket with no row naming it and
+   * nothing in the estate that still knew the key.
+   */
+  it('promises the displaced photo to the bin when one is replaced', async () => {
+    const { businessId, auth } = await onboard('+2348177300020');
+    const product = await seedProduct(businessId);
+
+    await upload(product.id, auth, JPEG, 'first.jpg');
+    const afterFirst = await objectsInBucket(businessId);
+    expect(afterFirst).toHaveLength(1);
+
+    await upload(product.id, auth, PNG, 'second.png', 'image/png');
+    expect(await objectsInBucket(businessId)).toHaveLength(2);
+
+    /* Both objects are still on disk: the queue is drained by the worker, not
+     * by the request. What matters is that the old one is now PROMISED rather
+     * than forgotten, which is the difference between a backlog somebody can
+     * read and a leak nobody can. */
+    const queued = await queuedDeletions(businessId);
+    expect(queued).toEqual([{ key: afterFirst[0]!, reason: 'image_replaced' }]);
+
+    // And the product now serves the new bytes, not the old.
+    const served = await app.inject({
+      method: 'GET',
+      url: `/v1/catalogue/${product.id}/image`,
+      headers: auth,
+    });
+    expect(Buffer.from(served.rawPayload)).toEqual(PNG);
+  });
+
+  it('promises nothing on a first upload, because nothing was displaced', async () => {
+    const { businessId, auth } = await onboard('+2348177300021');
+    const product = await seedProduct(businessId);
+
+    expect((await upload(product.id, auth, JPEG)).json()).toMatchObject({ outcome: 'stored' });
+
+    // A null `replacedKey` is not a key. Enqueuing one would be a promise to
+    // delete nothing, sitting in an operator's backlog forever.
+    expect(await queuedDeletions(businessId)).toEqual([]);
   });
 
   it('will not serve one merchant’s photo to another', async () => {

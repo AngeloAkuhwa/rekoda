@@ -173,7 +173,8 @@ export const pendingObjectDeletions = pgTable(
     /** Not a reference: the business is usually gone by the time this runs. */
     businessId: uuid('business_id'),
     storageKey: text('storage_key').notNull(),
-    reason: text('reason').notNull(), // business_deleted | evidence_purged
+    reason: text('reason').notNull(), // business_deleted | evidence_purged |
+    //                                    image_replaced | upload_orphaned
     attempts: integer('attempts').notNull().default(0),
     /** The provider's last refusal, for an operator reading a stuck queue. */
     lastError: text('last_error'),
