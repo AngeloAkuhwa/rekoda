@@ -96,9 +96,7 @@ describe('group E: the keys are declared as the ruling asked, adapted to a nulla
   it.each(GROUP_E)('$edge: a CHECK closes what MATCH SIMPLE skips', async ({ column, ck }) => {
     /* Without this, (business_id NULL, <column> set) is not checked by the
      * foreign key at all, because MATCH SIMPLE skips a partially null key. */
-    expect((await def(ck))?.def).toBe(
-      `CHECK (((${column} IS NULL) OR (business_id IS NOT NULL)))`,
-    );
+    expect((await def(ck))?.def).toBe(`CHECK (((${column} IS NULL) OR (business_id IS NOT NULL)))`);
   });
 
   it.each(GROUP_E)('$edge: the weaker single-column key is gone', async ({ column }) => {
@@ -169,7 +167,12 @@ async function seedCast(tag: string): Promise<Record<string, string>> {
 }
 
 /** A cost row, written raw so no repository is in the way. */
-const cost = (businessId: string | null, column: string | null, value: string | null, ref: string) =>
+const cost = (
+  businessId: string | null,
+  column: string | null,
+  value: string | null,
+  ref: string,
+) =>
   sql.raw(`INSERT INTO platform_cost_events
              (provider, provider_product, cost_type, amount_minor, currency,
               external_reference, incurred_at, source, actual_or_estimated
