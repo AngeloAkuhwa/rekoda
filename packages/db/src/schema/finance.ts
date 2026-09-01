@@ -89,7 +89,9 @@ export const invoices = pgTable(
      * back to the invoice that caused it, which is why `sale_source` was
      * written and never read. Nullable: documents issued before the column
      * existed keep their null, and a null means unattributed rather than
-     * something invented.
+     * something invented. The composite FK to `ledger_transactions
+     * (business_id, id)` lives in migration 0137, which is what makes that
+     * last sentence a promise the database keeps.
      */
     ledgerTransactionId: uuid('ledger_transaction_id'),
     issuedAt: createdAt(),
@@ -327,7 +329,9 @@ export const ledgerTransactions = pgTable(
     id: id(),
     businessId: businessId(),
     memo: text('memo').notNull(),
-    /** Reversal chains: a correction points at what it reverses. */
+    /** Reversal chains: a correction points at what it reverses. The
+     * self-referential composite FK lives in migration 0137, so a chain
+     * cannot cross tenants. */
     reversesId: uuid('reverses_id'),
     sourceType: text('source_type').notNull(),
     sourceId: text('source_id'),
@@ -597,6 +601,8 @@ export const bills = pgTable(
     billedOn: date('billed_on').notNull(),
     /** Nullable, honestly: Rekoda never invents terms nobody set. */
     dueDate: date('due_date'),
+    /** The composite FK to `ledger_transactions (business_id, id)` lives in
+     * migration 0137; another tenant's posting is unrepresentable. */
     ledgerTransactionId: uuid('ledger_transaction_id'),
     sourceType: text('source_type').notNull(),
     sourceId: text('source_id'),
@@ -856,6 +862,8 @@ export const revenueRecognitionEvents = pgTable('revenue_recognition_events', {
     .notNull()
     .references(() => businesses.id),
   orderId: uuid('order_id').notNull(),
+  /** The composite FK to `order_items (business_id, id)` lives in migration
+   * 0137, which had to give that table its tenant unique key first. */
   orderLineId: uuid('order_line_id'),
   sourceType: text('source_type').notNull(),
   sourceId: text('source_id').notNull(),

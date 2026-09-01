@@ -55,11 +55,20 @@ async function fixture(businessId: string) {
       customerId: null,
       lines: [
         { productId: null, name: 'wig', quantity: 1, unitPriceK: 100_000, lineTotalK: 100_000 },
+        { productId: null, name: 'bonnet', quantity: 1, unitPriceK: 100_000, lineTotalK: 100_000 },
       ],
-      totalK: 100_000,
+      totalK: 200_000,
       sourceType: 'chat',
       sourceId: `ord-${seq}`,
     });
+    /* The REAL line ids. These used to be invented uuids, which was invisible
+     * until migration 0137 made `order_line_id` a foreign key: a recognition
+     * event naming a line that does not exist is exactly what it now
+     * forbids. */
+    const lines = await tx.execute<{ id: string }>(sql`
+      SELECT id FROM order_items
+       WHERE business_id = ${businessId}::uuid AND order_id = ${order.id}::uuid
+       ORDER BY name`);
     const journal = await journalRepo.recordJournal(tx, {
       businessId,
       memo: 'recognition carrier',
@@ -68,7 +77,9 @@ async function fixture(businessId: string) {
       outOfAccount: 'CASH',
       actor: 'system',
     });
-    return { orderId: order.id, ledgerTransactionId: journal.ledgerTransactionId };
+    const [lineA, lineB] = [...lines].map((r) => r.id);
+    if (!lineA || !lineB) throw new Error('fixture: order lines missing');
+    return { orderId: order.id, ledgerTransactionId: journal.ledgerTransactionId, lineA, lineB };
   });
 }
 
@@ -110,9 +121,7 @@ describe('idempotency (§12.5)', () => {
 
   it('different order lines under one fulfilment are distinct recognitions', async () => {
     const businessId = await seedBusiness();
-    const { orderId, ledgerTransactionId } = await fixture(businessId);
-    const lineA = '11111111-1111-4111-8111-111111111111';
-    const lineB = '22222222-2222-4222-8222-222222222222';
+    const { orderId, ledgerTransactionId, lineA, lineB } = await fixture(businessId);
     for (const orderLineId of [lineA, lineB]) {
       const out = await withBusiness(db, businessId, (tx) =>
         recognitionEventsRepo.recordRevenueRecognition(tx, {

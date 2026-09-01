@@ -82,7 +82,9 @@ export const taxEvents = pgTable(
     sourceId: text('source_id').notNull(),
     /** The TAX POINT (§13) — not automatically the recognition moment. */
     occurredAt: timestamp('occurred_at', { withTimezone: true }).notNull(),
-    /** The posting that carried the tax to the books, when one did. */
+    /** The posting that carried the tax to the books, when one did. The
+     * composite FK to `ledger_transactions (business_id, id)` lives in
+     * migration 0137; another tenant's posting is unrepresentable. */
     journalId: uuid('journal_id'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
