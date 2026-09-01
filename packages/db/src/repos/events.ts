@@ -1,11 +1,25 @@
 /**
  * Ingress event storage (MASTER-PLAN §5.3.1).
  *
- * `external_events` is deliberately outside row-level security: an event
- * arrives before anyone knows which tenant it belongs to, and a policy keyed
- * on `app.business_id` would reject the very insert that determines it. The
- * table holds no financial data, and `business_id` is filled in when — and
- * only when — resolution succeeds.
+ * `external_events` carries a NULLABLE tenant, because an event arrives
+ * before anyone knows whose it is: `business_id` is filled in when — and only
+ * when — resolution succeeds. A policy keyed on `app.business_id` alone would
+ * therefore reject the very insert that determines it.
+ *
+ * For a long time that was taken to mean the table could have no policy at
+ * all. Migration 0130 says otherwise, in three:
+ *
+ *   tenant_isolation                  the canonical predicate, for the pinned
+ *                                     paths — the Meta ingress inside
+ *                                     `withBusiness`, and every job handler
+ *   worker_reads_the_estate           attribution is a cross-tenant read by
+ *                                     definition, and only the worker does it
+ *   app_records_unattributed_ingress  the backlog, which belongs to nobody
+ *                                     yet, so reading it is not reading
+ *                                     another tenant's event
+ *
+ * Which credential a function is given therefore decides what it can see.
+ * `unprocessedEvents` and `unattributedEvents` are worker questions.
  */
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import type { Db, TenantDb } from '../client.js';
@@ -87,10 +101,10 @@ export async function recordEvent(q: Queryable, event: IncomingEvent): Promise<R
  * Mark an event handled. Errors are recorded, not thrown away.
  *
  * `businessId` is optional but callers holding a tenant pin should pass it.
- * This table is outside row-level security by necessity — see the note at the
- * top of the file — so it is the only place in the codebase where a stray id
- * from a job payload could reach another tenant's row. The extra predicate
- * costs nothing and puts the check back.
+ * It used to be the only thing standing between a stray id in a job payload
+ * and another tenant's row; since 0130 the database refuses that as well.
+ * Belt and braces on the one table where a mistake would be quietest, and the
+ * predicate costs nothing.
  */
 export async function markProcessed(
   q: Queryable,
@@ -107,10 +121,11 @@ export async function markProcessed(
 /**
  * One event, scoped to the tenant it was attributed to.
  *
- * The `businessId` predicate is not decoration. This table is outside
- * row-level security by necessity, so a job payload carrying a stray id is the
- * one way a worker could read another tenant's event — and a worker is exactly
- * where nobody would notice.
+ * The `businessId` predicate is not decoration, and it is no longer alone:
+ * since 0130 a pinned caller cannot see another tenant's row whatever id it
+ * passes. Kept because a job payload carrying a stray id is the quietest way
+ * this could go wrong, and because the check should survive a future caller
+ * that reaches this on the worker credential, which sees the estate.
  */
 export async function eventForBusiness(
   q: Queryable,

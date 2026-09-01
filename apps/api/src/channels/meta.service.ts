@@ -94,11 +94,10 @@ export class MetaIngressService {
       /**
        * Sealed, not stored raw.
        *
-       * `external_events` is the one table with row-level security
-       * deliberately off — an event arrives before its tenant is known. A Meta
-       * webhook body carries the merchant's message text and the sender's
-       * number, so storing it verbatim would put both in plaintext in the
-       * least protected table we have. One AES-256-GCM encrypt costs
+       * A Meta webhook body carries the merchant's message text and the
+       * sender's number. Content like that belongs in the vault whatever
+       * else guards the row, and `external_events` is a table an operator
+       * reads across tenants by design. One AES-256-GCM encrypt costs
        * microseconds on a path that owes Meta an answer in seconds.
        */
       payload: sealPayload(payload, this.config.vaultKey, 'meta', event.externalId),

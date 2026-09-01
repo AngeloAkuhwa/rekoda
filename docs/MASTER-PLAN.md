@@ -1221,10 +1221,16 @@ raw text
 
 **Also closed while wiring this:** `external_events` stored provider payloads
 verbatim — the merchant's message text and the sender's WhatsApp number, in
-plaintext, in the one table with row-level security deliberately switched off.
-The table's own comment had always claimed PII was redacted at write time. It is
-now sealed (AES-256-GCM under `VAULT_KEY`) on the ack path and opened by the
-worker.
+plaintext, in a table the worker reads across every tenant. The table's own
+comment had always claimed PII was redacted at write time. It is now sealed
+(AES-256-GCM under `VAULT_KEY`) on the ack path and opened by the worker.
+
+That table also had no row-level security at all, on the reasoning that its
+tenant column is nullable because an event arrives before anyone knows whose it
+is. **Migration 0130 closed that**: the canonical tenant policy for the pinned
+paths, an estate-wide policy for the worker that performs attribution, and a
+narrow application policy over the unattributed backlog, which belongs to no
+tenant yet. See `docs/rls-exemption-register.md` section 6.
 
 **Still open in this section:** known-customer _fuzzy_ matching (only exact
 phone/email match keys today) and the residual-novel-name minimisation pass. A

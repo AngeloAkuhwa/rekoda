@@ -4,26 +4,27 @@ Every table that carries `business_id` and does **not** have a tenant policy, wi
 the reason it does not, the control that stands in its place, and the credential
 that reaches it.
 
-This exists so a future audit stops rediscovering the same six tables and
-re-deriving the same answers. A table on this list is exempt **on the record**.
-A table with `business_id`, no policy, and no entry here is a defect, not an
-exemption — that is the whole point of keeping the list.
+This exists so a future audit stops rediscovering the same tables and re-deriving
+the same answers. A table on this list is exempt **on the record**. A table with
+`business_id`, no policy, and no entry here is a defect, not an exemption — that
+is the whole point of keeping the list.
 
-**Baseline.** `main` at `2e4fa590`, migration head `0129`. 115 tables, 89 with
-row-level security both `ENABLE`d and `FORCE`d. The six below are the remainder
-that carry a tenant column.
+**Baseline.** Migration head `0130`. **Five** live exemptions: section 6,
+`external_events`, was the sixth and is now closed. It is kept below rather than
+deleted, because the reason it was open is the useful part.
 
 **This register is enforced.** `packages/db/src/rls-invariants.integration.test.ts`
-carries the same six tables as an `EXEMPT` map and fails if a table with
+carries the live exemptions as an `EXEMPT` map and fails if a table with
 `business_id` has no policy and no entry here — and fails the other way too, if an
-entry here has since gained a policy and no longer needs one. The list cannot
-quietly drift out of agreement with the database in either direction.
+entry here has since gained a policy and no longer needs one. That second
+direction is what removed `external_events` from the map: the test refused to
+pass while the register still called an exempt table something it no longer was.
 
 The same suite pins the other four invariants this register depends on: RLS is
 `ENABLE`d **and** `FORCE`d wherever it is on; every `USING (true)` policy belongs
 to `rekoda_worker` and never to `rekoda_app` or `PUBLIC`; every tenant predicate is
-written identically, with only `businesses`, `memberships` and `shops` excepted by
-name; and no policy's `WITH CHECK` differs from its `USING`.
+written identically, with four **policies** excepted by name (see the test); and
+no policy's `WITH CHECK` differs from its `USING`.
 
 **Query that produces this list** — run it after any migration that adds a table
 with `business_id`:
@@ -126,36 +127,63 @@ under `MATCH SIMPLE` for any row with a null tenant. See the remediation plan.
 Appears in the query above because it carries `business_id`, but no application
 role can read or write it at all. Listed so it is not re-investigated.
 
-## 6. `external_events`
+## 6. `external_events` — CLOSED by migration 0130
 
 | | |
 |---|---|
 | **Reason** | Nullable `business_id`: an unattributed provider event belongs to no tenant |
-| **Credential** | `rekoda_app` **SELECT, INSERT, UPDATE, DELETE** across every tenant |
-| **Standing control** | Payload sealed under `VAULT_KEY`; ops responses carry ids and counts, never payloads |
-| **Status** | **NOT settled. Open pre-launch item** |
+| **Credential** | `rekoda_app` sees its own tenant, plus the unattributed backlog. Nothing else |
+| **Standing control** | Three policies (below), FORCE ROW LEVEL SECURITY, and the invariant test |
+| **Status** | **Settled.** No longer an exemption |
 
-The only entry on this list that is not an accepted exemption.
+This entry stays because the register is read by people asking why a table is
+missing from it, and because the reason it was open is worth keeping.
 
-The nullable tenant is a real architectural reason not to apply a naive policy —
-and it is the same reason `pending_object_deletions` had before migration 0124,
-which solved it without giving anything up:
+The nullable tenant was a real architectural constraint, not an excuse: an event
+arrives before anyone knows whose it is, so a policy keyed on `app.business_id`
+alone would reject the very insert that decides it. What did not follow is the
+conclusion drawn from it, that the whole table had to stay open to the
+application role.
+
+Three policies, and the third is the one that does the work:
 
 ```sql
-CREATE POLICY tenant_isolation ON pending_object_deletions
+CREATE POLICY tenant_isolation ON external_events
   USING (business_id = nullif(current_setting('app.business_id', true), '')::uuid);
-CREATE POLICY worker_sweeps_orphans ON pending_object_deletions
+CREATE POLICY worker_reads_the_estate ON external_events
   TO rekoda_worker USING (true);
+CREATE POLICY app_records_unattributed_ingress ON external_events
+  TO rekoda_app USING (business_id IS NULL);
 ```
 
-A tenant policy plus a permissive worker policy gives the worker its estate-wide
-sweep while ordinary application activity sees only its own tenant.
+An event with no `business_id` belongs to nobody yet, so letting the ingress
+store and dedupe one is not letting it read another tenant's event. The moment
+the attribution pump sets `business_id`, the row leaves that view for good.
 
-The open question, which the adversarial audit must answer before anything is
-written: **which credential do the operator exception-queue reads actually run
-on?** If they run on `rekoda_app`, a tenant policy breaks them — and the answer is
-to give the operator an intentional privileged path, not to keep an estate-wide
-grant for every ordinary request because one operator endpoint needs it.
+### The question this register asked, answered
+
+> **which credential do the operator exception-queue reads actually run on?**
+
+`rekoda_worker`, and they always did: `exceptionQueue` and `resolveEvent` were
+already on the worker credential. Two calls were not — the estate-wide event
+counts on `/v1/ops/health` — and they moved before the policy landed rather than
+being used as a reason to keep an estate-wide grant for every ordinary request.
+That is the answer the register asked for and the one the owner ruling required.
+
+### Two changes had to ship first
+
+A policy is a **contraction** in the runbook's expand -> deploy -> contract
+sense: it removes visibility the running release depends on. Both prerequisites
+deployed ahead of it, or the window between `migrate` and the container swap
+would have been broken:
+
+1. the health counts moved to the worker credential, or the endpoint reports
+   zeros — silently, because row-level security filters rather than errors;
+2. `recordEvent` stopped reading the conflicting row back, or every provider
+   retry of an already-attributed event raises. `ON CONFLICT DO NOTHING`
+   against a row the credential cannot see does nothing quietly, so the
+   read-back found nothing and the old code threw — a 500 to a provider that
+   had already been heard, until it disabled the webhook.
 
 ---
 

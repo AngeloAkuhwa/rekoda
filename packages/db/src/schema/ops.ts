@@ -100,11 +100,15 @@ export const conversationMessages = pgTable(
  * External event store (spec §41 traceability).
  *
  * Payloads are SEALED at write time — AES-256-GCM under `VAULT_KEY`, see
- * `apps/api/src/privacy/payload-vault.ts`. This is the one table with
- * row-level security deliberately switched off, because an event arrives
- * before anyone knows which tenant it belongs to, so a provider body stored
- * verbatim would put the merchant's message and the sender's number in
- * plaintext in the least protected table in the schema.
+ * `apps/api/src/privacy/payload-vault.ts`. A provider body stored verbatim
+ * would put the merchant's message and the sender's number in plaintext, and
+ * the vault is where content like that belongs whatever else guards the row.
+ *
+ * The tenant column is NULLABLE, because an event arrives before anyone knows
+ * whose it is. That is why this table's policy set is unlike every other's:
+ * migration 0130 gives it the ordinary tenant policy, an estate-wide worker
+ * policy for attribution, and a narrow application policy over the rows that
+ * belong to nobody yet.
  * Idempotency: (provider, external id) is unique — a webhook retry is a
  * no-op by construction.
  */
@@ -404,9 +408,9 @@ export const commandDrafts = pgTable(
  * Who we have already told "you do not have an account yet".
  *
  * Keyed by the HMAC of the phone under MATCH_KEY, never the number: this
- * table needs to know that a person was answered, not who they are. Outside
- * row-level security, like `external_events`, because someone with no
- * business has no tenant to scope them to.
+ * table needs to know that a person was answered, not who they are. It
+ * carries no `business_id` at all — someone with no business has no tenant to
+ * scope them to — so there is nothing for a tenant policy to key on.
  */
 export const strangerContacts = pgTable('stranger_contacts', {
   matchKey: text('match_key').primaryKey(),

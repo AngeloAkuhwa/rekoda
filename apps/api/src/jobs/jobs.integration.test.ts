@@ -135,6 +135,22 @@ function enqueue(businessId: string, kind: string, payload: Record<string, unkno
   );
 }
 
+/**
+ * Record an attributed event the way the Meta ingress does: inside
+ * `withBusiness`, pinned to the tenant it resolved to.
+ *
+ * Migration 0130 gave `external_events` a tenant policy, so an unpinned
+ * insert carrying a `business_id` is refused — correctly. Production never
+ * writes one: `meta.service.ts` opens `withBusiness` the moment it has
+ * resolved the sender, and only a genuinely unattributed event (a stranger,
+ * a Paystack webhook awaiting the pump) goes in without a pin.
+ */
+function recordPinned(event: Parameters<typeof eventsRepo.recordEvent>[1]) {
+  const { businessId } = event;
+  if (!businessId) throw new Error('recordPinned is for attributed events only');
+  return withBusiness(appDb, businessId, (tx) => eventsRepo.recordEvent(tx, event));
+}
+
 function jobsOf(businessId: string) {
   return withBusiness(appDb, businessId, (tx) => jobsRepo.jobsForBusiness(tx));
 }
@@ -371,7 +387,7 @@ describe('the chat surface enforces roles', () => {
         },
       ],
     };
-    const recorded = await eventsRepo.recordEvent(appDb, {
+    const recorded = await recordPinned({
       provider: 'meta',
       eventType: 'message.text',
       externalId,
@@ -422,7 +438,7 @@ describe('the chat surface enforces roles', () => {
         },
       ],
     };
-    const recorded = await eventsRepo.recordEvent(appDb, {
+    const recorded = await recordPinned({
       provider: 'meta',
       eventType: 'message.text',
       externalId: second.wamid,
@@ -535,7 +551,7 @@ describe('a customer name never reaches the model twice', () => {
         },
       ],
     };
-    const recorded = await eventsRepo.recordEvent(appDb, {
+    const recorded = await recordPinned({
       provider: 'meta',
       eventType: 'message.text',
       externalId,
@@ -666,7 +682,7 @@ describe('inbound messages for one business never overlap across lanes', () => {
       paymentMethod: 'cash',
     });
 
-    const first = await eventsRepo.recordEvent(appDb, {
+    const first = await recordPinned({
       provider: 'meta',
       eventType: 'message.text',
       externalId: 'wamid.order1',
@@ -678,7 +694,7 @@ describe('inbound messages for one business never overlap across lanes', () => {
       ),
       businessId,
     });
-    const second = await eventsRepo.recordEvent(appDb, {
+    const second = await recordPinned({
       provider: 'meta',
       eventType: 'message.text',
       externalId: 'wamid.order2',
@@ -763,7 +779,7 @@ describe('inbound messages for one business never overlap across lanes', () => {
       paymentMethod: 'cash',
     });
 
-    const first = await eventsRepo.recordEvent(appDb, {
+    const first = await recordPinned({
       provider: 'meta',
       eventType: 'message.text',
       externalId: 'wamid.stall1',
@@ -775,7 +791,7 @@ describe('inbound messages for one business never overlap across lanes', () => {
       ),
       businessId,
     });
-    const second = await eventsRepo.recordEvent(appDb, {
+    const second = await recordPinned({
       provider: 'meta',
       eventType: 'message.text',
       externalId: 'wamid.stall2',

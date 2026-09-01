@@ -2160,7 +2160,7 @@ describe('tenant resolution', () => {
     const business = await seedMerchant('+2348031234567', 'Ada Fashion');
     await post(messagePayload('2348031234567', 'wamid.OWNED'));
 
-    const [row] = await events.unprocessedEvents(db, 'meta');
+    const [row] = await events.unprocessedEvents(workerDb, 'meta');
     expect(row?.businessId).toBe(business.id);
   });
 
@@ -2168,7 +2168,7 @@ describe('tenant resolution', () => {
     // Someone messaging Rekoda who has no account is an ordinary event, and
     // the reply layer should be able to offer them a signup.
     await post(messagePayload('2349099999999', 'wamid.STRANGER'));
-    const [row] = await events.unprocessedEvents(db, 'meta');
+    const [row] = await events.unprocessedEvents(workerDb, 'meta');
     expect(row).toBeDefined();
     expect(row?.businessId).toBeNull();
   });
@@ -2190,7 +2190,7 @@ describe('tenant resolution', () => {
 
     // Picking the first membership is a coin toss that could file a sale into
     // the wrong set of books. Unattributed, for a human to resolve.
-    const [row] = await events.unprocessedEvents(db, 'meta');
+    const [row] = await events.unprocessedEvents(workerDb, 'meta');
     expect(row?.businessId).toBeNull();
   });
 });
@@ -2218,7 +2218,7 @@ describe('what happens after the 200', () => {
     expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
 
     // `unprocessedEvents` is the backlog. Empty means the loop closed.
-    expect(await events.unprocessedEvents(db, 'meta')).toHaveLength(0);
+    expect(await events.unprocessedEvents(workerDb, 'meta')).toHaveLength(0);
     const [job] = await withBusiness(db, business.id, (tx) => jobsRepo.jobsForBusiness(tx));
     expect(job).toMatchObject({ state: 'done' });
   });
@@ -2262,15 +2262,15 @@ describe('nothing raw is stored', () => {
       messagePayload('2348031234567', 'wamid.SEALED', 'Ada 08039998888 bought 3 wigs for 150k'),
     );
 
-    const [row] = await events.unprocessedEvents(db, 'meta');
+    const [row] = await events.unprocessedEvents(workerDb, 'meta');
     const stored = JSON.stringify(row?.payload);
 
     /**
-     * `external_events` is the one table with row-level security deliberately
-     * off, because an event arrives before its tenant is known. Storing a Meta
-     * body verbatim therefore put the merchant's message AND the sender's
-     * number in plaintext in the least protected table in the schema — while
-     * the table's own comment claimed PII was redacted at write time.
+     * Storing a Meta body verbatim put the merchant's message AND the
+     * sender's number in plaintext — while the table's own comment claimed
+     * PII was redacted at write time. The seal is what makes that true. It is
+     * not a substitute for the tenant policy 0130 added, nor made redundant
+     * by it: the worker reads this table across every tenant by design.
      */
     expect(stored).not.toContain('bought 3 wigs');
     expect(stored).not.toContain('08039998888');
@@ -2378,7 +2378,7 @@ describe('what the model understood', () => {
     await post(messagePayload('2348031234567', 'wamid.ONCE', 'Ada bought 3 wigs'));
 
     // Captured before the run, because running it marks the event handled.
-    const [event] = await events.unprocessedEvents(db, 'meta');
+    const [event] = await events.unprocessedEvents(workerDb, 'meta');
     const runner = buildRunner(workerDb, db, deps);
     expect(await runner.runOnce()).toBe(true);
     /* TWO calls for one sentence is the escalation working, not a double
@@ -2470,7 +2470,7 @@ describe('answering the merchant', () => {
     const business = await seedMerchant('+2348031234567', 'Ada Fashion');
     await post(messagePayload('2348031234567', 'wamid.TWICE', 'good morning'));
 
-    const [event] = await events.unprocessedEvents(db, 'meta');
+    const [event] = await events.unprocessedEvents(workerDb, 'meta');
     const runner = buildRunner(workerDb, db, deps);
     expect(await runner.runOnce()).toBe(true);
 
