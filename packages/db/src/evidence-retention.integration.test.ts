@@ -92,6 +92,41 @@ describe('expiry: an unresolved claim must not live forever', () => {
     expect([...row][0]?.resolved_at).not.toBeNull();
   });
 
+  it('cannot be talked into sweeping a claim the caller never named', async () => {
+    const businessId = await seedBusiness();
+    const named = await seedEvidence(businessId, { deadline: daysAgo(1) });
+    const unnamed = await seedEvidence(businessId, { deadline: daysAgo(1) });
+
+    /* The exact string that made the old form dangerous. The list used to be
+     * pasted into the statement as `ARRAY['<id>'::uuid, ...]`, so an id
+     * carrying its own closing quote became a SECOND array element:
+     *
+     *   ARRAY['<named>'::uuid, '<unnamed>'::uuid]
+     *
+     * valid SQL, and a claim the caller never passed gets expired with the
+     * one it did. Bound, the whole thing is one value, PostgreSQL fails to
+     * parse it as a uuid, and nothing is swept.
+     *
+     * Not a live vulnerability: these ids come from the worker's own
+     * discovery SELECT, never from a request. It was safe by PROVENANCE,
+     * which is a property of today's callers rather than of the code. */
+    const smuggled = `${named}'::uuid, '${unnamed}`;
+
+    await expect(
+      withBusiness(app, businessId, (tx) =>
+        evidenceRetentionRepo.expireEvidence(tx, businessId, [smuggled]),
+      ),
+    ).rejects.toThrow();
+
+    const states = await withBusiness(app, businessId, (tx) =>
+      tx.execute<{ resolution_state: string }>(
+        sql`SELECT resolution_state FROM payment_evidence
+             WHERE id IN (${named}::uuid, ${unnamed}::uuid)`,
+      ),
+    );
+    expect([...states].map((r) => r.resolution_state)).toEqual(['UNRESOLVED', 'UNRESOLVED']);
+  });
+
   it('never touches a claim before its deadline, or one with no deadline', async () => {
     const businessId = await seedBusiness();
     await seedEvidence(businessId, { deadline: new Date(Date.now() + 24 * HOURS) });
