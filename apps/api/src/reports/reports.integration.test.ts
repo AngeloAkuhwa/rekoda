@@ -53,6 +53,7 @@ import {
   suppliersRepo,
   stockRepo,
   withBusiness,
+  sql,
   type Db,
   reportsRepo,
 } from '@rekoda/db';
@@ -108,6 +109,38 @@ function post(path: string, payload: unknown, headers: Record<string, string> = 
     payload: payload as Record<string, unknown>,
     headers: { 'content-type': 'application/json', ...headers },
   });
+}
+
+/**
+ * Void an invoice the way a merchant actually can: ask, then claim.
+ *
+ * `VoidReceipt` is HIGH_RISK, so the endpoint answers the first call with a
+ * confirmation naming the consequence and does nothing else. There is no
+ * configuration that skips this, which is the point of the tier, so every
+ * suite that voids an invoice as SETUP goes through the ceremony rather than
+ * through a shortcut that no deployment offers.
+ *
+ * Returns the second call's body: the outcome the caller is asserting on.
+ */
+async function voidInvoice(
+  invoiceNumber: string,
+  reason: string,
+  auth: Record<string, string>,
+): Promise<unknown> {
+  const asked = (
+    await post('/v1/reports/invoices/void', { invoiceNumber, reason }, auth)
+  ).json() as {
+    outcome: string;
+    confirmationId?: string;
+  };
+  if (asked.outcome !== 'confirm') return asked;
+  return (
+    await post(
+      '/v1/reports/invoices/void',
+      { invoiceNumber, reason, confirmationId: asked.confirmationId },
+      auth,
+    )
+  ).json();
 }
 
 async function onboard(phone: string) {
@@ -1107,13 +1140,9 @@ describe('crediting an invoice', () => {
       ),
     ).toEqual({ outcome: 'unpaid' });
 
-    expect(
-      voidInvoiceResponse.parse(
-        (
-          await post('/v1/reports/invoices/void', { invoiceNumber: paid, reason: 'mistake' }, auth)
-        ).json(),
-      ),
-    ).toMatchObject({ outcome: 'has_payments' });
+    expect(voidInvoiceResponse.parse(await voidInvoice(paid, 'mistake', auth))).toMatchObject({
+      outcome: 'has_payments',
+    });
   });
 
   it('refuses more than is left, and another tenant`s invoice', async () => {
@@ -1211,12 +1240,9 @@ describe('the audit trail', () => {
       return { invoiceNumber: sale.invoiceNumber };
     });
 
-    const res = await post(
-      '/v1/reports/invoices/void',
-      { invoiceNumber, reason: 'duplicate' },
-      auth,
-    );
-    expect(res.statusCode).toBe(200);
+    expect(await voidInvoice(invoiceNumber, 'duplicate', auth)).toMatchObject({
+      outcome: 'voided',
+    });
 
     const trailRes = await app.inject({ method: 'GET', url: '/v1/reports/audit', headers: auth });
     const trail = reportsAuditResponse.parse(trailRes.json());
@@ -1261,11 +1287,7 @@ describe('the audit trail', () => {
         actor: 'system',
       }),
     );
-    await post(
-      '/v1/reports/invoices/void',
-      { invoiceNumber: 'INV-2026-000001', reason: 'wrong' },
-      auth,
-    );
+    await voidInvoice('INV-2026-000001', 'wrong', auth);
 
     const trail = reportsAuditResponse.parse(
       (await app.inject({ method: 'GET', url: '/v1/reports/audit', headers: auth })).json(),
@@ -2252,12 +2274,18 @@ describe('voiding an invoice', () => {
 
   it('answers not_found as a RESULT, not an error page', async () => {
     const { auth } = await onboard('+2348177200002');
-    const res = await voidIt({ invoiceNumber: 'INV-2026-999999', reason: 'wrong one' }, auth);
 
     /* The register renders this as a sentence. A 404 would make an ordinary
-     * mistyped number look like the product breaking. */
-    expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ outcome: 'not_found' });
+     * mistyped number look like the product breaking.
+     *
+     * It arrives on the CLAIM rather than the ask, because the tier decides
+     * before the work does: `VoidReceipt` is HIGH_RISK, so the endpoint opens
+     * a confirmation before anything reads the invoice. A mistyped number
+     * therefore costs the merchant one extra press and still never produces
+     * an error page. */
+    expect(await voidInvoice('INV-2026-999999', 'wrong one', auth)).toEqual({
+      outcome: 'not_found',
+    });
   });
 
   it('withdraws a real invoice and takes it out of what is owed', async () => {
@@ -2287,8 +2315,20 @@ describe('voiding an invoice', () => {
     );
     expect(before.outstandingK).toBe(15_000_000);
 
-    const res = await voidIt({ invoiceNumber: sale.invoiceNumber, reason: 'wrong customer' }, auth);
-    expect(res.json()).toEqual({
+    /* The ask alone withdraws nothing. A confirmation that voided the invoice
+     * before the merchant answered would make the second press decoration. */
+    const asked = (
+      await voidIt({ invoiceNumber: sale.invoiceNumber, reason: 'wrong customer' }, auth)
+    ).json() as { outcome: string; consequence?: string };
+    expect(asked.outcome).toBe('confirm');
+    expect(asked.consequence).toContain(sale.invoiceNumber);
+    expect(
+      reportsInvoicesResponse.parse(
+        (await app.inject({ method: 'GET', url: '/v1/reports/invoices', headers: auth })).json(),
+      ).outstandingK,
+    ).toBe(15_000_000);
+
+    expect(await voidInvoice(sale.invoiceNumber, 'wrong customer', auth)).toEqual({
       outcome: 'voided',
       invoiceNumber: sale.invoiceNumber,
       reversedK: 15_000_000,
@@ -2592,16 +2632,44 @@ describe('closing a month', () => {
     expect((await reopenIt(auth, {})).statusCode).toBe(400);
   });
 
-  it('opens a month back up, and says what else came open with it', async () => {
-    const { auth } = await onboard('+2348177000054');
+  /**
+   * Two calls, on the DEFAULT configuration.
+   *
+   * This used to be one call, and that was the defect: `ReopenAccountingPeriod`
+   * is HIGH_RISK, and a rollout flag defaulting off sent the request straight
+   * to `reopenPeriodWork` with no confirmation, no consequence shown and no
+   * audit record. The flag is gone. The ceremony is not a deployment choice,
+   * so this suite runs the shape a default deployment actually serves.
+   */
+  it('asks before it opens a month back up, and says what else comes open', async () => {
+    const { auth, businessId } = await onboard('+2348177000054');
     await closeIt(auth, { through: '2026-05' });
 
-    expect(reopenBooksResponse.parse((await reopenIt(auth, { from: '2026-03' })).json())).toEqual({
-      outcome: 'reopened',
-      from: '2026-03',
-      wasClosedThrough: '2026-05',
-    });
+    const asked = reopenBooksResponse.parse((await reopenIt(auth, { from: '2026-03' })).json());
+    expect(asked.outcome).toBe('confirm');
+    if (asked.outcome !== 'confirm') throw new Error('expected a confirmation');
+    expect(asked.consequence).toContain('2026-03');
+
+    /* Nothing moved on the ask. A confirmation that reopened the books
+     * before the merchant answered would make the second step decoration. */
+    expect((await statements(auth)).booksClosedThrough).toBe('2026-05');
+
+    expect(
+      reopenBooksResponse.parse(
+        (await reopenIt(auth, { from: '2026-03', confirmationId: asked.confirmationId })).json(),
+      ),
+    ).toEqual({ outcome: 'reopened', from: '2026-03', wasClosedThrough: '2026-05' });
     expect((await statements(auth)).booksClosedThrough).toBe('2026-02');
+
+    /* And the ceremony left a record naming what was agreed to. */
+    const claimed = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ command: string; claimed_at: Date | null }>(
+        sql`SELECT command, claimed_at FROM pending_confirmations
+            WHERE business_id = ${businessId}::uuid AND command = 'ReopenAccountingPeriod'`,
+      ),
+    );
+    expect([...claimed]).toHaveLength(1);
+    expect([...claimed][0]!.claimed_at).not.toBeNull();
   });
 
   /**

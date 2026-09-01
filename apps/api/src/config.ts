@@ -96,9 +96,13 @@ export interface ApiConfig {
   commandIngestFinancialTransaction: boolean;
   commandConfirmReconciliation: boolean;
   commandAdjustInventory: boolean;
-  commandEraseData: boolean;
-  commandVoidReceipt: boolean;
-  commandReopenPeriod: boolean;
+  /* EraseData, VoidReceipt and ReopenAccountingPeriod had flags here and no
+   * longer do. Each is HIGH_RISK in `COMMAND_RISK`, so a flag choosing the
+   * direct path was configuration deciding whether the confirmation ceremony
+   * ran. There is no legitimate rollback to a path that skips it, so the
+   * seam is gone rather than merely defaulted on. `commandAdjustInventory`
+   * stays because it still governs ordinary ADDITIVE stock work; the
+   * destructive half crosses the bus regardless of it. */
   /**
    * Which provider interprets a merchant's message.
    *
@@ -706,9 +710,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     commandIngestFinancialTransaction: env['REKODA_COMMAND_INGEST_FINANCIAL_TRANSACTION'] === '1',
     commandConfirmReconciliation: env['REKODA_COMMAND_CONFIRM_RECONCILIATION'] === '1',
     commandAdjustInventory: env['REKODA_COMMAND_ADJUST_INVENTORY'] === '1',
-    commandEraseData: env['REKODA_COMMAND_ERASE_DATA'] === '1',
-    commandVoidReceipt: env['REKODA_COMMAND_VOID_RECEIPT'] === '1',
-    commandReopenPeriod: env['REKODA_COMMAND_REOPEN_PERIOD'] === '1',
     /**
      * Optional. The deterministic router answers most messages
      * without a model, so a missing key degrades the product rather than
