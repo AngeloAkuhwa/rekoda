@@ -95,8 +95,8 @@ export const setPlanRequest = z.object({
   businessId: z.string().uuid(),
   plan: z.enum(['trial', 'expired', 'chat', 'integrate', 'complete']),
   expiresAt: z.iso.datetime().nullable(),
-  /** Who is doing this. Recorded in the audit trail verbatim. */
-  actor: z.string().trim().min(2).max(60),
+  /* No `actor`. The operator plane verifies an identity and audits its
+   * subject; a caller cannot name themselves (ADR 0034). */
 });
 export type SetPlanRequest = z.infer<typeof setPlanRequest>;
 

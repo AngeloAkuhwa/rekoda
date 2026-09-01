@@ -579,28 +579,42 @@ describe('the operator plan endpoint', () => {
   const change = (body: unknown, headers: Record<string, string> = OPERATOR) =>
     post('/v1/businesses/plan', body, headers);
 
-  it('moves a business onto a paid plan for the operator who names themselves', async () => {
+  it('moves a business onto a paid plan, and names the operator who did it', async () => {
     const businessId = await businessFor('08031234590');
     const res = await change({
       businessId,
       plan: 'chat',
       expiresAt: new Date(Date.now() + 31 * 86_400_000).toISOString(),
-      actor: 'angelo',
     });
 
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ plan: 'chat' });
+
+    /* The actor is no longer a string the caller typed into the body. It is
+     * the identity the guard verified, so the audit trail names whoever held
+     * the credential rather than whoever they said they were. */
+    const trail = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ actor: string }>(sql`
+        SELECT actor FROM audit_events
+        WHERE business_id = ${businessId}::uuid AND action = 'plan_changed'
+      `),
+    );
+    expect([...trail].map((r) => r.actor)).toEqual(['operator:local:operator-secret']);
   });
 
+  /* 401, not 403: the operator guard now separates the two questions it used
+   * to answer with one status. No credential, or one it cannot verify, is a
+   * failure of AUTHENTICATION. 403 is reserved for a caller the guard did
+   * identify who lacks the scope the route declares. */
   it('refuses without the operator secret, and with a wrong one', async () => {
     const businessId = await businessFor('08031234591');
-    const body = { businessId, plan: 'complete', expiresAt: null, actor: 'angelo' };
+    const body = { businessId, plan: 'complete', expiresAt: null };
 
-    expect((await change(body, {})).statusCode).toBe(403);
+    expect((await change(body, {})).statusCode).toBe(401);
     expect(
       (await change(body, { 'x-rekoda-operator-secret': 'not-the-secret-but-long-enough-here' }))
         .statusCode,
-    ).toBe(403);
+    ).toBe(401);
   });
 
   it('refuses a session token in place of the operator secret', async () => {
@@ -618,17 +632,16 @@ describe('the operator plan endpoint', () => {
     const session = created.json() as { sessionToken: string; businessId: string };
 
     const res = await change(
-      { businessId: session.businessId, plan: 'complete', expiresAt: null, actor: 'self' },
+      { businessId: session.businessId, plan: 'complete', expiresAt: null },
       { 'x-rekoda-operator-secret': session.sessionToken },
     );
-    expect(res.statusCode).toBe(403);
+    expect(res.statusCode).toBe(401);
   });
 
   it('answers 400 for a malformed body and 404 for an unknown business', async () => {
     expect((await change({ plan: 'chat' })).statusCode).toBe(400);
     expect(
-      (await change({ businessId: 'not-a-uuid', plan: 'chat', expiresAt: null, actor: 'a' }))
-        .statusCode,
+      (await change({ businessId: 'not-a-uuid', plan: 'chat', expiresAt: null })).statusCode,
     ).toBe(400);
     expect(
       (
@@ -636,7 +649,6 @@ describe('the operator plan endpoint', () => {
           businessId: '2b0f9b6a-0000-4000-8000-000000000000',
           plan: 'chat',
           expiresAt: null,
-          actor: 'angelo',
         })
       ).statusCode,
     ).toBe(404);

@@ -10,13 +10,27 @@ The one question that ranks every other. Poll, in order:
 
 ```bash
 # 1. Is the estate healthy at all?
-curl -fsS -H "x-rekoda-operator-secret: $REKODA_OPERATOR_SECRET" \
+curl -fsS -H "authorization: Bearer $OPERATOR_TOKEN" \
   https://api.rekoda/v1/ops/health | jq
 
 # 2. Are the books still consistent? (§31 invariants, live)
-curl -fsS -H "x-rekoda-operator-secret: $REKODA_OPERATOR_SECRET" \
+curl -fsS -H "authorization: Bearer $OPERATOR_TOKEN" \
   https://api.rekoda/v1/ops/financial-integrity | jq
 ```
+
+`$OPERATOR_TOKEN` is a token from the identity provider named by
+`OPERATOR_OIDC_ISSUER`, carrying at least the `ops:read` scope. Both reads
+above declare `ops:read`; the endpoints that MOVE something declare more
+(`/v1/ops/refund` and the exception resolver want `ops:payment`). Two statuses
+to read correctly under stress: **401** means the token was missing, expired
+or did not verify — get a fresh one. **403** means it verified and the person
+it names lacks the scope the route asked for — the fix is with whoever
+administers operator scopes, not with the token.
+
+Outside production there is no identity provider: the API accepts
+`-H "x-rekoda-operator-secret: $REKODA_OPERATOR_SECRET"` instead, and every
+action it takes is audited as `operator:local:operator-secret` because a
+shared string names nobody. That header is refused at boot in production.
 
 `/v1/ops/health` reports the job queue, and the Meta and Paystack event
 health. `/v1/ops/financial-integrity` reports the four invariants that are

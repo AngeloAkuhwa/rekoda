@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { AuthController, BusinessController } from './auth/auth.controller.js';
 import { AuthService } from './auth/auth.service.js';
 import { SessionGuard } from './auth/session.guard.js';
+import { OperatorGuard } from './auth/operator.guard.js';
 import { RolesGuard } from './auth/roles.guard.js';
 import { DbModule } from './db/db.module.js';
 import { HealthController } from './health/health.controller.js';
@@ -46,6 +47,6 @@ import { WebhooksModule } from './webhooks/webhooks.module.js';
     OpsController,
     MetaWebhookController,
   ],
-  providers: [AuthService, SessionGuard, RolesGuard, MetaIngressService],
+  providers: [AuthService, SessionGuard, RolesGuard, OperatorGuard, MetaIngressService],
 })
 export class AppModule {}

@@ -240,8 +240,9 @@ export const opsRefundRequest = z.object({
     'unused_add_on',
     'suspension_error',
   ]),
-  /** `operator:<name>`, never a bare 'system'. */
-  actor: z.string().min(3),
+  /* No `actor`. The audit trail names the VERIFIED operator subject, and a
+   * body field here would let whoever held the credential also choose what
+   * the record said they were called (ADR 0034). */
 });
 
 export type OpsRefundRequest = z.infer<typeof opsRefundRequest>;
@@ -286,8 +287,7 @@ export const opsExceptionsResponse = z.object({
  */
 export const opsResolveEventRequest = z.object({
   resolution: z.string().trim().min(4).max(200),
-  /** `operator:<name>`, never a bare 'system'. */
-  actor: z.string().min(3),
+  /* No `actor`, for the reason on `opsRefundRequest` above. */
 });
 
 export type OpsEventView = z.infer<typeof opsEventView>;

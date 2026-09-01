@@ -2,18 +2,18 @@ import {
   BadRequestException,
   Body,
   Controller,
-  ForbiddenException,
   Get,
-  Headers,
   HttpCode,
   Inject,
+  Req,
+  UseGuards,
   NotFoundException,
   Param,
   Post,
   Query,
   ServiceUnavailableException,
 } from '@nestjs/common';
-import { createHash, timingSafeEqual } from 'node:crypto';
+import { OperatorGuard, OperatorScopes, type OperatorRequest } from '../auth/operator.guard.js';
 import { opsExceptionsResponse, opsRefundRequest, opsResolveEventRequest } from '@rekoda/contracts';
 import type { OpsExceptionsResponse } from '@rekoda/contracts';
 import {
@@ -53,17 +53,24 @@ import { DB, WORKER_DB } from '../db/db.module.js';
  * not an admin console — and a console is exactly where a cross-tenant read
  * would quietly become a feature. Nothing here names a business or a person:
  * the margin report is per-business and carries the id, because the id is
- * what an operator acts on, and a name would be a merchant list on a
- * plaintext header's say-so.
+ * what an operator acts on, and a name would be a merchant list on one
+ * credential's say-so.
  *
- * Gated on the deployment secret rather than a session, for the same reason
- * the plan endpoint is: no merchant should be able to see the platform's
- * queue depth, and no session is the right credential for a question that
- * spans every tenant.
+ * Gated on a VERIFIED OPERATOR IDENTITY rather than a session, for the same
+ * reason the plan endpoint is: no merchant should be able to see the
+ * platform's queue depth, and no session is the right credential for a
+ * question that spans every tenant.
+ *
+ * Every route below declares the scope it needs and `OperatorGuard` enforces
+ * it. Reading the estate is `ops:read`; moving money — a refund, resolving a
+ * payment exception — is `ops:payment`, so a token minted for a dashboard
+ * cannot issue a refund. A route that declares nothing is refused rather
+ * than defaulted, and `operator-plane.test.ts` refuses to let one exist.
  */
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 @Controller('v1/ops')
+@UseGuards(OperatorGuard)
 export class OpsController {
   constructor(
     @Inject(CONFIG) private readonly config: ApiConfig,
@@ -79,7 +86,8 @@ export class OpsController {
   ) {}
 
   @Get('health')
-  async health(@Headers('x-rekoda-operator-secret') secret: string | undefined): Promise<{
+  @OperatorScopes('ops:read')
+  async health(): Promise<{
     /** Null when this process holds no worker credential — poll one that does. */
     queue: Awaited<ReturnType<typeof jobsRepo.queueHealth>> | null;
     meta: Awaited<ReturnType<typeof events.eventHealth>>;
@@ -95,8 +103,6 @@ export class OpsController {
      */
     rejectedSignatures: { meta: number; paystack: number };
   }> {
-    this.assertOperator(secret);
-
     const [queue, meta, paystack] = await Promise.all([
       this.workerDb ? jobsRepo.queueHealth(this.workerDb) : Promise.resolve(null),
       events.eventHealth(this.db, 'meta'),
@@ -147,7 +153,8 @@ export class OpsController {
    * booking) and a human should be ready to help with registration.
    */
   @Get('graduation')
-  async graduation(@Headers('x-rekoda-operator-secret') secret: string | undefined): Promise<{
+  @OperatorScopes('ops:read')
+  async graduation(): Promise<{
     nudgeAtK: number;
     capK: number;
     businesses: Array<{
@@ -156,7 +163,6 @@ export class OpsController {
       state: 'collecting' | 'approaching_cap' | 'capped_risk';
     }>;
   }> {
-    this.assertOperator(secret);
     if (!this.workerDb) {
       throw new ServiceUnavailableException(
         'graduation needs the worker credential (WORKER_DATABASE_URL); poll a process that holds one',
@@ -197,9 +203,8 @@ export class OpsController {
    * this endpoint exists to prevent.
    */
   @Get('financial-integrity')
-  async financialIntegrity(
-    @Headers('x-rekoda-operator-secret') secret: string | undefined,
-  ): Promise<{
+  @OperatorScopes('ops:read')
+  async financialIntegrity(): Promise<{
     scanned: number;
     estateComplete: boolean;
     totals: {
@@ -221,7 +226,6 @@ export class OpsController {
       >
     >;
   }> {
-    this.assertOperator(secret);
     if (!this.workerDb) {
       throw new ServiceUnavailableException(
         'financial integrity needs the worker credential (WORKER_DATABASE_URL); poll a process that holds one',
@@ -279,10 +283,8 @@ export class OpsController {
   }
 
   @Get('margin')
-  async marginReport(
-    @Headers('x-rekoda-operator-secret') secret: string | undefined,
-    @Query('period') period?: string,
-  ): Promise<{
+  @OperatorScopes('ops:read')
+  async marginReport(@Query('period') period?: string): Promise<{
     period: string;
     /** Months with any metered usage, newest first. Saves guessing. */
     availablePeriods: string[];
@@ -312,8 +314,6 @@ export class OpsController {
       Margin & { businessId: string; plan: string; events: number; createdAt: string }
     >;
   }> {
-    this.assertOperator(secret);
-
     /**
      * No worker credential means the query would run under `tenant_isolation`
      * with no tenant pinned and come back empty. An empty margin report and a
@@ -384,10 +384,8 @@ export class OpsController {
    * controller.
    */
   @Get('business/:businessId')
-  async businessBilling(
-    @Headers('x-rekoda-operator-secret') secret: string | undefined,
-    @Param('businessId') businessId: string,
-  ): Promise<{
+  @OperatorScopes('ops:read')
+  async businessBilling(@Param('businessId') businessId: string): Promise<{
     plan: string;
     renewsAt: string | null;
     cycleStartedAt: string | null;
@@ -404,7 +402,6 @@ export class OpsController {
     }>;
     upgradeRequests: Array<{ fromPlan: string; at: string }>;
   }> {
-    this.assertOperator(secret);
     if (!UUID.test(businessId)) throw new BadRequestException('businessId must be a UUID');
 
     return withBusiness(this.db, businessId, async (tx) => {
@@ -452,20 +449,23 @@ export class OpsController {
    * decision nobody made.
    */
   @Post('refund')
+  @OperatorScopes('ops:payment')
   @HttpCode(200)
   async refund(
-    @Headers('x-rekoda-operator-secret') secret: string | undefined,
+    @Req() request: OperatorRequest,
     @Body() body: unknown,
   ): Promise<{ refunded: true; status: string; refundedK: number }> {
-    this.assertOperator(secret);
-
     const input = opsRefundRequest.safeParse(body);
     if (!input.success) {
       throw new BadRequestException(
         'businessId, reference, amountK (positive kobo) and reason are required',
       );
     }
-    const { businessId, reference, amountK, reason, actor } = input.data;
+    const { businessId, reference, amountK, reason } = input.data;
+    /* The audit actor is the VERIFIED subject, never a name the caller sent.
+     * A body field here meant whoever held the shared secret also chose who
+     * the record said they were. */
+    const actor = `operator:${request.operator!.subject}`;
 
     return withBusiness(this.db, businessId, async (tx) => {
       const charge = await subscriptionsRepo.refundCharge(tx, reference, amountK, new Date(), {
@@ -500,11 +500,8 @@ export class OpsController {
    * indistinguishable from a quiet night.
    */
   @Get('exceptions')
-  async exceptions(
-    @Headers('x-rekoda-operator-secret') secret: string | undefined,
-    @Query('limit') limitParam?: string,
-  ): Promise<OpsExceptionsResponse> {
-    this.assertOperator(secret);
+  @OperatorScopes('ops:read')
+  async exceptions(@Query('limit') limitParam?: string): Promise<OpsExceptionsResponse> {
     if (!this.workerDb) {
       throw new ServiceUnavailableException('this process holds no worker credential');
     }
@@ -527,13 +524,13 @@ export class OpsController {
    * destroy the only record of what went wrong.
    */
   @Post('exceptions/:id/resolve')
+  @OperatorScopes('ops:payment')
   @HttpCode(200)
   async resolveException(
-    @Headers('x-rekoda-operator-secret') secret: string | undefined,
+    @Req() request: OperatorRequest,
     @Param('id') id: string,
     @Body() body: unknown,
   ): Promise<{ resolved: true }> {
-    this.assertOperator(secret);
     if (!this.workerDb) {
       throw new ServiceUnavailableException('this process holds no worker credential');
     }
@@ -541,39 +538,18 @@ export class OpsController {
 
     const input = opsResolveEventRequest.safeParse(body);
     if (!input.success) {
-      throw new BadRequestException('resolution (at least 4 characters) and actor are required');
+      throw new BadRequestException('a resolution of at least 4 characters is required');
     }
 
     const resolved = await events.resolveEvent(
       this.workerDb,
       id,
       input.data.resolution,
-      input.data.actor,
+      `operator:${request.operator!.subject}`,
     );
     if (!resolved) throw new NotFoundException('no open exception with that id');
     return { resolved: true as const };
   }
-
-  private assertOperator(secret: string | undefined): void {
-    const expected = this.config.operatorSecret;
-    if (!expected || !secret || !matchesSecret(secret, expected)) {
-      throw new ForbiddenException('operator secret required');
-    }
-  }
-}
-
-/**
- * Constant-time secret comparison with no length oracle.
- *
- * Comparing digests rather than the strings means the observable work is
- * identical whatever the caller sent: a raw length pre-check answered
- * faster for wrong-length guesses, which quietly told an attacker how long
- * the secret is. Hashing first costs microseconds and says nothing.
- */
-function matchesSecret(given: string, expected: string): boolean {
-  const a = createHash('sha256').update(given, 'utf8').digest();
-  const b = createHash('sha256').update(expected, 'utf8').digest();
-  return timingSafeEqual(a, b);
 }
 
 /** Row to wire. Nothing here that a payload or a name could reach. */

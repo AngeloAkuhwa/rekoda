@@ -104,19 +104,24 @@ function resolveException(id: string, body: unknown, headers: Record<string, str
   });
 }
 
+/* 401 throughout, not 403. The operator guard separates the two questions
+ * the old blanket status ran together: no credential, or one that does not
+ * verify, is a failure of AUTHENTICATION, and 401 is what says so. 403 now
+ * means something narrower and more useful — the guard DID identify the
+ * caller, and the identity it read lacks the scope this route declares. */
 describe('who can read the operator health surface', () => {
   it('refuses a request with no secret', async () => {
-    expect((await health()).statusCode).toBe(403);
+    expect((await health()).statusCode).toBe(401);
   });
 
   it('refuses a wrong secret of the same length', async () => {
     const wrong = 'x'.repeat(OPERATOR_SECRET.length);
-    expect((await health({ 'x-rekoda-operator-secret': wrong })).statusCode).toBe(403);
+    expect((await health({ 'x-rekoda-operator-secret': wrong })).statusCode).toBe(401);
   });
 
   it('refuses a secret that is merely a prefix', async () => {
     const short = OPERATOR_SECRET.slice(0, 8);
-    expect((await health({ 'x-rekoda-operator-secret': short })).statusCode).toBe(403);
+    expect((await health({ 'x-rekoda-operator-secret': short })).statusCode).toBe(401);
   });
 
   it('answers the right secret', async () => {
@@ -249,12 +254,12 @@ describe('the margin report', () => {
   }
 
   it('is shut to a request with no secret', async () => {
-    expect((await margin()).statusCode).toBe(403);
+    expect((await margin()).statusCode).toBe(401);
   });
 
   it('is shut to a wrong secret of the same length', async () => {
     const wrong = 'x'.repeat(OPERATOR_SECRET.length);
-    expect((await margin('', { 'x-rekoda-operator-secret': wrong })).statusCode).toBe(403);
+    expect((await margin('', { 'x-rekoda-operator-secret': wrong })).statusCode).toBe(401);
   });
 
   it('refuses a period that is not a month', async () => {
@@ -486,15 +491,11 @@ describe('the operator billing surface', () => {
 
   it('refuses both endpoints without the operator secret', async () => {
     const { businessId, reference } = await merchantWithCharge('+2348140001001');
-    expect((await view(businessId, {})).statusCode).toBe(403);
+    expect((await view(businessId, {})).statusCode).toBe(401);
     expect(
-      (
-        await refund(
-          { businessId, reference, amountK: 1, reason: 'duplicate_charge', actor: 'x' },
-          {},
-        )
-      ).statusCode,
-    ).toBe(403);
+      (await refund({ businessId, reference, amountK: 1, reason: 'duplicate_charge' }, {}))
+        .statusCode,
+    ).toBe(401);
   });
 
   it('shows the plan, the charges and the upgrade requests together', async () => {
@@ -526,7 +527,6 @@ describe('the operator billing surface', () => {
       reference,
       amountK: 490_000,
       reason: 'service_failure',
-      actor: 'operator:angelo',
     });
     expect(res.statusCode).toBe(200);
     // Half back is still a charge that happened.
@@ -545,7 +545,6 @@ describe('the operator billing surface', () => {
       reference,
       amountK,
       reason: 'duplicate_charge' as const,
-      actor: 'operator:angelo',
     });
 
     expect((await refund(body(990_000))).json()).toMatchObject({ status: 'refunded' });
@@ -569,7 +568,6 @@ describe('the operator billing surface', () => {
       reference,
       amountK: 990_000,
       reason: 'service_failure',
-      actor: 'operator:angelo',
     });
 
     /* ADR 0024 refunds money in several situations that all leave the
@@ -586,7 +584,6 @@ describe('the operator billing surface', () => {
       reference,
       amountK: 1_000,
       reason: 'because I felt like it',
-      actor: 'operator:angelo',
     });
     // The policy is a table; the audit trail has to reconcile with it.
     expect(res.statusCode).toBe(400);
@@ -615,12 +612,12 @@ describe('the exception queue', () => {
   }
 
   it('is shut to anyone without the operator secret', async () => {
-    expect((await exceptions()).statusCode).toBe(403);
-    expect((await exceptions('', { 'x-rekoda-operator-secret': 'nope' })).statusCode).toBe(403);
+    expect((await exceptions()).statusCode).toBe(401);
+    expect((await exceptions('', { 'x-rekoda-operator-secret': 'nope' })).statusCode).toBe(401);
     expect(
       (await resolveException('00000000-0000-0000-0000-000000000000', { resolution: 'x' }))
         .statusCode,
-    ).toBe(403);
+    ).toBe(401);
   });
 
   it('is two empty lists on a quiet platform', async () => {
@@ -656,11 +653,7 @@ describe('the exception queue', () => {
     const flagged = await record('evt.api.worked');
     await events.markProcessed(db, flagged.id, 'foreign_reference');
 
-    const done = await resolveException(
-      flagged.id,
-      { resolution: 'not our merchant', actor: 'operator:ada' },
-      operator,
-    );
+    const done = await resolveException(flagged.id, { resolution: 'not our merchant' }, operator);
     expect(done.statusCode).toBe(200);
     expect(done.json()).toEqual({ resolved: true });
 
@@ -674,29 +667,18 @@ describe('the exception queue', () => {
     const flagged = await record('evt.api.refusals');
     await events.markProcessed(db, flagged.id, 'unknown_reference');
 
-    expect(
-      (await resolveException(flagged.id, { resolution: 'no', actor: 'operator:ada' }, operator))
-        .statusCode,
-    ).toBe(400);
+    expect((await resolveException(flagged.id, { resolution: 'no' }, operator)).statusCode).toBe(
+      400,
+    );
     expect(
       (await resolveException('not-a-uuid', { resolution: 'fine' }, operator)).statusCode,
     ).toBe(400);
 
-    await resolveException(
-      flagged.id,
-      { resolution: 'handled by hand', actor: 'operator:ada' },
-      operator,
-    );
+    await resolveException(flagged.id, { resolution: 'handled by hand' }, operator);
     /* A second operator arriving late is TOLD, rather than quietly
      * overwriting the decision the first one recorded. */
     expect(
-      (
-        await resolveException(
-          flagged.id,
-          { resolution: 'handled again', actor: 'operator:bola' },
-          operator,
-        )
-      ).statusCode,
+      (await resolveException(flagged.id, { resolution: 'handled again' }, operator)).statusCode,
     ).toBe(404);
   });
 });
@@ -743,7 +725,7 @@ describe('financial integrity probes', () => {
   }
 
   it('is shut without the operator secret', async () => {
-    expect((await probe()).statusCode).toBe(403);
+    expect((await probe()).statusCode).toBe(401);
   });
 
   it('answers all zero over a clean estate, every business scanned', async () => {
