@@ -981,6 +981,13 @@
       "when": 1788295310844,
       "tag": "0139_due_time_millisecond_precision",
       "breakpoints": true
+    },
+    {
+      "idx": 140,
+      "version": "7",
+      "when": 1788302401181,
+      "tag": "0140_tenant_fk_platform_cost_events",
+      "breakpoints": true
     }
   ]
 }
