@@ -9,8 +9,10 @@
  * the WhatsApp Business Account a catalogue sync writes INTO, so a row naming
  * another merchant's connection names another merchant's storefront.
  *
- * Group E's other two relationships, both on `platform_cost_events`, are not
- * here. They are held for a separate decision, recorded in migration 0138.
+ * Group E's other relationships, on `platform_cost_events`, landed separately
+ * in 0140 once the MATCH FULL question was settled; their own suite carries
+ * them. The assertion below is what noticed that decision being made, because
+ * it named the gap rather than leaving it to memory.
  *
  * Run on the OWNER credential and outside row-level security, for the reason
  * the earlier groups give: RLS would refuse the cross-tenant write on its own,
@@ -76,20 +78,27 @@ describe('group E: the key is declared as the ruling asked', () => {
     ]);
   });
 
-  it('platform_cost_events is untouched, pending its own decision', async () => {
+  it('platform_cost_events carries the rest of the group, settled in 0140', async () => {
     const rows = await owner.execute<{ conname: string }>(sql`
       SELECT con.conname
         FROM pg_constraint con
         JOIN pg_class c ON c.oid = con.conrelid
        WHERE c.relname = 'platform_cost_events' AND con.contype = 'f'
          AND array_length(con.conkey, 1) = 2
+       ORDER BY con.conname
     `);
 
-    /* MATCH FULL, the shape first proposed for this table, rejects any row
-     * mixing null and non-null key values, which is the (tenant present,
-     * payment absent) shape every unattributed cost row already has. Asserted
-     * so the gap is a recorded decision rather than something overlooked. */
-    expect([...rows].map((r) => r.conname)).toEqual([]);
+    /* This assertion used to say the opposite: that the table was untouched
+     * while MATCH FULL was still an open question. Keeping it pointed at the
+     * table rather than deleting it means group E stays countable from one
+     * place, and it is what failed the moment 0140 landed. The shape of those
+     * keys, and the CHECK each needs because `business_id` is nullable, are
+     * asserted in `tenant-fk-platform-costs.integration.test.ts`. */
+    expect([...rows].map((r) => r.conname)).toEqual([
+      'platform_cost_events_connection_business_fk',
+      'platform_cost_events_payment_business_fk',
+      'platform_cost_events_settlement_business_fk',
+    ]);
   });
 });
 
