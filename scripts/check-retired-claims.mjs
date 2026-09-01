@@ -80,6 +80,21 @@ const RETIRED = [
   },
 
   {
+    /* ADR 0033. Multicurrency is under active development and DARK: the
+     * launch is NGN-only. A current surface saying Rekoda supports, offers or
+     * accepts multiple currencies would be describing a capability no
+     * merchant can reach, on a page a merchant can.
+     *
+     * `unless` spares the sentences this repository needs to be able to
+     * write, which are all of the form "not yet", "dark", "NGN-only". */
+    pattern:
+      /\b(multi[- ]?currency|foreign currency|multiple currencies)\b[^.\n]{0,50}\b(supported|available|enabled|offered|live)\b/i,
+    unless: /\b(not|never|no longer|dark|nor|until|once|when|NGN-only|graduation)\b/i,
+    reason:
+      'multicurrency is a DARK capability under development (ADR 0033): the launch is NGN-only and no surface may describe FX as available',
+  },
+
+  {
     pattern: /audio never leaves/i,
     reason:
       'the "audio never leaves Rekoda" promise died with ADR 0032: voice notes are transcribed by hosted OpenAI',

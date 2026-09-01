@@ -897,6 +897,13 @@
       "when": 1787689200000,
       "tag": "0127_drop_bank_narration",
       "breakpoints": true
+    },
+    {
+      "idx": 128,
+      "version": "7",
+      "when": 1787775600000,
+      "tag": "0128_business_currency_shape",
+      "breakpoints": true
     }
   ]
 }
