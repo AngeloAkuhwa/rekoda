@@ -79,9 +79,9 @@ export const conversationMessages = pgTable(
   {
     id: id(),
     businessId: businessId(),
-    conversationId: uuid('conversation_id')
-      .notNull()
-      .references(() => conversations.id),
+    /** The composite FK to `conversations (business_id, id)` lives in migration
+     * 0141; another tenant's thread is unrepresentable. */
+    conversationId: uuid('conversation_id').notNull(),
     direction: text('direction').notNull(), // inbound | outbound
     kind: text('kind').notNull(), // text | voice | media | interactive
     /** Tokenised content — raw PII is vaulted before this row is written. */
@@ -386,9 +386,10 @@ export const commandDrafts = pgTable(
   {
     id: id(),
     businessId: businessId(),
-    conversationMessageId: uuid('conversation_message_id')
-      .notNull()
-      .references(() => conversationMessages.id),
+    /** The composite FK to `conversation_messages (business_id, id)` lives in
+     * migration 0141; another tenant's message is unrepresentable, so the
+     * draft a merchant is asked to confirm cannot come from another shop. */
+    conversationMessageId: uuid('conversation_message_id').notNull(),
     intent: text('intent').notNull(),
     command: jsonb('command').notNull(),
     model: text('model'),
