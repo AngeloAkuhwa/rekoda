@@ -11,7 +11,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { createDb, withBusiness, type Db } from './client.js';
 import { events, identity, jobsRepo } from './index.js';
-import { migrate, requireUrls, truncateAll, type Urls } from './testing.js';
+import { migrate, requireUrls, storedEventId, truncateAll, type Urls } from './testing.js';
 
 let urls: Urls;
 let appDb: Db;
@@ -142,13 +142,15 @@ describe('event health', () => {
       payload: { sealed: true },
       businessId: null,
     });
-    const flagged = await events.recordEvent(workerDb, {
-      provider: 'meta',
-      eventType: 'message.text',
-      externalId: 'wamid.flagged',
-      payload: { sealed: true },
-      businessId: null,
-    });
+    const flagged = storedEventId(
+      await events.recordEvent(workerDb, {
+        provider: 'meta',
+        eventType: 'message.text',
+        externalId: 'wamid.flagged',
+        payload: { sealed: true },
+        businessId: null,
+      }),
+    );
     await events.recordEvent(workerDb, {
       provider: 'paystack',
       eventType: 'charge.success',
@@ -157,7 +159,7 @@ describe('event health', () => {
       businessId: null,
     });
 
-    await events.markProcessed(workerDb, flagged.id, 'unknown_reference');
+    await events.markProcessed(workerDb, flagged, 'unknown_reference');
 
     const meta = await events.eventHealth(workerDb, 'meta');
     expect(meta.unprocessed).toBe(1);
@@ -170,15 +172,38 @@ describe('event health', () => {
     expect(paystack.flagged).toBe(0);
   });
 
-  it('does not count a clean processed event as flagged', async () => {
-    const clean = await events.recordEvent(workerDb, {
-      provider: 'meta',
+  it('reports a retry as a retry, and offers no row it may not be able to see', async () => {
+    const delivery = {
+      provider: 'meta' as const,
       eventType: 'message.text',
-      externalId: 'wamid.clean',
+      externalId: 'wamid.retried',
       payload: { sealed: true },
       businessId: null,
-    });
-    await events.markProcessed(workerDb, clean.id);
+    };
+
+    const first = await events.recordEvent(workerDb, delivery);
+    const second = await events.recordEvent(workerDb, delivery);
+
+    expect(first.isNew).toBe(true);
+    /* Exactly this, key for key. The duplicate branch used to follow the
+     * conflict with a SELECT for the existing id, which no ingress caller
+     * reads and which a tenant policy could refuse to answer. `toEqual` is
+     * what fails if somebody puts the read back. */
+    expect(second).toEqual({ isNew: false });
+    expect(await events.eventHealth(workerDb, 'meta')).toMatchObject({ unprocessed: 1 });
+  });
+
+  it('does not count a clean processed event as flagged', async () => {
+    const clean = storedEventId(
+      await events.recordEvent(workerDb, {
+        provider: 'meta',
+        eventType: 'message.text',
+        externalId: 'wamid.clean',
+        payload: { sealed: true },
+        businessId: null,
+      }),
+    );
+    await events.markProcessed(workerDb, clean);
 
     const health = await events.eventHealth(workerDb, 'meta');
 
@@ -188,24 +213,26 @@ describe('event health', () => {
 
 describe('the exception queue an operator works', () => {
   async function record(externalId: string, provider: 'meta' | 'paystack' = 'paystack') {
-    return events.recordEvent(workerDb, {
-      provider,
-      eventType: 'charge.success',
-      externalId,
-      payload: { sealed: true },
-      businessId: null,
-    });
+    return storedEventId(
+      await events.recordEvent(workerDb, {
+        provider,
+        eventType: 'charge.success',
+        externalId,
+        payload: { sealed: true },
+        businessId: null,
+      }),
+    );
   }
 
   it('separates what is stuck from what was flagged, and carries neither payload', async () => {
     const stuck = await record('evt.stuck');
     const flagged = await record('evt.flagged');
-    await events.markProcessed(workerDb, flagged.id, 'unknown_reference');
+    await events.markProcessed(workerDb, flagged, 'unknown_reference');
 
     const queue = await events.exceptionQueue(workerDb);
 
-    expect(queue.stuck.map((r) => r.id)).toEqual([stuck.id]);
-    expect(queue.flagged.map((r) => r.id)).toEqual([flagged.id]);
+    expect(queue.stuck.map((r) => r.id)).toEqual([stuck]);
+    expect(queue.flagged.map((r) => r.id)).toEqual([flagged]);
     expect(queue.flagged[0]?.error).toBe('unknown_reference');
 
     /* The payload is sealed and holds the sender's number and their message.
@@ -218,11 +245,11 @@ describe('the exception queue an operator works', () => {
 
   it('leaves the queue once worked, without erasing why it was flagged', async () => {
     const flagged = await record('evt.worked');
-    await events.markProcessed(workerDb, flagged.id, 'foreign_reference');
+    await events.markProcessed(workerDb, flagged, 'foreign_reference');
 
-    expect(
-      await events.resolveEvent(workerDb, flagged.id, 'not our merchant', 'operator:ada'),
-    ).toBe(true);
+    expect(await events.resolveEvent(workerDb, flagged, 'not our merchant', 'operator:ada')).toBe(
+      true,
+    );
 
     const queue = await events.exceptionQueue(workerDb);
     expect(queue.flagged).toHaveLength(0);
@@ -231,9 +258,7 @@ describe('the exception queue an operator works', () => {
       error: string | null;
       resolution: string | null;
       resolved_by: string | null;
-    }>(
-      sql`SELECT error, resolution, resolved_by FROM external_events WHERE id = ${flagged.id}::uuid`,
-    );
+    }>(sql`SELECT error, resolution, resolved_by FROM external_events WHERE id = ${flagged}::uuid`);
     /* `error` survives. It is the reason the row was flagged, and a
      * resolution that overwrote it would destroy the only record of what
      * actually went wrong. */
@@ -246,7 +271,7 @@ describe('the exception queue an operator works', () => {
 
   it('stamps a stuck event processed, so no sweep keeps picking it up', async () => {
     const stuck = await record('evt.abandoned');
-    await events.resolveEvent(workerDb, stuck.id, 'reference was never ours', 'operator:ada');
+    await events.resolveEvent(workerDb, stuck, 'reference was never ours', 'operator:ada');
 
     const queue = await events.exceptionQueue(workerDb);
     expect(queue.stuck).toHaveLength(0);
@@ -255,16 +280,16 @@ describe('the exception queue an operator works', () => {
 
   it('lets exactly ONE of two operators resolve the same row', async () => {
     const flagged = await record('evt.raced');
-    await events.markProcessed(workerDb, flagged.id, 'unknown_reference');
+    await events.markProcessed(workerDb, flagged, 'unknown_reference');
 
     const outcomes = await Promise.all([
-      events.resolveEvent(workerDb, flagged.id, 'first decision', 'operator:ada'),
-      events.resolveEvent(workerDb, flagged.id, 'second decision', 'operator:bola'),
+      events.resolveEvent(workerDb, flagged, 'first decision', 'operator:ada'),
+      events.resolveEvent(workerDb, flagged, 'second decision', 'operator:bola'),
     ]);
     expect(outcomes.filter(Boolean)).toHaveLength(1);
 
     const rows = await workerDb.execute<{ resolution: string }>(
-      sql`SELECT resolution FROM external_events WHERE id = ${flagged.id}::uuid`,
+      sql`SELECT resolution FROM external_events WHERE id = ${flagged}::uuid`,
     );
     /* Whichever won, the loser must not have overwritten it. */
     expect(['first decision', 'second decision']).toContain([...rows][0]?.resolution);
@@ -288,10 +313,10 @@ describe('the exception queue an operator works', () => {
    */
   it('drops a worked exception out of the health count too', async () => {
     const flagged = await record('evt.counted', 'meta');
-    await events.markProcessed(workerDb, flagged.id, 'unknown_reference');
+    await events.markProcessed(workerDb, flagged, 'unknown_reference');
     expect((await events.eventHealth(workerDb, 'meta')).flagged).toBe(1);
 
-    await events.resolveEvent(workerDb, flagged.id, 'handled by hand', 'operator:ada');
+    await events.resolveEvent(workerDb, flagged, 'handled by hand', 'operator:ada');
     expect((await events.eventHealth(workerDb, 'meta')).flagged).toBe(0);
   });
 });

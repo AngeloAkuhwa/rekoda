@@ -23,7 +23,7 @@ import {
   withBusiness,
   type Db,
 } from '@rekoda/db';
-import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
+import { migrate, requireUrls, storedEventId, truncateAll, type Urls } from '@rekoda/db/testing';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -378,7 +378,7 @@ describe('the chat surface enforces roles', () => {
       payload: sealPayload(body, config.vaultKey, 'meta', externalId),
       businessId,
     });
-    await enqueue(businessId, 'inbound.message', { eventId: recorded.id });
+    await enqueue(businessId, 'inbound.message', { eventId: storedEventId(recorded) });
     const runner = buildRunner(workerDb, appDb, deps);
     await runner.runOnce();
     return stubSender.sent[stubSender.sent.length - 1]?.text ?? '';
@@ -429,7 +429,7 @@ describe('the chat surface enforces roles', () => {
       payload: sealPayload(body, config.vaultKey, 'meta', second.wamid),
       businessId,
     });
-    await enqueue(businessId, 'inbound.message', { eventId: recorded.id });
+    await enqueue(businessId, 'inbound.message', { eventId: storedEventId(recorded) });
     await buildRunner(workerDb, appDb, deps).runOnce();
 
     const last = stubSender.sent[stubSender.sent.length - 1];
@@ -542,7 +542,7 @@ describe('a customer name never reaches the model twice', () => {
       payload: sealPayload(body, config.vaultKey, 'meta', externalId),
       businessId,
     });
-    await enqueue(businessId, 'inbound.message', { eventId: recorded.id });
+    await enqueue(businessId, 'inbound.message', { eventId: storedEventId(recorded) });
     const runner = buildRunner(workerDb, appDb, deps);
     await runner.runOnce();
   }
@@ -685,8 +685,8 @@ describe('inbound messages for one business never overlap across lanes', () => {
       payload: sealPayload(bodyFor('wamid.order2', 'yes'), config.vaultKey, 'meta', 'wamid.order2'),
       businessId,
     });
-    await enqueue(businessId, 'inbound.message', { eventId: first.id });
-    await enqueue(businessId, 'inbound.message', { eventId: second.id });
+    await enqueue(businessId, 'inbound.message', { eventId: storedEventId(first) });
+    await enqueue(businessId, 'inbound.message', { eventId: storedEventId(second) });
 
     // Two lanes, both draining; the lock is what keeps them in order.
     const runner = buildRunner(workerDb, appDb, deps, { idleMs: 20, concurrency: 2 });
@@ -782,8 +782,12 @@ describe('inbound messages for one business never overlap across lanes', () => {
       payload: sealPayload(bodyFor('wamid.stall2', 'yes'), config.vaultKey, 'meta', 'wamid.stall2'),
       businessId,
     });
-    const draftJob = await enqueue(businessId, 'inbound.message', { eventId: first.id });
-    const confirmJob = await enqueue(businessId, 'inbound.message', { eventId: second.id });
+    const draftJob = await enqueue(businessId, 'inbound.message', {
+      eventId: storedEventId(first),
+    });
+    const confirmJob = await enqueue(businessId, 'inbound.message', {
+      eventId: storedEventId(second),
+    });
     if (!draftJob || !confirmJob) throw new Error('both jobs should have enqueued');
 
     // A lane claims the draft's job — the oldest — and stalls before the lock.

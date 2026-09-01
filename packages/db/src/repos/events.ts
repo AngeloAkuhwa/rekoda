@@ -21,11 +21,18 @@ export interface IncomingEvent {
   businessId: string | null;
 }
 
-export interface RecordedEvent {
-  id: string;
-  /** False when this exact event was already stored — i.e. a provider retry. */
-  isNew: boolean;
-}
+/**
+ * Either this delivery stored the event, or an earlier one already had.
+ *
+ * A union rather than a flag beside an id, because on the duplicate branch
+ * there is no id to give: see `recordEvent`. Every caller already asks
+ * `isNew` before it reaches for the id, so the narrowing costs them nothing
+ * and the type stops promising something the database may refuse to say.
+ */
+export type RecordedEvent =
+  | { readonly isNew: true; readonly id: string }
+  /** This exact event was already stored — i.e. a provider retry. */
+  | { readonly isNew: false };
 
 /**
  * Store an event, exactly once.
@@ -40,6 +47,20 @@ export interface RecordedEvent {
  * A duplicate is not an error. The caller still answers 200, because a
  * provider that gets anything else will keep retrying until it gives up and
  * disables the webhook.
+ *
+ * The empty return is the whole answer, and deliberately so. This used to
+ * follow a conflict with a SELECT for the existing row's id — a second round
+ * trip on every provider retry, for an id no caller reads: all four ingress
+ * paths ask `isNew` and return before they touch it.
+ *
+ * Dropping it also removes a trap that row-level security would spring. Under
+ * a tenant policy, `ON CONFLICT DO NOTHING` against a row this credential
+ * cannot see does exactly what it does here — nothing, quietly, with no error
+ * — so the read-back would find no row and the old code raised. That is
+ * reachable: a webhook stored but never acknowledged, attributed to a tenant
+ * by the pump, and then retried by the provider. The reply would be a 500 to
+ * a provider that had already been heard, over and over, until it disabled
+ * the webhook. The conflict itself is proof enough that the event is stored.
  */
 export async function recordEvent(q: Queryable, event: IncomingEvent): Promise<RecordedEvent> {
   const inserted = await q
@@ -59,22 +80,7 @@ export async function recordEvent(q: Queryable, event: IncomingEvent): Promise<R
     .returning({ id: externalEvents.id });
 
   const row = inserted[0];
-  if (row) return { id: row.id, isNew: true };
-
-  const existing = await q
-    .select({ id: externalEvents.id })
-    .from(externalEvents)
-    .where(
-      and(
-        eq(externalEvents.provider, event.provider),
-        eq(externalEvents.externalId, event.externalId),
-      ),
-    )
-    .limit(1);
-
-  const found = existing[0];
-  if (!found) throw new Error('recordEvent: conflict reported but no existing row found');
-  return { id: found.id, isNew: false };
+  return row ? { isNew: true, id: row.id } : { isNew: false };
 }
 
 /**

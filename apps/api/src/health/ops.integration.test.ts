@@ -29,6 +29,7 @@ import {
   migrate,
   requireUrls,
   resetPlanCatalogue,
+  storedEventId,
   truncateAll,
   type Urls,
 } from '@rekoda/db/testing';
@@ -603,13 +604,15 @@ describe('the exception queue', () => {
   const operator = { 'x-rekoda-operator-secret': OPERATOR_SECRET };
 
   async function record(externalId: string) {
-    return events.recordEvent(db, {
-      provider: 'paystack',
-      eventType: 'charge.success',
-      externalId,
-      payload: { sender: '+2348120000001', text: 'a merchant said something private' },
-      businessId: null,
-    });
+    return storedEventId(
+      await events.recordEvent(db, {
+        provider: 'paystack',
+        eventType: 'charge.success',
+        externalId,
+        payload: { sender: '+2348120000001', text: 'a merchant said something private' },
+        businessId: null,
+      }),
+    );
   }
 
   it('is shut to anyone without the operator secret', async () => {
@@ -630,13 +633,13 @@ describe('the exception queue', () => {
   it('shows what is waiting and what was flagged, and NEVER the payload', async () => {
     const stuck = await record('evt.api.stuck');
     const flagged = await record('evt.api.flagged');
-    await events.markProcessed(db, flagged.id, 'unknown_reference');
+    await events.markProcessed(db, flagged, 'unknown_reference');
 
     const res = await exceptions('', operator);
     const body = res.json() as { stuck: Array<{ id: string }>; flagged: Array<{ id: string }> };
 
-    expect(body.stuck.map((r) => r.id)).toEqual([stuck.id]);
-    expect(body.flagged.map((r) => r.id)).toEqual([flagged.id]);
+    expect(body.stuck.map((r) => r.id)).toEqual([stuck]);
+    expect(body.flagged.map((r) => r.id)).toEqual([flagged]);
 
     /* The seal is the point: a triage list that leaked a provider body would
      * put a merchant's number and their message behind one plaintext header.
@@ -652,9 +655,9 @@ describe('the exception queue', () => {
 
   it('works one exception and takes it out of the list and the count', async () => {
     const flagged = await record('evt.api.worked');
-    await events.markProcessed(db, flagged.id, 'foreign_reference');
+    await events.markProcessed(db, flagged, 'foreign_reference');
 
-    const done = await resolveException(flagged.id, { resolution: 'not our merchant' }, operator);
+    const done = await resolveException(flagged, { resolution: 'not our merchant' }, operator);
     expect(done.statusCode).toBe(200);
     expect(done.json()).toEqual({ resolved: true });
 
@@ -666,20 +669,18 @@ describe('the exception queue', () => {
 
   it('refuses a resolution with nothing said, and one already worked', async () => {
     const flagged = await record('evt.api.refusals');
-    await events.markProcessed(db, flagged.id, 'unknown_reference');
+    await events.markProcessed(db, flagged, 'unknown_reference');
 
-    expect((await resolveException(flagged.id, { resolution: 'no' }, operator)).statusCode).toBe(
-      400,
-    );
+    expect((await resolveException(flagged, { resolution: 'no' }, operator)).statusCode).toBe(400);
     expect(
       (await resolveException('not-a-uuid', { resolution: 'fine' }, operator)).statusCode,
     ).toBe(400);
 
-    await resolveException(flagged.id, { resolution: 'handled by hand' }, operator);
+    await resolveException(flagged, { resolution: 'handled by hand' }, operator);
     /* A second operator arriving late is TOLD, rather than quietly
      * overwriting the decision the first one recorded. */
     expect(
-      (await resolveException(flagged.id, { resolution: 'handled again' }, operator)).statusCode,
+      (await resolveException(flagged, { resolution: 'handled again' }, operator)).statusCode,
     ).toBe(404);
   });
 });
