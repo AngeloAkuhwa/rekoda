@@ -153,6 +153,23 @@ POST /v1/webhooks   { "url": "https://yours.example/hooks/rekoda",
 An **empty** `eventTypes` means every type. The response carries the signing
 secret once.
 
+`eventTypes` is a **closed set**: a type not on this list is refused rather
+than accepted and never delivered.
+
+| Group | Types |
+| --- | --- |
+| Sales and invoicing | `sale.recorded`, `invoice.issued`, `invoice.voided` |
+| Money in | `payment.recorded`, `payment.confirmed` |
+| Money out | `expense.recorded`, `purchase.recorded` |
+| The books | `journal.posted`, `period.closed`, `period.reopened`, `books.opened` |
+| Orders | `order.placed`, `order.validated`, `order.rejected` |
+| Bank and stock | `financial_transactions.ingested`, `reconciliation.confirmed`, `inventory.adjusted` |
+| Privacy | `data.erased` |
+
+Name the types you handle. An empty list means every type, **including any
+type added later**, so a receiver that must never meet a `type` it does not
+recognise should list them rather than take the default.
+
 Deliveries are `POST`ed as:
 
 ```json
@@ -209,6 +226,24 @@ Redirects are **not** followed — a `3xx` is recorded as a failure.
 
 Deliveries are at-least-once. Make your handler idempotent on `id`.
 
+### Listing, pausing and resuming
+
+```
+GET  /v1/webhooks
+POST /v1/webhooks/:id/disable
+POST /v1/webhooks/:id/enable
+```
+
+`GET` lists the endpoints a business holds, with each one's status, its last
+success and how many failures it has run up. It never returns a signing
+secret: a secret is shown once, when it is minted or rotated, and never
+again.
+
+Disabling stops delivery **without destroying the endpoint or its history**,
+which is what a merchant wants when a receiver is down for maintenance or
+misbehaving: nothing new is attempted, the delivery log stays readable, and
+enabling resumes. Deleting would take the record with it.
+
 ### Rotating a secret
 
 ```
@@ -235,6 +270,7 @@ it stops answering.
 | Live keys per application per mode | 5 |
 | Page size | 100 |
 | Items per sale | 50 |
+| Webhook endpoints per business | 10 |
 | Webhook attempts | 6 |
 | Webhook timeout | 10 seconds |
 
