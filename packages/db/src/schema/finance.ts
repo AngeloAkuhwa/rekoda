@@ -481,9 +481,10 @@ export const bankLineMatches = pgTable(
   {
     id: id(),
     businessId: businessId(),
-    lineId: uuid('line_id')
-      .notNull()
-      .references(() => bankStatementLines.id, { onDelete: 'cascade' }),
+    /** The composite FK to `bank_statement_lines (business_id, id)` lives in
+     * migration 0145, which kept the ON DELETE CASCADE 0037 declared: deleting
+     * a line still takes its match with it. */
+    lineId: uuid('line_id').notNull(),
     /** The composite FK to `ledger_transactions (business_id, id)` lives in migration
      * 0135; another tenant's posting is unrepresentable. */
     transactionId: uuid('transaction_id').notNull(),

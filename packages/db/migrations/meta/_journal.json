@@ -1016,6 +1016,13 @@
       "when": 1788310950262,
       "tag": "0144_tenant_fk_group_f4_api_access",
       "breakpoints": true
+    },
+    {
+      "idx": 145,
+      "version": "7",
+      "when": 1788312252840,
+      "tag": "0145_tenant_fk_group_f5_delivery",
+      "breakpoints": true
     }
   ]
 }
