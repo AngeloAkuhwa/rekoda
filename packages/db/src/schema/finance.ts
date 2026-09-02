@@ -182,6 +182,9 @@ export const payments = pgTable(
     initialConfirmationSource: text('initial_confirmation_source'),
     paymentMethod: text('payment_method'),
     evidenceBasis: text('evidence_basis'),
+    /** Nullable: not every payment arrives with evidence. The composite FK to
+     * `payment_evidence (business_id, id)` lives in migration 0142, so a
+     * payment can never be booked against another tenant's evidence. */
     paymentEvidenceId: uuid('payment_evidence_id'),
     createdAt: createdAt(),
   },
