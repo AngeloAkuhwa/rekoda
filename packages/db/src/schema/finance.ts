@@ -221,6 +221,10 @@ export const paymentAllocations = pgTable(
     /** §14.2 (PR-049): a reversal row negates its original exactly; the
      * trigger in 0078 holds the shape, and these columns carry it. */
     currency: char('currency', { length: 3 }).notNull().default('NGN'),
+    /** Nullable: most rows are not reversals. The self-referential composite
+     * FK lives in migration 0143, so a correction and what it corrects belong
+     * to one merchant on every path, not only the insert the 0078 trigger
+     * guards. */
     reversalOfId: uuid('reversal_of_id'),
     reason: text('reason'),
     sourceType: text('source_type'),
@@ -929,6 +933,10 @@ export const customerCreditApplications = pgTable('customer_credit_applications'
   invoiceId: uuid('invoice_id').notNull(),
   amountMinor: bigint('amount_minor', { mode: 'number' }).notNull(),
   currency: char('currency', { length: 3 }).notNull().default('NGN'),
+  /** Nullable: most rows are not reversals. The self-referential composite
+   * FK lives in migration 0143, so a correction and what it corrects belong
+   * to one merchant on every path, not only the insert the 0078 trigger
+   * guards. */
   reversalOfId: uuid('reversal_of_id'),
   reason: text('reason'),
   sourceType: text('source_type').notNull(),
