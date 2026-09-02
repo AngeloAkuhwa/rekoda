@@ -220,7 +220,17 @@ export interface StoredMessage {
   providerMessageId: string | null;
 }
 
-/** A business's own messages, newest last. For the dashboard and for tests. */
+/**
+ * A business's own messages, newest last. For the dashboard and for tests.
+ *
+ * `id` is the tiebreaker, not the sort key. Migration 0146 makes `created_at`
+ * advance between rows written in one transaction, but two inserts can still
+ * land on the same microsecond, and rows written before 0146 already share an
+ * instant with everything else their transaction wrote. A tie has to resolve
+ * the same way every read or the merchant's history reshuffles between page
+ * loads; `id` cannot recover the true order of those older rows, and does not
+ * pretend to.
+ */
 export async function messagesFor(
   tx: TenantDb,
   businessId: string,
@@ -236,7 +246,7 @@ export async function messagesFor(
     })
     .from(conversationMessages)
     .where(eq(conversationMessages.businessId, businessId))
-    .orderBy(conversationMessages.createdAt)
+    .orderBy(conversationMessages.createdAt, conversationMessages.id)
     .limit(limit);
 }
 
@@ -267,7 +277,7 @@ export async function messagesForThread(
         eq(conversationMessages.conversationId, conversationId),
       ),
     )
-    .orderBy(conversationMessages.createdAt)
+    .orderBy(conversationMessages.createdAt, conversationMessages.id)
     .limit(limit);
 }
 
@@ -366,7 +376,7 @@ export async function draftsFor(tx: TenantDb, businessId: string): Promise<Draft
       eq(conversationMessages.id, commandDrafts.conversationMessageId),
     )
     .where(eq(commandDrafts.businessId, businessId))
-    .orderBy(commandDrafts.createdAt);
+    .orderBy(commandDrafts.createdAt, commandDrafts.id);
 }
 
 export interface OutboundMessageInput {
@@ -443,7 +453,7 @@ export async function pendingDraft(tx: TenantDb, businessId: string): Promise<Dr
       eq(conversationMessages.id, commandDrafts.conversationMessageId),
     )
     .where(and(eq(commandDrafts.businessId, businessId), eq(commandDrafts.state, 'pending')))
-    .orderBy(desc(commandDrafts.createdAt))
+    .orderBy(desc(commandDrafts.createdAt), desc(commandDrafts.id))
     .limit(1);
   return rows[0] ?? null;
 }
