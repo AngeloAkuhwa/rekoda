@@ -47,9 +47,10 @@ export const apiKeys = pgTable(
     businessId: uuid('business_id')
       .notNull()
       .references(() => businesses.id),
-    applicationId: uuid('application_id')
-      .notNull()
-      .references(() => apiApplications.id),
+    /** The composite FK to `api_applications (business_id, id)` lives in
+     * migration 0144; a key cannot be minted under another tenant's
+     * application. */
+    applicationId: uuid('application_id').notNull(),
     /** The public half: `rk_live_` plus eight hex characters. */
     prefix: text('prefix').notNull(),
     /** SHA-256 of the whole token. The token itself is never stored. */
@@ -71,9 +72,10 @@ export const apiKeys = pgTable(
 
 /** One row per key per minute. The limit lives in the WHERE clause. */
 export const apiKeyRateWindows = pgTable('api_key_rate_windows', {
-  apiKeyId: uuid('api_key_id')
-    .notNull()
-    .references(() => apiKeys.id),
+  /** The composite FK to `api_keys (business_id, id)` lives in migration 0144.
+   * The window IS the ceiling, so one attached to another tenant's key would
+   * spend that merchant's allowance. */
+  apiKeyId: uuid('api_key_id').notNull(),
   businessId: uuid('business_id')
     .notNull()
     .references(() => businesses.id),
