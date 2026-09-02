@@ -24,6 +24,21 @@ const id = () =>
     .primaryKey()
     .default(sql`gen_random_uuid()`);
 const createdAt = () => timestamp('created_at', { withTimezone: true }).notNull().defaultNow();
+/**
+ * `created_at` for the tables whose rows are read back IN THE ORDER THEY WERE
+ * WRITTEN.
+ *
+ * `now()` is TRANSACTION START time, so it is the same value for every row a
+ * transaction writes. One inbound job records the merchant's message and the
+ * reply it produced inside a single transaction, which gave both rows one
+ * instant and left `ORDER BY created_at` free to return the reply first.
+ * `clock_timestamp()` advances between statements, so the column means what
+ * the readers already assumed it meant (migration 0146).
+ */
+const insertedAt = (column: string) =>
+  timestamp(column, { withTimezone: true })
+    .notNull()
+    .default(sql`clock_timestamp()`);
 const businessId = () =>
   uuid('business_id')
     .notNull()
@@ -88,7 +103,7 @@ export const conversationMessages = pgTable(
     body: text('body'),
     /** Provider message id — the idempotency key for inbound delivery. */
     providerMessageId: text('provider_message_id'),
-    createdAt: createdAt(),
+    createdAt: insertedAt('created_at'),
   },
   (t) => [
     uniqueIndex('messages_provider_ux').on(t.providerMessageId),
@@ -400,8 +415,11 @@ export const commandDrafts = pgTable(
     identityLink: jsonb('identity_link'),
     /** pending | superseded | confirmed | abandoned */
     state: text('state').notNull().default('pending'),
-    createdAt: createdAt(),
-    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+    createdAt: insertedAt('created_at'),
+    /* Also `clock_timestamp()`, so a row does not claim to have been modified
+     * before it existed: `now()` here would be the transaction's start, which
+     * is EARLIER than the `created_at` beside it. */
+    updatedAt: insertedAt('updated_at'),
   },
   (t) => [
     // One draft per message — a job that runs twice must not give the merchant
