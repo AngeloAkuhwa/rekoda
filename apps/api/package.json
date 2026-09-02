@@ -14,8 +14,8 @@
     "dev": "node --watch dist/main.js"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.121.0",
-    "@aws-sdk/client-s3": "^3.1119.0",
+    "@anthropic-ai/sdk": "^0.122.0",
+    "@aws-sdk/client-s3": "^3.1121.0",
     "@fastify/multipart": "^10.1.1",
     "@fastify/rate-limit": "^11.2.0",
     "@nestjs/common": "^11.2.3",
@@ -25,8 +25,8 @@
     "@rekoda/core": "workspace:*",
     "@rekoda/db": "workspace:*",
     "jose": "^6.2.10",
-    "openai": "^7.6.0",
-    "pdfkit": "^0.20.1",
+    "openai": "^7.8.0",
+    "pdfkit": "^0.20.2",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",
     "ipaddr.js": "^2.5.0"
