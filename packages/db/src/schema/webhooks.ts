@@ -58,12 +58,14 @@ export const webhookDeliveries = pgTable(
     businessId: uuid('business_id')
       .notNull()
       .references(() => businesses.id),
-    endpointId: uuid('endpoint_id')
-      .notNull()
-      .references(() => webhookEndpoints.id),
+    /** The URL this delivery is sent TO. The composite FK to `webhook_endpoints
+     * (business_id, id)` lives in migration 0145: one merchant's event can
+     * never be delivered to another merchant's endpoint. */
+    endpointId: uuid('endpoint_id').notNull(),
     /* The fact this delivery announces. A real foreign key in migration
-     * 0111; `outbox_events` has no drizzle table (its repo is raw SQL), so
-     * the reference is the database's rather than this file's. */
+     * 0111, made tenant-composite in 0145; `outbox_events` has no drizzle
+     * table (its repo is raw SQL), so the reference is the database's rather
+     * than this file's. */
     outboxEventId: uuid('outbox_event_id').notNull(),
     eventType: text('event_type').notNull(),
     /** The body as it will be sent, frozen at fan-out. */
