@@ -421,9 +421,7 @@ export const commandDrafts = pgTable(
      * ride on clock resolution or on the lexical order of random uuids.
      * GENERATED ALWAYS: PostgreSQL assigns it, callers cannot.
      */
-    insertionSeq: bigint('insertion_seq', { mode: 'number' })
-      .notNull()
-      .generatedAlwaysAsIdentity(),
+    insertionSeq: bigint('insertion_seq', { mode: 'number' }).notNull().generatedAlwaysAsIdentity(),
     /** Time and provenance - never the final word on ordering. */
     createdAt: insertedAt('created_at'),
     /* Also `clock_timestamp()`, so a row does not claim to have been modified
