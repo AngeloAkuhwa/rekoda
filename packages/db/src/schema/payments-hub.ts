@@ -138,7 +138,11 @@ export const paymentIntents = pgTable(
      * 0133; another tenant's invoice is unrepresentable. */
     invoiceId: uuid('invoice_id'),
     providerType: text('provider_type').notNull(),
-    paymentConnectionId: uuid('payment_connection_id').references(() => paymentConnections.id),
+    /** The composite FK to `payment_connections (business_id, id)` lives in
+     * migration 0081; the redundant single-column key it superseded was
+     * dropped in 0147 (ruling 5). Nullable: an intent may exist before a
+     * connection is chosen. */
+    paymentConnectionId: uuid('payment_connection_id'),
     /** RKD-PAY-… — the authoritative reference, minted by Rekoda (§9). */
     reference: text('reference').notNull(),
     expectedAmountK: bigint('expected_amount_k', { mode: 'number' }).notNull(),

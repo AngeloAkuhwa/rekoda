@@ -369,9 +369,10 @@ export const ledgerEntries = pgTable(
   {
     id: id(),
     businessId: businessId(),
-    transactionId: uuid('transaction_id')
-      .notNull()
-      .references(() => ledgerTransactions.id),
+    /** The composite FK to `ledger_transactions (business_id, id)` lives in
+     * migration 0070; the redundant single-column key it superseded was
+     * dropped in 0147 (ruling 5). */
+    transactionId: uuid('transaction_id').notNull(),
     /** The chart row this entry moves (PR-031…034). The composite FK to
      * `accounts (business_id, id)` lives in migration 0063; another
      * tenant's account is unrepresentable. */
