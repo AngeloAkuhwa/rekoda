@@ -57,12 +57,19 @@ export async function recordCharge(
   return row;
 }
 
+/**
+ * The breakdown, in the order the checkout wrote it. `id` is the tiebreaker,
+ * not the sort key: migration 0148 makes `created_at` advance between rows
+ * written in one transaction, but rows from before it keep their ties, and a
+ * tie has to resolve the same way on every read or the receipt reshuffles
+ * the moment `resolveChargeActual` moves a line in the heap.
+ */
 export async function chargesForOrder(tx: TenantDb, businessId: string, orderId: string) {
   return tx
     .select()
     .from(paymentCharges)
     .where(and(eq(paymentCharges.businessId, businessId), eq(paymentCharges.orderId, orderId)))
-    .orderBy(paymentCharges.createdAt);
+    .orderBy(paymentCharges.createdAt, paymentCharges.id);
 }
 
 /**
