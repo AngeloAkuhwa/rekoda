@@ -376,7 +376,7 @@ export async function draftsFor(tx: TenantDb, businessId: string): Promise<Draft
       eq(conversationMessages.id, commandDrafts.conversationMessageId),
     )
     .where(eq(commandDrafts.businessId, businessId))
-    .orderBy(commandDrafts.createdAt, commandDrafts.id);
+    .orderBy(commandDrafts.insertionSeq);
 }
 
 export interface OutboundMessageInput {
@@ -453,7 +453,12 @@ export async function pendingDraft(tx: TenantDb, businessId: string): Promise<Dr
       eq(conversationMessages.id, commandDrafts.conversationMessageId),
     )
     .where(and(eq(commandDrafts.businessId, businessId), eq(commandDrafts.state, 'pending')))
-    .orderBy(desc(commandDrafts.createdAt), desc(commandDrafts.id))
+    /* The newest PENDING draft is what the merchant's "yes" will execute, so
+     * "newest" is decided by `insertion_seq` - the database-assigned ordinal
+     * (0149) - never by `created_at` (two drafts can share a microsecond)
+     * and never by `id` (a random uuid whose order says nothing about which
+     * draft came second). */
+    .orderBy(desc(commandDrafts.insertionSeq))
     .limit(1);
   return rows[0] ?? null;
 }
