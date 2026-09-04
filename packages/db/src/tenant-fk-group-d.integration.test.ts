@@ -126,7 +126,7 @@ describe('group D: the keys are declared as the ruling asked', () => {
     expect([...rows].map((r) => r.conname)).toEqual([]);
   });
 
-  it('leaves the ledger_entries duplicate alone, which is a separate ruling', async () => {
+  it('the ledger_entries duplicate is gone, closed by its own ruling', async () => {
     const rows = await owner.execute<{ conname: string }>(sql`
       SELECT con.conname
         FROM pg_constraint con
@@ -136,12 +136,13 @@ describe('group D: the keys are declared as the ruling asked', () => {
          AND c.relname = 'ledger_entries' AND a.attname = 'transaction_id'
     `);
 
-    /* `ledger_entries.transaction_id` carries BOTH the composite key (0070)
-     * and a redundant single-column one. It sits right beside these six and
-     * would have been easy to sweep up, but ruling 5 put it in its own
-     * cleanup. Asserted so that leaving it is a recorded decision rather than
-     * something nobody noticed. */
-    expect([...rows].map((r) => r.conname)).toHaveLength(1);
+    /* `ledger_entries.transaction_id` carried BOTH the composite key (0070)
+     * and a redundant single-column one. This test used to pin the duplicate
+     * IN PLACE, so that leaving it was a recorded decision rather than
+     * something nobody noticed, while ruling 5 kept it parked for its own
+     * cleanup. That cleanup is migration 0147, and the pin now records the
+     * completion; the full proofs live in the ruling 5 suite. */
+    expect([...rows].map((r) => r.conname)).toEqual([]);
   });
 });
 
