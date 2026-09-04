@@ -492,11 +492,93 @@ function webUrl(env: NodeJS.ProcessEnv): string | null {
  * typo. Boot is the right place to say so.
  */
 function voiceWindowSeconds(env: NodeJS.ProcessEnv): number {
-  const seconds = Number(env['VOICE_NOTE_MAX_DURATION_SECONDS'] ?? 120);
-  if (!Number.isInteger(seconds) || seconds <= 0) {
-    throw new ConfigError('VOICE_NOTE_MAX_DURATION_SECONDS must be a positive whole number');
+  return positiveInteger(env, 'VOICE_NOTE_MAX_DURATION_SECONDS', 120);
+}
+
+/**
+ * Every numeric environment value, read one way (`planningFx`'s pattern,
+ * generalized - the FX brief fixed this once and the rest of the file kept
+ * the bug it fixed). Raw `Number(env[...] ?? d)` has three ways to go wrong
+ * and the quietest is the worst: `??` only catches undefined, so `NAME=`
+ * with nothing after it is an empty STRING and `Number('')` is 0 - not NaN,
+ * not the default. A mistyped value gives NaN, which every comparison
+ * answers false to, so an AI cost brake set to `oops` simply stops braking
+ * and nothing anywhere says so. None of that is a runtime condition to
+ * handle; it is a deployment typo, and boot is where a deployment typo
+ * belongs: one-line refusal, naming the variable.
+ */
+function numericEnv(
+  env: NodeJS.ProcessEnv,
+  name: string,
+  fallback: number,
+  requirement: string,
+  accepts: (value: number) => boolean,
+): number {
+  const raw = env[name];
+  /* Absent means the default. Present-but-blank does NOT: somebody wrote the
+   * name down and left the value off, which is a question, not a default -
+   * and the check must come BEFORE Number(), because `Number('')` is 0,
+   * which the non-negative validators would otherwise wave through as a
+   * silent kill switch nobody asked for. */
+  if (raw === undefined) return fallback;
+  if (raw.trim() === '') {
+    throw new ConfigError(`${name} must be ${requirement}`);
   }
-  return seconds;
+  const value = Number(raw);
+  if (!accepts(value)) {
+    throw new ConfigError(`${name} must be ${requirement}`);
+  }
+  return value;
+}
+
+function positiveInteger(env: NodeJS.ProcessEnv, name: string, fallback: number): number {
+  return numericEnv(
+    env,
+    name,
+    fallback,
+    'a positive whole number',
+    (v) => Number.isInteger(v) && v > 0,
+  );
+}
+
+/**
+ * Zero is a VALUE here, never unlimited (PR-014's rule): a quota of 0 is a
+ * deliberate kill switch, and a verify window of 0 is "verify every poll",
+ * which one integration suite sets on purpose.
+ */
+function nonNegativeInteger(env: NodeJS.ProcessEnv, name: string, fallback: number): number {
+  return numericEnv(
+    env,
+    name,
+    fallback,
+    'a whole number, zero or more',
+    (v) => Number.isInteger(v) && v >= 0,
+  );
+}
+
+function positiveFiniteNumber(
+  env: NodeJS.ProcessEnv,
+  name: string,
+  fallback: number,
+  requirement: string,
+): number {
+  return numericEnv(env, name, fallback, requirement, (v) => Number.isFinite(v) && v > 0);
+}
+
+function boundedInteger(
+  env: NodeJS.ProcessEnv,
+  name: string,
+  fallback: number,
+  min: number,
+  max: number,
+): number {
+  return numericEnv(
+    env,
+    name,
+    fallback,
+    `a whole number between ${min} and ${max}`,
+    (v) => Number.isInteger(v) && v >= min && v <= max,
+  );
 }
 
 /**
@@ -520,15 +602,12 @@ function voiceWindowSeconds(env: NodeJS.ProcessEnv): number {
  * is a deployment typo, and boot is where a deployment typo belongs.
  */
 function planningFx(env: NodeJS.ProcessEnv): number {
-  const raw = env['PLANNING_FX_NGN_PER_USD'];
-  /* Absent means the default. Present-but-blank does NOT: somebody wrote the
-   * name down and left the value off, which is a question, not a default. */
-  if (raw === undefined) return 1_450;
-  const rate = Number(raw);
-  if (!Number.isFinite(rate) || rate <= 0) {
-    throw new ConfigError('PLANNING_FX_NGN_PER_USD must be a positive number of naira per USD');
-  }
-  return rate;
+  return positiveFiniteNumber(
+    env,
+    'PLANNING_FX_NGN_PER_USD',
+    1_450,
+    'a positive number of naira per USD',
+  );
 }
 
 /**
@@ -812,7 +891,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
   }
 
   return {
-    port: Number(env['PORT'] ?? 3001),
+    port: boundedInteger(env, 'PORT', 3001, 1, 65535),
     databaseUrl: required(env, 'DATABASE_URL'),
     otpPepper: required(env, 'OTP_PEPPER', 32),
     secret: required(env, 'REKODA_API_SECRET', 32),
@@ -834,11 +913,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
       .filter(Boolean),
     // Raised by the integration suite, which legitimately makes a few hundred
     // requests from one address in well under a minute.
-    rateLimitMax: Number(env['REKODA_RATE_LIMIT_MAX'] ?? 60),
+    rateLimitMax: positiveInteger(env, 'REKODA_RATE_LIMIT_MAX', 60),
     /* Two orders a minute, sustained for an hour, from ONE shop page is a
      * very good day for a small merchant; a flood is something else. */
-    shopOrdersPerHour: Number(env['REKODA_SHOP_ORDERS_PER_HOUR'] ?? 120),
-    transferVerifyMinSeconds: Number(env['REKODA_TRANSFER_VERIFY_MIN_SECONDS'] ?? 5),
+    shopOrdersPerHour: positiveInteger(env, 'REKODA_SHOP_ORDERS_PER_HOUR', 120),
+    transferVerifyMinSeconds: nonNegativeInteger(env, 'REKODA_TRANSFER_VERIFY_MIN_SECONDS', 5),
     /**
      * Required in production, optional elsewhere. An empty secret makes
      * `verifyMetaSignature` return false for everything, so a misconfigured
@@ -867,7 +946,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
      * connection pool since each in-flight job holds a claim connection and
      * a handler transaction. Raise it with the pool, not instead of it.
      */
-    workerConcurrency: Math.max(1, Number(env['REKODA_WORKER_CONCURRENCY'] ?? 4)),
+    /* The old `Math.max(1, Number(...))` was a floor that could not hold:
+     * `Math.max(1, NaN)` is NaN. */
+    workerConcurrency: positiveInteger(env, 'REKODA_WORKER_CONCURRENCY', 4),
     commandRecordSale: env['REKODA_COMMAND_RECORD_SALE'] === '1',
     commandIssueInvoice: env['REKODA_COMMAND_ISSUE_INVOICE'] === '1',
     commandRecordPayment: env['REKODA_COMMAND_RECORD_PAYMENT'] === '1',
@@ -924,19 +1005,27 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
      * ₦40,000 — a number that can be absorbed while someone investigates,
      * rather than discovered on an invoice.
      */
-    aiCallsPerBusinessPerDay: Number(env['AI_DAILY_CALLS_PER_BUSINESS'] ?? 60),
-    aiCallsGlobalPerDay: Number(env['AI_DAILY_CALLS_GLOBAL'] ?? 5_000),
+    aiCallsPerBusinessPerDay: nonNegativeInteger(env, 'AI_DAILY_CALLS_PER_BUSINESS', 60),
+    aiCallsGlobalPerDay: nonNegativeInteger(env, 'AI_DAILY_CALLS_GLOBAL', 5_000),
     /* 2,000 reads/day platform-wide is roughly ₦16,000 of vision at the
      * planning rate: absorbable while someone investigates. */
-    aiDocExtractionsGlobalPerDay: Number(env['AI_DOC_EXTRACTIONS_GLOBAL'] ?? 2_000),
+    aiDocExtractionsGlobalPerDay: nonNegativeInteger(env, 'AI_DOC_EXTRACTIONS_GLOBAL', 2_000),
     /* 30 minutes a day per business (the largest plan carries 120/month),
      * 10 hours a day platform-wide (~$3.60 at $0.006/min). Generous for
      * every legitimate day; a wall for a scripted one. */
-    voiceSecondsPerBusinessPerDay: Number(env['VOICE_SECONDS_PER_BUSINESS_PER_DAY'] ?? 1_800),
-    voiceSecondsGlobalPerDay: Number(env['VOICE_SECONDS_GLOBAL_PER_DAY'] ?? 36_000),
+    voiceSecondsPerBusinessPerDay: nonNegativeInteger(
+      env,
+      'VOICE_SECONDS_PER_BUSINESS_PER_DAY',
+      1_800,
+    ),
+    voiceSecondsGlobalPerDay: nonNegativeInteger(env, 'VOICE_SECONDS_GLOBAL_PER_DAY', 36_000),
     voiceNoteMaxDurationSeconds: voiceWindowSeconds(env),
-    aiDualExtractThresholdK: Number(env['AI_DUAL_EXTRACT_THRESHOLD_K'] ?? 50_000_000),
-    aiDocExtractionsPerBusinessPerDay: Number(env['AI_DOC_EXTRACTIONS_PER_BUSINESS'] ?? 25),
+    aiDualExtractThresholdK: nonNegativeInteger(env, 'AI_DUAL_EXTRACT_THRESHOLD_K', 50_000_000),
+    aiDocExtractionsPerBusinessPerDay: nonNegativeInteger(
+      env,
+      'AI_DOC_EXTRACTIONS_PER_BUSINESS',
+      25,
+    ),
     planningFxNairaPerUsd: planningFx(env),
     fxMode: fxMode(env, isProduction),
     operatorAuth: operatorAuth(env, isProduction),
@@ -955,7 +1044,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     metaBillingTemplateLocale: env['META_BILLING_TEMPLATE_LOCALE'] ?? 'en',
     metaRetentionTemplate: env['META_RETENTION_TEMPLATE'] || null,
     metaRetentionTemplateLocale: env['META_RETENTION_TEMPLATE_LOCALE'] ?? 'en',
-    metaServiceReplyCostMicros: Number(env['META_SERVICE_REPLY_COST_MICROS'] ?? 0),
+    metaServiceReplyCostMicros: nonNegativeInteger(env, 'META_SERVICE_REPLY_COST_MICROS', 0),
     metaWabaRegisteredInNigeria: env['META_WABA_REGISTERED_IN_NIGERIA'] !== 'false',
     planCatalogueReads: env['REKODA_PLAN_CATALOGUE_READS'] !== '0',
     r2AccountId: env['R2_ACCOUNT_ID'] ?? '',
