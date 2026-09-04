@@ -140,6 +140,20 @@ describe('the ordinal is the database’s, structurally', () => {
   });
 });
 
+describe('the hot path follows the authority it serves', () => {
+  it('the pending index sorts by the ordinal, not by created_at', async () => {
+    /* 0009 built this index for pendingDraft's ORDER BY ... LIMIT 1. The
+     * ordering authority moved, so the index moved with it (0149) - an index
+     * on the OLD order would leave the planner sorting every pending row
+     * while still being maintained on every insert and state change. */
+    const rows = await owner.execute<{ def: string }>(sql`
+      SELECT indexdef AS def FROM pg_indexes WHERE indexname = 'command_drafts_pending_ix'`);
+    expect([...rows][0]?.def).toBe(
+      "CREATE INDEX command_drafts_pending_ix ON public.command_drafts USING btree (business_id, insertion_seq DESC) WHERE (state = 'pending'::text)",
+    );
+  });
+});
+
 describe('confirmation selects the later draft, whatever the clock and the uuids say', () => {
   it('two drafts on one instant: the later insert carries the larger ordinal and wins', async () => {
     const businessId = await seedBusiness();
