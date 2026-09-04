@@ -238,8 +238,17 @@ export const paymentCharges = pgTable(
     taxCode: text('tax_code'),
     actualOrEstimated: text('actual_or_estimated').notNull().default('ESTIMATED'),
     providerCostScheduleId: uuid('provider_cost_schedule_id'),
-    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+    /* `clock_timestamp()`, not `now()`: every charge a checkout records in
+     * its one transaction would otherwise share transaction-start time, and
+     * the breakdown is read back in `created_at` order (migration 0148,
+     * the 0146 fix on the customer-facing table). `updated_at` moves with
+     * it so no fresh row claims it was modified before it existed. */
+    createdAt: timestamp('created_at', { withTimezone: true })
+      .notNull()
+      .default(sql`clock_timestamp()`),
+    updatedAt: timestamp('updated_at', { withTimezone: true })
+      .notNull()
+      .default(sql`clock_timestamp()`),
   },
   (t) => [index('payment_charges_order_ix').on(t.businessId, t.orderId)],
 );

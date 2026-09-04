@@ -1037,6 +1037,13 @@
       "when": 1788312254840,
       "tag": "0147_drop_duplicate_tenant_fks",
       "breakpoints": true
+    },
+    {
+      "idx": 148,
+      "version": "7",
+      "when": 1788312255840,
+      "tag": "0148_charge_breakdown_insertion_order",
+      "breakpoints": true
     }
   ]
 }
