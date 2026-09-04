@@ -482,8 +482,9 @@ describe('numeric configuration fails closed (launch closeout)', () => {
   /* One list, every rewired variable, so a NEW numeric env read that skips
    * the validators shows up as a missing row here rather than as a silent
    * NaN in production. */
-  const POSITIVE = ['REKODA_RATE_LIMIT_MAX', 'REKODA_SHOP_ORDERS_PER_HOUR'] as const;
+  const POSITIVE = ['REKODA_RATE_LIMIT_MAX'] as const;
   const NON_NEGATIVE = [
+    'REKODA_SHOP_ORDERS_PER_HOUR',
     'REKODA_TRANSFER_VERIFY_MIN_SECONDS',
     'AI_DAILY_CALLS_PER_BUSINESS',
     'AI_DAILY_CALLS_GLOBAL',
@@ -530,9 +531,26 @@ describe('numeric configuration fails closed (launch closeout)', () => {
       ...BASE,
       AI_DAILY_CALLS_GLOBAL: '0',
       REKODA_TRANSFER_VERIFY_MIN_SECONDS: '0',
+      REKODA_SHOP_ORDERS_PER_HOUR: '0',
     });
     expect(config.aiCallsGlobalPerDay).toBe(0);
     expect(config.transferVerifyMinSeconds).toBe(0);
+    /* The shop gate is `recent >= limit`, so 0 answers every storefront
+     * order `busy` - an operator halting a flood mid-incident must not have
+     * the whole API refuse to boot instead. */
+    expect(config.shopOrdersPerHour).toBe(0);
+  });
+
+  it('an integer is WRITTEN as an integer, not merely parseable as one', () => {
+    /* Number() reads hex, exponents, signed zero and trailing decimals;
+     * each of those in an env file is somebody not saying what they meant.
+     * Fail closed covers the form, not just the value. */
+    for (const written of ['0x50', '6e1', '-0', '2.0', '+5']) {
+      expect(() => loadConfig({ ...BASE, AI_DAILY_CALLS_GLOBAL: written })).toThrow(
+        /AI_DAILY_CALLS_GLOBAL/,
+      );
+    }
+    expect(() => loadConfig({ ...BASE, PORT: '0x1F90' })).toThrow(/PORT/);
   });
 
   it('a fraction is not a quota', () => {

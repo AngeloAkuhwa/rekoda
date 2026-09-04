@@ -512,7 +512,7 @@ function numericEnv(
   name: string,
   fallback: number,
   requirement: string,
-  accepts: (value: number) => boolean,
+  accepts: (value: number, raw: string) => boolean,
 ): number {
   const raw = env[name];
   /* Absent means the default. Present-but-blank does NOT: somebody wrote the
@@ -525,19 +525,27 @@ function numericEnv(
     throw new ConfigError(`${name} must be ${requirement}`);
   }
   const value = Number(raw);
-  if (!accepts(value)) {
+  if (!accepts(value, raw.trim())) {
     throw new ConfigError(`${name} must be ${requirement}`);
   }
   return value;
 }
+
+/**
+ * Integers must be WRITTEN as integers. `Number()` happily reads hex
+ * (`0x50` is 80), exponents (`6e1` is 60), `-0` and `2.0`, and each of
+ * those in an env file is somebody not saying what they meant - the
+ * fail-closed rule covers the form, not just the value.
+ */
+const PLAIN_DIGITS = /^\d+$/;
 
 function positiveInteger(env: NodeJS.ProcessEnv, name: string, fallback: number): number {
   return numericEnv(
     env,
     name,
     fallback,
-    'a positive whole number',
-    (v) => Number.isInteger(v) && v > 0,
+    'a positive whole number, written in plain digits',
+    (v, raw) => PLAIN_DIGITS.test(raw) && Number.isInteger(v) && v > 0,
   );
 }
 
@@ -551,8 +559,8 @@ function nonNegativeInteger(env: NodeJS.ProcessEnv, name: string, fallback: numb
     env,
     name,
     fallback,
-    'a whole number, zero or more',
-    (v) => Number.isInteger(v) && v >= 0,
+    'a whole number, zero or more, written in plain digits',
+    (v, raw) => PLAIN_DIGITS.test(raw) && Number.isInteger(v) && v >= 0,
   );
 }
 
@@ -577,7 +585,7 @@ function boundedInteger(
     name,
     fallback,
     `a whole number between ${min} and ${max}`,
-    (v) => Number.isInteger(v) && v >= min && v <= max,
+    (v, raw) => PLAIN_DIGITS.test(raw) && Number.isInteger(v) && v >= min && v <= max,
   );
 }
 
@@ -916,7 +924,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     rateLimitMax: positiveInteger(env, 'REKODA_RATE_LIMIT_MAX', 60),
     /* Two orders a minute, sustained for an hour, from ONE shop page is a
      * very good day for a small merchant; a flood is something else. */
-    shopOrdersPerHour: positiveInteger(env, 'REKODA_SHOP_ORDERS_PER_HOUR', 120),
+    /* A BRAKE, so zero is a value: the gate is `recent >= limit`, and 0
+     * answers every storefront order `busy` - the incident kill switch this
+     * PR's own rule promises the brakes. */
+    shopOrdersPerHour: nonNegativeInteger(env, 'REKODA_SHOP_ORDERS_PER_HOUR', 120),
     transferVerifyMinSeconds: nonNegativeInteger(env, 'REKODA_TRANSFER_VERIFY_MIN_SECONDS', 5),
     /**
      * Required in production, optional elsewhere. An empty secret makes

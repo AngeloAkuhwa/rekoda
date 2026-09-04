@@ -273,7 +273,9 @@ export class MerchantTransferService {
        * never hidden by this: a webhook that already booked answers `paid`
        * above before the window is even consulted.
        */
-      const window = Math.max(0, this.config.transferVerifyMinSeconds);
+      /* Non-negative by construction: config refuses anything else at boot,
+       * so no runtime clamp re-states the invariant more weakly here. */
+      const window = this.config.transferVerifyMinSeconds;
       if (!(await paymentsHub.claimVerifySlot(tx, live.id, window))) {
         return { state: 'throttled' as const };
       }
