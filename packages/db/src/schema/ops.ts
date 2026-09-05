@@ -415,6 +415,14 @@ export const commandDrafts = pgTable(
     identityLink: jsonb('identity_link'),
     /** pending | superseded | confirmed | abandoned */
     state: text('state').notNull().default('pending'),
+    /**
+     * The ordering AUTHORITY for drafts (migration 0149). `pendingDraft`
+     * decides what a merchant's "yes" executes, and that decision must not
+     * ride on clock resolution or on the lexical order of random uuids.
+     * GENERATED ALWAYS: PostgreSQL assigns it, callers cannot.
+     */
+    insertionSeq: bigint('insertion_seq', { mode: 'number' }).notNull().generatedAlwaysAsIdentity(),
+    /** Time and provenance - never the final word on ordering. */
     createdAt: insertedAt('created_at'),
     /* Also `clock_timestamp()`, so a row does not claim to have been modified
      * before it existed: `now()` here would be the transaction's start, which
