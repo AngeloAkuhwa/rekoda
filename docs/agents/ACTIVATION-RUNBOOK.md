@@ -119,13 +119,19 @@ the failure states. GitHub must refuse the merge in every one:
       `builder:codex` drill (cross-role key reuse must also fail).
 - [ ] 22. Amendment-transaction drill (items C + D1): with all gates
       green at revision 1, the owner dispatches a contract revision and
-      the run log must show the full freeze-before-mutate order — every
-      linked PR's three required checks forced red FIRST, the signed
-      revision posted only after, then the direct gate redispatch — and
-      the merge box must never be green between the revision existing
-      and fresh rev-2 verdicts landing. Also verify a human issue-body
-      edit alone (a PROPOSAL) blocks the gates without ever becoming the
-      active contract.
+      the run log must show the full transaction order — the SIGNED
+      `REKODA_CONTRACT_AMENDMENT_FREEZE` marker posted FIRST (from that
+      comment on, every gate evaluation returns
+      `CONTRACT_AMENDMENT_IN_PROGRESS`), then every linked PR's three
+      required checks forced red by the per-PR barrier jobs, the signed
+      revision posted only after every barrier, then the direct gate
+      redispatch — and the merge box must never be green between the
+      freeze marker existing and fresh rev-2 verdicts landing, including
+      an amendment whose body hash is unchanged (revision number is part
+      of the signed snapshot). Also verify a human issue-body edit alone
+      (a PROPOSAL) blocks the gates without ever becoming the active
+      contract, and that a risk or builder label change without an
+      authorized revision blocks (`CONTRACT_LABELS_DIVERGED`).
 - [ ] 23. Escape drill (item E): remove the drill PR's risk and builder
       labels AND its closing reference → the gates stay red (sticky
       enrollment from exhaustively-paginated label history), never
