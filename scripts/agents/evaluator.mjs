@@ -712,14 +712,43 @@ export function isGoverned(state) {
 }
 
 /**
- * Fail-closed decision for publishing a check run (post-check.mjs): a
- * transient lookup failure is NOT proof that no check exists — abort
- * rather than risk a duplicate same-name check; and only a check run
- * from the expected app may be updated in place.
+ * Fail-closed decision for publishing a check run (post-check.mjs). The
+ * asymmetry is the point:
+ *
+ *   - healthy lookup → upsert in place (PATCH ours, POST when absent);
+ *     a same-name run from a foreign app is never adopted;
+ *   - lookup FAILED + a MERGE-AUTHORIZING conclusion (success — and
+ *     neutral, which GitHub's required checks also treat as passing) →
+ *     ABORT. Not writing it is itself fail-closed (the required check
+ *     stays missing or red), and a blind duplicate passing run would be
+ *     the one genuinely dangerous ambiguity;
+ *   - lookup FAILED + FAILURE conclusion → POST BLIND (degraded).
+ *     A revocation must never be abandoned because a READ failed: an
+ *     existing same-HEAD green would otherwise stay merge-authorizing.
+ *     Creating a NEWER same-name failure run is safe because GitHub's
+ *     required-check evaluation and filter=latest listing use the most
+ *     recent run per (name, app) — the newest failure governs, and the
+ *     next healthy upsert PATCHes that latest run. (If GitHub's entire
+ *     write API is down, nothing can mutate GitHub merge state — that
+ *     distributed boundary is stated, not hidden; the flaw eliminated
+ *     here is a LIST failure alone abandoning an invalidation.)
  */
-export function chooseCheckAction({ lookupOk, runs, name, appSlug = 'github-actions' }) {
-  if (!lookupOk)
-    return { action: 'abort', reason: 'existing-check lookup failed — cannot prove absence' };
+export function chooseCheckAction({
+  lookupOk,
+  runs,
+  name,
+  conclusion,
+  appSlug = 'github-actions',
+}) {
+  if (!lookupOk) {
+    if (conclusion !== 'failure')
+      return { action: 'abort', reason: 'existing-check lookup failed — cannot prove absence' };
+    return {
+      action: 'post',
+      degraded: true,
+      reason: 'lookup failed but a failure conclusion must land — newest run governs',
+    };
+  }
   const ours = (runs ?? []).find((r) => r.name === name && r.appSlug === appSlug);
   if (ours) return { action: 'patch', id: ours.id };
   return { action: 'post' };

@@ -12,6 +12,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync, sign as cryptoSign } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   MARKERS,
   evaluate,
@@ -1856,9 +1859,33 @@ test('resolver: a second open candidate on a later page makes the request ambigu
 // chooseCheckAction — fail-closed upsert decision with app verification
 // ---------------------------------------------------------------------------
 
-test('check upsert: a failed lookup ABORTS — absence is never assumed, no blind POST', () => {
-  const d = chooseCheckAction({ lookupOk: false, runs: [], name: 'Technical Review Gate' });
-  assert.equal(d.action, 'abort');
+test('check upsert: a failed lookup ABORTS a passing conclusion — absence of green already blocks; no blind duplicate-passing', () => {
+  for (const conclusion of ['success', 'neutral']) {
+    const d = chooseCheckAction({
+      lookupOk: false,
+      runs: [],
+      name: 'Technical Review Gate',
+      conclusion,
+    });
+    assert.equal(d.action, 'abort', `${conclusion} must abort on lookup failure`);
+  }
+});
+
+test('check upsert: a failed lookup NEVER abandons a FAILURE — the revocation posts blind and the newest run governs', () => {
+  // The stale-green scenario: an old SUCCESS exists on this HEAD, the
+  // current state says BLOCK, and the read needed to find the old run
+  // fails. Abandoning the write would leave the old green
+  // merge-authorizing; instead the failure is POSTed blind — GitHub
+  // evaluates the most recent run per (name, app), so the new failure
+  // governs the required check.
+  const d = chooseCheckAction({
+    lookupOk: false,
+    runs: [],
+    name: 'Technical Review Gate',
+    conclusion: 'failure',
+  });
+  assert.equal(d.action, 'post');
+  assert.equal(d.degraded, true);
 });
 
 test('check upsert: an existing GitHub-Actions run of the same name is PATCHed in place', () => {
@@ -2310,4 +2337,202 @@ test('parsePrNumbersJson: anything but a JSON array of positive integers fails c
   assert.equal(parsePrNumbersJson('70 73'), null);
   assert.equal(parsePrNumbersJson(''), null);
   assert.equal(parsePrNumbersJson(null), null);
+});
+
+// ---------------------------------------------------------------------------
+// Governance is decided from CURRENT state — never a resolver-time snapshot
+// ---------------------------------------------------------------------------
+
+test('a PR ungoverned at resolve time that gains agent labels is governed on re-evaluation — never neutral-green', () => {
+  // Resolver-time snapshot: a plain PR.
+  const before = {
+    pr: {
+      riskLabels: [],
+      builderLabels: [],
+      enrollment: { everLabeledAgent: false, complete: true },
+    },
+    issue: null,
+  };
+  assert.equal(isGoverned(before), false);
+  // The finalizer re-normalizes: the SAME PR now carries agent labels.
+  const after = {
+    ...before,
+    pr: { ...before.pr, riskLabels: ['risk:R1'], builderLabels: ['builder:claude'] },
+  };
+  assert.equal(isGoverned(after), true);
+  // …or now closes an agent-task issue.
+  const viaIssue = { ...before, issue: { agentTask: true } };
+  assert.equal(isGoverned(viaIssue), true);
+  // …or its sticky label-event history is discovered late.
+  const viaHistory = {
+    ...before,
+    pr: { ...before.pr, enrollment: { everLabeledAgent: true, complete: true } },
+  };
+  assert.equal(isGoverned(viaHistory), true);
+  // Unprovable enrollment can never look neutral either.
+  const unprovable = {
+    ...before,
+    pr: { ...before.pr, enrollment: { everLabeledAgent: false, complete: false } },
+  };
+  assert.equal(isGoverned(unprovable), true);
+});
+
+// ---------------------------------------------------------------------------
+// Threat: a tampered PR-branch review-context helper cannot move the contract
+// ---------------------------------------------------------------------------
+
+test('THREAT: attacker-selected snapshot hash (tampered PR-branch helper) never validates — the target hash derives from issue state only', () => {
+  // A Claude-built PR edits review-context.mjs to print an
+  // attacker-chosen CONTRACT_SNAPSHOT_SHA256 with APPROVE instructions.
+  // The gates compute the target snapshot hash from the ISSUE's signed
+  // contract with trusted default-branch code — nothing in the PR's
+  // file tree is an input to it — so a Codex marker binding the
+  // attacker's hash is rejected, and only the true hash validates.
+  const attackerHash = sha256Hex('attacker-selected value');
+  const s = validState();
+  s.techEvidence.candidates = [
+    codexReview({ body: marker(MARKERS.codex, { contractHash: attackerHash }) }),
+  ];
+  expectBlock(s, 'TECH_WRONG_CONTRACT');
+  // The true hash (issue-derived) still validates — proving the target
+  // came from the issue contract, not from any reviewed file content.
+  s.techEvidence.candidates = [codexReview({ body: marker(MARKERS.codex) })];
+  assert.deepEqual(evaluate(s), { pass: true, reasons: [] });
+});
+
+// ---------------------------------------------------------------------------
+// READY promotion — every participating label may arrive last
+// ---------------------------------------------------------------------------
+
+test('READY promotion: ALL label-arrival orders promote exactly at the completing event — including risk LAST', () => {
+  const required = ['agent-task', 'status:ready', 'builder:claude', 'risk:R2'];
+  // Every permutation: each proper prefix declines; the full set proceeds.
+  const permute = (arr) =>
+    arr.length <= 1
+      ? [arr]
+      : arr.flatMap((x, i) =>
+          permute([...arr.slice(0, i), ...arr.slice(i + 1)]).map((p) => [x, ...p]),
+        );
+  for (const order of permute(required)) {
+    for (let k = 1; k < order.length; k++) {
+      assert.equal(
+        readyPromotionAction({ labels: order.slice(0, k) }).proceed,
+        false,
+        `prefix ${order.slice(0, k).join(',')} must decline`,
+      );
+    }
+    const full = readyPromotionAction({ labels: order });
+    assert.equal(full.proceed, true, `full set ${order.join(',')} must promote`);
+    assert.equal(full.dispatchClaude, true);
+    assert.equal(full.risk, 'risk:R2');
+  }
+});
+
+test('READY promotion: removing the blocking decision label is the completing transition', () => {
+  const withBlock = [
+    'agent-task',
+    'status:ready',
+    'builder:codex',
+    'risk:R1',
+    'needs-owner-decision',
+  ];
+  assert.equal(readyPromotionAction({ labels: withBlock }).proceed, false);
+  const cleared = withBlock.filter((l) => l !== 'needs-owner-decision');
+  assert.deepEqual(readyPromotionAction({ labels: cleared }), {
+    proceed: true,
+    dispatchClaude: false,
+    risk: 'risk:R1',
+    builder: 'builder:codex',
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Static workflow-graph assertions — the dependency/trigger shape itself
+// ---------------------------------------------------------------------------
+
+const WORKFLOWS_DIR = join(
+  dirname(fileURLToPath(import.meta.url)),
+  '..',
+  '..',
+  '.github',
+  'workflows',
+);
+const gatesYml = readFileSync(join(WORKFLOWS_DIR, 'agent-gates.yml'), 'utf8');
+const authorityYml = readFileSync(join(WORKFLOWS_DIR, 'agent-contract-authority.yml'), 'utf8');
+
+/** The YAML text of one job, from its header to the next top-level job. */
+function jobBlock(yml, jobId) {
+  const m = yml.match(new RegExp(`\\n  ${jobId}:\\n([\\s\\S]*?)(?=\\n  [a-z_]+:\\n|$)`));
+  assert.ok(m, `job ${jobId} must exist`);
+  return m[0];
+}
+
+test('WORKFLOW GRAPH: both AI reviewer jobs depend on invalidate and require its SUCCESS', () => {
+  for (const job of ['technical_ai', 'acceptance_ai']) {
+    const block = jobBlock(gatesYml, job);
+    assert.ok(
+      /needs:\s*\[resolve,\s*invalidate\]/.test(block),
+      `${job} must need [resolve, invalidate]`,
+    );
+    assert.ok(
+      block.includes("needs.invalidate.result == 'success'"),
+      `${job} must require the invalidation to have SUCCEEDED before any fresh review starts`,
+    );
+  }
+});
+
+test('WORKFLOW GRAPH: the finalizer refuses to run after a FAILED invalidation and never trusts resolver-time governance', () => {
+  const finalize = jobBlock(gatesYml, 'finalize');
+  assert.ok(
+    finalize.includes(
+      "needs.invalidate.result == 'success' || needs.invalidate.result == 'skipped'",
+    ),
+    'finalize must be gated on invalidation success-or-skipped',
+  );
+  assert.ok(
+    !finalize.includes('needs.resolve.outputs.governed'),
+    'finalize must not read resolver-time governance',
+  );
+  assert.ok(!/GOVERNED:/.test(finalize), 'finalize must carry no resolver-time GOVERNED env');
+  // The neutral publication must come AFTER the fresh normalization.
+  const normalizeAt = finalize.indexOf('normalize.mjs');
+  const neutralAt = finalize.indexOf('Not agent-governed');
+  assert.ok(
+    normalizeAt > -1 && neutralAt > -1 && normalizeAt < neutralAt,
+    'the neutral path must be decided only after re-normalizing CURRENT state',
+  );
+});
+
+test('WORKFLOW GRAPH: only invalidate, finalize (gates) and barrier (authority) write checks; publishers are evidence-only', () => {
+  for (const job of ['technical', 'acceptance']) {
+    const block = jobBlock(gatesYml, job);
+    assert.ok(!/checks:\s*write/.test(block), `${job} publisher must not hold checks: write`);
+    assert.ok(!block.includes('post-check.mjs'), `${job} publisher must not write checks`);
+  }
+  for (const job of ['invalidate', 'finalize']) {
+    assert.ok(/checks:\s*write/.test(jobBlock(gatesYml, job)), `${job} must hold checks: write`);
+  }
+  assert.ok(
+    /checks:\s*write/.test(jobBlock(authorityYml, 'barrier')),
+    'barrier must hold checks: write',
+  );
+});
+
+test('WORKFLOW GRAPH: baseline promotion triggers symmetrically on every participating label — risk included — and on decision-label removal', () => {
+  const baseline = jobBlock(authorityYml, 'baseline');
+  for (const needle of [
+    "github.event.label.name == 'status:ready'",
+    "github.event.label.name == 'agent-task'",
+    "startsWith(github.event.label.name, 'builder:')",
+    "startsWith(github.event.label.name, 'risk:')",
+    "github.event.action == 'unlabeled'",
+    "github.event.label.name == 'needs-owner-decision'",
+    "github.event.label.name == 'status:blocked-decision'",
+  ]) {
+    assert.ok(baseline.includes(needle), `baseline trigger must include: ${needle}`);
+  }
+  assert.ok(
+    /types:\s*\[labeled,\s*unlabeled\]/.test(authorityYml),
+    'issues trigger must include unlabeled',
+  );
 });

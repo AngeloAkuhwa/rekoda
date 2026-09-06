@@ -40,8 +40,12 @@
 #     displaced pending FINALIZER is replaced only by a NEWER job whose
 #     own run's finalizer republishes the COMPLETE three-check state
 #     from fresher state — never a partial update, never a lost gate
-#     conclusion. The red-only invalidator can never create green, so
-#     its displacement costs nothing but an early warning.
+#     conclusion. The red-only invalidator can never create green; the
+#     AI lanes REQUIRE its success before starting (no fresh review runs
+#     while an old same-HEAD green could still authorize), and a failed
+#     or displaced invalidation skips the lanes AND the finalizer — the
+#     fresh-review request simply never became authoritative and the
+#     run fails visibly.
 #
 # CHECK DELIVERY. Checks are upserted in place via the Checks API on the
 # resolved PR HEAD — one name+SHA never carries ambiguous duplicate
@@ -245,8 +249,15 @@ jobs:
 
   technical_ai:
     name: Technical review — AI (no signing key)
-    needs: resolve
-    if: needs.resolve.outputs.need_claude_ai == 'true'
+    # A fresh review NEVER starts while the old same-HEAD green could
+    # still authorize a merge: the red-only invalidation must have
+    # SUCCEEDED first (it runs whenever any fresh verdict is needed). If
+    # invalidation fails, no AI lane starts, no fresh review is
+    # considered active, and the run fails visibly.
+    needs: [resolve, invalidate]
+    if: >-
+      needs.resolve.outputs.need_claude_ai == 'true' &&
+      needs.invalidate.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     # References ONLY the AI credential from agents-claude-reviewer; the
@@ -452,8 +463,12 @@ jobs:
 
   acceptance_ai:
     name: Acceptance review — AI (no signing key)
-    needs: resolve
-    if: needs.resolve.outputs.need_gemini_ai == 'true'
+    # See technical_ai: invalidation must SUCCEED before any fresh
+    # review starts.
+    needs: [resolve, invalidate]
+    if: >-
+      needs.resolve.outputs.need_gemini_ai == 'true' &&
+      needs.invalidate.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     # References ONLY the AI credential from agents-gemini-reviewer.
@@ -679,8 +694,14 @@ jobs:
   finalize:
     name: Finalize — publish all three gate conclusions
     needs: [resolve, invalidate, technical_ai, technical, acceptance_ai, acceptance]
+    # Runs whatever the lanes did — EXCEPT after a FAILED invalidation:
+    # then the fresh-review request never became authoritative, no AI
+    # ran, nothing is republished, and the run's own failure is the
+    # visible signal (any partially-written invalidation reds are safe —
+    # red-only).
     if: >-
-      !cancelled() && needs.resolve.result == 'success' && needs.resolve.outputs.pr != ''
+      !cancelled() && needs.resolve.result == 'success' && needs.resolve.outputs.pr != '' &&
+      (needs.invalidate.result == 'success' || needs.invalidate.result == 'skipped')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     concurrency:
@@ -695,9 +716,6 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       PR: ${{ needs.resolve.outputs.pr }}
       HEAD_SHA: ${{ needs.resolve.outputs.head_sha }}
-      GOVERNED: ${{ needs.resolve.outputs.governed }}
-      IS_FORK: ${{ needs.resolve.outputs.fork }}
-      IS_DRAFT: ${{ needs.resolve.outputs.draft }}
       FORCE_REVIEW: ${{ github.event_name == 'workflow_dispatch' }}
       TECH_AI_RESULT: ${{ needs.technical_ai.result || 'skipped' }}
       GEMINI_AI_RESULT: ${{ needs.acceptance_ai.result || 'skipped' }}
@@ -711,30 +729,43 @@ jobs:
       - name: Compute and publish the complete three-check state
         run: |
           set -euo pipefail
-          if [ "$GOVERNED" != "true" ]; then
+          # CURRENT state decides EVERYTHING — resolver-time snapshots
+          # decide NOTHING here. Governance in particular may have been
+          # gained after resolve (labels, a closing reference, sticky
+          # enrollment history discovered late); a neutral-green
+          # conclusion from stale governance would bypass every reviewer
+          # gate. So: normalize/re-fetch first, inside the per-PR group,
+          # and only the FRESH sticky-governance verdict picks the path.
+          # Unprovable state never reaches a conclusion: normalize fails
+          # hard on unprovable listings, and an unprovably complete
+          # enrollment history makes isGoverned() TRUE (governed path)
+          # where the policy evaluation then blocks.
+          node scripts/agents/normalize.mjs --repo "$REPO" --pr "$PR" --out /tmp/state-final.json
+          node scripts/agents/run-gate.mjs --state /tmp/state-final.json --print-context > /tmp/ctx.txt
+          ctx() { grep "^$1=" /tmp/ctx.txt | head -1 | cut -d= -f2-; }
+          fresh_head=$(ctx head_sha)
+          governed=$(ctx governed)
+          fork=$(ctx fork)
+          draft=$(ctx draft)
+          if [ "$fresh_head" != "$HEAD_SHA" ]; then
+            echo "The PR moved past $HEAD_SHA — this evaluation is superseded; the new head's own run finalizes."
+            exit 0
+          fi
+          if [ "$governed" != "true" ]; then
             for name in "Agent policy gate" "Technical Review Gate" "Gemini Acceptance Gate"; do
               node scripts/agents/post-check.mjs --repo "$REPO" --name "$name" --sha "$HEAD_SHA" \
                 --conclusion success --title "Not agent-governed" \
-                --summary "This PR has never entered the autonomous agent lane; the gate passes neutrally."
+                --summary "This PR has never entered the autonomous agent lane (verified against CURRENT state and the complete label-event history); the gate passes neutrally."
             done
             exit 0
           fi
-          if [ "$IS_FORK" = "true" ]; then
+          if [ "$fork" = "true" ]; then
             for name in "Agent policy gate" "Technical Review Gate" "Gemini Acceptance Gate"; do
               node scripts/agents/post-check.mjs --repo "$REPO" --name "$name" --sha "$HEAD_SHA" \
                 --conclusion failure --title "Fork PR" \
                 --summary "Agent-governed PRs must come from branches of this repository, never forks."
             done
             exit 1
-          fi
-
-          # ONE current state decides all three conclusions.
-          node scripts/agents/normalize.mjs --repo "$REPO" --pr "$PR" --out /tmp/state-final.json
-          node scripts/agents/run-gate.mjs --state /tmp/state-final.json --print-context > /tmp/ctx.txt
-          fresh_head=$(grep '^head_sha=' /tmp/ctx.txt | cut -d= -f2)
-          if [ "$fresh_head" != "$HEAD_SHA" ]; then
-            echo "The PR moved past $HEAD_SHA — this evaluation is superseded; the new head's own run finalizes."
-            exit 0
           fi
 
           fail=0
@@ -749,7 +780,7 @@ jobs:
               --summary "Structural policy blocked HEAD $HEAD_SHA — see the run log for machine-readable reasons (docs/AUTONOMOUS-ENGINEERING.md §6)."
           fi
 
-          if [ "$IS_DRAFT" = "true" ] && [ "$FORCE_REVIEW" != "true" ]; then
+          if [ "$draft" = "true" ] && [ "$FORCE_REVIEW" != "true" ]; then
             node scripts/agents/post-check.mjs --repo "$REPO" --name "Technical Review Gate" --sha "$HEAD_SHA" \
               --conclusion success --title "Draft" --summary "Review runs when the PR is marked ready."
             node scripts/agents/post-check.mjs --repo "$REPO" --name "Gemini Acceptance Gate" --sha "$HEAD_SHA" \

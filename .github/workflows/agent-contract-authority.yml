@@ -58,7 +58,7 @@ name: Agent — contract authority
 
 on:
   issues:
-    types: [labeled]
+    types: [labeled, unlabeled]
   workflow_dispatch:
     inputs:
       mode:
@@ -334,17 +334,26 @@ jobs:
   # ---------------------------------------------------------------- #
   baseline:
     name: Record baseline and hand off (READY promotion)
-    # Label path: any of the participating labels may arrive LAST; each
-    # event only triggers a re-check — the decision is made against the
-    # RE-FETCHED current labels (readyPromotionAction). Dispatch path:
-    # the planner (or the owner) explicitly requests baseline recording;
-    # the issue number is only a REQUEST and every fact is re-verified.
+    # Label path: EVERY participating label is a symmetric trigger —
+    # agent-task, status:ready, builder:*, and risk:* additions (ANY of
+    # them may arrive last), plus REMOVAL of a blocking decision label
+    # (needs-owner-decision / status:blocked-decision), whose transition
+    # can also make the issue admissible. Each event is only a REQUEST
+    # to re-check: the decision is always made against the RE-FETCHED
+    # current labels through the one canonical readyPromotionAction() —
+    # no event snapshot ever decides eligibility. Dispatch path: the
+    # planner (or the owner) explicitly requests baseline recording; the
+    # issue number is only a REQUEST and every fact is re-verified.
     if: |
       (github.event_name == 'workflow_dispatch' && inputs.mode == 'baseline') ||
       (github.event_name == 'issues' && github.event.action == 'labeled' &&
        (github.event.label.name == 'status:ready' ||
         github.event.label.name == 'agent-task' ||
-        startsWith(github.event.label.name, 'builder:')))
+        startsWith(github.event.label.name, 'builder:') ||
+        startsWith(github.event.label.name, 'risk:'))) ||
+      (github.event_name == 'issues' && github.event.action == 'unlabeled' &&
+       (github.event.label.name == 'needs-owner-decision' ||
+        github.event.label.name == 'status:blocked-decision'))
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: agents-contract-authority

@@ -749,10 +749,28 @@ What remains, honestly:
    prove it one way or the other.
 2. **Codex reads AGENTS.md from the reviewed PR.** Codex's native review
    loads Code Review Rules from the repository content it reviews, which
-   for a PR can include the PR's own edit of AGENTS.md. Outside our
-   workflow control; mitigations: AGENTS.md is CODEOWNERS-owned, and the
-   marker's HEAD/revision binding is validated by our evaluator
-   regardless of what the review prose says.
+   for a PR can include the PR's own edit of AGENTS.md — so the
+   INSTRUCTION channel to native Codex cannot be technically guaranteed
+   by us; we state that plainly rather than claim independence we do
+   not have. Layered mitigations, each independent of Codex compliance:
+   (a) the trusted instructions direct Codex to a `git worktree` of
+   `origin/main` for ALL reviewer rules and helpers
+   (`review-context.mjs`, the evaluator) — policy code is never
+   executed from the PR checkout, and a divergence between the PR's
+   policy files and trusted main is itself a mandatory finding;
+   (b) every policy surface (AGENTS.md, CLAUDE.md, GEMINI.md,
+   `/scripts/`, `/.github/`) is CODEOWNERS-owned, so a PR that tampers
+   with the reviewer contract cannot merge without the owner's own
+   review regardless of what any AI concluded; and (c) the EVIDENCE
+   layer never trusts the review prose: the gates compute the contract
+   snapshot hash from GitHub issue state with trusted default-branch
+   code, and a Codex marker binding any other hash, revision, HEAD, or
+   PR is rejected (`TECH_WRONG_CONTRACT` et al.) — a tampered helper
+   can at most produce a marker the evaluator refuses, never smuggle an
+   approval for the wrong contract. The residual is reviewer JUDGMENT
+   subversion on a policy-file-touching PR before the owner's
+   code-owner review — which that same owner review is the designed
+   backstop for.
 3. **Gemini's file writes are not path-confined.** `write_file` has no
    path restriction in the Gemini CLI tool allowlist; enforcement is the
    read-only token plus post-run tracked-tree detection.

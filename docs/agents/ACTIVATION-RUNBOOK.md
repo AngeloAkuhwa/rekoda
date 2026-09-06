@@ -181,6 +181,25 @@ the failure states. GitHub must refuse the merge in every one:
       re-verifies the baseline before claiming the lane. A manual
       builder dispatch against a never-baselined issue must be refused
       with NO lane claim and NO secret-bearing builder job.
+- [ ] 32. Degraded-revocation drill (newest-run-wins live proof): with a
+      gate check SUCCESS on the drill HEAD, run `post-check.mjs` with a
+      failure conclusion while the lookup is forced to fail (e.g. a
+      temporarily invalid `check_name` query path or a revoked token for
+      the read only) so the BLIND failure POST executes — then verify in
+      the merge box and via
+      `commits/<sha>/check-runs?check_name=<name>` (filter=latest) that
+      the NEWEST run governs: the required check shows the failure, the
+      merge box is red, and a later healthy success upsert PATCHes that
+      latest run back green. An existing green must never remain
+      merge-authorizing merely because the read failed.
+- [ ] 33. Late-governance drill: open a plain (ungoverned) PR, let the
+      gates publish the three neutral successes, then add `risk:R1` +
+      `builder:claude` and a closing reference to an agent-task issue —
+      the next gates run's finalizer must re-resolve CURRENT governance
+      and flip all three gates to governed evaluation (red until real
+      evidence), never repeating the neutral pass. Also verify a forced
+      same-HEAD re-review flips the affected gate red BEFORE the AI lane
+      starts (the invalidation job precedes reviewer execution).
 
 ## D. Positive auto-merge drill
 
