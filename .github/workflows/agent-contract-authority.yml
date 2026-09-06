@@ -38,6 +38,8 @@ on:
 permissions:
   contents: read
   issues: write
+  actions: write # direct redispatch of Agent — gates after a contract change
+  pull-requests: read
 
 concurrency:
   group: contract-authority-${{ github.event.issue.number || inputs.issue }}
@@ -59,27 +61,39 @@ jobs:
       ISSUE: ${{ github.event.issue.number || inputs.issue }}
       ACTOR: ${{ github.actor }}
     steps:
-      - name: Resolve the immutable trusted-governance SHA
-        id: trusted
-        run: |
-          set -euo pipefail
-          sha=$(gh api "repos/$REPO/commits/heads/main" --jq .sha)
-          echo "Trusted governance SHA: $sha"
-          echo "sha=$sha" >> "$GITHUB_OUTPUT"
-
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # issues/workflow_dispatch events execute the default-branch
+      # definition; github.sha IS that trusted commit — definition and
+      # policy share one immutable trust root.
+      - name: Checkout trusted policy at the definition's own SHA
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: ${{ steps.trusted.outputs.sha }}
+          ref: ${{ github.sha }}
           fetch-depth: 1
 
+      - name: Trusted root
+        run: echo "Definition and policy trust root — default-branch SHA ${{ github.sha }}"
+
       - name: Authorize actor
+        env:
+          OWNER_LOGIN: AngeloAkuhwa
         run: |
           set -euo pipefail
-          perm=$(gh api "repos/$REPO/collaborators/$ACTOR/permission" --jq .permission)
-          case "$perm" in
-            admin|maintain|write) echo "Actor $ACTOR permission: $perm" ;;
-            *) echo "::error::Actor $ACTOR (permission: $perm) may not drive contract authority."; exit 1 ;;
-          esac
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            # Contract AMENDMENTS after implementation begins are
+            # OWNER-ONLY (docs/AUTONOMOUS-ENGINEERING.md §6): no write
+            # collaborator may sign new requirements.
+            if [ "$ACTOR" != "$OWNER_LOGIN" ]; then
+              echo "::error::Contract amendments are owner-only; actor $ACTOR is not @$OWNER_LOGIN."
+              exit 1
+            fi
+          else
+            # Baseline recording on READY promotion: write+ actor.
+            perm=$(gh api "repos/$REPO/collaborators/$ACTOR/permission" --jq .permission)
+            case "$perm" in
+              admin|maintain|write) echo "Actor $ACTOR permission: $perm" ;;
+              *) echo "::error::Actor $ACTOR (permission: $perm) may not drive contract authority."; exit 1 ;;
+            esac
+          fi
 
       - name: Post the signed marker
         env:
@@ -106,3 +120,27 @@ jobs:
             node scripts/agents/contract-revision.mjs --repo "$REPO" --issue "$ISSUE" \
               --baseline --sign-env CONTRACT_AUTHORITY_SIGNING_KEY --post
           fi
+
+      - name: Directly redispatch the gates for every open PR closing this issue
+        # GitHub suppresses workflow events created by GITHUB_TOKEN
+        # comments, so the authority NEVER relies on its own comment
+        # triggering a watcher: it dispatches the privileged gates
+        # itself (workflow_dispatch is exempt from that suppression).
+        run: |
+          set -euo pipefail
+          gh api "repos/$REPO/pulls?state=open&per_page=100" > /tmp/open-prs.json
+          node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            import { linkedOpenPrs } from "./scripts/agents/evaluator.mjs";
+            const prs = JSON.parse(readFileSync("/tmp/open-prs.json", "utf8"));
+            console.log(linkedOpenPrs(prs, Number(process.env.ISSUE)).join("\n"));
+          ' > /tmp/linked-prs.txt
+          if [ ! -s /tmp/linked-prs.txt ]; then
+            echo "No open PR closes #$ISSUE — nothing to redispatch."
+            exit 0
+          fi
+          while IFS= read -r pr; do
+            [ -n "$pr" ] || continue
+            echo "Contract changed on #$ISSUE — redispatching the gates for PR #$pr at its current HEAD."
+            gh workflow run agent-gates.yml --repo "$REPO" --ref main -f pr="$pr"
+          done < /tmp/linked-prs.txt

@@ -26,6 +26,10 @@ import {
   issueFormField,
   isGoverned,
   isActorAuthorized,
+  isContractAmendmentAuthorized,
+  evaluateBuildAdmission,
+  linkedOpenPrs,
+  SCHEME,
 } from './evaluator.mjs';
 
 const HEAD = 'a'.repeat(40);
@@ -67,6 +71,7 @@ function marker(
   const m = { name, pr, issue, headSha: head, contractRevision: rev, verdict };
   const lines = [
     `${name}`,
+    `SCHEME: ${SCHEME}`,
     `PR: ${pr}`,
     `ISSUE: ${issue}`,
     `HEAD_SHA: ${head}`,
@@ -90,7 +95,13 @@ function contractComment({
   id = 1,
 } = {}) {
   const m = { kind, issue, revision, bodySha256: sha256Hex(normalizeBody(body)), reason };
-  const lines = [kind, `ISSUE: ${issue}`, `REVISION: ${revision}`, `BODY_SHA256: ${m.bodySha256}`];
+  const lines = [
+    kind,
+    `SCHEME: ${SCHEME}`,
+    `ISSUE: ${issue}`,
+    `REVISION: ${revision}`,
+    `BODY_SHA256: ${m.bodySha256}`,
+  ];
   if (kind === 'REKODA_CONTRACT_REVISION') lines.push(`REASON: ${reason}`);
   if (key) lines.push(`SIGNATURE: ${signWith(key, canonicalContractPayload(m))}`);
   return { author, createdAt, id, body: lines.join('\n') };
@@ -116,7 +127,7 @@ function validState(overrides = {}) {
       riskLabels: ['risk:R1'],
       builderLabels: ['builder:claude'],
       author: 'claude[bot]',
-      everLabeledAgent: true,
+      enrollment: { everLabeledAgent: true, complete: true },
     },
     prBody: 'Closes #44',
     issue: {
@@ -573,7 +584,7 @@ test('a never-enrolled ordinary PR is not governed', () => {
   const s = validState();
   s.pr.riskLabels = [];
   s.pr.builderLabels = [];
-  s.pr.everLabeledAgent = false;
+  s.pr.enrollment = { everLabeledAgent: false, complete: true };
   s.prBody = 'Human PR.';
   s.issue = null;
   assert.equal(isGoverned(s), false);
@@ -823,4 +834,263 @@ test('parseClosingRefs finds distinct closing keywords only', () => {
 test('issueFormField extracts issue-form sections and treats _No response_ as empty', () => {
   assert.equal(issueFormField(ISSUE_BODY, 'Owner decision reference'), null);
   assert.equal(issueFormField(ISSUE_BODY, 'Outcome'), 'A working thing.');
+});
+
+// ---------------------------------------------------------------------------
+// Protocol scheme/version (audit item 5)
+// ---------------------------------------------------------------------------
+
+test('16g. a marker without a SCHEME line is malformed and never counts', () => {
+  const s = validState();
+  const noScheme = marker(MARKERS.gemini, { key: GEMINI_KEY }).replace(`SCHEME: ${SCHEME}\n`, '');
+  s.geminiEvidence.candidates = [
+    { author: ACTIONS, kind: 'comment', createdAt: 'x', id: 1, body: noScheme },
+  ];
+  expectBlock(s, 'GEMINI_MALFORMED');
+});
+
+test('16h. an unknown/future scheme is rejected even with a valid-looking signature', () => {
+  const s = validState();
+  const future = marker(MARKERS.gemini, { key: GEMINI_KEY }).replace(
+    `SCHEME: ${SCHEME}`,
+    'SCHEME: REKODA_AGENT_EVIDENCE_V9',
+  );
+  s.geminiEvidence.candidates = [
+    { author: ACTIONS, kind: 'comment', createdAt: 'x', id: 1, body: future },
+  ];
+  expectBlock(s, 'GEMINI_MALFORMED');
+  const sc = validState();
+  sc.techEvidence.candidates = [
+    codexReview({ body: marker(MARKERS.codex).replace(`SCHEME: ${SCHEME}`, 'SCHEME: OTHER') }),
+  ];
+  expectBlock(sc, 'TECH_MALFORMED');
+});
+
+test('16i. a contract marker with a wrong scheme does not count', () => {
+  const s = validState();
+  const c = contractComment();
+  c.body = c.body.replace(`SCHEME: ${SCHEME}`, 'SCHEME: NOPE');
+  s.issue.comments = [c];
+  expectBlock(s, 'CONTRACT_BASELINE_MISSING');
+});
+
+// ---------------------------------------------------------------------------
+// Sticky governance: complete history or fail closed (audit item 10)
+// ---------------------------------------------------------------------------
+
+test('11g/12g. incomplete or failed enrollment history fails CLOSED, never neutral', () => {
+  const s = validState();
+  s.pr.riskLabels = [];
+  s.pr.builderLabels = [];
+  s.prBody = 'Nothing here.';
+  s.issue = null;
+  s.pr.enrollment = { everLabeledAgent: false, complete: false }; // pagination not exhausted / API failure
+  assert.equal(isGoverned(s), true);
+  expectBlock(s, 'ENROLLMENT_HISTORY_INCOMPLETE', 'policy');
+  // reviewer gates also refuse while governance is unprovable
+  expectBlock(s, 'ENROLLMENT_HISTORY_INCOMPLETE', 'technical');
+  expectBlock(s, 'ENROLLMENT_HISTORY_INCOMPLETE', 'acceptance');
+});
+
+// ---------------------------------------------------------------------------
+// Verdict ordering across id domains (audit item 15)
+// ---------------------------------------------------------------------------
+
+test('15g. contradictory contemporaneous verdicts across id domains fail closed', () => {
+  const t = '2026-09-02T00:00:00Z';
+  const s = codexBuiltState();
+  s.techEvidence.candidates = [
+    {
+      author: ACTIONS,
+      kind: 'comment',
+      createdAt: t,
+      id: 5,
+      body: marker(MARKERS.claude, { key: CLAUDE_KEY, verdict: 'APPROVE' }),
+    },
+    {
+      author: ACTIONS,
+      kind: 'review',
+      createdAt: t,
+      id: 999999,
+      body: marker(MARKERS.claude, { key: CLAUDE_KEY, verdict: 'BLOCK' }),
+    },
+  ];
+  expectBlock(s, 'TECH_AMBIGUOUS_ORDER');
+});
+
+test('15h. contemporaneous agreeing verdicts across domains are fine; a later one still governs', () => {
+  const t = '2026-09-02T00:00:00Z';
+  const s = codexBuiltState();
+  s.techEvidence.candidates = [
+    {
+      author: ACTIONS,
+      kind: 'comment',
+      createdAt: t,
+      id: 5,
+      body: marker(MARKERS.claude, { key: CLAUDE_KEY }),
+    },
+    {
+      author: ACTIONS,
+      kind: 'review',
+      createdAt: t,
+      id: 999999,
+      body: marker(MARKERS.claude, { key: CLAUDE_KEY }),
+    },
+  ];
+  assert.equal(evaluate(s).pass, true);
+  s.techEvidence.candidates.push({
+    author: ACTIONS,
+    kind: 'comment',
+    createdAt: '2026-09-03T00:00:00Z',
+    id: 6,
+    body: marker(MARKERS.claude, { key: CLAUDE_KEY, verdict: 'BLOCK' }),
+  });
+  expectBlock(s, 'TECH_BLOCK'); // clearly-later valid verdict wins
+});
+
+// ---------------------------------------------------------------------------
+// Build admission (audit items 8/11) — the no-secret preflight's brain
+// ---------------------------------------------------------------------------
+
+const readyIssue = (over = {}) => ({
+  number: 60,
+  exists: true,
+  state: 'open',
+  agentTask: true,
+  labels: ['agent-task', 'risk:R1', 'builder:claude', 'status:ready'],
+  riskLabels: ['risk:R1'],
+  builderLabels: ['builder:claude'],
+  ...over,
+});
+
+test('a valid READY builder:claude issue is admitted when the lane is free', () => {
+  const r = evaluateBuildAdmission({
+    issue: readyIssue(),
+    requiredBuilder: 'builder:claude',
+    openLanes: [],
+  });
+  assert.deepEqual(r, { admit: true, reasons: [] });
+});
+
+test('6g. an unrelated/non-agent issue is rejected', () => {
+  const r = evaluateBuildAdmission({
+    issue: readyIssue({ agentTask: false, labels: ['status:ready'] }),
+    requiredBuilder: 'builder:claude',
+    openLanes: [],
+  });
+  assert.equal(r.admit, false);
+  assert.ok(r.reasons.some((x) => x.code === 'ADMIT_NOT_AGENT_TASK'));
+});
+
+test('7g. a builder:codex issue never admits the Claude builder', () => {
+  const r = evaluateBuildAdmission({
+    issue: readyIssue({
+      builderLabels: ['builder:codex'],
+      labels: ['agent-task', 'risk:R1', 'builder:codex', 'status:ready'],
+    }),
+    requiredBuilder: 'builder:claude',
+    openLanes: [],
+  });
+  assert.ok(r.reasons.some((x) => x.code === 'ADMIT_WRONG_BUILDER'));
+});
+
+test('8g. a closed or missing issue is rejected', () => {
+  assert.ok(
+    evaluateBuildAdmission({
+      issue: readyIssue({ state: 'closed' }),
+      requiredBuilder: 'builder:claude',
+      openLanes: [],
+    }).reasons.some((x) => x.code === 'ADMIT_ISSUE_NOT_OPEN'),
+  );
+  assert.ok(
+    evaluateBuildAdmission({
+      issue: null,
+      requiredBuilder: 'builder:claude',
+      openLanes: [],
+    }).reasons.some((x) => x.code === 'ADMIT_ISSUE_NOT_FOUND'),
+  );
+});
+
+test('9g. blocked-decision / needs-owner-decision issues are rejected', () => {
+  const r = evaluateBuildAdmission({
+    issue: readyIssue({
+      labels: [
+        'agent-task',
+        'risk:R1',
+        'builder:claude',
+        'status:ready',
+        'status:blocked-decision',
+      ],
+    }),
+    requiredBuilder: 'builder:claude',
+    openLanes: [],
+  });
+  assert.ok(r.reasons.some((x) => x.code === 'ADMIT_BLOCKED_DECISION'));
+});
+
+test('a not-READY issue is rejected', () => {
+  const r = evaluateBuildAdmission({
+    issue: readyIssue({ labels: ['agent-task', 'risk:R1', 'builder:claude', 'backlog'] }),
+    requiredBuilder: 'builder:claude',
+    openLanes: [],
+  });
+  assert.ok(r.reasons.some((x) => x.code === 'ADMIT_NOT_READY'));
+});
+
+test('13g2. an occupied implementation lane rejects a second admission', () => {
+  const r = evaluateBuildAdmission({
+    issue: readyIssue(),
+    requiredBuilder: 'builder:claude',
+    openLanes: [{ issue: 44, status: 'status:in-review' }],
+  });
+  assert.ok(r.reasons.some((x) => x.code === 'ADMIT_LANE_OCCUPIED'));
+});
+
+// ---------------------------------------------------------------------------
+// Contract-authority amendment authorization (audit item 12)
+// ---------------------------------------------------------------------------
+
+test('14g2. contract amendments are owner-only; write collaborators are rejected', () => {
+  assert.equal(isContractAmendmentAuthorized(OWNER, OWNER), true);
+  for (const actor of ['some-collaborator', ACTIONS, 'claude[bot]', '', undefined])
+    assert.equal(isContractAmendmentAuthorized(actor, OWNER), false, String(actor));
+});
+
+// ---------------------------------------------------------------------------
+// Authority/watch redispatch targeting (audit items 4/5)
+// ---------------------------------------------------------------------------
+
+test('4g. linkedOpenPrs finds exactly the open PRs closing the changed issue', () => {
+  const prs = [
+    { number: 70, body: 'Closes #44' },
+    { number: 71, body: 'Fixes #45' },
+    { number: 72, body: 'refs #44 only' },
+    { number: 73, body: 'Resolves #44 and more text' },
+  ];
+  assert.deepEqual(linkedOpenPrs(prs, 44), [70, 73]);
+  assert.deepEqual(linkedOpenPrs(prs, 99), []);
+});
+
+test('5g. a signed revision invalidates same-HEAD approvals regardless of comment-event delivery', () => {
+  // The dispatch is direct (no reliance on GITHUB_TOKEN comment events);
+  // the policy consequence is provable purely: same HEAD + revision 2 ⇒
+  // both rev-1 approvals stale until re-issued.
+  const s = validState();
+  const newBody = ISSUE_BODY + '\n\nAuthorized change.';
+  s.issue.body = newBody;
+  s.issue.comments = [
+    contractComment(),
+    contractComment({
+      kind: 'REKODA_CONTRACT_REVISION',
+      revision: 2,
+      body: newBody,
+      author: ACTIONS,
+      key: AUTHORITY_KEY,
+      id: 2,
+      createdAt: 'y',
+    }),
+  ];
+  const r = evaluate(s);
+  assert.equal(r.pass, false);
+  assert.ok(codes(r).includes('TECH_WRONG_REVISION') && codes(r).includes('GEMINI_WRONG_REVISION'));
 });

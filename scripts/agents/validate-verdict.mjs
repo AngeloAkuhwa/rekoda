@@ -2,16 +2,16 @@
 /**
  * Deterministic validation of an AI reviewer's structured verdict file
  * (docs/AUTONOMOUS-ENGINEERING.md §6). Malformed = BLOCK; wrong PR,
- * issue, HEAD, or contract revision = BLOCK. On success prints the exact
- * marker block to stdout (for the workflow to post as the PR comment)
- * and writes `verdict=` to GITHUB_OUTPUT.
+ * issue, HEAD, or contract revision = BLOCK. This step holds NO signing
+ * key: on success it writes a canonical payload file for the SEPARATE
+ * signing step (scripts/agents/sign-evidence.mjs) — the AI step has
+ * already terminated before any key exists in any process environment.
  *
  *   node scripts/agents/validate-verdict.mjs --file /tmp/review.json \
- *     --marker REKODA_CLAUDE_APPROVAL --pr 55 --issue 44 --head <sha> --revision 1
+ *     --marker REKODA_CLAUDE_APPROVAL --pr 55 --issue 44 --head <sha> \
+ *     --revision 1 --out /tmp/payload.json
  */
-import { readFileSync, appendFileSync } from 'node:fs';
-import { createPrivateKey, sign as cryptoSign } from 'node:crypto';
-import { canonicalVerdictPayload } from './evaluator.mjs';
+import { readFileSync, writeFileSync, appendFileSync } from 'node:fs';
 
 const args = Object.fromEntries(
   process.argv
@@ -60,58 +60,29 @@ const markerName = args.marker;
 if (!/^REKODA_(CLAUDE|GEMINI|CODEX)_APPROVAL$/.test(markerName))
   fail(`Unknown marker name ${markerName}.`);
 
-// Reviewer-specific provenance: sign the canonical payload with the
-// private key from the environment variable named by --sign-env. That
-// key exists only in this reviewer's GitHub environment — the builder
-// and every other workflow are technically unable to produce it. No
-// signing key = no publishable approval (fail closed).
-const signEnv = args['sign-env'];
-if (!signEnv)
-  fail('A --sign-env is required: unsigned reviewer verdicts are not acceptable evidence.');
-const keyPem = process.env[signEnv];
-if (!keyPem)
-  fail(
-    `Signing key env ${signEnv} is empty — the reviewer environment is not configured; refusing to publish an unsigned verdict.`,
-  );
-let signature;
-try {
-  signature = cryptoSign(
-    null,
-    Buffer.from(
-      canonicalVerdictPayload({
-        name: markerName,
-        pr: expected.pr,
-        issue: expected.issue,
-        headSha: expected.head_sha,
-        contractRevision: expected.contract_revision,
-        verdict: doc.verdict,
-      }),
-      'utf8',
-    ),
-    createPrivateKey(keyPem),
-  ).toString('base64');
-} catch (e) {
-  fail(`Signing failed: ${e.message}`);
-}
-
 const findings =
   doc.findings.length === 0
     ? 'No blocking findings.'
     : doc.findings.map((f) => `- ${String(f).replace(/\n/g, ' ').slice(0, 500)}`).join('\n');
-const marker = [
-  '```',
-  markerName,
-  `PR: ${expected.pr}`,
-  `ISSUE: ${expected.issue}`,
-  `HEAD_SHA: ${expected.head_sha}`,
-  `CONTRACT_REVISION: ${expected.contract_revision}`,
-  `VERDICT: ${doc.verdict}`,
-  `SIGNATURE: ${signature}`,
-  '```',
-  '',
-  findings,
-].join('\n');
 
-console.log(marker);
+writeFileSync(
+  args.out ?? '/tmp/rekoda-evidence-payload.json',
+  JSON.stringify(
+    {
+      markerName,
+      pr: expected.pr,
+      issue: expected.issue,
+      head_sha: expected.head_sha,
+      contract_revision: expected.contract_revision,
+      verdict: doc.verdict,
+      findings,
+    },
+    null,
+    2,
+  ),
+);
+console.log(
+  `Validated ${markerName} ${doc.verdict} for PR #${expected.pr} at ${expected.head_sha}.`,
+);
 if (process.env.GITHUB_OUTPUT)
   appendFileSync(process.env.GITHUB_OUTPUT, `verdict=${doc.verdict}\n`);

@@ -7,6 +7,13 @@ by name proves nothing. Record the evidence for each drill (a link to the
 run or PR) in this file's checklist when it is executed; nothing here is
 pre-marked as done, because none of it has been executed yet.
 
+**The bootstrap is two-phase.** The privileged gates execute from the
+default branch, so PR #233 cannot exercise them on itself. Phase 1: the
+owner manually reviews and merges PR #233 with everything INACTIVE — no
+secrets, no keys, no ruleset, no auto-merge. Phase 2 (this runbook):
+key/environment setup, configuration, then the drills on small throwaway
+activation PRs, and only then ACTIVE.
+
 ## A. Deterministic policy tests (local/CI, no live GitHub)
 
 The merge policy lives in `scripts/agents/evaluator.mjs` (pure — no
@@ -45,7 +52,9 @@ memory):
      first live-smoke lane).
      No agent credential in `test`, no runtime credential in any
      `agents-*`, no production credential anywhere, and no signing key
-     outside its one environment.
+     outside its one environment. On EVERY `agents-*` environment set
+     _Deployment branches and tags_ → selected branches → `main` only —
+     GitHub then refuses the environment to any PR-ref job.
 3. Codex: ChatGPT Codex Connector installed on the repo, Code review +
    Automatic reviews enabled (chatgpt.com/codex/settings/code-review).
 4. Repository → Settings → General → Pull Requests: **Allow auto-merge**
@@ -95,17 +104,48 @@ the failure states. GitHub must refuse the merge in every one:
       non-bypass actor → refused by the ruleset.
 - [ ] 20. Break CI on the drill branch → merge impossible with gates
       otherwise green.
-- [ ] 21. Forgery drill: post a hand-written `REKODA_GEMINI_APPROVAL`
-      comment with correct fields but no (or a wrong) SIGNATURE, from a
-      write-access account → rejected (`GEMINI_UNAUTHORIZED`); same for
-      `REKODA_CLAUDE_APPROVAL` on a `builder:codex` drill.
-- [ ] 22. Redispatch drill: edit the drill issue's body (with an
-      authorized signed revision) and verify the contract-watch workflow
-      re-runs all three gates on the unchanged code HEAD, which then
-      demand fresh verdicts for the new revision.
-- [ ] 23. Escape drill: remove the drill PR's risk and builder labels AND
-      its closing reference → the gates stay red (sticky enrollment from
-      label history), never neutral.
+- [ ] 21. Forgery drill (item H): post a hand-written
+      `REKODA_GEMINI_APPROVAL` comment with correct fields but no — or a
+      wrong-key — SIGNATURE, from a write-access account → rejected
+      (`GEMINI_UNAUTHORIZED`); same for `REKODA_CLAUDE_APPROVAL` on a
+      `builder:codex` drill (cross-role key reuse must also fail).
+- [ ] 22. Redispatch drill (item C): dispatch a contract revision via
+      the contract-authority workflow and verify the authority run
+      itself directly re-dispatches `Agent — gates` for the linked PR
+      (no reliance on its GITHUB_TOKEN comment triggering anything);
+      the gates then demand fresh verdicts for the new revision on the
+      unchanged code HEAD. Repeat via a human issue-body edit to prove
+      the contract-watch path.
+- [ ] 23. Escape drill (item E): remove the drill PR's risk and builder
+      labels AND its closing reference → the gates stay red (sticky
+      enrollment from exhaustively-paginated label history), never
+      neutral.
+- [ ] 24. Trust-boundary drill (items A/B): open a throwaway same-repo
+      PR that edits `agent-review-request.yml` (or adds a workflow
+      referencing `agents-gemini-reviewer`) → verify the PR-branch runs
+      receive NO reviewer secret (the environment refuses the PR ref)
+      and that the privileged `Agent — gates` run that evaluates the PR
+      executed the DEFAULT-branch definition (its logged trust-root SHA
+      is a main commit, not the PR's).
+- [ ] 25. Unauthorized dispatch drill (item D): confirm a non-write
+      account cannot dispatch `Agent — Claude builder` (GitHub refuses
+      the dispatch), and that labelling by a triage-only account is
+      refused by the preflight's write+ actor check before any
+      secret-bearing job starts. (The `@claude` mention path no longer
+      exists.)
+- [ ] 26. Simultaneous-admission drill (item F): label two READY
+      `builder:claude` issues within seconds → exactly one build is
+      admitted; the second run serializes on the
+      `rekoda-implementation-lane` group and refuses
+      (`ADMIT_LANE_OCCUPIED`).
+- [ ] 27. Unauthorized amendment drill (item I): a non-owner write
+      collaborator dispatches the contract-authority revision → refused
+      (owner-only); an unsigned revision comment from that collaborator
+      is ignored by the evaluator and the amendment blocks.
+- [ ] 28. Codex binding drill (item G): after a push, verify an old
+      Codex review whose marker names the new HEAD but whose review
+      `commit_id` is the old commit does NOT pass the Technical Review
+      Gate.
 
 ## D. Positive auto-merge drill
 

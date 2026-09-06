@@ -59,17 +59,43 @@ function ghPaged(pathname, pages = 3) {
   return out;
 }
 
+/**
+ * Exhaustive pagination with a defensive ceiling. Returns
+ * { items, complete }: complete=false when the ceiling was hit before the
+ * API ran out of pages, or on API failure — callers must FAIL CLOSED on
+ * incomplete history, never treat it as absence.
+ */
+function ghPagedComplete(pathname, maxPages = 30) {
+  const items = [];
+  try {
+    for (let page = 1; page <= maxPages; page++) {
+      const chunk = gh(`${pathname}${pathname.includes('?') ? '&' : '?'}per_page=100&page=${page}`);
+      items.push(...chunk);
+      if (chunk.length < 100) return { items, complete: true };
+    }
+    return { items, complete: false }; // ceiling hit with pages remaining
+  } catch {
+    return { items, complete: false }; // API failure: unprovable
+  }
+}
+
 const pr = gh(`repos/${repo}/pulls/${prNumber}`);
 const prLabels = (pr.labels ?? []).map((l) => l.name);
 
-// STICKY enrollment: the immutable label-event history. Removing a label
-// later cannot remove the 'labeled' event, so a PR that ever entered the
-// agent lane can never look neutral again.
-const events = ghPaged(`repos/${repo}/issues/${prNumber}/events`, 3);
-const everLabeledAgent = events.some(
-  (e) =>
-    e.event === 'labeled' && /^(risk:R[0-3]|builder:(claude|codex))$/.test(e.label?.name ?? ''),
-);
+// STICKY enrollment: the immutable label-event history, retrieved to
+// EXHAUSTION. Removing a label later cannot remove the 'labeled' event,
+// so a PR that ever entered the agent lane can never look neutral again.
+// If the history cannot be proven complete (ceiling or API failure), the
+// evaluator fails closed — enrollment can tighten governance but can
+// never loosen it.
+const eventHistory = ghPagedComplete(`repos/${repo}/issues/${prNumber}/events`);
+const enrollment = {
+  everLabeledAgent: eventHistory.items.some(
+    (e) =>
+      e.event === 'labeled' && /^(risk:R[0-3]|builder:(claude|codex))$/.test(e.label?.name ?? ''),
+  ),
+  complete: eventHistory.complete,
+};
 
 const refs = parseClosingRefs(pr.body ?? '');
 let issue = null;
@@ -179,7 +205,8 @@ const state = {
     author: pr.user?.login ?? '',
     draft: Boolean(pr.draft),
     fork: (pr.head?.repo?.full_name ?? repo) !== repo,
-    everLabeledAgent,
+    baseSha: (pr.base?.sha ?? '').toLowerCase(),
+    enrollment,
   },
   prBody: pr.body ?? '',
   issue,

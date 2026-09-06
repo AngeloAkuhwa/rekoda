@@ -1,0 +1,54 @@
+#!/usr/bin/env node
+/**
+ * Publishes a stable-named check run bound to an exact commit SHA via the
+ * Checks API. The privileged gates use this so their conclusions attach
+ * to the evaluated PR HEAD regardless of what event started the run
+ * (workflow_run, workflow_dispatch). Requires checks: write.
+ *
+ *   node scripts/agents/post-check.mjs --repo o/n --name "Technical Review Gate" \
+ *     --sha <head> --conclusion success|failure|neutral --title "…" --summary "…"
+ */
+import { execFileSync } from 'node:child_process';
+
+const args = Object.fromEntries(
+  process.argv
+    .slice(2)
+    .map((a, i, all) => (a.startsWith('--') ? [a.slice(2), all[i + 1]] : null))
+    .filter(Boolean),
+);
+const { repo, name, sha, conclusion } = args;
+if (
+  !repo ||
+  !name ||
+  !/^[0-9a-f]{40}$/i.test(sha ?? '') ||
+  !['success', 'failure', 'neutral'].includes(conclusion)
+) {
+  console.error(
+    'Usage: post-check.mjs --repo o/n --name N --sha <40hex> --conclusion success|failure|neutral [--title T --summary S]',
+  );
+  process.exit(2);
+}
+
+execFileSync(
+  'gh',
+  [
+    'api',
+    '--method',
+    'POST',
+    `repos/${repo}/check-runs`,
+    '-f',
+    `name=${name}`,
+    '-f',
+    `head_sha=${sha.toLowerCase()}`,
+    '-f',
+    'status=completed',
+    '-f',
+    `conclusion=${conclusion}`,
+    '-f',
+    `output[title]=${(args.title ?? name).slice(0, 250)}`,
+    '-f',
+    `output[summary]=${(args.summary ?? '').slice(0, 60000)}`,
+  ],
+  { encoding: 'utf8', stdio: ['ignore', 'ignore', 'inherit'] },
+);
+console.log(`Check '${name}' → ${conclusion} on ${sha}.`);

@@ -8,9 +8,16 @@ value lives.
 **The rule that shapes everything here:** agent credentials and Rekoda
 runtime credentials are two different things, live in different GitHub
 Environments, and never share a name. Agent credentials are further split
-**per role**, because environment membership is what makes forgery
-technically impossible: a signing key exists only in the one environment
-whose workflow is authorized to use it, so the builder cannot mint a
+**per role**. Environment membership alone is NOT the security boundary —
+any workflow file could name an environment. The boundary is
+**trusted-base execution** (docs/AUTONOMOUS-ENGINEERING.md §6): the
+secret-bearing jobs exist only in the privileged `Agent — gates` /
+authority workflows, whose definitions GitHub executes from the default
+branch, so PR-controlled YAML can never receive these secrets. The
+environments then add two supporting layers: each one carries a
+**deployment-branch policy restricted to `main`** (GitHub refuses it to
+any PR-ref job), and each signing key exists only in the one environment
+its privileged workflow references — the builder cannot mint a
 reviewer's verdict and the planner cannot mint contract evidence.
 
 - **`agents-builder`** — the Claude builder lanes. Holds only the AI

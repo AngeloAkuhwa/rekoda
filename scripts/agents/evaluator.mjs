@@ -5,32 +5,37 @@
  *
  * PURE: no network, no filesystem, no environment. It takes normalized
  * GitHub state (scripts/agents/normalize.mjs produces it) and returns
- * PASS or BLOCK with machine-readable reasons. Every workflow gate calls
- * this module instead of reimplementing policy in shell, and
+ * PASS or BLOCK with machine-readable reasons. Every gate calls this
+ * module instead of reimplementing policy in shell, and
  * evaluator.test.mjs proves the negative cases fail CLOSED.
  *
- * PROVENANCE MODEL (the part that makes forgery impossible, not just
- * forbidden):
+ * PROVENANCE MODEL:
+ *   - Every piece of signed evidence carries the protocol domain/version
+ *     SCHEME: REKODA_AGENT_EVIDENCE_V1 inside its signed payload; an
+ *     unknown, missing, or future scheme is rejected.
  *   - Claude/Gemini verdict markers count ONLY with a valid Ed25519
- *     signature over the canonical marker payload, verified against the
- *     committed public key for that reviewer (scripts/agents/keys/).
- *     The private keys live in reviewer-specific GitHub environments the
- *     builder job cannot reference — so neither the builder nor any
- *     unrelated workflow posting as github-actions[bot] can mint
- *     acceptable evidence. Author identity alone NEVER suffices.
+ *     signature over the canonical payload, verified against the
+ *     committed public key for that reviewer. The private keys are
+ *     reachable only inside the trusted privileged gates workflow, whose
+ *     definition GitHub executes from the DEFAULT BRANCH (workflow_run /
+ *     workflow_dispatch) — PR-controlled YAML never receives them.
+ *     Author identity alone NEVER suffices.
  *   - Codex markers count ONLY inside a non-dismissed GitHub REVIEW
  *     authored by the Codex connector whose review commit_id equals the
  *     current PR HEAD, in addition to every marker field matching.
  *   - Contract baseline/revision markers count ONLY when authored by the
- *     owner's human account (platform-verified — a workflow cannot post
- *     as a human) or signed by the contract-authority key.
- *   - Missing/invalid provenance fails CLOSED.
+ *     owner's human account or signed by the contract-authority key, with
+ *     the whole revision history validated, not just the highest number.
+ *   - Missing/invalid provenance, unprovable enrollment history, and
+ *     contemporaneous contradictory verdicts all fail CLOSED.
  *
  * Untrusted text (PR bodies, issue bodies, comments, review bodies) is
  * parsed here as data with anchored line grammars — never interpolated
  * into a shell.
  */
 import { createHash, createPublicKey, verify as cryptoVerify } from 'node:crypto';
+
+export const SCHEME = 'REKODA_AGENT_EVIDENCE_V1';
 
 export const MARKERS = {
   codex: 'REKODA_CODEX_APPROVAL',
@@ -58,12 +63,12 @@ export function sha256Hex(text) {
 
 /** Canonical signed payload for a verdict marker — field order is fixed. */
 export function canonicalVerdictPayload(m) {
-  return `${m.name}\nPR: ${m.pr}\nISSUE: ${m.issue}\nHEAD_SHA: ${m.headSha}\nCONTRACT_REVISION: ${m.contractRevision}\nVERDICT: ${m.verdict}`;
+  return `${m.name}\nSCHEME: ${SCHEME}\nPR: ${m.pr}\nISSUE: ${m.issue}\nHEAD_SHA: ${m.headSha}\nCONTRACT_REVISION: ${m.contractRevision}\nVERDICT: ${m.verdict}`;
 }
 
 /** Canonical signed payload for a contract marker — field order is fixed. */
 export function canonicalContractPayload(m) {
-  const base = `${m.kind}\nISSUE: ${m.issue}\nREVISION: ${m.revision}\nBODY_SHA256: ${m.bodySha256}`;
+  const base = `${m.kind}\nSCHEME: ${SCHEME}\nISSUE: ${m.issue}\nREVISION: ${m.revision}\nBODY_SHA256: ${m.bodySha256}`;
   return m.kind === 'REKODA_CONTRACT_REVISION' ? `${base}\nREASON: ${m.reason}` : base;
 }
 
@@ -90,14 +95,20 @@ export function parseClosingRefs(body) {
   return [...refs];
 }
 
+/** Open PRs whose body closes exactly the given issue. */
+export function linkedOpenPrs(openPrs, issueNumber) {
+  return (openPrs ?? [])
+    .filter((p) => parseClosingRefs(p.body ?? '').includes(Number(issueNumber)))
+    .map((p) => Number(p.number));
+}
+
 /**
  * Parse fixed-format approval marker blocks out of free text:
  *   <MARKER NAME>
- *   PR: <n> / ISSUE: <n> / HEAD_SHA: <40 hex> / CONTRACT_REVISION: <n>
- *   VERDICT: APPROVE|BLOCK
- *   SIGNATURE: <base64>          (required for Claude/Gemini provenance)
- * Anything that starts a block but does not parse completely is returned
- * with malformed: true — a malformed marker never counts as approval.
+ *   SCHEME: REKODA_AGENT_EVIDENCE_V1
+ *   PR / ISSUE / HEAD_SHA / CONTRACT_REVISION / VERDICT / SIGNATURE
+ * A block missing the scheme, carrying an unknown scheme, or failing any
+ * field grammar is malformed — a malformed marker never counts.
  */
 export function parseMarkers(text, markerName) {
   const lines = normalizeBody(text).split('\n');
@@ -106,13 +117,16 @@ export function parseMarkers(text, markerName) {
     if (lines[i].trim() !== markerName) continue;
     const fields = {};
     let consumed = 0;
-    for (let j = i + 1; j < lines.length && consumed < 10; j++, consumed++) {
+    for (let j = i + 1; j < lines.length && consumed < 12; j++, consumed++) {
       const line = lines[j].trim();
       if (line === markerName) break;
-      const m = line.match(/^(PR|ISSUE|HEAD_SHA|CONTRACT_REVISION|VERDICT|SIGNATURE):\s*(.*)$/);
+      const m = line.match(
+        /^(SCHEME|PR|ISSUE|HEAD_SHA|CONTRACT_REVISION|VERDICT|SIGNATURE):\s*(.*)$/,
+      );
       if (m) fields[m[1]] = m[2].trim();
       if (m && m[1] === 'SIGNATURE') break;
     }
+    const scheme = fields.SCHEME === SCHEME ? SCHEME : null;
     const pr = /^\d{1,7}$/.test(fields.PR ?? '') ? Number(fields.PR) : null;
     const issue = /^\d{1,7}$/.test(fields.ISSUE ?? '') ? Number(fields.ISSUE) : null;
     const headSha = SHA40.test((fields.HEAD_SHA ?? '').toLowerCase())
@@ -124,6 +138,7 @@ export function parseMarkers(text, markerName) {
     const verdict =
       fields.VERDICT === 'APPROVE' || fields.VERDICT === 'BLOCK' ? fields.VERDICT : null;
     const malformed =
+      scheme === null ||
       pr === null ||
       issue === null ||
       headSha === null ||
@@ -131,6 +146,7 @@ export function parseMarkers(text, markerName) {
       verdict === null;
     out.push({
       name: markerName,
+      scheme,
       pr,
       issue,
       headSha,
@@ -151,10 +167,13 @@ export function parseRevisionMarkers(text) {
     const name = lines[i].trim();
     if (name !== 'REKODA_CONTRACT_BASELINE' && name !== 'REKODA_CONTRACT_REVISION') continue;
     const fields = {};
-    for (let j = i + 1; j < Math.min(i + 8, lines.length); j++) {
-      const m = lines[j].trim().match(/^(ISSUE|REVISION|BODY_SHA256|REASON|SIGNATURE):\s*(.*)$/);
+    for (let j = i + 1; j < Math.min(i + 9, lines.length); j++) {
+      const m = lines[j]
+        .trim()
+        .match(/^(SCHEME|ISSUE|REVISION|BODY_SHA256|REASON|SIGNATURE):\s*(.*)$/);
       if (m) fields[m[1]] = m[2].trim();
     }
+    const scheme = fields.SCHEME === SCHEME ? SCHEME : null;
     const issue = /^\d{1,7}$/.test(fields.ISSUE ?? '') ? Number(fields.ISSUE) : null;
     const revision = /^\d{1,4}$/.test(fields.REVISION ?? '') ? Number(fields.REVISION) : null;
     const bodySha256 = /^[0-9a-f]{64}$/.test((fields.BODY_SHA256 ?? '').toLowerCase())
@@ -162,12 +181,14 @@ export function parseRevisionMarkers(text) {
       : null;
     const reason = (fields.REASON ?? '').trim();
     const malformed =
+      scheme === null ||
       issue === null ||
       revision === null ||
       bodySha256 === null ||
       (name === 'REKODA_CONTRACT_REVISION' && reason === '');
     out.push({
       kind: name,
+      scheme,
       issue,
       revision,
       bodySha256,
@@ -190,10 +211,10 @@ export function parseRevisionMarkers(text) {
  * SIGNATURE verifies against the contract-authority public key. History
  * rules (all fail closed with `invalid` set):
  *   - a baseline must exist, and every baseline must be revision 1 with
- *     one identical hash (conflicting baselines are invalid);
+ *     one identical hash;
  *   - revisions must be strictly monotonic 1..N with no gaps;
  *   - two markers for the same revision with different hashes conflict;
- *   - a revision marker requires a REASON (parse-level);
+ *   - a revision marker requires a REASON and the current scheme;
  *   - a replayed lower revision never lowers the current revision.
  */
 export function computeContractRevision({
@@ -223,7 +244,6 @@ export function computeContractRevision({
     list.push(m);
     byRevision.set(m.revision, list);
   }
-  // Baselines must be revision 1; any baseline at another number is invalid.
   if (markers.some((m) => m.kind === 'REKODA_CONTRACT_BASELINE' && m.revision !== 1)) {
     return {
       revision: null,
@@ -272,21 +292,20 @@ export function computeContractRevision({
 // Verdict resolution
 // ---------------------------------------------------------------------------
 
-function sortEvidence(candidates) {
-  return [...(candidates ?? [])].sort((a, b) => {
-    const t = String(a.createdAt ?? '').localeCompare(String(b.createdAt ?? ''));
-    if (t !== 0) return t;
-    return Number(a.id ?? 0) - Number(b.id ?? 0); // stable GitHub id breaks timestamp ties
-  });
-}
-
 /**
- * Pick the governing verdict for one reviewer. Ordering is deterministic:
- * (createdAt, GitHub id). The LATEST fully-valid, provenance-verified
- * marker for the exact (pr, issue, headSha, revision) governs — a later
- * valid verdict supersedes an earlier one either direction; anything
+ * Pick the governing verdict for one reviewer. Ordering is
+ * timestamp-primary: the latest fully-valid, provenance-verified marker
+ * for the exact (pr, issue, headSha, revision) governs; a later valid
+ * verdict supersedes an earlier one either direction; anything
  * malformed, mistargeted, or unauthorized never counts and never erases
  * a previous valid verdict.
+ *
+ * Ties: GitHub review ids and comment ids live in different id domains,
+ * so ids break ties only WITHIN one source kind (where they are truly
+ * chronological). Two contradictory valid verdicts from different
+ * source kinds at an indistinguishable timestamp FAIL CLOSED
+ * (diagnosis 'ambiguous') — redispatch a fresh review rather than
+ * invent a cross-domain chronology.
  *
  * provenance:
  *   { kind: 'signature', publicKey }  — Claude/Gemini workflow markers
@@ -295,9 +314,9 @@ function sortEvidence(candidates) {
  *       the target HEAD, in addition to marker-field matching.
  */
 export function resolveVerdict({ candidates, markerName, provenance, target }) {
-  let governing = null;
-  let diagnosis = 'missing'; // missing|stale|wrong_pr|wrong_issue|wrong_revision|malformed|unauthorized
-  for (const c of sortEvidence(candidates)) {
+  let diagnosis = 'missing';
+  const valid = [];
+  for (const c of candidates ?? []) {
     const found = parseMarkers(c.body, markerName);
     if (found.length === 0) continue;
     for (const m of found) {
@@ -305,7 +324,6 @@ export function resolveVerdict({ candidates, markerName, provenance, target }) {
         if (diagnosis === 'missing') diagnosis = 'malformed';
         continue;
       }
-      // Provenance first: unauthorized evidence never counts, whatever it claims.
       if (provenance.kind === 'signature') {
         if (!verifySignature(canonicalVerdictPayload(m), m.signature, provenance.publicKey)) {
           diagnosis = 'unauthorized';
@@ -319,8 +337,6 @@ export function resolveVerdict({ candidates, markerName, provenance, target }) {
           continue;
         }
         if (String(c.commitId ?? '').toLowerCase() !== target.headSha) {
-          // A marker claiming the current HEAD inside a review of an old
-          // commit is stale evidence, not proof.
           diagnosis = 'stale';
           continue;
         }
@@ -344,14 +360,32 @@ export function resolveVerdict({ candidates, markerName, provenance, target }) {
         diagnosis = 'wrong_revision';
         continue;
       }
-      governing = m.verdict; // sorted ascending → latest valid wins
+      valid.push({
+        verdict: m.verdict,
+        createdAt: String(c.createdAt ?? ''),
+        sourceKind: c.kind ?? 'comment',
+        id: Number(c.id ?? 0),
+      });
     }
   }
-  return { verdict: governing, diagnosis };
+  if (valid.length === 0) return { verdict: null, diagnosis };
+
+  const maxTime = valid.map((v) => v.createdAt).sort()[valid.length - 1];
+  const latest = valid.filter((v) => v.createdAt === maxTime);
+  const kinds = new Set(latest.map((v) => v.sourceKind));
+  if (kinds.size === 1) {
+    // Same id domain → ids are chronological; the highest id governs.
+    latest.sort((a, b) => a.id - b.id);
+    return { verdict: latest[latest.length - 1].verdict, diagnosis };
+  }
+  const verdicts = new Set(latest.map((v) => v.verdict));
+  if (verdicts.size === 1) return { verdict: [...verdicts][0], diagnosis };
+  // Contradictory contemporaneous evidence across id domains: fail closed.
+  return { verdict: null, diagnosis: 'ambiguous' };
 }
 
 // ---------------------------------------------------------------------------
-// Issue-form field extraction, governance, authorization
+// Issue-form fields, governance, authorization, build admission
 // ---------------------------------------------------------------------------
 
 export function issueFormField(body, label) {
@@ -373,22 +407,68 @@ export function issueFormField(body, label) {
  * STICKY governance. A PR is agent-governed when any of:
  *   - it currently carries risk or builder labels;
  *   - it closes an agent-task issue;
- *   - its immutable label-event history shows it EVER carried an agent
- *     label (normalize reads the timeline) — stripping labels and the
- *     closing reference can only make a PR more blocked, never neutral.
+ *   - its label-event history shows it EVER carried an agent label.
+ * Enrollment can only tighten governance, never loosen it: when the
+ * event history could not be retrieved COMPLETELY (API failure,
+ * pagination not exhausted), governance cannot be disproven — the PR is
+ * treated as governed and the evaluator blocks it as unprovable.
  */
 export function isGoverned(state) {
+  const enrollment = state.pr?.enrollment ?? { everLabeledAgent: false, complete: true };
   return (
     (state.pr?.riskLabels?.length ?? 0) > 0 ||
     (state.pr?.builderLabels?.length ?? 0) > 0 ||
     Boolean(state.issue?.agentTask) ||
-    Boolean(state.pr?.everLabeledAgent)
+    Boolean(enrollment.everLabeledAgent) ||
+    !enrollment.complete
   );
 }
 
 /** Repository permission levels that may start paid agent work. */
 export function isActorAuthorized(permission) {
   return permission === 'admin' || permission === 'maintain' || permission === 'write';
+}
+
+/** Contract AMENDMENTS after implementation begins are owner-only. */
+export function isContractAmendmentAuthorized(actor, ownerLogin) {
+  return Boolean(actor) && actor === ownerLogin;
+}
+
+/**
+ * Deterministic admission for starting a builder on an issue — evaluated
+ * by the no-secret preflight BEFORE any secret-bearing job, under the
+ * repository-wide implementation-lane concurrency lock. Fail closed.
+ */
+export function evaluateBuildAdmission({ issue, requiredBuilder, openLanes }) {
+  const reasons = [];
+  const add = (code, message) => reasons.push({ code, message });
+  if (!issue || !issue.exists) add('ADMIT_ISSUE_NOT_FOUND', 'The target issue does not exist.');
+  else {
+    if (issue.state !== 'open') add('ADMIT_ISSUE_NOT_OPEN', `Issue #${issue.number} is not open.`);
+    if (!issue.agentTask)
+      add('ADMIT_NOT_AGENT_TASK', `Issue #${issue.number} is not an agent-task.`);
+    const risk = (issue.riskLabels ?? []).filter((l) => RISK_RE.test(l));
+    if (risk.length !== 1)
+      add('ADMIT_RISK_INVALID', `Issue #${issue.number} must carry exactly one risk label.`);
+    const builder = (issue.builderLabels ?? []).filter((l) => BUILDER_RE.test(l));
+    if (builder.length !== 1 || builder[0] !== requiredBuilder)
+      add('ADMIT_WRONG_BUILDER', `Issue #${issue.number} is not labelled ${requiredBuilder}.`);
+    if (!(issue.labels ?? []).includes('status:ready'))
+      add('ADMIT_NOT_READY', `Issue #${issue.number} is not status:ready.`);
+    if (
+      (issue.labels ?? []).some(
+        (l) => l === 'needs-owner-decision' || l === 'status:blocked-decision',
+      )
+    )
+      add('ADMIT_BLOCKED_DECISION', `Issue #${issue.number} has an unresolved owner decision.`);
+    const otherLanes = (openLanes ?? []).filter((l) => l.issue !== issue.number);
+    if (otherLanes.length > 0)
+      add(
+        'ADMIT_LANE_OCCUPIED',
+        `The implementation lane is occupied (${otherLanes.map((l) => `#${l.issue}`).join(', ')}).`,
+      );
+  }
+  return { admit: reasons.length === 0, reasons };
 }
 
 // ---------------------------------------------------------------------------
@@ -410,6 +490,13 @@ export function evaluate(state, mode = 'full') {
   const add = (code, message) => reasons.push({ code, message });
   const cfg = state.config ?? {};
   const keys = cfg.publicKeys ?? {};
+
+  const enrollment = state.pr?.enrollment ?? { everLabeledAgent: false, complete: true };
+  if (!enrollment.complete)
+    add(
+      'ENROLLMENT_HISTORY_INCOMPLETE',
+      'The PR label-event history could not be retrieved completely; governance cannot be proven and the gate fails closed.',
+    );
 
   const prRisk = one(state.pr?.riskLabels, RISK_RE);
   const prBuilder = one(state.pr?.builderLabels, BUILDER_RE);
@@ -529,11 +616,15 @@ export function evaluate(state, mode = 'full') {
         ],
         malformed: [
           'TECH_MALFORMED',
-          'The technical marker is malformed; a malformed approval never counts.',
+          'The technical marker is malformed or carries an unsupported scheme; it never counts.',
         ],
         unauthorized: [
           'TECH_UNAUTHORIZED',
           'Technical-review evidence without valid reviewer provenance was rejected — nobody, including the builder, can substitute for the designated reviewer.',
+        ],
+        ambiguous: [
+          'TECH_AMBIGUOUS_ORDER',
+          'Contradictory contemporaneous technical verdicts with no provable order — fail closed; redispatch a fresh review.',
         ],
         missing: ['TECH_APPROVAL_MISSING', 'No technical-review verdict exists for this PR.'],
       };
@@ -565,11 +656,15 @@ export function evaluate(state, mode = 'full') {
         ],
         malformed: [
           'GEMINI_MALFORMED',
-          'The Gemini marker is malformed; a malformed approval never counts.',
+          'The Gemini marker is malformed or carries an unsupported scheme; it never counts.',
         ],
         unauthorized: [
           'GEMINI_UNAUTHORIZED',
           'Gemini-acceptance evidence without valid reviewer provenance was rejected.',
+        ],
+        ambiguous: [
+          'GEMINI_AMBIGUOUS_ORDER',
+          'Contradictory contemporaneous Gemini verdicts with no provable order — fail closed; redispatch a fresh review.',
         ],
         missing: [
           'GEMINI_APPROVAL_MISSING',
@@ -621,6 +716,7 @@ export function evaluate(state, mode = 'full') {
 }
 
 const PREREQ_CODES = new Set([
+  'ENROLLMENT_HISTORY_INCOMPLETE',
   'RISK_LABEL_INVALID',
   'BUILDER_LABEL_INVALID',
   'LINKED_ISSUE_MISSING',
