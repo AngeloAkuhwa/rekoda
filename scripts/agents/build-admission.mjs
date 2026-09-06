@@ -16,6 +16,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { evaluateBuildAdmission, computeContractRevision } from './evaluator.mjs';
+import { ghPagedComplete } from './gh-lib.mjs';
 
 const args = Object.fromEntries(
   process.argv
@@ -67,35 +68,40 @@ for (const label of ['status:building', 'status:in-review']) {
 }
 
 // Baseline-before-admission (docs/AUTONOMOUS-ENGINEERING.md §3): a valid
-// current contract baseline is REQUIRED before the lane may be claimed.
+// current contract baseline is REQUIRED before the lane may be claimed —
+// computed over the EXHAUSTIVELY paginated comment history; an
+// unprovably complete history is an invalid contract, never a valid
+// baseline.
 let contract = { baselineFound: false, invalid: null, amended: false };
 if (issue) {
   try {
     const raw = gh(`repos/${repo}/issues/${issueNumber}`);
-    const comments = [];
-    for (let page = 1; page <= 3; page++) {
-      const chunk = gh(`repos/${repo}/issues/${issueNumber}/comments?per_page=100&page=${page}`);
-      comments.push(
-        ...chunk.map((c) => ({
-          author: c.user?.login ?? '',
-          createdAt: c.created_at,
-          body: c.body ?? '',
-        })),
+    const history = ghPagedComplete(`repos/${repo}/issues/${issueNumber}/comments`);
+    if (!history.complete) {
+      contract = {
+        baselineFound: false,
+        invalid: 'comment history could not be proven complete',
+        amended: false,
+      };
+    } else {
+      const comments = history.items.map((c) => ({
+        author: c.user?.login ?? '',
+        createdAt: c.created_at,
+        body: c.body ?? '',
+      }));
+      const keyPath = join(
+        dirname(fileURLToPath(import.meta.url)),
+        'keys',
+        'contract-authority.pub.pem',
       );
-      if (chunk.length < 100) break;
+      contract = computeContractRevision({
+        issueNumber,
+        issueBody: raw.body ?? '',
+        issueComments: comments,
+        ownerLogin: process.env.OWNER_LOGIN || 'AngeloAkuhwa',
+        contractAuthorityKey: existsSync(keyPath) ? readFileSync(keyPath, 'utf8') : null,
+      });
     }
-    const keyPath = join(
-      dirname(fileURLToPath(import.meta.url)),
-      'keys',
-      'contract-authority.pub.pem',
-    );
-    contract = computeContractRevision({
-      issueNumber,
-      issueBody: raw.body ?? '',
-      issueComments: comments,
-      ownerLogin: process.env.OWNER_LOGIN || 'AngeloAkuhwa',
-      contractAuthorityKey: existsSync(keyPath) ? readFileSync(keyPath, 'utf8') : null,
-    });
   } catch {
     contract = {
       baselineFound: false,

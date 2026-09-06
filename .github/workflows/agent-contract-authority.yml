@@ -38,8 +38,9 @@ on:
 permissions:
   contents: read
   issues: write
-  actions: write # direct redispatch of Agent — gates after a contract change
+  actions: write # direct redispatch of Agent — gates / builder dispatch
   pull-requests: read
+  checks: write # D1 freeze: forcing linked PRs' required checks red BEFORE a revision becomes authoritative — demonstrably required here and nowhere else outside the gates
 
 concurrency:
   group: contract-authority-${{ github.event.issue.number || inputs.issue }}
@@ -95,7 +96,8 @@ jobs:
             esac
           fi
 
-      - name: Post the signed marker
+      - name: Amend the contract as a FREEZE-BEFORE-MUTATE transaction (revisions)
+        if: github.event_name == 'workflow_dispatch'
         env:
           CONTRACT_AUTHORITY_SIGNING_KEY: ${{ secrets.CONTRACT_AUTHORITY_SIGNING_KEY }}
           # env-var indirection — dispatch inputs never touch shell syntax
@@ -106,37 +108,64 @@ jobs:
           if [ ! -f scripts/agents/contract-revision.mjs ]; then
             echo "::error::Policy scripts are not on main yet."; exit 1
           fi
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            node scripts/agents/contract-revision.mjs --repo "$REPO" --issue "$ISSUE" \
-              --revision "$REVISION_INPUT" --reason "$REASON_INPUT" \
-              --sign-env CONTRACT_AUTHORITY_SIGNING_KEY --post
+          # D1 invariant: the active contract never changes while linked
+          # PRs remain merge-authorizing under the previous contract.
+          # This step follows scripts/agents/evaluator.mjs
+          # amendmentTransaction() exactly:
+          #   1. find every linked open PR (exhaustive; unprovable → abort);
+          #   2. FREEZE each one's CURRENT HEAD — force all three required
+          #      checks to failure — BEFORE anything else; any freeze
+          #      failure aborts with the previous revision still active
+          #      (already-frozen PRs stay safely blocked);
+          #   3. only after every freeze is confirmed, sign and post the
+          #      revision marker (this is the authoritative transition);
+          #   4. redispatch the gates; a failed dispatch leaves the PR
+          #      frozen (blocked), never silently green.
+          node scripts/agents/find-linked-prs.mjs --repo "$REPO" --issue "$ISSUE" > /tmp/linked-prs.txt
+          while IFS= read -r pr; do
+            [ -n "$pr" ] || continue
+            head=$(gh api "repos/$REPO/pulls/$pr" --jq '.head.sha')
+            echo "Freezing PR #$pr at $head before the amendment becomes authoritative…"
+            for name in "Agent policy gate" "Technical Review Gate" "Gemini Acceptance Gate"; do
+              node scripts/agents/post-check.mjs --repo "$REPO" --name "$name" --sha "$head" \
+                --conclusion failure --title "Contract amendment in progress" \
+                --summary "Issue #$ISSUE is being amended to revision $REVISION_INPUT; this check stays red until the gates re-evaluate under the new contract."
+            done
+          done < /tmp/linked-prs.txt
+          echo "All linked PRs frozen — committing revision $REVISION_INPUT."
+          node scripts/agents/contract-revision.mjs --repo "$REPO" --issue "$ISSUE" \
+            --revision "$REVISION_INPUT" --reason "$REASON_INPUT" \
+            --sign-env CONTRACT_AUTHORITY_SIGNING_KEY --post
+          while IFS= read -r pr; do
+            [ -n "$pr" ] || continue
+            echo "Redispatching the gates for PR #$pr under revision $REVISION_INPUT."
+            gh workflow run agent-gates.yml --repo "$REPO" --ref main -f pr="$pr"
+          done < /tmp/linked-prs.txt
+
+      - name: Record the baseline and hand off to the builder (READY promotion)
+        if: github.event_name != 'workflow_dispatch'
+        env:
+          CONTRACT_AUTHORITY_SIGNING_KEY: ${{ secrets.CONTRACT_AUTHORITY_SIGNING_KEY }}
+          HAS_CLAUDE_BUILDER: ${{ contains(github.event.issue.labels.*.name, 'builder:claude') }}
+        run: |
+          set -euo pipefail
+          if [ ! -f scripts/agents/contract-revision.mjs ]; then
+            echo "::error::Policy scripts are not on main yet."; exit 1
+          fi
+          # Baseline: record once; never overwrite an existing baseline.
+          if gh api "repos/$REPO/issues/$ISSUE/comments?per_page=100" \
+            --jq '[.[] | select(.body | contains("REKODA_CONTRACT_BASELINE"))] | length' | grep -qv '^0$'; then
+            echo "A baseline marker already exists on #$ISSUE."
           else
-            # Baseline: record once; never overwrite an existing baseline.
-            if gh api "repos/$REPO/issues/$ISSUE/comments?per_page=100" \
-              --jq '[.[] | select(.body | contains("REKODA_CONTRACT_BASELINE"))] | length' | grep -qv '^0$'; then
-              echo "A baseline marker already exists on #$ISSUE — not posting another."
-              exit 0
-            fi
             node scripts/agents/contract-revision.mjs --repo "$REPO" --issue "$ISSUE" \
               --baseline --sign-env CONTRACT_AUTHORITY_SIGNING_KEY --post
           fi
-
-      - name: Directly redispatch the gates for every open PR closing this issue
-        # GitHub suppresses workflow events created by GITHUB_TOKEN
-        # comments, so the authority NEVER relies on its own comment
-        # triggering a watcher: it dispatches the privileged gates
-        # itself (workflow_dispatch is exempt from that suppression).
-        run: |
-          set -euo pipefail
-          # Exhaustive pagination — a linked PR beyond page 1 is never
-          # silently missed; an unprovably complete listing fails.
-          node scripts/agents/find-linked-prs.mjs --repo "$REPO" --issue "$ISSUE" > /tmp/linked-prs.txt
-          if [ ! -s /tmp/linked-prs.txt ]; then
-            echo "No open PR closes #$ISSUE — nothing to redispatch."
-            exit 0
+          # Deterministic sequencing (no builder polling): the builder is
+          # dispatched only AFTER the baseline exists — admission then
+          # independently verifies it again.
+          if [ "$HAS_CLAUDE_BUILDER" = "true" ]; then
+            echo "Baseline recorded — dispatching the Claude builder for #$ISSUE."
+            gh workflow run agent-claude.yml --repo "$REPO" --ref main -f issue="$ISSUE"
+          else
+            echo "No builder:claude label — builder:codex lanes are claimed manually after this baseline."
           fi
-          while IFS= read -r pr; do
-            [ -n "$pr" ] || continue
-            echo "Contract changed on #$ISSUE — redispatching the gates for PR #$pr at its current HEAD."
-            gh workflow run agent-gates.yml --repo "$REPO" --ref main -f pr="$pr"
-          done < /tmp/linked-prs.txt

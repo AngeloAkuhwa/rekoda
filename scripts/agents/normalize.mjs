@@ -14,6 +14,7 @@
  */
 import { execFileSync } from 'node:child_process';
 import { writeFileSync, readFileSync, existsSync } from 'node:fs';
+import { gh, ghPagedComplete } from './gh-lib.mjs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseClosingRefs } from './evaluator.mjs';
@@ -40,43 +41,18 @@ const publicKey = (name) => {
   return existsSync(p) ? readFileSync(p, 'utf8') : null;
 };
 
-function gh(pathname, extra = []) {
-  return JSON.parse(
-    execFileSync('gh', ['api', pathname, ...extra], {
-      encoding: 'utf8',
-      maxBuffer: 32 * 1024 * 1024,
-    }),
-  );
-}
-
-function ghPaged(pathname, pages = 3) {
-  const out = [];
-  for (let page = 1; page <= pages; page++) {
-    const chunk = gh(`${pathname}${pathname.includes('?') ? '&' : '?'}per_page=100&page=${page}`);
-    out.push(...chunk);
-    if (chunk.length < 100) break;
+// A listing that cannot be proven complete is unprovable state: the
+// issue-comment case flows into the evaluator as commentsComplete=false
+// (a reasoned CONTRACT_HISTORY_INVALID block); every other case fails
+// this normalization visibly so no check is ever published from partial
+// evidence.
+function pagedOrDie(pathname, what) {
+  const r = ghPagedComplete(pathname);
+  if (!r.complete) {
+    console.error(`::error::${what} listing could not be proven complete — failing closed.`);
+    process.exit(1);
   }
-  return out;
-}
-
-/**
- * Exhaustive pagination with a defensive ceiling. Returns
- * { items, complete }: complete=false when the ceiling was hit before the
- * API ran out of pages, or on API failure — callers must FAIL CLOSED on
- * incomplete history, never treat it as absence.
- */
-function ghPagedComplete(pathname, maxPages = 30) {
-  const items = [];
-  try {
-    for (let page = 1; page <= maxPages; page++) {
-      const chunk = gh(`${pathname}${pathname.includes('?') ? '&' : '?'}per_page=100&page=${page}`);
-      items.push(...chunk);
-      if (chunk.length < 100) return { items, complete: true };
-    }
-    return { items, complete: false }; // ceiling hit with pages remaining
-  } catch {
-    return { items, complete: false }; // API failure: unprovable
-  }
+  return r.items;
 }
 
 const pr = gh(`repos/${repo}/pulls/${prNumber}`);
@@ -103,7 +79,8 @@ if (refs.length === 1) {
   try {
     const raw = gh(`repos/${repo}/issues/${refs[0]}`);
     const labels = (raw.labels ?? []).map((l) => l.name);
-    const comments = ghPaged(`repos/${repo}/issues/${refs[0]}/comments`).map((c) => ({
+    const commentHistory = ghPagedComplete(`repos/${repo}/issues/${refs[0]}/comments`);
+    const comments = commentHistory.items.map((c) => ({
       author: c.user?.login ?? '',
       createdAt: c.created_at,
       id: c.id,
@@ -118,6 +95,7 @@ if (refs.length === 1) {
       builderLabels: labels.filter((l) => /^builder:(claude|codex)$/.test(l)),
       body: raw.body ?? '',
       comments,
+      commentsComplete: commentHistory.complete,
     };
   } catch {
     issue = {
@@ -129,12 +107,13 @@ if (refs.length === 1) {
       builderLabels: [],
       body: '',
       comments: [],
+      commentsComplete: true,
     };
   }
 }
 
 // Reviews (Codex markers + owner approvals) — commit_id and state bind them.
-const reviews = ghPaged(`repos/${repo}/pulls/${prNumber}/reviews`).map((r) => ({
+const reviews = pagedOrDie(`repos/${repo}/pulls/${prNumber}/reviews`, 'PR review').map((r) => ({
   author: r.user?.login ?? '',
   kind: 'review',
   reviewState: r.state,
@@ -146,13 +125,15 @@ const reviews = ghPaged(`repos/${repo}/pulls/${prNumber}/reviews`).map((r) => ({
 }));
 
 // PR issue-comments (signed Claude/Gemini markers posted by the gates).
-const prComments = ghPaged(`repos/${repo}/issues/${prNumber}/comments`).map((c) => ({
-  author: c.user?.login ?? '',
-  kind: 'comment',
-  createdAt: c.created_at,
-  id: c.id,
-  body: c.body ?? '',
-}));
+const prComments = pagedOrDie(`repos/${repo}/issues/${prNumber}/comments`, 'PR comment').map(
+  (c) => ({
+    author: c.user?.login ?? '',
+    kind: 'comment',
+    createdAt: c.created_at,
+    id: c.id,
+    body: c.body ?? '',
+  }),
+);
 
 // Unresolved review threads.
 const [owner, name] = repo.split('/');
@@ -181,9 +162,9 @@ const unresolvedThreads = (
 // Global WIP: every open issue occupying the single implementation lane.
 const laneIssues = new Map();
 for (const label of ['status:building', 'status:in-review']) {
-  for (const i of ghPaged(
+  for (const i of pagedOrDie(
     `repos/${repo}/issues?state=open&labels=${encodeURIComponent(label)}`,
-    1,
+    'lane-issue',
   )) {
     if (i.pull_request) continue; // PRs carry status labels too; lanes are issues
     laneIssues.set(i.number, { issue: i.number, status: label });

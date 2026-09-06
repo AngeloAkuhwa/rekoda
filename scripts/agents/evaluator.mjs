@@ -244,11 +244,20 @@ export function parseRevisionMarkers(text) {
 // ---------------------------------------------------------------------------
 
 /**
- * Compute the issue's current contract revision from its comments with
- * validated provenance and validated history. Provenance: a marker counts
- * only when its comment author is the owner's human account, or its
- * SIGNATURE verifies against the contract-authority public key. History
- * rules (all fail closed with `invalid` set):
+ * Compute the issue's ACTIVE contract revision from its comments with
+ * validated provenance and validated history.
+ *
+ * Provenance (the D1 rule — mutable text can never silently change the
+ * merge contract): a BASELINE counts when authored by the owner's human
+ * account or signed by the contract-authority key; a REVISION counts
+ * ONLY when contract-authority-SIGNED — an owner-authored unsigned
+ * revision comment, like a direct issue-body edit, is a PROPOSAL: the
+ * previous signed revision stays the active merge contract, and the
+ * mismatched body simply blocks (CONTRACT_AMENDED_UNAUTHORIZED) until
+ * the owner-only authority transaction freezes the linked PRs, signs
+ * the new revision, and redispatches the gates.
+ *
+ * History rules (all fail closed with `invalid` set):
  *   - a baseline must exist, and every baseline must be revision 1 with
  *     one identical hash;
  *   - revisions must be strictly monotonic 1..N with no gaps;
@@ -267,9 +276,13 @@ export function computeContractRevision({
   for (const c of issueComments ?? []) {
     for (const m of parseRevisionMarkers(c.body)) {
       if (m.malformed || m.issue !== issueNumber) continue;
+      const signed = verifySignature(
+        canonicalContractPayload(m),
+        m.signature,
+        contractAuthorityKey,
+      );
       const authorized =
-        c.author === ownerLogin ||
-        verifySignature(canonicalContractPayload(m), m.signature, contractAuthorityKey);
+        m.kind === 'REKODA_CONTRACT_BASELINE' ? c.author === ownerLogin || signed : signed;
       if (authorized) markers.push(m);
     }
   }
@@ -325,6 +338,33 @@ export function computeContractRevision({
     expectedHash,
     currentHash,
   };
+}
+
+/**
+ * The FREEZE-BEFORE-MUTATE amendment transaction (D1), as a pure state
+ * machine the authority workflow implements step for step:
+ *   1. every linked open PR's current HEAD is frozen (required checks
+ *      forced non-green) BEFORE anything else;
+ *   2. only when EVERY freeze succeeded may the signed revision be
+ *      published (become authoritative);
+ *   3. gate redispatch follows; a failed dispatch leaves the PR frozen
+ *      (blocked), never silently re-green.
+ * Any partial failure keeps the previous revision active while the
+ * already-frozen PRs stay safely blocked.
+ */
+export function amendmentTransaction({ linkedPrs, freezeResults, signOk, dispatchResults }) {
+  const prs = (linkedPrs ?? []).map(Number);
+  const frozen = prs.filter((pr) => freezeResults?.[pr] === true);
+  const allFrozen = prs.every((pr) => freezeResults?.[pr] === true);
+  if (!allFrozen) {
+    return { published: false, frozen, dispatched: [], stillBlocked: frozen };
+  }
+  if (!signOk) {
+    return { published: false, frozen, dispatched: [], stillBlocked: frozen };
+  }
+  const dispatched = prs.filter((pr) => dispatchResults?.[pr] === true);
+  const stillBlocked = prs.filter((pr) => dispatchResults?.[pr] !== true);
+  return { published: true, frozen, dispatched, stillBlocked };
 }
 
 // ---------------------------------------------------------------------------
@@ -606,6 +646,12 @@ export function evaluate(state, mode = 'full') {
     )
       add('DECISION_STATE_INVALID', `Issue #${issue.number} has an unresolved owner decision.`);
 
+    if (issue.commentsComplete === false) {
+      add(
+        'CONTRACT_HISTORY_INVALID',
+        `Issue #${issue.number} comment history could not be proven complete; the contract state is unprovable and the gate fails closed.`,
+      );
+    }
     const rev = computeContractRevision({
       issueNumber: issue.number,
       issueBody: issue.body,
@@ -613,7 +659,9 @@ export function evaluate(state, mode = 'full') {
       ownerLogin: cfg.ownerLogin,
       contractAuthorityKey: keys.contractAuthority ?? null,
     });
-    if (rev.invalid) {
+    if (issue.commentsComplete === false) {
+      // fall through with no revision — unprovable history never yields one
+    } else if (rev.invalid) {
       add(
         'CONTRACT_HISTORY_INVALID',
         `Issue #${issue.number} contract history is invalid: ${rev.invalid}.`,

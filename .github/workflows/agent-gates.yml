@@ -48,8 +48,20 @@ on:
 
 permissions: {}
 
+# D2: ONE repository-wide privileged gate lane. workflow_run and
+# workflow_dispatch would otherwise derive different group keys for the
+# same PR (HEAD SHA vs PR number) and race check publication; the
+# concurrency expression is evaluated before the resolver can unify
+# them, so all privileged evaluation serializes through this single
+# trusted lane instead. With cancel-in-progress: false a security
+# evaluation is never cancelled; GitHub keeps at most one pending run
+# per group and a replaced pending request is safe — an unevaluated new
+# HEAD simply has no checks (blocked), and freezes/redispatches leave
+# their targets blocked until a later run evaluates them. This also
+# serializes every trusted post-check upsert: no two trusted publishers
+# can race the read-then-write.
 concurrency:
-  group: agent-gates-${{ github.event.workflow_run.head_sha || inputs.pr }}
+  group: rekoda-agent-gates
   cancel-in-progress: false
 
 env:
@@ -194,7 +206,12 @@ jobs:
       contents: read
       issues: read
       pull-requests: read
-      id-token: write # required by anthropics/claude-code-action's token exchange
+      # id-token:write is REQUIRED here, verified against the pinned
+      # action's own docs/faq.md ("Why am I getting OIDC authentication
+      # errors?"): "The OIDC token is required in order for the Claude
+      # GitHub app to function" — the default GitHub App auth path we
+      # use (no github_token input). Kept ONLY on this job.
+      id-token: write
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
@@ -371,27 +388,23 @@ jobs:
         with:
           name: verdict-technical
 
-      - name: Validate against FRESH state (keyless — the artifact cannot choose its target)
+      - name: Validate against FRESH state, sign the same in-memory payload, publish
         if: steps.scope.outputs.action == 'publish' && steps.guard.outputs.proceed == 'true'
+        env:
+          CLAUDE_REVIEWER_SIGNING_KEY: ${{ secrets.CLAUDE_REVIEWER_SIGNING_KEY }}
         run: |
           set -euo pipefail
-          node scripts/agents/validate-verdict.mjs \
+          # ONE trusted operation: sign-evidence.mjs revalidates every
+          # field against the fresh target and signs the exact in-memory
+          # canonical payload — no intermediate validated file exists to
+          # be swapped between validation and signing.
+          node scripts/agents/sign-evidence.mjs \
             --file unsigned-verdict.json \
             --marker REKODA_CLAUDE_APPROVAL \
             --pr "$PR" \
             --issue "${{ steps.fresh.outputs.issue }}" \
             --head "${{ steps.fresh.outputs.head_sha }}" \
             --revision "${{ steps.fresh.outputs.contract_revision }}" \
-            --out /tmp/rekoda-evidence-payload.json
-
-      - name: Sign and publish the evidence (the ONLY step that sees the key)
-        if: steps.scope.outputs.action == 'publish' && steps.guard.outputs.proceed == 'true'
-        env:
-          CLAUDE_REVIEWER_SIGNING_KEY: ${{ secrets.CLAUDE_REVIEWER_SIGNING_KEY }}
-        run: |
-          set -euo pipefail
-          node scripts/agents/sign-evidence.mjs \
-            --payload /tmp/rekoda-evidence-payload.json \
             --sign-env CLAUDE_REVIEWER_SIGNING_KEY > /tmp/marker.md
           gh pr comment "$PR" --repo "$REPO" --body-file /tmp/marker.md
 
@@ -623,27 +636,23 @@ jobs:
         with:
           name: verdict-acceptance
 
-      - name: Validate against FRESH state (keyless — the artifact cannot choose its target)
+      - name: Validate against FRESH state, sign the same in-memory payload, publish
         if: steps.scope.outputs.action == 'publish' && steps.guard.outputs.proceed == 'true'
+        env:
+          GEMINI_REVIEWER_SIGNING_KEY: ${{ secrets.GEMINI_REVIEWER_SIGNING_KEY }}
         run: |
           set -euo pipefail
-          node scripts/agents/validate-verdict.mjs \
+          # ONE trusted operation: sign-evidence.mjs revalidates every
+          # field against the fresh target and signs the exact in-memory
+          # canonical payload — no intermediate validated file exists to
+          # be swapped between validation and signing.
+          node scripts/agents/sign-evidence.mjs \
             --file unsigned-verdict.json \
             --marker REKODA_GEMINI_APPROVAL \
             --pr "$PR" \
             --issue "${{ steps.fresh.outputs.issue }}" \
             --head "${{ steps.fresh.outputs.head_sha }}" \
             --revision "${{ steps.fresh.outputs.contract_revision }}" \
-            --out /tmp/rekoda-evidence-payload.json
-
-      - name: Sign and publish the evidence (the ONLY step that sees the key)
-        if: steps.scope.outputs.action == 'publish' && steps.guard.outputs.proceed == 'true'
-        env:
-          GEMINI_REVIEWER_SIGNING_KEY: ${{ secrets.GEMINI_REVIEWER_SIGNING_KEY }}
-        run: |
-          set -euo pipefail
-          node scripts/agents/sign-evidence.mjs \
-            --payload /tmp/rekoda-evidence-payload.json \
             --sign-env GEMINI_REVIEWER_SIGNING_KEY > /tmp/marker.md
           gh pr comment "$PR" --repo "$REPO" --body-file /tmp/marker.md
 

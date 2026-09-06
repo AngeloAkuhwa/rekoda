@@ -195,10 +195,14 @@ Every implementation review evaluates **three contracts**, in this order:
 specification state is **contract revision 1**. A genuine requirement
 change after that point is made only by a **contract revision**:
 
-- **Who authorizes:** the planner (Gemini) or the owner records it; the
-  builder never authorizes a change to its own contract. Any
-  decision-level change, any risk-level change, and anything touching R3
-  requires the owner's explicit authorization.
+- **Who authorizes:** after implementation begins, a revision becomes
+  authoritative ONLY through the owner-dispatched contract-authority
+  transaction (which freezes every linked PR's merge checks before the
+  new revision takes effect, then requires fresh reviews). Anyone —
+  planner included — may PROPOSE a change on the issue, but a proposal,
+  like a direct body edit, never moves the active merge contract; it
+  simply blocks the gates until the owner's transaction lands. The
+  builder never authorizes a change to its own contract.
 - **How it is recorded:** an issue comment (or issue-body edit that a
   comment announces) stating the new revision number, exactly what
   changed, and why — the previous wording stays visible in the issue's

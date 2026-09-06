@@ -5,6 +5,15 @@
 # gets the privileged gates re-run against the same HEAD and the NEW
 # contract state.
 #
+# PROPOSAL vs TRANSITION (D1): every event this watcher sees is at most
+# a PROPOSED contract change or a state signal — a body edit, an
+# owner-typed marker, a label flip. None of it moves the active merge
+# contract: only the contract-authority's owner-dispatched
+# freeze-before-mutate transaction makes a revision authoritative. The
+# gates this watcher dispatches therefore evaluate proposals against the
+# UNCHANGED active contract and simply BLOCK on any mismatch — the D1
+# merge window cannot be reopened from here.
+#
 # The contract-authority WORKFLOW does not rely on this watcher at all —
 # GitHub suppresses workflow events created by GITHUB_TOKEN comments, so
 # the authority dispatches the gates itself directly. That suppression

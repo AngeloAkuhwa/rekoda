@@ -31,6 +31,7 @@ import {
   linkedOpenPrs,
   selectLinkedPrs,
   resolveWorkflowRunTarget,
+  amendmentTransaction,
   SCHEME,
 } from './evaluator.mjs';
 
@@ -371,7 +372,7 @@ test('unrelated workflow cannot authorize a contract revision with the wrong key
   expectBlock(s, 'CONTRACT_AMENDED_UNAUTHORIZED');
 });
 
-test('contract-authority-signed and owner-authored revisions ARE authorized', () => {
+test('only contract-authority-SIGNED revisions are authoritative', () => {
   const s = validState();
   const newBody = ISSUE_BODY + '\n\nAuthorized change.';
   s.issue.body = newBody;
@@ -628,12 +629,14 @@ test('duplicate same-revision markers with different hashes are rejected', () =>
       kind: 'REKODA_CONTRACT_REVISION',
       revision: 2,
       body: ISSUE_BODY + '\nA',
+      key: AUTHORITY_KEY,
       id: 2,
     }),
     contractComment({
       kind: 'REKODA_CONTRACT_REVISION',
       revision: 2,
       body: ISSUE_BODY + '\nB',
+      key: AUTHORITY_KEY,
       id: 3,
     }),
   ];
@@ -646,7 +649,13 @@ test('a skipped revision is rejected (monotonic 1..N required)', () => {
   s.issue.body = newBody;
   s.issue.comments = [
     contractComment(),
-    contractComment({ kind: 'REKODA_CONTRACT_REVISION', revision: 3, body: newBody, id: 2 }),
+    contractComment({
+      kind: 'REKODA_CONTRACT_REVISION',
+      revision: 3,
+      body: newBody,
+      key: AUTHORITY_KEY,
+      id: 2,
+    }),
   ];
   expectBlock(s, 'CONTRACT_HISTORY_INVALID');
 });
@@ -681,13 +690,14 @@ test('a replayed lower revision never lowers the current revision', () => {
         kind: 'REKODA_CONTRACT_REVISION',
         revision: 2,
         body: v2,
+        key: AUTHORITY_KEY,
         id: 2,
         createdAt: 'y',
       }),
       contractComment({ id: 3, createdAt: 'z' }), // baseline reposted later (same rev-1 hash)
     ],
     ownerLogin: OWNER,
-    contractAuthorityKey: null,
+    contractAuthorityKey: pem(AUTHORITY_KEY),
   });
   assert.equal(rev.revision, 2);
   assert.equal(rev.amended, false);
@@ -1214,7 +1224,8 @@ test('contract revision moved between AI review and signing → verdict binds th
       kind: 'REKODA_CONTRACT_REVISION',
       revision: 2,
       body: newBody,
-      author: OWNER,
+      author: ACTIONS,
+      key: AUTHORITY_KEY,
       id: 2,
       createdAt: 'y',
     }),
@@ -1293,4 +1304,133 @@ test('linked-PR selection finds PRs beyond the first page and fails closed on in
   });
   const incomplete = selectLinkedPrs({ openPrs: page1, complete: false, issueNumber: 44 });
   assert.equal(incomplete.ok, false); // pagination ceiling / API failure → never silently miss a PR
+});
+
+// ---------------------------------------------------------------------------
+// D1 — authoritative contract transitions and the freeze-before-mutate
+// transaction (final Phase-2 audit)
+// ---------------------------------------------------------------------------
+
+test('an owner-authored UNSIGNED revision comment is a PROPOSAL, never the active contract', () => {
+  const v2 = ISSUE_BODY + '\n\nProposed change.';
+  // Unit: with the body unchanged, the owner-unsigned rev-2 marker does
+  // not move the active revision.
+  const rev = computeContractRevision({
+    issueNumber: 44,
+    issueBody: ISSUE_BODY,
+    issueComments: [
+      contractComment(),
+      contractComment({
+        kind: 'REKODA_CONTRACT_REVISION',
+        revision: 2,
+        body: v2,
+        author: OWNER,
+        id: 2,
+      }),
+    ],
+    ownerLogin: OWNER,
+    contractAuthorityKey: pem(AUTHORITY_KEY),
+  });
+  assert.equal(rev.revision, 1);
+  // Full gate: with the body ALSO edited, nothing silently transitions —
+  // the previous contract stays active and the mismatch blocks.
+  const s = validState();
+  s.issue.body = v2;
+  s.issue.comments = [
+    contractComment(),
+    contractComment({
+      kind: 'REKODA_CONTRACT_REVISION',
+      revision: 2,
+      body: v2,
+      author: OWNER,
+      id: 2,
+    }),
+  ];
+  expectBlock(s, 'CONTRACT_AMENDED_UNAUTHORIZED');
+});
+
+test('a direct issue-body edit alone never replaces the active merge contract', () => {
+  const s = validState();
+  s.issue.body = ISSUE_BODY + '\n\nEdited without any transaction.';
+  const r = evaluate(s);
+  assert.equal(r.pass, false);
+  assert.ok(codes(r).includes('CONTRACT_AMENDED_UNAUTHORIZED'));
+  // and the reviewer approvals for revision 1 do not validate a new contract:
+  assert.ok(!codes(r).includes('TECH_WRONG_REVISION')); // no rev-2 exists to bind to
+});
+
+test('unprovably complete comment history yields no revision and blocks', () => {
+  const s = validState();
+  s.issue.commentsComplete = false;
+  const r = evaluate(s);
+  assert.equal(r.pass, false);
+  assert.ok(codes(r).includes('CONTRACT_HISTORY_INVALID'));
+});
+
+test('amendment transaction: publish only after EVERY linked PR is frozen', () => {
+  const ok = amendmentTransaction({
+    linkedPrs: [70, 73],
+    freezeResults: { 70: true, 73: true },
+    signOk: true,
+    dispatchResults: { 70: true, 73: true },
+  });
+  assert.deepEqual(ok, {
+    published: true,
+    frozen: [70, 73],
+    dispatched: [70, 73],
+    stillBlocked: [],
+  });
+});
+
+test('amendment transaction: a failed freeze forbids publication; frozen PRs stay safely blocked', () => {
+  const r = amendmentTransaction({
+    linkedPrs: [70, 73],
+    freezeResults: { 70: true, 73: false },
+    signOk: true,
+    dispatchResults: {},
+  });
+  assert.equal(r.published, false);
+  assert.deepEqual(r.frozen, [70]);
+  assert.deepEqual(r.dispatched, []);
+});
+
+test('amendment transaction: freeze ok but signing fails → nothing published, PRs remain blocked, never re-green', () => {
+  const r = amendmentTransaction({
+    linkedPrs: [70],
+    freezeResults: { 70: true },
+    signOk: false,
+    dispatchResults: {},
+  });
+  assert.equal(r.published, false);
+  assert.deepEqual(r.frozen, [70]);
+  assert.deepEqual(r.stillBlocked, [70]);
+});
+
+test('amendment transaction: dispatch failure after activation leaves the PR blocked (frozen), not green', () => {
+  const r = amendmentTransaction({
+    linkedPrs: [70, 73],
+    freezeResults: { 70: true, 73: true },
+    signOk: true,
+    dispatchResults: { 70: true, 73: false },
+  });
+  assert.equal(r.published, true);
+  assert.deepEqual(r.stillBlocked, [73]);
+});
+
+test('a baseline deep in a very large comment history is still found (position-independent)', () => {
+  const noise = Array.from({ length: 350 }, (_, i) => ({
+    author: 'someone',
+    createdAt: `t${i}`,
+    id: i + 100,
+    body: `comment ${i}`,
+  }));
+  const rev = computeContractRevision({
+    issueNumber: 44,
+    issueBody: ISSUE_BODY,
+    issueComments: [...noise, contractComment({ id: 9999 })],
+    ownerLogin: OWNER,
+    contractAuthorityKey: null,
+  });
+  assert.equal(rev.revision, 1);
+  assert.equal(rev.amended, false);
 });

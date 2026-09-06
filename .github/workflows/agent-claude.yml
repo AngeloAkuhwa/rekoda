@@ -1,26 +1,24 @@
 # Claude — builder lane (docs/AUTONOMOUS-ENGINEERING.md §1/§3, CLAUDE.md Role A).
 #
-# ENTRY PATHS — both default-branch-defined (issues and workflow_dispatch
-# events execute the default branch's workflow file), both behind the
-# same NO-SECRET preflight and the same REPOSITORY-WIDE concurrency
-# group:
-#   1. AUTOMATIC: an agent-task issue reaching status:ready with
-#      builder:claude (labels require triage+; the preflight still
-#      demands write+ of the labelling actor).
-#   2. MANUAL: workflow_dispatch with an issue number (GitHub already
-#      requires write access to dispatch; the preflight re-checks). The
-#      old @claude comment fallback was REMOVED deliberately: validating
-#      arbitrary mention targets safely added complexity without adding
-#      control — this dispatch is the authorized manual path.
+# ENTRY: workflow_dispatch ONLY (default-branch-defined), dispatched by:
+#   1. the trusted contract-authority workflow, AFTER it has recorded
+#      the contract baseline on a READY builder:claude issue —
+#      deterministic sequencing (authority → baseline → dispatch →
+#      admission → lane claim → build), no polling; or
+#   2. a write+ human, as the authorized manual path (the old @claude
+#      comment fallback stays removed; the old direct labeled trigger
+#      was removed too, so a READY event can no longer race the
+#      baseline).
 #
 # ATOMIC GLOBAL WIP: every admission (this workflow and the Codex
 # lane-claim workflow) runs under concurrency group
 # `rekoda-implementation-lane` with cancel-in-progress: false, so two
-# simultaneous READY events serialize; inside the lock the preflight
-# re-fetches live state, refuses if any other issue holds the lane, and
-# atomically claims it (status:ready → status:building) before the
-# builder starts. The issue lifecycle labels remain the source of truth
-# after the job ends.
+# simultaneous dispatches serialize; inside the lock the no-secret
+# preflight re-fetches live state, requires a valid current contract
+# baseline (no baseline → no admission → no lane claim → no builder),
+# refuses if any other issue holds the lane, and atomically claims it
+# (status:ready → status:building) before the builder starts. The issue
+# lifecycle labels remain the source of truth after the job ends.
 #
 # Environment agents-builder holds ONLY CLAUDE_CODE_OAUTH_TOKEN — no
 # reviewer or contract-authority signing key, so the builder is
@@ -30,12 +28,10 @@
 name: Agent — Claude builder
 
 on:
-  issues:
-    types: [labeled]
   workflow_dispatch:
     inputs:
       issue:
-        description: READY builder:claude issue number to build (manual authorized fallback)
+        description: READY builder:claude issue number to build (dispatched by the contract authority after the baseline, or by a write+ human)
         required: true
         type: number
 
@@ -48,12 +44,6 @@ concurrency:
 jobs:
   preflight:
     name: Builder admission preflight (no secrets)
-    if: |
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.action == 'labeled' &&
-       contains(github.event.issue.labels.*.name, 'agent-task') &&
-       ((github.event.label.name == 'status:ready' && contains(github.event.issue.labels.*.name, 'builder:claude')) ||
-        (github.event.label.name == 'builder:claude' && contains(github.event.issue.labels.*.name, 'status:ready'))))
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -65,7 +55,7 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       REPO: ${{ github.repository }}
-      ISSUE: ${{ github.event.issue.number || inputs.issue }}
+      ISSUE: ${{ inputs.issue }}
       ACTOR: ${{ github.actor }}
     steps:
       - name: Checkout trusted policy (default-branch definition SHA)
@@ -78,11 +68,20 @@ jobs:
         id: admit
         run: |
           set -euo pipefail
-          perm=$(gh api "repos/$REPO/collaborators/$ACTOR/permission" --jq .permission)
-          case "$perm" in
-            admin|maintain|write) echo "Actor $ACTOR permission: $perm" ;;
-            *) echo "::error::Actor $ACTOR (permission: $perm) may not dispatch paid agent work."; exit 1 ;;
-          esac
+          # Authorized dispatchers: a write+ human, or github-actions[bot]
+          # — the actor GitHub records when the trusted contract-authority
+          # workflow dispatches this with GITHUB_TOKEN. Only repository
+          # workflows can be that actor, and workflow files are
+          # CODEOWNERS-owned.
+          if [ "$ACTOR" = "github-actions[bot]" ]; then
+            echo "Dispatched by a repository workflow (contract authority)."
+          else
+            perm=$(gh api "repos/$REPO/collaborators/$ACTOR/permission" --jq .permission)
+            case "$perm" in
+              admin|maintain|write) echo "Actor $ACTOR permission: $perm" ;;
+              *) echo "::error::Actor $ACTOR (permission: $perm) may not dispatch paid agent work."; exit 1 ;;
+            esac
+          fi
           if gh api "repos/$REPO/issues/$ISSUE/comments?per_page=100" \
             --jq '[.[] | select(.user.login == "github-actions[bot]" and (.body | contains("REKODA_CLAUDE_BUILD_DISPATCHED")))] | length' \
             | grep -qv '^0$'; then
@@ -93,25 +92,12 @@ jobs:
           fi
           # Deterministic admission + atomic lane claim, inside the
           # repository-wide concurrency lock. Admission REQUIRES a valid
-          # contract baseline (no baseline → no lane claim → no
-          # secret-bearing builder job); because the READY label fires
-          # the contract-authority baseline recording concurrently with
-          # this preflight, a short bounded wait absorbs that race —
-          # after which the refusal stands and a later authorized
-          # dispatch retries.
-          admitted=false
-          for attempt in 1 2 3 4; do
-            if node scripts/agents/build-admission.mjs --repo "$REPO" --issue "$ISSUE" \
-              --builder builder:claude --transition; then
-              admitted=true; break
-            fi
-            echo "Admission attempt $attempt refused; waiting for the contract baseline / lane state…"
-            sleep 30
-          done
-          if [ "$admitted" != "true" ]; then
-            echo "::error::Builder admission refused after bounded retries — no lane was claimed and no builder starts."
-            exit 1
-          fi
+          # current contract baseline (no baseline → no lane claim → no
+          # secret-bearing builder job). No polling: the authority
+          # dispatches this workflow only AFTER the baseline exists, and
+          # this preflight independently verifies it again.
+          node scripts/agents/build-admission.mjs --repo "$REPO" --issue "$ISSUE" \
+            --builder builder:claude --transition
           gh issue comment "$ISSUE" --repo "$REPO" \
             --body "REKODA_CLAUDE_BUILD_DISPATCHED — Claude builder admitted; the implementation lane is claimed."
           echo "proceed=true" >> "$GITHUB_OUTPUT"
@@ -126,7 +112,9 @@ jobs:
     environment: agents-builder
     # Builder permissions, justified: contents:write (implementation
     # branch), pull-requests/issues:write (open PR, labels, comments),
-    # id-token:write (required by the pinned action's token exchange),
+    # id-token:write (required per the pinned action's docs/faq.md: "The
+    # OIDC token is required in order for the Claude GitHub app to
+    # function" — the default app-auth path we use),
     # actions:read (the action reads CI results while iterating).
     permissions:
       contents: write

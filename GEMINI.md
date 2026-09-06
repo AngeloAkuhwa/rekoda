@@ -36,13 +36,16 @@ review focus**, **Gemini review focus**, and **Required merge evidence**.
 
 Once implementation starts, the issue is the task/review contract at
 **contract revision 1** (`AGENTS.md` §8). If a genuine requirement must
-change, Gemini (or the owner) records a **contract revision** on the
-issue: the new revision number, exactly what changed, and why — the
-builder never authorizes a revision to its own contract, and any
-decision-level, risk-level, or R3-touching amendment requires the owner. A
-revision invalidates all existing reviewer approvals even when the code
-HEAD did not change; both reviewers re-review against the new contract,
-and the risk label and builder assignment are re-checked.
+change, Gemini may **propose** it on the issue (what changes and why),
+but only the **owner-dispatched contract-authority transaction** makes a
+revision authoritative — it freezes every linked PR's merge checks
+before the new revision exists, then requires fresh reviews
+(`AGENTS.md` §8). A proposal or direct edit alone never moves the active
+merge contract; it blocks the gates until the owner's transaction lands.
+The builder never authorizes a revision to its own contract. An
+authoritative revision invalidates all existing reviewer approvals even
+when the code HEAD did not change; both reviewers re-review against the
+new contract, and the risk label and builder assignment are re-checked.
 
 **R3 readiness:** R3 is not permanently `NEEDS-OWNER-DECISION`. With the
 required owner decision unresolved, the issue is `NEEDS-OWNER-DECISION`

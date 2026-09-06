@@ -117,13 +117,15 @@ the failure states. GitHub must refuse the merge in every one:
       wrong-key — SIGNATURE, from a write-access account → rejected
       (`GEMINI_UNAUTHORIZED`); same for `REKODA_CLAUDE_APPROVAL` on a
       `builder:codex` drill (cross-role key reuse must also fail).
-- [ ] 22. Redispatch drill (item C): dispatch a contract revision via
-      the contract-authority workflow and verify the authority run
-      itself directly re-dispatches `Agent — gates` for the linked PR
-      (no reliance on its GITHUB_TOKEN comment triggering anything);
-      the gates then demand fresh verdicts for the new revision on the
-      unchanged code HEAD. Repeat via a human issue-body edit to prove
-      the contract-watch path.
+- [ ] 22. Amendment-transaction drill (items C + D1): with all gates
+      green at revision 1, the owner dispatches a contract revision and
+      the run log must show the full freeze-before-mutate order — every
+      linked PR's three required checks forced red FIRST, the signed
+      revision posted only after, then the direct gate redispatch — and
+      the merge box must never be green between the revision existing
+      and fresh rev-2 verdicts landing. Also verify a human issue-body
+      edit alone (a PROPOSAL) blocks the gates without ever becoming the
+      active contract.
 - [ ] 23. Escape drill (item E): remove the drill PR's risk and builder
       labels AND its closing reference → the gates stay red (sticky
       enrollment from exhaustively-paginated label history), never
@@ -166,12 +168,13 @@ the failure states. GitHub must refuse the merge in every one:
       duplicates) and the merge box goes red until revision-2 verdicts
       land. This proves the required-check state cannot remain
       merge-authorizing on stale-revision evidence.
-- [ ] 31. Baseline-race drill: label a fresh agent-task issue
-      `status:ready` and watch the builder preflight — if it lands
-      before the authority's baseline, it waits its bounded retries and
-      only claims the lane AFTER the baseline exists; delete the
-      baseline scenario (a never-baselined issue) must end in a refusal
-      with NO lane claim and NO builder job.
+- [ ] 31. Baseline-sequencing drill: label a fresh `builder:claude`
+      agent-task issue `status:ready` and verify the deterministic
+      chain — the contract authority records the baseline FIRST and
+      only then dispatches the builder, whose admission independently
+      re-verifies the baseline before claiming the lane. A manual
+      builder dispatch against a never-baselined issue must be refused
+      with NO lane claim and NO secret-bearing builder job.
 
 ## D. Positive auto-merge drill
 

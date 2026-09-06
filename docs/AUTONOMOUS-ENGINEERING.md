@@ -65,11 +65,14 @@ finding → backlog → status:ready → status:building → status:in-review �
 2. When implementation starts, the issue's specification state is
    **contract revision 1** (`AGENTS.md` §8). The builder provides evidence
    against the acceptance criteria and never rewrites them. A genuine
-   requirement change is a recorded **contract revision** — authorized by
-   the planner or the owner (owner required for decision-level, risk, or
-   R3 amendments), preserving the previous wording in issue history, and
-   invalidating every existing reviewer approval even when the code HEAD
-   did not change.
+   requirement change after that is either a **proposal** (any issue
+   edit or comment — it never moves the active merge contract and simply
+   blocks the gates) or an **authoritative revision**, which exists only
+   through the owner-dispatched contract-authority transaction: freeze
+   every linked PR's merge checks, then sign the new revision, then
+   redispatch — so approvals for the old revision are invalid the moment
+   the new one exists, and never the other way around, even when the
+   code HEAD did not change.
 3. `READY` requires: no unanswered decision and dependencies landed. R3 is
    `NEEDS-OWNER-DECISION` while its owner decision is unresolved; once the
    decision is recorded and linked on the issue, it may become `READY`
@@ -286,23 +289,35 @@ owner generates and commits the public keys
 (`scripts/agents/generate-signing-keys.mjs`), no signed approval can
 exist — deliberately.
 
-**Contract revisions, mechanically:** contract authority is separate
-from everyone who wants the contract changed. When an agent-task issue
-is labelled `status:ready`, the deterministic **contract-authority
-workflow** (environment `agents-contract-authority`, the only holder of
-the contract signing key) records the signed
-`REKODA_CONTRACT_BASELINE` (SHA-256 of the issue body). Amendments
-after implementation begins are **owner-only**: its
-`workflow_dispatch` refuses any actor but the owner, and the owner's
-human account may also post markers unsigned (the platform proves a
-human authored them) — no write collaborator can sign new requirements,
-and the builder holds neither authority. The evaluator validates the
-whole history: baseline must be revision 1, revisions monotonic 1..N
-with no gaps, same-revision conflicts invalid, reasons required,
-replayed lower revisions inert. Then it recomputes the body hash every
-run: no baseline → BLOCK; an unmatched body → BLOCK (unauthorized
-amendment); and every verdict must name the current revision, so an
-authorized revision invalidates all prior approvals **without a push**.
+**Contract revisions, mechanically — proposals vs authoritative
+transitions (D1).** Contract authority is separate from everyone who
+wants the contract changed. When an agent-task issue is labelled
+`status:ready`, the deterministic **contract-authority workflow**
+(environment `agents-contract-authority`, the only holder of the
+contract signing key) records the signed `REKODA_CONTRACT_BASELINE`
+(SHA-256 of the issue body; the owner's human account may also post a
+baseline unsigned), and only then dispatches the builder — baseline
+strictly before admission. After implementation begins, **mutable issue
+text can never silently change the merge contract**: a direct body
+edit, an owner-typed unsigned revision comment, a planner suggestion —
+all are PROPOSALS, which leave the previous signed revision as the
+active merge contract and simply block the gates on the mismatch. The
+only authoritative transition is the **owner-dispatched
+freeze-before-mutate transaction** (`amendmentTransaction()` in the
+evaluator, executed step for step by the authority workflow): find
+every linked open PR (exhaustively), **freeze** each one's current HEAD
+by forcing all three required checks red, and only when every freeze is
+confirmed sign and post the revision marker, then redispatch the gates.
+If any freeze fails, nothing is published and the previous revision
+stays active (already-frozen PRs stay safely blocked); if signing or a
+dispatch fails after freezing, the PRs remain blocked — never silently
+re-green. So there is **no interval in which revision N+1 exists while
+revision-N checks still authorize a merge.** The evaluator additionally
+validates the whole history (baseline = revision 1, monotonic 1..N,
+conflicts invalid, reasons required, replays inert, unprovably complete
+comment history invalid) and recomputes the body hash every run; every
+verdict must name the current revision, so an authorized revision
+invalidates all prior approvals **without a push**.
 
 **Issue changes retrigger the gates — two explicit paths.** (1) The
 contract-authority workflow, after posting a marker, **directly
@@ -648,7 +663,18 @@ target, **upsert-in-place check runs** with `cancel-in-progress: false`
 gate concurrency, **required-check app-source binding** in the ruleset,
 **exhaustive linked-PR pagination** that fails visibly when unprovable,
 and **baseline-before-admission** (no baseline → no lane claim → no
-builder).
+builder). The final Phase-2 repair then closed D1 and D2: **authoritative
+contract transitions are freeze-before-mutate transactions** (mutable
+issue text is only ever a proposal; revision N+1 cannot exist while
+revision-N checks still authorize a merge), gate evaluation serializes
+through **one repository-wide privileged lane** (`rekoda-agent-gates` —
+workflow_run and workflow_dispatch can no longer race the same PR, and
+trusted check upserts are serialized), the publisher **validates and
+signs one in-memory payload in a single trusted operation**, contract
+history and builder admission read **exhaustively paginated** comment
+listings (unprovable → invalid), and builder dispatch is
+**deterministically sequenced behind the baseline** (the authority
+dispatches the builder only after recording it; no polling).
 
 What remains, honestly:
 
