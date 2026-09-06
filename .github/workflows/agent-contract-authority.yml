@@ -7,14 +7,35 @@
 # account is the other authorized source (unsigned; the platform proves
 # a human authored it).
 #
-#   - When an agent-task issue is labelled status:ready by a write+
-#     actor, it posts the signed REKODA_CONTRACT_BASELINE (revision 1)
-#     if no baseline exists yet — recording, not amending.
-#   - Amendments are workflow_dispatch only (write+ access required by
-#     GitHub to dispatch): a signed REKODA_CONTRACT_REVISION with the
-#     new hash and reason. The evaluator enforces monotonic history and
-#     rejects conflicts, so a second conflicting baseline or a replayed
-#     revision blocks the PR rather than changing anything.
+#   - When an agent-task issue carries status:ready plus exactly one
+#     builder:* label (labels RE-FETCHED at decision time, so both
+#     labelling orders work), it posts the signed
+#     REKODA_CONTRACT_BASELINE (revision 1) if no baseline exists yet —
+#     recording, not amending — and then dispatches the Claude builder
+#     when the builder is builder:claude.
+#   - Amendments are workflow_dispatch only (owner-only): a signed
+#     REKODA_CONTRACT_REVISION with the new hash and reason, executed as
+#     the freeze → sign → re-freeze → dispatch transaction below. The
+#     evaluator enforces monotonic history and rejects conflicts, so a
+#     second conflicting baseline or a replayed revision blocks the PR
+#     rather than changing anything.
+#
+# FREEZE/PUBLISHER SERIALIZATION (D1 + per-target ordering). Every job
+# here that writes a linked PR's checks takes the SAME job-level
+# concurrency group as that PR's gate check-writers
+# (rekoda-gates-pr-<pr>, cancel-in-progress: false), so a freeze and a
+# gate publisher can never interleave their read-then-write:
+#   - a publisher wholly BEFORE the post-signing re-freeze may write
+#     green for the then-still-active previous revision — the re-freeze
+#     job then overwrites it red;
+#   - a publisher wholly AFTER the re-freeze re-fetches state that
+#     already contains the new revision, so a previous-revision verdict
+#     no longer validates and the check stays red until a fresh review.
+# There is no third case: holding the group is what forbids a publisher
+# whose state read predates the signing from writing its check after
+# the re-freeze. A freeze leg that is itself displaced/cancelled fails
+# the matrix, the signing job never runs, and the previous revision
+# simply stays active (already-frozen PRs stay safely blocked).
 name: Agent — contract authority
 
 on:
@@ -35,126 +56,299 @@ on:
         required: true
         type: string
 
-permissions:
-  contents: read
-  issues: write
-  actions: write # direct redispatch of Agent — gates / builder dispatch
-  pull-requests: read
-  checks: write # D1 freeze: forcing linked PRs' required checks red BEFORE a revision becomes authoritative — demonstrably required here and nowhere else outside the gates
+permissions: {}
 
+# Amendments/baselines for ONE issue serialize; different issues never
+# contend. cancel-in-progress: false — a transaction in flight is never
+# cancelled midway.
 concurrency:
   group: contract-authority-${{ github.event.issue.number || inputs.issue }}
   cancel-in-progress: false
 
+env:
+  REPO: ${{ github.repository }}
+  ISSUE: ${{ github.event.issue.number || inputs.issue }}
+
 jobs:
-  contract:
-    name: Contract authority
-    if: |
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.action == 'labeled' && github.event.label.name == 'status:ready' &&
-       contains(github.event.issue.labels.*.name, 'agent-task'))
+  # ---------------------------------------------------------------- #
+  # Amendment transaction (workflow_dispatch, owner-only)             #
+  # ---------------------------------------------------------------- #
+  plan:
+    name: Authorize and find linked PRs
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    environment: agents-contract-authority
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      prs: ${{ steps.linked.outputs.prs }}
+      has_prs: ${{ steps.linked.outputs.has_prs }}
+      trusted_sha: ${{ github.sha }}
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      REPO: ${{ github.repository }}
-      ISSUE: ${{ github.event.issue.number || inputs.issue }}
       ACTOR: ${{ github.actor }}
     steps:
-      # issues/workflow_dispatch events execute the default-branch
-      # definition; github.sha IS that trusted commit — definition and
-      # policy share one immutable trust root.
+      # workflow_dispatch executes the default-branch definition;
+      # github.sha IS that trusted commit — definition and policy share
+      # one immutable trust root.
       - name: Checkout trusted policy at the definition's own SHA
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ github.sha }}
           fetch-depth: 1
 
-      - name: Trusted root
-        run: echo "Definition and policy trust root — default-branch SHA ${{ github.sha }}"
-
-      - name: Authorize actor
+      - name: Authorize actor (amendments are owner-only)
         env:
           OWNER_LOGIN: AngeloAkuhwa
         run: |
           set -euo pipefail
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            # Contract AMENDMENTS after implementation begins are
-            # OWNER-ONLY (docs/AUTONOMOUS-ENGINEERING.md §6): no write
-            # collaborator may sign new requirements.
-            if [ "$ACTOR" != "$OWNER_LOGIN" ]; then
-              echo "::error::Contract amendments are owner-only; actor $ACTOR is not @$OWNER_LOGIN."
-              exit 1
-            fi
-          else
-            # Baseline recording on READY promotion: write+ actor.
-            perm=$(gh api "repos/$REPO/collaborators/$ACTOR/permission" --jq .permission)
-            case "$perm" in
-              admin|maintain|write) echo "Actor $ACTOR permission: $perm" ;;
-              *) echo "::error::Actor $ACTOR (permission: $perm) may not drive contract authority."; exit 1 ;;
-            esac
+          # Contract AMENDMENTS after implementation begins are
+          # OWNER-ONLY (docs/AUTONOMOUS-ENGINEERING.md §6): no write
+          # collaborator may sign new requirements.
+          if [ "$ACTOR" != "$OWNER_LOGIN" ]; then
+            echo "::error::Contract amendments are owner-only; actor $ACTOR is not @$OWNER_LOGIN."
+            exit 1
           fi
 
-      - name: Amend the contract as a FREEZE-BEFORE-MUTATE transaction (revisions)
-        if: github.event_name == 'workflow_dispatch'
-        env:
-          CONTRACT_AUTHORITY_SIGNING_KEY: ${{ secrets.CONTRACT_AUTHORITY_SIGNING_KEY }}
-          # env-var indirection — dispatch inputs never touch shell syntax
-          REVISION_INPUT: ${{ inputs.revision }}
-          REASON_INPUT: ${{ inputs.reason }}
+      - name: Find every linked open PR (exhaustive; unprovable → abort)
+        id: linked
         run: |
           set -euo pipefail
-          if [ ! -f scripts/agents/contract-revision.mjs ]; then
+          if [ ! -f scripts/agents/find-linked-prs.mjs ]; then
             echo "::error::Policy scripts are not on main yet."; exit 1
           fi
-          # D1 invariant: the active contract never changes while linked
-          # PRs remain merge-authorizing under the previous contract.
-          # This step follows scripts/agents/evaluator.mjs
-          # amendmentTransaction() exactly:
-          #   1. find every linked open PR (exhaustive; unprovable → abort);
-          #   2. FREEZE each one's CURRENT HEAD — force all three required
-          #      checks to failure — BEFORE anything else; any freeze
-          #      failure aborts with the previous revision still active
-          #      (already-frozen PRs stay safely blocked);
-          #   3. only after every freeze is confirmed, sign and post the
-          #      revision marker (this is the authoritative transition);
-          #   4. redispatch the gates; a failed dispatch leaves the PR
-          #      frozen (blocked), never silently green.
           node scripts/agents/find-linked-prs.mjs --repo "$REPO" --issue "$ISSUE" > /tmp/linked-prs.txt
-          while IFS= read -r pr; do
-            [ -n "$pr" ] || continue
-            head=$(gh api "repos/$REPO/pulls/$pr" --jq '.head.sha')
-            echo "Freezing PR #$pr at $head before the amendment becomes authoritative…"
-            for name in "Agent policy gate" "Technical Review Gate" "Gemini Acceptance Gate"; do
-              node scripts/agents/post-check.mjs --repo "$REPO" --name "$name" --sha "$head" \
-                --conclusion failure --title "Contract amendment in progress" \
-                --summary "Issue #$ISSUE is being amended to revision $REVISION_INPUT; this check stays red until the gates re-evaluate under the new contract."
-            done
-          done < /tmp/linked-prs.txt
-          echo "All linked PRs frozen — committing revision $REVISION_INPUT."
+          prs=$(node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            const list = readFileSync("/tmp/linked-prs.txt", "utf8")
+              .split("\n").map((s) => s.trim()).filter(Boolean).map(Number);
+            if (list.some((n) => !Number.isInteger(n))) process.exit(1);
+            console.log(JSON.stringify(list));
+          ')
+          echo "prs=$prs" >> "$GITHUB_OUTPUT"
+          if [ "$prs" = "[]" ]; then
+            echo "has_prs=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_prs=true" >> "$GITHUB_OUTPUT"
+          fi
+          echo "Linked open PRs: $prs"
+
+  freeze:
+    name: 'Freeze linked PR (pre-sign)'
+    needs: plan
+    if: needs.plan.outputs.has_prs == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false # freeze every PR we can; any failure still aborts the signing
+      matrix:
+        pr: ${{ fromJSON(needs.plan.outputs.prs) }}
+    # The SAME group as this PR's gate check-writers: a freeze and a
+    # publisher never interleave (see header).
+    concurrency:
+      group: rekoda-gates-pr-${{ matrix.pr }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      pull-requests: read
+      checks: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Checkout trusted policy at the definition's own SHA
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.plan.outputs.trusted_sha }}
+          fetch-depth: 1
+
+      - name: Force this PR's required checks red BEFORE the revision exists
+        run: |
+          set -euo pipefail
+          head=$(gh api "repos/$REPO/pulls/${{ matrix.pr }}" --jq '.head.sha')
+          echo "Freezing PR #${{ matrix.pr }} at $head before the amendment becomes authoritative…"
+          for name in "Agent policy gate" "Technical Review Gate" "Gemini Acceptance Gate"; do
+            node scripts/agents/post-check.mjs --repo "$REPO" --name "$name" --sha "$head" \
+              --conclusion failure --title "Contract amendment in progress" \
+              --summary "Issue #$ISSUE is being amended; this check stays red until the gates re-evaluate under the new contract."
+          done
+
+  sign:
+    name: Sign and post the revision
+    needs: [plan, freeze]
+    # Runs only when the plan succeeded AND every freeze leg succeeded
+    # (or there was nothing to freeze). Any freeze failure leaves the
+    # PREVIOUS revision active with frozen PRs safely blocked — D1's
+    # abort state, never a silent re-green.
+    if: >-
+      !cancelled() && needs.plan.result == 'success' &&
+      (needs.freeze.result == 'success' || needs.freeze.result == 'skipped')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: agents-contract-authority
+    permissions:
+      contents: read
+      issues: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      CONTRACT_AUTHORITY_SIGNING_KEY: ${{ secrets.CONTRACT_AUTHORITY_SIGNING_KEY }}
+      # env-var indirection — dispatch inputs never touch shell syntax
+      REVISION_INPUT: ${{ inputs.revision }}
+      REASON_INPUT: ${{ inputs.reason }}
+    steps:
+      - name: Checkout trusted policy at the definition's own SHA
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.plan.outputs.trusted_sha }}
+          fetch-depth: 1
+
+      - name: Post the signed revision marker (the authoritative transition)
+        run: |
+          set -euo pipefail
           node scripts/agents/contract-revision.mjs --repo "$REPO" --issue "$ISSUE" \
             --revision "$REVISION_INPUT" --reason "$REASON_INPUT" \
             --sign-env CONTRACT_AUTHORITY_SIGNING_KEY --post
-          while IFS= read -r pr; do
-            [ -n "$pr" ] || continue
-            echo "Redispatching the gates for PR #$pr under revision $REVISION_INPUT."
-            gh workflow run agent-gates.yml --repo "$REPO" --ref main -f pr="$pr"
-          done < /tmp/linked-prs.txt
 
-      - name: Record the baseline and hand off to the builder (READY promotion)
-        if: github.event_name != 'workflow_dispatch'
-        env:
-          CONTRACT_AUTHORITY_SIGNING_KEY: ${{ secrets.CONTRACT_AUTHORITY_SIGNING_KEY }}
-          HAS_CLAUDE_BUILDER: ${{ contains(github.event.issue.labels.*.name, 'builder:claude') }}
+  refreeze:
+    name: 'Re-freeze linked PR (post-sign)'
+    needs: [plan, sign]
+    if: >-
+      !cancelled() && needs.sign.result == 'success' &&
+      needs.plan.outputs.has_prs == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        pr: ${{ fromJSON(needs.plan.outputs.prs) }}
+    # Entering the group AFTER the marker exists closes the window in
+    # which a previous-revision publisher (that read state before the
+    # signing) wrote green: its write happened before this job held the
+    # group, and this job overwrites it red.
+    concurrency:
+      group: rekoda-gates-pr-${{ matrix.pr }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      pull-requests: read
+      checks: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Checkout trusted policy at the definition's own SHA
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.plan.outputs.trusted_sha }}
+          fetch-depth: 1
+
+      - name: Force this PR's required checks red AFTER the revision exists
+        run: |
+          set -euo pipefail
+          head=$(gh api "repos/$REPO/pulls/${{ matrix.pr }}" --jq '.head.sha')
+          echo "Re-freezing PR #${{ matrix.pr }} at $head now that the new revision is authoritative…"
+          for name in "Agent policy gate" "Technical Review Gate" "Gemini Acceptance Gate"; do
+            node scripts/agents/post-check.mjs --repo "$REPO" --name "$name" --sha "$head" \
+              --conclusion failure --title "Contract amended — re-evaluation required" \
+              --summary "Issue #$ISSUE was amended; this check stays red until the gates re-evaluate under the new contract."
+          done
+
+  dispatch:
+    name: Redispatch the gates
+    needs: [plan, sign, refreeze]
+    # A failed redispatch leaves the PR frozen (blocked), never silently
+    # green — the owner redispatches Agent — gates manually.
+    if: >-
+      !cancelled() && needs.sign.result == 'success' &&
+      (needs.refreeze.result == 'success' || needs.refreeze.result == 'skipped')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Redispatch Agent — gates for every linked PR
+        run: |
+          set -euo pipefail
+          for pr in $(echo '${{ needs.plan.outputs.prs }}' | tr -d '[],' | tr ' ' '\n'); do
+            [ -n "$pr" ] || continue
+            echo "Redispatching the gates for PR #$pr under the new revision."
+            gh workflow run agent-gates.yml --repo "$REPO" --ref main -f pr="$pr"
+          done
+
+  # ---------------------------------------------------------------- #
+  # Baseline recording + builder hand-off (label events)              #
+  # ---------------------------------------------------------------- #
+  baseline:
+    name: Record baseline and hand off (READY promotion)
+    # Any of the three participating labels may arrive LAST; each event
+    # only triggers a re-check — the decision itself is made against the
+    # RE-FETCHED current labels (readyPromotionAction), so both
+    # status:ready-then-builder and builder-then-status:ready work.
+    if: |
+      github.event_name == 'issues' && github.event.action == 'labeled' &&
+      (github.event.label.name == 'status:ready' ||
+       github.event.label.name == 'agent-task' ||
+       startsWith(github.event.label.name, 'builder:'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: agents-contract-authority
+    permissions:
+      contents: read
+      issues: write
+      actions: write # deterministic builder dispatch after the baseline exists
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      ACTOR: ${{ github.actor }}
+      CONTRACT_AUTHORITY_SIGNING_KEY: ${{ secrets.CONTRACT_AUTHORITY_SIGNING_KEY }}
+    steps:
+      - name: Checkout trusted policy at the definition's own SHA
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+
+      - name: Authorize actor (write+ may promote to READY)
+        run: |
+          set -euo pipefail
+          perm=$(gh api "repos/$REPO/collaborators/$ACTOR/permission" --jq .permission)
+          case "$perm" in
+            admin|maintain|write) echo "Actor $ACTOR permission: $perm" ;;
+            *) echo "::error::Actor $ACTOR (permission: $perm) may not drive contract authority."; exit 1 ;;
+          esac
+
+      - name: Decide from the RE-FETCHED current labels
+        id: promote
         run: |
           set -euo pipefail
           if [ ! -f scripts/agents/contract-revision.mjs ]; then
             echo "::error::Policy scripts are not on main yet."; exit 1
           fi
+          gh api "repos/$REPO/issues/$ISSUE/labels" --paginate --jq '.[].name' > /tmp/labels.txt
+          node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            import { readyPromotionAction } from "./scripts/agents/evaluator.mjs";
+            const labels = readFileSync("/tmp/labels.txt", "utf8").split("\n").filter(Boolean);
+            const d = readyPromotionAction({ labels });
+            console.log(`proceed=${d.proceed}`);
+            console.log(`dispatch_claude=${d.dispatchClaude}`);
+          ' > /tmp/decision.txt
+          cat /tmp/decision.txt >> "$GITHUB_OUTPUT"
+          cat /tmp/decision.txt
+
+      - name: Record the baseline and hand off to the builder
+        if: steps.promote.outputs.proceed == 'true'
+        env:
+          DISPATCH_CLAUDE: ${{ steps.promote.outputs.dispatch_claude }}
+        run: |
+          set -euo pipefail
           # Baseline: record once; never overwrite an existing baseline.
-          if gh api "repos/$REPO/issues/$ISSUE/comments?per_page=100" \
-            --jq '[.[] | select(.body | contains("REKODA_CONTRACT_BASELINE"))] | length' | grep -qv '^0$'; then
+          # The existence probe is exhaustive (--paginate) — a baseline
+          # past the first comment page must not be re-posted.
+          count=$(gh api "repos/$REPO/issues/$ISSUE/comments" --paginate --jq '.[].body' \
+            | grep -c 'REKODA_CONTRACT_BASELINE' || true)
+          if [ "$count" != "0" ]; then
             echo "A baseline marker already exists on #$ISSUE."
           else
             node scripts/agents/contract-revision.mjs --repo "$REPO" --issue "$ISSUE" \
@@ -162,10 +356,11 @@ jobs:
           fi
           # Deterministic sequencing (no builder polling): the builder is
           # dispatched only AFTER the baseline exists — admission then
-          # independently verifies it again.
-          if [ "$HAS_CLAUDE_BUILDER" = "true" ]; then
+          # independently verifies it again, and its atomic lane claim
+          # makes a duplicate label-event dispatch a safe no-op.
+          if [ "$DISPATCH_CLAUDE" = "true" ]; then
             echo "Baseline recorded — dispatching the Claude builder for #$ISSUE."
             gh workflow run agent-claude.yml --repo "$REPO" --ref main -f issue="$ISSUE"
           else
-            echo "No builder:claude label — builder:codex lanes are claimed manually after this baseline."
+            echo "Builder is not builder:claude — builder:codex lanes are claimed manually after this baseline."
           fi

@@ -46,6 +46,7 @@ if (args['print-context'] === 'true') {
           issue: state.issue.number,
           headSha: state.pr.headSha,
           contractRevision: rev.revision,
+          contractBodySha256: rev.expectedHash,
         }
       : null;
   const verdictOf = (candidates, markerName, provenance) =>
@@ -68,11 +69,22 @@ if (args['print-context'] === 'true') {
     kind: 'signature',
     publicKey: keys.geminiReviewer ?? null,
   });
+  // contract_ok: the issue currently carries ONE authorized, unamended,
+  // provably complete contract — the precondition for exporting a
+  // snapshot to reviewers and for a publisher to sign against it.
+  const contractOk =
+    rev.revision !== null &&
+    rev.baselineFound === true &&
+    !rev.invalid &&
+    rev.amended !== true &&
+    state.issue?.commentsComplete !== false;
   const ctx = {
     governed: isGoverned(state) ? 'true' : 'false',
     issue: state.issue?.number ?? '',
     head_sha: state.pr.headSha,
     contract_revision: rev.revision ?? '',
+    contract_ok: contractOk ? 'true' : 'false',
+    contract_body_sha256: contractOk ? rev.expectedHash : '',
     builder,
     draft: state.pr.draft ? 'true' : 'false',
     fork: state.pr.fork ? 'true' : 'false',

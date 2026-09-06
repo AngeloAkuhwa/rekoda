@@ -19,6 +19,7 @@
 import { execFileSync } from 'node:child_process';
 import { appendFileSync } from 'node:fs';
 import { resolveWorkflowRunTarget } from './evaluator.mjs';
+import { ghPagedComplete } from './gh-lib.mjs';
 
 const args = Object.fromEntries(
   process.argv
@@ -57,21 +58,19 @@ if (args.pr) {
   process.exit(0);
 }
 
+// Exhaustively paginated: the true candidate — or a second open PR that
+// makes the request ambiguous — may sit past page 1, so a truncated
+// listing is UNPROVABLE state, never treated as a complete answer.
 const sha = String(args['head-sha'] ?? '').toLowerCase();
-let candidates;
-try {
-  candidates = gh(`repos/${repo}/commits/${sha}/pulls?per_page=30`).map((p) => ({
-    number: p.number,
-    state: p.state,
-    headSha: (p.head?.sha ?? '').toLowerCase(),
-    baseRepo: p.base?.repo?.full_name ?? '',
-  }));
-} catch (e) {
-  console.error(`::error::Candidate lookup for ${sha} failed: ${e.message} — failing closed.`);
-  process.exit(1);
-}
+const paged = ghPagedComplete(`repos/${repo}/commits/${sha}/pulls`);
+const candidates = paged.items.map((p) => ({
+  number: p.number,
+  state: p.state,
+  headSha: (p.head?.sha ?? '').toLowerCase(),
+  baseRepo: p.base?.repo?.full_name ?? '',
+}));
 
-const r = resolveWorkflowRunTarget({ headSha: sha, candidates, repo });
+const r = resolveWorkflowRunTarget({ headSha: sha, candidates, repo, complete: paged.complete });
 if (r.status === 'ok') {
   out(r.pr);
 } else if (r.status === 'none') {
@@ -82,6 +81,11 @@ if (r.status === 'ok') {
     `PR #${r.pr} has moved past ${sha} (force-push/new push) — this request is superseded; the new head's own request owns evaluation.`,
   );
   out('');
+} else if (r.status === 'unprovable') {
+  console.error(
+    `::error::Candidate listing for ${sha} is incomplete (API failure or pagination ceiling) — the target cannot be proven; failing closed.`,
+  );
+  process.exit(1);
 } else {
   console.error(
     `::error::Multiple open PRs share commit ${sha}; a privileged evaluation must know exactly whom it judges — failing closed.`,

@@ -265,8 +265,13 @@ root: the default-branch SHA the privileged definition itself came from
 or loads trusted policy.
 
 **Evidence protocol.** Every signed marker carries and signs
-`SCHEME: REKODA_AGENT_EVIDENCE_V1` along with its fields; a missing,
-unknown, or future scheme is rejected as malformed. A Claude or Gemini
+`SCHEME: REKODA_AGENT_EVIDENCE_V2` along with its fields; a missing,
+unknown, or future scheme is rejected as malformed. V2 verdicts bind
+`CONTRACT_BODY_SHA256` — the hash of the exact authorized contract
+snapshot the reviewer assessed — inside the signed payload, so a
+verdict produced under one contract text can never authorize a merge
+under another, even at an unchanged revision number (the A→B→A case).
+A Claude or Gemini
 verdict counts only with a valid **Ed25519 signature** over the
 canonical payload, verified against the committed public keys in
 `scripts/agents/keys/`. The signing keys never enter AI context — and
@@ -654,27 +659,50 @@ enrollment reads the label-event history **to exhaustion** and fails
 closed when it cannot be proven complete; verdict ordering is
 timestamp-primary with same-kind id tie-breaks only, failing closed on
 contradictory contemporaneous cross-kind evidence; and the evidence
-protocol is versioned (`SCHEME: REKODA_AGENT_EVIDENCE_V1`, unknown
+protocol is versioned (`SCHEME`, unknown
 schemes rejected). The Phase-2 activation-hardening pass then closed the
 final pre-key blockers: **exactly-one workflow_run target resolution**
 (zero/stale/ambiguous fail safe or closed), **runner-isolated AI and
 signing jobs** with independent signing-time revalidation of the fresh
-target, **upsert-in-place check runs** with `cancel-in-progress: false`
-gate concurrency, **required-check app-source binding** in the ruleset,
+target, **upsert-in-place check runs**,
+**required-check app-source binding** in the ruleset,
 **exhaustive linked-PR pagination** that fails visibly when unprovable,
 and **baseline-before-admission** (no baseline → no lane claim → no
-builder). The final Phase-2 repair then closed D1 and D2: **authoritative
+builder). The next Phase-2 repair closed D1 and D2: **authoritative
 contract transitions are freeze-before-mutate transactions** (mutable
 issue text is only ever a proposal; revision N+1 cannot exist while
-revision-N checks still authorize a merge), gate evaluation serializes
-through **one repository-wide privileged lane** (`rekoda-agent-gates` —
-workflow_run and workflow_dispatch can no longer race the same PR, and
-trusted check upserts are serialized), the publisher **validates and
+revision-N checks still authorize a merge), the publisher **validates and
 signs one in-memory payload in a single trusted operation**, contract
 history and builder admission read **exhaustively paginated** comment
 listings (unprovable → invalid), and builder dispatch is
 **deterministically sequenced behind the baseline** (the authority
-dispatches the builder only after recording it; no polling).
+dispatches the builder only after recording it; no polling). The final
+Phase-2 repair replaced the single global gate lane with **per-target
+serialization**: the gates workflow has no workflow-level concurrency
+group (GitHub's one-pending-slot semantics could displace — silently
+lose — a queued evaluation for a different PR), and instead every job
+that writes a PR's checks (policy, both gate publishers, and the
+contract authority's freeze/re-freeze jobs) takes the job-level group
+`rekoda-gates-pr-<PR>` (`cancel-in-progress: false`), totally ordering
+check writes and freezes per PR while requests for different PRs never
+contend. The amendment transaction became jobs — freeze (per-PR matrix)
+→ sign → **re-freeze** → dispatch — so a previous-revision publisher
+can never leave a green check standing after an amendment: it either
+finishes before the re-freeze (which overwrites it red) or starts after
+it (and re-fetches state that already contains the new revision).
+Evidence moved to **SCHEME V2**: verdicts bind `CONTRACT_BODY_SHA256`,
+reviewers receive a **hash-verified contract snapshot artifact**
+(never the live, mutable issue text), and the publisher refuses to sign
+unless the fresh contract is a single authorized, unamended snapshot
+whose hash equals both the reviewed snapshot's and the verdict's.
+Check upserts **fail closed on lookup failure** and only adopt
+same-name runs owned by the GitHub Actions app; workflow_run candidate
+listing paginates to exhaustion (unprovable → abort); READY promotion
+re-fetches labels so **both label orderings** (builder-then-ready and
+ready-then-builder) dispatch the builder; and the marker generators are
+**shared single-source functions** exercised end-to-end (real generator
+output through the real parser, verifier, and policy) so generator and
+parser can never drift apart again.
 
 What remains, honestly:
 

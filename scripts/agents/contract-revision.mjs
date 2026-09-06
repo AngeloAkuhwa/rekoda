@@ -14,7 +14,12 @@
  */
 import { execFileSync } from 'node:child_process';
 import { createPrivateKey, sign as cryptoSign } from 'node:crypto';
-import { normalizeBody, sha256Hex, canonicalContractPayload } from './evaluator.mjs';
+import {
+  normalizeBody,
+  sha256Hex,
+  canonicalContractPayload,
+  buildContractMarkerLines,
+} from './evaluator.mjs';
 
 const args = Object.fromEntries(
   process.argv
@@ -55,26 +60,23 @@ if (args.baseline === 'true') {
   m = { kind: 'REKODA_CONTRACT_REVISION', issue, revision: rev, bodySha256: hash, reason };
 }
 
-const lines = [
-  m.kind,
-  `ISSUE: ${m.issue}`,
-  `REVISION: ${m.revision}`,
-  `BODY_SHA256: ${m.bodySha256}`,
-];
-if (m.kind === 'REKODA_CONTRACT_REVISION') lines.push(`REASON: ${m.reason}`);
+// Rendered through the SAME shared generator the parser is tested
+// against — the emitted marker (including its SCHEME line) is exactly
+// what parseRevisionMarkers/computeContractRevision accept.
+let signature;
 if (args['sign-env']) {
   const keyPem = process.env[args['sign-env']];
   if (!keyPem) {
     console.error(`Signing key env ${args['sign-env']} is empty.`);
     process.exit(1);
   }
-  const sig = cryptoSign(
+  signature = cryptoSign(
     null,
     Buffer.from(canonicalContractPayload(m), 'utf8'),
     createPrivateKey(keyPem),
   ).toString('base64');
-  lines.push(`SIGNATURE: ${sig}`);
 }
+const lines = buildContractMarkerLines(m, signature);
 
 const body = '```\n' + lines.join('\n') + '\n```';
 if (args.post === 'true') {

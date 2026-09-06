@@ -12,6 +12,7 @@
  *     --sha <head> --conclusion success|failure|neutral --title "…" --summary "…"
  */
 import { execFileSync } from 'node:child_process';
+import { chooseCheckAction } from './evaluator.mjs';
 
 const args = Object.fromEntries(
   process.argv
@@ -34,7 +35,13 @@ if (
 
 const gh = (ghArgs) => execFileSync('gh', ghArgs, { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 });
 
-let existingId = null;
+// Fail-closed upsert decision: a FAILED lookup ABORTS visibly (a blind
+// POST during an API failure could race a concurrent creation into
+// same-name duplicates with ambiguous conclusions), and an existing run
+// is adopted for PATCH only when it belongs to the GitHub Actions app —
+// a same-name run from a foreign app is never adopted as "ours".
+let lookupOk = true;
+let runs = [];
 try {
   const list = JSON.parse(
     gh([
@@ -42,11 +49,20 @@ try {
       `repos/${repo}/commits/${sha.toLowerCase()}/check-runs?check_name=${encodeURIComponent(name)}&per_page=10`,
     ]),
   );
-  const ours = (list.check_runs ?? []).find((c) => c.name === name);
-  if (ours) existingId = ours.id;
-} catch {
-  existingId = null; // creation path below still publishes deterministically
+  runs = (list.check_runs ?? []).map((c) => ({ id: c.id, name: c.name, appSlug: c.app?.slug }));
+} catch (e) {
+  lookupOk = false;
+  console.error(`::error::Check-run lookup failed for '${name}' on ${sha}: ${e.message}`);
 }
+
+const decision = chooseCheckAction({ lookupOk, runs, name });
+if (decision.action === 'abort') {
+  console.error(
+    `::error::Refusing to publish check '${name}' without a provable current state (${decision.reason}); the required check stays missing/red — fail closed, not fail duplicate.`,
+  );
+  process.exit(1);
+}
+const existingId = decision.action === 'patch' ? decision.id : null;
 
 const fields = [
   '-f',

@@ -32,6 +32,12 @@ import {
   selectLinkedPrs,
   resolveWorkflowRunTarget,
   amendmentTransaction,
+  buildVerdictMarkerLines,
+  buildContractMarkerLines,
+  parseRevisionMarkers,
+  resolveVerdict,
+  chooseCheckAction,
+  readyPromotionAction,
   SCHEME,
 } from './evaluator.mjs';
 
@@ -58,6 +64,9 @@ const ISSUE_BODY = [
   '_No response_',
 ].join('\n');
 
+/** The active-contract snapshot hash every default verdict binds (V2). */
+const CONTRACT_HASH = sha256Hex(normalizeBody(ISSUE_BODY));
+
 /** Build a verdict marker body; sign with `key` unless key === null. */
 function marker(
   name,
@@ -66,12 +75,21 @@ function marker(
     issue = 44,
     head = HEAD,
     rev = 1,
+    contractHash = CONTRACT_HASH,
     verdict = 'APPROVE',
     key = undefined,
     dropSig = false,
   } = {},
 ) {
-  const m = { name, pr, issue, headSha: head, contractRevision: rev, verdict };
+  const m = {
+    name,
+    pr,
+    issue,
+    headSha: head,
+    contractRevision: rev,
+    contractBodySha256: contractHash,
+    verdict,
+  };
   const lines = [
     `${name}`,
     `SCHEME: ${SCHEME}`,
@@ -79,6 +97,7 @@ function marker(
     `ISSUE: ${issue}`,
     `HEAD_SHA: ${head}`,
     `CONTRACT_REVISION: ${rev}`,
+    `CONTRACT_BODY_SHA256: ${contractHash}`,
     `VERDICT: ${verdict}`,
   ];
   if (!dropSig && key) lines.push(`SIGNATURE: ${signWith(key, canonicalVerdictPayload(m))}`);
@@ -241,6 +260,15 @@ test('valid owner-authorized R3 passes only with decision reference AND owner ap
   s.issue.riskLabels = ['risk:R3'];
   s.issue.body = ISSUE_BODY.replace('_No response_', 'docs/REKODA_OWNER_DECISIONS.md OWN-15');
   s.issue.comments = [contractComment({ body: s.issue.body })];
+  // Verdicts bind the ACTIVE contract snapshot — here, the R3 body's hash.
+  const r3Hash = sha256Hex(normalizeBody(s.issue.body));
+  s.techEvidence.candidates = [
+    codexReview({ body: marker(MARKERS.codex, { contractHash: r3Hash }) }),
+  ];
+  s.geminiEvidence.candidates[0].body = marker(MARKERS.gemini, {
+    key: GEMINI_KEY,
+    contractHash: r3Hash,
+  });
   s.ownerReviews = [{ author: OWNER, state: 'APPROVED', commitId: HEAD }];
   assert.deepEqual(evaluate(s), { pass: true, reasons: [] });
 });
@@ -392,16 +420,21 @@ test('only contract-authority-SIGNED revisions are authoritative', () => {
   const r = evaluate(s);
   assert.equal(r.pass, false);
   assert.ok(codes(r).includes('TECH_WRONG_REVISION') && codes(r).includes('GEMINI_WRONG_REVISION'));
-  // fresh verdicts for revision 2 pass again
+  // fresh verdicts for revision 2 — binding the rev-2 snapshot hash — pass again
+  const rev2Hash = sha256Hex(normalizeBody(newBody));
   s.techEvidence.candidates.push(
-    codexReview({ id: 12, createdAt: 'z', body: marker(MARKERS.codex, { rev: 2 }) }),
+    codexReview({
+      id: 12,
+      createdAt: 'z',
+      body: marker(MARKERS.codex, { rev: 2, contractHash: rev2Hash }),
+    }),
   );
   s.geminiEvidence.candidates.push({
     author: ACTIONS,
     kind: 'comment',
     createdAt: 'z',
     id: 21,
-    body: marker(MARKERS.gemini, { rev: 2, key: GEMINI_KEY }),
+    body: marker(MARKERS.gemini, { rev: 2, contractHash: rev2Hash, key: GEMINI_KEY }),
   });
   assert.equal(evaluate(s).pass, true);
 });
@@ -1433,4 +1466,364 @@ test('a baseline deep in a very large comment history is still found (position-i
   });
   assert.equal(rev.revision, 1);
   assert.equal(rev.amended, false);
+});
+
+// ---------------------------------------------------------------------------
+// V2 evidence — verdicts bind the CONTRACT SNAPSHOT HASH, not just a number
+// ---------------------------------------------------------------------------
+
+test('a verdict binding a DIFFERENT contract snapshot hash blocks (wrong contract, right revision number)', () => {
+  const s = validState();
+  const foreign = sha256Hex(normalizeBody(ISSUE_BODY + '\n\nSomething else entirely.'));
+  s.techEvidence.candidates = [
+    codexReview({ body: marker(MARKERS.codex, { contractHash: foreign }) }),
+  ];
+  s.geminiEvidence.candidates[0].body = marker(MARKERS.gemini, {
+    key: GEMINI_KEY,
+    contractHash: foreign,
+  });
+  const r = evaluate(s);
+  assert.equal(r.pass, false);
+  assert.ok(codes(r).includes('TECH_WRONG_CONTRACT'));
+  assert.ok(codes(r).includes('GEMINI_WRONG_CONTRACT'));
+});
+
+test('A→B→A: a verdict signed for snapshot B never authorizes after the contract returns to A', () => {
+  // The issue body went A → B (authorized revision 2) → A (authorized
+  // revision 3). A reviewer verdict produced under B binds B's hash and
+  // revision 2; after the return to A it must not count — on EITHER axis.
+  const bodyA = ISSUE_BODY;
+  const bodyB = ISSUE_BODY + '\n\nTemporary requirement.';
+  const hashB = sha256Hex(normalizeBody(bodyB));
+  const s = validState();
+  s.issue.body = bodyA;
+  s.issue.comments = [
+    contractComment(),
+    contractComment({
+      kind: 'REKODA_CONTRACT_REVISION',
+      revision: 2,
+      body: bodyB,
+      author: ACTIONS,
+      key: AUTHORITY_KEY,
+      id: 2,
+      createdAt: 'y',
+    }),
+    contractComment({
+      kind: 'REKODA_CONTRACT_REVISION',
+      revision: 3,
+      body: bodyA,
+      author: ACTIONS,
+      key: AUTHORITY_KEY,
+      id: 3,
+      createdAt: 'z',
+    }),
+  ];
+  s.techEvidence.candidates = [
+    codexReview({ body: marker(MARKERS.codex, { rev: 2, contractHash: hashB }) }),
+  ];
+  s.geminiEvidence.candidates[0].body = marker(MARKERS.gemini, {
+    rev: 2,
+    contractHash: hashB,
+    key: GEMINI_KEY,
+  });
+  const r = evaluate(s);
+  assert.equal(r.pass, false);
+  assert.ok(codes(r).includes('TECH_WRONG_REVISION') || codes(r).includes('TECH_WRONG_CONTRACT'));
+  assert.ok(
+    codes(r).includes('GEMINI_WRONG_REVISION') || codes(r).includes('GEMINI_WRONG_CONTRACT'),
+  );
+});
+
+test('a V1-shaped marker (no CONTRACT_BODY_SHA256 line) is malformed evidence under V2', () => {
+  const s = validState();
+  const v1Lines = [
+    MARKERS.gemini,
+    `SCHEME: ${SCHEME}`,
+    'PR: 55',
+    'ISSUE: 44',
+    `HEAD_SHA: ${HEAD}`,
+    'CONTRACT_REVISION: 1',
+    'VERDICT: APPROVE',
+  ].join('\n');
+  s.geminiEvidence.candidates = [
+    { author: ACTIONS, kind: 'comment', createdAt: 'x', id: 1, body: v1Lines },
+  ];
+  expectBlock(s, 'GEMINI_MALFORMED');
+});
+
+test('a marker carrying the old V1 scheme string is rejected even with every V2 field present', () => {
+  const s = validState();
+  const oldScheme = marker(MARKERS.gemini, { key: GEMINI_KEY }).replace(
+    `SCHEME: ${SCHEME}`,
+    'SCHEME: REKODA_AGENT_EVIDENCE_V1',
+  );
+  s.geminiEvidence.candidates = [
+    { author: ACTIONS, kind: 'comment', createdAt: 'x', id: 1, body: oldScheme },
+  ];
+  expectBlock(s, 'GEMINI_MALFORMED');
+});
+
+// ---------------------------------------------------------------------------
+// END-TO-END with the REAL generators — the published bytes are the parsed
+// bytes: generator → parser → verifier → policy, no hand-built fixtures
+// ---------------------------------------------------------------------------
+
+test('E2E: real baseline generator output → parseRevisionMarkers → signature → revision 1 → build admission', () => {
+  // EXACTLY what contract-revision.mjs posts: the shared generator's
+  // lines, signed over the canonical payload, wrapped in a code fence.
+  const m = {
+    kind: 'REKODA_CONTRACT_BASELINE',
+    issue: 44,
+    revision: 1,
+    bodySha256: sha256Hex(normalizeBody(ISSUE_BODY)),
+    reason: '',
+  };
+  const signature = signWith(AUTHORITY_KEY, canonicalContractPayload(m));
+  const posted = '```\n' + buildContractMarkerLines(m, signature).join('\n') + '\n```';
+
+  const parsed = parseRevisionMarkers(posted);
+  assert.equal(parsed.length, 1);
+  assert.equal(parsed[0].malformed, false, 'the generated baseline must parse clean');
+  assert.equal(parsed[0].scheme, SCHEME);
+  assert.equal(parsed[0].kind, 'REKODA_CONTRACT_BASELINE');
+  assert.ok(
+    verifySignature(canonicalContractPayload(parsed[0]), parsed[0].signature, pem(AUTHORITY_KEY)),
+    'the parsed marker must re-verify against the authority key',
+  );
+
+  const contract = computeContractRevision({
+    issueNumber: 44,
+    issueBody: ISSUE_BODY,
+    issueComments: [{ author: ACTIONS, createdAt: 'x', id: 1, body: posted }],
+    ownerLogin: OWNER,
+    contractAuthorityKey: pem(AUTHORITY_KEY),
+  });
+  assert.equal(contract.revision, 1);
+  assert.equal(contract.amended, false);
+  assert.equal(contract.invalid, null);
+
+  const admission = evaluateBuildAdmission({
+    contract,
+    issue: readyIssue({ number: 44 }),
+    requiredBuilder: 'builder:claude',
+    openLanes: [],
+  });
+  assert.deepEqual(admission, { admit: true, reasons: [] });
+});
+
+test('E2E: real revision generator output advances the computed revision to 2', () => {
+  const newBody = ISSUE_BODY + '\n\nAuthorized amendment.';
+  const m2 = {
+    kind: 'REKODA_CONTRACT_REVISION',
+    issue: 44,
+    revision: 2,
+    bodySha256: sha256Hex(normalizeBody(newBody)),
+    reason: 'scope change',
+  };
+  const posted2 =
+    '```\n' +
+    buildContractMarkerLines(m2, signWith(AUTHORITY_KEY, canonicalContractPayload(m2))).join('\n') +
+    '\n```';
+  const contract = computeContractRevision({
+    issueNumber: 44,
+    issueBody: newBody,
+    issueComments: [contractComment(), { author: ACTIONS, createdAt: 'y', id: 2, body: posted2 }],
+    ownerLogin: OWNER,
+    contractAuthorityKey: pem(AUTHORITY_KEY),
+  });
+  assert.equal(contract.revision, 2);
+  assert.equal(contract.amended, false);
+  assert.equal(contract.expectedHash, m2.bodySha256);
+});
+
+test('E2E: real verdict generator output → parseMarkers → resolveVerdict APPROVE against the matching target', () => {
+  // EXACTLY what sign-evidence.mjs prints: the shared generator's lines
+  // in a fence, followed by the findings text.
+  const m = {
+    name: MARKERS.gemini,
+    pr: 55,
+    issue: 44,
+    headSha: HEAD,
+    contractRevision: 1,
+    contractBodySha256: CONTRACT_HASH,
+    verdict: 'APPROVE',
+  };
+  const signature = signWith(GEMINI_KEY, canonicalVerdictPayload(m));
+  const posted = [
+    '```',
+    ...buildVerdictMarkerLines(m, signature),
+    '```',
+    '',
+    'No blocking findings.',
+  ].join('\n');
+
+  const parsed = parseMarkers(posted, MARKERS.gemini);
+  assert.equal(parsed.length, 1);
+  assert.equal(parsed[0].malformed, false, 'the generated verdict must parse clean');
+  assert.equal(parsed[0].contractBodySha256, CONTRACT_HASH);
+
+  const r = resolveVerdict({
+    candidates: [{ author: ACTIONS, kind: 'comment', createdAt: 'x', id: 1, body: posted }],
+    markerName: MARKERS.gemini,
+    provenance: { kind: 'signature', publicKey: pem(GEMINI_KEY) },
+    target: {
+      pr: 55,
+      issue: 44,
+      headSha: HEAD,
+      contractRevision: 1,
+      contractBodySha256: CONTRACT_HASH,
+    },
+  });
+  assert.equal(r.verdict, 'APPROVE');
+});
+
+test('E2E: the same real generator output resolves to NO verdict for a different contract snapshot', () => {
+  const m = {
+    name: MARKERS.gemini,
+    pr: 55,
+    issue: 44,
+    headSha: HEAD,
+    contractRevision: 1,
+    contractBodySha256: CONTRACT_HASH,
+    verdict: 'APPROVE',
+  };
+  const posted = [
+    '```',
+    ...buildVerdictMarkerLines(m, signWith(GEMINI_KEY, canonicalVerdictPayload(m))),
+    '```',
+  ].join('\n');
+  const r = resolveVerdict({
+    candidates: [{ author: ACTIONS, kind: 'comment', createdAt: 'x', id: 1, body: posted }],
+    markerName: MARKERS.gemini,
+    provenance: { kind: 'signature', publicKey: pem(GEMINI_KEY) },
+    target: {
+      pr: 55,
+      issue: 44,
+      headSha: HEAD,
+      contractRevision: 1,
+      contractBodySha256: sha256Hex(normalizeBody(ISSUE_BODY + '\n\nMoved on.')),
+    },
+  });
+  assert.equal(r.verdict ?? null, null);
+});
+
+// ---------------------------------------------------------------------------
+// workflow_run resolver — exhaustive-listing semantics (later pages)
+// ---------------------------------------------------------------------------
+
+test('resolver: an INCOMPLETE candidate listing is unprovable — fail closed, never guess', () => {
+  const r = resolveWorkflowRunTarget({
+    headSha: HEAD,
+    candidates: [cand()],
+    repo: 'AngeloAkuhwa/rekoda',
+    complete: false,
+  });
+  assert.deepEqual(r, { pr: null, status: 'unprovable' });
+});
+
+test('resolver: the true candidate deep in a multi-page listing still resolves to exactly one PR', () => {
+  const candidates = Array.from({ length: 250 }, (_, i) =>
+    cand({ number: i + 1, state: 'closed', headSha: OLD_HEAD }),
+  );
+  candidates.push(cand({ number: 251 })); // the single open match, "page 3"
+  assert.deepEqual(
+    resolveWorkflowRunTarget({
+      headSha: HEAD,
+      candidates,
+      repo: 'AngeloAkuhwa/rekoda',
+      complete: true,
+    }),
+    { pr: 251, status: 'ok' },
+  );
+});
+
+test('resolver: a second open candidate on a later page makes the request ambiguous over the COMPLETE set', () => {
+  const candidates = Array.from({ length: 120 }, (_, i) =>
+    cand({ number: i + 1, state: 'closed', headSha: OLD_HEAD }),
+  );
+  candidates[0] = cand({ number: 1 }); // page-1 open match
+  candidates.push(cand({ number: 121 })); // page-2 open match
+  assert.deepEqual(
+    resolveWorkflowRunTarget({
+      headSha: HEAD,
+      candidates,
+      repo: 'AngeloAkuhwa/rekoda',
+      complete: true,
+    }),
+    { pr: null, status: 'ambiguous' },
+  );
+});
+
+// ---------------------------------------------------------------------------
+// chooseCheckAction — fail-closed upsert decision with app verification
+// ---------------------------------------------------------------------------
+
+test('check upsert: a failed lookup ABORTS — absence is never assumed, no blind POST', () => {
+  const d = chooseCheckAction({ lookupOk: false, runs: [], name: 'Technical Review Gate' });
+  assert.equal(d.action, 'abort');
+});
+
+test('check upsert: an existing GitHub-Actions run of the same name is PATCHed in place', () => {
+  const d = chooseCheckAction({
+    lookupOk: true,
+    runs: [
+      { id: 7, name: 'Some other check', appSlug: 'github-actions' },
+      { id: 9, name: 'Technical Review Gate', appSlug: 'github-actions' },
+    ],
+    name: 'Technical Review Gate',
+  });
+  assert.deepEqual(d, { action: 'patch', id: 9 });
+});
+
+test('check upsert: a same-name run from a FOREIGN app is never adopted — a fresh run is created', () => {
+  const d = chooseCheckAction({
+    lookupOk: true,
+    runs: [{ id: 13, name: 'Technical Review Gate', appSlug: 'evil-third-party-app' }],
+    name: 'Technical Review Gate',
+  });
+  assert.deepEqual(d, { action: 'post' });
+});
+
+test('check upsert: no existing run at all → create', () => {
+  assert.deepEqual(chooseCheckAction({ lookupOk: true, runs: [], name: 'Agent policy gate' }), {
+    action: 'post',
+  });
+});
+
+// ---------------------------------------------------------------------------
+// readyPromotionAction — both label orderings promote; the decision reads
+// the RE-FETCHED labels, never the single triggering event
+// ---------------------------------------------------------------------------
+
+test('READY promotion: builder label first, then status:ready — proceeds and dispatches Claude', () => {
+  const d = readyPromotionAction({
+    labels: ['agent-task', 'risk:R1', 'builder:claude', 'status:ready'],
+  });
+  assert.deepEqual(d, { proceed: true, dispatchClaude: true });
+});
+
+test('READY promotion: status:ready first, then builder label — the later builder event still promotes', () => {
+  // Same final label set regardless of arrival order; the builder:claude
+  // "labeled" event re-fetches and sees status:ready already present.
+  const d = readyPromotionAction({
+    labels: ['status:ready', 'agent-task', 'builder:claude'],
+  });
+  assert.deepEqual(d, { proceed: true, dispatchClaude: true });
+});
+
+test('READY promotion: builder:codex proceeds but never dispatches the Claude builder', () => {
+  const d = readyPromotionAction({ labels: ['agent-task', 'status:ready', 'builder:codex'] });
+  assert.deepEqual(d, { proceed: true, dispatchClaude: false });
+});
+
+test('READY promotion: missing pieces or ambiguous builders never proceed', () => {
+  assert.equal(readyPromotionAction({ labels: ['agent-task', 'builder:claude'] }).proceed, false);
+  assert.equal(readyPromotionAction({ labels: ['status:ready', 'builder:claude'] }).proceed, false);
+  assert.equal(readyPromotionAction({ labels: ['agent-task', 'status:ready'] }).proceed, false);
+  assert.equal(
+    readyPromotionAction({
+      labels: ['agent-task', 'status:ready', 'builder:claude', 'builder:codex'],
+    }).proceed,
+    false,
+  );
 });

@@ -29,10 +29,25 @@
 # CHECK DELIVERY. Each gate upserts its stable-named check run via the
 # Checks API on the resolved PR HEAD — updated IN PLACE, so one name+SHA
 # never carries ambiguous duplicate conclusions and a same-HEAD contract
-# revision deterministically flips the same required check. Concurrency
-# uses cancel-in-progress: FALSE — a security evaluation is never
-# cancelled into ambiguity; obsolete-SHA runs exit via the stale-target
-# rule instead.
+# revision deterministically flips the same required check.
+#
+# CONCURRENCY (per-target serialization; no request is ever displaced).
+# This workflow has NO workflow-level concurrency group: GitHub keeps at
+# most one PENDING run per group and silently replaces an older pending
+# run with a newer one, so a single global group could DISPLACE a queued
+# evaluation for PR B because PR C's request arrived later — a lost
+# security evaluation. With no workflow-level group, EVERY request runs.
+# Serialization happens where it matters: every job that WRITES checks
+# (policy, and both gate publishers) — and every contract-authority
+# freeze job — takes the job-level group `rekoda-gates-pr-<PR>`
+# (cancel-in-progress: false), keyed by the RESOLVED target. Check
+# writes for one PR are totally ordered against each other and against
+# contract freezes; requests for different PRs never contend. A pending
+# job displaced WITHIN one PR's group is replaced only by a newer job
+# that re-resolves and re-publishes that same PR's full state — never
+# lost, and never a stale green: obsolete-SHA runs still end via the
+# stale-target rule, and cancel-in-progress: false means a running
+# evaluation is never cancelled into ambiguity.
 name: Agent — gates
 
 on:
@@ -48,21 +63,10 @@ on:
 
 permissions: {}
 
-# D2: ONE repository-wide privileged gate lane. workflow_run and
-# workflow_dispatch would otherwise derive different group keys for the
-# same PR (HEAD SHA vs PR number) and race check publication; the
-# concurrency expression is evaluated before the resolver can unify
-# them, so all privileged evaluation serializes through this single
-# trusted lane instead. With cancel-in-progress: false a security
-# evaluation is never cancelled; GitHub keeps at most one pending run
-# per group and a replaced pending request is safe — an unevaluated new
-# HEAD simply has no checks (blocked), and freezes/redispatches leave
-# their targets blocked until a later run evaluates them. This also
-# serializes every trusted post-check upsert: no two trusted publishers
-# can race the read-then-write.
-concurrency:
-  group: rekoda-agent-gates
-  cancel-in-progress: false
+# Deliberately NO workflow-level concurrency here — see CONCURRENCY in
+# the header: a global group's one-pending-slot semantics can displace a
+# queued evaluation for a different PR. Serialization is job-level and
+# per resolved target instead.
 
 env:
   REPO: ${{ github.repository }}
@@ -82,6 +86,8 @@ jobs:
       head_sha: ${{ steps.ctx.outputs.head_sha }}
       issue: ${{ steps.ctx.outputs.issue }}
       contract_revision: ${{ steps.ctx.outputs.contract_revision }}
+      contract_ok: ${{ steps.ctx.outputs.contract_ok }}
+      contract_body_sha256: ${{ steps.ctx.outputs.contract_body_sha256 }}
       builder: ${{ steps.ctx.outputs.builder }}
       draft: ${{ steps.ctx.outputs.draft }}
       fork: ${{ steps.ctx.outputs.fork }}
@@ -127,13 +133,51 @@ jobs:
           node scripts/agents/normalize.mjs --repo "$REPO" --pr "${{ steps.target.outputs.pr }}" --out /tmp/state.json
           node scripts/agents/run-gate.mjs --state /tmp/state.json --print-context
 
+      # The exact contract snapshot the reviewers will assess: exported
+      # ONLY when the issue carries one authorized, unamended, provably
+      # complete contract (contract_ok), and verified against the active
+      # revision's body hash before upload. The AI reviews THIS file,
+      # never the live (mutable) issue text — an edit after export makes
+      # contract_ok false on the publisher's fresh re-resolve, so a
+      # verdict over a superseded snapshot is never signed.
+      - name: Export the verified contract snapshot
+        if: steps.target.outputs.pr != '' && steps.ctx.outputs.contract_ok == 'true'
+        env:
+          EXPECTED_HASH: ${{ steps.ctx.outputs.contract_body_sha256 }}
+        run: |
+          set -euo pipefail
+          node --input-type=module -e '
+            import { readFileSync, writeFileSync } from "node:fs";
+            import { normalizeBody, sha256Hex } from "./scripts/agents/evaluator.mjs";
+            const s = JSON.parse(readFileSync("/tmp/state.json", "utf8"));
+            const body = s.issue?.body ?? "";
+            const hash = sha256Hex(normalizeBody(body));
+            if (hash !== process.env.EXPECTED_HASH) {
+              console.error(`::error::Issue body hash ${hash} no longer matches the active contract ${process.env.EXPECTED_HASH} — not exporting a snapshot.`);
+              process.exit(1);
+            }
+            writeFileSync("/tmp/contract-snapshot.md", body);
+          '
+
+      - name: Publish the contract snapshot for the reviewer lanes
+        if: steps.target.outputs.pr != '' && steps.ctx.outputs.contract_ok == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: contract-snapshot
+          path: /tmp/contract-snapshot.md
+          retention-days: 1
+
       - name: Plan the AI lanes
         if: steps.target.outputs.pr != ''
         id: plan
         run: |
           set -euo pipefail
           need_claude=false; need_gemini=false
+          # No AI lane without contract_ok: a reviewer never assesses an
+          # unauthorized/amended contract, and there is no snapshot to
+          # review against.
           if [ "${{ steps.ctx.outputs.governed }}" = "true" ] && \
+             [ "${{ steps.ctx.outputs.contract_ok }}" = "true" ] && \
              [ "${{ steps.ctx.outputs.fork }}" != "true" ] && \
              { [ "${{ steps.ctx.outputs.draft }}" != "true" ] || [ "$FORCE_REVIEW" = "true" ]; }; then
             if [ "${{ steps.ctx.outputs.builder }}" = "builder:codex" ] && \
@@ -153,6 +197,10 @@ jobs:
     if: needs.resolve.outputs.pr != ''
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # Per-target check-write serialization (see CONCURRENCY header).
+    concurrency:
+      group: rekoda-gates-pr-${{ needs.resolve.outputs.pr }}
+      cancel-in-progress: false
     permissions:
       contents: read
       pull-requests: read
@@ -169,6 +217,31 @@ jobs:
         with:
           ref: ${{ needs.resolve.outputs.trusted_sha }}
           fetch-depth: 1
+
+      # T1 — no stale-green window while a fresh review runs: when this
+      # run is about to obtain a FRESH reviewer verdict (a forced
+      # redispatch, or no valid verdict exists for the current state),
+      # the corresponding gate check is flipped RED NOW, before the AI
+      # lane starts, so an earlier same-HEAD green can never authorize a
+      # merge during the review. The publisher flips it back only after
+      # a fresh signed verdict validates.
+      - name: Invalidate reviewer checks that a fresh verdict must replace
+        if: needs.resolve.outputs.governed == 'true'
+        env:
+          NEED_CLAUDE: ${{ needs.resolve.outputs.need_claude_ai }}
+          NEED_GEMINI: ${{ needs.resolve.outputs.need_gemini_ai }}
+        run: |
+          set -euo pipefail
+          if [ "$NEED_CLAUDE" = "true" ]; then
+            node scripts/agents/post-check.mjs --repo "$REPO" --name "Technical Review Gate" --sha "$HEAD_SHA" \
+              --conclusion failure --title "Fresh verdict required" \
+              --summary "A fresh technical review of HEAD $HEAD_SHA is in progress; no earlier conclusion authorizes a merge until the new signed verdict is published."
+          fi
+          if [ "$NEED_GEMINI" = "true" ]; then
+            node scripts/agents/post-check.mjs --repo "$REPO" --name "Gemini Acceptance Gate" --sha "$HEAD_SHA" \
+              --conclusion failure --title "Fresh verdict required" \
+              --summary "A fresh acceptance review of HEAD $HEAD_SHA is in progress; no earlier conclusion authorizes a merge until the new signed verdict is published."
+          fi
 
       - name: Evaluate and publish the checks
         run: |
@@ -231,12 +304,18 @@ jobs:
       - name: Exclude the untrusted checkout from the trusted tree's status
         run: echo "untrusted-pr-head/" >> .git/info/exclude
 
+      - name: Receive the verified contract snapshot
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: contract-snapshot
+          path: /tmp/rekoda-contract
+
       - name: Claude reviews the current HEAD (Reviewer 1 on builder:codex)
         uses: anthropics/claude-code-action@9c5ddab2e6d17b83ea679153b31f1d5f023cf636 # v1.0.217
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           claude_args: >-
-            --allowedTools "Read,Glob,Grep,Write(/tmp/**),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh issue view:*)"
+            --allowedTools "Read,Glob,Grep,Write(/tmp/**),Bash(gh pr view:*),Bash(gh pr diff:*)"
           prompt: |
             You are Claude acting as TECHNICAL REVIEWER (Reviewer 1) under
             CLAUDE.md Role B and AGENTS.md §8, which you must read FIRST
@@ -255,10 +334,13 @@ jobs:
             ${{ needs.resolve.outputs.contract_revision }}.
 
             Procedure:
-            1. Read the linked issue FIRST (`gh issue view ${{ needs.resolve.outputs.issue }}`)
-               so the task contract frames the review — note its
-               acceptance criteria, non-goals, required tests, and review
-               focus.
+            1. Read /tmp/rekoda-contract/contract-snapshot.md FIRST. That
+               file is THE authoritative task contract for this review —
+               the exact authorized revision snapshot, exported and
+               hash-verified by the trusted resolver. Do NOT fetch the
+               live issue text; the live issue is mutable and may carry
+               unauthorized proposals. Note the snapshot's acceptance
+               criteria, non-goals, required tests, and review focus.
             2. Inspect the diff (`gh pr diff ${{ needs.resolve.outputs.pr }}`)
                and the surrounding code in ./untrusted-pr-head. Review
                what is at HEAD, not what the PR body claims.
@@ -275,6 +357,7 @@ jobs:
                  "issue": ${{ needs.resolve.outputs.issue }},
                  "head_sha": "${{ needs.resolve.outputs.head_sha }}",
                  "contract_revision": ${{ needs.resolve.outputs.contract_revision }},
+                 "contract_body_sha256": "${{ needs.resolve.outputs.contract_body_sha256 }}",
                  "verdict": "APPROVE" or "BLOCK",
                  "findings": ["<one concise line per finding; empty array if none>"]
                }
@@ -306,6 +389,13 @@ jobs:
       needs.resolve.outputs.pr != '' && needs.resolve.outputs.governed == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # Per-target check-write serialization (see CONCURRENCY header): a
+    # contract-authority freeze for this PR and this publisher can never
+    # interleave — whichever enters the group second sees the other's
+    # completed state.
+    concurrency:
+      group: rekoda-gates-pr-${{ needs.resolve.outputs.pr }}
+      cancel-in-progress: false
     # References ONLY the signing key from agents-claude-reviewer; no AI
     # credential is ever materialized on this runner.
     environment: agents-claude-reviewer
@@ -380,6 +470,19 @@ jobs:
             echo "::error::The contract moved while the review ran (revision/issue changed); not signing — the redispatched run owns publication."
             exit 1
           fi
+          # The FRESH contract must still be a single authorized,
+          # unamended snapshot, and the SAME snapshot the reviewer was
+          # given — an edit or unauthorized proposal that landed during
+          # the review makes contract_ok false or moves the hash, and
+          # nothing gets signed.
+          if [ "${{ steps.fresh.outputs.contract_ok }}" != "true" ]; then
+            echo "::error::The active contract is no longer a single authorized, unamended snapshot; not signing."
+            exit 1
+          fi
+          if [ "${{ steps.fresh.outputs.contract_body_sha256 }}" != "${{ needs.resolve.outputs.contract_body_sha256 }}" ]; then
+            echo "::error::The active contract snapshot changed while the review ran; not signing — the redispatched run owns publication."
+            exit 1
+          fi
           echo "proceed=true" >> "$GITHUB_OUTPUT"
 
       - name: Receive the unsigned verdict (untrusted data)
@@ -405,6 +508,7 @@ jobs:
             --issue "${{ steps.fresh.outputs.issue }}" \
             --head "${{ steps.fresh.outputs.head_sha }}" \
             --revision "${{ steps.fresh.outputs.contract_revision }}" \
+            --contract-hash "${{ steps.fresh.outputs.contract_body_sha256 }}" \
             --sign-env CLAUDE_REVIEWER_SIGNING_KEY > /tmp/marker.md
           gh pr comment "$PR" --repo "$REPO" --body-file /tmp/marker.md
 
@@ -457,6 +561,12 @@ jobs:
       - name: Exclude the untrusted checkout from the trusted tree's status
         run: echo "untrusted-pr-head/" >> .git/info/exclude
 
+      - name: Receive the verified contract snapshot
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: contract-snapshot
+          path: /tmp/rekoda-contract
+
       - name: Gemini reviews system acceptance (Reviewer 2)
         uses: google-github-actions/run-gemini-cli@f77273f4c914e4bf38440cf36a0369cb64a37489 # v0.1.22
         env:
@@ -474,8 +584,7 @@ jobs:
                   "search_file_content",
                   "write_file",
                   "run_shell_command(gh pr view)",
-                  "run_shell_command(gh pr diff)",
-                  "run_shell_command(gh issue view)"
+                  "run_shell_command(gh pr diff)"
                 ]
               },
               "telemetry": { "enabled": false }
@@ -498,10 +607,14 @@ jobs:
             ${{ needs.resolve.outputs.contract_revision }}.
 
             Procedure:
-            1. Read the linked issue FIRST (`gh issue view ${{ needs.resolve.outputs.issue }}`)
-               — it is the authoritative contract: acceptance criteria,
-               scope, non-goals, required tests, required merge evidence,
-               and your review focus.
+            1. Read /tmp/rekoda-contract/contract-snapshot.md FIRST. That
+               file is THE authoritative contract for this review — the
+               exact authorized revision snapshot, exported and
+               hash-verified by the trusted resolver: acceptance
+               criteria, scope, non-goals, required tests, required
+               merge evidence, and your review focus. Do NOT fetch the
+               live issue text; it is mutable and may carry unauthorized
+               proposals.
             2. Inspect the diff (`gh pr diff ${{ needs.resolve.outputs.pr }}`)
                and the code under ./untrusted-pr-head. Evaluate what is
                at HEAD, not the PR narrative.
@@ -523,6 +636,7 @@ jobs:
                  "issue": ${{ needs.resolve.outputs.issue }},
                  "head_sha": "${{ needs.resolve.outputs.head_sha }}",
                  "contract_revision": ${{ needs.resolve.outputs.contract_revision }},
+                 "contract_body_sha256": "${{ needs.resolve.outputs.contract_body_sha256 }}",
                  "verdict": "APPROVE" or "BLOCK",
                  "findings": ["<one concise line per finding; empty array if none>"]
                }
@@ -554,6 +668,13 @@ jobs:
       needs.resolve.outputs.pr != '' && needs.resolve.outputs.governed == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # Per-target check-write serialization (see CONCURRENCY header): a
+    # contract-authority freeze for this PR and this publisher can never
+    # interleave — whichever enters the group second sees the other's
+    # completed state.
+    concurrency:
+      group: rekoda-gates-pr-${{ needs.resolve.outputs.pr }}
+      cancel-in-progress: false
     # References ONLY the signing key from agents-gemini-reviewer; no AI
     # credential is ever materialized on this runner.
     environment: agents-gemini-reviewer
@@ -628,6 +749,19 @@ jobs:
             echo "::error::The contract moved while the review ran (revision/issue changed); not signing — the redispatched run owns publication."
             exit 1
           fi
+          # The FRESH contract must still be a single authorized,
+          # unamended snapshot, and the SAME snapshot the reviewer was
+          # given — an edit or unauthorized proposal that landed during
+          # the review makes contract_ok false or moves the hash, and
+          # nothing gets signed.
+          if [ "${{ steps.fresh.outputs.contract_ok }}" != "true" ]; then
+            echo "::error::The active contract is no longer a single authorized, unamended snapshot; not signing."
+            exit 1
+          fi
+          if [ "${{ steps.fresh.outputs.contract_body_sha256 }}" != "${{ needs.resolve.outputs.contract_body_sha256 }}" ]; then
+            echo "::error::The active contract snapshot changed while the review ran; not signing — the redispatched run owns publication."
+            exit 1
+          fi
           echo "proceed=true" >> "$GITHUB_OUTPUT"
 
       - name: Receive the unsigned verdict (untrusted data)
@@ -653,6 +787,7 @@ jobs:
             --issue "${{ steps.fresh.outputs.issue }}" \
             --head "${{ steps.fresh.outputs.head_sha }}" \
             --revision "${{ steps.fresh.outputs.contract_revision }}" \
+            --contract-hash "${{ steps.fresh.outputs.contract_body_sha256 }}" \
             --sign-env GEMINI_REVIEWER_SIGNING_KEY > /tmp/marker.md
           gh pr comment "$PR" --repo "$REPO" --body-file /tmp/marker.md
 

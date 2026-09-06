@@ -11,7 +11,7 @@
  *
  * PROVENANCE MODEL:
  *   - Every piece of signed evidence carries the protocol domain/version
- *     SCHEME: REKODA_AGENT_EVIDENCE_V1 inside its signed payload; an
+ *     SCHEME: REKODA_AGENT_EVIDENCE_V2 inside its signed payload; an
  *     unknown, missing, or future scheme is rejected.
  *   - Claude/Gemini verdict markers count ONLY with a valid Ed25519
  *     signature over the canonical payload, verified against the
@@ -35,7 +35,12 @@
  */
 import { createHash, createPublicKey, verify as cryptoVerify } from 'node:crypto';
 
-export const SCHEME = 'REKODA_AGENT_EVIDENCE_V1';
+// V2: verdict evidence additionally binds CONTRACT_BODY_SHA256 — the
+// hash of the exact authorized contract snapshot the reviewer assessed —
+// so a mutable-body A→B→A window can never smuggle an unreviewed
+// contract past the publisher. Bumped cleanly while no signing key is
+// live; V1 evidence is rejected as an unknown scheme.
+export const SCHEME = 'REKODA_AGENT_EVIDENCE_V2';
 
 export const MARKERS = {
   codex: 'REKODA_CODEX_APPROVAL',
@@ -63,7 +68,41 @@ export function sha256Hex(text) {
 
 /** Canonical signed payload for a verdict marker — field order is fixed. */
 export function canonicalVerdictPayload(m) {
-  return `${m.name}\nSCHEME: ${SCHEME}\nPR: ${m.pr}\nISSUE: ${m.issue}\nHEAD_SHA: ${m.headSha}\nCONTRACT_REVISION: ${m.contractRevision}\nVERDICT: ${m.verdict}`;
+  return `${m.name}\nSCHEME: ${SCHEME}\nPR: ${m.pr}\nISSUE: ${m.issue}\nHEAD_SHA: ${m.headSha}\nCONTRACT_REVISION: ${m.contractRevision}\nCONTRACT_BODY_SHA256: ${m.contractBodySha256}\nVERDICT: ${m.verdict}`;
+}
+
+/**
+ * THE single source of marker text: every production generator renders
+ * through these, and the parsers below consume exactly this shape — the
+ * end-to-end tests feed real generator output through the real parser,
+ * so the two can never silently drift again.
+ */
+export function buildVerdictMarkerLines(m, signature) {
+  const lines = [
+    m.name,
+    `SCHEME: ${SCHEME}`,
+    `PR: ${m.pr}`,
+    `ISSUE: ${m.issue}`,
+    `HEAD_SHA: ${m.headSha}`,
+    `CONTRACT_REVISION: ${m.contractRevision}`,
+    `CONTRACT_BODY_SHA256: ${m.contractBodySha256}`,
+    `VERDICT: ${m.verdict}`,
+  ];
+  if (signature) lines.push(`SIGNATURE: ${signature}`);
+  return lines;
+}
+
+export function buildContractMarkerLines(m, signature) {
+  const lines = [
+    m.kind,
+    `SCHEME: ${SCHEME}`,
+    `ISSUE: ${m.issue}`,
+    `REVISION: ${m.revision}`,
+    `BODY_SHA256: ${m.bodySha256}`,
+  ];
+  if (m.kind === 'REKODA_CONTRACT_REVISION') lines.push(`REASON: ${m.reason}`);
+  if (signature) lines.push(`SIGNATURE: ${signature}`);
+  return lines;
 }
 
 /** Canonical signed payload for a contract marker — field order is fixed. */
@@ -127,9 +166,10 @@ export function selectLinkedPrs({ openPrs, complete, issueNumber }) {
  * candidates: [{ number, state, headSha, baseRepo }] with baseRepo the
  * full name of the PR's base repository.
  */
-export function resolveWorkflowRunTarget({ headSha, candidates, repo }) {
+export function resolveWorkflowRunTarget({ headSha, candidates, repo, complete = true }) {
   const sha = String(headSha ?? '').toLowerCase();
   if (!SHA40.test(sha)) return { pr: null, status: 'none' };
+  if (complete === false) return { pr: null, status: 'unprovable' }; // partial candidate set → fail closed
   const open = (candidates ?? []).filter(
     (c) => c.state === 'open' && (!repo || c.baseRepo === repo),
   );
@@ -144,8 +184,8 @@ export function resolveWorkflowRunTarget({ headSha, candidates, repo }) {
 /**
  * Parse fixed-format approval marker blocks out of free text:
  *   <MARKER NAME>
- *   SCHEME: REKODA_AGENT_EVIDENCE_V1
- *   PR / ISSUE / HEAD_SHA / CONTRACT_REVISION / VERDICT / SIGNATURE
+ *   SCHEME: REKODA_AGENT_EVIDENCE_V2
+ *   PR / ISSUE / HEAD_SHA / CONTRACT_REVISION / CONTRACT_BODY_SHA256 / VERDICT / SIGNATURE
  * A block missing the scheme, carrying an unknown scheme, or failing any
  * field grammar is malformed — a malformed marker never counts.
  */
@@ -156,11 +196,11 @@ export function parseMarkers(text, markerName) {
     if (lines[i].trim() !== markerName) continue;
     const fields = {};
     let consumed = 0;
-    for (let j = i + 1; j < lines.length && consumed < 12; j++, consumed++) {
+    for (let j = i + 1; j < lines.length && consumed < 13; j++, consumed++) {
       const line = lines[j].trim();
       if (line === markerName) break;
       const m = line.match(
-        /^(SCHEME|PR|ISSUE|HEAD_SHA|CONTRACT_REVISION|VERDICT|SIGNATURE):\s*(.*)$/,
+        /^(SCHEME|PR|ISSUE|HEAD_SHA|CONTRACT_REVISION|CONTRACT_BODY_SHA256|VERDICT|SIGNATURE):\s*(.*)$/,
       );
       if (m) fields[m[1]] = m[2].trim();
       if (m && m[1] === 'SIGNATURE') break;
@@ -174,6 +214,11 @@ export function parseMarkers(text, markerName) {
     const contractRevision = /^\d{1,4}$/.test(fields.CONTRACT_REVISION ?? '')
       ? Number(fields.CONTRACT_REVISION)
       : null;
+    const contractBodySha256 = /^[0-9a-f]{64}$/.test(
+      (fields.CONTRACT_BODY_SHA256 ?? '').toLowerCase(),
+    )
+      ? fields.CONTRACT_BODY_SHA256.toLowerCase()
+      : null;
     const verdict =
       fields.VERDICT === 'APPROVE' || fields.VERDICT === 'BLOCK' ? fields.VERDICT : null;
     const malformed =
@@ -182,6 +227,7 @@ export function parseMarkers(text, markerName) {
       issue === null ||
       headSha === null ||
       contractRevision === null ||
+      contractBodySha256 === null ||
       verdict === null;
     out.push({
       name: markerName,
@@ -190,6 +236,7 @@ export function parseMarkers(text, markerName) {
       issue,
       headSha,
       contractRevision,
+      contractBodySha256,
       verdict,
       signature: fields.SIGNATURE ?? null,
       malformed,
@@ -439,6 +486,10 @@ export function resolveVerdict({ candidates, markerName, provenance, target }) {
         diagnosis = 'wrong_revision';
         continue;
       }
+      if (m.contractBodySha256 !== target.contractBodySha256) {
+        diagnosis = 'wrong_contract';
+        continue;
+      }
       valid.push({
         verdict: m.verdict,
         createdAt: String(c.createdAt ?? ''),
@@ -501,6 +552,33 @@ export function isGoverned(state) {
     Boolean(enrollment.everLabeledAgent) ||
     !enrollment.complete
   );
+}
+
+/**
+ * Fail-closed decision for publishing a check run (post-check.mjs): a
+ * transient lookup failure is NOT proof that no check exists — abort
+ * rather than risk a duplicate same-name check; and only a check run
+ * from the expected app may be updated in place.
+ */
+export function chooseCheckAction({ lookupOk, runs, name, appSlug = 'github-actions' }) {
+  if (!lookupOk)
+    return { action: 'abort', reason: 'existing-check lookup failed — cannot prove absence' };
+  const ours = (runs ?? []).find((r) => r.name === name && r.appSlug === appSlug);
+  if (ours) return { action: 'patch', id: ours.id };
+  return { action: 'post' };
+}
+
+/**
+ * READY-promotion decision for the contract authority, evaluated against
+ * the RE-FETCHED current issue labels so both label orderings work
+ * (builder first then status:ready, or the reverse) and duplicate label
+ * events stay idempotent.
+ */
+export function readyPromotionAction({ labels }) {
+  const l = labels ?? [];
+  const builders = l.filter((x) => BUILDER_RE.test(x));
+  const proceed = l.includes('agent-task') && l.includes('status:ready') && builders.length === 1;
+  return { proceed, dispatchClaude: proceed && builders[0] === 'builder:claude' };
 }
 
 /** Repository permission levels that may start paid agent work. */
@@ -679,6 +757,7 @@ export function evaluate(state, mode = 'full') {
     } else {
       revision = rev.revision;
     }
+    if (revision !== null) issue._activeContractHash = rev.expectedHash;
   }
 
   const target =
@@ -688,6 +767,7 @@ export function evaluate(state, mode = 'full') {
           issue: issue.number,
           headSha: state.pr.headSha,
           contractRevision: revision,
+          contractBodySha256: issue._activeContractHash,
         }
       : null;
 
@@ -720,6 +800,10 @@ export function evaluate(state, mode = 'full') {
         wrong_revision: [
           'TECH_WRONG_REVISION',
           `The technical marker names a different contract revision (current: ${revision}).`,
+        ],
+        wrong_contract: [
+          'TECH_WRONG_CONTRACT',
+          'The technical marker binds a different contract snapshot hash than the active authorized contract.',
         ],
         malformed: [
           'TECH_MALFORMED',
@@ -760,6 +844,10 @@ export function evaluate(state, mode = 'full') {
         wrong_revision: [
           'GEMINI_WRONG_REVISION',
           `The Gemini marker names a different contract revision (current: ${revision}).`,
+        ],
+        wrong_contract: [
+          'GEMINI_WRONG_CONTRACT',
+          'The Gemini marker binds a different contract snapshot hash than the active authorized contract.',
         ],
         malformed: [
           'GEMINI_MALFORMED',

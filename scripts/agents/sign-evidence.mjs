@@ -13,11 +13,12 @@
  *
  *   node scripts/agents/sign-evidence.mjs --file unsigned-verdict.json \
  *     --marker REKODA_CLAUDE_APPROVAL --pr 55 --issue 44 --head <sha> \
- *     --revision 1 --sign-env CLAUDE_REVIEWER_SIGNING_KEY > marker.md
+ *     --revision 1 --contract-hash <sha256-of-active-contract-body> \
+ *     --sign-env CLAUDE_REVIEWER_SIGNING_KEY > marker.md
  */
 import { readFileSync, appendFileSync } from 'node:fs';
 import { createPrivateKey, sign as cryptoSign } from 'node:crypto';
-import { canonicalVerdictPayload, SCHEME } from './evaluator.mjs';
+import { canonicalVerdictPayload, buildVerdictMarkerLines } from './evaluator.mjs';
 
 const args = Object.fromEntries(
   process.argv
@@ -41,14 +42,21 @@ if (!keyPem)
     `Signing key env ${args['sign-env']} is empty — the reviewer environment is not configured; refusing to publish an unsigned verdict.`,
   );
 
-// The FRESH trusted target (independently re-resolved by the caller).
+// The FRESH trusted target (independently re-resolved by the caller),
+// including the ACTIVE authorized contract snapshot hash — the exact
+// contract the reviewer was given to assess.
 const expected = {
   pr: Number(args.pr),
   issue: Number(args.issue),
   head: String(args.head ?? '').toLowerCase(),
   revision: Number(args.revision),
+  contractHash: String(args['contract-hash'] ?? '').toLowerCase(),
 };
 if (!/^[0-9a-f]{40}$/.test(expected.head)) fail('Expected HEAD SHA is not 40-hex.');
+if (!/^[0-9a-f]{64}$/.test(expected.contractHash))
+  fail(
+    'Expected contract snapshot hash (--contract-hash) is not 64-hex — an unauthorized/amended contract is never signed.',
+  );
 if (
   !Number.isInteger(expected.pr) ||
   !Number.isInteger(expected.issue) ||
@@ -74,20 +82,26 @@ if (String(doc.head_sha).toLowerCase() !== expected.head)
   );
 if (Number(doc.contract_revision) !== expected.revision)
   fail(`Verdict names contract revision ${doc.contract_revision}, expected ${expected.revision}.`);
+if (String(doc.contract_body_sha256 ?? '').toLowerCase() !== expected.contractHash)
+  fail(
+    `Verdict names contract snapshot ${doc.contract_body_sha256}, expected ${expected.contractHash} — the reviewer must have assessed the exact authorized contract snapshot.`,
+  );
 if (doc.verdict !== 'APPROVE' && doc.verdict !== 'BLOCK')
   fail(`Verdict must be APPROVE or BLOCK, got: ${doc.verdict}.`);
 if (!Array.isArray(doc.findings)) fail('Verdict must carry a findings array (empty when none).');
 
 // Canonicalize from the EXPECTED values (never the artifact's own claims)
 // and sign that exact in-memory payload.
-const canonical = canonicalVerdictPayload({
+const m = {
   name: markerName,
   pr: expected.pr,
   issue: expected.issue,
   headSha: expected.head,
   contractRevision: expected.revision,
+  contractBodySha256: expected.contractHash,
   verdict: doc.verdict,
-});
+};
+const canonical = canonicalVerdictPayload(m);
 let signature;
 try {
   signature = cryptoSign(null, Buffer.from(canonical, 'utf8'), createPrivateKey(keyPem)).toString(
@@ -102,21 +116,8 @@ const findings =
     ? 'No blocking findings.'
     : doc.findings.map((f) => `- ${String(f).replace(/\n/g, ' ').slice(0, 500)}`).join('\n');
 
-console.log(
-  [
-    '```',
-    markerName,
-    `SCHEME: ${SCHEME}`,
-    `PR: ${expected.pr}`,
-    `ISSUE: ${expected.issue}`,
-    `HEAD_SHA: ${expected.head}`,
-    `CONTRACT_REVISION: ${expected.revision}`,
-    `VERDICT: ${doc.verdict}`,
-    `SIGNATURE: ${signature}`,
-    '```',
-    '',
-    findings,
-  ].join('\n'),
-);
+// Rendered through the SAME shared generator the parser is tested
+// against — what is published is exactly what parseMarkers accepts.
+console.log(['```', ...buildVerdictMarkerLines(m, signature), '```', '', findings].join('\n'));
 if (process.env.GITHUB_OUTPUT)
   appendFileSync(process.env.GITHUB_OUTPUT, `verdict=${doc.verdict}\n`);

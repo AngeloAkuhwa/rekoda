@@ -5,14 +5,23 @@
 # gets the privileged gates re-run against the same HEAD and the NEW
 # contract state.
 #
-# PROPOSAL vs TRANSITION (D1): every event this watcher sees is at most
+# ONE proposal semantic (D1): every event this watcher sees is at most
 # a PROPOSED contract change or a state signal — a body edit, an
 # owner-typed marker, a label flip. None of it moves the active merge
 # contract: only the contract-authority's owner-dispatched
-# freeze-before-mutate transaction makes a revision authoritative. The
-# gates this watcher dispatches therefore evaluate proposals against the
-# UNCHANGED active contract and simply BLOCK on any mismatch — the D1
-# merge window cannot be reopened from here.
+# freeze-before-mutate transaction makes a revision authoritative. A
+# pending proposal makes the gates' contract_ok false (the body no
+# longer matches the active revision's hash), which BLOCKS the gates,
+# stops reviewer lanes from running, and stops publishers from signing
+# — and V2 verdicts bind the reviewed snapshot's CONTRACT_BODY_SHA256,
+# so no verdict produced over other text can authorize anything. The
+# D1 merge window cannot be reopened from here.
+#
+# DELIVERY GUARANTEE: every dispatch below reaches an evaluation. The
+# gates workflow has no workflow-level concurrency group, so a request
+# cannot be displaced out of a pending slot by a later request; this
+# watcher's own per-issue group only collapses rapid same-issue events
+# into a newer run that re-dispatches against strictly fresher state.
 #
 # The contract-authority WORKFLOW does not rely on this watcher at all —
 # GitHub suppresses workflow events created by GITHUB_TOKEN comments, so
