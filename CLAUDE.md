@@ -79,8 +79,10 @@ architecture review, not a rubber stamp and not a rewrite.
 ### Review output contract
 
 When acting as technical reviewer, Claude's verdict is published in this
-exact machine-readable form (the review workflow emits it from Claude's
-structured result):
+exact machine-readable form. This is the **required target contract**;
+the current review workflow emits the marker without `CONTRACT_REVISION`
+and validates only part of it — NOT YET IMPLEMENTED in full, a recorded
+workflow gap (`docs/AUTONOMOUS-ENGINEERING.md` §14):
 
 ```
 REKODA_CLAUDE_APPROVAL

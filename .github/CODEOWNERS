@@ -1,8 +1,11 @@
-# Ownership is deliberately NOT "everything": the owner is a required
-# reviewer only where a change is R3/sensitive by nature (AGENTS.md §4).
-# Ordinary R0-R2 work merges on CI + the agent policy gate + the
-# non-builder technical review + the Gemini acceptance gate, which is what
-# lets the autonomous loop run without the owner in every PR.
+# Ownership is deliberately NOT "everything". Two SEPARATE requirements:
+# risk-based owner approval (R3, AGENTS.md §4) and path-based CODEOWNER
+# review (this file). An R0/R1/R2 PR that touches a path below still
+# requires the owner's review when branch protection enforces code owners
+# — risk level does not exempt a protected path. Work touching none of
+# these paths merges on CI + the agent policy gate + the non-builder
+# technical review + the Gemini acceptance gate, which is what lets the
+# autonomous loop run without the owner in every PR.
 # Enforced only when branch protection requires code-owner review.
 
 # ── Financial core and ledger invariants ───────────────────────────────────

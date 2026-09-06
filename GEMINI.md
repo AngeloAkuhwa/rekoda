@@ -79,15 +79,22 @@ doubt, route to Claude.
 
 ### WIP policy
 
-- At most **1** issue in `status:building`.
+- **One implementation task in flight at a time.** An issue in
+  `status:building` OR `status:in-review` (where repairs may still be
+  required) occupies the single implementation slot. A PR entering review
+  does **not** free the slot, and a reviewer BLOCK keeps the same builder
+  repairing in the same lane. Promote the next build only after merge,
+  explicit abandonment, or an owner-authorized blocking that releases the
+  lane.
 - At most **2** issues in `status:ready`.
 - Everything else stays `backlog` (or `status:blocked-decision`).
   A long READY queue rots: the tree moves under it.
 
 ## Role B — System Acceptance Reviewer
 
-On every implementation PR, after (and independently of) the technical
-review, Gemini answers one primary question:
+On every implementation PR, concurrently with (and independently of) the
+technical review — acceptance never waits for the technical verdict —
+Gemini answers one primary question:
 
 > **"Did we completely build the right thing, and does it fit Rekoda as a
 > whole?"**
@@ -119,6 +126,10 @@ Procedure:
    (`docs/AUTONOMOUS-ENGINEERING.md` §7).
 
 ### Review output contract
+
+The **required target contract** — the current acceptance workflow emits
+the marker without `CONTRACT_REVISION` and validates only part of it
+(NOT YET IMPLEMENTED in full; `docs/AUTONOMOUS-ENGINEERING.md` §14):
 
 ```
 REKODA_GEMINI_APPROVAL

@@ -2,10 +2,11 @@
 
 > **CONTROL PLANE STATUS: DRAFT / INACTIVE.** The rules below are the
 > approved contract, but GitHub does not enforce them until the owner
-> completes and confirms the activation checklist in §5. Until then there
-> is no autonomous merge of any kind. Live GitHub evidence at the time of
-> writing: `main` is not protected, no ruleset is active, and auto-merge
-> is disabled.
+> confirms the activation prerequisite in §5 — the configuration exists
+> **and** the merge contract is implemented and negative-case verified on
+> the live repository. Until then there is no autonomous merge of any
+> kind. Live GitHub evidence at the time of writing: `main` is not
+> protected, no ruleset is active, and auto-merge is disabled.
 
 How Rekoda's launch work continues with minimal owner involvement. This is
 a **control plane over the existing repository**, not a redesign of it:
@@ -41,8 +42,8 @@ canonical register of owner-held items.
 | `risk:R0` … `risk:R3`            | exactly one per issue and per PR (`AGENTS.md` §4)                   |
 | `builder:claude` `builder:codex` | exactly one per implementation issue and per PR (`AGENTS.md` §7)    |
 | `status:ready`                   | implementable now, no open decision (max **2**)                     |
-| `status:building`                | the builder owns it (max **1**)                                     |
-| `status:in-review`               | PR open, review loop running                                        |
+| `status:building`                | the builder owns it — occupies the single implementation slot (§3)  |
+| `status:in-review`               | PR open, review loop running — **still occupies the slot** (§3)     |
 | `status:blocked-decision`        | needs the owner; carries the exact question                         |
 | `backlog`                        | real but not launch-blocking; stays out of the READY queue          |
 | `needs-owner-decision`           | mirror of the template's NEEDS-OWNER-DECISION status                |
@@ -79,6 +80,14 @@ finding → backlog → status:ready → status:building → status:in-review �
    implements. Decision-level ambiguity discovered mid-build →
    `status:blocked-decision` with the question; the builder moves to other
    non-blocked work.
+5. **One implementation task in flight at a time.** An issue in
+   `status:building` OR `status:in-review` (where repairs may still be
+   required) occupies the single implementation slot — a PR entering
+   review does **not** free it, and a reviewer BLOCK keeps the same
+   builder repairing in the same lane. The slot is released only by
+   merge, explicit abandonment, or an owner-authorized blocking that
+   releases the lane; only then may the planner promote the next build.
+   `status:ready` ≤ 2 remains the queue cap.
 
 ## 4. PR lifecycle
 
@@ -125,8 +134,12 @@ review, not resolved threads, not a reaction, not silence. Plus, as
 before: squash merge, Conventional Commit title, HANDOFF updated in the
 same PR if durable state changed.
 
-**Activation checklist.** The control plane becomes ACTIVE only when the
-owner confirms, on the live repository, that:
+**Activation prerequisite.** The control plane becomes ACTIVE only when
+the owner confirms **both** of the following on the live repository. A
+required check merely _existing by name_ is not evidence that it enforces
+the contract — activation is based on **behavioural evidence**.
+
+**A. Configuration exists:**
 
 - a `main` branch ruleset exists and is Active;
 - the required CI checks are configured (secret scan, typecheck/lint/
@@ -137,9 +150,38 @@ owner confirms, on the live repository, that:
 - conversation resolution before merge is required;
 - force pushes are blocked;
 - direct pushes and bypasses of `main` are blocked (no bypass actors);
-- auto-merge is enabled at the repository level;
-- the R3 owner-approval behaviour has been exercised once (CODEOWNERS +
-  the gate) and behaves as documented.
+- auto-merge is enabled at the repository level.
+
+**B. The merge contract is implemented and negative-case verified.**
+Evidence — produced in the workflow phase, not assumed — must demonstrate
+that merge is actually BLOCKED for each of:
+
+1. missing technical reviewer approval;
+2. stale technical reviewer approval from an old HEAD;
+3. wrong reviewer identity;
+4. malformed approval marker;
+5. technical reviewer BLOCK verdict;
+6. missing Gemini acceptance;
+7. stale Gemini acceptance;
+8. Gemini BLOCK verdict;
+9. approval referencing the wrong PR;
+10. approval referencing the wrong linked issue;
+11. approval referencing the wrong contract revision;
+12. unauthorized issue-contract amendment;
+13. mismatch between issue risk label and PR risk label;
+14. mismatch between issue builder and PR builder;
+15. missing linked authoritative issue;
+16. unresolved blocking review threads;
+17. R3 without the required owner decision/reference;
+18. R3 without current owner approval;
+19. a direct/bypass merge attempt;
+20. required CI failure;
+
+plus positive-case evidence that a valid R0/R1/R2 PR becomes eligible
+**only after** every required gate genuinely passes. Several of these are
+known not to hold today (§14); implementing and proving them is the
+workflow phase's exit criterion, and the control plane stays
+DRAFT / INACTIVE until then.
 
 **Before activation: no autonomous merge, full stop.** After activation:
 the builder may request or enable **squash auto-merge**
@@ -190,10 +232,13 @@ check the revision — a recorded enforcement gap (§14).
 
 **The Codex signal, with claims labelled:**
 
-- GUARANTEED BY PROVIDER DOCUMENTATION: Codex's native review follows a
-  repository's AGENTS.md `## Code Review Rules`; reviews are triggered by
-  PR open, ready-for-review, and `@codex review`.
-- OBSERVED ON 2026-09-06 (live GitHub API data, multiple repositories):
+- GUARANTEED BY PROVIDER DOCUMENTATION (OpenAI's Codex GitHub-integration
+  doc, learn.chatgpt.com/docs/third-party/github, as read 2026-09-06 —
+  re-verify against the live doc before relying on it): Codex's native
+  review follows a repository's AGENTS.md `## Code Review Rules`; reviews
+  are triggered by PR open, ready-for-review, and `@codex review`.
+- OBSERVED ON 2026-09-06 (live GitHub API review objects on multiple
+  public repositories; recorded in PR #233's verification trail):
   reviews post as `chatgpt-codex-connector[bot]`, always state
   `COMMENTED`, each carrying a `commit_id`; a no-findings pass may post no
   review at all, only a 👍 reaction (which is not SHA-bound and therefore
@@ -208,11 +253,16 @@ contract for `builder:claude` PRs is: a valid `REKODA_CODEX_APPROVAL`
 APPROVE for the exact HEAD, or the PR does not merge** — fail closed. The
 gate as currently implemented is more permissive (it falls back to
 review-existence and to owner approval), which contradicts this contract
-and is recorded as enforcement gap #1 in §14. If the marker proves
-unreliable in practice, the honest alternatives are a human technical
-approval **recorded as an explicit stand-in decision by the owner** or
-rerouting the work `builder:codex` — not silently treating existence as
-approval.
+and is recorded as enforcement gap #1 in §14. **There is no substitute
+for the designated peer technical review — not the owner's approval, not
+anyone's.** If the designated reviewer cannot produce a verdict (the
+marker proves unreliable, the integration is down), the PR stays BLOCKED
+and the issue escalates to the owner as needs-owner-attention; the
+planner may then re-plan the work under the other builder (a new routing
+decision, giving it the other peer as technical reviewer) — never wave
+the requirement through. A human-substitute mechanism, if ever wanted,
+is a separately authorized operating-model change, not part of this
+model.
 
 **Reviewer isolation, honestly.** Four different things, not one:
 
@@ -281,9 +331,10 @@ planner apply it.
 (chatgpt.com/codex) under the owner's ChatGPT subscription. Claims
 labelled:
 
-- GUARANTEED BY PROVIDER DOCUMENTATION: starting tasks from the Codex
-  Cloud UI; `@codex <instruction>` comments on a **PR** start a cloud task
-  with the PR as context (how Codex repairs its own findings).
+- GUARANTEED BY PROVIDER DOCUMENTATION (the same Codex GitHub-integration
+  doc as §6): starting tasks from the Codex Cloud UI;
+  `@codex <instruction>` comments on a **PR** start a cloud task with the
+  PR as context (how Codex repairs its own findings).
 - OBSERVED ON 2026-09-06, not officially documented: `@codex` mentions on
   GitHub **issues** also start tasks; a Codex Cloud PR is authored by the
   connected user's own GitHub account from a `codex/…` branch (the reason
@@ -320,9 +371,11 @@ mini-plan document is written for agent work.
 
 **Superseded for agent work, deliberately:**
 
-- "One PR in flight at a time" → the WIP limits (`status:building` ≤ 1,
-  `status:ready` ≤ 2). The building limit preserves the original intent —
-  one implementation in flight — while allowing a planned queue.
+- "One PR in flight at a time" → **preserved** as the single
+  implementation slot (§3): an issue in `status:building` or
+  `status:in-review` occupies the one slot until merge, explicit
+  abandonment, or owner-authorized release — with `status:ready` ≤ 2 as a
+  planned queue behind it.
 - "The whole estate green before every push" → risk-proportional
   verification (`AGENTS.md` §5). R2+ still runs the full estate plus the
   affected integration suites; R0/R1 runs the targeted-then-broad ladder.
@@ -413,8 +466,8 @@ phase — none is silently pretended away:
    `builder:claude` PRs it passes on a marker APPROVE, but falls back to
    "a Codex review of the exact HEAD exists" and then to "the owner
    approved the exact HEAD". The contract (§6) requires a valid marker
-   APPROVE, fail closed; the fallbacks must become explicit,
-   owner-recorded stand-ins or be removed.
+   APPROVE, fail closed, with **no substitute** for the peer technical
+   review; both fallbacks must be **removed**.
 2. **`CONTRACT_REVISION` is not yet emitted or validated.** The marker
    format includes it; the Claude/Gemini review workflows and the policy
    gate neither write nor check it, and nothing machine-detects a contract
@@ -442,3 +495,24 @@ phase — none is silently pretended away:
 9. **No authorship/CODEOWNERS preflight automation.** The routing check in
    `GEMINI.md` (owner-owned paths + Codex authorship semantics) is manual
    planner procedure.
+10. **Issue linkage is a keyword pattern, not resolution.** The policy
+    gate greps the PR body for a closing keyword; it does not resolve the
+    linked issue and validate that it exists, is the authoritative
+    contract, carries matching labels, and is in the right status.
+11. **Marker parsing is partial.** The current validators check HEAD SHA
+    and VERDICT (and, for the workflow lanes, PR number); they do not
+    fully validate the marker's PR number, linked-issue number, contract
+    revision, or consistency with the PR's builder and risk labels.
+12. **Same-SHA supersession is not honoured.** The gate's Codex-marker
+    parse lets any BLOCK for the current HEAD dominate a later explicit
+    APPROVE for that same HEAD, contrary to §7's rule that a reviewer
+    supersedes its own verdict by an explicit later verdict.
+13. **The planner workflow's R3 rule is stale.** Its prompt still says
+    anything R3 is `needs-owner-decision`, never READY — contrary to the
+    final rule (§3: R3 with a recorded, linked owner decision may be
+    READY). Its WIP wording likewise still states the superseded
+    "building ≤ 1" form rather than the single in-flight
+    implementation-slot rule (§3).
+14. **Issue↔PR label consistency is unenforced.** Nothing deterministic
+    verifies that the PR's `risk:*` and `builder:*` labels equal the
+    linked issue's, or that the PR author matches the builder lane.
