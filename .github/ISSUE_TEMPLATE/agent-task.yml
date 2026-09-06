@@ -109,10 +109,25 @@ body:
     validations:
       required: true
   - type: dropdown
+    id: owner-decision-required
+    attributes:
+      label: Owner decision required?
+      description: Yes for anything R3 and anything with a decision only the owner can make; No otherwise.
+      options:
+        - 'No'
+        - 'Yes'
+    validations:
+      required: true
+  - type: textarea
+    id: owner-decision-reference
+    attributes:
+      label: Owner decision reference (if required and resolved)
+      description: Link to the recorded decision (docs/REKODA_OWNER_DECISIONS.md row, ADR, or issue comment). With this recorded, an R3 issue may be READY; without it, R3 stays NEEDS-OWNER-DECISION and implementation must not start. Merge still requires the owner's approving review where policy requires it.
+  - type: dropdown
     id: decision-status
     attributes:
       label: Decision status
-      description: READY means an implementer could start with no unanswered decision. Anything R3, and anything with a real open question, is NEEDS-OWNER-DECISION.
+      description: READY means an implementer could start with no unanswered decision — including R3 whose owner decision is recorded and linked above. NEEDS-OWNER-DECISION for any unresolved owner question.
       options:
         - READY
         - NEEDS-OWNER-DECISION

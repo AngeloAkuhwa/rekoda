@@ -34,9 +34,22 @@ higher), Dependencies, Decision status (`READY` only when an implementer
 could start with no unanswered decision), **Preferred builder**, **Codex
 review focus**, **Gemini review focus**, and **Required merge evidence**.
 
-Once implementation starts, the issue is the immutable task/review
-contract (`AGENTS.md` §8). If a genuine requirement must change, record
-the change and its reason on the issue transparently.
+Once implementation starts, the issue is the task/review contract at
+**contract revision 1** (`AGENTS.md` §8). If a genuine requirement must
+change, Gemini (or the owner) records a **contract revision** on the
+issue: the new revision number, exactly what changed, and why — the
+builder never authorizes a revision to its own contract, and any
+decision-level, risk-level, or R3-touching amendment requires the owner. A
+revision invalidates all existing reviewer approvals even when the code
+HEAD did not change; both reviewers re-review against the new contract,
+and the risk label and builder assignment are re-checked.
+
+**R3 readiness:** R3 is not permanently `NEEDS-OWNER-DECISION`. With the
+required owner decision unresolved, the issue is `NEEDS-OWNER-DECISION`
+(and carries the exact owner question). Once an explicit owner decision is
+recorded and linked on the issue, it may become `READY`. Implementation
+never starts without the recorded decision, and merge still requires the
+owner's approving review of the final HEAD.
 
 ### Choosing the builder
 
@@ -50,10 +63,19 @@ restriction):
 
 The non-building engineer automatically becomes Reviewer 1.
 
-**R3 work routes `builder:claude`.** A Codex Cloud PR is authored by the
-owner's own GitHub account, and GitHub cannot approve a PR authored by
-the approving account — which would make the R3 owner-approval gate
-unsatisfiable.
+**Authorship/approval preflight — run it before assigning the builder.**
+Risk-based owner decisions (`AGENTS.md` §4) and path-based CODEOWNER
+review (`.github/CODEOWNERS`) are two separate requirements: a PR can be
+R1/R2 and still need Angelo's review because it touches an owned path.
+Before routing, check which paths the task will touch against CODEOWNERS
+and note "owner review will be required" on the issue when they match.
+Then check authorship: a Codex Cloud PR is authored by the owner's own
+GitHub account (observed 2026-09; not officially documented), and GitHub
+does not count an approval from a PR's own author — so any task whose
+paths require the owner's CODEOWNER approval, and all R3 work, routes
+`builder:claude` (or a branch-ownership arrangement a human sets up that
+verifiably works). Do not assume GitHub behaviour beyond this; when in
+doubt, route to Claude.
 
 ### WIP policy
 
@@ -90,8 +112,11 @@ Procedure:
 4. Do **not** duplicate the technical review line-by-line merely for the
    sake of duplication; blocking technical defects Gemini happens to see
    still block, but depth-first code critique is Reviewer 1's job.
-5. Produce the verdict for the exact current HEAD. Any push invalidates
-   it; a previous SHA never approves a new SHA.
+5. Produce the verdict for the exact current HEAD and contract revision.
+   Any push — or contract revision — invalidates it; a previous SHA or
+   revision never approves a new one. Gemini's acceptance review runs
+   concurrently with the technical review; it does not wait for it
+   (`docs/AUTONOMOUS-ENGINEERING.md` §7).
 
 ### Review output contract
 
@@ -100,6 +125,7 @@ REKODA_GEMINI_APPROVAL
 PR: <number>
 ISSUE: <number>
 HEAD_SHA: <40-char current SHA>
+CONTRACT_REVISION: <integer, 1 unless the issue records a later revision>
 VERDICT: APPROVE|BLOCK
 ```
 

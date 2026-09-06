@@ -16,12 +16,14 @@ Environments, and never share a name.
   only (`TEST_REKODA_…` names). Only jobs that boot or test the Rekoda
   stack reference it. It contains **no** agent credentials.
 
-An engineering agent never receives Rekoda runtime provider credentials
-unless a task explicitly requires a sandbox validation job — and that
-validation should preferably be deterministic, non-agent code in a job
-that references `test` while the agent job references `agents`. Production
-credentials are never available to any autonomous agent workflow, in
-either environment.
+**The credential rule, single and absolute:** engineering agents NEVER
+directly receive Rekoda runtime provider credentials — there is no
+task-shaped exception. When a task needs sandbox or live validation, that
+validation runs in a **separate deterministic, non-agent job** that
+references the `test` environment; the engineering agent receives the
+job's output and evidence, never the credential. Production credentials
+are never available to any autonomous agent workflow, in either
+environment.
 
 Where a runtime name would collide with an agent name, the GitHub secret
 carries a `TEST_REKODA_` prefix and the workflow's `env:` block maps it to
@@ -55,18 +57,36 @@ Classification of every `.env.example` setting. Categories:
   in the workflow file (non-secret configuration).
 - **omitted** — intentionally unset in test; the code degrades safely by
   design.
+- **synthetic** — test-only stand-in configuration that exercises the code
+  path with values that mean nothing outside the job (a local issuer, a
+  computed HMAC). Not a real provider credential and not a production
+  value.
 - **sandbox** — needs a real provider sandbox/test account to mean
-  anything; lives as a `test` secret but only the live-smoke lane reads it.
+  anything; lives as a `test` secret but only the deterministic live-smoke
+  job reads it (never an engineering agent).
 - **production-only** — MUST NOT exist in the `test` environment in any
   form.
 
-### Database (ephemeral)
+### Database (ephemeral) — three roles, two naming namespaces
 
-CI provisions a job-scoped PostgreSQL with trust auth — no passwords, no
-stored URLs. As the existing `ci.yml` does:
-`DATABASE_URL` (owner, migrations), `APP_DATABASE_URL` (`rekoda_app`),
-`WORKER_DATABASE_URL` (`rekoda_worker`). Never run the db and api
-integration suites in parallel; they share the database.
+Three distinct connections, never conflated:
+
+- **owner/migration connection** — the `rekoda` role that owns the schema;
+  used ONLY to run migrations.
+- **application connection** — the `rekoda_app` role, RLS-constrained; what
+  the API uses.
+- **worker connection** — the `rekoda_worker` role, RLS-constrained like
+  `rekoda_app` plus the queue-claim grant (ADR 0022).
+
+The variable names differ by context, deliberately. The application
+runtime (`.env.example`) uses `DATABASE_URL` = **app** role,
+`OWNER_DATABASE_URL` = owner/migrations, `WORKER_DATABASE_URL` = worker.
+The CI test harness (`ci.yml` and `packages/db/src/testing.ts`, which
+refuses to run as superuser) uses `DATABASE_URL` = **owner**,
+`APP_DATABASE_URL` = app, `WORKER_DATABASE_URL` = worker. All of them are
+ephemeral in CI: a job-scoped PostgreSQL with trust auth — no passwords,
+no stored URLs. Never run the db and api integration suites in parallel;
+they share the database.
 
 ### Security keys (ephemeral)
 
@@ -80,15 +100,36 @@ would otherwise flag.
 
 `NODE_ENV`, `PORT`, `APP_URL`, `NEXT_PUBLIC_SITE_URL`, `REKODA_API_URL`,
 `REKODA_CORS_ORIGINS`, `REKODA_RATE_LIMIT_MAX`, `REKODA_WORKER`,
-`REKODA_WEB_URL`, `META_GRAPH_VERSION`, `META_SERVICE_REPLY_COST_MICROS`,
-`META_WABA_REGISTERED_IN_NIGERIA`, `PLANNING_FX_NGN_PER_USD`,
-`AI_DAILY_CALLS_PER_BUSINESS`, `AI_DAILY_CALLS_GLOBAL`,
-`AI_DOC_EXTRACTIONS_PER_BUSINESS`, `AI_DOC_EXTRACTIONS_GLOBAL`,
-`VOICE_SECONDS_PER_BUSINESS_PER_DAY`, `VOICE_SECONDS_GLOBAL_PER_DAY`,
-`VOICE_NOTE_MAX_DURATION_SECONDS`, `AI_MODEL_CLASSIFIER`,
-`AI_MODEL_DEFAULT`, `AI_MODEL_PRICES`, `AI_TRANSCRIPTION_PRICES` —
+`REKODA_WORKER_CONCURRENCY`, `REKODA_WEB_URL`, `META_GRAPH_VERSION`,
+`META_SERVICE_REPLY_COST_MICROS`, `META_WABA_REGISTERED_IN_NIGERIA`,
+`PLANNING_FX_NGN_PER_USD` (a positive number or the line deleted — an
+empty value is refused at boot), `AI_DAILY_CALLS_PER_BUSINESS`,
+`AI_DAILY_CALLS_GLOBAL`, `AI_DOC_EXTRACTIONS_PER_BUSINESS`,
+`AI_DOC_EXTRACTIONS_GLOBAL`, `VOICE_SECONDS_PER_BUSINESS_PER_DAY`,
+`VOICE_SECONDS_GLOBAL_PER_DAY`, `VOICE_NOTE_MAX_DURATION_SECONDS` —
 non-secret; workflow literals or `test` variables. Localhost URLs
 throughout.
+
+### AI configuration (variable / omitted)
+
+- `AI_PROVIDER` — **variable**: set explicitly in any lane that exercises
+  AI paths (a typo fails at boot by design); irrelevant in deterministic
+  suites that run keyless.
+- `AI_MODEL_DEFAULT`, `AI_MODEL_CLASSIFIER`, `AI_MODEL_PRICES`,
+  `AI_TRANSCRIPTION_PRICES` — **variable**: exact model ids and price
+  tables, non-secret.
+- `AI_MODEL_ESCALATION` — **omitted**: OFF at launch by documented
+  default; a lane that tests escalation sets it explicitly.
+- `AI_MODEL_VISION`, `AI_MODEL_TRANSCRIBER` — **omitted** (documented
+  defaults) except in the media lanes that test them.
+- `AI_MODEL_VISION_VERIFIER`, `AI_DUAL_EXTRACT_THRESHOLD_K` —
+  **omitted**: dual extraction stays off in test unless a lane tests it,
+  in which case the verifier must be a different vendor than the primary
+  and its family priced in `AI_MODEL_PRICES` (boot refuses otherwise).
+- `AI_BASE_URL` — **omitted** in test. Pointing it at a local fake for a
+  contract test is **synthetic**; pointing it at any third-party
+  OpenAI-compatible host is a compliance decision the owner makes, never a
+  test convenience.
 
 ### Test hooks (ephemeral, test-only by design)
 
@@ -145,7 +186,11 @@ the production bucket.
 - `NEXT_PUBLIC_LEGAL_*` real values (test renders the designed "not set
   yet" badges; the real entity facts are owner-held deployment values).
 - `OPERATOR_OIDC_ISSUER` / `_AUDIENCE` / `_JWKS_URL` / `_SCOPE_CLAIM` —
-  test uses the development stand-in `REKODA_OPERATOR_SECRET` (ephemeral).
+  the **production values** are production-only. Test uses the
+  development stand-in `REKODA_OPERATOR_SECRET` (ephemeral); if a lane
+  ever needs the OIDC code path itself, it uses a **synthetic** local
+  issuer/JWKS spun up inside the job — synthetic OIDC configuration is
+  not the same thing as production OIDC endpoints and never touches them.
 - `REKODA_PAYSTACK_PLATFORM_CONFIRMED` — the owner's recorded §47
   confirmation; test keys do not need it and setting it in test rehearses
   lying.
@@ -170,4 +215,6 @@ make the repository untestable:
    reporting through a **stable job name** so branch protection can
    require it. When the paths did not change, the job succeeds by
    explicitly reporting "not applicable" — a skip that branch protection
-   still sees as the named job passing.
+   still sees as the named job passing. These are **deterministic,
+   non-agent jobs**: they read `test` secrets, an engineering agent reads
+   only their output.

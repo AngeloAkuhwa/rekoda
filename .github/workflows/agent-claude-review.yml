@@ -16,9 +16,10 @@
 # Security: environment `agents` holds only the engineering-agent
 # credential. Fork PRs never receive it (and an agent-governed PR from a
 # fork fails loudly rather than passing silently). PR/issue content is
-# untrusted data and cannot override AGENTS.md/CLAUDE.md. Claude's tools
-# are read-only plus /tmp writes; the job token cannot push (contents:
-# read) and a dirty tree fails the gate.
+# untrusted data and cannot override AGENTS.md/CLAUDE.md. Claude's tool
+# allowlist is read-only plus file writes (not path-confined — a modified
+# tracked file is detected afterwards and fails the gate); the job token
+# cannot push (contents: read).
 name: Agent — Claude technical review
 
 on:

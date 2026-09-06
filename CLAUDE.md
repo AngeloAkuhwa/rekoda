@@ -25,7 +25,9 @@ Claude must never both build and technically approve the same PR.
    fully delivers the issue's acceptance criteria — including tests, docs
    the issue names, and HANDOFF when durable state changes. The issue is
    the contract (`AGENTS.md` §8): provide evidence against its acceptance
-   criteria, never rewrite them to fit the implementation.
+   criteria, never rewrite them to fit the implementation. A genuine
+   requirement change goes through a contract revision recorded on the
+   issue — which the builder never authorizes for its own build.
 5. **Defects get a regression test that fails before the fix.**
 6. **Verify at the issue's risk level** (`AGENTS.md` §5): targeted tests
    first, then the required broader suites. Run db and api integration
@@ -39,13 +41,14 @@ Claude must never both build and technically approve the same PR.
    reproduce it; fix the valid ones in-branch with a regression test;
    answer the invalid ones on the thread with concrete evidence (a test, a
    trace, a line reference) — never with "the reviewer is wrong" alone.
-   Every push invalidates both agent approvals; expect and await fresh
-   review of the new HEAD.
-9. **Never self-approve.** Claude may request or enable GitHub squash
-   auto-merge once — or before — the repository gates permit it (GitHub
-   holds auto-merge until every gate passes). GitHub, not Claude, decides
-   whether the merge actually happens. Never `--admin`, never a bypass,
-   never a direct push to `main`.
+   Every push — and every contract revision — invalidates both agent
+   approvals; expect and await fresh review of the new HEAD. The repair
+   loop and its escalation rule are `docs/AUTONOMOUS-ENGINEERING.md` §7.
+9. **Never self-approve.** Once the control plane is ACTIVE (`AGENTS.md`
+   §9 — before the owner activates it, no autonomous merge at all), Claude
+   may request or enable GitHub squash auto-merge; GitHub, not Claude,
+   decides whether the merge actually happens. Never `--admin`, never a
+   bypass, never a direct push to `main`.
 
 ## Role B — Technical Reviewer (issue/PR labelled `builder:codex`)
 
@@ -65,10 +68,13 @@ architecture review, not a rubber stamp and not a rewrite.
 4. **Do not edit Codex's implementation branch.** Findings go to the PR as
    review comments; repairs are Codex's to make. (A reproduction snippet
    in a comment is fine; a push to the branch is not.)
-5. **Produce a verdict for the exact current HEAD** in the review output
-   contract below. APPROVE means no blocking issue remains within Claude's
-   technical authority; BLOCK lists the blocking findings. A verdict for a
-   previous SHA never carries over to a new one.
+5. **Produce a verdict for the exact current HEAD and contract revision**
+   in the review output contract below. APPROVE means no blocking issue
+   remains within Claude's technical authority; BLOCK lists the blocking
+   findings. A verdict for a previous SHA or revision never carries over
+   to a new one, and Claude's technical APPROVE is what the merge
+   requires — nothing weaker (review existence, resolved threads, or an
+   owner review) substitutes for it (`AGENTS.md` §9).
 
 ### Review output contract
 
@@ -81,6 +87,7 @@ REKODA_CLAUDE_APPROVAL
 PR: <number>
 ISSUE: <number>
 HEAD_SHA: <40-char current SHA>
+CONTRACT_REVISION: <integer, 1 unless the issue records a later revision>
 VERDICT: APPROVE|BLOCK
 ```
 
