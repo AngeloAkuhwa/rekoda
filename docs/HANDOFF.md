@@ -16,15 +16,17 @@ points to. Keep it updated at the end of every working session — it is the
 project's memory, and it lives in the repo so it can never be lost with a
 chat.
 
-**Last updated:** 22 August 2026 · through PR #114. M4 complete; Doors 1 and
-2 shipped. Since #100 the books became auditable and reconcilable: a shelf can
-be counted, a month can be closed against a database trigger, a correction can
-be written by hand, the merchant's own bank is separate from provider
-settlements, a downloaded statement can be imported and matched against the
-ledger, both directions of payment can be recorded from the dashboard, and
-equipment is an asset that depreciates rather than a month's expense. The
-chart of accounts is fifteen and still fixed. Not launched, and still almost
-none of it code: see "What is still missing" below.
+**Last updated:** 6 September 2026 · through PR #231 (plus dependabot #224).
+The 132-PR build plan is complete, the R1 schema and R2 adversarial security
+audits of 1 September are executed in full (migrations 0130 through 0149),
+and the launch-closeout code work is done: the merchant's "yes" confirms by a
+database-assigned ordinal, and every numeric environment value fails closed
+at boot. The estate at this head: 150 migrations, 1,260 db + 1,040 api
+integration tests, turbo 24/24, three guard scripts, foreign-owner migration
+replay in CI. NestJS 12 (#225-#227) is deliberately deferred as one
+coordinated post-launch migration. Not launched: what remains is owner-held
+(see §6) plus the release-candidate drills. The sections below §3's newest
+entry are the project's history, kept as written.
 
 ---
 
@@ -56,7 +58,7 @@ for M2/M3 (PDF templates, Meta/Twilio channel code, conversation gates).
 | Milestones M0–M5      | [engineering-plan.md](engineering-plan.md) §11                                                                                                                                                      |
 | SEO/content plan      | [content-plan.md](content-plan.md)                                                                                                                                                                  |
 | Ops procedures        | [runbooks/](runbooks/)                                                                                                                                                                              |
-| Code                  | `packages/core` (money/ledger/costing/statements — most-tested), `packages/contracts` (AI border schemas), `packages/db` (schema + RLS, migrations through 0040), `packages/shared` (branded types) |
+| Code                  | `packages/core` (money/ledger/costing/statements — most-tested), `packages/contracts` (AI border schemas), `packages/db` (schema + RLS, migrations through 0149), `packages/shared` (branded types) |
 
 ## 3. Status at handoff
 
@@ -727,6 +729,64 @@ The standing process from here is docs/SYSTEM-PLAN.md: plan first, a failing
 test per fix, the whole estate green serially before any push, one PR in
 flight at a time.
 
+### From #124 to #231: the plan finished, the schema proven, the closeout (24 Aug - 5 Sep 2026)
+
+The longest era compresses well because its record lives elsewhere: the
+build plan's amendment log carries every PR (entries 1.13 through 1.139),
+and `docs/audits/` holds the 1 September audits verbatim. What a new
+session must know:
+
+- **The 132-PR build plan completed.** Every planned slice from PR-021
+  (command bus) through PR-132 landed and is marked MERGED in the plan's
+  own tables, including the accounting kernel and both golden-fixture
+  gates, the payment hub, WABA connection and W3 commerce, reconciliation
+  tiers, billing, the developer API, and production hardening. The only
+  never-built rows are PR-006 to PR-009 and PR-115, blocked by design on
+  the owner-approved R0A-i production provenance report.
+- **The R1/R2 audits were executed, not just filed** (GitHub #196 through
+  #222, migrations 0130-0145): `external_events` got its three-policy
+  tenant model; every status column got its CHECK from evidence, never
+  from comments; indexes were added on EXPLAIN plans, not by count; and
+  ruling 1 closed at **34 audited tenant-composite foreign keys plus 14
+  more the audit missed** (group F, found by re-measuring), each proven by
+  cross-tenant refusal tests and a standing closure query that fails the
+  suite if a weak edge ever returns. The RLS predicate suite
+  (`rls-invariants.integration.test.ts`) now asserts the canonical tenant
+  predicate character-for-character from `pg_policy`. Raw bank narration
+  is dropped (0127) and never persisted in any derivative.
+- **The ordering family** (0146, 0148, 0149): `now()` is transaction-start
+  time, so rows written by one job shared an instant and read back in
+  arbitrary order. Conversation transcripts, checkout breakdowns and -
+  the one that mattered - the draft a merchant's "yes" executes now order
+  by `clock_timestamp()` defaults, deterministic tiebreakers, and for
+  `command_drafts` a `GENERATED ALWAYS` identity `insertion_seq` that no
+  caller can choose (#230). Ruling 5's two redundant single-column FKs
+  are dropped (0147).
+- **Launch closeout** (#230, #231): after an independent launch review,
+  two code gaps closed - the confirmation ordinal above, and numeric
+  config that fails closed at boot: all thirteen `Number(env[...])` reads
+  now refuse garbage, blanks, hex/exponent forms and wrong signs with a
+  one-line error naming the variable, while zero stays a VALUE for the
+  brakes (a kill switch, never unlimited). Each PR carried an adversarial
+  review round whose findings were fixed in-branch before merge - among
+  them a deploy-time reordering hazard in the ordinal backfill and a shop
+  flood-brake whose kill switch the first commit would have broken.
+- **Owner decisions of 4-5 September:** annual billing STAYS on the
+  public pricing page by explicit ruling (the backend bills monthly; the
+  annual lifecycle is post-launch work, and the review's truthfulness
+  flag is recorded, not relitigated). The fix-plan 7 H7c-H7g enumeration
+  was proven unrecoverable from the repository and the owner ruled to
+  skip reconstructing it. Dependabot #224 (six minor/patch bumps) merged
+  after re-verifying the combined main; NestJS 12 (#225-#227) waits as
+  one coordinated post-launch migration.
+
+**Where the next session starts:** the owner holds a fill-in
+`.env` template and a per-variable checklist (delivered 5 September);
+the next milestone is booting the stack with test-mode values and walking
+every feature end to end, then the release-candidate sequence - AI live
+eval, live Paystack drill, production backup and restore evidence, branch
+protection, legal facts - per `docs/REKODA_OWNER_DECISIONS.md` §2.
+
 ## 4. Operational facts a new session must know
 
 1. **Pushing:** the Claude GitHub App is installed on the `AngeloAkuhwa`
@@ -815,30 +875,50 @@ flight at a time.
 
 ## 6. Open items owned by Angelo
 
-- **Three WhatsApp templates approved on the WABA.** Authentication for
-  sign-in (`META_OTP_TEMPLATE`) — nobody can sign in until this exists — and
-  two Utility templates, `META_BILLING_TEMPLATE` (days of grace left, date
-  grace ends) and `META_RETENTION_TEMPLATE` (days until deletion, date).
-- **Deploy the two sidecars**, `STT_URL` and `OCR_URL`. Both are marketing
-  claims until they exist, and neither may be swapped for a hosted provider
-  without the privacy page changing first.
-- **Written confirmation before Paystack goes live** (spec §47), after live
-  account verification, secured credentials, confirmed webhook verification,
-  the published refund policy, and one controlled live transaction.
-- **The company facts** — registered entity, address, support address — for
-  `/terms`, `/refunds` and `/privacy`.
-- **`REKODA_WEB_URL`** on the API deployment. Chat replies link to the
-  dashboard and the shop settings page shows a merchant their own
-  `rekoda.app/s/<handle>`; both fall back to a local default while it is
-  unset, which is right for development and wrong the moment a real merchant
-  reads one.
-- **30 to 50 Nigerian voice notes** for the accent benchmark (ADR 0024, C11).
-- Revoke the two burned PATs.
-- Secure `rekoda.app` (and ideally `rekoda.ng`).
-- Decide VoiceReceipt's fate for current testers (recommendation: keep it
-  running, migrate testers at M3).
-- CAC name alignment for the eventual Meta business verification (legal
-  name must match everywhere, character for character).
+The canonical register is `docs/REKODA_OWNER_DECISIONS.md` §2, which
+carries each item as the question to answer. The working list as of 6
+September:
+
+- **Fill the production environment.** A fill-in template
+  (`rekoda-production.env.template`) and a per-variable checklist were
+  delivered on 5 September; every value boots fail-closed, so a typo is a
+  one-line startup error naming the variable. Test-mode keys first, on the
+  host, never in git.
+- **Branch protection on `main`** - still off, zero rulesets. PR + CI +
+  integration + migration replay + e2e + secret scan required; no force
+  pushes; minutes of work protecting months of it.
+- **Production backup evidence** - the runbook's design is written but
+  nothing is enabled or evidenced yet: off-box backups, WAL/PITR, an
+  encrypted logical dump, alerting, and one restore drill into a clean
+  database before the first paying merchant.
+- **The AI live eval** - `docs/ai-launch-readiness.md` has every gate
+  wired and every live metric still reading "not yet run". An owner-run
+  eval against the configured models is a launch gate.
+- **Three WhatsApp templates approved on the WABA** - `META_OTP_TEMPLATE`
+  (nobody signs in without it), `META_BILLING_TEMPLATE`,
+  `META_RETENTION_TEMPLATE` (the retention sweep deletes nothing while it
+  is missing, by design).
+- **Written confirmation before Paystack goes live** (spec §47), then one
+  controlled real-money drill end to end: payment, verification, booking,
+  allocation, receipt, reconciliation, refund, webhook replay, no
+  duplicate booking.
+- **The company facts** for `/terms`, `/refunds`, `/privacy` and the
+  `NEXT_PUBLIC_LEGAL_*` values - production web refuses to boot without
+  them (all but the NDPR auditor line, which stays blank unless a genuine
+  filing supports it). Legal/DPCO review of the drafts.
+- **The R0A-i production provenance report** - run, reviewed, approved
+  per `docs/runbooks/r0a-provenance.md`; unblocks PR-006 to PR-009 and
+  PR-115 and nothing else.
+- **Tax, fiscalisation and accounting sign-off** - on the register so the
+  quiet items do not vanish behind the loud ones.
+- Secure `rekoda.app` (and ideally `rekoda.ng`); CAC name alignment for
+  Meta business verification; the accent-benchmark voice notes (ADR 0024
+  C11); VoiceReceipt's fate for current testers.
+
+Superseded from earlier versions of this list: the two self-hosted
+sidecars (`STT_URL`, `OCR_URL`) are not deployed and never will be -
+ADR 0032 replaced them with hosted OpenAI transcription and Anthropic
+vision, and the privacy pages already describe that architecture.
 
 ## 7. Standing review triggers (do not lose these)
 
