@@ -3,13 +3,19 @@
  * Normalizes live GitHub state for the pure policy evaluator
  * (scripts/agents/evaluator.mjs). All network access lives HERE; the
  * evaluator stays pure. Untrusted text (bodies, comments, reviews) is
- * carried as JSON values only — never through a shell.
+ * carried as JSON values only — never through a shell; every gh call
+ * uses execFileSync array arguments.
+ *
+ * Reads reviewer/contract-authority PUBLIC keys from the TRUSTED
+ * checkout (scripts/agents/keys/) so verification needs no secrets.
  *
  * Usage:  GH_TOKEN=… node scripts/agents/normalize.mjs \
  *           --repo owner/name --pr 123 --out /tmp/state.json
  */
 import { execFileSync } from 'node:child_process';
-import { writeFileSync } from 'node:fs';
+import { writeFileSync, readFileSync, existsSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { parseClosingRefs } from './evaluator.mjs';
 
 const args = Object.fromEntries(
@@ -27,9 +33,12 @@ if (!repo || !Number.isInteger(prNumber)) {
 
 const OWNER_LOGIN = process.env.OWNER_LOGIN || 'AngeloAkuhwa';
 const CODEX_LOGIN = process.env.CODEX_LOGIN || 'chatgpt-codex-connector[bot]';
-const TRUSTED_MARKER_AUTHORS = ['github-actions[bot]'];
-const AUTHORIZED_REVISION_AUTHORS = ['github-actions[bot]', OWNER_LOGIN];
-const CLAUDE_SIDE_AUTHORS = ['claude[bot]', 'github-actions[bot]'];
+
+const KEYS_DIR = join(dirname(fileURLToPath(import.meta.url)), 'keys');
+const publicKey = (name) => {
+  const p = join(KEYS_DIR, `${name}.pub.pem`);
+  return existsSync(p) ? readFileSync(p, 'utf8') : null;
+};
 
 function gh(pathname, extra = []) {
   return JSON.parse(
@@ -40,11 +49,9 @@ function gh(pathname, extra = []) {
   );
 }
 
-function ghPaged(pathname) {
-  // Up to 3 pages of 100 — a PR/issue with more comments than that has
-  // bigger problems than this gate.
+function ghPaged(pathname, pages = 3) {
   const out = [];
-  for (let page = 1; page <= 3; page++) {
+  for (let page = 1; page <= pages; page++) {
     const chunk = gh(`${pathname}${pathname.includes('?') ? '&' : '?'}per_page=100&page=${page}`);
     out.push(...chunk);
     if (chunk.length < 100) break;
@@ -55,6 +62,15 @@ function ghPaged(pathname) {
 const pr = gh(`repos/${repo}/pulls/${prNumber}`);
 const prLabels = (pr.labels ?? []).map((l) => l.name);
 
+// STICKY enrollment: the immutable label-event history. Removing a label
+// later cannot remove the 'labeled' event, so a PR that ever entered the
+// agent lane can never look neutral again.
+const events = ghPaged(`repos/${repo}/issues/${prNumber}/events`, 3);
+const everLabeledAgent = events.some(
+  (e) =>
+    e.event === 'labeled' && /^(risk:R[0-3]|builder:(claude|codex))$/.test(e.label?.name ?? ''),
+);
+
 const refs = parseClosingRefs(pr.body ?? '');
 let issue = null;
 if (refs.length === 1) {
@@ -64,6 +80,7 @@ if (refs.length === 1) {
     const comments = ghPaged(`repos/${repo}/issues/${refs[0]}/comments`).map((c) => ({
       author: c.user?.login ?? '',
       createdAt: c.created_at,
+      id: c.id,
       body: c.body ?? '',
     }));
     issue = {
@@ -90,19 +107,24 @@ if (refs.length === 1) {
   }
 }
 
-// Reviews (Codex technical markers + owner approvals) — commit_id binds them.
+// Reviews (Codex markers + owner approvals) — commit_id and state bind them.
 const reviews = ghPaged(`repos/${repo}/pulls/${prNumber}/reviews`).map((r) => ({
   author: r.user?.login ?? '',
+  kind: 'review',
+  reviewState: r.state,
   state: r.state,
   commitId: r.commit_id,
   createdAt: r.submitted_at,
+  id: r.id,
   body: r.body ?? '',
 }));
 
-// PR issue-comments (Claude + Gemini markers posted by the review workflows).
+// PR issue-comments (signed Claude/Gemini markers posted by the gates).
 const prComments = ghPaged(`repos/${repo}/issues/${prNumber}/comments`).map((c) => ({
   author: c.user?.login ?? '',
+  kind: 'comment',
   createdAt: c.created_at,
+  id: c.id,
   body: c.body ?? '',
 }));
 
@@ -130,36 +152,50 @@ const unresolvedThreads = (
   threads.data?.repository?.pullRequest?.reviewThreads?.nodes ?? []
 ).filter((t) => t.isResolved === false).length;
 
-const prBuilder = prLabels.filter((l) => /^builder:(claude|codex)$/.test(l));
-// Codex markers arrive in review bodies, Claude/Gemini markers in PR
-// comments; both sources are merged and time-ordered so the evaluator's
-// latest-valid-verdict-wins rule is exact, and wrong-identity attempts
-// from either source are diagnosed.
-const byCreatedAt = (a, b) => String(a.createdAt).localeCompare(String(b.createdAt));
-const techCandidates = [...reviews, ...prComments].sort(byCreatedAt);
+// Global WIP: every open issue occupying the single implementation lane.
+const laneIssues = new Map();
+for (const label of ['status:building', 'status:in-review']) {
+  for (const i of ghPaged(
+    `repos/${repo}/issues?state=open&labels=${encodeURIComponent(label)}`,
+    1,
+  )) {
+    if (i.pull_request) continue; // PRs carry status labels too; lanes are issues
+    laneIssues.set(i.number, { issue: i.number, status: label });
+  }
+}
+const openLanes = [...laneIssues.values()];
+
+// All markers can appear in either source; merged, the evaluator orders
+// them deterministically by (createdAt, id) and provenance decides what
+// counts.
+const allEvidence = [...reviews, ...prComments];
 
 const state = {
   pr: {
     number: prNumber,
     headSha: (pr.head?.sha ?? '').toLowerCase(),
     riskLabels: prLabels.filter((l) => /^risk:R[0-3]$/.test(l)),
-    builderLabels: prBuilder,
+    builderLabels: prLabels.filter((l) => /^builder:(claude|codex)$/.test(l)),
     author: pr.user?.login ?? '',
     draft: Boolean(pr.draft),
     fork: (pr.head?.repo?.full_name ?? repo) !== repo,
+    everLabeledAgent,
   },
   prBody: pr.body ?? '',
   issue,
-  techEvidence: { candidates: techCandidates },
-  geminiEvidence: { candidates: prComments },
+  techEvidence: { candidates: allEvidence },
+  geminiEvidence: { candidates: allEvidence },
   ownerReviews: reviews.map((r) => ({ author: r.author, state: r.state, commitId: r.commitId })),
   unresolvedThreads,
+  openLanes,
   config: {
     ownerLogin: OWNER_LOGIN,
     codexLogin: CODEX_LOGIN,
-    trustedMarkerAuthors: TRUSTED_MARKER_AUTHORS,
-    authorizedRevisionAuthors: AUTHORIZED_REVISION_AUTHORS,
-    claudeSideAuthors: CLAUDE_SIDE_AUTHORS,
+    publicKeys: {
+      claudeReviewer: publicKey('claude-reviewer'),
+      geminiReviewer: publicKey('gemini-reviewer'),
+      contractAuthority: publicKey('contract-authority'),
+    },
   },
 };
 

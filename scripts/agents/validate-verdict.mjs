@@ -10,6 +10,8 @@
  *     --marker REKODA_CLAUDE_APPROVAL --pr 55 --issue 44 --head <sha> --revision 1
  */
 import { readFileSync, appendFileSync } from 'node:fs';
+import { createPrivateKey, sign as cryptoSign } from 'node:crypto';
+import { canonicalVerdictPayload } from './evaluator.mjs';
 
 const args = Object.fromEntries(
   process.argv
@@ -58,6 +60,40 @@ const markerName = args.marker;
 if (!/^REKODA_(CLAUDE|GEMINI|CODEX)_APPROVAL$/.test(markerName))
   fail(`Unknown marker name ${markerName}.`);
 
+// Reviewer-specific provenance: sign the canonical payload with the
+// private key from the environment variable named by --sign-env. That
+// key exists only in this reviewer's GitHub environment — the builder
+// and every other workflow are technically unable to produce it. No
+// signing key = no publishable approval (fail closed).
+const signEnv = args['sign-env'];
+if (!signEnv)
+  fail('A --sign-env is required: unsigned reviewer verdicts are not acceptable evidence.');
+const keyPem = process.env[signEnv];
+if (!keyPem)
+  fail(
+    `Signing key env ${signEnv} is empty — the reviewer environment is not configured; refusing to publish an unsigned verdict.`,
+  );
+let signature;
+try {
+  signature = cryptoSign(
+    null,
+    Buffer.from(
+      canonicalVerdictPayload({
+        name: markerName,
+        pr: expected.pr,
+        issue: expected.issue,
+        headSha: expected.head_sha,
+        contractRevision: expected.contract_revision,
+        verdict: doc.verdict,
+      }),
+      'utf8',
+    ),
+    createPrivateKey(keyPem),
+  ).toString('base64');
+} catch (e) {
+  fail(`Signing failed: ${e.message}`);
+}
+
 const findings =
   doc.findings.length === 0
     ? 'No blocking findings.'
@@ -70,6 +106,7 @@ const marker = [
   `HEAD_SHA: ${expected.head_sha}`,
   `CONTRACT_REVISION: ${expected.contract_revision}`,
   `VERDICT: ${doc.verdict}`,
+  `SIGNATURE: ${signature}`,
   '```',
   '',
   findings,

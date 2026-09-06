@@ -208,25 +208,61 @@ stale, or wrong-identity verdicts BLOCK.
 **The evaluator.** All merge policy lives in one pure, deterministic,
 network-free module — `scripts/agents/evaluator.mjs` — proven by
 `scripts/agents/evaluator.test.mjs` (the twenty §5.B negative cases, the
-four positive cases, supersession and invalidation semantics). Every gate
-workflow normalizes live GitHub state with `scripts/agents/normalize.mjs`
-and asks the evaluator; none reimplements policy in shell, and the policy
-gate runs the test suite as a self-test on every execution. Scripts and
-governance always load from the **default branch**, never from the PR
-under evaluation.
+positive cases, and the provenance, stickiness, history, WIP, and
+ordering properties). Every gate workflow normalizes live GitHub state
+with `scripts/agents/normalize.mjs` and asks the evaluator; none
+reimplements policy in shell, and the policy gate runs the test suite as
+a self-test on every execution. Scripts and governance load from an
+**immutable trusted SHA** — each run resolves the default branch's tip
+once, logs it, and checks out exactly that commit, never the PR.
 
-**Contract revisions, mechanically:** when implementation starts, the
-builder posts a `REKODA_CONTRACT_BASELINE` comment on the issue (via
-`scripts/agents/contract-revision.mjs --baseline --post`) recording the
-SHA-256 of the issue body. An authorized amendment (planner or owner;
-owner mandatory for decision-level/risk/R3 changes) posts a
-`REKODA_CONTRACT_REVISION` marker with the new revision number, the new
-body hash, and the reason. The evaluator recomputes the body hash on
-every run: no baseline → BLOCK; a body that no longer matches the latest
-authorized marker's hash → BLOCK (unauthorized amendment); and every
-reviewer verdict must name the current revision, so an authorized
-revision invalidates all prior approvals **without a push**. Markers from
-unauthorized identities are ignored.
+**Approval provenance — forgery is impossible, not just forbidden.** A
+Claude or Gemini verdict counts only with a valid **Ed25519 signature**
+over the canonical marker payload, verified against the committed public
+keys in `scripts/agents/keys/`. The private keys live in
+reviewer-specific GitHub environments (`agents-claude-reviewer`,
+`agents-gemini-reviewer`) that no other job can reference — the builder
+(`agents-builder`), the planner (`agents-planner`), and any unrelated
+workflow posting as `github-actions[bot]` are technically incapable of
+producing acceptable evidence, and a marker signed with the wrong key,
+tampered after signing, or unsigned is rejected (`TECH_UNAUTHORIZED` /
+`GEMINI_UNAUTHORIZED`). A Codex verdict counts only inside a
+non-dismissed GitHub **review** authored by
+`chatgpt-codex-connector[bot]` whose review `commit_id` equals the
+current HEAD — a marker claiming the current HEAD inside a review of an
+old commit is stale evidence, not proof. Missing key material fails
+closed. Until the owner generates and commits the public keys
+(`scripts/agents/generate-signing-keys.mjs`), no signed approval can
+exist — deliberately.
+
+**Contract revisions, mechanically:** contract authority is separate
+from everyone who wants the contract changed. When an agent-task issue
+is labelled `status:ready`, the deterministic **contract-authority
+workflow** (environment `agents-contract-authority`, the only holder of
+the contract signing key) posts the signed `REKODA_CONTRACT_BASELINE`
+recording the SHA-256 of the issue body; amendments are its
+`workflow_dispatch` (write access required) posting a signed
+`REKODA_CONTRACT_REVISION` with the new hash and reason — or the owner's
+human account posts either unsigned (the platform proves a human
+authored it). The builder holds no signing key and is not the owner, so
+it cannot baseline or amend its own contract. The evaluator validates
+the whole history, not just the highest number: a baseline must be
+revision 1, revisions must be monotonic 1..N with no gaps, conflicting
+markers for the same revision are invalid, a revision needs a reason,
+and a replayed lower revision changes nothing. Then it recomputes the
+body hash on every run: no baseline → BLOCK; a body that no longer
+matches → BLOCK (unauthorized amendment); and every reviewer verdict
+must name the current revision, so an authorized revision invalidates
+all prior approvals **without a push**.
+
+**Issue changes retrigger the gates.** The no-secret **contract-watch
+workflow** listens for contract-relevant issue events only (body edits;
+risk/builder/status/decision label changes; comments carrying contract
+markers — never PR comments, and the gates' own GITHUB_TOKEN comments
+cannot trigger it, so there are no self-trigger loops). It finds the
+open PR closing the changed issue and `workflow_dispatch`es all three
+gates against the same code HEAD and the new contract state. It holds
+no AI secret; the dispatched gates do their own scoping.
 
 **How approvals go stale:** the `Technical Review Gate` and
 `Gemini Acceptance Gate` workflows re-run on every `synchronize`, so a
@@ -257,10 +293,16 @@ against the current HEAD.
   contract baseline/revision integrity; no unresolved review threads; R3
   owner decision reference plus owner approval of the current HEAD.
   Reviewer verdicts are owned by the two dedicated checks above — branch
-  protection composes all three. Neutrality is authoritative, not
-  label-cosmetic: a PR that closes an agent-task issue is governed even
-  with its labels stripped; only genuinely non-agent PRs (humans,
-  Dependabot) pass neutrally.
+  protection composes all three. Governance is **sticky**: a PR is
+  governed if it carries agent labels, closes an agent-task issue, or —
+  via GitHub's immutable label-event history — has EVER carried an agent
+  label. Stripping the labels and the closing reference can only make an
+  enrolled PR more blocked (every stripped element becomes its own
+  failure), never neutral; only genuinely never-enrolled PRs (humans,
+  Dependabot) pass neutrally. The evaluator also rejects the state where
+  more than one implementation lane is active (`WIP_VIOLATION`), and the
+  builder-dispatch preflight refuses to start a build while any other
+  issue holds the lane.
 
 **The Codex signal, with claims labelled:**
 
@@ -313,15 +355,16 @@ model.
   shows any tracked file modified (in the trusted tree or the untrusted
   PR checkout) after the review step. Detection, not prevention.
 
-**Reviewer governance trust rule (implemented):** the reviewer's
-governing instructions — `AGENTS.md`, `CLAUDE.md`, `GEMINI.md` — and the
-policy scripts are checked out from the **default branch**; the PR HEAD
-is checked out separately into `./untrusted-pr-head` and treated purely
-as untrusted implementation data, so a PR cannot rewrite the rules it is
-judged by. (Codex's native review is the exception outside our control:
-OpenAI documents that it reads AGENTS.md from the repository it reviews —
-which for a PR includes the PR's own version. This residual exposure is
-recorded in §14.)
+**Reviewer governance trust rule (implemented):** each gate run resolves
+the default branch's tip **once**, logs that SHA as the trusted
+governance commit, and checks out exactly it — so the governance used at
+step one cannot silently differ from the governance assumed later in the
+same decision. The PR HEAD is checked out separately into
+`./untrusted-pr-head` and treated purely as untrusted implementation
+data, so a PR cannot rewrite the rules it is judged by. (Codex's native
+review is the exception outside our control: OpenAI documents that it
+reads AGENTS.md from the repository it reviews — which for a PR includes
+the PR's own version. This residual exposure is recorded in §14.)
 
 ## 7. The repair loop and escalation
 
@@ -508,7 +551,17 @@ authoritative linked-issue resolution replacing the keyword grep (10);
 full marker validation — PR, issue, HEAD, revision, identity,
 builder/risk consistency (11); latest-valid-verdict supersession
 replacing BLOCK-dominates (12); the planner's R3 and single-lane WIP
-rules (13); and deterministic issue↔PR label consistency (14).
+rules (13); and deterministic issue↔PR label consistency (14). The
+security repair pass then closed the audit's blockers: **signed reviewer
+provenance** (a generic `github-actions[bot]` comment counts for
+nothing; only reviewer-specific Ed25519 keys mint acceptable evidence),
+**separated contract authority** with full history validation, **sticky
+governance** from immutable label-event history, **issue-change
+redispatch** via the no-secret contract-watch workflow, **no-secret
+authorization preflights** before every secret-bearing builder job,
+**deterministic global WIP** (dispatch admission + `WIP_VIOLATION`),
+**immutable trusted-governance SHAs**, Codex `commit_id` binding, and
+id-based deterministic verdict ordering.
 
 What remains, honestly:
 
@@ -530,15 +583,21 @@ What remains, honestly:
    read-only token plus post-run tracked-tree detection.
 4. **No automated escalation counter.** The 3-cycle rule (§7) is applied
    by the agents and the planner, not counted by a workflow.
-5. **WIP limits are prompt-enforced.** The planner counts and respects
-   the single implementation lane by instruction; no deterministic step
-   refuses an over-limit promotion.
+5. **Planner promotion is still prompt-guided.** The single lane is
+   deterministically enforced where it matters — the builder-dispatch
+   preflight refuses a second automated build, and the evaluator BLOCKS
+   any PR while two lanes are active — but the planner's own restraint
+   in promoting issues remains instruction, and a manually dispatched
+   Codex Cloud build participates in GitHub concurrency only through
+   those two enforcement points (Codex Cloud itself is not claimed to).
 6. **Codex builder dispatch is manual.** `builder:codex` work starts from
    Codex Cloud (MANUAL / CODEX CLOUD DISPATCH REQUIRED); no unattended
    issue→Codex trigger exists to automate safely, and no OPENAI_API_KEY
    was added to force one (§8).
-7. **The marker-comment trust anchor is the workflow identity.** Claude
-   and Gemini markers are trusted only when posted by
-   `github-actions[bot]`, which means "posted by a workflow in this
-   repository"; workflow changes are themselves CODEOWNERS-owned, and the
-   activation drills verify a user-posted forgery is rejected.
+7. **Signing keys do not exist yet.** The provenance design is
+   implemented and tested with real signatures, but the owner has not
+   yet generated/committed the public keys or created the per-role
+   environment secrets (`scripts/agents/keys/README.md`). Until then no
+   signed approval can exist and every reviewer gate fails closed — by
+   design, and lifted only by the owner-setup steps in the activation
+   runbook.

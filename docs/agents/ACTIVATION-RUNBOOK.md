@@ -28,16 +28,29 @@ invalidation, and contract-revision invalidation without a push.
 Settings to create, then verify by looking at the live repository (not by
 memory):
 
-1. Environments: `agents` with secrets `CLAUDE_CODE_OAUTH_TOKEN` (from
-   `claude setup-token`) and `GEMINI_API_KEY`; `test` created empty (its
-   `TEST_REKODA_…` secrets arrive with the first live-smoke lane). No
-   agent credential in `test`, no runtime credential in `agents`, no
-   production credential anywhere.
-2. Codex: ChatGPT Codex Connector installed on the repo, Code review +
+1. Signing authorities: run `node scripts/agents/generate-signing-keys.mjs`
+   locally, commit the three `scripts/agents/keys/*.pub.pem` files it
+   writes, and paste each printed private key into its environment secret
+   (next step). Private keys exist only in the environment secrets.
+2. Environments (Settings → Environments), each with exactly its secrets
+   per `docs/agents/TEST-ENVIRONMENT.md` §A:
+   - `agents-builder`: `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`);
+   - `agents-claude-reviewer`: `CLAUDE_CODE_OAUTH_TOKEN`,
+     `CLAUDE_REVIEWER_SIGNING_KEY`;
+   - `agents-gemini-reviewer`: `GEMINI_API_KEY`,
+     `GEMINI_REVIEWER_SIGNING_KEY`;
+   - `agents-planner`: `GEMINI_API_KEY`;
+   - `agents-contract-authority`: `CONTRACT_AUTHORITY_SIGNING_KEY`;
+   - `test`: created empty (its `TEST_REKODA_…` secrets arrive with the
+     first live-smoke lane).
+     No agent credential in `test`, no runtime credential in any
+     `agents-*`, no production credential anywhere, and no signing key
+     outside its one environment.
+3. Codex: ChatGPT Codex Connector installed on the repo, Code review +
    Automatic reviews enabled (chatgpt.com/codex/settings/code-review).
-3. Repository → Settings → General → Pull Requests: **Allow auto-merge**
+4. Repository → Settings → General → Pull Requests: **Allow auto-merge**
    on, squash merging on.
-4. Ruleset `protect-main` (Active, default branch): require a PR before
+5. Ruleset `protect-main` (Active, default branch): require a PR before
    merging; Require review from Code Owners; required approvals 0; require
    conversation resolution; block force pushes; no bypass actors; required
    status checks: `Secret scan (gitleaks)`,
@@ -46,7 +59,7 @@ memory):
    `Agent policy gate`, `Technical Review Gate`, `Gemini Acceptance Gate`.
    (A check name appears in the picker only after it has run once.)
 
-- [ ] All four verified on the live repository (record screenshots/date).
+- [ ] All five verified on the live repository (record screenshots/date).
 
 ## C. Live PR negative drills — merge must be BLOCKED
 
@@ -82,6 +95,17 @@ the failure states. GitHub must refuse the merge in every one:
       non-bypass actor → refused by the ruleset.
 - [ ] 20. Break CI on the drill branch → merge impossible with gates
       otherwise green.
+- [ ] 21. Forgery drill: post a hand-written `REKODA_GEMINI_APPROVAL`
+      comment with correct fields but no (or a wrong) SIGNATURE, from a
+      write-access account → rejected (`GEMINI_UNAUTHORIZED`); same for
+      `REKODA_CLAUDE_APPROVAL` on a `builder:codex` drill.
+- [ ] 22. Redispatch drill: edit the drill issue's body (with an
+      authorized signed revision) and verify the contract-watch workflow
+      re-runs all three gates on the unchanged code HEAD, which then
+      demand fresh verdicts for the new revision.
+- [ ] 23. Escape drill: remove the drill PR's risk and builder labels AND
+      its closing reference → the gates stay red (sticky enrollment from
+      label history), never neutral.
 
 ## D. Positive auto-merge drill
 

@@ -33,13 +33,16 @@ Claude must never both build and technically approve the same PR.
    first, then the required broader suites. Run db and api integration
    suites serially. Rebuild packages before running the api suite against
    them.
-7. **Record the contract baseline, then open or update the PR.** Before
-   the first PR push, post the issue's `REKODA_CONTRACT_BASELINE` marker
-   (`node scripts/agents/contract-revision.mjs --repo <repo> --issue <n>
---baseline --post`) — every gate fails closed without it. Fill the
-   template: linked issue, builder, risk level, acceptance-criteria
-   evidence; apply the issue's `risk:*` and `builder:*` labels to the PR.
-   Move the issue to `status:in-review`.
+7. **Verify the contract baseline, then open or update the PR.** The
+   contract-authority workflow posts the signed
+   `REKODA_CONTRACT_BASELINE` marker when the issue is labelled
+   `status:ready` (the owner can also post one); the builder is **not**
+   authorized to create contract markers and holds no signing key. If
+   the baseline is missing, note it on the issue and stop — every gate
+   fails closed without it. Fill the template: linked issue, builder,
+   risk level, acceptance-criteria evidence; apply the issue's `risk:*`
+   and `builder:*` labels to the PR. Move the issue to
+   `status:in-review`.
 8. **Repair the review findings.** Codex is Reviewer 1 and Gemini is
    Reviewer 2 on Claude-built PRs. Treat every finding as a hypothesis:
    reproduce it; fix the valid ones in-branch with a regression test;

@@ -8,12 +8,14 @@
 #     native Codex does not emit the marker AGENTS.md's Code Review Rules
 #     request, this gate stays red — that is the contract, not a bug.
 #   builder:codex → Claude reviews as Reviewer 1: this workflow runs
-#     Claude (subscription OAuth, environment `agents`), validates its
+#     Claude (subscription OAuth, environment `agents-claude-reviewer`), validates its
 #     structured verdict deterministically, posts the
 #     REKODA_CLAUDE_APPROVAL marker, and the verdict is the check.
 #
-# The builder can never satisfy its own gate: marker identity is checked
-# by the evaluator (builder-side identities are rejected as self-review).
+# The builder can never satisfy its own gate: a Claude verdict counts
+# only with a valid Ed25519 signature from CLAUDE_REVIEWER_SIGNING_KEY
+# (held solely by this workflow's environment), and a Codex verdict only
+# inside a live Codex review whose commit_id equals the current HEAD.
 # Every push re-runs this on the new HEAD; a later explicit verdict from
 # the same reviewer for the same HEAD/revision supersedes an earlier one
 # (workflow_dispatch forces a fresh replacement review after an
@@ -24,7 +26,7 @@
 # ./untrusted-pr-head as untrusted implementation data, so a PR cannot
 # rewrite the rules it is judged by. Claude's writes are path-confined to
 # /tmp by the tool allowlist, its token cannot push, and a modified
-# tracked file fails the gate. Fork PRs never see the `agents`
+# tracked file fails the gate. Fork PRs never see the reviewer
 # environment secret and an agent-governed fork PR fails loudly.
 name: Agent — technical review gate
 
@@ -40,10 +42,18 @@ on:
         required: true
         type: number
 
+# Least privilege, justified per permission:
+#   contents: read        — trusted + untrusted checkouts only, never push
+#   pull-requests: write  — publish the marker comment on the PR
+#   issues: write         — the PR-comment endpoint is the issues API;
+#                           granted alongside pull-requests:write so the
+#                           marker post cannot fail on the API mapping
+#   id-token: write       — required by anthropics/claude-code-action's
+#                           token exchange; no other step uses OIDC
 permissions:
   contents: read
   pull-requests: write
-  issues: read
+  issues: write
   id-token: write
 
 concurrency:
@@ -56,17 +66,29 @@ jobs:
     name: Technical Review Gate
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    environment: agents
+    # agents-claude-reviewer holds CLAUDE_CODE_OAUTH_TOKEN and
+    # CLAUDE_REVIEWER_SIGNING_KEY — the signing authority only THIS
+    # reviewer lane possesses. The builder's environment has no signing
+    # key, so it is technically incapable of minting this verdict.
+    environment: agents-claude-reviewer
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       REPO: ${{ github.repository }}
       PR: ${{ github.event.pull_request.number || inputs.pr }}
       FORCE_REVIEW: ${{ github.event_name == 'workflow_dispatch' }}
     steps:
-      - name: Checkout trusted policy and governance (default branch, never the PR)
+      - name: Resolve the immutable trusted-governance SHA
+        id: trusted
+        run: |
+          set -euo pipefail
+          sha=$(gh api "repos/$REPO/commits/heads/main" --jq .sha)
+          echo "Trusted governance SHA: $sha"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout trusted policy and governance at that exact SHA (never the PR)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: main
+          ref: ${{ steps.trusted.outputs.sha }}
           fetch-depth: 1
 
       - name: Bootstrap guard
@@ -178,8 +200,10 @@ jobs:
                APPROVE only if no blocking issue remains within your
                technical authority; BLOCK otherwise, findings listed.
 
-      - name: Validate the verdict, verify the tree, publish the marker
+      - name: Validate the verdict, verify the tree, sign and publish the marker
         if: steps.scope.outputs.action == 'claude-review'
+        env:
+          CLAUDE_REVIEWER_SIGNING_KEY: ${{ secrets.CLAUDE_REVIEWER_SIGNING_KEY }}
         run: |
           set -euo pipefail
           if [ -n "$(git status --porcelain)" ] || [ -n "$(git -C untrusted-pr-head status --porcelain)" ]; then
@@ -193,7 +217,8 @@ jobs:
             --pr "$PR" \
             --issue "${{ steps.ctx.outputs.issue }}" \
             --head "${{ steps.ctx.outputs.head_sha }}" \
-            --revision "${{ steps.ctx.outputs.contract_revision }}" > /tmp/marker.md
+            --revision "${{ steps.ctx.outputs.contract_revision }}" \
+            --sign-env CLAUDE_REVIEWER_SIGNING_KEY > /tmp/marker.md
           gh pr comment "$PR" --repo "$REPO" --body-file /tmp/marker.md
 
       - name: Final evaluation for the current HEAD and contract revision

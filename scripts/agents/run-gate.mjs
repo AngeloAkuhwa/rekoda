@@ -2,13 +2,20 @@
 /**
  * Gate CLI over the pure evaluator: reads a normalized state JSON, runs
  * evaluate() in the given mode, prints the reasons, exits 0 on PASS and
- * 1 on BLOCK. Also exposes the contract revision and linked issue for
- * workflow steps (--print-context).
+ * 1 on BLOCK. --print-context exposes constrained values (numbers,
+ * enums, hex) for workflow steps — no untrusted free text ever reaches
+ * a shell through these outputs.
  *
  * Usage: node scripts/agents/run-gate.mjs --state /tmp/state.json --mode policy|technical|acceptance|full
  */
 import { readFileSync, appendFileSync } from 'node:fs';
-import { evaluate, computeContractRevision, resolveVerdict, MARKERS } from './evaluator.mjs';
+import {
+  evaluate,
+  computeContractRevision,
+  resolveVerdict,
+  isGoverned,
+  MARKERS,
+} from './evaluator.mjs';
 
 const args = Object.fromEntries(
   process.argv
@@ -21,21 +28,17 @@ const mode = args.mode ?? 'full';
 
 if (args['print-context'] === 'true') {
   const cfg = state.config;
+  const keys = cfg.publicKeys ?? {};
   const rev = state.issue
     ? computeContractRevision({
         issueNumber: state.issue.number,
         issueBody: state.issue.body,
         issueComments: state.issue.comments,
-        authorizedAuthors: cfg.authorizedRevisionAuthors,
+        ownerLogin: cfg.ownerLogin,
+        contractAuthorityKey: keys.contractAuthority ?? null,
       })
     : { revision: null };
   const builder = state.pr.builderLabels.length === 1 ? state.pr.builderLabels[0] : '';
-  // A PR is agent-governed when it carries agent labels OR closes an
-  // agent-task issue — removing a label is not an escape hatch.
-  const governed =
-    state.pr.riskLabels.length > 0 ||
-    state.pr.builderLabels.length > 0 ||
-    Boolean(state.issue?.agentTask);
   const target =
     rev.revision !== null && state.issue
       ? {
@@ -45,33 +48,28 @@ if (args['print-context'] === 'true') {
           contractRevision: rev.revision,
         }
       : null;
-  const verdictOf = (candidates, markerName, expectedAuthors, forbiddenAuthors) =>
+  const verdictOf = (candidates, markerName, provenance) =>
     target
-      ? (resolveVerdict({ candidates, markerName, expectedAuthors, forbiddenAuthors, target })
-          .verdict ?? 'none')
+      ? (resolveVerdict({ candidates, markerName, provenance, target }).verdict ?? 'none')
       : 'none';
   const techVerdict =
     builder === 'builder:claude'
-      ? verdictOf(
-          state.techEvidence?.candidates,
-          MARKERS.codex,
-          [cfg.codexLogin],
-          cfg.claudeSideAuthors,
-        )
+      ? verdictOf(state.techEvidence?.candidates, MARKERS.codex, {
+          kind: 'codex',
+          login: cfg.codexLogin,
+        })
       : builder === 'builder:codex'
-        ? verdictOf(state.techEvidence?.candidates, MARKERS.claude, cfg.trustedMarkerAuthors, [
-            state.pr.author,
-            cfg.codexLogin,
-          ])
+        ? verdictOf(state.techEvidence?.candidates, MARKERS.claude, {
+            kind: 'signature',
+            publicKey: keys.claudeReviewer ?? null,
+          })
         : 'none';
-  const geminiVerdict = verdictOf(
-    state.geminiEvidence?.candidates,
-    MARKERS.gemini,
-    cfg.trustedMarkerAuthors,
-    [state.pr.author],
-  );
+  const geminiVerdict = verdictOf(state.geminiEvidence?.candidates, MARKERS.gemini, {
+    kind: 'signature',
+    publicKey: keys.geminiReviewer ?? null,
+  });
   const ctx = {
-    governed: governed ? 'true' : 'false',
+    governed: isGoverned(state) ? 'true' : 'false',
     issue: state.issue?.number ?? '',
     head_sha: state.pr.headSha,
     contract_revision: rev.revision ?? '',

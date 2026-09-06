@@ -1,4 +1,4 @@
-# The `agents` and `test` GitHub Environments
+# The `agents-*` and `test` GitHub Environments
 
 How the autonomous-engineering workflows get credentials, and how Rekoda's
 own runtime configuration is provided when a workflow boots the stack. No
@@ -6,12 +6,22 @@ secret **values** appear in this document, ever — only names and where each
 value lives.
 
 **The rule that shapes everything here:** agent credentials and Rekoda
-runtime credentials are two different things, live in two different GitHub
-Environments, and never share a name.
+runtime credentials are two different things, live in different GitHub
+Environments, and never share a name. Agent credentials are further split
+**per role**, because environment membership is what makes forgery
+technically impossible: a signing key exists only in the one environment
+whose workflow is authorized to use it, so the builder cannot mint a
+reviewer's verdict and the planner cannot mint contract evidence.
 
-- **Environment `agents`** — credentials that authenticate an engineering
-  agent to its own provider (Anthropic, Google). Only the agent workflows
-  reference it. It contains **no** Rekoda runtime configuration.
+- **`agents-builder`** — the Claude builder lanes. Holds only the AI
+  credential, never a signing key.
+- **`agents-claude-reviewer`** — the Technical Review Gate's Claude lane:
+  AI credential + the Claude-reviewer signing key.
+- **`agents-gemini-reviewer`** — the Gemini Acceptance Gate: AI
+  credential + the Gemini-reviewer signing key.
+- **`agents-planner`** — the Gemini planner: AI credential only.
+- **`agents-contract-authority`** — the deterministic contract-authority
+  workflow: the contract signing key only, no AI credential.
 - **Environment `test`** — Rekoda application/runtime sandbox credentials
   only (`TEST_REKODA_…` names). Only jobs that boot or test the Rekoda
   stack reference it. It contains **no** agent credentials.
@@ -37,13 +47,24 @@ env:
 `CLAUDE_CODE_OAUTH_TOKEN` is never handed to the Rekoda application, and
 `TEST_REKODA_ANTHROPIC_API_KEY` is never handed to the Claude agent.
 
-## A. Agent credentials (environment `agents`, secrets)
+## A. Agent credentials (the `agents-*` environments, secrets)
 
-| GitHub secret             | Used by                                               | Notes                                                                                                                                                                             |
-| ------------------------- | ----------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `CLAUDE_CODE_OAUTH_TOKEN` | Claude builder and Claude technical-review workflows  | Subscription OAuth token from `claude setup-token`. No `ANTHROPIC_API_KEY` is configured for the agent — subscription auth is the only path.                                      |
-| `GEMINI_API_KEY`          | Gemini planner and Gemini acceptance-review workflows | Unattended API key for GitHub Actions.                                                                                                                                            |
-| _(none for Codex)_        | —                                                     | Codex review and Codex building run on OpenAI's native GitHub integration under the owner's ChatGPT subscription. No `OPENAI_API_KEY` repository secret exists in this iteration. |
+| Environment                 | Secret                           | Notes                                                                                                                                        |
+| --------------------------- | -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `agents-builder`            | `CLAUDE_CODE_OAUTH_TOKEN`        | Subscription OAuth token from `claude setup-token`. No `ANTHROPIC_API_KEY` is configured for any agent — subscription auth is the only path. |
+| `agents-claude-reviewer`    | `CLAUDE_CODE_OAUTH_TOKEN`        | Same token value; separate environment so the reviewer's signing key never coexists with builder jobs.                                       |
+| `agents-claude-reviewer`    | `CLAUDE_REVIEWER_SIGNING_KEY`    | Ed25519 private key signing `REKODA_CLAUDE_APPROVAL` (public half committed in `scripts/agents/keys/`).                                      |
+| `agents-gemini-reviewer`    | `GEMINI_API_KEY`                 | Unattended API key for GitHub Actions.                                                                                                       |
+| `agents-gemini-reviewer`    | `GEMINI_REVIEWER_SIGNING_KEY`    | Ed25519 private key signing `REKODA_GEMINI_APPROVAL`.                                                                                        |
+| `agents-planner`            | `GEMINI_API_KEY`                 | Same key value; the planner deliberately holds no signing key.                                                                               |
+| `agents-contract-authority` | `CONTRACT_AUTHORITY_SIGNING_KEY` | Ed25519 private key signing contract baseline/revision markers; no AI credential.                                                            |
+| _(none for Codex)_          | —                                | Codex review/building run on OpenAI's native integration under the owner's ChatGPT subscription. No `OPENAI_API_KEY` exists.                 |
+
+The owner generates the three keypairs locally with
+`scripts/agents/generate-signing-keys.mjs`, commits the public halves,
+and pastes each private key into its environment — the private keys never
+enter the repository, and until the public keys are committed every
+reviewer gate fails closed.
 
 ## B. Rekoda runtime configuration for CI/test (environment `test`)
 

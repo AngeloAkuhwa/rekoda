@@ -1,25 +1,27 @@
 # Claude — builder lane (docs/AUTONOMOUS-ENGINEERING.md §1, CLAUDE.md Role A).
 #
-# Two entry paths:
-#   1. AUTOMATIC DISPATCH: when an issue reaches status:ready with
-#      builder:claude (labels can only be applied by users with triage+
-#      access, so arbitrary authors/commenters cannot consume quota), the
-#      build starts without a manual summon. A dispatch marker comment
-#      makes re-labelling idempotent, and a per-issue concurrency group
-#      prevents duplicate builds.
-#   2. MANUAL FALLBACK: mention @claude in an issue or PR comment — the
-#      explicitly authorized human path (the action itself rejects
-#      triggering users without write access).
+# AUTHORIZATION BEFORE SECRETS: both entry paths run a NO-SECRET
+# preflight job first (read-mostly GITHUB_TOKEN, no environment). Only
+# when the preflight proves the actor's repository permission is write+
+# and the target/state is valid does the secret-bearing builder job run
+# via needs:. The Anthropic action's own actor check is a second layer,
+# never the first.
 #
-# Authentication is the Claude subscription (CLAUDE_CODE_OAUTH_TOKEN from
-# `claude setup-token`, stored in the `agents` environment). No
-# ANTHROPIC_API_KEY exists for the agent, by design: the runtime test key
-# is TEST_REKODA_ANTHROPIC_API_KEY, lives in the `test` environment, and
-# never reaches this workflow (docs/agents/TEST-ENVIRONMENT.md).
+# Entry paths:
+#   1. AUTOMATIC DISPATCH: an agent-task issue reaching status:ready with
+#      builder:claude. The preflight additionally enforces the GLOBAL WIP
+#      rule deterministically: no build starts while any other issue
+#      occupies the single implementation lane (status:building or
+#      status:in-review), and a dispatch marker makes re-labelling
+#      idempotent.
+#   2. MANUAL FALLBACK: @claude mentions — same preflight, same
+#      authorization bar.
 #
-# The builder writes only its implementation branch and PR — never main,
-# never a bypass. Fork PRs never see environment secrets. Do not add
-# pull_request_target here.
+# Environment agents-builder holds ONLY CLAUDE_CODE_OAUTH_TOKEN. It has
+# no reviewer or contract-authority signing key, which is what makes the
+# builder technically incapable of forging approval or contract
+# evidence. The builder writes only its implementation branch and PR —
+# never main, never a bypass. Do not add pull_request_target here.
 name: Agent — Claude builder
 
 on:
@@ -32,20 +34,76 @@ on:
   issues:
     types: [opened, assigned, labeled]
 
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+
 jobs:
-  dispatch:
-    name: Claude builder (ready-issue dispatch)
+  dispatch-preflight:
+    name: Builder dispatch preflight (no secrets)
     if: |
       github.event_name == 'issues' && github.event.action == 'labeled' &&
       contains(github.event.issue.labels.*.name, 'agent-task') &&
       ((github.event.label.name == 'status:ready' && contains(github.event.issue.labels.*.name, 'builder:claude')) ||
        (github.event.label.name == 'builder:claude' && contains(github.event.issue.labels.*.name, 'status:ready')))
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write # dispatch marker comment; nothing else
+    outputs:
+      proceed: ${{ steps.check.outputs.proceed }}
+    steps:
+      - name: Authorize actor, enforce global WIP, dedupe
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          ISSUE: ${{ github.event.issue.number }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          perm=$(gh api "repos/$REPO/collaborators/$ACTOR/permission" --jq .permission)
+          case "$perm" in
+            admin|maintain|write) echo "Actor $ACTOR permission: $perm" ;;
+            *) echo "::error::Actor $ACTOR (permission: $perm) may not dispatch paid agent work."; exit 1 ;;
+          esac
+          # Global WIP: the single implementation lane must be free
+          # (only the target issue itself may hold a lane label).
+          for label in status:building status:in-review; do
+            busy=$(gh api "repos/$REPO/issues?state=open&labels=$label&per_page=100" \
+              --jq "[.[] | select(.pull_request | not) | select(.number != $ISSUE)] | length")
+            if [ "$busy" -gt 0 ]; then
+              echo "::error::The implementation lane is occupied ($busy issue(s) in $label); not dispatching a second build (docs/AUTONOMOUS-ENGINEERING.md §3)."
+              exit 1
+            fi
+          done
+          if gh api "repos/$REPO/issues/$ISSUE/comments?per_page=100" \
+            --jq '[.[] | select(.user.login == "github-actions[bot]" and (.body | contains("REKODA_CLAUDE_BUILD_DISPATCHED")))] | length' \
+            | grep -qv '^0$'; then
+            echo "Already dispatched for #$ISSUE — skipping duplicate build."
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          gh issue comment "$ISSUE" --repo "$REPO" \
+            --body "REKODA_CLAUDE_BUILD_DISPATCHED — Claude builder started for this issue."
+          echo "proceed=true" >> "$GITHUB_OUTPUT"
+
+  dispatch-build:
+    name: Claude builder (ready-issue dispatch)
+    needs: dispatch-preflight
+    if: needs.dispatch-preflight.outputs.proceed == 'true'
+    runs-on: ubuntu-latest
     timeout-minutes: 90
-    environment: agents
+    environment: agents-builder
     concurrency:
       group: claude-build-${{ github.event.issue.number }}
       cancel-in-progress: false
+    # Builder permissions, justified: contents:write (implementation
+    # branch), pull-requests/issues:write (open PR, labels, comments),
+    # id-token:write (the action's token exchange), actions:read (the
+    # action reads CI results while iterating).
     permissions:
       contents: write
       pull-requests: write
@@ -56,27 +114,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
-
-      - name: Dispatch once per issue
-        id: dedupe
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          ISSUE: ${{ github.event.issue.number }}
-        run: |
-          set -euo pipefail
-          if gh api "repos/${{ github.repository }}/issues/$ISSUE/comments?per_page=100" \
-            --jq '[.[] | select(.user.login == "github-actions[bot]" and (.body | contains("REKODA_CLAUDE_BUILD_DISPATCHED")))] | length' \
-            | grep -qv '^0$'; then
-            echo "Already dispatched for #$ISSUE — skipping duplicate build."
-            echo "fresh=false" >> "$GITHUB_OUTPUT"
-          else
-            gh issue comment "$ISSUE" --repo "${{ github.repository }}" \
-              --body "REKODA_CLAUDE_BUILD_DISPATCHED — Claude builder started for this issue."
-            echo "fresh=true" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Claude builds the READY issue
-        if: steps.dedupe.outputs.fresh == 'true'
         uses: anthropics/claude-code-action@9c5ddab2e6d17b83ea679153b31f1d5f023cf636 # v1.0.217
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -94,12 +132,14 @@ jobs:
                builder:claude, status:ready) and verify its claims
                against HEAD. If anything is off, say so on the issue and
                stop.
-            2. Move the issue to status:building (remove status:ready).
-            3. Post the contract baseline before any implementation:
-               node scripts/agents/contract-revision.mjs
-                 --repo ${{ github.repository }}
-                 --issue ${{ github.event.issue.number }}
-                 --baseline --post
+            2. Verify the issue carries an authorized
+               REKODA_CONTRACT_BASELINE comment (the contract-authority
+               workflow posts it when the issue is labelled
+               status:ready; the owner can also post it). You are NOT
+               authorized to create contract markers yourself. If it is
+               missing, note that on the issue and stop — the gates fail
+               closed without it.
+            3. Move the issue to status:building (remove status:ready).
             4. Implement the smallest complete vertical slice per the
                issue's acceptance criteria, with the required tests, on a
                feat/fix/docs/chore branch. Run the verification the risk
@@ -111,16 +151,48 @@ jobs:
                status:in-review.
             Never merge, never approve your own work, never push main.
 
-  claude:
-    name: Claude builder
+  mention-preflight:
+    name: Mention preflight (no secrets)
     if: |
       (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
       (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
       (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude')) ||
       (github.event_name == 'issues' && github.event.action != 'labeled' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')))
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      authorized: ${{ steps.check.outputs.authorized }}
+    steps:
+      - name: Authorize actor before any secret-bearing job
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          perm=$(gh api "repos/$REPO/collaborators/$ACTOR/permission" --jq .permission)
+          case "$perm" in
+            admin|maintain|write)
+              echo "Actor $ACTOR permission: $perm — authorized."
+              echo "authorized=true" >> "$GITHUB_OUTPUT" ;;
+            *)
+              echo "::error::Actor $ACTOR (permission: $perm) may not summon the paid builder."
+              exit 1 ;;
+          esac
+
+  claude:
+    name: Claude builder
+    needs: mention-preflight
+    if: needs.mention-preflight.outputs.authorized == 'true'
+    runs-on: ubuntu-latest
     timeout-minutes: 60
-    environment: agents
+    environment: agents-builder
+    concurrency:
+      group: claude-mention-${{ github.event.issue.number || github.event.pull_request.number }}
+      cancel-in-progress: false
     permissions:
       contents: write
       pull-requests: write

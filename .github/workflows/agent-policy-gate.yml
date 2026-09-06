@@ -27,14 +27,22 @@ on:
     types: [opened, synchronize, reopened, labeled, unlabeled, edited]
   pull_request_review:
     types: [submitted, dismissed]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: PR number to re-evaluate (used by the contract-watch dispatcher after issue-contract changes)
+        required: true
+        type: number
 
+# Least privilege: read-only everywhere — this gate only reads state and
+# reports its own check conclusion. No id-token (no OIDC), no writes.
 permissions:
   contents: read
   pull-requests: read
   issues: read
 
 concurrency:
-  group: policy-gate-${{ github.event.pull_request.number }}
+  group: policy-gate-${{ github.event.pull_request.number || inputs.pr }}
   cancel-in-progress: true
 
 jobs:
@@ -46,13 +54,21 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       REPO: ${{ github.repository }}
-      PR: ${{ github.event.pull_request.number }}
+      PR: ${{ github.event.pull_request.number || inputs.pr }}
       HAS_AGENT_LABELS: ${{ contains(join(github.event.pull_request.labels.*.name, ','), 'risk:R') || contains(join(github.event.pull_request.labels.*.name, ','), 'builder:') }}
     steps:
-      - name: Checkout trusted policy (default branch, never the PR)
+      - name: Resolve the immutable trusted-governance SHA
+        id: trusted
+        run: |
+          set -euo pipefail
+          sha=$(gh api "repos/$REPO/commits/heads/main" --jq .sha)
+          echo "Trusted governance SHA: $sha"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout trusted policy at that exact SHA (never the PR)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: main
+          ref: ${{ steps.trusted.outputs.sha }}
           fetch-depth: 1
 
       - name: Bootstrap guard

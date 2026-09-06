@@ -7,7 +7,7 @@
 # enforces GEMINI.md's "planner does not modify product code" rule at the
 # token level rather than by promise.
 #
-# GEMINI_API_KEY lives in the `agents` environment (engineering-agent
+# GEMINI_API_KEY lives in the `agents-planner` environment (engineering-agent
 # credentials only — docs/agents/TEST-ENVIRONMENT.md). The action is
 # pinned to a full commit SHA per security-hardening guidance for
 # non-first-party actions.
@@ -36,12 +36,17 @@ jobs:
     name: Gemini planner
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    environment: agents
+    # agents-planner holds ONLY GEMINI_API_KEY — no signing key, so the
+    # planner (which can comment on issues and PRs via issues:write)
+    # cannot mint reviewer or contract evidence.
+    environment: agents-planner
+    # Least privilege: issues:write is the planner's job; contents:read
+    # means it cannot push code even if prompted to; no id-token (API-key
+    # auth, no OIDC).
     permissions:
       contents: read
       issues: write
       pull-requests: read
-      id-token: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -115,11 +120,12 @@ jobs:
                and linked in the issue's "Owner decision reference" field
                may become READY (and routes builder:claude per
                GEMINI.md). Anything genuinely undecidable stays
-               needs-owner-decision. When you promote an issue to READY,
-               remind the builder in an issue comment that it must post
-               the REKODA_CONTRACT_BASELINE marker (via
-               scripts/agents/contract-revision.mjs) before opening the
-               PR — the policy gate fails closed without it.
+               needs-owner-decision. Labelling an issue status:ready
+               makes the contract-authority workflow record the signed
+               REKODA_CONTRACT_BASELINE automatically — so the issue
+               body must be FINAL before you apply that label; after it,
+               only an authorized signed revision can change the
+               contract.
             6. Do not modify code, do not reopen completed milestones
                without concrete evidence, and do not create speculative
                work while launch blockers exist.

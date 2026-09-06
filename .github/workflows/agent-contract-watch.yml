@@ -1,0 +1,98 @@
+# Contract watch — the no-secret dispatcher that makes issue-contract
+# changes retrigger PR gates (docs/AUTONOMOUS-ENGINEERING.md §6): a
+# contract revision must invalidate approvals WITHOUT a code push, so
+# when the authoritative issue changes, the open PR that closes it gets
+# its three gates re-run against the same HEAD and the NEW contract
+# state.
+#
+# Contract-relevant triggers only: issue body edits; risk/builder/
+# status/decision label changes; comments carrying contract markers.
+# PR comments are excluded (issue_comment fires for PRs too — filtered),
+# and the gates' own marker comments are posted with GITHUB_TOKEN, whose
+# events do not trigger workflows — no self-trigger loops. Expensive
+# reviewer reruns happen only through this filter.
+#
+# No environment, no AI secrets: an arbitrary issue comment can never
+# reach a secret-bearing job from here — this job only calls
+# workflow_dispatch, and the dispatched gates do their own scoping.
+name: Agent — contract watch
+
+on:
+  issues:
+    types: [edited, labeled, unlabeled]
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+  actions: write # workflow_dispatch of the three gates; nothing else
+
+concurrency:
+  group: contract-watch-${{ github.event.issue.number }}
+  cancel-in-progress: true
+
+jobs:
+  redispatch:
+    name: Contract watch
+    if: |
+      !github.event.issue.pull_request &&
+      contains(github.event.issue.labels.*.name, 'agent-task') &&
+      (
+        (github.event_name == 'issues' && github.event.action == 'edited') ||
+        (github.event_name == 'issues' &&
+         (github.event.action == 'labeled' || github.event.action == 'unlabeled') &&
+         (startsWith(github.event.label.name, 'risk:') ||
+          startsWith(github.event.label.name, 'builder:') ||
+          startsWith(github.event.label.name, 'status:') ||
+          github.event.label.name == 'needs-owner-decision')) ||
+        (github.event_name == 'issue_comment' &&
+         contains(github.event.comment.body, 'REKODA_CONTRACT'))
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      REPO: ${{ github.repository }}
+      ISSUE: ${{ github.event.issue.number }}
+    steps:
+      - name: Resolve the immutable trusted-governance SHA
+        id: trusted
+        run: |
+          set -euo pipefail
+          sha=$(gh api "repos/$REPO/commits/heads/main" --jq .sha)
+          echo "Trusted governance SHA: $sha"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ steps.trusted.outputs.sha }}
+          fetch-depth: 1
+
+      - name: Re-run the gates on every open PR closing this issue
+        run: |
+          set -euo pipefail
+          if [ ! -f scripts/agents/evaluator.mjs ]; then
+            echo "Policy scripts not on main yet — nothing to dispatch."; exit 0
+          fi
+          gh api "repos/$REPO/pulls?state=open&per_page=100" > /tmp/open-prs.json
+          node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            import { parseClosingRefs } from "./scripts/agents/evaluator.mjs";
+            const issue = Number(process.env.ISSUE);
+            const prs = JSON.parse(readFileSync("/tmp/open-prs.json", "utf8"));
+            const hits = prs.filter((p) => parseClosingRefs(p.body ?? "").includes(issue));
+            console.log(hits.map((p) => p.number).join("\n"));
+          ' > /tmp/linked-prs.txt
+          if [ ! -s /tmp/linked-prs.txt ]; then
+            echo "No open PR closes #$ISSUE — nothing to re-run."
+            exit 0
+          fi
+          while IFS= read -r pr; do
+            [ -n "$pr" ] || continue
+            echo "Issue #$ISSUE changed — re-dispatching gates for PR #$pr at its current HEAD."
+            gh workflow run agent-policy-gate.yml --repo "$REPO" -f pr="$pr"
+            gh workflow run agent-technical-review-gate.yml --repo "$REPO" -f pr="$pr"
+            gh workflow run agent-gemini-review.yml --repo "$REPO" -f pr="$pr"
+          done < /tmp/linked-prs.txt
