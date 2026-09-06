@@ -12,7 +12,10 @@
  *     --issue 60 --builder builder:claude [--transition]
  */
 import { execFileSync } from 'node:child_process';
-import { evaluateBuildAdmission } from './evaluator.mjs';
+import { readFileSync, existsSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { evaluateBuildAdmission, computeContractRevision } from './evaluator.mjs';
 
 const args = Object.fromEntries(
   process.argv
@@ -63,7 +66,46 @@ for (const label of ['status:building', 'status:in-review']) {
   }
 }
 
-const result = evaluateBuildAdmission({ issue, requiredBuilder, openLanes: lanes });
+// Baseline-before-admission (docs/AUTONOMOUS-ENGINEERING.md §3): a valid
+// current contract baseline is REQUIRED before the lane may be claimed.
+let contract = { baselineFound: false, invalid: null, amended: false };
+if (issue) {
+  try {
+    const raw = gh(`repos/${repo}/issues/${issueNumber}`);
+    const comments = [];
+    for (let page = 1; page <= 3; page++) {
+      const chunk = gh(`repos/${repo}/issues/${issueNumber}/comments?per_page=100&page=${page}`);
+      comments.push(
+        ...chunk.map((c) => ({
+          author: c.user?.login ?? '',
+          createdAt: c.created_at,
+          body: c.body ?? '',
+        })),
+      );
+      if (chunk.length < 100) break;
+    }
+    const keyPath = join(
+      dirname(fileURLToPath(import.meta.url)),
+      'keys',
+      'contract-authority.pub.pem',
+    );
+    contract = computeContractRevision({
+      issueNumber,
+      issueBody: raw.body ?? '',
+      issueComments: comments,
+      ownerLogin: process.env.OWNER_LOGIN || 'AngeloAkuhwa',
+      contractAuthorityKey: existsSync(keyPath) ? readFileSync(keyPath, 'utf8') : null,
+    });
+  } catch {
+    contract = {
+      baselineFound: false,
+      invalid: 'contract state could not be fetched',
+      amended: false,
+    };
+  }
+}
+
+const result = evaluateBuildAdmission({ issue, requiredBuilder, openLanes: lanes, contract });
 for (const r of result.reasons) console.error(`::error::[${r.code}] ${r.message}`);
 if (!result.admit) {
   console.error(`::error::Builder admission refused for #${issueNumber}.`);

@@ -103,6 +103,45 @@ export function linkedOpenPrs(openPrs, issueNumber) {
 }
 
 /**
+ * Linked-PR selection over an exhaustively paginated open-PR listing.
+ * `complete: false` (pagination ceiling hit, or API failure) fails
+ * closed — a linked PR must never be silently missed.
+ */
+export function selectLinkedPrs({ openPrs, complete, issueNumber }) {
+  if (!complete)
+    return { ok: false, prs: [], reason: 'open-PR listing could not be proven complete' };
+  return { ok: true, prs: linkedOpenPrs(openPrs, issueNumber) };
+}
+
+/**
+ * Resolve the target of a workflow_run request to exactly ONE valid PR —
+ * anything less certain fails closed (docs/AUTONOMOUS-ENGINEERING.md §6):
+ *   - 'none'      zero open same-base candidates → nothing to evaluate;
+ *   - 'ambiguous' multiple open candidates share the commit → BLOCK, a
+ *                 privileged evaluation must know exactly whom it judges;
+ *   - 'stale'     the single candidate's CURRENT head no longer equals
+ *                 the triggering SHA (force-push/new push) → do not
+ *                 evaluate; the new head's own request owns it;
+ *   - 'ok'        exactly one open candidate whose current head equals
+ *                 the triggering SHA.
+ * candidates: [{ number, state, headSha, baseRepo }] with baseRepo the
+ * full name of the PR's base repository.
+ */
+export function resolveWorkflowRunTarget({ headSha, candidates, repo }) {
+  const sha = String(headSha ?? '').toLowerCase();
+  if (!SHA40.test(sha)) return { pr: null, status: 'none' };
+  const open = (candidates ?? []).filter(
+    (c) => c.state === 'open' && (!repo || c.baseRepo === repo),
+  );
+  if (open.length === 0) return { pr: null, status: 'none' };
+  if (open.length > 1) return { pr: null, status: 'ambiguous' };
+  const c = open[0];
+  if (String(c.headSha ?? '').toLowerCase() !== sha)
+    return { pr: Number(c.number), status: 'stale' };
+  return { pr: Number(c.number), status: 'ok' };
+}
+
+/**
  * Parse fixed-format approval marker blocks out of free text:
  *   <MARKER NAME>
  *   SCHEME: REKODA_AGENT_EVIDENCE_V1
@@ -438,12 +477,32 @@ export function isContractAmendmentAuthorized(actor, ownerLogin) {
  * Deterministic admission for starting a builder on an issue — evaluated
  * by the no-secret preflight BEFORE any secret-bearing job, under the
  * repository-wide implementation-lane concurrency lock. Fail closed.
+ * `contract` is the computeContractRevision() result for the issue: a
+ * valid current baseline is REQUIRED before the lane may be claimed —
+ * no baseline, no admission, no status:building, no secret-bearing job.
  */
-export function evaluateBuildAdmission({ issue, requiredBuilder, openLanes }) {
+export function evaluateBuildAdmission({ issue, requiredBuilder, openLanes, contract }) {
   const reasons = [];
   const add = (code, message) => reasons.push({ code, message });
   if (!issue || !issue.exists) add('ADMIT_ISSUE_NOT_FOUND', 'The target issue does not exist.');
   else {
+    const c = contract ?? { baselineFound: false, invalid: null, amended: false };
+    if (c.invalid) {
+      add(
+        'ADMIT_CONTRACT_INVALID',
+        `Issue #${issue.number} contract history is invalid: ${c.invalid}.`,
+      );
+    } else if (!c.baselineFound) {
+      add(
+        'ADMIT_BASELINE_MISSING',
+        `Issue #${issue.number} has no authorized contract baseline yet; admission is refused until the contract-authority workflow (or the owner) records it.`,
+      );
+    } else if (c.amended) {
+      add(
+        'ADMIT_CONTRACT_INVALID',
+        `Issue #${issue.number} body no longer matches its authorized contract baseline/revision.`,
+      );
+    }
     if (issue.state !== 'open') add('ADMIT_ISSUE_NOT_OPEN', `Issue #${issue.number} is not open.`);
     if (!issue.agentTask)
       add('ADMIT_NOT_AGENT_TASK', `Issue #${issue.number} is not an agent-task.`);

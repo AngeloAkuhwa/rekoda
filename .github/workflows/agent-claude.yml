@@ -92,9 +92,26 @@ jobs:
             exit 0
           fi
           # Deterministic admission + atomic lane claim, inside the
-          # repository-wide concurrency lock.
-          node scripts/agents/build-admission.mjs --repo "$REPO" --issue "$ISSUE" \
-            --builder builder:claude --transition
+          # repository-wide concurrency lock. Admission REQUIRES a valid
+          # contract baseline (no baseline → no lane claim → no
+          # secret-bearing builder job); because the READY label fires
+          # the contract-authority baseline recording concurrently with
+          # this preflight, a short bounded wait absorbs that race —
+          # after which the refusal stands and a later authorized
+          # dispatch retries.
+          admitted=false
+          for attempt in 1 2 3 4; do
+            if node scripts/agents/build-admission.mjs --repo "$REPO" --issue "$ISSUE" \
+              --builder builder:claude --transition; then
+              admitted=true; break
+            fi
+            echo "Admission attempt $attempt refused; waiting for the contract baseline / lane state…"
+            sleep 30
+          done
+          if [ "$admitted" != "true" ]; then
+            echo "::error::Builder admission refused after bounded retries — no lane was claimed and no builder starts."
+            exit 1
+          fi
           gh issue comment "$ISSUE" --repo "$REPO" \
             --body "REKODA_CLAUDE_BUILD_DISPATCHED — Claude builder admitted; the implementation lane is claimed."
           echo "proceed=true" >> "$GITHUB_OUTPUT"
@@ -139,13 +156,10 @@ jobs:
             Procedure:
             1. Verify the issue's claims against HEAD. If anything is
                off, say so on the issue and stop.
-            2. Verify the issue carries an authorized
-               REKODA_CONTRACT_BASELINE comment (the contract-authority
-               workflow posts it when the issue is labelled
-               status:ready; the owner can also post one). You are NOT
-               authorized to create contract markers yourself. If it is
-               missing, note that on the issue and stop — the gates fail
-               closed without it.
+            2. The admission preflight has already verified an
+               authorized REKODA_CONTRACT_BASELINE exists — that
+               recorded contract is what you build against. You are NOT
+               authorized to create or change contract markers yourself.
             3. Implement the smallest complete vertical slice per the
                issue's acceptance criteria, with the required tests, on a
                feat/fix/docs/chore branch. Run the verification the risk

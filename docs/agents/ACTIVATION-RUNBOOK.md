@@ -18,10 +18,12 @@ activation PRs, and only then ACTIVE.
 
 The merge policy lives in `scripts/agents/evaluator.mjs` (pure — no
 network) and its behavioural evidence in
-`scripts/agents/evaluator.test.mjs`, which covers all twenty negative
-BLOCK cases of §5.B plus the four positive cases (valid R0/R1/R2 and
-owner-authorized R3), same-SHA verdict supersession, new-HEAD
-invalidation, and contract-revision invalidation without a push.
+`scripts/agents/evaluator.test.mjs`: all twenty §5.B BLOCK cases, the
+positive cases, and the provenance, protocol-scheme, contract-history,
+sticky-enrollment/pagination, build-admission (incl.
+baseline-before-admission), WIP, verdict-ordering, and workflow_run
+target-resolution properties. Run `node --test` on it for the current
+count — the suite is the source of truth, not a number written here.
 
 - Run locally: `node --test scripts/agents/evaluator.test.mjs`
 - Runs automatically: every `Agent policy gate` execution runs the suite
@@ -67,6 +69,12 @@ memory):
    `Integration (PostgreSQL)`, `End-to-end (Playwright)`,
    `Agent policy gate`, `Technical Review Gate`, `Gemini Acceptance Gate`.
    (A check name appears in the picker only after it has run once.)
+   For each required check, set its **source** to the **GitHub Actions**
+   app — GitHub's ruleset model binds a required check to the app that
+   must set it (`RequiredStatusCheckInput.appId`), which shuts out
+   third-party-app spoofing. Same-app spoofing (a PR-defined Actions job
+   using the same name) remains the platform residual, countered by
+   CODEOWNERS on workflow files — drill 29 exercises it.
 
 - [ ] All five verified on the live repository (record screenshots/date).
 
@@ -146,6 +154,24 @@ the failure states. GitHub must refuse the merge in every one:
       Codex review whose marker names the new HEAD but whose review
       `commit_id` is the old commit does NOT pass the Technical Review
       Gate.
+- [ ] 29. Check-spoof drill: a throwaway PR defines a job named
+      `Technical Review Gate` that exits 0 → verify the ruleset's
+      app-bound required check plus CODEOWNERS review on the workflow
+      change prevent the PR from merging on the spoofed green, and
+      record exactly what GitHub showed.
+- [ ] 30. Same-HEAD revision check-state drill: with all gates green at
+      revision 1, dispatch an owner-authorized revision 2 → verify the
+      authority's redispatch UPDATES the same-named check runs on the
+      unchanged HEAD to failure (upsert-in-place, no ambiguous
+      duplicates) and the merge box goes red until revision-2 verdicts
+      land. This proves the required-check state cannot remain
+      merge-authorizing on stale-revision evidence.
+- [ ] 31. Baseline-race drill: label a fresh agent-task issue
+      `status:ready` and watch the builder preflight — if it lands
+      before the authority's baseline, it waits its bounded retries and
+      only claims the lane AFTER the baseline exists; delete the
+      baseline scenario (a never-baselined issue) must end in a refusal
+      with NO lane claim and NO builder job.
 
 ## D. Positive auto-merge drill
 

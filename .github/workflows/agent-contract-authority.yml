@@ -128,13 +128,9 @@ jobs:
         # itself (workflow_dispatch is exempt from that suppression).
         run: |
           set -euo pipefail
-          gh api "repos/$REPO/pulls?state=open&per_page=100" > /tmp/open-prs.json
-          node --input-type=module -e '
-            import { readFileSync } from "node:fs";
-            import { linkedOpenPrs } from "./scripts/agents/evaluator.mjs";
-            const prs = JSON.parse(readFileSync("/tmp/open-prs.json", "utf8"));
-            console.log(linkedOpenPrs(prs, Number(process.env.ISSUE)).join("\n"));
-          ' > /tmp/linked-prs.txt
+          # Exhaustive pagination — a linked PR beyond page 1 is never
+          # silently missed; an unprovably complete listing fails.
+          node scripts/agents/find-linked-prs.mjs --repo "$REPO" --issue "$ISSUE" > /tmp/linked-prs.txt
           if [ ! -s /tmp/linked-prs.txt ]; then
             echo "No open PR closes #$ISSUE — nothing to redispatch."
             exit 0

@@ -87,7 +87,13 @@ finding → backlog → status:ready → status:building → status:in-review �
    builder repairing in the same lane. The slot is released only by
    merge, explicit abandonment, or an owner-authorized blocking that
    releases the lane; only then may the planner promote the next build.
-   `status:ready` ≤ 2 remains the queue cap.
+   `status:ready` ≤ 2 remains the queue cap. **Admission requires the
+   contract baseline**: the no-secret preflight refuses to claim the
+   lane (and therefore no secret-bearing builder job ever starts, and no
+   `status:building` transition happens) until a valid, current,
+   authorized `REKODA_CONTRACT_BASELINE` exists on the issue — the
+   READY-event race with the authority's baseline recording is absorbed
+   by a bounded wait, never by skipping the requirement.
 
 ## 4. PR lifecycle
 
@@ -231,7 +237,12 @@ reviewer environments are referenced only by it, and every fact
 (repository, PR number, HEAD SHA, base, labels, linked issue, contract
 revision, builder, risk) is **re-resolved from the GitHub API** inside
 the privileged run. Anything the untrusted side passes is a REQUEST
-naming a PR, never trusted evidence. Supporting layers, not the
+naming a PR, never trusted evidence — and the request must resolve to
+**exactly one** open same-base PR whose current head still equals the
+triggering SHA: zero candidates is nothing-to-evaluate, a force-pushed
+(stale) request is superseded by the new head's own request, multiple
+candidates FAIL CLOSED, and a dispatch for a closed or foreign PR is
+refused. Supporting layers, not the
 boundary: the `agents-*` environments carry deployment-branch policies
 restricted to `main` (a PR-branch job requesting one is refused by
 GitHub), and every workflow-file change requires the owner's CODEOWNERS
@@ -255,12 +266,17 @@ or loads trusted policy.
 unknown, or future scheme is rejected as malformed. A Claude or Gemini
 verdict counts only with a valid **Ed25519 signature** over the
 canonical payload, verified against the committed public keys in
-`scripts/agents/keys/`. The signing keys never enter AI context: the AI
-step holds only its AI credential; a keyless deterministic step
-validates the verdict after the AI action has terminated; the SEPARATE
-signing step is the only code that references the role key
-(step-scoped — GitHub injects secrets only into steps that reference
-them). The builder and planner environments hold no signing key, so a
+`scripts/agents/keys/`. The signing keys never enter AI context — and
+the boundary is a **fresh runner**, not a step: each reviewer lane is
+two jobs, an AI job that references only its AI credential and hands
+over an **unsigned verdict artifact (untrusted data)**, and a
+deterministic publish job on a different runner that references only the
+role signing key, **independently re-fetches** current GitHub state,
+refuses to sign if HEAD or contract moved since the review, and
+validates the artifact against the FRESH target values — the artifact
+cannot choose what it approves. A compromised third-party action in the
+AI job is confined to a runner that never held a key. The builder and
+planner environments hold no signing key, so a
 marker that is unsigned, wrong-key, or tampered is rejected
 (`TECH_UNAUTHORIZED` / `GEMINI_UNAUTHORIZED`) whoever posted it. A
 Codex verdict counts only inside a non-dismissed GitHub **review**
@@ -297,9 +313,12 @@ because GitHub suppresses workflow events from GITHUB_TOKEN comments
 loops). (2) For HUMAN changes (body edits, risk/builder/status/decision
 label changes, owner-posted contract evidence), the no-secret
 **contract-watch workflow** detects the change and dispatches the same
-privileged gates. Either way: same code HEAD + new revision → policy
-re-runs, both rev-N−1 approvals are stale, fresh rev-N verdicts are
-required.
+privileged gates. Both paths find the linked PRs over the
+**exhaustively paginated** open-PR listing
+(`scripts/agents/find-linked-prs.mjs`) — a linked PR beyond the first
+page is never silently missed, and an unprovably complete listing fails
+visibly. Either way: same code HEAD + new revision → policy re-runs,
+both rev-N−1 approvals are stale, fresh rev-N verdicts are required.
 
 **How approvals go stale:** every PR push completes the review-request
 workflow, which re-fires the privileged gates for the new HEAD; the
@@ -309,7 +328,15 @@ current HEAD.
 
 **What each check does:** each gate publishes its stable-named check run
 via the Checks API bound to the RESOLVED PR head (so redispatches land
-on the PR whatever the trigger):
+on the PR whatever the trigger) — **upserted in place**, so one name+SHA
+never carries ambiguous duplicate conclusions and a same-HEAD contract
+revision deterministically flips the same required check to red until
+fresh verdicts land. Gate concurrency is `cancel-in-progress: false`: a
+security evaluation is never cancelled into an ambiguous check state;
+obsolete-SHA runs end via the stale-target rule, and duplicate work is
+avoided by valid-verdict reuse instead of cancellation. In the ruleset,
+each required check is additionally bound to the **GitHub Actions app**
+as its source (`RequiredStatusCheckInput.appId`):
 
 - **`Technical Review Gate`** — builder-aware Reviewer 1. On
   `builder:claude` PRs it requires a valid `REKODA_CODEX_APPROVAL`
@@ -613,7 +640,15 @@ closed when it cannot be proven complete; verdict ordering is
 timestamp-primary with same-kind id tie-breaks only, failing closed on
 contradictory contemporaneous cross-kind evidence; and the evidence
 protocol is versioned (`SCHEME: REKODA_AGENT_EVIDENCE_V1`, unknown
-schemes rejected).
+schemes rejected). The Phase-2 activation-hardening pass then closed the
+final pre-key blockers: **exactly-one workflow_run target resolution**
+(zero/stale/ambiguous fail safe or closed), **runner-isolated AI and
+signing jobs** with independent signing-time revalidation of the fresh
+target, **upsert-in-place check runs** with `cancel-in-progress: false`
+gate concurrency, **required-check app-source binding** in the ruleset,
+**exhaustive linked-PR pagination** that fails visibly when unprovable,
+and **baseline-before-admission** (no baseline → no lane claim → no
+builder).
 
 What remains, honestly:
 
@@ -653,15 +688,20 @@ What remains, honestly:
    signed approval can exist and every reviewer gate fails closed — by
    design, and lifted only by the owner-setup steps in the activation
    runbook.
-8. **Required-check name-spoofing is a platform residual.** Any workflow
-   a PR defines can create a check run with a required check's name;
-   GitHub cannot distinguish it from ours. The counter is merge-time,
-   not run-time: every workflow-file change requires the owner's
-   CODEOWNERS review, so a PR carrying a spoofing job cannot merge
-   unreviewed. Activation drill B proves the boundary; the honest limit
-   is recorded rather than pretended away.
-9. **Trusted-base semantics are platform properties.** That
-   workflow_run/workflow_dispatch execute default-branch definitions and
-   that environment branch policies refuse PR refs are GitHub-documented
-   behaviours our unit tests cannot execute; the activation drills
-   (A, B) exercise them live before anything is trusted with a merge.
+8. **Required-check name-spoofing is a platform residual — narrowed,
+   not solved.** The ruleset binds each required check to the GitHub
+   Actions app as its source (`RequiredStatusCheckInput.appId`), which
+   shuts out third-party-app spoofing; but a PR-defined Actions job with
+   the same name comes from the same app and GitHub cannot distinguish
+   it. The counter is merge-time: every workflow-file change requires
+   the owner's CODEOWNERS review, so a PR carrying a spoofing job cannot
+   merge unreviewed. Drill 29 exercises it; the honest limit is recorded
+   rather than pretended away.
+9. **Trusted-base and check-state semantics are platform properties.**
+   That workflow_run/workflow_dispatch execute default-branch
+   definitions, that environment branch policies refuse PR refs, and
+   that branch protection follows an in-place-updated check run's latest
+   conclusion are GitHub behaviours our unit tests cannot execute — we
+   sidestep the undocumented duplicate-name tie-breaking entirely by
+   upserting one check run per name+SHA, and drills 24, 29 and 30
+   exercise the rest live before anything is trusted with a merge.

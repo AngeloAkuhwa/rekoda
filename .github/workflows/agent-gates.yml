@@ -1,37 +1,38 @@
 # Agent — gates: the PRIVILEGED control-plane workflow
 # (docs/AUTONOMOUS-ENGINEERING.md §6).
 #
-# TRUSTED-BASE EXECUTION. This workflow is triggered only by
-# workflow_run (completion of the no-secret "Agent — review request")
-# and by workflow_dispatch. For both, GitHub's documented semantics
-# execute the workflow DEFINITION from the default branch — a PR cannot
-# substitute its own version of this file, and PR-controlled YAML never
-# receives the reviewer environments. `github.sha` on these events is the
-# default-branch commit the definition came from; scripts and governance
-# are checked out at exactly that SHA, so definition, policy, and
-# governance share one immutable trust root.
+# TRUSTED-BASE EXECUTION. Triggered only by workflow_run (completion of
+# the no-secret "Agent — review request") and by workflow_dispatch; for
+# both, GitHub executes this DEFINITION from the default branch — a PR
+# cannot substitute it, and PR-controlled YAML never receives the
+# reviewer environments. Nothing from the trigger is trusted: a
+# workflow_run association or dispatch input is only a REQUEST, resolved
+# by scripts/agents/resolve-target.mjs to EXACTLY ONE open PR whose
+# current head still equals the triggering SHA — zero candidates means
+# nothing to evaluate, a force-pushed (stale) request is superseded by
+# the new head's own request, and multiple candidates FAIL CLOSED.
+# Every other fact (labels, issue, revision, builder, risk) is
+# re-resolved from the GitHub API.
 #
-# NOTHING from the triggering side is trusted. A dispatch input or
-# workflow_run association is only a REQUEST naming a PR number/commit;
-# every fact — repository, PR, HEAD SHA, base, labels, linked issue,
-# contract revision, builder, risk — is re-resolved here from the GitHub
-# API. Pointing this workflow at a different PR merely evaluates THAT
-# PR against its own true state.
+# RUNNER-ISOLATED REVIEW/SIGNING. Each reviewer lane is two jobs on two
+# fresh runners: the AI job references ONLY its AI credential and
+# produces an unsigned verdict artifact (untrusted data); the
+# deterministic publish job references ONLY the role signing key, never
+# an AI credential, independently RE-FETCHES current GitHub state,
+# re-verifies PR/issue/HEAD/revision against that fresh state, validates
+# the artifact against the FRESH values (the artifact cannot choose its
+# target), and only then signs and publishes. If HEAD or contract moved
+# between review and signing, it refuses — the superseding run owns
+# publication. A compromised third-party action in the AI job is
+# confined to a runner that never held a signing key.
 #
-# Check delivery: each gate publishes its stable-named check run
-# ("Agent policy gate", "Technical Review Gate", "Gemini Acceptance
-# Gate") via the Checks API bound to the RESOLVED PR HEAD SHA, so
-# redispatches (contract authority, contract watch, replacement
-# verdicts) land on the PR regardless of trigger. Name-spoofing by a
-# hostile PR-defined job is countered at merge time by CODEOWNERS:
-# every workflow change requires the owner's review.
-#
-# Signing-key exposure model: the AI steps receive ONLY their AI
-# credential. Verdicts are validated by a keyless deterministic step
-# AFTER the AI action has terminated; the role signing key is referenced
-# exclusively by the separate signing step's env. GitHub injects secrets
-# only into steps that reference them — no key ever exists in the AI
-# step's process environment, inputs, files, or outputs.
+# CHECK DELIVERY. Each gate upserts its stable-named check run via the
+# Checks API on the resolved PR HEAD — updated IN PLACE, so one name+SHA
+# never carries ambiguous duplicate conclusions and a same-HEAD contract
+# revision deterministically flips the same required check. Concurrency
+# uses cancel-in-progress: FALSE — a security evaluation is never
+# cancelled into ambiguity; obsolete-SHA runs exit via the stale-target
+# rule instead.
 name: Agent — gates
 
 on:
@@ -49,7 +50,7 @@ permissions: {}
 
 concurrency:
   group: agent-gates-${{ github.event.workflow_run.head_sha || inputs.pr }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 env:
   REPO: ${{ github.repository }}
@@ -74,9 +75,12 @@ jobs:
       fork: ${{ steps.ctx.outputs.fork }}
       tech_verdict: ${{ steps.ctx.outputs.tech_verdict }}
       gemini_verdict: ${{ steps.ctx.outputs.gemini_verdict }}
+      need_claude_ai: ${{ steps.plan.outputs.need_claude_ai }}
+      need_gemini_ai: ${{ steps.plan.outputs.need_gemini_ai }}
       trusted_sha: ${{ github.sha }}
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      FORCE_REVIEW: ${{ github.event_name == 'workflow_dispatch' }}
     steps:
       - name: Trusted root
         run: echo "Definition, policy and governance trust root — default-branch SHA ${{ github.sha }}"
@@ -90,24 +94,18 @@ jobs:
       - name: Evaluator self-test (behavioural evidence, every run)
         run: node --test scripts/agents/evaluator.test.mjs
 
-      - name: Resolve the target PR independently
+      - name: Resolve the target PR to exactly one valid candidate
         id: target
         env:
           DISPATCH_PR: ${{ inputs.pr }}
           RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
           set -euo pipefail
-          pr=""
           if [ -n "${DISPATCH_PR:-}" ]; then
-            pr="$DISPATCH_PR"
-          elif [ -n "${RUN_HEAD_SHA:-}" ]; then
-            pr=$(gh api "repos/$REPO/commits/$RUN_HEAD_SHA/pulls?per_page=10" \
-              --jq '[.[] | select(.state == "open")] | (first // empty) | .number' || true)
+            node scripts/agents/resolve-target.mjs --repo "$REPO" --pr "$DISPATCH_PR"
+          else
+            node scripts/agents/resolve-target.mjs --repo "$REPO" --head-sha "$RUN_HEAD_SHA"
           fi
-          if [ -z "$pr" ]; then
-            echo "No open PR resolved for this event — nothing to evaluate."
-          fi
-          echo "pr=$pr" >> "$GITHUB_OUTPUT"
 
       - name: Normalize GitHub state
         if: steps.target.outputs.pr != ''
@@ -116,6 +114,26 @@ jobs:
           set -euo pipefail
           node scripts/agents/normalize.mjs --repo "$REPO" --pr "${{ steps.target.outputs.pr }}" --out /tmp/state.json
           node scripts/agents/run-gate.mjs --state /tmp/state.json --print-context
+
+      - name: Plan the AI lanes
+        if: steps.target.outputs.pr != ''
+        id: plan
+        run: |
+          set -euo pipefail
+          need_claude=false; need_gemini=false
+          if [ "${{ steps.ctx.outputs.governed }}" = "true" ] && \
+             [ "${{ steps.ctx.outputs.fork }}" != "true" ] && \
+             { [ "${{ steps.ctx.outputs.draft }}" != "true" ] || [ "$FORCE_REVIEW" = "true" ]; }; then
+            if [ "${{ steps.ctx.outputs.builder }}" = "builder:codex" ] && \
+               { [ "${{ steps.ctx.outputs.tech_verdict }}" = "none" ] || [ "$FORCE_REVIEW" = "true" ]; }; then
+              need_claude=true
+            fi
+            if [ "${{ steps.ctx.outputs.gemini_verdict }}" = "none" ] || [ "$FORCE_REVIEW" = "true" ]; then
+              need_gemini=true
+            fi
+          fi
+          echo "need_claude_ai=$need_claude" >> "$GITHUB_OUTPUT"
+          echo "need_gemini_ai=$need_gemini" >> "$GITHUB_OUTPUT"
 
   policy:
     name: Policy evaluation
@@ -163,62 +181,30 @@ jobs:
             exit 1
           fi
 
-  technical:
-    name: Technical review lane
+  technical_ai:
+    name: Technical review — AI (no signing key)
     needs: resolve
-    if: needs.resolve.outputs.pr != '' && needs.resolve.outputs.governed == 'true'
+    if: needs.resolve.outputs.need_claude_ai == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    # agents-claude-reviewer holds the Claude AI credential and (in its
-    # own step only) the Claude reviewer signing key. This environment is
-    # reachable solely from this default-branch-defined workflow; its
-    # deployment-branch policy is additionally restricted to main.
+    # References ONLY the AI credential from agents-claude-reviewer; the
+    # signing key is never materialized on this runner.
     environment: agents-claude-reviewer
     permissions:
       contents: read
-      pull-requests: write
-      issues: write
-      id-token: write # required by anthropics/claude-code-action's token exchange; no other step uses OIDC
-      checks: write
+      issues: read
+      pull-requests: read
+      id-token: write # required by anthropics/claude-code-action's token exchange
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      PR: ${{ needs.resolve.outputs.pr }}
-      HEAD_SHA: ${{ needs.resolve.outputs.head_sha }}
-      FORCE_REVIEW: ${{ github.event_name == 'workflow_dispatch' }}
     steps:
-      - name: Checkout trusted policy and governance at the definition's own SHA
+      - name: Checkout trusted governance at the definition's own SHA
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ needs.resolve.outputs.trusted_sha }}
           fetch-depth: 1
 
-      - name: Scope
-        id: scope
-        env:
-          BUILDER: ${{ needs.resolve.outputs.builder }}
-          TECH_VERDICT: ${{ needs.resolve.outputs.tech_verdict }}
-          IS_FORK: ${{ needs.resolve.outputs.fork }}
-          IS_DRAFT: ${{ needs.resolve.outputs.draft }}
-        run: |
-          set -euo pipefail
-          if [ "$IS_FORK" = "true" ]; then
-            node scripts/agents/post-check.mjs --repo "$REPO" --name "Technical Review Gate" --sha "$HEAD_SHA" \
-              --conclusion failure --title "Fork PR" \
-              --summary "Agent-governed PRs must come from branches of this repository, never forks."
-            exit 1
-          fi
-          if [ "$IS_DRAFT" = "true" ] && [ "$FORCE_REVIEW" != "true" ]; then
-            node scripts/agents/post-check.mjs --repo "$REPO" --name "Technical Review Gate" --sha "$HEAD_SHA" \
-              --conclusion success --title "Draft" --summary "Review runs when the PR is marked ready."
-            echo "action=done" >> "$GITHUB_OUTPUT"; exit 0
-          fi
-          if [ "$BUILDER" = "builder:codex" ] && { [ "$TECH_VERDICT" = "none" ] || [ "$FORCE_REVIEW" = "true" ]; }; then
-            echo "action=claude-review" >> "$GITHUB_OUTPUT"; exit 0
-          fi
-          echo "action=evaluate" >> "$GITHUB_OUTPUT"
-
       - name: Checkout the PR HEAD as untrusted implementation data
-        if: steps.scope.outputs.action == 'claude-review'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ needs.resolve.outputs.head_sha }}
@@ -226,11 +212,9 @@ jobs:
           fetch-depth: 1
 
       - name: Exclude the untrusted checkout from the trusted tree's status
-        if: steps.scope.outputs.action == 'claude-review'
         run: echo "untrusted-pr-head/" >> .git/info/exclude
 
-      - name: Claude reviews the current HEAD (Reviewer 1 on builder:codex; AI credential only, NO signing key)
-        if: steps.scope.outputs.action == 'claude-review'
+      - name: Claude reviews the current HEAD (Reviewer 1 on builder:codex)
         uses: anthropics/claude-code-action@9c5ddab2e6d17b83ea679153b31f1d5f023cf636 # v1.0.217
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -280,26 +264,128 @@ jobs:
                APPROVE only if no blocking issue remains within your
                technical authority; BLOCK otherwise, findings listed.
 
-      - name: Validate the verdict (keyless) and verify the tree
-        if: steps.scope.outputs.action == 'claude-review'
+      - name: Verify the trees and stage the unsigned verdict
         run: |
           set -euo pipefail
           if [ -n "$(git status --porcelain)" ] || [ -n "$(git -C untrusted-pr-head status --porcelain)" ]; then
-            echo "::error::Tracked files were modified during review — refusing to publish a verdict."
+            echo "::error::Tracked files were modified during review — refusing to hand over a verdict."
             git status --porcelain; git -C untrusted-pr-head status --porcelain
             exit 1
           fi
+          cp /tmp/rekoda-claude-review.json ./unsigned-verdict.json
+
+      - name: Hand the unsigned verdict to the signing runner (untrusted data)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: verdict-technical
+          path: unsigned-verdict.json
+          retention-days: 1
+
+  technical:
+    name: Technical Review Gate publisher
+    needs: [resolve, technical_ai]
+    if: >-
+      !cancelled() && needs.resolve.result == 'success' &&
+      needs.resolve.outputs.pr != '' && needs.resolve.outputs.governed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # References ONLY the signing key from agents-claude-reviewer; no AI
+    # credential is ever materialized on this runner.
+    environment: agents-claude-reviewer
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      checks: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      PR: ${{ needs.resolve.outputs.pr }}
+      HEAD_SHA: ${{ needs.resolve.outputs.head_sha }}
+      AI_RESULT: ${{ needs.technical_ai.result }}
+    steps:
+      - name: Checkout trusted policy at the definition's own SHA
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.resolve.outputs.trusted_sha }}
+          fetch-depth: 1
+
+      - name: Fork / draft / AI-failure handling
+        id: scope
+        env:
+          IS_FORK: ${{ needs.resolve.outputs.fork }}
+          IS_DRAFT: ${{ needs.resolve.outputs.draft }}
+          FORCE_REVIEW: ${{ github.event_name == 'workflow_dispatch' }}
+        run: |
+          set -euo pipefail
+          if [ "$IS_FORK" = "true" ]; then
+            node scripts/agents/post-check.mjs --repo "$REPO" --name "Technical Review Gate" --sha "$HEAD_SHA" \
+              --conclusion failure --title "Fork PR" \
+              --summary "Agent-governed PRs must come from branches of this repository, never forks."
+            exit 1
+          fi
+          if [ "$IS_DRAFT" = "true" ] && [ "$FORCE_REVIEW" != "true" ]; then
+            node scripts/agents/post-check.mjs --repo "$REPO" --name "Technical Review Gate" --sha "$HEAD_SHA" \
+              --conclusion success --title "Draft" --summary "Review runs when the PR is marked ready."
+            echo "action=done" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if [ "$AI_RESULT" = "failure" ] || [ "$AI_RESULT" = "cancelled" ]; then
+            node scripts/agents/post-check.mjs --repo "$REPO" --name "Technical Review Gate" --sha "$HEAD_SHA" \
+              --conclusion failure --title "AI review did not complete" \
+              --summary "The reviewer run ended '$AI_RESULT'; redispatch Agent — gates for a fresh review."
+            exit 1
+          fi
+          if [ "$AI_RESULT" = "success" ]; then
+            echo "action=publish" >> "$GITHUB_OUTPUT"
+          else
+            echo "action=evaluate" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Independently re-resolve the current target state
+        if: steps.scope.outputs.action == 'publish' || steps.scope.outputs.action == 'evaluate'
+        id: fresh
+        run: |
+          set -euo pipefail
+          node scripts/agents/normalize.mjs --repo "$REPO" --pr "$PR" --out /tmp/state-fresh.json
+          node scripts/agents/run-gate.mjs --state /tmp/state-fresh.json --print-context
+
+      - name: Refuse to sign for a moved target
+        if: steps.scope.outputs.action == 'publish'
+        id: guard
+        run: |
+          set -euo pipefail
+          if [ "${{ steps.fresh.outputs.head_sha }}" != "$HEAD_SHA" ]; then
+            echo "The PR moved past $HEAD_SHA while the review ran — this request is superseded; the new head's own request owns evaluation."
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "${{ steps.fresh.outputs.contract_revision }}" != "${{ needs.resolve.outputs.contract_revision }}" ] || \
+             [ "${{ steps.fresh.outputs.issue }}" != "${{ needs.resolve.outputs.issue }}" ]; then
+            echo "::error::The contract moved while the review ran (revision/issue changed); not signing — the redispatched run owns publication."
+            exit 1
+          fi
+          echo "proceed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Receive the unsigned verdict (untrusted data)
+        if: steps.scope.outputs.action == 'publish' && steps.guard.outputs.proceed == 'true'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: verdict-technical
+
+      - name: Validate against FRESH state (keyless — the artifact cannot choose its target)
+        if: steps.scope.outputs.action == 'publish' && steps.guard.outputs.proceed == 'true'
+        run: |
+          set -euo pipefail
           node scripts/agents/validate-verdict.mjs \
-            --file /tmp/rekoda-claude-review.json \
+            --file unsigned-verdict.json \
             --marker REKODA_CLAUDE_APPROVAL \
             --pr "$PR" \
-            --issue "${{ needs.resolve.outputs.issue }}" \
-            --head "$HEAD_SHA" \
-            --revision "${{ needs.resolve.outputs.contract_revision }}" \
+            --issue "${{ steps.fresh.outputs.issue }}" \
+            --head "${{ steps.fresh.outputs.head_sha }}" \
+            --revision "${{ steps.fresh.outputs.contract_revision }}" \
             --out /tmp/rekoda-evidence-payload.json
 
       - name: Sign and publish the evidence (the ONLY step that sees the key)
-        if: steps.scope.outputs.action == 'claude-review'
+        if: steps.scope.outputs.action == 'publish' && steps.guard.outputs.proceed == 'true'
         env:
           CLAUDE_REVIEWER_SIGNING_KEY: ${{ secrets.CLAUDE_REVIEWER_SIGNING_KEY }}
         run: |
@@ -310,7 +396,9 @@ jobs:
           gh pr comment "$PR" --repo "$REPO" --body-file /tmp/marker.md
 
       - name: Final evaluation and check publication
-        if: steps.scope.outputs.action != 'done'
+        if: >-
+          steps.scope.outputs.action == 'evaluate' ||
+          (steps.scope.outputs.action == 'publish' && steps.guard.outputs.proceed == 'true')
         run: |
           set -euo pipefail
           node scripts/agents/normalize.mjs --repo "$REPO" --pr "$PR" --out /tmp/state-final.json
@@ -325,59 +413,28 @@ jobs:
             exit 1
           fi
 
-  acceptance:
-    name: Acceptance review lane
+  acceptance_ai:
+    name: Acceptance review — AI (no signing key)
     needs: resolve
-    if: needs.resolve.outputs.pr != '' && needs.resolve.outputs.governed == 'true'
+    if: needs.resolve.outputs.need_gemini_ai == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    # agents-gemini-reviewer holds the Gemini AI credential and (in its
-    # own step only) the Gemini reviewer signing key; deployment-branch
-    # policy restricted to main.
+    # References ONLY the AI credential from agents-gemini-reviewer.
     environment: agents-gemini-reviewer
     permissions:
       contents: read
-      pull-requests: write
-      issues: write
-      checks: write
+      issues: read
+      pull-requests: read
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      PR: ${{ needs.resolve.outputs.pr }}
-      HEAD_SHA: ${{ needs.resolve.outputs.head_sha }}
-      FORCE_REVIEW: ${{ github.event_name == 'workflow_dispatch' }}
     steps:
-      - name: Checkout trusted policy and governance at the definition's own SHA
+      - name: Checkout trusted governance at the definition's own SHA
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ needs.resolve.outputs.trusted_sha }}
           fetch-depth: 1
 
-      - name: Scope
-        id: scope
-        env:
-          GEMINI_VERDICT: ${{ needs.resolve.outputs.gemini_verdict }}
-          IS_FORK: ${{ needs.resolve.outputs.fork }}
-          IS_DRAFT: ${{ needs.resolve.outputs.draft }}
-        run: |
-          set -euo pipefail
-          if [ "$IS_FORK" = "true" ]; then
-            node scripts/agents/post-check.mjs --repo "$REPO" --name "Gemini Acceptance Gate" --sha "$HEAD_SHA" \
-              --conclusion failure --title "Fork PR" \
-              --summary "Agent-governed PRs must come from branches of this repository, never forks."
-            exit 1
-          fi
-          if [ "$IS_DRAFT" = "true" ] && [ "$FORCE_REVIEW" != "true" ]; then
-            node scripts/agents/post-check.mjs --repo "$REPO" --name "Gemini Acceptance Gate" --sha "$HEAD_SHA" \
-              --conclusion success --title "Draft" --summary "Acceptance review runs when the PR is marked ready."
-            echo "action=done" >> "$GITHUB_OUTPUT"; exit 0
-          fi
-          if [ "$GEMINI_VERDICT" = "none" ] || [ "$FORCE_REVIEW" = "true" ]; then
-            echo "action=gemini-review" >> "$GITHUB_OUTPUT"; exit 0
-          fi
-          echo "action=evaluate" >> "$GITHUB_OUTPUT"
-
       - name: Checkout the PR HEAD as untrusted implementation data
-        if: steps.scope.outputs.action == 'gemini-review'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ needs.resolve.outputs.head_sha }}
@@ -385,11 +442,9 @@ jobs:
           fetch-depth: 1
 
       - name: Exclude the untrusted checkout from the trusted tree's status
-        if: steps.scope.outputs.action == 'gemini-review'
         run: echo "untrusted-pr-head/" >> .git/info/exclude
 
-      - name: Gemini reviews system acceptance (Reviewer 2; AI credential only, NO signing key)
-        if: steps.scope.outputs.action == 'gemini-review'
+      - name: Gemini reviews system acceptance (Reviewer 2)
         uses: google-github-actions/run-gemini-cli@f77273f4c914e4bf38440cf36a0369cb64a37489 # v0.1.22
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -461,26 +516,128 @@ jobs:
                APPROVE only if no blocking issue remains within your
                acceptance authority; BLOCK otherwise, findings listed.
 
-      - name: Validate the verdict (keyless) and verify the tree
-        if: steps.scope.outputs.action == 'gemini-review'
+      - name: Verify the trees and stage the unsigned verdict
         run: |
           set -euo pipefail
           if [ -n "$(git status --porcelain)" ] || [ -n "$(git -C untrusted-pr-head status --porcelain)" ]; then
-            echo "::error::Tracked files were modified during acceptance review — refusing to publish a verdict."
+            echo "::error::Tracked files were modified during acceptance review — refusing to hand over a verdict."
             git status --porcelain; git -C untrusted-pr-head status --porcelain
             exit 1
           fi
+          cp /tmp/rekoda-gemini-review.json ./unsigned-verdict.json
+
+      - name: Hand the unsigned verdict to the signing runner (untrusted data)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: verdict-acceptance
+          path: unsigned-verdict.json
+          retention-days: 1
+
+  acceptance:
+    name: Gemini Acceptance Gate publisher
+    needs: [resolve, acceptance_ai]
+    if: >-
+      !cancelled() && needs.resolve.result == 'success' &&
+      needs.resolve.outputs.pr != '' && needs.resolve.outputs.governed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # References ONLY the signing key from agents-gemini-reviewer; no AI
+    # credential is ever materialized on this runner.
+    environment: agents-gemini-reviewer
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      checks: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      PR: ${{ needs.resolve.outputs.pr }}
+      HEAD_SHA: ${{ needs.resolve.outputs.head_sha }}
+      AI_RESULT: ${{ needs.acceptance_ai.result }}
+    steps:
+      - name: Checkout trusted policy at the definition's own SHA
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.resolve.outputs.trusted_sha }}
+          fetch-depth: 1
+
+      - name: Fork / draft / AI-failure handling
+        id: scope
+        env:
+          IS_FORK: ${{ needs.resolve.outputs.fork }}
+          IS_DRAFT: ${{ needs.resolve.outputs.draft }}
+          FORCE_REVIEW: ${{ github.event_name == 'workflow_dispatch' }}
+        run: |
+          set -euo pipefail
+          if [ "$IS_FORK" = "true" ]; then
+            node scripts/agents/post-check.mjs --repo "$REPO" --name "Gemini Acceptance Gate" --sha "$HEAD_SHA" \
+              --conclusion failure --title "Fork PR" \
+              --summary "Agent-governed PRs must come from branches of this repository, never forks."
+            exit 1
+          fi
+          if [ "$IS_DRAFT" = "true" ] && [ "$FORCE_REVIEW" != "true" ]; then
+            node scripts/agents/post-check.mjs --repo "$REPO" --name "Gemini Acceptance Gate" --sha "$HEAD_SHA" \
+              --conclusion success --title "Draft" --summary "Acceptance review runs when the PR is marked ready."
+            echo "action=done" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if [ "$AI_RESULT" = "failure" ] || [ "$AI_RESULT" = "cancelled" ]; then
+            node scripts/agents/post-check.mjs --repo "$REPO" --name "Gemini Acceptance Gate" --sha "$HEAD_SHA" \
+              --conclusion failure --title "AI review did not complete" \
+              --summary "The reviewer run ended '$AI_RESULT'; redispatch Agent — gates for a fresh review."
+            exit 1
+          fi
+          if [ "$AI_RESULT" = "success" ]; then
+            echo "action=publish" >> "$GITHUB_OUTPUT"
+          else
+            echo "action=evaluate" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Independently re-resolve the current target state
+        if: steps.scope.outputs.action == 'publish' || steps.scope.outputs.action == 'evaluate'
+        id: fresh
+        run: |
+          set -euo pipefail
+          node scripts/agents/normalize.mjs --repo "$REPO" --pr "$PR" --out /tmp/state-fresh.json
+          node scripts/agents/run-gate.mjs --state /tmp/state-fresh.json --print-context
+
+      - name: Refuse to sign for a moved target
+        if: steps.scope.outputs.action == 'publish'
+        id: guard
+        run: |
+          set -euo pipefail
+          if [ "${{ steps.fresh.outputs.head_sha }}" != "$HEAD_SHA" ]; then
+            echo "The PR moved past $HEAD_SHA while the review ran — this request is superseded; the new head's own request owns evaluation."
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "${{ steps.fresh.outputs.contract_revision }}" != "${{ needs.resolve.outputs.contract_revision }}" ] || \
+             [ "${{ steps.fresh.outputs.issue }}" != "${{ needs.resolve.outputs.issue }}" ]; then
+            echo "::error::The contract moved while the review ran (revision/issue changed); not signing — the redispatched run owns publication."
+            exit 1
+          fi
+          echo "proceed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Receive the unsigned verdict (untrusted data)
+        if: steps.scope.outputs.action == 'publish' && steps.guard.outputs.proceed == 'true'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: verdict-acceptance
+
+      - name: Validate against FRESH state (keyless — the artifact cannot choose its target)
+        if: steps.scope.outputs.action == 'publish' && steps.guard.outputs.proceed == 'true'
+        run: |
+          set -euo pipefail
           node scripts/agents/validate-verdict.mjs \
-            --file /tmp/rekoda-gemini-review.json \
+            --file unsigned-verdict.json \
             --marker REKODA_GEMINI_APPROVAL \
             --pr "$PR" \
-            --issue "${{ needs.resolve.outputs.issue }}" \
-            --head "$HEAD_SHA" \
-            --revision "${{ needs.resolve.outputs.contract_revision }}" \
+            --issue "${{ steps.fresh.outputs.issue }}" \
+            --head "${{ steps.fresh.outputs.head_sha }}" \
+            --revision "${{ steps.fresh.outputs.contract_revision }}" \
             --out /tmp/rekoda-evidence-payload.json
 
       - name: Sign and publish the evidence (the ONLY step that sees the key)
-        if: steps.scope.outputs.action == 'gemini-review'
+        if: steps.scope.outputs.action == 'publish' && steps.guard.outputs.proceed == 'true'
         env:
           GEMINI_REVIEWER_SIGNING_KEY: ${{ secrets.GEMINI_REVIEWER_SIGNING_KEY }}
         run: |
@@ -491,7 +648,9 @@ jobs:
           gh pr comment "$PR" --repo "$REPO" --body-file /tmp/marker.md
 
       - name: Final evaluation and check publication
-        if: steps.scope.outputs.action != 'done'
+        if: >-
+          steps.scope.outputs.action == 'evaluate' ||
+          (steps.scope.outputs.action == 'publish' && steps.guard.outputs.proceed == 'true')
         run: |
           set -euo pipefail
           node scripts/agents/normalize.mjs --repo "$REPO" --pr "$PR" --out /tmp/state-final.json

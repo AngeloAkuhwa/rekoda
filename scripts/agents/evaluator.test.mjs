@@ -29,6 +29,8 @@ import {
   isContractAmendmentAuthorized,
   evaluateBuildAdmission,
   linkedOpenPrs,
+  selectLinkedPrs,
+  resolveWorkflowRunTarget,
   SCHEME,
 } from './evaluator.mjs';
 
@@ -952,6 +954,8 @@ test('15h. contemporaneous agreeing verdicts across domains are fine; a later on
 // Build admission (audit items 8/11) — the no-secret preflight's brain
 // ---------------------------------------------------------------------------
 
+const OK_CONTRACT = { baselineFound: true, invalid: null, amended: false, revision: 1 };
+
 const readyIssue = (over = {}) => ({
   number: 60,
   exists: true,
@@ -965,6 +969,7 @@ const readyIssue = (over = {}) => ({
 
 test('a valid READY builder:claude issue is admitted when the lane is free', () => {
   const r = evaluateBuildAdmission({
+    contract: OK_CONTRACT,
     issue: readyIssue(),
     requiredBuilder: 'builder:claude',
     openLanes: [],
@@ -974,6 +979,7 @@ test('a valid READY builder:claude issue is admitted when the lane is free', () 
 
 test('6g. an unrelated/non-agent issue is rejected', () => {
   const r = evaluateBuildAdmission({
+    contract: OK_CONTRACT,
     issue: readyIssue({ agentTask: false, labels: ['status:ready'] }),
     requiredBuilder: 'builder:claude',
     openLanes: [],
@@ -984,6 +990,7 @@ test('6g. an unrelated/non-agent issue is rejected', () => {
 
 test('7g. a builder:codex issue never admits the Claude builder', () => {
   const r = evaluateBuildAdmission({
+    contract: OK_CONTRACT,
     issue: readyIssue({
       builderLabels: ['builder:codex'],
       labels: ['agent-task', 'risk:R1', 'builder:codex', 'status:ready'],
@@ -997,6 +1004,7 @@ test('7g. a builder:codex issue never admits the Claude builder', () => {
 test('8g. a closed or missing issue is rejected', () => {
   assert.ok(
     evaluateBuildAdmission({
+      contract: OK_CONTRACT,
       issue: readyIssue({ state: 'closed' }),
       requiredBuilder: 'builder:claude',
       openLanes: [],
@@ -1004,6 +1012,7 @@ test('8g. a closed or missing issue is rejected', () => {
   );
   assert.ok(
     evaluateBuildAdmission({
+      contract: OK_CONTRACT,
       issue: null,
       requiredBuilder: 'builder:claude',
       openLanes: [],
@@ -1013,6 +1022,7 @@ test('8g. a closed or missing issue is rejected', () => {
 
 test('9g. blocked-decision / needs-owner-decision issues are rejected', () => {
   const r = evaluateBuildAdmission({
+    contract: OK_CONTRACT,
     issue: readyIssue({
       labels: [
         'agent-task',
@@ -1030,6 +1040,7 @@ test('9g. blocked-decision / needs-owner-decision issues are rejected', () => {
 
 test('a not-READY issue is rejected', () => {
   const r = evaluateBuildAdmission({
+    contract: OK_CONTRACT,
     issue: readyIssue({ labels: ['agent-task', 'risk:R1', 'builder:claude', 'backlog'] }),
     requiredBuilder: 'builder:claude',
     openLanes: [],
@@ -1039,6 +1050,7 @@ test('a not-READY issue is rejected', () => {
 
 test('13g2. an occupied implementation lane rejects a second admission', () => {
   const r = evaluateBuildAdmission({
+    contract: OK_CONTRACT,
     issue: readyIssue(),
     requiredBuilder: 'builder:claude',
     openLanes: [{ issue: 44, status: 'status:in-review' }],
@@ -1093,4 +1105,192 @@ test('5g. a signed revision invalidates same-HEAD approvals regardless of commen
   const r = evaluate(s);
   assert.equal(r.pass, false);
   assert.ok(codes(r).includes('TECH_WRONG_REVISION') && codes(r).includes('GEMINI_WRONG_REVISION'));
+});
+
+// ---------------------------------------------------------------------------
+// Phase-2: workflow_run target resolution (activation blocker 1)
+// ---------------------------------------------------------------------------
+
+const cand = (over = {}) => ({
+  number: 90,
+  state: 'open',
+  headSha: HEAD,
+  baseRepo: 'AngeloAkuhwa/rekoda',
+  ...over,
+});
+
+test('workflow_run resolver: exactly one matching open candidate resolves', () => {
+  assert.deepEqual(
+    resolveWorkflowRunTarget({ headSha: HEAD, candidates: [cand()], repo: 'AngeloAkuhwa/rekoda' }),
+    { pr: 90, status: 'ok' },
+  );
+});
+
+test('workflow_run resolver: zero candidates → none (nothing to evaluate)', () => {
+  assert.equal(
+    resolveWorkflowRunTarget({ headSha: HEAD, candidates: [], repo: 'x/y' }).status,
+    'none',
+  );
+  assert.equal(
+    resolveWorkflowRunTarget({
+      headSha: HEAD,
+      candidates: [cand({ state: 'closed' })],
+      repo: 'AngeloAkuhwa/rekoda',
+    }).status,
+    'none',
+  );
+});
+
+test('workflow_run resolver: multiple open candidates → ambiguous, fail closed', () => {
+  const r = resolveWorkflowRunTarget({
+    headSha: HEAD,
+    candidates: [cand(), cand({ number: 91 })],
+    repo: 'AngeloAkuhwa/rekoda',
+  });
+  assert.deepEqual(r, { pr: null, status: 'ambiguous' });
+});
+
+test('workflow_run resolver: force-pushed candidate (current HEAD moved) → stale, do not evaluate', () => {
+  const r = resolveWorkflowRunTarget({
+    headSha: OLD_HEAD,
+    candidates: [cand()], // candidate now at HEAD, run was for OLD_HEAD
+    repo: 'AngeloAkuhwa/rekoda',
+  });
+  assert.deepEqual(r, { pr: 90, status: 'stale' });
+});
+
+test('workflow_run resolver: wrong-base-repo candidate is not a target', () => {
+  const r = resolveWorkflowRunTarget({
+    headSha: HEAD,
+    candidates: [cand({ baseRepo: 'someone/else' })],
+    repo: 'AngeloAkuhwa/rekoda',
+  });
+  assert.equal(r.status, 'none');
+});
+
+test('workflow_run resolver: malformed triggering SHA resolves nothing', () => {
+  assert.equal(
+    resolveWorkflowRunTarget({ headSha: 'not-a-sha', candidates: [cand()] }).status,
+    'none',
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Phase-2: signer-time independent revalidation (activation blocker 2)
+// ---------------------------------------------------------------------------
+
+test('an unsigned AI verdict cannot choose its target: only markers matching the FRESH target count', () => {
+  // The signing job binds evidence to freshly re-resolved values; a
+  // verdict naming an attacker-chosen PR/HEAD/revision is exactly a
+  // mistargeted marker, which the evaluator rejects wholesale.
+  const s = codexBuiltState();
+  s.techEvidence.candidates = [
+    {
+      author: ACTIONS,
+      kind: 'comment',
+      createdAt: 'x',
+      id: 1,
+      body: marker(MARKERS.claude, { key: CLAUDE_KEY, pr: 999 }),
+    },
+  ];
+  expectBlock(s, 'TECH_WRONG_PR');
+});
+
+test('HEAD moved between AI review and signing → the signed-late verdict is stale for the new HEAD', () => {
+  const s = codexBuiltState();
+  s.pr.headSha = 'd'.repeat(40); // push landed after the AI reviewed
+  const r = evaluate(s);
+  assert.equal(r.pass, false);
+  assert.ok(codes(r).includes('TECH_APPROVAL_STALE'));
+});
+
+test('contract revision moved between AI review and signing → verdict binds the old revision and is rejected', () => {
+  const s = codexBuiltState();
+  const newBody = ISSUE_BODY + '\n\nRevised mid-review.';
+  s.issue.body = newBody;
+  s.issue.comments = [
+    contractComment(),
+    contractComment({
+      kind: 'REKODA_CONTRACT_REVISION',
+      revision: 2,
+      body: newBody,
+      author: OWNER,
+      id: 2,
+      createdAt: 'y',
+    }),
+  ];
+  expectBlock(s, 'TECH_WRONG_REVISION');
+});
+
+// ---------------------------------------------------------------------------
+// Phase-2: baseline before admission (activation blocker 5)
+// ---------------------------------------------------------------------------
+
+test('admission without a contract baseline is refused — no lane claim, no builder', () => {
+  const r = evaluateBuildAdmission({
+    contract: { baselineFound: false, invalid: null, amended: false },
+    issue: readyIssue(),
+    requiredBuilder: 'builder:claude',
+    openLanes: [],
+  });
+  assert.equal(r.admit, false);
+  assert.ok(r.reasons.some((x) => x.code === 'ADMIT_BASELINE_MISSING'));
+  const r2 = evaluateBuildAdmission({
+    contract: undefined,
+    issue: readyIssue(),
+    requiredBuilder: 'builder:claude',
+    openLanes: [],
+  });
+  assert.ok(r2.reasons.some((x) => x.code === 'ADMIT_BASELINE_MISSING'));
+});
+
+test('admission with an invalid or amended contract is refused', () => {
+  const bad = evaluateBuildAdmission({
+    contract: {
+      baselineFound: true,
+      invalid: 'conflicting markers for revision 2',
+      amended: false,
+    },
+    issue: readyIssue(),
+    requiredBuilder: 'builder:claude',
+    openLanes: [],
+  });
+  assert.ok(bad.reasons.some((x) => x.code === 'ADMIT_CONTRACT_INVALID'));
+  const amended = evaluateBuildAdmission({
+    contract: { baselineFound: true, invalid: null, amended: true },
+    issue: readyIssue(),
+    requiredBuilder: 'builder:claude',
+    openLanes: [],
+  });
+  assert.ok(amended.reasons.some((x) => x.code === 'ADMIT_CONTRACT_INVALID'));
+});
+
+test('admission with a valid baseline (and everything else) is granted', () => {
+  const r = evaluateBuildAdmission({
+    contract: { baselineFound: true, invalid: null, amended: false, revision: 1 },
+    issue: readyIssue(),
+    requiredBuilder: 'builder:claude',
+    openLanes: [],
+  });
+  assert.deepEqual(r, { admit: true, reasons: [] });
+});
+
+// ---------------------------------------------------------------------------
+// Phase-2: complete linked-PR pagination (activation blocker 4)
+// ---------------------------------------------------------------------------
+
+test('linked-PR selection finds PRs beyond the first page and fails closed on incomplete listings', () => {
+  const page1 = Array.from({ length: 100 }, (_, i) => ({ number: i + 1, body: 'unrelated' }));
+  const page2 = [{ number: 150, body: 'Closes #44' }];
+  const all = [...page1, ...page2];
+  assert.deepEqual(selectLinkedPrs({ openPrs: all, complete: true, issueNumber: 44 }), {
+    ok: true,
+    prs: [150],
+  });
+  assert.deepEqual(selectLinkedPrs({ openPrs: all, complete: true, issueNumber: 9999 }), {
+    ok: true,
+    prs: [],
+  });
+  const incomplete = selectLinkedPrs({ openPrs: page1, complete: false, issueNumber: 44 });
+  assert.equal(incomplete.ok, false); // pagination ceiling / API failure → never silently miss a PR
 });
