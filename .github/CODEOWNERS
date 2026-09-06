@@ -1,8 +1,52 @@
-# Default owner for everything in the repository.
-* @AngeloAkuhwa
+# Ownership is deliberately NOT "everything". Two SEPARATE requirements:
+# risk-based owner approval (R3, AGENTS.md §4) and path-based CODEOWNER
+# review (this file). An R0/R1/R2 PR that touches a path below still
+# requires the owner's review when branch protection enforces code owners
+# — risk level does not exempt a protected path. Work touching none of
+# these paths merges on CI + the agent policy gate + the non-builder
+# technical review + the Gemini acceptance gate, which is what lets the
+# autonomous loop run without the owner in every PR.
+# Enforced only when branch protection requires code-owner review.
 
-# Financial core and security-sensitive paths — always reviewed by the owner.
+# ── Financial core and ledger invariants ───────────────────────────────────
 /packages/core/ @AngeloAkuhwa
+
+# ── Database: schema, migrations, RLS, tenant isolation ────────────────────
 /packages/db/ @AngeloAkuhwa
+
+# ── Authentication, sessions, operator plane, API keys ─────────────────────
+/apps/api/src/auth/ @AngeloAkuhwa
+/apps/api/src/api/ @AngeloAkuhwa
+/apps/web/src/server/ @AngeloAkuhwa
+
+# ── Money movement: payments, bank data, billing ───────────────────────────
+/apps/api/src/payments/ @AngeloAkuhwa
+/apps/api/src/bank/ @AngeloAkuhwa
+/apps/api/src/billing/ @AngeloAkuhwa
+
+# ── Privacy: vault, PII gateway, retention ─────────────────────────────────
+/apps/api/src/privacy/ @AngeloAkuhwa
+
+# ── Inbound webhook verification (Meta; Paystack's is under payments/) ─────
+/apps/api/src/channels/meta.controller.ts @AngeloAkuhwa
+
+# ── Legal and compliance claims ────────────────────────────────────────────
+/apps/web/src/app/privacy/ @AngeloAkuhwa
+/apps/web/src/app/terms/ @AngeloAkuhwa
+/apps/web/src/app/refunds/ @AngeloAkuhwa
+/apps/web/src/app/security/ @AngeloAkuhwa
+/apps/web/src/app/ai-privacy/ @AngeloAkuhwa
+/apps/web/src/app/data-deletion/ @AngeloAkuhwa
+/apps/web/legal-gate.mjs @AngeloAkuhwa
+/docs/compliance/ @AngeloAkuhwa
+
+# ── Decision records and security policy ───────────────────────────────────
 /docs/adr/ @AngeloAkuhwa
 /SECURITY.md @AngeloAkuhwa
+
+# ── Production workflow / CI enforcement / agent governance ────────────────
+/.github/ @AngeloAkuhwa
+/scripts/ @AngeloAkuhwa
+/AGENTS.md @AngeloAkuhwa
+/CLAUDE.md @AngeloAkuhwa
+/GEMINI.md @AngeloAkuhwa

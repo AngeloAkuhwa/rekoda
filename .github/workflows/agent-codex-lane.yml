@@ -1,0 +1,58 @@
+# Claim Codex implementation lane (docs/AUTONOMOUS-ENGINEERING.md §3/§8).
+#
+# Codex Cloud builds start OUTSIDE GitHub Actions, so GitHub concurrency
+# cannot govern the Codex process itself. What it CAN govern is the lane
+# state: this owner/write-dispatched workflow runs the SAME deterministic
+# admission as the Claude builder, under the SAME repository-wide
+# `rekoda-implementation-lane` concurrency group, and atomically claims
+# the lane (status:ready → status:building) for a builder:codex issue.
+# A Codex Cloud build is started only AFTER this claim succeeds — both
+# builder types then respect one GitHub-owned lane state.
+name: Agent — claim Codex lane
+
+on:
+  workflow_dispatch:
+    inputs:
+      issue:
+        description: READY builder:codex issue number to claim the lane for
+        required: true
+        type: number
+
+permissions: {}
+
+concurrency:
+  group: rekoda-implementation-lane
+  cancel-in-progress: false
+
+jobs:
+  claim:
+    name: Claim Codex lane
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      REPO: ${{ github.repository }}
+      ISSUE: ${{ inputs.issue }}
+      ACTOR: ${{ github.actor }}
+    steps:
+      - name: Checkout trusted policy (default-branch definition SHA)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+
+      - name: Authorize actor, admit atomically, claim the lane
+        run: |
+          set -euo pipefail
+          perm=$(gh api "repos/$REPO/collaborators/$ACTOR/permission" --jq .permission)
+          case "$perm" in
+            admin|maintain|write) echo "Actor $ACTOR permission: $perm" ;;
+            *) echo "::error::Actor $ACTOR (permission: $perm) may not claim the implementation lane."; exit 1 ;;
+          esac
+          node scripts/agents/build-admission.mjs --repo "$REPO" --issue "$ISSUE" \
+            --builder builder:codex --transition
+          gh issue comment "$ISSUE" --repo "$REPO" \
+            --body "REKODA_CODEX_LANE_CLAIMED — start the Codex Cloud build for this issue now; the implementation lane is claimed."

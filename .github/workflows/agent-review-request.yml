@@ -1,0 +1,32 @@
+# Review request — the NO-SECRET trigger half of the trusted-base gate
+# architecture (docs/AUTONOMOUS-ENGINEERING.md §6).
+#
+# This workflow's ONLY purpose is to complete, so that the privileged
+# `Agent — gates` workflow fires via workflow_run. That privileged
+# workflow's definition executes from the DEFAULT BRANCH by GitHub's
+# documented workflow_run semantics — a PR can edit THIS file freely and
+# gain nothing: there are no secrets here, nothing this run produces is
+# trusted, and the privileged side re-resolves every fact (PR, HEAD,
+# issue, labels, revision) from the GitHub API itself. Suppressing or
+# gaming this trigger only means the required gate checks never report —
+# fail closed.
+name: Agent — review request
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
+  pull_request_review:
+    types: [submitted, dismissed]
+
+permissions: {}
+
+jobs:
+  request:
+    name: Review request
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Request gate evaluation
+        run: |
+          echo "Review requested for ${{ github.event.pull_request.number || 'a review event' }} at ${{ github.event.pull_request.head.sha || github.sha }}."
+          echo "The privileged 'Agent — gates' workflow (default-branch definition) evaluates independently."
