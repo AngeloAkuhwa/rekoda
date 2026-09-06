@@ -2,8 +2,10 @@
 
 Provider-neutral rules for every AI agent (Claude, Gemini, Codex, or any
 successor) working in this repository. Load this first, every session. Role
-instructions live in `CLAUDE.md` (implementer) and `GEMINI.md` (planner);
-the full operating model is `docs/AUTONOMOUS-ENGINEERING.md`.
+instructions live in `CLAUDE.md` (engineer: builder or technical reviewer)
+and `GEMINI.md` (planner and system acceptance reviewer); the full
+operating model is `docs/AUTONOMOUS-ENGINEERING.md`. The roles and review
+rules are §7–§9 of this file.
 
 ## 1. Priority: launch first
 
@@ -60,8 +62,9 @@ Violating any of them is a bug, never a style preference.
    ADR — which is an R3 owner decision.
 10. **Every bug fix lands with a regression test that fails before the fix.**
     Never skip, disable, or quarantine a failing test to get green.
-11. **No direct push to `main`.** All change flows through a PR with green
-    CI. No agent merges its own PR.
+11. **No direct push to `main`.** All change flows through a PR that
+    clears every merge gate (§9). The builder never approves its own PR,
+    and no agent ever uses an admin or bypass merge.
 12. **Never hold, route, or delay funds** and never take on KYC of a
     merchant's customers (`docs/safety-review.md` §3 — RED items are
     company-ending, not expensive).
@@ -109,3 +112,88 @@ why. A green tick that ran nothing is a lie.
   work needs no HANDOFF edit.
 - Decision-level ambiguity is marked `status:blocked-decision` on the
   issue, never resolved by guessing.
+
+## 7. Peer engineers and the one-builder rule
+
+- **Claude and Codex are peer principal implementation engineers.**
+  **Gemini** is the planner / issue owner and the system acceptance
+  reviewer. **GitHub** is the engineering control plane and the final
+  merge authority. **Angelo** decides R3 and launch/business/legal/
+  provider questions — nothing routine.
+- Every implementation issue carries **exactly one** builder label —
+  `builder:claude` or `builder:codex` — assigned by the planner from the
+  evidence in the issue (routing guidance: `GEMINI.md`). Once the
+  autonomous system is active, no implementation PR may have both or
+  neither.
+- The non-building engineer is **Reviewer 1** (technical/adversarial
+  review). Gemini is always **Reviewer 2** (system acceptance). The
+  builder **never** approves, reviews-for-the-gate, or otherwise signs off
+  its own implementation, and never satisfies its own technical-review
+  requirement.
+
+## 8. Code review rules
+
+Every implementation review evaluates **three contracts**, in this order:
+
+1. **The linked GitHub issue** — the task-specific contract. The issue is
+   authoritative for Outcome, Scope, Non-goals, Acceptance criteria,
+   Required tests, Risk, Codex review focus, Gemini review focus, and
+   required merge evidence. The builder provides **evidence against** the
+   acceptance criteria; it may not rewrite the criteria to fit the
+   implementation. If a genuine requirement must change after
+   implementation starts, the change and its reason are recorded
+   transparently on the issue — never silently edited in.
+2. **Canonical repository state and accepted ADRs** — the
+   system/invariant contract (§2, §3).
+3. **The current PR HEAD plus executable evidence** — the implementation
+   contract. Reviewers evaluate what is actually at HEAD, not the PR's
+   description of it.
+
+Approvals bind to an **exact HEAD SHA**. Any push changes HEAD and
+invalidates **both** agent approvals; a previous SHA never approves a new
+SHA. Silence is never approval, and a malformed or wrong-identity approval
+is no approval.
+
+## 9. Merge authority
+
+GitHub — branch protection plus the deterministic gates — is the final
+merge authority. A PR is eligible to merge only when **all** of:
+
+1. every required deterministic CI check is green for the current HEAD;
+2. the non-builder technical reviewer approves the current HEAD;
+3. Gemini approves system acceptance for the current HEAD;
+4. no blocking review thread remains unresolved;
+5. the Agent policy gate passes;
+6. R3 only: Angelo's explicit approving review of the current HEAD, with
+   the recorded owner decision.
+
+The builder may **request or enable GitHub auto-merge** (squash), which
+GitHub holds until the gates pass. No agent may ever: use an admin merge
+or `--admin`, bypass branch protection, push or force-push `main`
+directly, fabricate a review approval, or approve itself.
+
+## Code Review Rules
+
+When reviewing a pull request in this repository (this section is also
+read by Codex's native review):
+
+- Evaluate the three contracts of §8: the linked issue, the accepted
+  ADRs/invariants of §3, and the actual code at the PR's current HEAD.
+- Probe hardest at: financial correctness (integer kobo, balanced
+  postings, append-only history), tenant isolation/RLS, privacy/PII
+  boundaries, security, races and concurrency, idempotency, migrations,
+  failure paths, and tests that pass for the wrong reason. Add the
+  issue's task-specific review focus.
+- End **every** review — including reviews with no findings — with this
+  exact block, using the PR's current HEAD commit SHA:
+
+  ```
+  REKODA_CODEX_APPROVAL
+  PR: <number>
+  ISSUE: <linked issue number>
+  HEAD_SHA: <40-char SHA of the commit reviewed>
+  VERDICT: APPROVE|BLOCK
+  ```
+
+  BLOCK if any blocking issue remains; APPROVE only if none does. Never
+  emit a marker for a commit other than the one actually reviewed.

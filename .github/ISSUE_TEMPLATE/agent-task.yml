@@ -1,5 +1,5 @@
 name: Agent task
-description: An implementation-ready unit of work for the autonomous engineering loop (see docs/AUTONOMOUS-ENGINEERING.md).
+description: An implementation-ready unit of work for the autonomous engineering loop (see docs/AUTONOMOUS-ENGINEERING.md). Once implementation starts, this issue is the immutable task/review contract — if a genuine requirement must change, record the change and its reason here transparently instead of silently rewriting it.
 labels: [agent-task]
 body:
   - type: textarea
@@ -68,6 +68,37 @@ body:
         - R1 — ordinary isolated behaviour
         - R2 — schema/integrations/jobs/cross-module
         - R3 — owner decision required
+    validations:
+      required: true
+  - type: dropdown
+    id: builder
+    attributes:
+      label: Preferred builder
+      description: Exactly one builder per issue (AGENTS.md §7); the planner also applies the matching builder:claude / builder:codex label. The non-building engineer becomes Reviewer 1. Routing guidance is in GEMINI.md.
+      options:
+        - Claude
+        - Codex
+    validations:
+      required: true
+  - type: textarea
+    id: codex-review-focus
+    attributes:
+      label: Codex review focus
+      description: Task-specific angles Codex's technical review must probe (beyond its standing adversarial scope). If Codex is the builder, this becomes guidance for Claude's technical review of the same surfaces.
+    validations:
+      required: true
+  - type: textarea
+    id: gemini-review-focus
+    attributes:
+      label: Gemini review focus
+      description: Task-specific system-acceptance angles — end-to-end behaviour, cross-module fit, docs/provider/operational implications Gemini must verify.
+    validations:
+      required: true
+  - type: textarea
+    id: merge-evidence
+    attributes:
+      label: Required merge evidence
+      description: The concrete evidence the PR must present before merge — test output, migration replay, sandbox validation, screenshots — proportionate to the risk level.
     validations:
       required: true
   - type: textarea

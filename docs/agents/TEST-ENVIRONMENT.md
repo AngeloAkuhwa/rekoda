@@ -1,4 +1,4 @@
-# The `test` GitHub Environment
+# The `agents` and `test` GitHub Environments
 
 How the autonomous-engineering workflows get credentials, and how Rekoda's
 own runtime configuration is provided when a workflow boots the stack. No
@@ -6,10 +6,24 @@ secret **values** appear in this document, ever — only names and where each
 value lives.
 
 **The rule that shapes everything here:** agent credentials and Rekoda
-runtime credentials are two different things and never share a name. An
-agent credential authenticates an engineering agent to its own provider
-(Anthropic, Google). A runtime credential is Rekoda's own configuration.
-Where the runtime name would collide with an agent name, the GitHub secret
+runtime credentials are two different things, live in two different GitHub
+Environments, and never share a name.
+
+- **Environment `agents`** — credentials that authenticate an engineering
+  agent to its own provider (Anthropic, Google). Only the agent workflows
+  reference it. It contains **no** Rekoda runtime configuration.
+- **Environment `test`** — Rekoda application/runtime sandbox credentials
+  only (`TEST_REKODA_…` names). Only jobs that boot or test the Rekoda
+  stack reference it. It contains **no** agent credentials.
+
+An engineering agent never receives Rekoda runtime provider credentials
+unless a task explicitly requires a sandbox validation job — and that
+validation should preferably be deterministic, non-agent code in a job
+that references `test` while the agent job references `agents`. Production
+credentials are never available to any autonomous agent workflow, in
+either environment.
+
+Where a runtime name would collide with an agent name, the GitHub secret
 carries a `TEST_REKODA_` prefix and the workflow's `env:` block maps it to
 the runtime name explicitly:
 
@@ -21,15 +35,15 @@ env:
 `CLAUDE_CODE_OAUTH_TOKEN` is never handed to the Rekoda application, and
 `TEST_REKODA_ANTHROPIC_API_KEY` is never handed to the Claude agent.
 
-## A. Agent credentials (environment `test`, secrets)
+## A. Agent credentials (environment `agents`, secrets)
 
-| GitHub secret             | Used by                     | Notes                                                                                                                                                                      |
-| ------------------------- | --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `CLAUDE_CODE_OAUTH_TOKEN` | Claude implementer workflow | Subscription OAuth token from `claude setup-token`. No `ANTHROPIC_API_KEY` is configured for the agent — subscription auth is the only path.                               |
-| `GEMINI_API_KEY`          | Gemini planner workflow     | Unattended API key for GitHub Actions.                                                                                                                                     |
-| _(none for Codex)_        | —                           | Codex review runs on OpenAI's native GitHub integration under the owner's ChatGPT subscription. No `OPENAI_API_KEY` repository secret exists for review in this iteration. |
+| GitHub secret             | Used by                                               | Notes                                                                                                                                                                             |
+| ------------------------- | ----------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CLAUDE_CODE_OAUTH_TOKEN` | Claude builder and Claude technical-review workflows  | Subscription OAuth token from `claude setup-token`. No `ANTHROPIC_API_KEY` is configured for the agent — subscription auth is the only path.                                      |
+| `GEMINI_API_KEY`          | Gemini planner and Gemini acceptance-review workflows | Unattended API key for GitHub Actions.                                                                                                                                            |
+| _(none for Codex)_        | —                                                     | Codex review and Codex building run on OpenAI's native GitHub integration under the owner's ChatGPT subscription. No `OPENAI_API_KEY` repository secret exists in this iteration. |
 
-## B. Rekoda runtime configuration for CI/test
+## B. Rekoda runtime configuration for CI/test (environment `test`)
 
 Classification of every `.env.example` setting. Categories:
 
@@ -140,7 +154,8 @@ the production bucket.
   `sandbox` per ADR 0033; `live` never).
 - Any **live** provider key (Paystack `sk_live_…`, production Meta token,
   production R2 credentials, production database URL). If one is ever
-  found in the `test` environment, treat it as burned and rotate.
+  found in the `test` or `agents` environment, treat it as burned and
+  rotate.
 
 ## Provider test principle
 

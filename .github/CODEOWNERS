@@ -1,7 +1,8 @@
 # Ownership is deliberately NOT "everything": the owner is a required
 # reviewer only where a change is R3/sensitive by nature (AGENTS.md §4).
-# Ordinary R0-R2 work merges on CI + the agent policy gate + Codex review,
-# which is what lets the autonomous loop run without the owner in every PR.
+# Ordinary R0-R2 work merges on CI + the agent policy gate + the
+# non-builder technical review + the Gemini acceptance gate, which is what
+# lets the autonomous loop run without the owner in every PR.
 # Enforced only when branch protection requires code-owner review.
 
 # ── Financial core and ledger invariants ───────────────────────────────────
