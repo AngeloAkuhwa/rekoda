@@ -54,20 +54,22 @@ jobs:
           settings: |
             {
               "maxSessionTurns": 40,
-              "coreTools": [
-                "read_file",
-                "read_many_files",
-                "glob",
-                "search_file_content",
-                "run_shell_command(gh label list)",
-                "run_shell_command(gh issue list)",
-                "run_shell_command(gh issue view)",
-                "run_shell_command(gh issue create)",
-                "run_shell_command(gh issue edit)",
-                "run_shell_command(gh issue comment)",
-                "run_shell_command(gh pr list)",
-                "run_shell_command(gh pr view)"
-              ],
+              "tools": {
+                "core": [
+                  "read_file",
+                  "read_many_files",
+                  "glob",
+                  "search_file_content",
+                  "run_shell_command(gh label list)",
+                  "run_shell_command(gh issue list)",
+                  "run_shell_command(gh issue view)",
+                  "run_shell_command(gh issue create)",
+                  "run_shell_command(gh issue edit)",
+                  "run_shell_command(gh issue comment)",
+                  "run_shell_command(gh pr list)",
+                  "run_shell_command(gh pr view)"
+                ]
+              },
               "telemetry": { "enabled": false }
             }
           prompt: |
