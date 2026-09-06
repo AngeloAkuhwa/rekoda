@@ -13,7 +13,7 @@
  *
  *   node scripts/agents/sign-evidence.mjs --file unsigned-verdict.json \
  *     --marker REKODA_CLAUDE_APPROVAL --pr 55 --issue 44 --head <sha> \
- *     --revision 1 --contract-hash <sha256-of-active-contract-body> \
+ *     --revision 1 --snapshot-hash <sha256-of-active-contract-snapshot> \
  *     --sign-env CLAUDE_REVIEWER_SIGNING_KEY > marker.md
  */
 import { readFileSync, appendFileSync } from 'node:fs';
@@ -43,19 +43,20 @@ if (!keyPem)
   );
 
 // The FRESH trusted target (independently re-resolved by the caller),
-// including the ACTIVE authorized contract snapshot hash — the exact
-// contract the reviewer was given to assess.
+// including the ACTIVE authorized contract SNAPSHOT hash (issue,
+// revision, risk, builder, body hash) — the exact contract the reviewer
+// was given to assess.
 const expected = {
   pr: Number(args.pr),
   issue: Number(args.issue),
   head: String(args.head ?? '').toLowerCase(),
   revision: Number(args.revision),
-  contractHash: String(args['contract-hash'] ?? '').toLowerCase(),
+  snapshotHash: String(args['snapshot-hash'] ?? '').toLowerCase(),
 };
 if (!/^[0-9a-f]{40}$/.test(expected.head)) fail('Expected HEAD SHA is not 40-hex.');
-if (!/^[0-9a-f]{64}$/.test(expected.contractHash))
+if (!/^[0-9a-f]{64}$/.test(expected.snapshotHash))
   fail(
-    'Expected contract snapshot hash (--contract-hash) is not 64-hex — an unauthorized/amended contract is never signed.',
+    'Expected contract snapshot hash (--snapshot-hash) is not 64-hex — an unauthorized/amended/diverged contract is never signed.',
   );
 if (
   !Number.isInteger(expected.pr) ||
@@ -82,9 +83,9 @@ if (String(doc.head_sha).toLowerCase() !== expected.head)
   );
 if (Number(doc.contract_revision) !== expected.revision)
   fail(`Verdict names contract revision ${doc.contract_revision}, expected ${expected.revision}.`);
-if (String(doc.contract_body_sha256 ?? '').toLowerCase() !== expected.contractHash)
+if (String(doc.contract_snapshot_sha256 ?? '').toLowerCase() !== expected.snapshotHash)
   fail(
-    `Verdict names contract snapshot ${doc.contract_body_sha256}, expected ${expected.contractHash} — the reviewer must have assessed the exact authorized contract snapshot.`,
+    `Verdict names contract snapshot ${doc.contract_snapshot_sha256}, expected ${expected.snapshotHash} — the reviewer must have assessed the exact authorized contract snapshot.`,
   );
 if (doc.verdict !== 'APPROVE' && doc.verdict !== 'BLOCK')
   fail(`Verdict must be APPROVE or BLOCK, got: ${doc.verdict}.`);
@@ -98,7 +99,7 @@ const m = {
   issue: expected.issue,
   headSha: expected.head,
   contractRevision: expected.revision,
-  contractBodySha256: expected.contractHash,
+  contractSnapshotSha256: expected.snapshotHash,
   verdict: doc.verdict,
 };
 const canonical = canonicalVerdictPayload(m);

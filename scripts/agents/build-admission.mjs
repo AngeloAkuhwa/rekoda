@@ -98,6 +98,7 @@ if (issue) {
         issueNumber,
         issueBody: raw.body ?? '',
         issueComments: comments,
+        issueLabels: (raw.labels ?? []).map((l) => l.name),
         ownerLogin: process.env.OWNER_LOGIN || 'AngeloAkuhwa',
         contractAuthorityKey: existsSync(keyPath) ? readFileSync(keyPath, 'utf8') : null,
       });

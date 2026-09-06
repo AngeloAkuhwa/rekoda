@@ -86,19 +86,26 @@ architecture review, not a rubber stamp and not a rewrite.
 ### Review output contract
 
 When acting as technical reviewer, Claude's verdict is published in this
-exact machine-readable form. The `Technical Review Gate` workflow emits
-it from Claude's structured result and
-`scripts/agents/validate-verdict.mjs` validates every field
-deterministically before it is posted — a malformed or wrong-target
-verdict is a BLOCK:
+exact machine-readable form. The gates workflow's evidence publisher
+emits it from Claude's structured result via
+`scripts/agents/sign-evidence.mjs`, which validates every field against
+the freshly re-resolved target and signs the canonical payload in one
+trusted operation — a malformed or wrong-target verdict is a BLOCK. The
+contract-snapshot values come from the gates' own resolution (the AI
+lane receives the hash-verified snapshot artifact; outside the gates,
+`node scripts/agents/review-context.mjs --repo <o/n> --pr <n>` prints
+them):
 
 ```
 REKODA_CLAUDE_APPROVAL
+SCHEME: REKODA_AGENT_EVIDENCE_V3
 PR: <number>
 ISSUE: <number>
 HEAD_SHA: <40-char current SHA>
 CONTRACT_REVISION: <integer, 1 unless the issue records a later revision>
+CONTRACT_SNAPSHOT_SHA256: <64-char hash of the active contract snapshot>
 VERDICT: APPROVE|BLOCK
+SIGNATURE: <Ed25519 over the canonical payload, reviewer key>
 ```
 
 ## Blocked?

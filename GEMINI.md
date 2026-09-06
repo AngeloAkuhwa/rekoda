@@ -130,18 +130,24 @@ Procedure:
 
 ### Review output contract
 
-The `Gemini Acceptance Gate` workflow emits this from Gemini's
-structured result and `scripts/agents/validate-verdict.mjs` validates
-every field deterministically before it is posted — a malformed or
-wrong-target verdict is a BLOCK:
+The gates workflow's evidence publisher emits this from Gemini's
+structured result via `scripts/agents/sign-evidence.mjs`, which
+validates every field against the freshly re-resolved target and signs
+the canonical payload in one trusted operation — a malformed or
+wrong-target verdict is a BLOCK. The contract-snapshot values come from
+the gates' own resolution (the AI lane receives the hash-verified
+snapshot artifact):
 
 ```
 REKODA_GEMINI_APPROVAL
+SCHEME: REKODA_AGENT_EVIDENCE_V3
 PR: <number>
 ISSUE: <number>
 HEAD_SHA: <40-char current SHA>
 CONTRACT_REVISION: <integer, 1 unless the issue records a later revision>
+CONTRACT_SNAPSHOT_SHA256: <64-char hash of the active contract snapshot>
 VERDICT: APPROVE|BLOCK
+SIGNATURE: <Ed25519 over the canonical payload, reviewer key>
 ```
 
 APPROVE means no blocking issue remains within Gemini's acceptance

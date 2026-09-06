@@ -34,10 +34,16 @@ import {
   amendmentTransaction,
   buildVerdictMarkerLines,
   buildContractMarkerLines,
+  buildFreezeMarkerLines,
   parseRevisionMarkers,
+  parseFreezeMarkers,
+  canonicalFreezePayload,
+  contractSnapshotHash,
   resolveVerdict,
   chooseCheckAction,
   readyPromotionAction,
+  parsePrNumbersJson,
+  FREEZE_MARKER,
   SCHEME,
 } from './evaluator.mjs';
 
@@ -64,8 +70,31 @@ const ISSUE_BODY = [
   '_No response_',
 ].join('\n');
 
-/** The active-contract snapshot hash every default verdict binds (V2). */
-const CONTRACT_HASH = sha256Hex(normalizeBody(ISSUE_BODY));
+const BODY_HASH = sha256Hex(normalizeBody(ISSUE_BODY));
+
+/**
+ * The V3 authoritative contract-snapshot hash (issue, revision, risk,
+ * builder, body) computed via the REAL production function.
+ */
+const snapHash = ({
+  issue = 44,
+  revision = 1,
+  risk = 'risk:R1',
+  builder = 'builder:claude',
+  body = ISSUE_BODY,
+} = {}) =>
+  contractSnapshotHash({
+    issue,
+    revision,
+    risk,
+    builder,
+    bodySha256: sha256Hex(normalizeBody(body)),
+  });
+
+/** The active-contract snapshot hash every default (claude-built) verdict binds. */
+const CONTRACT_HASH = snapHash();
+/** The active-contract snapshot hash for the codex-built default state. */
+const CODEX_CONTRACT_HASH = snapHash({ builder: 'builder:codex' });
 
 /** Build a verdict marker body; sign with `key` unless key === null. */
 function marker(
@@ -87,7 +116,7 @@ function marker(
     issue,
     headSha: head,
     contractRevision: rev,
-    contractBodySha256: contractHash,
+    contractSnapshotSha256: contractHash,
     verdict,
   };
   const lines = [
@@ -97,7 +126,7 @@ function marker(
     `ISSUE: ${issue}`,
     `HEAD_SHA: ${head}`,
     `CONTRACT_REVISION: ${rev}`,
-    `CONTRACT_BODY_SHA256: ${contractHash}`,
+    `CONTRACT_SNAPSHOT_SHA256: ${contractHash}`,
     `VERDICT: ${verdict}`,
   ];
   if (!dropSig && key) lines.push(`SIGNATURE: ${signWith(key, canonicalVerdictPayload(m))}`);
@@ -110,18 +139,30 @@ function contractComment({
   issue = 44,
   revision = 1,
   body = ISSUE_BODY,
+  risk = 'risk:R1',
+  builder = 'builder:claude',
   reason = 'scope change',
   author = OWNER,
   key = null,
   createdAt = '2026-09-01T00:00:00Z',
   id = 1,
 } = {}) {
-  const m = { kind, issue, revision, bodySha256: sha256Hex(normalizeBody(body)), reason };
+  const m = {
+    kind,
+    issue,
+    revision,
+    risk,
+    builder,
+    bodySha256: sha256Hex(normalizeBody(body)),
+    reason,
+  };
   const lines = [
     kind,
     `SCHEME: ${SCHEME}`,
     `ISSUE: ${issue}`,
     `REVISION: ${revision}`,
+    `RISK: ${risk}`,
+    `BUILDER: ${builder}`,
     `BODY_SHA256: ${m.bodySha256}`,
   ];
   if (kind === 'REKODA_CONTRACT_REVISION') lines.push(`REASON: ${reason}`);
@@ -220,13 +261,24 @@ function codexBuiltState() {
   s.pr.author = OWNER; // Codex Cloud PRs are authored by the connected account
   s.issue.labels = ['agent-task', 'risk:R1', 'builder:codex', 'status:in-review'];
   s.issue.builderLabels = ['builder:codex'];
+  // The signed contract records builder:codex — labels and snapshot agree.
+  s.issue.comments = [contractComment({ builder: 'builder:codex' })];
   s.techEvidence.candidates = [
     {
       author: ACTIONS,
       kind: 'comment',
       createdAt: '2026-09-02T00:00:00Z',
       id: 11,
-      body: marker(MARKERS.claude, { key: CLAUDE_KEY }),
+      body: marker(MARKERS.claude, { key: CLAUDE_KEY, contractHash: CODEX_CONTRACT_HASH }),
+    },
+  ];
+  s.geminiEvidence.candidates = [
+    {
+      author: ACTIONS,
+      kind: 'comment',
+      createdAt: '2026-09-02T01:00:00Z',
+      id: 20,
+      body: marker(MARKERS.gemini, { key: GEMINI_KEY, contractHash: CODEX_CONTRACT_HASH }),
     },
   ];
   return s;
@@ -259,9 +311,10 @@ test('valid owner-authorized R3 passes only with decision reference AND owner ap
   s.pr.riskLabels = ['risk:R3'];
   s.issue.riskLabels = ['risk:R3'];
   s.issue.body = ISSUE_BODY.replace('_No response_', 'docs/REKODA_OWNER_DECISIONS.md OWN-15');
-  s.issue.comments = [contractComment({ body: s.issue.body })];
-  // Verdicts bind the ACTIVE contract snapshot — here, the R3 body's hash.
-  const r3Hash = sha256Hex(normalizeBody(s.issue.body));
+  s.issue.labels = ['agent-task', 'risk:R3', 'builder:claude', 'status:in-review'];
+  s.issue.comments = [contractComment({ body: s.issue.body, risk: 'risk:R3' })];
+  // Verdicts bind the ACTIVE contract snapshot — here the R3 snapshot.
+  const r3Hash = snapHash({ risk: 'risk:R3', body: s.issue.body });
   s.techEvidence.candidates = [
     codexReview({ body: marker(MARKERS.codex, { contractHash: r3Hash }) }),
   ];
@@ -421,7 +474,7 @@ test('only contract-authority-SIGNED revisions are authoritative', () => {
   assert.equal(r.pass, false);
   assert.ok(codes(r).includes('TECH_WRONG_REVISION') && codes(r).includes('GEMINI_WRONG_REVISION'));
   // fresh verdicts for revision 2 — binding the rev-2 snapshot hash — pass again
-  const rev2Hash = sha256Hex(normalizeBody(newBody));
+  const rev2Hash = snapHash({ revision: 2, body: newBody });
   s.techEvidence.candidates.push(
     codexReview({
       id: 12,
@@ -950,14 +1003,22 @@ test('15g. contradictory contemporaneous verdicts across id domains fail closed'
       kind: 'comment',
       createdAt: t,
       id: 5,
-      body: marker(MARKERS.claude, { key: CLAUDE_KEY, verdict: 'APPROVE' }),
+      body: marker(MARKERS.claude, {
+        key: CLAUDE_KEY,
+        verdict: 'APPROVE',
+        contractHash: CODEX_CONTRACT_HASH,
+      }),
     },
     {
       author: ACTIONS,
       kind: 'review',
       createdAt: t,
       id: 999999,
-      body: marker(MARKERS.claude, { key: CLAUDE_KEY, verdict: 'BLOCK' }),
+      body: marker(MARKERS.claude, {
+        key: CLAUDE_KEY,
+        verdict: 'BLOCK',
+        contractHash: CODEX_CONTRACT_HASH,
+      }),
     },
   ];
   expectBlock(s, 'TECH_AMBIGUOUS_ORDER');
@@ -972,14 +1033,14 @@ test('15h. contemporaneous agreeing verdicts across domains are fine; a later on
       kind: 'comment',
       createdAt: t,
       id: 5,
-      body: marker(MARKERS.claude, { key: CLAUDE_KEY }),
+      body: marker(MARKERS.claude, { key: CLAUDE_KEY, contractHash: CODEX_CONTRACT_HASH }),
     },
     {
       author: ACTIONS,
       kind: 'review',
       createdAt: t,
       id: 999999,
-      body: marker(MARKERS.claude, { key: CLAUDE_KEY }),
+      body: marker(MARKERS.claude, { key: CLAUDE_KEY, contractHash: CODEX_CONTRACT_HASH }),
     },
   ];
   assert.equal(evaluate(s).pass, true);
@@ -988,7 +1049,11 @@ test('15h. contemporaneous agreeing verdicts across domains are fine; a later on
     kind: 'comment',
     createdAt: '2026-09-03T00:00:00Z',
     id: 6,
-    body: marker(MARKERS.claude, { key: CLAUDE_KEY, verdict: 'BLOCK' }),
+    body: marker(MARKERS.claude, {
+      key: CLAUDE_KEY,
+      verdict: 'BLOCK',
+      contractHash: CODEX_CONTRACT_HASH,
+    }),
   });
   expectBlock(s, 'TECH_BLOCK'); // clearly-later valid verdict wins
 });
@@ -1252,11 +1317,12 @@ test('contract revision moved between AI review and signing → verdict binds th
   const newBody = ISSUE_BODY + '\n\nRevised mid-review.';
   s.issue.body = newBody;
   s.issue.comments = [
-    contractComment(),
+    contractComment({ builder: 'builder:codex' }),
     contractComment({
       kind: 'REKODA_CONTRACT_REVISION',
       revision: 2,
       body: newBody,
+      builder: 'builder:codex',
       author: ACTIONS,
       key: AUTHORITY_KEY,
       id: 2,
@@ -1400,54 +1466,75 @@ test('unprovably complete comment history yields no revision and blocks', () => 
   assert.ok(codes(r).includes('CONTRACT_HISTORY_INVALID'));
 });
 
-test('amendment transaction: publish only after EVERY linked PR is frozen', () => {
+test('amendment transaction: sign only after the freeze marker is durable AND every barrier completed', () => {
   const ok = amendmentTransaction({
     linkedPrs: [70, 73],
-    freezeResults: { 70: true, 73: true },
+    freezeMarkerPosted: true,
+    barrierResults: { 70: true, 73: true },
     signOk: true,
     dispatchResults: { 70: true, 73: true },
   });
   assert.deepEqual(ok, {
-    published: true,
-    frozen: [70, 73],
+    signed: true,
+    barriered: [70, 73],
     dispatched: [70, 73],
-    stillBlocked: [],
+    state: 'complete',
   });
 });
 
-test('amendment transaction: a failed freeze forbids publication; frozen PRs stay safely blocked', () => {
+test('amendment transaction: no durable freeze marker → nothing signed, nothing mutated', () => {
   const r = amendmentTransaction({
     linkedPrs: [70, 73],
-    freezeResults: { 70: true, 73: false },
+    freezeMarkerPosted: false,
+    barrierResults: {},
     signOk: true,
     dispatchResults: {},
   });
-  assert.equal(r.published, false);
-  assert.deepEqual(r.frozen, [70]);
+  assert.deepEqual(r, {
+    signed: false,
+    barriered: [],
+    dispatched: [],
+    state: 'aborted_before_freeze',
+  });
+});
+
+test('amendment transaction: a failed barrier forbids signing; the freeze keeps every linked PR evaluator-blocked', () => {
+  const r = amendmentTransaction({
+    linkedPrs: [70, 73],
+    freezeMarkerPosted: true,
+    barrierResults: { 70: true, 73: false },
+    signOk: true,
+    dispatchResults: {},
+  });
+  assert.equal(r.signed, false);
+  assert.equal(r.state, 'frozen_blocked');
+  assert.deepEqual(r.barriered, [70]);
   assert.deepEqual(r.dispatched, []);
 });
 
-test('amendment transaction: freeze ok but signing fails → nothing published, PRs remain blocked, never re-green', () => {
+test('amendment transaction: barriers ok but signing fails → freeze stays active, PRs remain blocked, never re-green', () => {
   const r = amendmentTransaction({
     linkedPrs: [70],
-    freezeResults: { 70: true },
+    freezeMarkerPosted: true,
+    barrierResults: { 70: true },
     signOk: false,
     dispatchResults: {},
   });
-  assert.equal(r.published, false);
-  assert.deepEqual(r.frozen, [70]);
-  assert.deepEqual(r.stillBlocked, [70]);
+  assert.equal(r.signed, false);
+  assert.equal(r.state, 'frozen_blocked');
 });
 
-test('amendment transaction: dispatch failure after activation leaves the PR blocked (frozen), not green', () => {
+test('amendment transaction: dispatch failure after signing leaves the PR blocked (wrong revision), not green', () => {
   const r = amendmentTransaction({
     linkedPrs: [70, 73],
-    freezeResults: { 70: true, 73: true },
+    freezeMarkerPosted: true,
+    barrierResults: { 70: true, 73: true },
     signOk: true,
     dispatchResults: { 70: true, 73: false },
   });
-  assert.equal(r.published, true);
-  assert.deepEqual(r.stillBlocked, [73]);
+  assert.equal(r.signed, true);
+  assert.equal(r.state, 'signed_awaiting_dispatch');
+  assert.deepEqual(r.dispatched, [70]);
 });
 
 test('a baseline deep in a very large comment history is still found (position-independent)', () => {
@@ -1494,7 +1581,7 @@ test('A→B→A: a verdict signed for snapshot B never authorizes after the cont
   // revision 2; after the return to A it must not count — on EITHER axis.
   const bodyA = ISSUE_BODY;
   const bodyB = ISSUE_BODY + '\n\nTemporary requirement.';
-  const hashB = sha256Hex(normalizeBody(bodyB));
+  const hashB = snapHash({ revision: 2, body: bodyB });
   const s = validState();
   s.issue.body = bodyA;
   s.issue.comments = [
@@ -1575,6 +1662,8 @@ test('E2E: real baseline generator output → parseRevisionMarkers → signature
     kind: 'REKODA_CONTRACT_BASELINE',
     issue: 44,
     revision: 1,
+    risk: 'risk:R1',
+    builder: 'builder:claude',
     bodySha256: sha256Hex(normalizeBody(ISSUE_BODY)),
     reason: '',
   };
@@ -1586,6 +1675,8 @@ test('E2E: real baseline generator output → parseRevisionMarkers → signature
   assert.equal(parsed[0].malformed, false, 'the generated baseline must parse clean');
   assert.equal(parsed[0].scheme, SCHEME);
   assert.equal(parsed[0].kind, 'REKODA_CONTRACT_BASELINE');
+  assert.equal(parsed[0].risk, 'risk:R1');
+  assert.equal(parsed[0].builder, 'builder:claude');
   assert.ok(
     verifySignature(canonicalContractPayload(parsed[0]), parsed[0].signature, pem(AUTHORITY_KEY)),
     'the parsed marker must re-verify against the authority key',
@@ -1595,12 +1686,15 @@ test('E2E: real baseline generator output → parseRevisionMarkers → signature
     issueNumber: 44,
     issueBody: ISSUE_BODY,
     issueComments: [{ author: ACTIONS, createdAt: 'x', id: 1, body: posted }],
+    issueLabels: ['agent-task', 'risk:R1', 'builder:claude', 'status:ready'],
     ownerLogin: OWNER,
     contractAuthorityKey: pem(AUTHORITY_KEY),
   });
   assert.equal(contract.revision, 1);
   assert.equal(contract.amended, false);
+  assert.equal(contract.labelsDiverged, false);
   assert.equal(contract.invalid, null);
+  assert.equal(contract.snapshotHash, CONTRACT_HASH);
 
   const admission = evaluateBuildAdmission({
     contract,
@@ -1617,6 +1711,8 @@ test('E2E: real revision generator output advances the computed revision to 2', 
     kind: 'REKODA_CONTRACT_REVISION',
     issue: 44,
     revision: 2,
+    risk: 'risk:R1',
+    builder: 'builder:claude',
     bodySha256: sha256Hex(normalizeBody(newBody)),
     reason: 'scope change',
   };
@@ -1628,12 +1724,14 @@ test('E2E: real revision generator output advances the computed revision to 2', 
     issueNumber: 44,
     issueBody: newBody,
     issueComments: [contractComment(), { author: ACTIONS, createdAt: 'y', id: 2, body: posted2 }],
+    issueLabels: ['agent-task', 'risk:R1', 'builder:claude', 'status:in-review'],
     ownerLogin: OWNER,
     contractAuthorityKey: pem(AUTHORITY_KEY),
   });
   assert.equal(contract.revision, 2);
   assert.equal(contract.amended, false);
   assert.equal(contract.expectedHash, m2.bodySha256);
+  assert.equal(contract.snapshotHash, snapHash({ revision: 2, body: newBody }));
 });
 
 test('E2E: real verdict generator output → parseMarkers → resolveVerdict APPROVE against the matching target', () => {
@@ -1645,7 +1743,7 @@ test('E2E: real verdict generator output → parseMarkers → resolveVerdict APP
     issue: 44,
     headSha: HEAD,
     contractRevision: 1,
-    contractBodySha256: CONTRACT_HASH,
+    contractSnapshotSha256: CONTRACT_HASH,
     verdict: 'APPROVE',
   };
   const signature = signWith(GEMINI_KEY, canonicalVerdictPayload(m));
@@ -1660,7 +1758,7 @@ test('E2E: real verdict generator output → parseMarkers → resolveVerdict APP
   const parsed = parseMarkers(posted, MARKERS.gemini);
   assert.equal(parsed.length, 1);
   assert.equal(parsed[0].malformed, false, 'the generated verdict must parse clean');
-  assert.equal(parsed[0].contractBodySha256, CONTRACT_HASH);
+  assert.equal(parsed[0].contractSnapshotSha256, CONTRACT_HASH);
 
   const r = resolveVerdict({
     candidates: [{ author: ACTIONS, kind: 'comment', createdAt: 'x', id: 1, body: posted }],
@@ -1671,7 +1769,7 @@ test('E2E: real verdict generator output → parseMarkers → resolveVerdict APP
       issue: 44,
       headSha: HEAD,
       contractRevision: 1,
-      contractBodySha256: CONTRACT_HASH,
+      contractSnapshotSha256: CONTRACT_HASH,
     },
   });
   assert.equal(r.verdict, 'APPROVE');
@@ -1684,7 +1782,7 @@ test('E2E: the same real generator output resolves to NO verdict for a different
     issue: 44,
     headSha: HEAD,
     contractRevision: 1,
-    contractBodySha256: CONTRACT_HASH,
+    contractSnapshotSha256: CONTRACT_HASH,
     verdict: 'APPROVE',
   };
   const posted = [
@@ -1701,7 +1799,7 @@ test('E2E: the same real generator output resolves to NO verdict for a different
       issue: 44,
       headSha: HEAD,
       contractRevision: 1,
-      contractBodySha256: sha256Hex(normalizeBody(ISSUE_BODY + '\n\nMoved on.')),
+      contractSnapshotSha256: snapHash({ body: ISSUE_BODY + '\n\nMoved on.' }),
     },
   });
   assert.equal(r.verdict ?? null, null);
@@ -1799,21 +1897,38 @@ test('READY promotion: builder label first, then status:ready — proceeds and d
   const d = readyPromotionAction({
     labels: ['agent-task', 'risk:R1', 'builder:claude', 'status:ready'],
   });
-  assert.deepEqual(d, { proceed: true, dispatchClaude: true });
+  assert.deepEqual(d, {
+    proceed: true,
+    dispatchClaude: true,
+    risk: 'risk:R1',
+    builder: 'builder:claude',
+  });
 });
 
 test('READY promotion: status:ready first, then builder label — the later builder event still promotes', () => {
   // Same final label set regardless of arrival order; the builder:claude
   // "labeled" event re-fetches and sees status:ready already present.
   const d = readyPromotionAction({
-    labels: ['status:ready', 'agent-task', 'builder:claude'],
+    labels: ['status:ready', 'agent-task', 'risk:R2', 'builder:claude'],
   });
-  assert.deepEqual(d, { proceed: true, dispatchClaude: true });
+  assert.deepEqual(d, {
+    proceed: true,
+    dispatchClaude: true,
+    risk: 'risk:R2',
+    builder: 'builder:claude',
+  });
 });
 
 test('READY promotion: builder:codex proceeds but never dispatches the Claude builder', () => {
-  const d = readyPromotionAction({ labels: ['agent-task', 'status:ready', 'builder:codex'] });
-  assert.deepEqual(d, { proceed: true, dispatchClaude: false });
+  const d = readyPromotionAction({
+    labels: ['agent-task', 'risk:R1', 'status:ready', 'builder:codex'],
+  });
+  assert.deepEqual(d, {
+    proceed: true,
+    dispatchClaude: false,
+    risk: 'risk:R1',
+    builder: 'builder:codex',
+  });
 });
 
 test('READY promotion: missing pieces or ambiguous builders never proceed', () => {
@@ -1826,4 +1941,373 @@ test('READY promotion: missing pieces or ambiguous builders never proceed', () =
     }).proceed,
     false,
   );
+});
+
+// ---------------------------------------------------------------------------
+// V3 — the native Codex marker contract (AGENTS.md documents EXACTLY this)
+// ---------------------------------------------------------------------------
+
+test('the DOCUMENTED native Codex V3 block parses and resolves to APPROVE with platform provenance', () => {
+  // Byte-for-byte the block AGENTS.md instructs native Codex to emit,
+  // with values copied from review-context output.
+  const documented = [
+    'REKODA_CODEX_APPROVAL',
+    `SCHEME: ${SCHEME}`,
+    'PR: 55',
+    'ISSUE: 44',
+    `HEAD_SHA: ${HEAD}`,
+    'CONTRACT_REVISION: 1',
+    `CONTRACT_SNAPSHOT_SHA256: ${CONTRACT_HASH}`,
+    'VERDICT: APPROVE',
+  ].join('\n');
+  const r = resolveVerdict({
+    candidates: [
+      {
+        author: CODEX,
+        kind: 'review',
+        reviewState: 'COMMENTED',
+        commitId: HEAD,
+        createdAt: 'x',
+        id: 1,
+        body: `Findings: none.\n\n${documented}`,
+      },
+    ],
+    markerName: MARKERS.codex,
+    provenance: { kind: 'codex', login: CODEX },
+    target: {
+      pr: 55,
+      issue: 44,
+      headSha: HEAD,
+      contractRevision: 1,
+      contractSnapshotSha256: CONTRACT_HASH,
+    },
+  });
+  assert.equal(r.verdict, 'APPROVE');
+  // …and end-to-end through evaluate(): a full valid state whose only
+  // technical evidence is the documented block.
+  const s = validState();
+  s.techEvidence.candidates = [
+    codexReview({
+      body: `${documented}\n`,
+    }),
+  ];
+  assert.deepEqual(evaluate(s), { pass: true, reasons: [] });
+});
+
+test('the OLD documented Codex block (no SCHEME, no snapshot hash) is malformed and blocks', () => {
+  const old = [
+    'REKODA_CODEX_APPROVAL',
+    'PR: 55',
+    'ISSUE: 44',
+    `HEAD_SHA: ${HEAD}`,
+    'CONTRACT_REVISION: 1',
+    'VERDICT: APPROVE',
+  ].join('\n');
+  const s = validState();
+  s.techEvidence.candidates = [codexReview({ body: old })];
+  expectBlock(s, 'TECH_MALFORMED');
+});
+
+test('a native Codex block binding the WRONG snapshot hash blocks (TECH_WRONG_CONTRACT)', () => {
+  const s = validState();
+  s.techEvidence.candidates = [
+    codexReview({
+      body: marker(MARKERS.codex, { contractHash: snapHash({ body: ISSUE_BODY + '\n\nOther.' }) }),
+    }),
+  ];
+  expectBlock(s, 'TECH_WRONG_CONTRACT');
+});
+
+// ---------------------------------------------------------------------------
+// V3 — risk/builder are part of the signed contract snapshot
+// ---------------------------------------------------------------------------
+
+test('a risk label change WITHOUT an authorized revision blocks even with issue and PR consistent', () => {
+  const s = validState();
+  // Someone flips BOTH issue and PR labels R1 → R2 consistently; the body
+  // hash and revision are untouched, and old approvals bind them.
+  s.pr.riskLabels = ['risk:R2'];
+  s.issue.riskLabels = ['risk:R2'];
+  s.issue.labels = ['agent-task', 'risk:R2', 'builder:claude', 'status:in-review'];
+  const r = evaluate(s);
+  assert.equal(r.pass, false);
+  assert.ok(codes(r).includes('CONTRACT_LABELS_DIVERGED'));
+  // and no mode is exempt — the finalizer computes all three from this state
+  for (const mode of ['policy', 'technical', 'acceptance']) {
+    assert.equal(evaluate(s, mode).pass, false, `mode ${mode} must block`);
+  }
+});
+
+test('a builder label change WITHOUT an authorized revision blocks (old approvals cannot survive)', () => {
+  const s = validState();
+  s.pr.builderLabels = ['builder:codex'];
+  s.issue.builderLabels = ['builder:codex'];
+  s.issue.labels = ['agent-task', 'risk:R1', 'builder:codex', 'status:in-review'];
+  const r = evaluate(s);
+  assert.equal(r.pass, false);
+  assert.ok(codes(r).includes('CONTRACT_LABELS_DIVERGED'));
+});
+
+test('an authorized revision RECORDING the new labels re-activates the contract — but demands fresh evidence', () => {
+  const s = validState();
+  s.pr.riskLabels = ['risk:R2'];
+  s.issue.riskLabels = ['risk:R2'];
+  s.issue.labels = ['agent-task', 'risk:R2', 'builder:claude', 'status:in-review'];
+  s.issue.comments = [
+    contractComment(),
+    contractComment({
+      kind: 'REKODA_CONTRACT_REVISION',
+      revision: 2,
+      risk: 'risk:R2',
+      author: ACTIONS,
+      key: AUTHORITY_KEY,
+      id: 2,
+      createdAt: 'y',
+    }),
+  ];
+  // The old rev-1 evidence no longer matches the rev-2 snapshot…
+  const stale = evaluate(s);
+  assert.equal(stale.pass, false);
+  assert.ok(
+    codes(stale).includes('TECH_WRONG_REVISION') || codes(stale).includes('TECH_WRONG_CONTRACT'),
+  );
+  // …fresh evidence binding the new snapshot passes.
+  const h2 = snapHash({ revision: 2, risk: 'risk:R2' });
+  s.techEvidence.candidates = [
+    codexReview({
+      id: 12,
+      createdAt: 'z',
+      body: marker(MARKERS.codex, { rev: 2, contractHash: h2 }),
+    }),
+  ];
+  s.geminiEvidence.candidates = [
+    {
+      author: ACTIONS,
+      kind: 'comment',
+      createdAt: 'z',
+      id: 21,
+      body: marker(MARKERS.gemini, { rev: 2, contractHash: h2, key: GEMINI_KEY }),
+    },
+  ];
+  assert.deepEqual(evaluate(s), { pass: true, reasons: [] });
+});
+
+// ---------------------------------------------------------------------------
+// V3 — the amendment freeze is EVALUATOR state, not just red check writes
+// ---------------------------------------------------------------------------
+
+/** An authority-signed freeze comment via the REAL generator. */
+function freezeComment({ issue = 44, from = 1, target = 2, key = AUTHORITY_KEY, id = 5 } = {}) {
+  const f = { issue, fromRevision: from, targetRevision: target };
+  const signature = key ? signWith(key, canonicalFreezePayload(f)) : undefined;
+  return {
+    author: ACTIONS,
+    createdAt: 'f',
+    id,
+    body: '```\n' + buildFreezeMarkerLines(f, signature).join('\n') + '\n```',
+  };
+}
+
+test('a signed amendment freeze blocks EVERY gate mode — a rev-N publisher cannot conclude green mid-amendment', () => {
+  const s = validState(); // rev-1 contract, valid rev-1 evidence — would pass
+  assert.equal(evaluate(s).pass, true);
+  s.issue.comments = [...s.issue.comments, freezeComment()];
+  const r = evaluate(s);
+  assert.equal(r.pass, false);
+  assert.ok(codes(r).includes('CONTRACT_AMENDMENT_IN_PROGRESS'));
+  for (const mode of ['policy', 'technical', 'acceptance']) {
+    assert.equal(evaluate(s, mode).pass, false, `mode ${mode} must refuse green mid-amendment`);
+  }
+});
+
+test('a HIGHER revision with an UNCHANGED body hash still yields no merge window', () => {
+  // The amendment changes only revision+reason: body hash identical at
+  // rev 1 and rev 2. During the freeze every mode blocks; after the
+  // rev-2 marker exists the freeze expires but rev-1 evidence fails on
+  // revision AND snapshot (revision is inside the snapshot payload).
+  const s = validState();
+  s.issue.comments = [...s.issue.comments, freezeComment()];
+  assert.equal(evaluate(s).pass, false); // frozen
+  s.issue.comments = [
+    ...s.issue.comments,
+    contractComment({
+      kind: 'REKODA_CONTRACT_REVISION',
+      revision: 2,
+      author: ACTIONS,
+      key: AUTHORITY_KEY,
+      id: 6,
+      createdAt: 'g',
+    }),
+  ];
+  const after = evaluate(s);
+  assert.equal(after.pass, false); // freeze expired, but old evidence is dead
+  assert.ok(
+    codes(after).includes('TECH_WRONG_REVISION') || codes(after).includes('TECH_WRONG_CONTRACT'),
+  );
+  assert.ok(!codes(after).includes('CONTRACT_AMENDMENT_IN_PROGRESS'), 'the freeze must expire');
+});
+
+test('freeze markers are authority-signed ONLY — unsigned or rogue-signed freezes cannot block an issue', () => {
+  const s = validState();
+  s.issue.comments = [
+    ...s.issue.comments,
+    freezeComment({ key: null }),
+    freezeComment({ key: ROGUE_KEY, id: 7 }),
+  ];
+  assert.equal(evaluate(s).pass, true);
+});
+
+test('E2E: real freeze generator output → parseFreezeMarkers → signature → pendingFreeze; expires at the target revision', () => {
+  const c = freezeComment();
+  const parsed = parseFreezeMarkers(c.body);
+  assert.equal(parsed.length, 1);
+  assert.equal(parsed[0].malformed, false, 'the generated freeze must parse clean');
+  assert.ok(
+    verifySignature(canonicalFreezePayload(parsed[0]), parsed[0].signature, pem(AUTHORITY_KEY)),
+  );
+  const during = computeContractRevision({
+    issueNumber: 44,
+    issueBody: ISSUE_BODY,
+    issueComments: [contractComment(), c],
+    issueLabels: ['agent-task', 'risk:R1', 'builder:claude'],
+    ownerLogin: OWNER,
+    contractAuthorityKey: pem(AUTHORITY_KEY),
+  });
+  assert.deepEqual(during.pendingFreeze, { fromRevision: 1, targetRevision: 2 });
+  const after = computeContractRevision({
+    issueNumber: 44,
+    issueBody: ISSUE_BODY,
+    issueComments: [
+      contractComment(),
+      c,
+      contractComment({
+        kind: 'REKODA_CONTRACT_REVISION',
+        revision: 2,
+        author: ACTIONS,
+        key: AUTHORITY_KEY,
+        id: 9,
+        createdAt: 'h',
+      }),
+    ],
+    issueLabels: ['agent-task', 'risk:R1', 'builder:claude'],
+    ownerLogin: OWNER,
+    contractAuthorityKey: pem(AUTHORITY_KEY),
+  });
+  assert.equal(after.revision, 2);
+  assert.equal(after.pendingFreeze, null);
+});
+
+test('build admission refuses mid-amendment (pendingFreeze) and on diverged labels', () => {
+  const frozen = evaluateBuildAdmission({
+    contract: { ...OK_CONTRACT, pendingFreeze: { fromRevision: 1, targetRevision: 2 } },
+    issue: readyIssue(),
+    requiredBuilder: 'builder:claude',
+    openLanes: [],
+  });
+  assert.ok(frozen.reasons.some((x) => x.code === 'ADMIT_CONTRACT_INVALID'));
+  const diverged = evaluateBuildAdmission({
+    contract: { ...OK_CONTRACT, labelsDiverged: true },
+    issue: readyIssue(),
+    requiredBuilder: 'builder:claude',
+    openLanes: [],
+  });
+  assert.ok(diverged.reasons.some((x) => x.code === 'ADMIT_CONTRACT_INVALID'));
+});
+
+// ---------------------------------------------------------------------------
+// V3 — baseline existence is a canonical computation, never a substring probe
+// ---------------------------------------------------------------------------
+
+test('a comment that merely CONTAINS the baseline marker name is NOT a baseline (cannot suppress the real one)', () => {
+  const rev = computeContractRevision({
+    issueNumber: 44,
+    issueBody: ISSUE_BODY,
+    issueComments: [
+      {
+        author: 'random-drive-by',
+        createdAt: 'x',
+        id: 1,
+        body: 'lol REKODA_CONTRACT_BASELINE trust me this issue is done',
+      },
+    ],
+    issueLabels: ['agent-task', 'risk:R1', 'builder:claude'],
+    ownerLogin: OWNER,
+    contractAuthorityKey: pem(AUTHORITY_KEY),
+  });
+  assert.equal(rev.baselineFound, false);
+  assert.equal(rev.invalid, null);
+});
+
+test('malformed, unsigned-bot, wrong-issue, and rogue-signed baselines all fail to count as existing', () => {
+  const cases = [
+    // structurally complete but authored by a bot WITHOUT a signature
+    contractComment({ author: ACTIONS, key: null }),
+    // wrong issue number
+    contractComment({ issue: 999 }),
+    // signed by the wrong key
+    contractComment({ author: ACTIONS, key: ROGUE_KEY }),
+    // malformed: marker name present, fields garbage
+    { author: OWNER, createdAt: 'x', id: 4, body: 'REKODA_CONTRACT_BASELINE\nREVISION: banana' },
+  ];
+  for (const c of cases) {
+    const rev = computeContractRevision({
+      issueNumber: 44,
+      issueBody: ISSUE_BODY,
+      issueComments: [c],
+      issueLabels: ['agent-task', 'risk:R1', 'builder:claude'],
+      ownerLogin: OWNER,
+      contractAuthorityKey: pem(AUTHORITY_KEY),
+    });
+    assert.equal(rev.baselineFound, false, `case ${c.id ?? c.body?.slice(0, 30)} must not count`);
+  }
+});
+
+test('conflicting AUTHORIZED baselines are invalid history — fail closed, do not paper over with a new one', () => {
+  const rev = computeContractRevision({
+    issueNumber: 44,
+    issueBody: ISSUE_BODY,
+    issueComments: [
+      contractComment(),
+      contractComment({ body: ISSUE_BODY + '\n\nDifferent.', id: 2, createdAt: 'y' }),
+    ],
+    issueLabels: ['agent-task', 'risk:R1', 'builder:claude'],
+    ownerLogin: OWNER,
+    contractAuthorityKey: pem(AUTHORITY_KEY),
+  });
+  assert.equal(rev.revision, null);
+  assert.ok(rev.invalid);
+});
+
+test('two authorized markers for one revision that disagree only on RISK or BUILDER conflict', () => {
+  const rev = computeContractRevision({
+    issueNumber: 44,
+    issueBody: ISSUE_BODY,
+    issueComments: [contractComment(), contractComment({ risk: 'risk:R2', id: 2, createdAt: 'y' })],
+    issueLabels: ['agent-task', 'risk:R1', 'builder:claude'],
+    ownerLogin: OWNER,
+    contractAuthorityKey: pem(AUTHORITY_KEY),
+  });
+  assert.equal(rev.revision, null);
+  assert.ok(rev.invalid);
+});
+
+// ---------------------------------------------------------------------------
+// Linked-PR JSON — [70,73] is 70 and 73, NEVER 7073
+// ---------------------------------------------------------------------------
+
+test('parsePrNumbersJson: [70,73] dispatches exactly 70 and 73 — never a concatenation', () => {
+  assert.deepEqual(parsePrNumbersJson('[70,73]'), [70, 73]);
+  assert.deepEqual(parsePrNumbersJson('[]'), []);
+  assert.deepEqual(parsePrNumbersJson('[7073]'), [7073]); // a real single PR list stays itself
+});
+
+test('parsePrNumbersJson: anything but a JSON array of positive integers fails closed', () => {
+  assert.equal(parsePrNumbersJson('7073'), null); // bare number is not a list
+  assert.equal(parsePrNumbersJson('[70,"73"]'), null);
+  assert.equal(parsePrNumbersJson('[70,0]'), null);
+  assert.equal(parsePrNumbersJson('[70,-3]'), null);
+  assert.equal(parsePrNumbersJson('[70,73.5]'), null);
+  assert.equal(parsePrNumbersJson('70 73'), null);
+  assert.equal(parsePrNumbersJson(''), null);
+  assert.equal(parsePrNumbersJson(null), null);
 });

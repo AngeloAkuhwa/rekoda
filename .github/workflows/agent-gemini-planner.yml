@@ -47,6 +47,7 @@ jobs:
       contents: read
       issues: write
       pull-requests: read
+      actions: write # explicit contract-authority baseline dispatch (see final step)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -132,3 +133,31 @@ jobs:
             7. Finish by commenting a one-paragraph summary of what you
                changed (or that nothing needed changing) on the planning
                tracking issue if one exists; otherwise just stop.
+
+      # The planner's own label edits use GITHUB_TOKEN, and GitHub
+      # SUPPRESSES workflow triggers for events created with that token —
+      # an issues:labeled event from this job can never wake the contract
+      # authority. So authority is requested EXPLICITLY, deterministically,
+      # after the planning turn: for every currently-READY agent-task
+      # issue, dispatch the authority's baseline entry point. Idempotent
+      # end to end — the authority re-fetches and re-verifies the labels,
+      # skips any existing VALID baseline, and the builder's own atomic
+      # admission guards the hand-off. No event recursion anywhere.
+      - name: Explicitly request baseline authority for READY issues
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$REPO/issues?state=open&labels=agent-task,status:ready&per_page=100" \
+            --paginate --jq '.[] | select(.pull_request | not) | .number' > /tmp/ready.txt || true
+          if [ ! -s /tmp/ready.txt ]; then
+            echo "No READY agent-task issues — nothing to hand to contract authority."
+            exit 0
+          fi
+          while IFS= read -r n; do
+            [ -n "$n" ] || continue
+            echo "Requesting baseline authority for READY issue #$n."
+            gh workflow run agent-contract-authority.yml --repo "$REPO" --ref main \
+              -f mode=baseline -f issue="$n"
+          done < /tmp/ready.txt

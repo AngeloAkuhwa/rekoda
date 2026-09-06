@@ -266,14 +266,36 @@ reviewer's:
 | Claude, technical (Codex built)    | `REKODA_CLAUDE_APPROVAL` |
 | Gemini, system acceptance (always) | `REKODA_GEMINI_APPROVAL` |
 
-Each marker binds the PR number, the linked issue, the exact current HEAD
-SHA, the contract revision (§8), and an APPROVE or BLOCK verdict. A marker
-for any other commit, revision, or reviewer identity counts for nothing.
+Each marker binds the protocol scheme, the PR number, the linked issue,
+the exact current HEAD SHA, the contract revision (§8), the contract
+SNAPSHOT hash (the hash of the authoritative snapshot: issue, revision,
+risk, builder, body hash), and an APPROVE or BLOCK verdict. A marker for
+any other commit, revision, snapshot, or reviewer identity counts for
+nothing.
 
 The rest of this section is **Codex's** review instruction (Codex's native
 review is documented to load it):
 
-- Evaluate the three contracts of §8: the linked issue, the accepted
+- FIRST obtain the trusted review contract by running, from the
+  repository root at the PR's current HEAD:
+
+  ```
+  node scripts/agents/review-context.mjs --repo <owner/name> --pr <number> --out /tmp/contract-snapshot.md
+  ```
+
+  It prints the exact `head_sha`, `issue`, `contract_revision`,
+  `contract_snapshot_sha256`, `risk`, and `builder` values, writes the
+  ACTIVE contract snapshot text (hash-verified) to the `--out` file, and
+  prints the marker template to copy. Review THAT snapshot file — never
+  the live issue text, which is mutable and may carry pending proposals
+  that are not the active contract. NEVER invent or hand-compute the
+  snapshot hash from raw issue text; only the script's value is valid.
+  If the script exits non-zero there is no authorized contract to review
+  against: report that as the finding and emit VERDICT: BLOCK with the
+  values the gates published on the PR's checks, or no marker at all —
+  a missing marker is already a BLOCK.
+
+- Evaluate the three contracts of §8: the contract snapshot, the accepted
   ADRs/invariants of §3, and the actual code at the PR's current HEAD.
 - Probe hardest at: financial correctness (integer kobo, balanced
   postings, immutable posted truth), tenant isolation/RLS, privacy/PII
@@ -281,17 +303,23 @@ review is documented to load it):
   failure paths, and tests that pass for the wrong reason. Add the
   issue's task-specific review focus.
 - End **every** review — including reviews with no findings — with this
-  exact block, using the PR's current HEAD commit SHA and the issue's
-  current contract revision:
+  exact block, copying every value verbatim from the review-context
+  output:
 
   ```
   REKODA_CODEX_APPROVAL
+  SCHEME: REKODA_AGENT_EVIDENCE_V3
   PR: <number>
   ISSUE: <linked issue number>
   HEAD_SHA: <40-char SHA of the commit reviewed>
-  CONTRACT_REVISION: <integer, 1 unless the issue records a later revision>
+  CONTRACT_REVISION: <integer from review-context>
+  CONTRACT_SNAPSHOT_SHA256: <64-char hash from review-context>
   VERDICT: APPROVE|BLOCK
   ```
 
   BLOCK if any blocking issue remains; APPROVE only if none does. Never
-  emit a marker for a commit other than the one actually reviewed.
+  emit a marker for a commit other than the one actually reviewed. Codex
+  does not sign: the platform is the provenance — the marker counts only
+  inside a non-dismissed GitHub review authored by the Codex connector
+  whose review commit_id equals the PR's current HEAD, with every field
+  matching the gates' own computation.

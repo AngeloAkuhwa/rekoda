@@ -265,12 +265,22 @@ root: the default-branch SHA the privileged definition itself came from
 or loads trusted policy.
 
 **Evidence protocol.** Every signed marker carries and signs
-`SCHEME: REKODA_AGENT_EVIDENCE_V2` along with its fields; a missing,
-unknown, or future scheme is rejected as malformed. V2 verdicts bind
-`CONTRACT_BODY_SHA256` — the hash of the exact authorized contract
-snapshot the reviewer assessed — inside the signed payload, so a
-verdict produced under one contract text can never authorize a merge
-under another, even at an unchanged revision number (the A→B→A case).
+`SCHEME: REKODA_AGENT_EVIDENCE_V3` along with its fields; a missing,
+unknown, or future scheme is rejected as malformed. The authoritative
+task contract is a SNAPSHOT of every merge-authorization-relevant
+field — issue, revision, **risk label, builder label**, and body hash:
+contract baseline/revision markers record and sign RISK and BUILDER,
+and V3 verdicts bind `CONTRACT_SNAPSHOT_SHA256` (the hash of that
+canonical snapshot) inside the signed payload. A verdict produced under
+one contract can never authorize a merge under another — not via a body
+edit at an unchanged revision number (the A→B→A case), and not via a
+consistent risk/builder label rewrite with untouched body bytes: a
+label that diverges from the signed snapshot blocks every gate
+(`CONTRACT_LABELS_DIVERGED`) until an owner-authorized revision records
+the new labels and fresh reviews land. A signed
+`REKODA_CONTRACT_AMENDMENT_FREEZE` marker is durable evaluator state:
+while it targets a revision that does not yet exist, every gate for the
+issue's linked PRs refuses to pass (`CONTRACT_AMENDMENT_IN_PROGRESS`).
 A Claude or Gemini
 verdict counts only with a valid **Ed25519 signature** over the
 canonical payload, verified against the committed public keys in
@@ -702,7 +712,31 @@ re-fetches labels so **both label orderings** (builder-then-ready and
 ready-then-builder) dispatch the builder; and the marker generators are
 **shared single-source functions** exercised end-to-end (real generator
 output through the real parser, verifier, and policy) so generator and
-parser can never drift apart again.
+parser can never drift apart again. The follow-up audit pass then
+consolidated the whole design around **one authorization state machine
+per PR**: exactly one serialized job type — the gates' FINALIZE job —
+decides and publishes all three merge checks from a single re-normalized
+current state (reviewer publishers produce signed EVIDENCE comments
+only; a small red-only invalidator provides the early warning), so a
+displaced pending writer can never leave a partial or stale-green check
+state — its replacement republishes the complete three-check truth.
+Evidence moved to **SCHEME V3** (risk/builder inside the signed
+contract snapshot, `CONTRACT_SNAPSHOT_SHA256` in verdicts — see the
+evidence protocol above); the amendment became **freeze-marker →
+per-PR barriers → sign → dispatch**, with the signed amendment-freeze
+part of the evaluator's merge contract itself (a rev-N publisher is
+refused by evaluator state, not merely raced by check rewrites, and the
+target revision's existence is what expires the freeze — an atomic
+hand-over); the native Codex marker contract in AGENTS.md was updated
+to the V3 fields with `scripts/agents/review-context.mjs` as the
+deterministic source of the snapshot values every reviewer (Claude,
+Gemini, native Codex) assesses; baseline existence is decided by the
+**canonical contract computation** (`contract-status.mjs`), never a
+substring probe, with conflicting authorized history failing closed;
+the planner **explicitly dispatches** the authority's baseline entry
+point (GITHUB_TOKEN label events never trigger workflows — no event
+recursion anywhere); and linked-PR lists are parsed as JSON
+(`parsePrNumbersJson` — `[70,73]` dispatches 70 and 73, never 7073).
 
 What remains, honestly:
 

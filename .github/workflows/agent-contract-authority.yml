@@ -1,41 +1,59 @@
 # Contract authority — the only workflow that can SIGN contract
-# baseline/revision markers (docs/AUTONOMOUS-ENGINEERING.md §6).
-# Deterministic, no AI. Its environment (agents-contract-authority)
-# holds CONTRACT_AUTHORITY_SIGNING_KEY — a key the builder, planner and
+# baseline/revision/amendment-freeze markers
+# (docs/AUTONOMOUS-ENGINEERING.md §6). Deterministic, no AI. Its
+# environment (agents-contract-authority) holds
+# CONTRACT_AUTHORITY_SIGNING_KEY — a key the builder, planner and
 # reviewers do not possess, which is what separates contract authority
 # from everyone who merely wants the contract changed. The owner's human
-# account is the other authorized source (unsigned; the platform proves
-# a human authored it).
+# account is the other authorized baseline source (unsigned; the
+# platform proves a human authored it).
 #
-#   - When an agent-task issue carries status:ready plus exactly one
-#     builder:* label (labels RE-FETCHED at decision time, so both
-#     labelling orders work), it posts the signed
-#     REKODA_CONTRACT_BASELINE (revision 1) if no baseline exists yet —
-#     recording, not amending — and then dispatches the Claude builder
-#     when the builder is builder:claude.
-#   - Amendments are workflow_dispatch only (owner-only): a signed
-#     REKODA_CONTRACT_REVISION with the new hash and reason, executed as
-#     the freeze → sign → re-freeze → dispatch transaction below. The
-#     evaluator enforces monotonic history and rejects conflicts, so a
-#     second conflicting baseline or a replayed revision blocks the PR
-#     rather than changing anything.
+# BASELINE (mode=baseline dispatch, or a human label event): when an
+# agent-task issue carries status:ready plus exactly one risk and one
+# builder label (labels RE-FETCHED at decision time, so any labelling
+# order works), it records the signed REKODA_CONTRACT_BASELINE — with
+# RISK and BUILDER inside the signed snapshot — if no VALID baseline
+# exists yet, then dispatches the Claude builder when builder:claude.
+# Existence is decided by the SAME canonical computation admission uses
+# (contract-status.mjs → computeContractRevision): text that merely
+# contains a marker name, a malformed/unsigned/wrong-issue marker, or a
+# bad signature never suppresses the real baseline; conflicting
+# AUTHORIZED history fails closed instead of being papered over. The
+# planner EXPLICITLY dispatches this entry point (GITHUB_TOKEN label
+# events never trigger workflows — GitHub's recursion suppression), so
+# autonomous promotion does not depend on event recursion.
 #
-# FREEZE/PUBLISHER SERIALIZATION (D1 + per-target ordering). Every job
-# here that writes a linked PR's checks takes the SAME job-level
-# concurrency group as that PR's gate check-writers
-# (rekoda-gates-pr-<pr>, cancel-in-progress: false), so a freeze and a
-# gate publisher can never interleave their read-then-write:
-#   - a publisher wholly BEFORE the post-signing re-freeze may write
-#     green for the then-still-active previous revision — the re-freeze
-#     job then overwrites it red;
-#   - a publisher wholly AFTER the re-freeze re-fetches state that
-#     already contains the new revision, so a previous-revision verdict
-#     no longer validates and the check stays red until a fresh review.
-# There is no third case: holding the group is what forbids a publisher
-# whose state read predates the signing from writing its check after
-# the re-freeze. A freeze leg that is itself displaced/cancelled fails
-# the matrix, the signing job never runs, and the previous revision
-# simply stays active (already-frozen PRs stay safely blocked).
+# AMENDMENT (mode=revision dispatch, owner-only) — the atomic
+# freeze-before-mutate transaction, with the freeze itself part of the
+# EVALUATOR's merge contract, not merely red check writes:
+#   1. plan: authorize the owner, compute current revision, find every
+#      linked open PR (exhaustive; unprovable → abort);
+#   2. freeze_marker: post the SIGNED REKODA_CONTRACT_AMENDMENT_FREEZE
+#      (from → target revision). From this durable moment the evaluator
+#      returns CONTRACT_AMENDMENT_IN_PROGRESS for every linked PR: NO
+#      finalizer, whenever scheduled, can conclude an old-revision green
+#      after reading state that contains the freeze;
+#   3. barrier (matrix, one job per linked PR, inside that PR's
+#      rekoda-gates-pr-<pr> group): forces the three required checks red.
+#      After a PR's barrier completes, every later check writer entered
+#      the group AFTER the freeze marker existed — its state read
+#      contains the freeze (before signing) or the new revision (after),
+#      and either way old-revision green is impossible. A finalizer that
+#      entered the group BEFORE the barrier had its writes overwritten
+#      red by the barrier itself. At the moment the revision is signed,
+#      every linked PR is therefore non-merge-authorizing and cannot be
+#      re-greened under the old revision;
+#   4. sign: post the SIGNED revision marker (recording the current
+#      risk/builder labels in the snapshot). Its existence is exactly
+#      what EXPIRES the freeze — the freeze and the new revision hand
+#      over atomically inside evaluator state, with no interval in
+#      which the old revision can authorize anything;
+#   5. dispatch: re-run the gates per linked PR (JSON parsed with a real
+#      parser — [70,73] dispatches 70 and 73, never 7073). A failed
+#      dispatch leaves the PR blocked (frozen or wrong-revision), never
+#      silently green.
+# Any partial failure leaves the freeze active and every linked PR
+# evaluator-blocked; recovery is the owner re-running the amendment.
 name: Agent — contract authority
 
 on:
@@ -43,17 +61,23 @@ on:
     types: [labeled]
   workflow_dispatch:
     inputs:
+      mode:
+        description: baseline (record baseline + hand off) or revision (owner-only amendment)
+        required: false
+        default: revision
+        type: choice
+        options: [revision, baseline]
       issue:
-        description: Issue number to amend
+        description: Issue number
         required: true
         type: number
       revision:
-        description: New revision number (previous + 1)
-        required: true
+        description: 'mode=revision: new revision number (previous + 1)'
+        required: false
         type: number
       reason:
-        description: Why the contract changed
-        required: true
+        description: 'mode=revision: why the contract changed'
+        required: false
         type: string
 
 permissions: {}
@@ -71,23 +95,27 @@ env:
 
 jobs:
   # ---------------------------------------------------------------- #
-  # Amendment transaction (workflow_dispatch, owner-only)             #
+  # Amendment transaction (workflow_dispatch mode=revision, owner-only)#
   # ---------------------------------------------------------------- #
   plan:
     name: Authorize and find linked PRs
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && inputs.mode != 'baseline'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: read
       pull-requests: read
+      issues: read
     outputs:
       prs: ${{ steps.linked.outputs.prs }}
       has_prs: ${{ steps.linked.outputs.has_prs }}
+      from_revision: ${{ steps.current.outputs.revision }}
       trusted_sha: ${{ github.sha }}
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       ACTOR: ${{ github.actor }}
+      REVISION_INPUT: ${{ inputs.revision }}
+      REASON_INPUT: ${{ inputs.reason }}
     steps:
       # workflow_dispatch executes the default-branch definition;
       # github.sha IS that trusted commit — definition and policy share
@@ -111,13 +139,32 @@ jobs:
             exit 1
           fi
 
+      - name: Verify the target revision continues the current history
+        id: current
+        run: |
+          set -euo pipefail
+          if [ ! -f scripts/agents/contract-status.mjs ]; then
+            echo "::error::Policy scripts are not on main yet."; exit 1
+          fi
+          node scripts/agents/contract-status.mjs --repo "$REPO" --issue "$ISSUE"
+          current=$(grep '^revision=' "$GITHUB_OUTPUT" | tail -1 | cut -d= -f2)
+          if [ -z "$current" ]; then
+            echo "::error::Issue #$ISSUE has no valid current revision; amend only a valid contract."
+            exit 1
+          fi
+          if [ "$REVISION_INPUT" != "$((current + 1))" ]; then
+            echo "::error::Requested revision $REVISION_INPUT does not continue the current revision $current (expected $((current + 1)))."
+            exit 1
+          fi
+          if [ -z "${REASON_INPUT:-}" ]; then
+            echo "::error::mode=revision requires a non-empty reason."
+            exit 1
+          fi
+
       - name: Find every linked open PR (exhaustive; unprovable → abort)
         id: linked
         run: |
           set -euo pipefail
-          if [ ! -f scripts/agents/find-linked-prs.mjs ]; then
-            echo "::error::Policy scripts are not on main yet."; exit 1
-          fi
           node scripts/agents/find-linked-prs.mjs --repo "$REPO" --issue "$ISSUE" > /tmp/linked-prs.txt
           prs=$(node --input-type=module -e '
             import { readFileSync } from "node:fs";
@@ -134,18 +181,49 @@ jobs:
           fi
           echo "Linked open PRs: $prs"
 
-  freeze:
-    name: 'Freeze linked PR (pre-sign)'
+  freeze_marker:
+    name: Post the signed amendment-freeze marker
     needs: plan
-    if: needs.plan.outputs.has_prs == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: agents-contract-authority
+    permissions:
+      contents: read
+      issues: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      CONTRACT_AUTHORITY_SIGNING_KEY: ${{ secrets.CONTRACT_AUTHORITY_SIGNING_KEY }}
+      FROM_REVISION: ${{ needs.plan.outputs.from_revision }}
+      # env-var indirection — dispatch inputs never touch shell syntax
+      REVISION_INPUT: ${{ inputs.revision }}
+    steps:
+      - name: Checkout trusted policy at the definition's own SHA
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.plan.outputs.trusted_sha }}
+          fetch-depth: 1
+
+      - name: Freeze the merge contract (durable evaluator state)
+        run: |
+          set -euo pipefail
+          node scripts/agents/contract-revision.mjs --repo "$REPO" --issue "$ISSUE" \
+            --freeze --from "$FROM_REVISION" --target "$REVISION_INPUT" \
+            --sign-env CONTRACT_AUTHORITY_SIGNING_KEY --post
+
+  barrier:
+    name: 'Barrier — force linked PR checks red'
+    needs: [plan, freeze_marker]
+    if: >-
+      !cancelled() && needs.freeze_marker.result == 'success' &&
+      needs.plan.outputs.has_prs == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     strategy:
-      fail-fast: false # freeze every PR we can; any failure still aborts the signing
+      fail-fast: false # barrier every PR we can; any failure still aborts the signing
       matrix:
         pr: ${{ fromJSON(needs.plan.outputs.prs) }}
-    # The SAME group as this PR's gate check-writers: a freeze and a
-    # publisher never interleave (see header).
+    # The SAME group as this PR's finalizer: after this job, every later
+    # check writer for the PR read state that contains the freeze marker.
     concurrency:
       group: rekoda-gates-pr-${{ matrix.pr }}
       cancel-in-progress: false
@@ -162,27 +240,27 @@ jobs:
           ref: ${{ needs.plan.outputs.trusted_sha }}
           fetch-depth: 1
 
-      - name: Force this PR's required checks red BEFORE the revision exists
+      - name: Force this PR's required checks red under the freeze
         run: |
           set -euo pipefail
           head=$(gh api "repos/$REPO/pulls/${{ matrix.pr }}" --jq '.head.sha')
-          echo "Freezing PR #${{ matrix.pr }} at $head before the amendment becomes authoritative…"
+          echo "Barrier for PR #${{ matrix.pr }} at $head — the freeze marker is durable; overwriting any pre-freeze conclusion…"
           for name in "Agent policy gate" "Technical Review Gate" "Gemini Acceptance Gate"; do
             node scripts/agents/post-check.mjs --repo "$REPO" --name "$name" --sha "$head" \
               --conclusion failure --title "Contract amendment in progress" \
-              --summary "Issue #$ISSUE is being amended; this check stays red until the gates re-evaluate under the new contract."
+              --summary "Issue #$ISSUE is under a signed amendment freeze; this check stays red until the new revision is signed and the gates re-evaluate under it."
           done
 
   sign:
     name: Sign and post the revision
-    needs: [plan, freeze]
-    # Runs only when the plan succeeded AND every freeze leg succeeded
-    # (or there was nothing to freeze). Any freeze failure leaves the
-    # PREVIOUS revision active with frozen PRs safely blocked — D1's
-    # abort state, never a silent re-green.
+    needs: [plan, freeze_marker, barrier]
+    # Only when the freeze marker is durable AND every barrier completed
+    # (or there was nothing to barrier). Any failure leaves the freeze
+    # active: every linked PR stays evaluator-blocked until the owner
+    # re-runs the amendment — never a silent re-green.
     if: >-
-      !cancelled() && needs.plan.result == 'success' &&
-      (needs.freeze.result == 'success' || needs.freeze.result == 'skipped')
+      !cancelled() && needs.freeze_marker.result == 'success' &&
+      (needs.barrier.result == 'success' || needs.barrier.result == 'skipped')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: agents-contract-authority
@@ -202,64 +280,20 @@ jobs:
           ref: ${{ needs.plan.outputs.trusted_sha }}
           fetch-depth: 1
 
-      - name: Post the signed revision marker (the authoritative transition)
+      - name: Post the signed revision marker (the authoritative transition; expires the freeze)
         run: |
           set -euo pipefail
           node scripts/agents/contract-revision.mjs --repo "$REPO" --issue "$ISSUE" \
             --revision "$REVISION_INPUT" --reason "$REASON_INPUT" \
             --sign-env CONTRACT_AUTHORITY_SIGNING_KEY --post
 
-  refreeze:
-    name: 'Re-freeze linked PR (post-sign)'
-    needs: [plan, sign]
-    if: >-
-      !cancelled() && needs.sign.result == 'success' &&
-      needs.plan.outputs.has_prs == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    strategy:
-      fail-fast: false
-      matrix:
-        pr: ${{ fromJSON(needs.plan.outputs.prs) }}
-    # Entering the group AFTER the marker exists closes the window in
-    # which a previous-revision publisher (that read state before the
-    # signing) wrote green: its write happened before this job held the
-    # group, and this job overwrites it red.
-    concurrency:
-      group: rekoda-gates-pr-${{ matrix.pr }}
-      cancel-in-progress: false
-    permissions:
-      contents: read
-      pull-requests: read
-      checks: write
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-    steps:
-      - name: Checkout trusted policy at the definition's own SHA
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          ref: ${{ needs.plan.outputs.trusted_sha }}
-          fetch-depth: 1
-
-      - name: Force this PR's required checks red AFTER the revision exists
-        run: |
-          set -euo pipefail
-          head=$(gh api "repos/$REPO/pulls/${{ matrix.pr }}" --jq '.head.sha')
-          echo "Re-freezing PR #${{ matrix.pr }} at $head now that the new revision is authoritative…"
-          for name in "Agent policy gate" "Technical Review Gate" "Gemini Acceptance Gate"; do
-            node scripts/agents/post-check.mjs --repo "$REPO" --name "$name" --sha "$head" \
-              --conclusion failure --title "Contract amended — re-evaluation required" \
-              --summary "Issue #$ISSUE was amended; this check stays red until the gates re-evaluate under the new contract."
-          done
-
   dispatch:
     name: Redispatch the gates
-    needs: [plan, sign, refreeze]
-    # A failed redispatch leaves the PR frozen (blocked), never silently
-    # green — the owner redispatches Agent — gates manually.
+    needs: [plan, sign]
+    # A failed redispatch leaves the PR blocked (wrong-revision), never
+    # silently green — the owner redispatches Agent — gates manually.
     if: >-
-      !cancelled() && needs.sign.result == 'success' &&
-      (needs.refreeze.result == 'success' || needs.refreeze.result == 'skipped')
+      !cancelled() && needs.sign.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -267,30 +301,50 @@ jobs:
       actions: write
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # The compact JSON list from the plan job — parsed with a real JSON
+      # parser, via env (untrusted-shaped data never touches shell
+      # syntax): [70,73] → 70 and 73, NEVER 7073.
+      PRS_JSON: ${{ needs.plan.outputs.prs }}
     steps:
+      - name: Checkout trusted policy at the definition's own SHA
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.plan.outputs.trusted_sha }}
+          fetch-depth: 1
+
       - name: Redispatch Agent — gates for every linked PR
         run: |
           set -euo pipefail
-          for pr in $(echo '${{ needs.plan.outputs.prs }}' | tr -d '[],' | tr ' ' '\n'); do
+          node --input-type=module -e '
+            import { parsePrNumbersJson } from "./scripts/agents/evaluator.mjs";
+            const prs = parsePrNumbersJson(process.env.PRS_JSON);
+            if (prs === null) { console.error("::error::Linked-PR list is not a valid JSON array of PR numbers."); process.exit(1); }
+            console.log(prs.join("\n"));
+          ' > /tmp/prs.txt
+          while IFS= read -r pr; do
             [ -n "$pr" ] || continue
             echo "Redispatching the gates for PR #$pr under the new revision."
             gh workflow run agent-gates.yml --repo "$REPO" --ref main -f pr="$pr"
-          done
+          done < /tmp/prs.txt
 
   # ---------------------------------------------------------------- #
-  # Baseline recording + builder hand-off (label events)              #
+  # Baseline recording + builder hand-off                             #
+  # (workflow_dispatch mode=baseline — the planner's explicit entry    #
+  # point — or a human label event)                                   #
   # ---------------------------------------------------------------- #
   baseline:
     name: Record baseline and hand off (READY promotion)
-    # Any of the three participating labels may arrive LAST; each event
-    # only triggers a re-check — the decision itself is made against the
-    # RE-FETCHED current labels (readyPromotionAction), so both
-    # status:ready-then-builder and builder-then-status:ready work.
+    # Label path: any of the participating labels may arrive LAST; each
+    # event only triggers a re-check — the decision is made against the
+    # RE-FETCHED current labels (readyPromotionAction). Dispatch path:
+    # the planner (or the owner) explicitly requests baseline recording;
+    # the issue number is only a REQUEST and every fact is re-verified.
     if: |
-      github.event_name == 'issues' && github.event.action == 'labeled' &&
-      (github.event.label.name == 'status:ready' ||
-       github.event.label.name == 'agent-task' ||
-       startsWith(github.event.label.name, 'builder:'))
+      (github.event_name == 'workflow_dispatch' && inputs.mode == 'baseline') ||
+      (github.event_name == 'issues' && github.event.action == 'labeled' &&
+       (github.event.label.name == 'status:ready' ||
+        github.event.label.name == 'agent-task' ||
+        startsWith(github.event.label.name, 'builder:')))
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: agents-contract-authority
@@ -309,9 +363,17 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 1
 
-      - name: Authorize actor (write+ may promote to READY)
+      - name: Authorize actor
         run: |
           set -euo pipefail
+          # Trusted-workflow dispatch (the planner's GITHUB_TOKEN) appears
+          # as github-actions[bot]; it can only originate from a trusted
+          # default-branch workflow, and every issue fact is independently
+          # re-verified below — the request itself grants nothing.
+          if [ "$ACTOR" = "github-actions[bot]" ]; then
+            echo "Dispatched by a trusted default-branch workflow."
+            exit 0
+          fi
           perm=$(gh api "repos/$REPO/collaborators/$ACTOR/permission" --jq .permission)
           case "$perm" in
             admin|maintain|write) echo "Actor $ACTOR permission: $perm" ;;
@@ -343,13 +405,27 @@ jobs:
           DISPATCH_CLAUDE: ${{ steps.promote.outputs.dispatch_claude }}
         run: |
           set -euo pipefail
-          # Baseline: record once; never overwrite an existing baseline.
-          # The existence probe is exhaustive (--paginate) — a baseline
-          # past the first comment page must not be re-posted.
-          count=$(gh api "repos/$REPO/issues/$ISSUE/comments" --paginate --jq '.[].body' \
-            | grep -c 'REKODA_CONTRACT_BASELINE' || true)
-          if [ "$count" != "0" ]; then
-            echo "A baseline marker already exists on #$ISSUE."
+          # Baseline existence is decided by the SAME canonical parser/
+          # provenance computation admission uses — NEVER a substring
+          # probe: a comment that merely contains the marker name, a
+          # malformed marker, an unsigned bot marker, a wrong-issue
+          # marker or a bad signature does not suppress the real
+          # baseline; conflicting AUTHORIZED history fails closed.
+          node scripts/agents/contract-status.mjs --repo "$REPO" --issue "$ISSUE" > /tmp/status.txt
+          cat /tmp/status.txt
+          history_complete=$(grep '^history_complete=' /tmp/status.txt | cut -d= -f2)
+          baseline_found=$(grep '^baseline_found=' /tmp/status.txt | cut -d= -f2)
+          invalid=$(grep '^invalid=' /tmp/status.txt | cut -d= -f2-)
+          if [ "$history_complete" != "true" ]; then
+            echo "::error::Issue #$ISSUE comment history could not be proven complete; refusing to decide baseline existence."
+            exit 1
+          fi
+          if [ -n "$invalid" ]; then
+            echo "::error::Issue #$ISSUE carries INVALID authorized contract history ($invalid); this issue cannot proceed until the owner resolves it — not papering over it with a new baseline."
+            exit 1
+          fi
+          if [ "$baseline_found" = "true" ]; then
+            echo "A VALID authorized baseline already exists on #$ISSUE."
           else
             node scripts/agents/contract-revision.mjs --repo "$REPO" --issue "$ISSUE" \
               --baseline --sign-env CONTRACT_AUTHORITY_SIGNING_KEY --post
@@ -357,7 +433,7 @@ jobs:
           # Deterministic sequencing (no builder polling): the builder is
           # dispatched only AFTER the baseline exists — admission then
           # independently verifies it again, and its atomic lane claim
-          # makes a duplicate label-event dispatch a safe no-op.
+          # makes a duplicate dispatch a safe no-op.
           if [ "$DISPATCH_CLAUDE" = "true" ]; then
             echo "Baseline recorded — dispatching the Claude builder for #$ISSUE."
             gh workflow run agent-claude.yml --repo "$REPO" --ref main -f issue="$ISSUE"

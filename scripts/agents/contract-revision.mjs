@@ -1,16 +1,21 @@
 #!/usr/bin/env node
 /**
  * Contract-revision helper (docs/AUTONOMOUS-ENGINEERING.md §6): computes
- * the body hash of an issue and prints (or posts) the baseline/revision
- * marker. Provenance rules (enforced by the evaluator):
- *   - a marker AUTHORED by the owner's human account is authorized as-is;
- *   - a marker posted by any workflow is authorized only when SIGNED by
+ * the issue's contract snapshot — body hash PLUS the current risk and
+ * builder labels, which are part of the signed contract (V3) — and
+ * prints (or posts) the baseline/revision marker; --freeze posts the
+ * signed amendment-freeze marker instead. Provenance rules (enforced by
+ * the evaluator):
+ *   - a baseline AUTHORED by the owner's human account is authorized
+ *     as-is; a workflow-posted marker is authorized only when SIGNED by
  *     the contract-authority key (--sign-env, available only in the
- *     agent-contract-authority environment).
+ *     agent-contract-authority environment);
+ *   - revisions and freezes are authority-SIGNED ONLY.
  * The builder holds neither, by design.
  *
  *   node scripts/agents/contract-revision.mjs --repo o/n --issue 44 --baseline [--post] [--sign-env NAME]
  *   node scripts/agents/contract-revision.mjs --repo o/n --issue 44 --revision 2 --reason "scope change" [--post] [--sign-env NAME]
+ *   node scripts/agents/contract-revision.mjs --repo o/n --issue 44 --freeze --from 1 --target 2 --sign-env NAME [--post]
  */
 import { execFileSync } from 'node:child_process';
 import { createPrivateKey, sign as cryptoSign } from 'node:crypto';
@@ -18,7 +23,9 @@ import {
   normalizeBody,
   sha256Hex,
   canonicalContractPayload,
+  canonicalFreezePayload,
   buildContractMarkerLines,
+  buildFreezeMarkerLines,
 } from './evaluator.mjs';
 
 const args = Object.fromEntries(
@@ -31,52 +38,96 @@ const repo = args.repo;
 const issue = Number(args.issue);
 if (!repo || !Number.isInteger(issue)) {
   console.error(
-    'Usage: contract-revision.mjs --repo owner/name --issue N (--baseline | --revision K --reason "…") [--post] [--sign-env NAME]',
+    'Usage: contract-revision.mjs --repo owner/name --issue N (--baseline | --revision K --reason "…" | --freeze --from A --target B) [--post] [--sign-env NAME]',
   );
   process.exit(2);
 }
 
-const raw = JSON.parse(
-  execFileSync('gh', ['api', `repos/${repo}/issues/${issue}`], { encoding: 'utf8' }),
-);
-const hash = sha256Hex(normalizeBody(raw.body ?? ''));
-
-let m;
-if (args.baseline === 'true') {
-  m = { kind: 'REKODA_CONTRACT_BASELINE', issue, revision: 1, bodySha256: hash, reason: '' };
-} else {
-  const rev = Number(args.revision);
-  if (!Number.isInteger(rev) || rev < 2) {
-    console.error('A revision marker needs --revision K (K >= 2) and --reason.');
-    process.exit(2);
-  }
-  const reason = String(args.reason ?? '')
-    .replace(/\n/g, ' ')
-    .trim();
-  if (!reason) {
-    console.error('A revision marker requires a non-empty --reason.');
-    process.exit(2);
-  }
-  m = { kind: 'REKODA_CONTRACT_REVISION', issue, revision: rev, bodySha256: hash, reason };
-}
-
-// Rendered through the SAME shared generator the parser is tested
-// against — the emitted marker (including its SCHEME line) is exactly
-// what parseRevisionMarkers/computeContractRevision accept.
-let signature;
-if (args['sign-env']) {
+const signWithEnv = (payload) => {
+  if (!args['sign-env']) return undefined;
   const keyPem = process.env[args['sign-env']];
   if (!keyPem) {
     console.error(`Signing key env ${args['sign-env']} is empty.`);
     process.exit(1);
   }
-  signature = cryptoSign(
-    null,
-    Buffer.from(canonicalContractPayload(m), 'utf8'),
-    createPrivateKey(keyPem),
-  ).toString('base64');
+  return cryptoSign(null, Buffer.from(payload, 'utf8'), createPrivateKey(keyPem)).toString(
+    'base64',
+  );
+};
+
+// Rendered through the SAME shared generators the parser is tested
+// against — the emitted marker is exactly what the evaluator accepts.
+let lines;
+if (args.freeze === 'true') {
+  const fromRevision = Number(args.from);
+  const targetRevision = Number(args.target);
+  if (
+    !Number.isInteger(fromRevision) ||
+    !Number.isInteger(targetRevision) ||
+    targetRevision !== fromRevision + 1
+  ) {
+    console.error('A freeze marker needs --from A and --target B with B = A + 1.');
+    process.exit(2);
+  }
+  if (!args['sign-env']) {
+    console.error('A freeze marker is authority-signed only; --sign-env is required.');
+    process.exit(1);
+  }
+  const f = { issue, fromRevision, targetRevision };
+  lines = buildFreezeMarkerLines(f, signWithEnv(canonicalFreezePayload(f)));
+} else {
+  const raw = JSON.parse(
+    execFileSync('gh', ['api', `repos/${repo}/issues/${issue}`], { encoding: 'utf8' }),
+  );
+  const hash = sha256Hex(normalizeBody(raw.body ?? ''));
+  // Risk and builder are part of the signed contract snapshot — a marker
+  // cannot be produced for an issue whose labels are absent or ambiguous.
+  const labels = (raw.labels ?? []).map((l) => l.name);
+  const risks = labels.filter((l) => /^risk:R[0-3]$/.test(l));
+  const builders = labels.filter((l) => /^builder:(claude|codex)$/.test(l));
+  if (risks.length !== 1 || builders.length !== 1) {
+    console.error(
+      `Issue #${issue} must carry exactly one risk:R0..R3 and one builder:* label to record a contract (found risk: [${risks.join(', ')}], builder: [${builders.join(', ')}]).`,
+    );
+    process.exit(1);
+  }
+
+  let m;
+  if (args.baseline === 'true') {
+    m = {
+      kind: 'REKODA_CONTRACT_BASELINE',
+      issue,
+      revision: 1,
+      risk: risks[0],
+      builder: builders[0],
+      bodySha256: hash,
+      reason: '',
+    };
+  } else {
+    const rev = Number(args.revision);
+    if (!Number.isInteger(rev) || rev < 2) {
+      console.error('A revision marker needs --revision K (K >= 2) and --reason.');
+      process.exit(2);
+    }
+    const reason = String(args.reason ?? '')
+      .replace(/\n/g, ' ')
+      .trim();
+    if (!reason) {
+      console.error('A revision marker requires a non-empty --reason.');
+      process.exit(2);
+    }
+    m = {
+      kind: 'REKODA_CONTRACT_REVISION',
+      issue,
+      revision: rev,
+      risk: risks[0],
+      builder: builders[0],
+      bodySha256: hash,
+      reason,
+    };
+  }
+  lines = buildContractMarkerLines(m, signWithEnv(canonicalContractPayload(m)));
 }
-const lines = buildContractMarkerLines(m, signature);
 
 const body = '```\n' + lines.join('\n') + '\n```';
 if (args.post === 'true') {

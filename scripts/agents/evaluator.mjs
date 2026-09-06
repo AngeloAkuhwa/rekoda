@@ -11,8 +11,10 @@
  *
  * PROVENANCE MODEL:
  *   - Every piece of signed evidence carries the protocol domain/version
- *     SCHEME: REKODA_AGENT_EVIDENCE_V2 inside its signed payload; an
- *     unknown, missing, or future scheme is rejected.
+ *     SCHEME: REKODA_AGENT_EVIDENCE_V3 inside its signed payload; an
+ *     unknown, missing, or future scheme is rejected. Verdicts bind
+ *     CONTRACT_SNAPSHOT_SHA256 — the hash of the authoritative contract
+ *     snapshot (issue, revision, risk, builder, body hash).
  *   - Claude/Gemini verdict markers count ONLY with a valid Ed25519
  *     signature over the canonical payload, verified against the
  *     committed public key for that reviewer. The private keys are
@@ -35,18 +37,24 @@
  */
 import { createHash, createPublicKey, verify as cryptoVerify } from 'node:crypto';
 
-// V2: verdict evidence additionally binds CONTRACT_BODY_SHA256 — the
-// hash of the exact authorized contract snapshot the reviewer assessed —
-// so a mutable-body A→B→A window can never smuggle an unreviewed
-// contract past the publisher. Bumped cleanly while no signing key is
-// live; V1 evidence is rejected as an unknown scheme.
-export const SCHEME = 'REKODA_AGENT_EVIDENCE_V2';
+// V3: the authoritative task contract is a SNAPSHOT of every
+// merge-authorization-relevant field — issue, revision, risk label,
+// builder label, and body hash — not the body bytes alone. Contract
+// baseline/revision markers record and sign RISK and BUILDER; verdict
+// evidence binds CONTRACT_SNAPSHOT_SHA256 (the hash of that canonical
+// snapshot) so neither a mutable-body A→B→A window nor a consistent
+// risk/builder label rewrite can smuggle an unreviewed contract past
+// the gates. Bumped cleanly while no signing key is live; V1/V2
+// evidence is rejected as an unknown scheme.
+export const SCHEME = 'REKODA_AGENT_EVIDENCE_V3';
 
 export const MARKERS = {
   codex: 'REKODA_CODEX_APPROVAL',
   claude: 'REKODA_CLAUDE_APPROVAL',
   gemini: 'REKODA_GEMINI_APPROVAL',
 };
+
+export const FREEZE_MARKER = 'REKODA_CONTRACT_AMENDMENT_FREEZE';
 
 const SHA40 = /^[0-9a-f]{40}$/;
 const RISK_RE = /^risk:R[0-3]$/;
@@ -68,7 +76,23 @@ export function sha256Hex(text) {
 
 /** Canonical signed payload for a verdict marker — field order is fixed. */
 export function canonicalVerdictPayload(m) {
-  return `${m.name}\nSCHEME: ${SCHEME}\nPR: ${m.pr}\nISSUE: ${m.issue}\nHEAD_SHA: ${m.headSha}\nCONTRACT_REVISION: ${m.contractRevision}\nCONTRACT_BODY_SHA256: ${m.contractBodySha256}\nVERDICT: ${m.verdict}`;
+  return `${m.name}\nSCHEME: ${SCHEME}\nPR: ${m.pr}\nISSUE: ${m.issue}\nHEAD_SHA: ${m.headSha}\nCONTRACT_REVISION: ${m.contractRevision}\nCONTRACT_SNAPSHOT_SHA256: ${m.contractSnapshotSha256}\nVERDICT: ${m.verdict}`;
+}
+
+/**
+ * THE authoritative contract-snapshot identity (V3): the canonical
+ * serialization of every merge-authorization-relevant contract field.
+ * Its hash is what verdict evidence binds — a change to ANY of these
+ * fields without an authorized revision detaches all prior evidence.
+ * Owner-decision state is not a separate field: R3 decision references
+ * live in the issue body, so they are covered by BODY_SHA256.
+ */
+export function canonicalContractSnapshotPayload(m) {
+  return `REKODA_CONTRACT_SNAPSHOT\nSCHEME: ${SCHEME}\nISSUE: ${m.issue}\nREVISION: ${m.revision}\nRISK: ${m.risk}\nBUILDER: ${m.builder}\nBODY_SHA256: ${m.bodySha256}`;
+}
+
+export function contractSnapshotHash(m) {
+  return sha256Hex(canonicalContractSnapshotPayload(m));
 }
 
 /**
@@ -85,7 +109,7 @@ export function buildVerdictMarkerLines(m, signature) {
     `ISSUE: ${m.issue}`,
     `HEAD_SHA: ${m.headSha}`,
     `CONTRACT_REVISION: ${m.contractRevision}`,
-    `CONTRACT_BODY_SHA256: ${m.contractBodySha256}`,
+    `CONTRACT_SNAPSHOT_SHA256: ${m.contractSnapshotSha256}`,
     `VERDICT: ${m.verdict}`,
   ];
   if (signature) lines.push(`SIGNATURE: ${signature}`);
@@ -98,6 +122,8 @@ export function buildContractMarkerLines(m, signature) {
     `SCHEME: ${SCHEME}`,
     `ISSUE: ${m.issue}`,
     `REVISION: ${m.revision}`,
+    `RISK: ${m.risk}`,
+    `BUILDER: ${m.builder}`,
     `BODY_SHA256: ${m.bodySha256}`,
   ];
   if (m.kind === 'REKODA_CONTRACT_REVISION') lines.push(`REASON: ${m.reason}`);
@@ -105,10 +131,27 @@ export function buildContractMarkerLines(m, signature) {
   return lines;
 }
 
+export function buildFreezeMarkerLines(m, signature) {
+  const lines = [
+    FREEZE_MARKER,
+    `SCHEME: ${SCHEME}`,
+    `ISSUE: ${m.issue}`,
+    `FROM_REVISION: ${m.fromRevision}`,
+    `TARGET_REVISION: ${m.targetRevision}`,
+  ];
+  if (signature) lines.push(`SIGNATURE: ${signature}`);
+  return lines;
+}
+
 /** Canonical signed payload for a contract marker — field order is fixed. */
 export function canonicalContractPayload(m) {
-  const base = `${m.kind}\nSCHEME: ${SCHEME}\nISSUE: ${m.issue}\nREVISION: ${m.revision}\nBODY_SHA256: ${m.bodySha256}`;
+  const base = `${m.kind}\nSCHEME: ${SCHEME}\nISSUE: ${m.issue}\nREVISION: ${m.revision}\nRISK: ${m.risk}\nBUILDER: ${m.builder}\nBODY_SHA256: ${m.bodySha256}`;
   return m.kind === 'REKODA_CONTRACT_REVISION' ? `${base}\nREASON: ${m.reason}` : base;
+}
+
+/** Canonical signed payload for an amendment-freeze marker. */
+export function canonicalFreezePayload(m) {
+  return `${FREEZE_MARKER}\nSCHEME: ${SCHEME}\nISSUE: ${m.issue}\nFROM_REVISION: ${m.fromRevision}\nTARGET_REVISION: ${m.targetRevision}`;
 }
 
 /** Verify an Ed25519 signature (base64) over a payload with a PEM public key. */
@@ -184,8 +227,8 @@ export function resolveWorkflowRunTarget({ headSha, candidates, repo, complete =
 /**
  * Parse fixed-format approval marker blocks out of free text:
  *   <MARKER NAME>
- *   SCHEME: REKODA_AGENT_EVIDENCE_V2
- *   PR / ISSUE / HEAD_SHA / CONTRACT_REVISION / CONTRACT_BODY_SHA256 / VERDICT / SIGNATURE
+ *   SCHEME: REKODA_AGENT_EVIDENCE_V3
+ *   PR / ISSUE / HEAD_SHA / CONTRACT_REVISION / CONTRACT_SNAPSHOT_SHA256 / VERDICT / SIGNATURE
  * A block missing the scheme, carrying an unknown scheme, or failing any
  * field grammar is malformed — a malformed marker never counts.
  */
@@ -200,7 +243,7 @@ export function parseMarkers(text, markerName) {
       const line = lines[j].trim();
       if (line === markerName) break;
       const m = line.match(
-        /^(SCHEME|PR|ISSUE|HEAD_SHA|CONTRACT_REVISION|CONTRACT_BODY_SHA256|VERDICT|SIGNATURE):\s*(.*)$/,
+        /^(SCHEME|PR|ISSUE|HEAD_SHA|CONTRACT_REVISION|CONTRACT_SNAPSHOT_SHA256|VERDICT|SIGNATURE):\s*(.*)$/,
       );
       if (m) fields[m[1]] = m[2].trim();
       if (m && m[1] === 'SIGNATURE') break;
@@ -214,10 +257,10 @@ export function parseMarkers(text, markerName) {
     const contractRevision = /^\d{1,4}$/.test(fields.CONTRACT_REVISION ?? '')
       ? Number(fields.CONTRACT_REVISION)
       : null;
-    const contractBodySha256 = /^[0-9a-f]{64}$/.test(
-      (fields.CONTRACT_BODY_SHA256 ?? '').toLowerCase(),
+    const contractSnapshotSha256 = /^[0-9a-f]{64}$/.test(
+      (fields.CONTRACT_SNAPSHOT_SHA256 ?? '').toLowerCase(),
     )
-      ? fields.CONTRACT_BODY_SHA256.toLowerCase()
+      ? fields.CONTRACT_SNAPSHOT_SHA256.toLowerCase()
       : null;
     const verdict =
       fields.VERDICT === 'APPROVE' || fields.VERDICT === 'BLOCK' ? fields.VERDICT : null;
@@ -227,7 +270,7 @@ export function parseMarkers(text, markerName) {
       issue === null ||
       headSha === null ||
       contractRevision === null ||
-      contractBodySha256 === null ||
+      contractSnapshotSha256 === null ||
       verdict === null;
     out.push({
       name: markerName,
@@ -236,7 +279,7 @@ export function parseMarkers(text, markerName) {
       issue,
       headSha,
       contractRevision,
-      contractBodySha256,
+      contractSnapshotSha256,
       verdict,
       signature: fields.SIGNATURE ?? null,
       malformed,
@@ -253,15 +296,17 @@ export function parseRevisionMarkers(text) {
     const name = lines[i].trim();
     if (name !== 'REKODA_CONTRACT_BASELINE' && name !== 'REKODA_CONTRACT_REVISION') continue;
     const fields = {};
-    for (let j = i + 1; j < Math.min(i + 9, lines.length); j++) {
+    for (let j = i + 1; j < Math.min(i + 11, lines.length); j++) {
       const m = lines[j]
         .trim()
-        .match(/^(SCHEME|ISSUE|REVISION|BODY_SHA256|REASON|SIGNATURE):\s*(.*)$/);
+        .match(/^(SCHEME|ISSUE|REVISION|RISK|BUILDER|BODY_SHA256|REASON|SIGNATURE):\s*(.*)$/);
       if (m) fields[m[1]] = m[2].trim();
     }
     const scheme = fields.SCHEME === SCHEME ? SCHEME : null;
     const issue = /^\d{1,7}$/.test(fields.ISSUE ?? '') ? Number(fields.ISSUE) : null;
     const revision = /^\d{1,4}$/.test(fields.REVISION ?? '') ? Number(fields.REVISION) : null;
+    const risk = RISK_RE.test(fields.RISK ?? '') ? fields.RISK : null;
+    const builder = BUILDER_RE.test(fields.BUILDER ?? '') ? fields.BUILDER : null;
     const bodySha256 = /^[0-9a-f]{64}$/.test((fields.BODY_SHA256 ?? '').toLowerCase())
       ? fields.BODY_SHA256.toLowerCase()
       : null;
@@ -270,6 +315,8 @@ export function parseRevisionMarkers(text) {
       scheme === null ||
       issue === null ||
       revision === null ||
+      risk === null ||
+      builder === null ||
       bodySha256 === null ||
       (name === 'REKODA_CONTRACT_REVISION' && reason === '');
     out.push({
@@ -277,8 +324,54 @@ export function parseRevisionMarkers(text) {
       scheme,
       issue,
       revision,
+      risk,
+      builder,
       bodySha256,
       reason,
+      signature: fields.SIGNATURE ?? null,
+      malformed,
+    });
+  }
+  return out;
+}
+
+/**
+ * Amendment-freeze markers: durable, authority-signed state that puts an
+ * issue's merge contract into "revision transition in progress". While a
+ * freeze targeting a revision ABOVE the current one exists, the
+ * evaluator refuses every gate PASS for linked PRs — the freeze is part
+ * of the merge contract itself, not merely a red check write. It
+ * expires automatically the moment the target revision's signed marker
+ * exists (current revision >= target).
+ */
+export function parseFreezeMarkers(text) {
+  const lines = normalizeBody(text).split('\n');
+  const out = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].trim() !== FREEZE_MARKER) continue;
+    const fields = {};
+    for (let j = i + 1; j < Math.min(i + 7, lines.length); j++) {
+      const m = lines[j]
+        .trim()
+        .match(/^(SCHEME|ISSUE|FROM_REVISION|TARGET_REVISION|SIGNATURE):\s*(.*)$/);
+      if (m) fields[m[1]] = m[2].trim();
+    }
+    const scheme = fields.SCHEME === SCHEME ? SCHEME : null;
+    const issue = /^\d{1,7}$/.test(fields.ISSUE ?? '') ? Number(fields.ISSUE) : null;
+    const fromRevision = /^\d{1,4}$/.test(fields.FROM_REVISION ?? '')
+      ? Number(fields.FROM_REVISION)
+      : null;
+    const targetRevision = /^\d{1,4}$/.test(fields.TARGET_REVISION ?? '')
+      ? Number(fields.TARGET_REVISION)
+      : null;
+    const malformed =
+      scheme === null || issue === null || fromRevision === null || targetRevision === null;
+    out.push({
+      kind: FREEZE_MARKER,
+      scheme,
+      issue,
+      fromRevision,
+      targetRevision,
       signature: fields.SIGNATURE ?? null,
       malformed,
     });
@@ -316,10 +409,21 @@ export function computeContractRevision({
   issueNumber,
   issueBody,
   issueComments,
+  issueLabels,
   ownerLogin,
   contractAuthorityKey,
 }) {
+  const none = {
+    revision: null,
+    baselineFound: false,
+    amended: false,
+    invalid: null,
+    labelsDiverged: false,
+    pendingFreeze: null,
+    snapshotHash: null,
+  };
   const markers = [];
+  const freezes = [];
   for (const c of issueComments ?? []) {
     for (const m of parseRevisionMarkers(c.body)) {
       if (m.malformed || m.issue !== issueNumber) continue;
@@ -332,9 +436,25 @@ export function computeContractRevision({
         m.kind === 'REKODA_CONTRACT_BASELINE' ? c.author === ownerLogin || signed : signed;
       if (authorized) markers.push(m);
     }
+    // Amendment-freeze state: authority-SIGNED only — like a revision,
+    // a freeze is an authoritative transition no comment author can fake.
+    for (const f of parseFreezeMarkers(c.body)) {
+      if (f.malformed || f.issue !== issueNumber) continue;
+      if (verifySignature(canonicalFreezePayload(f), f.signature, contractAuthorityKey))
+        freezes.push(f);
+    }
   }
+  // A freeze is ACTIVE while its target revision does not yet exist; it
+  // expires the moment the target revision's signed marker is computed.
+  const activeFreeze = (currentRevision) => {
+    const active = freezes.filter((f) => f.targetRevision > currentRevision);
+    if (active.length === 0) return null;
+    const top = active.sort((a, b) => a.targetRevision - b.targetRevision)[active.length - 1];
+    return { fromRevision: top.fromRevision, targetRevision: top.targetRevision };
+  };
+
   if (markers.length === 0) {
-    return { revision: null, baselineFound: false, amended: false, invalid: null };
+    return { ...none, pendingFreeze: activeFreeze(0) };
   }
 
   const byRevision = new Map();
@@ -344,39 +464,43 @@ export function computeContractRevision({
     byRevision.set(m.revision, list);
   }
   if (markers.some((m) => m.kind === 'REKODA_CONTRACT_BASELINE' && m.revision !== 1)) {
-    return {
-      revision: null,
-      baselineFound: true,
-      amended: false,
-      invalid: 'baseline revision must be 1',
-    };
+    return { ...none, baselineFound: true, invalid: 'baseline revision must be 1' };
   }
   if (!byRevision.has(1) || !byRevision.get(1).some((m) => m.kind === 'REKODA_CONTRACT_BASELINE')) {
-    return { revision: null, baselineFound: false, amended: false, invalid: null };
+    return { ...none, pendingFreeze: activeFreeze(0) };
   }
   const max = Math.max(...byRevision.keys());
   for (let k = 1; k <= max; k++) {
     const list = byRevision.get(k);
     if (!list) {
       return {
-        revision: null,
+        ...none,
         baselineFound: true,
-        amended: false,
         invalid: `revision ${k} is missing (history must be monotonic 1..${max})`,
       };
     }
-    const hashes = new Set(list.map((m) => m.bodySha256));
-    if (hashes.size > 1) {
-      return {
-        revision: null,
-        baselineFound: true,
-        amended: false,
-        invalid: `conflicting markers for revision ${k}`,
-      };
+    // Two authorized markers for one revision must agree on the WHOLE
+    // snapshot — body hash, risk, and builder.
+    const identities = new Set(list.map((m) => `${m.bodySha256}|${m.risk}|${m.builder}`));
+    if (identities.size > 1) {
+      return { ...none, baselineFound: true, invalid: `conflicting markers for revision ${k}` };
     }
   }
-  const expectedHash = byRevision.get(max)[0].bodySha256;
+  const active = byRevision.get(max)[0];
+  const expectedHash = active.bodySha256;
   const currentHash = sha256Hex(normalizeBody(issueBody));
+  // Risk/builder are part of the signed contract snapshot: a label
+  // rewrite without an authorized revision detaches the contract even
+  // when the body bytes are untouched. Ambiguous or missing current
+  // labels also diverge (`one()` yields null ≠ the signed value).
+  // `issueLabels === undefined` means the caller carries label state
+  // elsewhere (every production caller passes the current labels).
+  let labelsDiverged = false;
+  if (issueLabels !== undefined) {
+    const currentRisk = one(issueLabels ?? [], RISK_RE);
+    const currentBuilder = one(issueLabels ?? [], BUILDER_RE);
+    labelsDiverged = currentRisk !== active.risk || currentBuilder !== active.builder;
+  }
   return {
     revision: max,
     baselineFound: true,
@@ -384,34 +508,67 @@ export function computeContractRevision({
     invalid: null,
     expectedHash,
     currentHash,
+    expectedRisk: active.risk,
+    expectedBuilder: active.builder,
+    labelsDiverged,
+    pendingFreeze: activeFreeze(max),
+    snapshotHash: contractSnapshotHash({
+      issue: issueNumber,
+      revision: max,
+      risk: active.risk,
+      builder: active.builder,
+      bodySha256: expectedHash,
+    }),
   };
 }
 
 /**
  * The FREEZE-BEFORE-MUTATE amendment transaction (D1), as a pure state
  * machine the authority workflow implements step for step:
- *   1. every linked open PR's current HEAD is frozen (required checks
- *      forced non-green) BEFORE anything else;
- *   2. only when EVERY freeze succeeded may the signed revision be
- *      published (become authoritative);
- *   3. gate redispatch follows; a failed dispatch leaves the PR frozen
- *      (blocked), never silently re-green.
- * Any partial failure keeps the previous revision active while the
- * already-frozen PRs stay safely blocked.
+ *   1. the SIGNED amendment-freeze marker is posted on the issue FIRST —
+ *      from that durable state on, the evaluator itself refuses every
+ *      gate PASS for the issue's linked PRs (CONTRACT_AMENDMENT_IN_
+ *      PROGRESS): no publisher, however scheduled, can conclude green;
+ *   2. a barrier then runs per linked PR inside that PR's check-write
+ *      concurrency group, forcing its required checks red — after a
+ *      PR's barrier, every later check writer for that PR entered the
+ *      group after the freeze marker existed and therefore reads state
+ *      that forbids old-revision green;
+ *   3. only when the freeze marker is durable AND every barrier
+ *      completed may the signed revision be published (the target
+ *      revision's existence is what EXPIRES the freeze — the freeze and
+ *      the activation hand over atomically in evaluator state);
+ *   4. gate redispatch follows; a failed dispatch leaves the PR blocked
+ *      (frozen or wrong-revision), never silently re-green.
+ * Any partial failure keeps the freeze active with every linked PR
+ * blocked by evaluator state — recovery is the owner re-running the
+ * amendment to completion, never a silent re-green.
  */
-export function amendmentTransaction({ linkedPrs, freezeResults, signOk, dispatchResults }) {
+export function amendmentTransaction({
+  linkedPrs,
+  freezeMarkerPosted,
+  barrierResults,
+  signOk,
+  dispatchResults,
+}) {
   const prs = (linkedPrs ?? []).map(Number);
-  const frozen = prs.filter((pr) => freezeResults?.[pr] === true);
-  const allFrozen = prs.every((pr) => freezeResults?.[pr] === true);
-  if (!allFrozen) {
-    return { published: false, frozen, dispatched: [], stillBlocked: frozen };
+  if (!freezeMarkerPosted) {
+    return { signed: false, barriered: [], dispatched: [], state: 'aborted_before_freeze' };
   }
-  if (!signOk) {
-    return { published: false, frozen, dispatched: [], stillBlocked: frozen };
+  const barriered = prs.filter((pr) => barrierResults?.[pr] === true);
+  const allBarriered = prs.every((pr) => barrierResults?.[pr] === true);
+  if (!allBarriered || !signOk) {
+    // Freeze marker durable, target revision absent → every linked PR is
+    // evaluator-blocked until the owner completes the amendment.
+    return { signed: false, barriered, dispatched: [], state: 'frozen_blocked' };
   }
   const dispatched = prs.filter((pr) => dispatchResults?.[pr] === true);
-  const stillBlocked = prs.filter((pr) => dispatchResults?.[pr] !== true);
-  return { published: true, frozen, dispatched, stillBlocked };
+  return {
+    signed: true,
+    barriered,
+    dispatched,
+    state: dispatched.length === prs.length ? 'complete' : 'signed_awaiting_dispatch',
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -486,7 +643,7 @@ export function resolveVerdict({ candidates, markerName, provenance, target }) {
         diagnosis = 'wrong_revision';
         continue;
       }
-      if (m.contractBodySha256 !== target.contractBodySha256) {
+      if (m.contractSnapshotSha256 !== target.contractSnapshotSha256) {
         diagnosis = 'wrong_contract';
         continue;
       }
@@ -577,8 +734,38 @@ export function chooseCheckAction({ lookupOk, runs, name, appSlug = 'github-acti
 export function readyPromotionAction({ labels }) {
   const l = labels ?? [];
   const builders = l.filter((x) => BUILDER_RE.test(x));
-  const proceed = l.includes('agent-task') && l.includes('status:ready') && builders.length === 1;
-  return { proceed, dispatchClaude: proceed && builders[0] === 'builder:claude' };
+  const risks = l.filter((x) => RISK_RE.test(x));
+  const blocked = l.some((x) => x === 'needs-owner-decision' || x === 'status:blocked-decision');
+  const proceed =
+    l.includes('agent-task') &&
+    l.includes('status:ready') &&
+    builders.length === 1 &&
+    risks.length === 1 &&
+    !blocked;
+  return {
+    proceed,
+    dispatchClaude: proceed && builders[0] === 'builder:claude',
+    risk: risks.length === 1 ? risks[0] : null,
+    builder: builders.length === 1 ? builders[0] : null,
+  };
+}
+
+/**
+ * Parse a JSON array of PR numbers (e.g. the authority plan job's
+ * `[70,73]` output) into validated integers — never shell-mangled text:
+ * `[70,73]` yields [70, 73], NEVER 7073. Anything that is not a JSON
+ * array of positive integers yields null (fail closed).
+ */
+export function parsePrNumbersJson(text) {
+  let v;
+  try {
+    v = JSON.parse(String(text ?? ''));
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(v)) return null;
+  if (!v.every((n) => Number.isInteger(n) && n > 0 && n < 10_000_000)) return null;
+  return v.map(Number);
 }
 
 /** Repository permission levels that may start paid agent work. */
@@ -615,10 +802,20 @@ export function evaluateBuildAdmission({ issue, requiredBuilder, openLanes, cont
         'ADMIT_BASELINE_MISSING',
         `Issue #${issue.number} has no authorized contract baseline yet; admission is refused until the contract-authority workflow (or the owner) records it.`,
       );
+    } else if (c.pendingFreeze) {
+      add(
+        'ADMIT_CONTRACT_INVALID',
+        `Issue #${issue.number} has a signed amendment freeze in progress (targeting revision ${c.pendingFreeze.targetRevision}); no builder starts mid-amendment.`,
+      );
     } else if (c.amended) {
       add(
         'ADMIT_CONTRACT_INVALID',
         `Issue #${issue.number} body no longer matches its authorized contract baseline/revision.`,
+      );
+    } else if (c.labelsDiverged) {
+      add(
+        'ADMIT_CONTRACT_INVALID',
+        `Issue #${issue.number} risk/builder labels no longer match the authorized contract snapshot.`,
       );
     }
     if (issue.state !== 'open') add('ADMIT_ISSUE_NOT_OPEN', `Issue #${issue.number} is not open.`);
@@ -734,6 +931,7 @@ export function evaluate(state, mode = 'full') {
       issueNumber: issue.number,
       issueBody: issue.body,
       issueComments: issue.comments,
+      issueLabels: issue.labels ?? [],
       ownerLogin: cfg.ownerLogin,
       contractAuthorityKey: keys.contractAuthority ?? null,
     });
@@ -749,15 +947,28 @@ export function evaluate(state, mode = 'full') {
         'CONTRACT_BASELINE_MISSING',
         `Issue #${issue.number} has no authorized REKODA_CONTRACT_BASELINE marker (owner-posted or contract-authority-signed).`,
       );
+    } else if (rev.pendingFreeze) {
+      // Durable amendment state IS the merge contract: while a signed
+      // freeze targets a revision that does not exist yet, no gate may
+      // pass — the evaluator itself, not a check write, forbids green.
+      add(
+        'CONTRACT_AMENDMENT_IN_PROGRESS',
+        `Issue #${issue.number} has a signed amendment freeze (revision ${rev.pendingFreeze.fromRevision} → ${rev.pendingFreeze.targetRevision}); every gate stays red until the target revision is signed and freshly reviewed.`,
+      );
     } else if (rev.amended) {
       add(
         'CONTRACT_AMENDED_UNAUTHORIZED',
         `Issue #${issue.number} body was changed without an authorized REKODA_CONTRACT_REVISION marker (expected ${rev.expectedHash}, found ${rev.currentHash}).`,
       );
+    } else if (rev.labelsDiverged) {
+      add(
+        'CONTRACT_LABELS_DIVERGED',
+        `Issue #${issue.number} risk/builder labels no longer match the authorized contract snapshot (signed: ${rev.expectedRisk} + ${rev.expectedBuilder}); a risk or builder change requires an owner-authorized contract revision.`,
+      );
     } else {
       revision = rev.revision;
     }
-    if (revision !== null) issue._activeContractHash = rev.expectedHash;
+    if (revision !== null) issue._activeSnapshotHash = rev.snapshotHash;
   }
 
   const target =
@@ -767,7 +978,7 @@ export function evaluate(state, mode = 'full') {
           issue: issue.number,
           headSha: state.pr.headSha,
           contractRevision: revision,
-          contractBodySha256: issue._activeContractHash,
+          contractSnapshotSha256: issue._activeSnapshotHash,
         }
       : null;
 
@@ -926,6 +1137,8 @@ const PREREQ_CODES = new Set([
   'CONTRACT_BASELINE_MISSING',
   'CONTRACT_AMENDED_UNAUTHORIZED',
   'CONTRACT_HISTORY_INVALID',
+  'CONTRACT_AMENDMENT_IN_PROGRESS',
+  'CONTRACT_LABELS_DIVERGED',
 ]);
 
 function filterByMode(reasons, mode) {
