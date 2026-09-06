@@ -1,43 +1,25 @@
-# The deterministic merge gate for agent work (docs/AUTONOMOUS-ENGINEERING.md §6).
+# The deterministic merge-policy gate (docs/AUTONOMOUS-ENGINEERING.md §6).
 #
-# Inspects only structured GitHub data — labels, the PR body, the reviews
-# API, review-thread resolution, and one fixed-format marker block this
-# repository itself defines — never free-text scraping of prose. PRs with
-# no risk:* and no builder:* label (humans, Dependabot) pass neutrally:
-# the gate governs agent work.
+# All policy logic lives in scripts/agents/evaluator.mjs — pure,
+# network-free, and proven by scripts/agents/evaluator.test.mjs, which
+# runs as a self-test on every gate run. This workflow only fetches and
+# normalizes GitHub state (scripts/agents/normalize.mjs) and reports the
+# evaluator's verdict. Scripts and policy are always loaded from the
+# TRUSTED default branch, never from the PR under evaluation.
 #
-# Division of labour between the gates (branch protection composes them —
-# all are required checks, all bind to the current HEAD):
-#   - THIS gate: label integrity, linked issue, unresolved threads,
-#     the Codex technical-review requirement on builder:claude PRs, and
-#     the R3 owner-approval requirement.
-#   - "Claude technical review": the technical-review requirement on
-#     builder:codex PRs (its own workflow re-runs on every push).
-#   - "Gemini Acceptance Gate": system acceptance on every agent PR
-#     (its own workflow re-runs on every push).
-# This gate does not re-check the other two — duplicating them here would
-# only add ordering races; branch protection already requires all three.
+# Gate scope (mode 'policy'): label integrity, authoritative linked-issue
+# resolution, issue↔PR risk/builder consistency, contract
+# baseline/revision integrity (unauthorized amendment blocks), unresolved
+# threads, and the R3 owner decision + owner approval of the exact HEAD.
+# The reviewer verdicts are owned by the dedicated required checks
+# 'Technical Review Gate' and 'Gemini Acceptance Gate'; branch protection
+# composes all three, so this gate does not race them.
 #
-# Codex signal, honestly (verified against live behaviour + official docs,
-# 2026-09): OpenAI's native integration posts reviews as
-# chatgpt-codex-connector[bot], always state COMMENTED (never APPROVE),
-# each carrying a commit_id. It reviews on PR open / ready-for-review /
-# "@codex review" — NOT on every push. A no-findings pass may post no
-# review at all (a thumbs-up reaction instead, which is not SHA-bound and
-# therefore useless as a stale-proof signal). AGENTS.md "Code Review
-# Rules" are a documented Codex feature, so we ask Codex to end reviews
-# with a fixed REKODA_CODEX_APPROVAL block — but output format is not
-# guaranteed. The gate therefore accepts, strongest first:
-#   1. a valid marker for the exact HEAD in a Codex review of that HEAD
-#      (VERDICT respected: BLOCK fails the gate);
-#   2. else any Codex review of the exact HEAD (threads must be resolved);
-#   3. else the owner's approving review of the exact HEAD (a human
-#      technical review outranks a missing bot one);
-#   4. else fail, with the instruction to comment '@codex review'.
-# It never infers approval from silence or from a reaction.
+# Neutrality: a PR is agent-governed if it carries risk:*/builder:* labels
+# OR closes an agent-task issue — removing a label is not an escape
+# hatch. Everything else (humans, Dependabot) passes neutrally.
 #
-# Uses only the read-only GITHUB_TOKEN — safe on fork PRs, no environment
-# secrets.
+# Read-only GITHUB_TOKEN; no environment secrets; safe on fork PRs.
 name: Agent policy gate
 
 on:
@@ -49,6 +31,7 @@ on:
 permissions:
   contents: read
   pull-requests: read
+  issues: read
 
 concurrency:
   group: policy-gate-${{ github.event.pull_request.number }}
@@ -59,121 +42,52 @@ jobs:
     # Stable name — this is what branch protection requires.
     name: Agent policy gate
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       REPO: ${{ github.repository }}
       PR: ${{ github.event.pull_request.number }}
-      OWNER_LOGIN: AngeloAkuhwa
-      CODEX_LOGIN: chatgpt-codex-connector[bot]
+      HAS_AGENT_LABELS: ${{ contains(join(github.event.pull_request.labels.*.name, ','), 'risk:R') || contains(join(github.event.pull_request.labels.*.name, ','), 'builder:') }}
     steps:
-      - name: Evaluate policy
+      - name: Checkout trusted policy (default branch, never the PR)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: main
+          fetch-depth: 1
+
+      - name: Bootstrap guard
+        id: bootstrap
         run: |
           set -euo pipefail
-          fail() { echo "::error::$1"; FAILED=1; }
-          FAILED=0
-
-          pr_json=$(gh api "repos/$REPO/pulls/$PR")
-          head_sha=$(jq -r '.head.sha' <<<"$pr_json")
-          body=$(jq -r '.body // ""' <<<"$pr_json")
-          labels=$(jq -r '.labels[].name' <<<"$pr_json")
-
-          risk_labels=$(grep -E '^risk:R[0-3]$' <<<"$labels" || true)
-          risk_count=$(grep -c . <<<"$risk_labels" || true)
-          builder_labels=$(grep -E '^builder:(claude|codex)$' <<<"$labels" || true)
-          builder_count=$(grep -c . <<<"$builder_labels" || true)
-
-          if [ "$risk_count" -eq 0 ] && [ "$builder_count" -eq 0 ]; then
-            echo "No risk:* or builder:* label — not an agent-governed PR. Gate passes neutrally."
+          if [ ! -f scripts/agents/evaluator.mjs ]; then
+            if [ "$HAS_AGENT_LABELS" = "true" ]; then
+              echo "::error::Agent-labelled PR but the policy scripts are not on main yet."
+              exit 1
+            fi
+            echo "Policy scripts not on main yet and no agent labels — neutral pass (bootstrap)."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          echo "ready=true" >> "$GITHUB_OUTPUT"
 
-          # Label integrity: exactly one of each.
-          if [ "$risk_count" -ne 1 ]; then
-            fail "Exactly one risk:R0..R3 label is required; found $risk_count: $(tr '\n' ' ' <<<"$risk_labels")"
+      - name: Evaluator self-test (behavioural evidence, every run)
+        if: steps.bootstrap.outputs.ready == 'true'
+        run: node --test scripts/agents/evaluator.test.mjs
+
+      - name: Normalize GitHub state
+        if: steps.bootstrap.outputs.ready == 'true'
+        id: ctx
+        run: |
+          set -euo pipefail
+          node scripts/agents/normalize.mjs --repo "$REPO" --pr "$PR" --out /tmp/state.json
+          node scripts/agents/run-gate.mjs --state /tmp/state.json --print-context
+
+      - name: Evaluate policy
+        if: steps.bootstrap.outputs.ready == 'true'
+        run: |
+          set -euo pipefail
+          if [ "${{ steps.ctx.outputs.governed }}" != "true" ]; then
+            echo "Not an agent-governed PR — gate passes neutrally."
+            exit 0
           fi
-          if [ "$builder_count" -ne 1 ]; then
-            fail "Exactly one builder label (builder:claude or builder:codex) is required; found $builder_count: $(tr '\n' ' ' <<<"$builder_labels")"
-          fi
-          risk=$(head -n1 <<<"$risk_labels" | sed 's/^risk://')
-          builder=$(head -n1 <<<"$builder_labels" | sed 's/^builder://')
-          echo "Risk: ${risk:-unset} · Builder: ${builder:-unset} · HEAD: $head_sha"
-
-          # Linked issue: a closing keyword in the body. The issue is the
-          # authoritative contract (AGENTS.md §8).
-          if ! grep -qiE '(close[sd]?|fix(e[sd])?|resolve[sd]?)[[:space:]]+#[0-9]+' <<<"$body"; then
-            fail "PR body must link its issue with a closing keyword (e.g. 'Closes #123')."
-          fi
-
-          # One page of 100 is deliberate: --paginate concatenates JSON
-          # arrays, which breaks jq; a PR with more than 100 reviews has
-          # bigger problems than this gate.
-          reviews=$(gh api "repos/$REPO/pulls/$PR/reviews?per_page=100")
-
-          # No unresolved review threads on any agent-governed PR.
-          owner=${REPO%/*}; name=${REPO#*/}
-          unresolved=$(gh api graphql \
-            -f query='query($o:String!,$n:String!,$pr:Int!){repository(owner:$o,name:$n){pullRequest(number:$pr){reviewThreads(first:100){nodes{isResolved}}}}}' \
-            -f o="$owner" -f n="$name" -F pr="$PR" \
-            --jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false)] | length')
-          if [ "$unresolved" -gt 0 ]; then
-            fail "$unresolved unresolved review thread(s). Fix or answer-with-evidence, then resolve them."
-          fi
-
-          # Technical review, builder-aware. The builder never satisfies
-          # its own technical-review requirement (AGENTS.md §7).
-          if [ "$builder" = "claude" ]; then
-            codex_bodies=$(jq -r --arg u "$CODEX_LOGIN" --arg sha "$head_sha" \
-              '[.[] | select(.user.login == $u and .commit_id == $sha)] | map(.body // "") | join("\n----\n")' <<<"$reviews")
-            codex_on_head=$(jq -r --arg u "$CODEX_LOGIN" --arg sha "$head_sha" \
-              '[.[] | select(.user.login == $u and .commit_id == $sha)] | length' <<<"$reviews")
-            owner_approved_head=$(jq -r --arg u "$OWNER_LOGIN" --arg sha "$head_sha" \
-              '[.[] | select(.user.login == $u and .commit_id == $sha and .state == "APPROVED")] | length' <<<"$reviews")
-
-            # Strict fixed-format marker (defined by this repository, best-
-            # effort emitted by Codex per AGENTS.md "Code Review Rules").
-            # Only markers naming the exact current HEAD count; if several
-            # exist, any BLOCK outranks any APPROVE.
-            marker_verdict=$(awk -v sha="$head_sha" '
-              /^REKODA_CODEX_APPROVAL$/ { inblk=1; insha=0; next }
-              inblk && $1 == "HEAD_SHA:" { if ($2 == sha) insha=1 }
-              inblk && $1 == "VERDICT:" {
-                if (insha && ($2 == "APPROVE" || $2 == "BLOCK")) {
-                  if ($2 == "BLOCK") blocked=1; else approved=1
-                }
-                inblk=0
-              }
-              END { if (blocked) print "BLOCK"; else if (approved) print "APPROVE" }' \
-              <<<"$codex_bodies")
-
-            if [ "$marker_verdict" = "BLOCK" ]; then
-              fail "Codex technical review BLOCKED HEAD $head_sha. Repair the findings and push."
-            elif [ "$marker_verdict" = "APPROVE" ]; then
-              echo "Codex marker APPROVE for HEAD $head_sha."
-            elif [ "$codex_on_head" -gt 0 ]; then
-              echo "Codex reviewed HEAD $head_sha (no marker — existence mode; threads must be resolved, and are checked above)."
-            elif [ "$owner_approved_head" -gt 0 ]; then
-              echo "Owner approved HEAD $head_sha — human technical review satisfies the requirement."
-            else
-              fail "No Codex technical review of HEAD $head_sha. Comment '@codex review' (Codex does not re-review pushes automatically) and re-run this check when the review lands."
-            fi
-          else
-            echo "builder:codex — the technical-review requirement is the required check 'Claude technical review', which re-runs on every push."
-          fi
-
-          echo "System acceptance is the required check 'Gemini Acceptance Gate', which re-runs on every push."
-
-          if [ "$risk" = "R3" ]; then
-            # The owner must have APPROVED the current head, explicitly.
-            owner_approved=$(jq -r --arg u "$OWNER_LOGIN" --arg sha "$head_sha" \
-              '[.[] | select(.user.login == $u and .commit_id == $sha and .state == "APPROVED")] | length' <<<"$reviews")
-            if [ "$owner_approved" -eq 0 ]; then
-              fail "R3 requires @$OWNER_LOGIN's approving review of HEAD $head_sha (a fresh approval after every push, deliberately). Note: GitHub cannot approve a PR authored by the same account — route R3 work builder:claude (GEMINI.md)."
-            fi
-          fi
-
-          if [ "$FAILED" -eq 1 ]; then
-            echo "::error::Agent policy gate failed — see docs/AUTONOMOUS-ENGINEERING.md §6."
-            exit 1
-          fi
-          echo "Agent policy gate passed for risk $risk, builder $builder, at $head_sha."
+          node scripts/agents/run-gate.mjs --state /tmp/state.json --mode policy

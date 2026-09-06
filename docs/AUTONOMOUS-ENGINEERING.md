@@ -102,7 +102,7 @@ finding → backlog → status:ready → status:building → status:in-review �
    - Claude built → Codex reviews (native GitHub review; `@codex review`
      after each push, since Codex does not re-review pushes
      automatically).
-   - Codex built → Claude reviews (the `Claude technical review` check,
+   - Codex built → Claude reviews (the `Technical Review Gate` check,
      which re-runs automatically on every push).
 4. **Reviewer 2 — Gemini — reviews system acceptance** (the
    `Gemini Acceptance Gate` check, re-run automatically on every push):
@@ -144,7 +144,7 @@ the contract — activation is based on **behavioural evidence**.
 - a `main` branch ruleset exists and is Active;
 - the required CI checks are configured (secret scan, typecheck/lint/
   test/build, migrations, integration, e2e);
-- `Claude technical review` is a required check;
+- `Technical Review Gate` is a required check;
 - `Gemini Acceptance Gate` is a required check;
 - `Agent policy gate` is a required check;
 - conversation resolution before merge is required;
@@ -205,30 +205,62 @@ marker (`AGENTS.md` Code Review Rules table: `REKODA_CODEX_APPROVAL`,
 `REKODA_CLAUDE_APPROVAL`, `REKODA_GEMINI_APPROVAL`). Missing, malformed,
 stale, or wrong-identity verdicts BLOCK.
 
-**How approvals go stale:** the `Claude technical review` and
+**The evaluator.** All merge policy lives in one pure, deterministic,
+network-free module — `scripts/agents/evaluator.mjs` — proven by
+`scripts/agents/evaluator.test.mjs` (the twenty §5.B negative cases, the
+four positive cases, supersession and invalidation semantics). Every gate
+workflow normalizes live GitHub state with `scripts/agents/normalize.mjs`
+and asks the evaluator; none reimplements policy in shell, and the policy
+gate runs the test suite as a self-test on every execution. Scripts and
+governance always load from the **default branch**, never from the PR
+under evaluation.
+
+**Contract revisions, mechanically:** when implementation starts, the
+builder posts a `REKODA_CONTRACT_BASELINE` comment on the issue (via
+`scripts/agents/contract-revision.mjs --baseline --post`) recording the
+SHA-256 of the issue body. An authorized amendment (planner or owner;
+owner mandatory for decision-level/risk/R3 changes) posts a
+`REKODA_CONTRACT_REVISION` marker with the new revision number, the new
+body hash, and the reason. The evaluator recomputes the body hash on
+every run: no baseline → BLOCK; a body that no longer matches the latest
+authorized marker's hash → BLOCK (unauthorized amendment); and every
+reviewer verdict must name the current revision, so an authorized
+revision invalidates all prior approvals **without a push**. Markers from
+unauthorized identities are ignored.
+
+**How approvals go stale:** the `Technical Review Gate` and
 `Gemini Acceptance Gate` workflows re-run on every `synchronize`, so a
-push produces a new HEAD whose checks have not passed yet, and their
-validators refuse any verdict whose `head_sha` is not the event HEAD. The
-policy gate likewise matches Codex review `commit_id` and owner-approval
-`commit_id` against the current HEAD. Contract-revision invalidation is
-policy (`AGENTS.md` §8) that reviewers apply; the validators do not yet
-check the revision — a recorded enforcement gap (§14).
+push produces a new HEAD whose checks have not passed yet, and the
+evaluator refuses any verdict whose `HEAD_SHA` or `CONTRACT_REVISION` is
+not current. The policy gate likewise matches owner-approval `commit_id`
+against the current HEAD.
 
-**What each check does today:**
+**What each check does:**
 
-- **`Gemini Acceptance Gate`** (`agent-gemini-review.yml`) — on every push
-  to any `builder:*` PR (neutral otherwise, and on drafts): Gemini reviews
-  the current HEAD against the linked issue, writes a verdict JSON to
-  `/tmp`, and a deterministic step validates the schema and exact HEAD,
-  posts the marker, and converts APPROVE/BLOCK into the check conclusion.
-- **`Claude technical review`** (`agent-claude-review.yml`) — identical
-  mechanics on `builder:codex` PRs, per `CLAUDE.md` Role B.
-- **`Agent policy gate`** (`agent-policy-gate.yml`) — structured-data
-  checks only: exactly one `risk:*` and one `builder:*` label; a linked
-  issue; no unresolved review threads; the Codex requirement on
-  `builder:claude` PRs; R3 owner approval of the current HEAD. Re-runs on
-  pushes, label changes, body edits, and review submissions. PRs with no
-  `risk:*`/`builder:*` labels (humans, Dependabot) pass neutrally.
+- **`Technical Review Gate`** (`agent-technical-review-gate.yml`) —
+  builder-aware Reviewer 1. On `builder:claude` PRs it requires a valid
+  `REKODA_CODEX_APPROVAL` APPROVE from `chatgpt-codex-connector[bot]` for
+  the exact HEAD and revision — fail closed, nothing weaker. On
+  `builder:codex` PRs it runs Claude (per `CLAUDE.md` Role B) against the
+  untrusted PR checkout, validates the structured verdict
+  deterministically, posts the `REKODA_CLAUDE_APPROVAL` marker, and the
+  verdict is the check; an already-valid verdict for the current
+  HEAD/revision is reused instead of re-running, and `workflow_dispatch`
+  forces a fresh replacement verdict.
+- **`Gemini Acceptance Gate`** (`agent-gemini-review.yml`) — identical
+  mechanics for Reviewer 2 on every `builder:*` PR, per `GEMINI.md`
+  Role B.
+- **`Agent policy gate`** (`agent-policy-gate.yml`) — the structural
+  evaluation: exactly one `risk:*` and one `builder:*` label on the PR
+  **and** the issue, with both pairs matching; the authoritative linked
+  issue resolved and validated (exists, agent-task, decision state);
+  contract baseline/revision integrity; no unresolved review threads; R3
+  owner decision reference plus owner approval of the current HEAD.
+  Reviewer verdicts are owned by the two dedicated checks above — branch
+  protection composes all three. Neutrality is authoritative, not
+  label-cosmetic: a PR that closes an agent-task issue is governed even
+  with its labels stripped; only genuinely non-agent PRs (humans,
+  Dependabot) pass neutrally.
 
 **The Codex signal, with claims labelled:**
 
@@ -250,10 +282,9 @@ check the revision — a recorded enforcement gap (§14).
 
 Because the only trustworthy APPROVE from Codex is a valid marker, **the
 contract for `builder:claude` PRs is: a valid `REKODA_CODEX_APPROVAL`
-APPROVE for the exact HEAD, or the PR does not merge** — fail closed. The
-gate as currently implemented is more permissive (it falls back to
-review-existence and to owner approval), which contradicts this contract
-and is recorded as enforcement gap #1 in §14. **There is no substitute
+APPROVE for the exact HEAD and revision, or the PR does not merge** — and
+that is what the Technical Review Gate now implements: fail closed, no
+review-existence fallback, no owner-approval fallback. **There is no substitute
 for the designated peer technical review — not the owner's approval, not
 anyone's.** If the designated reviewer cannot produce a verdict (the
 marker proves unreliable, the integration is down), the PR stays BLOCKED
@@ -274,20 +305,23 @@ model.
   reach fork PRs; reviewer workflows trigger on PR events, never on their
   own comments (and GITHUB_TOKEN events do not retrigger workflows), which
   is what actually prevents recursive bot loops.
-- **Filesystem/tool enforcement**: only partial today. Tool allowlists
-  restrict which tools run, but the Write/`write_file` tools are **not**
-  path-confined to `/tmp` — do not claim they are.
+- **Filesystem/tool enforcement**: Claude's reviewer writes are
+  path-confined to `/tmp` by the tool allowlist (`Write(/tmp/**)`);
+  Gemini's `write_file` tool is **not** path-confinable and relies on the
+  next layer — do not claim otherwise.
 - **Post-run detection**: the validator fails the check if `git status`
-  shows any tracked file modified after the review step. Detection, not
-  prevention.
+  shows any tracked file modified (in the trusted tree or the untrusted
+  PR checkout) after the review step. Detection, not prevention.
 
-**Reviewer governance trust rule (intended):** the reviewer's governing
-instructions — `AGENTS.md`, `CLAUDE.md`, `GEMINI.md` — must be loaded from
-a trusted ref (`main`, or verified-unchanged against it), while the PR
-HEAD is treated purely as untrusted implementation data. Today the
-reviewer workflows check out the PR HEAD and read the governance files
-from it, so a PR could rewrite the rules it is judged by — enforcement gap
-#3 in §14, to fix in the workflow phase.
+**Reviewer governance trust rule (implemented):** the reviewer's
+governing instructions — `AGENTS.md`, `CLAUDE.md`, `GEMINI.md` — and the
+policy scripts are checked out from the **default branch**; the PR HEAD
+is checked out separately into `./untrusted-pr-head` and treated purely
+as untrusted implementation data, so a PR cannot rewrite the rules it is
+judged by. (Codex's native review is the exception outside our control:
+OpenAI documents that it reads AGENTS.md from the repository it reviews —
+which for a PR includes the PR's own version. This residual exposure is
+recorded in §14.)
 
 ## 7. The repair loop and escalation
 
@@ -304,7 +338,11 @@ When either reviewer BLOCKS:
    "the reviewer is wrong" alone, and never a test weakened to get green.
 5. A reviewer supersedes its earlier verdict **on the same SHA** only by
    an explicit later verdict for that SHA (e.g. after an invalid-finding
-   answer); history is never deleted or edited away.
+   answer); history is never deleted or edited away. Mechanically: the
+   evaluator uses the latest fully-valid verdict from the authorized
+   reviewer for the exact HEAD/revision, and a replacement review run is
+   forced via the gate workflow's `workflow_dispatch` (write access
+   required).
 6. A new code push creates a new HEAD: both approvals are invalid, both
    reviewers re-evaluate the new HEAD (a contract revision has the same
    effect without a push).
@@ -456,63 +494,51 @@ done:
 - the owner-held items in `docs/REKODA_OWNER_DECISIONS.md` §2 are not
   worked around, simulated, or marked done by anyone but the owner.
 
-## 14. Workflow enforcement gaps to fix next
+## 14. Enforcement status and remaining gaps
 
-The documented contract above is ahead of the implemented workflows in
-these places. Each is a deliberate, recorded gap for the next workflow
-phase — none is silently pretended away:
+The workflow phase implemented the contract. Closed since the gap
+register was first recorded: the fail-closed technical gate with no
+review-existence or owner-approval fallback (old gap 1); contract
+revisions emitted, bound, and validated end to end, including
+invalidation without a push (2); reviewer governance and policy scripts
+loaded from the default branch with the PR head as untrusted data only
+(3); Claude reviewer writes path-confined to /tmp (4, partially — see
+below); every agent action pinned to an immutable commit SHA (6);
+authoritative linked-issue resolution replacing the keyword grep (10);
+full marker validation — PR, issue, HEAD, revision, identity,
+builder/risk consistency (11); latest-valid-verdict supersession
+replacing BLOCK-dominates (12); the planner's R3 and single-lane WIP
+rules (13); and deterministic issue↔PR label consistency (14).
 
-1. **The policy gate accepts weaker-than-APPROVE Codex signals.** On
-   `builder:claude` PRs it passes on a marker APPROVE, but falls back to
-   "a Codex review of the exact HEAD exists" and then to "the owner
-   approved the exact HEAD". The contract (§6) requires a valid marker
-   APPROVE, fail closed, with **no substitute** for the peer technical
-   review; both fallbacks must be **removed**.
-2. **`CONTRACT_REVISION` is not yet emitted or validated.** The marker
-   format includes it; the Claude/Gemini review workflows and the policy
-   gate neither write nor check it, and nothing machine-detects a contract
-   revision to invalidate approvals without a push.
-3. **Reviewer governance loads from the PR HEAD.** The review workflows
-   check out the PR HEAD and read `AGENTS.md`/role files from it; the
-   trust rule (§6) requires governance from `main` (or
-   verified-unchanged), with PR HEAD as data only.
-4. **Tool confinement is detection, not prevention.** Reviewer file writes
-   are not path-restricted to `/tmp`; a tracked-file modification is
-   caught after the fact by the porcelain check rather than made
-   impossible.
-5. **No automated escalation counter.** The 3-cycle rule (§7) is applied
-   by the agents, not counted by a workflow.
-6. **Mutable action references remain.** `anthropics/claude-code-action`
-   is pinned to the `@v1` tag (official guidance, but a mutable tag) and
-   `actions/checkout` to `@v7`; full SHA-pinning is the standard the
-   Gemini action already meets.
-7. **WIP limits are prompt-enforced.** The planner counts and respects
-   them by instruction; no deterministic step refuses an over-limit
-   promotion.
-8. **R3 owner-decision linkage is unchecked.** The gate verifies the
-   owner's approving review, not that a recorded decision is linked on the
-   issue.
-9. **No authorship/CODEOWNERS preflight automation.** The routing check in
-   `GEMINI.md` (owner-owned paths + Codex authorship semantics) is manual
-   planner procedure.
-10. **Issue linkage is a keyword pattern, not resolution.** The policy
-    gate greps the PR body for a closing keyword; it does not resolve the
-    linked issue and validate that it exists, is the authoritative
-    contract, carries matching labels, and is in the right status.
-11. **Marker parsing is partial.** The current validators check HEAD SHA
-    and VERDICT (and, for the workflow lanes, PR number); they do not
-    fully validate the marker's PR number, linked-issue number, contract
-    revision, or consistency with the PR's builder and risk labels.
-12. **Same-SHA supersession is not honoured.** The gate's Codex-marker
-    parse lets any BLOCK for the current HEAD dominate a later explicit
-    APPROVE for that same HEAD, contrary to §7's rule that a reviewer
-    supersedes its own verdict by an explicit later verdict.
-13. **The planner workflow's R3 rule is stale.** Its prompt still says
-    anything R3 is `needs-owner-decision`, never READY — contrary to the
-    final rule (§3: R3 with a recorded, linked owner decision may be
-    READY). Its WIP wording likewise still states the superseded
-    "building ≤ 1" form rather than the single in-flight
-    implementation-slot rule (§3).
-14. **Issue↔PR label consistency is unenforced.** Nothing deterministic
-    verifies that the PR's `risk:*` and `builder:*` labels equal the
-    linked issue's, or that the PR author matches the builder lane.
+What remains, honestly:
+
+1. **Codex marker emission is unverified.** AGENTS.md Code Review Rules
+   are a documented Codex feature, but whether Codex reliably emits a
+   valid `REKODA_CODEX_APPROVAL` block has NOT yet been observed on this
+   repository. Until it does, every `builder:claude` PR's Technical
+   Review Gate stays red — that is the fail-closed contract working, and
+   the activation drills (docs/agents/ACTIVATION-RUNBOOK.md §C) will
+   prove it one way or the other.
+2. **Codex reads AGENTS.md from the reviewed PR.** Codex's native review
+   loads Code Review Rules from the repository content it reviews, which
+   for a PR can include the PR's own edit of AGENTS.md. Outside our
+   workflow control; mitigations: AGENTS.md is CODEOWNERS-owned, and the
+   marker's HEAD/revision binding is validated by our evaluator
+   regardless of what the review prose says.
+3. **Gemini's file writes are not path-confined.** `write_file` has no
+   path restriction in the Gemini CLI tool allowlist; enforcement is the
+   read-only token plus post-run tracked-tree detection.
+4. **No automated escalation counter.** The 3-cycle rule (§7) is applied
+   by the agents and the planner, not counted by a workflow.
+5. **WIP limits are prompt-enforced.** The planner counts and respects
+   the single implementation lane by instruction; no deterministic step
+   refuses an over-limit promotion.
+6. **Codex builder dispatch is manual.** `builder:codex` work starts from
+   Codex Cloud (MANUAL / CODEX CLOUD DISPATCH REQUIRED); no unattended
+   issue→Codex trigger exists to automate safely, and no OPENAI_API_KEY
+   was added to force one (§8).
+7. **The marker-comment trust anchor is the workflow identity.** Claude
+   and Gemini markers are trusted only when posted by
+   `github-actions[bot]`, which means "posted by a workflow in this
+   repository"; workflow changes are themselves CODEOWNERS-owned, and the
+   activation drills verify a user-posted forgery is rejected.

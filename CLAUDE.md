@@ -33,9 +33,13 @@ Claude must never both build and technically approve the same PR.
    first, then the required broader suites. Run db and api integration
    suites serially. Rebuild packages before running the api suite against
    them.
-7. **Open or update the PR** using the template: linked issue, builder,
-   risk level, acceptance-criteria evidence. Move the issue to
-   `status:in-review`.
+7. **Record the contract baseline, then open or update the PR.** Before
+   the first PR push, post the issue's `REKODA_CONTRACT_BASELINE` marker
+   (`node scripts/agents/contract-revision.mjs --repo <repo> --issue <n>
+--baseline --post`) — every gate fails closed without it. Fill the
+   template: linked issue, builder, risk level, acceptance-criteria
+   evidence; apply the issue's `risk:*` and `builder:*` labels to the PR.
+   Move the issue to `status:in-review`.
 8. **Repair the review findings.** Codex is Reviewer 1 and Gemini is
    Reviewer 2 on Claude-built PRs. Treat every finding as a hypothesis:
    reproduce it; fix the valid ones in-branch with a regression test;
@@ -79,10 +83,11 @@ architecture review, not a rubber stamp and not a rewrite.
 ### Review output contract
 
 When acting as technical reviewer, Claude's verdict is published in this
-exact machine-readable form. This is the **required target contract**;
-the current review workflow emits the marker without `CONTRACT_REVISION`
-and validates only part of it — NOT YET IMPLEMENTED in full, a recorded
-workflow gap (`docs/AUTONOMOUS-ENGINEERING.md` §14):
+exact machine-readable form. The `Technical Review Gate` workflow emits
+it from Claude's structured result and
+`scripts/agents/validate-verdict.mjs` validates every field
+deterministically before it is posted — a malformed or wrong-target
+verdict is a BLOCK:
 
 ```
 REKODA_CLAUDE_APPROVAL

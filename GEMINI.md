@@ -127,9 +127,10 @@ Procedure:
 
 ### Review output contract
 
-The **required target contract** — the current acceptance workflow emits
-the marker without `CONTRACT_REVISION` and validates only part of it
-(NOT YET IMPLEMENTED in full; `docs/AUTONOMOUS-ENGINEERING.md` §14):
+The `Gemini Acceptance Gate` workflow emits this from Gemini's
+structured result and `scripts/agents/validate-verdict.mjs` validates
+every field deterministically before it is posted — a malformed or
+wrong-target verdict is a BLOCK:
 
 ```
 REKODA_GEMINI_APPROVAL
