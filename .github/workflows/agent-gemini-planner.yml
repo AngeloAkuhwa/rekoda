@@ -1,0 +1,94 @@
+# Gemini — the planner / issue manager (docs/AUTONOMOUS-ENGINEERING.md §1).
+#
+# Runs a weekly backlog audit plus on-demand dispatch. It reads state and
+# manages ISSUES only — contents permission is read, so it cannot push
+# code, which enforces GEMINI.md's "planner does not modify product code"
+# rule at the token level rather than by promise.
+#
+# GEMINI_API_KEY lives in the `test` environment. The action is pinned to
+# a full commit SHA (v0.1.22) per security-hardening guidance for
+# non-first-party actions.
+name: Agent — Gemini planner
+
+on:
+  schedule:
+    # Mondays 07:00 Lagos (06:00 UTC): one audit pass a week is enough
+    # while WIP limits cap the queue at ready:2 / building:1.
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+    inputs:
+      focus:
+        description: Optional focus for this planning pass
+        required: false
+        type: string
+
+jobs:
+  plan:
+    name: Gemini planner
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: test
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+      - uses: google-github-actions/run-gemini-cli@f77273f4c914e4bf38440cf36a0369cb64a37489 # v0.1.22
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
+          settings: |
+            {
+              "maxSessionTurns": 40,
+              "coreTools": [
+                "read_file",
+                "read_many_files",
+                "glob",
+                "search_file_content",
+                "run_shell_command(gh label list)",
+                "run_shell_command(gh issue list)",
+                "run_shell_command(gh issue view)",
+                "run_shell_command(gh issue create)",
+                "run_shell_command(gh issue edit)",
+                "run_shell_command(gh issue comment)",
+                "run_shell_command(gh pr list)",
+                "run_shell_command(gh pr view)"
+              ],
+              "telemetry": { "enabled": false }
+            }
+          prompt: |
+            You are Rekoda's planner. Read GEMINI.md and AGENTS.md in the
+            repository root and follow them exactly; they define your role,
+            the risk levels, the WIP policy (max 1 status:building, max 2
+            status:ready) and the scope freeze.
+
+            This pass: ${{ inputs.focus || 'routine launch-backlog audit' }}
+
+            Procedure:
+            1. Read docs/HANDOFF.md ("Status at handoff" and "Open items")
+               and docs/REKODA_OWNER_DECISIONS.md section 2.
+            2. List open issues and open PRs with gh. Deduplicate before
+               proposing anything.
+            3. Verify any claim you rely on against the repository tree —
+               repository evidence outranks your memory.
+            4. If the READY/BUILDING queue is at its WIP limit, do not
+               promote anything; at most file genuine findings as backlog.
+            5. Create or update issues using the Agent task template
+               structure (.github/ISSUE_TEMPLATE/agent-task.yml): every
+               issue gets exactly one risk:R0..R3 label, a status or
+               backlog label, evidence, required context routed via
+               docs/agents/CONTEXT-MAP.md, acceptance criteria, required
+               tests, dependencies, and a decision status. Anything R3 or
+               genuinely undecidable is needs-owner-decision, never READY.
+            6. Do not modify code, do not comment on PRs beyond planning
+               context, do not reopen completed milestones without concrete
+               evidence, and do not create speculative work while launch
+               blockers exist.
+            7. Finish by commenting a one-paragraph summary of what you
+               changed (or that nothing needed changing) on the planning
+               tracking issue if one exists; otherwise just stop.

@@ -1,0 +1,53 @@
+# Claude — the implementation engineer (docs/AUTONOMOUS-ENGINEERING.md §1).
+#
+# Interactive mode: mention @claude in an issue or PR comment and Claude
+# picks the work up under CLAUDE.md's rules. There is deliberately no
+# scheduled/autonomous trigger yet — work enters through READY issues, and
+# a human (or the planner) summons the implementer explicitly, which keeps
+# the loop auditable while it earns trust.
+#
+# Authentication is the Claude subscription (CLAUDE_CODE_OAUTH_TOKEN from
+# `claude setup-token`, stored in the `test` environment). No
+# ANTHROPIC_API_KEY exists for the agent, by design: the runtime test key
+# is TEST_REKODA_ANTHROPIC_API_KEY and never reaches this workflow
+# (docs/agents/TEST-ENVIRONMENT.md).
+#
+# Security: the action itself rejects triggering users without write
+# access, and fork PRs never see environment secrets. Do not add
+# pull_request_target here.
+name: Agent — Claude implementer
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+  pull_request_review:
+    types: [submitted]
+  issues:
+    types: [opened, assigned]
+
+jobs:
+  claude:
+    name: Claude implementer
+    if: |
+      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
+      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
+      (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude')) ||
+      (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')))
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: test
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}

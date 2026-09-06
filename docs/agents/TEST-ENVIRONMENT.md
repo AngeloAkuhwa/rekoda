@@ -1,0 +1,158 @@
+# The `test` GitHub Environment
+
+How the autonomous-engineering workflows get credentials, and how Rekoda's
+own runtime configuration is provided when a workflow boots the stack. No
+secret **values** appear in this document, ever — only names and where each
+value lives.
+
+**The rule that shapes everything here:** agent credentials and Rekoda
+runtime credentials are two different things and never share a name. An
+agent credential authenticates an engineering agent to its own provider
+(Anthropic, Google). A runtime credential is Rekoda's own configuration.
+Where the runtime name would collide with an agent name, the GitHub secret
+carries a `TEST_REKODA_` prefix and the workflow's `env:` block maps it to
+the runtime name explicitly:
+
+```yaml
+env:
+  ANTHROPIC_API_KEY: ${{ secrets.TEST_REKODA_ANTHROPIC_API_KEY }}
+```
+
+`CLAUDE_CODE_OAUTH_TOKEN` is never handed to the Rekoda application, and
+`TEST_REKODA_ANTHROPIC_API_KEY` is never handed to the Claude agent.
+
+## A. Agent credentials (environment `test`, secrets)
+
+| GitHub secret             | Used by                     | Notes                                                                                                                                                                      |
+| ------------------------- | --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CLAUDE_CODE_OAUTH_TOKEN` | Claude implementer workflow | Subscription OAuth token from `claude setup-token`. No `ANTHROPIC_API_KEY` is configured for the agent — subscription auth is the only path.                               |
+| `GEMINI_API_KEY`          | Gemini planner workflow     | Unattended API key for GitHub Actions.                                                                                                                                     |
+| _(none for Codex)_        | —                           | Codex review runs on OpenAI's native GitHub integration under the owner's ChatGPT subscription. No `OPENAI_API_KEY` repository secret exists for review in this iteration. |
+
+## B. Rekoda runtime configuration for CI/test
+
+Classification of every `.env.example` setting. Categories:
+
+- **ephemeral** — generated fresh inside the CI job with
+  `openssl rand -hex 32`, never stored anywhere.
+- **secret** — GitHub secret in the `test` environment (real value, test
+  tier only).
+- **variable** — GitHub variable in the `test` environment, or a literal
+  in the workflow file (non-secret configuration).
+- **omitted** — intentionally unset in test; the code degrades safely by
+  design.
+- **sandbox** — needs a real provider sandbox/test account to mean
+  anything; lives as a `test` secret but only the live-smoke lane reads it.
+- **production-only** — MUST NOT exist in the `test` environment in any
+  form.
+
+### Database (ephemeral)
+
+CI provisions a job-scoped PostgreSQL with trust auth — no passwords, no
+stored URLs. As the existing `ci.yml` does:
+`DATABASE_URL` (owner, migrations), `APP_DATABASE_URL` (`rekoda_app`),
+`WORKER_DATABASE_URL` (`rekoda_worker`). Never run the db and api
+integration suites in parallel; they share the database.
+
+### Security keys (ephemeral)
+
+`VAULT_KEY`, `MATCH_KEY`, `CONNECTION_KEY`, `SESSION_SECRET`,
+`REKODA_API_SECRET`, `OTP_PEPPER`, `REKODA_OPERATOR_SECRET` — each
+generated per run, each distinct (the doctor refuses reuse). Generating at
+runtime also keeps high-entropy literals out of the tree, which gitleaks
+would otherwise flag.
+
+### Runtime shape (variable / literal)
+
+`NODE_ENV`, `PORT`, `APP_URL`, `NEXT_PUBLIC_SITE_URL`, `REKODA_API_URL`,
+`REKODA_CORS_ORIGINS`, `REKODA_RATE_LIMIT_MAX`, `REKODA_WORKER`,
+`REKODA_WEB_URL`, `META_GRAPH_VERSION`, `META_SERVICE_REPLY_COST_MICROS`,
+`META_WABA_REGISTERED_IN_NIGERIA`, `PLANNING_FX_NGN_PER_USD`,
+`AI_DAILY_CALLS_PER_BUSINESS`, `AI_DAILY_CALLS_GLOBAL`,
+`AI_DOC_EXTRACTIONS_PER_BUSINESS`, `AI_DOC_EXTRACTIONS_GLOBAL`,
+`VOICE_SECONDS_PER_BUSINESS_PER_DAY`, `VOICE_SECONDS_GLOBAL_PER_DAY`,
+`VOICE_NOTE_MAX_DURATION_SECONDS`, `AI_MODEL_CLASSIFIER`,
+`AI_MODEL_DEFAULT`, `AI_MODEL_PRICES`, `AI_TRANSCRIPTION_PRICES` —
+non-secret; workflow literals or `test` variables. Localhost URLs
+throughout.
+
+### Test hooks (ephemeral, test-only by design)
+
+`REKODA_REVEAL_OTP` / `REKODA_E2E_REVEAL_OTP` — set only by
+`playwright.config.ts`; the API refuses to boot with them in production.
+
+### Meta / WhatsApp (omitted)
+
+`META_ACCESS_TOKEN`, `META_PHONE_NUMBER_ID`, `META_OTP_TEMPLATE` (+
+locales), `META_BILLING_TEMPLATE`, `META_RETENTION_TEMPLATE` — omitted.
+Unset, inbound is still recorded and replies are simply not delivered,
+which is the designed degradation. `META_APP_SECRET` and
+`META_VERIFY_TOKEN` are **ephemeral** where a signature/handshake test
+needs one. There is no meaningful Meta sandbox before the owner's WABA
+and approved templates exist (owner-held, `docs/REKODA_OWNER_DECISIONS.md`
+§2); a live Meta smoke lane is deliberately not designed yet.
+
+### Paystack (sandbox)
+
+| GitHub secret/variable                                                  | Maps to runtime                                   | Class                                                                  |
+| ----------------------------------------------------------------------- | ------------------------------------------------- | ---------------------------------------------------------------------- |
+| secret `TEST_REKODA_PAYSTACK_SECRET_KEY`                                | `PAYSTACK_SECRET_KEY`                             | sandbox — a Paystack **test-mode** key (`sk_test_…`), never a live key |
+| variables `TEST_REKODA_PAYSTACK_PLAN_CHAT` / `_INTEGRATE` / `_COMPLETE` | `PAYSTACK_PLAN_CHAT` / `_INTEGRATE` / `_COMPLETE` | variable — test-mode plan codes                                        |
+
+`PAYSTACK_BASE_URL` stays unset for the live-smoke lane and points at the
+local fake for deterministic contract tests. Deterministic suites do not
+need the secret at all — every webhook path is exercised against computed
+HMACs with ephemeral keys.
+
+### AI providers (sandbox)
+
+| GitHub secret                   | Maps to runtime     | Class                                                              |
+| ------------------------------- | ------------------- | ------------------------------------------------------------------ |
+| `TEST_REKODA_ANTHROPIC_API_KEY` | `ANTHROPIC_API_KEY` | sandbox — a dedicated low-limit key for the AI live-eval lane only |
+| `TEST_REKODA_OPENAI_API_KEY`    | `OPENAI_API_KEY`    | sandbox — same, for transcription; only when the voice lane runs   |
+
+Deterministic suites run with both omitted: the router degrades to
+deterministic answers by design. `VOICE_TRANSCRIPTION_ENABLED` /
+`IMAGE_AI_ENABLED` stay unset except in the lane that tests them (each
+refuses to boot without its key, so enabling them in a keyless job fails
+loudly — correct, and the reason they are off by default).
+
+### Object storage (omitted / sandbox)
+
+Deterministic runs: `R2_*` omitted, `REKODA_LOCAL_STORAGE` set to a job
+temp dir (development-only escape hatch, which a CI job is). If a live R2
+smoke is ever wanted: secrets `TEST_REKODA_R2_ACCOUNT_ID`,
+`TEST_REKODA_R2_ACCESS_KEY_ID`, `TEST_REKODA_R2_SECRET_ACCESS_KEY` and
+variable `TEST_REKODA_R2_BUCKET` naming a dedicated test bucket — never
+the production bucket.
+
+### Production-only — MUST NOT be in `test`
+
+- `NEXT_PUBLIC_LEGAL_*` real values (test renders the designed "not set
+  yet" badges; the real entity facts are owner-held deployment values).
+- `OPERATOR_OIDC_ISSUER` / `_AUDIENCE` / `_JWKS_URL` / `_SCOPE_CLAIM` —
+  test uses the development stand-in `REKODA_OPERATOR_SECRET` (ephemeral).
+- `REKODA_PAYSTACK_PLATFORM_CONFIRMED` — the owner's recorded §47
+  confirmation; test keys do not need it and setting it in test rehearses
+  lying.
+- `REKODA_TRUSTED_PROXIES` — no proxy in CI.
+- `FX_MODE` anything other than `off` (a dedicated FX lane may use
+  `sandbox` per ADR 0033; `live` never).
+- Any **live** provider key (Paystack `sk_live_…`, production Meta token,
+  production R2 credentials, production database URL). If one is ever
+  found in the `test` environment, treat it as burned and rotate.
+
+## Provider test principle
+
+Every external provider gets both layers, and an outage of one must not
+make the repository untestable:
+
+1. **Deterministic contract tests** (default, run everywhere): local
+   fakes, computed signatures, ephemeral keys. These are the merge-gate's
+   backbone and need no environment secrets.
+2. **Narrow live sandbox smoke** (path-aware): a small suite hitting the
+   real test-mode provider, running only when relevant paths change, but
+   reporting through a **stable job name** so branch protection can
+   require it. When the paths did not change, the job succeeds by
+   explicitly reporting "not applicable" — a skip that branch protection
+   still sees as the named job passing.
