@@ -46,9 +46,14 @@ import {
   chooseCheckAction,
   readyPromotionAction,
   parsePrNumbersJson,
+  orderCheckWrites,
+  passingPublicationAllowed,
+  authorizeForceReview,
+  amendmentSignAllowed,
   FREEZE_MARKER,
   SCHEME,
 } from './evaluator.mjs';
+import { parseContractRevisionCli } from './cli-args.mjs';
 
 const HEAD = 'a'.repeat(40);
 const OLD_HEAD = 'b'.repeat(40);
@@ -2534,5 +2539,342 @@ test('WORKFLOW GRAPH: baseline promotion triggers symmetrically on every partici
   assert.ok(
     /types:\s*\[labeled,\s*unlabeled\]/.test(authorityYml),
     'issues trigger must include unlabeled',
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Failure-before-pass publication — the finalizer's write order contract
+// ---------------------------------------------------------------------------
+
+test('check publication: EVERY non-passing conclusion precedes EVERY passing conclusion, for all combinations', () => {
+  const names = ['Agent policy gate', 'Technical Review Gate', 'Gemini Acceptance Gate'];
+  for (let mask = 0; mask < 8; mask++) {
+    const conclusions = names.map((name, i) => ({
+      name,
+      conclusion: mask & (1 << i) ? 'failure' : 'success',
+    }));
+    const ordered = orderCheckWrites(conclusions);
+    assert.equal(ordered.length, 3);
+    const firstPass = ordered.findIndex((c) => c.conclusion === 'success');
+    const lastFail = ordered.map((c) => c.conclusion).lastIndexOf('failure');
+    if (firstPass !== -1 && lastFail !== -1) {
+      assert.ok(lastFail < firstPass, `mask ${mask}: a failure was ordered after a pass`);
+    }
+  }
+});
+
+test('check publication: the Codex scenario — policy PASS, technical BLOCK, gemini PASS — writes the revocation first', () => {
+  const ordered = orderCheckWrites([
+    { name: 'Agent policy gate', conclusion: 'success' },
+    { name: 'Technical Review Gate', conclusion: 'failure' },
+    { name: 'Gemini Acceptance Gate', conclusion: 'success' },
+  ]);
+  assert.deepEqual(
+    ordered.map((c) => c.name),
+    ['Technical Review Gate', 'Agent policy gate', 'Gemini Acceptance Gate'],
+  );
+  // …so a Policy PASS lookup abort (chooseCheckAction: success + failed
+  // lookup → abort) can no longer strand the Technical FAILURE behind
+  // it: the failure was already delivered, blind if necessary.
+  assert.equal(
+    chooseCheckAction({
+      lookupOk: false,
+      runs: [],
+      name: 'Agent policy gate',
+      conclusion: 'success',
+    }).action,
+    'abort',
+  );
+  assert.equal(
+    chooseCheckAction({
+      lookupOk: false,
+      runs: [],
+      name: 'Technical Review Gate',
+      conclusion: 'failure',
+    }).action,
+    'post',
+  );
+});
+
+test('check publication: neutral counts as passing for ordering (GitHub treats neutral as passing)', () => {
+  const ordered = orderCheckWrites([
+    { name: 'A', conclusion: 'neutral' },
+    { name: 'B', conclusion: 'failure' },
+  ]);
+  assert.deepEqual(
+    ordered.map((c) => c.name),
+    ['B', 'A'],
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Owner-authorized amendment snapshot binding
+// ---------------------------------------------------------------------------
+
+test('amendment signing: the signer refuses ANY drift from the owner-authorized snapshot', () => {
+  const authorized = snapHash({ revision: 2 }); // owner reviewed body A, risk R1, builder claude
+  // unchanged → sign
+  assert.equal(
+    amendmentSignAllowed({ expectedSnapshotHash: authorized, freshSnapshotHash: authorized }),
+    true,
+  );
+  // collaborator edits the body during the barriers → refuse
+  const bodyDrift = snapHash({ revision: 2, body: ISSUE_BODY + '\n\nInjected requirement.' });
+  assert.equal(
+    amendmentSignAllowed({ expectedSnapshotHash: authorized, freshSnapshotHash: bodyDrift }),
+    false,
+  );
+  // risk or builder relabelled during the barriers → refuse
+  assert.equal(
+    amendmentSignAllowed({
+      expectedSnapshotHash: authorized,
+      freshSnapshotHash: snapHash({ revision: 2, risk: 'risk:R3' }),
+    }),
+    false,
+  );
+  assert.equal(
+    amendmentSignAllowed({
+      expectedSnapshotHash: authorized,
+      freshSnapshotHash: snapHash({ revision: 2, builder: 'builder:codex' }),
+    }),
+    false,
+  );
+  // A→B→A: the final state IS byte-for-byte the authorized snapshot → sign
+  const backToA = snapHash({ revision: 2, body: ISSUE_BODY });
+  assert.equal(
+    amendmentSignAllowed({ expectedSnapshotHash: authorized, freshSnapshotHash: backToA }),
+    true,
+  );
+  // no/invalid authorization hash → never sign
+  assert.equal(
+    amendmentSignAllowed({ expectedSnapshotHash: '', freshSnapshotHash: authorized }),
+    false,
+  );
+  assert.equal(
+    amendmentSignAllowed({ expectedSnapshotHash: undefined, freshSnapshotHash: authorized }),
+    false,
+  );
+});
+
+// ---------------------------------------------------------------------------
+// The REAL contract-revision CLI parser, with REAL argv arrays
+// ---------------------------------------------------------------------------
+
+test('REAL CLI: --baseline with --sign-env parses as the baseline mode (boolean flag takes no value)', () => {
+  const a = parseContractRevisionCli([
+    '--repo',
+    'x/y',
+    '--issue',
+    '44',
+    '--baseline',
+    '--sign-env',
+    'KEY',
+  ]);
+  assert.equal(a.mode, 'baseline');
+  assert.equal(a.baseline, true);
+  assert.equal(a['sign-env'], 'KEY');
+  assert.equal(a.post, undefined);
+});
+
+test('REAL CLI: --freeze --from 1 --target 2 actually enters the freeze mode', () => {
+  const a = parseContractRevisionCli([
+    '--repo',
+    'x/y',
+    '--issue',
+    '44',
+    '--freeze',
+    '--from',
+    '1',
+    '--target',
+    '2',
+    '--sign-env',
+    'KEY',
+  ]);
+  assert.equal(a.mode, 'freeze');
+  assert.equal(a.freeze, true);
+  assert.equal(a.from, '1');
+  assert.equal(a.target, '2');
+});
+
+test('REAL CLI: --revision 2 --reason … --expected-snapshot-hash … parses the revision mode; --post is boolean', () => {
+  const h = 'a'.repeat(64);
+  const a = parseContractRevisionCli([
+    '--repo',
+    'x/y',
+    '--issue',
+    '44',
+    '--revision',
+    '2',
+    '--reason',
+    'scope',
+    '--expected-snapshot-hash',
+    h,
+    '--sign-env',
+    'KEY',
+    '--post',
+  ]);
+  assert.equal(a.mode, 'revision');
+  assert.equal(a.revision, '2');
+  assert.equal(a.reason, 'scope');
+  assert.equal(a['expected-snapshot-hash'], h);
+  assert.equal(a.post, true);
+});
+
+test('REAL CLI: unknown options, missing values, and invalid mode combinations FAIL loudly', () => {
+  assert.throws(() => parseContractRevisionCli(['--repo', 'x/y', '--issue', '44', '--banana']));
+  assert.throws(() =>
+    parseContractRevisionCli(['--repo', 'x/y', '--issue', '44', '--revision', '--post']),
+  ); // --revision swallowed an option token → missing value
+  assert.throws(() => parseContractRevisionCli(['--repo', 'x/y', '--issue', '44'])); // no mode
+  assert.throws(() =>
+    parseContractRevisionCli(['--repo', 'x/y', '--issue', '44', '--baseline', '--freeze']),
+  ); // two modes
+  assert.throws(() =>
+    parseContractRevisionCli(['--repo', 'x/y', '--issue', '44', '--baseline', '--revision', '2']),
+  ); // baseline + revision
+});
+
+// ---------------------------------------------------------------------------
+// Shared-HEAD SHA: passing publication requires a unique CURRENT association
+// ---------------------------------------------------------------------------
+
+test('passing publication: allowed ONLY when the current association is exactly this one open PR', () => {
+  assert.equal(passingPublicationAllowed({ resolution: { status: 'ok', pr: 55 }, pr: 55 }), true);
+  assert.equal(passingPublicationAllowed({ resolution: { status: 'ok', pr: '55' }, pr: 55 }), true);
+  // a SECOND open PR appeared on the same SHA after resolve → refuse
+  assert.equal(
+    passingPublicationAllowed({ resolution: { status: 'ambiguous', pr: null }, pr: 55 }),
+    false,
+  );
+  // the association moved to a different PR → refuse
+  assert.equal(passingPublicationAllowed({ resolution: { status: 'ok', pr: 90 }, pr: 55 }), false);
+  // gone, superseded, or unprovable → refuse
+  assert.equal(
+    passingPublicationAllowed({ resolution: { status: 'none', pr: null }, pr: 55 }),
+    false,
+  );
+  assert.equal(
+    passingPublicationAllowed({ resolution: { status: 'stale', pr: 55 }, pr: 55 }),
+    false,
+  );
+  assert.equal(
+    passingPublicationAllowed({ resolution: { status: 'unprovable', pr: null }, pr: 55 }),
+    false,
+  );
+  assert.equal(passingPublicationAllowed({ resolution: null, pr: 55 }), false);
+});
+
+// ---------------------------------------------------------------------------
+// Force review is authenticated human intent — never transport
+// ---------------------------------------------------------------------------
+
+test('force review: not requested → plain reevaluation, no error (automatic dispatches are never force)', () => {
+  assert.deepEqual(
+    authorizeForceReview({ requested: false, actor: 'github-actions[bot]', permission: 'none' }),
+    {
+      force: false,
+      error: null,
+    },
+  );
+  assert.deepEqual(
+    authorizeForceReview({ requested: undefined, actor: 'anyone', permission: 'admin' }),
+    {
+      force: false,
+      error: null,
+    },
+  );
+});
+
+test('force review: a workflow identity or an under-privileged actor requesting force is REJECTED with an error', () => {
+  const bot = authorizeForceReview({
+    requested: true,
+    actor: 'github-actions[bot]',
+    permission: 'admin',
+  });
+  assert.equal(bot.force, false);
+  assert.ok(bot.error);
+  const readOnly = authorizeForceReview({ requested: true, actor: 'drive-by', permission: 'read' });
+  assert.equal(readOnly.force, false);
+  assert.ok(readOnly.error);
+  const none = authorizeForceReview({ requested: 'true', actor: 'drive-by', permission: 'none' });
+  assert.equal(none.force, false);
+  assert.ok(none.error);
+});
+
+test('force review: a write+/maintain/admin HUMAN may force a fresh paid review', () => {
+  for (const permission of ['write', 'maintain', 'admin']) {
+    assert.deepEqual(authorizeForceReview({ requested: true, actor: 'AngeloAkuhwa', permission }), {
+      force: true,
+      error: null,
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Static workflow assertions for this pass
+// ---------------------------------------------------------------------------
+
+const watchYml = readFileSync(join(WORKFLOWS_DIR, 'agent-contract-watch.yml'), 'utf8');
+
+test('WORKFLOW GRAPH: force_review is an explicit input (default false); resolve authenticates it; no event-name force inference remains', () => {
+  assert.ok(
+    /force_review:\n[\s\S]{0,400}?default: false/.test(gatesYml),
+    'force_review input must default false',
+  );
+  const resolve = jobBlock(gatesYml, 'resolve');
+  assert.ok(
+    resolve.includes('Authenticate forced-review intent'),
+    'resolve must authenticate force',
+  );
+  assert.ok(resolve.includes('authorizeForceReview'), 'resolve must use the tested authorizer');
+  assert.ok(
+    !gatesYml.includes("github.event_name == 'workflow_dispatch'"),
+    'force must never be inferred from the event transport',
+  );
+});
+
+test('WORKFLOW GRAPH: every automatic gates dispatcher passes force_review=false; the watcher authorizes comment authors', () => {
+  assert.ok(watchYml.includes('-f force_review=false'), 'watcher must dispatch plain reevaluation');
+  assert.ok(
+    watchYml.includes('Authorize comment-triggered redispatch'),
+    'watcher must gate comment-triggered dispatch on an authorized author',
+  );
+  assert.ok(
+    authorityYml.includes('-f force_review=false'),
+    'authority redispatch must be plain reevaluation',
+  );
+});
+
+test('WORKFLOW GRAPH: ambiguity actively reds the shared SHA, and the finalizer orders failures → association re-check → passes', () => {
+  const resolve = jobBlock(gatesYml, 'resolve');
+  assert.ok(
+    resolve.includes('Ambiguous shared SHA — force all three gates red'),
+    'resolve must actively fail a shared SHA',
+  );
+  const finalize = jobBlock(gatesYml, 'finalize');
+  const failuresAt = finalize.indexOf('FAILURES FIRST');
+  const assocAt = finalize.indexOf('ASSOCIATION RE-CHECK');
+  const passesAt = finalize.indexOf('PASSES LAST');
+  assert.ok(
+    failuresAt > -1 && assocAt > failuresAt && passesAt > assocAt,
+    'finalize must publish failures, then re-check association, then passes',
+  );
+  assert.ok(
+    finalize.includes('passingPublicationAllowed'),
+    'finalize must use the tested association gate',
+  );
+});
+
+test('WORKFLOW GRAPH: the amendment carries the owner-authorized snapshot hash into the signer', () => {
+  assert.ok(/expected_snapshot_hash:/.test(authorityYml), 'the dispatch input must exist');
+  const sign = jobBlock(authorityYml, 'sign');
+  assert.ok(
+    sign.includes('--expected-snapshot-hash'),
+    'the signer must receive the authorized hash',
+  );
+  const plan = jobBlock(authorityYml, 'plan');
+  assert.ok(
+    plan.includes('amendment-context.mjs'),
+    'the plan job must recompute and compare the proposed snapshot',
   );
 });

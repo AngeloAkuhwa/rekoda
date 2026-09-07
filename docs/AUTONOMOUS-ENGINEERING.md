@@ -737,6 +737,27 @@ the planner **explicitly dispatches** the authority's baseline entry
 point (GITHUB_TOKEN label events never trigger workflows — no event
 recursion anywhere); and linked-PR lists are parsed as JSON
 (`parsePrNumbersJson` — `[70,73]` dispatches 70 and 73, never 7073).
+The closing audit pass then hardened publication and intent semantics:
+the finalizer computes **one immutable result** and writes every
+**failure before any pass** (`orderCheckWrites`), so a passing upsert's
+fail-closed abort can never strand a required revocation; **no passing
+conclusion is published without re-proving the SHA's current PR
+association is exactly this one open PR** (`passingPublicationAllowed`
+— checks attach to the SHA, and a shared/ambiguous SHA is actively
+forced red on all three gates rather than merely left alone);
+amendments carry the **owner-authorized snapshot hash** end to end (the
+owner reviews `amendment-context.mjs` output from trusted main and
+dispatches with `expected_snapshot_hash`; the plan job and the signer
+itself both refuse any drift — `amendmentSignAllowed`); the
+contract-revision CLI parses with declared boolean/value options
+(`cli-args.mjs`, real-argv tested — the folding parser under which
+`--freeze` and `--baseline` silently misparsed is gone); and **forced
+fresh review is authenticated human intent, never transport**
+(`authorizeForceReview`: an explicit `force_review` input, refused for
+workflow identities and non-write actors; every automatic dispatcher
+sends `force_review=false`, and comment-triggered watch redispatch
+requires a write+ comment author, so an untrusted commenter can never
+launch paid reviewer work).
 
 What remains, honestly:
 

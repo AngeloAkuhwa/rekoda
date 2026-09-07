@@ -32,9 +32,11 @@ if (!repo) {
   console.error('Usage: resolve-target.mjs --repo o/n (--head-sha <sha> | --pr <n>)');
   process.exit(2);
 }
-const out = (pr) => {
+const out = (pr, status) => {
   console.log(`pr=${pr}`);
-  if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `pr=${pr}\n`);
+  console.log(`status=${status}`);
+  if (process.env.GITHUB_OUTPUT)
+    appendFileSync(process.env.GITHUB_OUTPUT, `pr=${pr}\nstatus=${status}\n`);
 };
 const gh = (p) =>
   JSON.parse(execFileSync('gh', ['api', p], { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 }));
@@ -54,7 +56,7 @@ if (args.pr) {
     );
     process.exit(1);
   }
-  out(n);
+  out(n, 'ok');
   process.exit(0);
 }
 
@@ -72,23 +74,29 @@ const candidates = paged.items.map((p) => ({
 
 const r = resolveWorkflowRunTarget({ headSha: sha, candidates, repo, complete: paged.complete });
 if (r.status === 'ok') {
-  out(r.pr);
+  out(r.pr, 'ok');
 } else if (r.status === 'none') {
   console.log(`No open PR of ${repo} currently targets ${sha} — nothing to evaluate.`);
-  out('');
+  out('', 'none');
 } else if (r.status === 'stale') {
   console.log(
     `PR #${r.pr} has moved past ${sha} (force-push/new push) — this request is superseded; the new head's own request owns evaluation.`,
   );
-  out('');
+  out('', 'stale');
 } else if (r.status === 'unprovable') {
   console.error(
     `::error::Candidate listing for ${sha} is incomplete (API failure or pagination ceiling) — the target cannot be proven; failing closed.`,
   );
+  out('', 'unprovable');
   process.exit(1);
 } else {
+  // Check runs attach to the SHA, not the PR: a shared HEAD must never
+  // RETAIN a merge-authorizing gate state either — the workflow's
+  // ambiguity handler actively publishes three failures for this SHA
+  // (status=ambiguous below is its trigger) before this exit blocks.
   console.error(
     `::error::Multiple open PRs share commit ${sha}; a privileged evaluation must know exactly whom it judges — failing closed.`,
   );
+  out('', 'ambiguous');
   process.exit(1);
 }

@@ -755,6 +755,78 @@ export function chooseCheckAction({
 }
 
 /**
+ * Deterministic publication order for one finalizer result: EVERY
+ * non-passing conclusion is written BEFORE any passing conclusion. A
+ * passing upsert can legitimately abort (lookup failure → no blind
+ * duplicate green), and under fail-fast shell semantics that abort must
+ * never be able to strand a required revocation behind it — the
+ * merge-blocking truth reaches GitHub first, always. The input is one
+ * immutable computed result; nothing is recalculated between writes.
+ */
+export function orderCheckWrites(conclusions) {
+  const list = (conclusions ?? []).map((c) => ({ name: c.name, conclusion: c.conclusion }));
+  const blocking = list.filter((c) => c.conclusion !== 'success' && c.conclusion !== 'neutral');
+  const passing = list.filter((c) => c.conclusion === 'success' || c.conclusion === 'neutral');
+  return [...blocking, ...passing];
+}
+
+/**
+ * May a PASSING (merge-authorizing) conclusion be published for `pr`?
+ * Check runs attach to the HEAD SHA, not the PR — a SHA shared by
+ * several open PRs would let a second PR inherit another PR's green.
+ * Passing publication therefore requires the CURRENT association to be
+ * exactly one open PR AND that PR to be this one; ambiguity, absence,
+ * staleness, an unprovable listing, or a different PR all refuse.
+ * (Failure conclusions are exempt — red on a shared SHA is safe and is
+ * exactly what the ambiguity handler publishes.)
+ */
+export function passingPublicationAllowed({ resolution, pr }) {
+  return Boolean(resolution && resolution.status === 'ok' && Number(resolution.pr) === Number(pr));
+}
+
+/**
+ * Forced fresh review is AUTHENTICATED HUMAN INTENT, never transport:
+ * arriving via workflow_dispatch proves nothing (trusted workflows
+ * redispatch the gates automatically for plain reevaluation). A
+ * force_review request is honored only for a write+/maintain/admin
+ * HUMAN actor — github-actions[bot] can never force paid review, and an
+ * unauthorized request is an ERROR (visible), not a silent downgrade.
+ */
+export function authorizeForceReview({ requested, actor, permission }) {
+  if (requested !== true && requested !== 'true') return { force: false, error: null };
+  if (!actor || actor === 'github-actions[bot]') {
+    return {
+      force: false,
+      error:
+        'force_review=true from a workflow identity is refused — only an authorized human forces paid review',
+    };
+  }
+  if (!isActorAuthorized(permission)) {
+    return {
+      force: false,
+      error: `force_review=true requires write+ permission; actor ${actor} has '${permission}'`,
+    };
+  }
+  return { force: true, error: null };
+}
+
+/**
+ * The amendment signer's last-instant guard: the snapshot the OWNER
+ * authorized (its hash passed through the whole transaction) must equal
+ * the snapshot about to be signed, computed from freshly fetched state.
+ * Any drift — body, risk, or builder changed by anyone after the owner
+ * authorized — refuses the signing; "latest state wins" is never the
+ * amendment semantic. (A→B→A is allowed by construction: the final
+ * state IS byte-for-byte the authorized snapshot.)
+ */
+export function amendmentSignAllowed({ expectedSnapshotHash, freshSnapshotHash }) {
+  return (
+    /^[0-9a-f]{64}$/.test(String(expectedSnapshotHash ?? '')) &&
+    expectedSnapshotHash === freshSnapshotHash
+  );
+}
+
+/**
  * READY-promotion decision for the contract authority, evaluated against
  * the RE-FETCHED current issue labels so both label orderings work
  * (builder first then status:ready, or the reverse) and duplicate label

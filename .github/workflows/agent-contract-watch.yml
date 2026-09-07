@@ -86,7 +86,33 @@ jobs:
       - name: Trusted root
         run: echo "Definition and policy trust root — default-branch SHA ${{ github.sha }}"
 
+      # Comment-triggered redispatch is AUTHORIZED-AUTHOR ONLY: an
+      # arbitrary public commenter must not be able to launch privileged
+      # gate runs (and thereby paid reviewer work) merely by including
+      # marker-looking text — the evaluator would ignore such text as
+      # invalid evidence anyway, so there is nothing legitimate to
+      # re-evaluate. Only a write+/maintain/admin comment author (real
+      # contract evidence can only come from them or from suppressed
+      # GITHUB_TOKEN posts) triggers a redispatch; others end here,
+      # quietly and without any dispatch. Label/edit events are already
+      # limited to actors with triage+ access by GitHub itself.
+      - name: Authorize comment-triggered redispatch
+        if: github.event_name == 'issue_comment'
+        env:
+          COMMENT_AUTHOR: ${{ github.event.comment.user.login }}
+        run: |
+          set -euo pipefail
+          perm=$(gh api "repos/$REPO/collaborators/$COMMENT_AUTHOR/permission" --jq .permission 2>/dev/null || echo none)
+          case "$perm" in
+            admin|maintain|write) echo "Comment author $COMMENT_AUTHOR permission: $perm" ;;
+            *)
+              echo "Comment author $COMMENT_AUTHOR (permission: $perm) is not an authorized evidence source — the marker-looking text is data for the evaluator, not a trigger; no privileged dispatch."
+              echo "SKIP=true" >> "$GITHUB_ENV"
+              ;;
+          esac
+
       - name: Re-run the gates on every open PR closing this issue
+        if: env.SKIP != 'true'
         run: |
           set -euo pipefail
           if [ ! -f scripts/agents/evaluator.mjs ]; then
@@ -102,5 +128,8 @@ jobs:
           while IFS= read -r pr; do
             [ -n "$pr" ] || continue
             echo "Issue #$ISSUE changed — re-dispatching the privileged gates for PR #$pr at its current HEAD."
-            gh workflow run agent-gates.yml --repo "$REPO" --ref main -f pr="$pr"
+            # Plain reevaluation only: valid same-state evidence is
+            # reused; force is authenticated HUMAN intent, never a
+            # watcher side effect.
+            gh workflow run agent-gates.yml --repo "$REPO" --ref main -f pr="$pr" -f force_review=false
           done < /tmp/linked-prs.txt

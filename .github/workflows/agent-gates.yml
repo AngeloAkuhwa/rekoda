@@ -68,9 +68,20 @@ on:
   workflow_dispatch:
     inputs:
       pr:
-        description: PR number to (re-)evaluate — a request; all state is re-resolved. Forces fresh reviewer verdicts.
+        description: PR number to (re-)evaluate — a request; all state is re-resolved.
         required: true
         type: number
+      # Forced fresh review is AUTHENTICATED HUMAN INTENT, never
+      # transport: trusted workflows redispatch the gates automatically
+      # for plain reevaluation (force_review=false — existing exact
+      # HEAD/revision/snapshot evidence is reused normally). Only a
+      # write+ HUMAN actor may set this true; a workflow identity
+      # requesting it is refused before any AI lane can start.
+      force_review:
+        description: Discard-and-refresh reviewer verdicts (authorized humans only)
+        required: false
+        default: false
+        type: boolean
 
 permissions: {}
 
@@ -86,8 +97,15 @@ jobs:
       contents: read
       pull-requests: read
       issues: read
+      # checks:write here exists ONLY for the red-only ambiguity handler
+      # below: a SHA shared by multiple open PRs must never RETAIN a
+      # merge-authorizing gate state, so the three stable gate names are
+      # actively forced red on it. This job can never write a passing
+      # conclusion.
+      checks: write
     outputs:
       pr: ${{ steps.target.outputs.pr }}
+      force_review: ${{ steps.force.outputs.force_review }}
       governed: ${{ steps.ctx.outputs.governed }}
       head_sha: ${{ steps.ctx.outputs.head_sha }}
       issue: ${{ steps.ctx.outputs.issue }}
@@ -106,7 +124,6 @@ jobs:
       trusted_sha: ${{ github.sha }}
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      FORCE_REVIEW: ${{ github.event_name == 'workflow_dispatch' }}
     steps:
       - name: Trusted root
         run: echo "Definition, policy and governance trust root — default-branch SHA ${{ github.sha }}"
@@ -120,8 +137,39 @@ jobs:
       - name: Evaluator self-test (behavioural evidence, every run)
         run: node --test scripts/agents/evaluator.test.mjs
 
+      # Force is INTENT, not transport: only a write+ HUMAN may discard
+      # valid same-state reviewer evidence and trigger fresh paid AI
+      # runs. A workflow identity (github-actions[bot]) or an
+      # under-privileged actor requesting force is a hard ERROR — never
+      # a silent downgrade — before any secret-bearing job exists.
+      - name: Authenticate forced-review intent
+        id: force
+        env:
+          FORCE_INPUT: ${{ inputs.force_review }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          if [ "${FORCE_INPUT:-false}" != "true" ]; then
+            echo "force_review=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          perm=$(gh api "repos/$REPO/collaborators/$ACTOR/permission" --jq .permission 2>/dev/null || echo none)
+          decision=$(A_ACTOR="$ACTOR" A_PERM="$perm" node --input-type=module -e '
+            import { authorizeForceReview } from "./scripts/agents/evaluator.mjs";
+            const d = authorizeForceReview({
+              requested: true,
+              actor: process.env.A_ACTOR,
+              permission: process.env.A_PERM,
+            });
+            if (d.error) { console.error(`::error::${d.error}`); process.exit(1); }
+            console.log(d.force ? "true" : "false");
+          ')
+          echo "force_review=$decision" >> "$GITHUB_OUTPUT"
+          echo "Forced fresh review authorized for $ACTOR ($perm)."
+
       - name: Resolve the target PR to exactly one valid candidate
         id: target
+        continue-on-error: true
         env:
           DISPATCH_PR: ${{ inputs.pr }}
           RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
@@ -132,6 +180,33 @@ jobs:
           else
             node scripts/agents/resolve-target.mjs --repo "$REPO" --head-sha "$RUN_HEAD_SHA"
           fi
+
+      # Check runs attach to the SHA, not the PR: when one HEAD is
+      # shared by multiple open PRs, gate state published for an earlier
+      # (possibly ungoverned) PR would be INHERITED by the others. On
+      # ambiguity the SHA must not merely get nothing — it must lose any
+      # merge-authorizing state it has: all three stable gate names are
+      # actively forced red. This may block every PR using the SHA;
+      # ambiguity requires the user to make the target unique.
+      - name: Ambiguous shared SHA — force all three gates red
+        if: steps.target.outputs.status == 'ambiguous'
+        env:
+          RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          sha=$(echo "$RUN_HEAD_SHA" | tr 'A-F' 'a-f')
+          for name in "Agent policy gate" "Technical Review Gate" "Gemini Acceptance Gate"; do
+            node scripts/agents/post-check.mjs --repo "$REPO" --name "$name" --sha "$sha" \
+              --conclusion failure --title "Ambiguous PR association" \
+              --summary "HEAD $sha belongs to multiple open PRs; no gate state can be trusted to one of them. Make the association unique (close or retarget the extra PR), then re-run the gates."
+          done
+          exit 1
+
+      - name: Propagate resolver failure
+        if: steps.target.outcome == 'failure' && steps.target.outputs.status != 'ambiguous'
+        run: |
+          echo "::error::Target resolution failed (status: '${{ steps.target.outputs.status }}')."
+          exit 1
 
       - name: Normalize GitHub state
         if: steps.target.outputs.pr != ''
@@ -180,6 +255,10 @@ jobs:
       - name: Plan the AI lanes
         if: steps.target.outputs.pr != ''
         id: plan
+        env:
+          # AUTHENTICATED force only — never inferred from the event
+          # transport: an automatic redispatch reuses valid evidence.
+          FORCE_REVIEW: ${{ steps.force.outputs.force_review }}
         run: |
           set -euo pipefail
           need_claude=false; need_gemini=false
@@ -716,7 +795,7 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       PR: ${{ needs.resolve.outputs.pr }}
       HEAD_SHA: ${{ needs.resolve.outputs.head_sha }}
-      FORCE_REVIEW: ${{ github.event_name == 'workflow_dispatch' }}
+      FORCE_REVIEW: ${{ needs.resolve.outputs.force_review }}
       TECH_AI_RESULT: ${{ needs.technical_ai.result || 'skipped' }}
       GEMINI_AI_RESULT: ${{ needs.acceptance_ai.result || 'skipped' }}
     steps:
@@ -751,63 +830,88 @@ jobs:
             echo "The PR moved past $HEAD_SHA — this evaluation is superseded; the new head's own run finalizes."
             exit 0
           fi
+          # ---- COMPUTE the one immutable finalizer result (no writes yet) ----
           if [ "$governed" != "true" ]; then
-            for name in "Agent policy gate" "Technical Review Gate" "Gemini Acceptance Gate"; do
-              node scripts/agents/post-check.mjs --repo "$REPO" --name "$name" --sha "$HEAD_SHA" \
-                --conclusion success --title "Not agent-governed" \
-                --summary "This PR has never entered the autonomous agent lane (verified against CURRENT state and the complete label-event history); the gate passes neutrally."
-            done
-            exit 0
-          fi
-          if [ "$fork" = "true" ]; then
-            for name in "Agent policy gate" "Technical Review Gate" "Gemini Acceptance Gate"; do
-              node scripts/agents/post-check.mjs --repo "$REPO" --name "$name" --sha "$HEAD_SHA" \
-                --conclusion failure --title "Fork PR" \
-                --summary "Agent-governed PRs must come from branches of this repository, never forks."
-            done
-            exit 1
+            pol=success;  pol_t="Not agent-governed";  pol_s="This PR has never entered the autonomous agent lane (verified against CURRENT state and the complete label-event history); the gate passes neutrally."
+            tech=success; tech_t="$pol_t"; tech_s="$pol_s"
+            acc=success;  acc_t="$pol_t";  acc_s="$pol_s"
+          elif [ "$fork" = "true" ]; then
+            pol=failure;  pol_t="Fork PR";  pol_s="Agent-governed PRs must come from branches of this repository, never forks."
+            tech=failure; tech_t="$pol_t"; tech_s="$pol_s"
+            acc=failure;  acc_t="$pol_t";  acc_s="$pol_s"
+          else
+            if node scripts/agents/run-gate.mjs --state /tmp/state-final.json --mode policy; then
+              pol=success; pol_t="Policy satisfied"; pol_s="Structural policy passed for HEAD $HEAD_SHA (details in the run log)."
+            else
+              pol=failure; pol_t="Policy BLOCKED"; pol_s="Structural policy blocked HEAD $HEAD_SHA — see the run log for machine-readable reasons (docs/AUTONOMOUS-ENGINEERING.md §6)."
+            fi
+            if [ "$draft" = "true" ] && [ "$FORCE_REVIEW" != "true" ]; then
+              tech=success; tech_t="Draft"; tech_s="Review runs when the PR is marked ready."
+              acc=success;  acc_t="Draft";  acc_s="Acceptance review runs when the PR is marked ready."
+            else
+              if node scripts/agents/run-gate.mjs --state /tmp/state-final.json --mode technical; then
+                tech=success; tech_t="Technical review APPROVE"; tech_s="A valid technical verdict approves HEAD $HEAD_SHA at the current contract snapshot."
+              else
+                tech=failure; tech_t="Technical review BLOCKED"; tech_s="No valid APPROVE for HEAD $HEAD_SHA at the current contract snapshot (AI lane result: $TECH_AI_RESULT) — see the run log (docs/AUTONOMOUS-ENGINEERING.md §6)."
+              fi
+              if node scripts/agents/run-gate.mjs --state /tmp/state-final.json --mode acceptance; then
+                acc=success; acc_t="System acceptance APPROVE"; acc_s="A valid acceptance verdict approves HEAD $HEAD_SHA at the current contract snapshot."
+              else
+                acc=failure; acc_t="System acceptance BLOCKED"; acc_s="No valid APPROVE for HEAD $HEAD_SHA at the current contract snapshot (AI lane result: $GEMINI_AI_RESULT) — see the run log (docs/AUTONOMOUS-ENGINEERING.md §6)."
+              fi
+            fi
           fi
 
+          publish() {
+            node scripts/agents/post-check.mjs --repo "$REPO" --name "$1" --sha "$HEAD_SHA" \
+              --conclusion "$2" --title "$3" --summary "$4"
+          }
           fail=0
-          if node scripts/agents/run-gate.mjs --state /tmp/state-final.json --mode policy; then
-            node scripts/agents/post-check.mjs --repo "$REPO" --name "Agent policy gate" --sha "$HEAD_SHA" \
-              --conclusion success --title "Policy satisfied" \
-              --summary "Structural policy passed for HEAD $HEAD_SHA (details in the run log)."
-          else
-            fail=1
-            node scripts/agents/post-check.mjs --repo "$REPO" --name "Agent policy gate" --sha "$HEAD_SHA" \
-              --conclusion failure --title "Policy BLOCKED" \
-              --summary "Structural policy blocked HEAD $HEAD_SHA — see the run log for machine-readable reasons (docs/AUTONOMOUS-ENGINEERING.md §6)."
+          # ---- FAILURES FIRST (scripts/agents/evaluator.mjs
+          # orderCheckWrites is the tested contract): every required
+          # revocation reaches GitHub before any passing upsert can
+          # abort this step. A single failure-write error does not stop
+          # the other failure writes; any blocked conclusion fails the
+          # job regardless.
+          if [ "$pol" = "failure" ]; then fail=1; publish "Agent policy gate" failure "$pol_t" "$pol_s" || true; fi
+          if [ "$tech" = "failure" ]; then fail=1; publish "Technical Review Gate" failure "$tech_t" "$tech_s" || true; fi
+          if [ "$acc" = "failure" ]; then fail=1; publish "Gemini Acceptance Gate" failure "$acc_t" "$acc_s" || true; fi
+
+          # ---- ASSOCIATION RE-CHECK before ANY passing write: checks
+          # attach to the SHA, so a HEAD that became shared by several
+          # open PRs after resolve must never receive green from this
+          # run — a second PR would inherit it. Exactly one open
+          # association AND it is this PR, or no passing conclusion.
+          if [ "$pol" = "success" ] || [ "$tech" = "success" ] || [ "$acc" = "success" ]; then
+            assoc=$(GITHUB_OUTPUT= node scripts/agents/resolve-target.mjs --repo "$REPO" --head-sha "$HEAD_SHA" 2>&1 || true)
+            a_status=$(printf '%s\n' "$assoc" | grep '^status=' | head -1 | cut -d= -f2 || true)
+            a_pr=$(printf '%s\n' "$assoc" | grep '^pr=' | head -1 | cut -d= -f2 || true)
+            if [ "$a_status" = "ambiguous" ]; then
+              for name in "Agent policy gate" "Technical Review Gate" "Gemini Acceptance Gate"; do
+                publish "$name" failure "Ambiguous PR association" "HEAD $HEAD_SHA belongs to multiple open PRs; no gate state can be trusted to one of them. Make the association unique, then re-run the gates." || true
+              done
+              exit 1
+            fi
+            allow=$(A_STATUS="$a_status" A_PR="$a_pr" THIS_PR="$PR" node --input-type=module -e '
+              import { passingPublicationAllowed } from "./scripts/agents/evaluator.mjs";
+              console.log(
+                passingPublicationAllowed({
+                  resolution: { status: process.env.A_STATUS, pr: process.env.A_PR },
+                  pr: process.env.THIS_PR,
+                })
+                  ? "true"
+                  : "false",
+              );
+            ')
+            if [ "$allow" != "true" ]; then
+              echo "::error::Refusing every passing conclusion: current PR association for $HEAD_SHA is not provably this PR alone (status '$a_status', pr '$a_pr'). The delivered failures stand."
+              exit 1
+            fi
           fi
 
-          if [ "$draft" = "true" ] && [ "$FORCE_REVIEW" != "true" ]; then
-            node scripts/agents/post-check.mjs --repo "$REPO" --name "Technical Review Gate" --sha "$HEAD_SHA" \
-              --conclusion success --title "Draft" --summary "Review runs when the PR is marked ready."
-            node scripts/agents/post-check.mjs --repo "$REPO" --name "Gemini Acceptance Gate" --sha "$HEAD_SHA" \
-              --conclusion success --title "Draft" --summary "Acceptance review runs when the PR is marked ready."
-            exit $fail
-          fi
-
-          if node scripts/agents/run-gate.mjs --state /tmp/state-final.json --mode technical; then
-            node scripts/agents/post-check.mjs --repo "$REPO" --name "Technical Review Gate" --sha "$HEAD_SHA" \
-              --conclusion success --title "Technical review APPROVE" \
-              --summary "A valid technical verdict approves HEAD $HEAD_SHA at the current contract snapshot."
-          else
-            fail=1
-            node scripts/agents/post-check.mjs --repo "$REPO" --name "Technical Review Gate" --sha "$HEAD_SHA" \
-              --conclusion failure --title "Technical review BLOCKED" \
-              --summary "No valid APPROVE for HEAD $HEAD_SHA at the current contract snapshot (AI lane result: $TECH_AI_RESULT) — see the run log (docs/AUTONOMOUS-ENGINEERING.md §6)."
-          fi
-
-          if node scripts/agents/run-gate.mjs --state /tmp/state-final.json --mode acceptance; then
-            node scripts/agents/post-check.mjs --repo "$REPO" --name "Gemini Acceptance Gate" --sha "$HEAD_SHA" \
-              --conclusion success --title "System acceptance APPROVE" \
-              --summary "A valid acceptance verdict approves HEAD $HEAD_SHA at the current contract snapshot."
-          else
-            fail=1
-            node scripts/agents/post-check.mjs --repo "$REPO" --name "Gemini Acceptance Gate" --sha "$HEAD_SHA" \
-              --conclusion failure --title "System acceptance BLOCKED" \
-              --summary "No valid APPROVE for HEAD $HEAD_SHA at the current contract snapshot (AI lane result: $GEMINI_AI_RESULT) — see the run log (docs/AUTONOMOUS-ENGINEERING.md §6)."
-          fi
-
+          # ---- PASSES LAST; one passing-write abort (e.g. lookup
+          # failure → no blind green) does not stop the other attempts.
+          if [ "$pol" = "success" ]; then publish "Agent policy gate" success "$pol_t" "$pol_s" || fail=1; fi
+          if [ "$tech" = "success" ]; then publish "Technical Review Gate" success "$tech_t" "$tech_s" || fail=1; fi
+          if [ "$acc" = "success" ]; then publish "Gemini Acceptance Gate" success "$acc_t" "$acc_s" || fail=1; fi
           exit $fail

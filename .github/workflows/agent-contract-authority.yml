@@ -79,6 +79,18 @@ on:
         description: 'mode=revision: why the contract changed'
         required: false
         type: string
+      # THE SNAPSHOT THE OWNER AUTHORIZES IS THE SNAPSHOT THE AUTHORITY
+      # SIGNS: the owner obtains this hash from trusted main
+      # (scripts/agents/amendment-context.mjs), reviews exactly that
+      # proposed state, and passes its hash here. The plan job verifies
+      # the CURRENT proposal still matches it, and the signer re-verifies
+      # at the last instant — any drift (body, risk, builder) after
+      # authorization refuses the amendment; "latest state wins" never
+      # applies.
+      expected_snapshot_hash:
+        description: 'mode=revision: the owner-reviewed proposed snapshot hash (from amendment-context.mjs)'
+        required: false
+        type: string
 
 permissions: {}
 
@@ -109,7 +121,8 @@ jobs:
     outputs:
       prs: ${{ steps.linked.outputs.prs }}
       has_prs: ${{ steps.linked.outputs.has_prs }}
-      from_revision: ${{ steps.current.outputs.revision }}
+      from_revision: ${{ steps.current.outputs.from_revision }}
+      expected_snapshot_hash: ${{ steps.current.outputs.expected_snapshot_hash }}
       trusted_sha: ${{ github.sha }}
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -139,25 +152,34 @@ jobs:
             exit 1
           fi
 
-      - name: Verify the target revision continues the current history
+      - name: Verify the target revision continues the current history and matches the OWNER-authorized snapshot
         id: current
+        env:
+          EXPECTED_SNAPSHOT: ${{ inputs.expected_snapshot_hash }}
         run: |
           set -euo pipefail
-          if [ ! -f scripts/agents/contract-status.mjs ]; then
+          if [ ! -f scripts/agents/amendment-context.mjs ]; then
             echo "::error::Policy scripts are not on main yet."; exit 1
-          fi
-          node scripts/agents/contract-status.mjs --repo "$REPO" --issue "$ISSUE"
-          current=$(grep '^revision=' "$GITHUB_OUTPUT" | tail -1 | cut -d= -f2)
-          if [ -z "$current" ]; then
-            echo "::error::Issue #$ISSUE has no valid current revision; amend only a valid contract."
-            exit 1
-          fi
-          if [ "$REVISION_INPUT" != "$((current + 1))" ]; then
-            echo "::error::Requested revision $REVISION_INPUT does not continue the current revision $current (expected $((current + 1)))."
-            exit 1
           fi
           if [ -z "${REASON_INPUT:-}" ]; then
             echo "::error::mode=revision requires a non-empty reason."
+            exit 1
+          fi
+          # Independently compute the CURRENT proposed snapshot with
+          # trusted code and require it to equal the hash the owner
+          # authorized. A mismatch means the proposal changed between
+          # the owner's review and this dispatch — refuse immediately.
+          node scripts/agents/amendment-context.mjs --repo "$REPO" --issue "$ISSUE" \
+            --target-revision "$REVISION_INPUT" > /tmp/amendment.txt
+          cat /tmp/amendment.txt
+          grep -E '^(from_revision|target_revision|expected_snapshot_hash)=' /tmp/amendment.txt >> "$GITHUB_OUTPUT"
+          proposed=$(grep '^expected_snapshot_hash=' /tmp/amendment.txt | cut -d= -f2)
+          if ! printf '%s' "${EXPECTED_SNAPSHOT:-}" | grep -qE '^[0-9a-f]{64}$'; then
+            echo "::error::mode=revision requires expected_snapshot_hash (obtain it with: node scripts/agents/amendment-context.mjs --repo $REPO --issue $ISSUE)."
+            exit 1
+          fi
+          if [ "$proposed" != "$EXPECTED_SNAPSHOT" ]; then
+            echo "::error::The CURRENT proposed snapshot ($proposed) is not the snapshot the owner authorized ($EXPECTED_SNAPSHOT) — the proposal changed since review. Re-run amendment-context.mjs, review the new state, and dispatch again."
             exit 1
           fi
 
@@ -281,10 +303,19 @@ jobs:
           fetch-depth: 1
 
       - name: Post the signed revision marker (the authoritative transition; expires the freeze)
+        env:
+          EXPECTED_SNAPSHOT: ${{ needs.plan.outputs.expected_snapshot_hash }}
         run: |
           set -euo pipefail
+          # The signer itself re-fetches fresh state and refuses at the
+          # last instant unless the proposed snapshot STILL equals the
+          # owner-authorized hash carried through the transaction — a
+          # collaborator edit during the barriers can never be signed;
+          # the freeze keeps every linked PR blocked and the owner
+          # restarts the amendment against the new proposal.
           node scripts/agents/contract-revision.mjs --repo "$REPO" --issue "$ISSUE" \
             --revision "$REVISION_INPUT" --reason "$REASON_INPUT" \
+            --expected-snapshot-hash "$EXPECTED_SNAPSHOT" \
             --sign-env CONTRACT_AUTHORITY_SIGNING_KEY --post
 
   dispatch:
@@ -324,7 +355,9 @@ jobs:
           while IFS= read -r pr; do
             [ -n "$pr" ] || continue
             echo "Redispatching the gates for PR #$pr under the new revision."
-            gh workflow run agent-gates.yml --repo "$REPO" --ref main -f pr="$pr"
+            # Plain reevaluation — the new revision itself makes old
+            # evidence stale; force is authenticated HUMAN intent only.
+            gh workflow run agent-gates.yml --repo "$REPO" --ref main -f pr="$pr" -f force_review=false
           done < /tmp/prs.txt
 
   # ---------------------------------------------------------------- #

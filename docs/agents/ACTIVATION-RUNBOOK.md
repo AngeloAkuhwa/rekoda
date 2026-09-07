@@ -117,8 +117,15 @@ the failure states. GitHub must refuse the merge in every one:
       wrong-key — SIGNATURE, from a write-access account → rejected
       (`GEMINI_UNAUTHORIZED`); same for `REKODA_CLAUDE_APPROVAL` on a
       `builder:codex` drill (cross-role key reuse must also fail).
-- [ ] 22. Amendment-transaction drill (items C + D1): with all gates
-      green at revision 1, the owner dispatches a contract revision and
+- [ ] 22. Amendment-transaction drill (items C + D1): the owner FIRST
+      obtains and reviews the proposed snapshot from trusted main —
+      `node scripts/agents/amendment-context.mjs --repo <o/n> --issue <n>`
+      — which prints the exact risk/builder/body hash to be signed plus
+      the ready-to-run dispatch command carrying
+      `expected_snapshot_hash`; the authority refuses (in the plan job
+      AND again inside the signer) if the proposal drifts from that
+      authorized hash at any point. Then, with all gates
+      green at revision 1, the owner dispatches the contract revision and
       the run log must show the full transaction order — the SIGNED
       `REKODA_CONTRACT_AMENDMENT_FREEZE` marker posted FIRST (from that
       comment on, every gate evaluation returns
