@@ -17,7 +17,7 @@
  *     --sha <head> --conclusion success|failure|neutral --title "…" --summary "…"
  */
 import { execFileSync } from 'node:child_process';
-import { chooseCheckAction } from './evaluator.mjs';
+import { chooseCheckAction, GATE_PUBLISHER_APP_SLUG } from './evaluator.mjs';
 
 const args = Object.fromEntries(
   process.argv
@@ -71,7 +71,18 @@ for (let attempt = 1; attempt <= 3 && !lookupOk; attempt++) {
   }
 }
 
-const decision = chooseCheckAction({ lookupOk, runs, name, conclusion });
+// Only a run belonging to the DEDICATED Rekoda Gate Publisher App is
+// ever adopted as "ours" (X6): the caller supplies the App token as
+// GH_TOKEN, and the ruleset source-binds the three required names to
+// that App id — a same-name run from the generic GitHub Actions app or
+// any other app is a foreign run this publisher never PATCHes.
+const decision = chooseCheckAction({
+  lookupOk,
+  runs,
+  name,
+  conclusion,
+  appSlug: args['app-slug'] ?? GATE_PUBLISHER_APP_SLUG,
+});
 if (decision.action === 'abort') {
   console.error(
     `::error::Refusing to publish ${conclusion} for '${name}' without a provable current state (${decision.reason}; last error: ${lastErr}); the required check stays non-green — fail closed, not fail duplicate-passing.`,

@@ -12,7 +12,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync, sign as cryptoSign } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -38,9 +38,28 @@ import {
   buildVerdictMarkerLines,
   buildContractMarkerLines,
   buildFreezeMarkerLines,
+  buildRefreshMarkerLines,
+  buildEnrollmentMarkerLines,
+  buildOwnerDecisionMarkerLines,
+  buildLaneClaimMarkerLines,
+  buildLaneReleaseMarkerLines,
+  buildCodexVerdictTemplateLines,
   parseRevisionMarkers,
   parseFreezeMarkers,
+  parseRefreshMarkers,
+  parseEnrollmentMarkers,
+  parseOwnerDecisionMarkers,
+  parseLaneMarkers,
   canonicalFreezePayload,
+  canonicalRefreshPayload,
+  canonicalEnrollmentPayload,
+  canonicalLaneClaimPayload,
+  canonicalLaneReleasePayload,
+  currentRefreshGeneration,
+  resolvePrEnrollment,
+  resolveOwnerDecision,
+  resolveLaneLease,
+  evaluateBuildStart,
   contractSnapshotHash,
   resolveVerdict,
   chooseCheckAction,
@@ -49,8 +68,12 @@ import {
   orderCheckWrites,
   passingPublicationAllowed,
   authorizeForceReview,
+  trustedDispatchRefAllowed,
+  geminiRuntimeUntrackedAllowed,
+  foldReviewThreadPages,
   amendmentSignAllowed,
   FREEZE_MARKER,
+  GATE_PUBLISHER_APP_SLUG,
   SCHEME,
 } from './evaluator.mjs';
 import { parseContractRevisionCli } from './cli-args.mjs';
@@ -104,7 +127,13 @@ const CONTRACT_HASH = snapHash();
 /** The active-contract snapshot hash for the codex-built default state. */
 const CODEX_CONTRACT_HASH = snapHash({ builder: 'builder:codex' });
 
-/** Build a verdict marker body; sign with `key` unless key === null. */
+/**
+ * Build a V4 verdict marker body; sign with `key` unless key === null.
+ * Signed roles carry the signer-issuance fields (REFRESH_GENERATION,
+ * EVIDENCE_SEQUENCE, EVIDENCE_ID); the native Codex marker carries only
+ * the generation (its authenticated order is the platform's review
+ * chronology).
+ */
 function marker(
   name,
   {
@@ -114,10 +143,14 @@ function marker(
     rev = 1,
     contractHash = CONTRACT_HASH,
     verdict = 'APPROVE',
+    generation = 0,
+    sequence = 1,
+    evidenceId = 'e'.repeat(32),
     key = undefined,
     dropSig = false,
   } = {},
 ) {
+  const isCodex = name === MARKERS.codex;
   const m = {
     name,
     pr,
@@ -125,6 +158,9 @@ function marker(
     headSha: head,
     contractRevision: rev,
     contractSnapshotSha256: contractHash,
+    refreshGeneration: generation,
+    evidenceSequence: sequence,
+    evidenceId,
     verdict,
   };
   const lines = [
@@ -135,10 +171,76 @@ function marker(
     `HEAD_SHA: ${head}`,
     `CONTRACT_REVISION: ${rev}`,
     `CONTRACT_SNAPSHOT_SHA256: ${contractHash}`,
-    `VERDICT: ${verdict}`,
+    `REFRESH_GENERATION: ${generation}`,
   ];
+  if (!isCodex) {
+    lines.push(`EVIDENCE_SEQUENCE: ${sequence}`, `EVIDENCE_ID: ${evidenceId}`);
+  }
+  lines.push(`VERDICT: ${verdict}`);
   if (!dropSig && key) lines.push(`SIGNATURE: ${signWith(key, canonicalVerdictPayload(m))}`);
   return `Review done.\n\n${lines.join('\n')}\n`;
+}
+
+/** Authority-signed PR-enrollment comment (X4). */
+function enrollmentComment({
+  issue = 44,
+  pr = 55,
+  contractHash = CONTRACT_HASH,
+  status = 'active',
+  key = AUTHORITY_KEY,
+  createdAt = '2026-09-01T00:30:00Z',
+  id = 2,
+} = {}) {
+  const m = { issue, pr, contractSnapshotSha256: contractHash, status };
+  const lines = buildEnrollmentMarkerLines(
+    m,
+    key ? signWith(key, canonicalEnrollmentPayload(m)) : undefined,
+  );
+  return { author: ACTIONS, createdAt, id, body: lines.join('\n') };
+}
+
+/** Control-plane-signed review-refresh comment (X3). */
+function refreshComment({
+  pr = 55,
+  head = HEAD,
+  contractHash = CONTRACT_HASH,
+  role = 'technical',
+  generation = 1,
+  key = role === 'technical' ? CLAUDE_KEY : GEMINI_KEY,
+  createdAt = '2026-09-03T00:00:00Z',
+  id = 30,
+} = {}) {
+  const m = {
+    pr,
+    headSha: head,
+    contractSnapshotSha256: contractHash,
+    role,
+    refreshGeneration: generation,
+  };
+  const lines = buildRefreshMarkerLines(
+    m,
+    key ? signWith(key, canonicalRefreshPayload(m)) : undefined,
+  );
+  return { author: ACTIONS, kind: 'comment', createdAt, id, body: lines.join('\n') };
+}
+
+/** Owner-authored R3 decision comment (X7). */
+function ownerDecisionComment({
+  issue = 44,
+  contractHash,
+  decision = 'APPROVE_IMPLEMENTATION',
+  reference = 'docs/REKODA_OWNER_DECISIONS.md §2.9',
+  author = OWNER,
+  createdAt = '2026-09-01T00:10:00Z',
+  id = 3,
+} = {}) {
+  const lines = buildOwnerDecisionMarkerLines({
+    issue,
+    contractSnapshotSha256: contractHash,
+    decision,
+    reference,
+  });
+  return { author, createdAt, id, body: lines.join('\n') };
 }
 
 /** Contract marker comment; authorized by owner authorship or a signature. */
@@ -209,7 +311,7 @@ function validState(overrides = {}) {
       riskLabels: ['risk:R1'],
       builderLabels: ['builder:claude'],
       body: ISSUE_BODY,
-      comments: [contractComment()],
+      comments: [contractComment(), enrollmentComment()],
     },
     techEvidence: { candidates: [codexReview()] },
     geminiEvidence: {
@@ -270,7 +372,10 @@ function codexBuiltState() {
   s.issue.labels = ['agent-task', 'risk:R1', 'builder:codex', 'status:in-review'];
   s.issue.builderLabels = ['builder:codex'];
   // The signed contract records builder:codex — labels and snapshot agree.
-  s.issue.comments = [contractComment({ builder: 'builder:codex' })];
+  s.issue.comments = [
+    contractComment({ builder: 'builder:codex' }),
+    enrollmentComment({ contractHash: CODEX_CONTRACT_HASH }),
+  ];
   s.techEvidence.candidates = [
     {
       author: ACTIONS,
@@ -314,15 +419,20 @@ test('valid R2 builder:codex passes with a SIGNED Claude technical verdict', () 
   assert.deepEqual(evaluate(s), { pass: true, reasons: [] });
 });
 
-test('valid owner-authorized R3 passes only with decision reference AND owner approval of HEAD', () => {
+test('valid owner-authorized R3 passes only with a snapshot-bound owner decision AND owner approval of HEAD', () => {
   const s = validState();
   s.pr.riskLabels = ['risk:R3'];
   s.issue.riskLabels = ['risk:R3'];
   s.issue.body = ISSUE_BODY.replace('_No response_', 'docs/REKODA_OWNER_DECISIONS.md OWN-15');
   s.issue.labels = ['agent-task', 'risk:R3', 'builder:claude', 'status:in-review'];
-  s.issue.comments = [contractComment({ body: s.issue.body, risk: 'risk:R3' })];
-  // Verdicts bind the ACTIVE contract snapshot — here the R3 snapshot.
+  // Verdicts, enrollment, and the owner decision all bind the ACTIVE
+  // contract snapshot — here the R3 snapshot.
   const r3Hash = snapHash({ risk: 'risk:R3', body: s.issue.body });
+  s.issue.comments = [
+    contractComment({ body: s.issue.body, risk: 'risk:R3' }),
+    enrollmentComment({ contractHash: r3Hash }),
+    ownerDecisionComment({ contractHash: r3Hash }),
+  ];
   s.techEvidence.candidates = [
     codexReview({ body: marker(MARKERS.codex, { contractHash: r3Hash }) }),
   ];
@@ -467,13 +577,14 @@ test('only contract-authority-SIGNED revisions are authoritative', () => {
   s.issue.body = newBody;
   s.issue.comments = [
     contractComment(),
+    enrollmentComment(),
     contractComment({
       kind: 'REKODA_CONTRACT_REVISION',
       revision: 2,
       body: newBody,
       author: ACTIONS,
       key: AUTHORITY_KEY,
-      id: 2,
+      id: 5,
       createdAt: 'y',
     }),
   ];
@@ -1002,7 +1113,7 @@ test('11g/12g. incomplete or failed enrollment history fails CLOSED, never neutr
 // Verdict ordering across id domains (audit item 15)
 // ---------------------------------------------------------------------------
 
-test('15g. contradictory contemporaneous verdicts across id domains fail closed', () => {
+test('15g. two different signed issuances claiming ONE sequence fail closed (signer-integrity violation)', () => {
   const t = '2026-09-02T00:00:00Z';
   const s = codexBuiltState();
   s.techEvidence.candidates = [
@@ -1014,44 +1125,56 @@ test('15g. contradictory contemporaneous verdicts across id domains fail closed'
       body: marker(MARKERS.claude, {
         key: CLAUDE_KEY,
         verdict: 'APPROVE',
+        sequence: 7,
+        evidenceId: 'a'.repeat(32),
         contractHash: CODEX_CONTRACT_HASH,
       }),
     },
     {
       author: ACTIONS,
-      kind: 'review',
-      createdAt: t,
-      id: 999999,
+      kind: 'comment',
+      createdAt: '2026-09-03T00:00:00Z',
+      id: 6,
       body: marker(MARKERS.claude, {
         key: CLAUDE_KEY,
         verdict: 'BLOCK',
+        sequence: 7,
+        evidenceId: 'b'.repeat(32),
         contractHash: CODEX_CONTRACT_HASH,
       }),
     },
   ];
-  expectBlock(s, 'TECH_AMBIGUOUS_ORDER');
+  expectBlock(s, 'TECH_SEQUENCE_CONFLICT');
 });
 
-test('15h. contemporaneous agreeing verdicts across domains are fine; a later one still governs', () => {
-  const t = '2026-09-02T00:00:00Z';
+test('15h. replays of one issuance collapse; the HIGHER signed sequence governs wherever and whenever its text sits', () => {
   const s = codexBuiltState();
+  const approveSeq1 = marker(MARKERS.claude, {
+    key: CLAUDE_KEY,
+    sequence: 1,
+    evidenceId: 'a'.repeat(32),
+    contractHash: CODEX_CONTRACT_HASH,
+  });
   s.techEvidence.candidates = [
     {
       author: ACTIONS,
       kind: 'comment',
-      createdAt: t,
+      createdAt: '2026-09-02T00:00:00Z',
       id: 5,
-      body: marker(MARKERS.claude, { key: CLAUDE_KEY, contractHash: CODEX_CONTRACT_HASH }),
+      body: approveSeq1,
     },
+    // the SAME issuance re-posted later — a replay, not new evidence
     {
       author: ACTIONS,
-      kind: 'review',
-      createdAt: t,
-      id: 999999,
-      body: marker(MARKERS.claude, { key: CLAUDE_KEY, contractHash: CODEX_CONTRACT_HASH }),
+      kind: 'comment',
+      createdAt: '2026-09-04T00:00:00Z',
+      id: 9,
+      body: approveSeq1,
     },
   ];
   assert.equal(evaluate(s).pass, true);
+  // A later ISSUANCE (higher sequence) governs even when its comment
+  // timestamp is EARLIER than the replayed copy above.
   s.techEvidence.candidates.push({
     author: ACTIONS,
     kind: 'comment',
@@ -1060,10 +1183,12 @@ test('15h. contemporaneous agreeing verdicts across domains are fine; a later on
     body: marker(MARKERS.claude, {
       key: CLAUDE_KEY,
       verdict: 'BLOCK',
+      sequence: 2,
+      evidenceId: 'b'.repeat(32),
       contractHash: CODEX_CONTRACT_HASH,
     }),
   });
-  expectBlock(s, 'TECH_BLOCK'); // clearly-later valid verdict wins
+  expectBlock(s, 'TECH_BLOCK'); // the higher issuance sequence wins
 });
 
 // ---------------------------------------------------------------------------
@@ -1752,6 +1877,9 @@ test('E2E: real verdict generator output → parseMarkers → resolveVerdict APP
     headSha: HEAD,
     contractRevision: 1,
     contractSnapshotSha256: CONTRACT_HASH,
+    refreshGeneration: 0,
+    evidenceSequence: 1,
+    evidenceId: 'f'.repeat(32),
     verdict: 'APPROVE',
   };
   const signature = signWith(GEMINI_KEY, canonicalVerdictPayload(m));
@@ -1767,6 +1895,7 @@ test('E2E: real verdict generator output → parseMarkers → resolveVerdict APP
   assert.equal(parsed.length, 1);
   assert.equal(parsed[0].malformed, false, 'the generated verdict must parse clean');
   assert.equal(parsed[0].contractSnapshotSha256, CONTRACT_HASH);
+  assert.equal(parsed[0].evidenceSequence, 1);
 
   const r = resolveVerdict({
     candidates: [{ author: ACTIONS, kind: 'comment', createdAt: 'x', id: 1, body: posted }],
@@ -1778,6 +1907,7 @@ test('E2E: real verdict generator output → parseMarkers → resolveVerdict APP
       headSha: HEAD,
       contractRevision: 1,
       contractSnapshotSha256: CONTRACT_HASH,
+      refreshGeneration: 0,
     },
   });
   assert.equal(r.verdict, 'APPROVE');
@@ -1791,6 +1921,9 @@ test('E2E: the same real generator output resolves to NO verdict for a different
     headSha: HEAD,
     contractRevision: 1,
     contractSnapshotSha256: CONTRACT_HASH,
+    refreshGeneration: 0,
+    evidenceSequence: 1,
+    evidenceId: 'f'.repeat(32),
     verdict: 'APPROVE',
   };
   const posted = [
@@ -1808,9 +1941,11 @@ test('E2E: the same real generator output resolves to NO verdict for a different
       headSha: HEAD,
       contractRevision: 1,
       contractSnapshotSha256: snapHash({ body: ISSUE_BODY + '\n\nMoved on.' }),
+      refreshGeneration: 0,
     },
   });
   assert.equal(r.verdict ?? null, null);
+  assert.equal(r.diagnosis, 'wrong_contract');
 });
 
 // ---------------------------------------------------------------------------
@@ -1893,12 +2028,12 @@ test('check upsert: a failed lookup NEVER abandons a FAILURE — the revocation 
   assert.equal(d.degraded, true);
 });
 
-test('check upsert: an existing GitHub-Actions run of the same name is PATCHed in place', () => {
+test('check upsert: an existing Rekoda Gate Publisher run of the same name is PATCHed in place', () => {
   const d = chooseCheckAction({
     lookupOk: true,
     runs: [
-      { id: 7, name: 'Some other check', appSlug: 'github-actions' },
-      { id: 9, name: 'Technical Review Gate', appSlug: 'github-actions' },
+      { id: 7, name: 'Some other check', appSlug: GATE_PUBLISHER_APP_SLUG },
+      { id: 9, name: 'Technical Review Gate', appSlug: GATE_PUBLISHER_APP_SLUG },
     ],
     name: 'Technical Review Gate',
   });
@@ -1906,12 +2041,18 @@ test('check upsert: an existing GitHub-Actions run of the same name is PATCHed i
 });
 
 test('check upsert: a same-name run from a FOREIGN app is never adopted — a fresh run is created', () => {
-  const d = chooseCheckAction({
-    lookupOk: true,
-    runs: [{ id: 13, name: 'Technical Review Gate', appSlug: 'evil-third-party-app' }],
-    name: 'Technical Review Gate',
-  });
-  assert.deepEqual(d, { action: 'post' });
+  // The generic GitHub Actions app is itself FOREIGN now (X6): a
+  // same-named run any GITHUB_TOKEN workflow rendered is never adopted
+  // by the dedicated publisher — and the ruleset's App source binding
+  // means such a run can never satisfy the required check either.
+  for (const appSlug of ['evil-third-party-app', 'github-actions']) {
+    const d = chooseCheckAction({
+      lookupOk: true,
+      runs: [{ id: 13, name: 'Technical Review Gate', appSlug }],
+      name: 'Technical Review Gate',
+    });
+    assert.deepEqual(d, { action: 'post' }, `${appSlug} run must not be adopted`);
+  }
 });
 
 test('check upsert: no existing run at all → create', () => {
@@ -1976,22 +2117,23 @@ test('READY promotion: missing pieces or ambiguous builders never proceed', () =
 });
 
 // ---------------------------------------------------------------------------
-// V3 — the native Codex marker contract (AGENTS.md documents EXACTLY this)
+// V4 — the native Codex marker contract (AGENTS.md documents EXACTLY this,
+// rendered through the SAME template generator review-context.mjs prints)
 // ---------------------------------------------------------------------------
 
-test('the DOCUMENTED native Codex V3 block parses and resolves to APPROVE with platform provenance', () => {
+test('the DOCUMENTED native Codex V4 block parses and resolves to APPROVE with platform provenance', () => {
   // Byte-for-byte the block AGENTS.md instructs native Codex to emit,
-  // with values copied from review-context output.
-  const documented = [
-    'REKODA_CODEX_APPROVAL',
-    `SCHEME: ${SCHEME}`,
-    'PR: 55',
-    'ISSUE: 44',
-    `HEAD_SHA: ${HEAD}`,
-    'CONTRACT_REVISION: 1',
-    `CONTRACT_SNAPSHOT_SHA256: ${CONTRACT_HASH}`,
-    'VERDICT: APPROVE',
-  ].join('\n');
+  // with values copied from review-context output — including the
+  // CURRENT technical refresh generation.
+  const documented = buildCodexVerdictTemplateLines({
+    pr: 55,
+    issue: 44,
+    headSha: HEAD,
+    contractRevision: 1,
+    contractSnapshotSha256: CONTRACT_HASH,
+    refreshGeneration: 0,
+    verdict: 'APPROVE',
+  }).join('\n');
   const r = resolveVerdict({
     candidates: [
       {
@@ -2012,6 +2154,7 @@ test('the DOCUMENTED native Codex V3 block parses and resolves to APPROVE with p
       headSha: HEAD,
       contractRevision: 1,
       contractSnapshotSha256: CONTRACT_HASH,
+      refreshGeneration: 0,
     },
   });
   assert.equal(r.verdict, 'APPROVE');
@@ -2026,8 +2169,21 @@ test('the DOCUMENTED native Codex V3 block parses and resolves to APPROVE with p
   assert.deepEqual(evaluate(s), { pass: true, reasons: [] });
 });
 
-test('the OLD documented Codex block (no SCHEME, no snapshot hash) is malformed and blocks', () => {
-  const old = [
+test('the OLD documented Codex blocks (V3-shaped: no REFRESH_GENERATION) are malformed and block', () => {
+  const v3Shaped = [
+    'REKODA_CODEX_APPROVAL',
+    `SCHEME: ${SCHEME}`,
+    'PR: 55',
+    'ISSUE: 44',
+    `HEAD_SHA: ${HEAD}`,
+    'CONTRACT_REVISION: 1',
+    `CONTRACT_SNAPSHOT_SHA256: ${CONTRACT_HASH}`,
+    'VERDICT: APPROVE',
+  ].join('\n');
+  const s = validState();
+  s.techEvidence.candidates = [codexReview({ body: v3Shaped })];
+  expectBlock(s, 'TECH_MALFORMED');
+  const ancient = [
     'REKODA_CODEX_APPROVAL',
     'PR: 55',
     'ISSUE: 44',
@@ -2035,8 +2191,7 @@ test('the OLD documented Codex block (no SCHEME, no snapshot hash) is malformed 
     'CONTRACT_REVISION: 1',
     'VERDICT: APPROVE',
   ].join('\n');
-  const s = validState();
-  s.techEvidence.candidates = [codexReview({ body: old })];
+  s.techEvidence.candidates = [codexReview({ body: ancient })];
   expectBlock(s, 'TECH_MALFORMED');
 });
 
@@ -2087,6 +2242,7 @@ test('an authorized revision RECORDING the new labels re-activates the contract 
   s.issue.labels = ['agent-task', 'risk:R2', 'builder:claude', 'status:in-review'];
   s.issue.comments = [
     contractComment(),
+    enrollmentComment(),
     contractComment({
       kind: 'REKODA_CONTRACT_REVISION',
       revision: 2,
@@ -2472,16 +2628,73 @@ function jobBlock(yml, jobId) {
   return m[0];
 }
 
-test('WORKFLOW GRAPH: both AI reviewer jobs depend on invalidate and require its SUCCESS', () => {
-  for (const job of ['technical_ai', 'acceptance_ai']) {
+test('WORKFLOW GRAPH: both AI reviewer jobs depend on their refresh job AND invalidate, requiring SUCCESS', () => {
+  for (const [job, refreshJob] of [
+    ['technical_ai', 'refresh_technical'],
+    ['acceptance_ai', 'refresh_acceptance'],
+  ]) {
     const block = jobBlock(gatesYml, job);
     assert.ok(
-      /needs:\s*\[resolve,\s*invalidate\]/.test(block),
-      `${job} must need [resolve, invalidate]`,
+      new RegExp(`needs:\\s*\\[resolve,\\s*${refreshJob},\\s*invalidate\\]`).test(block),
+      `${job} must need [resolve, ${refreshJob}, invalidate]`,
     );
     assert.ok(
       block.includes("needs.invalidate.result == 'success'"),
       `${job} must require the invalidation to have SUCCEEDED before any fresh review starts`,
+    );
+    assert.ok(
+      block.includes(`needs.${refreshJob}.result == 'success'`) &&
+        block.includes(`needs.${refreshJob}.result == 'skipped'`),
+      `${job} must never run after a FAILED durable refresh`,
+    );
+  }
+});
+
+test('WORKFLOW GRAPH (X3): the durable refresh jobs run BEFORE the AI, signed, in the issuance lane', () => {
+  for (const [job, env, lane] of [
+    ['refresh_technical', 'agents-claude-reviewer', 'rekoda-evidence-technical-pr-'],
+    ['refresh_acceptance', 'agents-gemini-reviewer', 'rekoda-evidence-acceptance-pr-'],
+  ]) {
+    const block = jobBlock(gatesYml, job);
+    assert.ok(block.includes(`environment: ${env}`), `${job} must hold the role signing key env`);
+    assert.ok(block.includes(lane), `${job} must serialize in the role issuance lane`);
+    assert.ok(block.includes('refresh-marker.mjs'), `${job} must post the signed durable marker`);
+    assert.ok(
+      block.includes("force_review == 'true'"),
+      `${job} must run only on authenticated force`,
+    );
+  }
+  // The finalizer never runs after a FAILED refresh — the run fails
+  // visibly with the durable generation already current.
+  const finalize = jobBlock(gatesYml, 'finalize');
+  assert.ok(
+    finalize.includes(
+      "needs.refresh_technical.result == 'success' || needs.refresh_technical.result == 'skipped'",
+    ) &&
+      finalize.includes(
+        "needs.refresh_acceptance.result == 'success' || needs.refresh_acceptance.result == 'skipped'",
+      ),
+    'finalize must be gated on refresh success-or-skipped',
+  );
+});
+
+test('WORKFLOW GRAPH (X1): verdicts travel as bounded job outputs — no artifact archive reaches a publisher', () => {
+  for (const job of ['technical', 'acceptance']) {
+    const block = jobBlock(gatesYml, job);
+    assert.ok(
+      !block.includes('download-artifact'),
+      `${job} publisher must never download an artifact archive`,
+    );
+    assert.ok(
+      block.includes('VERDICT_B64') && block.includes('RUNNER_TEMP'),
+      `${job} publisher must receive the verdict as bounded data written only into RUNNER_TEMP`,
+    );
+  }
+  for (const job of ['technical_ai', 'acceptance_ai']) {
+    const block = jobBlock(gatesYml, job);
+    assert.ok(
+      block.includes('verdict_b64') && !block.includes('upload-artifact'),
+      `${job} must hand its verdict over as a job output, never an uploaded archive`,
     );
   }
 });
@@ -2508,18 +2721,50 @@ test('WORKFLOW GRAPH: the finalizer refuses to run after a FAILED invalidation a
   );
 });
 
-test('WORKFLOW GRAPH: only invalidate, finalize (gates) and barrier (authority) write checks; publishers are evidence-only', () => {
+test('WORKFLOW GRAPH (X6): NO workflow holds checks:write on GITHUB_TOKEN — every check write uses the dedicated App token in the gate-publisher environment', () => {
+  for (const f of readdirSync(WORKFLOWS_DIR)) {
+    const yml = readFileSync(join(WORKFLOWS_DIR, f), 'utf8');
+    // Line-anchored: a real `checks: write` permission grant, not prose
+    // about its absence.
+    assert.ok(
+      !/^[ \t]*checks:[ \t]*write[ \t]*$/m.test(yml),
+      `${f} must not grant checks: write to GITHUB_TOKEN — the dedicated Gate Publisher App is the only trusted check identity`,
+    );
+  }
+  for (const job of ['ambiguity_revoke', 'invalidate', 'finalize']) {
+    const block = jobBlock(gatesYml, job);
+    assert.ok(
+      block.includes('environment: agents-gate-publisher'),
+      `${job} must run in the gate-publisher environment`,
+    );
+    assert.ok(block.includes('app-token.mjs'), `${job} must mint the dedicated App token`);
+  }
+  const barrier = jobBlock(authorityYml, 'barrier');
+  assert.ok(
+    barrier.includes('environment: agents-gate-publisher') && barrier.includes('app-token.mjs'),
+    'the amendment barrier is a red-only invocation of the same gate-publisher identity',
+  );
   for (const job of ['technical', 'acceptance']) {
     const block = jobBlock(gatesYml, job);
-    assert.ok(!/checks:\s*write/.test(block), `${job} publisher must not hold checks: write`);
     assert.ok(!block.includes('post-check.mjs'), `${job} publisher must not write checks`);
   }
-  for (const job of ['invalidate', 'finalize']) {
-    assert.ok(/checks:\s*write/.test(jobBlock(gatesYml, job)), `${job} must hold checks: write`);
+});
+
+test('WORKFLOW GRAPH (X5): every gate-check writer serializes in the SHA-keyed authorization lane', () => {
+  for (const job of ['ambiguity_revoke', 'invalidate', 'finalize']) {
+    assert.ok(
+      jobBlock(gatesYml, job).includes('rekoda-authorization-sha-'),
+      `${job} must take the SHA-scoped authorization group`,
+    );
   }
   assert.ok(
-    /checks:\s*write/.test(jobBlock(authorityYml, 'barrier')),
-    'barrier must hold checks: write',
+    jobBlock(authorityYml, 'barrier').includes('rekoda-authorization-sha-'),
+    'the amendment barrier must take the SHA-scoped authorization group',
+  );
+  // No writer still uses the old PR-number-scoped check-write group.
+  assert.ok(
+    !gatesYml.includes('rekoda-gates-pr-') && !authorityYml.includes('rekoda-gates-pr-'),
+    'PR-number serialization of check writes is gone — checks attach to the SHA',
   );
 });
 
@@ -2765,49 +3010,68 @@ test('passing publication: allowed ONLY when the current association is exactly 
 });
 
 // ---------------------------------------------------------------------------
-// Force review is authenticated human intent — never transport
+// Force review is OWNER-ONLY authenticated human intent — never transport
 // ---------------------------------------------------------------------------
 
 test('force review: not requested → plain reevaluation, no error (automatic dispatches are never force)', () => {
   assert.deepEqual(
-    authorizeForceReview({ requested: false, actor: 'github-actions[bot]', permission: 'none' }),
-    {
-      force: false,
-      error: null,
-    },
+    authorizeForceReview({
+      requested: false,
+      actor: 'github-actions[bot]',
+      actorType: 'Bot',
+      ownerLogin: OWNER,
+    }),
+    { force: false, error: null },
   );
   assert.deepEqual(
-    authorizeForceReview({ requested: undefined, actor: 'anyone', permission: 'admin' }),
-    {
-      force: false,
-      error: null,
-    },
+    authorizeForceReview({
+      requested: undefined,
+      actor: OWNER,
+      actorType: 'User',
+      ownerLogin: OWNER,
+    }),
+    { force: false, error: null },
   );
 });
 
-test('force review: a workflow identity or an under-privileged actor requesting force is REJECTED with an error', () => {
-  const bot = authorizeForceReview({
-    requested: true,
-    actor: 'github-actions[bot]',
-    permission: 'admin',
-  });
-  assert.equal(bot.force, false);
-  assert.ok(bot.error);
-  const readOnly = authorizeForceReview({ requested: true, actor: 'drive-by', permission: 'read' });
-  assert.equal(readOnly.force, false);
-  assert.ok(readOnly.error);
-  const none = authorizeForceReview({ requested: 'true', actor: 'drive-by', permission: 'none' });
-  assert.equal(none.force, false);
-  assert.ok(none.error);
+test('force review (Y2): EVERY bot/App identity is rejected — excluding github-actions[bot] alone is not sufficient', () => {
+  // The trusted account TYPE decides, not a login denylist: a
+  // write-permission GitHub App such as claude[bot] must be refused
+  // exactly like the workflow identity.
+  for (const [actor, actorType] of [
+    ['github-actions[bot]', 'Bot'],
+    ['claude[bot]', 'Bot'],
+    ['chatgpt-codex-connector[bot]', 'Bot'],
+    ['some-org-automation[bot]', 'Bot'],
+    ['dependabot[bot]', 'Bot'],
+  ]) {
+    const r = authorizeForceReview({ requested: true, actor, actorType, ownerLogin: OWNER });
+    assert.equal(r.force, false, `${actor} must never force paid review`);
+    assert.ok(r.error, `${actor} refusal must be a visible error`);
+  }
 });
 
-test('force review: a write+/maintain/admin HUMAN may force a fresh paid review', () => {
-  for (const permission of ['write', 'maintain', 'admin']) {
-    assert.deepEqual(authorizeForceReview({ requested: true, actor: 'AngeloAkuhwa', permission }), {
-      force: true,
-      error: null,
-    });
-  }
+test('force review (Y2): a non-owner human — even write+/admin — is rejected; only the owner forces', () => {
+  const writeHuman = authorizeForceReview({
+    requested: true,
+    actor: 'trusted-collaborator',
+    actorType: 'User',
+    ownerLogin: OWNER,
+  });
+  assert.equal(writeHuman.force, false);
+  assert.ok(writeHuman.error);
+  const spoofedType = authorizeForceReview({
+    requested: 'true',
+    actor: OWNER,
+    actorType: 'Bot', // an App named like the owner is still a Bot
+    ownerLogin: OWNER,
+  });
+  assert.equal(spoofedType.force, false);
+  assert.ok(spoofedType.error);
+  assert.deepEqual(
+    authorizeForceReview({ requested: true, actor: OWNER, actorType: 'User', ownerLogin: OWNER }),
+    { force: true, error: null },
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -2816,28 +3080,52 @@ test('force review: a write+/maintain/admin HUMAN may force a fresh paid review'
 
 const watchYml = readFileSync(join(WORKFLOWS_DIR, 'agent-contract-watch.yml'), 'utf8');
 
-test('WORKFLOW GRAPH: force_review is an explicit input (default false); resolve authenticates it; no event-name force inference remains', () => {
+test('WORKFLOW GRAPH: force_review is an explicit input (default false); resolve authenticates it OWNER-only; event_name appears only in the non-main-ref guard', () => {
   assert.ok(
     /force_review:\n[\s\S]{0,400}?default: false/.test(gatesYml),
     'force_review input must default false',
   );
   const resolve = jobBlock(gatesYml, 'resolve');
   assert.ok(
-    resolve.includes('Authenticate forced-review intent'),
-    'resolve must authenticate force',
+    resolve.includes('Authenticate forced-review intent (owner only)'),
+    'resolve must authenticate force as owner-only',
   );
   assert.ok(resolve.includes('authorizeForceReview'), 'resolve must use the tested authorizer');
   assert.ok(
-    !gatesYml.includes("github.event_name == 'workflow_dispatch'"),
-    'force must never be inferred from the event transport',
+    resolve.includes('users/$ACTOR') && resolve.includes('.type'),
+    'resolve must verify the trusted ACCOUNT TYPE, not just the login',
   );
+  // event_name may appear ONLY to guard non-main dispatch refs — never
+  // to infer force from the transport.
+  const eventNameUses = gatesYml.split("github.event_name == 'workflow_dispatch'").length - 1;
+  const refGuards = gatesYml.split('Refuse non-main dispatch refs').length - 1;
+  assert.ok(
+    eventNameUses <= refGuards,
+    'every workflow_dispatch event_name conditional must be a non-main-ref guard, not force inference',
+  );
+  assert.ok(refGuards >= 1, 'the gates must refuse non-main dispatch refs');
 });
 
-test('WORKFLOW GRAPH: every automatic gates dispatcher passes force_review=false; the watcher authorizes comment authors', () => {
+test('WORKFLOW GRAPH (Y1): the watcher authorizes BEFORE any concurrency; nothing can cancel an authorized delivery', () => {
   assert.ok(watchYml.includes('-f force_review=false'), 'watcher must dispatch plain reevaluation');
   assert.ok(
-    watchYml.includes('Authorize comment-triggered redispatch'),
-    'watcher must gate comment-triggered dispatch on an authorized author',
+    !watchYml.includes('cancel-in-progress: true'),
+    'no watcher concurrency may cancel in progress — an unauthorized comment must never displace an authorized delivery',
+  );
+  const authorize = jobBlock(watchYml, 'authorize');
+  assert.ok(
+    !authorize.includes('concurrency:'),
+    'the authorization preflight must have NO concurrency group — unauthorized events die in isolation',
+  );
+  const redispatch = jobBlock(watchYml, 'redispatch');
+  assert.ok(
+    redispatch.includes('needs: authorize') &&
+      redispatch.includes("needs.authorize.outputs.proceed == 'true'"),
+    'only authorized events reach the redispatch lane',
+  );
+  assert.ok(
+    redispatch.includes('cancel-in-progress: false'),
+    'authorized deliveries queue durably, never cancel each other',
   );
   assert.ok(
     authorityYml.includes('-f force_review=false'),
@@ -2845,11 +3133,11 @@ test('WORKFLOW GRAPH: every automatic gates dispatcher passes force_review=false
   );
 });
 
-test('WORKFLOW GRAPH: ambiguity actively reds the shared SHA, and the finalizer orders failures → association re-check → passes', () => {
-  const resolve = jobBlock(gatesYml, 'resolve');
+test('WORKFLOW GRAPH: ambiguity actively reds the shared SHA via the gate-publisher lane, and the finalizer orders failures → association re-check → passes', () => {
+  const revoke = jobBlock(gatesYml, 'ambiguity_revoke');
   assert.ok(
-    resolve.includes('Ambiguous shared SHA — force all three gates red'),
-    'resolve must actively fail a shared SHA',
+    revoke.includes("status == 'ambiguous'") && revoke.includes('--conclusion failure'),
+    'the ambiguity handler must actively fail a shared SHA',
   );
   const finalize = jobBlock(gatesYml, 'finalize');
   const failuresAt = finalize.indexOf('FAILURES FIRST');
@@ -2877,4 +3165,738 @@ test('WORKFLOW GRAPH: the amendment carries the owner-authorized snapshot hash i
     plan.includes('amendment-context.mjs'),
     'the plan job must recompute and compare the proposed snapshot',
   );
+});
+
+// ---------------------------------------------------------------------------
+// X2 — replay-resistant V4 evidence: the exact audit scenario
+// ---------------------------------------------------------------------------
+
+test('X2: APPROVE seq10 → BLOCK seq11 → copied APPROVE seq10 in the NEWEST comment: BLOCK remains authoritative', () => {
+  const s = codexBuiltState();
+  const approveSeq10 = marker(MARKERS.claude, {
+    key: CLAUDE_KEY,
+    verdict: 'APPROVE',
+    sequence: 10,
+    evidenceId: 'a'.repeat(32),
+    contractHash: CODEX_CONTRACT_HASH,
+  });
+  s.techEvidence.candidates = [
+    {
+      author: ACTIONS,
+      kind: 'comment',
+      createdAt: '2026-09-02T00:00:00Z',
+      id: 5,
+      body: approveSeq10,
+    },
+    {
+      author: ACTIONS,
+      kind: 'comment',
+      createdAt: '2026-09-02T01:00:00Z',
+      id: 6,
+      body: marker(MARKERS.claude, {
+        key: CLAUDE_KEY,
+        verdict: 'BLOCK',
+        sequence: 11,
+        evidenceId: 'b'.repeat(32),
+        contractHash: CODEX_CONTRACT_HASH,
+      }),
+    },
+    // The attacker needs NO signing key for this: the exact signed
+    // APPROVE text is copied verbatim into a brand-new comment with the
+    // newest timestamp and highest comment id.
+    {
+      author: 'attacker',
+      kind: 'comment',
+      createdAt: '2026-09-09T00:00:00Z',
+      id: 999,
+      body: approveSeq10,
+    },
+  ];
+  expectBlock(s, 'TECH_BLOCK');
+});
+
+test('X2: the same replay against the Gemini role also keeps the BLOCK', () => {
+  const s = validState();
+  const approve = marker(MARKERS.gemini, {
+    key: GEMINI_KEY,
+    verdict: 'APPROVE',
+    sequence: 3,
+    evidenceId: 'c'.repeat(32),
+  });
+  s.geminiEvidence.candidates = [
+    { author: ACTIONS, kind: 'comment', createdAt: '2026-09-02T01:00:00Z', id: 20, body: approve },
+    {
+      author: ACTIONS,
+      kind: 'comment',
+      createdAt: '2026-09-02T02:00:00Z',
+      id: 21,
+      body: marker(MARKERS.gemini, {
+        key: GEMINI_KEY,
+        verdict: 'BLOCK',
+        sequence: 4,
+        evidenceId: 'd'.repeat(32),
+      }),
+    },
+    {
+      author: 'attacker',
+      kind: 'comment',
+      createdAt: '2026-09-09T00:00:00Z',
+      id: 900,
+      body: approve,
+    },
+  ];
+  expectBlock(s, 'GEMINI_BLOCK');
+});
+
+test('X2: a signed marker WITHOUT issuance fields is malformed under V4 (no downgrade path)', () => {
+  const s = validState();
+  // V3-shaped signed Gemini marker: no generation/sequence/id lines.
+  const m = {
+    name: MARKERS.gemini,
+    pr: 55,
+    issue: 44,
+    headSha: HEAD,
+    contractRevision: 1,
+    contractSnapshotSha256: CONTRACT_HASH,
+    verdict: 'APPROVE',
+  };
+  const v3Lines = [
+    MARKERS.gemini,
+    `SCHEME: ${SCHEME}`,
+    'PR: 55',
+    'ISSUE: 44',
+    `HEAD_SHA: ${HEAD}`,
+    'CONTRACT_REVISION: 1',
+    `CONTRACT_SNAPSHOT_SHA256: ${CONTRACT_HASH}`,
+    'VERDICT: APPROVE',
+    `SIGNATURE: ${signWith(GEMINI_KEY, canonicalVerdictPayload(m))}`,
+  ];
+  s.geminiEvidence.candidates = [
+    { author: ACTIONS, kind: 'comment', createdAt: 'x', id: 20, body: v3Lines.join('\n') },
+  ];
+  expectBlock(s, 'GEMINI_MALFORMED');
+});
+
+// ---------------------------------------------------------------------------
+// X3 — the durable refresh generation
+// ---------------------------------------------------------------------------
+
+test('X3: once the signed refresh marker exists, gen-0 evidence is invalid — AI/signer failure, cancellation, or a concurrent ordinary finalizer cannot restore it', () => {
+  // The pre-refresh state passes.
+  const s = validState();
+  assert.equal(evaluate(s).pass, true);
+  // The forced refresh posts the durable generation-1 marker. NOTHING
+  // else happens (the AI fails / the signer fails / the job is
+  // cancelled): the evaluator alone — which any ordinary finalizer
+  // re-runs over current state — now refuses the old evidence.
+  s.techEvidence.candidates = [...s.techEvidence.candidates, refreshComment({ role: 'technical' })];
+  const r = evaluate(s);
+  assert.equal(r.pass, false);
+  assert.ok(codes(r).includes('TECH_REFRESH_REQUIRED'));
+  // The generation is never "cleared": re-evaluating any number of
+  // times yields the same refusal until qualifying evidence exists.
+  assert.equal(evaluate(s, 'technical').pass, false);
+});
+
+test('X3: a fresh gen-1 BLOCK keeps the gate red; a fresh gen-1 APPROVE may pass', () => {
+  const s = validState();
+  s.techEvidence.candidates = [
+    codexReview(), // old gen-0 approve — dead after the refresh
+    refreshComment({ role: 'technical' }),
+    codexReview({
+      id: 40,
+      createdAt: '2026-09-04T00:00:00Z',
+      body: marker(MARKERS.codex, { generation: 1, verdict: 'BLOCK' }),
+    }),
+  ];
+  expectBlock(s, 'TECH_BLOCK');
+  s.techEvidence.candidates = [
+    codexReview(),
+    refreshComment({ role: 'technical' }),
+    codexReview({
+      id: 41,
+      createdAt: '2026-09-04T01:00:00Z',
+      body: marker(MARKERS.codex, { generation: 1 }),
+    }),
+  ];
+  assert.deepEqual(evaluate(s), { pass: true, reasons: [] });
+});
+
+test('X3: the acceptance role has its own independent generation', () => {
+  const s = validState();
+  s.geminiEvidence.candidates = [
+    ...s.geminiEvidence.candidates,
+    refreshComment({ role: 'acceptance', id: 31 }),
+  ];
+  const r = evaluate(s);
+  assert.equal(r.pass, false);
+  assert.ok(codes(r).includes('GEMINI_REFRESH_REQUIRED'));
+  assert.ok(!codes(r).includes('TECH_REFRESH_REQUIRED'), 'the technical role is untouched');
+});
+
+test('X3: refresh markers are control-plane-signed ONLY — unsigned/rogue/wrong-key markers bump nothing', () => {
+  const s = validState();
+  s.techEvidence.candidates = [
+    ...s.techEvidence.candidates,
+    refreshComment({ role: 'technical', key: ROGUE_KEY, id: 32 }),
+    refreshComment({ role: 'technical', key: null, id: 33 }),
+    // acceptance-key-signed marker claiming the technical role
+    refreshComment({ role: 'technical', key: GEMINI_KEY, id: 34 }),
+  ];
+  assert.equal(evaluate(s).pass, true, 'no forged marker may invalidate current evidence');
+});
+
+test('X3: the refresh binds HEAD and snapshot — a marker for another head or contract does not touch this gate', () => {
+  const s = validState();
+  s.techEvidence.candidates = [
+    ...s.techEvidence.candidates,
+    refreshComment({ role: 'technical', head: OLD_HEAD, id: 35 }),
+    refreshComment({
+      role: 'technical',
+      contractHash: snapHash({ body: ISSUE_BODY + '\nother' }),
+      id: 36,
+    }),
+  ];
+  assert.equal(evaluate(s).pass, true);
+});
+
+test('X3: currentRefreshGeneration takes the MAX valid generation', () => {
+  const target = { pr: 55, headSha: HEAD, contractSnapshotSha256: CONTRACT_HASH };
+  const gen = currentRefreshGeneration({
+    candidates: [
+      refreshComment({ generation: 1 }),
+      refreshComment({ generation: 3, id: 37 }),
+      refreshComment({ generation: 2, id: 38 }),
+      refreshComment({ generation: 9, key: ROGUE_KEY, id: 39 }), // forged — ignored
+    ],
+    role: 'technical',
+    target,
+    publicKey: pem(CLAUDE_KEY),
+  });
+  assert.equal(gen, 3);
+});
+
+// ---------------------------------------------------------------------------
+// X4 — authoritative PR enrollment
+// ---------------------------------------------------------------------------
+
+test('X4: a governed PR with a closing reference but NO active enrollment blocks in EVERY mode', () => {
+  const s = validState();
+  s.issue.comments = [contractComment()]; // no enrollment record
+  const r = evaluate(s);
+  assert.equal(r.pass, false);
+  assert.ok(codes(r).includes('PR_NOT_ENROLLED'));
+  for (const mode of ['policy', 'technical', 'acceptance']) {
+    assert.equal(evaluate(s, mode).pass, false, `mode ${mode} must block without enrollment`);
+  }
+});
+
+test('X4: a released enrollment blocks; a re-enrollment (latest event) reactivates', () => {
+  const s = validState();
+  s.issue.comments = [
+    contractComment(),
+    enrollmentComment({ createdAt: '2026-09-01T00:30:00Z', id: 2 }),
+    enrollmentComment({ status: 'released', createdAt: '2026-09-01T01:00:00Z', id: 4 }),
+  ];
+  expectBlock(s, 'PR_NOT_ENROLLED');
+  s.issue.comments.push(enrollmentComment({ createdAt: '2026-09-01T02:00:00Z', id: 6 }));
+  assert.deepEqual(evaluate(s), { pass: true, reasons: [] });
+});
+
+test('X4: rogue-signed and unsigned enrollment markers count for nothing', () => {
+  const s = validState();
+  s.issue.comments = [
+    contractComment(),
+    enrollmentComment({ key: ROGUE_KEY }),
+    enrollmentComment({ key: null, id: 7 }),
+  ];
+  expectBlock(s, 'PR_NOT_ENROLLED');
+});
+
+test('X4: an enrollment for a DIFFERENT PR does not enroll this one', () => {
+  const s = validState();
+  s.issue.comments = [contractComment(), enrollmentComment({ pr: 77 })];
+  const r = evaluate(s);
+  assert.ok(codes(r).includes('PR_NOT_ENROLLED'));
+  const enr = resolvePrEnrollment({
+    issueComments: s.issue.comments,
+    issueNumber: 44,
+    prNumber: 55,
+    authorityKey: pem(AUTHORITY_KEY),
+  });
+  assert.deepEqual(enr, { enrolled: false, activePrs: [77] });
+});
+
+test('X4: a "Closes #N" body edit DURING an amendment gains nothing — after the freeze expires the latecomer PR still cannot pass', () => {
+  // The latecomer PR: governed via the agent-task issue link it just
+  // added, valid rev-2 contract, even fresh rev-2 verdicts — but no
+  // enrollment, because only the authority can enroll and its per-issue
+  // transaction was already in flight.
+  const newBody = ISSUE_BODY + '\n\nAmended.';
+  const rev2Hash = snapHash({ revision: 2, body: newBody });
+  const s = validState({ pr: { number: 91 } });
+  s.prBody = 'Closes #44';
+  s.issue.body = newBody;
+  s.issue.comments = [
+    contractComment(),
+    contractComment({
+      kind: 'REKODA_CONTRACT_REVISION',
+      revision: 2,
+      body: newBody,
+      author: ACTIONS,
+      key: AUTHORITY_KEY,
+      id: 8,
+      createdAt: 'y',
+    }),
+    // enrollment exists — for the REAL implementation PR #55, not #91
+    enrollmentComment({ contractHash: rev2Hash, createdAt: 'z', id: 9 }),
+  ];
+  s.techEvidence.candidates = [
+    codexReview({ body: marker(MARKERS.codex, { pr: 91, rev: 2, contractHash: rev2Hash }) }),
+  ];
+  s.geminiEvidence.candidates = [
+    {
+      author: ACTIONS,
+      kind: 'comment',
+      createdAt: 'z',
+      id: 22,
+      body: marker(MARKERS.gemini, { pr: 91, rev: 2, contractHash: rev2Hash, key: GEMINI_KEY }),
+    },
+  ];
+  expectBlock(s, 'PR_NOT_ENROLLED');
+});
+
+test('X4 E2E: real enrollment generator output → parseEnrollmentMarkers → resolvePrEnrollment', () => {
+  const m = { issue: 44, pr: 55, contractSnapshotSha256: CONTRACT_HASH, status: 'active' };
+  const posted =
+    '```\n' +
+    buildEnrollmentMarkerLines(m, signWith(AUTHORITY_KEY, canonicalEnrollmentPayload(m))).join(
+      '\n',
+    ) +
+    '\n```';
+  const parsed = parseEnrollmentMarkers(posted);
+  assert.equal(parsed.length, 1);
+  assert.equal(parsed[0].malformed, false);
+  const r = resolvePrEnrollment({
+    issueComments: [{ author: ACTIONS, createdAt: 'x', id: 1, body: posted }],
+    issueNumber: 44,
+    prNumber: 55,
+    authorityKey: pem(AUTHORITY_KEY),
+  });
+  assert.deepEqual(r, { enrolled: true, activePrs: [55] });
+});
+
+// ---------------------------------------------------------------------------
+// X7 — R3 owner authorization before build admission AND merge
+// ---------------------------------------------------------------------------
+
+test('X7: an R3 issue NEVER admits without a current owner decision; approval admits; R1 needs none', () => {
+  const r3Issue = readyIssue({
+    labels: ['agent-task', 'risk:R3', 'builder:claude', 'status:ready'],
+    riskLabels: ['risk:R3'],
+  });
+  // missing
+  let r = evaluateBuildAdmission({
+    contract: OK_CONTRACT,
+    issue: r3Issue,
+    requiredBuilder: 'builder:claude',
+    openLanes: [],
+    ownerDecision: { approved: false },
+  });
+  assert.equal(r.admit, false);
+  assert.ok(r.reasons.some((x) => x.code === 'ADMIT_R3_DECISION_MISSING'));
+  // approved → admitted
+  r = evaluateBuildAdmission({
+    contract: OK_CONTRACT,
+    issue: r3Issue,
+    requiredBuilder: 'builder:claude',
+    openLanes: [],
+    ownerDecision: { approved: true },
+  });
+  assert.deepEqual(r, { admit: true, reasons: [] });
+  // R1 issues never need one
+  r = evaluateBuildAdmission({
+    contract: OK_CONTRACT,
+    issue: readyIssue(),
+    requiredBuilder: 'builder:claude',
+    openLanes: [],
+    ownerDecision: { approved: false },
+  });
+  assert.deepEqual(r, { admit: true, reasons: [] });
+});
+
+test('X7: resolveOwnerDecision — snapshot-bound, owner-authored, latest-governs (REVOKE works), escalation invalidates', () => {
+  const hash = snapHash({ risk: 'risk:R3' });
+  const otherHash = snapHash({ risk: 'risk:R2' });
+  // owner-authored, matching snapshot → approved
+  assert.equal(
+    resolveOwnerDecision({
+      issueComments: [ownerDecisionComment({ contractHash: hash })],
+      issueNumber: 44,
+      snapshotHash: hash,
+      ownerLogin: OWNER,
+    }).approved,
+    true,
+  );
+  // NOT owner-authored → never counts (a write collaborator or bot
+  // cannot authorize R3)
+  assert.equal(
+    resolveOwnerDecision({
+      issueComments: [ownerDecisionComment({ contractHash: hash, author: 'claude[bot]' })],
+      issueNumber: 44,
+      snapshotHash: hash,
+      ownerLogin: OWNER,
+    }).approved,
+    false,
+  );
+  // decision bound to ANOTHER snapshot (old revision / pre-escalation
+  // R2 state / edited body) → never counts for this one
+  assert.equal(
+    resolveOwnerDecision({
+      issueComments: [ownerDecisionComment({ contractHash: otherHash })],
+      issueNumber: 44,
+      snapshotHash: hash,
+      ownerLogin: OWNER,
+    }).approved,
+    false,
+  );
+  // latest decision governs: APPROVE then REVOKE → refused
+  assert.equal(
+    resolveOwnerDecision({
+      issueComments: [
+        ownerDecisionComment({ contractHash: hash, createdAt: 'a', id: 1 }),
+        ownerDecisionComment({ contractHash: hash, decision: 'REVOKE', createdAt: 'b', id: 2 }),
+      ],
+      issueNumber: 44,
+      snapshotHash: hash,
+      ownerLogin: OWNER,
+    }).approved,
+    false,
+  );
+  // no snapshot hash (invalid contract) → never approved
+  assert.equal(
+    resolveOwnerDecision({
+      issueComments: [ownerDecisionComment({ contractHash: hash })],
+      issueNumber: 44,
+      snapshotHash: null,
+      ownerLogin: OWNER,
+    }).approved,
+    false,
+  );
+});
+
+test('X7: the merge gate blocks R3 whose decision binds a superseded snapshot', () => {
+  const s = validState();
+  s.pr.riskLabels = ['risk:R3'];
+  s.issue.riskLabels = ['risk:R3'];
+  s.issue.labels = ['agent-task', 'risk:R3', 'builder:claude', 'status:in-review'];
+  const r3Hash = snapHash({ risk: 'risk:R3' });
+  s.issue.comments = [
+    contractComment({ risk: 'risk:R3' }),
+    enrollmentComment({ contractHash: r3Hash }),
+    // decision recorded against the OLD R1 snapshot — not this contract
+    ownerDecisionComment({ contractHash: CONTRACT_HASH }),
+  ];
+  s.techEvidence.candidates = [
+    codexReview({ body: marker(MARKERS.codex, { contractHash: r3Hash }) }),
+  ];
+  s.geminiEvidence.candidates[0].body = marker(MARKERS.gemini, {
+    key: GEMINI_KEY,
+    contractHash: r3Hash,
+  });
+  s.ownerReviews = [{ author: OWNER, state: 'APPROVED', commitId: HEAD }];
+  expectBlock(s, 'R3_OWNER_DECISION_MISSING');
+});
+
+// ---------------------------------------------------------------------------
+// Y3 — lane pagination + the durable lease
+// ---------------------------------------------------------------------------
+
+test('Y3: an unprovably complete lane search BLOCKS admission', () => {
+  const r = evaluateBuildAdmission({
+    contract: OK_CONTRACT,
+    issue: readyIssue(),
+    requiredBuilder: 'builder:claude',
+    openLanes: [],
+    laneSearchComplete: false,
+  });
+  assert.equal(r.admit, false);
+  assert.ok(r.reasons.some((x) => x.code === 'ADMIT_LANE_UNPROVABLE'));
+});
+
+test('Y3: an occupied lane blocks wherever it was found — a lease-discovered lane counts exactly like a labelled one', () => {
+  const r = evaluateBuildAdmission({
+    contract: OK_CONTRACT,
+    issue: readyIssue(),
+    requiredBuilder: 'builder:claude',
+    // e.g. discovered on page 2 of the label listing, or via the lease
+    // scan of an issue whose labels a compromised builder stripped
+    openLanes: [{ issue: 210, status: 'lease' }],
+  });
+  assert.equal(r.admit, false);
+  assert.ok(r.reasons.some((x) => x.code === 'ADMIT_LANE_OCCUPIED'));
+});
+
+test('Y3: the lease is authority-signed both directions — a compromised builder can neither claim nor release', () => {
+  const claim = { issue: 60, contractSnapshotSha256: CONTRACT_HASH, claimId: '1'.repeat(32) };
+  const signedClaim = {
+    author: ACTIONS,
+    createdAt: 'a',
+    id: 1,
+    body: buildLaneClaimMarkerLines(
+      claim,
+      signWith(AUTHORITY_KEY, canonicalLaneClaimPayload(claim)),
+    ).join('\n'),
+  };
+  // active claim, no release
+  assert.equal(
+    resolveLaneLease({
+      issueComments: [signedClaim],
+      issueNumber: 60,
+      authorityKey: pem(AUTHORITY_KEY),
+    }).active,
+    true,
+  );
+  // a BUILDER-forged release (rogue key / unsigned) frees nothing
+  const release = { issue: 60, claimId: claim.claimId };
+  const forgedRelease = {
+    author: 'claude[bot]',
+    createdAt: 'b',
+    id: 2,
+    body: buildLaneReleaseMarkerLines(
+      release,
+      signWith(ROGUE_KEY, canonicalLaneReleasePayload(release)),
+    ).join('\n'),
+  };
+  const unsignedRelease = {
+    author: 'claude[bot]',
+    createdAt: 'c',
+    id: 3,
+    body: buildLaneReleaseMarkerLines(release).join('\n'),
+  };
+  assert.equal(
+    resolveLaneLease({
+      issueComments: [signedClaim, forgedRelease, unsignedRelease],
+      issueNumber: 60,
+      authorityKey: pem(AUTHORITY_KEY),
+    }).active,
+    true,
+    'only the authority can release a lane',
+  );
+  // the AUTHORITY release frees it
+  const realRelease = {
+    author: ACTIONS,
+    createdAt: 'd',
+    id: 4,
+    body: buildLaneReleaseMarkerLines(
+      release,
+      signWith(AUTHORITY_KEY, canonicalLaneReleasePayload(release)),
+    ).join('\n'),
+  };
+  assert.equal(
+    resolveLaneLease({
+      issueComments: [signedClaim, realRelease],
+      issueNumber: 60,
+      authorityKey: pem(AUTHORITY_KEY),
+    }).active,
+    false,
+  );
+  // a builder-forged CLAIM admits nothing either
+  const forgedClaim = {
+    author: 'claude[bot]',
+    createdAt: 'e',
+    id: 5,
+    body: buildLaneClaimMarkerLines(
+      claim,
+      signWith(ROGUE_KEY, canonicalLaneClaimPayload(claim)),
+    ).join('\n'),
+  };
+  assert.equal(
+    resolveLaneLease({
+      issueComments: [forgedClaim],
+      issueNumber: 60,
+      authorityKey: pem(AUTHORITY_KEY),
+    }).active,
+    false,
+  );
+});
+
+test('Y3: evaluateBuildStart — the builder preflight requires the claim, the building state, and a valid contract', () => {
+  const buildingIssue = readyIssue({
+    labels: ['agent-task', 'risk:R1', 'builder:claude', 'status:building'],
+  });
+  // happy path
+  assert.deepEqual(
+    evaluateBuildStart({
+      issue: buildingIssue,
+      requiredBuilder: 'builder:claude',
+      lease: { active: true },
+      contract: OK_CONTRACT,
+    }),
+    { start: true, reasons: [] },
+  );
+  // no lease → refused (a manual dispatch against an unclaimed issue)
+  let r = evaluateBuildStart({
+    issue: buildingIssue,
+    requiredBuilder: 'builder:claude',
+    lease: { active: false },
+    contract: OK_CONTRACT,
+  });
+  assert.equal(r.start, false);
+  assert.ok(r.reasons.some((x) => x.code === 'START_LEASE_MISSING'));
+  // not status:building → refused
+  r = evaluateBuildStart({
+    issue: readyIssue(),
+    requiredBuilder: 'builder:claude',
+    lease: { active: true },
+    contract: OK_CONTRACT,
+  });
+  assert.equal(r.start, false);
+  assert.ok(r.reasons.some((x) => x.code === 'START_NOT_BUILDING'));
+  // contract went bad mid-flight → refused
+  r = evaluateBuildStart({
+    issue: buildingIssue,
+    requiredBuilder: 'builder:claude',
+    lease: { active: true },
+    contract: { baselineFound: true, invalid: null, amended: true },
+  });
+  assert.equal(r.start, false);
+  assert.ok(r.reasons.some((x) => x.code === 'START_CONTRACT_INVALID'));
+});
+
+// ---------------------------------------------------------------------------
+// Y6 — review-thread completeness
+// ---------------------------------------------------------------------------
+
+test('Y6: thread 101 (page 2) is counted — one unresolved beyond the first page blocks', () => {
+  const page1 = {
+    nodes: Array.from({ length: 100 }, () => ({ isResolved: true })),
+    pageInfo: { hasNextPage: true, endCursor: 'c1' },
+  };
+  const page2 = {
+    nodes: [{ isResolved: false }],
+    pageInfo: { hasNextPage: false, endCursor: null },
+  };
+  assert.deepEqual(foldReviewThreadPages([page1, page2]), { unresolved: 1, complete: true });
+  // …and through the evaluator: that one thread blocks the merge.
+  const s = validState();
+  s.unresolvedThreads = 1;
+  expectBlock(s, 'THREADS_UNRESOLVED');
+});
+
+test('Y6: an unexhausted or malformed listing is UNPROVABLE — never "0 unresolved"', () => {
+  // last page still claims more
+  assert.deepEqual(
+    foldReviewThreadPages([
+      { nodes: [{ isResolved: true }], pageInfo: { hasNextPage: true, endCursor: 'c' } },
+    ]),
+    { unresolved: null, complete: false },
+  );
+  // malformed node payload
+  assert.deepEqual(
+    foldReviewThreadPages([{ nodes: [{ isResolved: 'yes' }], pageInfo: { hasNextPage: false } }]),
+    { unresolved: null, complete: false },
+  );
+  // missing nodes array / empty response
+  assert.deepEqual(foldReviewThreadPages([{ pageInfo: { hasNextPage: false } }]), {
+    unresolved: null,
+    complete: false,
+  });
+  assert.deepEqual(foldReviewThreadPages([]), { unresolved: null, complete: false });
+  assert.deepEqual(foldReviewThreadPages(null), { unresolved: null, complete: false });
+});
+
+// ---------------------------------------------------------------------------
+// X8 — Gemini runtime integration: only the pinned action's known
+// runtime files are tolerated as untracked
+// ---------------------------------------------------------------------------
+
+test('X8: the pinned action runtime files pass the integrity allowlist', () => {
+  const r = geminiRuntimeUntrackedAllowed([
+    '.gemini/settings.json',
+    '.gemini/commands/review.toml',
+    '.gemini/commands/nested/cmd.toml',
+    '.gemini/telemetry.log',
+    'gemini-artifacts/stdout.log',
+    'gemini-artifacts/stderr.log',
+  ]);
+  assert.deepEqual(r, { ok: true, unexpected: [] });
+});
+
+test('X8: anything else untracked fails — .gemini is never a blanket exemption', () => {
+  const r = geminiRuntimeUntrackedAllowed([
+    '.gemini/settings.json',
+    '.gemini/evil.sh',
+    'packages/core/src/backdoor.ts',
+  ]);
+  assert.equal(r.ok, false);
+  assert.deepEqual(r.unexpected, ['.gemini/evil.sh', 'packages/core/src/backdoor.ts']);
+});
+
+test('X8/Y5 WORKFLOW: both Gemini lanes pin gemini_cli_version (never latest); the reviewer lane checks tracked files and the allowlist', () => {
+  const plannerYml = readFileSync(join(WORKFLOWS_DIR, 'agent-gemini-planner.yml'), 'utf8');
+  for (const [name, yml] of [
+    ['gates', gatesYml],
+    ['planner', plannerYml],
+  ]) {
+    const m = yml.match(/gemini_cli_version:\s*(\S+)/);
+    assert.ok(m, `${name} must pin gemini_cli_version`);
+    assert.notEqual(m[1], 'latest', `${name} must never review under latest`);
+    assert.ok(/^\d+\.\d+\.\d+$/.test(m[1]), `${name} pin must be an exact semver`);
+  }
+  const stage = jobBlock(gatesYml, 'acceptance_ai');
+  assert.ok(
+    stage.includes('--untracked-files=no') && stage.includes('geminiRuntimeUntrackedAllowed'),
+    'the acceptance lane must check tracked changes strictly and untracked paths against the tested allowlist',
+  );
+});
+
+// ---------------------------------------------------------------------------
+// workflow_dispatch trust — non-main refs are refused everywhere
+// ---------------------------------------------------------------------------
+
+test('trustedDispatchRefAllowed: refs/heads/main only', () => {
+  assert.equal(trustedDispatchRefAllowed('refs/heads/main'), true);
+  for (const ref of [
+    'refs/heads/feature/evil',
+    'refs/tags/main',
+    'refs/heads/main2',
+    'main',
+    '',
+    undefined,
+  ]) {
+    assert.equal(trustedDispatchRefAllowed(ref), false, `${ref} must be refused`);
+  }
+});
+
+test('WORKFLOW: every privileged workflow_dispatch path refuses non-main refs explicitly', () => {
+  for (const f of [
+    'agent-gates.yml',
+    'agent-contract-authority.yml',
+    'agent-claude.yml',
+    'agent-codex-lane.yml',
+    'agent-gemini-planner.yml',
+  ]) {
+    const yml = readFileSync(join(WORKFLOWS_DIR, f), 'utf8');
+    assert.ok(
+      yml.includes('Refuse non-main dispatch refs') && yml.includes('refs/heads/main'),
+      `${f} must reject non-main dispatch refs before anything privileged`,
+    );
+  }
+});
+
+// ---------------------------------------------------------------------------
+// X6 — the dedicated Gate Publisher App source-identity model
+// ---------------------------------------------------------------------------
+
+test('X6: the dedicated App slug is the adopted identity; only the three writer jobs (and the barrier) hold the credential', () => {
+  assert.equal(GATE_PUBLISHER_APP_SLUG, 'rekoda-gate-publisher');
+  const envRefs = gatesYml.split('environment: agents-gate-publisher').length - 1;
+  assert.equal(envRefs, 3, 'exactly ambiguity_revoke + invalidate + finalize in the gates');
+  for (const job of ['technical_ai', 'acceptance_ai', 'technical', 'acceptance', 'resolve']) {
+    assert.ok(
+      !jobBlock(gatesYml, job).includes('agents-gate-publisher'),
+      `${job} must never receive the gate-publisher credential`,
+    );
+  }
 });

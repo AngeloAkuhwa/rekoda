@@ -238,19 +238,24 @@ treated as hostile, can edit any PR-triggered YAML in its branch and
 gain nothing: the privileged definition is not substitutable, the
 reviewer environments are referenced only by it, and every fact
 (repository, PR number, HEAD SHA, base, labels, linked issue, contract
-revision, builder, risk) is **re-resolved from the GitHub API** inside
-the privileged run. Anything the untrusted side passes is a REQUEST
-naming a PR, never trusted evidence — and the request must resolve to
-**exactly one** open same-base PR whose current head still equals the
-triggering SHA: zero candidates is nothing-to-evaluate, a force-pushed
-(stale) request is superseded by the new head's own request, multiple
-candidates FAIL CLOSED, and a dispatch for a closed or foreign PR is
-refused. Supporting layers, not the
-boundary: the `agents-*` environments carry deployment-branch policies
-restricted to `main` (a PR-branch job requesting one is refused by
-GitHub), and every workflow-file change requires the owner's CODEOWNERS
-review before merge — which is also what defuses required-check
-name-spoofing by a hostile PR-defined job.
+revision, builder, risk, enrollment, refresh generation) is
+**re-resolved from the GitHub API** inside the privileged run. Anything
+the untrusted side passes is a REQUEST naming a PR, never trusted
+evidence — and the request must resolve to **exactly one** open
+same-base PR whose current head still equals the triggering SHA: zero
+candidates is nothing-to-evaluate, a force-pushed (stale) request is
+superseded by the new head's own request, multiple candidates FAIL
+CLOSED, and a dispatch for a closed or foreign PR is refused.
+**`workflow_dispatch` trust is conditional, not implied**: the
+definition must exist on the default branch, but a run can be
+dispatched against ANY ref — so every privileged dispatch path
+hard-rejects any ref but `refs/heads/main` in its first step, every
+automatic `gh workflow run` passes `--ref main` explicitly, and the
+`agents-*` environments carry `main`-only deployment-branch policies as
+a REQUIRED second wall (not optional defense in depth): a PR-ref job
+requesting one is refused by GitHub even if a guard were ever bypassed.
+Every workflow-file change additionally requires the owner's CODEOWNERS
+review before merge.
 
 **The evaluator.** All merge policy lives in one pure, deterministic,
 network-free module — `scripts/agents/evaluator.mjs` — proven by
@@ -265,12 +270,12 @@ root: the default-branch SHA the privileged definition itself came from
 or loads trusted policy.
 
 **Evidence protocol.** Every signed marker carries and signs
-`SCHEME: REKODA_AGENT_EVIDENCE_V3` along with its fields; a missing,
+`SCHEME: REKODA_AGENT_EVIDENCE_V4` along with its fields; a missing,
 unknown, or future scheme is rejected as malformed. The authoritative
 task contract is a SNAPSHOT of every merge-authorization-relevant
 field — issue, revision, **risk label, builder label**, and body hash:
 contract baseline/revision markers record and sign RISK and BUILDER,
-and V3 verdicts bind `CONTRACT_SNAPSHOT_SHA256` (the hash of that
+and verdicts bind `CONTRACT_SNAPSHOT_SHA256` (the hash of that
 canonical snapshot) inside the signed payload. A verdict produced under
 one contract can never authorize a merge under another — not via a body
 edit at an unchanged revision number (the A→B→A case), and not via a
@@ -281,28 +286,58 @@ the new labels and fresh reviews land. A signed
 `REKODA_CONTRACT_AMENDMENT_FREEZE` marker is durable evaluator state:
 while it targets a revision that does not yet exist, every gate for the
 issue's linked PRs refuses to pass (`CONTRACT_AMENDMENT_IN_PROGRESS`).
-A Claude or Gemini
+**V4 makes evidence replay-resistant and refresh-durable**: signed
+verdicts carry signer-created `EVIDENCE_SEQUENCE` and `EVIDENCE_ID`
+inside the signed payload — the signer computes the next monotonic
+sequence itself over the COMPLETE existing role evidence, inside a
+per-(PR, role) issuance lane — and the evaluator orders signed evidence
+by that authenticated sequence, never by comment timestamps, so a
+copied older signed APPROVE re-posted in a newer comment keeps its old
+sequence and can never supersede a later BLOCK (two issuances claiming
+one sequence fail closed). All verdicts additionally bind the current
+`REFRESH_GENERATION`: a forced fresh review first posts the
+control-plane-signed `REKODA_REVIEW_REFRESH` marker (generation N+1)
+for the exact (PR, HEAD, snapshot, role) — from that durable moment
+every earlier generation's evidence is invalid whatever happens next
+(AI failure, signer failure, cancellation, a concurrent ordinary
+finalizer); nothing "clears" a generation, only fresh evidence binding
+it satisfies the gate. A Claude or Gemini
 verdict counts only with a valid **Ed25519 signature** over the
 canonical payload, verified against the committed public keys in
 `scripts/agents/keys/`. The signing keys never enter AI context — and
 the boundary is a **fresh runner**, not a step: each reviewer lane is
 two jobs, an AI job that references only its AI credential and hands
-over an **unsigned verdict artifact (untrusted data)**, and a
-deterministic publish job on a different runner that references only the
-role signing key, **independently re-fetches** current GitHub state,
-refuses to sign if HEAD or contract moved since the review, and
-validates the artifact against the FRESH target values — the artifact
-cannot choose what it approves. A compromised third-party action in the
-AI job is confined to a runner that never held a key. The builder and
+its unsigned verdict over as a **bounded base64 job output (hostile
+data — never an artifact archive whose extraction could overwrite a
+trusted checkout)**, and a deterministic publish job on a different
+runner that references only the role signing key, writes the received
+bytes ONLY into `$RUNNER_TEMP` under a byte bound, **independently
+re-fetches** current GitHub state, refuses to sign if HEAD, contract,
+or refresh generation moved since the review, and validates the verdict
+against the FRESH target values — the handoff cannot choose what it
+approves. A compromised third-party action in the AI job is confined to
+a runner that never held a key. The builder and
 planner environments hold no signing key, so a
 marker that is unsigned, wrong-key, or tampered is rejected
 (`TECH_UNAUTHORIZED` / `GEMINI_UNAUTHORIZED`) whoever posted it. A
 Codex verdict counts only inside a non-dismissed GitHub **review**
 authored by `chatgpt-codex-connector[bot]` whose review `commit_id`
-equals the current HEAD. Missing key material fails closed; until the
-owner generates and commits the public keys
-(`scripts/agents/generate-signing-keys.mjs`), no signed approval can
-exist — deliberately.
+equals the current HEAD (and must bind the current refresh generation
+printed by `review-context.mjs`); Codex marker text copied into a
+comment or any other identity's review never qualifies. Missing key
+material fails closed; until the owner generates and commits the public
+keys (`scripts/agents/generate-signing-keys.mjs`), no signed approval
+can exist — deliberately.
+
+**Authoritative enrollment (X4).** A "Closes #N" reference in mutable
+PR body text is DISCOVERY/PROPOSAL only. The implementation-PR
+relationship itself is the authority-signed `REKODA_PR_ENROLLMENT`
+record on the issue: without an ACTIVE enrollment no gate passes for
+the PR (`PR_NOT_ENROLLED`), a body edit adding a closing reference
+mid-amendment enrolls nothing, and enrollment itself always requests a
+fresh finalization (the authority redispatches the gates for the newly
+enrolled PR before its checks can mean anything). One active enrollment
+per issue; releases are owner/authority actions.
 
 **Contract revisions, mechanically — proposals vs authoritative
 transitions (D1).** Contract authority is separate from everyone who
@@ -356,17 +391,25 @@ evaluator refuses any verdict whose `HEAD_SHA` or `CONTRACT_REVISION`
 is not current, and matches owner-approval `commit_id` against the
 current HEAD.
 
-**What each check does:** each gate publishes its stable-named check run
-via the Checks API bound to the RESOLVED PR head (so redispatches land
-on the PR whatever the trigger) — **upserted in place**, so one name+SHA
-never carries ambiguous duplicate conclusions and a same-HEAD contract
-revision deterministically flips the same required check to red until
-fresh verdicts land. Gate concurrency is `cancel-in-progress: false`: a
-security evaluation is never cancelled into an ambiguous check state;
-obsolete-SHA runs end via the stale-target rule, and duplicate work is
-avoided by valid-verdict reuse instead of cancellation. In the ruleset,
-each required check is additionally bound to the **GitHub Actions app**
-as its source (`RequiredStatusCheckInput.appId`):
+**What each check does:** the three gate conclusions are published
+EXCLUSIVELY with a token of the dedicated **Rekoda Gate Publisher**
+GitHub App, minted by trusted repository code from the credential in
+the `agents-gate-publisher` environment — no repository workflow holds
+`checks: write` on `GITHUB_TOKEN`, and in the ruleset each required
+gate check is source-bound to the App's id
+(`RequiredStatusCheckInput.appId`), so a same-named check rendered by
+ANY ordinary GITHUB_TOKEN workflow (merged or unmerged) can never
+satisfy the requirement. Every check writer serializes in the
+SHA-keyed lane `rekoda-authorization-sha-<HEAD>` (checks attach to the
+COMMIT, so PR-number serialization cannot protect two PRs sharing a
+SHA), with `cancel-in-progress: false`. Check runs are **upserted in
+place** on the healthy path, so one name+SHA never carries ambiguous
+duplicate conclusions and a same-HEAD contract revision
+deterministically flips the same required check red until fresh
+verdicts land; the degraded revocation path (lookup failure + FAILURE
+conclusion) deliberately posts a NEWER blind failure run — a
+fail-closed revocation, not a duplicate-impossibility claim, because
+GitHub evaluates the newest run per (name, app). In the ruleset:
 
 - **`Technical Review Gate`** — builder-aware Reviewer 1. On
   `builder:claude` PRs it requires a valid `REKODA_CODEX_APPROVAL`
@@ -628,6 +671,14 @@ done:
 
 ## 14. Enforcement status and remaining gaps
 
+> **HISTORY NOTE.** The pass-by-pass narrative below records how the
+> design evolved; earlier passes' mechanisms (SCHEME V1/V2/V3, the
+> `rekoda-gates-pr-<PR>` check-write groups, GitHub-Actions-app check
+> adoption, write+-actor force review, label-only lane state) are
+> SUPERSEDED where the final consolidation paragraph and §6 say so —
+> §6 and the last paragraph of this section describe the CURRENT
+> system.
+
 The workflow phase implemented the contract. Closed since the gap
 register was first recorded: the fail-closed technical gate with no
 review-existence or owner-approval fallback (old gap 1); contract
@@ -752,12 +803,53 @@ itself both refuse any drift — `amendmentSignAllowed`); the
 contract-revision CLI parses with declared boolean/value options
 (`cli-args.mjs`, real-argv tested — the folding parser under which
 `--freeze` and `--baseline` silently misparsed is gone); and **forced
-fresh review is authenticated human intent, never transport**
-(`authorizeForceReview`: an explicit `force_review` input, refused for
-workflow identities and non-write actors; every automatic dispatcher
-sends `force_review=false`, and comment-triggered watch redispatch
-requires a write+ comment author, so an untrusted commenter can never
-launch paid reviewer work).
+fresh review is authenticated human intent, never transport** (an
+explicit `force_review` input; every automatic dispatcher sends
+`force_review=false` — **ordinary redispatch is NOT force review**:
+valid same-state evidence is reused and nothing paid starts).
+
+The FINAL Phase-2 consolidation pass (this one) then collapsed the
+remaining independent trust surfaces into four hard boundaries.
+**(A) One dedicated gate-publisher identity (X6)**: the
+owner-controlled **Rekoda Gate Publisher** GitHub App is the only
+identity whose check runs the ruleset accepts for the three gates; its
+credential lives solely in the main-restricted `agents-gate-publisher`
+environment, minted into a repo-scoped checks:write token by ~60 lines
+of trusted code (`app-token.mjs`), and NO workflow holds
+`checks: write` on GITHUB_TOKEN (statically asserted) — a malicious
+same-repo PR workflow executing before merge can render fake
+same-named checks that the ruleset simply never counts.
+**(B) One SHA-scoped authorization finalizer (X5)**: every writer of
+the three names (the gates' ambiguity revocation, red-only pre-review
+invalidation, and finalize job, plus the authority's red-only
+amendment barrier) is an invocation of that one gate-publisher
+component inside the `rekoda-authorization-sha-<HEAD>` lane; the
+finalizer re-normalizes CURRENT state and re-enumerates the COMPLETE
+current PR association inside the lock before any pass, so a stale
+finalizer can never overwrite a shared-SHA or amendment revocation.
+**(C) Replay-resistant evidence with durable refresh generations
+(X1/X2/X3)**: SCHEME V4 (signer-created issuance sequence/id inside
+the signed payload; authenticated-sequence ordering; the
+control-plane-signed `REKODA_REVIEW_REFRESH` generation a failed
+forced refresh can never roll back), with the AI→signer handoff as
+bounded job-output data written only into `$RUNNER_TEMP` — the
+artifact-extraction path into a trusted checkout is gone entirely.
+**(D) Trusted enrollment and admission state (X4/X7/Y3)**: the
+authority-signed `REKODA_PR_ENROLLMENT` record (closing references are
+proposals), the owner-authored snapshot-bound `REKODA_OWNER_DECISION`
+required for R3 at baseline, admission, AND merge, and the
+authority-signed lane lease
+(`REKODA_IMPLEMENTATION_LANE_CLAIM`/`…_RELEASE`) that a compromised
+builder can neither mint nor release. Force review became
+**owner-only** with trusted account-TYPE verification — a
+write-permission App like `claude[bot]` is refused (Y2); the watcher
+authorizes every event BEFORE any concurrency so an unauthorized
+comment can never displace an authorized delivery (Y1); lane and
+review-thread listings paginate to exhaustion and fail closed (Y3/Y6);
+every privileged dispatch path refuses non-main refs; and both Gemini
+lanes pin `gemini_cli_version`, with the reviewer lane's integrity
+guard allowlisting exactly the pinned action's known runtime files
+(X8/Y5).
 
 What remains, honestly:
 
@@ -815,15 +907,17 @@ What remains, honestly:
    signed approval can exist and every reviewer gate fails closed — by
    design, and lifted only by the owner-setup steps in the activation
    runbook.
-8. **Required-check name-spoofing is a platform residual — narrowed,
-   not solved.** The ruleset binds each required check to the GitHub
-   Actions app as its source (`RequiredStatusCheckInput.appId`), which
-   shuts out third-party-app spoofing; but a PR-defined Actions job with
-   the same name comes from the same app and GitHub cannot distinguish
-   it. The counter is merge-time: every workflow-file change requires
-   the owner's CODEOWNERS review, so a PR carrying a spoofing job cannot
-   merge unreviewed. Drill 29 exercises it; the honest limit is recorded
-   rather than pretended away.
+8. **Required-check name-spoofing is closed at the requirement level —
+   pending live proof.** The ruleset binds the three gate checks to the
+   dedicated **Rekoda Gate Publisher App** id
+   (`RequiredStatusCheckInput.appId`), and no repository workflow holds
+   `checks: write` on GITHUB_TOKEN — so a same-named check rendered by
+   any GITHUB_TOKEN workflow (including one on an unmerged, hostile PR
+   branch, which CODEOWNERS cannot stop from EXECUTING) comes from the
+   wrong app and never satisfies the requirement; it can at most be
+   DISPLAYED. This is design-and-configuration truth, not yet live
+   truth: the App does not exist yet, and drills 29 and 34 must be
+   executed before it may be claimed proven.
 9. **Trusted-base and check-state semantics are platform properties.**
    That workflow_run/workflow_dispatch execute default-branch
    definitions, that environment branch policies refuse PR refs, and

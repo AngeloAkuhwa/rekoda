@@ -13,6 +13,8 @@ import {
   evaluate,
   computeContractRevision,
   resolveVerdict,
+  currentRefreshGeneration,
+  resolvePrEnrollment,
   isGoverned,
   MARKERS,
 } from './evaluator.mjs';
@@ -51,26 +53,55 @@ if (args['print-context'] === 'true') {
           contractSnapshotSha256: rev.snapshotHash,
         }
       : null;
-  const verdictOf = (candidates, markerName, provenance) =>
+  // Durable refresh generations (X3): the CURRENT signed generation per
+  // role — evidence from any other generation never satisfies a gate.
+  const techGeneration = target
+    ? currentRefreshGeneration({
+        candidates: state.techEvidence?.candidates,
+        role: 'technical',
+        target,
+        publicKey: keys.claudeReviewer ?? null,
+      })
+    : 0;
+  const geminiGeneration = target
+    ? currentRefreshGeneration({
+        candidates: state.geminiEvidence?.candidates,
+        role: 'acceptance',
+        target,
+        publicKey: keys.geminiReviewer ?? null,
+      })
+    : 0;
+  const verdictOf = (candidates, markerName, provenance, refreshGeneration) =>
     target
-      ? (resolveVerdict({ candidates, markerName, provenance, target }).verdict ?? 'none')
+      ? (resolveVerdict({
+          candidates,
+          markerName,
+          provenance,
+          target: { ...target, refreshGeneration },
+        }).verdict ?? 'none')
       : 'none';
   const techVerdict =
     builder === 'builder:claude'
-      ? verdictOf(state.techEvidence?.candidates, MARKERS.codex, {
-          kind: 'codex',
-          login: cfg.codexLogin,
-        })
+      ? verdictOf(
+          state.techEvidence?.candidates,
+          MARKERS.codex,
+          { kind: 'codex', login: cfg.codexLogin },
+          techGeneration,
+        )
       : builder === 'builder:codex'
-        ? verdictOf(state.techEvidence?.candidates, MARKERS.claude, {
-            kind: 'signature',
-            publicKey: keys.claudeReviewer ?? null,
-          })
+        ? verdictOf(
+            state.techEvidence?.candidates,
+            MARKERS.claude,
+            { kind: 'signature', publicKey: keys.claudeReviewer ?? null },
+            techGeneration,
+          )
         : 'none';
-  const geminiVerdict = verdictOf(state.geminiEvidence?.candidates, MARKERS.gemini, {
-    kind: 'signature',
-    publicKey: keys.geminiReviewer ?? null,
-  });
+  const geminiVerdict = verdictOf(
+    state.geminiEvidence?.candidates,
+    MARKERS.gemini,
+    { kind: 'signature', publicKey: keys.geminiReviewer ?? null },
+    geminiGeneration,
+  );
   // contract_ok: the issue currently carries ONE authorized, unamended,
   // provably complete contract whose risk/builder labels still match the
   // signed snapshot and with NO amendment freeze in progress — the
@@ -84,8 +115,20 @@ if (args['print-context'] === 'true') {
     rev.labelsDiverged !== true &&
     !rev.pendingFreeze &&
     state.issue?.commentsComplete !== false;
+  // X4: the trusted implementation-PR relationship — closing-reference
+  // text is discovery only; only an authority-signed active enrollment
+  // makes this PR reviewable/mergeable for the issue.
+  const enrolled = state.issue
+    ? resolvePrEnrollment({
+        issueComments: state.issue.comments,
+        issueNumber: state.issue.number,
+        prNumber: state.pr.number,
+        authorityKey: keys.contractAuthority ?? null,
+      }).enrolled
+    : false;
   const ctx = {
     governed: isGoverned(state) ? 'true' : 'false',
+    enrolled: enrolled ? 'true' : 'false',
     issue: state.issue?.number ?? '',
     head_sha: state.pr.headSha,
     contract_revision: rev.revision ?? '',
@@ -98,6 +141,8 @@ if (args['print-context'] === 'true') {
     fork: state.pr.fork ? 'true' : 'false',
     tech_verdict: techVerdict,
     gemini_verdict: geminiVerdict,
+    tech_refresh_generation: techGeneration,
+    gemini_refresh_generation: geminiGeneration,
   };
   for (const [k, v] of Object.entries(ctx)) {
     console.log(`${k}=${v}`);

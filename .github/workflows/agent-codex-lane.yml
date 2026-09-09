@@ -3,11 +3,13 @@
 # Codex Cloud builds start OUTSIDE GitHub Actions, so GitHub concurrency
 # cannot govern the Codex process itself. What it CAN govern is the lane
 # state: this owner/write-dispatched workflow runs the SAME deterministic
-# admission as the Claude builder, under the SAME repository-wide
-# `rekoda-implementation-lane` concurrency group, and atomically claims
-# the lane (status:ready → status:building) for a builder:codex issue.
-# A Codex Cloud build is started only AFTER this claim succeeds — both
-# builder types then respect one GitHub-owned lane state.
+# admission as the authority's Claude hand-off, under the SAME
+# repository-wide `rekoda-implementation-lane` concurrency group, posts
+# the SIGNED lane claim (the durable lane truth — Y3; it runs in the
+# agents-contract-authority environment because the lease is
+# authority-signed, and it is a deterministic no-AI job), and
+# transitions the labels for a builder:codex issue. A Codex Cloud build
+# is started only AFTER this claim succeeds.
 name: Agent — claim Codex lane
 
 on:
@@ -29,22 +31,32 @@ jobs:
     name: Claim Codex lane
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    environment: agents-contract-authority
     permissions:
       contents: read
       issues: write
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      CONTRACT_AUTHORITY_SIGNING_KEY: ${{ secrets.CONTRACT_AUTHORITY_SIGNING_KEY }}
       REPO: ${{ github.repository }}
       ISSUE: ${{ inputs.issue }}
       ACTOR: ${{ github.actor }}
     steps:
+      - name: Refuse non-main dispatch refs
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "::error::Privileged dispatch must target refs/heads/main (got $GITHUB_REF); refusing."
+            exit 1
+          fi
+
       - name: Checkout trusted policy (default-branch definition SHA)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ github.sha }}
           fetch-depth: 1
 
-      - name: Authorize actor, admit atomically, claim the lane
+      - name: Authorize actor, admit atomically, lease and claim the lane
         run: |
           set -euo pipefail
           perm=$(gh api "repos/$REPO/collaborators/$ACTOR/permission" --jq .permission)
@@ -53,6 +65,11 @@ jobs:
             *) echo "::error::Actor $ACTOR (permission: $perm) may not claim the implementation lane."; exit 1 ;;
           esac
           node scripts/agents/build-admission.mjs --repo "$REPO" --issue "$ISSUE" \
-            --builder builder:codex --transition
+            --builder builder:codex --phase admission
+          snapshot=$(node scripts/agents/contract-status.mjs --repo "$REPO" --issue "$ISSUE" | grep '^contract_snapshot_sha256=' | cut -d= -f2)
+          node scripts/agents/lane-lease.mjs --repo "$REPO" --issue "$ISSUE" \
+            --claim --snapshot-hash "$snapshot" --sign-env CONTRACT_AUTHORITY_SIGNING_KEY
+          gh issue edit "$ISSUE" --repo "$REPO" \
+            --remove-label 'status:ready' --add-label 'status:building'
           gh issue comment "$ISSUE" --repo "$REPO" \
-            --body "REKODA_CODEX_LANE_CLAIMED — start the Codex Cloud build for this issue now; the implementation lane is claimed."
+            --body "REKODA_CODEX_LANE_CLAIMED — start the Codex Cloud build for this issue now; the implementation lane is leased and claimed."

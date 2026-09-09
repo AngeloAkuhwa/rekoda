@@ -269,9 +269,17 @@ reviewer's:
 Each marker binds the protocol scheme, the PR number, the linked issue,
 the exact current HEAD SHA, the contract revision (§8), the contract
 SNAPSHOT hash (the hash of the authoritative snapshot: issue, revision,
-risk, builder, body hash), and an APPROVE or BLOCK verdict. A marker for
-any other commit, revision, snapshot, or reviewer identity counts for
-nothing.
+risk, builder, body hash), the current REVIEW REFRESH GENERATION (a
+forced fresh review durably invalidates every earlier generation's
+evidence), and an APPROVE or BLOCK verdict. Signed Claude/Gemini
+markers additionally carry a signer-created EVIDENCE_SEQUENCE and
+EVIDENCE_ID inside the signed payload — issuance order is
+authenticated, so re-posting an old signed APPROVE never supersedes a
+later BLOCK. A marker for any other commit, revision, snapshot,
+generation, or reviewer identity counts for nothing. A PR additionally
+needs an ACTIVE authority-signed `REKODA_PR_ENROLLMENT` record: a
+"Closes #N" reference in mutable PR body text is a proposal, never the
+implementation-PR relationship itself.
 
 The rest of this section is **Codex's** review instruction (Codex's native
 review is documented to load it):
@@ -333,12 +341,13 @@ review is documented to load it):
 
   ```
   REKODA_CODEX_APPROVAL
-  SCHEME: REKODA_AGENT_EVIDENCE_V3
+  SCHEME: REKODA_AGENT_EVIDENCE_V4
   PR: <number>
   ISSUE: <linked issue number>
   HEAD_SHA: <40-char SHA of the commit reviewed>
   CONTRACT_REVISION: <integer from review-context>
   CONTRACT_SNAPSHOT_SHA256: <64-char hash from review-context>
+  REFRESH_GENERATION: <integer from review-context (tech_refresh_generation)>
   VERDICT: APPROVE|BLOCK
   ```
 

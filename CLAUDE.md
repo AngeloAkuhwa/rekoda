@@ -98,15 +98,24 @@ them):
 
 ```
 REKODA_CLAUDE_APPROVAL
-SCHEME: REKODA_AGENT_EVIDENCE_V3
+SCHEME: REKODA_AGENT_EVIDENCE_V4
 PR: <number>
 ISSUE: <number>
 HEAD_SHA: <40-char current SHA>
 CONTRACT_REVISION: <integer, 1 unless the issue records a later revision>
 CONTRACT_SNAPSHOT_SHA256: <64-char hash of the active contract snapshot>
+REFRESH_GENERATION: <the current durable refresh generation for the role>
+EVIDENCE_SEQUENCE: <monotonic per PR+role, created by the trusted signer>
+EVIDENCE_ID: <32-hex issuance id, created by the trusted signer>
 VERDICT: APPROVE|BLOCK
 SIGNATURE: <Ed25519 over the canonical payload, reviewer key>
 ```
+
+The issuance fields are the signer's alone: the reviewer supplies only
+the verdict and findings; `sign-evidence.mjs` fetches the complete
+existing role evidence inside its per-(PR, role) issuance lane and
+creates the next sequence itself, so a copied older signed APPROVE can
+never supersede a later BLOCK.
 
 ## Blocked?
 

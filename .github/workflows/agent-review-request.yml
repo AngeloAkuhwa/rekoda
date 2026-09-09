@@ -14,7 +14,12 @@ name: Agent — review request
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
+    # `edited` included (X4): a PR body or base edit — e.g. a "Closes
+    # #N" added to an already-open PR — is an enrollment PROPOSAL that
+    # must reach an ordinary reevaluation promptly. The evaluator
+    # blocks un-enrolled PRs categorically, so the residual delivery
+    # window carries no authorization semantics.
+    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled, edited]
   pull_request_review:
     types: [submitted, dismissed]
 

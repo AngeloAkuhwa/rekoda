@@ -37,16 +37,29 @@
  */
 import { createHash, createPublicKey, verify as cryptoVerify } from 'node:crypto';
 
-// V3: the authoritative task contract is a SNAPSHOT of every
+// V4: the authoritative task contract is a SNAPSHOT of every
 // merge-authorization-relevant field — issue, revision, risk label,
-// builder label, and body hash — not the body bytes alone. Contract
-// baseline/revision markers record and sign RISK and BUILDER; verdict
-// evidence binds CONTRACT_SNAPSHOT_SHA256 (the hash of that canonical
-// snapshot) so neither a mutable-body A→B→A window nor a consistent
-// risk/builder label rewrite can smuggle an unreviewed contract past
-// the gates. Bumped cleanly while no signing key is live; V1/V2
-// evidence is rejected as an unknown scheme.
-export const SCHEME = 'REKODA_AGENT_EVIDENCE_V3';
+// builder label, and body hash. Contract baseline/revision markers
+// record and sign RISK and BUILDER; verdict evidence binds
+// CONTRACT_SNAPSHOT_SHA256 (the hash of that canonical snapshot) so
+// neither a mutable-body A→B→A window nor a consistent risk/builder
+// label rewrite can smuggle an unreviewed contract past the gates.
+// V4 additionally makes reviewer evidence REPLAY-RESISTANT and bound to
+// a DURABLE refresh generation:
+//   - signed verdicts carry trusted signer-generated issuance identity —
+//     EVIDENCE_SEQUENCE (monotonic per PR+role, created by the signer
+//     inside its issuance lane, part of the signed payload) and
+//     EVIDENCE_ID — so a copied older signed APPROVE re-posted in a
+//     newer comment keeps its OLD sequence and can never supersede a
+//     later BLOCK; comment timestamps decide nothing for signed roles;
+//   - all verdicts carry REFRESH_GENERATION, bound to the current
+//     signed REKODA_REVIEW_REFRESH generation for (PR, HEAD, snapshot,
+//     role): once a forced refresh bumps the generation, every earlier
+//     verdict is invalid regardless of AI/signer/job failure — the
+//     generation is never "cleared", only satisfied by fresh evidence.
+// Bumped cleanly while no signing key is live; V1/V2/V3 evidence is
+// rejected as an unknown scheme.
+export const SCHEME = 'REKODA_AGENT_EVIDENCE_V4';
 
 export const MARKERS = {
   codex: 'REKODA_CODEX_APPROVAL',
@@ -55,6 +68,20 @@ export const MARKERS = {
 };
 
 export const FREEZE_MARKER = 'REKODA_CONTRACT_AMENDMENT_FREEZE';
+export const REFRESH_MARKER = 'REKODA_REVIEW_REFRESH';
+export const ENROLLMENT_MARKER = 'REKODA_PR_ENROLLMENT';
+export const OWNER_DECISION_MARKER = 'REKODA_OWNER_DECISION';
+export const LANE_CLAIM_MARKER = 'REKODA_IMPLEMENTATION_LANE_CLAIM';
+export const LANE_RELEASE_MARKER = 'REKODA_IMPLEMENTATION_LANE_RELEASE';
+
+// The ONLY app identity whose check runs the control plane trusts (and
+// the ruleset source-binds): the dedicated, owner-controlled Rekoda
+// Gate Publisher GitHub App. The generic GitHub Actions app is NOT a
+// sufficient publisher identity — any same-repository workflow (merged
+// or not) can obtain checks:write on GITHUB_TOKEN and publish
+// same-named runs under that app; the dedicated App's credential lives
+// only in the main-restricted agents-gate-publisher environment.
+export const GATE_PUBLISHER_APP_SLUG = 'rekoda-gate-publisher';
 
 const SHA40 = /^[0-9a-f]{40}$/;
 const RISK_RE = /^risk:R[0-3]$/;
@@ -74,9 +101,14 @@ export function sha256Hex(text) {
   return createHash('sha256').update(text, 'utf8').digest('hex');
 }
 
-/** Canonical signed payload for a verdict marker — field order is fixed. */
+/**
+ * Canonical signed payload for a verdict marker — field order is fixed.
+ * V4: REFRESH_GENERATION, EVIDENCE_SEQUENCE and EVIDENCE_ID are INSIDE
+ * the signed payload — issuance order is authenticated by the signer,
+ * never inferred from comment timestamps or comment ids.
+ */
 export function canonicalVerdictPayload(m) {
-  return `${m.name}\nSCHEME: ${SCHEME}\nPR: ${m.pr}\nISSUE: ${m.issue}\nHEAD_SHA: ${m.headSha}\nCONTRACT_REVISION: ${m.contractRevision}\nCONTRACT_SNAPSHOT_SHA256: ${m.contractSnapshotSha256}\nVERDICT: ${m.verdict}`;
+  return `${m.name}\nSCHEME: ${SCHEME}\nPR: ${m.pr}\nISSUE: ${m.issue}\nHEAD_SHA: ${m.headSha}\nCONTRACT_REVISION: ${m.contractRevision}\nCONTRACT_SNAPSHOT_SHA256: ${m.contractSnapshotSha256}\nREFRESH_GENERATION: ${m.refreshGeneration}\nEVIDENCE_SEQUENCE: ${m.evidenceSequence}\nEVIDENCE_ID: ${m.evidenceId}\nVERDICT: ${m.verdict}`;
 }
 
 /**
@@ -110,10 +142,36 @@ export function buildVerdictMarkerLines(m, signature) {
     `HEAD_SHA: ${m.headSha}`,
     `CONTRACT_REVISION: ${m.contractRevision}`,
     `CONTRACT_SNAPSHOT_SHA256: ${m.contractSnapshotSha256}`,
+    `REFRESH_GENERATION: ${m.refreshGeneration}`,
+    `EVIDENCE_SEQUENCE: ${m.evidenceSequence}`,
+    `EVIDENCE_ID: ${m.evidenceId}`,
     `VERDICT: ${m.verdict}`,
   ];
   if (signature) lines.push(`SIGNATURE: ${signature}`);
   return lines;
+}
+
+/**
+ * The native-Codex verdict block (unsigned; platform provenance).
+ * Codex carries no signer, so it has no authenticated issuance
+ * sequence — GitHub review chronology under the connector's identity
+ * with commit_id binding is its trusted order — but it DOES bind the
+ * current REFRESH_GENERATION (printed by review-context.mjs), so a
+ * forced refresh detaches old native evidence exactly like signed
+ * evidence.
+ */
+export function buildCodexVerdictTemplateLines(m) {
+  return [
+    MARKERS.codex,
+    `SCHEME: ${SCHEME}`,
+    `PR: ${m.pr}`,
+    `ISSUE: ${m.issue}`,
+    `HEAD_SHA: ${m.headSha}`,
+    `CONTRACT_REVISION: ${m.contractRevision}`,
+    `CONTRACT_SNAPSHOT_SHA256: ${m.contractSnapshotSha256}`,
+    `REFRESH_GENERATION: ${m.refreshGeneration}`,
+    `VERDICT: ${m.verdict ?? 'APPROVE|BLOCK'}`,
+  ];
 }
 
 export function buildContractMarkerLines(m, signature) {
@@ -152,6 +210,114 @@ export function canonicalContractPayload(m) {
 /** Canonical signed payload for an amendment-freeze marker. */
 export function canonicalFreezePayload(m) {
   return `${FREEZE_MARKER}\nSCHEME: ${SCHEME}\nISSUE: ${m.issue}\nFROM_REVISION: ${m.fromRevision}\nTARGET_REVISION: ${m.targetRevision}`;
+}
+
+/**
+ * Canonical signed payload for a review-refresh marker (X3): durable,
+ * control-plane-signed state that makes generation N the ONLY
+ * generation whose evidence can satisfy the (PR, HEAD, snapshot, role)
+ * gate. It binds the exact HEAD and contract snapshot, so a new head or
+ * an authorized revision naturally starts back at generation 0 (their
+ * evidence is detached by those bindings already).
+ */
+export function canonicalRefreshPayload(m) {
+  return `${REFRESH_MARKER}\nSCHEME: ${SCHEME}\nPR: ${m.pr}\nHEAD_SHA: ${m.headSha}\nCONTRACT_SNAPSHOT_SHA256: ${m.contractSnapshotSha256}\nROLE: ${m.role}\nREFRESH_GENERATION: ${m.refreshGeneration}`;
+}
+
+export function buildRefreshMarkerLines(m, signature) {
+  const lines = [
+    REFRESH_MARKER,
+    `SCHEME: ${SCHEME}`,
+    `PR: ${m.pr}`,
+    `HEAD_SHA: ${m.headSha}`,
+    `CONTRACT_SNAPSHOT_SHA256: ${m.contractSnapshotSha256}`,
+    `ROLE: ${m.role}`,
+    `REFRESH_GENERATION: ${m.refreshGeneration}`,
+  ];
+  if (signature) lines.push(`SIGNATURE: ${signature}`);
+  return lines;
+}
+
+/**
+ * Canonical signed payload for a PR-enrollment marker (the trusted
+ * implementation-PR relationship). Closing references in mutable PR
+ * body text are DISCOVERY/PROPOSAL only; only an authority-signed
+ * active enrollment makes a PR the implementation PR for an issue. The
+ * snapshot hash records the contract state at enrollment for audit;
+ * the relationship itself survives authorized revisions (which already
+ * detach all reviewer evidence).
+ */
+export function canonicalEnrollmentPayload(m) {
+  return `${ENROLLMENT_MARKER}\nSCHEME: ${SCHEME}\nISSUE: ${m.issue}\nPR: ${m.pr}\nCONTRACT_SNAPSHOT_SHA256: ${m.contractSnapshotSha256}\nSTATUS: ${m.status}`;
+}
+
+export function buildEnrollmentMarkerLines(m, signature) {
+  const lines = [
+    ENROLLMENT_MARKER,
+    `SCHEME: ${SCHEME}`,
+    `ISSUE: ${m.issue}`,
+    `PR: ${m.pr}`,
+    `CONTRACT_SNAPSHOT_SHA256: ${m.contractSnapshotSha256}`,
+    `STATUS: ${m.status}`,
+  ];
+  if (signature) lines.push(`SIGNATURE: ${signature}`);
+  return lines;
+}
+
+/**
+ * Owner-decision marker (X7): R3 work may not be admitted to a builder
+ * lane, baselined, or merged without a CURRENT owner authorization
+ * bound to the exact contract snapshot. Provenance is the platform:
+ * only a comment AUTHORED by the owner's human account counts (like
+ * baselines) — no signature, because no workflow may mint one.
+ */
+export function buildOwnerDecisionMarkerLines(m) {
+  return [
+    OWNER_DECISION_MARKER,
+    `SCHEME: ${SCHEME}`,
+    `ISSUE: ${m.issue}`,
+    `CONTRACT_SNAPSHOT_SHA256: ${m.contractSnapshotSha256}`,
+    `DECISION: ${m.decision}`,
+    `REFERENCE: ${m.reference}`,
+  ];
+}
+
+/**
+ * Lane-lease markers (Y3): the durable security truth of the single
+ * implementation lane. Labels remain a UI projection and a discovery
+ * index; the LEASE is authority-signed, so a compromised builder (which
+ * holds issues:write but no signing key) can flip labels yet can never
+ * mint a claim for its own admission nor a release that frees the lane.
+ */
+export function canonicalLaneClaimPayload(m) {
+  return `${LANE_CLAIM_MARKER}\nSCHEME: ${SCHEME}\nISSUE: ${m.issue}\nCONTRACT_SNAPSHOT_SHA256: ${m.contractSnapshotSha256}\nCLAIM_ID: ${m.claimId}`;
+}
+
+export function canonicalLaneReleasePayload(m) {
+  return `${LANE_RELEASE_MARKER}\nSCHEME: ${SCHEME}\nISSUE: ${m.issue}\nCLAIM_ID: ${m.claimId}`;
+}
+
+export function buildLaneClaimMarkerLines(m, signature) {
+  const lines = [
+    LANE_CLAIM_MARKER,
+    `SCHEME: ${SCHEME}`,
+    `ISSUE: ${m.issue}`,
+    `CONTRACT_SNAPSHOT_SHA256: ${m.contractSnapshotSha256}`,
+    `CLAIM_ID: ${m.claimId}`,
+  ];
+  if (signature) lines.push(`SIGNATURE: ${signature}`);
+  return lines;
+}
+
+export function buildLaneReleaseMarkerLines(m, signature) {
+  const lines = [
+    LANE_RELEASE_MARKER,
+    `SCHEME: ${SCHEME}`,
+    `ISSUE: ${m.issue}`,
+    `CLAIM_ID: ${m.claimId}`,
+  ];
+  if (signature) lines.push(`SIGNATURE: ${signature}`);
+  return lines;
 }
 
 /** Verify an Ed25519 signature (base64) over a payload with a PEM public key. */
@@ -227,23 +393,30 @@ export function resolveWorkflowRunTarget({ headSha, candidates, repo, complete =
 /**
  * Parse fixed-format approval marker blocks out of free text:
  *   <MARKER NAME>
- *   SCHEME: REKODA_AGENT_EVIDENCE_V3
- *   PR / ISSUE / HEAD_SHA / CONTRACT_REVISION / CONTRACT_SNAPSHOT_SHA256 / VERDICT / SIGNATURE
+ *   SCHEME: REKODA_AGENT_EVIDENCE_V4
+ *   PR / ISSUE / HEAD_SHA / CONTRACT_REVISION / CONTRACT_SNAPSHOT_SHA256
+ *   REFRESH_GENERATION / EVIDENCE_SEQUENCE / EVIDENCE_ID / VERDICT / SIGNATURE
  * A block missing the scheme, carrying an unknown scheme, or failing any
  * field grammar is malformed — a malformed marker never counts.
+ * REFRESH_GENERATION is required for EVERY reviewer marker; the signer
+ * issuance fields (EVIDENCE_SEQUENCE, EVIDENCE_ID) are required for the
+ * signed Claude/Gemini roles and absent for native Codex, whose
+ * authenticated order is the platform's review chronology under the
+ * connector identity with commit_id binding.
  */
 export function parseMarkers(text, markerName) {
   const lines = normalizeBody(text).split('\n');
   const out = [];
+  const needsIssuance = markerName !== MARKERS.codex;
   for (let i = 0; i < lines.length; i++) {
     if (lines[i].trim() !== markerName) continue;
     const fields = {};
     let consumed = 0;
-    for (let j = i + 1; j < lines.length && consumed < 13; j++, consumed++) {
+    for (let j = i + 1; j < lines.length && consumed < 16; j++, consumed++) {
       const line = lines[j].trim();
       if (line === markerName) break;
       const m = line.match(
-        /^(SCHEME|PR|ISSUE|HEAD_SHA|CONTRACT_REVISION|CONTRACT_SNAPSHOT_SHA256|VERDICT|SIGNATURE):\s*(.*)$/,
+        /^(SCHEME|PR|ISSUE|HEAD_SHA|CONTRACT_REVISION|CONTRACT_SNAPSHOT_SHA256|REFRESH_GENERATION|EVIDENCE_SEQUENCE|EVIDENCE_ID|VERDICT|SIGNATURE):\s*(.*)$/,
       );
       if (m) fields[m[1]] = m[2].trim();
       if (m && m[1] === 'SIGNATURE') break;
@@ -262,6 +435,15 @@ export function parseMarkers(text, markerName) {
     )
       ? fields.CONTRACT_SNAPSHOT_SHA256.toLowerCase()
       : null;
+    const refreshGeneration = /^\d{1,6}$/.test(fields.REFRESH_GENERATION ?? '')
+      ? Number(fields.REFRESH_GENERATION)
+      : null;
+    const evidenceSequence = /^\d{1,9}$/.test(fields.EVIDENCE_SEQUENCE ?? '')
+      ? Number(fields.EVIDENCE_SEQUENCE)
+      : null;
+    const evidenceId = /^[0-9a-f]{32}$/.test((fields.EVIDENCE_ID ?? '').toLowerCase())
+      ? fields.EVIDENCE_ID.toLowerCase()
+      : null;
     const verdict =
       fields.VERDICT === 'APPROVE' || fields.VERDICT === 'BLOCK' ? fields.VERDICT : null;
     const malformed =
@@ -271,6 +453,8 @@ export function parseMarkers(text, markerName) {
       headSha === null ||
       contractRevision === null ||
       contractSnapshotSha256 === null ||
+      refreshGeneration === null ||
+      (needsIssuance && (evidenceSequence === null || evidenceId === null)) ||
       verdict === null;
     out.push({
       name: markerName,
@@ -280,6 +464,9 @@ export function parseMarkers(text, markerName) {
       headSha,
       contractRevision,
       contractSnapshotSha256,
+      refreshGeneration,
+      evidenceSequence,
+      evidenceId,
       verdict,
       signature: fields.SIGNATURE ?? null,
       malformed,
@@ -377,6 +564,292 @@ export function parseFreezeMarkers(text) {
     });
   }
   return out;
+}
+
+/** Review-refresh markers (X3) — see canonicalRefreshPayload. */
+export function parseRefreshMarkers(text) {
+  const lines = normalizeBody(text).split('\n');
+  const out = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].trim() !== REFRESH_MARKER) continue;
+    const fields = {};
+    for (let j = i + 1; j < Math.min(i + 9, lines.length); j++) {
+      const m = lines[j]
+        .trim()
+        .match(
+          /^(SCHEME|PR|HEAD_SHA|CONTRACT_SNAPSHOT_SHA256|ROLE|REFRESH_GENERATION|SIGNATURE):\s*(.*)$/,
+        );
+      if (m) fields[m[1]] = m[2].trim();
+    }
+    const scheme = fields.SCHEME === SCHEME ? SCHEME : null;
+    const pr = /^\d{1,7}$/.test(fields.PR ?? '') ? Number(fields.PR) : null;
+    const headSha = SHA40.test((fields.HEAD_SHA ?? '').toLowerCase())
+      ? fields.HEAD_SHA.toLowerCase()
+      : null;
+    const contractSnapshotSha256 = /^[0-9a-f]{64}$/.test(
+      (fields.CONTRACT_SNAPSHOT_SHA256 ?? '').toLowerCase(),
+    )
+      ? fields.CONTRACT_SNAPSHOT_SHA256.toLowerCase()
+      : null;
+    const role = fields.ROLE === 'technical' || fields.ROLE === 'acceptance' ? fields.ROLE : null;
+    const refreshGeneration = /^\d{1,6}$/.test(fields.REFRESH_GENERATION ?? '')
+      ? Number(fields.REFRESH_GENERATION)
+      : null;
+    const malformed =
+      scheme === null ||
+      pr === null ||
+      headSha === null ||
+      contractSnapshotSha256 === null ||
+      role === null ||
+      refreshGeneration === null ||
+      refreshGeneration < 1;
+    out.push({
+      kind: REFRESH_MARKER,
+      scheme,
+      pr,
+      headSha,
+      contractSnapshotSha256,
+      role,
+      refreshGeneration,
+      signature: fields.SIGNATURE ?? null,
+      malformed,
+    });
+  }
+  return out;
+}
+
+/**
+ * The CURRENT refresh generation for (PR, HEAD, snapshot, role): the
+ * highest generation among validly signed refresh markers, 0 when none
+ * exists. Durable by construction — nothing "clears" a generation; a
+ * failed refresh (AI error, signer error, cancellation, a concurrent
+ * ordinary finalizer) simply leaves the generation current with no
+ * satisfying evidence, so the gate stays red until fresh evidence
+ * binding this generation exists.
+ */
+export function currentRefreshGeneration({ candidates, role, target, publicKey }) {
+  let gen = 0;
+  for (const c of candidates ?? []) {
+    for (const m of parseRefreshMarkers(c.body)) {
+      if (m.malformed) continue;
+      if (m.pr !== target.pr) continue;
+      if (m.headSha !== target.headSha) continue;
+      if (m.contractSnapshotSha256 !== target.contractSnapshotSha256) continue;
+      if (m.role !== role) continue;
+      if (!verifySignature(canonicalRefreshPayload(m), m.signature, publicKey)) continue;
+      if (m.refreshGeneration > gen) gen = m.refreshGeneration;
+    }
+  }
+  return gen;
+}
+
+/** PR-enrollment markers (X4) — see canonicalEnrollmentPayload. */
+export function parseEnrollmentMarkers(text) {
+  const lines = normalizeBody(text).split('\n');
+  const out = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].trim() !== ENROLLMENT_MARKER) continue;
+    const fields = {};
+    for (let j = i + 1; j < Math.min(i + 8, lines.length); j++) {
+      const m = lines[j]
+        .trim()
+        .match(/^(SCHEME|ISSUE|PR|CONTRACT_SNAPSHOT_SHA256|STATUS|SIGNATURE):\s*(.*)$/);
+      if (m) fields[m[1]] = m[2].trim();
+    }
+    const scheme = fields.SCHEME === SCHEME ? SCHEME : null;
+    const issue = /^\d{1,7}$/.test(fields.ISSUE ?? '') ? Number(fields.ISSUE) : null;
+    const pr = /^\d{1,7}$/.test(fields.PR ?? '') ? Number(fields.PR) : null;
+    const contractSnapshotSha256 = /^[0-9a-f]{64}$/.test(
+      (fields.CONTRACT_SNAPSHOT_SHA256 ?? '').toLowerCase(),
+    )
+      ? fields.CONTRACT_SNAPSHOT_SHA256.toLowerCase()
+      : null;
+    const status =
+      fields.STATUS === 'active' || fields.STATUS === 'released' ? fields.STATUS : null;
+    const malformed =
+      scheme === null ||
+      issue === null ||
+      pr === null ||
+      contractSnapshotSha256 === null ||
+      status === null;
+    out.push({
+      kind: ENROLLMENT_MARKER,
+      scheme,
+      issue,
+      pr,
+      contractSnapshotSha256,
+      status,
+      signature: fields.SIGNATURE ?? null,
+      malformed,
+    });
+  }
+  return out;
+}
+
+/**
+ * The authoritative implementation-PR relationship for an issue.
+ * Enrollment events are authority-SIGNED only and the authority is
+ * serialized per issue, so containing-comment order (createdAt, id) is
+ * a trusted chronology here; the LATEST event per PR decides that PR's
+ * state. Mutable "Closes #N" text never enters this computation.
+ */
+export function resolvePrEnrollment({ issueComments, issueNumber, prNumber, authorityKey }) {
+  const events = [];
+  for (const c of issueComments ?? []) {
+    for (const m of parseEnrollmentMarkers(c.body)) {
+      if (m.malformed || m.issue !== issueNumber) continue;
+      if (!verifySignature(canonicalEnrollmentPayload(m), m.signature, authorityKey)) continue;
+      events.push({ ...m, createdAt: String(c.createdAt ?? ''), id: Number(c.id ?? 0) });
+    }
+  }
+  events.sort((a, b) =>
+    a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : a.id - b.id,
+  );
+  const latestByPr = new Map();
+  for (const e of events) latestByPr.set(e.pr, e);
+  const activePrs = [...latestByPr.values()].filter((e) => e.status === 'active').map((e) => e.pr);
+  return {
+    enrolled: latestByPr.get(Number(prNumber))?.status === 'active',
+    activePrs,
+  };
+}
+
+/** Owner-decision markers (X7) — owner-authored only; no signature. */
+export function parseOwnerDecisionMarkers(text) {
+  const lines = normalizeBody(text).split('\n');
+  const out = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].trim() !== OWNER_DECISION_MARKER) continue;
+    const fields = {};
+    for (let j = i + 1; j < Math.min(i + 8, lines.length); j++) {
+      const m = lines[j]
+        .trim()
+        .match(/^(SCHEME|ISSUE|CONTRACT_SNAPSHOT_SHA256|DECISION|REFERENCE):\s*(.*)$/);
+      if (m) fields[m[1]] = m[2].trim();
+    }
+    const scheme = fields.SCHEME === SCHEME ? SCHEME : null;
+    const issue = /^\d{1,7}$/.test(fields.ISSUE ?? '') ? Number(fields.ISSUE) : null;
+    const contractSnapshotSha256 = /^[0-9a-f]{64}$/.test(
+      (fields.CONTRACT_SNAPSHOT_SHA256 ?? '').toLowerCase(),
+    )
+      ? fields.CONTRACT_SNAPSHOT_SHA256.toLowerCase()
+      : null;
+    const decision =
+      fields.DECISION === 'APPROVE_IMPLEMENTATION' || fields.DECISION === 'REVOKE'
+        ? fields.DECISION
+        : null;
+    const reference = (fields.REFERENCE ?? '').trim();
+    const malformed =
+      scheme === null ||
+      issue === null ||
+      contractSnapshotSha256 === null ||
+      decision === null ||
+      reference === '';
+    out.push({
+      kind: OWNER_DECISION_MARKER,
+      scheme,
+      issue,
+      contractSnapshotSha256,
+      decision,
+      reference,
+      malformed,
+    });
+  }
+  return out;
+}
+
+/**
+ * Is there a CURRENT owner authorization for this exact contract
+ * snapshot? Only markers in comments AUTHORED by the owner's human
+ * account count (the platform proves the human); the latest matching
+ * decision governs, so REVOKE works; a decision for any other snapshot
+ * (older revision, changed labels, edited body) counts for nothing —
+ * risk escalation, downgrade-and-back, and every other contract
+ * transition automatically invalidates prior authorization.
+ */
+export function resolveOwnerDecision({ issueComments, issueNumber, snapshotHash, ownerLogin }) {
+  if (!/^[0-9a-f]{64}$/.test(String(snapshotHash ?? ''))) return { approved: false };
+  const events = [];
+  for (const c of issueComments ?? []) {
+    if ((c.author ?? '') !== ownerLogin) continue;
+    for (const m of parseOwnerDecisionMarkers(c.body)) {
+      if (m.malformed || m.issue !== issueNumber) continue;
+      if (m.contractSnapshotSha256 !== snapshotHash) continue;
+      events.push({ ...m, createdAt: String(c.createdAt ?? ''), id: Number(c.id ?? 0) });
+    }
+  }
+  if (events.length === 0) return { approved: false };
+  events.sort((a, b) =>
+    a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : a.id - b.id,
+  );
+  return { approved: events[events.length - 1].decision === 'APPROVE_IMPLEMENTATION' };
+}
+
+/** Lane claim/release markers (Y3). */
+export function parseLaneMarkers(text) {
+  const lines = normalizeBody(text).split('\n');
+  const out = [];
+  for (let i = 0; i < lines.length; i++) {
+    const name = lines[i].trim();
+    if (name !== LANE_CLAIM_MARKER && name !== LANE_RELEASE_MARKER) continue;
+    const fields = {};
+    for (let j = i + 1; j < Math.min(i + 7, lines.length); j++) {
+      const m = lines[j]
+        .trim()
+        .match(/^(SCHEME|ISSUE|CONTRACT_SNAPSHOT_SHA256|CLAIM_ID|SIGNATURE):\s*(.*)$/);
+      if (m) fields[m[1]] = m[2].trim();
+    }
+    const scheme = fields.SCHEME === SCHEME ? SCHEME : null;
+    const issue = /^\d{1,7}$/.test(fields.ISSUE ?? '') ? Number(fields.ISSUE) : null;
+    const contractSnapshotSha256 = /^[0-9a-f]{64}$/.test(
+      (fields.CONTRACT_SNAPSHOT_SHA256 ?? '').toLowerCase(),
+    )
+      ? fields.CONTRACT_SNAPSHOT_SHA256.toLowerCase()
+      : null;
+    const claimId = /^[0-9a-f]{32}$/.test((fields.CLAIM_ID ?? '').toLowerCase())
+      ? fields.CLAIM_ID.toLowerCase()
+      : null;
+    const malformed =
+      scheme === null ||
+      issue === null ||
+      claimId === null ||
+      (name === LANE_CLAIM_MARKER && contractSnapshotSha256 === null);
+    out.push({
+      kind: name,
+      scheme,
+      issue,
+      contractSnapshotSha256,
+      claimId,
+      signature: fields.SIGNATURE ?? null,
+      malformed,
+    });
+  }
+  return out;
+}
+
+/**
+ * Durable lane state for ONE issue: a claim is ACTIVE while no valid
+ * signed release names its claim id. Both directions are
+ * authority-signed — a compromised builder cannot mint a claim to admit
+ * itself, and cannot mint a release to free its lane; removing the
+ * status label only lies to the UI projection, never to this record.
+ */
+export function resolveLaneLease({ issueComments, issueNumber, authorityKey }) {
+  const claims = new Map();
+  const released = new Set();
+  for (const c of issueComments ?? []) {
+    for (const m of parseLaneMarkers(c.body)) {
+      if (m.malformed || m.issue !== issueNumber) continue;
+      if (m.kind === LANE_CLAIM_MARKER) {
+        if (verifySignature(canonicalLaneClaimPayload(m), m.signature, authorityKey))
+          claims.set(m.claimId, m);
+      } else if (verifySignature(canonicalLaneReleasePayload(m), m.signature, authorityKey)) {
+        released.add(m.claimId);
+      }
+    }
+  }
+  const active = [...claims.keys()].filter((id) => !released.has(id));
+  return { active: active.length > 0, claimIds: active };
 }
 
 // ---------------------------------------------------------------------------
@@ -576,25 +1049,35 @@ export function amendmentTransaction({
 // ---------------------------------------------------------------------------
 
 /**
- * Pick the governing verdict for one reviewer. Ordering is
- * timestamp-primary: the latest fully-valid, provenance-verified marker
- * for the exact (pr, issue, headSha, revision) governs; a later valid
- * verdict supersedes an earlier one either direction; anything
- * malformed, mistargeted, or unauthorized never counts and never erases
- * a previous valid verdict.
+ * Pick the governing verdict for one reviewer.
  *
- * Ties: GitHub review ids and comment ids live in different id domains,
- * so ids break ties only WITHIN one source kind (where they are truly
- * chronological). Two contradictory valid verdicts from different
- * source kinds at an indistinguishable timestamp FAIL CLOSED
- * (diagnosis 'ambiguous') — redispatch a fresh review rather than
- * invent a cross-domain chronology.
+ * SIGNED roles (Claude/Gemini): ordering is AUTHENTICATED-SEQUENCE-
+ * primary. Every valid marker carries the signer-generated
+ * EVIDENCE_SEQUENCE inside its signed payload; the highest sequence
+ * governs. Where the marker text physically sits and when it was
+ * re-posted decide NOTHING: a copied older signed APPROVE in a newer
+ * comment keeps its old sequence and can never supersede a later BLOCK.
+ * A duplicate of the same issuance (same sequence, id, verdict) is a
+ * REPLAY and collapses to one; two different issuances claiming the
+ * same sequence are a signer-integrity violation and FAIL CLOSED
+ * (diagnosis 'sequence_conflict').
+ *
+ * NATIVE Codex: the platform is the provenance — a non-dismissed REVIEW
+ * by the connector login whose commit_id equals the target HEAD.
+ * Ordinary users cannot author a review as the connector, so review
+ * chronology (createdAt, then review id) is trusted issuance order for
+ * this role; marker text copied into any comment or non-connector
+ * review never qualifies. Contradictory contemporaneous verdicts
+ * across id domains fail closed ('ambiguous').
+ *
+ * ALL roles: a valid verdict must bind the CURRENT refresh generation
+ * (target.refreshGeneration); evidence from a superseded generation is
+ * 'stale_generation' — a forced refresh whose fresh review then fails
+ * leaves the gate red, never falls back to pre-refresh evidence.
  *
  * provenance:
  *   { kind: 'signature', publicKey }  — Claude/Gemini workflow markers
- *   { kind: 'codex', login }          — Codex native review markers:
- *       must be a non-dismissed REVIEW by `login` whose commit_id equals
- *       the target HEAD, in addition to marker-field matching.
+ *   { kind: 'codex', login }          — Codex native review markers
  */
 export function resolveVerdict({ candidates, markerName, provenance, target }) {
   let diagnosis = 'missing';
@@ -647,15 +1130,38 @@ export function resolveVerdict({ candidates, markerName, provenance, target }) {
         diagnosis = 'wrong_contract';
         continue;
       }
+      if (m.refreshGeneration !== (target.refreshGeneration ?? 0)) {
+        diagnosis = 'stale_generation';
+        continue;
+      }
       valid.push({
         verdict: m.verdict,
         createdAt: String(c.createdAt ?? ''),
         sourceKind: c.kind ?? 'comment',
         id: Number(c.id ?? 0),
+        sequence: m.evidenceSequence,
+        evidenceId: m.evidenceId,
       });
     }
   }
   if (valid.length === 0) return { verdict: null, diagnosis };
+
+  if (provenance.kind === 'signature') {
+    // Authenticated issuance order: collapse replays, reject sequence
+    // forks, let the highest signed sequence govern.
+    const bySequence = new Map();
+    for (const v of valid) {
+      const prev = bySequence.get(v.sequence);
+      if (!prev) {
+        bySequence.set(v.sequence, v);
+      } else if (prev.evidenceId !== v.evidenceId || prev.verdict !== v.verdict) {
+        return { verdict: null, diagnosis: 'sequence_conflict' };
+      }
+      // identical issuance re-posted → replay; the original stands
+    }
+    const ordered = [...bySequence.values()].sort((a, b) => a.sequence - b.sequence);
+    return { verdict: ordered[ordered.length - 1].verdict, diagnosis };
+  }
 
   const maxTime = valid.map((v) => v.createdAt).sort()[valid.length - 1];
   const latest = valid.filter((v) => v.createdAt === maxTime);
@@ -738,7 +1244,7 @@ export function chooseCheckAction({
   runs,
   name,
   conclusion,
-  appSlug = 'github-actions',
+  appSlug = GATE_PUBLISHER_APP_SLUG,
 }) {
   if (!lookupOk) {
     if (conclusion !== 'failure')
@@ -785,29 +1291,92 @@ export function passingPublicationAllowed({ resolution, pr }) {
 }
 
 /**
- * Forced fresh review is AUTHENTICATED HUMAN INTENT, never transport:
- * arriving via workflow_dispatch proves nothing (trusted workflows
- * redispatch the gates automatically for plain reevaluation). A
- * force_review request is honored only for a write+/maintain/admin
- * HUMAN actor — github-actions[bot] can never force paid review, and an
- * unauthorized request is an ERROR (visible), not a silent downgrade.
+ * Forced fresh review is OWNER-ONLY authenticated human intent, never
+ * transport: arriving via workflow_dispatch proves nothing (trusted
+ * workflows redispatch the gates automatically for plain reevaluation).
+ * Forcing incurs paid AI work and invalidates the current reviewer
+ * authorization (a durable refresh-generation bump), so it is a
+ * security-sensitive operator action reserved for the owner. Excluding
+ * `github-actions[bot]` alone is NOT sufficient — a write-permission
+ * GitHub App/bot (e.g. claude[bot]) would pass a permission check — so
+ * the trusted GitHub account TYPE must be `User` AND the login must be
+ * the owner's. An unauthorized request is an ERROR (visible), never a
+ * silent downgrade.
  */
-export function authorizeForceReview({ requested, actor, permission }) {
+export function authorizeForceReview({ requested, actor, actorType, ownerLogin }) {
   if (requested !== true && requested !== 'true') return { force: false, error: null };
-  if (!actor || actor === 'github-actions[bot]') {
+  if (!actor || actorType !== 'User') {
     return {
       force: false,
-      error:
-        'force_review=true from a workflow identity is refused — only an authorized human forces paid review',
+      error: `force_review=true from a non-human identity (actor '${actor ?? ''}', type '${actorType ?? 'unknown'}') is refused — only the owner's human account forces paid review`,
     };
   }
-  if (!isActorAuthorized(permission)) {
+  if (actor !== ownerLogin) {
     return {
       force: false,
-      error: `force_review=true requires write+ permission; actor ${actor} has '${permission}'`,
+      error: `force_review is owner-only (it discards current reviewer authorization and starts paid AI work); actor ${actor} is not @${ownerLogin}`,
     };
   }
   return { force: true, error: null };
+}
+
+/**
+ * A workflow_dispatch workflow must EXIST on the default branch, but a
+ * run can be dispatched against any ref — github.sha then points at
+ * that ref's commit, and PR-controlled code would run in a privileged
+ * definition. Every secret-bearing or trusted-publisher dispatch path
+ * therefore hard-rejects any ref but main; environment main-only
+ * deployment restrictions are the REQUIRED second wall, not optional
+ * defense in depth.
+ */
+export function trustedDispatchRefAllowed(ref) {
+  return ref === 'refs/heads/main';
+}
+
+/**
+ * Untracked paths the pinned run-gemini-cli action legitimately creates
+ * in the workspace during normal operation (verified against the pinned
+ * action source: `.gemini/settings.json` from the `settings` input,
+ * `.gemini/commands/` copied from the action's own tree,
+ * `.gemini/telemetry.log`, and `gemini-artifacts/` logs). ONLY these
+ * exact paths are tolerated as untracked; anything else untracked — and
+ * ANY tracked-file modification, which is checked separately — fails
+ * the integrity guard. Evaluated over `git status --porcelain
+ * --untracked-files=all` paths so nothing hides inside an untracked
+ * directory.
+ */
+export function geminiRuntimeUntrackedAllowed(paths) {
+  const ALLOWED = [
+    /^\.gemini\/settings\.json$/,
+    /^\.gemini\/commands\/[^\0]+$/,
+    /^\.gemini\/telemetry\.log$/,
+    /^gemini-artifacts\/[^\0]+$/,
+  ];
+  const unexpected = (paths ?? []).filter((p) => !ALLOWED.some((re) => re.test(p)));
+  return { ok: unexpected.length === 0, unexpected };
+}
+
+/**
+ * Fold cursor-paginated review-thread pages (Y6): every page must be
+ * well-formed and the LAST page must prove exhaustion
+ * (hasNextPage=false), else the count is unprovable and the caller
+ * fails closed — thread 101 must be able to block, and a malformed or
+ * truncated GraphQL response must never read as "0 unresolved".
+ */
+export function foldReviewThreadPages(pages) {
+  if (!Array.isArray(pages) || pages.length === 0) return { unresolved: null, complete: false };
+  let unresolved = 0;
+  for (const p of pages) {
+    const nodes = p?.nodes;
+    if (!Array.isArray(nodes)) return { unresolved: null, complete: false };
+    for (const n of nodes) {
+      if (n?.isResolved === false) unresolved++;
+      else if (n?.isResolved !== true) return { unresolved: null, complete: false };
+    }
+  }
+  const last = pages[pages.length - 1];
+  if (last?.pageInfo?.hasNextPage !== false) return { unresolved: null, complete: false };
+  return { unresolved, complete: true };
 }
 
 /**
@@ -887,9 +1456,21 @@ export function isContractAmendmentAuthorized(actor, ownerLogin) {
  * valid current baseline is REQUIRED before the lane may be claimed —
  * no baseline, no admission, no status:building, no secret-bearing job.
  */
-export function evaluateBuildAdmission({ issue, requiredBuilder, openLanes, contract }) {
+export function evaluateBuildAdmission({
+  issue,
+  requiredBuilder,
+  openLanes,
+  laneSearchComplete = true,
+  contract,
+  ownerDecision,
+}) {
   const reasons = [];
   const add = (code, message) => reasons.push({ code, message });
+  if (laneSearchComplete === false)
+    add(
+      'ADMIT_LANE_UNPROVABLE',
+      'The implementation-lane search could not be proven complete (pagination ceiling or API failure); an occupied lane may be hidden — admission fails closed.',
+    );
   if (!issue || !issue.exists) add('ADMIT_ISSUE_NOT_FOUND', 'The target issue does not exist.');
   else {
     const c = contract ?? { baselineFound: false, invalid: null, amended: false };
@@ -925,6 +1506,18 @@ export function evaluateBuildAdmission({ issue, requiredBuilder, openLanes, cont
     const risk = (issue.riskLabels ?? []).filter((l) => RISK_RE.test(l));
     if (risk.length !== 1)
       add('ADMIT_RISK_INVALID', `Issue #${issue.number} must carry exactly one risk label.`);
+    // R3 owner authorization BEFORE build admission (the frozen
+    // operating model): R3 may not consume a builder lane or a
+    // secret-bearing builder job until a CURRENT owner decision bound
+    // to the exact active contract snapshot exists. Missing, revoked,
+    // wrong-snapshot (old revision, changed labels, edited body) all
+    // block; a risk escalation to R3 invalidates any earlier admission
+    // authority automatically because the snapshot changes.
+    if (risk.length === 1 && risk[0] === 'risk:R3' && ownerDecision?.approved !== true)
+      add(
+        'ADMIT_R3_DECISION_MISSING',
+        `Issue #${issue.number} is risk:R3 with no current owner-authorized REKODA_OWNER_DECISION for the active contract snapshot; R3 work is never admitted without it.`,
+      );
     const builder = (issue.builderLabels ?? []).filter((l) => BUILDER_RE.test(l));
     if (builder.length !== 1 || builder[0] !== requiredBuilder)
       add('ADMIT_WRONG_BUILDER', `Issue #${issue.number} is not labelled ${requiredBuilder}.`);
@@ -944,6 +1537,47 @@ export function evaluateBuildAdmission({ issue, requiredBuilder, openLanes, cont
       );
   }
   return { admit: reasons.length === 0, reasons };
+}
+
+/**
+ * The builder preflight's POST-CLAIM verification: the trusted
+ * admission authority has already admitted the issue and posted the
+ * signed lane claim (the durable authorization to build), and the
+ * label transition to status:building already happened — so this check
+ * verifies the CLAIM, not READY-ness. A manual dispatch against an
+ * unclaimed issue is refused here with no secret-bearing job: only the
+ * admission authority (which holds the signing key and the lane lock)
+ * can create the claim.
+ */
+export function evaluateBuildStart({ issue, requiredBuilder, lease, contract }) {
+  const reasons = [];
+  const add = (code, message) => reasons.push({ code, message });
+  if (!issue || !issue.exists) add('START_ISSUE_NOT_FOUND', 'The target issue does not exist.');
+  else {
+    if (issue.state !== 'open') add('START_ISSUE_NOT_OPEN', `Issue #${issue.number} is not open.`);
+    if (!issue.agentTask)
+      add('START_NOT_AGENT_TASK', `Issue #${issue.number} is not an agent-task.`);
+    const builder = (issue.builderLabels ?? []).filter((l) => BUILDER_RE.test(l));
+    if (builder.length !== 1 || builder[0] !== requiredBuilder)
+      add('START_WRONG_BUILDER', `Issue #${issue.number} is not labelled ${requiredBuilder}.`);
+    if (!(issue.labels ?? []).includes('status:building'))
+      add(
+        'START_NOT_BUILDING',
+        `Issue #${issue.number} is not status:building — the admission authority claims the lane (labels + signed claim) before any builder job starts.`,
+      );
+    if (lease?.active !== true)
+      add(
+        'START_LEASE_MISSING',
+        `Issue #${issue.number} holds no active signed REKODA_IMPLEMENTATION_LANE_CLAIM; only the admission authority can create one — dispatch the contract authority (mode=baseline), never the builder directly.`,
+      );
+    const c = contract ?? { baselineFound: false, invalid: null, amended: false };
+    if (c.invalid || !c.baselineFound || c.pendingFreeze || c.amended || c.labelsDiverged)
+      add(
+        'START_CONTRACT_INVALID',
+        `Issue #${issue.number} no longer carries a single valid, current, authorized contract; the builder does not start.`,
+      );
+  }
+  return { start: reasons.length === 0, reasons };
 }
 
 // ---------------------------------------------------------------------------
@@ -1070,6 +1704,25 @@ export function evaluate(state, mode = 'full') {
       revision = rev.revision;
     }
     if (revision !== null) issue._activeSnapshotHash = rev.snapshotHash;
+
+    // AUTHORITATIVE ENROLLMENT (X4): the closing reference above is
+    // DISCOVERY only — mutable PR body text can gain or lose "Closes
+    // #N" at any moment, so it can never be the authorization
+    // relationship. Only an authority-signed active REKODA_PR_ENROLLMENT
+    // record makes this PR the implementation PR; without it no gate
+    // passes, whatever text the PR body carries and whenever it gained
+    // it — a mid-amendment "Closes #N" edit enrolls nothing.
+    const enr = resolvePrEnrollment({
+      issueComments: issue.comments,
+      issueNumber: issue.number,
+      prNumber: state.pr.number,
+      authorityKey: keys.contractAuthority ?? null,
+    });
+    if (!enr.enrolled)
+      add(
+        'PR_NOT_ENROLLED',
+        `PR #${state.pr.number} holds no active trusted enrollment for issue #${issue.number}; a closing reference is only a proposal — the contract authority's signed REKODA_PR_ENROLLMENT record (and nothing weaker) makes a PR the implementation PR.`,
+      );
   }
 
   const target =
@@ -1083,21 +1736,44 @@ export function evaluate(state, mode = 'full') {
         }
       : null;
 
+  // Durable refresh generations (X3): the CURRENT generation per role,
+  // from control-plane-signed REKODA_REVIEW_REFRESH markers. The
+  // technical generation is signed by the Claude-reviewer control key
+  // and the acceptance generation by the Gemini-reviewer control key —
+  // the keys the trusted refresh jobs hold; the AI never creates one.
+  const techGeneration = target
+    ? currentRefreshGeneration({
+        candidates: state.techEvidence?.candidates,
+        role: 'technical',
+        target,
+        publicKey: keys.claudeReviewer ?? null,
+      })
+    : 0;
+  const geminiGeneration = target
+    ? currentRefreshGeneration({
+        candidates: state.geminiEvidence?.candidates,
+        role: 'acceptance',
+        target,
+        publicKey: keys.geminiReviewer ?? null,
+      })
+    : 0;
+
   // Technical review — builder-aware; provenance makes self-satisfaction impossible.
   if (prBuilder && target) {
+    const techTarget = { ...target, refreshGeneration: techGeneration };
     const tech =
       prBuilder === 'builder:claude'
         ? resolveVerdict({
             candidates: state.techEvidence?.candidates,
             markerName: MARKERS.codex,
             provenance: { kind: 'codex', login: cfg.codexLogin },
-            target,
+            target: techTarget,
           })
         : resolveVerdict({
             candidates: state.techEvidence?.candidates,
             markerName: MARKERS.claude,
             provenance: { kind: 'signature', publicKey: keys.claudeReviewer ?? null },
-            target,
+            target: techTarget,
           });
     if (tech.verdict === 'BLOCK') {
       add('TECH_BLOCK', 'The technical reviewer BLOCKED this HEAD/revision.');
@@ -1129,6 +1805,14 @@ export function evaluate(state, mode = 'full') {
           'TECH_AMBIGUOUS_ORDER',
           'Contradictory contemporaneous technical verdicts with no provable order — fail closed; redispatch a fresh review.',
         ],
+        sequence_conflict: [
+          'TECH_SEQUENCE_CONFLICT',
+          'Two different signed technical issuances claim the same evidence sequence — signer-integrity violation; fail closed and redispatch a fresh review.',
+        ],
+        stale_generation: [
+          'TECH_REFRESH_REQUIRED',
+          `A forced fresh technical review is in effect (current refresh generation ${techGeneration}); only evidence binding that generation can satisfy this gate — pre-refresh evidence never returns.`,
+        ],
         missing: ['TECH_APPROVAL_MISSING', 'No technical-review verdict exists for this PR.'],
       };
       add(...map[tech.diagnosis]);
@@ -1141,7 +1825,7 @@ export function evaluate(state, mode = 'full') {
       candidates: state.geminiEvidence?.candidates,
       markerName: MARKERS.gemini,
       provenance: { kind: 'signature', publicKey: keys.geminiReviewer ?? null },
-      target,
+      target: { ...target, refreshGeneration: geminiGeneration },
     });
     if (gem.verdict === 'BLOCK') {
       add('GEMINI_BLOCK', 'Gemini system acceptance BLOCKED this HEAD/revision.');
@@ -1173,6 +1857,14 @@ export function evaluate(state, mode = 'full') {
           'GEMINI_AMBIGUOUS_ORDER',
           'Contradictory contemporaneous Gemini verdicts with no provable order — fail closed; redispatch a fresh review.',
         ],
+        sequence_conflict: [
+          'GEMINI_SEQUENCE_CONFLICT',
+          'Two different signed Gemini issuances claim the same evidence sequence — signer-integrity violation; fail closed and redispatch a fresh review.',
+        ],
+        stale_generation: [
+          'GEMINI_REFRESH_REQUIRED',
+          `A forced fresh acceptance review is in effect (current refresh generation ${geminiGeneration}); only evidence binding that generation can satisfy this gate — pre-refresh evidence never returns.`,
+        ],
         missing: [
           'GEMINI_APPROVAL_MISSING',
           'No Gemini system-acceptance verdict exists for this PR.',
@@ -1194,13 +1886,23 @@ export function evaluate(state, mode = 'full') {
       `${lanes.length} implementation lanes are active (issues ${lanes.map((l) => `#${l.issue}`).join(', ')}); the contract allows exactly one.`,
     );
 
-  // R3: recorded owner decision + owner approval of the current HEAD.
+  // R3: a CURRENT owner decision bound to the exact active contract
+  // snapshot (a trustworthy owner-authored marker, never mutable
+  // issue-body text alone) + owner approval of the current HEAD.
   if (prRisk === 'risk:R3') {
-    if (issue && !issueFormField(issue.body, 'Owner decision reference'))
-      add(
-        'R3_OWNER_DECISION_MISSING',
-        `Issue #${issue.number} records no owner decision reference; R3 requires one before implementation.`,
-      );
+    if (issue) {
+      const decision = resolveOwnerDecision({
+        issueComments: issue.comments,
+        issueNumber: issue.number,
+        snapshotHash: issue._activeSnapshotHash ?? null,
+        ownerLogin: cfg.ownerLogin,
+      });
+      if (!decision.approved)
+        add(
+          'R3_OWNER_DECISION_MISSING',
+          `Issue #${issue.number} carries no current owner-authorized REKODA_OWNER_DECISION for the active contract snapshot; R3 requires one (missing, revoked, or bound to a superseded snapshot all block).`,
+        );
+    }
     const ownerApproved = (state.ownerReviews ?? []).some(
       (r) =>
         r.author === cfg.ownerLogin &&
@@ -1240,6 +1942,7 @@ const PREREQ_CODES = new Set([
   'CONTRACT_HISTORY_INVALID',
   'CONTRACT_AMENDMENT_IN_PROGRESS',
   'CONTRACT_LABELS_DIVERGED',
+  'PR_NOT_ENROLLED',
 ]);
 
 function filterByMode(reasons, mode) {

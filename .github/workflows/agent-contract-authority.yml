@@ -1,59 +1,71 @@
 # Contract authority — the only workflow that can SIGN contract
-# baseline/revision/amendment-freeze markers
+# baseline/revision/amendment-freeze/enrollment/lane-lease markers
 # (docs/AUTONOMOUS-ENGINEERING.md §6). Deterministic, no AI. Its
 # environment (agents-contract-authority) holds
 # CONTRACT_AUTHORITY_SIGNING_KEY — a key the builder, planner and
 # reviewers do not possess, which is what separates contract authority
 # from everyone who merely wants the contract changed. The owner's human
-# account is the other authorized baseline source (unsigned; the
-# platform proves a human authored it).
+# account is the other authorized baseline/decision source (unsigned;
+# the platform proves a human authored it).
+#
+# DISPATCH TRUST: workflow_dispatch runs can target any ref, so every
+# entry point first refuses non-main refs; the agents-contract-authority
+# environment additionally restricts deployment branches to main.
 #
 # BASELINE (mode=baseline dispatch, or a human label event): when an
 # agent-task issue carries status:ready plus exactly one risk and one
-# builder label (labels RE-FETCHED at decision time, so any labelling
-# order works), it records the signed REKODA_CONTRACT_BASELINE — with
-# RISK and BUILDER inside the signed snapshot — if no VALID baseline
-# exists yet, then dispatches the Claude builder when builder:claude.
-# Existence is decided by the SAME canonical computation admission uses
-# (contract-status.mjs → computeContractRevision): text that merely
-# contains a marker name, a malformed/unsigned/wrong-issue marker, or a
-# bad signature never suppresses the real baseline; conflicting
-# AUTHORIZED history fails closed instead of being papered over. The
-# planner EXPLICITLY dispatches this entry point (GITHUB_TOKEN label
-# events never trigger workflows — GitHub's recursion suppression), so
-# autonomous promotion does not depend on event recursion.
+# builder label (labels RE-FETCHED at decision time), it records the
+# signed REKODA_CONTRACT_BASELINE if no VALID baseline exists yet —
+# for risk:R3 ONLY after a current owner REKODA_OWNER_DECISION bound to
+# the proposed baseline snapshot exists (X7) — then, under the
+# repository-wide implementation-lane lock, runs the full admission,
+# posts the signed LANE CLAIM (the durable lane truth — Y3), claims the
+# labels, and dispatches the Claude builder. The builder's own
+# preflight then verifies the CLAIM (not READY-ness); it can never mint
+# one itself.
+#
+# ENROLLMENT (mode=enroll — X4): closing references in mutable PR body
+# text are DISCOVERY only. This entry point independently verifies the
+# deterministic preconditions (open same-repo non-fork PR closing
+# exactly this issue; valid current contract; no other active
+# enrollment), signs the REKODA_PR_ENROLLMENT record, and immediately
+# redispatches the gates for that PR — enrollment always requests
+# finalization, so a newly enrolled PR is freshly evaluated before it
+# can ever be merge-authorized.
 #
 # AMENDMENT (mode=revision dispatch, owner-only) — the atomic
 # freeze-before-mutate transaction, with the freeze itself part of the
-# EVALUATOR's merge contract, not merely red check writes:
-#   1. plan: authorize the owner, compute current revision, find every
-#      linked open PR (exhaustive; unprovable → abort);
-#   2. freeze_marker: post the SIGNED REKODA_CONTRACT_AMENDMENT_FREEZE
-#      (from → target revision). From this durable moment the evaluator
-#      returns CONTRACT_AMENDMENT_IN_PROGRESS for every linked PR: NO
-#      finalizer, whenever scheduled, can conclude an old-revision green
-#      after reading state that contains the freeze;
-#   3. barrier (matrix, one job per linked PR, inside that PR's
-#      rekoda-gates-pr-<pr> group): forces the three required checks red.
-#      After a PR's barrier completes, every later check writer entered
-#      the group AFTER the freeze marker existed — its state read
-#      contains the freeze (before signing) or the new revision (after),
-#      and either way old-revision green is impossible. A finalizer that
-#      entered the group BEFORE the barrier had its writes overwritten
-#      red by the barrier itself. At the moment the revision is signed,
-#      every linked PR is therefore non-merge-authorizing and cannot be
-#      re-greened under the old revision;
-#   4. sign: post the SIGNED revision marker (recording the current
-#      risk/builder labels in the snapshot). Its existence is exactly
-#      what EXPIRES the freeze — the freeze and the new revision hand
-#      over atomically inside evaluator state, with no interval in
-#      which the old revision can authorize anything;
-#   5. dispatch: re-run the gates per linked PR (JSON parsed with a real
-#      parser — [70,73] dispatches 70 and 73, never 7073). A failed
-#      dispatch leaves the PR blocked (frozen or wrong-revision), never
-#      silently green.
-# Any partial failure leaves the freeze active and every linked PR
+# EVALUATOR's merge contract:
+#   1. plan: authorize the owner, compute current revision, take the
+#      DETERMINATE amendment set — the union of the trusted ACTIVE
+#      enrollments (authoritative; only this serialized workflow can
+#      change them, so the set cannot grow mid-transaction) and the
+#      current body-link discovery (defense in depth); unprovable →
+#      abort;
+#   2. freeze_marker: post the SIGNED amendment freeze. From this
+#      durable moment the evaluator returns
+#      CONTRACT_AMENDMENT_IN_PROGRESS for the issue's PRs;
+#   3. barrier (matrix, per target PR, inside that HEAD's
+#      rekoda-authorization-sha-* lane, using the DEDICATED Gate
+#      Publisher App token): red-only revocation of the three required
+#      checks. Red-only writes are always safe; a finalizer scheduled
+#      before the freeze either finished before the barrier (its green
+#      is overwritten inside the same SHA lane) or re-reads state
+#      inside its own lock and refuses;
+#   4. sign: post the SIGNED revision (expires the freeze atomically) —
+#      only when the freshly fetched snapshot still equals the
+#      owner-authorized hash;
+#   5. dispatch: re-run the gates per target PR. A PR that adds
+#      "Closes #N" DURING the transaction gains nothing: it holds no
+#      enrollment, so the evaluator blocks it categorically, and the
+#      no-secret request workflow (pull_request: edited) re-evaluates
+#      it promptly — the freeze does not need to chase mutable text.
+# Any partial failure leaves the freeze active and every target PR
 # evaluator-blocked; recovery is the owner re-running the amendment.
+#
+# LANE RELEASE (mode=release-lane, owner-only — Y3): posts the signed
+# release for the issue's active lane claims. Only this authority can
+# release a lane; a compromised builder stripping labels cannot.
 name: Agent — contract authority
 
 on:
@@ -62,14 +74,18 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: baseline (record baseline + hand off) or revision (owner-only amendment)
+        description: revision (owner amendment) | baseline (record + hand off) | enroll (PR enrollment) | release-lane (owner lane release)
         required: false
         default: revision
         type: choice
-        options: [revision, baseline]
+        options: [revision, baseline, enroll, release-lane]
       issue:
         description: Issue number
         required: true
+        type: number
+      pr:
+        description: 'mode=enroll: the PR to enroll as the implementation PR'
+        required: false
         type: number
       revision:
         description: 'mode=revision: new revision number (previous + 1)'
@@ -84,9 +100,7 @@ on:
       # (scripts/agents/amendment-context.mjs), reviews exactly that
       # proposed state, and passes its hash here. The plan job verifies
       # the CURRENT proposal still matches it, and the signer re-verifies
-      # at the last instant — any drift (body, risk, builder) after
-      # authorization refuses the amendment; "latest state wins" never
-      # applies.
+      # at the last instant.
       expected_snapshot_hash:
         description: 'mode=revision: the owner-reviewed proposed snapshot hash (from amendment-context.mjs)'
         required: false
@@ -94,9 +108,10 @@ on:
 
 permissions: {}
 
-# Amendments/baselines for ONE issue serialize; different issues never
-# contend. cancel-in-progress: false — a transaction in flight is never
-# cancelled midway.
+# Authority transactions for ONE issue serialize; different issues never
+# contend (the baseline job's lane claim additionally takes the
+# repository-wide lane lock at job level). cancel-in-progress: false —
+# a transaction in flight is never cancelled midway.
 concurrency:
   group: contract-authority-${{ github.event.issue.number || inputs.issue }}
   cancel-in-progress: false
@@ -110,8 +125,8 @@ jobs:
   # Amendment transaction (workflow_dispatch mode=revision, owner-only)#
   # ---------------------------------------------------------------- #
   plan:
-    name: Authorize and find linked PRs
-    if: github.event_name == 'workflow_dispatch' && inputs.mode != 'baseline'
+    name: Authorize and take the determinate amendment set
+    if: github.event_name == 'workflow_dispatch' && (inputs.mode == 'revision' || inputs.mode == '')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -120,6 +135,7 @@ jobs:
       issues: read
     outputs:
       prs: ${{ steps.linked.outputs.prs }}
+      targets: ${{ steps.linked.outputs.targets }}
       has_prs: ${{ steps.linked.outputs.has_prs }}
       from_revision: ${{ steps.current.outputs.from_revision }}
       expected_snapshot_hash: ${{ steps.current.outputs.expected_snapshot_hash }}
@@ -130,9 +146,14 @@ jobs:
       REVISION_INPUT: ${{ inputs.revision }}
       REASON_INPUT: ${{ inputs.reason }}
     steps:
-      # workflow_dispatch executes the default-branch definition;
-      # github.sha IS that trusted commit — definition and policy share
-      # one immutable trust root.
+      - name: Refuse non-main dispatch refs
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "::error::Privileged dispatch must target refs/heads/main (got $GITHUB_REF); refusing."
+            exit 1
+          fi
+
       - name: Checkout trusted policy at the definition's own SHA
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -165,10 +186,6 @@ jobs:
             echo "::error::mode=revision requires a non-empty reason."
             exit 1
           fi
-          # Independently compute the CURRENT proposed snapshot with
-          # trusted code and require it to equal the hash the owner
-          # authorized. A mismatch means the proposal changed between
-          # the owner's review and this dispatch — refuse immediately.
           node scripts/agents/amendment-context.mjs --repo "$REPO" --issue "$ISSUE" \
             --target-revision "$REVISION_INPUT" > /tmp/amendment.txt
           cat /tmp/amendment.txt
@@ -183,25 +200,40 @@ jobs:
             exit 1
           fi
 
-      - name: Find every linked open PR (exhaustive; unprovable → abort)
+      # The DETERMINATE amendment set (X4): trusted ACTIVE enrollments
+      # (authoritative; only this per-issue-serialized workflow mutates
+      # them, so the set cannot change under the transaction) UNION the
+      # current body-link discovery (defense in depth for the window
+      # before enrollment existed). Unprovable → abort. Each target's
+      # CURRENT head is captured for the barrier's SHA lane.
+      - name: Take the determinate target set (enrollment ∪ discovery; unprovable → abort)
         id: linked
         run: |
           set -euo pipefail
-          node scripts/agents/find-linked-prs.mjs --repo "$REPO" --issue "$ISSUE" > /tmp/linked-prs.txt
-          prs=$(node --input-type=module -e '
+          node scripts/agents/find-linked-prs.mjs --repo "$REPO" --issue "$ISSUE" > /tmp/discovered.txt
+          node scripts/agents/pr-enrollment.mjs --repo "$REPO" --issue "$ISSUE" --list > /tmp/enrolled.txt
+          targets=$(node --input-type=module -e '
             import { readFileSync } from "node:fs";
-            const list = readFileSync("/tmp/linked-prs.txt", "utf8")
-              .split("\n").map((s) => s.trim()).filter(Boolean).map(Number);
-            if (list.some((n) => !Number.isInteger(n))) process.exit(1);
-            console.log(JSON.stringify(list));
+            import { execFileSync } from "node:child_process";
+            const nums = (f) => readFileSync(f, "utf8").split("\n").map((s) => s.trim()).filter(Boolean).map(Number);
+            const set = [...new Set([...nums("/tmp/discovered.txt"), ...nums("/tmp/enrolled.txt")])];
+            if (set.some((n) => !Number.isInteger(n) || n <= 0)) process.exit(1);
+            const targets = set.map((pr) => {
+              const raw = JSON.parse(execFileSync("gh", ["api", `repos/${process.env.REPO}/pulls/${pr}`], { encoding: "utf8" }));
+              return { pr, head: String(raw.head?.sha ?? "").toLowerCase() };
+            });
+            if (targets.some((t) => !/^[0-9a-f]{40}$/.test(t.head))) process.exit(1);
+            console.log(JSON.stringify(targets));
           ')
+          prs=$(T="$targets" node --input-type=module -e 'console.log(JSON.stringify(JSON.parse(process.env.T).map((x) => x.pr)));')
+          echo "targets=$targets" >> "$GITHUB_OUTPUT"
           echo "prs=$prs" >> "$GITHUB_OUTPUT"
           if [ "$prs" = "[]" ]; then
             echo "has_prs=false" >> "$GITHUB_OUTPUT"
           else
             echo "has_prs=true" >> "$GITHUB_OUTPUT"
           fi
-          echo "Linked open PRs: $prs"
+          echo "Amendment target set: $targets"
 
   freeze_marker:
     name: Post the signed amendment-freeze marker
@@ -233,26 +265,26 @@ jobs:
             --sign-env CONTRACT_AUTHORITY_SIGNING_KEY --post
 
   barrier:
-    name: 'Barrier — force linked PR checks red'
+    name: 'Barrier — force target PR checks red (gate-publisher identity)'
     needs: [plan, freeze_marker]
     if: >-
       !cancelled() && needs.freeze_marker.result == 'success' &&
       needs.plan.outputs.has_prs == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    environment: agents-gate-publisher
     strategy:
       fail-fast: false # barrier every PR we can; any failure still aborts the signing
       matrix:
-        pr: ${{ fromJSON(needs.plan.outputs.prs) }}
-    # The SAME group as this PR's finalizer: after this job, every later
-    # check writer for the PR read state that contains the freeze marker.
+        target: ${{ fromJSON(needs.plan.outputs.targets) }}
+    # The SAME SHA lane as every other gate-check writer: after this
+    # red-only invocation, any later writer for the SHA re-reads state
+    # (which contains the freeze) inside the same lane.
     concurrency:
-      group: rekoda-gates-pr-${{ matrix.pr }}
+      group: rekoda-authorization-sha-${{ matrix.target.head }}
       cancel-in-progress: false
     permissions:
       contents: read
-      pull-requests: read
-      checks: write
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
@@ -262,15 +294,31 @@ jobs:
           ref: ${{ needs.plan.outputs.trusted_sha }}
           fetch-depth: 1
 
-      - name: Force this PR's required checks red under the freeze
+      - name: Mint the Rekoda Gate Publisher token
+        id: app_token
+        env:
+          REKODA_GATE_PUBLISHER_APP_ID: ${{ secrets.REKODA_GATE_PUBLISHER_APP_ID }}
+          REKODA_GATE_PUBLISHER_APP_PRIVATE_KEY: ${{ secrets.REKODA_GATE_PUBLISHER_APP_PRIVATE_KEY }}
+        run: node scripts/agents/app-token.mjs --repo "$REPO"
+
+      - name: Force this PR's required checks red under the freeze (red-only)
+        env:
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
+          PLANNED_HEAD: ${{ matrix.target.head }}
         run: |
           set -euo pipefail
-          head=$(gh api "repos/$REPO/pulls/${{ matrix.pr }}" --jq '.head.sha')
-          echo "Barrier for PR #${{ matrix.pr }} at $head — the freeze marker is durable; overwriting any pre-freeze conclusion…"
-          for name in "Agent policy gate" "Technical Review Gate" "Gemini Acceptance Gate"; do
-            node scripts/agents/post-check.mjs --repo "$REPO" --name "$name" --sha "$head" \
-              --conclusion failure --title "Contract amendment in progress" \
-              --summary "Issue #$ISSUE is under a signed amendment freeze; this check stays red until the new revision is signed and the gates re-evaluate under it."
+          # Red on the planned head (the SHA this job's lane serializes)
+          # AND on the current head if it moved — red-only writes are
+          # safe anywhere, and the moved head's own request re-evaluates
+          # under the freeze regardless.
+          current=$(GH_TOKEN="${{ secrets.GITHUB_TOKEN }}" gh api "repos/$REPO/pulls/${{ matrix.target.pr }}" --jq '.head.sha' | tr 'A-F' 'a-f')
+          for sha in $(printf '%s\n%s\n' "$PLANNED_HEAD" "$current" | sort -u); do
+            echo "Barrier for PR #${{ matrix.target.pr }} at $sha — the freeze marker is durable; overwriting any pre-freeze conclusion…"
+            for name in "Agent policy gate" "Technical Review Gate" "Gemini Acceptance Gate"; do
+              node scripts/agents/post-check.mjs --repo "$REPO" --name "$name" --sha "$sha" \
+                --conclusion failure --title "Contract amendment in progress" \
+                --summary "Issue #$ISSUE is under a signed amendment freeze; this check stays red until the new revision is signed and the gates re-evaluate under it."
+            done
           done
 
   sign:
@@ -278,7 +326,7 @@ jobs:
     needs: [plan, freeze_marker, barrier]
     # Only when the freeze marker is durable AND every barrier completed
     # (or there was nothing to barrier). Any failure leaves the freeze
-    # active: every linked PR stays evaluator-blocked until the owner
+    # active: every target PR stays evaluator-blocked until the owner
     # re-runs the amendment — never a silent re-green.
     if: >-
       !cancelled() && needs.freeze_marker.result == 'success' &&
@@ -302,6 +350,27 @@ jobs:
           ref: ${{ needs.plan.outputs.trusted_sha }}
           fetch-depth: 1
 
+      # X4 (thread 2): re-verify the target set is still determinate
+      # before expiring the freeze. Enrollment is authoritative and this
+      # workflow is serialized per issue, so the trusted set cannot have
+      # changed — but a NEW body-link (a proposal) appearing during the
+      # transaction is re-checked here: it cannot pass any gate without
+      # enrollment, so signing is safe; we log it for the audit trail.
+      - name: Re-enumerate current links before expiring the freeze
+        run: |
+          set -euo pipefail
+          node scripts/agents/find-linked-prs.mjs --repo "$REPO" --issue "$ISSUE" > /tmp/discovered-now.txt
+          node scripts/agents/pr-enrollment.mjs --repo "$REPO" --issue "$ISSUE" --list > /tmp/enrolled-now.txt
+          PLANNED='${{ needs.plan.outputs.prs }}' node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            const nums = (f) => readFileSync(f, "utf8").split("\n").map((s) => s.trim()).filter(Boolean).map(Number);
+            const now = new Set([...nums("/tmp/discovered-now.txt"), ...nums("/tmp/enrolled-now.txt")]);
+            const planned = new Set(JSON.parse(process.env.PLANNED));
+            const late = [...now].filter((n) => !planned.has(n));
+            for (const n of late)
+              console.log(`::warning::PR #${n} gained a closing reference during the amendment; it holds NO enrollment, so the evaluator blocks it categorically (PR_NOT_ENROLLED) — its own request-workflow run re-evaluates it.`);
+          '
+
       - name: Post the signed revision marker (the authoritative transition; expires the freeze)
         env:
           EXPECTED_SNAPSHOT: ${{ needs.plan.outputs.expected_snapshot_hash }}
@@ -309,10 +378,7 @@ jobs:
           set -euo pipefail
           # The signer itself re-fetches fresh state and refuses at the
           # last instant unless the proposed snapshot STILL equals the
-          # owner-authorized hash carried through the transaction — a
-          # collaborator edit during the barriers can never be signed;
-          # the freeze keeps every linked PR blocked and the owner
-          # restarts the amendment against the new proposal.
+          # owner-authorized hash carried through the transaction.
           node scripts/agents/contract-revision.mjs --repo "$REPO" --issue "$ISSUE" \
             --revision "$REVISION_INPUT" --reason "$REASON_INPUT" \
             --expected-snapshot-hash "$EXPECTED_SNAPSHOT" \
@@ -333,8 +399,7 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       # The compact JSON list from the plan job — parsed with a real JSON
-      # parser, via env (untrusted-shaped data never touches shell
-      # syntax): [70,73] → 70 and 73, NEVER 7073.
+      # parser, via env: [70,73] → 70 and 73, NEVER 7073.
       PRS_JSON: ${{ needs.plan.outputs.prs }}
     steps:
       - name: Checkout trusted policy at the definition's own SHA
@@ -343,40 +408,157 @@ jobs:
           ref: ${{ needs.plan.outputs.trusted_sha }}
           fetch-depth: 1
 
-      - name: Redispatch Agent — gates for every linked PR
+      - name: Redispatch Agent — gates for every target PR
         run: |
           set -euo pipefail
           node --input-type=module -e '
             import { parsePrNumbersJson } from "./scripts/agents/evaluator.mjs";
             const prs = parsePrNumbersJson(process.env.PRS_JSON);
-            if (prs === null) { console.error("::error::Linked-PR list is not a valid JSON array of PR numbers."); process.exit(1); }
+            if (prs === null) { console.error("::error::Target-PR list is not a valid JSON array of PR numbers."); process.exit(1); }
             console.log(prs.join("\n"));
           ' > /tmp/prs.txt
           while IFS= read -r pr; do
             [ -n "$pr" ] || continue
             echo "Redispatching the gates for PR #$pr under the new revision."
             # Plain reevaluation — the new revision itself makes old
-            # evidence stale; force is authenticated HUMAN intent only.
+            # evidence stale; force is authenticated OWNER intent only.
             gh workflow run agent-gates.yml --repo "$REPO" --ref main -f pr="$pr" -f force_review=false
           done < /tmp/prs.txt
 
   # ---------------------------------------------------------------- #
-  # Baseline recording + builder hand-off                             #
+  # PR enrollment (workflow_dispatch mode=enroll — X4)                #
+  # ---------------------------------------------------------------- #
+  enroll:
+    name: Enroll the implementation PR (signed record + fresh finalization)
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'enroll'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: agents-contract-authority
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: write
+      actions: write # the mandatory post-enrollment gates dispatch
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      CONTRACT_AUTHORITY_SIGNING_KEY: ${{ secrets.CONTRACT_AUTHORITY_SIGNING_KEY }}
+      ACTOR: ${{ github.actor }}
+      PR_INPUT: ${{ inputs.pr }}
+    steps:
+      - name: Refuse non-main dispatch refs
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "::error::Privileged dispatch must target refs/heads/main (got $GITHUB_REF); refusing."
+            exit 1
+          fi
+
+      - name: Checkout trusted policy at the definition's own SHA
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+
+      - name: Authorize actor
+        run: |
+          set -euo pipefail
+          # Trusted-workflow dispatch (the gates' enrollment request via
+          # GITHUB_TOKEN) appears as github-actions[bot]; only
+          # repository workflows can be that actor, and every
+          # precondition is independently re-verified by the enrollment
+          # script — the request itself grants nothing.
+          if [ "$ACTOR" = "github-actions[bot]" ]; then
+            echo "Dispatched by a trusted default-branch workflow."
+            exit 0
+          fi
+          perm=$(gh api "repos/$REPO/collaborators/$ACTOR/permission" --jq .permission)
+          case "$perm" in
+            admin|maintain|write) echo "Actor $ACTOR permission: $perm" ;;
+            *) echo "::error::Actor $ACTOR (permission: $perm) may not drive contract authority."; exit 1 ;;
+          esac
+
+      - name: Verify preconditions, sign and post the enrollment
+        run: |
+          set -euo pipefail
+          if [ -z "${PR_INPUT:-}" ]; then
+            echo "::error::mode=enroll requires the pr input."
+            exit 1
+          fi
+          node scripts/agents/pr-enrollment.mjs --repo "$REPO" --issue "$ISSUE" \
+            --pr "$PR_INPUT" --enroll --sign-env CONTRACT_AUTHORITY_SIGNING_KEY
+
+      # Enrollment always REQUESTS FINALIZATION: the newly enrolled PR
+      # is freshly evaluated before its checks can mean anything —
+      # neutral-green state from its ungoverned past is republished as
+      # governed evaluation by the finalizer.
+      - name: Dispatch the gates for the enrolled PR
+        run: |
+          set -euo pipefail
+          gh workflow run agent-gates.yml --repo "$REPO" --ref main -f pr="$PR_INPUT" -f force_review=false
+
+  # ---------------------------------------------------------------- #
+  # Lane release (workflow_dispatch mode=release-lane, owner-only)    #
+  # ---------------------------------------------------------------- #
+  release_lane:
+    name: Release the implementation lane (owner only)
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'release-lane'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: agents-contract-authority
+    concurrency:
+      group: rekoda-implementation-lane
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      issues: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      CONTRACT_AUTHORITY_SIGNING_KEY: ${{ secrets.CONTRACT_AUTHORITY_SIGNING_KEY }}
+      ACTOR: ${{ github.actor }}
+    steps:
+      - name: Refuse non-main dispatch refs
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "::error::Privileged dispatch must target refs/heads/main (got $GITHUB_REF); refusing."
+            exit 1
+          fi
+
+      - name: Checkout trusted policy at the definition's own SHA
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+
+      - name: Authorize actor (lane release is owner-only)
+        env:
+          OWNER_LOGIN: AngeloAkuhwa
+        run: |
+          set -euo pipefail
+          if [ "$ACTOR" != "$OWNER_LOGIN" ]; then
+            echo "::error::Lane release is owner-only; actor $ACTOR is not @$OWNER_LOGIN."
+            exit 1
+          fi
+
+      - name: Post the signed lane release
+        run: |
+          set -euo pipefail
+          node scripts/agents/lane-lease.mjs --repo "$REPO" --issue "$ISSUE" \
+            --release --sign-env CONTRACT_AUTHORITY_SIGNING_KEY
+
+  # ---------------------------------------------------------------- #
+  # Baseline recording + lane claim + builder hand-off                #
   # (workflow_dispatch mode=baseline — the planner's explicit entry    #
   # point — or a human label event)                                   #
   # ---------------------------------------------------------------- #
   baseline:
-    name: Record baseline and hand off (READY promotion)
+    name: Record baseline, claim the lane, hand off (READY promotion)
     # Label path: EVERY participating label is a symmetric trigger —
     # agent-task, status:ready, builder:*, and risk:* additions (ANY of
-    # them may arrive last), plus REMOVAL of a blocking decision label
-    # (needs-owner-decision / status:blocked-decision), whose transition
-    # can also make the issue admissible. Each event is only a REQUEST
-    # to re-check: the decision is always made against the RE-FETCHED
-    # current labels through the one canonical readyPromotionAction() —
-    # no event snapshot ever decides eligibility. Dispatch path: the
-    # planner (or the owner) explicitly requests baseline recording; the
-    # issue number is only a REQUEST and every fact is re-verified.
+    # them may arrive last), plus REMOVAL of a blocking decision label.
+    # Each event is only a REQUEST to re-check against the RE-FETCHED
+    # current labels. Dispatch path: the planner (or the owner)
+    # explicitly requests baseline recording.
     if: |
       (github.event_name == 'workflow_dispatch' && inputs.mode == 'baseline') ||
       (github.event_name == 'issues' && github.event.action == 'labeled' &&
@@ -388,8 +570,13 @@ jobs:
        (github.event.label.name == 'needs-owner-decision' ||
         github.event.label.name == 'status:blocked-decision'))
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     environment: agents-contract-authority
+    # Y3: the lane claim is ATOMIC under the repository-wide lane lock —
+    # the same group the builder preflight and the Codex claim take.
+    concurrency:
+      group: rekoda-implementation-lane
+      cancel-in-progress: false
     permissions:
       contents: read
       issues: write
@@ -399,6 +586,15 @@ jobs:
       ACTOR: ${{ github.actor }}
       CONTRACT_AUTHORITY_SIGNING_KEY: ${{ secrets.CONTRACT_AUTHORITY_SIGNING_KEY }}
     steps:
+      - name: Refuse non-main dispatch refs
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "::error::Privileged dispatch must target refs/heads/main (got $GITHUB_REF); refusing."
+            exit 1
+          fi
+
       - name: Checkout trusted policy at the definition's own SHA
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -408,10 +604,6 @@ jobs:
       - name: Authorize actor
         run: |
           set -euo pipefail
-          # Trusted-workflow dispatch (the planner's GITHUB_TOKEN) appears
-          # as github-actions[bot]; it can only originate from a trusted
-          # default-branch workflow, and every issue fact is independently
-          # re-verified below — the request itself grants nothing.
           if [ "$ACTOR" = "github-actions[bot]" ]; then
             echo "Dispatched by a trusted default-branch workflow."
             exit 0
@@ -437,27 +629,28 @@ jobs:
             const d = readyPromotionAction({ labels });
             console.log(`proceed=${d.proceed}`);
             console.log(`dispatch_claude=${d.dispatchClaude}`);
+            console.log(`risk=${d.risk ?? ""}`);
           ' > /tmp/decision.txt
           cat /tmp/decision.txt >> "$GITHUB_OUTPUT"
           cat /tmp/decision.txt
 
-      - name: Record the baseline and hand off to the builder
+      - name: Record the baseline (R3 requires the owner decision first)
         if: steps.promote.outputs.proceed == 'true'
         env:
-          DISPATCH_CLAUDE: ${{ steps.promote.outputs.dispatch_claude }}
+          RISK: ${{ steps.promote.outputs.risk }}
         run: |
           set -euo pipefail
           # Baseline existence is decided by the SAME canonical parser/
           # provenance computation admission uses — NEVER a substring
-          # probe: a comment that merely contains the marker name, a
-          # malformed marker, an unsigned bot marker, a wrong-issue
-          # marker or a bad signature does not suppress the real
-          # baseline; conflicting AUTHORIZED history fails closed.
+          # probe.
           node scripts/agents/contract-status.mjs --repo "$REPO" --issue "$ISSUE" > /tmp/status.txt
           cat /tmp/status.txt
           history_complete=$(grep '^history_complete=' /tmp/status.txt | cut -d= -f2)
           baseline_found=$(grep '^baseline_found=' /tmp/status.txt | cut -d= -f2)
           invalid=$(grep '^invalid=' /tmp/status.txt | cut -d= -f2-)
+          decision_proposed=$(grep '^owner_decision_ok_proposed=' /tmp/status.txt | cut -d= -f2)
+          decision_active=$(grep '^owner_decision_ok=' /tmp/status.txt | cut -d= -f2)
+          proposed_hash=$(grep '^proposed_baseline_snapshot_hash=' /tmp/status.txt | cut -d= -f2)
           if [ "$history_complete" != "true" ]; then
             echo "::error::Issue #$ISSUE comment history could not be proven complete; refusing to decide baseline existence."
             exit 1
@@ -466,19 +659,49 @@ jobs:
             echo "::error::Issue #$ISSUE carries INVALID authorized contract history ($invalid); this issue cannot proceed until the owner resolves it — not papering over it with a new baseline."
             exit 1
           fi
+          # X7: an R3 issue is never baselined / READY-promoted without
+          # a CURRENT owner decision bound to the exact snapshot the
+          # baseline would sign (pre-baseline: the proposed revision-1
+          # snapshot; already-baselined: the active snapshot).
+          if [ "$RISK" = "risk:R3" ]; then
+            if [ "$baseline_found" = "true" ]; then relevant="$decision_active"; else relevant="$decision_proposed"; fi
+            if [ "$relevant" != "true" ]; then
+              echo "::error::Issue #$ISSUE is risk:R3 with no current owner REKODA_OWNER_DECISION for the exact contract snapshot (proposed baseline snapshot: $proposed_hash). The owner posts the decision marker first; nothing is baselined, claimed, or dispatched."
+              exit 1
+            fi
+          fi
           if [ "$baseline_found" = "true" ]; then
             echo "A VALID authorized baseline already exists on #$ISSUE."
           else
             node scripts/agents/contract-revision.mjs --repo "$REPO" --issue "$ISSUE" \
               --baseline --sign-env CONTRACT_AUTHORITY_SIGNING_KEY --post
           fi
-          # Deterministic sequencing (no builder polling): the builder is
-          # dispatched only AFTER the baseline exists — admission then
-          # independently verifies it again, and its atomic lane claim
-          # makes a duplicate dispatch a safe no-op.
-          if [ "$DISPATCH_CLAUDE" = "true" ]; then
-            echo "Baseline recorded — dispatching the Claude builder for #$ISSUE."
-            gh workflow run agent-claude.yml --repo "$REPO" --ref main -f issue="$ISSUE"
-          else
-            echo "Builder is not builder:claude — builder:codex lanes are claimed manually after this baseline."
+
+      # Y3: admission + the SIGNED lane claim + the label transition,
+      # all inside the repository-wide lane lock this job holds. The
+      # builder preflight verifies the claim; it cannot create one.
+      - name: Admit, claim the lane (signed lease), and hand off to the builder
+        if: steps.promote.outputs.proceed == 'true' && steps.promote.outputs.dispatch_claude == 'true'
+        run: |
+          set -euo pipefail
+          if gh api "repos/$REPO/issues/$ISSUE/comments" --paginate \
+            --jq '[.[] | select(.user.login == "github-actions[bot]" and (.body | contains("REKODA_CLAUDE_BUILD_DISPATCHED")))] | length' \
+            | grep -qv '^0$'; then
+            echo "Already dispatched for #$ISSUE — skipping duplicate build."
+            exit 0
           fi
+          node scripts/agents/build-admission.mjs --repo "$REPO" --issue "$ISSUE" \
+            --builder builder:claude --phase admission
+          snapshot=$(node scripts/agents/contract-status.mjs --repo "$REPO" --issue "$ISSUE" | grep '^contract_snapshot_sha256=' | cut -d= -f2)
+          node scripts/agents/lane-lease.mjs --repo "$REPO" --issue "$ISSUE" \
+            --claim --snapshot-hash "$snapshot" --sign-env CONTRACT_AUTHORITY_SIGNING_KEY
+          gh issue edit "$ISSUE" --repo "$REPO" \
+            --remove-label 'status:ready' --add-label 'status:building'
+          gh issue comment "$ISSUE" --repo "$REPO" \
+            --body "REKODA_CLAUDE_BUILD_DISPATCHED — admission granted, lane leased and claimed; dispatching the Claude builder."
+          gh workflow run agent-claude.yml --repo "$REPO" --ref main -f issue="$ISSUE"
+
+      - name: Codex lanes are claimed via their own authority entry point
+        if: steps.promote.outputs.proceed == 'true' && steps.promote.outputs.dispatch_claude != 'true'
+        run: |
+          echo "Builder is not builder:claude — a write+ human dispatches 'Agent — claim Codex lane', which admits and leases under the same lane lock."

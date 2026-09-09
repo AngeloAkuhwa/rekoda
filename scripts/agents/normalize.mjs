@@ -17,7 +17,7 @@ import { writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { gh, ghPagedComplete } from './gh-lib.mjs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parseClosingRefs } from './evaluator.mjs';
+import { parseClosingRefs, foldReviewThreadPages } from './evaluator.mjs';
 
 const args = Object.fromEntries(
   process.argv
@@ -135,29 +135,57 @@ const prComments = pagedOrDie(`repos/${repo}/issues/${prNumber}/comments`, 'PR c
   }),
 );
 
-// Unresolved review threads.
+// Unresolved review threads — cursor-paginated to EXHAUSTION (Y6):
+// thread 101 must be able to block, and a missing/malformed GraphQL
+// response or an unexhausted listing is unprovable state that fails
+// this normalization visibly — it never reads as "0 unresolved".
 const [owner, name] = repo.split('/');
-const threads = JSON.parse(
-  execFileSync(
-    'gh',
-    [
-      'api',
-      'graphql',
-      '-f',
-      'query=query($o:String!,$n:String!,$pr:Int!){repository(owner:$o,name:$n){pullRequest(number:$pr){reviewThreads(first:100){nodes{isResolved}}}}}',
-      '-f',
-      `o=${owner}`,
-      '-f',
-      `n=${name}`,
-      '-F',
-      `pr=${prNumber}`,
-    ],
-    { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 },
-  ),
-);
-const unresolvedThreads = (
-  threads.data?.repository?.pullRequest?.reviewThreads?.nodes ?? []
-).filter((t) => t.isResolved === false).length;
+const threadPages = [];
+let threadCursor = null;
+for (let page = 1; page <= 50; page++) {
+  const cursorArgs = threadCursor ? ['-f', `cursor=${threadCursor}`] : [];
+  let parsed;
+  try {
+    parsed = JSON.parse(
+      execFileSync(
+        'gh',
+        [
+          'api',
+          'graphql',
+          '-f',
+          'query=query($o:String!,$n:String!,$pr:Int!,$cursor:String){repository(owner:$o,name:$n){pullRequest(number:$pr){reviewThreads(first:100,after:$cursor){nodes{isResolved}pageInfo{hasNextPage endCursor}}}}}',
+          '-f',
+          `o=${owner}`,
+          '-f',
+          `n=${name}`,
+          '-F',
+          `pr=${prNumber}`,
+          ...cursorArgs,
+        ],
+        { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 },
+      ),
+    );
+  } catch (e) {
+    console.error(`::error::Review-thread listing failed (${e.message}) — failing closed.`);
+    process.exit(1);
+  }
+  const conn = parsed.data?.repository?.pullRequest?.reviewThreads;
+  if (!conn || !Array.isArray(conn.nodes) || !conn.pageInfo) {
+    console.error('::error::Review-thread GraphQL response is malformed — failing closed.');
+    process.exit(1);
+  }
+  threadPages.push(conn);
+  if (!conn.pageInfo.hasNextPage) break;
+  threadCursor = conn.pageInfo.endCursor;
+}
+const threadFold = foldReviewThreadPages(threadPages);
+if (!threadFold.complete) {
+  console.error(
+    '::error::Review-thread listing could not be proven complete (pagination unexhausted or malformed nodes) — failing closed.',
+  );
+  process.exit(1);
+}
+const unresolvedThreads = threadFold.unresolved;
 
 // Global WIP: every open issue occupying the single implementation lane.
 const laneIssues = new Map();

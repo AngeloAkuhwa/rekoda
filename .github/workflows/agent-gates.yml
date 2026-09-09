@@ -4,61 +4,61 @@
 # TRUSTED-BASE EXECUTION. Triggered only by workflow_run (completion of
 # the no-secret "Agent — review request") and by workflow_dispatch; for
 # both, GitHub executes this DEFINITION from the default branch — a PR
-# cannot substitute it, and PR-controlled YAML never receives the
-# reviewer environments. Nothing from the trigger is trusted: a
-# workflow_run association or dispatch input is only a REQUEST, resolved
-# by scripts/agents/resolve-target.mjs to EXACTLY ONE open PR whose
-# current head still equals the triggering SHA — zero candidates means
-# nothing to evaluate, a force-pushed (stale) request is superseded by
-# the new head's own request, and multiple candidates FAIL CLOSED.
-# Every other fact (labels, issue, revision, builder, risk) is
+# cannot substitute it. workflow_dispatch is additionally guarded: a
+# dispatch against any ref but refs/heads/main is REFUSED outright,
+# because a dispatch run can target a non-main ref even though the
+# workflow file must exist on main — event_name alone proves nothing.
+# Nothing from the trigger is trusted: a workflow_run association or
+# dispatch input is only a REQUEST, resolved by
+# scripts/agents/resolve-target.mjs to EXACTLY ONE open PR whose current
+# head still equals the triggering SHA. Every other fact (labels, issue,
+# revision, builder, risk, enrollment, refresh generation) is
 # re-resolved from the GitHub API.
 #
-# RUNNER-ISOLATED REVIEW/SIGNING. Each reviewer lane is two jobs on two
-# fresh runners: the AI job references ONLY its AI credential and
-# produces an unsigned verdict artifact (untrusted data); the
-# deterministic publish job references ONLY the role signing key, never
-# an AI credential, independently RE-FETCHES current GitHub state,
-# re-verifies PR/issue/HEAD/revision/contract-snapshot against that
-# fresh state, validates the artifact against the FRESH values (the
-# artifact cannot choose its target), and only then signs and posts the
-# EVIDENCE COMMENT. Publishers produce evidence only — they never write
-# a check.
+# ONE GATE-PUBLISHER IDENTITY (X6). The three merge-authorization checks
+# (Agent policy gate, Technical Review Gate, Gemini Acceptance Gate) are
+# published EXCLUSIVELY with a token of the dedicated, owner-controlled
+# **Rekoda Gate Publisher** GitHub App, minted by trusted repository
+# code (scripts/agents/app-token.mjs) from the credential in the
+# `agents-gate-publisher` environment (main-only deployment branches).
+# NO job in this repository holds `checks: write` on GITHUB_TOKEN, and
+# the activation ruleset source-binds the three required names to the
+# App's id — a malicious same-repo PR workflow can still render
+# same-named GITHUB_TOKEN checks, but the ruleset never accepts them.
 #
-# ONE AUTHORIZATION STATE MACHINE PER PR. Exactly one job type decides
-# and writes the three merge checks: the FINALIZE job. It re-normalizes
-# the CURRENT state and computes ALL THREE gate conclusions (Agent
-# policy gate, Technical Review Gate, Gemini Acceptance Gate) from that
-# single state, then upserts all three checks. Contract-authority state
-# transitions (amendment freezes, revisions) are durable signed markers
-# the evaluator itself reads, so a finalizer authoritatively sees them —
-# no partial writer can leave a stale green standing:
-#   - the finalize job (and the authority's freeze barriers, and the
-#     small red-only invalidation job) take the job-level group
-#     `rekoda-gates-pr-<resolved PR>` (cancel-in-progress: false);
-#   - GitHub keeps at most one running and one pending job per group; a
-#     displaced pending FINALIZER is replaced only by a NEWER job whose
-#     own run's finalizer republishes the COMPLETE three-check state
-#     from fresher state — never a partial update, never a lost gate
-#     conclusion. The red-only invalidator can never create green; the
-#     AI lanes REQUIRE its success before starting (no fresh review runs
-#     while an old same-HEAD green could still authorize), and a failed
-#     or displaced invalidation skips the lanes AND the finalizer — the
-#     fresh-review request simply never became authoritative and the
-#     run fails visibly.
+# ONE SHA-SCOPED AUTHORIZATION FINALIZER (X5). Checks attach to the
+# COMMIT, not the PR, so serialization is keyed by SHA: every job that
+# writes any of the three names takes the job-level group
+# `rekoda-authorization-sha-<HEAD>` (cancel-in-progress: false). The
+# writers are exactly three invocations of the one gate-publisher
+# component: the red-only ambiguity revocation, the red-only pre-review
+# invalidation (presentation — the DURABLE truth is the refresh
+# generation), and the FINALIZE job, which re-normalizes CURRENT state
+# inside the lock, computes all three conclusions from one immutable
+# state, publishes every failure first, re-proves the complete current
+# PR association, and only then publishes passes. A later finalizer in
+# the same SHA lane always re-reads state, so a stale green can never
+# overwrite an ambiguity or amendment revocation.
 #
-# CHECK DELIVERY. Checks are upserted in place via the Checks API on the
-# resolved PR HEAD — one name+SHA never carries ambiguous duplicate
-# conclusions, and a same-HEAD contract transition deterministically
-# flips the same required checks.
+# DURABLE REFRESH GENERATIONS (X3). A forced fresh review FIRST posts
+# the control-plane-signed REKODA_REVIEW_REFRESH marker (generation
+# N+1) inside the role's issuance lane — from that durable moment,
+# generation-N evidence can never satisfy the gate again, whatever the
+# AI, signer, or any concurrently scheduled finalizer does. The
+# pre-review red flip is presentation only.
+#
+# EVIDENCE HANDOFF WITHOUT ARCHIVES (X1). The AI runner hands its
+# unsigned verdict to the publisher as a bounded base64 JOB OUTPUT —
+# never an artifact archive whose extraction could touch the trusted
+# checkout. The publisher writes it only into $RUNNER_TEMP, re-parses
+# it under a byte bound, and treats it as hostile data; the signer
+# independently validates every field against freshly re-resolved
+# state.
 #
 # CONCURRENCY (no request is ever displaced). This workflow has NO
-# workflow-level concurrency group: GitHub keeps at most one PENDING run
-# per group and silently replaces an older pending run with a newer one,
-# so a single global group could DISPLACE a queued evaluation for PR B
-# because PR C's request arrived later. With no workflow-level group,
-# EVERY request runs; serialization is per resolved target and lives on
-# the finalize/invalidate/barrier jobs only.
+# workflow-level concurrency group; serialization lives on the
+# SHA-keyed check-writer jobs and the per-(PR, role) evidence issuance
+# lanes only.
 name: Agent — gates
 
 on:
@@ -71,14 +71,13 @@ on:
         description: PR number to (re-)evaluate — a request; all state is re-resolved.
         required: true
         type: number
-      # Forced fresh review is AUTHENTICATED HUMAN INTENT, never
-      # transport: trusted workflows redispatch the gates automatically
-      # for plain reevaluation (force_review=false — existing exact
-      # HEAD/revision/snapshot evidence is reused normally). Only a
-      # write+ HUMAN actor may set this true; a workflow identity
-      # requesting it is refused before any AI lane can start.
+      # Forced fresh review is OWNER-ONLY authenticated human intent —
+      # it starts paid AI work and durably invalidates the current
+      # reviewer authorization (a refresh-generation bump). A workflow
+      # identity, ANY bot/App account (claude[bot] included), and any
+      # non-owner human are refused before any secret-bearing job.
       force_review:
-        description: Discard-and-refresh reviewer verdicts (authorized humans only)
+        description: Discard-and-refresh reviewer verdicts (owner only)
         required: false
         default: false
         type: boolean
@@ -90,21 +89,16 @@ env:
 
 jobs:
   resolve:
-    name: Resolve target (no secrets)
+    name: Resolve target (no secrets, no check writes)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: read
       pull-requests: read
       issues: read
-      # checks:write here exists ONLY for the red-only ambiguity handler
-      # below: a SHA shared by multiple open PRs must never RETAIN a
-      # merge-authorizing gate state, so the three stable gate names are
-      # actively forced red on it. This job can never write a passing
-      # conclusion.
-      checks: write
     outputs:
       pr: ${{ steps.target.outputs.pr }}
+      status: ${{ steps.target.outputs.status }}
       force_review: ${{ steps.force.outputs.force_review }}
       governed: ${{ steps.ctx.outputs.governed }}
       head_sha: ${{ steps.ctx.outputs.head_sha }}
@@ -117,14 +111,31 @@ jobs:
       builder: ${{ steps.ctx.outputs.builder }}
       draft: ${{ steps.ctx.outputs.draft }}
       fork: ${{ steps.ctx.outputs.fork }}
+      enrolled: ${{ steps.ctx.outputs.enrolled }}
       tech_verdict: ${{ steps.ctx.outputs.tech_verdict }}
       gemini_verdict: ${{ steps.ctx.outputs.gemini_verdict }}
+      tech_refresh_generation: ${{ steps.ctx.outputs.tech_refresh_generation }}
+      gemini_refresh_generation: ${{ steps.ctx.outputs.gemini_refresh_generation }}
       need_claude_ai: ${{ steps.plan.outputs.need_claude_ai }}
       need_gemini_ai: ${{ steps.plan.outputs.need_gemini_ai }}
+      run_head_sha: ${{ github.event.workflow_run.head_sha }}
       trusted_sha: ${{ github.sha }}
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
+      # A workflow_dispatch run can be pointed at ANY ref; the file
+      # merely has to exist on main. Every privileged path in this
+      # repository therefore rejects non-main dispatch refs explicitly —
+      # github.sha is only a trust root when the ref is proven main.
+      - name: Refuse non-main dispatch refs
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "::error::Privileged dispatch must target refs/heads/main (got $GITHUB_REF); refusing."
+            exit 1
+          fi
+
       - name: Trusted root
         run: echo "Definition, policy and governance trust root — default-branch SHA ${{ github.sha }}"
 
@@ -137,35 +148,37 @@ jobs:
       - name: Evaluator self-test (behavioural evidence, every run)
         run: node --test scripts/agents/evaluator.test.mjs
 
-      # Force is INTENT, not transport: only a write+ HUMAN may discard
-      # valid same-state reviewer evidence and trigger fresh paid AI
-      # runs. A workflow identity (github-actions[bot]) or an
-      # under-privileged actor requesting force is a hard ERROR — never
-      # a silent downgrade — before any secret-bearing job exists.
-      - name: Authenticate forced-review intent
+      # Force is OWNER-ONLY INTENT, not transport: the trusted sender
+      # account TYPE must be User AND the login must be the owner's —
+      # excluding github-actions[bot] alone would still admit a
+      # write-permission App like claude[bot]. An unauthorized request
+      # is a hard ERROR before any secret-bearing job exists.
+      - name: Authenticate forced-review intent (owner only)
         id: force
         env:
           FORCE_INPUT: ${{ inputs.force_review }}
           ACTOR: ${{ github.actor }}
+          OWNER_LOGIN: AngeloAkuhwa
         run: |
           set -euo pipefail
           if [ "${FORCE_INPUT:-false}" != "true" ]; then
             echo "force_review=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          perm=$(gh api "repos/$REPO/collaborators/$ACTOR/permission" --jq .permission 2>/dev/null || echo none)
-          decision=$(A_ACTOR="$ACTOR" A_PERM="$perm" node --input-type=module -e '
+          actor_type=$(gh api "users/$ACTOR" --jq .type 2>/dev/null || echo unknown)
+          decision=$(A_ACTOR="$ACTOR" A_TYPE="$actor_type" A_OWNER="$OWNER_LOGIN" node --input-type=module -e '
             import { authorizeForceReview } from "./scripts/agents/evaluator.mjs";
             const d = authorizeForceReview({
               requested: true,
               actor: process.env.A_ACTOR,
-              permission: process.env.A_PERM,
+              actorType: process.env.A_TYPE,
+              ownerLogin: process.env.A_OWNER,
             });
             if (d.error) { console.error(`::error::${d.error}`); process.exit(1); }
             console.log(d.force ? "true" : "false");
           ')
           echo "force_review=$decision" >> "$GITHUB_OUTPUT"
-          echo "Forced fresh review authorized for $ACTOR ($perm)."
+          echo "Forced fresh review authorized for $ACTOR (type $actor_type)."
 
       - name: Resolve the target PR to exactly one valid candidate
         id: target
@@ -181,27 +194,8 @@ jobs:
             node scripts/agents/resolve-target.mjs --repo "$REPO" --head-sha "$RUN_HEAD_SHA"
           fi
 
-      # Check runs attach to the SHA, not the PR: when one HEAD is
-      # shared by multiple open PRs, gate state published for an earlier
-      # (possibly ungoverned) PR would be INHERITED by the others. On
-      # ambiguity the SHA must not merely get nothing — it must lose any
-      # merge-authorizing state it has: all three stable gate names are
-      # actively forced red. This may block every PR using the SHA;
-      # ambiguity requires the user to make the target unique.
-      - name: Ambiguous shared SHA — force all three gates red
-        if: steps.target.outputs.status == 'ambiguous'
-        env:
-          RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
-        run: |
-          set -euo pipefail
-          sha=$(echo "$RUN_HEAD_SHA" | tr 'A-F' 'a-f')
-          for name in "Agent policy gate" "Technical Review Gate" "Gemini Acceptance Gate"; do
-            node scripts/agents/post-check.mjs --repo "$REPO" --name "$name" --sha "$sha" \
-              --conclusion failure --title "Ambiguous PR association" \
-              --summary "HEAD $sha belongs to multiple open PRs; no gate state can be trusted to one of them. Make the association unique (close or retarget the extra PR), then re-run the gates."
-          done
-          exit 1
-
+      # Ambiguity is handled by the SHA-scoped red-only revocation job
+      # below (the gate-publisher component) — this job writes nothing.
       - name: Propagate resolver failure
         if: steps.target.outcome == 'failure' && steps.target.outputs.status != 'ambiguous'
         run: |
@@ -216,15 +210,11 @@ jobs:
           node scripts/agents/normalize.mjs --repo "$REPO" --pr "${{ steps.target.outputs.pr }}" --out /tmp/state.json
           node scripts/agents/run-gate.mjs --state /tmp/state.json --print-context
 
-      # The exact contract snapshot the reviewers will assess: exported
-      # ONLY when the issue carries one authorized, unamended contract
-      # whose risk/builder labels match the signed snapshot and no
-      # amendment freeze is active (contract_ok), and verified against
-      # the active revision's body hash before upload. The AI reviews
-      # THIS file, never the live (mutable) issue text — a proposal that
-      # lands after export makes contract_ok false on the publisher's
-      # fresh re-resolve, so a verdict over a superseded snapshot is
-      # never signed.
+      # The exact contract snapshot the reviewers will assess (see the
+      # publisher guards: a verdict over a superseded snapshot is never
+      # signed). This artifact flows TRUSTED → AI runner only; the
+      # reviewer output comes back as bounded job-output data, never as
+      # an archive (X1).
       - name: Export the verified contract snapshot
         if: steps.target.outputs.pr != '' && steps.ctx.outputs.contract_ok == 'true'
         env:
@@ -256,17 +246,20 @@ jobs:
         if: steps.target.outputs.pr != ''
         id: plan
         env:
-          # AUTHENTICATED force only — never inferred from the event
-          # transport: an automatic redispatch reuses valid evidence.
+          # AUTHENTICATED owner force only — never inferred from the
+          # event transport: an automatic redispatch reuses valid
+          # evidence.
           FORCE_REVIEW: ${{ steps.force.outputs.force_review }}
         run: |
           set -euo pipefail
           need_claude=false; need_gemini=false
-          # No AI lane without contract_ok: a reviewer never assesses an
-          # unauthorized/amended/diverged contract, and there is no
-          # snapshot to review against.
+          # No AI lane without contract_ok AND an active trusted
+          # enrollment: an un-enrolled PR can never pass, so paid review
+          # work for it is never started — enrollment is requested from
+          # the authority instead (see request_enrollment).
           if [ "${{ steps.ctx.outputs.governed }}" = "true" ] && \
              [ "${{ steps.ctx.outputs.contract_ok }}" = "true" ] && \
+             [ "${{ steps.ctx.outputs.enrolled }}" = "true" ] && \
              [ "${{ steps.ctx.outputs.fork }}" != "true" ] && \
              { [ "${{ steps.ctx.outputs.draft }}" != "true" ] || [ "$FORCE_REVIEW" = "true" ]; }; then
             if [ "${{ steps.ctx.outputs.builder }}" = "builder:codex" ] && \
@@ -280,28 +273,187 @@ jobs:
           echo "need_claude_ai=$need_claude" >> "$GITHUB_OUTPUT"
           echo "need_gemini_ai=$need_gemini" >> "$GITHUB_OUTPUT"
 
-  # RED-ONLY early warning: when this run will obtain a fresh reviewer
-  # verdict, the affected gate checks are flipped red before the AI lane
-  # starts, so an earlier same-HEAD green cannot authorize a merge during
-  # the review. This job can only ever write FAILURE conclusions —
-  # displacing it costs nothing but the early warning; the finalize job
-  # remains the single authority for the complete three-check state.
-  invalidate:
-    name: Invalidate checks pending fresh review (red-only)
+  # Check runs attach to the SHA: when one HEAD is shared by multiple
+  # open PRs, the SHA must actively LOSE any merge-authorizing state.
+  # Red-only invocation of the gate-publisher component, inside the
+  # same SHA lane as every other writer.
+  ambiguity_revoke:
+    name: Ambiguous shared SHA — force all three gates red
     needs: resolve
-    if: >-
-      needs.resolve.outputs.pr != '' && needs.resolve.outputs.governed == 'true' &&
-      (needs.resolve.outputs.need_claude_ai == 'true' || needs.resolve.outputs.need_gemini_ai == 'true')
+    if: ${{ !cancelled() && needs.resolve.outputs.status == 'ambiguous' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    environment: agents-gate-publisher
     concurrency:
-      group: rekoda-gates-pr-${{ needs.resolve.outputs.pr }}
+      group: rekoda-authorization-sha-${{ github.event.workflow_run.head_sha }}
       cancel-in-progress: false
     permissions:
       contents: read
-      checks: write
+    env:
+      RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+    steps:
+      - name: Checkout trusted policy at the definition's own SHA
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.resolve.outputs.trusted_sha }}
+          fetch-depth: 1
+
+      - name: Mint the Rekoda Gate Publisher token
+        id: app_token
+        env:
+          REKODA_GATE_PUBLISHER_APP_ID: ${{ secrets.REKODA_GATE_PUBLISHER_APP_ID }}
+          REKODA_GATE_PUBLISHER_APP_PRIVATE_KEY: ${{ secrets.REKODA_GATE_PUBLISHER_APP_PRIVATE_KEY }}
+        run: node scripts/agents/app-token.mjs --repo "$REPO"
+
+      - name: Force all three gates red on the shared SHA
+        env:
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
+        run: |
+          set -euo pipefail
+          sha=$(echo "$RUN_HEAD_SHA" | tr 'A-F' 'a-f')
+          for name in "Agent policy gate" "Technical Review Gate" "Gemini Acceptance Gate"; do
+            node scripts/agents/post-check.mjs --repo "$REPO" --name "$name" --sha "$sha" \
+              --conclusion failure --title "Ambiguous PR association" \
+              --summary "HEAD $sha belongs to multiple open PRs; no gate state can be trusted to one of them. Make the association unique (close or retarget the extra PR), then re-run the gates."
+          done
+          exit 1
+
+  # X4: a governed PR whose closing reference has no active trusted
+  # enrollment cannot pass any gate. This no-secret job merely REQUESTS
+  # enrollment from the contract authority, which independently
+  # verifies every precondition, signs the record, and redispatches the
+  # gates (the required finalization) — mutable PR body text alone
+  # never becomes authorization.
+  request_enrollment:
+    name: Request authority enrollment (no secrets)
+    needs: resolve
+    if: >-
+      needs.resolve.outputs.pr != '' && needs.resolve.outputs.governed == 'true' &&
+      needs.resolve.outputs.contract_ok == 'true' && needs.resolve.outputs.enrolled != 'true' &&
+      needs.resolve.outputs.fork != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: write
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Checkout trusted policy at the definition's own SHA
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.resolve.outputs.trusted_sha }}
+          fetch-depth: 1
+      - name: Dispatch the enrollment authority
+        run: |
+          set -euo pipefail
+          echo "PR #${{ needs.resolve.outputs.pr }} proposes issue #${{ needs.resolve.outputs.issue }} but holds no active enrollment — requesting authority enrollment."
+          gh workflow run agent-contract-authority.yml --repo "$REPO" --ref main \
+            -f mode=enroll -f issue="${{ needs.resolve.outputs.issue }}" -f pr="${{ needs.resolve.outputs.pr }}"
+
+  # X3 FIRST STEP of any forced refresh: the DURABLE generation bump,
+  # posted by trusted deterministic code with the role's control-plane
+  # signing key, inside the role's issuance lane, BEFORE any AI starts.
+  # Once posted, pre-refresh evidence is invalid forever — an AI
+  # failure, signer failure, cancellation, or concurrent ordinary
+  # finalizer cannot resurrect it.
+  refresh_technical:
+    name: Durable technical refresh generation (forced only)
+    needs: resolve
+    if: >-
+      needs.resolve.outputs.pr != '' && needs.resolve.outputs.force_review == 'true' &&
+      needs.resolve.outputs.governed == 'true' && needs.resolve.outputs.contract_ok == 'true' &&
+      needs.resolve.outputs.enrolled == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: agents-claude-reviewer
+    concurrency:
+      group: rekoda-evidence-technical-pr-${{ needs.resolve.outputs.pr }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+    outputs:
+      refresh_generation: ${{ steps.mark.outputs.refresh_generation }}
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Checkout trusted policy at the definition's own SHA
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.resolve.outputs.trusted_sha }}
+          fetch-depth: 1
+      - name: Post the signed refresh marker (generation N+1)
+        id: mark
+        env:
+          CLAUDE_REVIEWER_SIGNING_KEY: ${{ secrets.CLAUDE_REVIEWER_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          node scripts/agents/refresh-marker.mjs --repo "$REPO" \
+            --pr "${{ needs.resolve.outputs.pr }}" --role technical \
+            --sign-env CLAUDE_REVIEWER_SIGNING_KEY
+
+  refresh_acceptance:
+    name: Durable acceptance refresh generation (forced only)
+    needs: resolve
+    if: >-
+      needs.resolve.outputs.pr != '' && needs.resolve.outputs.force_review == 'true' &&
+      needs.resolve.outputs.governed == 'true' && needs.resolve.outputs.contract_ok == 'true' &&
+      needs.resolve.outputs.enrolled == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: agents-gemini-reviewer
+    concurrency:
+      group: rekoda-evidence-acceptance-pr-${{ needs.resolve.outputs.pr }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+    outputs:
+      refresh_generation: ${{ steps.mark.outputs.refresh_generation }}
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Checkout trusted policy at the definition's own SHA
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.resolve.outputs.trusted_sha }}
+          fetch-depth: 1
+      - name: Post the signed refresh marker (generation N+1)
+        id: mark
+        env:
+          GEMINI_REVIEWER_SIGNING_KEY: ${{ secrets.GEMINI_REVIEWER_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          node scripts/agents/refresh-marker.mjs --repo "$REPO" \
+            --pr "${{ needs.resolve.outputs.pr }}" --role acceptance \
+            --sign-env GEMINI_REVIEWER_SIGNING_KEY
+
+  # RED-ONLY presentation flip before the AI lanes: the DURABLE
+  # authorization truth is the refresh generation above / the absence of
+  # current-state evidence — this invocation of the gate-publisher
+  # component merely makes the merge box red immediately, inside the
+  # SHA lane, with the dedicated App token.
+  invalidate:
+    name: Invalidate checks pending fresh review (red-only)
+    needs: [resolve, refresh_technical, refresh_acceptance]
+    if: >-
+      !cancelled() &&
+      needs.resolve.outputs.pr != '' && needs.resolve.outputs.governed == 'true' &&
+      (needs.resolve.outputs.need_claude_ai == 'true' || needs.resolve.outputs.need_gemini_ai == 'true') &&
+      (needs.refresh_technical.result == 'success' || needs.refresh_technical.result == 'skipped') &&
+      (needs.refresh_acceptance.result == 'success' || needs.refresh_acceptance.result == 'skipped')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: agents-gate-publisher
+    concurrency:
+      group: rekoda-authorization-sha-${{ needs.resolve.outputs.head_sha }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    env:
       HEAD_SHA: ${{ needs.resolve.outputs.head_sha }}
       NEED_CLAUDE: ${{ needs.resolve.outputs.need_claude_ai }}
       NEED_GEMINI: ${{ needs.resolve.outputs.need_gemini_ai }}
@@ -312,7 +464,16 @@ jobs:
           ref: ${{ needs.resolve.outputs.trusted_sha }}
           fetch-depth: 1
 
+      - name: Mint the Rekoda Gate Publisher token
+        id: app_token
+        env:
+          REKODA_GATE_PUBLISHER_APP_ID: ${{ secrets.REKODA_GATE_PUBLISHER_APP_ID }}
+          REKODA_GATE_PUBLISHER_APP_PRIVATE_KEY: ${{ secrets.REKODA_GATE_PUBLISHER_APP_PRIVATE_KEY }}
+        run: node scripts/agents/app-token.mjs --repo "$REPO"
+
       - name: Flip the affected gate checks red before the review starts
+        env:
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
         run: |
           set -euo pipefail
           if [ "$NEED_CLAUDE" = "true" ]; then
@@ -329,14 +490,13 @@ jobs:
   technical_ai:
     name: Technical review — AI (no signing key)
     # A fresh review NEVER starts while the old same-HEAD green could
-    # still authorize a merge: the red-only invalidation must have
-    # SUCCEEDED first (it runs whenever any fresh verdict is needed). If
-    # invalidation fails, no AI lane starts, no fresh review is
-    # considered active, and the run fails visibly.
-    needs: [resolve, invalidate]
+    # still authorize a merge: the durable refresh (when forced) and the
+    # red-only invalidation must have SUCCEEDED first.
+    needs: [resolve, refresh_technical, invalidate]
     if: >-
       needs.resolve.outputs.need_claude_ai == 'true' &&
-      needs.invalidate.result == 'success'
+      needs.invalidate.result == 'success' &&
+      (needs.refresh_technical.result == 'success' || needs.refresh_technical.result == 'skipped')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     # References ONLY the AI credential from agents-claude-reviewer; the
@@ -352,6 +512,9 @@ jobs:
       # GitHub app to function" — the default GitHub App auth path we
       # use (no github_token input). Kept ONLY on this job.
       id-token: write
+    outputs:
+      verdict_b64: ${{ steps.stage.outputs.verdict_b64 }}
+      review_generation: ${{ steps.gen.outputs.review_generation }}
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
@@ -376,6 +539,22 @@ jobs:
         with:
           name: contract-snapshot
           path: /tmp/rekoda-contract
+
+      # The generation this review is CONDUCTED under: the forced bump
+      # when one happened this run, else the current durable value. The
+      # publisher refuses to sign if the durable generation moved past
+      # this while the review ran — a mid-review force supersedes it.
+      - name: Pin the review's refresh generation
+        id: gen
+        env:
+          FORCED_GEN: ${{ needs.refresh_technical.outputs.refresh_generation }}
+          CURRENT_GEN: ${{ needs.resolve.outputs.tech_refresh_generation }}
+        run: |
+          set -euo pipefail
+          gen="${FORCED_GEN:-$CURRENT_GEN}"
+          gen="${gen:-0}"
+          echo "review_generation=$gen" >> "$GITHUB_OUTPUT"
+          echo "Reviewing under technical refresh generation $gen."
 
       - name: Claude reviews the current HEAD (Reviewer 1 on builder:codex)
         uses: anthropics/claude-code-action@9c5ddab2e6d17b83ea679153b31f1d5f023cf636 # v1.0.217
@@ -428,13 +607,19 @@ jobs:
                  "head_sha": "${{ needs.resolve.outputs.head_sha }}",
                  "contract_revision": ${{ needs.resolve.outputs.contract_revision }},
                  "contract_snapshot_sha256": "${{ needs.resolve.outputs.contract_snapshot_sha256 }}",
+                 "refresh_generation": ${{ steps.gen.outputs.review_generation }},
                  "verdict": "APPROVE" or "BLOCK",
                  "findings": ["<one concise line per finding; empty array if none>"]
                }
                APPROVE only if no blocking issue remains within your
                technical authority; BLOCK otherwise, findings listed.
 
-      - name: Verify the trees and stage the unsigned verdict
+      # X1: the verdict leaves this runner as BOUNDED STRUCTURED DATA —
+      # size-checked, parse-checked, base64-encoded job output. No
+      # artifact archive ever travels from the AI runner toward the
+      # signing runner, so no extraction can touch a trusted checkout.
+      - name: Verify the trees and stage the unsigned verdict as bounded job output
+        id: stage
         run: |
           set -euo pipefail
           if [ -n "$(git status --porcelain)" ] || [ -n "$(git -C untrusted-pr-head status --porcelain)" ]; then
@@ -442,18 +627,18 @@ jobs:
             git status --porcelain; git -C untrusted-pr-head status --porcelain
             exit 1
           fi
-          cp /tmp/rekoda-claude-review.json ./unsigned-verdict.json
+          f=/tmp/rekoda-claude-review.json
+          if [ ! -f "$f" ]; then echo "::error::No verdict file was produced."; exit 1; fi
+          size=$(wc -c < "$f")
+          if [ "$size" -gt 65536 ]; then echo "::error::Verdict exceeds the 64KB bound ($size bytes)."; exit 1; fi
+          node -e 'JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"))' "$f"
+          echo "verdict_b64=$(base64 -w0 "$f")" >> "$GITHUB_OUTPUT"
 
-      - name: Hand the unsigned verdict to the signing runner (untrusted data)
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: verdict-technical
-          path: unsigned-verdict.json
-          retention-days: 1
-
-  # EVIDENCE ONLY: validates the untrusted verdict against freshly
-  # re-resolved state and posts the SIGNED marker comment. Writes no
-  # check — the finalize job alone concludes the gates.
+  # EVIDENCE ONLY: receives the untrusted verdict as bounded job-output
+  # data (never an archive), validates it against freshly re-resolved
+  # state, and posts the SIGNED V4 marker with a signer-created
+  # issuance sequence — inside the per-(PR, role) issuance lane. Writes
+  # no check; the finalize job alone concludes the gates.
   technical:
     name: Technical evidence publisher (no checks)
     needs: [resolve, technical_ai]
@@ -464,6 +649,9 @@ jobs:
     # References ONLY the signing key from agents-claude-reviewer; no AI
     # credential is ever materialized on this runner.
     environment: agents-claude-reviewer
+    concurrency:
+      group: rekoda-evidence-technical-pr-${{ needs.resolve.outputs.pr }}
+      cancel-in-progress: false
     permissions:
       contents: read
       pull-requests: write
@@ -488,6 +676,8 @@ jobs:
 
       - name: Refuse to sign for a moved target
         id: guard
+        env:
+          REVIEW_GENERATION: ${{ needs.technical_ai.outputs.review_generation }}
         run: |
           set -euo pipefail
           if [ "${{ steps.fresh.outputs.head_sha }}" != "$HEAD_SHA" ]; then
@@ -500,9 +690,6 @@ jobs:
             echo "::error::The contract moved while the review ran (revision/issue changed); not signing — the redispatched run owns publication."
             exit 1
           fi
-          # The FRESH contract must still be a single authorized,
-          # unamended, undiverged, unfrozen snapshot — and the SAME
-          # snapshot the reviewer was given.
           if [ "${{ steps.fresh.outputs.contract_ok }}" != "true" ]; then
             echo "::error::The active contract is no longer a single authorized, unamended snapshot; not signing."
             exit 1
@@ -511,43 +698,63 @@ jobs:
             echo "::error::The active contract snapshot changed while the review ran; not signing — the redispatched run owns publication."
             exit 1
           fi
+          # The DURABLE generation must not have moved past the one this
+          # review was conducted under — a mid-review force supersedes.
+          if [ "${{ steps.fresh.outputs.tech_refresh_generation }}" != "$REVIEW_GENERATION" ]; then
+            echo "::error::The technical refresh generation moved (now ${{ steps.fresh.outputs.tech_refresh_generation }}, review conducted under $REVIEW_GENERATION); not signing — the newer refresh's own run owns publication."
+            exit 1
+          fi
           echo "proceed=true" >> "$GITHUB_OUTPUT"
 
-      - name: Receive the unsigned verdict (untrusted data)
+      - name: Receive the unsigned verdict as bounded data (RUNNER_TEMP only, no archive)
         if: steps.guard.outputs.proceed == 'true'
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: verdict-technical
+        env:
+          VERDICT_B64: ${{ needs.technical_ai.outputs.verdict_b64 }}
+        run: |
+          set -euo pipefail
+          node --input-type=module -e '
+            import { writeFileSync } from "node:fs";
+            const b64 = process.env.VERDICT_B64 ?? "";
+            if (b64.length === 0 || b64.length > 90000) {
+              console.error("::error::Verdict job output is missing or exceeds the byte bound.");
+              process.exit(1);
+            }
+            const buf = Buffer.from(b64, "base64");
+            JSON.parse(buf.toString("utf8")); // hostile data — but it must at least be JSON
+            writeFileSync(`${process.env.RUNNER_TEMP}/unsigned-verdict.json`, buf);
+          '
 
       - name: Validate against FRESH state, sign the same in-memory payload, publish evidence
         if: steps.guard.outputs.proceed == 'true'
         env:
           CLAUDE_REVIEWER_SIGNING_KEY: ${{ secrets.CLAUDE_REVIEWER_SIGNING_KEY }}
+          REVIEW_GENERATION: ${{ needs.technical_ai.outputs.review_generation }}
         run: |
           set -euo pipefail
           # ONE trusted operation: sign-evidence.mjs revalidates every
-          # field against the fresh target and signs the exact in-memory
-          # canonical payload — no intermediate validated file exists to
-          # be swapped between validation and signing.
+          # field against the fresh target, creates the next monotonic
+          # issuance sequence itself over the COMPLETE existing role
+          # evidence, and signs the exact in-memory canonical payload.
           node scripts/agents/sign-evidence.mjs \
-            --file unsigned-verdict.json \
+            --file "$RUNNER_TEMP/unsigned-verdict.json" \
             --marker REKODA_CLAUDE_APPROVAL \
+            --repo "$REPO" \
             --pr "$PR" \
             --issue "${{ steps.fresh.outputs.issue }}" \
             --head "${{ steps.fresh.outputs.head_sha }}" \
             --revision "${{ steps.fresh.outputs.contract_revision }}" \
             --snapshot-hash "${{ steps.fresh.outputs.contract_snapshot_sha256 }}" \
+            --refresh-generation "$REVIEW_GENERATION" \
             --sign-env CLAUDE_REVIEWER_SIGNING_KEY > /tmp/marker.md
           gh pr comment "$PR" --repo "$REPO" --body-file /tmp/marker.md
 
   acceptance_ai:
     name: Acceptance review — AI (no signing key)
-    # See technical_ai: invalidation must SUCCEED before any fresh
-    # review starts.
-    needs: [resolve, invalidate]
+    needs: [resolve, refresh_acceptance, invalidate]
     if: >-
       needs.resolve.outputs.need_gemini_ai == 'true' &&
-      needs.invalidate.result == 'success'
+      needs.invalidate.result == 'success' &&
+      (needs.refresh_acceptance.result == 'success' || needs.refresh_acceptance.result == 'skipped')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     # References ONLY the AI credential from agents-gemini-reviewer.
@@ -556,6 +763,9 @@ jobs:
       contents: read
       issues: read
       pull-requests: read
+    outputs:
+      verdict_b64: ${{ steps.stage.outputs.verdict_b64 }}
+      review_generation: ${{ steps.gen.outputs.review_generation }}
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
@@ -581,12 +791,38 @@ jobs:
           name: contract-snapshot
           path: /tmp/rekoda-contract
 
+      - name: Pin the review's refresh generation
+        id: gen
+        env:
+          FORCED_GEN: ${{ needs.refresh_acceptance.outputs.refresh_generation }}
+          CURRENT_GEN: ${{ needs.resolve.outputs.gemini_refresh_generation }}
+        run: |
+          set -euo pipefail
+          gen="${FORCED_GEN:-$CURRENT_GEN}"
+          gen="${gen:-0}"
+          echo "review_generation=$gen" >> "$GITHUB_OUTPUT"
+          echo "Reviewing under acceptance refresh generation $gen."
+
+      - name: Snapshot the workspace before the pinned action runs
+        run: |
+          set -euo pipefail
+          git status --porcelain --untracked-files=all > /tmp/pre-action-status.txt
+          if [ -s /tmp/pre-action-status.txt ]; then
+            echo "::error::The trusted checkout is not clean before the review action."
+            cat /tmp/pre-action-status.txt
+            exit 1
+          fi
+
       - name: Gemini reviews system acceptance (Reviewer 2)
         uses: google-github-actions/run-gemini-cli@f77273f4c914e4bf38440cf36a0369cb64a37489 # v0.1.22
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
+          # Y5: the CLI itself is version-pinned — `latest` is never
+          # reviewed code. Bump only together with a review of the new
+          # version (the pinned action commit stays reviewed separately).
+          gemini_cli_version: 0.59.0
           settings: |
             {
               "maxSessionTurns": 40,
@@ -654,28 +890,54 @@ jobs:
                  "head_sha": "${{ needs.resolve.outputs.head_sha }}",
                  "contract_revision": ${{ needs.resolve.outputs.contract_revision }},
                  "contract_snapshot_sha256": "${{ needs.resolve.outputs.contract_snapshot_sha256 }}",
+                 "refresh_generation": ${{ steps.gen.outputs.review_generation }},
                  "verdict": "APPROVE" or "BLOCK",
                  "findings": ["<one concise line per finding; empty array if none>"]
                }
                APPROVE only if no blocking issue remains within your
                acceptance authority; BLOCK otherwise, findings listed.
 
-      - name: Verify the trees and stage the unsigned verdict
+      # X8: the pinned action legitimately creates runtime files
+      # (.gemini/settings.json from the settings input, .gemini/commands/
+      # copied from the action's own tree, telemetry/log paths). Normal
+      # action setup is NOT tampering — but ONLY those exact untracked
+      # paths are tolerated: any TRACKED modification in either tree and
+      # any unexpected untracked path fails; the known runtime files are
+      # then removed and the final status must be clean.
+      - name: Verify the trees and stage the unsigned verdict as bounded job output
+        id: stage
         run: |
           set -euo pipefail
-          if [ -n "$(git status --porcelain)" ] || [ -n "$(git -C untrusted-pr-head status --porcelain)" ]; then
-            echo "::error::Tracked files were modified during acceptance review — refusing to hand over a verdict."
-            git status --porcelain; git -C untrusted-pr-head status --porcelain
+          if [ -n "$(git status --porcelain --untracked-files=no)" ] || \
+             [ -n "$(git -C untrusted-pr-head status --porcelain --untracked-files=all)" ]; then
+            echo "::error::Tracked files were modified (or the untrusted tree changed) during acceptance review — refusing to hand over a verdict."
+            git status --porcelain --untracked-files=no
+            git -C untrusted-pr-head status --porcelain --untracked-files=all
             exit 1
           fi
-          cp /tmp/rekoda-gemini-review.json ./unsigned-verdict.json
-
-      - name: Hand the unsigned verdict to the signing runner (untrusted data)
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: verdict-acceptance
-          path: unsigned-verdict.json
-          retention-days: 1
+          git status --porcelain --untracked-files=all | sed -n 's/^?? //p' > /tmp/untracked.txt
+          node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            import { geminiRuntimeUntrackedAllowed } from "./scripts/agents/evaluator.mjs";
+            const paths = readFileSync("/tmp/untracked.txt", "utf8").split("\n").filter(Boolean);
+            const r = geminiRuntimeUntrackedAllowed(paths);
+            if (!r.ok) {
+              console.error(`::error::Unexpected untracked paths after the review action: ${r.unexpected.join(", ")}`);
+              process.exit(1);
+            }
+          '
+          rm -rf .gemini gemini-artifacts
+          if [ -n "$(git status --porcelain --untracked-files=all)" ]; then
+            echo "::error::The workspace is not clean after removing the known action runtime files."
+            git status --porcelain --untracked-files=all
+            exit 1
+          fi
+          f=/tmp/rekoda-gemini-review.json
+          if [ ! -f "$f" ]; then echo "::error::No verdict file was produced."; exit 1; fi
+          size=$(wc -c < "$f")
+          if [ "$size" -gt 65536 ]; then echo "::error::Verdict exceeds the 64KB bound ($size bytes)."; exit 1; fi
+          node -e 'JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"))' "$f"
+          echo "verdict_b64=$(base64 -w0 "$f")" >> "$GITHUB_OUTPUT"
 
   # EVIDENCE ONLY — see the technical publisher.
   acceptance:
@@ -688,6 +950,9 @@ jobs:
     # References ONLY the signing key from agents-gemini-reviewer; no AI
     # credential is ever materialized on this runner.
     environment: agents-gemini-reviewer
+    concurrency:
+      group: rekoda-evidence-acceptance-pr-${{ needs.resolve.outputs.pr }}
+      cancel-in-progress: false
     permissions:
       contents: read
       pull-requests: write
@@ -712,6 +977,8 @@ jobs:
 
       - name: Refuse to sign for a moved target
         id: guard
+        env:
+          REVIEW_GENERATION: ${{ needs.acceptance_ai.outputs.review_generation }}
         run: |
           set -euo pipefail
           if [ "${{ steps.fresh.outputs.head_sha }}" != "$HEAD_SHA" ]; then
@@ -724,9 +991,6 @@ jobs:
             echo "::error::The contract moved while the review ran (revision/issue changed); not signing — the redispatched run owns publication."
             exit 1
           fi
-          # The FRESH contract must still be a single authorized,
-          # unamended, undiverged, unfrozen snapshot — and the SAME
-          # snapshot the reviewer was given.
           if [ "${{ steps.fresh.outputs.contract_ok }}" != "true" ]; then
             echo "::error::The active contract is no longer a single authorized, unamended snapshot; not signing."
             exit 1
@@ -735,62 +999,85 @@ jobs:
             echo "::error::The active contract snapshot changed while the review ran; not signing — the redispatched run owns publication."
             exit 1
           fi
+          if [ "${{ steps.fresh.outputs.gemini_refresh_generation }}" != "$REVIEW_GENERATION" ]; then
+            echo "::error::The acceptance refresh generation moved (now ${{ steps.fresh.outputs.gemini_refresh_generation }}, review conducted under $REVIEW_GENERATION); not signing — the newer refresh's own run owns publication."
+            exit 1
+          fi
           echo "proceed=true" >> "$GITHUB_OUTPUT"
 
-      - name: Receive the unsigned verdict (untrusted data)
+      - name: Receive the unsigned verdict as bounded data (RUNNER_TEMP only, no archive)
         if: steps.guard.outputs.proceed == 'true'
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: verdict-acceptance
+        env:
+          VERDICT_B64: ${{ needs.acceptance_ai.outputs.verdict_b64 }}
+        run: |
+          set -euo pipefail
+          node --input-type=module -e '
+            import { writeFileSync } from "node:fs";
+            const b64 = process.env.VERDICT_B64 ?? "";
+            if (b64.length === 0 || b64.length > 90000) {
+              console.error("::error::Verdict job output is missing or exceeds the byte bound.");
+              process.exit(1);
+            }
+            const buf = Buffer.from(b64, "base64");
+            JSON.parse(buf.toString("utf8")); // hostile data — but it must at least be JSON
+            writeFileSync(`${process.env.RUNNER_TEMP}/unsigned-verdict.json`, buf);
+          '
 
       - name: Validate against FRESH state, sign the same in-memory payload, publish evidence
         if: steps.guard.outputs.proceed == 'true'
         env:
           GEMINI_REVIEWER_SIGNING_KEY: ${{ secrets.GEMINI_REVIEWER_SIGNING_KEY }}
+          REVIEW_GENERATION: ${{ needs.acceptance_ai.outputs.review_generation }}
         run: |
           set -euo pipefail
-          # ONE trusted operation: sign-evidence.mjs revalidates every
-          # field against the fresh target and signs the exact in-memory
-          # canonical payload — no intermediate validated file exists to
-          # be swapped between validation and signing.
           node scripts/agents/sign-evidence.mjs \
-            --file unsigned-verdict.json \
+            --file "$RUNNER_TEMP/unsigned-verdict.json" \
             --marker REKODA_GEMINI_APPROVAL \
+            --repo "$REPO" \
             --pr "$PR" \
             --issue "${{ steps.fresh.outputs.issue }}" \
             --head "${{ steps.fresh.outputs.head_sha }}" \
             --revision "${{ steps.fresh.outputs.contract_revision }}" \
             --snapshot-hash "${{ steps.fresh.outputs.contract_snapshot_sha256 }}" \
+            --refresh-generation "$REVIEW_GENERATION" \
             --sign-env GEMINI_REVIEWER_SIGNING_KEY > /tmp/marker.md
           gh pr comment "$PR" --repo "$REPO" --body-file /tmp/marker.md
 
-  # THE single authorization decision for this PR. Runs after every lane
-  # (whatever their outcome), re-normalizes the CURRENT state once, and
-  # computes and publishes ALL THREE gate conclusions from that single
-  # state. If a pending finalizer is ever displaced within the per-PR
-  # group, its replacement is a newer job that republishes the complete
-  # three-check state — a partial or stale conclusion cannot survive.
+  # THE single authorization decision for this HEAD. Runs after every
+  # lane (whatever their outcome — EXCEPT after a failed durable refresh
+  # or failed invalidation, which fail the run visibly with the old
+  # evidence already detached by the durable generation), re-normalizes
+  # the CURRENT state once INSIDE the SHA lock, and computes and
+  # publishes ALL THREE gate conclusions from that single state with
+  # the dedicated App token.
   finalize:
     name: Finalize — publish all three gate conclusions
-    needs: [resolve, invalidate, technical_ai, technical, acceptance_ai, acceptance]
-    # Runs whatever the lanes did — EXCEPT after a FAILED invalidation:
-    # then the fresh-review request never became authoritative, no AI
-    # ran, nothing is republished, and the run's own failure is the
-    # visible signal (any partially-written invalidation reds are safe —
-    # red-only).
+    needs:
+      [
+        resolve,
+        refresh_technical,
+        refresh_acceptance,
+        invalidate,
+        technical_ai,
+        technical,
+        acceptance_ai,
+        acceptance,
+      ]
     if: >-
       !cancelled() && needs.resolve.result == 'success' && needs.resolve.outputs.pr != '' &&
-      (needs.invalidate.result == 'success' || needs.invalidate.result == 'skipped')
+      (needs.invalidate.result == 'success' || needs.invalidate.result == 'skipped') &&
+      (needs.refresh_technical.result == 'success' || needs.refresh_technical.result == 'skipped') &&
+      (needs.refresh_acceptance.result == 'success' || needs.refresh_acceptance.result == 'skipped')
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    environment: agents-gate-publisher
     concurrency:
-      group: rekoda-gates-pr-${{ needs.resolve.outputs.pr }}
+      group: rekoda-authorization-sha-${{ needs.resolve.outputs.head_sha }}
       cancel-in-progress: false
     permissions:
       contents: read
       pull-requests: read
       issues: read
-      checks: write
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       PR: ${{ needs.resolve.outputs.pr }}
@@ -805,20 +1092,23 @@ jobs:
           ref: ${{ needs.resolve.outputs.trusted_sha }}
           fetch-depth: 1
 
+      - name: Mint the Rekoda Gate Publisher token
+        id: app_token
+        env:
+          REKODA_GATE_PUBLISHER_APP_ID: ${{ secrets.REKODA_GATE_PUBLISHER_APP_ID }}
+          REKODA_GATE_PUBLISHER_APP_PRIVATE_KEY: ${{ secrets.REKODA_GATE_PUBLISHER_APP_PRIVATE_KEY }}
+        run: node scripts/agents/app-token.mjs --repo "$REPO"
+
       - name: Compute and publish the complete three-check state
+        env:
+          GATE_PUBLISHER_TOKEN: ${{ steps.app_token.outputs.token }}
         run: |
           set -euo pipefail
           # CURRENT state decides EVERYTHING — resolver-time snapshots
-          # decide NOTHING here. Governance in particular may have been
-          # gained after resolve (labels, a closing reference, sticky
-          # enrollment history discovered late); a neutral-green
-          # conclusion from stale governance would bypass every reviewer
-          # gate. So: normalize/re-fetch first, inside the per-PR group,
-          # and only the FRESH sticky-governance verdict picks the path.
-          # Unprovable state never reaches a conclusion: normalize fails
-          # hard on unprovable listings, and an unprovably complete
-          # enrollment history makes isGoverned() TRUE (governed path)
-          # where the policy evaluation then blocks.
+          # decide NOTHING here: normalize/re-fetch first, INSIDE the
+          # SHA lock, so a finalizer that waited behind an ambiguity
+          # revocation or amendment barrier re-reads the world before a
+          # single write. Unprovable state never reaches a conclusion.
           node scripts/agents/normalize.mjs --repo "$REPO" --pr "$PR" --out /tmp/state-final.json
           node scripts/agents/run-gate.mjs --state /tmp/state-final.json --print-context > /tmp/ctx.txt
           ctx() { grep "^$1=" /tmp/ctx.txt | head -1 | cut -d= -f2-; }
@@ -850,38 +1140,36 @@ jobs:
               acc=success;  acc_t="Draft";  acc_s="Acceptance review runs when the PR is marked ready."
             else
               if node scripts/agents/run-gate.mjs --state /tmp/state-final.json --mode technical; then
-                tech=success; tech_t="Technical review APPROVE"; tech_s="A valid technical verdict approves HEAD $HEAD_SHA at the current contract snapshot."
+                tech=success; tech_t="Technical review APPROVE"; tech_s="A valid technical verdict approves HEAD $HEAD_SHA at the current contract snapshot and refresh generation."
               else
-                tech=failure; tech_t="Technical review BLOCKED"; tech_s="No valid APPROVE for HEAD $HEAD_SHA at the current contract snapshot (AI lane result: $TECH_AI_RESULT) — see the run log (docs/AUTONOMOUS-ENGINEERING.md §6)."
+                tech=failure; tech_t="Technical review BLOCKED"; tech_s="No valid APPROVE for HEAD $HEAD_SHA at the current contract snapshot and refresh generation (AI lane result: $TECH_AI_RESULT) — see the run log (docs/AUTONOMOUS-ENGINEERING.md §6)."
               fi
               if node scripts/agents/run-gate.mjs --state /tmp/state-final.json --mode acceptance; then
-                acc=success; acc_t="System acceptance APPROVE"; acc_s="A valid acceptance verdict approves HEAD $HEAD_SHA at the current contract snapshot."
+                acc=success; acc_t="System acceptance APPROVE"; acc_s="A valid acceptance verdict approves HEAD $HEAD_SHA at the current contract snapshot and refresh generation."
               else
-                acc=failure; acc_t="System acceptance BLOCKED"; acc_s="No valid APPROVE for HEAD $HEAD_SHA at the current contract snapshot (AI lane result: $GEMINI_AI_RESULT) — see the run log (docs/AUTONOMOUS-ENGINEERING.md §6)."
+                acc=failure; acc_t="System acceptance BLOCKED"; acc_s="No valid APPROVE for HEAD $HEAD_SHA at the current contract snapshot and refresh generation (AI lane result: $GEMINI_AI_RESULT) — see the run log (docs/AUTONOMOUS-ENGINEERING.md §6)."
               fi
             fi
           fi
 
           publish() {
-            node scripts/agents/post-check.mjs --repo "$REPO" --name "$1" --sha "$HEAD_SHA" \
+            GH_TOKEN="$GATE_PUBLISHER_TOKEN" node scripts/agents/post-check.mjs --repo "$REPO" --name "$1" --sha "$HEAD_SHA" \
               --conclusion "$2" --title "$3" --summary "$4"
           }
           fail=0
           # ---- FAILURES FIRST (scripts/agents/evaluator.mjs
           # orderCheckWrites is the tested contract): every required
           # revocation reaches GitHub before any passing upsert can
-          # abort this step. A single failure-write error does not stop
-          # the other failure writes; any blocked conclusion fails the
-          # job regardless.
+          # abort this step.
           if [ "$pol" = "failure" ]; then fail=1; publish "Agent policy gate" failure "$pol_t" "$pol_s" || true; fi
           if [ "$tech" = "failure" ]; then fail=1; publish "Technical Review Gate" failure "$tech_t" "$tech_s" || true; fi
           if [ "$acc" = "failure" ]; then fail=1; publish "Gemini Acceptance Gate" failure "$acc_t" "$acc_s" || true; fi
 
-          # ---- ASSOCIATION RE-CHECK before ANY passing write: checks
-          # attach to the SHA, so a HEAD that became shared by several
-          # open PRs after resolve must never receive green from this
-          # run — a second PR would inherit it. Exactly one open
-          # association AND it is this PR, or no passing conclusion.
+          # ---- ASSOCIATION RE-CHECK before ANY passing write, INSIDE
+          # the SHA lock: re-enumerate the COMPLETE current open-PR
+          # association for this SHA. A finalizer that paused before an
+          # ambiguity revocation cannot resume and restore green — this
+          # re-read runs after it acquired the same SHA lane.
           if [ "$pol" = "success" ] || [ "$tech" = "success" ] || [ "$acc" = "success" ]; then
             assoc=$(GITHUB_OUTPUT= node scripts/agents/resolve-target.mjs --repo "$REPO" --head-sha "$HEAD_SHA" 2>&1 || true)
             a_status=$(printf '%s\n' "$assoc" | grep '^status=' | head -1 | cut -d= -f2 || true)

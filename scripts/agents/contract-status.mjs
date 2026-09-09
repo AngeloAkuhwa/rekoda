@@ -19,7 +19,13 @@ import { execFileSync } from 'node:child_process';
 import { appendFileSync, readFileSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { computeContractRevision } from './evaluator.mjs';
+import {
+  computeContractRevision,
+  resolveOwnerDecision,
+  contractSnapshotHash,
+  normalizeBody,
+  sha256Hex,
+} from './evaluator.mjs';
 import { ghPagedComplete } from './gh-lib.mjs';
 
 const args = Object.fromEntries(
@@ -69,6 +75,49 @@ const contractOk =
   rev.labelsDiverged !== true &&
   !rev.pendingFreeze;
 
+// X7 — R3 owner authorization:
+//   - proposed_baseline_snapshot_hash: what a revision-1 baseline over
+//     the CURRENT body/labels would bind. The owner reviews exactly
+//     this state and posts the REKODA_OWNER_DECISION marker naming
+//     this hash BEFORE any baseline/READY promotion of an R3 issue.
+//   - owner_decision_ok / owner_decision_ok_proposed: is a CURRENT
+//     owner APPROVE_IMPLEMENTATION decision recorded for the active /
+//     the proposed-baseline snapshot?
+const labels = (raw.labels ?? []).map((l) => l.name);
+const risks = labels.filter((l) => /^risk:R[0-3]$/.test(l));
+const builders = labels.filter((l) => /^builder:(claude|codex)$/.test(l));
+const proposedBaselineHash =
+  risks.length === 1 && builders.length === 1
+    ? contractSnapshotHash({
+        issue,
+        revision: 1,
+        risk: risks[0],
+        builder: builders[0],
+        bodySha256: sha256Hex(normalizeBody(raw.body ?? '')),
+      })
+    : '';
+const decisionComments = history.complete
+  ? history.items.map((c) => ({
+      author: c.user?.login ?? '',
+      createdAt: c.created_at,
+      id: c.id,
+      body: c.body ?? '',
+    }))
+  : [];
+const ownerLogin = process.env.OWNER_LOGIN || 'AngeloAkuhwa';
+const decisionActive = resolveOwnerDecision({
+  issueComments: decisionComments,
+  issueNumber: issue,
+  snapshotHash: rev.snapshotHash ?? null,
+  ownerLogin,
+});
+const decisionProposed = resolveOwnerDecision({
+  issueComments: decisionComments,
+  issueNumber: issue,
+  snapshotHash: proposedBaselineHash || null,
+  ownerLogin,
+});
+
 const out = {
   history_complete: history.complete ? 'true' : 'false',
   baseline_found: rev.baselineFound ? 'true' : 'false',
@@ -82,6 +131,9 @@ const out = {
   builder: rev.expectedBuilder ?? '',
   contract_body_sha256: rev.expectedHash ?? '',
   contract_snapshot_sha256: rev.snapshotHash ?? '',
+  proposed_baseline_snapshot_hash: proposedBaselineHash,
+  owner_decision_ok: decisionActive.approved ? 'true' : 'false',
+  owner_decision_ok_proposed: decisionProposed.approved ? 'true' : 'false',
 };
 for (const [k, v] of Object.entries(out)) {
   console.log(`${k}=${v}`);

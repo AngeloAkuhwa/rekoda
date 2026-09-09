@@ -22,7 +22,7 @@ import { writeFileSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { MARKERS, SCHEME, normalizeBody, sha256Hex } from './evaluator.mjs';
+import { normalizeBody, sha256Hex, buildCodexVerdictTemplateLines } from './evaluator.mjs';
 
 const args = Object.fromEntries(
   process.argv
@@ -70,6 +70,8 @@ try {
     'builder',
     'contract_body_sha256',
     'contract_snapshot_sha256',
+    'tech_refresh_generation',
+    'gemini_refresh_generation',
   ]) {
     console.log(`${k}=${ctx[k] ?? ''}`);
   }
@@ -93,22 +95,22 @@ try {
     console.log(`snapshot_written=${args.out}`);
   }
 
-  const markerName =
-    ctx.builder === 'builder:claude'
-      ? MARKERS.codex
-      : ctx.builder === 'builder:codex'
-        ? MARKERS.claude
-        : MARKERS.codex;
+  // Native Codex template: SCHEME/target fields plus the CURRENT
+  // technical refresh generation — Codex copies every value verbatim.
+  // (The signed Claude/Gemini roles never use a template; their signer
+  // creates the issuance fields itself.)
   console.log('');
   console.log('--- verdict marker template (fill in VERDICT) ---');
-  console.log(markerName);
-  console.log(`SCHEME: ${SCHEME}`);
-  console.log(`PR: ${pr}`);
-  console.log(`ISSUE: ${ctx.issue}`);
-  console.log(`HEAD_SHA: ${ctx.head_sha}`);
-  console.log(`CONTRACT_REVISION: ${ctx.contract_revision}`);
-  console.log(`CONTRACT_SNAPSHOT_SHA256: ${ctx.contract_snapshot_sha256}`);
-  console.log('VERDICT: APPROVE|BLOCK');
+  for (const line of buildCodexVerdictTemplateLines({
+    pr,
+    issue: ctx.issue,
+    headSha: ctx.head_sha,
+    contractRevision: ctx.contract_revision,
+    contractSnapshotSha256: ctx.contract_snapshot_sha256,
+    refreshGeneration: ctx.tech_refresh_generation ?? 0,
+  })) {
+    console.log(line);
+  }
 } finally {
   rmSync(tmp, { recursive: true, force: true });
 }

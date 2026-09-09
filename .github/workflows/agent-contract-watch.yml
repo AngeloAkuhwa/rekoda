@@ -6,31 +6,26 @@
 # contract state.
 #
 # ONE proposal semantic (D1): every event this watcher sees is at most
-# a PROPOSED contract change or a state signal — a body edit, an
-# owner-typed marker, a label flip. None of it moves the active merge
-# contract: only the contract-authority's owner-dispatched
-# freeze-before-mutate transaction makes a revision authoritative. A
-# pending proposal makes the gates' contract_ok false (the body no
-# longer matches the active revision's hash), which BLOCKS the gates,
-# stops reviewer lanes from running, and stops publishers from signing
-# — and V2 verdicts bind the reviewed snapshot's CONTRACT_BODY_SHA256,
-# so no verdict produced over other text can authorize anything. The
-# D1 merge window cannot be reopened from here.
+# a PROPOSED contract change or a state signal. None of it moves the
+# active merge contract: only the contract-authority's owner-dispatched
+# freeze-before-mutate transaction makes a revision authoritative, and
+# only an authority-signed enrollment makes a PR the implementation PR.
 #
-# DELIVERY GUARANTEE: every dispatch below reaches an evaluation. The
-# gates workflow has no workflow-level concurrency group, so a request
-# cannot be displaced out of a pending slot by a later request; this
-# watcher's own per-issue group only collapses rapid same-issue events
-# into a newer run that re-dispatches against strictly fresher state.
+# DELIVERY GUARANTEE (Y1): an UNAUTHORIZED event can never displace an
+# AUTHORIZED delivery. There is NO workflow-level concurrency and NO
+# cancellation: every event runs its cheap no-secret authorization
+# first, and only AUTHORIZED reevaluation work enters the per-issue
+# durable serialization group (cancel-in-progress: false — queued, never
+# cancelled). A storm of untrusted marker-looking comments therefore
+# dies in its own authorize jobs without ever contending with — let
+# alone cancelling — an authorized run's dispatch.
 #
-# The contract-authority WORKFLOW does not rely on this watcher at all —
-# GitHub suppresses workflow events created by GITHUB_TOKEN comments, so
-# the authority dispatches the gates itself directly. That suppression
-# is a feature here: the gates' own marker comments can never self-
-# trigger loops through this watcher either.
+# Ordinary redispatch here is NOT force review: every dispatch carries
+# force_review=false, valid same-state evidence is reused, and forcing
+# is a separate owner-only authenticated action on the gates workflow.
 #
 # No environment, no AI secrets: an arbitrary issue comment can never
-# reach a secret-bearing job from here — this job only calls
+# reach a secret-bearing job from here — this workflow only calls
 # workflow_dispatch of the privileged gates, which re-resolve everything
 # themselves.
 name: Agent — contract watch
@@ -45,15 +40,13 @@ permissions:
   contents: read
   issues: read
   pull-requests: read
-  actions: write # workflow_dispatch of the three gates; nothing else
-
-concurrency:
-  group: contract-watch-${{ github.event.issue.number }}
-  cancel-in-progress: true
+  actions: write # workflow_dispatch of the gates; nothing else
 
 jobs:
-  redispatch:
-    name: Contract watch
+  # CHEAP, NO-CONCURRENCY authorization preflight: unauthorized events
+  # end here, in their own isolated job, displacing nothing.
+  authorize:
+    name: Authorize the event (no concurrency, no secrets)
     if: |
       !github.event.issue.pull_request &&
       contains(github.event.issue.labels.*.name, 'agent-task') &&
@@ -66,53 +59,74 @@ jobs:
           startsWith(github.event.label.name, 'status:') ||
           github.event.label.name == 'needs-owner-decision')) ||
         (github.event_name == 'issue_comment' &&
-         contains(github.event.comment.body, 'REKODA_CONTRACT'))
+         contains(github.event.comment.body, 'REKODA_'))
       )
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      proceed: ${{ steps.decide.outputs.proceed }}
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      REPO: ${{ github.repository }}
+    steps:
+      # issues/issue_comment events execute the default-branch
+      # definition; github.sha IS that trusted commit.
+      - name: Trusted root
+        run: echo "Definition and policy trust root — default-branch SHA ${{ github.sha }}"
+
+      # Comment-triggered redispatch is AUTHORIZED-AUTHOR ONLY: an
+      # arbitrary public commenter must not launch privileged gate runs
+      # merely by including marker-looking text — the evaluator would
+      # ignore such text as invalid evidence anyway, so there is nothing
+      # legitimate to re-evaluate. Label/edit events are already limited
+      # to triage+ actors by GitHub itself.
+      - name: Decide
+        id: decide
+        env:
+          EVENT: ${{ github.event_name }}
+          COMMENT_AUTHOR: ${{ github.event.comment.user.login }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" != "issue_comment" ]; then
+            echo "proceed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          perm=$(gh api "repos/$REPO/collaborators/$COMMENT_AUTHOR/permission" --jq .permission 2>/dev/null || echo none)
+          case "$perm" in
+            admin|maintain|write)
+              echo "Comment author $COMMENT_AUTHOR permission: $perm"
+              echo "proceed=true" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "Comment author $COMMENT_AUTHOR (permission: $perm) is not an authorized evidence source — the marker-looking text is data for the evaluator, not a trigger; no privileged dispatch."
+              echo "proceed=false" >> "$GITHUB_OUTPUT"
+              ;;
+          esac
+
+  # ONLY authorized reevaluation enters the per-issue durable lane:
+  # queued behind a running delivery, NEVER cancelling it, never
+  # cancelled by anything an unauthorized commenter can do.
+  redispatch:
+    name: Contract watch — authorized redispatch
+    needs: authorize
+    if: needs.authorize.outputs.proceed == 'true'
+    runs-on: ubuntu-latest
     timeout-minutes: 10
+    concurrency:
+      group: contract-watch-issue-${{ github.event.issue.number }}
+      cancel-in-progress: false
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       REPO: ${{ github.repository }}
       ISSUE: ${{ github.event.issue.number }}
     steps:
-      # issues/issue_comment events execute the default-branch
-      # definition; github.sha IS that trusted commit.
       - name: Checkout trusted policy at the definition's own SHA
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ github.sha }}
           fetch-depth: 1
 
-      - name: Trusted root
-        run: echo "Definition and policy trust root — default-branch SHA ${{ github.sha }}"
-
-      # Comment-triggered redispatch is AUTHORIZED-AUTHOR ONLY: an
-      # arbitrary public commenter must not be able to launch privileged
-      # gate runs (and thereby paid reviewer work) merely by including
-      # marker-looking text — the evaluator would ignore such text as
-      # invalid evidence anyway, so there is nothing legitimate to
-      # re-evaluate. Only a write+/maintain/admin comment author (real
-      # contract evidence can only come from them or from suppressed
-      # GITHUB_TOKEN posts) triggers a redispatch; others end here,
-      # quietly and without any dispatch. Label/edit events are already
-      # limited to actors with triage+ access by GitHub itself.
-      - name: Authorize comment-triggered redispatch
-        if: github.event_name == 'issue_comment'
-        env:
-          COMMENT_AUTHOR: ${{ github.event.comment.user.login }}
-        run: |
-          set -euo pipefail
-          perm=$(gh api "repos/$REPO/collaborators/$COMMENT_AUTHOR/permission" --jq .permission 2>/dev/null || echo none)
-          case "$perm" in
-            admin|maintain|write) echo "Comment author $COMMENT_AUTHOR permission: $perm" ;;
-            *)
-              echo "Comment author $COMMENT_AUTHOR (permission: $perm) is not an authorized evidence source — the marker-looking text is data for the evaluator, not a trigger; no privileged dispatch."
-              echo "SKIP=true" >> "$GITHUB_ENV"
-              ;;
-          esac
-
       - name: Re-run the gates on every open PR closing this issue
-        if: env.SKIP != 'true'
         run: |
           set -euo pipefail
           if [ ! -f scripts/agents/evaluator.mjs ]; then
@@ -129,7 +143,7 @@ jobs:
             [ -n "$pr" ] || continue
             echo "Issue #$ISSUE changed — re-dispatching the privileged gates for PR #$pr at its current HEAD."
             # Plain reevaluation only: valid same-state evidence is
-            # reused; force is authenticated HUMAN intent, never a
+            # reused; force is authenticated OWNER intent, never a
             # watcher side effect.
             gh workflow run agent-gates.yml --repo "$REPO" --ref main -f pr="$pr" -f force_review=false
           done < /tmp/linked-prs.txt
