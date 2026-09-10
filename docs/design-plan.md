@@ -1,9 +1,10 @@
 # Rekoda — Design & UX Plan
 
+> **Reset note (10 September 2026).** The design method here is current; the screen inventory it once pointed at (MASTER-PLAN Part 6) is archived. Which screens exist: `REKODA_CURRENT_STATE.md` §5.21.
+
 **Version:** 1.0 · 19 August 2026
 **Owns:** how every Rekoda surface is designed, built and reviewed.
-**Companion to:** `MASTER-PLAN.md` Part 6 (which lists _what_ screens exist —
-this document says _how they are made good_).
+**Companion to:** `REKODA_DESIGN_SYSTEM.md` (which patterns exist) and `REKODA_CURRENT_STATE.md` (which screens exist). This document says _how they are made good_. Historically a companion to `archive/MASTER-PLAN.md` Part 6.
 
 ---
 

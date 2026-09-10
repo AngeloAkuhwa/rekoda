@@ -1,5 +1,7 @@
 # Rekoda Decision Register
 
+> **Reset note (10 September 2026).** This index was generated against spec v1.6.6 and build plan v1.7 on 25 August 2026 and has not been regenerated since. Owner rulings after that date are in `REKODA_OWNER_DECISIONS.md`; implementation status is in `REKODA_CURRENT_STATE.md`.
+
 > **GENERATED VIEW — NOT A SOURCE OF TRUTH.**
 > Every decision below is owned by the document named in its Authority column. This file exists so a decision can be found by name; it never states a rule the authority does not.
 >

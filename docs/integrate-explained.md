@@ -1,5 +1,7 @@
 # Rekoda Integrate — end to end, from the vendor's side
 
+> **Reset note (10 September 2026).** Supporting narrative. Where this document and `REKODA_USER_JOURNEYS.md` or `REKODA_CANONICAL_SPEC.md` disagree, they win. Its Twilio cost arithmetic is historical: Integrate is Meta-direct (ADR 0017) and the WABA catalogue is retired as an order path (ADR 0018). Current Integrate status: `REKODA_CURRENT_STATE.md` §5.25 and §8.
+
 **Version:** 1.0 · 19 August 2026
 **Who this is for:** the owner, anyone joining the team, and the 5–10 concierge
 merchants of M5. It explains what a vendor actually does, what Rekoda does, how
@@ -115,7 +117,7 @@ link and I'll handle the rest."_
 
 ## 3. What the Rekoda team actually does in the alpha
 
-M5 is a **concierge alpha — 5–10 merchants, hand-held** (MASTER-PLAN §5.6). Not
+M5 is a **concierge alpha — 5–10 merchants, hand-held** (archive/MASTER-PLAN §5.6). Not
 because self-serve is impossible, but because the first ten teach us where the
 funnel breaks. Concretely, a Rekoda person:
 
@@ -391,7 +393,7 @@ account → verified payment → receipt → stock → ledger.
 **Rekoda does not take a cut of Ada's sales, and Paystack's fees are hers, shown
 transparently.** Paystack's per-customer-account charge (1%, capped ₦300) is
 configured with `bearer_type` so it sits with the sub-merchant, exactly as
-MASTER-PLAN Part 8 requires.
+archive/MASTER-PLAN Part 8 requires.
 
 **Why no transaction rake, even though Connect makes it easy?** Three reasons,
 and I would hold this line at V1:

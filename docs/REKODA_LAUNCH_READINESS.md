@@ -1,0 +1,541 @@
+# Rekoda Launch Readiness
+
+| Field | Value |
+|---|---|
+| Status | **AUTHORITATIVE for launch control** (manifest rank C). The single control board for putting real users on Rekoda |
+| Established | 10 September 2026 against `main` at `7155a2b`, from the inventory in `REKODA_CURRENT_STATE.md`, a product security review, the CI configuration and a local run of every suite |
+| Update rule | A gap opens or closes here in the same PR as the change. A gate flips only with evidence named in its row |
+
+## 1. Current launch verdict
+
+# NOT READY
+
+Rekoda is code-complete against its build plan and its test estate is
+unusually strong, but nothing has ever run outside CI. There is no
+deployment artifact, no backup mechanism, no live WhatsApp number, no
+production Paystack path, no company facts on the legal pages, and the AI
+has never been measured against a real model. Three financial defects must
+close before real money touches the books. The verdict moves to **READY FOR
+STAGING** when the P0 items in §4 that are code gaps are closed and a
+staging environment boots end to end; to **READY FOR PRIVATE BETA** when
+GATES 1 to 11 pass and journeys J1 to J13 pass on staging with real
+providers in test mode; to **READY FOR PUBLIC LAUNCH** when the owner-held
+external dependencies in §5 close and GATE 12 passes.
+
+## 2. Launch target
+
+- **Product:** Rekoda Chat first (merchant talks to Rekoda on WhatsApp plus the shared dashboard). Integrate's storefront and WhatsApp-catalogue orders are built; merchant-owned WABA connection has no HTTP surface and Meta app review is open, so Integrate ships to a private cohort only after W0 closes.
+- **Market:** Nigeria, NGN only (ADR 0033).
+- **Providers at launch:** Meta Cloud API (WhatsApp), Anthropic (reasoning, vision), OpenAI (transcription, optional verifier), Paystack (collection, merchant-owned accounts, Pay-with-Transfer), Cloudflare R2 (documents), Hetzner + Cloudflare (hosting per ADR 0006). Mono, OPay and Kuda stay production-disabled.
+- **Shape of the first cohort:** a private beta of hand-held merchants on test-mode Paystack keys, then live keys after the §47 written confirmation.
+
+## 3. Current verified state (summary)
+
+See `REKODA_CURRENT_STATE.md` §3 for the capability table. In one paragraph: identity, tenancy, RLS, webhook verification, the chat gates, the ledger kernel, statements, exports, the storefront, the public API and metering are verified complete in CI; the WhatsApp transport, voice, vision, AI interpretation, payments, R2 storage, retention, the queue and billing are implemented but have never been exercised against a live provider; suppliers, tax calculation, notifications, sweeps scheduling, observability, legal pages and the admin surface are partial; backups and deployment do not exist as code.
+
+## 4. Known blockers (P0)
+
+| ID | Blocker | Owner |
+|---|---|---|
+| G-01 | No deployment artifacts exist (no Dockerfile, production compose, Caddy config); the worker is a flag on the API process and nothing sets it | CLAUDE |
+| G-02 | No backup mechanism exists; accepted ADR 0010 (WAL archiving, PITR) is unmet and the runbook plans nightly dumps instead | CLAUDE, ANGELO (destination) |
+| G-03 | Production WhatsApp number, Meta app review and three approved templates; nothing Meta-facing has ever run against Meta | ANGELO, PROVIDER |
+| G-04 | Company facts for the legal pages are unset; production web refuses to boot without them | ANGELO, LEGAL |
+| G-05 | Paystack §47 written platform-model confirmation, then one controlled real-money drill | ANGELO, PROVIDER |
+| G-06 | Refund, reversal and chargeback webhooks are silently absorbed as `already_booked`; the books keep saying the customer paid | CLAUDE |
+| G-07 | The AI live evaluation has never run and the harness has two fail-open defects | CLAUDE, ANGELO (key, budget) |
+| G-08 | The production environment has never been filled; `.env.example` disagrees with the code on six names | ANGELO, CLAUDE |
+
+## 5. External dependencies (nothing in the code can close these)
+
+| Dependency | Who must act | Evidence that closes it |
+|---|---|---|
+| Meta: Tech Provider setup, Advanced Access on `business_management`, `whatsapp_business_management`, `whatsapp_business_messaging`; billing mode decided (prefer merchant-direct; never enable Rekoda credit-line billing without metering and ceilings) | ANGELO with Meta | App Review approvals visible in the Meta app dashboard; billing mode recorded in `REKODA_OWNER_DECISIONS.md` |
+| Meta: a Nigeria-registered WABA and phone number for Rekoda's own Chat line | ANGELO | `META_PHONE_NUMBER_ID` issued; `META_WABA_REGISTERED_IN_NIGERIA=true` truthfully |
+| Meta: approved templates `META_OTP_TEMPLATE` (AUTHENTICATION), `META_BILLING_TEMPLATE`, `META_RETENTION_TEMPLATE` (UTILITY) | ANGELO | Template status APPROVED in WhatsApp Manager; a real OTP received on a phone |
+| Paystack: written answers to the twelve platform-model questions (`REKODA_OWNER_DECISIONS.md` §2 P); live keys and activation | ANGELO with Paystack | The letter on file; `REKODA_PAYSTACK_PLATFORM_CONFIRMED=1` set by the owner |
+| Anthropic and OpenAI accounts with billing and a spend ceiling | ANGELO | Keys in the environment; a completed eval run (G-07) |
+| Cloudflare: domain (`rekoda.app`, ideally `rekoda.ng`), DNS, TLS, R2 bucket and credentials | ANGELO | `NEXT_PUBLIC_SITE_URL` resolving over HTTPS; one document written and read back from R2 |
+| Hetzner (or chosen host): server, backup destination (off-box, encrypted) | ANGELO | A restore into a clean database from an off-box backup, recorded in `runbooks/backup-restore.md` |
+| Operator identity provider (OIDC issuer, audience, JWKS) | ANGELO | A signed operator token accepted by `GET /v1/ops/health` in production mode |
+| Legal: entity name, RC number, address, privacy and support emails; DPCO review of the compliance pack; governing-law clause for `/terms`; tax and fiscalisation position; accounting sign-off on the statements | ANGELO, LEGAL | Values in the environment; review notes in `docs/compliance/README.md`; sign-off recorded in `REKODA_OWNER_DECISIONS.md` §2 T |
+| Support channel: a monitored support email and the security contact | ANGELO | `NEXT_PUBLIC_SUPPORT_EMAIL` set; `SECURITY.md` and `/security` name a company address |
+| Mono, OPay, Kuda commercial and compliance terms | ANGELO with providers | Migration rows flipped by a migration, never by an UPDATE (OWN-7) |
+
+## 6. Open owner decisions
+
+| ID | Question | Options | Recommendation |
+|---|---|---|---|
+| OD-1 | The R0A-i provenance gate blocks PR-006 to PR-009 and PR-115, but there is no production data yet, so the report would be empty | (a) run the classifier on the empty database, approve the empty report, and let R0A-ii proceed; (b) keep the gate until the first real data exists; (c) drop PR-006–009 as moot for a fresh estate | (a): it satisfies the ruling literally, costs an hour, and lets `payments.verified` retire before any real row exists |
+| OD-2 | VAT on quote acceptance, storefront and WhatsApp-catalogue sales is hardcoded to zero, and there is no VAT-registration setting | (a) launch with a written "VAT is stated by the merchant in chat only" limitation; (b) add a business-level VAT-registered flag and wire `calculateTax` before beta | (b) if any beta merchant is VAT-registered, else (a) with the limitation on `/pricing` |
+| OD-3 | Which built-but-unwired modules ship at launch: refunds and reversals (must, see G-06), goods returns, revenue recognition, journal drafts, account lifecycle, provider resolver, add-on holds | per module: wire now, defer, or delete | wire refunds and reversals now; defer the rest to post-launch and say so in `REKODA_CURRENT_STATE.md` §6 |
+| OD-4 | The fourteen `REKODA_COMMAND_*` rollout flags default off, so most writes bypass the command bus in a default deployment | (a) set every flag on in staging and fix what breaks; (b) launch with the direct path | (a) |
+| OD-5 | Renewal without card-on-file: every renewal enters the seven-day grace ladder by design and the page says "A payment did not go through" | (a) keep the flow and rewrite the copy as "Your month has ended, pay to continue"; (b) build card-on-file (needs a Paystack authorisation, post-§47) | (a) for beta |
+| OD-6 | Erasure over WhatsApp accepts ten phrases and deletes only customer identities | (a) narrow to the exact phrase and make the second ask time-boxed, keep the scope; (b) make chat erasure delete the whole business through the retention function | (a) now, (b) as a follow-up ruling |
+| OD-7 | Backup design: ADR 0010 (WAL archiving, PITR) versus the runbook's nightly dump | (a) implement 0010 with pgBackRest or WAL-G; (b) supersede 0010 with an ADR accepting nightly encrypted dumps plus a restore drill for the beta | (b) for private beta, (a) before public launch |
+
+## 7. Readiness by area
+
+| Area | Verdict | Why |
+|---|---|---|
+| Staging | NOT READY | No environment exists; env inventory and bring-up order in §11 |
+| Production | NOT READY | G-01, G-02, G-08 |
+| End-to-end | NOT READY | Journeys defined (§10); J1–J3, J19, J20 can run locally against stubs; nothing has run against a provider |
+| Operational | NOT READY | No alerts, no metrics exporter, no error tracking, no backups, no rollback drill |
+| Legal and compliance | NOT READY | Facts unset; drafts unreviewed; no governing-law clause; tax position open |
+| Repository | READY | GATE 1 passes locally and in CI (see §9) |
+| Database | READY (schema) / NOT READY (operations) | RLS and migrations proven; backup and PITR absent |
+
+## 8. Gap register
+
+Severity: **P0** launch blocker · **P1** before private beta · **P2** acceptable after launch. Owner: CLAUDE (engineering), ANGELO (owner), PROVIDER, LEGAL. Status: OPEN unless stated.
+
+| ID | Area | Gap | Sev | Evidence | Exact next action | Depends on | How to verify | Owner |
+|---|---|---|---|---|---|---|---|---|
+| G-01 | Deployment | No Dockerfile, production compose, Caddy config or worker entrypoint; `deploy.md` is prose and names `migrate` where the path is `migrate:apply` | P0 | `find -iname 'Dockerfile*'` empty; `docs/runbooks/deploy.md:23` | Write `Dockerfile` (multi-stage, Node per `.nvmrc`), `docker-compose.prod.yml` (api, api with `REKODA_WORKER=1`, web, caddy), `Caddyfile`; fix the runbook; add `/health` version field | none | `docker compose -f docker-compose.prod.yml up` on a clean VM boots api, worker, web; `GET /health` reports migrations and version over HTTPS | CLAUDE |
+| G-02 | Backups | No backup script, timer, WAL archiving or off-box destination; ADR 0010 unmet; `scripts/restore-drill.sh` does not exist | P0 | `docs/runbooks/backup-restore.md:7-14`; `docs/adr/0010-pitr-backups.md` | Decide OD-7; implement the chosen design as a compose service or systemd timer with encryption and an off-box target; write `scripts/restore-drill.sh` that restores into a clean database and runs the ledger-balance invariant | OD-7, host account | A restore from the off-box copy into an empty database passes `recovery-drill` invariants; the drill is recorded with date and operator in the runbook | CLAUDE, ANGELO |
+| G-03 | WhatsApp | Nothing Meta-facing has run against Meta: handshake, OTP template, document delivery, media download, 24-hour window | P0 | `REKODA_CURRENT_STATE.md` §5.5; `docs/runbooks/README.md` lists `meta-submission.md` as not written | Register the WABA in Nigeria, submit the three templates, complete App Review; write `docs/runbooks/meta-submission.md` with exact URLs per field; then run J1 and J2 on staging | ANGELO, Meta | GATE 4 rows pass against the real number | ANGELO, PROVIDER |
+| G-04 | Legal | `NEXT_PUBLIC_LEGAL_ENTITY`, `_RC_NUMBER`, `_ADDRESS`, `_PRIVACY_EMAIL`, `_SUPPORT_EMAIL` unset; `/terms` has no governing-law clause; `/security` and `SECURITY.md` name a GitHub URL and a personal address | P0 | `apps/web/legal-gate.mjs`; `apps/web/src/app/terms/page.tsx`; `SECURITY.md:8` | Supply the facts to the environment; add a governing-law clause (Federal Republic of Nigeria) after counsel review; point security reporting at a company address | LEGAL review | `next start` boots in production mode; the five pages render the facts with no "not set yet" badge | ANGELO, LEGAL |
+| G-05 | Payments | Live Paystack path gated on §47; no real transaction has ever been verified, booked, receipted, settled or refunded end to end | P0 | `apps/api/src/payments/connections.service.ts:101-177`; `REKODA_OWNER_DECISIONS.md` §2 P | Obtain the written answers; on staging with a TEST key run J3, J8, J9, J10, J11 and J19; then with a LIVE key one controlled ₦100 drill: intent, pay, signed webhook, verify, book, allocate, receipt PDF, ledger balance, settlement sweep, refund webhook, replay, no duplicate | G-06, staging | GATE 8 rows pass with real Paystack events | ANGELO, PROVIDER |
+| G-06 | Payments (financial) | `refund.processed`, reversal and `charge.dispute.*` events are routed by reference only and marked `already_booked`; `repos/refunds.ts` and `repos/chargebacks.ts` have no callers | P0 | `apps/api/src/payments/paystack-pump.ts:97-127`; `process-payment-event.handler.ts` never reads `eventType` | Route by event type in the pump; call `recordRefund`, `recordPaymentReversal`, `recordChargeback` from a new handler branch with a reversing posting; add a merchant read surface for settlements, refunds and chargebacks; regression test that fails before the fix | none | An injected `refund.processed` for a booked payment writes a `refunds` row, a reversing journal, and the invoice returns to unpaid; replay is idempotent | CLAUDE |
+| G-07 | AI | Every gate in `docs/ai-launch-readiness.md` reads "not yet run"; harness `injectionResisted` uses a substring match and `rate()` returns 1.0 on a zero denominator | P0 | `apps/api/src/ai/eval/harness.ts:116-118,166` | Fix the two harness defects with tests; run `run-eval.ts` against `claude-sonnet-5` with a real key; record the numbers and the owner's signed pass bar in `ai-launch-readiness.md` | Anthropic key and budget | accepted-answer ≥ 0.95, amount ≥ 0.98, quantity ≥ 0.95, customer-token, abstain and injection = 1.00, or the owner signs different numbers | CLAUDE, ANGELO |
+| G-08 | Configuration | `.env.example` documents `OWNER_DATABASE_URL` (migrations read `DATABASE_URL`), `SESSION_SECRET` (unread), `APP_URL`, `PAYSTACK_PLAN_*` (unread) and omits `MONO_SECRET_KEY`, `MONO_BASE_URL`, `REKODA_SHOP_ORDERS_PER_HOUR`, `REKODA_TRANSFER_VERIFY_MIN_SECONDS`, `REKODA_PLAN_CATALOGUE_READS` and the `REKODA_COMMAND_*` flags | P0 | `REKODA_CURRENT_STATE.md` §5.1 | Correct `.env.example` to the code; produce the staging `.env` from §11 with test-mode values; store secrets in the host's secret store, never in git | none | The API and web boot in production mode from the corrected template with placeholder secrets and fail only on the provider keys | CLAUDE, ANGELO |
+| G-09 | Repository | Branch protection on `main` is off (no rulesets) | P1 | `gh api repos/AngeloAkuhwa/rekoda/branches/main/protection` → 404 | Require PR, CI (all five jobs), no force push, code-owner review | none | A direct push to `main` is refused | ANGELO |
+| G-10 | Sweeps | No sweep fires a first pass on boot and no last-run is persisted; a process restarted more often than every 6 h never runs retention; `sinceReclaim` only advances when the queue is empty | P1 | `apps/api/src/jobs/jobs.module.ts:503-526`; `runner.ts:198-207` | Run each sweep once at boot after a short delay, or persist last-run in a `sweep_runs` table and schedule from it; fix reclaim cadence | none | Restart the worker every minute for ten minutes; retention and settlement each run at least once | CLAUDE |
+| G-11 | Tax | `vatK: 0` hardcoded on three sale paths; `calculateTax` unwired; no VAT-registration setting | P1 | `sale-commands.ts:129`; `order-commands.ts:96,384` | Decide OD-2; if (b), add the setting and wire `calculateTax` with a failing-first test on each path | OD-2 | A storefront order for a VAT-registered business writes a tax event and the invoice shows VAT | CLAUDE, ANGELO |
+| G-12 | Auth | OTP send failures are swallowed with no metric or alert; a Meta outage is invisible | P1 | `apps/api/src/auth/auth.service.ts:145-160` | Count failed sends in `SecurityMetrics`, expose on `/v1/ops/health`, alert when the failure ratio exceeds a threshold | G-26 | Point `META_ACCESS_TOKEN` at an invalid value on staging; the ops health surface shows the failures within a minute | CLAUDE |
+| G-13 | Keys | `CONNECTION_KEY` is not fingerprint-enrolled at boot and is optional in production; a wrong key boots clean and splits the estate | P1 | `apps/api/src/main.ts:114-115`; `config.ts:799-806` | Enrol `CONNECTION_KEY` in `assertKeyUnchanged`; require it in production | none | Booting with a changed `CONNECTION_KEY` refuses with the variable named | CLAUDE |
+| G-14 | Keys | No re-wrap job exists; `VAULT_KEY` and `CONNECTION_KEY` cannot be rotated; `MATCH_KEY` is permanent | P1 | `docs/runbooks/key-rotation.md:96-100` | Build the re-wrap migration job for vault and connection ciphers (dual-key window, then retire), with a test that rotates a fixture estate | none | Rotate on staging and read every facet and credential back | CLAUDE |
+| G-15 | Privacy | Chat erasure fires on ten phrases, the second ask has no time window, and it deletes only `customer_identities` | P1 | `packages/core/src/router.ts:376-387`; `packages/db/src/repos/conversations.ts:440-464`; `apps/api/src/commands/privacy-commands.ts` | Decide OD-6; require the exact phrase on the second ask within a bounded window; document the scope on `/data-deletion` | OD-6 | "delete my data" then "forget me" no longer erases; the exact phrase within the window does | CLAUDE |
+| G-16 | Billing | Every renewal enters dunning by design and the page reads "A payment did not go through" | P1 | `apps/api/src/billing/renewal-sweep.ts:134-137`; `apps/web/src/app/app/billing/page.tsx:127`; status map lacks `paid` | Decide OD-5; rewrite the copy; add `paid` to the status map | OD-5 | J15 and J16 pass with the new copy | CLAUDE |
+| G-17 | Billing | `addOnsRepo.hold`/`endHolding` have no callers; the Developer API Starter and extra seat cannot be sold | P2 | `packages/db/src/repos/add-ons.ts:147,169` | Wire from the plan-change path, or remove the two add-ons from the public price list until wired | OD-3 | Buying the add-on holds it and renews at the add-on price | CLAUDE |
+| G-18 | Queue | `outbox_events` has no backoff column and `claimBatch` no time predicate; a transiently failing event is dead in about 14 s | P1 | `packages/db/src/repos/outbox.ts:68-109`; migration 0060 | Add `next_attempt_at` with exponential backoff; claim only rows past it | none | A dispatcher that fails five times then succeeds delivers the event | CLAUDE |
+| G-19 | Privacy | `financialYears = 6` and `conversationDays = 90` are published on `/privacy` and enforced by nothing; evidence-retention clocks have no writer | P1 | `apps/api/src/privacy/retention-sweep.ts`; `/privacy#retention` | Either enforce the two limits in the sweep or restate the page to what is enforced | LEGAL | The page and the sweep agree line for line | CLAUDE, LEGAL |
+| G-20 | WhatsApp | Delivery statuses stored and never read; a `status.failed` is invisible; statuses attributed by `recipient_id` can land under the wrong tenant | P1 | `apps/api/src/channels/meta.service.ts:37,56,66` | Route statuses by `phoneNumberId`; consume `failed` into an operator-visible counter; mark status rows processed | none | A failed template delivery appears on `/v1/ops/health` within a minute; a status for merchant A never lands under B | CLAUDE |
+| G-21 | WhatsApp | Rate-limit allowlist compares the URL with its query, so Meta's GET handshake is not exempt | P2 | `apps/api/src/main.ts:226-229` | Strip the query before comparing, as the body-cap hook does | none | Sixty-one handshakes in a minute all answer 200 | CLAUDE |
+| G-22 | Payments (financial) | Merchant-borne processing fee estimated from the DVA rate card (1%, cap ₦300) when the live mechanism is Pay-with-Transfer (1.5% + ₦100, cap ₦2,000) | P1 | `apps/api/src/commands/order-commands.ts:339-344`; ADR 0016:140-149; migration 0094 | Seed a `collection_transfer_pwt` cost-schedule row and select it; regression test on the ADR's ₦105,000 example | none | A ₦105,000 order records a ₦1,675 processing charge | CLAUDE |
+| G-23 | Chat | Drafts never expire; a "yes" days later issues Monday's invoice | P1 | `0008_command_drafts.sql:22-23` (`abandoned` unused) | Expire pending drafts after a bounded window and reply that the preview lapsed | none | A "yes" 25 hours after a preview gets the lapse reply, no document | CLAUDE |
+| G-24 | Consent | STOP/START keyword match runs before the paste guard, so a punctuation-padded `start` re-subscribes an opted-out merchant | P1 | `packages/core/src/router.ts:431-436` | Apply `MAX_COMMAND_CHARS` and `survivedNormalisation` before the keyword lookup | none | The padded message routes to the model path, not START | CLAUDE |
+| G-25 | Auth | Sessions roll forever with no absolute lifetime and there is no "sign out everywhere" | P2 | `packages/db/src/repos/identity.ts` `validateSession` | Add an absolute cap (90 days) and `DELETE /v1/auth/sessions` for all of a user's sessions | none | A token minted 91 days ago is refused | CLAUDE |
+| G-26 | Observability | No metrics exporter, no alerting, no error tracking; `SecurityMetrics` is in-process | P1 | `apps/api/src/channels/security-metrics.service.ts`; no Sentry/OTel/Prometheus dependency | Add structured error reporting and a minimal alert set (webhook rejections, OTP send failures, queue depth, sweep staleness, backup age, provider 5xx, daily AI spend) delivered to a channel the owner reads | G-01 | Each alert fires once on staging when its condition is forced | CLAUDE |
+| G-27 | Tooling | Four guard scripts compute `ROOT` via `new URL(..).pathname` and fail on a path with a space | P2 | `scripts/check-{openapi,node-version,retired-claims,ui-copy}.mjs` | Use `fileURLToPath` | none | `node scripts/check-openapi.mjs` passes on this checkout | CLAUDE |
+| G-28 | E2E | Playwright proves empty states, auth and CSP; no browser test drives a populated month; storefront, catalogue, stock, team and exports untested | P1 | `apps/web/e2e/` | Add a populated-month spec seeded through the API (J3, J4, J13) and a storefront spec (J12) | none | The new specs pass in CI | CLAUDE |
+| G-29 | Chat | CG4 (verify delivery; refund the document credit on failure) is not implemented | P2 | `deliver-document.handler.ts:135`; token `CG4` absent | Refund `DOCUMENT_GENERATION` when retries exhaust and reply with the resend hint | G-20 | A forced delivery failure refunds the unit and the merchant is told | CLAUDE |
+| G-30 | AI | Cached OpenAI tokens double-counted; `RawProtectedFieldError` uncaught (job dies, no reply, no refund); non-`ProviderUnreachable` throws keep the quota slot | P2 | `apps/api/src/ai/openai.transport.ts:107,119`; `interpreter.service.ts:274-279,328-342` | Subtract cached tokens; catch and reply; release the slot in `finally` | none | Unit tests on each | CLAUDE |
+| G-31 | Privacy | Token-to-value map overwritten when one customer is matched by two facets; known-name pass can splice a token | P2 | `apps/api/src/privacy/gateway.service.ts:153,222,172-192` | Key the map by token and facet; skip already-emitted spans | none | "paid 5k to 0803… Ada" rehydrates the number where the number was | CLAUDE |
+| G-32 | Vision | `config.ts:232-238` claims a disagreement is routed to `requires_review`; no review row exists; disabled voice and image answer as a transient outage | P2 | `inbound-message.handler.ts:2227-2229`; `replies.ts` `voiceUnavailable`, `photoUnavailable` | Either add the review row or correct the comment; add honest "not enabled on this plan/deployment" copy | none | Copy test in `replies.test.ts` | CLAUDE |
+| G-33 | Suppliers | Two incompatible identity models; no supplier page or list endpoint; statement routes orphaned; no integration test | P2 | `REKODA_CURRENT_STATE.md` §5.15 | Decide the dashboard supplier posture; add a list endpoint and page or remove the orphan routes; add `suppliers.integration.test.ts` | owner decision | Routes reachable from the UI or removed | CLAUDE |
+| G-34 | Stock | No cart stock hold; `reservation`/`release` reasons never written | P2 | `packages/db/src/repos/stock.ts:40-41,341-474` | Post-launch: a TTL hold on checkout start | none | Two carts for the last unit: one wins at checkout start | CLAUDE |
+| G-35 | Runbooks | `docs/runbooks/data-erasure.md:89-93` selects the wrong column into `business_id`; `meta-submission.md` and `integrate-onboarding.md` do not exist | P1 | runbooks README | Fix the SQL; write `meta-submission.md` with G-03; write `integrate-onboarding.md` before the first Integrate merchant | G-03 | Operator dry-run of each runbook on staging | CLAUDE, ANGELO |
+| G-36 | Retention | Sweep sends and bills the template before claiming (crash re-sends); graduation nudge sends free-form outside the 24-hour window with no template | P2 | `retention-sweep.ts:110-140`; `graduation-nudge.handler.ts:37-41` | Claim first; use a UTILITY template for the nudge or drop it | G-03 | Kill the worker between send and claim; no second message | CLAUDE |
+| G-37 | Audit | Data exports, operator reads and exception resolution write no audit row; the DB owner can edit the audit table | P2 | `reports.controller.ts:2184-2249`; `ops.controller.ts:537-563` | Write audit rows for exports and operator actions | none | `/app/audit` shows the export | CLAUDE |
+| G-38 | Cost | `PAYMENT_FEE`, `BANK_FEED`, `STORAGE`, `TELEPHONY` cost classes have no writer; OTP template cost only logged; no price-staleness guard for the 1 Oct 2026 Meta repricing | P2 | `packages/db/src/repos/platform-costs.ts`; `auth.service.ts:158-162`; `messaging.ts` card dated 2026-08-24 | Write the OTP cost; add a staleness assertion that fails after the effective date | none | Margin report includes OTP cost; the card test fails after 1 Oct 2026 until updated | CLAUDE |
+| G-39 | Housekeeping | No pruning of done jobs, dispatched outbox rows, idempotency records, expired challenges or day-keyed counters | P2 | `packages/db/src/repos/{jobs,outbox,idempotency}.ts` | A weekly prune sweep with retention windows | none | Row counts stable over a simulated month | CLAUDE |
+| G-40 | Storage | `R2Storage` has no automated test; a partial R2 configuration fails at first document, not at boot | P1 | `apps/api/src/documents/r2.storage.test.ts`; `documents.module.ts` | Resolve storage at boot; on staging write, read and delete one object | R2 account | J3's receipt PDF is stored and fetched from R2 | CLAUDE, ANGELO |
+| G-41 | Repository | Local Node is 22 while `.nvmrc` says 24; `check-node-version` fails locally | P2 | local run 10 Sep 2026 | `nvm install 24 && nvm use 24` on the development machine | none | The guard passes locally | ANGELO |
+| G-42 | Dependencies | NestJS 12 (#225–#227) deferred; no dependency-vulnerability gate in CI | P2 | `.github/dependabot.yml`; `ci.yml` | Add `pnpm audit --prod` as a non-blocking job now, blocking after triage; migrate NestJS after launch | none | CI job present | CLAUDE |
+| G-43 | Config | `REKODA_TRUSTED_PROXIES` is required in production; the per-IP limiter is per process | P2 (single replica) | `apps/api/src/main.ts:15-28,93-99` | Set the proxy CIDRs in staging; move to a shared store before a second replica | G-01 | Spoofed `X-Forwarded-For` does not reset the OTP bucket | CLAUDE, ANGELO |
+| G-44 | Commercial | `MANUAL_BOOKKEEPING` is declared lost on expiry and enforced nowhere; three copies of plan prices | P2 | `packages/db/src/repos/entitlements.ts`; web change-plan table | Enforce or drop the declaration; read prices from the catalogue in web | none | An expired business is refused a manual sale | CLAUDE |
+| G-45 | Governance | The GitHub environments `agents`, `agents-claude-reviewer`, `agents-gemini-reviewer`, `agents-planner` and the labels `agent-task`, `builder:*`, `risk:R*`, `status:*` still exist on the repository after the control-plane removal | P2 | `gh api repos/…/environments`; `gh label list` | Delete the four environments (and any signing-key secrets in them) and the labels | none | The environment list is empty | ANGELO |
+| G-46 | Health | `/health` is unauthenticated and rate-limit-exempt and returns the migration count | P2 | `apps/api/src/health/health.controller.ts` | Keep it open for the platform probe but restrict the body to `ok` unless an operator scope is presented | none | Anonymous `/health` returns status only | CLAUDE |
+| G-47 | Tax and accounting | Tax, fiscalisation and accounting sign-off on the statements are open on the owner register | P1 | `REKODA_OWNER_DECISIONS.md` §2 T | Engage a qualified reviewer with the golden-fixture statements (`statements.pdf` for the fixture month) | ANGELO | Sign-off recorded | ANGELO, LEGAL |
+
+## 9. Launch gates
+
+Status: **PASS** · **FAIL** · **NOT RUN** · **BLOCKED EXTERNALLY**. "Local 10 Sep 2026" is the run recorded in §12.
+
+### GATE 1 — Repository
+
+| Check | Status | Evidence |
+|---|---|---|
+| Fresh `main` | PASS | `7155a2b`, clean tree |
+| `pnpm install --frozen-lockfile` | PASS | local 10 Sep 2026, exit 0 |
+| `pnpm turbo typecheck` | PASS | 24/24 tasks |
+| `pnpm turbo lint` | PASS | Prettier clean |
+| Unit tests | PASS | core 931, api 296, web 25, contracts 22 |
+| Integration tests | PASS in CI; local run 2,294 of 2,300 (six environment-caused failures, §12) | CI `integration` job |
+| Migration replay (foreign owner) | PASS in CI | CI `migrations-portable` |
+| Playwright | PASS in CI; NOT RUN locally this pass | CI `e2e` |
+| Secret scan | PASS in CI | gitleaks full history |
+| Guard scripts | PASS (boundaries, ui-copy, retired-claims, openapi); node-version FAIL locally (G-41) | local 10 Sep 2026 |
+
+### GATE 2 — Database
+
+| Check | Status |
+|---|---|
+| Empty-database migration (0000–0149) | PASS (local and CI) |
+| Upgrade migration from a prior head | NOT RUN (no prior production head exists; CI replays from empty) |
+| RLS invariants against `pg_policy` | PASS |
+| Tenant isolation over pooled connections | PASS |
+| Backup exists | FAIL (G-02) |
+| Restore / PITR drill from an off-box copy | FAIL (G-02); the in-CI dump/restore drill PASSes |
+| Worker permissions (claim-only cross-tenant read, no BYPASSRLS) | PASS |
+| Production indexes from EXPLAIN evidence | PASS (migration 0136 and the R1 audit) |
+
+### GATE 3 — Identity and onboarding
+
+| Check | Status |
+|---|---|
+| OTP request, verify, lockouts | PASS (stub sender); BLOCKED EXTERNALLY for real delivery (G-03) |
+| Business creation with seeded chart and tax model | PASS |
+| Login, session, logout, re-login | PASS (e2e) |
+| Accountant and delegate access matrix | PASS |
+| Abuse limits (per phone, per IP) | PASS single replica; G-43 for replicas |
+
+### GATE 4 — WhatsApp
+
+| Check | Status |
+|---|---|
+| Meta webhook verify handshake | PASS (computed); NOT RUN against Meta |
+| Real inbound message | BLOCKED EXTERNALLY |
+| Dedupe (8 concurrent deliveries, 1 row) | PASS |
+| Reply delivered | BLOCKED EXTERNALLY |
+| STOP / START | PASS (G-24 open) |
+| Unknown sender answered once | PASS |
+| Delivery failure and retry | PARTIAL: job retries PASS; failure statuses unread (G-20) |
+
+### GATE 5 — AI and media
+
+| Check | Status |
+|---|---|
+| Text classification and structured command (stub) | PASS |
+| Live model evaluation | NOT RUN (G-07) |
+| Voice transcription | NOT RUN live; ceilings and metering PASS |
+| Image / OCR | NOT RUN live; ceilings and metering PASS |
+| PII boundary | PASS (behavioural log test) |
+| Provider timeout and malformed response | PASS |
+| Cost recording | PASS (G-30 double-count on OpenAI cache) |
+
+### GATE 6 — Core books
+
+| Check | Status |
+|---|---|
+| Sale, invoice, receipt, expense, purchase, stock | PASS |
+| Partial and full payment | PASS |
+| Credit note | PASS |
+| Refund / reversal via provider event | FAIL (G-06) |
+| Balanced ledger, append-only | PASS (app and DB enforced) |
+| VAT on all sale paths | FAIL (G-11) |
+
+### GATE 7 — Reporting
+
+| Check | Status |
+|---|---|
+| Dashboard totals, registers, P&L, balance sheet, cash flow, receivables, payables | PASS |
+| PDF and Excel agree with JSON | PASS |
+| Period boundaries (Lagos month, year rollover) | PASS |
+
+### GATE 8 — Payments and reconciliation
+
+| Check | Status |
+|---|---|
+| Payment intent | PASS (stub) |
+| Real test payment and provider webhook | NOT RUN (needs staging) |
+| Verification, recording, duplicate webhook, partial, overpayment, failed payment | PASS (fixtures) |
+| Refund / reversal | FAIL (G-06) |
+| Settlement sweep | PASS (fixtures; pagination past page 1 untested live) |
+| Live real-money drill | BLOCKED EXTERNALLY (G-05) |
+
+### GATE 9 — Commercial
+
+| Check | Status |
+|---|---|
+| Trial, allowances, upgrade quote, packs | PASS |
+| Billing charge, renewal, failed renewal, grace, read-only | PASS mechanically; copy FAIL (G-16) |
+| Entitlements before meter and before provider cost | PASS |
+| Add-ons | FAIL (G-17) |
+| Revenue collection live | BLOCKED EXTERNALLY (§47) |
+
+### GATE 10 — Privacy and compliance
+
+| Check | Status |
+|---|---|
+| Privacy notice, terms, refund policy, AI privacy, data deletion pages | PASS (content); FAIL facts (G-04) |
+| Retention enforced as published | FAIL (G-19) |
+| Deletion (retention function, portability export) | PASS mechanically; NOT RUN with R2 |
+| PII logging check | PASS |
+| Provider disclosures | PASS (`docs/compliance/subprocessor-register.md`) |
+| Nigeria launch obligations (NDPA review, tax) | BLOCKED EXTERNALLY (G-47) |
+
+### GATE 11 — Production operations
+
+| Check | Status |
+|---|---|
+| Domain, TLS | NOT RUN |
+| Environment variables, secret management | FAIL (G-08) |
+| Queues and worker process | FAIL (G-01) |
+| Cron / sweeps | FAIL (G-10) |
+| Health checks | PASS (`/health`, `/v1/ops/health`) |
+| Logging with redaction | PASS |
+| Alerts (app, backup, provider, cost) | FAIL (G-26) |
+| Rollback procedure | NOT RUN |
+
+### GATE 12 — End-to-end merchant journeys
+
+NOT RUN. Definitions in §10.
+
+## 10. End-to-end test journeys
+
+Every journey states preconditions, test data, action, expected WhatsApp
+reply, expected API and database state, expected accounting entries,
+expected PDF or dashboard result, expected audit record and the pass
+condition. "Local" journeys run today against the stub sender and a local
+Postgres through the existing integration harness (`apps/api/src/channels/meta.integration.test.ts`
+already covers most of their steps); "staging" journeys need the named
+provider. Do not execute provider-dependent journeys until staging exists
+and the keys are test-mode.
+
+| J | Journey | Runs | Needs |
+|---|---|---|---|
+| J1 | New merchant onboarding | local (stub OTP); staging for real OTP | Meta template |
+| J2 | First WhatsApp text transaction | local; staging | Meta, Anthropic |
+| J3 | Sale, invoice, payment, receipt, ledger | local; staging | Paystack test key, R2 |
+| J4 | Expense, confirmation, books, report | local | Anthropic |
+| J5 | Purchase, inventory, supplier payable | local | Anthropic |
+| J6 | Voice-note transaction | staging | OpenAI |
+| J7 | Receipt photo transaction | staging | Anthropic vision |
+| J8 | Customer owes, later payment, reconciliation | local; staging | Paystack |
+| J9 | Partial payment | local | — |
+| J10 | Overpayment | local | — |
+| J11 | Reversal, refund, credit | local (credit note); FAIL until G-06 (refund) | Paystack |
+| J12 | Stock purchase, sale, reduction | local | — |
+| J13 | Monthly statements, PDF and Excel | local; staging for R2 | R2 |
+| J14 | Accountant access | local | — |
+| J15 | Trial to paid plan | staging | Paystack |
+| J16 | Failed subscription, grace, read-only | local (sweep); staging | Meta billing template |
+| J17 | STOP then START | local | — |
+| J18 | Data deletion and retention | local; staging for R2 | Meta retention template, R2 |
+| J19 | Duplicate delivery, provider retry, idempotency | local | — |
+| J20 | Cross-tenant attack attempt | local | — |
+
+### J1 · New merchant onboarding
+- **Preconditions:** empty database; web and API in production mode with legal facts set; `META_OTP_TEMPLATE` approved (staging).
+- **Test data:** phone `+2348030000001` (or a real test handset on staging); business "Ada's Provisions", type retail.
+- **Action:** `/start` with the phone; enter the code; `/setup/business`; complete.
+- **Expected WhatsApp:** one AUTHENTICATION template carrying the code, delivered within 30 s; no free-form text.
+- **Expected API/DB:** `users`, `businesses`, `memberships` (owner), `sessions` rows; `planExpiresAt` = now + 30 days; full chart (`accounts`) and tax model seeded in the same transaction.
+- **Expected accounting:** nothing posts.
+- **Expected dashboard:** `/app` empty state that says so; `/app/billing` shows trial with days left.
+- **Expected audit:** `business.created` naming the user.
+- **Pass:** all of the above; a second `POST /v1/businesses` with the same grant creates nothing new; a forged setup cookie is refused.
+
+### J2 · First WhatsApp text transaction
+- **Preconditions:** J1; `ANTHROPIC_API_KEY` set; business has no products.
+- **Test data:** message "sold 3 bags of rice to Ada 08031234567 for 45k, she paid cash".
+- **Action:** send from the merchant's number to Rekoda's number.
+- **Expected WhatsApp:** a CG2 preview naming the customer token rehydrated as "Ada", 3 × bag of rice, ₦45,000, paid ₦45,000, balance ₦0; then after "yes", the receipt PDF with caption "recorded".
+- **Expected API/DB:** `external_events` one row for the wamid; `conversation_messages` inbound stored tokenised; `command_drafts` pending then confirmed; `customers` and `customer_identities` (vaulted); `invoices` `RCT-…` receipt or `INV-…` paid; `payments` with `initialConfirmationSource = MERCHANT_ATTESTED`, `paymentMethod = CASH`; `usage_events` one `AI_ACTIONS` row with tokens and cost.
+- **Expected accounting:** DR Cash 45,000 / CR Sales Revenue 45,000 (plus COGS only if the product had a cost).
+- **Expected dashboard:** `/app` money in (recorded, not verified) ₦45,000; `/app/receipts` one row.
+- **Expected audit:** `sale.recorded` naming the merchant and the draft id.
+- **Pass:** figures in the reply equal the rows; the log contains no phone number, name or body; a replayed webhook produces no second row and no second reply.
+
+### J3 · Sale, invoice, Paystack payment, receipt, ledger
+- **Preconditions:** J1; Paystack TEST key connected via `/app/payments`; R2 configured.
+- **Test data:** "sold 2 generators to Chidi chidi@example.com for 350k, not paid" then "payment details".
+- **Action:** confirm the sale; ask for payment details; pay the intent with a Paystack test card or transfer.
+- **Expected WhatsApp:** invoice PDF `INV-2026-…` with balance ₦350,000; the payment link; after the webhook, a receipt PDF with caption "payment confirmed" (verified).
+- **Expected API/DB:** `payment_intents` succeeded; `external_events` one Paystack `charge.success`; `payments` `PROVIDER_VERIFIED`; allocation to the invoice; `invoices` status `paid`; receipt row with `snapshot.verified = true`; document object in R2 under a business-scoped key.
+- **Expected accounting:** at issue DR Accounts Receivable 350,000 / CR Sales Revenue 350,000; at payment DR Bank 350,000 / CR Accounts Receivable 350,000; settlement posting after the sweep with fee components reconciling to gross.
+- **Expected dashboard:** `/app/payments` shows the payment VERIFIED; `/app/invoices` paid; `/app/reports` balance sheet balanced.
+- **Expected audit:** `invoice.issued`, `payment.booked`, `receipt.issued`.
+- **Pass:** ledger debits equal credits; a replayed `charge.success` is `already_booked` with no second receipt; the invoice cannot be voided (`has_payments`).
+
+### J4 · Expense, confirmation, books, report
+- **Preconditions:** J1.
+- **Test data:** "paid 35k for fuel today".
+- **Expected WhatsApp:** preview "Fuel ₦35,000 paid cash"; after "yes", "recorded".
+- **Expected DB:** `spend_entries` category fuel, status active, `ledger_transaction_id` set.
+- **Expected accounting:** DR Operating Expenses 35,000 / CR Cash 35,000.
+- **Expected dashboard:** `/app/expenses` one row; `/app/reports` P&L expenses ₦35,000 in the current Lagos month.
+- **Pass:** voiding from the dashboard writes the mirror posting, the entry stays marked `voided`, and P&L returns to zero.
+
+### J5 · Purchase, inventory, supplier payable
+- **Test data:** "bought 20 bags of rice from Musa for 400k, paid 250k".
+- **Expected WhatsApp:** preview naming 20 bags, ₦400,000, paid ₦250,000, owed ₦150,000; "recorded" with the bill number.
+- **Expected DB:** `products` rice; `inventory_movements` +20 at unit cost 20,000; `bills` `BILL-…` balance due 150,000; `suppliers` row with vaulted name.
+- **Expected accounting:** DR Inventory 400,000 / CR Cash 250,000 / CR Accounts Payable 150,000.
+- **Expected dashboard:** `/app/stock` rice 20 on hand; `/app/expenses` payables ₦150,000.
+- **Pass:** paying the supplier ₦150,000 from the dashboard clears the bill and AP; paying more is refused `more_than_owed`.
+
+### J6 · Voice-note transaction (staging)
+- **Preconditions:** `VOICE_TRANSCRIPTION_ENABLED=1`, `OPENAI_API_KEY`, `AI_TRANSCRIPTION_PRICES`.
+- **Test data:** a 12-second OGG voice note saying "I sold five cartons of milk to Ngozi for twelve thousand five hundred, she transferred".
+- **Expected WhatsApp:** the same CG2 preview as text; on an unintelligible note, the "could not hear" reply and nothing metered.
+- **Expected DB:** `usage_events` one `transcription` row with `localSeconds` 12 and `providerSeconds` within tolerance; `voice_second_counters` +12; audio not persisted anywhere.
+- **Pass:** figures match; a 130-second note is refused before any provider call; the daily ceiling refuses at the limit.
+
+### J7 · Receipt photo transaction (staging)
+- **Preconditions:** `IMAGE_AI_ENABLED=1`, `ANTHROPIC_API_KEY`.
+- **Test data:** a phone photo of a thermal-printer receipt for ₦8,450 with a caption "fuel".
+- **Expected WhatsApp:** preview "Fuel ₦8,450"; a photo of a cat gets "not a business document" and no monthly unit consumed; a ₦600,000 invoice photo with a verifier configured gets a second reading and, on disagreement, the field-naming reply.
+- **Expected DB:** `usage_events` `ocr_vision` row; `doc_extraction_counters` +1; image not persisted.
+- **Pass:** as above; a PDF attachment is refused with zero provider requests.
+
+### J8 · Customer owes, later payment, reconciliation
+- **Test data:** J3's unpaid invoice; then "Chidi paid 350k by transfer"; then a bank CSV import containing the credit.
+- **Expected WhatsApp:** "who owes me" lists Chidi ₦350,000; after the payment message, receipt with caption "recorded" (MERCHANT CONFIRMED, never "verified").
+- **Expected DB:** `payments` `MERCHANT_ATTESTED` + `BANK_TRANSFER`; after the CSV import and reconcile, a `bank_line_matches` row tier 1 or 2, `decided_by = auto`.
+- **Expected accounting:** DR Bank / CR Accounts Receivable 350,000 at attestation; nothing posts from the bank line.
+- **Pass:** the payment's trust rises to externally verified without overwriting the attestation; the bank line never creates a second payment.
+
+### J9 · Partial payment
+- **Test data:** an unpaid ₦100,000 invoice; "Ada paid 40k cash".
+- **Expected:** allocation 40,000 against that invoice; status `partially_paid` (derived); balance ₦60,000 in the reply and the register; DR Cash 40,000 / CR AR 40,000.
+- **Pass:** a second "paid 70k" is answered with the real balance (₦60,000 allocated, ₦10,000 to customer credit), never overposted.
+
+### J10 · Overpayment
+- **Test data:** ₦60,000 balance; provider webhook for ₦75,000.
+- **Expected:** allocation 60,000; `customer_credits` grant 15,000 keyed on the payment; CR Customer Credit 15,000; the customer statement shows credit available; the reply names the excess.
+- **Pass:** no invoice is reduced by the credit until it is explicitly applied.
+
+### J11 · Reversal, refund, credit
+- **Test data:** a paid invoice; issue a credit note of ₦20,000 from the dashboard; then inject a Paystack `refund.processed` for the original charge.
+- **Expected:** credit note creates `CUSTOMER_CREDIT` liability with proportional VAT; the refund writes a `refunds` row and a reversing posting and the invoice returns to unpaid.
+- **Status:** the refund half FAILS until G-06 is closed. Pass condition is the full expectation.
+
+### J12 · Stock purchase, sale, stock reduction
+- **Test data:** J5's 20 bags; storefront order for 3 bags at the catalogue price; then "stock".
+- **Expected:** server-priced order; on confirmation `inventory_movements` −3 reason `sale` in the same transaction as the invoice; COGS 60,000 posted at weighted average; "stock" answers 17 bags with no model call.
+- **Pass:** two simultaneous orders for the last unit: exactly one succeeds; the loser is told.
+
+### J13 · Monthly statements, PDF and Excel
+- **Test data:** the month of J2–J12.
+- **Expected:** `GET /v1/reports/statements.pdf?period=YYYY-MM` is a real A4 PDF with the four statements; `.xlsx` opens in Excel with one sheet per statement and numeric cells; both agree with `/app/reports`; the balance sheet reports `balanced: true`; exports consume `REPORT_EXPORTS` and the 429 message appears at the cap.
+- **Pass:** trial balance nets to zero; assets = liabilities + equity + profit.
+
+### J14 · Accountant access
+- **Test data:** owner invites an accountant by phone; accountant signs in.
+- **Expected:** accountant reads everything, downloads the audit CSV and reconciles bank lines; every write door (sale, expense, void, settings, team, billing) answers 403; the delegate can record trade but not reconcile or void; the owner cannot be removed.
+- **Pass:** the live matrix in `roles.integration.test.ts` reproduced through the browser.
+
+### J15 · Trial to paid plan (staging)
+- **Test data:** a business on day 20 of trial; `POST /v1/billing/quote` then `/plan` for Chat; pay the Paystack charge.
+- **Expected:** the plan changes only after the provider confirms (never on the merchant's say-so); `subscription_charges` settled; `billing.process` never touches the merchant's ledger; allowances reset to the plan's table.
+- **Pass:** a partial payment does not unlock; an overpayment unlocks and the excess is an operator decision.
+
+### J16 · Failed subscription, grace, read-only
+- **Test data:** a paid business whose cycle ends today; run the renewal sweep, then the grace sweep at days 1, 5 and 8.
+- **Expected:** a renewal charge opens; reminders on days 1 and 5 via `META_BILLING_TEMPLATE`; day 8 read-only with books intact and exportable; the billing page copy per OD-5.
+- **Pass:** a sale attempt on day 8 is refused with the upgrade sentence; `GET /v1/reports/portability.json` still works.
+
+### J17 · STOP then START
+- **Test data:** "STOP", then a receipt is due, then "START", then "resend".
+- **Expected:** after STOP no proactive send reaches the merchant (the document is rendered and stored, delivery suppressed); "resend" is honoured because the merchant asked; after START delivery resumes; a padded "start" inside 400 dashes is not treated as START (G-24).
+- **Pass:** `users.opted_out_at` set and cleared with the first refusal timestamp preserved on repeat STOP.
+
+### J18 · Data deletion and retention
+- **Test data:** "delete my data" twice within the window; a business abandoned 90 days ago with `META_RETENTION_TEMPLATE` set.
+- **Expected:** the two-ask erasure removes every `customer_identities` row and emits `data.erased` with a count only; the retention sweep warns, then deletes the due business through the `SECURITY DEFINER` function, deletes its R2 objects, and leaves `retention_deletions`; with the template unset the sweep deletes nothing.
+- **Pass:** no PII remains in any table or object; `customer_message_optouts` survive.
+
+### J19 · Duplicate delivery, provider retry, idempotency
+- **Test data:** the same Meta wamid delivered eight times concurrently; the same Paystack `charge.success` three times; a `POST /api/v1/sales` replayed with the same idempotency key.
+- **Expected:** one `external_events` row and one job each; one booking; the API replay returns the first response.
+- **Pass:** counts from SQL equal one.
+
+### J20 · Cross-tenant attack attempt
+- **Test data:** two businesses A and B; A's session; B's invoice id, customer id, product id, shop slug, export kind.
+- **Expected:** every A request naming B's ids answers 404 or empty, never B's data; `?businessId=B` on any route is inert; a status webhook for B's number never lands under A; the app role cannot read `payment_intents` across tenants.
+- **Pass:** `roles.integration.test.ts` and `rls-invariants` reproduced through HTTP on staging.
+
+## 11. Staging plan
+
+### 11.1 Environment variable inventory
+
+Legend: **avail** = value exists today · **placeholder** = any value works in staging · **owner** = the owner must supply · **provider** = needs a provider account · **S** secret / **C** public config · **sandbox** = test mode usable. No values are recorded here.
+
+| Group | Variable | Read by | S/C | State | Sandbox |
+|---|---|---|---|---|---|
+| Database | `DATABASE_URL` (app role `rekoda_app`) | api, migrations | S | placeholder (staging Postgres) | yes |
+| Database | `WORKER_DATABASE_URL` (`rekoda_worker`) | api worker | S | placeholder | yes |
+| Database | migration connection (owner role; today via `DATABASE_URL` at migrate time, G-08) | `packages/db/src/migrate.ts` | S | placeholder | yes |
+| Web/API | `NODE_ENV=production`, `PORT` | api, web | C | avail | — |
+| Web/API | `REKODA_API_URL`, `REKODA_WEB_URL`, `NEXT_PUBLIC_SITE_URL`, `REKODA_CORS_ORIGINS` | web, api | C | owner (domain) | — |
+| Web/API | `REKODA_TRUSTED_PROXIES` | api | C | owner (proxy CIDRs) | — |
+| Web/API | `REKODA_RATE_LIMIT_MAX`, `REKODA_SHOP_ORDERS_PER_HOUR`, `REKODA_TRANSFER_VERIFY_MIN_SECONDS`, `REKODA_WORKER`, `REKODA_WORKER_CONCURRENCY`, `REKODA_PLAN_CATALOGUE_READS`, `REKODA_COMMAND_*` (14) | api | C | defaults; decide OD-4 | — |
+| Web/API | `NEXT_PUBLIC_REKODA_WHATSAPP` | web | C | owner (the Chat number) | — |
+| Legal | `NEXT_PUBLIC_LEGAL_ENTITY`, `_RC_NUMBER`, `_ADDRESS`, `_PRIVACY_EMAIL`, `_SUPPORT_EMAIL`, `_NDPR_AUDITOR` | web boot gate | C | owner (G-04) | staging may use "STAGING (not a legal entity)" only if the site is unreachable publicly |
+| WhatsApp/Meta | `META_ACCESS_TOKEN` | api | S | provider | test number available in the Meta app |
+| WhatsApp/Meta | `META_PHONE_NUMBER_ID`, `META_GRAPH_VERSION` | api | C | provider | yes |
+| WhatsApp/Meta | `META_APP_SECRET`, `META_VERIFY_TOKEN` | api | S | provider / generate | yes |
+| WhatsApp/Meta | `META_OTP_TEMPLATE`, `META_BILLING_TEMPLATE`, `META_RETENTION_TEMPLATE` (+ `_LOCALE`) | api | C | provider (approval) | templates must be approved even for a test number |
+| WhatsApp/Meta | `META_SERVICE_REPLY_COST_MICROS`, `META_WABA_REGISTERED_IN_NIGERIA` | api | C | owner | — |
+| AI/Anthropic | `ANTHROPIC_API_KEY` | api | S | provider | yes (real spend) |
+| AI | `AI_PROVIDER`, `AI_MODEL_DEFAULT`, `AI_MODEL_CLASSIFIER`, `AI_MODEL_VISION`, `AI_MODEL_ESCALATION`, `AI_MODEL_PRICES`, `AI_DAILY_CALLS_PER_BUSINESS`, `AI_DAILY_CALLS_GLOBAL`, `AI_DOC_EXTRACTIONS_*`, `AI_DUAL_EXTRACT_THRESHOLD_K`, `PLANNING_FX_NGN_PER_USD` | api | C | defaults | — |
+| Voice/OpenAI | `OPENAI_API_KEY`, `VOICE_TRANSCRIPTION_ENABLED=1`, `AI_MODEL_TRANSCRIBER`, `AI_TRANSCRIPTION_PRICES`, `VOICE_NOTE_MAX_DURATION_SECONDS`, `VOICE_SECONDS_*` | api | S/C | provider | yes |
+| Vision | `IMAGE_AI_ENABLED=1`, `AI_MODEL_VISION_VERIFIER` (optional, OpenAI) | api | C | provider | yes |
+| Paystack | `PAYSTACK_SECRET_KEY` (TEST key for staging) | api | S | provider | yes, `sk_test_` |
+| Paystack | `PAYSTACK_BASE_URL` (unset in real deployments), `REKODA_PAYSTACK_PLATFORM_CONFIRMED` (unset until §47) | api | C | owner | — |
+| Bank | `MONO_SECRET_KEY`, `MONO_BASE_URL`, `NEXT_PUBLIC_MONO_PUBLIC_KEY` | api, web | S/C | provider; commercially closed | Mono sandbox |
+| Storage/R2 | `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET` | api | S | provider (Cloudflare) | a staging bucket |
+| Email/SMS | none used | — | — | — | — |
+| Security | `VAULT_KEY`, `MATCH_KEY`, `CONNECTION_KEY`, `OTP_PEPPER`, `REKODA_API_SECRET` (each `openssl rand -hex 32`, distinct) | api | S | generate per environment; never reuse between staging and production | — |
+| Operator | `OPERATOR_OIDC_ISSUER`, `_AUDIENCE`, `_JWKS_URL`, `_SCOPE_CLAIM` | api | C | owner (an IdP) | a staging IdP tenant |
+| Operator | `REKODA_OPERATOR_SECRET` | api | S | development only; refused in production | — |
+| Test hooks | `REKODA_REVEAL_OTP`, `REKODA_E2E_REVEAL_OTP` | api, web | — | must be unset in staging and production | — |
+| FX | `FX_MODE=off` | api | C | avail | — |
+
+### 11.2 Bring-up order
+
+1. Close G-08: correct `.env.example`; generate the five security keys for staging; decide OD-4 flags.
+2. Close G-01: build the images; provision one host (or a compose stack) with Postgres 16, Caddy, Cloudflare DNS for a staging hostname; set `REKODA_TRUSTED_PROXIES`.
+3. Database: create the owner, `rekoda_app` and `rekoda_worker` roles with passwords held in the host secret store; run `migrate:apply` as the owner; confirm `GET /health` reports 150 migrations.
+4. Storage: create the staging R2 bucket; boot the API with the R2 keys; write and read one document (G-40).
+5. Web: set the legal values (staging placeholders only if the host is not public); confirm `next start` boots; run J1 with the dev OTP reveal **disabled** and a real Meta test number.
+6. Meta: register the webhook URL, complete the handshake, submit the three templates on the test WABA; run J1, J2, J17, J19.
+7. AI: set the Anthropic key, run J2 and J4 live; run the eval (G-07) and record the numbers.
+8. Media: enable voice and image with test budgets; run J6 and J7.
+9. Paystack: connect a TEST key from `/app/payments`; run J3, J8, J9, J10, J11 (after G-06), J15, J16.
+10. Operations: enable backups (G-02) and run one restore into a fresh database; wire the alert set (G-26); force each alert once.
+11. Run J12, J13, J14, J18, J20; then GATE 12 in full and record the results in §9.
+
+## 12. Verification record
+
+Local run on 10 September 2026 (Windows 11, Node 22.21.0, PostgreSQL 17.6 throwaway instance on port 15432, Europe/London timezone; CI is Linux, Node 24, PostgreSQL 16, UTC):
+
+| Command | Result |
+|---|---|
+| `pnpm install --frozen-lockfile` | exit 0 |
+| `pnpm turbo typecheck lint test build` | 24 of 24 tasks; unit tests core 931, api 296, web 25, contracts 22 passed |
+| `node scripts/check-boundaries.mjs` | OK, 9 rules |
+| `check-ui-copy`, `check-retired-claims`, `check-openapi` | OK (run with a literal root because of G-27) |
+| `check-node-version` | FAIL: local Node 22 vs `.nvmrc` 24 (G-41) |
+| `pnpm --filter @rekoda/db migrate:apply` | exit 0, 150 migrations on an empty database |
+| `pnpm --filter @rekoda/db test:integration` | 1,258 of 1,260 passed; 2 failed: `recovery-drill` (`pg_dump` not on PATH), `party-statements` opening window (timezone) |
+| `pnpm --filter @rekoda/api test:integration` | 1,036 of 1,040 passed; 4 failed: `billing` pack repricing, `retention-sweep` ×2, `catalogue` photo (timezone or Windows path) |
+| Re-run of the six with `TZ=UTC`, database timezone UTC and `pg_dump` on PATH | recorded in `HANDOFF.md` top section |
+| Playwright | not run locally this pass; passes in CI on `main` |
+
+The six local failures are environment differences from CI, not product
+regressions on `main`; CI on `7155a2b` is green. Product bugs found during
+the inventory are recorded in §8, not fixed in the reset PR.
+
+## 13. Security review summary (10 Sep 2026)
+
+Application-layer security is strong: tenancy by `withBusiness()` and six RLS invariants, boot refusal of bypass roles, `SECURITY DEFINER` functions with pinned `search_path`, webhooks verified over raw bytes with length-checked constant-time compares, 128 KB pre-parse caps, DNS-rebinding-proof outbound SSRF guard, integer kobo everywhere with server-side recomputation, structural prompt-injection containment (one zod tool, ₦10bn ceiling, preview and confirm), tokenisation before every model call, AES-256-GCM vault with AAD binding and downgrade refusal, disclosed media processing, byte-sniffed uploads, OIDC operator plane failing closed, no committed credentials, full-history secret scan. The launch risk is operational, not in the code. Findings and their gap IDs: no backups (G-02), no deployment topology (G-01), `CONNECTION_KEY` not enrolled (G-13), per-process rate limiter (G-43), sessions without an absolute cap (G-25), `/health` oracle (G-46), no dependency-audit gate (G-42), `SESSION_SECRET` dead variable (G-08). CSP `unsafe-inline` for scripts is a documented Next.js trade-off; the API sets no helmet headers (low, JSON API behind CORS allowlist; add `nosniff` and HSTS with G-01).
+
+## 14. Go / no-go and rollback
+
+**Go to private beta** when: every P0 in §8 is CLOSED; GATES 1–11 show no FAIL; journeys J1–J13, J17, J19, J20 PASS on staging with test-mode providers; a restore drill from an off-box backup has been executed within the last 7 days; the alert set has fired once each; the owner has signed the AI eval numbers.
+
+**Go to public launch** when, additionally: §47 confirmation is on file and the live-money drill passed; Meta App Review is approved with the three templates; legal review of the compliance pack and the governing-law clause is recorded; tax and accounting sign-off is recorded; J14–J16 and J18 PASS on production configuration.
+
+**Rollback criteria** (any one triggers a stop of new sign-ups and a decision within the hour): a ledger that does not balance for any business; a payment booked twice; a cross-tenant read or write; PII in a log line; webhook rejection rate above 5% for ten minutes; OTP send failure ratio above 20% for ten minutes; backup age above 24 hours; daily AI spend above the platform ceiling. Rollback procedure: `deploy.md` (to be completed with G-01) restores the previous image and, if a migration must be reversed, restores the last backup into a fresh database and replays from the outbox.
+
+## 15. Contradictions found during the reset (recorded, resolved by evidence)
+
+| # | Contradiction | Resolution |
+|---|---|---|
+| 1 | Manifest "120-PR index" vs HANDOFF "132-PR plan" | Both stale; 138 rows, 132 identifiers, explained in `REKODA_REFERENCE_MANIFEST.md` §6 |
+| 2 | ADR 0010 (WAL archiving, PITR, `scripts/restore-drill.sh`) vs `runbooks/backup-restore.md` (nightly dumps, nothing enabled) | Neither implemented; OD-7 |
+| 3 | `.env.example` `OWNER_DATABASE_URL` vs `migrate.ts` reading `DATABASE_URL` | Code wins; G-08 |
+| 4 | HANDOFF §5 "STT is self-hosted" vs ADR 0032 | ADR wins; line corrected |
+| 5 | `README.md` "pg-boss jobs" and ADR 0001 vs ADR 0022 (in-schema queue) | ADR 0022 wins; README and 0001 status corrected |
+| 6 | `SECURITY.md` claiming Twilio signature verification vs no Twilio handler in code | Code wins; line removed |
+| 7 | `config.ts:232-238` claiming `requires_review` routing vs no review row | Code behaviour wins; G-32 |
+| 8 | ADR 0014 Status "Accepted" vs manifest "Superseded by spec §6" | Superseded in part; ADR status line updated |
+| 9 | `docs/adr/README.md` missing 0028, 0029, 0030 | Rows added |
+| 10 | `rls-exemption-register.md` baseline "head 0130" vs estate at 0149 | The test is the enforcement; note added to the register |
+| 11 | Spec §12 revenue recognition "CORRECT" vs `recognise()` having zero callers | Built, unwired; `REKODA_CURRENT_STATE.md` §6; OD-3 |
+| 12 | `docs/agents/CONTEXT-MAP.md` filing `repos/issue.ts` under Ops | It is the document issuing engine; corrected in the current-state map |

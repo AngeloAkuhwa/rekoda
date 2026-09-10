@@ -66,8 +66,7 @@ the "latest measured" column.
 - **Carry raw evaluation media.** Voice and photograph cases appear as
   the transcripts and extracted text those pipelines hand the
   interpreter, which is the layer under evaluation. Raw audio/image
-  evaluation belongs to the transcription/vision bench (ADR 0008's
-  M3 benchmark), run outside the repository.
+  evaluation belongs to the transcription/vision bench (the accent benchmark of ADR 0024 C11; ADR 0008 itself is superseded by ADR 0032), run outside the repository.
 - **Tolerate a fixture that breaks the rules.** The dataset test runs
   the structural-PII detector over every input and requires every
   category present, so the dataset stays de-identified and complete as

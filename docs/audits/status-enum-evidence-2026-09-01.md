@@ -1,5 +1,7 @@
 # Status enum evidence, 1 September 2026
 
+> **HISTORICAL — FINDINGS REMEDIATED.** This audit was taken at migration head `0129` on 1 September 2026. Its findings were executed in migrations 0130–0149 (GitHub #196–#231); see `REKODA_CURRENT_STATE.md` Appendix A.5. It is kept as the record of what was found and how coverage was scoped. Do not use it as a list of open work.
+
 Phase 2 of the R1 remediation plan. Ruling 3 requires the authoritative set for
 each logic-bearing status column to be **derived from evidence** — production
 writers, contract enums, TypeScript unions, fixtures, stored values — before any

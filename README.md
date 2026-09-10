@@ -2,162 +2,148 @@
 
 **You run the business. Rekoda builds the records.**
 
-Rekoda is a WhatsApp-first financial operating assistant for small businesses in Nigeria.
-A merchant talks to Rekoda — text or voice note — or connects their WhatsApp Business
-catalogue, and Rekoda turns business activity into structured financial records:
-invoices, receipts, customer balances, inventory, a double-entry ledger, and
-**reconciliation** — matching what _should_ have happened against what _actually_
+Rekoda is a WhatsApp-first financial operating assistant for small businesses
+in Nigeria. A merchant talks to Rekoda on WhatsApp (text, a voice note, a
+photo of a receipt) or uses the web dashboard, and Rekoda turns that activity
+into records that hold up: invoices, receipts, customer and supplier balances,
+stock, a double-entry ledger, the four financial statements, and
+**reconciliation** of what should have happened against what actually
 happened when money moved.
 
+**Who it is for.** Nigerian traders and small service businesses that already
+run their business in WhatsApp and cannot produce books when a bank, a buyer
+or the tax authority asks. Launch is Nigeria and naira only.
+
+**Maturity.** Pre-launch. The build plan is complete and the test estate is
+large, but Rekoda has never been deployed and no live provider has been
+exercised. The launch verdict and every open gap are in
+[docs/REKODA_LAUNCH_READINESS.md](docs/REKODA_LAUNCH_READINESS.md).
+
+## Product surfaces
+
+| Surface                    | What it does                                                                                                                                                                                                                                     |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Rekoda Chat** (WhatsApp) | The merchant tells Rekoda what happened; Rekoda previews, the merchant confirms, a numbered, audited record and a PDF come back. Free deterministic commands: `who owes me`, `records`, `stock`, `resend`, `payment details`, `help`, STOP/START |
+| **Dashboard** (`/app`)     | Overview, invoices and quotes, receipts, debtors, expenses and purchases, stock and catalogue, bank reconciliation, payments, reports (P&L, balance sheet, cash flow, trial balance, VAT), audit trail, team, billing, settings, exports         |
+| **Rekoda Integrate**       | The merchant's customers order on a hosted storefront (`/s/<slug>`) or the merchant's own WhatsApp catalogue and pay by transfer; the same ledger receives the sale. Merchant-owned WhatsApp connection waits on Meta app review                 |
+| **Public API** (`/api/v1`) | Keys, sales and payments writes, customers, products and invoices reads, signed outbound webhooks. Reference: [docs/public-api.md](docs/public-api.md)                                                                                           |
+| **Marketing and legal**    | `/`, `/pricing`, `/privacy`, `/terms`, `/refunds`, `/security`, `/ai-privacy`, `/data-deletion`                                                                                                                                                  |
+
+## Architecture in one picture
+
 ```
-  WhatsApp / User
-        │
-        ▼
-    Rekoda API
-        │
-        ├────────────────────────┬──────────────────────┐
-        ▼                        ▼                      ▼
-  Text / structured        Voice note             Document photo
-        │                        │                      │
-        │                  OpenAI STT            Claude vision
-        │               (transcription only)  (reads the page into text)
-        │                        │                      │
-        └────────────────────────┴──────────┬───────────┘
-                                            ▼
-                    PRIVACY GATEWAY  ← supported customer identifiers
-                                       tokenised before reasoning
-                                            ▼
-                    Anthropic Claude (reasoning; never computes money)
-                                            ▼
-                    Validated Rekoda command → CONFIRMATION GATE
-                                            ▼
-             DETERMINISTIC FINANCIAL CORE → ledger / invoice / receipt
-                                            ▼
-                                     RECONCILIATION
+WhatsApp (Meta Cloud API)          Web dashboard / storefront / public API
+        │  signed webhook                       │  session or API key
+        ▼                                       ▼
+  ┌──────────────────────── apps/api (NestJS on Fastify) ────────────────────────┐
+  │ verify signature → idempotency → job queue (rekoda_worker)                     │
+  │ text ──► PRIVACY GATEWAY (PII tokenised) ──► deterministic router             │
+  │ voice ─► OpenAI transcription ─┐            └─► Anthropic Claude interprets    │
+  │ photo ─► Claude vision reads ──┘                 into a zod-validated command  │
+  │                     CONVERSATION GATES: arithmetic check, preview, one "yes"   │
+  │                     COMMAND LAYER → DETERMINISTIC FINANCIAL CORE (@rekoda/core)│
+  │                     integer kobo · balanced postings · append-only ledger      │
+  └───────────────────────────────┬────────────────────────────────────────────────┘
+                                  ▼
+             PostgreSQL 16 with row-level security (packages/db)
+             one business, one ledger, whichever door the event came through
 ```
 
-The three input paths are deliberately not identical (ADR 0032): typed text
-is tokenised before any model sees it; a voice note must reach OpenAI as
-audio to become text; a photographed document must reach Claude vision as
-pixels to be read. Raw media is processed transiently and never persisted;
-the transcript or extracted text then walks the same gateway typed text
-walks before the reasoning model sees anything.
+Money is integer kobo. AI proposes; deterministic code disposes. Tenant data
+is scoped in code and again by Postgres RLS. Customer PII lives in an
+encrypted vault and travels as tokens. Webhooks are verified, then
+deduplicated, then processed. Posted financial truth is never edited;
+corrections are new postings. Raw voice and image media are processed by
+the disclosed hosted provider and never persisted (ADR 0032).
 
-## Status
+## Repository layout
 
-**M0 complete.** The deterministic financial core: money engine (integer kobo),
-double-entry ledger with its balancing invariant, reconciliation engine,
-document numbering, the AI border-checkpoint schemas, and the Postgres schema
-with row-level-security policies.
+```
+apps/api            NestJS: webhooks, /v1 and /api/v1, auth, jobs, sweeps
+apps/web            Next.js: marketing, legal, dashboard (/app), storefront (/s)
+packages/core       Pure domain rules: money, ledger, statements, gates, replies (no IO)
+packages/db         Drizzle schema, SQL migrations 0000–0149, RLS policies, repos
+packages/contracts  zod schemas shared between api, web and the AI border
+packages/shared     Branded types and utilities
+scripts/            CI guard scripts (boundaries, node version, UI copy, retired claims, OpenAPI)
+docs/               Canonical documentation (see below)
+```
 
-**M1 identity complete.** A merchant goes from a phone number to an
-authenticated dashboard: OTP over `apps/api`, business creation under RLS, and
-a revocable session, all against PostgreSQL and covered end to end. Sign-in
-codes go out as a WhatsApp authentication template, which needs an approved
-template on the WABA (`META_OTP_TEMPLATE`).
+Stack: TypeScript end to end, NestJS 11 on Fastify, Next.js 16, PostgreSQL 16
+with Drizzle, an in-schema job queue (ADR 0022), pdfkit and a hand-rolled
+xlsx writer, Anthropic Claude (reasoning and vision), OpenAI (transcription),
+Meta WhatsApp Cloud API, Paystack, Cloudflare R2. pnpm 9 and Turborepo. Node
+version from `.nvmrc`.
 
-**M2 chat and dashboard, feature complete.** An inbound WhatsApp message runs
-through the privacy gateway, a routed model call, the conversation gates, and
-the transaction engine: sales, expenses, purchases and merchant-reported
-payments all become confirmed, balanced, numbered, audited records with a PDF.
-Paystack payments are verified server-side, booked, receipted, settlement
-tracked and exception queued. The dashboard carries an overview, the four
-statements, and registers for invoices, receipts and payments. Usage is metered
-against exhaustible plan allowances, and there is an operator health surface.
+## Local setup
 
-**Not yet.** Voice (M3), conversational reporting from SQL, Excel export,
-accountant access, and self-service purchase. Paystack stays in test mode until
-written confirmation (spec §47).
+Prerequisites: Node per `.nvmrc` (24), pnpm via corepack, Docker (for
+PostgreSQL) or a local PostgreSQL 16.
 
 ```bash
-# see the core prove itself: a balanced sale, trial balance, reconciliation
-pnpm install && pnpm demo:m0
-pnpm test        # unit tests across core + contracts
-```
+pnpm install --frozen-lockfile
+docker compose -f docker-compose.dev.yml up -d   # PostgreSQL 16 on 127.0.0.1:5432
 
-### Running the stack locally
-
-```bash
-docker compose -f docker-compose.dev.yml up -d      # PostgreSQL 16
-
-# Migrations run as the OWNER. The application never does — `rekoda_app` is
-# not the table owner and has no BYPASSRLS, which is what keeps the tenant
-# policies live for every query it makes.
-DATABASE_URL=postgres://rekoda@localhost:5432/rekoda \
-  pnpm --filter @rekoda/db migrate:apply
+# Migrations run as the OWNER role. The application runs as rekoda_app, which
+# is not the table owner and cannot bypass RLS.
+DATABASE_URL=postgres://rekoda@127.0.0.1:5432/rekoda pnpm --filter @rekoda/db migrate:apply
 
 pnpm turbo build
-pnpm --filter @rekoda/api start   # :3001 — needs DATABASE_URL (rekoda_app),
-                                  # OTP_PEPPER, REKODA_API_SECRET
-pnpm --filter @rekoda/web dev     # :3000 — needs REKODA_API_URL
+cp .env.example .env            # fill the required keys; the API names any missing value at boot
+pnpm --filter @rekoda/api start  # :3001 (set REKODA_WORKER=1 to also run the queue and sweeps)
+pnpm --filter @rekoda/web dev    # :3000, needs REKODA_API_URL
 ```
 
-`.env.example` documents every variable and says which are test-only.
+Without provider keys the stack still boots: inbound messages are recorded
+and answered in the database, the deterministic router answers without a
+model, and voice and image features answer honestly that they are off.
+
+## Test commands
 
 ```bash
-# integration + end-to-end, against a real database
-DATABASE_URL=... APP_DATABASE_URL=... pnpm --filter @rekoda/db test:integration
-DATABASE_URL=... APP_DATABASE_URL=... pnpm --filter @rekoda/api test:integration
-DATABASE_URL=... APP_DATABASE_URL=... pnpm --filter @rekoda/web e2e
-node scripts/check-boundaries.mjs   # architectural boundaries
+pnpm turbo typecheck lint test build          # unit tests across every package
+node scripts/check-boundaries.mjs             # architectural boundaries (CI runs five guard scripts)
+
+# Integration suites need a real PostgreSQL and three roles; run them SERIALLY.
+DATABASE_URL=postgres://rekoda@127.0.0.1:5432/rekoda \
+APP_DATABASE_URL=postgres://rekoda_app@127.0.0.1:5432/rekoda \
+WORKER_DATABASE_URL=postgres://rekoda_worker@127.0.0.1:5432/rekoda \
+  pnpm --filter @rekoda/db test:integration
+# then, with the same variables:
+  pnpm --filter @rekoda/api test:integration
+
+pnpm --filter @rekoda/web e2e                 # Playwright against a production build (CI shape)
 ```
 
-These suites **fail rather than skip** when the database is missing: an
-integration run that quietly passes with nothing behind it reports the same
-green tick as one that proved something.
+These suites fail rather than skip when the database is missing. CI runs a
+full-history secret scan, typecheck/lint/test/build with the guard scripts, a
+foreign-owner migration replay, the two integration suites and Playwright on
+every pull request.
 
 ## Documentation
 
-| Document                                             | Purpose                                                         |
-| ---------------------------------------------------- | --------------------------------------------------------------- |
-| [docs/architecture.md](docs/architecture.md)         | The V1 product & system architecture specification              |
-| [docs/engineering-plan.md](docs/engineering-plan.md) | Review findings, stack decisions, milestones                    |
-| [docs/pricing-model.md](docs/pricing-model.md)       | Commercial model: plans, COGS, unit economics                   |
-| [docs/content-plan.md](docs/content-plan.md)         | SEO keyword map and content calendar                            |
-| [docs/adr/](docs/adr/)                               | Architecture Decision Records — why things are the way they are |
-| [docs/runbooks/](docs/runbooks/)                     | Operational runbooks (deploy, backup, incident)                 |
+Start at [CLAUDE.md](CLAUDE.md) (the engineering entry point and the rules),
+then [docs/REKODA_REFERENCE_MANIFEST.md](docs/REKODA_REFERENCE_MANIFEST.md),
+which classifies every document.
 
-## Stack (decided — see ADRs)
+| Document                                                           | Purpose                                                          |
+| ------------------------------------------------------------------ | ---------------------------------------------------------------- |
+| [docs/REKODA_CANONICAL_SPEC.md](docs/REKODA_CANONICAL_SPEC.md)     | What Rekoda is supposed to do (authoritative, frozen)            |
+| [docs/REKODA_CURRENT_STATE.md](docs/REKODA_CURRENT_STATE.md)       | What exists in code today, with evidence                         |
+| [docs/REKODA_LAUNCH_READINESS.md](docs/REKODA_LAUNCH_READINESS.md) | What blocks real users: gates, gaps, test journeys, staging plan |
+| [docs/REKODA_USER_JOURNEYS.md](docs/REKODA_USER_JOURNEYS.md)       | The merchant and customer journeys                               |
+| [docs/REKODA_OWNER_DECISIONS.md](docs/REKODA_OWNER_DECISIONS.md)   | Owner rulings and the external go-live register                  |
+| [docs/adr/](docs/adr/)                                             | Why technical decisions were made                                |
+| [docs/runbooks/](docs/runbooks/)                                   | Deploy, backup and restore, incident, key rotation, data erasure |
+| [docs/HANDOFF.md](docs/HANDOFF.md)                                 | Session continuity: current SHA, last work, next actions         |
 
-TypeScript end-to-end. **NestJS** (Fastify) API · **Next.js 15** web ·
-**PostgreSQL 16** with row-level security + **Drizzle** · **pg-boss** jobs ·
-**OpenAI** transcription (voice, opt-in) · **Anthropic** Claude (reasoning + vision) ·
-**PDFKit**/exceljs documents · **Paystack** billing · pnpm + Turborepo monorepo ·
-Hetzner + Cloudflare + R2 hosting.
+## Contributing and security
 
-Planned layout:
-
-```
-apps/api          NestJS — webhooks, api/v1, auth, jobs
-apps/web          Next.js — marketing, guides, /business, /admin, legal
-packages/core     Pure domain: money, ledger, reconciliation (no framework, no IO)
-packages/db       Drizzle schema, migrations, RLS policies, seeds
-packages/contracts  zod schemas shared API ↔ web
-packages/shared   Branded types, utilities
-```
-
-There is no self-hosted STT or OCR service in the launch architecture
-(ADR 0032): OpenAI transcribes, Claude reads and reasons, and each media
-feature is an explicit opt-in that refuses to boot without its provider
-key.
-
-## Engineering standards
-
-- **Conventional Commits** (`feat:`, `fix:`, `docs:`, `chore:`, …) — enforced by review.
-- All work lands on `main` through PRs with green CI (typecheck, lint, tests, secret scan).
-- Every significant decision gets an **ADR** before or with the code that implements it.
-- **Money is integer kobo, always.** Floats never touch a financial value.
-- **AI proposes, deterministic code disposes.** No AI-computed figure is ever authoritative.
-- Every business-owned row is tenant-scoped by `businessId` — and enforced again by
-  Postgres RLS.
-- Secrets never enter the repository. `.env.example` documents every variable; a boot-time
-  doctor validates them.
-
-## Security
-
-See [SECURITY.md](SECURITY.md) for the vulnerability disclosure policy and the
-security principles the codebase holds to.
+Branch from `main`, open a pull request, keep CI green, squash-merge with a
+Conventional Commit title: [CONTRIBUTING.md](CONTRIBUTING.md). Vulnerability
+disclosure and the security principles the codebase holds to:
+[SECURITY.md](SECURITY.md).
 
 ## License
 
-Proprietary — see [LICENSE](LICENSE). © 2026 Angelo Akuhwa. All rights reserved.
+Proprietary. See [LICENSE](LICENSE). © 2026 Angelo Akuhwa. All rights reserved.

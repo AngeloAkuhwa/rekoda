@@ -1,5 +1,7 @@
 # Rekoda V1 — Commercial & Pricing Model
 
+> **Reset note (10 September 2026).** Prices are launch candidates (spec §30; migration 0113 holds the approved figures). Annual plans stay on the public pricing page by owner ruling of 4–5 September 2026 while the backend bills monthly; the annual lifecycle is post-launch. Twilio rows are historical (ADR 0017). The ₦1,450/$ planning FX is configuration (`PLANNING_FX_NGN_PER_USD`).
+
 **Status:** Adopted for launch, with the adjustments recorded at the end.
 **Basis:** External-cost research as of 16 August 2026; internal planning FX ₦1,450/$
 (CBN ~₦1,357/$, Wise ~₦1,393/$ at time of research — the buffer absorbs FX movement

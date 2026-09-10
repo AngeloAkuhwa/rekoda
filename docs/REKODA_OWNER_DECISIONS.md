@@ -1,5 +1,7 @@
 # Owner decisions and the external go-live register
 
+> **Reset note (10 September 2026).** The external go-live register in §2 is now mirrored, with gap IDs and owners, in `REKODA_LAUNCH_READINESS.md` §5 and §8; open questions that need a ruling are listed there as OD-1 to OD-7. Record new rulings here first, then close the matching gap.
+
 > **This file is a SOURCE, not a generated view.** `REKODA_DECISION_REGISTER.md`
 > indexes decisions whose authority is the canonical spec or the build plan.
 > The rulings here are the owner's own, made in response to what the build

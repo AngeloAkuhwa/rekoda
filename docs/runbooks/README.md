@@ -18,3 +18,8 @@ Planned (populated as the systems they describe land):
 | `integrate-onboarding.md` — concierge WABA/catalogue/Paystack setup | M5         |
 
 Rule: a backup that has not been restore-drilled does not count as a backup.
+
+Status (10 September 2026): `meta-submission.md` and `integrate-onboarding.md`
+are still unwritten; they are launch gaps G-03 and G-35 in
+`../REKODA_LAUNCH_READINESS.md`. No production backup pipeline exists yet
+(gap G-02); the restore drill in CI is real, the backup is not.

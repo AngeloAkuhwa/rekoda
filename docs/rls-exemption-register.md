@@ -1,5 +1,7 @@
 # RLS exemption register
 
+> **Reset note (10 September 2026).** The baseline below names migration head `0130`; the estate is at `0149`. The register is enforced in both directions by `packages/db/src/rls-invariants.integration.test.ts` against the live catalogue, so the test, not this text, is the authority on which exemptions exist today (five: `sessions`, `magic_links`, `retention_deletions`, `platform_cost_events`, `migration_manifest_items`).
+
 Every table that carries `business_id` and does **not** have a tenant policy, with
 the reason it does not, the control that stands in its place, and the credential
 that reaches it.

@@ -1,5 +1,7 @@
 # R1 remediation plan, 1 September 2026
 
+> **HISTORICAL — FINDINGS REMEDIATED.** This audit was taken at migration head `0129` on 1 September 2026. Its findings were executed in migrations 0130–0149 (GitHub #196–#231); see `REKODA_CURRENT_STATE.md` Appendix A.5. It is kept as the record of what was found and how coverage was scoped. Do not use it as a list of open work.
+
 Follows `schema-launch-audit-2026-09-01.md` and the owner ruling of 1 September.
 This document is the sequencing; it is not itself a change.
 

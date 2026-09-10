@@ -1,5 +1,7 @@
 # Rekoda Chat V1 — sell anywhere, tell Rekoda what happened
 
+> **Reset note (10 September 2026).** Supporting narrative. Where this document and `REKODA_USER_JOURNEYS.md` or `REKODA_CANONICAL_SPEC.md` disagree, they win. The Chat/Integrate distinction it draws is still the product.
+
 **Recorded from the owner's directive, 19 August 2026.** This is the
 authoritative product definition for Rekoda Chat and the binding correction to
 every earlier description of it. Where older documents or copy conflict with

@@ -2,7 +2,9 @@
 
 Every significant decision is recorded here before or with the code that
 implements it. ADRs are immutable once **Accepted** — to change course, write
-a new ADR that supersedes the old one.
+a new ADR that supersedes the old one. The one field that may be edited on
+an accepted ADR is its **Status** line, to record a later supersession or
+amendment so the reader is not misled.
 
 | #                                                         | Title                                                                           | Status                            |
 | --------------------------------------------------------- | ------------------------------------------------------------------------------- | --------------------------------- |
@@ -33,6 +35,9 @@ a new ADR that supersedes the old one.
 | [0025](0025-bank-account-split.md)                        | The merchant's own bank account, separate from settlements                      | Accepted (amends 0004)            |
 | [0026](0026-fixed-assets.md)                              | A generator is an asset, not a month's expense                                  | Accepted (amends 0004)            |
 | [0027](0027-hosted-ai-at-launch.md)                       | Hosted AI at launch, and the privacy pages tell the truth about it              | Accepted (amends 0008, 0024; amended by 0032) |
+| [0028](0028-voice-is-sold-in-minutes-and-counted-in-seconds.md) | Voice is sold in minutes and counted in seconds                                 | Accepted                          |
+| [0029](0029-message-usage-and-meta-billing-are-independent.md) | Message usage and Meta billing responsibility are independent              | Accepted (amended 2026-08-26)     |
+| 0030                                                      | Number never used; the sequence skips it deliberately. Do not "fix" this      | —                                 |
 | [0031](0031-sonnet-reads-the-message.md)                  | Sonnet reads the message                                                        | Accepted (amends 0023)            |
 | [0032](0032-launch-media-architecture.md)                 | The launch media architecture: OpenAI STT + Claude vision, no sidecars          | Accepted (amends 0005, 0008, 0024, 0027) |
 | [0033](0033-multicurrency-is-a-dark-capability.md)        | Multicurrency and embedded FX are a dark capability; the launch is NGN-only     | Accepted                          |

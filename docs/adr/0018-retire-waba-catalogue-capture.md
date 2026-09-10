@@ -2,7 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-08-19
-**Retires rung A2 of:** [0012](adr/0012-integrate-without-cac.md) · **corrects**
+**Retires rung A2 of:** [0012](0012-integrate-without-cac.md) · **corrects**
 [0017](0017-meta-direct-for-integrate-too.md) and `integrate-explained.md` §6b
 
 ## Context

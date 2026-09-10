@@ -1,5 +1,7 @@
 # Rekoda Amendment Log
 
+> **Reset note (10 September 2026).** The build-plan table below stops at baseline 120 (v1.5). Amendments 1.122–1.139 in `REKODA_END_TO_END_BUILD_PLAN.md` §15 added PR-116 to PR-132 (owner rulings, the AI directive, the launch-readiness review); see `REKODA_REFERENCE_MANIFEST.md` §6.
+
 > **GENERATED VIEW — NOT A SOURCE OF TRUTH.**
 > The authoritative amendment log lives in `docs/REKODA_END_TO_END_BUILD_PLAN.md` §15. This file is an index for finding an amendment by version; it adds nothing.
 

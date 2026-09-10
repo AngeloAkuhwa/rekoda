@@ -1,5 +1,7 @@
 # Rekoda Payments V1 — Paystack behind a provider-neutral Payment Hub
 
+> **Reset note (10 September 2026).** Payment truth (evidence vs money, verification, provenance) is now `REKODA_CANONICAL_SPEC.md` §6–§7. This document remains the Payment Hub design and **§47 is still the live Paystack release gate**, enforced in `apps/api/src/payments/connections.service.ts`. Implementation status: `REKODA_CURRENT_STATE.md` §5.17.
+
 **Recorded from the owner's directive, 19 August 2026.** This is the
 authoritative payments specification. Where it conflicts with older documents,
 this wins; the reconciliation appendix at the bottom names each conflict rather
@@ -220,7 +222,7 @@ Before assuming informal merchants can be auto-onboarded as Paystack
 subaccounts, Rekoda must obtain **explicit commercial/compliance confirmation
 from Paystack** for the platform-subaccount model. Never bypass provider KYC in
 code; build onboarding so provider-required KYC fields can be added dynamically.
-This is the same item as MASTER-PLAN §11.1 (1a).
+This is the same item as archive/MASTER-PLAN §11.1 (1a).
 
 ## 48. Definition of done
 

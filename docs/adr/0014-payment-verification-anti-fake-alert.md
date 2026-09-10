@@ -1,6 +1,6 @@
 # 0014 — Payment verification as a product: the fake-alert defence
 
-**Status:** Accepted
+**Status:** Accepted; the two-state Recorded/Verified model is **superseded in part by the canonical spec §6** (evidence and money as separate axes, `docs/REKODA_CANONICAL_SPEC.md`). The product instinct, that money has more than two states, is preserved there.
 **Date:** 2026-08-19
 **Reorders:** [0012](0012-integrate-without-cac.md) ladder B priority · builds on
 [0013](0013-rekoda-as-the-single-integration.md)

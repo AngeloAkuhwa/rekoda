@@ -1,34 +1,124 @@
-# Rekoda — Session Handoff & Project Memory
+# Rekoda — Session Handoff
 
-> **Media-architecture supersession (ADR 0032, 29 Aug 2026).** Sections of
-> this document describing self-hosted STT/OCR sidecars, `services/stt`,
-> `STT_URL`, `STT_FALLBACK`, `OCR_URL` or the "audio never leaves Rekoda"
-> posture are HISTORICAL and do not describe the current production
-> media-processing architecture. The launch architecture is OpenAI for
-> voice transcription and Anthropic Claude for reasoning and vision, with
-> no self-hosted media sidecars — see
-> [ADR 0032](adr/0032-launch-media-architecture.md).
+> **Operational memory, not specification.** Read the top section (five
+> minutes), then follow the reading order. Everything under
+> "Historical session log" is the project's history, kept as written;
+> where it names a document, that document may since have been archived
+> (see `REKODA_REFERENCE_MANIFEST.md`).
 
+## Current state at a glance
 
-**Purpose:** this file lets any new session (human or Claude) resume the
-project with zero context loss. Read this first, then the documents it
-points to. Keep it updated at the end of every working session — it is the
-project's memory, and it lives in the repo so it can never be lost with a
-chat.
+| Field | Value |
+|---|---|
+| **Current date** | 11 September 2026 |
+| **Current `main` SHA** | `7155a2b` (6 Sep 2026, "chore: add autonomous engineering control plane (#233)") |
+| **Open branch** | `chore/repository-reset-launch-readiness` — the repository reset and launch-readiness PR |
+| **Product version / state** | 0.1.0. Build plan complete (138 rows, PR-001…PR-132; PR-006–009 and PR-115 gated); 150 migrations; never deployed; no live provider has been exercised |
+| **Launch verdict** | **NOT READY** (`REKODA_LAUNCH_READINESS.md` §1) |
+| **Engineering model** | Simple: Angelo assigns, Claude reads `CLAUDE.md` and the canonical docs, implements with tests, normal CI, Angelo reviews and merges. The multi-agent control plane (PR #233) was removed on 10 Sep 2026 and PR #234 closed unmerged |
 
-**Last updated:** 6 September 2026 · through PR #231 (plus dependabot #224).
-The 132-PR build plan is complete, the R1 schema and R2 adversarial security
-audits of 1 September are executed in full (migrations 0130 through 0149),
-and the launch-closeout code work is done: the merchant's "yes" confirms by a
-database-assigned ordinal, and every numeric environment value fails closed
-at boot. The estate at this head: 150 migrations, 1,260 db + 1,040 api
-integration tests, turbo 24/24, three guard scripts, foreign-owner migration
-replay in CI. NestJS 12 (#225-#227) is deliberately deferred as one
-coordinated post-launch migration. Not launched: what remains is owner-held
-(see §6) plus the release-candidate drills. The sections below §3's newest
-entry are the project's history, kept as written.
+**Last completed work (10–11 Sep 2026):** the repository reset. Removed
+`AGENTS.md`, `GEMINI.md`, `docs/AUTONOMOUS-ENGINEERING.md`, `docs/agents/`,
+`scripts/agents/`, the seven `agent-*.yml` workflows and the agent-task
+issue form; archived `architecture.md`, `MASTER-PLAN.md`,
+`engineering-plan.md`, `SYSTEM-PLAN.md`, `FIX-PLAN-2.md` under
+`docs/archive/`; rewrote `CLAUDE.md`, `CONTRIBUTING.md`, `README.md`,
+`CODEOWNERS` and the PR template; rebuilt `REKODA_REFERENCE_MANIFEST.md`;
+created `REKODA_CURRENT_STATE.md` (evidence-based inventory plus the build
+plan reconciliation) and `REKODA_LAUNCH_READINESS.md` (verdict, gates,
+47 gaps, 20 journeys, staging plan). Verified locally: install, typecheck,
+lint, unit tests (1,274), build, guard scripts, migrations on an empty
+database, db integration 1,258/1,260 and api integration 1,036/1,040 (the
+six failures are Windows/timezone/`pg_dump`-on-PATH environment
+differences; the two db ones pass with `pg_dump` on PATH and UTC; CI on
+`main` is green).
+
+**Next three actions:**
+
+1. Angelo reviews and merges the reset PR; deletes the leftover GitHub
+   environments `agents*` and the `builder:*`, `risk:*`, `status:*`,
+   `agent-task` labels (gap G-45); turns on branch protection (G-09).
+2. Rule on OD-1 to OD-7 in `REKODA_LAUNCH_READINESS.md` §6 (R0A-i on an
+   empty database, VAT, which unwired modules ship, command-bus flags,
+   renewal copy, erasure scope, backup design).
+3. Claude starts the P0 code gaps in order: G-06 (refund and reversal
+   webhooks), G-08 (`.env.example` to match the code), G-01 (Dockerfile,
+   production compose, Caddy, worker), G-02 (backups per OD-7), G-07 (fix
+   the eval harness, then the owner runs the live eval).
+
+**Known P0 blockers:** G-01 deployment artifacts · G-02 backups · G-03
+Meta number, app review, templates · G-04 legal facts · G-05 Paystack §47
+and live drill · G-06 refund/reversal/chargeback webhooks absorbed · G-07
+AI eval never run · G-08 production environment (`REKODA_LAUNCH_READINESS.md` §4).
+
+**Document reading order:** `CLAUDE.md` → this section →
+`REKODA_LAUNCH_READINESS.md` §1–§3 → `REKODA_CURRENT_STATE.md` §3 →
+`REKODA_CANONICAL_SPEC.md` §2–§3, §5–§6 → `REKODA_USER_JOURNEYS.md`
+Part 4 → the ADRs and current-state rows for the area in hand.
+`REKODA_REFERENCE_MANIFEST.md` classifies every document.
+
+## Operational facts that still hold
+
+- Three database roles, three connection strings: owner runs migrations
+  (`DATABASE_URL` at migrate time), `rekoda_app` serves requests, and
+  `rekoda_worker` is the only credential that reads across tenants, to
+  claim a job. Never run the db and api integration suites at the same
+  time; they share one PostgreSQL and each truncates the other's fixtures.
+- The api integration suite runs against the packages' built `dist`;
+  `pnpm turbo build` first.
+- postgres-js cannot bind a JS `Date` or an array into raw SQL; cast
+  explicitly. `tx.execute` returns `timestamptz` as a string. A backslash
+  inside a `sql` template never reaches Postgres; use POSIX classes.
+- Secrets are not interchangeable: `REKODA_API_SECRET` signs setup grants,
+  `VAULT_KEY` seals, `MATCH_KEY` derives match keys, `CONNECTION_KEY`
+  wraps provider credentials, `OTP_PEPPER` peppers codes; production
+  operator access is OIDC, never a shared secret.
+- A page or a reply may only state numbers about the business, never about
+  its own page: counts come from SQL over the whole table.
+- gitleaks scans the full history and reads a high-entropy literal in a
+  test as a credential; compose test secrets from one another.
+- On this Windows checkout the four guard scripts need a literal root
+  (gap G-27) and Playwright's `webServer` commands use POSIX env syntax;
+  run both in CI or WSL.
+- Pushing from this machine: plain `git push` can hang on a dead
+  credential; use the `gh` credential helper.
+
+## Working agreements with Angelo (standing)
+
+- Security and scalability are default requirements. Money rules are
+  absolute: integer kobo, deterministic computation, AI proposes and code
+  disposes, no figure in a reply that the deterministic layer did not
+  compute.
+- No Azure; hosting is Hetzner + Cloudflare + R2 (ADR 0006). No hardware
+  purchases. Voice transcription is hosted OpenAI and vision is hosted
+  Anthropic (ADR 0032).
+- Plans before substantial builds; honest pushback with reasoning is
+  welcome, then do what he decides. Show UI as screenshots (light and
+  dark, mobile included). No zip deliveries; everything lands as
+  reviewable conventional commits.
+- Do not expand launch scope. Multicurrency stays dark (ADR 0033). NestJS
+  12 (#225–#227) waits as one post-launch migration.
+
+## Standing review triggers
+
+Kept from earlier sessions, still live: the 1 Oct 2026 Meta service-message
+repricing (re-run the COGS tables and the `messaging.ts` card); the first
+50 paying merchants (replace pricing assumptions with `usage_events`);
+the first abandoned trial reaching 90 days (needs `META_RETENTION_TEMPLATE`);
+5,000 published shops (sitemap index); the first merchant past 10,000
+invoices, receipts or expense entries (`EXPORT_ROWS` caps at ten thousand
+with no truncation notice); `reconciliationsFor` must never be capped
+without an open COUNT beside it; a persistently high `assetsDue` means the
+depreciation sweep runs too rarely.
 
 ---
+
+# Historical session log
+
+Everything below is the project's history as it was written at the time,
+through PR #231 (6 September 2026). Status claims here are superseded by
+`REKODA_CURRENT_STATE.md`; open-item lists are superseded by
+`REKODA_LAUNCH_READINESS.md`.
 
 ## 1. What this project is (30 seconds)
 
@@ -37,8 +127,8 @@ businesses. Merchants talk to it (text/voice) or connect their WhatsApp
 catalogue + Paystack; Rekoda turns activity into invoices, receipts, a
 double-entry ledger, and **reconciliation** — matching what should have
 happened against what actually happened when money moved. Full story:
-[architecture.md](architecture.md) (the spec) and
-[engineering-plan.md](engineering-plan.md) (review, stack, milestones).
+[archive/architecture.md](archive/architecture.md) (the original spec) and
+[archive/engineering-plan.md](archive/engineering-plan.md) (review, stack, milestones); both superseded, see `REKODA_REFERENCE_MANIFEST.md`.
 
 Rekoda supersedes **VoiceReceipt AI**, a working single-vendor WhatsApp
 receipt bot built first (118-test Node/SQLite codebase). Rekoda is a
@@ -52,10 +142,10 @@ for M2/M3 (PDF templates, Meta/Twilio channel code, conversation gates).
 
 | Thing                 | Location                                                                                                                                                                                            |
 | --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Decisions and why     | [adr/](adr/) — 26 ADRs. Two superseded (0002 by 0011, 0009 by 0012) and one still Proposed: **0013**, deferred to Phase 2. 0003 is Accepted, not pending: it was reinstated as the default          |
-| Product & system spec | [architecture.md](architecture.md)                                                                                                                                                                  |
+| Decisions and why     | [adr/](adr/) — 33 ADRs at the reset (0001–0034, 0030 unused); see `REKODA_REFERENCE_MANIFEST.md` §4 for status. This row is historical                                                                    |
+| Product & system spec | [archive/architecture.md](archive/architecture.md) (superseded by `REKODA_CANONICAL_SPEC.md` on 25 Aug 2026)                                                                                             |
 | Commercial model      | [pricing-model.md](pricing-model.md) — incl. standing review triggers                                                                                                                               |
-| Milestones M0–M5      | [engineering-plan.md](engineering-plan.md) §11                                                                                                                                                      |
+| Milestones M0–M5      | [archive/engineering-plan.md](archive/engineering-plan.md) §11 (superseded by the build plan)                                                                                                            |
 | SEO/content plan      | [content-plan.md](content-plan.md)                                                                                                                                                                  |
 | Ops procedures        | [runbooks/](runbooks/)                                                                                                                                                                              |
 | Code                  | `packages/core` (money/ledger/costing/statements — most-tested), `packages/contracts` (AI border schemas), `packages/db` (schema + RLS, migrations through 0149), `packages/shared` (branded types) |
@@ -725,7 +815,7 @@ Lessons that cost time, so they are written down:
   or the per-IP limiter trusts any X-Forwarded-For. Unset means trust-all,
   which is only acceptable in development.
 
-The standing process from here is docs/SYSTEM-PLAN.md: plan first, a failing
+The standing process from here was docs/archive/SYSTEM-PLAN.md: plan first, a failing
 test per fix, the whole estate green serially before any push, one PR in
 flight at a time.
 
@@ -857,7 +947,7 @@ protection, legal facts - per `docs/REKODA_OWNER_DECISIONS.md` §2.
 - **No Azure** (cost). Hosting is Hetzner + Cloudflare + R2 (ADR 0006).
 - **AI:** strongest affordable model — Sonnet is the runtime default
   (ADR 0007); top-tier models for build/evals; escalation is a config flag.
-  No hardware purchases ever — STT is self-hosted on the rented server.
+  No hardware purchases ever. (Voice transcription is hosted OpenAI per ADR 0032; the earlier self-hosted STT preference is superseded.)
 - **No zip-file deliveries** — everything through the repo as reviewable
   conventional commits. (Bundles were a one-time workaround for the proxy.)
 - **UI work uses the UI/UX Pro Max skill + 21st.dev inspiration**, and

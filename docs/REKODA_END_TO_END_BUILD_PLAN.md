@@ -1,5 +1,7 @@
 # Rekoda End-to-End Build Plan
 
+> **BUILD HISTORY / COMPLETED PLAN.** Every planned row except PR-006 to PR-009 and PR-115 (blocked by the R0A-i gate, see `REKODA_LAUNCH_READINESS.md` OD-1) merged by 6 September 2026. This document is kept for its §15 amendment log and for PR provenance. **Do not use it to decide what needs building:** what exists is `REKODA_CURRENT_STATE.md`, what blocks launch is `REKODA_LAUNCH_READINESS.md`. The header below still says "Baseline PR plan 120"; the index grew to 138 rows / PR-132 through §15 entries 1.122–1.138 (see `REKODA_REFERENCE_MANIFEST.md` §6).
+
 | Field | Value |
 |---|---|
 | Status | **APPROVED — EXECUTION PLAN** |

@@ -3,7 +3,7 @@
 **Version:** 1.0 · 19 August 2026
 **Purpose:** one page the owner can review to decide what is safe to build now,
 what must be confirmed in writing first, and what must never be built.
-**Companion to:** `MASTER-PLAN.md` (the plan) and `adr/` (the decisions).
+**Companion to:** `adr/` (the decisions) and, historically, `archive/MASTER-PLAN.md`. Current status lives in `REKODA_CURRENT_STATE.md` and `REKODA_LAUNCH_READINESS.md`.
 
 Everything here is drawn from ADRs 0001–0013 and from verification done against
 the delivered M0 bundle and the VoiceReceipt source. Where a claim rests on an
@@ -40,7 +40,7 @@ What is genuinely missing, and should land in M1:
 | --- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | G6  | **Lint-ban raw `db` imports outside `packages/db`** — `withBusiness()` is a guarantee only if it is the _only_ path.                                                                                                               |
 | G7  | **Pooled-connection leakage test as an M1 exit criterion** — two tenants over one reused connection; assert no cross-tenant rows _and_ that an unpinned query returns zero rows. This single test proves the whole tenancy design. |
-| G8  | **pg-boss jobs run inside `withBusiness`** — background workers are where tenant context is forgotten first.                                                                                                                       |
+| G8  | **Background jobs run inside `withBusiness`** (the in-schema queue, ADR 0022) — background workers are where tenant context is forgotten first.                                                                                     |
 | G9  | **Composite indexes** `(business_id, status)` on `invoices`/`payments` for the debtors query and reconciliation queue.                                                                                                             |
 
 ## 1.3 Money-engine consistency (fix before M2 builds on it)

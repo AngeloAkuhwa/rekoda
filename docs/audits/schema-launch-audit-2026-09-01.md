@@ -1,5 +1,7 @@
 # Schema forensic audit, 1 September 2026
 
+> **HISTORICAL — FINDINGS REMEDIATED.** This audit was taken at migration head `0129` on 1 September 2026. Its findings were executed in migrations 0130–0149 (GitHub #196–#231); see `REKODA_CURRENT_STATE.md` Appendix A.5. It is kept as the record of what was found and how coverage was scoped. Do not use it as a list of open work.
+
 **Status:** findings only. No migration, no schema change, no code change accompanies
 this document. Nothing here is a decision; every item is a thing found, with the
 evidence that found it, for the owner to rule on.
