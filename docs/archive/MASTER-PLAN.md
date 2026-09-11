@@ -15,7 +15,7 @@
 > media-processing architecture. The launch architecture is OpenAI for
 > voice transcription and Anthropic Claude for reasoning and vision, with
 > no self-hosted media sidecars — see
-> [ADR 0032](adr/0032-launch-media-architecture.md).
+> [ADR 0032](../adr/0032-launch-media-architecture.md).
 
 **Version:** 4.0 · 19 August 2026
 **Changes in v4:** ADRs 0013–0019 land. Integrate is redesigned end to end:

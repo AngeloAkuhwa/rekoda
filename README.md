@@ -21,13 +21,13 @@ exercised. The launch verdict and every open gap are in
 
 ## Product surfaces
 
-| Surface                    | What it does                                                                                                                                                                                                                                     |
-| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **Rekoda Chat** (WhatsApp) | The merchant tells Rekoda what happened; Rekoda previews, the merchant confirms, a numbered, audited record and a PDF come back. Free deterministic commands: `who owes me`, `records`, `stock`, `resend`, `payment details`, `help`, STOP/START |
-| **Dashboard** (`/app`)     | Overview, invoices and quotes, receipts, debtors, expenses and purchases, stock and catalogue, bank reconciliation, payments, reports (P&L, balance sheet, cash flow, trial balance, VAT), audit trail, team, billing, settings, exports         |
-| **Rekoda Integrate**       | The merchant's customers order on a hosted storefront (`/s/<slug>`) or the merchant's own WhatsApp catalogue and pay by transfer; the same ledger receives the sale. Merchant-owned WhatsApp connection waits on Meta app review                 |
-| **Public API** (`/api/v1`) | Keys, sales and payments writes, customers, products and invoices reads, signed outbound webhooks. Reference: [docs/public-api.md](docs/public-api.md)                                                                                           |
-| **Marketing and legal**    | `/`, `/pricing`, `/privacy`, `/terms`, `/refunds`, `/security`, `/ai-privacy`, `/data-deletion`                                                                                                                                                  |
+| Surface                    | What it does                                                                                                                                                                                                                                                |
+| -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Rekoda Chat** (WhatsApp) | The merchant tells Rekoda what happened; Rekoda previews, the merchant confirms, a numbered, audited record and a PDF come back. Free deterministic commands: `who owes me`, `records`, `stock`, `resend`, `payment details`, `help`, `upgrade`, STOP/START |
+| **Dashboard** (`/app`)     | Overview, invoices and quotes, receipts, debtors, expenses and purchases, stock and catalogue, bank reconciliation, payments, reports (P&L, balance sheet, cash flow, trial balance, VAT), audit trail, team, billing, settings, exports                    |
+| **Rekoda Integrate**       | The merchant's customers order on a hosted storefront (`/s/<slug>`) or the merchant's own WhatsApp catalogue and pay by transfer; the same ledger receives the sale. Merchant-owned WhatsApp connection waits on Meta app review                            |
+| **Public API** (`/api/v1`) | Keys, sales and payments writes, customers, products and invoices reads, signed outbound webhooks. Reference: [docs/public-api.md](docs/public-api.md)                                                                                                      |
+| **Marketing and legal**    | `/`, `/pricing`, `/privacy`, `/terms`, `/refunds`, `/security`, `/ai-privacy`, `/data-deletion`                                                                                                                                                             |
 
 ## Architecture in one picture
 
@@ -84,11 +84,12 @@ PostgreSQL) or a local PostgreSQL 16.
 pnpm install --frozen-lockfile
 docker compose -f docker-compose.dev.yml up -d   # PostgreSQL 16 on 127.0.0.1:5432
 
+pnpm turbo build                                  # migrate:apply runs the built packages/db/dist
+
 # Migrations run as the OWNER role. The application runs as rekoda_app, which
 # is not the table owner and cannot bypass RLS.
 DATABASE_URL=postgres://rekoda@127.0.0.1:5432/rekoda pnpm --filter @rekoda/db migrate:apply
 
-pnpm turbo build
 cp .env.example .env              # fill the required keys; the API names any missing value at boot
 pnpm --filter @rekoda/api start:local   # :3001, reads the root .env (node --env-file)
 pnpm --filter @rekoda/web dev           # :3000; in development it needs no variables

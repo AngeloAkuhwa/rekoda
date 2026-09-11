@@ -22,4 +22,4 @@
 - [ ] No PII outside the vault/gateway paths; no secrets in code or fixtures
 - [ ] New dependency? Justified in the description
 - [ ] Decision-level change? ADR added or superseded, or owner ruling recorded
-- [ ] `docs/REKODA_CURRENT_STATE.md` / `docs/HANDOFF.md` updated if product state changed
+- [ ] `docs/REKODA_CURRENT_STATE.md`, `docs/REKODA_LAUNCH_READINESS.md` (a gap opened or closed) and `docs/HANDOFF.md` updated if product or launch state changed

@@ -53,10 +53,9 @@ Verify at the depth the change warrants, and report honestly what ran,
 what passed and what was skipped:
 
 - **Docs or copy only:** `pnpm lint` does not look at Markdown (every
-  workspace lints its own `src`), so run Prettier over the files you touched:
-  `pnpm exec prettier --check $(git diff --name-only origin/main -- '*.md')`
-  (or `pnpm docs:check` for every Markdown file the repository keeps
-  formatted); links resolve; any status claim matches the code.
+  workspace lints its own `src`), so run `pnpm docs:check` (Prettier over
+  every root, `docs/` and `.github/` Markdown file); links resolve; any status
+  claim matches the code.
 - **Ordinary behaviour change:** targeted tests for the change, then
   `pnpm turbo typecheck lint test build` and the guard scripts CI runs
   (`node scripts/check-boundaries.mjs`, `check-node-version.mjs`,

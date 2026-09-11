@@ -74,7 +74,7 @@ session never starts a capability from zero.
   deterministic router, Anthropic interpretation into a zod-validated
   command, conversation gates CG1–CG5, draft/confirm by database ordinal,
   free deterministic commands (`who owes me`, `records`, `stock`,
-  `resend`, `help`, `upgrade`).
+  `resend`, `payment details`, `help`, `upgrade`, STOP/START).
 - **Media:** OpenAI transcription for voice notes, Anthropic Claude vision
   for document photos, hard daily ceilings, no self-hosted sidecars
   (ADR 0032).

@@ -15,7 +15,7 @@
 > media-processing architecture. The launch architecture is OpenAI for
 > voice transcription and Anthropic Claude for reasoning and vision, with
 > no self-hosted media sidecars — see
-> [ADR 0032](adr/0032-launch-media-architecture.md).
+> [ADR 0032](../adr/0032-launch-media-architecture.md).
 
 **Prepared for:** Angelo Akuhwa
 **Date:** 19 August 2026 · v2 — revised after your feedback: no Azure, strongest affordable AI, STT clarified (no hardware), UI inventory + SEO/content plan added.

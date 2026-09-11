@@ -1,4 +1,6 @@
 import 'reflect-metadata';
+import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { Logger } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import multipart from '@fastify/multipart';
@@ -262,7 +264,7 @@ export async function createApp(): Promise<NestFastifyApplication> {
 }
 
 /* Boot only when run directly — the integration tests import createApp. */
-if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
   // Validate the environment BEFORE Nest starts, so a missing secret is a
   // one-line startup error instead of a stack trace inside a DI factory.
   const config = loadConfig();

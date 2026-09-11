@@ -117,7 +117,7 @@ link and I'll handle the rest."_
 
 ## 3. What the Rekoda team actually does in the alpha
 
-M5 is a **concierge alpha — 5–10 merchants, hand-held** (archive/MASTER-PLAN §5.6). Not
+M5 is a **concierge alpha — 5–10 merchants, hand-held** (historically archive/MASTER-PLAN §5.6; the current Integrate scope is `REKODA_LAUNCH_READINESS.md` §2). Not
 because self-serve is impossible, but because the first ten teach us where the
 funnel breaks. Concretely, a Rekoda person:
 
