@@ -284,7 +284,12 @@ async function handleRefund(deps: ProcessPaymentEventDeps, ctx: Ctx): Promise<vo
   const { tx, businessId, eventId, intent, summary } = ctx;
 
   if (summary.eventType !== 'refund.processed') {
-    const stage = summary.eventType === 'refund.failed' ? 'refund_failed' : 'refund_pending';
+    const stage =
+      summary.eventType === 'refund.failed'
+        ? 'refund_failed'
+        : summary.eventType === 'refund.processing'
+          ? 'refund_processing'
+          : 'refund_pending';
     await events.markProcessed(tx, eventId, stage, businessId);
     return;
   }

@@ -61,6 +61,7 @@ import {
   chargebackPaymentWork,
   refundPaymentWork,
 } from '../commands/payment-adjustment-commands.js';
+import { sweepSettlements } from './settlement-sweep.js';
 import { RiskPolicyService } from '../risk/risk-policy.service.js';
 
 const RUN_SALT = randomBytes(16).toString('hex');
@@ -353,7 +354,9 @@ async function balanceByRole(
 }
 
 const AR = '1100';
-const BANK_PAYSTACK = '1020';
+/** Chart code of the BANK_PAYSTACK ledger key ("Bank (Paystack settlements)");
+ * 1020 is the generic bank account, which no Paystack posting touches. */
+const BANK_PAYSTACK = '1010';
 
 async function countRows(businessId: string, table: string, where = 'true'): Promise<number> {
   const rows = await withBusiness(appDb, businessId, (tx) =>
@@ -483,11 +486,13 @@ describe('a provider refund of a booked payment (G-06)', () => {
     const [refund] = await refundsOf(businessId);
     expect(refund).toMatchObject({ method: 'bank', amountK: 15_000_000 });
     expect((await invoiceState(businessId, sale.invoiceId))?.status).toBe('issued');
-    // Clearing is exactly where the settlement left it; the bank is what moved.
+    // Clearing is exactly where the settlement left it; the bank is what moved
+    // (the settle() helper records the payout without posting it, so the bank
+    // starts at zero and the refund's credit is the only movement).
     expect(await balanceByRole(businessId, 'PAYMENT_PROVIDER_CLEARING', connectionId)).toBe(
       clearingBefore,
     );
-    expect(await balanceByCode(businessId, BANK_PAYSTACK)).toBe(0);
+    expect(await balanceByCode(businessId, BANK_PAYSTACK)).toBe(-15_000_000);
     expect(await countRows(businessId, 'settlement_items')).toBe(settlementItemsBefore);
     expect(await countRows(businessId, 'settlements', "status = 'SETTLED'")).toBe(1);
     const totals = await ledgerTotals(businessId);
@@ -2006,6 +2011,7 @@ describe('where a refund leaves from is decided inside the payment lock', () => 
     expect(await balanceByRole(businessId, 'PAYMENT_PROVIDER_CLEARING', connectionId)).toBe(
       clearingBefore,
     );
+    expect(await balanceByCode(businessId, BANK_PAYSTACK)).toBe(-15_000_000);
     expect(await balanceByCode(businessId, AR)).toBe(15_000_000);
   });
 });
@@ -2057,5 +2063,61 @@ describe('a provider read that names no charge is not evidence', () => {
     );
     expect(await chargebacksOf(businessId)).toHaveLength(0);
     expect((await ledgerTotals(businessId)).lines).toBe(linesBefore);
+  });
+});
+
+/* ── the ninth independent review of 11 Sep 2026 ─────────────────────────── */
+
+describe('a payout that covers a payment adjusted BEFORE it is not posted from derived totals (OD-10)', () => {
+  it('after a pre-settlement provider refund, a totals-only payout is an exception, never a fee posting', async () => {
+    const { businessId, connectionId } = await seedBusiness();
+    const { intent } = await seedObligation(businessId);
+    const { paymentId } = await bookPayment(businessId, intent.reference);
+
+    provider.willVerifyRefund('700', {
+      amountK: 5_000_000,
+      transactionReference: intent.reference,
+    });
+    await storeEvent(refundEvent(intent.reference, 5_000_000, { id: 700 }));
+    await pump();
+    await drainJobs();
+    expect(await paymentStatus(businessId, paymentId)).toBe('partially_refunded');
+    const clearingAfterRefund = await balanceByRole(
+      businessId,
+      'PAYMENT_PROVIDER_CLEARING',
+      connectionId,
+    );
+    expect(clearingAfterRefund).toBe(10_000_000);
+    const linesAfterRefund = (await ledgerTotals(businessId)).lines;
+
+    /* The provider reports the payout at the charge's full gross with the
+     * refund netted out of the total: derived as one fee, the refund would
+     * be booked as processing fees and clearing credited for it twice. */
+    provider.willSettle({
+      references: [intent.reference],
+      grossK: 15_000_000,
+      netK: 15_000_000 - 223_750 - 5_000_000,
+    });
+    await sweepSettlements({ workerDb, appDb, provider });
+
+    expect(await countRows(businessId, 'settlements')).toBe(0);
+    expect((await ledgerTotals(businessId)).lines).toBe(linesAfterRefund);
+    expect(await balanceByRole(businessId, 'PAYMENT_PROVIDER_CLEARING', connectionId)).toBe(
+      clearingAfterRefund,
+    );
+    expect(await balanceByCode(businessId, '6050')).toBe(0);
+    const exceptions = (await reconciliationsOf(businessId)).filter(
+      (r) => r.status === 'EXCEPTION' && r.reason === 'settlement_components_unknown',
+    );
+    expect(exceptions).toHaveLength(1);
+
+    // Re-polling the same batch adds nothing and posts nothing.
+    await sweepSettlements({ workerDb, appDb, provider });
+    expect(await countRows(businessId, 'settlements')).toBe(0);
+    expect(
+      (await reconciliationsOf(businessId)).filter(
+        (r) => r.reason === 'settlement_components_unknown',
+      ),
+    ).toHaveLength(1);
   });
 });

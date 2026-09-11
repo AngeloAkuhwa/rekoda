@@ -18,7 +18,15 @@
  */
 import { Logger } from '@nestjs/common';
 import { PAYMENT_REFERENCE_PATTERN } from '@rekoda/core';
-import { paymentsHub, settleRepo, settlementsRepo, withBusiness, type Db } from '@rekoda/db';
+import {
+  chargebacksRepo,
+  paymentsHub,
+  refundsRepo,
+  settleRepo,
+  settlementsRepo,
+  withBusiness,
+  type Db,
+} from '@rekoda/db';
 import type { PaymentProviderPort, ProviderSettlement } from './provider.port.js';
 
 export interface SweepDeps {
@@ -148,6 +156,50 @@ async function ingestSettlement(
     if (!connection) return;
 
     const covered = await settleRepo.paymentsByReferences(tx, businessId, refs);
+
+    /* A payment refunded, reversed or charged back BEFORE this payout has
+     * already had clearing credited for that money (G-06). How the provider
+     * then reports the payout — the charge at full gross with the refund
+     * netted out of the total, or a smaller gross — is a G-05 question
+     * (OD-10). Until it is answered, deriving "gross − net" as a fee over
+     * such a payment would book the refund as processing fees and credit
+     * clearing twice, silently. Where the provider itemised, its components
+     * stand and `postSettlement` judges them; where it stated only totals,
+     * the payout is a human's, not a derivation. */
+    if (!settlement.components?.length && grossK !== netK) {
+      const coveredIds = new Set(covered.map((p) => p.id));
+      const [refunds, reversals, chargebacks] = await Promise.all([
+        refundsRepo.refundsFor(tx, businessId),
+        refundsRepo.reversalsFor(tx, businessId),
+        chargebacksRepo.chargebacksFor(tx, businessId),
+      ]);
+      const adjustedBeforePayout =
+        refunds.some((r) => r.method === 'provider' && coveredIds.has(r.paymentId)) ||
+        reversals.some((r) => coveredIds.has(r.paymentId)) ||
+        chargebacks.some((c) => c.timing === 'PRE_SETTLEMENT' && coveredIds.has(c.paymentId));
+      if (adjustedBeforePayout) {
+        const already = await settleRepo.hasException(
+          tx,
+          businessId,
+          'settlement',
+          settlement.settlementId,
+        );
+        if (!already) {
+          await settleRepo.recordException(tx, {
+            businessId,
+            reason: 'settlement_components_unknown',
+            expectationKind: 'settlement',
+            expectationId: settlement.settlementId,
+            amountK: grossK,
+          });
+        }
+        log.warn(
+          `settlement ${settlement.settlementId} covers a payment adjusted before payout; components not derived, payout not posted (OD-10)`,
+        );
+        return;
+      }
+    }
+
     const outcome = await settlementsRepo.recordSettlement(tx, {
       businessId,
       paymentConnectionId: connection.id,
