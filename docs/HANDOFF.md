@@ -8,14 +8,14 @@
 
 ## Current state at a glance
 
-| Field                       | Value                                                                                                                                                                                                                                |
-| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **Current date**            | 11 September 2026                                                                                                                                                                                                                    |
-| **Current `main` SHA**      | `3158c3c` (11 Sep 2026, "chore: reset repository for launch readiness (#237)")                                                                                                                                                       |
-| **Open branches**           | `fix/payment-refunds-reversals-chargebacks` (PR #238, G-06, based on `main` after #237 merged as `3158c3c` on 11 Sep 2026)                                                                                                           |
-| **Product version / state** | 0.1.0. Build plan complete (138 rows, PR-001…PR-132; PR-006–009 and PR-115 gated); 152 migrations; never deployed; no live provider has been exercised                                                                               |
-| **Launch verdict**          | **NOT READY** (`REKODA_LAUNCH_READINESS.md` §1)                                                                                                                                                                                      |
-| **Engineering model**       | Simple: Angelo assigns, Claude reads `CLAUDE.md` and the canonical docs, implements with tests, normal CI, Angelo reviews and merges. The multi-agent control plane (PR #233) was removed on 10 Sep 2026 and PR #234 closed unmerged |
+| Field                       | Value                                                                                                                                                                                                                                 |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Current date**            | 11 September 2026                                                                                                                                                                                                                     |
+| **Current `main` SHA**      | `8f07a6d` (11 Sep 2026, "fix: handle payment refunds reversals and chargebacks (#238)", the squash of `a9096db`)                                                                                                                      |
+| **Open branches**           | none of Rekoda's own; Dependabot #235 (minor and patch group) and #236 (Vitest 5) are open and being refreshed against this `main`; #225, #226 and #227 (NestJS 12, one package each) were closed as deferred post-launch work (G-70) |
+| **Product version / state** | 0.1.0. Build plan complete (138 rows, PR-001…PR-132; PR-006–009 and PR-115 gated); 152 migrations; never deployed; no live provider has been exercised                                                                                |
+| **Launch verdict**          | **NOT READY** (`REKODA_LAUNCH_READINESS.md` §1)                                                                                                                                                                                       |
+| **Engineering model**       | Simple: Angelo assigns, Claude reads `CLAUDE.md` and the canonical docs, implements with tests, normal CI, Angelo reviews and merges. The multi-agent control plane (PR #233) was removed on 10 Sep 2026 and PR #234 closed unmerged  |
 
 **Last completed work (10–11 Sep 2026):** the repository reset. Removed
 `AGENTS.md`, `GEMINI.md`, `docs/AUTONOMOUS-ENGINEERING.md`, `docs/agents/`,
@@ -33,7 +33,7 @@ six failures are Windows/timezone/`pg_dump`-on-PATH environment
 differences; the two db ones pass with `pg_dump` on PATH and UTC; CI on
 `main` is green).
 
-**Last completed work (11 Sep 2026, G-06):** provider refunds, reversals
+**Last completed work (11 Sep 2026, G-06, merged as `8f07a6d`; CODE COMPLETE, NOT LIVE PROVIDER VERIFIED until G-05):** provider refunds, reversals
 and chargebacks now reach the books. Events are dispatched by kind in the
 payment-event handler; `verifyRefund` and `verifyDispute` join the provider
 port (Paystack `GET /refund/:id`, `GET /dispute/:id`; the other adapters
