@@ -5,7 +5,11 @@ import type {
   InitializeTransactionResult,
   PaymentProviderPort,
   ProviderSettlement,
+  VerifiedDispute,
+  VerifiedRefund,
   VerifiedTransaction,
+  VerifyDisputeResult,
+  VerifyRefundResult,
   VerifyTransactionResult,
 } from './provider.port.js';
 
@@ -22,6 +26,9 @@ export class StubPaymentProvider implements PaymentProviderPort {
   readonly initialized: InitializeTransactionInput[] = [];
   readonly subaccountsCreated: CreateSubaccountInput[] = [];
   private readonly verifications = new Map<string, VerifiedTransaction>();
+  private readonly refunds = new Map<string, VerifiedRefund>();
+  private readonly disputes = new Map<string, VerifiedDispute>();
+  private failRefundRead: Error | null = null;
   private readonly settlements: Array<ProviderSettlement & { references: string[] }> = [];
   private failInitialize: Error | null = null;
   private failVerify: Error | null = null;
@@ -42,6 +49,38 @@ export class StubPaymentProvider implements PaymentProviderPort {
       paidAtIso: null,
       ...overrides,
     });
+  }
+
+  /** Script the authoritative answer about one refund. */
+  willVerifyRefund(providerRefundId: string, overrides: Partial<VerifiedRefund> = {}): void {
+    this.refunds.set(providerRefundId, {
+      succeeded: true,
+      providerRefundId,
+      transactionReference: null,
+      amountK: 0,
+      currency: 'NGN',
+      providerStatus: 'processed',
+      refundedAtIso: null,
+      ...overrides,
+    });
+  }
+
+  /** Script the authoritative answer about one dispute. */
+  willVerifyDispute(providerDisputeId: string, overrides: Partial<VerifiedDispute> = {}): void {
+    this.disputes.set(providerDisputeId, {
+      providerDisputeId,
+      transactionReference: null,
+      amountK: null,
+      currency: 'NGN',
+      providerStatus: 'awaiting-merchant-feedback',
+      providerResolution: null,
+      outcome: 'open',
+      ...overrides,
+    });
+  }
+
+  failNextRefundReadWith(error: Error): void {
+    this.failRefundRead = error;
   }
 
   /** Make the next verify call fail, as a provider outage would. */
@@ -81,6 +120,9 @@ export class StubPaymentProvider implements PaymentProviderPort {
     this.initialized.length = 0;
     this.subaccountsCreated.length = 0;
     this.verifications.clear();
+    this.refunds.clear();
+    this.disputes.clear();
+    this.failRefundRead = null;
     this.settlements.length = 0;
     this.failVerify = null;
     this.failInitialize = null;
@@ -130,6 +172,23 @@ export class StubPaymentProvider implements PaymentProviderPort {
     const transaction = this.verifications.get(reference);
     if (!transaction) return Promise.resolve({ found: false });
     return Promise.resolve({ found: true, transaction });
+  }
+
+  verifyRefund(providerRefundId: string): Promise<VerifyRefundResult> {
+    if (this.failRefundRead) {
+      const error = this.failRefundRead;
+      this.failRefundRead = null;
+      return Promise.reject(error);
+    }
+    const refund = this.refunds.get(providerRefundId);
+    if (!refund) return Promise.resolve({ found: false });
+    return Promise.resolve({ found: true, refund });
+  }
+
+  verifyDispute(providerDisputeId: string): Promise<VerifyDisputeResult> {
+    const dispute = this.disputes.get(providerDisputeId);
+    if (!dispute) return Promise.resolve({ found: false });
+    return Promise.resolve({ found: true, dispute });
   }
 
   listSettlements(_fromIso: string): Promise<ProviderSettlement[]> {

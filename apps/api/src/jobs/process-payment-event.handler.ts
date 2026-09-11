@@ -19,16 +19,42 @@
  * The handler's writes and the job's completion share one transaction (the
  * runner's contract), so "did this event get booked?" is a question with
  * exactly one answer.
+ *
+ * Which pipeline an event enters is decided by its KIND — the event name,
+ * for refunds and disputes; every other kind (a charge, and anything the
+ * summary does not classify) walks the charge confirmation path below, where
+ * a verify that finds nothing retires it. Provider-executed refunds and
+ * chargebacks are recorded here as facts, not authorised as commands, so
+ * they do not pass the CommandBus; `auditPaymentAdjustment` writes the
+ * actor and reason Appendix D.2 asks for.
+ *
+ * never the payload (G-06). A charge event walks the confirmation path
+ * below, unchanged. A refund event or a dispute event is about money going
+ * BACK on a payment already booked, and is handled by its own branch: the
+ * same verify-first rule, the same one-transaction rule, and the repos that
+ * record and post refunds, reversals and chargebacks (0091, 0092). Before
+ * this, every one of those events was judged as a fresh confirmation of the
+ * original charge and retired as `already_booked`, and the books kept saying
+ * the customer had paid.
  */
 import { Logger } from '@nestjs/common';
 import { judgeProviderPayment, type FeePolicy } from '@rekoda/core';
-import { paystackWebhookBody, summarisePaystackEvent } from '@rekoda/contracts';
-import { events, jobsRepo, paymentsHub, settleRepo, type TenantDb } from '@rekoda/db';
+import {
+  paystackWebhookBody,
+  summarisePaystackEvent,
+  type PaystackEventSummary,
+} from '@rekoda/contracts';
+import { events, jobsRepo, paymentsHub, refundsRepo, settleRepo, type TenantDb } from '@rekoda/db';
 import { isProductionEnv, type ApiConfig } from '../config.js';
 import { openPayload } from '../privacy/payload-vault.js';
 import type { PaymentProviderPort } from '../payments/provider.port.js';
 import type { CommandBus } from '../commands/command-bus.service.js';
 import { confirmPaymentWork, type ConfirmPaymentInput } from '../commands/payment-commands.js';
+import {
+  chargebackPaymentWork,
+  refundPaymentWork,
+  reversePaymentWork,
+} from '../commands/payment-adjustment-commands.js';
 import type { JobContext, JobHandler } from './runner.js';
 
 export interface ProcessPaymentEventDeps {
@@ -40,10 +66,14 @@ export interface ProcessPaymentEventDeps {
 /** Provider statuses that mean "this attempt is over", not "still cooking". */
 const DEAD_PROVIDER_STATUSES = new Set(['failed', 'abandoned', 'reversed']);
 
+const ACTOR = 'system:payments';
+
+type Intent = NonNullable<Awaited<ReturnType<typeof paymentsHub.intentByReference>>>;
+
 export function processPaymentEventHandler(deps: ProcessPaymentEventDeps): JobHandler {
   const log = new Logger('ProcessPaymentEventJob');
 
-  return async ({ tx, payload, businessId }: JobContext): Promise<void> => {
+  return async ({ tx, payload, businessId, attempt, maxAttempts }: JobContext): Promise<void> => {
     const eventId = typeof payload['eventId'] === 'string' ? payload['eventId'] : null;
     if (!eventId) throw new Error('payment.process: payload is missing eventId');
 
@@ -55,8 +85,9 @@ export function processPaymentEventHandler(deps: ProcessPaymentEventDeps): JobHa
       return;
     }
 
-    const reference = referenceOf(event.payload, deps.config.vaultKey, event.externalId);
-    if (!reference) {
+    const summary = summaryOf(event.payload, deps.config.vaultKey, event.externalId);
+    const reference = summary?.reference ?? null;
+    if (!summary || !reference) {
       await events.markProcessed(tx, eventId, 'unreadable_at_processing', businessId);
       return;
     }
@@ -77,6 +108,10 @@ export function processPaymentEventHandler(deps: ProcessPaymentEventDeps): JobHa
       return;
     }
 
+    const ctx: Ctx = { tx, businessId, eventId, intent, summary, log, attempt, maxAttempts };
+    if (summary.kind === 'refund') return handleRefund(deps, ctx);
+    if (summary.kind === 'dispute') return handleDispute(deps, ctx);
+
     /* ── the authoritative call (§20) ─────────────────────────────────── */
     const verified = await deps.provider.verifyTransaction(reference);
     if (!verified.found) {
@@ -96,6 +131,15 @@ export function processPaymentEventHandler(deps: ProcessPaymentEventDeps): JobHa
 
     if (judgement.verdict === 'rejected') {
       if (judgement.reason === 'provider_not_success') {
+        /**
+         * The provider now says a payment it once confirmed is REVERSED —
+         * undone on its side before it paid out (§14.3 PaymentReversal).
+         * Only a booked payment can be undone; anything else on this
+         * status is the ordinary dead-attempt case below.
+         */
+        if (t.providerStatus === 'reversed' && intent.status === 'succeeded') {
+          return handleReversal(deps, ctx, t.providerTransactionId);
+        }
         if (DEAD_PROVIDER_STATUSES.has(t.providerStatus)) {
           // The attempt is over. The intent follows it; the obligation stays.
           await paymentsHub.advanceIntent(tx, intent.id, 'failed', {
@@ -161,7 +205,7 @@ export function processPaymentEventHandler(deps: ProcessPaymentEventDeps): JobHa
       feePolicy: (connection?.feePolicy ?? 'merchant_bearing') as FeePolicy,
       method: t.method,
       paymentConnectionId: connection?.id ?? null,
-      actor: 'system:payments',
+      actor: ACTOR,
       eventId,
     };
 
@@ -176,7 +220,7 @@ export function processPaymentEventHandler(deps: ProcessPaymentEventDeps): JobHa
           businessId,
           command: 'ConfirmPayment',
           payload: input,
-          actor: 'system:payments',
+          actor: ACTOR,
           ingress: 'AUTOMATION',
           idempotencyKey: `confirm:${intent.id}:${t.providerTransactionId}`,
         },
@@ -202,6 +246,321 @@ export function processPaymentEventHandler(deps: ProcessPaymentEventDeps): JobHa
   };
 }
 
+/* ── money going back (G-06) ─────────────────────────────────────────────── */
+
+interface Ctx {
+  tx: TenantDb;
+  businessId: string;
+  eventId: string;
+  intent: Intent;
+  summary: PaystackEventSummary;
+  log: Logger;
+  /** This job's attempt and the queue's ceiling for it. */
+  attempt: number;
+  maxAttempts: number;
+}
+
+/**
+ * A refund event. Only `refund.processed` means money actually went back;
+ * the pending and failed stages are recorded and nothing moves. Then the
+ * same discipline as a charge: the provider's refund read is the truth, the
+ * envelope is the hint, and a truth that does not describe THIS payment —
+ * another reference, another currency, more than was paid — is a human's
+ * question, never a posting.
+ */
+/**
+ * A `refund.processed` event whose provider read has not caught up. Thrown
+ * so the job attempt fails and is retried; see `handleRefund`.
+ */
+export class RefundReadLagging extends Error {
+  constructor(providerRefundId: string, providerStatus: string) {
+    super(
+      `refund ${providerRefundId} reads as ${providerStatus} on a refund.processed event; retrying`,
+    );
+  }
+}
+
+async function handleRefund(deps: ProcessPaymentEventDeps, ctx: Ctx): Promise<void> {
+  const { tx, businessId, eventId, intent, summary } = ctx;
+
+  if (summary.eventType !== 'refund.processed') {
+    const stage = summary.eventType === 'refund.failed' ? 'refund_failed' : 'refund_pending';
+    await events.markProcessed(tx, eventId, stage, businessId);
+    return;
+  }
+
+  const payment = await settleRepo.paymentForIntent(tx, businessId, intent.id);
+  if (!payment) {
+    // A refund of money Rekoda never booked. Nothing to reverse; a human
+    // decides what this is.
+    await flag(ctx, 'refund_without_booked_payment', summary.amountK);
+    return;
+  }
+  if (!summary.objectId) {
+    await flag(ctx, 'refund_without_provider_id', summary.amountK);
+    return;
+  }
+
+  /* ── the authoritative call ─────────────────────────────────────────── */
+  const verified = await deps.provider.verifyRefund(summary.objectId);
+  if (!verified.found) {
+    await flag(ctx, 'refund_verify_not_found', summary.amountK);
+    return;
+  }
+  const r = verified.refund;
+  if (!r.succeeded) {
+    if (r.providerStatus === 'failed') {
+      // The envelope said processed; the provider's own record says it
+      // failed. Two provider truths disagree: a human's, not a posting.
+      await flag(ctx, 'refund_failed_on_processed_event', r.amountK);
+      return;
+    }
+    /* The envelope said processed; the read still says pending. A later
+     * redelivery of the same event carries the same refund id and is
+     * dropped at ingress as a duplicate, so retiring this one here would
+     * lose the refund for good. Fail the attempt instead: the runner
+     * retries with backoff. On the LAST attempt the disagreement becomes an
+     * exception in the merchant's queue and the event is retired with that
+     * reason, so a refund that never turns processed is a row somebody
+     * reviews, never a dead job nobody looks at. */
+    if (ctx.attempt >= ctx.maxAttempts) {
+      await flag(ctx, 'refund_read_never_processed', r.amountK);
+      return;
+    }
+    throw new RefundReadLagging(summary.objectId, r.providerStatus);
+  }
+  const mismatch = describesPayment(r.transactionReference, r.currency, r.amountK, intent, payment);
+  if (mismatch) {
+    await flag(ctx, mismatch, r.amountK);
+    return;
+  }
+
+  const settled = await refundsRepo.paymentSettled(tx, businessId, payment.id);
+  const connection = await paymentsHub.connectionFor(tx, businessId, deps.provider.providerType);
+  const result = await refundPaymentWork(tx, {
+    businessId,
+    paymentId: payment.id,
+    paymentAmountK: payment.amountK,
+    amountK: r.amountK,
+    providerRefundId: r.providerRefundId,
+    settled,
+    paymentConnectionId: connection?.id ?? null,
+    reason: `provider refund ${r.providerRefundId}`,
+    actor: ACTOR,
+    eventId,
+  });
+
+  switch (result.outcome) {
+    case 'refunded':
+      await events.markProcessed(tx, eventId, null, businessId);
+      ctx.log.log(
+        `refunded ${intent.reference}: ${result.lifecycle}, ` +
+          `${result.unwind.unwound.length} allocation(s) unwound`,
+      );
+      return;
+    case 'already_recorded':
+      // The provider re-notifying an executed refund: one row, one posting.
+      await events.markProcessed(tx, eventId, 'refund_already_recorded', businessId);
+      return;
+    default:
+      await flag(ctx, `refund_${result.outcome}`, r.amountK);
+      return;
+  }
+}
+
+/**
+ * A dispute event. Opening one moves no money: it is filed as an exception
+ * so somebody is looking. Only a dispute the provider reports as LOST —
+ * verified by its own read, never from the envelope — becomes a chargeback,
+ * with the timing (clearing reversal or a payable to the provider) decided
+ * by the payment's settlement state inside the repo (§21).
+ */
+async function handleDispute(deps: ProcessPaymentEventDeps, ctx: Ctx): Promise<void> {
+  const { tx, businessId, eventId, intent, summary } = ctx;
+
+  const payment = await settleRepo.paymentForIntent(tx, businessId, intent.id);
+  if (!payment) {
+    await flag(ctx, 'dispute_without_booked_payment', summary.amountK);
+    return;
+  }
+  if (!summary.objectId) {
+    await flag(ctx, 'dispute_without_provider_id', summary.amountK);
+    return;
+  }
+
+  const verified = await deps.provider.verifyDispute(summary.objectId);
+  if (!verified.found) {
+    await flag(ctx, 'dispute_verify_not_found', summary.amountK);
+    return;
+  }
+  const d = verified.dispute;
+
+  if (d.outcome === 'open' && d.providerStatus === 'resolved') {
+    /* A resolution word Rekoda does not know (`disputeOutcome` maps only
+     * the published vocabulary, OD-9). Not "still open": a distinct row
+     * every time, so a lost dispute under an unknown word is never hidden
+     * behind an earlier dispute-opened exception. */
+    await flag(ctx, 'dispute_resolution_unrecognised', d.amountK ?? summary.amountK);
+    return;
+  }
+  if (d.outcome === 'open') {
+    // Pending: a risk state, not a reversal. One exception per dispute,
+    // however many reminders the provider sends.
+    await flagOnce(
+      ctx,
+      'dispute_opened',
+      summary.eventType === 'charge.dispute.remind' ? 'dispute_reminder' : 'dispute_opened',
+      d.amountK ?? summary.amountK,
+    );
+    return;
+  }
+  if (d.outcome === 'won') {
+    // Closed in the merchant's favour: nothing moves; the operator closes
+    // the exception the opening left.
+    await events.markProcessed(tx, eventId, 'dispute_won', businessId);
+    return;
+  }
+
+  const amountK = d.amountK ?? summary.amountK;
+  if (amountK === null) {
+    await flag(ctx, 'chargeback_without_amount', null);
+    return;
+  }
+  const mismatch = describesPayment(d.transactionReference, d.currency, amountK, intent, payment);
+  if (mismatch) {
+    await flag(ctx, mismatch.replace('refund_', 'chargeback_'), amountK);
+    return;
+  }
+  const connection = await paymentsHub.connectionFor(tx, businessId, deps.provider.providerType);
+  if (!connection) {
+    await flag(ctx, 'chargeback_without_connection', amountK);
+    return;
+  }
+
+  const result = await chargebackPaymentWork(tx, {
+    businessId,
+    paymentId: payment.id,
+    paymentAmountK: payment.amountK,
+    paymentConnectionId: connection.id,
+    providerChargebackId: d.providerDisputeId,
+    amountK,
+    reason: `dispute ${d.providerDisputeId} ${d.providerResolution ?? 'lost'}`,
+    actor: ACTOR,
+    eventId,
+  });
+  switch (result.outcome) {
+    case 'charged_back':
+      await events.markProcessed(tx, eventId, null, businessId);
+      ctx.log.log(`chargeback on ${intent.reference}: ${result.timing}`);
+      return;
+    case 'already_recorded':
+      await events.markProcessed(tx, eventId, 'chargeback_already_recorded', businessId);
+      return;
+    default:
+      await flag(ctx, `chargeback_${result.outcome}`, amountK);
+      return;
+  }
+}
+
+/**
+ * The provider's verify now says a booked payment is REVERSED. Before the
+ * payout that is a PaymentReversal (whole, once, back through clearing).
+ * After the payout it is a refund or a chargeback and which one is not the
+ * provider status's to say — a human's, with the payment left standing.
+ */
+async function handleReversal(
+  deps: ProcessPaymentEventDeps,
+  ctx: Ctx,
+  providerTransactionId: string,
+): Promise<void> {
+  const { tx, businessId, eventId, intent } = ctx;
+  const payment = await settleRepo.paymentForIntent(tx, businessId, intent.id);
+  if (!payment) {
+    await flag(ctx, 'reversal_without_booked_payment', null);
+    return;
+  }
+  if (await refundsRepo.paymentSettled(tx, businessId, payment.id)) {
+    await flag(ctx, 'reversal_after_settlement', payment.amountK);
+    return;
+  }
+  const connection = await paymentsHub.connectionFor(tx, businessId, deps.provider.providerType);
+  if (!connection) {
+    await flag(ctx, 'reversal_without_connection', payment.amountK);
+    return;
+  }
+  const result = await reversePaymentWork(tx, {
+    businessId,
+    paymentId: payment.id,
+    paymentAmountK: payment.amountK,
+    paymentConnectionId: connection.id,
+    providerReversalId: providerTransactionId,
+    reason: 'provider reported the charge reversed',
+    actor: ACTOR,
+    eventId,
+  });
+  switch (result.outcome) {
+    case 'reversed':
+      await events.markProcessed(tx, eventId, null, businessId);
+      ctx.log.log(`reversed ${intent.reference}: ${result.unwind.unwound.length} allocation(s)`);
+      return;
+    case 'already_recorded':
+      await events.markProcessed(tx, eventId, 'reversal_already_recorded', businessId);
+      return;
+    default:
+      await flag(ctx, `reversal_${result.outcome}`, payment.amountK);
+      return;
+  }
+}
+
+/**
+ * Does the provider's truth describe THIS payment? A different charge
+ * reference, a different currency, or more than the payment ever held are
+ * each a reason to stop and ask rather than post.
+ */
+function describesPayment(
+  transactionReference: string | null,
+  currency: string | null,
+  amountK: number,
+  intent: Intent,
+  payment: { amountK: number; currency: string | null },
+): string | null {
+  if (transactionReference && transactionReference !== intent.reference) {
+    return 'refund_reference_mismatch';
+  }
+  if (currency && payment.currency && currency.toUpperCase() !== payment.currency.toUpperCase()) {
+    return 'refund_currency_mismatch';
+  }
+  if (!Number.isSafeInteger(amountK) || amountK <= 0 || amountK > payment.amountK) {
+    return 'refund_amount_mismatch';
+  }
+  return null;
+}
+
+/** File an exception for a human AND retire the event with the same reason. */
+async function flag(ctx: Ctx, reason: string, amountK: number | null): Promise<void> {
+  await exception(ctx.tx, ctx.businessId, ctx.intent, reason, amountK ?? undefined);
+  await events.markProcessed(ctx.tx, ctx.eventId, reason, ctx.businessId);
+}
+
+/** Like `flag`, but one exception per expectation however many events say so. */
+async function flagOnce(
+  ctx: Ctx,
+  exceptionReason: string,
+  eventReason: string,
+  amountK: number | null,
+): Promise<void> {
+  const kind = ctx.intent.invoiceId ? 'invoice' : 'intent';
+  const id = ctx.intent.invoiceId ?? ctx.intent.id;
+  /* Once per REASON, while it is OPEN: an obligation that already carries
+   * an overpaid or duplicate row, or one a human has resolved, still gets
+   * its dispute-opened row. `hasException` (any reason, any state) would
+   * swallow it. */
+  if (!(await settleRepo.hasOpenException(ctx.tx, ctx.businessId, kind, id, exceptionReason))) {
+    await exception(ctx.tx, ctx.businessId, ctx.intent, exceptionReason, amountK ?? undefined);
+  }
+  await events.markProcessed(ctx.tx, ctx.eventId, eventReason, ctx.businessId);
+}
+
 /**
  * A reconciliation exception with no payment row — money that did NOT book.
  * `amountK` is the amount the provider actually reported when one is known;
@@ -223,7 +582,11 @@ async function exception(
   });
 }
 
-function referenceOf(payload: unknown, vaultKey: string, externalId: string): string | null {
+function summaryOf(
+  payload: unknown,
+  vaultKey: string,
+  externalId: string,
+): PaystackEventSummary | null {
   let opened: unknown;
   try {
     opened = openPayload(payload, vaultKey, 'paystack', externalId);
@@ -237,5 +600,5 @@ function referenceOf(payload: unknown, vaultKey: string, externalId: string): st
   }
   const parsed = paystackWebhookBody.safeParse(opened);
   if (!parsed.success) return null;
-  return summarisePaystackEvent(parsed.data).reference;
+  return summarisePaystackEvent(parsed.data);
 }

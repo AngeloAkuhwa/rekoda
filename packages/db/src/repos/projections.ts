@@ -38,15 +38,21 @@ export interface RebuiltDocuments {
   billsRepaired: string[];
 }
 
-export async function rebuildDocumentProjections(
+/**
+ * The invoice half of the rebuild, for ONE invoice or all of them.
+ *
+ * A writer that moves an allocation (a refund or reversal unwinding what a
+ * payment answered, G-06) maintains the projection by calling this for the
+ * invoice it touched, inside its own transaction — the same derivation the
+ * proving rebuild uses, so the stored figures cannot disagree with what a
+ * rebuild would compute. Returns the invoice numbers whose stored figures
+ * changed.
+ */
+export async function rebuildInvoiceProjection(
   tx: TenantDb,
   businessId: string,
-): Promise<RebuiltDocuments> {
-  const computedAt = new Date();
-
-  /* Invoices: settled = allocations (net of their exact-negation reversals,
-   * §14.2) + credit applications (same shape) + legacy pre-§14.1 credit
-   * notes. Derived first, compared, then only the drifted rows written. */
+  invoiceId?: string,
+): Promise<string[]> {
   const invoiceRows = await tx.execute<{ invoice_number: string }>(sql`
     WITH derived AS (
       SELECT i.id,
@@ -67,6 +73,7 @@ export async function rebuildDocumentProjections(
                                            AND g.source_id = cn.credit_note_number)), 0) AS legacy_credited
       FROM invoices i
       WHERE i.business_id = ${businessId}::uuid
+        AND (${invoiceId ?? null}::uuid IS NULL OR i.id = ${invoiceId ?? null}::uuid)
     ),
     target AS (
       SELECT id, invoice_number, paid, credited,
@@ -90,6 +97,19 @@ export async function rebuildDocumentProjections(
             OR i.credited_k <> t.credited OR i.status <> t.status)
     RETURNING i.invoice_number
   `);
+  return [...invoiceRows].map((r) => r.invoice_number).sort();
+}
+
+export async function rebuildDocumentProjections(
+  tx: TenantDb,
+  businessId: string,
+): Promise<RebuiltDocuments> {
+  const computedAt = new Date();
+
+  /* Invoices: settled = allocations (net of their exact-negation reversals,
+   * §14.2) + credit applications (same shape) + legacy pre-§14.1 credit
+   * notes. Derived first, compared, then only the drifted rows written. */
+  const invoicesRepaired = await rebuildInvoiceProjection(tx, businessId);
 
   /* Bills: settled by the EXPENSE attribution — the same join the ageing
    * reads — because payments older than the bill_id column carry only it. */
@@ -129,7 +149,7 @@ export async function rebuildDocumentProjections(
   return {
     computedAt,
     invoicesChecked: Number(count?.invoices ?? 0),
-    invoicesRepaired: [...invoiceRows].map((r) => r.invoice_number).sort(),
+    invoicesRepaired,
     billsChecked: Number(count?.bills ?? 0),
     billsRepaired: [...billRows].map((r) => r.bill_number).sort(),
   };

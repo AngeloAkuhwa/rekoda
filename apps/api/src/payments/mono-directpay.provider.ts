@@ -29,6 +29,8 @@ import type {
   PaymentProviderPort,
   ProviderSettlement,
   VerifyTransactionResult,
+  VerifyDisputeResult,
+  VerifyRefundResult,
 } from './provider.port.js';
 
 export class MonoApiError extends Error {}
@@ -130,6 +132,17 @@ export class MonoDirectPayProvider implements PaymentProviderPort {
 
   listSettlementTransactions(_settlementId: string): Promise<string[]> {
     return Promise.resolve([]);
+  }
+
+  /* No refund or dispute read is modelled for this provider yet (§18:
+   * capabilities are explicit). Answering found:false without a request
+   * routes the event to a human instead of inventing a verified fact. */
+  verifyRefund(_providerRefundId: string): Promise<VerifyRefundResult> {
+    return Promise.resolve({ found: false });
+  }
+
+  verifyDispute(_providerDisputeId: string): Promise<VerifyDisputeResult> {
+    return Promise.resolve({ found: false });
   }
 
   private async request(method: string, path: string, payload: unknown): Promise<unknown> {

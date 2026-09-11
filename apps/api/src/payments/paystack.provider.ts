@@ -15,7 +15,9 @@
 import { Logger } from '@nestjs/common';
 import {
   paystackChargeResponse,
+  paystackDisputeResponse,
   paystackInitializeResponse,
+  paystackRefundResponse,
   paystackSettlementListResponse,
   paystackSettlementTransactionsResponse,
   paystackSubaccountResponse,
@@ -28,8 +30,33 @@ import type {
   InitializeTransactionResult,
   PaymentProviderPort,
   ProviderSettlement,
+  VerifiedDispute,
+  VerifyDisputeResult,
+  VerifyRefundResult,
   VerifyTransactionResult,
 } from './provider.port.js';
+
+/**
+ * Paystack's dispute vocabulary, translated once (spec §21; G-06). A
+ * dispute is LOST when the merchant accepted it or Paystack auto-accepted
+ * it on the merchant's silence — either way the provider takes the money
+ * back — and WON when Paystack declined it. Any other resolution, and every
+ * dispute whose status is not yet resolved, is OPEN: the books wait.
+ * Taken from Paystack's published dispute lifecycle; the live drill
+ * (docs/REKODA_LAUNCH_READINESS.md, GATE 8) is what makes this list final.
+ */
+const DISPUTE_LOST = new Set(['merchant-accepted', 'auto-accepted']);
+const DISPUTE_WON = new Set(['declined']);
+
+export function disputeOutcome(
+  status: string,
+  resolution: string | null,
+): VerifiedDispute['outcome'] {
+  if (status !== 'resolved' || !resolution) return 'open';
+  if (DISPUTE_LOST.has(resolution)) return 'lost';
+  if (DISPUTE_WON.has(resolution)) return 'won';
+  return 'open';
+}
 
 /** A hung provider must never hold a worker (or its transaction) open. */
 /** A runaway guard: 200 pages is 40,000 settlements or transactions. */
@@ -142,6 +169,65 @@ export class PaystackProvider implements PaymentProviderPort {
 
   async verifyTransaction(reference: string): Promise<VerifyTransactionResult> {
     return verifyPaystackTransaction(this.secretKey, this.baseUrl, reference);
+  }
+
+  /**
+   * `GET /refund/:id` — read the way `verify` is read for a charge. A 404
+   * (or Paystack's own status:false) is a routine miss for the handler to
+   * flag, not an outage to retry.
+   */
+  async verifyRefund(providerRefundId: string): Promise<VerifyRefundResult> {
+    const response = await fetch(`${this.baseUrl}/refund/${encodeURIComponent(providerRefundId)}`, {
+      headers: this.headers(),
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+    if (response.status === 404) return { found: false };
+    if (!response.ok) throw new PaystackApiError(`refund read failed with HTTP ${response.status}`);
+    const parsed = paystackRefundResponse.safeParse(await response.json());
+    if (!parsed.success) throw new PaystackApiError('refund read returned an unreadable response');
+    if (!parsed.data.status || !parsed.data.data) return { found: false };
+    const d = parsed.data.data;
+    return {
+      found: true,
+      refund: {
+        succeeded: d.status === 'processed',
+        providerRefundId: String(d.id),
+        transactionReference: d.transaction?.reference ?? d.transaction_reference ?? null,
+        amountK: d.amount,
+        currency: d.currency ?? null,
+        providerStatus: d.status,
+        refundedAtIso: d.refunded_at ?? null,
+      },
+    };
+  }
+
+  /** `GET /dispute/:id` — the dispute's state, translated by `disputeOutcome`. */
+  async verifyDispute(providerDisputeId: string): Promise<VerifyDisputeResult> {
+    const response = await fetch(
+      `${this.baseUrl}/dispute/${encodeURIComponent(providerDisputeId)}`,
+      { headers: this.headers(), signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) },
+    );
+    if (response.status === 404) return { found: false };
+    if (!response.ok)
+      throw new PaystackApiError(`dispute read failed with HTTP ${response.status}`);
+    const parsed = paystackDisputeResponse.safeParse(await response.json());
+    if (!parsed.success) throw new PaystackApiError('dispute read returned an unreadable response');
+    if (!parsed.data.status || !parsed.data.data) return { found: false };
+    const d = parsed.data.data;
+    const resolution = d.resolution ?? null;
+    return {
+      found: true,
+      dispute: {
+        providerDisputeId: String(d.id),
+        transactionReference: d.transaction?.reference ?? d.transaction_reference ?? null,
+        amountK:
+          typeof d.refund_amount === 'number' ? d.refund_amount : (d.transaction?.amount ?? null),
+        currency: d.currency ?? null,
+        providerStatus: d.status,
+        providerResolution: resolution,
+        outcome: disputeOutcome(d.status, resolution),
+      },
+    };
   }
 
   async listSettlements(fromIso: string): Promise<ProviderSettlement[]> {

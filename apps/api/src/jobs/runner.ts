@@ -27,6 +27,9 @@ export interface JobContext {
   payload: Record<string, unknown>;
   /** 1 on the first run. Handlers that talk to a provider use it to decide how loud to be. */
   attempt: number;
+  /** The queue's ceiling for this job: a handler on its last attempt can
+   * choose to record an outcome rather than die. */
+  maxAttempts: number;
 }
 
 export type JobHandler = (ctx: JobContext) => Promise<void>;
@@ -142,6 +145,7 @@ export class JobRunner {
           businessId: job.businessId,
           payload: job.payload,
           attempt: job.attempts,
+          maxAttempts: job.maxAttempts,
         });
         await jobsRepo.markDone(tx, job.id);
       });

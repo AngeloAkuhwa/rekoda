@@ -80,8 +80,9 @@ session never starts a capability from zero.
   for document photos, hard daily ceilings, no self-hosted sidecars
   (ADR 0032).
 - **Books:** sales, invoices (issue/void), receipts, expenses, purchases,
-  supplier bills, credit notes, refund and reversal records (built,
-  unwired until G-06), stock movements and stocktakes
+  supplier bills, credit notes, refund, reversal and chargeback records
+  (wired to provider events, G-06; live envelopes under G-05), stock
+  movements and stocktakes
   with weighted-average costing, fixed assets with depreciation,
   recurring spend, opening balances, period close; append-only balanced
   ledger in integer kobo; chart of accounts per spec §11.
@@ -140,7 +141,7 @@ session never starts a capability from zero.
 Monorepo (pnpm + turbo, Node from `.nvmrc`): `apps/api` (NestJS on
 Fastify: webhooks, `/v1`, auth, jobs), `apps/web` (Next.js: marketing,
 legal, dashboard `/app`, storefront `/s/[slug]`), `packages/core` (pure
-rules, no IO), `packages/db` (Drizzle schema, SQL migrations `0000`–`0149`,
+rules, no IO), `packages/db` (Drizzle schema, SQL migrations `0000`–`0151`,
 RLS, repos in `src/repos/`), `packages/contracts` (zod borders),
 `packages/shared` (branded types).
 

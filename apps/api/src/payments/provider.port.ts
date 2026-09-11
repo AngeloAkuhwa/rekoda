@@ -60,6 +60,50 @@ export interface VerifiedTransaction {
 export type VerifyTransactionResult =
   { found: true; transaction: VerifiedTransaction } | { found: false };
 
+/**
+ * A provider's answer about a REFUND, normalised (spec §14.3; G-06). Read
+ * exactly the way a charge is read: the webhook is the hint, this is the
+ * truth. `succeeded` is the adapter's translation of "the money actually
+ * went back"; a pending or failed refund is found-but-not-succeeded.
+ */
+export interface VerifiedRefund {
+  succeeded: boolean;
+  /** The provider's own id for the refund. */
+  providerRefundId: string;
+  /** The reference of the CHARGE this refund returns money from. */
+  transactionReference: string | null;
+  /** Integer kobo actually refunded. */
+  amountK: number;
+  currency: string | null;
+  /** The provider's native status, verbatim, for audit. */
+  providerStatus: string;
+  refundedAtIso: string | null;
+}
+
+export type VerifyRefundResult = { found: true; refund: VerifiedRefund } | { found: false };
+
+/**
+ * A provider's answer about a DISPUTE (spec §21). The adapter reports the
+ * provider's lifecycle words verbatim and translates only what its
+ * documentation makes unambiguous: `outcome` is 'lost' when the provider
+ * has taken (or will take) the money back, 'won' when it has closed the
+ * dispute in the merchant's favour, and 'open' for everything else,
+ * including a resolution the adapter does not recognise. Only 'lost' may
+ * move the books, and only after this call, never from a webhook copy.
+ */
+export interface VerifiedDispute {
+  providerDisputeId: string;
+  transactionReference: string | null;
+  /** Integer kobo under dispute (the amount the provider would take back). */
+  amountK: number | null;
+  currency: string | null;
+  providerStatus: string;
+  providerResolution: string | null;
+  outcome: 'open' | 'won' | 'lost';
+}
+
+export type VerifyDisputeResult = { found: true; dispute: VerifiedDispute } | { found: false };
+
 export interface CreateSubaccountInput {
   businessName: string;
   settlementBankCode: string;
@@ -136,6 +180,14 @@ export interface PaymentProviderPort {
   initializeTransaction(input: InitializeTransactionInput): Promise<InitializeTransactionResult>;
   /** Server-side verification — the ONLY source of authoritative amounts (§20). */
   verifyTransaction(reference: string): Promise<VerifyTransactionResult>;
+  /**
+   * Server-side verification of a refund the provider says it executed.
+   * A provider with no refund read answers `found: false` without a
+   * request, which routes the event to a human rather than to the books.
+   */
+  verifyRefund(providerRefundId: string): Promise<VerifyRefundResult>;
+  /** Server-side read of a dispute's state, same rule as refunds. */
+  verifyDispute(providerDisputeId: string): Promise<VerifyDisputeResult>;
   /**
    * Settlement batches since a date. Polled, not webhook-fed: settlement
    * webhooks are best-effort at Paystack, so the sweep asks directly.

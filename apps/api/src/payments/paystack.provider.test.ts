@@ -7,7 +7,7 @@
  */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { PaystackApiError, PaystackProvider } from './paystack.provider.js';
+import { PaystackApiError, PaystackProvider, disputeOutcome } from './paystack.provider.js';
 
 interface Recorded {
   method: string;
@@ -330,5 +330,102 @@ describe('listing settlements (§26–28)', () => {
       expect.stringContaining('page=1'),
       expect.stringContaining('page=2'),
     ]);
+  });
+});
+
+describe('reading a refund and a dispute (G-06)', () => {
+  it('reads a refund the way it reads a charge: kobo as kobo, the charge it refunds, verbatim status', async () => {
+    respond = (_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          status: true,
+          data: {
+            id: 501,
+            status: 'processed',
+            amount: 4_000_000,
+            currency: 'NGN',
+            transaction: { id: 4099260516, reference: 'RKD-PAY-20260819-A83F92' },
+            refunded_at: '2026-09-11T10:00:00.000Z',
+          },
+        }),
+      );
+    };
+    const result = await provider().verifyRefund('501');
+    if (!result.found) throw new Error('expected found');
+    expect(result.refund).toEqual({
+      succeeded: true,
+      providerRefundId: '501',
+      transactionReference: 'RKD-PAY-20260819-A83F92',
+      amountK: 4_000_000,
+      currency: 'NGN',
+      providerStatus: 'processed',
+      refundedAtIso: '2026-09-11T10:00:00.000Z',
+    });
+    expect(requests[0]?.url).toBe('/refund/501');
+    expect(requests[0]?.authorization).toBe('Bearer sk_test_secret');
+  });
+
+  it('a pending refund is found-but-not-succeeded; an unknown one is found:false; an outage throws', async () => {
+    respond = (_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ status: true, data: { id: 502, status: 'pending', amount: 100 } }));
+    };
+    const pending = await provider().verifyRefund('502');
+    if (!pending.found) throw new Error('expected found');
+    expect(pending.refund.succeeded).toBe(false);
+
+    respond = (_req, res) => {
+      res.writeHead(404, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ status: false, message: 'Refund not found' }));
+    };
+    expect(await provider().verifyRefund('503')).toEqual({ found: false });
+
+    respond = (_req, res) => {
+      res.writeHead(503);
+      res.end();
+    };
+    await expect(provider().verifyRefund('504')).rejects.toBeInstanceOf(PaystackApiError);
+  });
+
+  it('translates the dispute lifecycle: lost only when resolved against the merchant, won when declined, otherwise open', () => {
+    expect(disputeOutcome('awaiting-merchant-feedback', null)).toBe('open');
+    expect(disputeOutcome('pending', 'merchant-accepted')).toBe('open');
+    expect(disputeOutcome('resolved', 'merchant-accepted')).toBe('lost');
+    expect(disputeOutcome('resolved', 'auto-accepted')).toBe('lost');
+    expect(disputeOutcome('resolved', 'declined')).toBe('won');
+    expect(disputeOutcome('resolved', 'something-new')).toBe('open');
+    expect(disputeOutcome('resolved', null)).toBe('open');
+  });
+
+  it('reads a dispute and reports the provider words verbatim beside the translation', async () => {
+    respond = (_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          status: true,
+          data: {
+            id: 602,
+            status: 'resolved',
+            resolution: 'merchant-accepted',
+            refund_amount: 15_000_000,
+            currency: 'NGN',
+            transaction: { id: 1, reference: 'RKD-PAY-20260819-A83F92', amount: 15_000_000 },
+          },
+        }),
+      );
+    };
+    const result = await provider().verifyDispute('602');
+    if (!result.found) throw new Error('expected found');
+    expect(result.dispute).toEqual({
+      providerDisputeId: '602',
+      transactionReference: 'RKD-PAY-20260819-A83F92',
+      amountK: 15_000_000,
+      currency: 'NGN',
+      providerStatus: 'resolved',
+      providerResolution: 'merchant-accepted',
+      outcome: 'lost',
+    });
+    expect(requests[0]?.url).toBe('/dispute/602');
   });
 });

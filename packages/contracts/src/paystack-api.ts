@@ -169,3 +169,74 @@ export const paystackChargeResponse = z
   .loose();
 
 export type PaystackChargeResponse = z.infer<typeof paystackChargeResponse>;
+
+/**
+ * `GET /refund/:id` — the authoritative answer about a refund, read the
+ * same way `verify` is read for a charge: the webhook said one happened,
+ * this says what actually did. The charge it refunds rides in
+ * `transaction` (an object on the fetch, a bare reference on the webhook).
+ */
+export const paystackRefundResponse = z
+  .object({
+    status: z.boolean(),
+    message: z.string().optional(),
+    data: z
+      .object({
+        id: z.union([z.number(), z.string()]),
+        /** processed | pending | processing | failed — verbatim, for audit. */
+        status: z.string(),
+        /** Integer kobo actually refunded. Never multiply. */
+        amount: z.number(),
+        currency: z.string().nullish(),
+        transaction_reference: z.string().nullish(),
+        transaction: z
+          .object({
+            id: z.union([z.number(), z.string()]).nullish(),
+            reference: z.string().nullish(),
+          })
+          .loose()
+          .nullish(),
+        refund_reference: z.string().nullish(),
+        refunded_at: z.string().nullish(),
+      })
+      .loose()
+      .optional(),
+  })
+  .loose();
+
+export type PaystackRefundResponse = z.infer<typeof paystackRefundResponse>;
+
+/**
+ * `GET /dispute/:id` — a dispute's current state. `status` is where it is
+ * in Paystack's lifecycle and `resolution` how it ended, both verbatim: the
+ * adapter reports them and the handler decides nothing from a webhook copy.
+ */
+export const paystackDisputeResponse = z
+  .object({
+    status: z.boolean(),
+    message: z.string().optional(),
+    data: z
+      .object({
+        id: z.union([z.number(), z.string()]),
+        status: z.string(),
+        resolution: z.string().nullish(),
+        /** Integer kobo under dispute. */
+        refund_amount: z.number().nullish(),
+        currency: z.string().nullish(),
+        transaction_reference: z.string().nullish(),
+        transaction: z
+          .object({
+            id: z.union([z.number(), z.string()]).nullish(),
+            reference: z.string().nullish(),
+            amount: z.number().nullish(),
+          })
+          .loose()
+          .nullish(),
+        resolved_at: z.string().nullish(),
+      })
+      .loose()
+      .optional(),
+  })
+  .loose();
+
+export type PaystackDisputeResponse = z.infer<typeof paystackDisputeResponse>;

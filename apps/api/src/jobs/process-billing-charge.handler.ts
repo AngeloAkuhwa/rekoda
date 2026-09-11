@@ -64,6 +64,21 @@ export function processBillingChargeHandler(deps: ProcessBillingChargeDeps): Job
       await events.markProcessed(tx, eventId, 'charge_missing_for_tenant', businessId);
       return;
     }
+    /**
+     * Money going BACK on Rekoda's own revenue — a refund of a subscription
+     * charge, a dispute on one — is not this handler's to book and must
+     * never reach the merchant's refund path either (G-06 invariant 10:
+     * the two payment domains cannot cross). It is flagged for an
+     * operator, who records it through the ops refund surface, and the
+     * charge is left exactly as it stands.
+     */
+    const kind = eventKindOf(event.payload, deps.config.vaultKey, event.externalId);
+    if (kind === 'refund' || kind === 'dispute') {
+      await events.markProcessed(tx, eventId, `billing_${kind}_event`, businessId);
+      log.warn(`a Paystack ${kind} event named a subscription charge; flagged for an operator`);
+      return;
+    }
+
     if (charge.status !== 'pending') {
       await events.markProcessed(tx, eventId, `already_${charge.status}`, businessId);
       return;
@@ -141,6 +156,17 @@ export function processBillingChargeHandler(deps: ProcessBillingChargeDeps): Job
       log.log(`business ${businessId}: subscription charge ${charge.kind} applied`);
     }
   };
+}
+
+function eventKindOf(payload: unknown, vaultKey: string, externalId: string): string | null {
+  let opened: unknown;
+  try {
+    opened = openPayload(payload, vaultKey, 'paystack', externalId);
+  } catch {
+    return null;
+  }
+  const parsed = paystackWebhookBody.safeParse(opened);
+  return parsed.success ? summarisePaystackEvent(parsed.data).kind : null;
 }
 
 function referenceOf(payload: unknown, vaultKey: string, externalId: string): string | null {

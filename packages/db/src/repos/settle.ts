@@ -496,6 +496,67 @@ export async function hasException(
   return rows.length === 1;
 }
 
+/**
+ * Whether an UNRESOLVED exception with THIS reason is already on file for
+ * the expectation. `hasException` answers a coarser question (any exception,
+ * any reason, resolved or not), which is right for a sweep re-polling one
+ * disagreement and wrong for "has THIS thing been raised": an obligation
+ * that was once overpaid, or whose earlier exception a human resolved, must
+ * still get its dispute-opened row (G-06 review, 11 Sep 2026).
+ */
+export async function hasOpenException(
+  tx: TenantDb,
+  businessId: string,
+  expectationKind: string,
+  expectationId: string,
+  reason: string,
+): Promise<boolean> {
+  const rows = await tx
+    .select({ id: reconciliations.id })
+    .from(reconciliations)
+    .where(
+      and(
+        eq(reconciliations.businessId, businessId),
+        eq(reconciliations.status, 'EXCEPTION'),
+        eq(reconciliations.expectationKind, expectationKind),
+        eq(reconciliations.expectationId, expectationId),
+        eq(reconciliations.reason, reason),
+        isNull(reconciliations.resolvedAt),
+      ),
+    )
+    .limit(1);
+  return rows.length === 1;
+}
+
+/**
+ * Whether this payment was booked as an OVERPAYMENT: part of it never
+ * answered an invoice and sits in customer credit (§14.1). Any refund,
+ * reversal or chargeback of such a payment touches that credit as well as
+ * the receivable, and the credit-side posting has no canonical rule yet
+ * (OD-8), so the callers refuse the whole adjustment to a human rather
+ * than reverse only the invoice half. The booking's own reconciliation
+ * row is the record: `bookVerifiedPayment` writes it with reason
+ * `overpaid` and the payment id.
+ */
+export async function paymentWasOverpaid(
+  tx: TenantDb,
+  businessId: string,
+  paymentId: string,
+): Promise<boolean> {
+  const rows = await tx
+    .select({ id: reconciliations.id })
+    .from(reconciliations)
+    .where(
+      and(
+        eq(reconciliations.businessId, businessId),
+        eq(reconciliations.paymentId, paymentId),
+        eq(reconciliations.reason, 'overpaid'),
+      ),
+    )
+    .limit(1);
+  return rows.length === 1;
+}
+
 export async function recordException(
   tx: TenantDb,
   input: {
@@ -1201,6 +1262,148 @@ export async function collectedByBusiness(
   return [...rows].map((r) => ({ businessId: r.business_id, collectedK: Number(r.total) }));
 }
 
+/* ── what a payment currently answers (G-06) ────────────────────────────── */
+
+export interface StandingAllocation {
+  id: string;
+  invoiceId: string;
+  amountK: number;
+  /** The database-assigned insertion ordinal (0151): the ordering authority. */
+  insertionSeq: number;
+  createdAt: Date;
+}
+
+/**
+ * The allocations of one payment that still stand: positive rows with no
+ * reversal against them, NEWEST first. Newest first is the deterministic
+ * order a partial refund unwinds in — the last obligation the money
+ * answered is the first it stops answering — and a reader that needs the
+ * chronological view sorts the other way.
+ *
+ * "Newest" is decided by `insertion_seq`, the identity migration 0151
+ * added, never by `created_at`: that column is the transaction's start
+ * time, so every allocation one transaction writes (a payment matched
+ * across several invoices) ties on it, and the uuid tiebreaker behind it
+ * is random. Which invoice reopens on a partial refund cannot be random.
+ */
+export async function standingAllocationsFor(
+  tx: TenantDb,
+  businessId: string,
+  paymentId: string,
+): Promise<StandingAllocation[]> {
+  const rows = await tx.execute<{
+    id: string;
+    invoice_id: string;
+    amount_k: number;
+    insertion_seq: number;
+    created_at: Date;
+  }>(sql`
+    SELECT a.id, a.invoice_id, a.amount_k::bigint AS amount_k, a.insertion_seq, a.created_at
+      FROM payment_allocations a
+     WHERE a.business_id = ${businessId}::uuid
+       AND a.payment_id = ${paymentId}::uuid
+       AND a.reversal_of_id IS NULL
+       AND a.amount_k > 0
+       AND NOT EXISTS (SELECT 1 FROM payment_allocations r
+                        WHERE r.business_id = a.business_id AND r.reversal_of_id = a.id)
+     ORDER BY a.insertion_seq DESC
+  `);
+  return [...rows].map((r) => ({
+    id: r.id,
+    invoiceId: r.invoice_id,
+    amountK: Number(r.amount_k),
+    insertionSeq: Number(r.insertion_seq),
+    createdAt: new Date(r.created_at),
+  }));
+}
+
+/**
+ * A fresh, positive allocation carrying its reason and source — the second
+ * half of §14.2's "full reversal followed by a fresh allocation of the
+ * correct amount". Never negative (the 0078 trigger refuses). It does NOT
+ * check the amount against what the invoice still owes: its only caller
+ * re-allocates a subset of an allocation it has just reversed inside the
+ * same transaction, so the invoice cannot end up over-paid, and the caller
+ * re-derives the invoice's stored figures from the subledger afterwards.
+ * A caller allocating fresh money must bound the amount itself.
+ */
+export async function allocatePayment(
+  tx: TenantDb,
+  input: {
+    businessId: string;
+    paymentId: string;
+    invoiceId: string;
+    amountK: number;
+    reason: string;
+    sourceType: string;
+    sourceId: string;
+  },
+): Promise<{ id: string }> {
+  if (!Number.isSafeInteger(input.amountK) || input.amountK <= 0) {
+    throw new Error('allocatePayment: amount must be a positive integer');
+  }
+  const inserted = await tx
+    .insert(paymentAllocations)
+    .values({
+      businessId: input.businessId,
+      paymentId: input.paymentId,
+      invoiceId: input.invoiceId,
+      amountK: input.amountK,
+      reason: input.reason,
+      sourceType: input.sourceType,
+      sourceId: input.sourceId,
+    })
+    .returning({ id: paymentAllocations.id });
+  const row = inserted[0];
+  if (!row) throw new Error('allocatePayment: insert returned no row');
+  return { id: row.id };
+}
+
+/**
+ * The payment's LIFECYCLE word (0011's vocabulary), stamped after the fact
+ * that changed it has been recorded and posted. Never touches an amount,
+ * a provenance field or a journal: what the payment WAS stays on its
+ * verification, allocation and ledger rows; this is what it now is.
+ */
+export async function markPaymentLifecycle(
+  tx: TenantDb,
+  businessId: string,
+  paymentId: string,
+  status: 'refunded' | 'partially_refunded' | 'reversed',
+): Promise<void> {
+  await tx
+    .update(payments)
+    .set({ status })
+    .where(and(eq(payments.businessId, businessId), eq(payments.id, paymentId)));
+}
+
+/** One payment, by the intent that minted it — the row a provider event is about. */
+export async function paymentForIntent(
+  tx: TenantDb,
+  businessId: string,
+  paymentIntentId: string,
+): Promise<{
+  id: string;
+  amountK: number;
+  currency: string | null;
+  status: string | null;
+  customerId: string | null;
+} | null> {
+  const rows = await tx
+    .select({
+      id: payments.id,
+      amountK: payments.amountK,
+      currency: payments.currency,
+      status: payments.status,
+      customerId: payments.customerId,
+    })
+    .from(payments)
+    .where(and(eq(payments.businessId, businessId), eq(payments.paymentIntentId, paymentIntentId)))
+    .limit(1);
+  const row = rows[0];
+  return row ? { ...row, amountK: Number(row.amountK) } : null;
+}
+
 /* ── §14.2: one full reversal per allocation (PR-049) ───────────────────── */
 
 export type ReverseAllocationOutcome =
@@ -1267,4 +1470,34 @@ export async function reverseAllocation(
   const row = inserted[0];
   if (!row) throw new Error('reverseAllocation: insert returned no row');
   return { outcome: 'reversed', id: row.id };
+}
+
+/* ── the audit row for money going back (G-06 invariant 14) ─────────────── */
+
+/**
+ * Why a payment's lifecycle changed, in the same trail as its booking:
+ * which provider event said so, which refund/reversal/chargeback row
+ * recorded it, what moved on the receivable side. The provider event row
+ * keeps the sealed envelope and the processing result; this is the link
+ * from the payment to both, so neither has to be inferred from a posting.
+ */
+export async function auditPaymentAdjustment(
+  tx: TenantDb,
+  input: {
+    businessId: string;
+    paymentId: string;
+    actor: string;
+    action: 'refunded' | 'reversed' | 'charged_back';
+    detail: Record<string, unknown>;
+  },
+): Promise<void> {
+  await tx.insert(auditEvents).values({
+    businessId: input.businessId,
+    actor: input.actor,
+    entity: 'payment',
+    entityId: input.paymentId,
+    action: input.action,
+    newValue: { ...input.detail, at: new Date().toISOString() } as never,
+    sourceType: 'provider_webhook',
+  });
 }
