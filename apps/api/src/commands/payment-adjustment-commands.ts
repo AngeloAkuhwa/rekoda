@@ -168,6 +168,9 @@ export async function refundPaymentWork(
   tx: TenantDb,
   input: RefundPaymentInput,
 ): Promise<RefundPaymentResult> {
+  if (!(await settleRepo.lockPayment(tx, input.businessId, input.paymentId))) {
+    return { outcome: 'payment_not_found' };
+  }
   if (
     (await chargebacksRepo.chargebacksFor(tx, input.businessId)).some(
       (c) => c.paymentId === input.paymentId,
@@ -259,7 +262,11 @@ export interface ReversePaymentInput {
 export type ReversePaymentResult =
   | { outcome: 'reversed'; reversalId: string; unwind: UnwindOutcome }
   | { outcome: 'already_recorded'; reversalId: string }
-  | { outcome: 'exceeds_allocations'; standingK: number }
+  /** The payment no longer answers exactly what it was booked for: part of
+   * it was already refunded or charged back. A reversal is the WHOLE payment
+   * undone (§14.3), so this is a human's, under whatever name the provider
+   * gives the rest. */
+  | { outcome: 'payment_already_adjusted'; standingK: number }
   | { outcome: 'overpaid_payment' }
   | { outcome: 'payment_not_found' }
   | { outcome: 'already_settled' }
@@ -269,6 +276,9 @@ export async function reversePaymentWork(
   tx: TenantDb,
   input: ReversePaymentInput,
 ): Promise<ReversePaymentResult> {
+  if (!(await settleRepo.lockPayment(tx, input.businessId, input.paymentId))) {
+    return { outcome: 'payment_not_found' };
+  }
   if (await settleRepo.paymentWasOverpaid(tx, input.businessId, input.paymentId)) {
     return { outcome: 'overpaid_payment' };
   }
@@ -278,9 +288,10 @@ export async function reversePaymentWork(
       (r) => r.paymentId === input.paymentId,
     );
     if (existing) return { outcome: 'already_recorded', reversalId: existing.id };
-    /* Part of the money never answered an invoice (an overpayment holds it
-     * as customer credit) — reversing that part is a different posting. */
-    return { outcome: 'exceeds_allocations', standingK };
+    /* Part of the money already left through a refund or a chargeback
+     * (an overpayment is refused above). What remains is not "the payment",
+     * and reversing it is a different posting. */
+    return { outcome: 'payment_already_adjusted', standingK };
   }
 
   const recorded = await refundsRepo.recordPaymentReversal(tx, {
@@ -354,6 +365,9 @@ export async function chargebackPaymentWork(
   tx: TenantDb,
   input: ChargebackPaymentInput,
 ): Promise<ChargebackPaymentResult> {
+  if (!(await settleRepo.lockPayment(tx, input.businessId, input.paymentId))) {
+    return { outcome: 'payment_not_found' };
+  }
   if (
     (await refundsRepo.refundsFor(tx, input.businessId)).some(
       (r) => r.paymentId === input.paymentId,

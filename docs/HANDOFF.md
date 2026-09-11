@@ -11,8 +11,8 @@
 | Field                       | Value                                                                                                                                                                                                                                |
 | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | **Current date**            | 11 September 2026                                                                                                                                                                                                                    |
-| **Current `main` SHA**      | `7155a2b` (6 Sep 2026, "chore: add autonomous engineering control plane (#233)")                                                                                                                                                     |
-| **Open branches**           | `chore/repository-reset-launch-readiness` (PR #237, the reset) and `fix/payment-refunds-reversals-chargebacks` (PR #238, G-06, stacked on #237)                                                                                      |
+| **Current `main` SHA**      | `3158c3c` (11 Sep 2026, "chore: reset repository for launch readiness (#237)")                                                                                                                                                       |
+| **Open branches**           | `fix/payment-refunds-reversals-chargebacks` (PR #238, G-06, based on `main` after #237 merged as `3158c3c` on 11 Sep 2026)                                                                                                           |
 | **Product version / state** | 0.1.0. Build plan complete (138 rows, PR-001…PR-132; PR-006–009 and PR-115 gated); 152 migrations; never deployed; no live provider has been exercised                                                                               |
 | **Launch verdict**          | **NOT READY** (`REKODA_LAUNCH_READINESS.md` §1)                                                                                                                                                                                      |
 | **Engineering model**       | Simple: Angelo assigns, Claude reads `CLAUDE.md` and the canonical docs, implements with tests, normal CI, Angelo reviews and merges. The multi-agent control plane (PR #233) was removed on 10 Sep 2026 and PR #234 closed unmerged |
@@ -64,7 +64,7 @@ chargebacks do), and an Opus reviewer found that a partial dispute
 and the refund Paystack raises for it could post twice against one
 payment (now a refund on a payment carrying a chargeback, and the
 reverse, are refused to a human under OD-11); billing-domain refund
-events are flagged and never booked. 35 api integration cases, 5 db
+events are flagged and never booked. 41 api integration cases, 5 db
 cases, plus contract and adapter unit tests. Open decisions OD-8
 (overpayment-credit refunds) and OD-9 (dispute lifecycle mapping and the
 newest-first unwind order) recorded in `REKODA_LAUNCH_READINESS.md` §6.

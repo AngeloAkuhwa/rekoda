@@ -538,6 +538,32 @@ export async function hasOpenException(
  * row is the record: `bookVerifiedPayment` writes it with reason
  * `overpaid` and the payment id.
  */
+/**
+ * Serialise every adjustment of one payment. Refund, reversal and
+ * chargeback work each READ the payment's adjustment state (standing
+ * allocations, earlier refunds or chargebacks, the overpaid mark) and then
+ * WRITE financial truth; under READ COMMITTED two worker lanes handling two
+ * provider facts about one payment could both pass their reads before
+ * either committed, and both post. A row lock on the payment, taken before
+ * the first read, makes the second lane wait and then see the first lane's
+ * commit. Only the payment row is locked and every other write is an
+ * insert, so no two adjustments can wait on each other.
+ *
+ * Returns false when the payment does not exist for this tenant.
+ */
+export async function lockPayment(
+  tx: TenantDb,
+  businessId: string,
+  paymentId: string,
+): Promise<boolean> {
+  const rows = await tx.execute<{ id: string }>(sql`
+    SELECT id FROM payments
+     WHERE business_id = ${businessId}::uuid AND id = ${paymentId}::uuid
+     FOR UPDATE
+  `);
+  return [...rows].length === 1;
+}
+
 export async function paymentWasOverpaid(
   tx: TenantDb,
   businessId: string,
@@ -1232,11 +1258,18 @@ export class BalanceMoved extends Error {
  * payments only: the number is compared against Paystack's Starter cap, and
  * only money the provider itself confirmed counts toward that.
  */
+/**
+ * GROSS processed volume (ADR 0019): the Starter cap counts what the
+ * provider processed, and a later refund, reversal or chargeback does not
+ * un-process it. The lifecycle words G-06 introduced therefore stay in the
+ * sum; `failed`, `pending` and unverified rows never entered it.
+ */
 export async function collectedToDate(tx: TenantDb, businessId: string): Promise<number> {
   const rows = await tx.execute<{ total: string | number | null }>(sql`
     SELECT COALESCE(SUM(amount_k), 0) AS total
     FROM payments
-    WHERE business_id = ${businessId}::uuid AND verified = 1 AND status = 'confirmed'
+    WHERE business_id = ${businessId}::uuid AND verified = 1
+      AND status IN ('confirmed', 'partially_refunded', 'refunded', 'reversed')
   `);
   return Number([...rows][0]?.total ?? 0);
 }
@@ -1254,7 +1287,8 @@ export async function collectedByBusiness(
   const rows = await workerDb.execute<{ business_id: string; total: string | number }>(sql`
     SELECT business_id, SUM(amount_k) AS total
     FROM payments
-    WHERE verified = 1 AND status = 'confirmed'
+    WHERE verified = 1
+      AND status IN ('confirmed', 'partially_refunded', 'refunded', 'reversed')
     GROUP BY business_id
     ORDER BY total DESC
     LIMIT ${limit}

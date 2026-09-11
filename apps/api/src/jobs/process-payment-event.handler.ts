@@ -421,11 +421,15 @@ async function handleDispute(deps: ProcessPaymentEventDeps, ctx: Ctx): Promise<v
     return;
   }
 
-  const amountK = d.amountK ?? summary.amountK;
-  if (amountK === null) {
-    await flag(ctx, 'chargeback_without_amount', null);
+  /* The amount that posts comes from the provider's own record of the
+   * dispute, never from the envelope: a webhook is a hint about which
+   * dispute to read, and its amount may describe an earlier state of it.
+   * The envelope's figure may describe the exception, not the posting. */
+  if (d.amountK === null) {
+    await flag(ctx, 'chargeback_without_amount', summary.amountK);
     return;
   }
+  const amountK = d.amountK;
   const mismatch = describesPayment(d.transactionReference, d.currency, amountK, intent, payment);
   if (mismatch) {
     await flag(ctx, mismatch.replace('refund_', 'chargeback_'), amountK);
@@ -538,7 +542,7 @@ function describesPayment(
 
 /** File an exception for a human AND retire the event with the same reason. */
 async function flag(ctx: Ctx, reason: string, amountK: number | null): Promise<void> {
-  await exception(ctx.tx, ctx.businessId, ctx.intent, reason, amountK ?? undefined);
+  await exception(ctx.tx, ctx.businessId, ctx.intent, reason, amountK);
   await events.markProcessed(ctx.tx, ctx.eventId, reason, ctx.businessId);
 }
 
@@ -556,7 +560,7 @@ async function flagOnce(
    * its dispute-opened row. `hasException` (any reason, any state) would
    * swallow it. */
   if (!(await settleRepo.hasOpenException(ctx.tx, ctx.businessId, kind, id, exceptionReason))) {
-    await exception(ctx.tx, ctx.businessId, ctx.intent, exceptionReason, amountK ?? undefined);
+    await exception(ctx.tx, ctx.businessId, ctx.intent, exceptionReason, amountK);
   }
   await events.markProcessed(ctx.tx, ctx.eventId, eventReason, ctx.businessId);
 }
@@ -571,14 +575,20 @@ async function exception(
   businessId: string,
   intent: { id: string; invoiceId: string | null; expectedAmountK: number },
   reason: string,
-  amountK?: number,
+  /** `undefined`: the intent's expectation is the best figure. `null`: no
+   * figure is known. A number is kept only if it is an integer kobo the
+   * column can hold; a provider envelope is unvalidated input and must not
+   * turn a fail-safe exception into a failed insert (and a dead job). */
+  amountK?: number | null,
 ): Promise<void> {
+  const recorded =
+    amountK === undefined ? intent.expectedAmountK : Number.isSafeInteger(amountK) ? amountK : null;
   await settleRepo.recordException(tx, {
     businessId,
     reason,
     expectationKind: intent.invoiceId ? 'invoice' : 'intent',
     expectationId: intent.invoiceId ?? intent.id,
-    amountK: amountK ?? intent.expectedAmountK,
+    amountK: recorded,
   });
 }
 

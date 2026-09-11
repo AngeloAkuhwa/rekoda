@@ -57,6 +57,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ContainerAudioProbe } from '../ai/audio-duration.js';
 import { CommandBus } from '../commands/command-bus.service.js';
+import {
+  chargebackPaymentWork,
+  refundPaymentWork,
+} from '../commands/payment-adjustment-commands.js';
 import { RiskPolicyService } from '../risk/risk-policy.service.js';
 
 const RUN_SALT = randomBytes(16).toString('hex');
@@ -767,6 +771,13 @@ describe('a provider refund of a booked payment (G-06)', () => {
 
 /* ── reversals ───────────────────────────────────────────────────────────── */
 
+/* SYNTHETIC INGRESS. These cases store a fresh `charge.success` with a NEW
+ * object id so the re-verify runs and reports `reversed`. A real redelivery
+ * of the original charge event carries the same id and is dropped at ingress
+ * as a duplicate, and Paystack publishes no charge-reversal webhook for an
+ * inbound charge: whether anything triggers this branch in production is
+ * OD-10(a), confirmed only by the G-05 drill. These cases prove the branch's
+ * accounting, not its reachability. */
 describe('a provider-side reversal of a booked payment (§14.3 PaymentReversal)', () => {
   it('BEFORE settlement: reversed whole, back through clearing, invoice reopened', async () => {
     const { businessId, connectionId } = await seedBusiness();
@@ -1705,5 +1716,255 @@ describe('one movement of money, two provider facts (OD-11)', () => {
       .map((r) => r.reason)
       .sort();
     expect(reasons).toEqual(['dispute_opened', 'dispute_resolution_unrecognised']);
+  });
+});
+
+/* ── the seventh independent review of 11 Sep 2026 ───────────────────────── */
+
+describe('two lanes, one payment: adjustments serialise on the payment row', () => {
+  const refundInput = (businessId: string, paymentId: string, connectionId: string) => ({
+    businessId,
+    paymentId,
+    paymentAmountK: 15_000_000,
+    amountK: 6_000_000,
+    providerRefundId: 'race-rf-1',
+    settled: false,
+    paymentConnectionId: connectionId,
+    reason: 'provider refund race-rf-1',
+    actor: 'system',
+    eventId: 'race-refund-event',
+  });
+  const chargebackInput = (businessId: string, paymentId: string, connectionId: string) => ({
+    businessId,
+    paymentId,
+    paymentAmountK: 15_000_000,
+    paymentConnectionId: connectionId,
+    providerChargebackId: 'race-cb-1',
+    amountK: 6_000_000,
+    reason: 'dispute race-cb-1 merchant-accepted',
+    actor: 'system',
+    eventId: 'race-dispute-event',
+  });
+
+  /**
+   * Lane A does its work and then HOLDS its transaction open; lane B starts
+   * while A is uncommitted. Without the row lock B's guard reads see no
+   * chargeback and a full standing allocation, and B's unwind then collides
+   * with A's uncommitted reversal (a unique-index wait that ends in an
+   * error, or, with a different interleaving, a second posting). With the
+   * lock B waits on the payment row, then reads A's commit and refuses.
+   */
+  async function race<A, B>(
+    businessId: string,
+    laneA: (tx: Parameters<Parameters<typeof withBusiness>[2]>[0]) => Promise<A>,
+    laneB: (tx: Parameters<Parameters<typeof withBusiness>[2]>[0]) => Promise<B>,
+  ): Promise<{ a: A; b: B }> {
+    let aDone!: () => void;
+    const aHasWritten = new Promise<void>((resolve) => (aDone = resolve));
+    let release!: () => void;
+    const hold = new Promise<void>((resolve) => (release = resolve));
+    const a = withBusiness(appDb, businessId, async (tx) => {
+      const result = await laneA(tx);
+      aDone();
+      await hold;
+      return result;
+    });
+    await aHasWritten;
+    const b = withBusiness(appDb, businessId, (tx) => laneB(tx));
+    // B is now blocked on the payment row (or, without the lock, racing).
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    release();
+    const [ra, rb] = await Promise.all([a, b]);
+    return { a: ra, b: rb };
+  }
+
+  it('a chargeback then a concurrent refund: the refund waits, sees the chargeback, and refuses', async () => {
+    const { businessId, connectionId } = await seedBusiness();
+    const { sale, intent } = await seedObligation(businessId);
+    const { paymentId } = await bookPayment(businessId, intent.reference);
+
+    const { a, b } = await race(
+      businessId,
+      (tx) => chargebackPaymentWork(tx, chargebackInput(businessId, paymentId, connectionId)),
+      (tx) => refundPaymentWork(tx, refundInput(businessId, paymentId, connectionId)),
+    );
+    expect(a.outcome).toBe('charged_back');
+    expect(b.outcome).toBe('payment_under_chargeback');
+
+    expect(await chargebacksOf(businessId)).toHaveLength(1);
+    expect(await refundsOf(businessId)).toHaveLength(0);
+    expect(await balanceByCode(businessId, AR)).toBe(6_000_000);
+    expect((await invoiceState(businessId, sale.invoiceId))?.balanceDueK).toBe(6_000_000);
+    expect(await standing(businessId, paymentId)).toMatchObject([{ amountK: 9_000_000 }]);
+    const totals = await ledgerTotals(businessId);
+    expect(totals.d).toBe(totals.c);
+  });
+
+  it('a refund then a concurrent chargeback: the chargeback waits, sees the refund, and refuses', async () => {
+    const { businessId, connectionId } = await seedBusiness();
+    const { sale, intent } = await seedObligation(businessId);
+    const { paymentId } = await bookPayment(businessId, intent.reference);
+
+    const { a, b } = await race(
+      businessId,
+      (tx) => refundPaymentWork(tx, refundInput(businessId, paymentId, connectionId)),
+      (tx) => chargebackPaymentWork(tx, chargebackInput(businessId, paymentId, connectionId)),
+    );
+    expect(a.outcome).toBe('refunded');
+    expect(b.outcome).toBe('payment_already_refunded');
+
+    expect(await refundsOf(businessId)).toHaveLength(1);
+    expect(await chargebacksOf(businessId)).toHaveLength(0);
+    expect(await balanceByCode(businessId, AR)).toBe(6_000_000);
+    expect((await invoiceState(businessId, sale.invoiceId))?.balanceDueK).toBe(6_000_000);
+    expect(await standing(businessId, paymentId)).toMatchObject([{ amountK: 9_000_000 }]);
+  });
+
+  it('two concurrent partial refunds whose sum exceeds the payment: one posts, the other is refused, never an error', async () => {
+    const { businessId, connectionId } = await seedBusiness();
+    const { intent } = await seedObligation(businessId);
+    const { paymentId } = await bookPayment(businessId, intent.reference);
+
+    const { a, b } = await race(
+      businessId,
+      (tx) =>
+        refundPaymentWork(tx, {
+          ...refundInput(businessId, paymentId, connectionId),
+          amountK: 10_000_000,
+          providerRefundId: 'race-rf-2',
+        }),
+      (tx) =>
+        refundPaymentWork(tx, {
+          ...refundInput(businessId, paymentId, connectionId),
+          amountK: 10_000_000,
+          providerRefundId: 'race-rf-3',
+        }),
+    );
+    expect(a.outcome).toBe('refunded');
+    expect(b.outcome).toBe('exceeds_allocations');
+    expect(await refundsOf(businessId)).toHaveLength(1);
+    expect(await standing(businessId, paymentId)).toMatchObject([{ amountK: 5_000_000 }]);
+  });
+});
+
+describe("the amount a chargeback posts is the provider's, never the envelope's", () => {
+  it("a LOST dispute whose read carries no amount: chargeback_without_amount is a human's, nothing posts", async () => {
+    const { businessId } = await seedBusiness();
+    const { sale, intent } = await seedObligation(businessId);
+    const { paymentId } = await bookPayment(businessId, intent.reference);
+    const linesBefore = (await ledgerTotals(businessId)).lines;
+
+    provider.willVerifyDispute('660', {
+      amountK: null,
+      transactionReference: intent.reference,
+      providerStatus: 'resolved',
+      providerResolution: 'merchant-accepted',
+      outcome: 'lost',
+    });
+    const resolved = await storeEvent(
+      disputeEvent(intent.reference, 15_000_000, {
+        id: 660,
+        event: 'charge.dispute.resolve',
+        status: 'resolved',
+        resolution: 'merchant-accepted',
+      }),
+    );
+    await pump();
+    await drainJobs();
+
+    expect((await events.eventStatus(workerDb, resolved))?.error).toBe('chargeback_without_amount');
+    expect(await chargebacksOf(businessId)).toHaveLength(0);
+    expect((await ledgerTotals(businessId)).lines).toBe(linesBefore);
+    expect(await paymentStatus(businessId, paymentId)).toBe('confirmed');
+    expect((await invoiceState(businessId, sale.invoiceId))?.status).toBe('paid');
+    const exceptions = (await reconciliationsOf(businessId)).filter(
+      (r) => r.status === 'EXCEPTION',
+    );
+    // The envelope's figure describes the exception, so the human sees it.
+    expect(exceptions).toMatchObject([
+      { reason: 'chargeback_without_amount', amountK: 15_000_000 },
+    ]);
+  });
+});
+
+describe('the Starter-cap figure is GROSS processed volume (ADR 0019)', () => {
+  it('a partial and then a full refund leave collected-to-date unchanged', async () => {
+    const { businessId } = await seedBusiness();
+    const { intent } = await seedObligation(businessId);
+    const { paymentId } = await bookPayment(businessId, intent.reference);
+    const collected = () =>
+      withBusiness(appDb, businessId, (tx) => settleRepo.collectedToDate(tx, businessId));
+    expect(await collected()).toBe(15_000_000);
+
+    provider.willVerifyRefund('670', {
+      amountK: 4_000_000,
+      transactionReference: intent.reference,
+    });
+    await storeEvent(refundEvent(intent.reference, 4_000_000, { id: 670 }));
+    await pump();
+    await drainJobs();
+    expect(await paymentStatus(businessId, paymentId)).toBe('partially_refunded');
+    expect(await collected()).toBe(15_000_000);
+
+    provider.willVerifyRefund('671', {
+      amountK: 11_000_000,
+      transactionReference: intent.reference,
+    });
+    await storeEvent(refundEvent(intent.reference, 11_000_000, { id: 671 }));
+    await pump();
+    await drainJobs();
+    expect(await paymentStatus(businessId, paymentId)).toBe('refunded');
+    expect(await collected()).toBe(15_000_000);
+    const rows = await withBusiness(appDb, businessId, (tx) => settleRepo.collectedByBusiness(tx));
+    expect(rows.find((r) => r.businessId === businessId)?.collectedK).toBe(15_000_000);
+  });
+});
+
+describe('a second partial refund', () => {
+  it('unwinds the retained row, empties the payment and stamps it refunded, with every reversal negating its original', async () => {
+    const { businessId } = await seedBusiness();
+    const { sale, intent } = await seedObligation(businessId);
+    const { paymentId } = await bookPayment(businessId, intent.reference);
+
+    provider.willVerifyRefund('680', {
+      amountK: 4_000_000,
+      transactionReference: intent.reference,
+    });
+    await storeEvent(refundEvent(intent.reference, 4_000_000, { id: 680 }));
+    await pump();
+    await drainJobs();
+    expect(await standing(businessId, paymentId)).toMatchObject([{ amountK: 11_000_000 }]);
+    expect(await paymentStatus(businessId, paymentId)).toBe('partially_refunded');
+
+    provider.willVerifyRefund('681', {
+      amountK: 11_000_000,
+      transactionReference: intent.reference,
+    });
+    const second = await storeEvent(refundEvent(intent.reference, 11_000_000, { id: 681 }));
+    await pump();
+    await drainJobs();
+
+    expect((await events.eventStatus(workerDb, second))?.error).toBeNull();
+    expect(await refundsOf(businessId)).toHaveLength(2);
+    expect(await standing(businessId, paymentId)).toEqual([]);
+    expect(await paymentStatus(businessId, paymentId)).toBe('refunded');
+    expect(await invoiceState(businessId, sale.invoiceId)).toMatchObject({
+      status: 'issued',
+      balanceDueK: 15_000_000,
+    });
+    expect(await balanceByCode(businessId, AR)).toBe(15_000_000);
+    // original, its reversal, retained ₦110,000, its reversal: four rows, two negative.
+    expect(await countRows(businessId, 'payment_allocations')).toBe(4);
+    expect(await countRows(businessId, 'payment_allocations', 'amount_k < 0')).toBe(2);
+    const negatives = await withBusiness(appDb, businessId, (tx) =>
+      tx.execute<{ bad: number }>(sql`
+        SELECT count(*)::int AS bad FROM payment_allocations r
+        WHERE r.business_id = ${businessId}::uuid AND r.amount_k < 0
+          AND (r.reversal_of_id IS NULL OR r.amount_k <> -(SELECT o.amount_k FROM payment_allocations o WHERE o.id = r.reversal_of_id))
+      `),
+    );
+    expect(Number([...negatives][0]!.bad)).toBe(0);
+    const totals = await ledgerTotals(businessId);
+    expect(totals.d).toBe(totals.c);
   });
 });
