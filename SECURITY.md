@@ -39,7 +39,7 @@ not test against production merchant data.
    encrypted at rest with AES-256-GCM under a key that lives only in the
    environment.
 5. **All webhooks are signature-verified** (Meta `X-Hub-Signature-256`,
-   Twilio `X-Twilio-Signature`, Paystack HMAC-SHA512) and processed
+   Paystack HMAC-SHA512) and processed
    idempotently — a replayed or forged delivery cannot create a second
    financial record.
 6. **Money is integer kobo and double-entry.** Financial mutations are

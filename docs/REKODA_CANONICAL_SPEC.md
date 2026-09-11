@@ -2,14 +2,14 @@
 
 ## 1. Document control
 
-| Field | Value |
-|---|---|
-| Status | **APPROVED — FROZEN FOR IMPLEMENTATION** |
-| Canonical version | 1.6.6 |
-| Effective date | 25 August 2026 |
-| Supersedes | Canonical Product Architecture v2.0; Chat & Integrate Journey v1.0; corrections v1.1 through v1.6.5; ADR 0004 (chart of accounts), ADR 0014 (Recorded vs Verified) in part |
-| Owners | Product and engineering, jointly. Accounting sections additionally require finance sign-off. |
-| Companion | `docs/REKODA_END_TO_END_BUILD_PLAN.md` |
+| Field             | Value                                                                                                                                                                      |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Status            | **APPROVED — FROZEN FOR IMPLEMENTATION**                                                                                                                                   |
+| Canonical version | 1.6.6                                                                                                                                                                      |
+| Effective date    | 25 August 2026                                                                                                                                                             |
+| Supersedes        | Canonical Product Architecture v2.0; Chat & Integrate Journey v1.0; corrections v1.1 through v1.6.5; ADR 0004 (chart of accounts), ADR 0014 (Recorded vs Verified) in part |
+| Owners            | Product and engineering, jointly. Accounting sections additionally require finance sign-off.                                                                               |
+| Companion         | `docs/REKODA_END_TO_END_BUILD_PLAN.md`                                                                                                                                     |
 
 > **This document is the authoritative Rekoda product and architecture specification. Older plans, ADRs, comments and implementations do not override it. A conflict must be surfaced and resolved rather than silently preserved.**
 
@@ -28,14 +28,14 @@ Code never becomes the source of truth by accident. A merged PR that contradicts
 
 Every architectural statement in this document carries one of these, either explicitly or by section default.
 
-| Status | Meaning |
-|---|---|
-| **CORRECT** | Built, and it matches this specification. Do not rework it. |
-| **DRIFTED** | Built, but it diverges from this specification. Named in the build plan with the slice that repairs it. |
-| **SUPERSEDED** | An older decision that a later approved correction replaced. Kept visible so nobody re-derives it. |
-| **DEPRECATED** | Still running, still relied upon, scheduled for removal after a named cutover. |
-| **OPEN COMMERCIAL** | Blocked on a commercial decision or a provider agreement, not on engineering. |
-| **OPEN COMPLIANCE** | Blocked on legal, tax, regulatory or provider compliance review. |
+| Status              | Meaning                                                                                                 |
+| ------------------- | ------------------------------------------------------------------------------------------------------- |
+| **CORRECT**         | Built, and it matches this specification. Do not rework it.                                             |
+| **DRIFTED**         | Built, but it diverges from this specification. Named in the build plan with the slice that repairs it. |
+| **SUPERSEDED**      | An older decision that a later approved correction replaced. Kept visible so nobody re-derives it.      |
+| **DEPRECATED**      | Still running, still relied upon, scheduled for removal after a named cutover.                          |
+| **OPEN COMMERCIAL** | Blocked on a commercial decision or a provider agreement, not on engineering.                           |
+| **OPEN COMPLIANCE** | Blocked on legal, tax, regulatory or provider compliance review.                                        |
 
 ### 1.3 Technology, frozen
 
@@ -43,24 +43,24 @@ Rekoda is TypeScript, NestJS, Drizzle ORM, the existing PostgreSQL database, the
 
 Earlier canonical material used .NET vocabulary. It is translated once, here, and the original wording must not survive anywhere:
 
-| Old wording | Canonical meaning |
-|---|---|
+| Old wording                 | Canonical meaning                                                                                                               |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
 | "deterministic .NET engine" | deterministic server-side application, domain and accounting engine, implemented in the existing NestJS/TypeScript architecture |
-| "EF entities" | persisted, Drizzle-backed domain and data models |
-| "EF migrations" | SQL migrations under `packages/db/migrations` |
+| "EF entities"               | persisted, Drizzle-backed domain and data models                                                                                |
+| "EF migrations"             | SQL migrations under `packages/db/migrations`                                                                                   |
 
 ### 1.4 Canonical name to physical table mapping
 
 The canonical vocabulary below is deliberately not identical to the physical schema. Renaming fifty-one migrations' worth of tables buys nothing and risks a great deal, so the mapping is stated once and treated as authoritative.
 
-| Canonical name | Physical table | Note |
-|---|---|---|
-| `JournalEntry` | `ledger_transactions` | Same rows. Gains `postingKey`, `postingPurpose`, currency columns. |
-| `JournalLine` | `ledger_entries` | Same rows. Gains `accountId`, functional/transaction currency columns. |
-| `JournalDraft` / `JournalDraftLine` | new tables | Do not exist today. |
-| `Account` | new table | Does not exist today. The chart of accounts is currently a TypeScript constant. |
-| `FinancialTransaction` | `bank_statement_lines` | Same rows. |
-| `Reconciliation` | `reconciliations` | Present, but its `MATCHED` status is an internal expectation match, not a bank match. |
+| Canonical name                      | Physical table         | Note                                                                                  |
+| ----------------------------------- | ---------------------- | ------------------------------------------------------------------------------------- |
+| `JournalEntry`                      | `ledger_transactions`  | Same rows. Gains `postingKey`, `postingPurpose`, currency columns.                    |
+| `JournalLine`                       | `ledger_entries`       | Same rows. Gains `accountId`, functional/transaction currency columns.                |
+| `JournalDraft` / `JournalDraftLine` | new tables             | Do not exist today.                                                                   |
+| `Account`                           | new table              | Does not exist today. The chart of accounts is currently a TypeScript constant.       |
+| `FinancialTransaction`              | `bank_statement_lines` | Same rows.                                                                            |
+| `Reconciliation`                    | `reconciliations`      | Present, but its `MATCHED` status is an internal expectation match, not a bank match. |
 
 ---
 
@@ -86,12 +86,12 @@ Any one of them alone is a commodity. The combination is the moat, and the accou
 
 ### 2.1 What Rekoda is not
 
-| Category | What they do | What they cannot do |
-|---|---|---|
-| Invoice apps | Produce a PDF | No ledger, no reconciliation, no proof a payment happened |
-| WhatsApp chatbots | Reply, route, collect | No financial truth; nothing survives the conversation |
-| Payment-link products | Collect money | No books, no receivables, no cost of goods, no statements |
-| Ordinary accounting packages | Produce statements | Demand double entry from someone who is selling from a phone |
+| Category                     | What they do          | What they cannot do                                          |
+| ---------------------------- | --------------------- | ------------------------------------------------------------ |
+| Invoice apps                 | Produce a PDF         | No ledger, no reconciliation, no proof a payment happened    |
+| WhatsApp chatbots            | Reply, route, collect | No financial truth; nothing survives the conversation        |
+| Payment-link products        | Collect money         | No books, no receivables, no cost of goods, no statements    |
+| Ordinary accounting packages | Produce statements    | Demand double entry from someone who is selling from a phone |
 
 Rekoda's specific claim is that the merchant never has to be an accountant, and the books are still real. Every design decision in this document is downstream of that claim, and the ones that look expensive are the ones that protect it.
 
@@ -230,46 +230,46 @@ The journey specification remains a reference document. The invariants that cons
 
 ### 5.1 Chat
 
-| Journey | Invariant |
-|---|---|
-| Onboarding | A business exists before any financial record does. Identity is vaulted before it is used. |
-| Cash sale | Sale, payment and fulfilment may post together. One event, one journal. |
-| Credit sale | Creates a receivable under the configured policy (§12). Never revenue on invoice issue unless fulfilled. |
-| Partial payment | Allocates against a specific invoice. Never silently spreads across invoices. |
-| Merchant-attested cash | `MERCHANT_ATTESTED` + `paymentMethod = CASH`. Requires the confirmation transition (§6.10). |
-| Merchant-attested transfer or POS | `MERCHANT_ATTESTED` + `BANK_TRANSFER` or `POS`. Same requirement. The instrument never changes the source. |
-| Proof-of-payment screenshot | **Creates `PaymentEvidence`, never a `Payment`.** A screenshot is never proof. |
-| Invoice | A projection of order and line state, not an independently editable record. |
-| Payment request | Mints an intent against the merchant's own connection. Never against Rekoda's. |
-| Expense / purchase / supplier payable | Post to the same kernel as sales. No parallel bookkeeping. |
-| Inventory | Movements drive valuation and COGS. Stock is never inferred from sales alone. |
-| Customer / supplier balances | Derived from the subledgers, never stored as a mutable total. |
-| Reconciliation | See §22. AI explains; deterministic logic or a human decides. |
-| Reports / financial Q&A | Read the ledger. Never recompute from source events. |
-| Correction | A reversing journal. Never an edit. |
-| Refund | Distinct from credit note, return, reversal and chargeback (§14). |
-| Document upload | Metered as `DOCUMENTS_UNDERSTOOD` after entitlement, before OCR spend. |
-| Voice | Metered as `VOICE_MINUTES` after entitlement, before transcription spend. |
+| Journey                               | Invariant                                                                                                  |
+| ------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| Onboarding                            | A business exists before any financial record does. Identity is vaulted before it is used.                 |
+| Cash sale                             | Sale, payment and fulfilment may post together. One event, one journal.                                    |
+| Credit sale                           | Creates a receivable under the configured policy (§12). Never revenue on invoice issue unless fulfilled.   |
+| Partial payment                       | Allocates against a specific invoice. Never silently spreads across invoices.                              |
+| Merchant-attested cash                | `MERCHANT_ATTESTED` + `paymentMethod = CASH`. Requires the confirmation transition (§6.10).                |
+| Merchant-attested transfer or POS     | `MERCHANT_ATTESTED` + `BANK_TRANSFER` or `POS`. Same requirement. The instrument never changes the source. |
+| Proof-of-payment screenshot           | **Creates `PaymentEvidence`, never a `Payment`.** A screenshot is never proof.                             |
+| Invoice                               | A projection of order and line state, not an independently editable record.                                |
+| Payment request                       | Mints an intent against the merchant's own connection. Never against Rekoda's.                             |
+| Expense / purchase / supplier payable | Post to the same kernel as sales. No parallel bookkeeping.                                                 |
+| Inventory                             | Movements drive valuation and COGS. Stock is never inferred from sales alone.                              |
+| Customer / supplier balances          | Derived from the subledgers, never stored as a mutable total.                                              |
+| Reconciliation                        | See §22. AI explains; deterministic logic or a human decides.                                              |
+| Reports / financial Q&A               | Read the ledger. Never recompute from source events.                                                       |
+| Correction                            | A reversing journal. Never an edit.                                                                        |
+| Refund                                | Distinct from credit note, return, reversal and chargeback (§14).                                          |
+| Document upload                       | Metered as `DOCUMENTS_UNDERSTOOD` after entitlement, before OCR spend.                                     |
+| Voice                                 | Metered as `VOICE_MINUTES` after entitlement, before transcription spend.                                  |
 
 ### 5.2 Integrate
 
-| Journey | Invariant |
-|---|---|
-| Merchant onboarding | Embedded Signup. Rekoda is a Tech Provider; the WABA belongs to the merchant. |
-| WABA connection | `phoneNumberId → BusinessId` routing is the only routing. An unknown id is never guessed at. |
-| Catalogue | Server-side state. The customer's message never sets a price. |
-| Cart / place order | An order is a request. It is not a sale and not a receivable until validated. |
-| Order validation | Server-side, against real catalogue and real stock, before any figure is shown. |
-| Charge breakdown | Every line is a record (`PaymentCharge`, §19), never arithmetic in a controller. |
-| Invoice | Same projection rules as Chat. |
-| Payment choice / verification | A `PROVIDER_VERIFIED` verification is written only after a server-side verify (§6.3). |
-| Receipt | Acknowledges a payment (§15). Delivered in the merchant's own thread. |
-| Inventory / COGS | Recognised on fulfilment, proportionally (§12). |
-| Settlement / reconciliation | §20 and §22. |
-| Fulfilment | Partial fulfilment recognises only the fulfilled proportion. |
-| Away assistant / human handoff | The assistant never transacts on the merchant's behalf beyond configured limits. |
-| Cancellation / refund | Distinct records, distinct postings. |
-| Storefront / Instagram entry | Additional ingresses to the same commands. No separate financial logic. |
+| Journey                        | Invariant                                                                                    |
+| ------------------------------ | -------------------------------------------------------------------------------------------- |
+| Merchant onboarding            | Embedded Signup. Rekoda is a Tech Provider; the WABA belongs to the merchant.                |
+| WABA connection                | `phoneNumberId → BusinessId` routing is the only routing. An unknown id is never guessed at. |
+| Catalogue                      | Server-side state. The customer's message never sets a price.                                |
+| Cart / place order             | An order is a request. It is not a sale and not a receivable until validated.                |
+| Order validation               | Server-side, against real catalogue and real stock, before any figure is shown.              |
+| Charge breakdown               | Every line is a record (`PaymentCharge`, §19), never arithmetic in a controller.             |
+| Invoice                        | Same projection rules as Chat.                                                               |
+| Payment choice / verification  | A `PROVIDER_VERIFIED` verification is written only after a server-side verify (§6.3).        |
+| Receipt                        | Acknowledges a payment (§15). Delivered in the merchant's own thread.                        |
+| Inventory / COGS               | Recognised on fulfilment, proportionally (§12).                                              |
+| Settlement / reconciliation    | §20 and §22.                                                                                 |
+| Fulfilment                     | Partial fulfilment recognises only the fulfilled proportion.                                 |
+| Away assistant / human handoff | The assistant never transacts on the merchant's behalf beyond configured limits.             |
+| Cancellation / refund          | Distinct records, distinct postings.                                                         |
+| Storefront / Instagram entry   | Additional ingresses to the same commands. No separate financial logic.                      |
 
 ### 5.3 Complete
 
@@ -313,7 +313,7 @@ paymentMethod                      what instrument the money moved on
   CASH · BANK_TRANSFER · POS · CARD · USSD · WALLET · OTHER · UNKNOWN
 ```
 
-`UNKNOWN` is kept deliberately. Historical rows exist whose instrument cannot be established, and forcing them into `OTHER` would claim knowledge the estate does not have. `OTHER` means *something we can name but have not enumerated*; `UNKNOWN` means *we do not know*.
+`UNKNOWN` is kept deliberately. Historical rows exist whose instrument cannot be established, and forcing them into `OTHER` would claim knowledge the estate does not have. `OTHER` means _something we can name but have not enumerated_; `UNKNOWN` means _we do not know_.
 
 **`LEGACY_PROVENANCE_UNKNOWN` is not a verification source.** It is an initial historical state and nothing else:
 
@@ -575,7 +575,7 @@ confirmationIntegrity            derived, never stored
   NEEDS_REVIEW    the active verification set is EMPTY
 ```
 
-`NEEDS_REVIEW` is a queue item and a question, not an accounting event. It asks a human one thing: *is this payment still valid on new evidence, or does it need reversing?*
+`NEEDS_REVIEW` is a queue item and a question, not an accounting event. It asks a human one thing: _is this payment still valid on new evidence, or does it need reversing?_
 
 **Resolving it has exactly two permitted outcomes, and no third:**
 
@@ -671,11 +671,11 @@ overwriting an earlier confirmation source   ✗  forbidden (§6.3)
 
 Three independent columns. Never fused.
 
-| Column | Values |
-|---|---|
-| `confirmationSource` | the five values of §6.2 |
-| `evidence_basis` | `TYPED` · `SPOKEN` · `SAW_AN_IMAGE` · `NOT_A_MESSAGE` · `NO_MESSAGE_ON_FILE` — context for a human, never a trust grade |
-| `paymentMethod` | `CASH` · `BANK_TRANSFER` · `POS` · `CARD` · `USSD` · `WALLET` · `OTHER` |
+| Column               | Values                                                                                                                  |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `confirmationSource` | the five values of §6.2                                                                                                 |
+| `evidence_basis`     | `TYPED` · `SPOKEN` · `SAW_AN_IMAGE` · `NOT_A_MESSAGE` · `NO_MESSAGE_ON_FILE` — context for a human, never a trust grade |
+| `paymentMethod`      | `CASH` · `BANK_TRANSFER` · `POS` · `CARD` · `USSD` · `WALLET` · `OTHER`                                                 |
 
 Attestations made while looking at an image are still attestations. They are reported separately **for review, not remediation**; whether to re-check them is the merchant's decision.
 
@@ -685,7 +685,7 @@ The production report must produce: provenance distribution, naira totals, the r
 
 The backfill writes `initialConfirmationSource` and, for every row it can establish, one `PaymentVerification` recording how. A row it cannot establish keeps `LEGACY_PROVENANCE_UNKNOWN` **permanently visible**; later remediation adds a verification event beside it and never replaces it (§6.5).
 
-> **R0A-ii may not write a historical provenance assignment, backfill, remediation cutover or destructive cleanup until that production report has been run and its remediation queue explicitly approved.** No historical trust may be manufactured. Additive schema and correct sources on *new* payments are not covered by this block, because empty tables manufacture nothing and getting new payments right shrinks the problem while history is being investigated. The local database is not production data and produces no counts.
+> **R0A-ii may not write a historical provenance assignment, backfill, remediation cutover or destructive cleanup until that production report has been run and its remediation queue explicitly approved.** No historical trust may be manufactured. Additive schema and correct sources on _new_ payments are not covered by this block, because empty tables manufacture nothing and getting new payments right shrinks the problem while history is being investigated. The local database is not production data and produces no counts.
 
 ---
 
@@ -726,7 +726,7 @@ JournalDraft                      JournalEntry
 JournalDraftLine                  JournalLine
 ```
 
-`JournalEntry` and `JournalLine` **have no mutable lifecycle state**. There is no `state` column and there must never be one. Existence in the authoritative table *is* posted. A row cannot be promoted from draft to posted once `UPDATE` is revoked, which is precisely why the two are separate tables rather than one table with a flag.
+`JournalEntry` and `JournalLine` **have no mutable lifecycle state**. There is no `state` column and there must never be one. Existence in the authoritative table _is_ posted. A row cannot be promoted from draft to posted once `UPDATE` is revoked, which is precisely why the two are separate tables rather than one table with a flag.
 
 ### 9.2 Posting
 
@@ -776,17 +776,17 @@ The ledger stays correct without this, which is what makes the omission dangerou
 
 The application layer validates first, because a good error message reaches the caller as something they can act on. PostgreSQL enforces the same rules again, because the trigger catches the writer nobody has thought of yet.
 
-| Invariant | Enforced by |
-|---|---|
-| At least two lines per entry | trigger, deferred to statement end |
-| Exactly one of debit or credit is non-zero per line | CHECK |
-| Debit total equals credit total, in functional currency | trigger |
-| Every line shares the entry's `businessId` | CHECK + composite FK |
-| The account is active | trigger |
-| The accounting period is open | trigger |
-| The currency is valid for the business | CHECK |
-| Functional amounts are coherent with transaction amounts | trigger |
-| An FX snapshot exists when transaction currency differs from functional | CHECK |
+| Invariant                                                               | Enforced by                        |
+| ----------------------------------------------------------------------- | ---------------------------------- |
+| At least two lines per entry                                            | trigger, deferred to statement end |
+| Exactly one of debit or credit is non-zero per line                     | CHECK                              |
+| Debit total equals credit total, in functional currency                 | trigger                            |
+| Every line shares the entry's `businessId`                              | CHECK + composite FK               |
+| The account is active                                                   | trigger                            |
+| The accounting period is open                                           | trigger                            |
+| The currency is valid for the business                                  | CHECK                              |
+| Functional amounts are coherent with transaction amounts                | trigger                            |
+| An FX snapshot exists when transaction currency differs from functional | CHECK                              |
 
 The balance trigger sums **functional** amounts only and must never see a transaction amount (§16).
 
@@ -870,13 +870,13 @@ integrity        the referenced scope exists, is of the expected type,
 
 ### 11.4 Lifecycle
 
-| Action | Account with postings | Account without postings |
-|---|---|---|
-| DELETE | refused, always | permitted |
-| Change `systemRole` or scope | refused, always | refused, always |
-| Deactivate | **allowed** where policy permits | allowed |
-| Post into it once inactive | refused | refused |
-| Appear in historical reports | yes, forever | n/a |
+| Action                       | Account with postings            | Account without postings |
+| ---------------------------- | -------------------------------- | ------------------------ |
+| DELETE                       | refused, always                  | permitted                |
+| Change `systemRole` or scope | refused, always                  | refused, always          |
+| Deactivate                   | **allowed** where policy permits | allowed                  |
+| Post into it once inactive   | refused                          | refused                  |
+| Appear in historical reports | yes, forever                     | n/a                      |
 
 Historical postings are the reason deactivation exists instead of deletion. A rule that forbade deactivation because postings exist would make every used account permanent, and a merchant who changes banks would be stuck with a chart of accounts they can never tidy.
 
@@ -1034,6 +1034,7 @@ RevenueRecognitionPolicy
 ### 12.4 The five cases, as tests
 
 **(a) Unconditional receivable before fulfilment**
+
 ```
 invoice      DR Accounts Receivable   100,000    CR Contract Liability  100,000
 payment      DR Clearing / Bank       100,000    CR Accounts Receivable 100,000
@@ -1042,12 +1043,14 @@ fulfilment   DR Contract Liability    100,000    CR Sales Revenue       100,000
 ```
 
 **(b) Advance payment, no receivable**
+
 ```
 payment      DR Clearing / Bank       100,000    CR Contract Liability  100,000
 fulfilment   DR Contract Liability    100,000    CR Sales Revenue       100,000
 ```
 
 **(c) Fulfilment before payment (conditional invoice, trade credit)**
+
 ```
 invoice      nothing posts
 fulfilment   DR Accounts Receivable   100,000    CR Sales Revenue       100,000
@@ -1056,6 +1059,7 @@ payment      DR Bank                  100,000    CR Accounts Receivable 100,000
 ```
 
 **(d) Partial deposit**
+
 ```
 deposit      DR Clearing               30,000    CR Contract Liability   30,000
 fulfilment   DR Contract Liability     30,000
@@ -1065,6 +1069,7 @@ balance      DR Bank                   70,000    CR Accounts Receivable  70,000
 ```
 
 **(e) Immediate cash and carry**
+
 ```
 sale+pay+fulfil   DR Clearing / Bank   100,000   CR Sales Revenue       100,000
                                                  DR COGS / CR Inventory
@@ -1393,7 +1398,7 @@ CR Bank
 bank transaction  ≠  customer payment
 ```
 
-Money moving through an account is a fact. What that money *was* is a judgement, and the judgement belongs to the merchant.
+Money moving through an account is a fact. What that money _was_ is a judgement, and the judgement belongs to the merchant.
 
 ### 22.1 Tiers
 
@@ -1695,7 +1700,6 @@ material production evidence proves the design incorrect
 ```
 
 **Refactoring preference alone is not sufficient.** A nicer-looking implementation of a settled decision is not a reason to reopen it.
-
 
 ---
 
@@ -2096,7 +2100,7 @@ PaymentAttempt      INITIATED · PENDING · SUCCEEDED · FAILED · ABANDONED
 
 ### E.3 Invoice
 
-> **SUPERSEDED.** An earlier draft listed `PARTIALLY_PAID` and `PAID` as *lifecycle* states. They are not. An invoice is simultaneously `ISSUED`, `PARTIALLY_PAID` and `OVERDUE`, and a single column cannot say that. Three independent dimensions, as previously agreed:
+> **SUPERSEDED.** An earlier draft listed `PARTIALLY_PAID` and `PAID` as _lifecycle_ states. They are not. An invoice is simultaneously `ISSUED`, `PARTIALLY_PAID` and `OVERDUE`, and a single column cannot say that. Three independent dimensions, as previously agreed:
 
 ```
 InvoiceLifecycle          DRAFT · ISSUED · VOID

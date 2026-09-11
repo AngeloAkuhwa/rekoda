@@ -1,6 +1,6 @@
 # 0024 — The commercial terms, decided
 
-**Status:** Accepted — the "report generation is not capped" clause is **superseded in part** by the owner ruling of 2026-08-28 (see Scope)
+**Status:** Accepted — the "report generation is not capped" clause is **superseded in part** by the owner ruling of 2026-08-28 (see Scope); media claims amended by [0032](0032-launch-media-architecture.md)
 **Date:** 2026-08-21
 **Decided by:** Angelo Akuhwa
 

@@ -10,12 +10,12 @@
 
 ## Contents
 
-| Document | What it is | Status |
-| --- | --- | --- |
-| `subprocessor-register.md` | Every third party that processes data on Rekoda's behalf, and exactly what each receives | DRAFT |
-| `record-of-processing.md` | What personal data Rekoda processes, why, and for how long (RoPA draft) | DRAFT |
-| `data-transfer-assessment.md` | Where data leaves Nigeria, to whom, and the open legal questions | DRAFT |
-| `incident-register.md` | The closed-incident record `privacy-security-incident.md` step 18 appends to | Live register (empty until an incident) |
+| Document                      | What it is                                                                               | Status                                  |
+| ----------------------------- | ---------------------------------------------------------------------------------------- | --------------------------------------- |
+| `subprocessor-register.md`    | Every third party that processes data on Rekoda's behalf, and exactly what each receives | DRAFT                                   |
+| `record-of-processing.md`     | What personal data Rekoda processes, why, and for how long (RoPA draft)                  | DRAFT                                   |
+| `data-transfer-assessment.md` | Where data leaves Nigeria, to whom, and the open legal questions                         | DRAFT                                   |
+| `incident-register.md`        | The closed-incident record `privacy-security-incident.md` step 18 appends to             | Live register (empty until an incident) |
 
 ## Ground rules for editing this pack
 

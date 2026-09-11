@@ -84,9 +84,9 @@ meets two different bodies for the same refusal.
 
 ## Response headers
 
-| Header | Meaning |
-| --- | --- |
+| Header               | Meaning                                                             |
+| -------------------- | ------------------------------------------------------------------- |
 | `Rekoda-Api-Version` | The version that answered. Present on success and on every failure. |
-| `Retry-After` | Seconds to wait, on `429`. |
-| `Deprecation` | Set when the version has a retirement date. |
-| `Sunset` | When the version stops answering. |
+| `Retry-After`        | Seconds to wait, on `429`.                                          |
+| `Deprecation`        | Set when the version has a retirement date.                         |
+| `Sunset`             | When the version stops answering.                                   |

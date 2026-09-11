@@ -1,5 +1,7 @@
 # Schema forensic audit, 1 September 2026
 
+> **HISTORICAL — FINDINGS REMEDIATED.** This audit was taken at migration head `0129` on 1 September 2026. Its findings were executed in migrations 0130–0149 (GitHub #196–#231); see `REKODA_CURRENT_STATE.md` Appendix A.5. It is kept as the record of what was found and how coverage was scoped. Do not use it as a list of open work.
+
 **Status:** findings only. No migration, no schema change, no code change accompanies
 this document. Nothing here is a decision; every item is a thing found, with the
 evidence that found it, for the owner to rule on.
@@ -17,7 +19,7 @@ below was re-run at that commit and came back identical to the first pass: 34 ga
 deletes. Nothing in this report was revised, because nothing in the evidence moved.
 
 **Scope.** 115 tables. Structure only: constraints, keys, types, row-level
-security, delete behaviour, index coverage. What the application *does* with the
+security, delete behaviour, index coverage. What the application _does_ with the
 schema is the adversarial security audit's question, not this one, and the
 distinction matters for several findings below: this audit can say the database
 permits something, and cannot say whether a code path reaches it.
@@ -26,14 +28,14 @@ permits something, and cannot say whether a code path reaches it.
 
 ## Summary
 
-| # | Finding | Severity | Reach |
-|---|---|---|---|
-| 1 | 34 foreign keys let a row reference **another tenant's** record | **High** | Structural; reachability unproven |
-| 2 | Four status columns that drive logic have no CHECK and no trigger | **Medium** | Application is the only guard |
-| 3 | `external_events` is readable across every tenant by the application role | **Medium** | Grant is live |
-| 4 | 54 foreign keys lead no index | Low-Medium | Erasure and retention paths |
-| 5 | `ledger_entries` carries a superseded duplicate foreign key | Low | Cosmetic |
-| 6 | `sessions` and `magic_links` sit outside RLS with no written reason | Low | Believed correct, undocumented |
+| #   | Finding                                                                   | Severity   | Reach                             |
+| --- | ------------------------------------------------------------------------- | ---------- | --------------------------------- |
+| 1   | 34 foreign keys let a row reference **another tenant's** record           | **High**   | Structural; reachability unproven |
+| 2   | Four status columns that drive logic have no CHECK and no trigger         | **Medium** | Application is the only guard     |
+| 3   | `external_events` is readable across every tenant by the application role | **Medium** | Grant is live                     |
+| 4   | 54 foreign keys lead no index                                             | Low-Medium | Erasure and retention paths       |
+| 5   | `ledger_entries` carries a superseded duplicate foreign key               | Low        | Cosmetic                          |
+| 6   | `sessions` and `magic_links` sit outside RLS with no written reason       | Low        | Believed correct, undocumented    |
 
 Three things came back **clean** and are recorded in full below, because a launch
 audit that only lists faults misrepresents the estate.
@@ -62,8 +64,8 @@ goods_returns_invoice_fk  FOREIGN KEY (invoice_id)
 ```
 
 Nothing in the database stops a return being attached to **another business's
-invoice**. Row-level security filters what a query can *read*; it does not
-constrain what a foreign key will *accept*. A write that takes an id from a
+invoice**. Row-level security filters what a query can _read_; it does not
+constrain what a foreign key will _accept_. A write that takes an id from a
 request and inserts it without first reading the row back under the tenant pin
 will be accepted by PostgreSQL.
 
@@ -159,11 +161,11 @@ can be reverted alone.
 Four columns that drive branching logic accept any text at all. Verified: no
 CHECK constraint, no trigger, on any of them.
 
-| Column | Enforced by |
-|---|---|
-| `invoices.status` | application only |
-| `orders.status` | application only |
-| `expenses.status` | application only |
+| Column                   | Enforced by      |
+| ------------------------ | ---------------- |
+| `invoices.status`        | application only |
+| `orders.status`          | application only |
+| `expenses.status`        | application only |
 | `reconciliations.status` | application only |
 
 The schema again shows it knows better a few lines away —

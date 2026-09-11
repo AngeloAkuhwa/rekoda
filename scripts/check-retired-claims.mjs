@@ -12,7 +12,7 @@
  *
  * Scope is deliberately narrow to keep false positives near zero: only
  * the surfaces that must always describe the present are scanned. The
- * historical documents (docs/adr/00*.md, MASTER-PLAN, HANDOFF,
+ * historical documents (docs/adr/00*.md, docs/archive/MASTER-PLAN.md, HANDOFF,
  * ai-model-strategy's on-the-record history section) are deliberately NOT
  * scanned — quoting a retired claim as history is legitimate there.
  * Every pattern below is a phrase with essentially one meaning, so a

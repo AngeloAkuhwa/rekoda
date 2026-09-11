@@ -1,3 +1,11 @@
+> **ARCHIVED — NOT AUTHORITATIVE.**
+> **DO NOT USE THIS DOCUMENT TO DECIDE CURRENT PRODUCT BEHAVIOUR OR IMPLEMENTATION STATUS.**
+> Archived 10 September 2026 during the repository reset. It is kept as
+> history only. The current authorities are `docs/REKODA_CANONICAL_SPEC.md`
+> (required behaviour), `docs/REKODA_CURRENT_STATE.md` (what exists in code)
+> and `docs/REKODA_LAUNCH_READINESS.md` (what blocks launch); see
+> `docs/REKODA_REFERENCE_MANIFEST.md` for the full hierarchy.
+
 # Rekoda V1 — Engineering Review & Delivery Plan (v2)
 
 > **Media-architecture supersession (ADR 0032, 29 Aug 2026).** Sections of
@@ -7,8 +15,7 @@
 > media-processing architecture. The launch architecture is OpenAI for
 > voice transcription and Anthropic Claude for reasoning and vision, with
 > no self-hosted media sidecars — see
-> [ADR 0032](adr/0032-launch-media-architecture.md).
-
+> [ADR 0032](../adr/0032-launch-media-architecture.md).
 
 **Prepared for:** Angelo Akuhwa
 **Date:** 19 August 2026 · v2 — revised after your feedback: no Azure, strongest affordable AI, STT clarified (no hardware), UI inventory + SEO/content plan added.

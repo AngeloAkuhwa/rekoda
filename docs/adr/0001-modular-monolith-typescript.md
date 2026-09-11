@@ -1,6 +1,6 @@
 # 0001 — Modular monolith on TypeScript (NestJS + Next.js + PostgreSQL)
 
-**Status:** Accepted
+**Status:** Accepted. Two named mechanisms have since been replaced: `pg-boss` by the in-schema job queue ([0022](0022-job-queue-in-our-own-schema.md)) and the STT sidecar by hosted transcription ([0032](0032-launch-media-architecture.md)). The monolith decision itself stands.
 **Date:** 2026-08-19
 
 ## Context

@@ -11,7 +11,9 @@
     "test": "vitest run --passWithNoTests",
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "start": "node dist/main.js",
-    "dev": "node --watch dist/main.js"
+    "dev": "node --watch dist/main.js",
+    "start:local": "node --env-file=../../.env dist/main.js",
+    "dev:local": "node --env-file=../../.env --watch dist/main.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.122.0",

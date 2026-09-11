@@ -5,16 +5,21 @@ a person under stress: numbered steps, exact commands, no prose detours.
 
 Planned (populated as the systems they describe land):
 
-| Runbook                                                             | Lands with |
-| ------------------------------------------------------------------- | ---------- |
-| `deploy.md` — zero-touch deploy + rollback                          | M0 ✅      |
+| Runbook                                                                                                           | Lands with                                                   |
+| ----------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
+| `deploy.md` — zero-touch deploy + rollback                                                                        | M0 ✅                                                        |
 | `backup-restore.md` — **restore drill** (automated in CI); nightly dumps + B2 offsite designed, enabled at deploy | M0 ✅ (drill automated, PR-107; production pipeline pending) |
-| `incident.md` — triage off the §31 integrity probes, provider status | S1 ✅ (PR-107) |
-| `privacy-security-incident.md` — breach response, NDPC decision points | REM ✅ (PR-132) |
-| `key-rotation.md` — provider keys, vault key, session secrets       | S1 ✅ (PR-107) |
-| `data-erasure.md` — deletion requests end-to-end, three lanes       | REM ✅ (PR-132) |
-| `r0a-provenance.md` — run, review and approve the legacy provenance report | R0A ✅ (PR-120), **gate OPEN** |
-| `meta-submission.md` — WhatsApp/app review, exact URLs per field    | M2 (owner, W0) |
-| `integrate-onboarding.md` — concierge WABA/catalogue/Paystack setup | M5         |
+| `incident.md` — triage off the §31 integrity probes, provider status                                              | S1 ✅ (PR-107)                                               |
+| `privacy-security-incident.md` — breach response, NDPC decision points                                            | REM ✅ (PR-132)                                              |
+| `key-rotation.md` — provider keys, vault key, session secrets                                                     | S1 ✅ (PR-107)                                               |
+| `data-erasure.md` — deletion requests end-to-end, three lanes                                                     | REM ✅ (PR-132)                                              |
+| `r0a-provenance.md` — run, review and approve the legacy provenance report                                        | R0A ✅ (PR-120), **gate OPEN**                               |
+| `meta-submission.md` — WhatsApp/app review, exact URLs per field                                                  | M2 (owner, W0)                                               |
+| `integrate-onboarding.md` — concierge WABA/catalogue/Paystack setup                                               | M5                                                           |
 
 Rule: a backup that has not been restore-drilled does not count as a backup.
+
+Status (10 September 2026): `meta-submission.md` and `integrate-onboarding.md`
+are still unwritten; they are launch gaps G-03 and G-35 in
+`../REKODA_LAUNCH_READINESS.md`. No production backup pipeline exists yet
+(gap G-02); the restore drill in CI is real, the backup is not.

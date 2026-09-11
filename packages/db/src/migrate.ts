@@ -14,6 +14,7 @@ import { readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import postgres from 'postgres';
+import { isEntrypoint } from './entrypoint.js';
 
 export interface JournalEntry {
   idx: number;
@@ -62,7 +63,7 @@ export async function applyMigrations(
 }
 
 /* Runnable directly: `node dist/migrate.js` */
-if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) {
+if (isEntrypoint(import.meta.url, process.argv[1])) {
   const url = process.env['DATABASE_URL'];
   if (!url) {
     console.error('DATABASE_URL is required');

@@ -1,5 +1,7 @@
 # Status enum evidence, 1 September 2026
 
+> **HISTORICAL — FINDINGS REMEDIATED.** This audit was taken at migration head `0129` on 1 September 2026. Its findings were executed in migrations 0130–0149 (GitHub #196–#231); see `REKODA_CURRENT_STATE.md` Appendix A.5. It is kept as the record of what was found and how coverage was scoped. Do not use it as a list of open work.
+
 Phase 2 of the R1 remediation plan. Ruling 3 requires the authoritative set for
 each logic-bearing status column to be **derived from evidence** — production
 writers, contract enums, TypeScript unions, fixtures, stored values — before any
@@ -17,12 +19,12 @@ phase 4, gated on the R2 review.
 Three of the four schema comments are **wrong**, and a CHECK built from them would
 have been an outage rather than a safeguard.
 
-| Column | Comment says | Evidence says | Damage if the comment were trusted |
-|---|---|---|---|
-| `orders.status` | 4 values | **7 values** | Rejects `quoted`, `open`, `received`, `validated` — breaks quotes, purchase orders, receiving and validation |
-| `invoices.status` | 4 values | **5 values** | Rejects `credited` — breaks the credit-note path |
-| `reconciliations.status` | 4 values | **3 values** | Permits `UNMATCHED`, which nothing writes |
-| `expenses.status` | no comment | **2 values** | — |
+| Column                   | Comment says | Evidence says | Damage if the comment were trusted                                                                           |
+| ------------------------ | ------------ | ------------- | ------------------------------------------------------------------------------------------------------------ |
+| `orders.status`          | 4 values     | **7 values**  | Rejects `quoted`, `open`, `received`, `validated` — breaks quotes, purchase orders, receiving and validation |
+| `invoices.status`        | 4 values     | **5 values**  | Rejects `credited` — breaks the credit-note path                                                             |
+| `reconciliations.status` | 4 values     | **3 values**  | Permits `UNMATCHED`, which nothing writes                                                                    |
+| `expenses.status`        | no comment   | **2 values**  | —                                                                                                            |
 
 Counting how often a literal appears in the codebase is **also invalid**, and was
 tried and discarded: `'paid'`, `'confirmed'` and `'cancelled'` each appear in
@@ -37,13 +39,13 @@ actions — different columns entirely. Only per-column writer tracing answers t
 issued  partially_paid  paid  voided  credited
 ```
 
-| Value | Written by | Evidence |
-|---|---|---|
-| `issued` | invoice creation with nothing paid | `repos/issue.ts:338`, `repos/opening.ts:163` |
-| `partially_paid` | creation with a part payment; allocation leaving a balance | `repos/issue.ts:338`, `repos/settle.ts:274` |
-| `paid` | creation fully paid; allocation clearing the balance | `repos/issue.ts:338`, `:1394`, `repos/settle.ts:274` |
-| `voided` | withdrawal | `repos/issue.ts:615` |
-| **`credited`** | **credit notes reaching the invoice total** | **`repos/issue.ts:1210`** |
+| Value            | Written by                                                 | Evidence                                             |
+| ---------------- | ---------------------------------------------------------- | ---------------------------------------------------- |
+| `issued`         | invoice creation with nothing paid                         | `repos/issue.ts:338`, `repos/opening.ts:163`         |
+| `partially_paid` | creation with a part payment; allocation leaving a balance | `repos/issue.ts:338`, `repos/settle.ts:274`          |
+| `paid`           | creation fully paid; allocation clearing the balance       | `repos/issue.ts:338`, `:1394`, `repos/settle.ts:274` |
+| `voided`         | withdrawal                                                 | `repos/issue.ts:615`                                 |
+| **`credited`**   | **credit notes reaching the invoice total**                | **`repos/issue.ts:1210`**                            |
 
 The missing one is written in raw SQL inside a `CASE`, which is why a reader
 skimming the Drizzle declaration would not see it:
@@ -68,15 +70,15 @@ placed  quoted  open  confirmed  cancelled  received  validated
 The `orders` table carries three different documents — a sales order, a quote and
 a purchase order — which is why its set is larger than any one flow suggests.
 
-| Value | Meaning | Evidence |
-|---|---|---|
-| `placed` | a sales order created | `repos/orders.ts:74` |
-| `quoted` | a quote created | `repos/orders.ts:133` |
-| `open` | a purchase order created | `repos/orders.ts:329` |
-| `confirmed` | quote or order taken up, invoice attached | `sale-commands.ts:143`, `order-commands.ts:112` |
-| `validated` | order validated with an invoice | `order-commands.ts:395` |
-| `received` | purchase order received | `reports.controller.ts:1127` |
-| `cancelled` | any of the three cancelled | `reports.controller.ts:1032`, `:1205`, `order-commands.ts:306` |
+| Value       | Meaning                                   | Evidence                                                       |
+| ----------- | ----------------------------------------- | -------------------------------------------------------------- |
+| `placed`    | a sales order created                     | `repos/orders.ts:74`                                           |
+| `quoted`    | a quote created                           | `repos/orders.ts:133`                                          |
+| `open`      | a purchase order created                  | `repos/orders.ts:329`                                          |
+| `confirmed` | quote or order taken up, invoice attached | `sale-commands.ts:143`, `order-commands.ts:112`                |
+| `validated` | order validated with an invoice           | `order-commands.ts:395`                                        |
+| `received`  | purchase order received                   | `reports.controller.ts:1127`                                   |
+| `cancelled` | any of the three cancelled                | `reports.controller.ts:1032`, `:1205`, `order-commands.ts:306` |
 
 `paid`, which the comment lists, is **never written to this column** by any site.
 
@@ -84,11 +86,13 @@ a purchase order — which is why its set is larger than any one flow suggests.
 
 ```ts
 export async function markOrder(
-  tx: TenantDb, businessId: string, id: string,
-  from: string,          // ← untyped
-  to: string,            // ← untyped
+  tx: TenantDb,
+  businessId: string,
+  id: string,
+  from: string, // ← untyped
+  to: string, // ← untyped
   invoiceId?: string,
-): Promise<MarkOutcome>
+): Promise<MarkOutcome>;
 ```
 
 Every transition goes through `markOrder`, and both ends are bare `string`. The
@@ -105,10 +109,10 @@ code change and is out of scope for this document.
 recorded  voided
 ```
 
-| Value | Written by | Evidence |
-|---|---|---|
+| Value      | Written by                                        | Evidence                                                         |
+| ---------- | ------------------------------------------------- | ---------------------------------------------------------------- |
 | `recorded` | column default; neither insert sets it explicitly | `schema/finance.ts:248`, inserts at `repos/spend.ts:118`, `:165` |
-| `voided` | withdrawal | `repos/spend.ts:458`, `:467` |
+| `voided`   | withdrawal                                        | `repos/spend.ts:458`, `:467`                                     |
 
 **Disambiguation.** `repos/spend.ts:788` writes `'paid'` and `'partially_paid'`
 but updates **`bills`**, not `expenses` — verified by reading the statement's
@@ -125,9 +129,11 @@ Uppercase, unlike the other three columns. Derived in one place:
 
 ```ts
 const status =
-  reconciliation === 'matched'      ? 'MATCHED'
-  : reconciliation === 'partial_match' ? 'PARTIAL'
-  : 'EXCEPTION';
+  reconciliation === 'matched'
+    ? 'MATCHED'
+    : reconciliation === 'partial_match'
+      ? 'PARTIAL'
+      : 'EXCEPTION';
 ```
 
 `repos/settle.ts:420`, with a second explicit `'EXCEPTION'` at `:511` for an

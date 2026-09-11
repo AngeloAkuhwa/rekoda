@@ -27,10 +27,10 @@ pricing page must not promise.
 `SERVICE_MESSAGE` and `REPORT_EXPORTS` got their figures from the owner on
 28 August 2026 (PR-117, migration 0113):
 
-| Unit              | What counts                                                     | Trial | Chat | Integrate | Complete |
-| ----------------- | --------------------------------------------------------------- | ----- | ---- | --------- | -------- |
-| `SERVICE_MESSAGE` | A free-form reply to a customer outside the 24-hour window       | 250   | 0    | 5,000     | 5,000    |
-| `REPORT_EXPORTS`  | One unit per file PRODUCED: the statements PDF, the workbook, and each CSV. Reading the same figures on a page costs nothing, and data portability is never counted (below) | 10 | 50 | 100 | 200 |
+| Unit              | What counts                                                                                                                                                                 | Trial | Chat | Integrate | Complete |
+| ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----- | ---- | --------- | -------- |
+| `SERVICE_MESSAGE` | A free-form reply to a customer outside the 24-hour window                                                                                                                  | 250   | 0    | 5,000     | 5,000    |
+| `REPORT_EXPORTS`  | One unit per file PRODUCED: the statements PDF, the workbook, and each CSV. Reading the same figures on a page costs nothing, and data portability is never counted (below) | 10    | 50   | 100       | 200      |
 
 Chat sells no `SERVICE_MESSAGE` by decision, not omission: a Chat merchant
 talks to their customers from their own phone, and the plan sells them the
@@ -107,12 +107,12 @@ a standing grant from the held add-on, and never as a pack.
 
 The product, as approved on 28 August 2026 and seeded by migration 0113:
 
-| What is sold              | Shape             | Price         | Grants                                                              |
-| ------------------------- | ----------------- | ------------- | ------------------------------------------------------------------- |
-| Developer API Starter     | recurring add-on  | ₦25,000/month | `REKODA_API`, 1 application, 25,000 requests, 25,000 deliveries |
-| One extra API application | recurring add-on  | ₦5,000/month  | +1 application (capacity)                                           |
-| `api_requests_25k`        | one-off pack      | ₦10,000       | +25,000 requests this month                                         |
-| `webhook_deliveries_25k`  | one-off pack      | ₦5,000        | +25,000 deliveries this month                                       |
+| What is sold              | Shape            | Price         | Grants                                                          |
+| ------------------------- | ---------------- | ------------- | --------------------------------------------------------------- |
+| Developer API Starter     | recurring add-on | ₦25,000/month | `REKODA_API`, 1 application, 25,000 requests, 25,000 deliveries |
+| One extra API application | recurring add-on | ₦5,000/month  | +1 application (capacity)                                       |
+| `api_requests_25k`        | one-off pack     | ₦10,000       | +25,000 requests this month                                     |
+| `webhook_deliveries_25k`  | one-off pack     | ₦5,000        | +25,000 deliveries this month                                   |
 
 The ceiling every API consume reads is `allowance + grants + bonus`, so:
 
@@ -125,11 +125,11 @@ The ceiling every API consume reads is `allowance + grants + bonus`, so:
 
 The three consume like this:
 
-| Unit | Kind | How the ceiling is enforced |
-| --- | --- | --- |
-| `API_REQUEST_UNITS` | consumable | one taken per authenticated request, after the per-minute key ceiling so a flood cannot burn a month faster than that ceiling allows; never given back, because the request was served |
-| `WEBHOOK_DELIVERIES` | consumable | one taken per delivery, before the send; refunded on every attempt that delivered nothing, so a merchant's own outage is not billed six times |
-| `API_APPLICATIONS` | capacity | nothing is taken: registration counts the ACTIVE applications and refuses the one past the ceiling. Disabling an application frees its slot immediately |
+| Unit                 | Kind       | How the ceiling is enforced                                                                                                                                                            |
+| -------------------- | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `API_REQUEST_UNITS`  | consumable | one taken per authenticated request, after the per-minute key ceiling so a flood cannot burn a month faster than that ceiling allows; never given back, because the request was served |
+| `WEBHOOK_DELIVERIES` | consumable | one taken per delivery, before the send; refunded on every attempt that delivered nothing, so a merchant's own outage is not billed six times                                          |
+| `API_APPLICATIONS`   | capacity   | nothing is taken: registration counts the ACTIVE applications and refuses the one past the ceiling. Disabling an application frees its slot immediately                                |
 
 PR-113 metered `API_APPLICATIONS` as a monthly tally, which meant a merchant
 who registered their applications and then deleted every one of them still
@@ -182,13 +182,13 @@ lands in W1/W2 they message their OWN customer, the category is chosen at
 send time, and metering it against their plan is right, because then it is
 their message.
 
-| Category | Rekoda's cost | What sends it |
-|---|---|---|
-| `SERVICE_MESSAGE` | ₦0 today, chargeable 1 Oct 2026 | Every reply and document, inside the 24-hour window |
-| `UTILITY_TEMPLATE` | ₦9.72 | Grace-period and retention notices |
-| `AUTH_TEMPLATE` | ₦21.03 | Sign-in codes, Nigeria-registered WABA |
-| `AUTH_INTL_TEMPLATE` | ₦108.75 | The same code, WABA registered elsewhere |
-| `MARKETING_TEMPLATE` | ₦74.82 | Nothing. Commercial rule 2 excludes it from V1 |
+| Category             | Rekoda's cost                   | What sends it                                       |
+| -------------------- | ------------------------------- | --------------------------------------------------- |
+| `SERVICE_MESSAGE`    | ₦0 today, chargeable 1 Oct 2026 | Every reply and document, inside the 24-hour window |
+| `UTILITY_TEMPLATE`   | ₦9.72                           | Grace-period and retention notices                  |
+| `AUTH_TEMPLATE`      | ₦21.03                          | Sign-in codes, Nigeria-registered WABA              |
+| `AUTH_INTL_TEMPLATE` | ₦108.75                         | The same code, WABA registered elsewhere            |
+| `MARKETING_TEMPLATE` | ₦74.82                          | Nothing. Commercial rule 2 excludes it from V1      |
 
 The rate card lives in `@rekoda/core`'s `messaging.ts`, sourced from the
 external cost stack in `pricing-model.md`.

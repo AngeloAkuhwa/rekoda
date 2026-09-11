@@ -9,12 +9,12 @@ because it was granted, and holds capacity because it was bought.
 
 ## What it costs
 
-| What you buy               | Billing   | Price         | What it gives you                                                  |
-| -------------------------- | --------- | ------------- | ------------------------------------------------------------------ |
-| Developer API Starter      | monthly   | ₦25,000       | API access, one application, 25,000 requests, 25,000 webhook deliveries |
-| One extra API application  | monthly   | ₦5,000        | one more application you may hold                                  |
-| 25,000 extra API requests  | one-off   | ₦10,000       | requests for the month you buy them in                             |
-| 25,000 extra deliveries    | one-off   | ₦5,000        | webhook deliveries for the month you buy them in                   |
+| What you buy              | Billing | Price   | What it gives you                                                       |
+| ------------------------- | ------- | ------- | ----------------------------------------------------------------------- |
+| Developer API Starter     | monthly | ₦25,000 | API access, one application, 25,000 requests, 25,000 webhook deliveries |
+| One extra API application | monthly | ₦5,000  | one more application you may hold                                       |
+| 25,000 extra API requests | one-off | ₦10,000 | requests for the month you buy them in                                  |
+| 25,000 extra deliveries   | one-off | ₦5,000  | webhook deliveries for the month you buy them in                        |
 
 Requests and deliveries are **spent**: they reset every month, and a one-off
 top-up covers the month you buy it in. Applications are **held**: the number
@@ -70,15 +70,15 @@ Every response carries `Rekoda-Api-Version: v1`, on success and on failure.
 
 ### Routes
 
-| Route | What it does |
-| --- | --- |
-| `GET /api/v1/identity` | Who this key speaks for |
-| `GET /api/v1/customers` | The merchant's customers, as pseudonyms |
-| `GET /api/v1/products` | The catalogue |
-| `GET /api/v1/invoices` | Invoices, newest first; `?status=` narrows |
-| `GET /api/v1/invoices/:invoiceNumber` | One invoice |
-| `POST /api/v1/sales` | Record a sale (live keys only) |
-| `POST /api/v1/payments` | Record a payment against an invoice (live keys only) |
+| Route                                 | What it does                                         |
+| ------------------------------------- | ---------------------------------------------------- |
+| `GET /api/v1/identity`                | Who this key speaks for                              |
+| `GET /api/v1/customers`               | The merchant's customers, as pseudonyms              |
+| `GET /api/v1/products`                | The catalogue                                        |
+| `GET /api/v1/invoices`                | Invoices, newest first; `?status=` narrows           |
+| `GET /api/v1/invoices/:invoiceNumber` | One invoice                                          |
+| `POST /api/v1/sales`                  | Record a sale (live keys only)                       |
+| `POST /api/v1/payments`               | Record a payment against an invoice (live keys only) |
 
 A **customer is a pseudonym**. Names, phones and addresses live encrypted in
 Rekoda's identity vault, one facet per row, and no route here exposes them.
@@ -115,7 +115,7 @@ Idempotency-Key: order-4471
 ```
 
 Use your own identifier for the thing you are recording. A key reused for a
-*different* request body is refused, because that is a bug in the caller and
+_different_ request body is refused, because that is a bug in the caller and
 a silent second sale is worse than an error.
 
 ## Errors
@@ -129,17 +129,17 @@ Every failure is:
 Branch on `code`. Never match on `message`: it is prose for a human reading a
 log and may be reworded at any time.
 
-| Code | Status | What to do |
-| --- | --- | --- |
-| `unauthenticated` | 401 | The key is missing, malformed, revoked, expired, or its application is disabled. Rekoda does not say which. |
-| `not_entitled` | 403 | The business does not hold `REKODA_API`. |
-| `forbidden` | 403 | This key may not do this. A test key attempting a write is the common case. |
-| `invalid_request` | 400 | The body or a query parameter is wrong. `message` says which field. |
-| `not_found` | 404 | No such thing, or nothing this key may see. |
-| `rate_limited` | 429 | The per-minute ceiling. Wait `retryAfterSeconds` and retry. |
-| `quota_exhausted` | 429 | The month's capacity is spent. Waiting will not help; buy more. |
-| `unsupported_version` | 404 | The version segment in the URL is not one Rekoda serves. |
-| `internal` | 500 | Ours. Retry; if it persists, tell us. |
+| Code                  | Status | What to do                                                                                                  |
+| --------------------- | ------ | ----------------------------------------------------------------------------------------------------------- |
+| `unauthenticated`     | 401    | The key is missing, malformed, revoked, expired, or its application is disabled. Rekoda does not say which. |
+| `not_entitled`        | 403    | The business does not hold `REKODA_API`.                                                                    |
+| `forbidden`           | 403    | This key may not do this. A test key attempting a write is the common case.                                 |
+| `invalid_request`     | 400    | The body or a query parameter is wrong. `message` says which field.                                         |
+| `not_found`           | 404    | No such thing, or nothing this key may see.                                                                 |
+| `rate_limited`        | 429    | The per-minute ceiling. Wait `retryAfterSeconds` and retry.                                                 |
+| `quota_exhausted`     | 429    | The month's capacity is spent. Waiting will not help; buy more.                                             |
+| `unsupported_version` | 404    | The version segment in the URL is not one Rekoda serves.                                                    |
+| `internal`            | 500    | Ours. Retry; if it persists, tell us.                                                                       |
 
 ## Webhooks
 
@@ -156,15 +156,15 @@ secret once.
 `eventTypes` is a **closed set**: a type not on this list is refused rather
 than accepted and never delivered.
 
-| Group | Types |
-| --- | --- |
-| Sales and invoicing | `sale.recorded`, `invoice.issued`, `invoice.voided` |
-| Money in | `payment.recorded`, `payment.confirmed` |
-| Money out | `expense.recorded`, `purchase.recorded` |
-| The books | `journal.posted`, `period.closed`, `period.reopened`, `books.opened` |
-| Orders | `order.placed`, `order.validated`, `order.rejected` |
-| Bank and stock | `financial_transactions.ingested`, `reconciliation.confirmed`, `inventory.adjusted` |
-| Privacy | `data.erased` |
+| Group               | Types                                                                               |
+| ------------------- | ----------------------------------------------------------------------------------- |
+| Sales and invoicing | `sale.recorded`, `invoice.issued`, `invoice.voided`                                 |
+| Money in            | `payment.recorded`, `payment.confirmed`                                             |
+| Money out           | `expense.recorded`, `purchase.recorded`                                             |
+| The books           | `journal.posted`, `period.closed`, `period.reopened`, `books.opened`                |
+| Orders              | `order.placed`, `order.validated`, `order.rejected`                                 |
+| Bank and stock      | `financial_transactions.ingested`, `reconciliation.confirmed`, `inventory.adjusted` |
+| Privacy             | `data.erased`                                                                       |
 
 Name the types you handle. An empty list means every type, **including any
 type added later**, so a receiver that must never meet a `type` it does not
@@ -264,15 +264,15 @@ it stops answering.
 
 ## Limits
 
-| Limit | Value |
-| --- | --- |
-| Requests per key per minute | 120 |
-| Live keys per application per mode | 5 |
-| Page size | 100 |
-| Items per sale | 50 |
-| Webhook endpoints per business | 10 |
-| Webhook attempts | 6 |
-| Webhook timeout | 10 seconds |
+| Limit                              | Value      |
+| ---------------------------------- | ---------- |
+| Requests per key per minute        | 120        |
+| Live keys per application per mode | 5          |
+| Page size                          | 100        |
+| Items per sale                     | 50         |
+| Webhook endpoints per business     | 10         |
+| Webhook attempts                   | 6          |
+| Webhook timeout                    | 10 seconds |
 
 Monthly capacity (`API_REQUEST_UNITS`, `API_APPLICATIONS`,
 `WEBHOOK_DELIVERIES`) is what the business bought with the API product, and
