@@ -98,6 +98,7 @@ not undoable by anybody.
    hours and deletes each row once the object is really gone. Do not delete
    objects by hand: a hand-deleted object leaves no record that it went,
    and a hand-deletion that fails halfway leaves no record of what did not.
+
 8. **Keep what the law keeps**: invoices, receipts, ledger entries and the
    journal survive until the financial retention period (`RETENTION.financialYears`,
    published on `/privacy#retention`) has elapsed for their year — with

@@ -17,7 +17,6 @@
 > no self-hosted media sidecars — see
 > [ADR 0032](adr/0032-launch-media-architecture.md).
 
-
 **Prepared for:** Angelo Akuhwa
 **Date:** 19 August 2026 · v2 — revised after your feedback: no Azure, strongest affordable AI, STT clarified (no hardware), UI inventory + SEO/content plan added.
 **Inputs reviewed:** _Rekoda V1 Complete Product and Architecture Specification_ + the commercial/pricing model (₦9,900 / ₦19,900 / ₦29,900), against the research and the working VoiceReceipt codebase.

@@ -17,21 +17,21 @@ The owner ruling ends: **do not start schema migrations until R2 is reviewed.**
 That is a hard gate, and it decides what happens now versus later regardless of
 how ready a piece of work looks.
 
-| Phase | Work | Gate |
-|---|---|---|
-| 0 | R1 audit as a documentation-only PR | none — done |
-| 1 | RLS exemption register (ruling 6) | none — documentation |
-| 2 | Status enum evidence: derive the authoritative sets (ruling 3, prep only) | none — analysis |
-| 3 | **R2 adversarial audit, report only** | none — next |
-| — | **OWNER REVIEW OF R2** | ← everything below waits here |
-| 4 | Status CHECK constraints + drift test (ruling 3, migration) | after R2 review |
-| 5 | Tenant-composite FKs, five grouped PRs (ruling 1) | after R2 review |
-| 6 | `external_events` access (ruling 2) | after R2 proves the paths |
-| 7 | Selective indexes on evidence (ruling 4) | after R2 / perf evidence |
-| 8 | Drop the redundant `ledger_entries` FK (ruling 5) | opportunistic cleanup |
+| Phase | Work                                                                      | Gate                          |
+| ----- | ------------------------------------------------------------------------- | ----------------------------- |
+| 0     | R1 audit as a documentation-only PR                                       | none — done                   |
+| 1     | RLS exemption register (ruling 6)                                         | none — documentation          |
+| 2     | Status enum evidence: derive the authoritative sets (ruling 3, prep only) | none — analysis               |
+| 3     | **R2 adversarial audit, report only**                                     | none — next                   |
+| —     | **OWNER REVIEW OF R2**                                                    | ← everything below waits here |
+| 4     | Status CHECK constraints + drift test (ruling 3, migration)               | after R2 review               |
+| 5     | Tenant-composite FKs, five grouped PRs (ruling 1)                         | after R2 review               |
+| 6     | `external_events` access (ruling 2)                                       | after R2 proves the paths     |
+| 7     | Selective indexes on evidence (ruling 4)                                  | after R2 / perf evidence      |
+| 8     | Drop the redundant `ledger_entries` FK (ruling 5)                         | opportunistic cleanup         |
 
 Phase 2 is deliberately split from phase 4. The ruling requires the valid set to
-be *derived from evidence* before any constraint is written; doing that derivation
+be _derived from evidence_ before any constraint is written; doing that derivation
 now costs nothing, is not a migration, and means phase 4 is mechanical when it is
 unblocked.
 
@@ -43,7 +43,7 @@ The ruling's per-relationship checklist is right, and one step has to go in fron
 of it, because without it a composite FK can be added, validated, reported as
 fixed, and enforce nothing.
 
-PostgreSQL's default foreign key match type is **`MATCH SIMPLE`**: if *any*
+PostgreSQL's default foreign key match type is **`MATCH SIMPLE`**: if _any_
 column of a composite key is NULL, **the constraint is not checked at all**. So
 `FOREIGN KEY (business_id, payment_id)` on a row with `business_id IS NULL`
 permits any `payment_id` whatsoever, silently.
@@ -51,7 +51,7 @@ permits any `payment_id` whatsoever, silently.
 Checked across all 21 source tables in the 34 gaps:
 
 - **20 have `business_id NOT NULL`.** For these, a composite FK enforces exactly
-  what it appears to, and a nullable *child* column (`invoice_id IS NULL`) still
+  what it appears to, and a nullable _child_ column (`invoice_id IS NULL`) still
   behaves correctly — an optional relationship stays optional.
 - **`platform_cost_events.business_id` is NULLABLE.** Its two edges
   (`payment_id`, `settlement_id`) cannot be fixed by adding a composite FK alone.

@@ -8,14 +8,14 @@
 
 ## Current state at a glance
 
-| Field | Value |
-|---|---|
-| **Current date** | 11 September 2026 |
-| **Current `main` SHA** | `7155a2b` (6 Sep 2026, "chore: add autonomous engineering control plane (#233)") |
-| **Open branch** | `chore/repository-reset-launch-readiness` — the repository reset and launch-readiness PR |
-| **Product version / state** | 0.1.0. Build plan complete (138 rows, PR-001…PR-132; PR-006–009 and PR-115 gated); 150 migrations; never deployed; no live provider has been exercised |
-| **Launch verdict** | **NOT READY** (`REKODA_LAUNCH_READINESS.md` §1) |
-| **Engineering model** | Simple: Angelo assigns, Claude reads `CLAUDE.md` and the canonical docs, implements with tests, normal CI, Angelo reviews and merges. The multi-agent control plane (PR #233) was removed on 10 Sep 2026 and PR #234 closed unmerged |
+| Field                       | Value                                                                                                                                                                                                                                |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Current date**            | 11 September 2026                                                                                                                                                                                                                    |
+| **Current `main` SHA**      | `7155a2b` (6 Sep 2026, "chore: add autonomous engineering control plane (#233)")                                                                                                                                                     |
+| **Open branch**             | `chore/repository-reset-launch-readiness` — the repository reset and launch-readiness PR                                                                                                                                             |
+| **Product version / state** | 0.1.0. Build plan complete (138 rows, PR-001…PR-132; PR-006–009 and PR-115 gated); 150 migrations; never deployed; no live provider has been exercised                                                                               |
+| **Launch verdict**          | **NOT READY** (`REKODA_LAUNCH_READINESS.md` §1)                                                                                                                                                                                      |
+| **Engineering model**       | Simple: Angelo assigns, Claude reads `CLAUDE.md` and the canonical docs, implements with tests, normal CI, Angelo reviews and merges. The multi-agent control plane (PR #233) was removed on 10 Sep 2026 and PR #234 closed unmerged |
 
 **Last completed work (10–11 Sep 2026):** the repository reset. Removed
 `AGENTS.md`, `GEMINI.md`, `docs/AUTONOMOUS-ENGINEERING.md`, `docs/agents/`,
@@ -142,10 +142,10 @@ for M2/M3 (PDF templates, Meta/Twilio channel code, conversation gates).
 
 | Thing                 | Location                                                                                                                                                                                            |
 | --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Decisions and why     | [adr/](adr/) — 33 ADRs at the reset (0001–0034, 0030 unused); see `REKODA_REFERENCE_MANIFEST.md` §4 for status. This row is historical                                                                    |
-| Product & system spec | [archive/architecture.md](archive/architecture.md) (superseded by `REKODA_CANONICAL_SPEC.md` on 25 Aug 2026)                                                                                             |
+| Decisions and why     | [adr/](adr/) — 33 ADRs at the reset (0001–0034, 0030 unused); see `REKODA_REFERENCE_MANIFEST.md` §4 for status. This row is historical                                                              |
+| Product & system spec | [archive/architecture.md](archive/architecture.md) (superseded by `REKODA_CANONICAL_SPEC.md` on 25 Aug 2026)                                                                                        |
 | Commercial model      | [pricing-model.md](pricing-model.md) — incl. standing review triggers                                                                                                                               |
-| Milestones M0–M5      | [archive/engineering-plan.md](archive/engineering-plan.md) §11 (superseded by the build plan)                                                                                                            |
+| Milestones M0–M5      | [archive/engineering-plan.md](archive/engineering-plan.md) §11 (superseded by the build plan)                                                                                                       |
 | SEO/content plan      | [content-plan.md](content-plan.md)                                                                                                                                                                  |
 | Ops procedures        | [runbooks/](runbooks/)                                                                                                                                                                              |
 | Code                  | `packages/core` (money/ledger/costing/statements — most-tested), `packages/contracts` (AI border schemas), `packages/db` (schema + RLS, migrations through 0149), `packages/shared` (branded types) |

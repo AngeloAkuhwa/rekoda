@@ -41,14 +41,14 @@ nonzero is the incident.
 
 ## Triage table
 
-| Symptom (from the probes)                     | Almost certainly            | Do this                                                                 |
-| --------------------------------------------- | --------------------------- | ----------------------------------------------------------------------- |
-| `queue.dead > 0`                              | A handler is throwing       | Read the job's `last_error` (owner SQL, below); fix code, redeploy; dead jobs do NOT auto-retry, re-enqueue after the fix |
-| `meta.badSignatures` or `paystack` climbing   | Key rotation, or a probe    | Check whether `META_APP_SECRET` / Paystack secret was just rotated; if not, it is someone probing an unauthenticated route — the HMAC already rejects them, so this is a detection signal, not a breach |
-| `financial-integrity.unbalancedJournals > 0`  | **STOP.** A trigger was circumvented | This is the worst signal the estate can emit (the balance trigger is supposed to make it impossible). Freeze writes if you can, snapshot the database, and reconstruct from the last green recovery drill point |
-| `paidWithoutSettlement > 0`                    | A status flipped without its allocation | Named business id: read its invoices and payment_allocations; a paid invoice with no allocation and no applied credit is either a bug or a manual edit |
-| `settlementDrift > 0`                          | An ingested settlement stopped reconciling | Named business id: net should equal gross less deductions plus additions; re-check the provider report against the stored components |
-| `deadOutboxEvents > 0`                         | A subscriber never got an announcement | The event is VISIBLE by design (§26), never lost; decide per event whether to re-dispatch |
+| Symptom (from the probes)                    | Almost certainly                           | Do this                                                                                                                                                                                                         |
+| -------------------------------------------- | ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `queue.dead > 0`                             | A handler is throwing                      | Read the job's `last_error` (owner SQL, below); fix code, redeploy; dead jobs do NOT auto-retry, re-enqueue after the fix                                                                                       |
+| `meta.badSignatures` or `paystack` climbing  | Key rotation, or a probe                   | Check whether `META_APP_SECRET` / Paystack secret was just rotated; if not, it is someone probing an unauthenticated route — the HMAC already rejects them, so this is a detection signal, not a breach         |
+| `financial-integrity.unbalancedJournals > 0` | **STOP.** A trigger was circumvented       | This is the worst signal the estate can emit (the balance trigger is supposed to make it impossible). Freeze writes if you can, snapshot the database, and reconstruct from the last green recovery drill point |
+| `paidWithoutSettlement > 0`                  | A status flipped without its allocation    | Named business id: read its invoices and payment_allocations; a paid invoice with no allocation and no applied credit is either a bug or a manual edit                                                          |
+| `settlementDrift > 0`                        | An ingested settlement stopped reconciling | Named business id: net should equal gross less deductions plus additions; re-check the provider report against the stored components                                                                            |
+| `deadOutboxEvents > 0`                       | A subscriber never got an announcement     | The event is VISIBLE by design (§26), never lost; decide per event whether to re-dispatch                                                                                                                       |
 
 ## Reading a job's failure, as the owner
 

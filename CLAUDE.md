@@ -190,6 +190,13 @@ client idempotency key; numeric config is parsed fail-closed.
 4. Open a PR from a `feat/`, `fix/`, `docs/` or `chore/` branch with a
    Conventional Commit title and the template filled. Never push to
    `main`. Never bypass a check. Do not merge; Angelo does.
+5. Before calling it merge-ready, get an independent review from a fresh
+   Claude context that did not build it (read-only; given only the PR, the
+   exact head SHA, the requirements, the diff, the canonical docs and the
+   test evidence). Fix every valid BLOCKING or IMPORTANT finding and every
+   valid Codex thread; a new SHA gets a new review. Report READY FOR OWNER
+   MERGE only when CI is green on that exact SHA and no blocking finding or
+   thread remains (`CONTRIBUTING.md`, "Independent review before merge").
 
 ## 8. Blocked?
 

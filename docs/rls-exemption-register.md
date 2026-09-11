@@ -45,13 +45,13 @@ SELECT c.relname
 
 ## 1. `sessions`
 
-| | |
-|---|---|
-| **Reason** | Resolved **before** the tenant is known |
-| **Lookup key** | `sessions_token_ux`, a UNIQUE index on `token_hash` |
-| **Credential** | `rekoda_app` (SELECT, INSERT, UPDATE, DELETE) |
-| **Standing control** | Unguessable hashed bearer token |
-| **Status** | Exempt. Correct as designed |
+|                      |                                                     |
+| -------------------- | --------------------------------------------------- |
+| **Reason**           | Resolved **before** the tenant is known             |
+| **Lookup key**       | `sessions_token_ux`, a UNIQUE index on `token_hash` |
+| **Credential**       | `rekoda_app` (SELECT, INSERT, UPDATE, DELETE)       |
+| **Standing control** | Unguessable hashed bearer token                     |
+| **Status**           | Exempt. Correct as designed                         |
 
 A tenant policy here is a circular dependency, not a control:
 
@@ -63,7 +63,7 @@ to set app.business_id you must know the business
 
 The security boundary is a different one and it is sound: a caller presents a
 token, the token is hashed, and the row is found by a unique index on that hash or
-not at all. Possession of the token *is* the authorisation to learn which business
+not at all. Possession of the token _is_ the authorisation to learn which business
 it belongs to. Nothing about the row is reachable by guessing a `business_id`.
 
 **Do not add a tenant policy to this table for consistency.** It would break sign-in
@@ -71,13 +71,13 @@ and buy nothing.
 
 ## 2. `magic_links`
 
-| | |
-|---|---|
-| **Reason** | Identical to `sessions` — resolved before the tenant is known |
-| **Lookup key** | `magic_links_token_ux`, a UNIQUE index on `token_hash` |
-| **Credential** | `rekoda_app` (SELECT, INSERT, UPDATE, DELETE) |
+|                      |                                                                      |
+| -------------------- | -------------------------------------------------------------------- |
+| **Reason**           | Identical to `sessions` — resolved before the tenant is known        |
+| **Lookup key**       | `magic_links_token_ux`, a UNIQUE index on `token_hash`               |
+| **Credential**       | `rekoda_app` (SELECT, INSERT, UPDATE, DELETE)                        |
 | **Standing control** | Unguessable hashed single-use token, with `expires_at` and `used_at` |
-| **Status** | Exempt. Correct as designed |
+| **Status**           | Exempt. Correct as designed                                          |
 
 The sign-in link Rekoda sends to a merchant in chat. Same circular dependency, same
 resolution, with two extra controls the session does not have: the link expires, and
@@ -85,12 +85,12 @@ resolution, with two extra controls the session does not have: the link expires,
 
 ## 3. `retention_deletions`
 
-| | |
-|---|---|
-| **Reason** | The row's purpose is to **outlive** the tenant it names |
-| **Credential** | `rekoda_app` SELECT only; `rekoda_worker` INSERT, SELECT |
+|                      |                                                                   |
+| -------------------- | ----------------------------------------------------------------- |
+| **Reason**           | The row's purpose is to **outlive** the tenant it names           |
+| **Credential**       | `rekoda_app` SELECT only; `rekoda_worker` INSERT, SELECT          |
 | **Standing control** | Holds nothing worth isolating; no write path from the application |
-| **Status** | Exempt, documented at migration 0022 |
+| **Status**           | Exempt, documented at migration 0022                              |
 
 A policy keyed on a business that has just been deleted matches nothing, which
 would make the row unreachable by every credential — precisely the failure the
@@ -102,12 +102,12 @@ if the table ever gains a column that is not a count.
 
 ## 4. `platform_cost_events`
 
-| | |
-|---|---|
-| **Reason** | Rekoda's own cost ledger, not a tenant's. Margin surfaces read it **across** businesses by design |
-| **Credential** | `rekoda_app` **INSERT only**; `rekoda_worker` INSERT, SELECT |
-| **Standing control** | The application cannot read it at all — no SELECT grant |
-| **Status** | Exempt, documented at migration 0124 |
+|                      |                                                                                                   |
+| -------------------- | ------------------------------------------------------------------------------------------------- |
+| **Reason**           | Rekoda's own cost ledger, not a tenant's. Margin surfaces read it **across** businesses by design |
+| **Credential**       | `rekoda_app` **INSERT only**; `rekoda_worker` INSERT, SELECT                                      |
+| **Standing control** | The application cannot read it at all — no SELECT grant                                           |
+| **Status**           | Exempt, documented at migration 0124                                                              |
 
 The exemption is carried by the grant rather than by a policy, which is the
 stronger of the two: `rekoda_app` cannot read one business's costs, let alone
@@ -119,24 +119,24 @@ under `MATCH SIMPLE` for any row with a null tenant. See the remediation plan.
 
 ## 5. `migration_manifest_items`
 
-| | |
-|---|---|
-| **Reason** | A one-off migration artefact |
-| **Credential** | **None.** Neither application role holds any grant |
-| **Standing control** | Unreachable except by the table owner |
-| **Status** | Exempt. Not a leak |
+|                      |                                                    |
+| -------------------- | -------------------------------------------------- |
+| **Reason**           | A one-off migration artefact                       |
+| **Credential**       | **None.** Neither application role holds any grant |
+| **Standing control** | Unreachable except by the table owner              |
+| **Status**           | Exempt. Not a leak                                 |
 
 Appears in the query above because it carries `business_id`, but no application
 role can read or write it at all. Listed so it is not re-investigated.
 
 ## 6. `external_events` — CLOSED by migration 0130
 
-| | |
-|---|---|
-| **Reason** | Nullable `business_id`: an unattributed provider event belongs to no tenant |
-| **Credential** | `rekoda_app` sees its own tenant, plus the unattributed backlog. Nothing else |
-| **Standing control** | Three policies (below), FORCE ROW LEVEL SECURITY, and the invariant test |
-| **Status** | **Settled.** No longer an exemption |
+|                      |                                                                               |
+| -------------------- | ----------------------------------------------------------------------------- |
+| **Reason**           | Nullable `business_id`: an unattributed provider event belongs to no tenant   |
+| **Credential**       | `rekoda_app` sees its own tenant, plus the unattributed backlog. Nothing else |
+| **Standing control** | Three policies (below), FORCE ROW LEVEL SECURITY, and the invariant test      |
+| **Status**           | **Settled.** No longer an exemption                                           |
 
 This entry stays because the register is read by people asking why a table is
 missing from it, and because the reason it was open is worth keeping.

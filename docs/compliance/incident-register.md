@@ -9,8 +9,8 @@ An empty register is a fact worth being able to prove, which is why this
 file exists before the first incident does.
 
 | Closed (UTC) | Classification | Scope (factual, no speculation) | NDPC notified? | Data subjects notified? | Post-incident review |
-| --- | --- | --- | --- | --- | --- |
-| _none yet_ | | | | | |
+| ------------ | -------------- | ------------------------------- | -------------- | ----------------------- | -------------------- |
+| _none yet_   |                |                                 |                |                         |                      |
 
 Rules:
 

@@ -14,10 +14,10 @@ Drill cadence: monthly, and before any migration touching financial tables.
 > evidence (timer unit, bucket name, first verified upload date).
 
 | Data                                                    | Method (planned)                        | Frequency (planned) | Destination (planned)   |
-| ------------------------------------------------------- | --------------------------------------- | ----------------- | ----------------------- |
-| Postgres (everything: ledger, vault ciphertexts, audit) | `pg_dump -Fc`                           | nightly 02:00 WAT | Backblaze B2, encrypted |
-| Generated documents                                     | R2 is primary storage; lifecycle-copied | continuous        | R2 + B2 mirror          |
-| Whole box                                               | Hetzner snapshot                        | weekly            | Hetzner                 |
+| ------------------------------------------------------- | --------------------------------------- | ------------------- | ----------------------- |
+| Postgres (everything: ledger, vault ciphertexts, audit) | `pg_dump -Fc`                           | nightly 02:00 WAT   | Backblaze B2, encrypted |
+| Generated documents                                     | R2 is primary storage; lifecycle-copied | continuous          | R2 + B2 mirror          |
+| Whole box                                               | Hetzner snapshot                        | weekly              | Hetzner                 |
 
 Vault ciphertexts are useless without `VAULT_KEY`, which lives ONLY in the
 environment — so an exfiltrated backup alone exposes no customer identity.
@@ -83,7 +83,7 @@ against production. A green build is a passed drill.
 
 ## Drill log
 
-| Date       | Dump                        | Duration | Result | Operator     |
-| ---------- | --------------------------- | -------- | ------ | ------------ |
-| Continuous | CI, per push (§32-shaped)   | ~6s      | PASS   | recovery-drill test |
-| _(first production drill due before first paying merchant)_ |  |  |  |  |
+| Date                                                        | Dump                      | Duration | Result | Operator            |
+| ----------------------------------------------------------- | ------------------------- | -------- | ------ | ------------------- |
+| Continuous                                                  | CI, per push (§32-shaped) | ~6s      | PASS   | recovery-drill test |
+| _(first production drill due before first paying merchant)_ |                           |          |        |                     |

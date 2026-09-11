@@ -89,10 +89,18 @@ docker compose -f docker-compose.dev.yml up -d   # PostgreSQL 16 on 127.0.0.1:54
 DATABASE_URL=postgres://rekoda@127.0.0.1:5432/rekoda pnpm --filter @rekoda/db migrate:apply
 
 pnpm turbo build
-cp .env.example .env            # fill the required keys; the API names any missing value at boot
-pnpm --filter @rekoda/api start  # :3001 (set REKODA_WORKER=1 to also run the queue and sweeps)
-pnpm --filter @rekoda/web dev    # :3000, needs REKODA_API_URL
+cp .env.example .env              # fill the required keys; the API names any missing value at boot
+pnpm --filter @rekoda/api start:local   # :3001, reads the root .env (node --env-file)
+pnpm --filter @rekoda/web dev           # :3000; in development it needs no variables
 ```
+
+The API reads only `process.env` (`loadConfig` in `apps/api/src/config.ts`), so
+a copied `.env` does nothing by itself. `start:local` and `dev:local` start
+Node with `--env-file=../../.env`; a production deployment injects the
+variables from its own secret store and uses plain `start`. The web app
+defaults `REKODA_API_URL` to the API above and only demands the legal
+values in a production build. Set `REKODA_WORKER=1` in `.env` to also run
+the queue and sweeps in the same process.
 
 Without provider keys the stack still boots: inbound messages are recorded
 and answered in the database, the deterministic router answers without a

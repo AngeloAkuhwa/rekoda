@@ -1,12 +1,12 @@
 # Rekoda Design System Reference
 
-| Field | Value |
-|---|---|
-| Status | **CANONICAL — consolidates the existing system, extends it to spec v1.6.6** |
-| Version | 1.0 |
-| Effective date | 25 August 2026 |
+| Field                 | Value                                                                         |
+| --------------------- | ----------------------------------------------------------------------------- |
+| Status                | **CANONICAL — consolidates the existing system, extends it to spec v1.6.6**   |
+| Version               | 1.0                                                                           |
+| Effective date        | 25 August 2026                                                                |
 | Token source of truth | `design-system/rekoda/MASTER.md` → generates `apps/web/src/styles/tokens.css` |
-| Governed by | `docs/REKODA_CANONICAL_SPEC.md` v1.6.6 |
+| Governed by           | `docs/REKODA_CANONICAL_SPEC.md` v1.6.6                                        |
 
 > **This document does not replace the existing design system. It consolidates it and extends it.** Rekoda already has a working system with real tokens, a stated brief and non-negotiable rules. The design direction below is that system, not a new one.
 
@@ -14,13 +14,13 @@
 
 Duplicating tokens into this file would create a second answer to every colour question, so it does not.
 
-| Concern | Authority |
-|---|---|
-| Token values, palette rationale, typography choice | `design-system/rekoda/MASTER.md` |
-| The generated tokens the app actually consumes | `apps/web/src/styles/tokens.css` |
-| Base element styles, utilities, component CSS | `apps/web/src/styles/globals.css` |
-| Which patterns must exist and what they may claim | **this document** |
-| What a screen is allowed to assert about money | **the canonical spec**, always |
+| Concern                                            | Authority                         |
+| -------------------------------------------------- | --------------------------------- |
+| Token values, palette rationale, typography choice | `design-system/rekoda/MASTER.md`  |
+| The generated tokens the app actually consumes     | `apps/web/src/styles/tokens.css`  |
+| Base element styles, utilities, component CSS      | `apps/web/src/styles/globals.css` |
+| Which patterns must exist and what they may claim  | **this document**                 |
+| What a screen is allowed to assert about money     | **the canonical spec**, always    |
 
 **A raw hex in a component is a bug.** Edit `MASTER.md`, regenerate `tokens.css`, then use the token.
 
@@ -148,19 +148,19 @@ This is not copy preference. It is the anti-fake-alert defence the entire produc
 
 **Added by the canonical spec, owned by the slice that needs them:**
 
-| Component | Slice | What it must express |
-|---|---|---|
-| `TrustBadge` | PR-008 | The five states of §3.2, and no sixth |
-| `EvidenceCard` | R0A-ii | A reported payment, its resolution state and its deadline |
-| `VerificationTimeline` | R0A-ii | Append-only history, revocations shown struck but present |
-| `HighRiskConfirm` | E1 | Names the consequence in the merchant's own words |
-| `EntitlementRefusal` | E1 | What is unavailable, why, and what would change it |
-| `UsageMeter` | E1 / BL2 | Units used against the allowance, never a surprise |
-| `ReconciliationConfidence` | B1 | Exact · strong · suggested · manual, visibly different |
-| `ConnectionHealth` | P1 | Four independent statuses, never blended into one dot |
-| `CollectionStatus` | D1 | Lifecycle, payment and aging as three separate readings |
-| `AuditTimeline` | D1 | Who did what, when, with what reason |
-| `AccountantView` | D1 | Dense, keyboard-first, tabular-numeral throughout |
+| Component                  | Slice    | What it must express                                      |
+| -------------------------- | -------- | --------------------------------------------------------- |
+| `TrustBadge`               | PR-008   | The five states of §3.2, and no sixth                     |
+| `EvidenceCard`             | R0A-ii   | A reported payment, its resolution state and its deadline |
+| `VerificationTimeline`     | R0A-ii   | Append-only history, revocations shown struck but present |
+| `HighRiskConfirm`          | E1       | Names the consequence in the merchant's own words         |
+| `EntitlementRefusal`       | E1       | What is unavailable, why, and what would change it        |
+| `UsageMeter`               | E1 / BL2 | Units used against the allowance, never a surprise        |
+| `ReconciliationConfidence` | B1       | Exact · strong · suggested · manual, visibly different    |
+| `ConnectionHealth`         | P1       | Four independent statuses, never blended into one dot     |
+| `CollectionStatus`         | D1       | Lifecycle, payment and aging as three separate readings   |
+| `AuditTimeline`            | D1       | Who did what, when, with what reason                      |
+| `AccountantView`           | D1       | Dense, keyboard-first, tabular-numeral throughout         |
 
 ---
 

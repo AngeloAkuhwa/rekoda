@@ -17,7 +17,6 @@
 > no self-hosted media sidecars — see
 > [ADR 0032](adr/0032-launch-media-architecture.md).
 
-
 **Version:** 4.0 · 19 August 2026
 **Changes in v4:** ADRs 0013–0019 land. Integrate is redesigned end to end:
 the **Rekoda storefront is the order-capture path** (the WABA catalogue is

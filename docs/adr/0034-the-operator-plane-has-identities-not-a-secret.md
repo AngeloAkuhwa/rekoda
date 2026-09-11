@@ -105,7 +105,7 @@ only one credential and it meant "yes".
    this scope is not yours" — and it names the missing scope, because that
    tells the caller about their own token rather than about the deployment.
    The authentication refusal stays uniform whatever went wrong: a caller who
-   learns *which* check failed learns whether they have the right issuer, the
+   learns _which_ check failed learns whether they have the right issuer, the
    right audience or merely a stale token, and that is a map.
 
 ## Consequences

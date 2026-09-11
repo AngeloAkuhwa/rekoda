@@ -17,7 +17,6 @@
 > no self-hosted media sidecars — see
 > [ADR 0032](adr/0032-launch-media-architecture.md).
 
-
 _A three-lane adversarial audit of the post-remediation codebase (HEAD 3cd6437,
 all of PRs #124-#131 merged). This plan is the standing contract for closing
 its findings: one batch per PR, each planned here, each shipped with a test

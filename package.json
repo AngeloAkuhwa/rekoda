@@ -2,7 +2,7 @@
   "name": "rekoda",
   "private": true,
   "version": "0.1.0",
-  "description": "WhatsApp-first financial operating assistant \u2014 you run the business, Rekoda builds the records.",
+  "description": "WhatsApp-first financial operating assistant — you run the business, Rekoda builds the records.",
   "license": "SEE LICENSE IN LICENSE",
   "packageManager": "pnpm@9.15.9",
   "engines": {
@@ -19,7 +19,8 @@
     "boundaries": "node scripts/check-boundaries.mjs",
     "test:integration": "pnpm --filter @rekoda/db test:integration && pnpm --filter @rekoda/api test:integration",
     "e2e": "pnpm --filter @rekoda/web e2e",
-    "migrate": "pnpm --filter @rekoda/db migrate:apply"
+    "migrate": "pnpm --filter @rekoda/db migrate:apply",
+    "docs:check": "prettier --check \"*.md\" \"docs/**/*.md\" \".github/**/*.md\""
   },
   "devDependencies": {
     "playwright": "1.62.1",

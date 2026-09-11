@@ -15,21 +15,21 @@ than one that admits it.
 
 ## Summary
 
-| # | Area | Depth | Result |
-|---|---|---|---|
-| 1 | Reachability of the 34 tenant-FK gaps | Deep on the exposed subset | **No reachable cross-tenant write found.** The emblematic edge has no ingress at all |
-| 2 | `external_events` cross-tenant access | **Answered definitively** | One estate-wide read on the application credential. Small, precise fix |
-| 3 | Every `sql.raw` production site | Complete — all 6 | None exploitable. Two unescaped, safe only by provenance |
-| 4 | Operator / admin authentication | Deep | Rebuilt this session (#196). No finding |
-| 5 | HIGH_RISK direct execution | Deep | Closed this session (#194). No finding |
-| 6 | Object-storage lifecycle | Deep | Closed this session (#197). No finding |
-| 7 | Auth / IDOR / CSRF / SSRF / webhook / log / secret / DoS | **Bounded pass only** | Nothing alarming surfaced; not an exhaustive review |
+| #   | Area                                                     | Depth                      | Result                                                                               |
+| --- | -------------------------------------------------------- | -------------------------- | ------------------------------------------------------------------------------------ |
+| 1   | Reachability of the 34 tenant-FK gaps                    | Deep on the exposed subset | **No reachable cross-tenant write found.** The emblematic edge has no ingress at all |
+| 2   | `external_events` cross-tenant access                    | **Answered definitively**  | One estate-wide read on the application credential. Small, precise fix               |
+| 3   | Every `sql.raw` production site                          | Complete — all 6           | None exploitable. Two unescaped, safe only by provenance                             |
+| 4   | Operator / admin authentication                          | Deep                       | Rebuilt this session (#196). No finding                                              |
+| 5   | HIGH_RISK direct execution                               | Deep                       | Closed this session (#194). No finding                                               |
+| 6   | Object-storage lifecycle                                 | Deep                       | Closed this session (#197). No finding                                               |
+| 7   | Auth / IDOR / CSRF / SSRF / webhook / log / secret / DoS | **Bounded pass only**      | Nothing alarming surfaced; not an exhaustive review                                  |
 
 ---
 
 ## 1. Reachability of the 34 tenant-FK gaps
 
-**Question.** R1 proved the database *permits* a tenant-owned row to reference
+**Question.** R1 proved the database _permits_ a tenant-owned row to reference
 another tenant's parent on 34 edges. Does any code path reach it?
 
 **Method.** For each edge, find every writer of the referencing column, then ask
@@ -78,8 +78,8 @@ if (!movement) return { outcome: 'refused', reason: 'no_such_movement' };
 ```
 
 `openMovements` is tenant-scoped, so another merchant's transaction is refused.
-The code anticipates the case in a comment: *"Either it is not a bank movement of
-this business at all, or somebody already claimed it."*
+The code anticipates the case in a comment: _"Either it is not a bank movement of
+this business at all, or somebody already claimed it."_
 
 ### 1.3 Conclusion, and what it does not license
 
@@ -87,8 +87,8 @@ this business at all, or somebody already claimed it."*
 layers today — application validation and RLS — and both held everywhere traced.
 
 This does not license leaving the third layer out, and the ruling already says so:
-*application reachability is not required to conclude that a tenant-owned child
-must not be capable of referencing another tenant's parent.* What R2 changes is
+_application reachability is not required to conclude that a tenant-owned child
+must not be capable of referencing another tenant's parent._ What R2 changes is
 **urgency, not direction**. The 34 are a structural defect to fix on the ruling's
 schedule, not an active breach.
 
@@ -110,12 +110,12 @@ run on? If `rekoda_app`, a tenant policy breaks them.
 **The answer: the exception queue already runs on the worker.** One narrower read
 does not.
 
-| Path | Credential | Verdict |
-|---|---|---|
-| `events.exceptionQueue(this.workerDb, limit)` | **worker** | Correct already |
-| `events.resolveEvent(this.workerDb, …)` | **worker** | Correct already, guarded by `if (!this.workerDb) throw ServiceUnavailable` |
-| `events.eventHealth(this.db, 'meta')` | **application** | ← the only blocker |
-| `events.eventHealth(this.db, 'paystack')` | **application** | ← the only blocker |
+| Path                                          | Credential      | Verdict                                                                    |
+| --------------------------------------------- | --------------- | -------------------------------------------------------------------------- |
+| `events.exceptionQueue(this.workerDb, limit)` | **worker**      | Correct already                                                            |
+| `events.resolveEvent(this.workerDb, …)`       | **worker**      | Correct already, guarded by `if (!this.workerDb) throw ServiceUnavailable` |
+| `events.eventHealth(this.db, 'meta')`         | **application** | ← the only blocker                                                         |
+| `events.eventHealth(this.db, 'paystack')`     | **application** | ← the only blocker                                                         |
 
 Both at `ops.controller.ts:108-109`, and both return estate-wide **counts**, not
 rows.
@@ -149,14 +149,14 @@ the R2 review.
 
 ## 3. `sql.raw` — all six sites
 
-| Site | Interpolates | Escaped | Constrained | Verdict |
-|---|---|---|---|---|
-| `recognition.ts:49` | a ternary over two hardcoded strings | n/a | n/a | Safe by construction |
-| `accounts.ts:30` | `ACCOUNTS[key].code`, a code-defined constant map | n/a | typed `AccountKey` | Safe |
-| `reports.ts:41` | a module constant | n/a | n/a | Safe |
-| `webhooks.ts:79` | `input.eventTypes` | **yes** (`'` → `''`) | **yes** (`z.enum(WEBHOOK_EVENT_TYPES)`) | Not exploitable |
-| `evidence-retention.ts:64` | `evidenceIds` | **no** | no | Safe **only by provenance** |
-| `evidence-retention.ts:122` | `evidenceIds` | **no** | no | Safe **only by provenance** |
+| Site                        | Interpolates                                      | Escaped              | Constrained                             | Verdict                     |
+| --------------------------- | ------------------------------------------------- | -------------------- | --------------------------------------- | --------------------------- |
+| `recognition.ts:49`         | a ternary over two hardcoded strings              | n/a                  | n/a                                     | Safe by construction        |
+| `accounts.ts:30`            | `ACCOUNTS[key].code`, a code-defined constant map | n/a                  | typed `AccountKey`                      | Safe                        |
+| `reports.ts:41`             | a module constant                                 | n/a                  | n/a                                     | Safe                        |
+| `webhooks.ts:79`            | `input.eventTypes`                                | **yes** (`'` → `''`) | **yes** (`z.enum(WEBHOOK_EVENT_TYPES)`) | Not exploitable             |
+| `evidence-retention.ts:64`  | `evidenceIds`                                     | **no**               | no                                      | Safe **only by provenance** |
+| `evidence-retention.ts:122` | `evidenceIds`                                     | **no**               | no                                      | Safe **only by provenance** |
 
 ### 3.1 The two unescaped sites
 
@@ -177,9 +177,9 @@ Uuids selected from a table, never from a request. **Not exploitable as written.
 It is still the weakest construct in the codebase, and the repository's own
 comment elsewhere makes the argument better than this report can:
 
-> *"These keys come from our own columns rather than from a request, but a
+> _"These keys come from our own columns rather than from a request, but a
 > repository that interpolates a value into SQL text teaches the next one to do
-> it with a value that does."* — `object-deletions.ts`
+> it with a value that does."_ — `object-deletions.ts`
 
 The signature is `evidenceIds: readonly string[]`. Nothing in the type system and
 nothing at the call boundary prevents a future caller passing ids from a request
@@ -241,8 +241,8 @@ a weaker claim than "these are sound".
   `identity.ts`, `vault.ts`, `tokens.ts` and `operator.guard.ts`. No hand-rolled
   comparison was found at a controller.
 - **Secrets in logs.** No log call was found interpolating a secret, key or token.
-  One message *names* a key without printing it — `'a sealed Paystack payload
-  would not open — check VAULT_KEY'` — which is the correct shape.
+  One message _names_ a key without printing it — `'a sealed Paystack payload
+would not open — check VAULT_KEY'` — which is the correct shape.
 - **SSRF.** 15 outbound `fetch` sites, all inside named provider adapters (Meta,
   Mono, Kuda, Paystack, OPay) whose base URLs come from configuration. No site was
   found taking a URL from a request. **Not verified exhaustively**, and the FX work
@@ -256,14 +256,14 @@ a weaker claim than "these are sound".
 
 ## What R2 changes about the R1 rulings
 
-| Ruling | Change |
-|---|---|
-| 1 — 34 tenant FKs | **Direction unchanged, urgency lowered.** No reachable write found; the emblematic edge has no ingress. Fix on schedule, not tonight |
-| 2 — `external_events` | **Now actionable and small.** The blocker is two `eventHealth` calls on the wrong credential. Move them first, then apply the 0124 policy pair |
-| 3 — status CHECKs | Untouched by R2; the evidence document already derived the sets |
-| 4 — indexes | Untouched; still needs `EXPLAIN` evidence |
-| 5 — duplicate FK | Untouched |
-| 6 — sessions / magic_links | **No attack path found.** The exemption stands; the register records it |
+| Ruling                     | Change                                                                                                                                         |
+| -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1 — 34 tenant FKs          | **Direction unchanged, urgency lowered.** No reachable write found; the emblematic edge has no ingress. Fix on schedule, not tonight           |
+| 2 — `external_events`      | **Now actionable and small.** The blocker is two `eventHealth` calls on the wrong credential. Move them first, then apply the 0124 policy pair |
+| 3 — status CHECKs          | Untouched by R2; the evidence document already derived the sets                                                                                |
+| 4 — indexes                | Untouched; still needs `EXPLAIN` evidence                                                                                                      |
+| 5 — duplicate FK           | Untouched                                                                                                                                      |
+| 6 — sessions / magic_links | **No attack path found.** The exemption stands; the register records it                                                                        |
 
 **New, not in R1:** the two unescaped `sql.raw` interpolations in
 `evidence-retention.ts`. Not exploitable; worth binding properly.

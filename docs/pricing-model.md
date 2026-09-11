@@ -80,7 +80,7 @@ inventory → reconciliation, with unmatched/short-payment/exception detection.
 **Integrate is the customer-facing half.** It does not include recording by
 message: no merchant messaging, no voice notes, no photographed receipts.
 Those are Chat, and **Complete is both** — which is the point of Complete
-existing. A merchant who wants to run their shop automatically *and* tell
+existing. A merchant who wants to run their shop automatically _and_ tell
 Rekoda about the rest of the business buys Complete.
 
 > **Corrected 26 Aug 2026 (owner decision).** This plan previously carried
@@ -115,23 +115,23 @@ seat or an API application is held rather than spent.
 
 One-off packs:
 
-| Pack                                    | Price  |
-| --------------------------------------- | ------ |
-| +100 WhatsApp messages                  | ₦2,500 |
-| +30 voice minutes                       | ₦1,500 |
-| +50 document generations                | ₦2,000 |
-| +50 Integrate orders + related capacity | ₦5,000 |
+| Pack                                    | Price   |
+| --------------------------------------- | ------- |
+| +100 WhatsApp messages                  | ₦2,500  |
+| +30 voice minutes                       | ₦1,500  |
+| +50 document generations                | ₦2,000  |
+| +50 Integrate orders + related capacity | ₦5,000  |
 | +25,000 API requests                    | ₦10,000 |
-| +25,000 webhook deliveries              | ₦5,000 |
+| +25,000 webhook deliveries              | ₦5,000  |
 
 Recurring add-ons:
 
-| Add-on                     | Price            | What it grants                                                        |
-| -------------------------- | ---------------- | --------------------------------------------------------------------- |
-| Extra accountant/delegate  | ₦1,500/month     | +1 accountant seat                                                    |
+| Add-on                     | Price            | What it grants                                                                        |
+| -------------------------- | ---------------- | ------------------------------------------------------------------------------------- |
+| Extra accountant/delegate  | ₦1,500/month     | +1 accountant seat                                                                    |
 | Developer API Starter      | ₦25,000/month    | the REKODA_API entitlement, 1 application, 25,000 requests, 25,000 webhook deliveries |
-| One extra API application  | ₦5,000/month     | +1 application                                                        |
-| Additional WhatsApp number | Custom initially | a further number, handled as a conversation                           |
+| One extra API application  | ₦5,000/month     | +1 application                                                                        |
+| Additional WhatsApp number | Custom initially | a further number, handled as a conversation                                           |
 
 There is deliberately no pack of API applications. "Fifty more applications,
 once" is not a sentence about standing capacity, and the catalogue is
@@ -165,14 +165,14 @@ which is exactly when someone needs it most.
 > 16 Aug 2026 and several lines are now superseded by decisions taken since.
 > Where they conflict, **the ADR wins**:
 >
-> | Original assumption                                                | Superseded by                                                                                                                                        |
-> | ------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-> | Twilio ₦7.25/msg both directions for Chat                          | **ADR 0002/0011** — Chat is Meta-direct; Twilio applies to the Integrate WABA path only                                                              |
-> | Free-form replies and utility templates free inside the 24h window | **ADR 0011** — Meta charges for **every service message from 1 Oct 2026**, flat, no volume discount (~₦10/outbound in Nigeria)                       |
-> | Twilio Verify ~₦80+/OTP                                            | **ADR 0002** — OTP over Rekoda's own WhatsApp number (~₦10), SMS fallback only                                                                       |
+> | Original assumption                                                | Superseded by                                                                                                                                                |
+> | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+> | Twilio ₦7.25/msg both directions for Chat                          | **ADR 0002/0011** — Chat is Meta-direct; Twilio applies to the Integrate WABA path only                                                                      |
+> | Free-form replies and utility templates free inside the 24h window | **ADR 0011** — Meta charges for **every service message from 1 Oct 2026**, flat, no volume discount (~₦10/outbound in Nigeria)                               |
+> | Twilio Verify ~₦80+/OTP                                            | **ADR 0002** — OTP over Rekoda's own WhatsApp number (~₦10), SMS fallback only                                                                               |
 > | OpenAI transcription ~₦6.53/min                                    | **ADR 0027/0032** — OpenAI IS the launch transcriber, costed at a $0.006/min ceiling via `AI_TRANSCRIPTION_PRICES`; no self-hosted sidecar exists (ADR 0032) |
-> | Azure hosting ₦75–150k/month                                       | **ADR 0006** — Hetzner + Cloudflare + R2, **~₦30–40k/month** at launch                                                                               |
-> | Nightly `pg_dump` backups                                          | **ADR 0010** — continuous WAL archiving (PITR)                                                                                                       |
+> | Azure hosting ₦75–150k/month                                       | **ADR 0006** — Hetzner + Cloudflare + R2, **~₦30–40k/month** at launch                                                                                       |
+> | Nightly `pg_dump` backups                                          | **ADR 0010** — continuous WAL archiving (PITR)                                                                                                               |
 >
 > Net effect: hosting and STT are **much** cheaper than modelled, messaging is
 > **more** expensive from October, and the ₦9,900 tier lands at **39–60% margin**
@@ -208,21 +208,21 @@ which is exactly when someone needs it most.
 
 ## External cost stack (researched 16 Aug 2026, re-verified 24 Aug 2026, at planning FX ₦1,450/$)
 
-| Service                    | Underlying price        | ≈ Cost             | Note                                                                   |
-| -------------------------- | ----------------------- | ------------------ | ---------------------------------------------------------------------- |
-| Twilio WhatsApp            | $0.005/msg each way     | ₦7.25/msg          | Integrate path only — see ADR 0002                                     |
-| Meta utility template (NG) | ~$0.0067                | ₦9.72              | Only when required                                                     |
-| Meta authentication (NG)   | $0.0145 (NG-registered) | ₦21.03             | OTP. **$0.0750 if the WABA is registered outside Nigeria** (rate card `meta-ng-2026-08`) |
-| Meta marketing (NG)        | ~$0.0516                | ₦74.82             | **Excluded from V1 entirely**                                          |
-| In-window service replies  | currently ₦0 Meta-side  | —                  | **Chargeable from 1 Oct 2026; re-run maths when rates publish ~1 Sep** |
+| Service                    | Underlying price        | ≈ Cost             | Note                                                                                                                               |
+| -------------------------- | ----------------------- | ------------------ | ---------------------------------------------------------------------------------------------------------------------------------- |
+| Twilio WhatsApp            | $0.005/msg each way     | ₦7.25/msg          | Integrate path only — see ADR 0002                                                                                                 |
+| Meta utility template (NG) | ~$0.0067                | ₦9.72              | Only when required                                                                                                                 |
+| Meta authentication (NG)   | $0.0145 (NG-registered) | ₦21.03             | OTP. **$0.0750 if the WABA is registered outside Nigeria** (rate card `meta-ng-2026-08`)                                           |
+| Meta marketing (NG)        | ~$0.0516                | ₦74.82             | **Excluded from V1 entirely**                                                                                                      |
+| In-window service replies  | currently ₦0 Meta-side  | —                  | **Chargeable from 1 Oct 2026; re-run maths when rates publish ~1 Sep**                                                             |
 | OpenAI transcription       | $0.006/min ceiling      | ~₦8.70/min         | Launch configuration (ADR 0027); actual rate supplied at deploy via `AI_TRANSCRIPTION_PRICES`, recorded per call in `usage_events` |
-| Claude Haiku 4.5           | $1/$5 per MTok          | ~₦2–4/call         | Trivial classification                                                 |
-| Claude Sonnet 5            | $2/$10 per MTok         | ~₦8/call           | **Interpreter default** (ADR 0031, accuracy-first) and the vision reader |
-| Claude Opus 5              | $5/$25 per MTok         | ~₦20/call          | Escalation role only — rare by design                                  |
-| Claude Fable 5             | $10/$50 per MTok        | ~₦40/call          | Build-time & evals, escalation flag only                               |
-| Paystack local card        | 1.5% + ₦100, cap ₦2,000 | merchant-borne     | Never absorbed into subscription                                       |
-| Paystack DVA/transfer      | 1%, cap ₦300            | merchant-borne     | Encourage "pay by transfer"                                            |
-| Hosting (ADR 0006)         | Hetzner+CF+R2           | ~₦30–40k/mo shared | ~₦1,500/business at 25 businesses                                      |
+| Claude Haiku 4.5           | $1/$5 per MTok          | ~₦2–4/call         | Trivial classification                                                                                                             |
+| Claude Sonnet 5            | $2/$10 per MTok         | ~₦8/call           | **Interpreter default** (ADR 0031, accuracy-first) and the vision reader                                                           |
+| Claude Opus 5              | $5/$25 per MTok         | ~₦20/call          | Escalation role only — rare by design                                                                                              |
+| Claude Fable 5             | $10/$50 per MTok        | ~₦40/call          | Build-time & evals, escalation flag only                                                                                           |
+| Paystack local card        | 1.5% + ₦100, cap ₦2,000 | merchant-borne     | Never absorbed into subscription                                                                                                   |
+| Paystack DVA/transfer      | 1%, cap ₦300            | merchant-borne     | Encourage "pay by transfer"                                                                                                        |
+| Hosting (ADR 0006)         | Hetzner+CF+R2           | ~₦30–40k/mo shared | ~₦1,500/business at 25 businesses                                                                                                  |
 
 ## Commercial rules
 

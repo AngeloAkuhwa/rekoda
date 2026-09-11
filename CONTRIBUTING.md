@@ -52,7 +52,11 @@ accepted; supersede rather than edit.
 Verify at the depth the change warrants, and report honestly what ran,
 what passed and what was skipped:
 
-- **Docs or copy only:** `pnpm lint` over the touched files; links resolve.
+- **Docs or copy only:** `pnpm lint` does not look at Markdown (every
+  workspace lints its own `src`), so run Prettier over the files you touched:
+  `pnpm exec prettier --check $(git diff --name-only origin/main -- '*.md')`
+  (or `pnpm docs:check` for every Markdown file the repository keeps
+  formatted); links resolve; any status claim matches the code.
 - **Ordinary behaviour change:** targeted tests for the change, then
   `pnpm turbo typecheck lint test build` and the guard scripts CI runs
   (`node scripts/check-boundaries.mjs`, `check-node-version.mjs`,
@@ -71,6 +75,27 @@ what passed and what was skipped:
 
 A green tick that ran nothing is a lie. Never skip, disable or quarantine
 a failing test to get green.
+
+## Independent review before merge
+
+Every feature or fix gets a second look from a Claude session that did not
+build it, before the builder calls it merge-ready. The reviewer starts from
+a fresh context with no access to the builder's reasoning, receives only the
+PR number, the exact head SHA, the task requirements, the diff, the canonical
+docs and the test evidence, and is read-only: no edits, commits, pushes or
+merges. It hunts for functional defects, regressions, money and accounting
+errors, tenant and RLS leaks, idempotency and concurrency holes, unverified
+provider assumptions, missing edge cases, weak tests and documentation that
+promises behaviour the code does not implement, and reports each finding as
+BLOCKING, IMPORTANT or NON-BLOCKING. The builder fixes every valid BLOCKING
+and IMPORTANT finding; a fix that changes the SHA gets a fresh review of the
+new SHA. Codex review threads on the PR are fetched and answered the same
+way: valid findings fixed, invalid ones answered with code evidence. A PR is
+reported READY FOR OWNER MERGE only when CI is green on the exact head, the
+fresh review has no BLOCKING or IMPORTANT findings, valid Codex findings are
+fixed, no blocking thread is unresolved, and the docs match the code. This is
+a lightweight human-in-the-loop process: no bots, gates, labels or signed
+evidence. Angelo merges.
 
 ## Tests
 

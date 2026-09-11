@@ -1,11 +1,11 @@
 # Rekoda Current State
 
-| Field | Value |
-|---|---|
-| Status | **AUTHORITATIVE for implementation status** (manifest rank B) |
-| Verified against | `main` at `7155a2b` (6 Sep 2026), re-inventoried 10 Sep 2026 from source, tests, migrations, routes, workers, web pages and CI |
-| Method | Every row below was checked against the tree, not against `HANDOFF.md`. "Verified complete" means code and automated tests exist and CI runs them; it never means a provider was exercised live |
-| Update rule | When a capability's status changes, change its row here in the same PR |
+| Field            | Value                                                                                                                                                                                           |
+| ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Status           | **AUTHORITATIVE for implementation status** (manifest rank B)                                                                                                                                   |
+| Verified against | `main` at `7155a2b` (6 Sep 2026), re-inventoried 10 Sep 2026 from source, tests, migrations, routes, workers, web pages and CI                                                                  |
+| Method           | Every row below was checked against the tree, not against `HANDOFF.md`. "Verified complete" means code and automated tests exist and CI runs them; it never means a provider was exercised live |
+| Update rule      | When a capability's status changes, change its row here in the same PR                                                                                                                          |
 
 > **Read this before designing anything.** Lack of chat context is not
 > evidence that a feature does not exist. If a capability below says it
@@ -13,77 +13,77 @@
 
 ## 1. Status vocabulary
 
-| Status | Meaning |
-|---|---|
-| **VERIFIED COMPLETE** | Code plus automated tests cover the behaviour end to end; CI executes them against real PostgreSQL 16 |
-| **IMPLEMENTED, NOT LIVE-VERIFIED** | Code plus tests exist, but the tests use a stub, fake or local HTTP server; proving it needs a real provider account or environment |
-| **PARTIAL** | Part of the capability is real, part is missing or unreachable |
-| **BUILT, UNWIRED** | Schema, repo and passing integration tests exist, but no route, command, job or webhook branch calls it. Inert in the running system |
-| **DEFERRED POST-LAUNCH** | Deliberately not in launch scope |
-| **BLOCKED EXTERNALLY** | Waits on a provider, a regulator, or an owner-held fact |
-| **NOT IMPLEMENTED** | Nothing exists |
+| Status                             | Meaning                                                                                                                              |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| **VERIFIED COMPLETE**              | Code plus automated tests cover the behaviour end to end; CI executes them against real PostgreSQL 16                                |
+| **IMPLEMENTED, NOT LIVE-VERIFIED** | Code plus tests exist, but the tests use a stub, fake or local HTTP server; proving it needs a real provider account or environment  |
+| **PARTIAL**                        | Part of the capability is real, part is missing or unreachable                                                                       |
+| **BUILT, UNWIRED**                 | Schema, repo and passing integration tests exist, but no route, command, job or webhook branch calls it. Inert in the running system |
+| **DEFERRED POST-LAUNCH**           | Deliberately not in launch scope                                                                                                     |
+| **BLOCKED EXTERNALLY**             | Waits on a provider, a regulator, or an owner-held fact                                                                              |
+| **NOT IMPLEMENTED**                | Nothing exists                                                                                                                       |
 
 ## 2. Scale snapshot (10 Sep 2026)
 
-| Measure | Value |
-|---|---|
-| Source | about 142k lines of TypeScript across `apps/api`, `apps/web`, `packages/{core,db,contracts,shared}` |
-| Migrations | 150 SQL files, `0000_init.sql` to `0149_draft_confirmation_ordinal.sql`, contiguous |
-| Tables | 96 `pgTable` declarations |
-| Unit tests (local run, `pnpm turbo test`) | core 931, api 296, web 25, contracts 22; 1,274 passing |
-| Integration tests | db 103 files, api 48 files (about 2,200 cases); run serially against three DB roles in CI |
-| Playwright | 5 specs, about 33 tests, production build of web + api + Postgres |
-| Skipped tests, TODO/FIXME markers | zero |
-| CI jobs | secret scan (gitleaks, full history), typecheck/lint/test/build + five guard scripts, foreign-owner migration replay, integration, e2e |
-| HTTP surface | 43 report routes, 7 public-API routes, 8 operator routes, 2 inbound webhooks, storefront, billing, bank, catalogue, payments, auth (full list in §5.18) |
-| Web routes | 13 public, 17 dashboard, all server components with real data; no placeholders |
+| Measure                                   | Value                                                                                                                                                   |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Source                                    | about 142k lines of TypeScript across `apps/api`, `apps/web`, `packages/{core,db,contracts,shared}`                                                     |
+| Migrations                                | 150 SQL files, `0000_init.sql` to `0149_draft_confirmation_ordinal.sql`, contiguous                                                                     |
+| Tables                                    | 96 `pgTable` declarations                                                                                                                               |
+| Unit tests (local run, `pnpm turbo test`) | core 931, api 296, web 25, contracts 22; 1,274 passing                                                                                                  |
+| Integration tests                         | db 103 files, api 48 files (about 2,200 cases); run serially against three DB roles in CI                                                               |
+| Playwright                                | 5 specs, about 33 tests, production build of web + api + Postgres                                                                                       |
+| Skipped tests, TODO/FIXME markers         | zero                                                                                                                                                    |
+| CI jobs                                   | secret scan (gitleaks, full history), typecheck/lint/test/build + five guard scripts, foreign-owner migration replay, integration, e2e                  |
+| HTTP surface                              | 43 report routes, 7 public-API routes, 8 operator routes, 2 inbound webhooks, storefront, billing, bank, catalogue, payments, auth (full list in §5.18) |
+| Web routes                                | 13 public, 17 dashboard, all server components with real data; no placeholders                                                                          |
 
 ## 3. Capability table
 
-| # | Capability | Status | Launch-critical gap |
-|---|---|---|---|
-| 1 | Product foundation, config fail-closed | VERIFIED COMPLETE | none |
-| 2 | Auth / OTP / session / roles | VERIFIED COMPLETE (OTP delivery over WhatsApp not live-verified) | silent OTP send failure has no alert |
-| 3 | Business onboarding | VERIFIED COMPLETE | web boot blocked on legal facts |
-| 4 | Tenant isolation / RLS | VERIFIED COMPLETE | none |
-| 5 | WhatsApp transport (Meta Cloud API) | IMPLEMENTED, NOT LIVE-VERIFIED | delivery statuses stored, never read |
-| 6 | Meta webhook verification + idempotency | VERIFIED COMPLETE | none |
-| 7 | Chat text flows (gates, commands, drafts) | PARTIAL | CG4 (delivery verification + refund) absent; drafts never expire |
-| 8 | Voice-note flow | IMPLEMENTED, NOT LIVE-VERIFIED (off by default) | accent quality unmeasured |
-| 9 | AI interpretation, eval | IMPLEMENTED, NOT LIVE-VERIFIED | eval never run against a real model |
-| 10 | Vision / receipt OCR | IMPLEMENTED, NOT LIVE-VERIFIED (off by default) | `requires_review` routing absent |
-| 11 | PII / vault / privacy gateway | VERIFIED COMPLETE | key re-wrap job absent (no rotation path) |
-| 12 | Sales, invoices, receipts | VERIFIED COMPLETE | VAT hardcoded to zero on three sale paths |
-| 13 | Expenses, purchases, bills | VERIFIED COMPLETE | supplier returns unwired |
-| 14 | Customers | VERIFIED COMPLETE (chat), PARTIAL (dashboard) | no customer list page |
-| 15 | Suppliers | PARTIAL | two incompatible identity models, no supplier page |
-| 16 | Stock / inventory / catalogue | VERIFIED COMPLETE | no cart stock hold |
-| 17 | Payments hub (intent, verify, book, receipt, exceptions) | IMPLEMENTED, NOT LIVE-VERIFIED | refund/reversal/chargeback webhooks silently absorbed |
-| 18 | Paystack specifics | IMPLEMENTED, NOT LIVE-VERIFIED; §47 gate | merchant fee estimated from the wrong rate card |
-| 19 | Bank feeds / statement reconciliation | VERIFIED COMPLETE (CSV); BLOCKED EXTERNALLY (Mono live) | none for CSV |
-| 20 | Accounting ledger, journals, close, AR/AP, assets, recurring | VERIFIED COMPLETE | recognition engine, journal drafts, account lifecycle unwired |
-| 21 | Tax / VAT | PARTIAL | recording wired, calculation unwired |
-| 22 | Credit notes / refunds / reversals | credit notes VERIFIED; refunds and reversals BUILT, UNWIRED | see 17 |
-| 23 | Statements, reports, dashboard | VERIFIED COMPLETE | none |
-| 24 | PDF, Excel, CSV, portability export | VERIFIED COMPLETE (R2 storage and WhatsApp delivery not live-verified) | `R2Storage` untested |
-| 25 | Accountant / member access | VERIFIED COMPLETE | no role-change UI |
-| 26 | Public API + keys + outbound webhooks | VERIFIED COMPLETE | no dashboard UI for keys/webhooks |
-| 27 | Storefront `/s/[slug]` + pay with transfer | VERIFIED COMPLETE | none |
-| 28 | Plans, trial, entitlements | PARTIAL | `MANUAL_BOOKKEEPING` lapse not enforced |
-| 29 | Subscriptions, billing, renewals, grace | PARTIAL; revenue collection BLOCKED EXTERNALLY (§47) | add-on holds unsellable; renewal copy misleading |
-| 30 | Usage metering | VERIFIED COMPLETE (consumables), PARTIAL (capacity) | none |
-| 31 | Provider-cost tracking, margin | IMPLEMENTED, NOT LIVE-VERIFIED | four cost classes have no writer |
-| 32 | Notifications | PARTIAL (WhatsApp only) | no email/SMS fallback for sign-in |
-| 33 | Queues / workers | IMPLEMENTED, NOT LIVE-VERIFIED | outbox has no backoff |
-| 34 | Scheduled sweeps | PARTIAL | no first pass on boot, no persisted last run |
-| 35 | Retention / deletion | IMPLEMENTED, NOT LIVE-VERIFIED | two published limits enforced by nothing |
-| 36 | Audit trail | IMPLEMENTED, NOT LIVE-VERIFIED | exports and operator actions write no row |
-| 37 | Observability / health | PARTIAL | no metrics exporter, no alerting, no error tracking |
-| 38 | Operations / admin | PARTIAL (API only) | no admin UI |
-| 39 | Marketing site | VERIFIED COMPLETE | none |
-| 40 | Legal pages | PARTIAL, BLOCKED EXTERNALLY | company facts unset; no governing-law clause |
-| 41 | Backups / PITR | NOT IMPLEMENTED (restore drill exists in CI) | no backup mechanism at all |
-| 42 | Deployment / runtime | NOT IMPLEMENTED | no Dockerfile, compose or Caddy config |
+| #   | Capability                                                   | Status                                                                 | Launch-critical gap                                              |
+| --- | ------------------------------------------------------------ | ---------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| 1   | Product foundation, config fail-closed                       | VERIFIED COMPLETE                                                      | none                                                             |
+| 2   | Auth / OTP / session / roles                                 | VERIFIED COMPLETE (OTP delivery over WhatsApp not live-verified)       | silent OTP send failure has no alert                             |
+| 3   | Business onboarding                                          | VERIFIED COMPLETE                                                      | web boot blocked on legal facts                                  |
+| 4   | Tenant isolation / RLS                                       | VERIFIED COMPLETE                                                      | none                                                             |
+| 5   | WhatsApp transport (Meta Cloud API)                          | IMPLEMENTED, NOT LIVE-VERIFIED                                         | delivery statuses stored, never read                             |
+| 6   | Meta webhook verification + idempotency                      | VERIFIED COMPLETE                                                      | none                                                             |
+| 7   | Chat text flows (gates, commands, drafts)                    | PARTIAL                                                                | CG4 (delivery verification + refund) absent; drafts never expire |
+| 8   | Voice-note flow                                              | IMPLEMENTED, NOT LIVE-VERIFIED (off by default)                        | accent quality unmeasured                                        |
+| 9   | AI interpretation, eval                                      | IMPLEMENTED, NOT LIVE-VERIFIED                                         | eval never run against a real model                              |
+| 10  | Vision / receipt OCR                                         | IMPLEMENTED, NOT LIVE-VERIFIED (off by default)                        | `requires_review` routing absent                                 |
+| 11  | PII / vault / privacy gateway                                | VERIFIED COMPLETE                                                      | key re-wrap job absent (no rotation path)                        |
+| 12  | Sales, invoices, receipts                                    | VERIFIED COMPLETE                                                      | VAT hardcoded to zero on three sale paths                        |
+| 13  | Expenses, purchases, bills                                   | VERIFIED COMPLETE                                                      | supplier returns unwired                                         |
+| 14  | Customers                                                    | VERIFIED COMPLETE (chat), PARTIAL (dashboard)                          | no customer list page                                            |
+| 15  | Suppliers                                                    | PARTIAL                                                                | two incompatible identity models, no supplier page               |
+| 16  | Stock / inventory / catalogue                                | VERIFIED COMPLETE                                                      | no cart stock hold                                               |
+| 17  | Payments hub (intent, verify, book, receipt, exceptions)     | IMPLEMENTED, NOT LIVE-VERIFIED                                         | refund/reversal/chargeback webhooks silently absorbed            |
+| 18  | Paystack specifics                                           | IMPLEMENTED, NOT LIVE-VERIFIED; §47 gate                               | merchant fee estimated from the wrong rate card                  |
+| 19  | Bank feeds / statement reconciliation                        | VERIFIED COMPLETE (CSV); BLOCKED EXTERNALLY (Mono live)                | none for CSV                                                     |
+| 20  | Accounting ledger, journals, close, AR/AP, assets, recurring | VERIFIED COMPLETE                                                      | recognition engine, journal drafts, account lifecycle unwired    |
+| 21  | Tax / VAT                                                    | PARTIAL                                                                | recording wired, calculation unwired                             |
+| 22  | Credit notes / refunds / reversals                           | credit notes VERIFIED; refunds and reversals BUILT, UNWIRED            | see 17                                                           |
+| 23  | Statements, reports, dashboard                               | VERIFIED COMPLETE                                                      | none                                                             |
+| 24  | PDF, Excel, CSV, portability export                          | VERIFIED COMPLETE (R2 storage and WhatsApp delivery not live-verified) | `R2Storage` untested                                             |
+| 25  | Accountant / member access                                   | VERIFIED COMPLETE                                                      | no role-change UI                                                |
+| 26  | Public API + keys + outbound webhooks                        | VERIFIED COMPLETE                                                      | no dashboard UI for keys/webhooks                                |
+| 27  | Storefront `/s/[slug]` + pay with transfer                   | VERIFIED COMPLETE                                                      | none                                                             |
+| 28  | Plans, trial, entitlements                                   | PARTIAL                                                                | `MANUAL_BOOKKEEPING` lapse not enforced                          |
+| 29  | Subscriptions, billing, renewals, grace                      | PARTIAL; revenue collection BLOCKED EXTERNALLY (§47)                   | add-on holds unsellable; renewal copy misleading                 |
+| 30  | Usage metering                                               | VERIFIED COMPLETE (consumables), PARTIAL (capacity)                    | none                                                             |
+| 31  | Provider-cost tracking, margin                               | IMPLEMENTED, NOT LIVE-VERIFIED                                         | four cost classes have no writer                                 |
+| 32  | Notifications                                                | PARTIAL (WhatsApp only)                                                | no email/SMS fallback for sign-in                                |
+| 33  | Queues / workers                                             | IMPLEMENTED, NOT LIVE-VERIFIED                                         | outbox has no backoff                                            |
+| 34  | Scheduled sweeps                                             | PARTIAL                                                                | no first pass on boot, no persisted last run                     |
+| 35  | Retention / deletion                                         | IMPLEMENTED, NOT LIVE-VERIFIED                                         | two published limits enforced by nothing                         |
+| 36  | Audit trail                                                  | IMPLEMENTED, NOT LIVE-VERIFIED                                         | exports and operator actions write no row                        |
+| 37  | Observability / health                                       | PARTIAL                                                                | no metrics exporter, no alerting, no error tracking              |
+| 38  | Operations / admin                                           | PARTIAL (API only)                                                     | no admin UI                                                      |
+| 39  | Marketing site                                               | VERIFIED COMPLETE                                                      | none                                                             |
+| 40  | Legal pages                                                  | PARTIAL, BLOCKED EXTERNALLY                                            | company facts unset; no governing-law clause                     |
+| 41  | Backups / PITR                                               | NOT IMPLEMENTED (restore drill exists in CI)                           | no backup mechanism at all                                       |
+| 42  | Deployment / runtime                                         | NOT IMPLEMENTED                                                        | no Dockerfile, compose or Caddy config                           |
 
 ## 4. Where the code lives
 
@@ -97,23 +97,23 @@ never in `apps/web`; provider SDKs only in `apps/api`; `apps/api/src/ai/**`
 may not import financial repos; twenty named financial writers may only be
 called from `apps/api/src/commands/`.
 
-| Area | Source | Tests |
-|---|---|---|
-| Ledger, chart, statements, close | `packages/core/src/{ledger,chart,money,periods,statements,recognition,costing,numbering}.ts`; `packages/db/src/repos/{journal,accounts,close,opening,reports,party-statements}.ts`; `apps/api/src/reports/` | `packages/core/src/*.test.ts`; `packages/db/src/{journal*,close,ledger-append-only,golden-fixture}.integration.test.ts`; `apps/api/src/reports/*.integration.test.ts` |
-| Payments, Paystack, bank | `apps/api/src/payments/`; `apps/api/src/bank/`; `apps/api/src/commands/payment-commands.ts`; `apps/api/src/jobs/process-payment-event.handler.ts`; `packages/core/src/{payments,provenance,charges,reconciliation,bank-matching,bank-statement}.ts`; `packages/db/src/repos/{settle,settlements,evidence,provenance,payments-hub,bank}.ts` | `apps/api/src/payments/*.integration.test.ts`; `packages/db/src/{payments-hub,settle*,settlements,bank*,reconciliation-tiers}.integration.test.ts` |
-| Billing (Rekoda's own) | `apps/api/src/billing/`; `packages/core/src/{billing,allowances,entitlements,capabilities,gates}.ts`; `packages/db/src/repos/{billing,subscriptions,usage,quota,add-ons,plan-catalogue}.ts`; `apps/web/src/app/app/billing/` | `apps/api/src/billing/*.integration.test.ts`; `packages/db/src/{subscriptions,usage,quota,charges}.integration.test.ts` |
-| Privacy, vault, retention | `apps/api/src/privacy/{gateway.service,payload-vault,retention-sweep}.ts`; `packages/core/src/{privacy,vault,retention}.ts`; `apps/api/src/commands/privacy-commands.ts` | `apps/api/src/privacy/*.test.ts`; `apps/api/src/observability/logs.integration.test.ts`; `packages/db/src/{retention,boot-checks,customer-consent,evidence-retention,portability}.integration.test.ts` |
-| Auth, identity, operator plane | `apps/api/src/auth/`; `apps/api/src/api/` (API keys); `packages/db/src/repos/identity.ts`; `packages/core/src/identity.ts`; `apps/web/src/app/{start,verify,enter,setup}/`; `apps/web/src/server/` | `apps/api/src/auth/*.test.ts`; `packages/db/src/{tenancy,magic-links}.integration.test.ts`; `apps/web/e2e/onboarding.spec.ts` |
-| Database, RLS, migrations | `packages/db/migrations/`; `packages/db/src/schema/`; `packages/db/src/client.ts` (`withBusiness`, `withUser`, `withAdvisoryLock`); `packages/db/src/migrate.ts` | `packages/db/src/{rls-invariants,tenancy,tenant-fk-*,cross-product,load,recovery-drill}.integration.test.ts`; CI foreign-owner replay |
-| AI, media | `apps/api/src/ai/` (transports, interpreter, prompt, classifier, stt, ocr, audio-duration, model-prices, eval/); `packages/core/src/{router,assistant,ai-cost,extraction-compare,images}.ts` | `apps/api/src/ai/*.test.ts`, `interpreter.integration.test.ts`, `eval/*` |
-| WhatsApp channel, replies | `apps/api/src/channels/` (meta.controller, meta.service, meta.sender, waba-templates, stranger-sweep, catalogue-sync); `apps/api/src/replies/`; `apps/api/src/jobs/inbound-message.handler.ts`; `packages/core/src/{messaging,replies,gates}.ts`; `packages/contracts/src/meta-webhook.ts` | `apps/api/src/channels/*.integration.test.ts` (meta.integration is about 6,900 lines); `packages/core/src/{replies,gates,router}.test.ts` |
-| Documents, PDF, Excel, storage | `apps/api/src/documents/` (pdf, storage, r2.storage); `apps/api/src/jobs/{render,deliver}-document.handler.ts`; `packages/core/src/{invoice-layout,receipt-layout,statement-layout,xlsx,csv,words}.ts` | `apps/api/src/documents/pdf.integration.test.ts`; `packages/core/src/{xlsx,csv,invoice-layout}.test.ts` |
-| Dashboard, storefront, marketing | `apps/web/src/app/app/` (17 routes); `apps/web/src/app/s/[slug]/`; `apps/web/src/server/api.ts` (the only HTTP client, zod-parsed); `apps/api/src/shop/` | `apps/web/src/**/*.test.ts(x)`; `apps/web/e2e/`; `apps/api/src/shop/*.integration.test.ts` |
-| Stock, catalogue, orders | `apps/api/src/catalogue/`; `apps/api/src/commands/{stock,order,sale,spend}-commands.ts`; `packages/db/src/repos/{stock,stocktake,catalogue,orders,issue,spend}.ts` | `packages/db/src/{stock,stock-reservation,stocktake,catalogue,orders,issue}.integration.test.ts`; `apps/api/src/commands/*.integration.test.ts` |
-| Jobs, queue, outbox, sweeps | `apps/api/src/jobs/` (`jobs.module.ts` registers every sweep, `runner.ts`, `queue.service.ts`); `apps/api/src/commands/{command-bus.service,outbox-dispatcher}.ts`; `packages/db/src/repos/{jobs,outbox,idempotency}.ts` | `apps/api/src/jobs/jobs.integration.test.ts`; `packages/db/src/{jobs,outbox,idempotency}.integration.test.ts` |
-| Ops, health, exceptions, margin | `apps/api/src/health/` (health, ops controllers); `apps/api/src/risk/`; `packages/db/src/repos/{margin,platform-costs,observability}.ts` | `apps/api/src/health/ops.integration.test.ts` |
-| Legal, compliance | `apps/web/src/app/{terms,privacy,refunds,security,ai-privacy,data-deletion}/`; `apps/web/legal-gate.mjs`; `apps/web/src/lib/legal.ts`; `docs/compliance/` | `apps/web/src/lib/legal-gate.test.ts`; `scripts/check-retired-claims.mjs` |
-| Public API | `apps/api/src/api/public/`; `packages/contracts/src/public/v1/`; `docs/openapi.json` | `apps/api/src/api/*.integration.test.ts`; `scripts/check-openapi.mjs` |
+| Area                             | Source                                                                                                                                                                                                                                                                                                                                     | Tests                                                                                                                                                                                                  |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Ledger, chart, statements, close | `packages/core/src/{ledger,chart,money,periods,statements,recognition,costing,numbering}.ts`; `packages/db/src/repos/{journal,accounts,close,opening,reports,party-statements}.ts`; `apps/api/src/reports/`                                                                                                                                | `packages/core/src/*.test.ts`; `packages/db/src/{journal*,close,ledger-append-only,golden-fixture}.integration.test.ts`; `apps/api/src/reports/*.integration.test.ts`                                  |
+| Payments, Paystack, bank         | `apps/api/src/payments/`; `apps/api/src/bank/`; `apps/api/src/commands/payment-commands.ts`; `apps/api/src/jobs/process-payment-event.handler.ts`; `packages/core/src/{payments,provenance,charges,reconciliation,bank-matching,bank-statement}.ts`; `packages/db/src/repos/{settle,settlements,evidence,provenance,payments-hub,bank}.ts` | `apps/api/src/payments/*.integration.test.ts`; `packages/db/src/{payments-hub,settle*,settlements,bank*,reconciliation-tiers}.integration.test.ts`                                                     |
+| Billing (Rekoda's own)           | `apps/api/src/billing/`; `packages/core/src/{billing,allowances,entitlements,capabilities,gates}.ts`; `packages/db/src/repos/{billing,subscriptions,usage,quota,add-ons,plan-catalogue}.ts`; `apps/web/src/app/app/billing/`                                                                                                               | `apps/api/src/billing/*.integration.test.ts`; `packages/db/src/{subscriptions,usage,quota,charges}.integration.test.ts`                                                                                |
+| Privacy, vault, retention        | `apps/api/src/privacy/{gateway.service,payload-vault,retention-sweep}.ts`; `packages/core/src/{privacy,vault,retention}.ts`; `apps/api/src/commands/privacy-commands.ts`                                                                                                                                                                   | `apps/api/src/privacy/*.test.ts`; `apps/api/src/observability/logs.integration.test.ts`; `packages/db/src/{retention,boot-checks,customer-consent,evidence-retention,portability}.integration.test.ts` |
+| Auth, identity, operator plane   | `apps/api/src/auth/`; `apps/api/src/api/` (API keys); `packages/db/src/repos/identity.ts`; `packages/core/src/identity.ts`; `apps/web/src/app/{start,verify,enter,setup}/`; `apps/web/src/server/`                                                                                                                                         | `apps/api/src/auth/*.test.ts`; `packages/db/src/{tenancy,magic-links}.integration.test.ts`; `apps/web/e2e/onboarding.spec.ts`                                                                          |
+| Database, RLS, migrations        | `packages/db/migrations/`; `packages/db/src/schema/`; `packages/db/src/client.ts` (`withBusiness`, `withUser`, `withAdvisoryLock`); `packages/db/src/migrate.ts`                                                                                                                                                                           | `packages/db/src/{rls-invariants,tenancy,tenant-fk-*,cross-product,load,recovery-drill}.integration.test.ts`; CI foreign-owner replay                                                                  |
+| AI, media                        | `apps/api/src/ai/` (transports, interpreter, prompt, classifier, stt, ocr, audio-duration, model-prices, eval/); `packages/core/src/{router,assistant,ai-cost,extraction-compare,images}.ts`                                                                                                                                               | `apps/api/src/ai/*.test.ts`, `interpreter.integration.test.ts`, `eval/*`                                                                                                                               |
+| WhatsApp channel, replies        | `apps/api/src/channels/` (meta.controller, meta.service, meta.sender, waba-templates, stranger-sweep, catalogue-sync); `apps/api/src/replies/`; `apps/api/src/jobs/inbound-message.handler.ts`; `packages/core/src/{messaging,replies,gates}.ts`; `packages/contracts/src/meta-webhook.ts`                                                 | `apps/api/src/channels/*.integration.test.ts` (meta.integration is about 6,900 lines); `packages/core/src/{replies,gates,router}.test.ts`                                                              |
+| Documents, PDF, Excel, storage   | `apps/api/src/documents/` (pdf, storage, r2.storage); `apps/api/src/jobs/{render,deliver}-document.handler.ts`; `packages/core/src/{invoice-layout,receipt-layout,statement-layout,xlsx,csv,words}.ts`                                                                                                                                     | `apps/api/src/documents/pdf.integration.test.ts`; `packages/core/src/{xlsx,csv,invoice-layout}.test.ts`                                                                                                |
+| Dashboard, storefront, marketing | `apps/web/src/app/app/` (17 routes); `apps/web/src/app/s/[slug]/`; `apps/web/src/server/api.ts` (the only HTTP client, zod-parsed); `apps/api/src/shop/`                                                                                                                                                                                   | `apps/web/src/**/*.test.ts(x)`; `apps/web/e2e/`; `apps/api/src/shop/*.integration.test.ts`                                                                                                             |
+| Stock, catalogue, orders         | `apps/api/src/catalogue/`; `apps/api/src/commands/{stock,order,sale,spend}-commands.ts`; `packages/db/src/repos/{stock,stocktake,catalogue,orders,issue,spend}.ts`                                                                                                                                                                         | `packages/db/src/{stock,stock-reservation,stocktake,catalogue,orders,issue}.integration.test.ts`; `apps/api/src/commands/*.integration.test.ts`                                                        |
+| Jobs, queue, outbox, sweeps      | `apps/api/src/jobs/` (`jobs.module.ts` registers every sweep, `runner.ts`, `queue.service.ts`); `apps/api/src/commands/{command-bus.service,outbox-dispatcher}.ts`; `packages/db/src/repos/{jobs,outbox,idempotency}.ts`                                                                                                                   | `apps/api/src/jobs/jobs.integration.test.ts`; `packages/db/src/{jobs,outbox,idempotency}.integration.test.ts`                                                                                          |
+| Ops, health, exceptions, margin  | `apps/api/src/health/` (health, ops controllers); `apps/api/src/risk/`; `packages/db/src/repos/{margin,platform-costs,observability}.ts`                                                                                                                                                                                                   | `apps/api/src/health/ops.integration.test.ts`                                                                                                                                                          |
+| Legal, compliance                | `apps/web/src/app/{terms,privacy,refunds,security,ai-privacy,data-deletion}/`; `apps/web/legal-gate.mjs`; `apps/web/src/lib/legal.ts`; `docs/compliance/`                                                                                                                                                                                  | `apps/web/src/lib/legal-gate.test.ts`; `scripts/check-retired-claims.mjs`                                                                                                                              |
+| Public API                       | `apps/api/src/api/public/`; `packages/contracts/src/public/v1/`; `docs/openapi.json`                                                                                                                                                                                                                                                       | `apps/api/src/api/*.integration.test.ts`; `scripts/check-openapi.mjs`                                                                                                                                  |
 
 ## 5. Capability detail
 
@@ -351,61 +351,61 @@ There is no `Dockerfile`, no production compose file and no Caddy configuration 
 
 ## 6. Built but unwired (do not rebuild; wire or decide)
 
-| Module | Migrations | Tests passing | Reachable from a user action |
-|---|---|---|---|
-| `repos/refunds.ts` (`recordRefund`, `recordPaymentReversal`) | 0092 | `settlements` (19), `golden-fixture` | No |
-| `repos/chargebacks.ts` | 0091 | same | No |
-| `repos/returns.ts` (customer and supplier returns) | 0101 | `goods-returns` (7) | No |
-| `repos/recognition*.ts`, `packages/core/src/recognition.ts` (spec §12) | 0074–0076 | 3 files | No |
-| `repos/journal-drafts.ts` create/edit side | 0072, 0073 | 7 cases | No (only `recordPostedDraft` is called) |
-| `repos/accounts.ts` write side (create, rename, deactivate) | 0061, 0066 | `accounts*` | No |
-| `repos/projections.ts` | — | `projections` | No |
-| `repos/fx.ts` | 0068, 0069 | `fx` | No (dark by ADR 0033, expected) |
-| `packages/core/src/tax.ts` `calculateTax` | 0099, 0100 | `tax`, `tax-model` | No |
-| `resolveProviderConnection`, `resolvePaymentProvider` | 0093, 0115 | `provider-resolver` (9) | No |
-| `KudaProvider`, `OPayProvider`, `MonoDirectPayProvider` | — | `provider-conformance` | No |
-| `repos/add-ons.ts` `hold`, `endHolding` | 0112 | `add-ons` | No |
-| `connectWaba`, template registry, `WabaTemplateService.sendTemplate` | 0084, 0088, 0089 | `waba-templates` | No HTTP surface |
+| Module                                                                 | Migrations       | Tests passing                        | Reachable from a user action            |
+| ---------------------------------------------------------------------- | ---------------- | ------------------------------------ | --------------------------------------- |
+| `repos/refunds.ts` (`recordRefund`, `recordPaymentReversal`)           | 0092             | `settlements` (19), `golden-fixture` | No                                      |
+| `repos/chargebacks.ts`                                                 | 0091             | same                                 | No                                      |
+| `repos/returns.ts` (customer and supplier returns)                     | 0101             | `goods-returns` (7)                  | No                                      |
+| `repos/recognition*.ts`, `packages/core/src/recognition.ts` (spec §12) | 0074–0076        | 3 files                              | No                                      |
+| `repos/journal-drafts.ts` create/edit side                             | 0072, 0073       | 7 cases                              | No (only `recordPostedDraft` is called) |
+| `repos/accounts.ts` write side (create, rename, deactivate)            | 0061, 0066       | `accounts*`                          | No                                      |
+| `repos/projections.ts`                                                 | —                | `projections`                        | No                                      |
+| `repos/fx.ts`                                                          | 0068, 0069       | `fx`                                 | No (dark by ADR 0033, expected)         |
+| `packages/core/src/tax.ts` `calculateTax`                              | 0099, 0100       | `tax`, `tax-model`                   | No                                      |
+| `resolveProviderConnection`, `resolvePaymentProvider`                  | 0093, 0115       | `provider-resolver` (9)              | No                                      |
+| `KudaProvider`, `OPayProvider`, `MonoDirectPayProvider`                | —                | `provider-conformance`               | No                                      |
+| `repos/add-ons.ts` `hold`, `endHolding`                                | 0112             | `add-ons`                            | No                                      |
+| `connectWaba`, template registry, `WabaTemplateService.sendTemplate`   | 0084, 0088, 0089 | `waba-templates`                     | No HTTP surface                         |
 
 ## 7. Product invariants, verified at HEAD
 
-| Invariant | Where it is enforced | Evidence |
-|---|---|---|
-| Money is integer kobo | `packages/core/src/money.ts` (`assertKobo`, single naira boundary in `parseAmountText`); no `numeric` money column in 150 migrations | repo-wide grep; `money.test.ts` |
-| AI proposes, deterministic code disposes | zod tool schema with a ₦10bn ceiling; `computeMoney` recomputes; CG1/CG2 preview; `check-boundaries.mjs` forbids financial imports under `apps/api/src/ai/` | `interpreter.integration.test.ts`, `gates.test.ts` |
-| No AI-produced number reaches a reply | replies are template builders fed computed values; only `reply.service.ts` sends | `replies.test.ts` completeness sweep |
-| Tenant scoping in code and by RLS | `withBusiness()`; six RLS invariants against `pg_policy`; boot refuses BYPASSRLS | `rls-invariants`, `tenancy` suites |
-| PII boundary | tokenise before model; one rehydration call site; logging ban proven behaviourally | `gateway`, `logs` suites |
-| Webhooks verify, dedupe, then process | Meta and Paystack controllers; `UNIQUE (provider, external_id)` | `meta`, `paystack` suites |
-| Postings balance | `assertBalanced()` plus deferred DB constraint triggers (0070) | `ledger.test.ts`, `journal*` suites |
-| Posted truth is immutable | `REVOKE UPDATE, DELETE` on ledger tables (0051), bank lines, matches, returns, portability; provenance set-once trigger (0058) | `ledger-append-only`, `bank` suites |
-| Provider failures fail safely | missing key degrades honestly; bad config refuses boot; empty webhook secret rejects all | `config.test.ts` |
-| No secrets in source | gitleaks full history in CI; `.gitignore`; test secrets composed | CI `secret-scan` |
-| Never hold funds, never KYC a customer, never treat a screenshot as payment | ADR 0016, 0019; `payment_evidence` never becomes a `Payment` | `evidence` suites; `safety-review.md` RED list |
+| Invariant                                                                   | Where it is enforced                                                                                                                                        | Evidence                                           |
+| --------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------- |
+| Money is integer kobo                                                       | `packages/core/src/money.ts` (`assertKobo`, single naira boundary in `parseAmountText`); no `numeric` money column in 150 migrations                        | repo-wide grep; `money.test.ts`                    |
+| AI proposes, deterministic code disposes                                    | zod tool schema with a ₦10bn ceiling; `computeMoney` recomputes; CG1/CG2 preview; `check-boundaries.mjs` forbids financial imports under `apps/api/src/ai/` | `interpreter.integration.test.ts`, `gates.test.ts` |
+| No AI-produced number reaches a reply                                       | replies are template builders fed computed values; only `reply.service.ts` sends                                                                            | `replies.test.ts` completeness sweep               |
+| Tenant scoping in code and by RLS                                           | `withBusiness()`; six RLS invariants against `pg_policy`; boot refuses BYPASSRLS                                                                            | `rls-invariants`, `tenancy` suites                 |
+| PII boundary                                                                | tokenise before model; one rehydration call site; logging ban proven behaviourally                                                                          | `gateway`, `logs` suites                           |
+| Webhooks verify, dedupe, then process                                       | Meta and Paystack controllers; `UNIQUE (provider, external_id)`                                                                                             | `meta`, `paystack` suites                          |
+| Postings balance                                                            | `assertBalanced()` plus deferred DB constraint triggers (0070)                                                                                              | `ledger.test.ts`, `journal*` suites                |
+| Posted truth is immutable                                                   | `REVOKE UPDATE, DELETE` on ledger tables (0051), bank lines, matches, returns, portability; provenance set-once trigger (0058)                              | `ledger-append-only`, `bank` suites                |
+| Provider failures fail safely                                               | missing key degrades honestly; bad config refuses boot; empty webhook secret rejects all                                                                    | `config.test.ts`                                   |
+| No secrets in source                                                        | gitleaks full history in CI; `.gitignore`; test secrets composed                                                                                            | CI `secret-scan`                                   |
+| Never hold funds, never KYC a customer, never treat a screenshot as payment | ADR 0016, 0019; `payment_evidence` never becomes a `Payment`                                                                                                | `evidence` suites; `safety-review.md` RED list     |
 
 ## 8. Current provider and owner decisions
 
-| Decision | Current state | Source |
-|---|---|---|
-| Launch country and currency | Nigeria, NGN only; FX dark behind `FX_MODE=off` | ADR 0033 |
-| AI reasoning provider | Anthropic Claude; `claude-sonnet-5` interpreter and vision, `claude-haiku-4-5` classifier, escalation off | ADR 0007, 0023, 0031; `ai-model-strategy.md` |
-| Voice transcription | OpenAI `whisper-1`, hosted, opt-in, no sidecar | ADR 0032 |
-| Vision and receipt OCR | Anthropic Claude vision, transcription-only, opt-in; optional OpenAI verifier above ₦500,000 | ADR 0032; `ai-model-strategy.md` §6 |
-| WhatsApp provider | Meta Cloud API direct; Twilio retired | ADR 0011, 0017, 0018 |
-| Payments provider | Paystack, merchant-owned accounts; per-transaction Pay-with-Transfer; no DVA; live path gated on §47 written confirmation | ADR 0016, 0019; `payments-v1.md` §47; migration 0115 |
-| Bank feeds | Mono adapter built; commercially closed. OPay, Kuda closed | OWN-8, OWN-9; migration 0115 |
-| Storage | Cloudflare R2 (S3 API); no filesystem fallback in production | ADR 0006 |
-| Hosting | Hetzner + Cloudflare (no Azure); nothing built yet | ADR 0006 |
-| Billing approach | Monthly cycles, manual renewal within 7-day grace, no card-on-file; prices are candidates | ADR 0024; spec §30 |
-| Trial terms | 30 days, allowances per plan catalogue; `SERVICE_MESSAGE` 250 on trial | migration 0017, 0113; OWN-3 |
-| Annual billing | Shown on the pricing page by owner ruling (4–5 Sep 2026); lifecycle is post-launch | HANDOFF 6 Sep 2026 |
-| Multi-currency | DEFERRED POST-LAUNCH (dark) | ADR 0033 |
-| Stablecoin | Not mentioned anywhere in the repository; NOT IN SCOPE | — |
-| M5 / Integrate scope | Storefront and WhatsApp-catalogue orders built; merchant-owned WABA connection has no HTTP surface; Meta app review OPEN | migration 0115; owner register W0 |
-| Operator identity | OIDC identities, no shared secret in production | ADR 0034 |
-| Report exports cap | 10 / 50 / 100 / 200 per plan (supersedes ADR 0024 clause) | OWN-4 |
-| Data portability | never metered, on any plan | OWN-5 |
-| R0A-i provenance report | Never run; there is no production data yet. Whether the gate is satisfied trivially on an empty database is an OPEN OWNER DECISION | `REKODA_LAUNCH_READINESS.md` OD-1 |
+| Decision                    | Current state                                                                                                                      | Source                                               |
+| --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------- |
+| Launch country and currency | Nigeria, NGN only; FX dark behind `FX_MODE=off`                                                                                    | ADR 0033                                             |
+| AI reasoning provider       | Anthropic Claude; `claude-sonnet-5` interpreter and vision, `claude-haiku-4-5` classifier, escalation off                          | ADR 0007, 0023, 0031; `ai-model-strategy.md`         |
+| Voice transcription         | OpenAI `whisper-1`, hosted, opt-in, no sidecar                                                                                     | ADR 0032                                             |
+| Vision and receipt OCR      | Anthropic Claude vision, transcription-only, opt-in; optional OpenAI verifier above ₦500,000                                       | ADR 0032; `ai-model-strategy.md` §6                  |
+| WhatsApp provider           | Meta Cloud API direct; Twilio retired                                                                                              | ADR 0011, 0017, 0018                                 |
+| Payments provider           | Paystack, merchant-owned accounts; per-transaction Pay-with-Transfer; no DVA; live path gated on §47 written confirmation          | ADR 0016, 0019; `payments-v1.md` §47; migration 0115 |
+| Bank feeds                  | Mono adapter built; commercially closed. OPay, Kuda closed                                                                         | OWN-8, OWN-9; migration 0115                         |
+| Storage                     | Cloudflare R2 (S3 API); no filesystem fallback in production                                                                       | ADR 0006                                             |
+| Hosting                     | Hetzner + Cloudflare (no Azure); nothing built yet                                                                                 | ADR 0006                                             |
+| Billing approach            | Monthly cycles, manual renewal within 7-day grace, no card-on-file; prices are candidates                                          | ADR 0024; spec §30                                   |
+| Trial terms                 | 30 days, allowances per plan catalogue; `SERVICE_MESSAGE` 250 on trial                                                             | migration 0017, 0113; OWN-3                          |
+| Annual billing              | Shown on the pricing page by owner ruling (4–5 Sep 2026); lifecycle is post-launch                                                 | HANDOFF 6 Sep 2026                                   |
+| Multi-currency              | DEFERRED POST-LAUNCH (dark)                                                                                                        | ADR 0033                                             |
+| Stablecoin                  | Not mentioned anywhere in the repository; NOT IN SCOPE                                                                             | —                                                    |
+| M5 / Integrate scope        | Storefront and WhatsApp-catalogue orders built; merchant-owned WABA connection has no HTTP surface; Meta app review OPEN           | migration 0115; owner register W0                    |
+| Operator identity           | OIDC identities, no shared secret in production                                                                                    | ADR 0034                                             |
+| Report exports cap          | 10 / 50 / 100 / 200 per plan (supersedes ADR 0024 clause)                                                                          | OWN-4                                                |
+| Data portability            | never metered, on any plan                                                                                                         | OWN-5                                                |
+| R0A-i provenance report     | Never run; there is no production data yet. Whether the gate is satisfied trivially on an empty database is an OPEN OWNER DECISION | `REKODA_LAUNCH_READINESS.md` OD-1                    |
 
 ## Appendix A. Build-plan reconciliation
 
@@ -463,275 +463,275 @@ Legend — **Status:** DONE (evidence at HEAD) · BLOCKED · SUPERSEDED · DEFER
 
 #### W0 — Meta readiness (0 engineering PRs)
 
-| BUILD ITEM | INTENDED OUTCOME | CURRENT CODE EVIDENCE | STATUS | SUPERSEDED BY | LAUNCH |
-|---|---|---|---|---|---|
-| W0 (slice, no PR) | Tech Provider + Advanced Access on three scopes; billing mode chosen | none by design; register in `REKODA_OWNER_DECISIONS.md` §2 W0 — all three permissions OPEN | BLOCKED (owner/Meta) | — | P0 |
+| BUILD ITEM        | INTENDED OUTCOME                                                     | CURRENT CODE EVIDENCE                                                                      | STATUS               | SUPERSEDED BY | LAUNCH |
+| ----------------- | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ | -------------------- | ------------- | ------ |
+| W0 (slice, no PR) | Tech Provider + Advanced Access on three scopes; billing mode chosen | none by design; register in `REKODA_OWNER_DECISIONS.md` §2 W0 — all three permissions OPEN | BLOCKED (owner/Meta) | —             | P0     |
 
 #### R0A-i — Legacy payment provenance investigation
 
-| BUILD ITEM | INTENDED OUTCOME | CURRENT CODE EVIDENCE | STATUS | SUPERSEDED BY | LAUNCH |
-|---|---|---|---|---|---|
-| PR-001 | Canonical spec + build plan as frozen canon | `docs/REKODA_CANONICAL_SPEC.md`, `docs/REKODA_END_TO_END_BUILD_PLAN.md`; cmt `07beaa8` | DONE | — | none |
-| PR-002 | Provenance classifier on evidence, not the `verified` boolean | `scripts/investigations/r0a-i-payment-provenance.sql`; cmts `6606a04`, `fe13082` | DONE (never run against production) | — | P1 |
-| PR-120 | Report that can be signed: one REPEATABLE READ snapshot, header, checksum | migration `0116_manifest_report_fingerprints.sql`, `scripts/investigations/run-r0a-i.sh` | DONE | — | P1 |
+| BUILD ITEM | INTENDED OUTCOME                                                          | CURRENT CODE EVIDENCE                                                                    | STATUS                              | SUPERSEDED BY | LAUNCH |
+| ---------- | ------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- | ----------------------------------- | ------------- | ------ |
+| PR-001     | Canonical spec + build plan as frozen canon                               | `docs/REKODA_CANONICAL_SPEC.md`, `docs/REKODA_END_TO_END_BUILD_PLAN.md`; cmt `07beaa8`   | DONE                                | —             | none   |
+| PR-002     | Provenance classifier on evidence, not the `verified` boolean             | `scripts/investigations/r0a-i-payment-provenance.sql`; cmts `6606a04`, `fe13082`         | DONE (never run against production) | —             | P1     |
+| PR-120     | Report that can be signed: one REPEATABLE READ snapshot, header, checksum | migration `0116_manifest_report_fingerprints.sql`, `scripts/investigations/run-r0a-i.sh` | DONE                                | —             | P1     |
 
 #### R0A-ii — Payment evidence and trust migration
 
-| BUILD ITEM | INTENDED OUTCOME | CURRENT CODE EVIDENCE | STATUS | SUPERSEDED BY | LAUNCH |
-|---|---|---|---|---|---|
-| PR-003 | `PaymentEvidence` + append-only `PaymentVerification` schema | migration `0057_payment_evidence.sql`; `packages/db/src/repos/evidence.ts`, `provenance.ts` | DONE | — | P0 |
-| PR-004 | `initialConfirmationSource`/`paymentMethod` nullable + set-once trigger | migration `0058_payment_provenance.sql` (`rollback_provenance_manifest` SECURITY DEFINER) | DONE | — | P0 |
-| PR-005 | New payments carry provenance at birth | `packages/db/src/repos/settle.ts`, `issue.ts`, `provenance.ts` | DONE | — | P0 |
-| PR-006 | Historical provenance backfill from the approved report | **none** — no `0054_provenance_backfill`, no commit | BLOCKED (R0A-i approval) | — | P1 |
-| PR-007 | Remediation queue: add verifications, never rewrite | **none** — no remediation-queue route or repo | BLOCKED (PR-006) | — | P1 |
-| PR-008 | Readers cutover: trust level derived from provenance | **none** | BLOCKED (PR-007) | — | P1 |
-| PR-009 | Retire `verified` writers; column becomes trigger-maintained | **none**; `payments.verified` still a live writable integer | BLOCKED (PR-008) | — | P1 |
+| BUILD ITEM | INTENDED OUTCOME                                                        | CURRENT CODE EVIDENCE                                                                       | STATUS                   | SUPERSEDED BY | LAUNCH |
+| ---------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- | ------------------------ | ------------- | ------ |
+| PR-003     | `PaymentEvidence` + append-only `PaymentVerification` schema            | migration `0057_payment_evidence.sql`; `packages/db/src/repos/evidence.ts`, `provenance.ts` | DONE                     | —             | P0     |
+| PR-004     | `initialConfirmationSource`/`paymentMethod` nullable + set-once trigger | migration `0058_payment_provenance.sql` (`rollback_provenance_manifest` SECURITY DEFINER)   | DONE                     | —             | P0     |
+| PR-005     | New payments carry provenance at birth                                  | `packages/db/src/repos/settle.ts`, `issue.ts`, `provenance.ts`                              | DONE                     | —             | P0     |
+| PR-006     | Historical provenance backfill from the approved report                 | **none** — no `0054_provenance_backfill`, no commit                                         | BLOCKED (R0A-i approval) | —             | P1     |
+| PR-007     | Remediation queue: add verifications, never rewrite                     | **none** — no remediation-queue route or repo                                               | BLOCKED (PR-006)         | —             | P1     |
+| PR-008     | Readers cutover: trust level derived from provenance                    | **none**                                                                                    | BLOCKED (PR-007)         | —             | P1     |
+| PR-009     | Retire `verified` writers; column becomes trigger-maintained            | **none**; `payments.verified` still a live writable integer                                 | BLOCKED (PR-008)         | —             | P1     |
 
 #### R0B — Ledger integrity and privacy truth
 
-| BUILD ITEM | INTENDED OUTCOME | CURRENT CODE EVIDENCE | STATUS | SUPERSEDED BY | LAUNCH |
-|---|---|---|---|---|---|
-| PR-010 | Revoke UPDATE/DELETE on ledger tables, proven by test | migration `0051_ledger_transactions_append_only.sql` | DONE | — | P0 |
-| PR-011 | Evidence retention TTL, expiry sweep, legal holds | migration `0059_evidence_retention.sql`; `repos/evidence-retention.ts` | DONE | — | P0 |
+| BUILD ITEM | INTENDED OUTCOME                                      | CURRENT CODE EVIDENCE                                                  | STATUS | SUPERSEDED BY | LAUNCH |
+| ---------- | ----------------------------------------------------- | ---------------------------------------------------------------------- | ------ | ------------- | ------ |
+| PR-010     | Revoke UPDATE/DELETE on ledger tables, proven by test | migration `0051_ledger_transactions_append_only.sql`                   | DONE   | —             | P0     |
+| PR-011     | Evidence retention TTL, expiry sweep, legal holds     | migration `0059_evidence_retention.sql`; `repos/evidence-retention.ts` | DONE   | —             | P0     |
 
 #### E1 — Entitlements, pre-cost gating, risk tier
 
-| BUILD ITEM | INTENDED OUTCOME | CURRENT CODE EVIDENCE | STATUS | SUPERSEDED BY | LAUNCH |
-|---|---|---|---|---|---|
-| PR-012 | Entitlement schema, additive | migration `0052_entitlements.sql`; `repos/entitlements.ts` | DONE | — | P0 |
-| PR-013 | Entitlement resolver + single server-side gate | `packages/core/src/entitlements.ts`; `repos/entitlements.ts` | DONE | — | P0 |
-| PR-014 | Metered units expanded to the canonical seventeen | migration `0053_metered_units_canonical.sql`; `packages/core/src/allowances.ts` | DONE | — | P0 |
-| PR-015 | Pre-cost gating for AI, OCR, transcription | `apps/api/src/ai/` reserve-before-spend; `repos/quota.ts` | DONE | — | P0 |
-| PR-016 | Message-category metering (utility/marketing/auth/service) | migration `0054_message_categories.sql`; `apps/api/src/channels/message-cost.ts` | DONE | — | P0 |
-| PR-017 | UI visibility rules and plan-switch impact review | `apps/web` plan surfaces; spec §3.2a; cmt `PR-017` | DONE | — | P1 |
-| PR-017a | Shared command risk policy + HIGH_RISK confirmation | migration `0055_pending_confirmations.sql`; `packages/core/src/risk.ts`, `repos/risk.ts` | DONE | — | P0 |
-| PR-018 | Cross-product refusal suite (plan × entitlement matrix) | E1 refusal suite; cmt `PR-018` | DONE | — | P0 |
+| BUILD ITEM | INTENDED OUTCOME                                           | CURRENT CODE EVIDENCE                                                                    | STATUS | SUPERSEDED BY | LAUNCH |
+| ---------- | ---------------------------------------------------------- | ---------------------------------------------------------------------------------------- | ------ | ------------- | ------ |
+| PR-012     | Entitlement schema, additive                               | migration `0052_entitlements.sql`; `repos/entitlements.ts`                               | DONE   | —             | P0     |
+| PR-013     | Entitlement resolver + single server-side gate             | `packages/core/src/entitlements.ts`; `repos/entitlements.ts`                             | DONE   | —             | P0     |
+| PR-014     | Metered units expanded to the canonical seventeen          | migration `0053_metered_units_canonical.sql`; `packages/core/src/allowances.ts`          | DONE   | —             | P0     |
+| PR-015     | Pre-cost gating for AI, OCR, transcription                 | `apps/api/src/ai/` reserve-before-spend; `repos/quota.ts`                                | DONE   | —             | P0     |
+| PR-016     | Message-category metering (utility/marketing/auth/service) | migration `0054_message_categories.sql`; `apps/api/src/channels/message-cost.ts`         | DONE   | —             | P0     |
+| PR-017     | UI visibility rules and plan-switch impact review          | `apps/web` plan surfaces; spec §3.2a; cmt `PR-017`                                       | DONE   | —             | P1     |
+| PR-017a    | Shared command risk policy + HIGH_RISK confirmation        | migration `0055_pending_confirmations.sql`; `packages/core/src/risk.ts`, `repos/risk.ts` | DONE   | —             | P0     |
+| PR-018     | Cross-product refusal suite (plan × entitlement matrix)    | E1 refusal suite; cmt `PR-018`                                                           | DONE   | —             | P0     |
 
 #### A1 — Application command layer, idempotency, outbox
 
-| BUILD ITEM | INTENDED OUTCOME | CURRENT CODE EVIDENCE | STATUS | SUPERSEDED BY | LAUNCH |
-|---|---|---|---|---|---|
-| PR-019 | Command layer skeleton + `IdempotencyRecord` | migration `0056_idempotency_records.sql`; `apps/api/src/commands/command-bus.service.ts`, `command-registry.ts`; `repos/idempotency.ts` | DONE | — | P0 |
-| PR-020 | `OutboxEvent` + dispatcher job | migration `0060_outbox_events.sql`; `commands/outbox-dispatcher.ts`; `repos/outbox.ts` | DONE | — | P0 |
-| PR-021 | Commands `RecordSale`, `IssueInvoice` | `apps/api/src/commands/sale-commands.ts` | DONE | — | P0 |
-| PR-022 | Commands: payments and evidence | `apps/api/src/commands/payment-commands.ts` | DONE | — | P0 |
-| PR-023 | Commands `RecordExpense`, `RecordPurchase` | `apps/api/src/commands/spend-commands.ts` | DONE | — | P0 |
-| PR-024 | Commands `PostJournal`, `ClosePeriod` | `apps/api/src/commands/ledger-commands.ts` | DONE | — | P0 |
-| PR-025 | Command `PlaceOrder` / `RecordOrder` | `apps/api/src/commands/order-commands.ts` | DONE | — | P0 |
-| PR-026 | Commands `IngestFinancialTransaction`, `ConfirmReconciliation` | `apps/api/src/commands/bank-commands.ts` | DONE | — | P0 |
-| PR-027 | Ingress rewiring: chat handler | `commands/stock-commands.ts`; chat handler on the bus; cmt `PR-027` | DONE | — | P0 |
-| PR-028 | Ingress rewiring: dashboard and storefront | `ReopenAccountingPeriod`/`VoidReceipt` two-step; cmt `PR-028` | DONE | — | P0 |
+| BUILD ITEM | INTENDED OUTCOME                                               | CURRENT CODE EVIDENCE                                                                                                                   | STATUS | SUPERSEDED BY | LAUNCH |
+| ---------- | -------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- | ------ | ------------- | ------ |
+| PR-019     | Command layer skeleton + `IdempotencyRecord`                   | migration `0056_idempotency_records.sql`; `apps/api/src/commands/command-bus.service.ts`, `command-registry.ts`; `repos/idempotency.ts` | DONE   | —             | P0     |
+| PR-020     | `OutboxEvent` + dispatcher job                                 | migration `0060_outbox_events.sql`; `commands/outbox-dispatcher.ts`; `repos/outbox.ts`                                                  | DONE   | —             | P0     |
+| PR-021     | Commands `RecordSale`, `IssueInvoice`                          | `apps/api/src/commands/sale-commands.ts`                                                                                                | DONE   | —             | P0     |
+| PR-022     | Commands: payments and evidence                                | `apps/api/src/commands/payment-commands.ts`                                                                                             | DONE   | —             | P0     |
+| PR-023     | Commands `RecordExpense`, `RecordPurchase`                     | `apps/api/src/commands/spend-commands.ts`                                                                                               | DONE   | —             | P0     |
+| PR-024     | Commands `PostJournal`, `ClosePeriod`                          | `apps/api/src/commands/ledger-commands.ts`                                                                                              | DONE   | —             | P0     |
+| PR-025     | Command `PlaceOrder` / `RecordOrder`                           | `apps/api/src/commands/order-commands.ts`                                                                                               | DONE   | —             | P0     |
+| PR-026     | Commands `IngestFinancialTransaction`, `ConfirmReconciliation` | `apps/api/src/commands/bank-commands.ts`                                                                                                | DONE   | —             | P0     |
+| PR-027     | Ingress rewiring: chat handler                                 | `commands/stock-commands.ts`; chat handler on the bus; cmt `PR-027`                                                                     | DONE   | —             | P0     |
+| PR-028     | Ingress rewiring: dashboard and storefront                     | `ReopenAccountingPeriod`/`VoidReceipt` two-step; cmt `PR-028`                                                                           | DONE   | —             | P0     |
 
 #### F1 — Accounting Kernel I
 
-| BUILD ITEM | INTENDED OUTCOME | CURRENT CODE EVIDENCE | STATUS | SUPERSEDED BY | LAUNCH |
-|---|---|---|---|---|---|
-| PR-029 | `accounts` table, scoped roles, typed scope columns | migration `0061_accounts.sql`; `repos/accounts.ts`; `packages/core/src/chart.ts` | DONE | — | P0 |
-| PR-030 | Seed business-scoped accounts for every business | migration `0062_seed_chart_of_accounts.sql`; `SEED_CHART` in core | DONE | — | P0 |
-| PR-031 | `ledger_entries.account_id` additive + dual write | migration `0063_ledger_entries_account_id.sql` | DONE | — | P0 |
-| PR-032 | Backfill `account_id` across all history, validated | migration `0064_backfill_ledger_account_id.sql` (aborting `DO` gate) | DONE | — | P0 |
-| PR-033 | Readers cutover to `account_id` | reporting layer joins `accounts` via `codeOf`; cmt `PR-033` | DONE | — | P0 |
-| PR-034 | Drop `ledger_entries.account` text | migration `0065_drop_ledger_account_text.sql` | DONE | — | P0 |
-| PR-035 | Account lifecycle: deactivation, mandatory-role replacement | migration `0066_account_lifecycle.sql` | DONE | — | P0 |
-| PR-036 | `accounting_periods`, migrate `books_closed_through` | migration `0067_accounting_periods.sql`; `packages/core/src/periods.ts` | DONE | — | P0 |
-| PR-037 | Journal currency columns, additive | migration `0068_journal_currency.sql` | DONE | — | P0 |
-| PR-038 | `ExchangeRateSnapshot` and the FX requirement | migration `0069_exchange_rate_snapshots.sql`; `core/src/fx.ts`, `repos/fx.ts` | DONE | — | P0 |
-| PR-039 | Journal invariant triggers | migration `0070_journal_invariant_triggers.sql` | DONE | — | P0 |
-| PR-040 | `postingKey`, `postingPurpose`, reversal uniqueness | migration `0071_posting_key_purpose.sql` | DONE | — | P0 |
-| PR-041 | `JournalDraft` pair + the `PostJournal` command | migration `0072_journal_drafts.sql`; `repos/journal-drafts.ts` | DONE | — | P0 |
-| PR-042 | Posted-draft lock trigger | migration `0073_posted_draft_lock.sql` | DONE | — | P0 |
-| PR-043 | Recognition engine in core, five golden cases | `packages/core/src/recognition.ts` + `.test.ts` | DONE | — | P0 |
-| PR-044 | `ReceivableRecognitionPolicy` + contract liability | migration `0074_receivable_policy.sql`; `repos/recognition-policy.ts` | DONE | — | P0 |
-| PR-045 | `RevenueRecognitionEvent` + its idempotency | migration `0075_revenue_recognition_events.sql`; `repos/recognition-events.ts` | DONE | — | P0 |
-| PR-046 | Recognition wired to orders, invoices, fulfilment | migration `0076_ledger_dimensions.sql` (header names "F1, PR-046"); `repos/recognition.ts` | DONE | — | P0 |
-| PR-047 | Proportional recognition on partial fulfilment | `packages/core/src/fulfilment.ts` + `.test.ts`; cmt `4ab0616` | DONE | — | P0 |
-| PR-048 | `CustomerCredit` subledger | migration `0077_customer_credits.sql`; `repos/customer-credits.ts` | DONE | — | P0 |
-| PR-049 | Append-only allocations, full-reversal constraint | migration `0078_allocation_full_reversal.sql` | DONE | — | P0 |
-| PR-050 | Golden business fixture v1 — **F1 convergence gate** | `packages/db/src/golden-fixture.integration.test.ts` | DONE (gate passed) | — | P0 |
+| BUILD ITEM | INTENDED OUTCOME                                            | CURRENT CODE EVIDENCE                                                                      | STATUS             | SUPERSEDED BY | LAUNCH |
+| ---------- | ----------------------------------------------------------- | ------------------------------------------------------------------------------------------ | ------------------ | ------------- | ------ |
+| PR-029     | `accounts` table, scoped roles, typed scope columns         | migration `0061_accounts.sql`; `repos/accounts.ts`; `packages/core/src/chart.ts`           | DONE               | —             | P0     |
+| PR-030     | Seed business-scoped accounts for every business            | migration `0062_seed_chart_of_accounts.sql`; `SEED_CHART` in core                          | DONE               | —             | P0     |
+| PR-031     | `ledger_entries.account_id` additive + dual write           | migration `0063_ledger_entries_account_id.sql`                                             | DONE               | —             | P0     |
+| PR-032     | Backfill `account_id` across all history, validated         | migration `0064_backfill_ledger_account_id.sql` (aborting `DO` gate)                       | DONE               | —             | P0     |
+| PR-033     | Readers cutover to `account_id`                             | reporting layer joins `accounts` via `codeOf`; cmt `PR-033`                                | DONE               | —             | P0     |
+| PR-034     | Drop `ledger_entries.account` text                          | migration `0065_drop_ledger_account_text.sql`                                              | DONE               | —             | P0     |
+| PR-035     | Account lifecycle: deactivation, mandatory-role replacement | migration `0066_account_lifecycle.sql`                                                     | DONE               | —             | P0     |
+| PR-036     | `accounting_periods`, migrate `books_closed_through`        | migration `0067_accounting_periods.sql`; `packages/core/src/periods.ts`                    | DONE               | —             | P0     |
+| PR-037     | Journal currency columns, additive                          | migration `0068_journal_currency.sql`                                                      | DONE               | —             | P0     |
+| PR-038     | `ExchangeRateSnapshot` and the FX requirement               | migration `0069_exchange_rate_snapshots.sql`; `core/src/fx.ts`, `repos/fx.ts`              | DONE               | —             | P0     |
+| PR-039     | Journal invariant triggers                                  | migration `0070_journal_invariant_triggers.sql`                                            | DONE               | —             | P0     |
+| PR-040     | `postingKey`, `postingPurpose`, reversal uniqueness         | migration `0071_posting_key_purpose.sql`                                                   | DONE               | —             | P0     |
+| PR-041     | `JournalDraft` pair + the `PostJournal` command             | migration `0072_journal_drafts.sql`; `repos/journal-drafts.ts`                             | DONE               | —             | P0     |
+| PR-042     | Posted-draft lock trigger                                   | migration `0073_posted_draft_lock.sql`                                                     | DONE               | —             | P0     |
+| PR-043     | Recognition engine in core, five golden cases               | `packages/core/src/recognition.ts` + `.test.ts`                                            | DONE               | —             | P0     |
+| PR-044     | `ReceivableRecognitionPolicy` + contract liability          | migration `0074_receivable_policy.sql`; `repos/recognition-policy.ts`                      | DONE               | —             | P0     |
+| PR-045     | `RevenueRecognitionEvent` + its idempotency                 | migration `0075_revenue_recognition_events.sql`; `repos/recognition-events.ts`             | DONE               | —             | P0     |
+| PR-046     | Recognition wired to orders, invoices, fulfilment           | migration `0076_ledger_dimensions.sql` (header names "F1, PR-046"); `repos/recognition.ts` | DONE               | —             | P0     |
+| PR-047     | Proportional recognition on partial fulfilment              | `packages/core/src/fulfilment.ts` + `.test.ts`; cmt `4ab0616`                              | DONE               | —             | P0     |
+| PR-048     | `CustomerCredit` subledger                                  | migration `0077_customer_credits.sql`; `repos/customer-credits.ts`                         | DONE               | —             | P0     |
+| PR-049     | Append-only allocations, full-reversal constraint           | migration `0078_allocation_full_reversal.sql`                                              | DONE               | —             | P0     |
+| PR-050     | Golden business fixture v1 — **F1 convergence gate**        | `packages/db/src/golden-fixture.integration.test.ts`                                       | DONE (gate passed) | —             | P0     |
 
 #### P1 — Payment Hub
 
-| BUILD ITEM | INTENDED OUTCOME | CURRENT CODE EVIDENCE | STATUS | SUPERSEDED BY | LAUNCH |
-|---|---|---|---|---|---|
-| PR-051 | `PaymentConnection` four statuses, additive + backfilled | migration `0079_connection_four_statuses.sql`; `repos/payments-hub.ts` | DONE | — | P0 |
-| PR-052 | Provider-neutral connection attributes | migration `0080_connection_attributes.sql` | DONE | — | P0 |
-| PR-053 | Connection-scoped clearing account provisioning | `repos/accounts.ts` provisioning; cmt `PR-053` | DONE | — | P0 |
-| PR-054 | `PaymentIntent`/`PaymentAttempt`, connection-scoped ids | migration `0081_payment_attempts.sql`; `apps/api/src/payments/payment-intents.service.ts` | DONE | — | P0 |
-| PR-055 | `PaymentVerification` wired into `ConfirmPayment` | `commands/payment-commands.ts` + `repos/provenance.ts` | DONE | — | P0 |
-| PR-056 | `EconomicFeeBearer` split from `ProviderFeePayer` | migration `0082_fee_bearer_split.sql` | DONE | — | P0 |
-| PR-057 | `PaymentCharge` and the checkout breakdown | migration `0083_payment_charges.sql`; `core/src/charges.ts`, `repos/charges.ts` | DONE | — | P0 |
+| BUILD ITEM | INTENDED OUTCOME                                         | CURRENT CODE EVIDENCE                                                                     | STATUS | SUPERSEDED BY | LAUNCH |
+| ---------- | -------------------------------------------------------- | ----------------------------------------------------------------------------------------- | ------ | ------------- | ------ |
+| PR-051     | `PaymentConnection` four statuses, additive + backfilled | migration `0079_connection_four_statuses.sql`; `repos/payments-hub.ts`                    | DONE   | —             | P0     |
+| PR-052     | Provider-neutral connection attributes                   | migration `0080_connection_attributes.sql`                                                | DONE   | —             | P0     |
+| PR-053     | Connection-scoped clearing account provisioning          | `repos/accounts.ts` provisioning; cmt `PR-053`                                            | DONE   | —             | P0     |
+| PR-054     | `PaymentIntent`/`PaymentAttempt`, connection-scoped ids  | migration `0081_payment_attempts.sql`; `apps/api/src/payments/payment-intents.service.ts` | DONE   | —             | P0     |
+| PR-055     | `PaymentVerification` wired into `ConfirmPayment`        | `commands/payment-commands.ts` + `repos/provenance.ts`                                    | DONE   | —             | P0     |
+| PR-056     | `EconomicFeeBearer` split from `ProviderFeePayer`        | migration `0082_fee_bearer_split.sql`                                                     | DONE   | —             | P0     |
+| PR-057     | `PaymentCharge` and the checkout breakdown               | migration `0083_payment_charges.sql`; `core/src/charges.ts`, `repos/charges.ts`           | DONE   | —             | P0     |
 
 #### W1/W2 — Merchant WABA connection and messaging
 
-| BUILD ITEM | INTENDED OUTCOME | CURRENT CODE EVIDENCE | STATUS | SUPERSEDED BY | LAUNCH |
-|---|---|---|---|---|---|
-| PR-058 | Embedded Signup + the WABA connection model | migration `0084_waba_connections.sql`; `repos/waba.ts` | DONE (production waits on W0) | — | P0 |
-| PR-058a-1 | Conversation: channel-neutral columns, additive | migration `0085_conversation_columns.sql` | DONE | — | P0 |
-| PR-058a-2 | Conversation: backfill threads as `conversationKind = MERCHANT` | migration `0086_conversation_backfill.sql` | DONE | — | P0 |
-| PR-058a-3 | Conversation: readers and writers onto the resolver, flagged | `repos/conversations.ts`; cmt `PR-058a-3` | DONE | — | P0 |
-| PR-058a-4 | Conversation: replace the broad unique, enable customer threads | migration `0087_conversation_constraints.sql` (header names PR-058a-4) | DONE | — | P0 |
-| PR-058a-5 | Conversation: NOT NULL and cleanup after soak | cmt `ae8e7c0` (no separate migration; folded) | DONE | — | P0 |
-| PR-059 | `phoneNumberId` → `BusinessId` routing | `channels/customer-route.service.ts`, `meta.service.ts` | DONE | — | P0 |
-| PR-060 | Per-WABA template registry | migration `0088_waba_template_registry.sql`; `channels/waba-templates.service.ts` | DONE | — | P0 |
-| PR-061 | Service window + send-time category selection | `channels/message-cost.ts`, `meta.sender.ts` | DONE | — | P0 |
-| PR-062 | Connection health and billing mode | migration `0089_waba_health_billing.sql` | DONE (production waits on W0) | — | P0 |
+| BUILD ITEM | INTENDED OUTCOME                                                | CURRENT CODE EVIDENCE                                                             | STATUS                        | SUPERSEDED BY | LAUNCH |
+| ---------- | --------------------------------------------------------------- | --------------------------------------------------------------------------------- | ----------------------------- | ------------- | ------ |
+| PR-058     | Embedded Signup + the WABA connection model                     | migration `0084_waba_connections.sql`; `repos/waba.ts`                            | DONE (production waits on W0) | —             | P0     |
+| PR-058a-1  | Conversation: channel-neutral columns, additive                 | migration `0085_conversation_columns.sql`                                         | DONE                          | —             | P0     |
+| PR-058a-2  | Conversation: backfill threads as `conversationKind = MERCHANT` | migration `0086_conversation_backfill.sql`                                        | DONE                          | —             | P0     |
+| PR-058a-3  | Conversation: readers and writers onto the resolver, flagged    | `repos/conversations.ts`; cmt `PR-058a-3`                                         | DONE                          | —             | P0     |
+| PR-058a-4  | Conversation: replace the broad unique, enable customer threads | migration `0087_conversation_constraints.sql` (header names PR-058a-4)            | DONE                          | —             | P0     |
+| PR-058a-5  | Conversation: NOT NULL and cleanup after soak                   | cmt `ae8e7c0` (no separate migration; folded)                                     | DONE                          | —             | P0     |
+| PR-059     | `phoneNumberId` → `BusinessId` routing                          | `channels/customer-route.service.ts`, `meta.service.ts`                           | DONE                          | —             | P0     |
+| PR-060     | Per-WABA template registry                                      | migration `0088_waba_template_registry.sql`; `channels/waba-templates.service.ts` | DONE                          | —             | P0     |
+| PR-061     | Service window + send-time category selection                   | `channels/message-cost.ts`, `meta.sender.ts`                                      | DONE                          | —             | P0     |
+| PR-062     | Connection health and billing mode                              | migration `0089_waba_health_billing.sql`                                          | DONE (production waits on W0) | —             | P0     |
 
 #### P2 — Paystack platform model and settlements
 
-| BUILD ITEM | INTENDED OUTCOME | CURRENT CODE EVIDENCE | STATUS | SUPERSEDED BY | LAUNCH |
-|---|---|---|---|---|---|
-| PR-063 | `Settlement`/`SettlementItem`/`SettlementComponent` | migration `0090_settlements.sql`; `repos/settlements.ts` | DONE | — | P0 |
-| PR-064 | Settlement ingestion with signed components | `apps/api/src/payments/settlement-sweep.ts` | DONE | — | P0 |
-| PR-065 | Settlement postings from actual provider data | `repos/settlements.ts` postings; cmt `PR-065` | DONE | — | P0 |
-| PR-066 | Chargeback + `PROVIDER_CHARGEBACK_PAYABLE` | migration `0091_chargebacks.sql`; `repos/chargebacks.ts` | DONE | — | P0 |
-| PR-067 | Refund and `PaymentReversal`, kept distinct | migration `0092_refunds_reversals.sql`; `repos/refunds.ts` | DONE (P2 complete) | — | P0 |
+| BUILD ITEM | INTENDED OUTCOME                                    | CURRENT CODE EVIDENCE                                      | STATUS             | SUPERSEDED BY | LAUNCH |
+| ---------- | --------------------------------------------------- | ---------------------------------------------------------- | ------------------ | ------------- | ------ |
+| PR-063     | `Settlement`/`SettlementItem`/`SettlementComponent` | migration `0090_settlements.sql`; `repos/settlements.ts`   | DONE               | —             | P0     |
+| PR-064     | Settlement ingestion with signed components         | `apps/api/src/payments/settlement-sweep.ts`                | DONE               | —             | P0     |
+| PR-065     | Settlement postings from actual provider data       | `repos/settlements.ts` postings; cmt `PR-065`              | DONE               | —             | P0     |
+| PR-066     | Chargeback + `PROVIDER_CHARGEBACK_PAYABLE`          | migration `0091_chargebacks.sql`; `repos/chargebacks.ts`   | DONE               | —             | P0     |
+| PR-067     | Refund and `PaymentReversal`, kept distinct         | migration `0092_refunds_reversals.sql`; `repos/refunds.ts` | DONE (P2 complete) | —             | P0     |
 
 #### P3 — Mono DirectPay, OPay, Kuda adapters
 
-| BUILD ITEM | INTENDED OUTCOME | CURRENT CODE EVIDENCE | STATUS | SUPERSEDED BY | LAUNCH |
-|---|---|---|---|---|---|
-| PR-068 | `ProviderCapability` + `PaymentProviderResolver` | migration `0093_provider_capabilities.sql`; `core/src/capabilities.ts`; `packages/db/src/provider-resolver.integration.test.ts` | DONE | status model superseded by PR-119 | P1 |
-| PR-069 | Mono DirectPay adapter | `apps/api/src/payments/mono-directpay.provider.ts`; `packages/contracts/src/mono-api.ts` | DONE; production BLOCKED (Mono terms, OWN-9) | — | P2 |
-| PR-070 | OPay adapter | `apps/api/src/payments/opay.provider.ts` | DONE; production BLOCKED (OPay access, OWN-9) | — | P2 |
-| PR-071 | Kuda adapter | `apps/api/src/payments/kuda.provider.ts` | DONE; production BLOCKED (PSP/MMO licensing, OWN-8) | — | P2 |
-| PR-072 | `ProviderCostSchedule` | migration `0094_provider_cost_schedules.sql` | DONE (P3 complete) | — | P1 |
-| PR-119 | Provider readiness as three independent axes, defaulting closed | migration `0115_provider_readiness_axes.sql` (generated `production_enabled`) | DONE | supersedes 0093's blended status | P0 |
+| BUILD ITEM | INTENDED OUTCOME                                                | CURRENT CODE EVIDENCE                                                                                                           | STATUS                                              | SUPERSEDED BY                     | LAUNCH |
+| ---------- | --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------- | --------------------------------- | ------ |
+| PR-068     | `ProviderCapability` + `PaymentProviderResolver`                | migration `0093_provider_capabilities.sql`; `core/src/capabilities.ts`; `packages/db/src/provider-resolver.integration.test.ts` | DONE                                                | status model superseded by PR-119 | P1     |
+| PR-069     | Mono DirectPay adapter                                          | `apps/api/src/payments/mono-directpay.provider.ts`; `packages/contracts/src/mono-api.ts`                                        | DONE; production BLOCKED (Mono terms, OWN-9)        | —                                 | P2     |
+| PR-070     | OPay adapter                                                    | `apps/api/src/payments/opay.provider.ts`                                                                                        | DONE; production BLOCKED (OPay access, OWN-9)       | —                                 | P2     |
+| PR-071     | Kuda adapter                                                    | `apps/api/src/payments/kuda.provider.ts`                                                                                        | DONE; production BLOCKED (PSP/MMO licensing, OWN-8) | —                                 | P2     |
+| PR-072     | `ProviderCostSchedule`                                          | migration `0094_provider_cost_schedules.sql`                                                                                    | DONE (P3 complete)                                  | —                                 | P1     |
+| PR-119     | Provider readiness as three independent axes, defaulting closed | migration `0115_provider_readiness_axes.sql` (generated `production_enabled`)                                                   | DONE                                                | supersedes 0093's blended status  | P0     |
 
 #### B1 — Financial feeds and reconciliation
 
-| BUILD ITEM | INTENDED OUTCOME | CURRENT CODE EVIDENCE | STATUS | SUPERSEDED BY | LAUNCH |
-|---|---|---|---|---|---|
-| PR-073 | `FinancialAccountConnection`, connection-scoped identity | migration `0095_financial_account_connections.sql`; `packages/db/src/financial-account-connections.integration.test.ts` | DONE | — | P0 |
-| PR-074 | Reconciliation tiers one to four | migration `0096_reconciliation_tiers.sql`; `core/src/reconciliation.ts` | DONE | — | P0 |
-| PR-075 | Golden test: a bank credit is not revenue | `packages/db/src/golden-bank-credit.integration.test.ts` | DONE (mandatory, blocking) | — | P0 |
-| PR-076 | Reconciliation and classification surface | `apps/api/src/bank/`; migration `0097_drop_bank_feed_connections.sql` (**deviation**: row says "no migration"; amendment 1.82) | DONE | — | P0 |
+| BUILD ITEM | INTENDED OUTCOME                                         | CURRENT CODE EVIDENCE                                                                                                          | STATUS                     | SUPERSEDED BY | LAUNCH |
+| ---------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ | -------------------------- | ------------- | ------ |
+| PR-073     | `FinancialAccountConnection`, connection-scoped identity | migration `0095_financial_account_connections.sql`; `packages/db/src/financial-account-connections.integration.test.ts`        | DONE                       | —             | P0     |
+| PR-074     | Reconciliation tiers one to four                         | migration `0096_reconciliation_tiers.sql`; `core/src/reconciliation.ts`                                                        | DONE                       | —             | P0     |
+| PR-075     | Golden test: a bank credit is not revenue                | `packages/db/src/golden-bank-credit.integration.test.ts`                                                                       | DONE (mandatory, blocking) | —             | P0     |
+| PR-076     | Reconciliation and classification surface                | `apps/api/src/bank/`; migration `0097_drop_bank_feed_connections.sql` (**deviation**: row says "no migration"; amendment 1.82) | DONE                       | —             | P0     |
 
 #### F2 — Accounting Kernel II
 
-| BUILD ITEM | INTENDED OUTCOME | CURRENT CODE EVIDENCE | STATUS | SUPERSEDED BY | LAUNCH |
-|---|---|---|---|---|---|
-| PR-077 | Accounts payable and the bill lifecycle | migration `0098_bills.sql`; `repos/spend.ts` | DONE | — | P1 |
-| PR-078 | Tax model: codes, rates, treatments, point policies | migration `0099_tax_model.sql`; `core/src/tax.ts`, `repos/tax.ts` | DONE; statutory claim BLOCKED (tax review) | — | P1 |
-| PR-079 | `TaxEvent` + the separated tax calculator | migration `0100_tax_events.sql` | DONE; statutory claim BLOCKED | — | P1 |
-| PR-080 | Purchase lifecycle and goods returns with dispositions | migration `0101_goods_returns.sql`; `repos/returns.ts` | DONE | — | P1 |
-| PR-081 | Credit notes onto `CustomerCredit` | migration `0102_credit_notes_customer_credit.sql` | DONE | — | P1 |
-| PR-082 | Recurring entries on the kernel | `core/src/recurring.ts`, `repos/recurring.ts` (no migration, as the row says) | DONE | — | P1 |
-| PR-083 | Opening balances on the kernel | `repos/opening.ts` (**deviation**: row says "yes" migration, carried none; amendment 1.89) | DONE | — | P1 |
-| PR-084 | Document projections on the kernel | `repos/projections.ts`; `core/src/document-status.ts`; cmt `6a87fed` | DONE | — | P1 |
-| PR-085 | Golden business fixture, complete — **F2 gate** | `packages/db/src/golden-fixture.integration.test.ts` (all eleven §32 outputs) | DONE (gate passed) | — | P0 |
+| BUILD ITEM | INTENDED OUTCOME                                       | CURRENT CODE EVIDENCE                                                                      | STATUS                                     | SUPERSEDED BY | LAUNCH |
+| ---------- | ------------------------------------------------------ | ------------------------------------------------------------------------------------------ | ------------------------------------------ | ------------- | ------ |
+| PR-077     | Accounts payable and the bill lifecycle                | migration `0098_bills.sql`; `repos/spend.ts`                                               | DONE                                       | —             | P1     |
+| PR-078     | Tax model: codes, rates, treatments, point policies    | migration `0099_tax_model.sql`; `core/src/tax.ts`, `repos/tax.ts`                          | DONE; statutory claim BLOCKED (tax review) | —             | P1     |
+| PR-079     | `TaxEvent` + the separated tax calculator              | migration `0100_tax_events.sql`                                                            | DONE; statutory claim BLOCKED              | —             | P1     |
+| PR-080     | Purchase lifecycle and goods returns with dispositions | migration `0101_goods_returns.sql`; `repos/returns.ts`                                     | DONE                                       | —             | P1     |
+| PR-081     | Credit notes onto `CustomerCredit`                     | migration `0102_credit_notes_customer_credit.sql`                                          | DONE                                       | —             | P1     |
+| PR-082     | Recurring entries on the kernel                        | `core/src/recurring.ts`, `repos/recurring.ts` (no migration, as the row says)              | DONE                                       | —             | P1     |
+| PR-083     | Opening balances on the kernel                         | `repos/opening.ts` (**deviation**: row says "yes" migration, carried none; amendment 1.89) | DONE                                       | —             | P1     |
+| PR-084     | Document projections on the kernel                     | `repos/projections.ts`; `core/src/document-status.ts`; cmt `6a87fed`                       | DONE                                       | —             | P1     |
+| PR-085     | Golden business fixture, complete — **F2 gate**        | `packages/db/src/golden-fixture.integration.test.ts` (all eleven §32 outputs)              | DONE (gate passed)                         | —             | P0     |
 
 #### W3 — Native WhatsApp commerce
 
-| BUILD ITEM | INTENDED OUTCOME | CURRENT CODE EVIDENCE | STATUS | SUPERSEDED BY | LAUNCH |
-|---|---|---|---|---|---|
-| PR-086 | Catalogue synchronisation to the WABA | migration `0103_waba_catalogue.sql`; `channels/catalogue-sync.service.ts`, `meta-catalogue.publisher.ts` | DONE (test doubles; production waits on W0) | — | P0 |
-| PR-087 | Cart and order ingestion from WhatsApp | `channels/meta.service.ts` cart parser → `PlaceOrder` | DONE | — | P0 |
-| PR-088 | Server-side order validation and breakdown | `commands/order-commands.ts`; `core/src/orders.ts` | DONE | — | P0 |
-| PR-089 | Payment and receipt in the merchant thread — **W3 gate** | end-to-end suite in `channels/meta.integration.test.ts` | DONE (gate passed) | — | P0 |
+| BUILD ITEM | INTENDED OUTCOME                                         | CURRENT CODE EVIDENCE                                                                                    | STATUS                                      | SUPERSEDED BY | LAUNCH |
+| ---------- | -------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- | ------------------------------------------- | ------------- | ------ |
+| PR-086     | Catalogue synchronisation to the WABA                    | migration `0103_waba_catalogue.sql`; `channels/catalogue-sync.service.ts`, `meta-catalogue.publisher.ts` | DONE (test doubles; production waits on W0) | —             | P0     |
+| PR-087     | Cart and order ingestion from WhatsApp                   | `channels/meta.service.ts` cart parser → `PlaceOrder`                                                    | DONE                                        | —             | P0     |
+| PR-088     | Server-side order validation and breakdown               | `commands/order-commands.ts`; `core/src/orders.ts`                                                       | DONE                                        | —             | P0     |
+| PR-089     | Payment and receipt in the merchant thread — **W3 gate** | end-to-end suite in `channels/meta.integration.test.ts`                                                  | DONE (gate passed)                          | —             | P0     |
 
 #### W4 — Away assistant
 
-| BUILD ITEM | INTENDED OUTCOME | CURRENT CODE EVIDENCE | STATUS | SUPERSEDED BY | LAUNCH |
-|---|---|---|---|---|---|
-| PR-090 | Away assistant within configured limits, OFF by default | migration `0104_away_assistant.sql`; `core/src/assistant.ts` | DONE | — | P1 |
-| PR-091 | Human handoff — **W4 closes** | `core/src/assistant.ts` + replies; cmt `PR-091` | DONE | — | P1 |
+| BUILD ITEM | INTENDED OUTCOME                                        | CURRENT CODE EVIDENCE                                        | STATUS | SUPERSEDED BY | LAUNCH |
+| ---------- | ------------------------------------------------------- | ------------------------------------------------------------ | ------ | ------------- | ------ |
+| PR-090     | Away assistant within configured limits, OFF by default | migration `0104_away_assistant.sql`; `core/src/assistant.ts` | DONE   | —             | P1     |
+| PR-091     | Human handoff — **W4 closes**                           | `core/src/assistant.ts` + replies; cmt `PR-091`              | DONE   | —             | P1     |
 
 #### X1 — Complete cross-product experience
 
-| BUILD ITEM | INTENDED OUTCOME | CURRENT CODE EVIDENCE | STATUS | SUPERSEDED BY | LAUNCH |
-|---|---|---|---|---|---|
-| PR-092 | Cross-product routing with single-record proof | `channels/customer-route.service.ts` (`CustomerThreadRouter`) | DONE | — | P1 |
-| PR-093 | Send payment details end to end across products — **X1 closes** | `channels/customer-route.integration.test.ts` | DONE | — | P1 |
+| BUILD ITEM | INTENDED OUTCOME                                                | CURRENT CODE EVIDENCE                                         | STATUS | SUPERSEDED BY | LAUNCH |
+| ---------- | --------------------------------------------------------------- | ------------------------------------------------------------- | ------ | ------------- | ------ |
+| PR-092     | Cross-product routing with single-record proof                  | `channels/customer-route.service.ts` (`CustomerThreadRouter`) | DONE   | —             | P1     |
+| PR-093     | Send payment details end to end across products — **X1 closes** | `channels/customer-route.integration.test.ts`                 | DONE   | —             | P1     |
 
 #### D1 — Dashboard and accountant experience
 
-| BUILD ITEM | INTENDED OUTCOME | CURRENT CODE EVIDENCE | STATUS | SUPERSEDED BY | LAUNCH |
-|---|---|---|---|---|---|
-| PR-094 | Accountant users and roles, every grant an audited act | `core/src/audit.ts`; `repos/identity.ts`; cmt `d0de684` (no migration) | DONE | — | P1 |
-| PR-095 | Statements v2 driven by the chart in the database | `core/src/statements.ts`; `repos/reports.ts` | DONE | — | P0 |
-| PR-096 | Customer and supplier statements | `repos/party-statements.ts`; `core/src/statement-layout.ts` | DONE | — | P1 |
-| PR-097 | Receipt separated from statement in the interface | `apps/web` receipts/statement pages; cmt `PR-097` | DONE | — | P1 |
-| PR-098 | Exports on the kernel — **D1 closes** | `core/src/csv.ts`, `xlsx.ts`; `repos/reports.ts`; cmt `ab599ca` | DONE, with `REPORT_EXPORTS` metering deferred at close | PR-118 (metering) | P1 |
+| BUILD ITEM | INTENDED OUTCOME                                       | CURRENT CODE EVIDENCE                                                  | STATUS                                                 | SUPERSEDED BY     | LAUNCH |
+| ---------- | ------------------------------------------------------ | ---------------------------------------------------------------------- | ------------------------------------------------------ | ----------------- | ------ |
+| PR-094     | Accountant users and roles, every grant an audited act | `core/src/audit.ts`; `repos/identity.ts`; cmt `d0de684` (no migration) | DONE                                                   | —                 | P1     |
+| PR-095     | Statements v2 driven by the chart in the database      | `core/src/statements.ts`; `repos/reports.ts`                           | DONE                                                   | —                 | P0     |
+| PR-096     | Customer and supplier statements                       | `repos/party-statements.ts`; `core/src/statement-layout.ts`            | DONE                                                   | —                 | P1     |
+| PR-097     | Receipt separated from statement in the interface      | `apps/web` receipts/statement pages; cmt `PR-097`                      | DONE                                                   | —                 | P1     |
+| PR-098     | Exports on the kernel — **D1 closes**                  | `core/src/csv.ts`, `xlsx.ts`; `repos/reports.ts`; cmt `ab599ca`        | DONE, with `REPORT_EXPORTS` metering deferred at close | PR-118 (metering) | P1     |
 
 #### BL2 — Billing, pricing, usage, cost model, margin
 
-| BUILD ITEM | INTENDED OUTCOME | CURRENT CODE EVIDENCE | STATUS | SUPERSEDED BY | LAUNCH |
-|---|---|---|---|---|---|
-| PR-099 | `PlanVersion`, `PlanPrice`, `AllowanceVersion` | migration `0105_plan_catalogue.sql`; `repos/plan-catalogue.ts` | DONE | — | P0 |
-| PR-100 | Hardcoded allowances migrated to data | catalogue reads at nine meter sites; cmt `PR-100` | DONE | — | P0 |
-| PR-101 | Add-ons and usage packs | migration `0106_add_ons_usage_packs.sql`; `repos/add-ons.ts` | DONE | — | P1 |
-| PR-102 | `PlatformCostEvent` (decision COST-1) | migration `0107_platform_cost_events.sql`; `repos/platform-costs.ts` | DONE | — | P1 |
-| PR-103 | Margin engine and admin view — **BL2 closes** | `core/src/margin.ts`; `repos/margin.ts` | DONE | — | P1 |
-| PR-116 | `UNIT_KIND`: consumable vs capacity, and the add-on grant | migration `0112_add_on_grants.sql`; `UNIT_KIND` in `packages/core` | DONE | corrects PR-113's `API_APPLICATIONS` meter | P0 |
-| PR-117 | The approved plan and API commercial figures as catalogue data | migration `0113_approved_commercial_figures.sql`; `PLAN_ALLOWANCES` | DONE | supersedes ADR 0024's uncapped-reports clause | P0 |
-| PR-118 | Meter what is produced, never meter leaving | migration `0114_portability_exports.sql`; `repos/portability.ts`; `GET /v1/reports/portability.json` | DONE | closes PR-098's deferral | P0 |
+| BUILD ITEM | INTENDED OUTCOME                                               | CURRENT CODE EVIDENCE                                                                                | STATUS | SUPERSEDED BY                                 | LAUNCH |
+| ---------- | -------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- | ------ | --------------------------------------------- | ------ |
+| PR-099     | `PlanVersion`, `PlanPrice`, `AllowanceVersion`                 | migration `0105_plan_catalogue.sql`; `repos/plan-catalogue.ts`                                       | DONE   | —                                             | P0     |
+| PR-100     | Hardcoded allowances migrated to data                          | catalogue reads at nine meter sites; cmt `PR-100`                                                    | DONE   | —                                             | P0     |
+| PR-101     | Add-ons and usage packs                                        | migration `0106_add_ons_usage_packs.sql`; `repos/add-ons.ts`                                         | DONE   | —                                             | P1     |
+| PR-102     | `PlatformCostEvent` (decision COST-1)                          | migration `0107_platform_cost_events.sql`; `repos/platform-costs.ts`                                 | DONE   | —                                             | P1     |
+| PR-103     | Margin engine and admin view — **BL2 closes**                  | `core/src/margin.ts`; `repos/margin.ts`                                                              | DONE   | —                                             | P1     |
+| PR-116     | `UNIT_KIND`: consumable vs capacity, and the add-on grant      | migration `0112_add_on_grants.sql`; `UNIT_KIND` in `packages/core`                                   | DONE   | corrects PR-113's `API_APPLICATIONS` meter    | P0     |
+| PR-117     | The approved plan and API commercial figures as catalogue data | migration `0113_approved_commercial_figures.sql`; `PLAN_ALLOWANCES`                                  | DONE   | supersedes ADR 0024's uncapped-reports clause | P0     |
+| PR-118     | Meter what is produced, never meter leaving                    | migration `0114_portability_exports.sql`; `repos/portability.ts`; `GET /v1/reports/portability.json` | DONE   | closes PR-098's deferral                      | P0     |
 
 #### S1 — Production hardening
 
-| BUILD ITEM | INTENDED OUTCOME | CURRENT CODE EVIDENCE | STATUS | SUPERSEDED BY | LAUNCH |
-|---|---|---|---|---|---|
-| PR-104 | Observability over financial events | `apps/api/src/health/ops.controller.ts` (`/v1/ops/financial-integrity`); `repos/observability.ts` | DONE | operator auth later rebuilt (ADR 0034 / #196) | P0 |
-| PR-105 | Load and performance | migration `0108_hot_path_indexes.sql` (three measured gaps) | DONE | — | P1 |
-| PR-106 | Security review and fixes | migration `0109_security_hardening.sql`; cmt `PR-106` | DONE | extended by the R1/R2 audits (#196–#222) | P0 |
-| PR-107 | Runbooks and a real recovery drill | `docs/runbooks/backup-restore.md`; automated `pg_dump`/`pg_restore` drill test | DONE in CI; **production evidence still owner-held** | — | P0 |
-| PR-108 | Fix-plan 7 remainder, H7c–H7g — **S1 closes** | cmt `PR-108`: NODE_ENV fail-closed + PR-106's named findings | **SUPERSEDED / substituted** — the H7c–H7g enumeration is absent from the repo and its history; owner ruled 4–5 Sep not to reconstruct it | owner ruling (HANDOFF §3) | P1 |
-| PR-115 | Drop the `verified` compatibility column after soak | **none** | BLOCKED (PR-009 + two releases) | — | P2 |
+| BUILD ITEM | INTENDED OUTCOME                                    | CURRENT CODE EVIDENCE                                                                             | STATUS                                                                                                                                    | SUPERSEDED BY                                 | LAUNCH |
+| ---------- | --------------------------------------------------- | ------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------- | ------ |
+| PR-104     | Observability over financial events                 | `apps/api/src/health/ops.controller.ts` (`/v1/ops/financial-integrity`); `repos/observability.ts` | DONE                                                                                                                                      | operator auth later rebuilt (ADR 0034 / #196) | P0     |
+| PR-105     | Load and performance                                | migration `0108_hot_path_indexes.sql` (three measured gaps)                                       | DONE                                                                                                                                      | —                                             | P1     |
+| PR-106     | Security review and fixes                           | migration `0109_security_hardening.sql`; cmt `PR-106`                                             | DONE                                                                                                                                      | extended by the R1/R2 audits (#196–#222)      | P0     |
+| PR-107     | Runbooks and a real recovery drill                  | `docs/runbooks/backup-restore.md`; automated `pg_dump`/`pg_restore` drill test                    | DONE in CI; **production evidence still owner-held**                                                                                      | —                                             | P0     |
+| PR-108     | Fix-plan 7 remainder, H7c–H7g — **S1 closes**       | cmt `PR-108`: NODE_ENV fail-closed + PR-106's named findings                                      | **SUPERSEDED / substituted** — the H7c–H7g enumeration is absent from the repo and its history; owner ruled 4–5 Sep not to reconstruct it | owner ruling (HANDOFF §3)                     | P1     |
+| PR-115     | Drop the `verified` compatibility column after soak | **none**                                                                                          | BLOCKED (PR-009 + two releases)                                                                                                           | —                                             | P2     |
 
 #### API-D — Developer platform
 
-| BUILD ITEM | INTENDED OUTCOME | CURRENT CODE EVIDENCE | STATUS | SUPERSEDED BY | LAUNCH |
-|---|---|---|---|---|---|
-| PR-109 | API foundation: keys, authentication, rate limits | migration `0110_api_keys.sql`; `apps/api/src/api/api-key.guard.ts`, `api-keys.service.ts`; `repos/api-keys.ts` | DONE | — | P1 |
-| PR-110 | Versioned public contract layer | `packages/contracts/src/public/{version.ts,v1/}` + boundary rule in `scripts/check-boundaries.mjs` | DONE | — | P1 |
-| PR-111 | Merchant API version one | `apps/api/src/api/public/`; `repos/merchant-api.ts`; `contracts/public/v1/merchant.ts` | DONE | — | P1 |
-| PR-112 | Webhooks | migration `0111_webhooks.sql`; `repos/webhooks.ts`; `core/src/webhooks.ts` | DONE | fills 0060's empty handlers | P1 |
-| PR-113 | API entitlement and metering | `apps/api/src/api/api-metering.integration.test.ts`; the `consumeUnit` chokepoint | DONE | `API_APPLICATIONS` half corrected by PR-116 | P1 |
-| PR-114 | Developer documentation and sandbox — **API-D closes** | `docs/public-api.md`; `apps/api/src/api/sandbox.integration.test.ts` (`rk_test_` keys refuse writes) | DONE | — | P1 |
+| BUILD ITEM | INTENDED OUTCOME                                       | CURRENT CODE EVIDENCE                                                                                          | STATUS | SUPERSEDED BY                               | LAUNCH |
+| ---------- | ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------- | ------ | ------------------------------------------- | ------ |
+| PR-109     | API foundation: keys, authentication, rate limits      | migration `0110_api_keys.sql`; `apps/api/src/api/api-key.guard.ts`, `api-keys.service.ts`; `repos/api-keys.ts` | DONE   | —                                           | P1     |
+| PR-110     | Versioned public contract layer                        | `packages/contracts/src/public/{version.ts,v1/}` + boundary rule in `scripts/check-boundaries.mjs`             | DONE   | —                                           | P1     |
+| PR-111     | Merchant API version one                               | `apps/api/src/api/public/`; `repos/merchant-api.ts`; `contracts/public/v1/merchant.ts`                         | DONE   | —                                           | P1     |
+| PR-112     | Webhooks                                               | migration `0111_webhooks.sql`; `repos/webhooks.ts`; `core/src/webhooks.ts`                                     | DONE   | fills 0060's empty handlers                 | P1     |
+| PR-113     | API entitlement and metering                           | `apps/api/src/api/api-metering.integration.test.ts`; the `consumeUnit` chokepoint                              | DONE   | `API_APPLICATIONS` half corrected by PR-116 | P1     |
+| PR-114     | Developer documentation and sandbox — **API-D closes** | `docs/public-api.md`; `apps/api/src/api/sandbox.integration.test.ts` (`rk_test_` keys refuse writes)           | DONE   | —                                           | P1     |
 
 #### GOV — Governance
 
-| BUILD ITEM | INTENDED OUTCOME | CURRENT CODE EVIDENCE | STATUS | SUPERSEDED BY | LAUNCH |
-|---|---|---|---|---|---|
-| PR-121 | Owner decision register + external go-live register | `docs/REKODA_OWNER_DECISIONS.md` (OWN-1…OWN-14 and §2) | DONE | — | P0 |
+| BUILD ITEM | INTENDED OUTCOME                                    | CURRENT CODE EVIDENCE                                  | STATUS | SUPERSEDED BY | LAUNCH |
+| ---------- | --------------------------------------------------- | ------------------------------------------------------ | ------ | ------------- | ------ |
+| PR-121     | Owner decision register + external go-live register | `docs/REKODA_OWNER_DECISIONS.md` (OWN-1…OWN-14 and §2) | DONE   | —             | P0     |
 
 #### AI-1 — AI orchestration hardening (owner directive, 29 Aug 2026; slice absent from §2)
 
-| BUILD ITEM | INTENDED OUTCOME | CURRENT CODE EVIDENCE | STATUS | SUPERSEDED BY | LAUNCH |
-|---|---|---|---|---|---|
-| PR-122 | AI truth pass: Sonnet permanent pricing, accuracy-first default, boot pricing checks | `apps/api/src/ai/model-prices.ts` + `.test.ts`; `core/src/ai-cost.ts`; ADR 0031 | DONE | corrects ADR 0007/0023 defaults | P0 |
-| PR-123 | Role-aware cost rows + hosted OCR/STT telemetry | `AiModelRole` in core; `apps/api/src/ai/ocr.vision.ts`, `stt.openai.ts` | DONE | — | P0 |
-| PR-124 | Document-extraction daily ceiling; voice duration cross-check | migration `0117_doc_extraction_counters.sql`; `apps/api/src/ai/audio-duration.ts` | DONE | — | P0 |
-| PR-125 | Bounded Opus escalation + the classifier as a junk gate | `apps/api/src/ai/interpreter.service.ts`, `classifier.ts` | DONE | — | P1 |
-| PR-126 | High-value dual extraction behind an independent verifier transport | `core/src/extraction-compare.ts`; `apps/api/src/ai/openai.transport.ts` | DONE (opt-in; no shipped default) | — | P1 |
-| PR-127 | Evaluation harness, versioned dataset, launch-gate report | `apps/api/src/ai/eval/{dataset.ts,harness.ts,run-eval.ts}`; `docs/ai-launch-readiness.md` | DONE; **live eval never run — owner gate** | — | P0 |
+| BUILD ITEM | INTENDED OUTCOME                                                                     | CURRENT CODE EVIDENCE                                                                     | STATUS                                     | SUPERSEDED BY                   | LAUNCH |
+| ---------- | ------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------- | ------------------------------------------ | ------------------------------- | ------ |
+| PR-122     | AI truth pass: Sonnet permanent pricing, accuracy-first default, boot pricing checks | `apps/api/src/ai/model-prices.ts` + `.test.ts`; `core/src/ai-cost.ts`; ADR 0031           | DONE                                       | corrects ADR 0007/0023 defaults | P0     |
+| PR-123     | Role-aware cost rows + hosted OCR/STT telemetry                                      | `AiModelRole` in core; `apps/api/src/ai/ocr.vision.ts`, `stt.openai.ts`                   | DONE                                       | —                               | P0     |
+| PR-124     | Document-extraction daily ceiling; voice duration cross-check                        | migration `0117_doc_extraction_counters.sql`; `apps/api/src/ai/audio-duration.ts`         | DONE                                       | —                               | P0     |
+| PR-125     | Bounded Opus escalation + the classifier as a junk gate                              | `apps/api/src/ai/interpreter.service.ts`, `classifier.ts`                                 | DONE                                       | —                               | P1     |
+| PR-126     | High-value dual extraction behind an independent verifier transport                  | `core/src/extraction-compare.ts`; `apps/api/src/ai/openai.transport.ts`                   | DONE (opt-in; no shipped default)          | —                               | P1     |
+| PR-127     | Evaluation harness, versioned dataset, launch-gate report                            | `apps/api/src/ai/eval/{dataset.ts,harness.ts,run-eval.ts}`; `docs/ai-launch-readiness.md` | DONE; **live eval never run — owner gate** | —                               | P0     |
 
 #### LR-1…LR-5 — Launch-readiness remediation (owner review, 29 Aug 2026; slice absent from §2)
 
-| BUILD ITEM | INTENDED OUTCOME | CURRENT CODE EVIDENCE | STATUS | SUPERSEDED BY | LAUNCH |
-|---|---|---|---|---|---|
-| PR-128 | R9 tenant-scoped retention users + R5 command persistence boundary | migration `0118_tenant_scoped_retention_users.sql`; `core/src/command-persistence.ts` | DONE (two P0 defects) | — | P0 |
-| PR-129 | R1–R4 AI architecture truth: sidecar removal, explicit media flags, honest public claims | ADR `docs/adr/0032-launch-media-architecture.md`; `apps/api/src/ai/stt.openai.ts`; no sidecar clients remain | DONE | **supersedes ADR 0008 / ADR 0027 sidecar STT/OCR** | P0 |
-| PR-130 | A4 media daily ceilings, platform-wide included | migration `0119_media_daily_ceilings.sql` | DONE | — | P0 |
-| PR-131 | R8 legal-facts boot gate, A5 RLS role assert, A6 key fingerprints | migration `0120_key_fingerprints.sql`; `repos/boot-checks.ts` | DONE | — | P0 |
-| PR-132 | R6 incident response, R7 compliance drafts, R10 erasure operations | `docs/runbooks/privacy-security-incident.md`, `data-erasure.md`; `repos/retention.ts` | DONE | — | P0 |
+| BUILD ITEM | INTENDED OUTCOME                                                                         | CURRENT CODE EVIDENCE                                                                                        | STATUS                | SUPERSEDED BY                                      | LAUNCH |
+| ---------- | ---------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ | --------------------- | -------------------------------------------------- | ------ |
+| PR-128     | R9 tenant-scoped retention users + R5 command persistence boundary                       | migration `0118_tenant_scoped_retention_users.sql`; `core/src/command-persistence.ts`                        | DONE (two P0 defects) | —                                                  | P0     |
+| PR-129     | R1–R4 AI architecture truth: sidecar removal, explicit media flags, honest public claims | ADR `docs/adr/0032-launch-media-architecture.md`; `apps/api/src/ai/stt.openai.ts`; no sidecar clients remain | DONE                  | **supersedes ADR 0008 / ADR 0027 sidecar STT/OCR** | P0     |
+| PR-130     | A4 media daily ceilings, platform-wide included                                          | migration `0119_media_daily_ceilings.sql`                                                                    | DONE                  | —                                                  | P0     |
+| PR-131     | R8 legal-facts boot gate, A5 RLS role assert, A6 key fingerprints                        | migration `0120_key_fingerprints.sql`; `repos/boot-checks.ts`                                                | DONE                  | —                                                  | P0     |
+| PR-132     | R6 incident response, R7 compliance drafts, R10 erasure operations                       | `docs/runbooks/privacy-security-incident.md`, `data-erasure.md`; `repos/retention.ts`                        | DONE                  | —                                                  | P0     |
 
 #### Post-index work the §9 table never absorbed
 
-| BUILD ITEM | INTENDED OUTCOME | CURRENT CODE EVIDENCE | STATUS | SUPERSEDED BY | LAUNCH |
-|---|---|---|---|---|---|
-| PR-133, PR-134 | *(never issued)* — the slot was used by GitHub #159 (export authorization matrix) and #160 (webhook SSRF guard), both unnumbered | cmts `4ce8e6e`, `06cd77d` | identifiers MISSING; the work is DONE | — | P0 |
-| PR-135 | Honour a customer's STOP on a merchant's WhatsApp | migration `0121_customer_message_optouts.sql` (#162) | DONE | — | P0 |
-| PR-136 | Delete the object, not just the row that named it | migrations `0122`, `0124`, `0129`; `repos/object-deletions.ts` (#163) | DONE | — | P0 |
-| PR-137 | Put the whole payment on the books when a customer overpays | cmt `4fc4167` (#164) | DONE | — | P0 |
-| PR-138 … PR-144 | Atomic stock take · `PlaceOrder` as the one order door · WABA cart ids · fixture truncation · catalogue projection caller · test money vs real money (`0123_provider_environment.sql`) · a retry does not buy a second reading | cmts `7eb99ee` … `3ba3802` (#165–#171) | DONE | — | P0 |
-| (unnumbered, #172–#195) | Session-link and STOP-tap fixes · grandfathering pin · retention/deletion queue scoping · API reference published as a spec · bank-reference identity and narration drop (`0125`–`0127`) · multicurrency as a dark capability (`0128`, ADR 0033) · margin month · the HIGH_RISK flag rule | migrations `0125`–`0129`; ADR 0033 | DONE | — | P0/P1 |
-| (unnumbered, #196–#231) | R1/R2 audit execution, the ordering family, launch closeout — see (f) | migrations `0130`–`0149` | DONE | — | P0 |
+| BUILD ITEM              | INTENDED OUTCOME                                                                                                                                                                                                                                                                          | CURRENT CODE EVIDENCE                                                 | STATUS                                | SUPERSEDED BY | LAUNCH |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- | ------------------------------------- | ------------- | ------ |
+| PR-133, PR-134          | _(never issued)_ — the slot was used by GitHub #159 (export authorization matrix) and #160 (webhook SSRF guard), both unnumbered                                                                                                                                                          | cmts `4ce8e6e`, `06cd77d`                                             | identifiers MISSING; the work is DONE | —             | P0     |
+| PR-135                  | Honour a customer's STOP on a merchant's WhatsApp                                                                                                                                                                                                                                         | migration `0121_customer_message_optouts.sql` (#162)                  | DONE                                  | —             | P0     |
+| PR-136                  | Delete the object, not just the row that named it                                                                                                                                                                                                                                         | migrations `0122`, `0124`, `0129`; `repos/object-deletions.ts` (#163) | DONE                                  | —             | P0     |
+| PR-137                  | Put the whole payment on the books when a customer overpays                                                                                                                                                                                                                               | cmt `4fc4167` (#164)                                                  | DONE                                  | —             | P0     |
+| PR-138 … PR-144         | Atomic stock take · `PlaceOrder` as the one order door · WABA cart ids · fixture truncation · catalogue projection caller · test money vs real money (`0123_provider_environment.sql`) · a retry does not buy a second reading                                                            | cmts `7eb99ee` … `3ba3802` (#165–#171)                                | DONE                                  | —             | P0     |
+| (unnumbered, #172–#195) | Session-link and STOP-tap fixes · grandfathering pin · retention/deletion queue scoping · API reference published as a spec · bank-reference identity and narration drop (`0125`–`0127`) · multicurrency as a dark capability (`0128`, ADR 0033) · margin month · the HIGH_RISK flag rule | migrations `0125`–`0129`; ADR 0033                                    | DONE                                  | —             | P0/P1  |
+| (unnumbered, #196–#231) | R1/R2 audit execution, the ordering family, launch closeout — see (f)                                                                                                                                                                                                                     | migrations `0130`–`0149`                                              | DONE                                  | —             | P0     |
 
 #### EMBED — deferred slice
 
-| BUILD ITEM | INTENDED OUTCOME | CURRENT CODE EVIDENCE | STATUS | SUPERSEDED BY | LAUNCH |
-|---|---|---|---|---|---|
-| EMBED (no PRs allocated) | Embedded commerce, "later, separate approval" | none by design | DEFERRED (separate owner approval) | — | none |
+| BUILD ITEM               | INTENDED OUTCOME                              | CURRENT CODE EVIDENCE | STATUS                             | SUPERSEDED BY | LAUNCH |
+| ------------------------ | --------------------------------------------- | --------------------- | ---------------------------------- | ------------- | ------ |
+| EMBED (no PRs allocated) | Embedded commerce, "later, separate approval" | none by design        | DEFERRED (separate owner approval) | —             | none   |
 
 ---
 
@@ -753,42 +753,42 @@ Legend — **Status:** DONE (evidence at HEAD) · BLOCKED · SUPERSEDED · DEFER
 
 ### A.3 Open items the plan still names
 
-| Open item | Named in | What unblocks it |
-|---|---|---|
-| **PR-006, PR-007, PR-008, PR-009** (provenance backfill → `verified` retirement) | plan §2, §7, §17; HANDOFF §6; OWN-14 | The R0A-i production report **run** via `scripts/investigations/run-r0a-i.sh`, reviewed, reconciled against expected counts and totals, remediation population understood, and explicitly approved with an immutable operator UUID per `docs/runbooks/r0a-provenance.md`. Owner action only |
-| **PR-115** (drop the `verified` column) | plan §9, §7 | PR-009 merged **plus two releases of soak** |
-| **W0 — three Meta permissions** (`business_management`, `whatsapp_business_management`, `whatsapp_business_messaging`) | plan §3 W0, §6; OWN register §2 W0 | App Review + Advanced Access granted in writing, plus Tech Provider status. Calendar gate; blocks production W1/W2, W3, W4 |
-| **W0 — billing mode** (`MERCHANT_DIRECT` / `REKODA_CREDIT_LINE` / `PARTNER_BILLED`) | plan §3 W0, §6 | Ask Meta which modes are available; prefer merchant-direct. Credit-line mode additionally requires metering, billing recovery, spending ceilings, suspension rules, credit-risk controls and working-capital modelling |
-| **Paystack — twelve written questions** | plan §6; OWN register §2 P | Written answers from Paystack; until then the merchant-key path stays disabled or fallback. Then one controlled real-money drill end to end |
-| **Mono / OPay production enablement** (PR-069, PR-070) | plan §6; OWN-9 | Live credentials, contract, webhook and signature validation, commercial terms. `technical_support` is already true in 0115 — the adapters are real |
-| **Kuda production enablement** (PR-071) | plan §6; OWN-8 | An approved PSP or MMO licensing arrangement; `compliance_approval` stays false/unknown until then |
-| **Tax and fiscalisation review** (PR-078, PR-079) | plan §6; OWN register §2 T | A qualified Nigerian tax/fiscalisation opinion. Model and calculator are built; only the statutory *claim* is blocked |
-| **Finance and accounting sign-off** | plan §6; OWN register §2 T | Qualified review of the statements Rekoda produces and of Rekoda's own books, before merchants rely on either |
-| **Legal and corporate facts (task #40)** | plan §1.3, §6; OWN register §2 L | Six real values from the corporate records (entity name, CAC/RC, address, support email, DPO email, contact channel). Production web refuses to boot without them (PR-131's R8 gate) |
-| **AI live evaluation** | PR-127; HANDOFF §6 | An owner-run eval against the configured models; every live metric in `docs/ai-launch-readiness.md` still reads "not yet run". Explicit launch gate |
-| **Three WhatsApp templates approved** (`META_OTP_TEMPLATE`, `META_BILLING_TEMPLATE`, `META_RETENTION_TEMPLATE`) | HANDOFF §6 | WABA template approval. Without the OTP template nobody can sign in; the retention sweep deletes nothing without its template, by design |
-| **Production environment fill, branch protection, backup/PITR evidence** | HANDOFF §6 | Owner: fill `rekoda-production.env.template`; enable rulesets on `main` (currently zero); enable off-box backups and WAL/PITR and run one restore into a clean database |
-| **H7c–H7g enumeration** | plan §8 gate; PR-108 | Owner ruled 4–5 Sep **not** to reconstruct it. The §8 gate text still asks for owner confirmation — it needs the ruling written into §8 to close cleanly |
-| **NestJS 12 migration** (#225–#227 open) | HANDOFF §3 | Deliberately deferred as one coordinated post-launch migration |
-| **Annual billing lifecycle** | HANDOFF §3 (4–5 Sep ruling) | Post-launch work; the public pricing page keeps annual by explicit owner ruling while the backend bills monthly |
-| **EMBED slice** | plan §2, §3 | Separate owner approval. No PRs allocated |
-| **A third audit pass on RLS `USING` predicates** | `docs/audits/adversarial-security-audit-2026-09-01.md`, closing section | R2 explicitly did not re-derive each policy predicate and names this "the strongest candidate for a third pass". Partly answered since by `rls-invariants.integration.test.ts` (#203) |
+| Open item                                                                                                              | Named in                                                                | What unblocks it                                                                                                                                                                                                                                                                            |
+| ---------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **PR-006, PR-007, PR-008, PR-009** (provenance backfill → `verified` retirement)                                       | plan §2, §7, §17; HANDOFF §6; OWN-14                                    | The R0A-i production report **run** via `scripts/investigations/run-r0a-i.sh`, reviewed, reconciled against expected counts and totals, remediation population understood, and explicitly approved with an immutable operator UUID per `docs/runbooks/r0a-provenance.md`. Owner action only |
+| **PR-115** (drop the `verified` column)                                                                                | plan §9, §7                                                             | PR-009 merged **plus two releases of soak**                                                                                                                                                                                                                                                 |
+| **W0 — three Meta permissions** (`business_management`, `whatsapp_business_management`, `whatsapp_business_messaging`) | plan §3 W0, §6; OWN register §2 W0                                      | App Review + Advanced Access granted in writing, plus Tech Provider status. Calendar gate; blocks production W1/W2, W3, W4                                                                                                                                                                  |
+| **W0 — billing mode** (`MERCHANT_DIRECT` / `REKODA_CREDIT_LINE` / `PARTNER_BILLED`)                                    | plan §3 W0, §6                                                          | Ask Meta which modes are available; prefer merchant-direct. Credit-line mode additionally requires metering, billing recovery, spending ceilings, suspension rules, credit-risk controls and working-capital modelling                                                                      |
+| **Paystack — twelve written questions**                                                                                | plan §6; OWN register §2 P                                              | Written answers from Paystack; until then the merchant-key path stays disabled or fallback. Then one controlled real-money drill end to end                                                                                                                                                 |
+| **Mono / OPay production enablement** (PR-069, PR-070)                                                                 | plan §6; OWN-9                                                          | Live credentials, contract, webhook and signature validation, commercial terms. `technical_support` is already true in 0115 — the adapters are real                                                                                                                                         |
+| **Kuda production enablement** (PR-071)                                                                                | plan §6; OWN-8                                                          | An approved PSP or MMO licensing arrangement; `compliance_approval` stays false/unknown until then                                                                                                                                                                                          |
+| **Tax and fiscalisation review** (PR-078, PR-079)                                                                      | plan §6; OWN register §2 T                                              | A qualified Nigerian tax/fiscalisation opinion. Model and calculator are built; only the statutory _claim_ is blocked                                                                                                                                                                       |
+| **Finance and accounting sign-off**                                                                                    | plan §6; OWN register §2 T                                              | Qualified review of the statements Rekoda produces and of Rekoda's own books, before merchants rely on either                                                                                                                                                                               |
+| **Legal and corporate facts (task #40)**                                                                               | plan §1.3, §6; OWN register §2 L                                        | Six real values from the corporate records (entity name, CAC/RC, address, support email, DPO email, contact channel). Production web refuses to boot without them (PR-131's R8 gate)                                                                                                        |
+| **AI live evaluation**                                                                                                 | PR-127; HANDOFF §6                                                      | An owner-run eval against the configured models; every live metric in `docs/ai-launch-readiness.md` still reads "not yet run". Explicit launch gate                                                                                                                                         |
+| **Three WhatsApp templates approved** (`META_OTP_TEMPLATE`, `META_BILLING_TEMPLATE`, `META_RETENTION_TEMPLATE`)        | HANDOFF §6                                                              | WABA template approval. Without the OTP template nobody can sign in; the retention sweep deletes nothing without its template, by design                                                                                                                                                    |
+| **Production environment fill, branch protection, backup/PITR evidence**                                               | HANDOFF §6                                                              | Owner: fill `rekoda-production.env.template`; enable rulesets on `main` (currently zero); enable off-box backups and WAL/PITR and run one restore into a clean database                                                                                                                     |
+| **H7c–H7g enumeration**                                                                                                | plan §8 gate; PR-108                                                    | Owner ruled 4–5 Sep **not** to reconstruct it. The §8 gate text still asks for owner confirmation — it needs the ruling written into §8 to close cleanly                                                                                                                                    |
+| **NestJS 12 migration** (#225–#227 open)                                                                               | HANDOFF §3                                                              | Deliberately deferred as one coordinated post-launch migration                                                                                                                                                                                                                              |
+| **Annual billing lifecycle**                                                                                           | HANDOFF §3 (4–5 Sep ruling)                                             | Post-launch work; the public pricing page keeps annual by explicit owner ruling while the backend bills monthly                                                                                                                                                                             |
+| **EMBED slice**                                                                                                        | plan §2, §3                                                             | Separate owner approval. No PRs allocated                                                                                                                                                                                                                                                   |
+| **A third audit pass on RLS `USING` predicates**                                                                       | `docs/audits/adversarial-security-audit-2026-09-01.md`, closing section | R2 explicitly did not re-derive each policy predicate and names this "the strongest candidate for a third pass". Partly answered since by `rls-invariants.integration.test.ts` (#203)                                                                                                       |
 
 ---
 
 ### A.4 Superseded items, consolidated
 
-| Superseded | By | Effect |
-|---|---|---|
+| Superseded                                                                                                                          | By                                 | Effect                                                                                                                                                                                                           |
+| ----------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Self-hosted STT/OCR sidecars (`STT_URL`, `OCR_URL`, `services/stt`, ADR 0008 afrispeech, ADR 0027's "one env var away" optionality) | **ADR 0032** (PR-129, 29 Aug 2026) | Launch architecture is OpenAI transcription + Anthropic Claude vision/reasoning. Clients, tests and config **deleted**, not flagged off; "audio never leaves Rekoda" removed from SECURITY.md and `.env.example` |
-| ADR 0004's fixed 17-key chart of accounts | spec §11 / PR-029, PR-030 | Chart becomes business-scoped rows; append-only and integer kobo survive |
-| ADR 0014's payment verification model | spec §6 / PR-003…PR-005 | Five confirmation sources, append-only verifications, derived trust |
-| `0093`'s single blended `provider_capabilities.status` | migration `0115` (PR-119, OWN-7) | Three independent axes; `production_enabled` generated by the database |
-| PR-113's `API_APPLICATIONS` monthly tally | PR-116 `UNIT_KIND` (OWN-1) | Capacity is counted, not tallied |
-| ADR 0024's "report generation is not capped" | OWN-4 / PR-117 | `REPORT_EXPORTS` sells 10 / 50 / 100 / 200 |
-| The operator shared secret guarding PR-104's `/v1/ops` | **ADR 0034** / GitHub #196 | The operator plane gets verified identities and scopes |
-| PR-108's stated H7c–H7g scope | owner ruling, 4–5 Sep 2026 | Substituted with PR-106's named hardening findings |
-| ADR 0002 → 0011, ADR 0009 → 0012, ADR 0007/0023 defaults → ADR 0031 | `docs/adr/README.md`, the manifest | pre-build-plan supersessions |
+| ADR 0004's fixed 17-key chart of accounts                                                                                           | spec §11 / PR-029, PR-030          | Chart becomes business-scoped rows; append-only and integer kobo survive                                                                                                                                         |
+| ADR 0014's payment verification model                                                                                               | spec §6 / PR-003…PR-005            | Five confirmation sources, append-only verifications, derived trust                                                                                                                                              |
+| `0093`'s single blended `provider_capabilities.status`                                                                              | migration `0115` (PR-119, OWN-7)   | Three independent axes; `production_enabled` generated by the database                                                                                                                                           |
+| PR-113's `API_APPLICATIONS` monthly tally                                                                                           | PR-116 `UNIT_KIND` (OWN-1)         | Capacity is counted, not tallied                                                                                                                                                                                 |
+| ADR 0024's "report generation is not capped"                                                                                        | OWN-4 / PR-117                     | `REPORT_EXPORTS` sells 10 / 50 / 100 / 200                                                                                                                                                                       |
+| The operator shared secret guarding PR-104's `/v1/ops`                                                                              | **ADR 0034** / GitHub #196         | The operator plane gets verified identities and scopes                                                                                                                                                           |
+| PR-108's stated H7c–H7g scope                                                                                                       | owner ruling, 4–5 Sep 2026         | Substituted with PR-106's named hardening findings                                                                                                                                                               |
+| ADR 0002 → 0011, ADR 0009 → 0012, ADR 0007/0023 defaults → ADR 0031                                                                 | `docs/adr/README.md`, the manifest | pre-build-plan supersessions                                                                                                                                                                                     |
 
 ---
 
@@ -796,17 +796,17 @@ Legend — **Status:** DONE (evidence at HEAD) · BLOCKED · SUPERSEDED · DEFER
 
 **`schema-launch-audit-2026-09-01.md` (R1)** and **`schema-remediation-plan-2026-09-01.md`** define six rulings across eight phases behind a hard gate ("do not start schema migrations until R2 is reviewed"). **`adversarial-security-audit-2026-09-01.md` (R2)** answered seven questions and lowered R1's urgency without changing its direction. `status-enum-evidence-2026-09-01.md` is the phase-2 derivation.
 
-| Ruling / phase | Plan | Executed at HEAD | Complete? |
-|---|---|---|---|
-| **1 — 34 tenant-composite FKs**, five grouped PRs | phase 5 | migrations `0132` (group A, 9), `0133` (B, 12), `0134` (C, 4), `0135` (D, 6), `0138` (E/WABA), `0140` (platform_cost_events), `0141`–`0145` (**group F**, 14 more the audit missed, found by re-measuring); GitHub #209–#222 | **YES, over-delivered** — 34 audited + 14 unfound = 48 edges, each with a cross-tenant refusal test that bypasses the service layer, plus a standing closure query that fails the suite if a weak edge returns |
-| **1 (precondition) — `platform_cost_events.business_id` nullable / MATCH FULL** | ruling required at phase 5 | migration `0140_tenant_fk_platform_cost_events.sql` | **YES** — resolved rather than left documented |
-| **2 — `external_events` access model** | phase 6 | migration `0130_external_events_tenant_policy.sql` (three-policy model); the two `eventHealth` calls moved to the worker credential (#204); dedupe answers from the conflict (#205) | **YES** |
-| **3 — status CHECK constraints + drift test** | phases 2 and 4 | `status-enum-evidence-2026-09-01.md`, then migration `0131_status_check_constraints.sql` for `invoices`, `orders`, `expenses`, `reconciliations` (#207) | **YES**, both directions of the drift test |
-| **4 — indexes on evidence only** | phase 7 | migration `0136_customer_merge_indexes.sql` — four indexes chosen by `EXPLAIN` (#213), not the 54-FK sweep | **YES**, as scoped (a queue, not a sweep) |
-| **5 — drop the redundant `ledger_entries` FK** | phase 8, opportunistic | migration `0147_drop_duplicate_tenant_fks.sql` (#228) | **YES** |
-| **6 — sessions / magic_links RLS exemption** | documentation only unless R2 finds a path | R2 found no attack path; the exemption register stands (#201) | **YES** (documented, by design) |
-| **R2 new — two unescaped `sql.raw` in `evidence-retention.ts`** | "not exploitable; worth binding properly" | the evidence sweeps bind their id list (#208) | **YES** |
-| **R2 residual — RLS `USING` predicates never re-derived** | named "the strongest candidate for a third pass" | `rls-invariants.integration.test.ts` (#203) asserts the canonical tenant predicate character-for-character from `pg_policy` | **PARTIALLY** — presence and text are now asserted; a full third adversarial pass was never run |
+| Ruling / phase                                                                  | Plan                                             | Executed at HEAD                                                                                                                                                                                                             | Complete?                                                                                                                                                                                                      |
+| ------------------------------------------------------------------------------- | ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **1 — 34 tenant-composite FKs**, five grouped PRs                               | phase 5                                          | migrations `0132` (group A, 9), `0133` (B, 12), `0134` (C, 4), `0135` (D, 6), `0138` (E/WABA), `0140` (platform_cost_events), `0141`–`0145` (**group F**, 14 more the audit missed, found by re-measuring); GitHub #209–#222 | **YES, over-delivered** — 34 audited + 14 unfound = 48 edges, each with a cross-tenant refusal test that bypasses the service layer, plus a standing closure query that fails the suite if a weak edge returns |
+| **1 (precondition) — `platform_cost_events.business_id` nullable / MATCH FULL** | ruling required at phase 5                       | migration `0140_tenant_fk_platform_cost_events.sql`                                                                                                                                                                          | **YES** — resolved rather than left documented                                                                                                                                                                 |
+| **2 — `external_events` access model**                                          | phase 6                                          | migration `0130_external_events_tenant_policy.sql` (three-policy model); the two `eventHealth` calls moved to the worker credential (#204); dedupe answers from the conflict (#205)                                          | **YES**                                                                                                                                                                                                        |
+| **3 — status CHECK constraints + drift test**                                   | phases 2 and 4                                   | `status-enum-evidence-2026-09-01.md`, then migration `0131_status_check_constraints.sql` for `invoices`, `orders`, `expenses`, `reconciliations` (#207)                                                                      | **YES**, both directions of the drift test                                                                                                                                                                     |
+| **4 — indexes on evidence only**                                                | phase 7                                          | migration `0136_customer_merge_indexes.sql` — four indexes chosen by `EXPLAIN` (#213), not the 54-FK sweep                                                                                                                   | **YES**, as scoped (a queue, not a sweep)                                                                                                                                                                      |
+| **5 — drop the redundant `ledger_entries` FK**                                  | phase 8, opportunistic                           | migration `0147_drop_duplicate_tenant_fks.sql` (#228)                                                                                                                                                                        | **YES**                                                                                                                                                                                                        |
+| **6 — sessions / magic_links RLS exemption**                                    | documentation only unless R2 finds a path        | R2 found no attack path; the exemption register stands (#201)                                                                                                                                                                | **YES** (documented, by design)                                                                                                                                                                                |
+| **R2 new — two unescaped `sql.raw` in `evidence-retention.ts`**                 | "not exploitable; worth binding properly"        | the evidence sweeps bind their id list (#208)                                                                                                                                                                                | **YES**                                                                                                                                                                                                        |
+| **R2 residual — RLS `USING` predicates never re-derived**                       | named "the strongest candidate for a third pass" | `rls-invariants.integration.test.ts` (#203) asserts the canonical tenant predicate character-for-character from `pg_policy`                                                                                                  | **PARTIALLY** — presence and text are now asserted; a full third adversarial pass was never run                                                                                                                |
 
 **Beyond the audits' own scope**, the same era closed an ordering family neither audit found: `now()` is transaction-start time, so rows written by one job shared an instant and read back in arbitrary order. Migrations `0146` (conversation transcripts), `0148` (checkout breakdowns) and `0149` (`command_drafts.insertion_seq`, `GENERATED ALWAYS`, so a merchant's "yes" executes the right draft) fix it, plus `0137` (six unconstrained reference columns) and `0139` (queue due-time precision).
 
