@@ -120,8 +120,10 @@ session never starts a capability from zero.
 8. **Provider failures fail safely.** A missing key degrades the feature
    honestly; a bad config value refuses to boot; a missing signature
    secret rejects every webhook.
-9. **Secrets never enter source, fixtures or logs.** `.env.example`
-   documents every variable; gitleaks scans the whole history in CI.
+9. **Secrets never enter source, fixtures or logs.** gitleaks scans the
+   whole history in CI. `.env.example` is meant to document every variable
+   the code reads; G-08 in `docs/REKODA_LAUNCH_READINESS.md` tracks the
+   names where it currently disagrees with the code.
 10. **Never hold, route or delay funds; never KYC a merchant's customer;
     never accept a screenshot as payment evidence** (`docs/safety-review.md`
     RED list).

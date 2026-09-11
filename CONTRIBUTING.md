@@ -88,13 +88,14 @@ provider assumptions, missing edge cases, weak tests and documentation that
 promises behaviour the code does not implement, and reports each finding as
 BLOCKING, IMPORTANT or NON-BLOCKING. The builder fixes every valid BLOCKING
 and IMPORTANT finding; a fix that changes the SHA gets a fresh review of the
-new SHA. Codex review threads on the PR are fetched and answered the same
-way: valid findings fixed, invalid ones answered with code evidence. A PR is
-reported READY FOR OWNER MERGE only when CI is green on the exact head, the
-fresh review has no BLOCKING or IMPORTANT findings, valid Codex findings are
-fixed, no blocking thread is unresolved, and the docs match the code. This is
-a lightweight human-in-the-loop process: no bots, gates, labels or signed
-evidence. Angelo merges.
+new SHA. Codex review threads on the PR (Codex is the GitHub review app that
+comments on pull requests, not a pipeline or a gate) are fetched and
+answered the same way: valid findings fixed, invalid ones answered with code
+evidence. A PR is reported READY FOR OWNER MERGE only when CI is green on the
+exact head, the fresh review has no BLOCKING or IMPORTANT findings, valid
+Codex findings are fixed, no blocking thread is unresolved, and the docs
+match the code. This is a lightweight human-in-the-loop process: no bots,
+gates, labels or signed evidence. Angelo merges.
 
 ## Tests
 

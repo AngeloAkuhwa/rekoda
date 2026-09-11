@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Architectural boundaries, enforced (MASTER-PLAN 4.4 #1).
+ * Architectural boundaries, enforced (docs/archive/MASTER-PLAN.md 4.4 #1).
  *
  * `withBusiness()` is only a tenancy guarantee if it is the ONLY path to the
  * database. That is an architectural claim, and architectural claims decay
