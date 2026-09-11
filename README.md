@@ -121,7 +121,9 @@ WORKER_DATABASE_URL=postgres://rekoda_worker@127.0.0.1:5432/rekoda \
 # then, with the same variables:
   pnpm --filter @rekoda/api test:integration
 
-pnpm --filter @rekoda/web e2e                 # Playwright against a production build (CI shape)
+# Playwright needs a browser and REKODA_CHROME='' (else it looks for CI's Linux path):
+pnpm --filter @rekoda/web exec playwright install chromium
+REKODA_CHROME='' pnpm --filter @rekoda/web e2e   # against a production build (CI shape)
 ```
 
 These suites fail rather than skip when the database is missing. CI runs a
