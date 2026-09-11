@@ -428,4 +428,26 @@ describe('reading a refund and a dispute (G-06)', () => {
     });
     expect(requests[0]?.url).toBe('/dispute/602');
   });
+
+  it("a dispute read without refund_amount reports NO amount, never the charge's", async () => {
+    respond = (_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          status: true,
+          data: {
+            id: 603,
+            status: 'resolved',
+            resolution: 'merchant-accepted',
+            currency: 'NGN',
+            transaction: { id: 1, reference: 'RKD-PAY-20260819-A83F92', amount: 15_000_000 },
+          },
+        }),
+      );
+    };
+    const result = await provider().verifyDispute('603');
+    if (!result.found) throw new Error('expected found');
+    expect(result.dispute.amountK).toBeNull();
+    expect(result.dispute.outcome).toBe('lost');
+  });
 });

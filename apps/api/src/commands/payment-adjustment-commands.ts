@@ -134,8 +134,6 @@ export interface RefundPaymentInput {
   /** Integer kobo the provider confirmed it returned. */
   amountK: number;
   providerRefundId: string;
-  /** Whether the provider had already paid this payment out (§20). */
-  settled: boolean;
   paymentConnectionId: string | null;
   reason: string;
   actor: string;
@@ -198,7 +196,12 @@ export async function refundPaymentWork(
   /* Where the money physically left from: the clearing account while the
    * provider still held it, the bank once it had paid out. A booking with
    * no connection posted to the bank directly, so its refund does too. */
-  const method = !input.settled && input.paymentConnectionId ? 'provider' : 'bank';
+  /* Read INSIDE the payment lock: a settlement that lands between an
+   * earlier read and the posting would otherwise credit clearing for money
+   * the provider had already paid out. Settlement writes take a key-share
+   * lock on the payment row, so they wait behind this lock. */
+  const settled = await refundsRepo.paymentSettled(tx, input.businessId, input.paymentId);
+  const method = !settled && input.paymentConnectionId ? 'provider' : 'bank';
   const recorded = await refundsRepo.recordRefund(tx, {
     businessId: input.businessId,
     paymentId: input.paymentId,

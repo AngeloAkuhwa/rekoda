@@ -1728,7 +1728,6 @@ describe('two lanes, one payment: adjustments serialise on the payment row', () 
     paymentAmountK: 15_000_000,
     amountK: 6_000_000,
     providerRefundId: 'race-rf-1',
-    settled: false,
     paymentConnectionId: connectionId,
     reason: 'provider refund race-rf-1',
     actor: 'system',
@@ -1966,5 +1965,97 @@ describe('a second partial refund', () => {
     expect(Number([...negatives][0]!.bad)).toBe(0);
     const totals = await ledgerTotals(businessId);
     expect(totals.d).toBe(totals.c);
+  });
+});
+
+/* ── the eighth independent review of 11 Sep 2026 ────────────────────────── */
+
+describe('where a refund leaves from is decided inside the payment lock', () => {
+  it('a payment settled before the refund is refunded from the BANK, whatever an earlier read believed', async () => {
+    const { businessId, connectionId } = await seedBusiness();
+    const { intent } = await seedObligation(businessId);
+    const { paymentId } = await bookPayment(businessId, intent.reference);
+    const clearingBefore = await balanceByRole(
+      businessId,
+      'PAYMENT_PROVIDER_CLEARING',
+      connectionId,
+    );
+
+    /* The settlement lands after the handler would have looked but before
+     * the command runs: the command must see it. */
+    await settle(businessId, connectionId, paymentId, 15_000_000);
+    const result = await withBusiness(appDb, businessId, (tx) =>
+      refundPaymentWork(tx, {
+        businessId,
+        paymentId,
+        paymentAmountK: 15_000_000,
+        amountK: 15_000_000,
+        providerRefundId: 'settled-rf-1',
+        paymentConnectionId: connectionId,
+        reason: 'provider refund settled-rf-1',
+        actor: 'system',
+        eventId: 'settled-refund-event',
+      }),
+    );
+    expect(result.outcome).toBe('refunded');
+    const [refund] = await refundsOf(businessId);
+    expect(refund).toMatchObject({ method: 'bank', amountK: 15_000_000 });
+    /* The refund left from the bank, so clearing is exactly what it was
+     * (the settlement helper records the payout; its own posting is the
+     * settlement poster's job and is not part of this case). */
+    expect(await balanceByRole(businessId, 'PAYMENT_PROVIDER_CLEARING', connectionId)).toBe(
+      clearingBefore,
+    );
+    expect(await balanceByCode(businessId, AR)).toBe(15_000_000);
+  });
+});
+
+describe('a provider read that names no charge is not evidence', () => {
+  it('a refund read with no transaction reference is refund_reference_missing, nothing posts', async () => {
+    const { businessId } = await seedBusiness();
+    const { intent } = await seedObligation(businessId);
+    const { paymentId } = await bookPayment(businessId, intent.reference);
+    const linesBefore = (await ledgerTotals(businessId)).lines;
+
+    provider.willVerifyRefund('690', { amountK: 15_000_000, transactionReference: null });
+    const eventId = await storeEvent(refundEvent(intent.reference, 15_000_000, { id: 690 }));
+    await pump();
+    await drainJobs();
+
+    expect((await events.eventStatus(workerDb, eventId))?.error).toBe('refund_reference_missing');
+    expect(await refundsOf(businessId)).toHaveLength(0);
+    expect((await ledgerTotals(businessId)).lines).toBe(linesBefore);
+    expect(await paymentStatus(businessId, paymentId)).toBe('confirmed');
+  });
+
+  it('a lost dispute read with no transaction reference is chargeback_reference_missing, nothing posts', async () => {
+    const { businessId } = await seedBusiness();
+    const { intent } = await seedObligation(businessId);
+    await bookPayment(businessId, intent.reference);
+    const linesBefore = (await ledgerTotals(businessId)).lines;
+
+    provider.willVerifyDispute('691', {
+      amountK: 15_000_000,
+      transactionReference: null,
+      providerStatus: 'resolved',
+      providerResolution: 'merchant-accepted',
+      outcome: 'lost',
+    });
+    const resolved = await storeEvent(
+      disputeEvent(intent.reference, 15_000_000, {
+        id: 691,
+        event: 'charge.dispute.resolve',
+        status: 'resolved',
+        resolution: 'merchant-accepted',
+      }),
+    );
+    await pump();
+    await drainJobs();
+
+    expect((await events.eventStatus(workerDb, resolved))?.error).toBe(
+      'chargeback_reference_missing',
+    );
+    expect(await chargebacksOf(businessId)).toHaveLength(0);
+    expect((await ledgerTotals(businessId)).lines).toBe(linesBefore);
   });
 });

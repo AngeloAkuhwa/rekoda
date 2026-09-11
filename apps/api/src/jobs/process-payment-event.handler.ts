@@ -335,7 +335,6 @@ async function handleRefund(deps: ProcessPaymentEventDeps, ctx: Ctx): Promise<vo
     return;
   }
 
-  const settled = await refundsRepo.paymentSettled(tx, businessId, payment.id);
   const connection = await paymentsHub.connectionFor(tx, businessId, deps.provider.providerType);
   const result = await refundPaymentWork(tx, {
     businessId,
@@ -343,7 +342,6 @@ async function handleRefund(deps: ProcessPaymentEventDeps, ctx: Ctx): Promise<vo
     paymentAmountK: payment.amountK,
     amountK: r.amountK,
     providerRefundId: r.providerRefundId,
-    settled,
     paymentConnectionId: connection?.id ?? null,
     reason: `provider refund ${r.providerRefundId}`,
     actor: ACTOR,
@@ -528,7 +526,12 @@ function describesPayment(
   intent: Intent,
   payment: { amountK: number; currency: string | null },
 ): string | null {
-  if (transactionReference && transactionReference !== intent.reference) {
+  if (!transactionReference) {
+    /* The provider's own record names no charge: the envelope alone said
+     * which payment this is about, and the envelope is a hint. */
+    return 'refund_reference_missing';
+  }
+  if (transactionReference !== intent.reference) {
     return 'refund_reference_mismatch';
   }
   if (currency && payment.currency && currency.toUpperCase() !== payment.currency.toUpperCase()) {

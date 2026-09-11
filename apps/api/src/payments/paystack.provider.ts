@@ -220,8 +220,11 @@ export class PaystackProvider implements PaymentProviderPort {
       dispute: {
         providerDisputeId: String(d.id),
         transactionReference: d.transaction?.reference ?? d.transaction_reference ?? null,
-        amountK:
-          typeof d.refund_amount === 'number' ? d.refund_amount : (d.transaction?.amount ?? null),
+        /* `refund_amount` is the amount in dispute. The charge's own amount
+         * is NOT a substitute: a partial dispute without `refund_amount` must
+         * reach a human (`chargeback_without_amount`), never post the whole
+         * charge. */
+        amountK: typeof d.refund_amount === 'number' ? d.refund_amount : null,
         currency: d.currency ?? null,
         providerStatus: d.status,
         providerResolution: resolution,
