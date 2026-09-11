@@ -19,7 +19,7 @@ amendment so the reader is not misled.
 | [0009](0009-dva-bank-transfer-reconciliation.md)                | Dedicated Virtual Accounts turn bank transfers into verified payments           | Superseded by 0012                                          |
 | [0010](0010-pitr-backups.md)                                    | Continuous WAL archiving (PITR), not nightly dumps                              | Accepted                                                    |
 | [0011](0011-messaging-economics-revised.md)                     | Messaging economics after Meta's 1 October 2026 change                          | Accepted                                                    |
-| [0012](0012-integrate-without-cac.md)                           | Integrate without CAC: tiered capture and tiered verification                   | Accepted                                                    |
+| [0012](0012-integrate-without-cac.md)                           | Integrate without CAC: tiered capture and tiered verification                   | Accepted (ladder B reordered by 0013)                       |
 | [0013](0013-rekoda-as-the-single-integration.md)                | Rekoda as the single integration: platform-owned Paystack, merchant subaccounts | Proposed                                                    |
 | [0014](0014-payment-verification-anti-fake-alert.md)            | Payment verification as a product: the fake-alert defence                       | Accepted (two-state model superseded in part by spec §6)    |
 | [0015](0015-full-books.md)                                      | End-to-end books: trial balance, P&L, balance sheet, period close               | Accepted                                                    |

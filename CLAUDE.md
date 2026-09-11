@@ -72,20 +72,23 @@ session never starts a capability from zero.
   (`apps/api/src/channels/`).
 - **Chat engine:** privacy gateway (PII tokenised before any model),
   deterministic router, Anthropic interpretation into a zod-validated
-  command, conversation gates CG1–CG5, draft/confirm by database ordinal,
+  command, conversation gates CG1–CG3 and CG5 (CG4 is open as G-29),
+  draft/confirm by database ordinal,
   free deterministic commands (`who owes me`, `records`, `stock`,
   `resend`, `payment details`, `help`, `upgrade`, STOP/START).
 - **Media:** OpenAI transcription for voice notes, Anthropic Claude vision
   for document photos, hard daily ceilings, no self-hosted sidecars
   (ADR 0032).
 - **Books:** sales, invoices (issue/void), receipts, expenses, purchases,
-  supplier bills, credit notes, refunds, stock movements and stocktakes
+  supplier bills, credit notes, refund and reversal records (built,
+  unwired until G-06), stock movements and stocktakes
   with weighted-average costing, fixed assets with depreciation,
   recurring spend, opening balances, period close; append-only balanced
   ledger in integer kobo; chart of accounts per spec §11.
 - **Payments:** Paystack connection, intents, server-side verification,
   attribution, booking, receipts, settlement tracking, exception queue,
-  refunds as records, bank feeds (Mono/OPay/Kuda adapters, production
+  operator-recorded refunds (`POST /v1/ops/refund`; provider refund
+  webhooks are G-06), bank feeds (Mono/OPay/Kuda adapters, production
   disabled by readiness axes), bank statement matching and reconciliation
   tiers. Money is never held by Rekoda.
 - **Reporting:** dashboard, four statements (screen, PDF, Excel),
