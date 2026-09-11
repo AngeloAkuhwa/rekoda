@@ -1,6 +1,6 @@
 # 0018 — Retire the WABA catalogue as an order-capture path
 
-**Status:** Accepted
+**Status:** Accepted — superseded in part. The canonical spec §3.2 (v1.6.6) restored catalogue order capture on the merchant's own WABA and PR-087 (W3) built it (`packages/contracts/src/meta-webhook.ts:44`, `apps/api/src/jobs/inbound-message.handler.ts:1633`); the cost arithmetic below is historical.
 **Date:** 2026-08-19
 **Retires rung A2 of:** [0012](0012-integrate-without-cac.md) · **corrects**
 [0017](0017-meta-direct-for-integrate-too.md) and `integrate-explained.md` §6b
