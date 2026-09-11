@@ -100,7 +100,8 @@ a copied `.env` does nothing by itself. `start:local` and `dev:local` start
 Node with `--env-file=../../.env`; a production deployment injects the
 variables from its own secret store and uses plain `start`. The web app
 defaults `REKODA_API_URL` to the API above and only demands the legal
-values in a production build. Set `REKODA_WORKER=1` in `.env` to also run
+values when a production server starts (`next start`; `next build` succeeds
+without them). Set `REKODA_WORKER=1` in `.env` to also run
 the queue and sweeps in the same process.
 
 Without provider keys the stack still boots: inbound messages are recorded
