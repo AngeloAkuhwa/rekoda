@@ -1,6 +1,6 @@
 # ADR 0028 — Voice is sold in minutes and counted in seconds
 
-**Status**: accepted
+**Status:** Accepted
 **Date**: 26 August 2026
 **Supersedes**: nothing. Amends the unit definition ADR 0024 records commercially.
 

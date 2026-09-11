@@ -20,7 +20,7 @@
     "test:integration": "pnpm --filter @rekoda/db test:integration && pnpm --filter @rekoda/api test:integration",
     "e2e": "pnpm --filter @rekoda/web e2e",
     "migrate": "pnpm --filter @rekoda/db migrate:apply",
-    "docs:check": "prettier --check \"*.md\" \"docs/**/*.md\" \".github/**/*.md\""
+    "docs:check": "prettier --check \"*.md\" \"docs/**/*.md\" \".github/**/*.md\" \"design-system/**/*.md\""
   },
   "devDependencies": {
     "playwright": "1.62.1",

@@ -1,6 +1,6 @@
 # ADR 0029 — Message usage and Meta billing responsibility are independent
 
-**Status**: accepted, amended 26 August 2026 before merge
+**Status:** Accepted, amended 26 August 2026 before merge
 **Date**: 26 August 2026
 **Relates to**: spec §4.2, §24, §29; ADR 0024 commercial rule 3
 

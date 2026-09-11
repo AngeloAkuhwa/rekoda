@@ -107,7 +107,9 @@ the queue and sweeps in the same process.
 
 Without provider keys the stack still boots: inbound messages are recorded
 and answered in the database, the deterministic router answers without a
-model, and voice and image features answer honestly that they are off.
+model, and voice and image features refuse without calling a provider (today
+with outage-worded copy rather than an honest "this is off"; G-32 and G-64 in
+`docs/REKODA_LAUNCH_READINESS.md`).
 
 ## Test commands
 

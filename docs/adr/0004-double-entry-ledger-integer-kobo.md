@@ -1,6 +1,6 @@
 # 0004 — Double-entry ledger, integer kobo
 
-**Status:** Accepted
+**Status:** Accepted — chart of accounts replaced by spec §11; amended by [0025](0025-bank-account-split.md) and [0026](0026-fixed-assets.md)
 **Date:** 2026-08-19
 
 ## Context
