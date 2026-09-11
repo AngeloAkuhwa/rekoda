@@ -152,3 +152,64 @@ describe('the documented refund envelope (paystack.com/docs/payments/refunds, "L
     }
   });
 });
+
+describe('the published dispute object as a webhook body (paystack.com/docs/api/dispute)', () => {
+  /* Paystack's dispute objects carry null, not absence, for the fields a
+   * dispute has not filled: `transaction_reference`, `refund_amount`,
+   * `currency`, `resolution`. The charge is named inside `transaction`. */
+  const disputeBody = (event: string, status: string, resolution: string | null) => ({
+    event,
+    data: {
+      id: 2867,
+      refund_amount: null,
+      currency: null,
+      status,
+      resolution,
+      domain: 'live',
+      transaction: {
+        id: 5991760,
+        domain: 'live',
+        status: 'success',
+        reference: 'asjck8gf76zd1dr',
+        amount: 39100,
+        currency: 'NGN',
+      },
+      transaction_reference: null,
+      category: 'general',
+      customer: { id: 16200, email: 'demo@email.com' },
+      bin: '424242',
+      last4: '4242',
+      dueAt: '2019-08-30T16:10:41.000Z',
+      resolvedAt: null,
+      evidence: null,
+      attachments: '[]',
+      note: null,
+      history: [],
+      messages: [],
+    },
+  });
+
+  it.each([
+    ['charge.dispute.create', 'awaiting-merchant-feedback', null],
+    ['charge.dispute.remind', 'awaiting-merchant-feedback', null],
+    ['charge.dispute.resolve', 'resolved', 'merchant-accepted'],
+  ])(
+    '%s with null fields parses and names the charge from transaction.reference',
+    (event, status, resolution) => {
+      const parsed = paystackWebhookBody.safeParse(disputeBody(event, status, resolution));
+      expect(parsed.success).toBe(true);
+      if (!parsed.success) return;
+      expect(summarisePaystackEvent(parsed.data)).toMatchObject({
+        kind: 'dispute',
+        eventType: event,
+        reference: 'asjck8gf76zd1dr',
+        objectId: '2867',
+        fingerprint: `2867:${event}`,
+        amountK: null,
+        currency: null,
+        providerStatus: status,
+        resolution,
+      });
+    },
+  );
+});

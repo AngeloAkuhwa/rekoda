@@ -312,11 +312,20 @@ async function readRefundForEvent(
       return { reason: 'refund_without_provider_id', amountK: summary.amountK };
     }
     const listed = await deps.provider.listRefunds(providerTransactionId);
-    const candidates = listed.filter(
+    const matching = listed.filter(
       (c) => c.succeeded && (summary.amountK === null || c.amountK === summary.amountK),
     );
-    if (candidates.length === 1) return { refund: candidates[0]! };
-    if (candidates.length > 1) return { reason: 'refund_ambiguous', amountK: summary.amountK };
+    /* Refunds already on file are not candidates: two equal partial refunds
+     * are routine, and the second event announces the one not yet booked. */
+    const onFile = new Set(
+      (await refundsRepo.refundsFor(ctx.tx, ctx.businessId)).map((r) => r.providerRefundId),
+    );
+    const fresh = matching.filter((c) => !onFile.has(c.providerRefundId));
+    if (fresh.length === 1) return { refund: fresh[0]! };
+    if (fresh.length > 1) return { reason: 'refund_ambiguous', amountK: summary.amountK };
+    /* Everything that matches is already booked: a redelivery under a new
+     * fingerprint. The command answers already_recorded for it. */
+    if (matching.length > 0) return { refund: matching[0]! };
     if (lastAttempt) return { reason: 'refund_verify_not_found', amountK: summary.amountK };
     throw new RefundReadLagging(providerTransactionId, 'no processed refund listed yet');
   } catch (error) {
@@ -332,7 +341,15 @@ async function readRefundForEvent(
 async function handleRefund(deps: ProcessPaymentEventDeps, ctx: Ctx): Promise<void> {
   const { tx, businessId, eventId, intent, summary } = ctx;
 
+  if (summary.eventType === 'refund.needs-attention') {
+    /* Paystack says this refund could not complete on its own and needs a
+     * human: that is an exception in the merchant's queue, never a label. */
+    await flag(ctx, 'refund_needs_attention', summary.amountK);
+    return;
+  }
   if (summary.eventType !== 'refund.processed') {
+    /* Nothing has moved yet (pending, processing) or nothing will (failed):
+     * retired with the stage as the reason, for the audit trail. */
     const stage =
       summary.eventType === 'refund.failed'
         ? 'refund_failed'

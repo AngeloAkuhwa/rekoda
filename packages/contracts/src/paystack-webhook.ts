@@ -33,32 +33,37 @@ export const paystackWebhookBody = z
     event: z.string().min(1).max(100),
     data: z
       .object({
+        /* Every scalar is NULLISH, not optional: Paystack's published dispute
+         * objects carry `"transaction_reference": null`, `"refund_amount": null`
+         * and `"currency": null`, and a signed body the schema refuses is
+         * answered 200 and never stored. Absent and null mean the same thing
+         * here: no value. */
         /** Paystack's numeric id for the event's OWN object: the transaction
          * on a charge event, the refund on a refund event, the dispute on a
          * dispute event. The idempotency anchor either way. */
-        id: z.union([z.number(), z.string()]).optional(),
-        reference: z.string().max(200).optional(),
+        id: z.union([z.number(), z.string()]).nullish(),
+        reference: z.string().max(200).nullish(),
         /** Integer kobo, straight from Paystack, as a number or a digit
          * string (the documented refund envelope). Never multiply. */
-        amount: koboField.optional(),
-        currency: z.string().max(10).optional(),
-        status: z.string().max(50).optional(),
+        amount: koboField.nullish(),
+        currency: z.string().max(10).nullish(),
+        status: z.string().max(50).nullish(),
         /**
          * Refund and dispute events are ABOUT a charge and name it here
          * rather than in `reference`, which on those envelopes is either
          * absent or the refund's own reference. Read at ingress so the
          * pump can route the event to the payment it concerns.
          */
-        transaction_reference: z.string().max(200).optional(),
+        transaction_reference: z.string().max(200).nullish(),
         transaction: z
           .object({
-            id: z.union([z.number(), z.string()]).optional(),
-            reference: z.string().max(200).optional(),
+            id: z.union([z.number(), z.string()]).nullish(),
+            reference: z.string().max(200).nullish(),
           })
           .loose()
-          .optional(),
+          .nullish(),
         /** Dispute events: the amount under dispute, kobo. */
-        refund_amount: koboField.optional(),
+        refund_amount: koboField.nullish(),
         /** Dispute events: how Paystack says it ended, verbatim. */
         resolution: z.string().max(50).nullish(),
       })

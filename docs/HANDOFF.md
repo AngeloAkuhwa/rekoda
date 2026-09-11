@@ -64,7 +64,7 @@ chargebacks do), and an Opus reviewer found that a partial dispute
 and the refund Paystack raises for it could post twice against one
 payment (now a refund on a payment carrying a chargeback, and the
 reverse, are refused to a human under OD-11); billing-domain refund
-events are flagged and never booked. 51 api integration cases, 5 db
+events are flagged and never booked. 54 api integration cases, 5 db
 cases, plus contract and adapter unit tests. Open decisions OD-8
 (overpayment-credit refunds), OD-9 (dispute lifecycle mapping and the
 newest-first unwind order), OD-10 (reversal trigger, post-settlement

@@ -2129,6 +2129,31 @@ describe('a payout that covers a payment adjusted BEFORE it is not posted from d
         (r) => r.reason === 'settlement_components_unknown',
       ),
     ).toHaveLength(1);
+
+    /* The payment is HELD, not settled: the money is still in clearing on
+     * the books, so the next adjustment keeps going through clearing. */
+    const stamp = await withBusiness(appDb, businessId, (tx) =>
+      tx.execute<{ settlement_status: string | null }>(
+        sql`SELECT settlement_status FROM payments WHERE id = ${paymentId}::uuid`,
+      ),
+    );
+    expect([...stamp][0]?.settlement_status).toBe('held');
+    provider.willVerifyRefund('701', {
+      amountK: 4_000_000,
+      transactionReference: intent.reference,
+    });
+    await storeEvent(refundEvent(intent.reference, 4_000_000, { id: 701 }));
+    await pump();
+    await drainJobs();
+    const refunds = await refundsOf(businessId);
+    expect(refunds.map((r) => [r.providerRefundId, r.method])).toEqual([
+      ['700', 'provider'],
+      ['701', 'provider'],
+    ]);
+    expect(await balanceByRole(businessId, 'PAYMENT_PROVIDER_CLEARING', connectionId)).toBe(
+      6_000_000,
+    );
+    expect(await balanceByCode(businessId, BANK_PAYSTACK)).toBe(0);
   });
 });
 
@@ -2342,5 +2367,138 @@ describe('the documented refund envelope and refund read (no refund id, charge n
         (r) => r.reason === 'settlement_components_unknown',
       ),
     ).toHaveLength(1);
+  });
+});
+
+/* ── the eleventh independent review of 11 Sep 2026 ──────────────────────── */
+
+describe('the published dispute object (null fields) reaches the books', () => {
+  it('charge.dispute.create with transaction_reference, refund_amount and currency null is stored and files dispute_opened', async () => {
+    const { businessId } = await seedBusiness();
+    const { sale, intent } = await seedObligation(businessId);
+    const { paymentId } = await bookPayment(businessId, intent.reference);
+
+    provider.willVerifyDispute('2867', { amountK: null, transactionReference: intent.reference });
+    const opened = await storeEvent({
+      event: 'charge.dispute.create',
+      data: {
+        id: 2867,
+        refund_amount: null,
+        currency: null,
+        status: 'awaiting-merchant-feedback',
+        resolution: null,
+        domain: 'live',
+        transaction: {
+          id: 5991760,
+          status: 'success',
+          reference: intent.reference,
+          amount: 15_000_000,
+          currency: 'NGN',
+        },
+        transaction_reference: null,
+        category: 'general',
+        resolvedAt: null,
+        evidence: null,
+        note: null,
+      },
+    });
+    await pump();
+    await drainJobs();
+
+    expect((await events.eventStatus(workerDb, opened))?.error).toBe('dispute_opened');
+    expect(await chargebacksOf(businessId)).toHaveLength(0);
+    expect(await paymentStatus(businessId, paymentId)).toBe('confirmed');
+    expect((await invoiceState(businessId, sale.invoiceId))?.status).toBe('paid');
+    const exceptions = (await reconciliationsOf(businessId)).filter(
+      (r) => r.status === 'EXCEPTION',
+    );
+    expect(exceptions.map((r) => r.reason)).toEqual(['dispute_opened']);
+  });
+});
+
+describe('two equal partial refunds announced without refund ids', () => {
+  it('the second id-less event books the refund not yet on file, and a redelivery of either adds nothing', async () => {
+    const { businessId } = await seedBusiness();
+    const { sale, intent } = await seedObligation(businessId);
+    provider.willVerify(intent.reference, {
+      amountK: 15_000_000,
+      providerTransactionId: 'pst-tx-920',
+    });
+    await storeEvent(chargeSuccess(intent.reference));
+    await pump();
+    await drainJobs();
+    const idless = (suffix: string) => ({
+      event: 'refund.processed',
+      data: {
+        status: 'processed',
+        transaction_reference: intent.reference,
+        refund_reference: null,
+        amount: '5000000',
+        currency: 'NGN',
+        processor: 'instant-transfer',
+        integration: 412829,
+        domain: 'live',
+        _delivery: suffix,
+      },
+    });
+
+    provider.willVerifyRefund('920', {
+      amountK: 5_000_000,
+      transactionReference: null,
+      transactionId: 'pst-tx-920',
+    });
+    await storeEvent(idless('first'), 'sha256:idless-920-first');
+    await pump();
+    await drainJobs();
+    expect((await refundsOf(businessId)).map((r) => r.providerRefundId)).toEqual(['920']);
+
+    provider.willVerifyRefund('921', {
+      amountK: 5_000_000,
+      transactionReference: null,
+      transactionId: 'pst-tx-920',
+    });
+    await storeEvent(idless('second'), 'sha256:idless-920-second');
+    await pump();
+    await drainJobs();
+    expect((await refundsOf(businessId)).map((r) => r.providerRefundId).sort()).toEqual([
+      '920',
+      '921',
+    ]);
+    expect((await invoiceState(businessId, sale.invoiceId))?.balanceDueK).toBe(10_000_000);
+
+    const again = await storeEvent(idless('again'), 'sha256:idless-920-again');
+    await pump();
+    await drainJobs();
+    expect((await events.eventStatus(workerDb, again))?.error).toBe('refund_already_recorded');
+    expect(await refundsOf(businessId)).toHaveLength(2);
+    expect((await invoiceState(businessId, sale.invoiceId))?.balanceDueK).toBe(10_000_000);
+  });
+});
+
+describe("Paystack's refund.needs-attention is a human's, not a label", () => {
+  it('files refund_needs_attention and posts nothing', async () => {
+    const { businessId } = await seedBusiness();
+    const { intent } = await seedObligation(businessId);
+    const { paymentId } = await bookPayment(businessId, intent.reference);
+    const linesBefore = (await ledgerTotals(businessId)).lines;
+
+    const eventId = await storeEvent(
+      refundEvent(intent.reference, 15_000_000, {
+        id: 930,
+        event: 'refund.needs-attention',
+        status: 'needs-attention',
+      }),
+    );
+    await pump();
+    await drainJobs();
+
+    expect((await events.eventStatus(workerDb, eventId))?.error).toBe('refund_needs_attention');
+    expect(await refundsOf(businessId)).toHaveLength(0);
+    expect((await ledgerTotals(businessId)).lines).toBe(linesBefore);
+    expect(await paymentStatus(businessId, paymentId)).toBe('confirmed');
+    const exceptions = (await reconciliationsOf(businessId)).filter(
+      (r) => r.status === 'EXCEPTION',
+    );
+    expect(exceptions).toMatchObject([{ reason: 'refund_needs_attention', amountK: 15_000_000 }]);
   });
 });
