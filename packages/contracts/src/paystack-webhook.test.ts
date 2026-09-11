@@ -103,3 +103,52 @@ describe('the reference is the charge the event is about', () => {
     expect(s.reference).toBe('RKD-PAY-5');
   });
 });
+
+describe('the documented refund envelope (paystack.com/docs/payments/refunds, "Listen to notifications")', () => {
+  /* Verbatim from the published sample, with the event and status of the
+   * processed stage. Two things a fixture built by hand would not have:
+   * the amount is a digit STRING, and there is no `data.id`. */
+  const documented = {
+    event: 'refund.processed',
+    data: {
+      status: 'processed',
+      transaction_reference: 'tvunjbbd_412829_4b18075d_c7had',
+      refund_reference: null,
+      amount: '10000',
+      currency: 'NGN',
+      processor: 'instant-transfer',
+      customer: { first_name: 'Drew', last_name: 'Berry', email: 'demo@email.com' },
+      integration: 412829,
+      domain: 'live',
+    },
+  };
+
+  it('parses: a digit-string amount is an integer, and no id means no fingerprint and no object id', () => {
+    const parsed = paystackWebhookBody.safeParse(documented);
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) return;
+    const summary = summarisePaystackEvent(parsed.data);
+    expect(summary).toMatchObject({
+      kind: 'refund',
+      eventType: 'refund.processed',
+      reference: 'tvunjbbd_412829_4b18075d_c7had',
+      amountK: 10_000,
+      objectId: null,
+      fingerprint: null,
+      providerStatus: 'processed',
+    });
+  });
+
+  it('an amount that is not an integer kobo is no amount at all, never a posting figure', () => {
+    for (const amount of ['10000.50', '-5', 'ten', 1.5, -1, Number.MAX_SAFE_INTEGER + 2]) {
+      const parsed = paystackWebhookBody.safeParse({
+        ...documented,
+        data: { ...documented.data, amount },
+      });
+      if (parsed.success) {
+        expect(summarisePaystackEvent(parsed.data).amountK).toBeNull();
+      }
+      // A shape the schema refuses is equally acceptable: it never reaches a posting.
+    }
+  });
+});

@@ -57,6 +57,7 @@ export class StubPaymentProvider implements PaymentProviderPort {
       succeeded: true,
       providerRefundId,
       transactionReference: null,
+      transactionId: null,
       amountK: 0,
       currency: 'NGN',
       providerStatus: 'processed',
@@ -183,6 +184,18 @@ export class StubPaymentProvider implements PaymentProviderPort {
     const refund = this.refunds.get(providerRefundId);
     if (!refund) return Promise.resolve({ found: false });
     return Promise.resolve({ found: true, refund });
+  }
+
+  /** The refunds scripted against one charge, by the id the charge's verify carried. */
+  listRefunds(providerTransactionId: string): Promise<VerifiedRefund[]> {
+    if (this.failRefundRead) {
+      const error = this.failRefundRead;
+      this.failRefundRead = null;
+      return Promise.reject(error);
+    }
+    return Promise.resolve(
+      [...this.refunds.values()].filter((r) => r.transactionId === providerTransactionId),
+    );
   }
 
   verifyDispute(providerDisputeId: string): Promise<VerifyDisputeResult> {

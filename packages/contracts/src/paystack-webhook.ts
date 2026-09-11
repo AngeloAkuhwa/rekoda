@@ -13,6 +13,21 @@
  */
 import { z } from 'zod';
 
+/**
+ * Paystack writes amounts as integer kobo, but not always as a JSON number:
+ * the published refund envelope carries `"amount": "10000"`. Both shapes are
+ * read; `toKobo` turns either into an integer or, for anything else, null.
+ * The envelope is a hint about which object to read, never a figure that
+ * posts, so a value that cannot be read costs nothing but the hint.
+ */
+const koboField = z.union([z.number(), z.string().regex(/^\d{1,18}$/)]);
+
+export function toKobo(value: number | string | undefined | null): number | null {
+  if (value === undefined || value === null) return null;
+  const n = typeof value === 'number' ? value : Number(value);
+  return Number.isSafeInteger(n) && n >= 0 ? n : null;
+}
+
 export const paystackWebhookBody = z
   .object({
     event: z.string().min(1).max(100),
@@ -23,8 +38,9 @@ export const paystackWebhookBody = z
          * dispute event. The idempotency anchor either way. */
         id: z.union([z.number(), z.string()]).optional(),
         reference: z.string().max(200).optional(),
-        /** Integer kobo, straight from Paystack. Never multiply. */
-        amount: z.number().optional(),
+        /** Integer kobo, straight from Paystack, as a number or a digit
+         * string (the documented refund envelope). Never multiply. */
+        amount: koboField.optional(),
         currency: z.string().max(10).optional(),
         status: z.string().max(50).optional(),
         /**
@@ -42,7 +58,7 @@ export const paystackWebhookBody = z
           .loose()
           .optional(),
         /** Dispute events: the amount under dispute, kobo. */
-        refund_amount: z.number().optional(),
+        refund_amount: koboField.optional(),
         /** Dispute events: how Paystack says it ended, verbatim. */
         resolution: z.string().max(50).nullish(),
       })
@@ -114,7 +130,7 @@ export function summarisePaystackEvent(body: PaystackWebhookBody): PaystackEvent
     kind,
     reference,
     objectId: id === undefined || id === null ? null : String(id),
-    amountK: typeof amount === 'number' ? amount : null,
+    amountK: toKobo(amount),
     currency: d.currency ?? null,
     providerStatus: d.status ?? null,
     resolution: kind === 'dispute' ? (d.resolution ?? null) : null,

@@ -176,31 +176,56 @@ export type PaystackChargeResponse = z.infer<typeof paystackChargeResponse>;
  * this says what actually did. The charge it refunds rides in
  * `transaction` (an object on the fetch, a bare reference on the webhook).
  */
-export const paystackRefundResponse = z
+/**
+ * One refund as `GET /refund/:id` and `GET /refund?transaction=:id` return
+ * it. Paystack's documented Fetch Refund response names the refunded charge
+ * as a NUMBER (`"transaction": 1641`, the transaction id) and carries no
+ * reference; the Create Refund response names it as an object. Both are
+ * read. A refund therefore identifies its charge by transaction id first
+ * and by reference only when one is present.
+ */
+export const paystackRefundData = z
   .object({
-    status: z.boolean(),
-    message: z.string().optional(),
-    data: z
-      .object({
-        id: z.union([z.number(), z.string()]),
-        /** processed | pending | processing | failed — verbatim, for audit. */
-        status: z.string(),
-        /** Integer kobo actually refunded. Never multiply. */
-        amount: z.number(),
-        currency: z.string().nullish(),
-        transaction_reference: z.string().nullish(),
-        transaction: z
+    id: z.union([z.number(), z.string()]),
+    /** processed | pending | processing | failed — verbatim, for audit. */
+    status: z.string(),
+    /** Integer kobo actually refunded. Never multiply. */
+    amount: z.number(),
+    currency: z.string().nullish(),
+    transaction_reference: z.string().nullish(),
+    transaction: z
+      .union([
+        z.number(),
+        z.string(),
+        z
           .object({
             id: z.union([z.number(), z.string()]).nullish(),
             reference: z.string().nullish(),
           })
-          .loose()
-          .nullish(),
-        refund_reference: z.string().nullish(),
-        refunded_at: z.string().nullish(),
-      })
-      .loose()
-      .optional(),
+          .loose(),
+      ])
+      .nullish(),
+    refund_reference: z.string().nullish(),
+    refunded_at: z.string().nullish(),
+  })
+  .loose();
+
+export type PaystackRefundData = z.infer<typeof paystackRefundData>;
+
+/** `GET /refund?transaction=:id` — every refund raised against one charge. */
+export const paystackRefundListResponse = z
+  .object({
+    status: z.boolean(),
+    message: z.string().optional(),
+    data: z.array(paystackRefundData),
+  })
+  .loose();
+
+export const paystackRefundResponse = z
+  .object({
+    status: z.boolean(),
+    message: z.string().optional(),
+    data: paystackRefundData.optional(),
   })
   .loose();
 

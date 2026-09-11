@@ -166,7 +166,14 @@ async function ingestSettlement(
      * clearing twice, silently. Where the provider itemised, its components
      * stand and `postSettlement` judges them; where it stated only totals,
      * the payout is a human's, not a derivation. */
-    if (!settlement.components?.length && grossK !== netK) {
+    if (!settlement.components?.length) {
+      /* Lock the covered payments (ascending, the same order every caller
+       * uses) so an adjustment landing between these reads and the payout
+       * row cannot slip past the guard; an adjustment holds only its own
+       * payment row, so the two cannot wait on each other in a cycle. */
+      for (const p of [...covered].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))) {
+        await settleRepo.lockPayment(tx, businessId, p.id);
+      }
       const coveredIds = new Set(covered.map((p) => p.id));
       const [refunds, reversals, chargebacks] = await Promise.all([
         refundsRepo.refundsFor(tx, businessId),

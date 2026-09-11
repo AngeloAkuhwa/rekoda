@@ -17,7 +17,9 @@ import {
   paystackChargeResponse,
   paystackDisputeResponse,
   paystackInitializeResponse,
+  paystackRefundListResponse,
   paystackRefundResponse,
+  type PaystackRefundData,
   paystackSettlementListResponse,
   paystackSettlementTransactionsResponse,
   paystackSubaccountResponse,
@@ -34,6 +36,7 @@ import type {
   VerifyDisputeResult,
   VerifyRefundResult,
   VerifyTransactionResult,
+  VerifiedRefund,
 } from './provider.port.js';
 
 /**
@@ -64,6 +67,37 @@ const SETTLEMENT_MAX_PAGES = 200;
 const REQUEST_TIMEOUT_MS = 15_000;
 
 export class PaystackApiError extends Error {}
+
+/**
+ * One refund as the adapter reports it. The charge it refunds is named by
+ * transaction id (Fetch and List responses: a bare number) and, when the
+ * provider includes it, by reference (Create response: an object).
+ */
+function toVerifiedRefund(d: PaystackRefundData): VerifiedRefund {
+  const tx = d.transaction;
+  const transactionId =
+    tx === null || tx === undefined
+      ? null
+      : typeof tx === 'object'
+        ? tx.id === null || tx.id === undefined
+          ? null
+          : String(tx.id)
+        : String(tx);
+  const transactionReference =
+    (tx !== null && tx !== undefined && typeof tx === 'object' ? tx.reference : null) ??
+    d.transaction_reference ??
+    null;
+  return {
+    succeeded: d.status === 'processed',
+    providerRefundId: String(d.id),
+    transactionReference,
+    transactionId,
+    amountK: d.amount,
+    currency: d.currency ?? null,
+    providerStatus: d.status,
+    refundedAtIso: d.refunded_at ?? null,
+  };
+}
 
 /**
  * Paystack's settlement vocabulary → ours. Anything unrecognised becomes
@@ -186,19 +220,22 @@ export class PaystackProvider implements PaymentProviderPort {
     const parsed = paystackRefundResponse.safeParse(await response.json());
     if (!parsed.success) throw new PaystackApiError('refund read returned an unreadable response');
     if (!parsed.data.status || !parsed.data.data) return { found: false };
-    const d = parsed.data.data;
-    return {
-      found: true,
-      refund: {
-        succeeded: d.status === 'processed',
-        providerRefundId: String(d.id),
-        transactionReference: d.transaction?.reference ?? d.transaction_reference ?? null,
-        amountK: d.amount,
-        currency: d.currency ?? null,
-        providerStatus: d.status,
-        refundedAtIso: d.refunded_at ?? null,
-      },
-    };
+    return { found: true, refund: toVerifiedRefund(parsed.data.data) };
+  }
+
+  /** `GET /refund?transaction=:id` — the refunds raised against one charge. */
+  async listRefunds(providerTransactionId: string): Promise<VerifiedRefund[]> {
+    const query = new URLSearchParams({ transaction: providerTransactionId, perPage: '50' });
+    const response = await fetch(`${this.baseUrl}/refund?${query.toString()}`, {
+      headers: this.headers(),
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+    if (response.status === 404) return [];
+    if (!response.ok) throw new PaystackApiError(`refund list failed with HTTP ${response.status}`);
+    const parsed = paystackRefundListResponse.safeParse(await response.json());
+    if (!parsed.success) throw new PaystackApiError('refund list returned an unreadable response');
+    if (!parsed.data.status) return [];
+    return parsed.data.data.map(toVerifiedRefund);
   }
 
   /** `GET /dispute/:id` — the dispute's state, translated by `disputeOutcome`. */

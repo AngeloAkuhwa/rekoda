@@ -357,6 +357,7 @@ describe('reading a refund and a dispute (G-06)', () => {
       succeeded: true,
       providerRefundId: '501',
       transactionReference: 'RKD-PAY-20260819-A83F92',
+      transactionId: '4099260516',
       amountK: 4_000_000,
       currency: 'NGN',
       providerStatus: 'processed',
@@ -364,6 +365,75 @@ describe('reading a refund and a dispute (G-06)', () => {
     });
     expect(requests[0]?.url).toBe('/refund/501');
     expect(requests[0]?.authorization).toBe('Bearer sk_test_secret');
+  });
+
+  it('reads the DOCUMENTED Fetch Refund response: the charge is a bare transaction id, no reference', async () => {
+    /* Verbatim from paystack.com/docs/api/refund/#fetch (sample response). */
+    respond = (_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          status: true,
+          message: 'Refund retrieved',
+          data: {
+            integration: 100982,
+            transaction: 1641,
+            dispute: null,
+            settlement: null,
+            domain: 'live',
+            amount: 500000,
+            deducted_amount: 500000,
+            fully_deducted: true,
+            currency: 'NGN',
+            channel: 'migs',
+            status: 'processed',
+            refunded_by: 'eseyinwale@gmail.com',
+            refunded_at: '2018-01-12T10:54:47.000Z',
+            expected_at: '2017-10-01T21:10:59.000Z',
+            customer_note: 'xxx',
+            merchant_note: 'xxx',
+            id: 1,
+            createdAt: '2017-09-24T21:10:59.000Z',
+            updatedAt: '2018-01-18T11:59:56.000Z',
+          },
+        }),
+      );
+    };
+    const result = await provider().verifyRefund('1');
+    if (!result.found) throw new Error('expected found');
+    expect(result.refund).toMatchObject({
+      succeeded: true,
+      providerRefundId: '1',
+      transactionReference: null,
+      transactionId: '1641',
+      amountK: 500000,
+      currency: 'NGN',
+      providerStatus: 'processed',
+    });
+  });
+
+  it('lists the refunds against one charge by transaction id, each read the same way', async () => {
+    respond = (_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          status: true,
+          message: 'Refunds retrieved',
+          data: [
+            { id: 7, transaction: 1641, amount: 300000, currency: 'NGN', status: 'processed' },
+            { id: 8, transaction: 1641, amount: 200000, currency: 'NGN', status: 'pending' },
+          ],
+        }),
+      );
+    };
+    const listed = await provider().listRefunds('1641');
+    expect(
+      listed.map((r) => [r.providerRefundId, r.transactionId, r.amountK, r.succeeded]),
+    ).toEqual([
+      ['7', '1641', 300000, true],
+      ['8', '1641', 200000, false],
+    ]);
+    expect(requests[0]?.url).toBe('/refund?transaction=1641&perPage=50');
   });
 
   it('a pending refund is found-but-not-succeeded; an unknown one is found:false; an outage throws', async () => {

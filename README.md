@@ -62,7 +62,7 @@ the disclosed hosted provider and never persisted (ADR 0032).
 apps/api            NestJS: webhooks, /v1 and /api/v1, auth, jobs, sweeps
 apps/web            Next.js: marketing, legal, dashboard (/app), storefront (/s)
 packages/core       Pure domain rules: money, ledger, statements, gates, replies (no IO)
-packages/db         Drizzle schema, SQL migrations 0000–0149, RLS policies, repos
+packages/db         Drizzle schema, SQL migrations 0000–0151, RLS policies, repos
 packages/contracts  zod schemas shared between api, web and the AI border
 packages/shared     Branded types and utilities
 scripts/            CI guard scripts (boundaries, node version, UI copy, retired claims, OpenAPI)

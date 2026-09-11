@@ -70,8 +70,13 @@ export interface VerifiedRefund {
   succeeded: boolean;
   /** The provider's own id for the refund. */
   providerRefundId: string;
-  /** The reference of the CHARGE this refund returns money from. */
+  /** The reference of the CHARGE this refund returns money from, when the
+   * provider names it that way (Paystack's Create Refund response does). */
   transactionReference: string | null;
+  /** The provider's own id for that charge, when the provider names it that
+   * way (Paystack's Fetch and List Refund responses do). Matched against the
+   * id the booking stored from the charge's verify. */
+  transactionId: string | null;
   /** Integer kobo actually refunded. */
   amountK: number;
   currency: string | null;
@@ -186,6 +191,12 @@ export interface PaymentProviderPort {
    * request, which routes the event to a human rather than to the books.
    */
   verifyRefund(providerRefundId: string): Promise<VerifyRefundResult>;
+  /**
+   * Every refund the provider holds against one charge, by the provider's
+   * transaction id. The documented refund webhook carries no refund id, so
+   * this is how such an event is matched to the refund it announces.
+   */
+  listRefunds(providerTransactionId: string): Promise<VerifiedRefund[]>;
   /** Server-side read of a dispute's state, same rule as refunds. */
   verifyDispute(providerDisputeId: string): Promise<VerifyDisputeResult>;
   /**

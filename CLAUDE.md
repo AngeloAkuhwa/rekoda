@@ -88,8 +88,9 @@ session never starts a capability from zero.
   ledger in integer kobo; chart of accounts per spec §11.
 - **Payments:** Paystack connection, intents, server-side verification,
   attribution, booking, receipts, settlement tracking, exception queue,
-  operator-recorded refunds (`POST /v1/ops/refund`; provider refund
-  webhooks are G-06), bank feeds (Mono adapter, production disabled by
+  operator-recorded refunds (`POST /v1/ops/refund`); provider refund,
+  reversal and dispute webhooks (G-06, code complete, not live-verified
+  until G-05), bank feeds (Mono adapter, production disabled by
   readiness axes; OPay, Kuda and MonoDirectPay payment adapters exist with
   no runtime binding), bank statement matching and reconciliation tiers. Money is never held by Rekoda.
 - **Reporting:** dashboard, four statements (screen, PDF, Excel),

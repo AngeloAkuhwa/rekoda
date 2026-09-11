@@ -31,6 +31,7 @@ import type {
   VerifyTransactionResult,
   VerifyDisputeResult,
   VerifyRefundResult,
+  VerifiedRefund,
 } from './provider.port.js';
 
 export class MonoApiError extends Error {}
@@ -139,6 +140,11 @@ export class MonoDirectPayProvider implements PaymentProviderPort {
    * routes the event to a human instead of inventing a verified fact. */
   verifyRefund(_providerRefundId: string): Promise<VerifyRefundResult> {
     return Promise.resolve({ found: false });
+  }
+
+  /** No refund read exists for this provider yet: nothing is listed, nothing posts. */
+  listRefunds(_providerTransactionId: string): Promise<VerifiedRefund[]> {
+    return Promise.resolve([]);
   }
 
   verifyDispute(_providerDisputeId: string): Promise<VerifyDisputeResult> {

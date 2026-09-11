@@ -26,7 +26,7 @@ issue form; archived `architecture.md`, `MASTER-PLAN.md`,
 `CODEOWNERS` and the PR template; rebuilt `REKODA_REFERENCE_MANIFEST.md`;
 created `REKODA_CURRENT_STATE.md` (evidence-based inventory plus the build
 plan reconciliation) and `REKODA_LAUNCH_READINESS.md` (verdict, gates,
-68 gaps, 20 journeys, staging plan). Verified locally: install, typecheck,
+70 gaps, 20 journeys, staging plan). Verified locally: install, typecheck,
 lint, unit tests (1,274), build, guard scripts, migrations on an empty
 database, db integration 1,258/1,260 and api integration 1,036/1,040 (the
 six failures are Windows/timezone/`pg_dump`-on-PATH environment
@@ -64,10 +64,14 @@ chargebacks do), and an Opus reviewer found that a partial dispute
 and the refund Paystack raises for it could post twice against one
 payment (now a refund on a payment carrying a chargeback, and the
 reverse, are refused to a human under OD-11); billing-domain refund
-events are flagged and never booked. 45 api integration cases, 5 db
+events are flagged and never booked. 51 api integration cases, 5 db
 cases, plus contract and adapter unit tests. Open decisions OD-8
-(overpayment-credit refunds) and OD-9 (dispute lifecycle mapping and the
-newest-first unwind order) recorded in `REKODA_LAUNCH_READINESS.md` §6.
+(overpayment-credit refunds), OD-9 (dispute lifecycle mapping and the
+newest-first unwind order), OD-10 (reversal trigger, post-settlement
+refund credit side, payout netting), OD-11 (one movement of money, two
+provider facts) and OD-12 (gross processed volume) recorded in
+`REKODA_LAUNCH_READINESS.md` §6. G-06 is CODE COMPLETE and NOT LIVE
+PROVIDER VERIFIED until the G-05 drill.
 
 **Next three actions:**
 
@@ -80,13 +84,13 @@ newest-first unwind order) recorded in `REKODA_LAUNCH_READINESS.md` §6.
 3. Claude continues the P0 code gaps in order: G-08 (`.env.example` to
    match the code), G-01 (Dockerfile, production compose, Caddy, worker),
    G-02 (backups per OD-7), G-07 (fix the eval harness, then the owner runs
-   the live eval). G-06 is closed in code and waits only on the G-05 live
-   drill for the real Paystack envelopes.
+   the live eval). G-06 is code complete and NOT live-verified until the G-05 drill
+   confirms the real Paystack envelopes.
 
 **Known P0 blockers:** G-01 deployment artifacts · G-02 backups · G-03
 Meta number, app review, templates · G-04 legal facts · G-05 Paystack §47
 and live drill · G-07 AI eval never run · G-08 production environment
-(`REKODA_LAUNCH_READINESS.md` §4). G-06 closed in code on 11 Sep 2026.
+(`REKODA_LAUNCH_READINESS.md` §4). G-06 code complete on 11 Sep 2026, not live-verified until G-05.
 
 **Document reading order:** `CLAUDE.md` → this section →
 `REKODA_LAUNCH_READINESS.md` §1–§3 → `REKODA_CURRENT_STATE.md` §3 →

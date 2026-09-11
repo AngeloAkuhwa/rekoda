@@ -56,6 +56,8 @@ import {
   reversePaymentWork,
 } from '../commands/payment-adjustment-commands.js';
 import type { JobContext, JobHandler } from './runner.js';
+import { describeFailure } from './runner.js';
+import type { VerifiedRefund } from '../payments/provider.port.js';
 
 export interface ProcessPaymentEventDeps {
   provider: PaymentProviderPort;
@@ -280,6 +282,53 @@ export class RefundReadLagging extends Error {
   }
 }
 
+/**
+ * The provider's own record of the refund this event announces.
+ *
+ * With a refund id in the envelope, `GET /refund/:id`. The documented
+ * Paystack refund envelope carries NO refund id, only the charge's
+ * reference, so without one the refund is found among the refunds the
+ * provider lists against the charge (by the transaction id the booking
+ * stored), matched on the envelope's amount when it has one. A read that
+ * finds nothing yet, or that fails, is retried by the runner and becomes an
+ * exception on the last attempt — never a dead job, never a retirement
+ * that loses the refund (the redelivery is dropped at ingress).
+ */
+async function readRefundForEvent(
+  deps: ProcessPaymentEventDeps,
+  ctx: Ctx,
+  providerTransactionId: string | null,
+): Promise<{ refund: VerifiedRefund } | { reason: string; amountK: number | null }> {
+  const { summary } = ctx;
+  const lastAttempt = ctx.attempt >= ctx.maxAttempts;
+  try {
+    if (summary.objectId) {
+      const verified = await deps.provider.verifyRefund(summary.objectId);
+      if (verified.found) return { refund: verified.refund };
+      if (lastAttempt) return { reason: 'refund_verify_not_found', amountK: summary.amountK };
+      throw new RefundReadLagging(summary.objectId, 'not found');
+    }
+    if (!providerTransactionId) {
+      return { reason: 'refund_without_provider_id', amountK: summary.amountK };
+    }
+    const listed = await deps.provider.listRefunds(providerTransactionId);
+    const candidates = listed.filter(
+      (c) => c.succeeded && (summary.amountK === null || c.amountK === summary.amountK),
+    );
+    if (candidates.length === 1) return { refund: candidates[0]! };
+    if (candidates.length > 1) return { reason: 'refund_ambiguous', amountK: summary.amountK };
+    if (lastAttempt) return { reason: 'refund_verify_not_found', amountK: summary.amountK };
+    throw new RefundReadLagging(providerTransactionId, 'no processed refund listed yet');
+  } catch (error) {
+    if (error instanceof RefundReadLagging) throw error;
+    if (!lastAttempt) throw error;
+    /* The last attempt: a provider that could not be read (an outage, an
+     * unreadable response) is a row a human reviews, not a dead job. */
+    ctx.log.warn(`refund read failed on the last attempt: ${describeFailure(error)}`);
+    return { reason: 'refund_read_unavailable', amountK: summary.amountK };
+  }
+}
+
 async function handleRefund(deps: ProcessPaymentEventDeps, ctx: Ctx): Promise<void> {
   const { tx, businessId, eventId, intent, summary } = ctx;
 
@@ -301,18 +350,13 @@ async function handleRefund(deps: ProcessPaymentEventDeps, ctx: Ctx): Promise<vo
     await flag(ctx, 'refund_without_booked_payment', summary.amountK);
     return;
   }
-  if (!summary.objectId) {
-    await flag(ctx, 'refund_without_provider_id', summary.amountK);
-    return;
-  }
-
   /* ── the authoritative call ─────────────────────────────────────────── */
-  const verified = await deps.provider.verifyRefund(summary.objectId);
-  if (!verified.found) {
-    await flag(ctx, 'refund_verify_not_found', summary.amountK);
+  const read = await readRefundForEvent(deps, ctx, intent.providerReference ?? null);
+  if ('reason' in read) {
+    await flag(ctx, read.reason, read.amountK);
     return;
   }
-  const r = verified.refund;
+  const r = read.refund;
   if (!r.succeeded) {
     if (r.providerStatus === 'failed') {
       // The envelope said processed; the provider's own record says it
@@ -332,9 +376,16 @@ async function handleRefund(deps: ProcessPaymentEventDeps, ctx: Ctx): Promise<vo
       await flag(ctx, 'refund_read_never_processed', r.amountK);
       return;
     }
-    throw new RefundReadLagging(summary.objectId, r.providerStatus);
+    throw new RefundReadLagging(r.providerRefundId, r.providerStatus);
   }
-  const mismatch = describesPayment(r.transactionReference, r.currency, r.amountK, intent, payment);
+  const mismatch = describesPayment(
+    r.transactionReference,
+    r.transactionId,
+    r.currency,
+    r.amountK,
+    intent,
+    payment,
+  );
   if (mismatch) {
     await flag(ctx, mismatch, r.amountK);
     return;
@@ -433,7 +484,14 @@ async function handleDispute(deps: ProcessPaymentEventDeps, ctx: Ctx): Promise<v
     return;
   }
   const amountK = d.amountK;
-  const mismatch = describesPayment(d.transactionReference, d.currency, amountK, intent, payment);
+  const mismatch = describesPayment(
+    d.transactionReference,
+    null,
+    d.currency,
+    amountK,
+    intent,
+    payment,
+  );
   if (mismatch) {
     await flag(ctx, mismatch.replace('refund_', 'chargeback_'), amountK);
     return;
@@ -526,18 +584,25 @@ async function handleReversal(
  */
 function describesPayment(
   transactionReference: string | null,
+  transactionId: string | null,
   currency: string | null,
   amountK: number,
   intent: Intent,
   payment: { amountK: number; currency: string | null },
 ): string | null {
-  if (!transactionReference) {
+  if (transactionReference) {
+    if (transactionReference !== intent.reference) return 'refund_reference_mismatch';
+  } else if (transactionId) {
+    /* Paystack's refund read names the charge by transaction id, not by
+     * reference: the booking stored that id on the intent from the charge's
+     * own verify (`advanceIntent`, `providerReference`). */
+    if (!intent.providerReference || transactionId !== intent.providerReference) {
+      return 'refund_reference_mismatch';
+    }
+  } else {
     /* The provider's own record names no charge: the envelope alone said
      * which payment this is about, and the envelope is a hint. */
     return 'refund_reference_missing';
-  }
-  if (transactionReference !== intent.reference) {
-    return 'refund_reference_mismatch';
   }
   if (currency && payment.currency && currency.toUpperCase() !== payment.currency.toUpperCase()) {
     return 'refund_currency_mismatch';
