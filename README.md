@@ -91,6 +91,7 @@ pnpm turbo build                                  # migrate:apply runs the built
 DATABASE_URL=postgres://rekoda@127.0.0.1:5432/rekoda pnpm --filter @rekoda/db migrate:apply
 
 cp .env.example .env              # fill the required keys; the API names any missing value at boot
+# set REKODA_LOCAL_STORAGE=./.local-documents in .env so PDFs have somewhere to land (R2 is for production)
 pnpm --filter @rekoda/api start:local   # :3001, reads the root .env (node --env-file)
 pnpm --filter @rekoda/web dev           # :3000; in development it needs no variables
 ```
