@@ -78,7 +78,9 @@ version from `.nvmrc`.
 ## Local setup
 
 Prerequisites: Node per `.nvmrc` (24), pnpm via corepack, Docker (for
-PostgreSQL) or a local PostgreSQL 16.
+PostgreSQL) or a local PostgreSQL 16. The command blocks below assume a
+POSIX shell; on Windows run them in Git Bash (PowerShell needs `Copy-Item`
+for `cp` and `$env:NAME = '…'` for `export` / inline `NAME=… cmd`).
 
 ```bash
 pnpm install --frozen-lockfile

@@ -63,5 +63,6 @@ export * as usageRepo from './repos/usage.js';
 export * as webhooksRepo from './repos/webhooks.js';
 export * as bootChecks from './repos/boot-checks.js';
 export { applyMigrations } from './migrate.js';
+export { isEntrypoint } from './entrypoint.js';
 /** Re-exported so consumers of this package never import drizzle directly. */
 export { sql } from 'drizzle-orm';

@@ -1,6 +1,4 @@
 import 'reflect-metadata';
-import { resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { Logger } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import multipart from '@fastify/multipart';
@@ -8,7 +6,7 @@ import rateLimit from '@fastify/rate-limit';
 import { FastifyAdapter, type NestFastifyApplication } from '@nestjs/platform-fastify';
 import { AppModule } from './app.module.js';
 import { DB, WORKER_DB } from './db/db.module.js';
-import { bootChecks, type Db } from '@rekoda/db';
+import { bootChecks, isEntrypoint, type Db } from '@rekoda/db';
 import { MAX_IMAGE_BYTES } from '@rekoda/core';
 import { publicApi } from '@rekoda/contracts';
 import { CONFIG, isProductionEnv, loadConfig, type ApiConfig } from './config.js';
@@ -264,7 +262,7 @@ export async function createApp(): Promise<NestFastifyApplication> {
 }
 
 /* Boot only when run directly — the integration tests import createApp. */
-if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
+if (isEntrypoint(import.meta.url, process.argv[1])) {
   // Validate the environment BEFORE Nest starts, so a missing secret is a
   // one-line startup error instead of a stack trace inside a DI factory.
   const config = loadConfig();
