@@ -101,19 +101,20 @@ PR #234 (`fix/autonomous-control-plane-activation-hardening`, final SHA
 
 ## 4. ADR status summary
 
-| ADR                                                                              | Status                                                                        |
-| -------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
-| 0002, 0008, 0009                                                                 | Superseded (by 0011, 0032, 0012 respectively)                                 |
-| 0004                                                                             | Accepted; chart of accounts replaced by spec §11; amended by 0025, 0026       |
-| 0005                                                                             | Accepted; self-hosted STT half superseded by 0032                             |
-| 0007                                                                             | Accepted; default model superseded by 0023 then 0031                          |
-| 0013                                                                             | Proposed, deferred (platform-owned Paystack); positioning superseded by 0019  |
-| 0014                                                                             | Accepted; two-state model superseded in part by spec §6                       |
-| 0024                                                                             | Accepted; report-cap clause superseded by OWN-4; media claims amended by 0032 |
-| 0027                                                                             | Accepted; sidecar clause superseded by 0032                                   |
-| 0001                                                                             | Accepted; its `pg-boss` and STT-sidecar mechanisms replaced by 0022 and 0032  |
-| 0030                                                                             | Number never used                                                             |
-| All others (0003, 0006, 0010–0012, 0015–0023, 0025, 0026, 0028, 0029, 0031–0034) | Accepted and current                                                          |
+| ADR                                                                               | Status                                                                        |
+| --------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| 0002, 0008, 0009                                                                  | Superseded (by 0011, 0032, 0012 respectively)                                 |
+| 0004                                                                              | Accepted; chart of accounts replaced by spec §11; amended by 0025, 0026       |
+| 0005                                                                              | Accepted; self-hosted STT half superseded by 0032                             |
+| 0007                                                                              | Accepted; default model superseded by 0023 then 0031                          |
+| 0013                                                                              | Proposed, deferred (platform-owned Paystack); positioning superseded by 0019  |
+| 0014                                                                              | Accepted; two-state model superseded in part by spec §6                       |
+| 0024                                                                              | Accepted; report-cap clause superseded by OWN-4; media claims amended by 0032 |
+| 0027                                                                              | Accepted; sidecar clause superseded by 0032                                   |
+| 0001                                                                              | Accepted; its `pg-boss` and STT-sidecar mechanisms replaced by 0022 and 0032  |
+| 0030                                                                              | Number never used                                                             |
+| 0012                                                                              | Accepted; ladder B reordered by 0013                                          |
+| All others (0003, 0006, 0010, 0011, 0015–0023, 0025, 0026, 0028, 0029, 0031–0034) | Accepted and current                                                          |
 
 ## 5. Reading order for a new session
 

@@ -2,7 +2,7 @@
   "name": "rekoda",
   "private": true,
   "version": "0.1.0",
-  "description": "WhatsApp-first financial operating assistant — you run the business, Rekoda builds the records.",
+  "description": "WhatsApp-first financial operating assistant \u2014 you run the business, Rekoda builds the records.",
   "license": "SEE LICENSE IN LICENSE",
   "packageManager": "pnpm@9.15.9",
   "engines": {

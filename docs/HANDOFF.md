@@ -26,7 +26,7 @@ issue form; archived `architecture.md`, `MASTER-PLAN.md`,
 `CODEOWNERS` and the PR template; rebuilt `REKODA_REFERENCE_MANIFEST.md`;
 created `REKODA_CURRENT_STATE.md` (evidence-based inventory plus the build
 plan reconciliation) and `REKODA_LAUNCH_READINESS.md` (verdict, gates,
-64 gaps, 20 journeys, staging plan). Verified locally: install, typecheck,
+65 gaps, 20 journeys, staging plan). Verified locally: install, typecheck,
 lint, unit tests (1,274), build, guard scripts, migrations on an empty
 database, db integration 1,258/1,260 and api integration 1,036/1,040 (the
 six failures are Windows/timezone/`pg_dump`-on-PATH environment

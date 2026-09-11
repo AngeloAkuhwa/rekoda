@@ -62,8 +62,8 @@ Everything below exists at HEAD with tests. The evidence for each row is
 in `docs/REKODA_CURRENT_STATE.md`; the short list is here so a fresh
 session never starts a capability from zero.
 
-- **Identity:** OTP over WhatsApp, setup grant, sessions, owner/accountant
-  roles, operator plane with OIDC identities (`apps/api/src/auth/`).
+- **Identity:** OTP over WhatsApp, setup grant, sessions, owner, accountant
+  and delegate roles, operator plane with OIDC identities (`apps/api/src/auth/`).
 - **Tenancy:** `withBusiness()` is the only path to tenant data; RLS on
   every business-owned table; three DB roles (owner, `rekoda_app`,
   `rekoda_worker`); an RLS exemption register enforced by tests.
@@ -88,9 +88,9 @@ session never starts a capability from zero.
 - **Payments:** Paystack connection, intents, server-side verification,
   attribution, booking, receipts, settlement tracking, exception queue,
   operator-recorded refunds (`POST /v1/ops/refund`; provider refund
-  webhooks are G-06), bank feeds (Mono/OPay/Kuda adapters, production
-  disabled by readiness axes), bank statement matching and reconciliation
-  tiers. Money is never held by Rekoda.
+  webhooks are G-06), bank feeds (Mono adapter, production disabled by
+  readiness axes; OPay, Kuda and MonoDirectPay payment adapters exist with
+  no runtime binding), bank statement matching and reconciliation tiers. Money is never held by Rekoda.
 - **Reporting:** dashboard, four statements (screen, PDF, Excel),
   registers, receivables/payables, portability export, audit trail.
 - **Commercial:** plans, 30-day trial, allowances and packs, subscriptions,
