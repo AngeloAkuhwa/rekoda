@@ -89,7 +89,7 @@ PR #234 (`fix/autonomous-control-plane-activation-hardening`, final SHA
 
 | Artifact                                                              | Role                                                                                                                     |
 | --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `packages/db/migrations/0000`–`0149`                                  | The schema as it actually is; 150 files, contiguous                                                                      |
+| `packages/db/migrations/0000`–`0151`                                  | The schema as it actually is; 152 files, contiguous                                                                      |
 | `packages/db/src/rls-invariants.integration.test.ts`                  | Makes the RLS exemption register executable                                                                              |
 | `packages/db/src/golden-fixture.integration.test.ts`                  | Proves the accounting ties for the golden business (spec §32)                                                            |
 | `design-system/rekoda/MASTER.md`                                      | Token source of truth; generates `apps/web/src/styles/tokens.css`                                                        |

@@ -90,6 +90,30 @@ export async function recordChargeback(
   const bankDebit = timing === 'POST_SETTLEMENT' && input.recoveredByBankDebit === true;
   const resolvedImmediately = timing === 'PRE_SETTLEMENT' || bankDebit;
 
+  /* The accounts the posting needs, resolved BEFORE the fact is written:
+   * a missing account must leave no chargeback row without its posting
+   * (the same ordering `recordRefund` keeps). The posting each timing
+   * demands is §21.1/§21.2, idempotent under purpose CHARGEBACK on
+   * ('chargeback', id). */
+  const arIds = await accountIdsForKeys(
+    tx,
+    input.businessId,
+    bankDebit ? ['ACCOUNTS_RECEIVABLE', 'BANK_PAYSTACK'] : ['ACCOUNTS_RECEIVABLE'],
+  );
+  let creditAccountId: string;
+  if (bankDebit) {
+    creditAccountId = arIds.get('BANK_PAYSTACK')!;
+  } else {
+    const account = await accountByRole(
+      tx,
+      input.businessId,
+      timing === 'PRE_SETTLEMENT' ? 'PAYMENT_PROVIDER_CLEARING' : 'PROVIDER_CHARGEBACK_PAYABLE',
+      input.paymentConnectionId,
+    );
+    if (!account) return { outcome: 'no_clearing_account' };
+    creditAccountId = account.id;
+  }
+
   const inserted = await tx
     .insert(chargebacks)
     .values({
@@ -137,27 +161,6 @@ export async function recordChargeback(
       isNew: false,
       timing: row.timing as 'PRE_SETTLEMENT' | 'POST_SETTLEMENT',
     };
-  }
-
-  /* The posting each timing demands (§21.1/§21.2), idempotent under
-   * purpose CHARGEBACK on ('chargeback', id). */
-  const arIds = await accountIdsForKeys(
-    tx,
-    input.businessId,
-    bankDebit ? ['ACCOUNTS_RECEIVABLE', 'BANK_PAYSTACK'] : ['ACCOUNTS_RECEIVABLE'],
-  );
-  let creditAccountId: string;
-  if (bankDebit) {
-    creditAccountId = arIds.get('BANK_PAYSTACK')!;
-  } else {
-    const account = await accountByRole(
-      tx,
-      input.businessId,
-      timing === 'PRE_SETTLEMENT' ? 'PAYMENT_PROVIDER_CLEARING' : 'PROVIDER_CHARGEBACK_PAYABLE',
-      input.paymentConnectionId,
-    );
-    if (!account) return { outcome: 'no_clearing_account' };
-    creditAccountId = account.id;
   }
 
   const txRows = await tx

@@ -10,6 +10,13 @@
  * Partial refunds are ordinary — money returned deliberately can be some
  * of the money — but the refunds on one payment can never exceed it.
  *
+ * WHERE it leaves from is the method (0150): the bank, the till, or — for
+ * a refund the provider executes before it has paid the charge out — the
+ * connection's clearing account, which the next payout will simply be
+ * smaller by:
+ *
+ *     DR Accounts Receivable · CR Provider Clearing
+ *
  * A PAYMENT REVERSAL is a payment undone BEFORE SETTLEMENT: the money
  * never left the provider, so the connection's clearing account gives it
  * back — whole, once (§9.3's full-reversal-once, applied to the payment;
@@ -41,7 +48,14 @@ async function paymentAmountK(
   return rows[0]?.amountK ?? null;
 }
 
-async function coveredBySettledPayout(
+/**
+ * Whether the provider has already paid this payment out (§20): covered by
+ * a SETTLED payout, or stamped settled by the polling sweep for payments
+ * older than the model. This is what decides whether a later refund leaves
+ * from clearing or from the bank, and whether a reversal is possible at
+ * all. The conservative reading of an unknown state is "not yet".
+ */
+export async function paymentSettled(
   tx: TenantDb,
   businessId: string,
   paymentId: string,
@@ -71,7 +85,10 @@ export interface RecordRefundInput {
   businessId: string;
   paymentId: string;
   amountK: number;
-  method: 'bank' | 'cash';
+  /** Where the money physically left from. `provider` needs the connection
+   * whose clearing account still held the money. */
+  method: 'bank' | 'cash' | 'provider';
+  paymentConnectionId?: string;
   reason: string;
   actor: string;
   providerRefundId?: string;
@@ -81,7 +98,10 @@ export type RecordRefundOutcome =
   | { outcome: 'recorded'; id: string; isNew: boolean }
   | { outcome: 'payment_not_found' }
   /** The refunds on one payment can never exceed the payment. */
-  | { outcome: 'exceeds_payment'; refundedSoFarK: number };
+  | { outcome: 'exceeds_payment'; refundedSoFarK: number }
+  /** `method: 'provider'` names no connection, or the connection has no
+   * clearing account to credit. */
+  | { outcome: 'no_clearing_account' };
 
 export async function recordRefund(
   tx: TenantDb,
@@ -97,6 +117,27 @@ export async function recordRefund(
   const refundedSoFarK = Number(refundedRows[0]?.total ?? 0);
   if (refundedSoFarK + input.amountK > amountK) {
     return { outcome: 'exceeds_payment', refundedSoFarK };
+  }
+
+  /* Resolve the credit side BEFORE the row exists, so a refund that cannot
+   * be posted is not recorded either — a fact with no posting is exactly
+   * the drift a rebuild would later find. */
+  let creditAccountId: string;
+  if (input.method === 'provider') {
+    if (!input.paymentConnectionId) return { outcome: 'no_clearing_account' };
+    const clearing = await accountByRole(
+      tx,
+      input.businessId,
+      'PAYMENT_PROVIDER_CLEARING',
+      input.paymentConnectionId,
+    );
+    if (!clearing) return { outcome: 'no_clearing_account' };
+    creditAccountId = clearing.id;
+  } else {
+    const ids = await accountIdsForKeys(tx, input.businessId, [
+      input.method === 'cash' ? 'CASH' : 'BANK_PAYSTACK',
+    ]);
+    creditAccountId = ids.get(input.method === 'cash' ? 'CASH' : 'BANK_PAYSTACK')!;
   }
 
   const inserted = await tx
@@ -130,17 +171,14 @@ export async function recordRefund(
     return { outcome: 'recorded', id: row.id, isNew: false };
   }
 
-  const ids = await accountIdsForKeys(tx, input.businessId, [
-    'ACCOUNTS_RECEIVABLE',
-    input.method === 'cash' ? 'CASH' : 'BANK_PAYSTACK',
-  ]);
+  const ids = await accountIdsForKeys(tx, input.businessId, ['ACCOUNTS_RECEIVABLE']);
   await writeTwoLine(tx, input.businessId, {
     memo: `Refund on payment ${input.paymentId.slice(0, 8)}: ${input.reason}`,
     sourceType: 'refund',
     sourceId: created.id,
     postingPurpose: 'REFUND',
     debitAccountId: ids.get('ACCOUNTS_RECEIVABLE')!,
-    creditAccountId: ids.get(input.method === 'cash' ? 'CASH' : 'BANK_PAYSTACK')!,
+    creditAccountId,
     amountK: input.amountK,
   });
   return { outcome: 'recorded', id: created.id, isNew: true };
@@ -169,9 +207,22 @@ export async function recordPaymentReversal(
 ): Promise<RecordPaymentReversalOutcome> {
   const amountK = await paymentAmountK(tx, input.businessId, input.paymentId);
   if (amountK === null) return { outcome: 'payment_not_found' };
-  if (await coveredBySettledPayout(tx, input.businessId, input.paymentId)) {
+  if (await paymentSettled(tx, input.businessId, input.paymentId)) {
     return { outcome: 'already_settled' };
   }
+
+  /* Resolve the credit side BEFORE the row exists, as recordRefund and
+   * recordChargeback do: a reversal that cannot be posted must not be
+   * recorded either, because the (business, payment) uniqueness would make
+   * every retry read as "already recorded" and the fact would never post. */
+  const clearing = await accountByRole(
+    tx,
+    input.businessId,
+    'PAYMENT_PROVIDER_CLEARING',
+    input.paymentConnectionId,
+  );
+  if (!clearing) return { outcome: 'no_clearing_account' };
+  const ids = await accountIdsForKeys(tx, input.businessId, ['ACCOUNTS_RECEIVABLE']);
 
   const inserted = await tx
     .insert(paymentReversals)
@@ -203,14 +254,6 @@ export async function recordPaymentReversal(
     return { outcome: 'recorded', id: row.id, isNew: false, amountK: row.amountK };
   }
 
-  const clearing = await accountByRole(
-    tx,
-    input.businessId,
-    'PAYMENT_PROVIDER_CLEARING',
-    input.paymentConnectionId,
-  );
-  if (!clearing) return { outcome: 'no_clearing_account' };
-  const ids = await accountIdsForKeys(tx, input.businessId, ['ACCOUNTS_RECEIVABLE']);
   await writeTwoLine(tx, input.businessId, {
     memo: `Payment reversal ${input.providerReversalId ?? created.id.slice(0, 8)}: ${input.reason}`,
     sourceType: 'payment_reversal',
@@ -271,6 +314,31 @@ export interface RefundRow {
   method: string;
   reason: string;
   providerRefundId: string | null;
+}
+
+export interface PaymentReversalRow {
+  id: string;
+  paymentId: string;
+  amountK: number;
+  reason: string;
+  providerReversalId: string | null;
+}
+
+export async function reversalsFor(
+  tx: TenantDb,
+  businessId: string,
+): Promise<PaymentReversalRow[]> {
+  return tx
+    .select({
+      id: paymentReversals.id,
+      paymentId: paymentReversals.paymentId,
+      amountK: paymentReversals.amountK,
+      reason: paymentReversals.reason,
+      providerReversalId: paymentReversals.providerReversalId,
+    })
+    .from(paymentReversals)
+    .where(eq(paymentReversals.businessId, businessId))
+    .orderBy(paymentReversals.createdAt);
 }
 
 export async function refundsFor(tx: TenantDb, businessId: string): Promise<RefundRow[]> {

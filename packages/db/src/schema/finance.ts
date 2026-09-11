@@ -229,6 +229,16 @@ export const paymentAllocations = pgTable(
     reason: text('reason'),
     sourceType: text('source_type'),
     sourceId: text('source_id'),
+    /**
+     * The ordering AUTHORITY for a payment's allocations (migration 0151).
+     * `standingAllocationsFor` decides which allocation a partial refund
+     * unwinds first, and that decision must not ride on `created_at` (the
+     * transaction's start, shared by every row one transaction writes) or
+     * on the lexical order of random uuids. GENERATED ALWAYS: PostgreSQL
+     * assigns it, callers cannot.
+     */
+    insertionSeq: bigint('insertion_seq', { mode: 'number' }).notNull().generatedAlwaysAsIdentity(),
+    /** Time and provenance, never the final word on ordering. */
     createdAt: createdAt(),
   },
   (t) => [index('alloc_payment_ix').on(t.paymentId), index('alloc_invoice_ix').on(t.invoiceId)],

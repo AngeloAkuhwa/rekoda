@@ -18,7 +18,15 @@
  */
 import { Logger } from '@nestjs/common';
 import { PAYMENT_REFERENCE_PATTERN } from '@rekoda/core';
-import { paymentsHub, settleRepo, settlementsRepo, withBusiness, type Db } from '@rekoda/db';
+import {
+  chargebacksRepo,
+  paymentsHub,
+  refundsRepo,
+  settleRepo,
+  settlementsRepo,
+  withBusiness,
+  type Db,
+} from '@rekoda/db';
 import type { PaymentProviderPort, ProviderSettlement } from './provider.port.js';
 
 export interface SweepDeps {
@@ -65,19 +73,89 @@ async function applySettlement(deps: SweepDeps, settlement: ProviderSettlement):
   }
 
   let stamped = 0;
+  const held = new Set<string>();
   for (const [businessId, refs] of byBusiness) {
-    stamped += await withBusiness(deps.appDb, businessId, (tx) =>
-      settleRepo.markSettlements(tx, businessId, refs, settlement.status, settlement.settledAtIso),
-    );
+    stamped += await withBusiness(deps.appDb, businessId, async (tx) => {
+      /* Decided BEFORE the stamp: a settled stamp is what `paymentSettled`
+       * and the chargeback timing read, so a payout this sweep refuses to
+       * post must not leave its payments looking paid out. They are stamped
+       * `held` instead, and every later adjustment keeps going through
+       * clearing, where the money still is on the books. */
+      const hold = await payoutMustBeHeld(tx, businessId, refs, settlement);
+      if (hold) held.add(businessId);
+      const status = hold && settlement.status === 'settled' ? 'held' : settlement.status;
+      return settleRepo.markSettlements(tx, businessId, refs, status, settlement.settledAtIso);
+    });
   }
   if (stamped > 0) {
     log.log(
-      `settlement ${settlement.settlementId}: ${stamped} payment(s) now ${settlement.status}`,
+      `settlement ${settlement.settlementId}: ${stamped} payment(s) now ${settlement.status}${held.size ? ` (${held.size} business(es) held, OD-10)` : ''}`,
     );
   }
 
-  await ingestSettlement(deps, settlement, references, byBusiness);
+  await ingestSettlement(deps, settlement, references, byBusiness, held);
   return stamped;
+}
+
+/**
+ * A payment refunded, reversed or charged back BEFORE this payout has already
+ * had clearing credited for that money (G-06). How the provider then reports
+ * the payout — the charge at full gross with the refund netted out of the
+ * total, or a smaller gross — is a G-05 question (OD-10c). Until it is
+ * answered, deriving "gross − net" as a fee over such a payment would book
+ * the refund as processing fees and credit clearing twice, silently. Where
+ * the provider itemised, its components stand and `postSettlement` judges
+ * them; where it stated only totals, the payout is a human's, not a
+ * derivation: one exception, no §20 row, no posting, and the covered
+ * payments stamped `held`.
+ *
+ * The covered payments are locked first (ascending, the order every caller
+ * uses) so an adjustment landing between these reads and the stamp cannot
+ * slip past; an adjustment holds only its own payment row, so the two
+ * cannot wait on each other in a cycle.
+ */
+async function payoutMustBeHeld(
+  tx: Parameters<typeof settleRepo.markSettlements>[0],
+  businessId: string,
+  refs: string[],
+  settlement: ProviderSettlement,
+): Promise<boolean> {
+  if (settlement.components?.length) return false;
+  if (settlement.grossK === null || settlement.netK === null) return false;
+  const covered = await settleRepo.paymentsByReferences(tx, businessId, refs);
+  for (const p of [...covered].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))) {
+    await settleRepo.lockPayment(tx, businessId, p.id);
+  }
+  const coveredIds = new Set(covered.map((p) => p.id));
+  const [refunds, reversals, chargebacks] = await Promise.all([
+    refundsRepo.refundsFor(tx, businessId),
+    refundsRepo.reversalsFor(tx, businessId),
+    chargebacksRepo.chargebacksFor(tx, businessId),
+  ]);
+  const adjustedBeforePayout =
+    refunds.some((r) => r.method === 'provider' && coveredIds.has(r.paymentId)) ||
+    reversals.some((r) => coveredIds.has(r.paymentId)) ||
+    chargebacks.some((c) => c.timing === 'PRE_SETTLEMENT' && coveredIds.has(c.paymentId));
+  if (!adjustedBeforePayout) return false;
+  const already = await settleRepo.hasException(
+    tx,
+    businessId,
+    'settlement',
+    settlement.settlementId,
+  );
+  if (!already) {
+    await settleRepo.recordException(tx, {
+      businessId,
+      reason: 'settlement_components_unknown',
+      expectationKind: 'settlement',
+      expectationId: settlement.settlementId,
+      amountK: settlement.grossK,
+    });
+  }
+  log.warn(
+    `settlement ${settlement.settlementId} covers a payment adjusted before payout; components not derived, payout not posted, payments held (OD-10)`,
+  );
+  return true;
 }
 
 /**
@@ -96,6 +174,7 @@ async function ingestSettlement(
   settlement: ProviderSettlement,
   references: string[],
   byBusiness: Map<string, string[]>,
+  held: Set<string>,
 ): Promise<void> {
   if (settlement.grossK === null || settlement.netK === null) return;
   const grossK = settlement.grossK;
@@ -110,6 +189,7 @@ async function ingestSettlement(
     return;
   }
   const [businessId, refs] = [...byBusiness.entries()][0]!;
+  if (held.has(businessId)) return; // decided before the stamp, see payoutMustBeHeld
   if (refs.length !== references.length) {
     log.warn(
       `settlement ${settlement.settlementId} carries traffic beyond one tenant's; §20 row not recorded`,
@@ -148,6 +228,7 @@ async function ingestSettlement(
     if (!connection) return;
 
     const covered = await settleRepo.paymentsByReferences(tx, businessId, refs);
+
     const outcome = await settlementsRepo.recordSettlement(tx, {
       businessId,
       paymentConnectionId: connection.id,

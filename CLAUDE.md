@@ -80,15 +80,17 @@ session never starts a capability from zero.
   for document photos, hard daily ceilings, no self-hosted sidecars
   (ADR 0032).
 - **Books:** sales, invoices (issue/void), receipts, expenses, purchases,
-  supplier bills, credit notes, refund and reversal records (built,
-  unwired until G-06), stock movements and stocktakes
+  supplier bills, credit notes, refund, reversal and chargeback records
+  (wired to provider events; G-06 is CODE COMPLETE (11 Sep 2026), NOT LIVE PROVIDER VERIFIED until G-05), stock
+  movements and stocktakes
   with weighted-average costing, fixed assets with depreciation,
   recurring spend, opening balances, period close; append-only balanced
   ledger in integer kobo; chart of accounts per spec §11.
 - **Payments:** Paystack connection, intents, server-side verification,
   attribution, booking, receipts, settlement tracking, exception queue,
-  operator-recorded refunds (`POST /v1/ops/refund`; provider refund
-  webhooks are G-06), bank feeds (Mono adapter, production disabled by
+  operator-recorded refunds (`POST /v1/ops/refund`); provider refund,
+  reversal and dispute webhooks (G-06, code complete, not live-verified
+  until G-05), bank feeds (Mono adapter, production disabled by
   readiness axes; OPay, Kuda and MonoDirectPay payment adapters exist with
   no runtime binding), bank statement matching and reconciliation tiers. Money is never held by Rekoda.
 - **Reporting:** dashboard, four statements (screen, PDF, Excel),
@@ -140,7 +142,7 @@ session never starts a capability from zero.
 Monorepo (pnpm + turbo, Node from `.nvmrc`): `apps/api` (NestJS on
 Fastify: webhooks, `/v1`, auth, jobs), `apps/web` (Next.js: marketing,
 legal, dashboard `/app`, storefront `/s/[slug]`), `packages/core` (pure
-rules, no IO), `packages/db` (Drizzle schema, SQL migrations `0000`–`0149`,
+rules, no IO), `packages/db` (Drizzle schema, SQL migrations `0000`–`0151`,
 RLS, repos in `src/repos/`), `packages/contracts` (zod borders),
 `packages/shared` (branded types).
 

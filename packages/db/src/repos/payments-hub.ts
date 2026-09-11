@@ -249,6 +249,8 @@ export interface IntentRow {
   currency: string;
   businessId: string;
   invoiceId: string | null;
+  /** The provider's own id for the charge, stored when the intent advanced on its verify. */
+  providerReference: string | null;
   customerId: string | null;
   /** Opaque checkout handle from the provider, when initialised. */
   providerCheckoutRef: string | null;
@@ -284,6 +286,7 @@ export async function createIntent(tx: TenantDb, input: IntentInput): Promise<In
         currency: paymentIntents.currency,
         businessId: paymentIntents.businessId,
         invoiceId: paymentIntents.invoiceId,
+        providerReference: paymentIntents.providerReference,
         customerId: paymentIntents.customerId,
         providerCheckoutRef: paymentIntents.providerCheckoutRef,
       });
@@ -319,6 +322,7 @@ export async function intentByReference(
       currency: paymentIntents.currency,
       businessId: paymentIntents.businessId,
       invoiceId: paymentIntents.invoiceId,
+      providerReference: paymentIntents.providerReference,
       customerId: paymentIntents.customerId,
       providerCheckoutRef: paymentIntents.providerCheckoutRef,
     })
@@ -349,6 +353,7 @@ export async function liveIntentForInvoice(
       currency: paymentIntents.currency,
       businessId: paymentIntents.businessId,
       invoiceId: paymentIntents.invoiceId,
+      providerReference: paymentIntents.providerReference,
       customerId: paymentIntents.customerId,
       providerCheckoutRef: paymentIntents.providerCheckoutRef,
     })
@@ -406,6 +411,7 @@ export async function resolveIntentByReference(
       currency: paymentIntents.currency,
       businessId: paymentIntents.businessId,
       invoiceId: paymentIntents.invoiceId,
+      providerReference: paymentIntents.providerReference,
       customerId: paymentIntents.customerId,
       providerCheckoutRef: paymentIntents.providerCheckoutRef,
     })

@@ -41,6 +41,9 @@ import type {
   PaymentProviderPort,
   ProviderSettlement,
   VerifyTransactionResult,
+  VerifyDisputeResult,
+  VerifyRefundResult,
+  VerifiedRefund,
 } from './provider.port.js';
 
 export class KudaApiError extends Error {}
@@ -132,6 +135,22 @@ export class KudaProvider implements PaymentProviderPort {
 
   listSettlementTransactions(_settlementId: string): Promise<string[]> {
     return Promise.resolve([]);
+  }
+
+  /* No refund or dispute read is modelled for this provider yet (§18:
+   * capabilities are explicit). Answering found:false without a request
+   * routes the event to a human instead of inventing a verified fact. */
+  verifyRefund(_providerRefundId: string): Promise<VerifyRefundResult> {
+    return Promise.resolve({ found: false });
+  }
+
+  /** No refund read exists for this provider yet: nothing is listed, nothing posts. */
+  listRefunds(_providerTransactionId: string, _currency: string): Promise<VerifiedRefund[]> {
+    return Promise.resolve([]);
+  }
+
+  verifyDispute(_providerDisputeId: string): Promise<VerifyDisputeResult> {
+    return Promise.resolve({ found: false });
   }
 
   /** Kuda's v2.1 envelope: one endpoint, serviceType names the call. */

@@ -11,9 +11,9 @@
 | Field                       | Value                                                                                                                                                                                                                                |
 | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | **Current date**            | 11 September 2026                                                                                                                                                                                                                    |
-| **Current `main` SHA**      | `7155a2b` (6 Sep 2026, "chore: add autonomous engineering control plane (#233)")                                                                                                                                                     |
-| **Open branch**             | `chore/repository-reset-launch-readiness` — the repository reset and launch-readiness PR                                                                                                                                             |
-| **Product version / state** | 0.1.0. Build plan complete (138 rows, PR-001…PR-132; PR-006–009 and PR-115 gated); 150 migrations; never deployed; no live provider has been exercised                                                                               |
+| **Current `main` SHA**      | `3158c3c` (11 Sep 2026, "chore: reset repository for launch readiness (#237)")                                                                                                                                                       |
+| **Open branches**           | `fix/payment-refunds-reversals-chargebacks` (PR #238, G-06, based on `main` after #237 merged as `3158c3c` on 11 Sep 2026)                                                                                                           |
+| **Product version / state** | 0.1.0. Build plan complete (138 rows, PR-001…PR-132; PR-006–009 and PR-115 gated); 152 migrations; never deployed; no live provider has been exercised                                                                               |
 | **Launch verdict**          | **NOT READY** (`REKODA_LAUNCH_READINESS.md` §1)                                                                                                                                                                                      |
 | **Engineering model**       | Simple: Angelo assigns, Claude reads `CLAUDE.md` and the canonical docs, implements with tests, normal CI, Angelo reviews and merges. The multi-agent control plane (PR #233) was removed on 10 Sep 2026 and PR #234 closed unmerged |
 
@@ -26,12 +26,52 @@ issue form; archived `architecture.md`, `MASTER-PLAN.md`,
 `CODEOWNERS` and the PR template; rebuilt `REKODA_REFERENCE_MANIFEST.md`;
 created `REKODA_CURRENT_STATE.md` (evidence-based inventory plus the build
 plan reconciliation) and `REKODA_LAUNCH_READINESS.md` (verdict, gates,
-68 gaps, 20 journeys, staging plan). Verified locally: install, typecheck,
+70 gaps, 20 journeys, staging plan). Verified locally: install, typecheck,
 lint, unit tests (1,274), build, guard scripts, migrations on an empty
 database, db integration 1,258/1,260 and api integration 1,036/1,040 (the
 six failures are Windows/timezone/`pg_dump`-on-PATH environment
 differences; the two db ones pass with `pg_dump` on PATH and UTC; CI on
 `main` is green).
+
+**Last completed work (11 Sep 2026, G-06):** provider refunds, reversals
+and chargebacks now reach the books. Events are dispatched by kind in the
+payment-event handler; `verifyRefund` and `verifyDispute` join the provider
+port (Paystack `GET /refund/:id`, `GET /dispute/:id`; the other adapters
+answer `found: false`); `payment-adjustment-commands.ts` reuses
+`recordRefund`, `recordPaymentReversal` and `recordChargeback`, unwinds
+allocations through §14.2 full-reversal rows and re-derives the invoice
+projection; migration 0150 lets a pre-settlement refund credit the
+connection's clearing account; migration 0151 gives `payment_allocations`
+an `insertion_seq` identity so "newest allocation first" is decided by the
+database, not by a tied `created_at` and a random uuid (the first CI run
+of #238 failed the two-invoice case on exactly that); the independent
+review of 11 Sep then found, and this branch fixed, a dispute-opened
+exception swallowed when the obligation already carried any exception
+(`hasOpenException`: once per reason while open), a `refund.processed`
+whose provider read lagged retired unflagged (now the attempt fails and
+retries; a failed read is an exception) and a chargeback row written
+before its posting account was resolved (account first); the reversal
+trigger and the post-settlement refund credit side are recorded as
+OD-10 for the G-05 drill; the third review found that a refund
+fitting inside an overpaid payment's allocations reopened the invoice
+while the customer credit stood (now every adjustment of an overpaid
+payment is refused whole, `*_overpaid_payment`, under OD-8) and that a
+refund read still pending on the last attempt died as a job (now an
+exception, `refund_read_never_processed`); a Sonnet reviewer in the
+model fan-out found `recordPaymentReversal` writing its row before
+resolving the clearing account (now account first, as refunds and
+chargebacks do), and an Opus reviewer found that a partial dispute
+and the refund Paystack raises for it could post twice against one
+payment (now a refund on a payment carrying a chargeback, and the
+reverse, are refused to a human under OD-11); billing-domain refund
+events are flagged and never booked. 58 api integration cases, 5 db
+cases, plus contract and adapter unit tests. Open decisions OD-8
+(overpayment-credit refunds), OD-9 (dispute lifecycle mapping and the
+newest-first unwind order), OD-10 (reversal trigger, post-settlement
+refund credit side, payout netting), OD-11 (one movement of money, two
+provider facts) and OD-12 (gross processed volume) recorded in
+`REKODA_LAUNCH_READINESS.md` §6. G-06 is CODE COMPLETE and NOT LIVE
+PROVIDER VERIFIED until the G-05 drill.
 
 **Next three actions:**
 
@@ -41,15 +81,16 @@ differences; the two db ones pass with `pg_dump` on PATH and UTC; CI on
 2. Rule on OD-1 to OD-7 in `REKODA_LAUNCH_READINESS.md` §6 (R0A-i on an
    empty database, VAT, which unwired modules ship, command-bus flags,
    renewal copy, erasure scope, backup design).
-3. Claude starts the P0 code gaps in order: G-06 (refund and reversal
-   webhooks), G-08 (`.env.example` to match the code), G-01 (Dockerfile,
-   production compose, Caddy, worker), G-02 (backups per OD-7), G-07 (fix
-   the eval harness, then the owner runs the live eval).
+3. Claude continues the P0 code gaps in order: G-08 (`.env.example` to
+   match the code), G-01 (Dockerfile, production compose, Caddy, worker),
+   G-02 (backups per OD-7), G-07 (fix the eval harness, then the owner runs
+   the live eval). G-06 is code complete and NOT live-verified until the G-05 drill
+   confirms the real Paystack envelopes.
 
 **Known P0 blockers:** G-01 deployment artifacts · G-02 backups · G-03
 Meta number, app review, templates · G-04 legal facts · G-05 Paystack §47
-and live drill · G-06 refund/reversal/chargeback webhooks absorbed · G-07
-AI eval never run · G-08 production environment (`REKODA_LAUNCH_READINESS.md` §4).
+and live drill · G-07 AI eval never run · G-08 production environment
+(`REKODA_LAUNCH_READINESS.md` §4). G-06 code complete on 11 Sep 2026, not live-verified until G-05.
 
 **Document reading order:** `CLAUDE.md` → this section →
 `REKODA_LAUNCH_READINESS.md` §1–§3 → `REKODA_CURRENT_STATE.md` §3 →

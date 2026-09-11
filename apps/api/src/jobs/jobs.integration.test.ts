@@ -816,11 +816,25 @@ describe('inbound messages for one business never overlap across lanes', () => {
       // The confirm's lane runs, but must NOT process "yes" ahead of the
       // draft: give it long enough to have claimed, then look.
       await new Promise((resolve) => setTimeout(resolve, 700));
-      const midway = await jobsOf(businessId);
-      const confirm = midway.find((j) => j.id === confirmJob.id);
-      expect(confirm?.state).toBe('pending');
-      // Stepping back is not failing: the wait costs no attempt.
-      expect(confirm?.attempts).toBe(0);
+      /* The lane claims the confirm, steps back, and claims it again every
+       * idle tick: a single sample can land mid-claim (`running`) on a slow
+       * machine. Watch for a while: it must be seen stepped back to
+       * `pending`, it must never finish, and the wait costs no attempt. */
+      let seenPending = false;
+      const watchUntil = Date.now() + 3_000;
+      while (Date.now() < watchUntil) {
+        const now = await jobsOf(businessId);
+        const confirm = now.find((j) => j.id === confirmJob.id);
+        expect(['pending', 'running']).toContain(confirm?.state);
+        // Stepping back is not failing: the wait costs no attempt.
+        expect(confirm?.attempts).toBe(0);
+        if (confirm?.state === 'pending') {
+          seenPending = true;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      expect(seenPending).toBe(true);
       const expensesBefore = await withBusiness(appDb, businessId, (tx) =>
         tx.select().from(schema.expenses),
       );
