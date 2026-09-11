@@ -105,11 +105,15 @@ values when a production server starts (`next start`; `next build` succeeds
 without them). Set `REKODA_WORKER=1` in `.env` to also run
 the queue and sweeps in the same process.
 
-Without provider keys the stack still boots: inbound messages are recorded
-and answered in the database, the deterministic router answers without a
-model, and voice and image features refuse without calling a provider (today
-with outage-worded copy rather than an honest "this is off"; G-32 and G-64 in
-`docs/REKODA_LAUNCH_READINESS.md`).
+Without AI or outbound provider keys the stack still boots: the deterministic
+router answers without a model, and voice and image features refuse without
+calling a provider (today with outage-worded copy rather than an honest "this
+is off"; G-32 and G-64 in `docs/REKODA_LAUNCH_READINESS.md`). Inbound
+WhatsApp handling is the exception: every Meta webhook is signature-checked
+against `META_APP_SECRET`, and an empty secret rejects every delivery with 401
+before anything is stored (`packages/core/src/webhooks.ts`,
+`verifyMetaSignature`), so set it (any value works with the stub sender) to
+exercise the inbound path.
 
 ## Test commands
 
@@ -118,12 +122,13 @@ pnpm turbo typecheck lint test build          # unit tests across every package
 node scripts/check-boundaries.mjs             # architectural boundaries (CI runs five guard scripts)
 
 # Integration suites need a real PostgreSQL and three roles; run them SERIALLY.
-DATABASE_URL=postgres://rekoda@127.0.0.1:5432/rekoda \
-APP_DATABASE_URL=postgres://rekoda_app@127.0.0.1:5432/rekoda \
-WORKER_DATABASE_URL=postgres://rekoda_worker@127.0.0.1:5432/rekoda \
-  pnpm --filter @rekoda/db test:integration
-# then, with the same variables:
-  pnpm --filter @rekoda/api test:integration
+# Both suites read the three URLs (requireUrls in packages/db/src/testing.ts),
+# so export them once for the shell rather than prefixing one command.
+export DATABASE_URL=postgres://rekoda@127.0.0.1:5432/rekoda
+export APP_DATABASE_URL=postgres://rekoda_app@127.0.0.1:5432/rekoda
+export WORKER_DATABASE_URL=postgres://rekoda_worker@127.0.0.1:5432/rekoda
+pnpm --filter @rekoda/db test:integration
+pnpm --filter @rekoda/api test:integration
 
 # Playwright needs a browser and REKODA_CHROME='' (else it looks for CI's Linux path):
 pnpm --filter @rekoda/web exec playwright install chromium
