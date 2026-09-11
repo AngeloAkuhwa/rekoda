@@ -99,6 +99,9 @@ export type VerifyRefundResult = { found: true; refund: VerifiedRefund } | { fou
 export interface VerifiedDispute {
   providerDisputeId: string;
   transactionReference: string | null;
+  /** The provider's own id for the disputed charge (Paystack's dispute
+   * objects always carry `transaction.id`), matched like a refund's. */
+  transactionId: string | null;
   /** Integer kobo under dispute (the amount the provider would take back). */
   amountK: number | null;
   currency: string | null;
@@ -196,7 +199,7 @@ export interface PaymentProviderPort {
    * transaction id. The documented refund webhook carries no refund id, so
    * this is how such an event is matched to the refund it announces.
    */
-  listRefunds(providerTransactionId: string): Promise<VerifiedRefund[]>;
+  listRefunds(providerTransactionId: string, currency: string): Promise<VerifiedRefund[]>;
   /** Server-side read of a dispute's state, same rule as refunds. */
   verifyDispute(providerDisputeId: string): Promise<VerifyDisputeResult>;
   /**

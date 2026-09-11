@@ -81,7 +81,7 @@ session never starts a capability from zero.
   (ADR 0032).
 - **Books:** sales, invoices (issue/void), receipts, expenses, purchases,
   supplier bills, credit notes, refund, reversal and chargeback records
-  (wired to provider events, G-06; live envelopes under G-05), stock
+  (wired to provider events; G-06 is CODE COMPLETE (11 Sep 2026), NOT LIVE PROVIDER VERIFIED until G-05), stock
   movements and stocktakes
   with weighted-average costing, fixed assets with depreciation,
   recurring spend, opening balances, period close; append-only balanced

@@ -57,7 +57,7 @@ import {
 } from '../commands/payment-adjustment-commands.js';
 import type { JobContext, JobHandler } from './runner.js';
 import { describeFailure } from './runner.js';
-import type { VerifiedRefund } from '../payments/provider.port.js';
+import type { VerifiedDispute, VerifiedRefund } from '../payments/provider.port.js';
 
 export interface ProcessPaymentEventDeps {
   provider: PaymentProviderPort;
@@ -274,6 +274,12 @@ interface Ctx {
  * A `refund.processed` event whose provider read has not caught up. Thrown
  * so the job attempt fails and is retried; see `handleRefund`.
  */
+export class DisputeReadLagging extends Error {
+  constructor(providerDisputeId: string, detail: string) {
+    super(`dispute ${providerDisputeId} ${detail}; retrying`);
+  }
+}
+
 export class RefundReadLagging extends Error {
   constructor(providerRefundId: string, providerStatus: string) {
     super(
@@ -298,6 +304,7 @@ async function readRefundForEvent(
   deps: ProcessPaymentEventDeps,
   ctx: Ctx,
   providerTransactionId: string | null,
+  currency: string,
 ): Promise<{ refund: VerifiedRefund } | { reason: string; amountK: number | null }> {
   const { summary } = ctx;
   const lastAttempt = ctx.attempt >= ctx.maxAttempts;
@@ -311,7 +318,7 @@ async function readRefundForEvent(
     if (!providerTransactionId) {
       return { reason: 'refund_without_provider_id', amountK: summary.amountK };
     }
-    const listed = await deps.provider.listRefunds(providerTransactionId);
+    const listed = await deps.provider.listRefunds(providerTransactionId, currency);
     const matching = listed.filter(
       (c) => c.succeeded && (summary.amountK === null || c.amountK === summary.amountK),
     );
@@ -323,8 +330,19 @@ async function readRefundForEvent(
     const fresh = matching.filter((c) => !onFile.has(c.providerRefundId));
     if (fresh.length === 1) return { refund: fresh[0]! };
     if (fresh.length > 1) return { reason: 'refund_ambiguous', amountK: summary.amountK };
-    /* Everything that matches is already booked: a redelivery under a new
-     * fingerprint. The command answers already_recorded for it. */
+    /* A refund the provider lists but has not booked here and does not yet
+     * call processed may be the one this event announces (the list lags the
+     * webhook the way a single read does): wait for it, never retire the
+     * event as a redelivery of something else. */
+    const unbooked = listed.filter((c) => !onFile.has(c.providerRefundId));
+    if (unbooked.length > 0) {
+      if (lastAttempt) {
+        return { reason: 'refund_read_never_processed', amountK: summary.amountK };
+      }
+      throw new RefundReadLagging(unbooked[0]!.providerRefundId, unbooked[0]!.providerStatus);
+    }
+    /* Everything the provider lists is already booked: a redelivery under a
+     * new fingerprint. The command answers already_recorded for it. */
     if (matching.length > 0) return { refund: matching[0]! };
     if (lastAttempt) return { reason: 'refund_verify_not_found', amountK: summary.amountK };
     throw new RefundReadLagging(providerTransactionId, 'no processed refund listed yet');
@@ -335,6 +353,33 @@ async function readRefundForEvent(
      * unreadable response) is a row a human reviews, not a dead job. */
     ctx.log.warn(`refund read failed on the last attempt: ${describeFailure(error)}`);
     return { reason: 'refund_read_unavailable', amountK: summary.amountK };
+  }
+}
+
+/**
+ * The provider's own record of the dispute this event announces, under the
+ * same rule as a refund read: not found yet, or not readable (an outage, a
+ * shape the schema refuses), is retried by the runner and becomes an
+ * exception on the last attempt — never a dead job, never a retirement
+ * that loses the dispute (the redelivery is dropped at ingress).
+ */
+async function readDisputeForEvent(
+  deps: ProcessPaymentEventDeps,
+  ctx: Ctx,
+  providerDisputeId: string,
+): Promise<{ dispute: VerifiedDispute } | { reason: string; amountK: number | null }> {
+  const { summary } = ctx;
+  const lastAttempt = ctx.attempt >= ctx.maxAttempts;
+  try {
+    const verified = await deps.provider.verifyDispute(providerDisputeId);
+    if (verified.found) return { dispute: verified.dispute };
+    if (lastAttempt) return { reason: 'dispute_verify_not_found', amountK: summary.amountK };
+    throw new DisputeReadLagging(providerDisputeId, 'is not found yet');
+  } catch (error) {
+    if (error instanceof DisputeReadLagging) throw error;
+    if (!lastAttempt) throw error;
+    ctx.log.warn(`dispute read failed on the last attempt: ${describeFailure(error)}`);
+    return { reason: 'dispute_read_unavailable', amountK: summary.amountK };
   }
 }
 
@@ -368,7 +413,12 @@ async function handleRefund(deps: ProcessPaymentEventDeps, ctx: Ctx): Promise<vo
     return;
   }
   /* ── the authoritative call ─────────────────────────────────────────── */
-  const read = await readRefundForEvent(deps, ctx, intent.providerReference ?? null);
+  const read = await readRefundForEvent(
+    deps,
+    ctx,
+    intent.providerReference ?? null,
+    payment.currency ?? 'NGN',
+  );
   if ('reason' in read) {
     await flag(ctx, read.reason, read.amountK);
     return;
@@ -459,12 +509,12 @@ async function handleDispute(deps: ProcessPaymentEventDeps, ctx: Ctx): Promise<v
     return;
   }
 
-  const verified = await deps.provider.verifyDispute(summary.objectId);
-  if (!verified.found) {
-    await flag(ctx, 'dispute_verify_not_found', summary.amountK);
+  const read = await readDisputeForEvent(deps, ctx, summary.objectId);
+  if ('reason' in read) {
+    await flag(ctx, read.reason, read.amountK);
     return;
   }
-  const d = verified.dispute;
+  const d = read.dispute;
 
   if (d.outcome === 'open' && d.providerStatus === 'resolved') {
     /* A resolution word Rekoda does not know (`disputeOutcome` maps only
@@ -503,7 +553,7 @@ async function handleDispute(deps: ProcessPaymentEventDeps, ctx: Ctx): Promise<v
   const amountK = d.amountK;
   const mismatch = describesPayment(
     d.transactionReference,
-    null,
+    d.transactionId,
     d.currency,
     amountK,
     intent,

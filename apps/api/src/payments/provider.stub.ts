@@ -29,6 +29,7 @@ export class StubPaymentProvider implements PaymentProviderPort {
   private readonly refunds = new Map<string, VerifiedRefund>();
   private readonly disputes = new Map<string, VerifiedDispute>();
   private failRefundRead: Error | null = null;
+  private failDisputeRead: Error | null = null;
   private readonly settlements: Array<ProviderSettlement & { references: string[] }> = [];
   private failInitialize: Error | null = null;
   private failVerify: Error | null = null;
@@ -71,6 +72,7 @@ export class StubPaymentProvider implements PaymentProviderPort {
     this.disputes.set(providerDisputeId, {
       providerDisputeId,
       transactionReference: null,
+      transactionId: null,
       amountK: null,
       currency: 'NGN',
       providerStatus: 'awaiting-merchant-feedback',
@@ -78,6 +80,10 @@ export class StubPaymentProvider implements PaymentProviderPort {
       outcome: 'open',
       ...overrides,
     });
+  }
+
+  failNextDisputeReadWith(error: Error): void {
+    this.failDisputeRead = error;
   }
 
   failNextRefundReadWith(error: Error): void {
@@ -118,6 +124,7 @@ export class StubPaymentProvider implements PaymentProviderPort {
   }
 
   reset(): void {
+    this.failDisputeRead = null;
     this.initialized.length = 0;
     this.subaccountsCreated.length = 0;
     this.verifications.clear();
@@ -187,7 +194,7 @@ export class StubPaymentProvider implements PaymentProviderPort {
   }
 
   /** The refunds scripted against one charge, by the id the charge's verify carried. */
-  listRefunds(providerTransactionId: string): Promise<VerifiedRefund[]> {
+  listRefunds(providerTransactionId: string, _currency: string): Promise<VerifiedRefund[]> {
     if (this.failRefundRead) {
       const error = this.failRefundRead;
       this.failRefundRead = null;
@@ -199,6 +206,11 @@ export class StubPaymentProvider implements PaymentProviderPort {
   }
 
   verifyDispute(providerDisputeId: string): Promise<VerifyDisputeResult> {
+    if (this.failDisputeRead) {
+      const error = this.failDisputeRead;
+      this.failDisputeRead = null;
+      return Promise.reject(error);
+    }
     const dispute = this.disputes.get(providerDisputeId);
     if (!dispute) return Promise.resolve({ found: false });
     return Promise.resolve({ found: true, dispute });

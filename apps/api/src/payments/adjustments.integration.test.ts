@@ -2502,3 +2502,199 @@ describe("Paystack's refund.needs-attention is a human's, not a label", () => {
     expect(exceptions).toMatchObject([{ reason: 'refund_needs_attention', amountK: 15_000_000 }]);
   });
 });
+
+/* ── the twelfth independent review of 11 Sep 2026 ───────────────────────── */
+
+describe("a dispute read that fails is retried, then a human's, never a dead job", () => {
+  it('a provider unreadable on every attempt of a LOST dispute: dispute_read_unavailable, nothing posts', async () => {
+    const { businessId } = await seedBusiness();
+    const { sale, intent } = await seedObligation(businessId);
+    const { paymentId } = await bookPayment(businessId, intent.reference);
+    const linesBefore = (await ledgerTotals(businessId)).lines;
+
+    const resolved = await storeEvent(
+      disputeEvent(intent.reference, 15_000_000, {
+        id: 940,
+        event: 'charge.dispute.resolve',
+        status: 'resolved',
+        resolution: 'merchant-accepted',
+      }),
+    );
+    await pump();
+    const runner = buildRunner(workerDb, appDb, deps);
+    for (let attempt = 1; attempt <= 5; attempt += 1) {
+      provider.failNextDisputeReadWith(new Error('dispute read failed with HTTP 503'));
+      await withBusiness(appDb, businessId, (tx) =>
+        tx.execute(sql`UPDATE jobs SET run_at = now() WHERE state = 'pending'`),
+      );
+      expect(await runner.runOnce()).toBe(true);
+    }
+
+    expect((await events.eventStatus(workerDb, resolved))?.error).toBe('dispute_read_unavailable');
+    expect(await chargebacksOf(businessId)).toHaveLength(0);
+    expect((await ledgerTotals(businessId)).lines).toBe(linesBefore);
+    expect(await paymentStatus(businessId, paymentId)).toBe('confirmed');
+    expect((await invoiceState(businessId, sale.invoiceId))?.status).toBe('paid');
+    const exceptions = (await reconciliationsOf(businessId)).filter(
+      (r) => r.status === 'EXCEPTION',
+    );
+    expect(exceptions).toMatchObject([{ reason: 'dispute_read_unavailable', amountK: 15_000_000 }]);
+    const jobs = await withBusiness(appDb, businessId, (tx) => jobsRepo.jobsForBusiness(tx));
+    expect(jobs.filter((j) => j.state === 'dead' || j.state === 'pending')).toHaveLength(0);
+  });
+
+  it('a dispute the provider cannot find yet is retried and charges back once when it appears', async () => {
+    const { businessId } = await seedBusiness();
+    const { sale, intent } = await seedObligation(businessId);
+    const { paymentId } = await bookPayment(businessId, intent.reference);
+
+    const resolved = await storeEvent(
+      disputeEvent(intent.reference, 15_000_000, {
+        id: 941,
+        event: 'charge.dispute.resolve',
+        status: 'resolved',
+        resolution: 'merchant-accepted',
+      }),
+    );
+    await pump();
+    const runner = buildRunner(workerDb, appDb, deps);
+    expect(await runner.runOnce()).toBe(true); // 404: fails, retried
+    expect((await events.eventStatus(workerDb, resolved))?.processed).toBe(false);
+    expect(await chargebacksOf(businessId)).toHaveLength(0);
+
+    provider.willVerifyDispute('941', {
+      amountK: 15_000_000,
+      transactionReference: intent.reference,
+      providerStatus: 'resolved',
+      providerResolution: 'merchant-accepted',
+      outcome: 'lost',
+    });
+    await withBusiness(appDb, businessId, (tx) =>
+      tx.execute(sql`UPDATE jobs SET run_at = now() WHERE state = 'pending'`),
+    );
+    await drainJobs();
+    expect((await events.eventStatus(workerDb, resolved))?.error).toBeNull();
+    expect(await chargebacksOf(businessId)).toHaveLength(1);
+    expect(await paymentStatus(businessId, paymentId)).toBe('reversed');
+    expect((await invoiceState(businessId, sale.invoiceId))?.status).toBe('issued');
+  });
+});
+
+describe('an id-less refund event waits for a refund the provider lists but has not processed', () => {
+  it('the second of two equal refunds still processing: retried, then booked once it is processed', async () => {
+    const { businessId } = await seedBusiness();
+    const { sale, intent } = await seedObligation(businessId);
+    provider.willVerify(intent.reference, {
+      amountK: 15_000_000,
+      providerTransactionId: 'pst-tx-950',
+    });
+    await storeEvent(chargeSuccess(intent.reference));
+    await pump();
+    await drainJobs();
+    const idless = (suffix: string) => ({
+      event: 'refund.processed',
+      data: {
+        status: 'processed',
+        transaction_reference: intent.reference,
+        refund_reference: null,
+        amount: '5000000',
+        currency: 'NGN',
+        processor: 'instant-transfer',
+        integration: 412829,
+        domain: 'live',
+        _delivery: suffix,
+      },
+    });
+
+    provider.willVerifyRefund('950', {
+      amountK: 5_000_000,
+      transactionReference: null,
+      transactionId: 'pst-tx-950',
+    });
+    await storeEvent(idless('first'), 'sha256:idless-950-first');
+    await pump();
+    await drainJobs();
+    expect((await refundsOf(businessId)).map((r) => r.providerRefundId)).toEqual(['950']);
+
+    /* The provider lists the second refund, still processing. */
+    provider.willVerifyRefund('951', {
+      amountK: 5_000_000,
+      transactionReference: null,
+      transactionId: 'pst-tx-950',
+      succeeded: false,
+      providerStatus: 'processing',
+    });
+    const second = await storeEvent(idless('second'), 'sha256:idless-950-second');
+    await pump();
+    const runner = buildRunner(workerDb, appDb, deps);
+    expect(await runner.runOnce()).toBe(true);
+    expect((await events.eventStatus(workerDb, second))?.processed).toBe(false);
+    expect(await refundsOf(businessId)).toHaveLength(1);
+
+    provider.willVerifyRefund('951', {
+      amountK: 5_000_000,
+      transactionReference: null,
+      transactionId: 'pst-tx-950',
+    });
+    await withBusiness(appDb, businessId, (tx) =>
+      tx.execute(sql`UPDATE jobs SET run_at = now() WHERE state = 'pending'`),
+    );
+    await drainJobs();
+    expect((await events.eventStatus(workerDb, second))?.error).toBeNull();
+    expect((await refundsOf(businessId)).map((r) => r.providerRefundId).sort()).toEqual([
+      '950',
+      '951',
+    ]);
+    expect((await invoiceState(businessId, sale.invoiceId))?.balanceDueK).toBe(10_000_000);
+  });
+
+  it('one that never turns processed is refund_read_never_processed on the last attempt, never a dead job', async () => {
+    const { businessId } = await seedBusiness();
+    const { intent } = await seedObligation(businessId);
+    provider.willVerify(intent.reference, {
+      amountK: 15_000_000,
+      providerTransactionId: 'pst-tx-952',
+    });
+    await storeEvent(chargeSuccess(intent.reference));
+    await pump();
+    await drainJobs();
+
+    provider.willVerifyRefund('952', {
+      amountK: 15_000_000,
+      transactionReference: null,
+      transactionId: 'pst-tx-952',
+      succeeded: false,
+      providerStatus: 'pending',
+    });
+    const eventId = await storeEvent(
+      {
+        event: 'refund.processed',
+        data: {
+          status: 'processed',
+          transaction_reference: intent.reference,
+          refund_reference: null,
+          amount: '15000000',
+          currency: 'NGN',
+          processor: 'instant-transfer',
+          integration: 412829,
+          domain: 'live',
+        },
+      },
+      'sha256:idless-952',
+    );
+    await pump();
+    const runner = buildRunner(workerDb, appDb, deps);
+    for (let attempt = 1; attempt <= 5; attempt += 1) {
+      await withBusiness(appDb, businessId, (tx) =>
+        tx.execute(sql`UPDATE jobs SET run_at = now() WHERE state = 'pending'`),
+      );
+      expect(await runner.runOnce()).toBe(true);
+    }
+    expect((await events.eventStatus(workerDb, eventId))?.error).toBe(
+      'refund_read_never_processed',
+    );
+    expect(await refundsOf(businessId)).toHaveLength(0);
+    const jobs = await withBusiness(appDb, businessId, (tx) => jobsRepo.jobsForBusiness(tx));
+    expect(jobs.filter((j) => j.state === 'dead' || j.state === 'pending')).toHaveLength(0);
+  });
+});

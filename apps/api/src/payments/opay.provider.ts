@@ -135,7 +135,7 @@ export class OPayProvider implements PaymentProviderPort {
   }
 
   /** No refund read exists for this provider yet: nothing is listed, nothing posts. */
-  listRefunds(_providerTransactionId: string): Promise<VerifiedRefund[]> {
+  listRefunds(_providerTransactionId: string, _currency: string): Promise<VerifiedRefund[]> {
     return Promise.resolve([]);
   }
 

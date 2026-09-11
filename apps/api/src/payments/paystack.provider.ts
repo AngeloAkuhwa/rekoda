@@ -224,8 +224,15 @@ export class PaystackProvider implements PaymentProviderPort {
   }
 
   /** `GET /refund?transaction=:id` — the refunds raised against one charge. */
-  async listRefunds(providerTransactionId: string): Promise<VerifiedRefund[]> {
-    const query = new URLSearchParams({ transaction: providerTransactionId, perPage: '50' });
+  async listRefunds(providerTransactionId: string, currency: string): Promise<VerifiedRefund[]> {
+    /* `transaction` and `currency` are the parameters Paystack's List
+     * Refunds reference lists without the "optional" mark; sent as
+     * published, confirmed live under G-05. */
+    const query = new URLSearchParams({
+      transaction: providerTransactionId,
+      currency,
+      perPage: '50',
+    });
     const response = await fetch(`${this.baseUrl}/refund?${query.toString()}`, {
       headers: this.headers(),
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
@@ -257,6 +264,10 @@ export class PaystackProvider implements PaymentProviderPort {
       dispute: {
         providerDisputeId: String(d.id),
         transactionReference: d.transaction?.reference ?? d.transaction_reference ?? null,
+        transactionId:
+          d.transaction?.id === null || d.transaction?.id === undefined
+            ? null
+            : String(d.transaction.id),
         /* `refund_amount` is the amount in dispute. The charge's own amount
          * is NOT a substitute: a partial dispute without `refund_amount` must
          * reach a human (`chargeback_without_amount`), never post the whole

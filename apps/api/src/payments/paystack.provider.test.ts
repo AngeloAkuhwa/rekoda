@@ -426,14 +426,14 @@ describe('reading a refund and a dispute (G-06)', () => {
         }),
       );
     };
-    const listed = await provider().listRefunds('1641');
+    const listed = await provider().listRefunds('1641', 'NGN');
     expect(
       listed.map((r) => [r.providerRefundId, r.transactionId, r.amountK, r.succeeded]),
     ).toEqual([
       ['7', '1641', 300000, true],
       ['8', '1641', 200000, false],
     ]);
-    expect(requests[0]?.url).toBe('/refund?transaction=1641&perPage=50');
+    expect(requests[0]?.url).toBe('/refund?transaction=1641&currency=NGN&perPage=50');
   });
 
   it('a pending refund is found-but-not-succeeded; an unknown one is found:false; an outage throws', async () => {
@@ -490,6 +490,7 @@ describe('reading a refund and a dispute (G-06)', () => {
     expect(result.dispute).toEqual({
       providerDisputeId: '602',
       transactionReference: 'RKD-PAY-20260819-A83F92',
+      transactionId: '1',
       amountK: 15_000_000,
       currency: 'NGN',
       providerStatus: 'resolved',
