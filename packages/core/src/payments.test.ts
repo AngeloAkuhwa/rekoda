@@ -95,7 +95,7 @@ describe('judging a provider payment (§21–22)', () => {
   });
 
   it.each([0, -5_000, 10.5, Number.NaN])(
-    'rejects a non-positive or fractional amount: %p',
+    'rejects a non-positive or fractional amount: %s',
     (amountK) => {
       expect(judgeProviderPayment(EXPECTED, reported({ amountK })).verdict).toBe('rejected');
     },

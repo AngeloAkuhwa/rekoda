@@ -71,6 +71,11 @@ jobs:
       - name: Architectural boundaries
         if: steps.ws.outputs.present == 'true'
         run: node scripts/check-boundaries.mjs
+      # A deployment is filled from .env.example. Every name the code reads
+      # must be in it and every name in it must be read (G-08).
+      - name: Environment template matches the code
+        if: steps.ws.outputs.present == 'true'
+        run: node scripts/check-env-example.mjs
       # One Node version, and an LTS. `.nvmrc` is the source of truth; this
       # checks engines, every @types/node, AND the version actually running,
       # because a project can be consistent in four files and still be tested
