@@ -129,6 +129,14 @@ export function problemsFor({ compose, dockerfile, caddyfile, dockerignore, giti
     }
   }
 
+  // Rekoda's images are built on the host and never pulled: a registry image
+  // under the same name would otherwise run in place of the checked-out code.
+  for (const [name, s] of Object.entries(services)) {
+    if (/^rekoda-/.test(String(s?.image ?? '')) && s?.pull_policy !== 'never') {
+      problems.push(`${name} runs a Rekoda image and must set pull_policy: never`);
+    }
+  }
+
   // The worker's jobs finish before a stop kills them.
   const grace = String(svc('worker')?.stop_grace_period ?? '');
   const m = grace.match(/^(\d+)(s|m)$/);

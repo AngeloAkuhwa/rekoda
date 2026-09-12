@@ -29,9 +29,9 @@ alias dc='docker compose -f docker-compose.prod.yml'
 | Credential                                     | Lives in                          | Reaches                                                                                                         |
 | ---------------------------------------------- | --------------------------------- | --------------------------------------------------------------------------------------------------------------- |
 | PostgreSQL owner (superuser, migrations)       | `secrets/postgres_owner_password` | `postgres` and the `migrate` job. Never `api`, `worker` or `web`                                                |
-| `rekoda_app` (RLS-bound)                       | `DATABASE_URL` in `.env`          | `api`, `worker`; `migrate` reads it only to set the role's password                                             |
+| `rekoda_app` (RLS-bound)                       | `DATABASE_URL` in `.env`          | `api`, `worker`; `migrate`, which loads all of `.env` to set the role's password from it                        |
 | `rekoda_worker` (claims jobs across tenants)   | `WORKER_DATABASE_URL` in `.env`   | `worker`, and `api` (it routes a message on a merchant's own WhatsApp number to its tenant); `migrate` as above |
-| Application secrets (`VAULT_KEY` and the rest) | `.env`                            | `api`, `worker`                                                                                                 |
+| Application secrets (`VAULT_KEY` and the rest) | `.env`                            | `api`, `worker`, and the `migrate` job (the same image, run on demand)                                          |
 | Anything at all                                | nowhere else                      | `web` receives only `NODE_ENV`, `REKODA_API_URL` and `REKODA_WEB_URL`                                           |
 
 The compose file sets some values itself, whatever `.env` says:
@@ -177,8 +177,10 @@ dc up -d --wait --force-recreate api worker       # 3. at once: new containers, 
 curl -fsS https://<api host>/health               # 4. ok
 ```
 
-If step 3 fails, put the old URLs back in `.env` and run step 2 again, so the
-database accepts what the running containers hold, then find out why. The
+If step 3 fails, put the old URLs back in `.env`, run step 2 again, and run
+step 3 again: a container step 3 already recreated holds the new URL, and
+only a second `--force-recreate` gives both the restored one. Then find out
+why. The
 owner password is rotated separately, inside PostgreSQL, and then in
 `secrets/postgres_owner_password`.
 

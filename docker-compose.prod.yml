@@ -72,6 +72,8 @@ services:
     # The runtime URLs come from .env itself, the file the api and worker
     # load, never from compose interpolation, where an exported shell value
     # would win and the roles would get passwords the services never see.
+    # It receives the whole file, like the api it shares an image with; the
+    # owner password is the one thing it holds that they do not.
     env_file: .env
     environment:
       NODE_ENV: production
@@ -96,6 +98,9 @@ services:
 
   api:
     image: rekoda-app:${REKODA_RELEASE:?set REKODA_RELEASE in .env}
+    # Built here, never pulled: a missing release image is built from the
+    # checkout or fails, never fetched under the same name from a registry.
+    pull_policy: never
     build:
       context: .
       target: app
@@ -185,6 +190,7 @@ services:
 
   web:
     image: rekoda-web:${REKODA_RELEASE:?set REKODA_RELEASE in .env}
+    pull_policy: never
     build:
       context: .
       target: web

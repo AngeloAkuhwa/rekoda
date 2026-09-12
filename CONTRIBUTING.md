@@ -67,7 +67,8 @@ what passed and what was skipped:
   `pnpm deploy:check` and `pnpm env:check`, then the CI "Deployment (Docker)"
   job, which boots the stack with `bash scripts/deploy-smoke.sh` (it needs a
   Docker engine and free ports 80 and 443; it refuses to run where a `.env`
-  already exists).
+  already exists or beside a running `rekoda-prod` stack, and runs as its own
+  compose project).
 - **Schema, migrations, payments, auth, privacy, jobs, or anything
   cross-cutting:** all of the above plus the integration suites,
   **serially, never in parallel** (they share one PostgreSQL):

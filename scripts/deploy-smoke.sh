@@ -19,7 +19,11 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-COMPOSE=(docker compose -f docker-compose.prod.yml)
+# Its own compose project, never the file's fixed `rekoda-prod`: on a host
+# that runs Rekoda, that name would adopt the live containers and volumes, and
+# the cleanup's `down -v` would delete the production database.
+PROJECT="rekoda-smoke-$$"
+COMPOSE=(docker compose -p "$PROJECT" -f docker-compose.prod.yml)
 SITE=rekoda.localhost
 API=api.rekoda.localhost
 WORK=$(mktemp -d)
@@ -42,6 +46,9 @@ cleanup() {
 
 [ ! -e .env ] || fail '.env already exists; this test never overwrites a real one'
 [ ! -e secrets ] || fail 'secrets/ already exists; this test never overwrites a real one'
+if [ -n "$(docker ps -aq --filter label=com.docker.compose.project=rekoda-prod)" ]; then
+  fail 'a rekoda-prod stack exists on this host; run the smoke test on a machine without one'
+fi
 trap cleanup EXIT
 
 rand() { openssl rand -hex 32; }

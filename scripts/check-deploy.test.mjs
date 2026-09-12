@@ -210,3 +210,12 @@ test('a worker stopped before its jobs can finish', () => {
   const short = edited('compose', '    stop_grace_period: 150s\n', '    stop_grace_period: 10s\n');
   expectProblem(problems(short), /found "10s"/);
 });
+
+test('a Rekoda image that compose may pull from a registry', () => {
+  const edit = edited(
+    'compose',
+    '  web:\n    image: rekoda-web:${REKODA_RELEASE:?set REKODA_RELEASE in .env}\n    pull_policy: never\n',
+    '  web:\n    image: rekoda-web:${REKODA_RELEASE:?set REKODA_RELEASE in .env}\n',
+  );
+  expectProblem(problems(edit), /^web runs a Rekoda image and must set pull_policy: never/);
+});
