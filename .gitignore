@@ -37,6 +37,8 @@ coverage/
 .nyc_output/
 test-results/
 playwright-report/
+# Vitest 5 roots reporter output, attachments and blob reports here
+.vitest/
 
 # STT models (downloaded at build/deploy, never committed)
 services/stt/models/

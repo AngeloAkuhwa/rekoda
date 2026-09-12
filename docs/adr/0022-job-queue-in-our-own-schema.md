@@ -114,12 +114,26 @@ worker. Job payloads hold an event id or a document id; message text stays in
 the vault. This is a rule the schema comment states and reviewers must hold.
 
 **A third connection string.** Deployments now configure `DATABASE_URL`
-(`rekoda_app`), `OWNER_DATABASE_URL` (migrations) and `WORKER_DATABASE_URL`
-(`rekoda_worker`). `WORKER_DATABASE_URL` deliberately does **not** fall back to
-`DATABASE_URL`: that convenience would hand the runner a role with no claim
-policy, so the queue would look permanently empty and jobs would pile up
-silently — and in an environment where `DATABASE_URL` is the owner, it would
-hand the runner `BYPASSRLS`.
+(`rekoda_app`), `WORKER_DATABASE_URL` (`rekoda_worker`) and, for the migrate
+command alone, `DATABASE_URL` pointed at the owner connection (migrations).
+
+> **Implementation note (12 Sep 2026, G-08).** The sentence above originally
+> named `OWNER_DATABASE_URL` for migrations. The migration runner
+> (`packages/db/src/migrate.ts`, `drizzle.config.ts`) reads `DATABASE_URL`,
+> not `OWNER_DATABASE_URL`, and no code ever read the latter, so the sentence
+> was corrected on 12 Sep 2026; the decision (three roles, no fallback from
+> the worker to the app connection) is unchanged. The owner connection is supplied to the migrate command alone:
+> `DATABASE_URL=<owner connection> pnpm migrate`; that role must hold
+> SUPERUSER or BYPASSRLS, because every tenant table is under FORCE ROW
+> LEVEL SECURITY and `migrate.ts` refuses a role without the privilege. The
+> application is never started with that value; the boot doctor refuses a
+> role that can bypass RLS. `.env.example` no longer lists `OWNER_DATABASE_URL` and
+> `scripts/check-env-example.mjs` forbids its return. Three roles, no
+> fallback from the worker to the app connection: as decided. `WORKER_DATABASE_URL` deliberately does **not** fall back to
+> `DATABASE_URL`: that convenience would hand the runner a role with no claim
+> policy, so the queue would look permanently empty and jobs would pile up
+> silently — and in an environment where `DATABASE_URL` is the owner, it would
+> hand the runner `BYPASSRLS`.
 
 **We own the retry semantics.** Exponential backoff, a `dead` state after
 `max_attempts`, and a reclaim sweep for jobs whose worker died mid-run — about

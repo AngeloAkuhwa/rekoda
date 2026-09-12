@@ -457,7 +457,7 @@ const ROLE_DEFAULTS = {
 /**
  * The operator credential, held to the same 32 characters as every other
  * secret here. Optional outside production so a developer is not blocked by
- * a key they do not need; when it is absent the endpoints answer 403, which
+ * a key they do not need; when it is absent the endpoints answer 401, which
  * is the correct behaviour for a gate with no key rather than a reason to
  * open a different one.
  */
