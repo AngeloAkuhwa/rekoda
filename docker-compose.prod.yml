@@ -20,6 +20,13 @@
 #     its public NEXT_PUBLIC_* values are baked in at build;
 #   - no test hook appears anywhere in this file.
 
+# The project name is fixed, so the volumes are always rekoda-prod_pgdata and
+# rekoda-prod_caddy_data: a checkout in another directory must find the same
+# database, not open an empty one that looks like data loss. Not `rekoda`,
+# which is docker-compose.dev.yml's default project name in a checkout called
+# rekoda, so the two can never share a volume.
+name: rekoda-prod
+
 x-logging: &logging
   driver: json-file
   options:
@@ -30,6 +37,8 @@ services:
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
+    # Docker's 64 MB default /dev/shm is exhausted by parallel queries.
+    shm_size: 256mb
     environment:
       POSTGRES_USER: rekoda_owner
       POSTGRES_DB: rekoda
@@ -96,6 +105,9 @@ services:
       NODE_ENV: production
       PORT: '3001'
       REKODA_WORKER: '0'
+      # The same value that tags the image, so /health names what is running
+      # even when the shell exports a different one than .env.
+      REKODA_RELEASE: ${REKODA_RELEASE:?set REKODA_RELEASE in .env}
       # Caddy's fixed address on the edge network: the only proxy the API
       # believes an X-Forwarded-For from.
       REKODA_TRUSTED_PROXIES: 172.30.10.10
@@ -135,6 +147,7 @@ services:
       NODE_ENV: production
       PORT: '3001'
       REKODA_WORKER: '1'
+      REKODA_RELEASE: ${REKODA_RELEASE:?set REKODA_RELEASE in .env}
       REKODA_TRUSTED_PROXIES: 172.30.10.10
     networks:
       - db

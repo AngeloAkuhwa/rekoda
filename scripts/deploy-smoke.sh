@@ -113,11 +113,18 @@ COMMIT=$(git rev-parse --short HEAD)
 "${COMPOSE[@]}" build --build-arg "REKODA_COMMIT=$COMMIT"
 
 step 'no secret reached an image: not in any layer, not in the config'
-# Counted over the whole stream, never `grep -q`: under pipefail an early
-# match kills `docker save` with SIGPIPE and the pipeline reads as a miss.
+# Exported to a file first, so a failed export fails the run instead of
+# reading as a clean scan, and searched whole. The web image is the positive
+# control: its baked legal entity must be visible to the same search, or the
+# layers are compressed (the containerd image store) and a miss proves nothing.
 for image in rekoda-app:ci-a rekoda-web:ci-a; do
-  hits=$(docker save "$image" | grep -a -c -F -f "$WORK/secrets.txt" || true)
+  docker save -o "$WORK/image.tar" "$image" || fail "could not export $image for the scan"
+  hits=$(grep -a -c -F -f "$WORK/secrets.txt" "$WORK/image.tar" || true)
   [ "${hits:-0}" = 0 ] || fail "$image contains one of the generated secrets"
+  if [ "$image" = rekoda-web:ci-a ] && ! grep -a -q -F CI-PLACEHOLDER-ENTITY "$WORK/image.tar"; then
+    fail 'the scan cannot see inside the layers (not even the baked legal entity), so it proves nothing'
+  fi
+  rm -f "$WORK/image.tar"
   config=$(docker image inspect --format '{{json .Config.Env}}' "$image")
   if grep -E -q '"(VAULT_KEY|MATCH_KEY|CONNECTION_KEY|OTP_PEPPER|REKODA_API_SECRET|META_APP_SECRET|DATABASE_URL|WORKER_DATABASE_URL)=' <<<"$config"; then
     fail "$image bakes a secret-shaped variable"

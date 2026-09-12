@@ -92,7 +92,7 @@ RUN pnpm turbo run build --filter=@rekoda/web...
 RUN rm -rf node_modules apps/*/node_modules packages/*/node_modules \
  && pnpm install --offline --frozen-lockfile --prod --filter "@rekoda/web..."
 RUN set -eu; \
-    rm -rf apps/api scripts deploy .github .turbo; \
+    rm -rf apps/api packages/db scripts deploy .github .turbo; \
     find /repo -maxdepth 1 -type f ! -name package.json -delete; \
     for dir in packages/*; do \
       rm -rf "$dir/src" "$dir/.turbo" "$dir"/tsconfig*.json "$dir"/vitest*.ts "$dir/drizzle.config.ts"; \
@@ -130,8 +130,9 @@ ENV NODE_ENV=production \
 COPY --from=web-build /repo /repo
 WORKDIR /repo/apps/web
 # The compiled site stays root's, so the process cannot rewrite the pages and
-# server chunks it serves. Only Next's runtime cache (optimised images, the
-# fetch cache) is the node user's; nothing here regenerates a page on disk.
+# server chunks it serves. Next keeps regenerated pages in memory
+# (isrFlushToDisk is off in next.config.mjs); .next/cache is the node user's
+# only so that anything Next still writes there has a place to go.
 RUN mkdir -p /repo/apps/web/.next/cache && chown node:node /repo/apps/web/.next/cache
 ARG NEXT_PUBLIC_SITE_URL
 ARG NEXT_PUBLIC_REKODA_WHATSAPP

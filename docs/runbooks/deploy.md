@@ -72,7 +72,9 @@ treat it as a variable. Every generated value above is hex.
 1. **Host.** Ubuntu LTS, a non-root deploy user, SSH keys only
    (`PasswordAuthentication no`), `ufw` allowing 22, 80, 443 and 443/udp
    only. Install Docker Engine and the compose plugin.
-2. **DNS.** Point the site and API hostnames at the host. Leave the
+2. **DNS.** Point the site and API hostnames at the host with **A records
+   only** (no AAAA): the compose networks are IPv4, and Docker would present
+   every IPv6 visitor to Caddy as one internal address. Leave the
    Cloudflare records **DNS only** (grey) until Caddy has certificates, then
    proxy them with SSL/TLS mode **Full (strict)**, keep Cloudflare's "Always
    Use HTTPS" **off** (Caddy redirects already, and certificate renewals
@@ -222,8 +224,13 @@ holding either is a credential at rest. Do not switch one on.
 - **One service:** `dc restart api` (or `worker`, `web`, `caddy`). Meta and
   Paystack retry a webhook that meets a restart; a job claimed by a worker
   that stops is requeued once it is stale (five minutes).
-- **After editing `.env`:** `dc up -d --wait` recreates the services whose
-  configuration changed.
+- **After editing `.env`:** `dc up -d --wait` recreates the api, worker and
+  Caddy when their values changed. **Not the site's public values:** every
+  `NEXT_PUBLIC_*` value (the site URL, the legal facts, the WhatsApp number,
+  the Mono public key) is baked into the web image at build, and compose does
+  not rebuild or recreate it for a changed build argument. Change one, then
+  set a new `REKODA_RELEASE` and run the whole "Deploy a release" sequence, so
+  the pages, the legal gate and `/health` all name the new build.
 - **After editing the Caddyfile:**
   `dc exec caddy caddy reload --config /etc/caddy/Caddyfile` (validates, then
   swaps without dropping connections; the compose file mounts the whole
@@ -282,8 +289,9 @@ restore from backup, and **there is no backup mechanism yet** (G-02 in
 The same files and the same commands. Only `.env` differs: the hostnames,
 test-mode provider keys (`sk_test_`, a test WhatsApp number), a staging
 identity-provider tenant, separately generated keys and passwords, and the
-legal facts (staging placeholders only while the host is not publicly
-reachable; the web build still refuses them blank). `NODE_ENV` is
+legal facts (staging placeholders only while the staging hostname is not
+shared or linked anywhere, since the host answers publicly for its
+certificates; the web build still refuses them blank). `NODE_ENV` is
 `production` in both; the API treats anything but development and test as
 production anyway.
 

@@ -44,7 +44,16 @@ export const HEALTH_CHECKED = ['api', 'postgres', 'web', 'worker'];
 /** A name that looks like a credential, which no image may be built with. */
 const SECRET_SHAPED = /SECRET|PASSWORD|TOKEN|PRIVATE|PEPPER|DATABASE_URL|_KEY$/;
 /** Lines .dockerignore must keep: a secret outside the context cannot reach a layer. */
-export const DOCKERIGNORE_REQUIRED = ['.env', '.env.*', 'secrets/', '.git/'];
+export const DOCKERIGNORE_REQUIRED = [
+  '.env',
+  '.env.*',
+  '**/.env',
+  '**/.env.*',
+  'secrets/',
+  '.git/',
+];
+/** The only services that may load .env, which holds every application secret. */
+export const ENV_FILE_LOADERS = ['api', 'worker'];
 
 const asList = (value) => (value === undefined || value === null ? [] : [value].flat());
 function keyed(value) {
@@ -105,6 +114,14 @@ export function problemsFor({ compose, dockerfile, caddyfile, dockerignore, giti
   }
   if (!/^\/?secrets\/?$/m.test(gitignore)) {
     problems.push(`${FILES.gitignore} must ignore secrets/`);
+  }
+
+  // .env holds every application secret: the api and the worker load it, and
+  // nothing else does (least of all the internet-facing proxy).
+  for (const [name, s] of Object.entries(services)) {
+    if (asList(s?.env_file).length > 0 && !ENV_FILE_LOADERS.includes(name)) {
+      problems.push(`${name} loads an env_file; only ${ENV_FILE_LOADERS.join(' and ')} may`);
+    }
   }
 
   // The migrate job runs only when asked, and is the only way in as the owner.

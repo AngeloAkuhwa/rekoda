@@ -89,8 +89,8 @@ test('the worker on a different image', () => {
 test('the api trusting a proxy that is not caddy', () => {
   const edit = edited(
     'compose',
-    "      REKODA_WORKER: '0'\n      # Caddy's fixed address on the edge network: the only proxy the API\n      # believes an X-Forwarded-For from.\n      REKODA_TRUSTED_PROXIES: 172.30.10.10\n",
-    "      REKODA_WORKER: '0'\n      REKODA_TRUSTED_PROXIES: 0.0.0.0/0\n",
+    "      # believes an X-Forwarded-For from.\n      REKODA_TRUSTED_PROXIES: 172.30.10.10\n",
+    "      # believes an X-Forwarded-For from.\n      REKODA_TRUSTED_PROXIES: 0.0.0.0/0\n",
   );
   expectProblem(problems(edit), /api must trust exactly caddy's fixed address/);
 });
@@ -191,4 +191,15 @@ test('the Caddyfile mounted as a single file, which a checkout never updates', (
     '      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro\n',
   );
   expectProblem(problems(edit), /caddy must mount \.\/deploy read-only at \/etc\/caddy/);
+});
+
+test('.env loaded by the proxy, or a nested .env let into the build context', () => {
+  const caddy = edited(
+    'compose',
+    '  caddy:\n    image: caddy:2.11.4-alpine\n',
+    '  caddy:\n    image: caddy:2.11.4-alpine\n    env_file: .env\n',
+  );
+  expectProblem(problems(caddy), /^caddy loads an env_file; only api and worker may/);
+  const nested = edited('dockerignore', '\n**/.env\n', '\n');
+  expectProblem(problems(nested), /\.dockerignore must exclude \*\*\/\.env$/);
 });

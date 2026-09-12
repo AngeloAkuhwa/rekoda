@@ -608,12 +608,20 @@ export function deploymentProblemsFor({ product }, { example }, deployment) {
     }
   }
 
-  // Rule 4: Caddy reads only what its service is given.
+  // Rule 4: Caddy reads only what its service is given, and is given only
+  // what it reads (a pass-through would also keep a dead template name alive).
   if (!caddyService) problems.push(`${DEPLOY.compose} has no ${CADDY_SERVICE} service`);
   for (const name of sorted(caddy)) {
     if (!caddyService?.environment.has(name)) {
       problems.push(
         `${DEPLOY.caddyfile} reads {$${name}}, which the ${CADDY_SERVICE} service is not given`,
+      );
+    }
+  }
+  for (const name of sorted(caddyService?.environment.keys() ?? [])) {
+    if (!caddy.has(name)) {
+      problems.push(
+        `the ${CADDY_SERVICE} service is given ${name}, which ${DEPLOY.caddyfile} never reads`,
       );
     }
   }

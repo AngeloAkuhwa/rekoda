@@ -60,7 +60,7 @@ within 20% of the previous week's.
 ## Real restore (incident)
 
 Same as the drill against the production server, plus: stop the app first
-(`docker compose stop api web`), restore, run integrity checks, start, then
+(`docker compose -f docker-compose.prod.yml stop api worker web`), restore, run integrity checks, start, then
 verify webhooks re-deliver (Meta and Paystack both retry) — idempotency
 keys make replays safe.
 

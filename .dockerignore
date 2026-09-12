@@ -4,12 +4,14 @@
 # any of it is removed.
 .env
 .env.*
+**/.env
+**/.env.*
 !.env.example
 secrets/
-*.pem
-*.key
-*.p12
-*.pfx
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
 .git/
 .claude/
 

@@ -405,6 +405,17 @@ test('rule 4: a Caddyfile placeholder the caddy service is not given', () => {
   assert.ok(!problems.some((p) => /IN_A_COMMENT/.test(p)));
 });
 
+test('rule 4: the caddy service given a name the Caddyfile never reads', () => {
+  const compose = BASE_COMPOSE.replace(
+    '      REKODA_API_PUBLIC_URL: ${REKODA_API_PUBLIC_URL}\n',
+    '      REKODA_API_PUBLIC_URL: ${REKODA_API_PUBLIC_URL}\n      VAULT_KEY: ${VAULT_KEY}\n',
+  );
+  expectProblem(
+    deploymentProblems({ compose }),
+    /caddy service is given VAULT_KEY, which deploy\/Caddyfile never reads/,
+  );
+});
+
 test('rule 5: a public name the web code reads but the build does not pass', () => {
   const problems = deploymentProblems({
     product: { ...PRODUCT_READS, NEXT_PUBLIC_NEW: 'apps/web/src/app/page.tsx' },
