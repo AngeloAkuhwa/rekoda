@@ -16,12 +16,13 @@
  *      file (product code or the named test harnesses), so a dead name
  *      cannot sit in the template pretending to matter.
  *
- * "Reads" are the accessor forms the code actually uses: `process.env.X`,
- * `process.env['X']`, `env['X']` and `helper(env, 'X')` in loadConfig, and
- * `env.X` in the web boot gate. Harness files (the integration test setup,
- * the Playwright config) are scanned for rule 2 only, so a harness-only
- * name may be documented under the test-hooks section but its absence from
- * the template is never demanded.
+ * "Reads" are every accessor form: `process.env.X`, `process.env['X']`,
+ * `env['X']` and `helper(env, 'X')` in loadConfig, `env.X` in the web boot
+ * gate, and destructuring (`const { X } = process.env`). Product code is
+ * every source tree a deployment runs; test files and the harness files are
+ * scanned for rule 2 only, so a harness-only name may be documented under
+ * the test-hooks section but its absence from the template is never
+ * demanded.
  */
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
@@ -29,18 +30,22 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = join(fileURLToPath(import.meta.url), '..', '..');
 
-/** Product code: what a deployment actually reads. */
+/** Product code: every source tree a deployment runs. Test files and the
+ * harness files below are skipped here and scanned as harnesses instead. */
 const PRODUCT = [
   'apps/api/src',
   'apps/web/src',
   'apps/web/legal-gate.mjs',
   'apps/web/next.config.mjs',
-  'packages/db/src/migrate.ts',
-  'packages/db/src/client.ts',
+  'packages/db/src',
+  'packages/core/src',
+  'packages/contracts/src',
+  'packages/shared/src',
 ];
 /** Harnesses: names read only here are legitimate template entries under
  * "test hooks", never required. */
 const HARNESS = ['packages/db/src/testing.ts', 'apps/web/playwright.config.ts', 'apps/web/e2e'];
+const HARNESS_FILES = new Set(HARNESS.map((h) => join(ROOT, h)));
 
 const ACCESSORS = [
   /process\.env\.([A-Z][A-Z0-9_]+)/g,
@@ -49,6 +54,20 @@ const ACCESSORS = [
   /\(\s*env\s*,\s*['"]([A-Z][A-Z0-9_]+)['"]/g,
   /\benv\.([A-Z][A-Z0-9_]{2,})\b/g,
 ];
+/** `const { A, B: alias, C = 'x' } = process.env` (or `= env`): every key
+ * on the left is a read. Nothing in the tree does this today; the form is
+ * common enough that a guard which cannot see it is a guard with a hole. */
+const DESTRUCTURING = /\{([^}]*)\}\s*=\s*(?:process\.env|env)\b/g;
+function destructuredNames(text) {
+  const names = [];
+  for (const match of text.matchAll(DESTRUCTURING)) {
+    for (const part of match[1].split(',')) {
+      const key = part.split(/[:=]/)[0].trim();
+      if (/^[A-Z][A-Z0-9_]+$/.test(key)) names.push(key);
+    }
+  }
+  return names;
+}
 
 function walk(path, out) {
   let stat;
@@ -75,15 +94,14 @@ function readsIn(paths, { includeTests }) {
   const names = new Map();
   for (const root of paths) {
     for (const file of walk(join(ROOT, root), []).filter(isSource)) {
-      if (!includeTests && isTest(file)) continue;
+      if (!includeTests && (isTest(file) || HARNESS_FILES.has(file))) continue;
       const text = readFileSync(file, 'utf8');
-      for (const re of ACCESSORS) {
-        for (const match of text.matchAll(re)) {
-          const name = match[1];
-          if (!names.has(name)) names.set(name, new Set());
-          names.get(name).add(relative(ROOT, file).replaceAll('\\', '/'));
-        }
-      }
+      const record = (name) => {
+        if (!names.has(name)) names.set(name, new Set());
+        names.get(name).add(relative(ROOT, file).replaceAll('\\', '/'));
+      };
+      for (const re of ACCESSORS) for (const match of text.matchAll(re)) record(match[1]);
+      for (const name of destructuredNames(text)) record(name);
     }
   }
   return names;
