@@ -316,44 +316,55 @@ echo 'ok'
 step 'visitors through Caddy -> web -> API keep their own buckets (G-71)'
 # Caddy is told to trust this host the way it trusts Cloudflare in front of a
 # real deployment, so each request names its visitor in CF-Connecting-IP.
-# The observable is the site itself: an unknown shop is the site's 404 while
-# the visitor has budget, and anything else once the API refuses the calls
-# web makes for them (two per storefront view).
+# The observable is a web route handler that makes exactly one API call and
+# passes the API's refusal through: the dashboard export, with a session
+# cookie that names no session. It answers 401 (the API read the made-up
+# session) while the visitor has budget, and 429 once the API refuses the
+# visitor. A page would not do: the storefront streams, so it answers 200
+# whatever the API said.
 set_env REKODA_EDGE_PROXIES private_ranges
 "${COMPOSE[@]}" up -d --wait --wait-timeout 300 caddy
-shop() {
+LIMIT=$(sed -n 's/^REKODA_RATE_LIMIT_MAX=//p' .env)
+view() {
   # $1: the visitor Cloudflare would name; any further arguments go to curl.
   local visitor=$1
   shift
-  site -o /dev/null -w '%{http_code}' -H "CF-Connecting-IP: $visitor" "$@" "https://$SITE/s/deploy-smoke-no-such-shop"
+  site -o /dev/null -w '%{http_code}' -H "CF-Connecting-IP: $visitor" \
+    -H 'Cookie: rk_session=deploy-smoke-not-a-session' "$@" "https://$SITE/app/export/invoices"
 }
 exhaust() {
-  # Views as visitor $1 until the site stops answering 404; prints how many.
-  local first views code
-  first=$(shop "$1")
-  [ "$first" = 404 ] || fail "visitor $1 was refused before spending anything (got $first)"
-  for views in $(seq 2 40); do
-    code=$(shop "$1")
-    if [ "$code" != 404 ]; then
-      echo "$views"
-      return 0
-    fi
+  # Views as visitor $1 until the API refuses them. A fresh bucket of the
+  # visitor's own is spent by exactly LIMIT views, so the refusal must land
+  # on view LIMIT + 1: sooner means someone else's calls shared it, later
+  # means a view escaped the count.
+  local views code
+  for views in $(seq 1 $((LIMIT + 5))); do
+    code=$(view "$1")
+    case "$code" in
+      401) ;;
+      429)
+        [ "$views" = $((LIMIT + 1)) ] ||
+          fail "visitor $1 was refused at view $views, not $((LIMIT + 1)): not a bucket of their own"
+        return 0
+        ;;
+      *) fail "view $views as visitor $1 answered $code, not 401 or 429" ;;
+    esac
   done
   fail "visitor $1 was never limited through web"
 }
-for _ in $(seq 1 30); do [ "$(shop 203.0.113.70)" = 404 ] && break || sleep 2; done
+for _ in $(seq 1 30); do [ "$(view 203.0.113.70)" = 401 ] && break || sleep 2; done
 A=203.0.113.71
 B=203.0.113.72
-# An assignment, so set -e stops the run if exhaust fails in its subshell.
-views=$(exhaust "$A")
-echo "visitor $A limited after $views storefront views"
-[ "$(shop "$B")" = 404 ] || fail 'visitor B shared visitor A’s bucket through web'
-[ "$(shop "$A")" != 404 ] || fail 'visitor A got a fresh bucket back'
+# A call, not a substitution, so fail stops the whole run.
+exhaust "$A"
+echo "visitor $A refused at view $((LIMIT + 1)) through web"
+[ "$(view "$B")" = 401 ] || fail 'visitor B shared visitor A’s bucket through web'
+[ "$(view "$A")" = 429 ] || fail 'visitor A got a fresh bucket back'
 # A browser cannot choose its bucket through the site: Caddy replaces the
 # header with the address it decided, in both directions.
-[ "$(shop 203.0.113.73 -H "X-Rekoda-Client-IP: $A")" = 404 ] ||
+[ "$(view 203.0.113.73 -H "X-Rekoda-Client-IP: $A")" = 401 ] ||
   fail 'a browser borrowed another visitor’s bucket through the site'
-[ "$(shop "$A" -H 'X-Rekoda-Client-IP: 203.0.113.74')" != 404 ] ||
+[ "$(view "$A" -H 'X-Rekoda-Client-IP: 203.0.113.74')" = 429 ] ||
   fail 'a limited browser escaped by naming a fresh address to the site'
 # Direct API traffic still keys on the address Caddy decided, and one visitor
 # is one bucket whichever road they take; the header is removed on this host.
@@ -367,10 +378,10 @@ direct() {
   fail 'a caller borrowed another visitor’s bucket on the API host'
 # IPv6 visitors count by /64: a fresh address from the same allocation is
 # already spent, and the next allocation is not.
-views=$(exhaust 2001:db8:71::1)
-echo "visitor 2001:db8:71::1 limited after $views storefront views"
-[ "$(shop 2001:db8:71::ffff)" != 404 ] || fail 'a new address in the same IPv6 /64 got a fresh bucket'
-[ "$(shop 2001:db8:72::1)" = 404 ] || fail 'the next IPv6 /64 shared a bucket'
+exhaust 2001:db8:71::1
+echo "visitor 2001:db8:71::1 refused at view $((LIMIT + 1)) through web"
+[ "$(view 2001:db8:71::ffff)" = 429 ] || fail 'a new address in the same IPv6 /64 got a fresh bucket'
+[ "$(view 2001:db8:72::1)" = 401 ] || fail 'the next IPv6 /64 shared a bucket'
 echo 'ok'
 
 step 'nothing tried to write where the images keep code read-only'
