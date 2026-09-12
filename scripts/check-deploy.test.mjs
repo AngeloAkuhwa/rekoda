@@ -183,3 +183,12 @@ test('the edge forwarding a client-chosen X-Forwarded-For', () => {
   const edit = edited('caddyfile', '\theader_up X-Forwarded-For {client_ip}\n', '');
   expectProblem(problems(edit), /must replace X-Forwarded-For with \{client_ip\}/);
 });
+
+test('the Caddyfile mounted as a single file, which a checkout never updates', () => {
+  const edit = edited(
+    'compose',
+    '      - ./deploy:/etc/caddy:ro\n',
+    '      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro\n',
+  );
+  expectProblem(problems(edit), /caddy must mount \.\/deploy read-only at \/etc\/caddy/);
+});

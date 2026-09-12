@@ -331,7 +331,7 @@ Append-only by GRANT (no triggers), proven through the real non-owner roles; eve
 
 ### 5.33 Observability and health — PARTIAL
 
-`GET /health` (database, migration count; unauthenticated and rate-limit-exempt) and `GET /v1/ops/health` (queue depth, webhook intake, numbers only, no tenant named). Logging is the Nest logger through `redactForLog`, proven by a real full-stack test. Not yet: no metrics exporter, no alerting, no error tracking (no Sentry, OpenTelemetry, Prometheus or pino); `SecurityMetrics` is in-process; `/health` reports the running `release` and `commit` since G-01 (validated at boot, baked into the image).
+`GET /health` (database, migration count; unauthenticated and rate-limit-exempt) and `GET /v1/ops/health` (queue depth, webhook intake, numbers only, no tenant named). Logging is the Nest logger through `redactForLog`, proven by a real full-stack test. Not yet: no metrics exporter, no alerting, no error tracking (no Sentry, OpenTelemetry, Prometheus or pino); `SecurityMetrics` is in-process; `/health` reports the running `release` and `commit` since G-01 (validated at boot, baked into the image), and says `ok` only when the database holds every migration the build carries.
 
 ### 5.34 Operations and admin — PARTIAL (API only)
 

@@ -138,8 +138,18 @@ sed -i 's/^REKODA_RELEASE=.*/REKODA_RELEASE=vX.Y.Z/' .env
 dc build --build-arg REKODA_COMMIT=$(git rev-parse --short HEAD)   # build BEFORE touching anything live
 dc run --rm -T migrate                                             # expand-only migrations, as the owner
 dc up -d --wait                                                    # recreates api, worker and web on the new images
+dc exec caddy caddy reload --config /etc/caddy/Caddyfile            # apply a changed Caddyfile (validated first)
 curl -fsS https://<api host>/health                                # release must now read vX.Y.Z
 ```
+
+`/health` answers `ok` only when the database holds every migration the new
+image carries, so an image started before its migrate job is `degraded`, its
+container is unhealthy, and `up --wait` fails instead of reporting success.
+
+`up` recreates a container only when its compose configuration or image
+changed; Caddy's is neither when only the Caddyfile changes, hence the
+reload. Caddy validates the new file first and keeps serving the old one if
+it does not parse.
 
 The previous release's images stay on the host (`rekoda-app:<previous>`,
 `rekoda-web:<previous>`); that is what makes rollback a one-line change. Keep
@@ -150,10 +160,31 @@ release as the code that needs it must be backward-compatible with the
 previous release (additive columns and tables). Destructive contractions ship
 one release later.
 
+## Rotate a database password
+
+The migrate job sets `rekoda_app` and `rekoda_worker` to the passwords in
+`.env` on every run, so on an ordinary deploy it re-sets the same ones. A
+rotation changes them, and the running api and worker still hold the old
+URLs: connections they already have stay open, but any new one is refused.
+So a rotation is one short, deliberate sequence, not part of a deploy:
+
+```bash
+# 1. put the new password(s) in DATABASE_URL and/or WORKER_DATABASE_URL in .env
+dc run --rm -T migrate                            # 2. the database now accepts only the new ones
+dc up -d --wait --force-recreate api worker       # 3. at once: new containers, new URLs
+curl -fsS https://<api host>/health               # 4. ok
+```
+
+If step 3 fails, put the old URLs back in `.env` and run step 2 again, so the
+database accepts what the running containers hold, then find out why. The
+owner password is rotated separately, inside PostgreSQL, and then in
+`secrets/postgres_owner_password`.
+
 ## Health and readiness
 
 - `GET /health` (public, not rate-limited) answers `status` (`ok` only when
-  the database is up and the schema is migrated), `database`, the migration
+  the database is up and holds at least every migration this image carries),
+  `database`, the migration
   count, and the running `release` and `commit`. Nothing about the host, the
   database or a credential.
 - `dc ps` shows each container's health: `api` and `worker` pass when their
@@ -193,7 +224,10 @@ holding either is a credential at rest. Do not switch one on.
   that stops is requeued once it is stale (five minutes).
 - **After editing `.env`:** `dc up -d --wait` recreates the services whose
   configuration changed.
-- **After editing the Caddyfile:** `dc restart caddy`.
+- **After editing the Caddyfile:**
+  `dc exec caddy caddy reload --config /etc/caddy/Caddyfile` (validates, then
+  swaps without dropping connections; the compose file mounts the whole
+  `deploy/` directory so the container sees a file a checkout replaced).
 - **The whole stack:** `dc down` then `dc up -d --wait`. The `pgdata`,
   `caddy_data` and `caddy_config` volumes survive.
 - **Never `dc down -v`** on a real host: it deletes the database and the
@@ -205,6 +239,7 @@ holding either is a credential at rest. Do not switch one on.
 git checkout vPREVIOUS
 sed -i 's/^REKODA_RELEASE=.*/REKODA_RELEASE=vPREVIOUS/' .env
 dc up -d --wait                      # the previous images are still on the host: no build
+dc exec caddy caddy reload --config /etc/caddy/Caddyfile
 curl -fsS https://<api host>/health  # release must read vPREVIOUS
 ```
 

@@ -218,7 +218,10 @@ services:
       REKODA_ACME_EMAIL: ${REKODA_ACME_EMAIL:?set REKODA_ACME_EMAIL in .env}
       REKODA_EDGE_PROXIES: ${REKODA_EDGE_PROXIES:-}
     volumes:
-      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      # The directory, not the file: `git checkout` replaces the Caddyfile with
+      # a new file, and a single-file bind mount would keep showing the old
+      # one, so a reload after a deploy would re-read stale configuration.
+      - ./deploy:/etc/caddy:ro
       - caddy_data:/data
       - caddy_config:/config
     networks:

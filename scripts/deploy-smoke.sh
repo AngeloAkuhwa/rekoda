@@ -286,5 +286,10 @@ jq -e '.release == "ci-a" and .status == "ok"' "$WORK/health.json" >/dev/null ||
   fail 'the rollback to ci-a did not take'
 echo 'ok: rolled back without a rebuild'
 
+step "Caddy reloads the checked-out Caddyfile (the runbook's last deploy step)"
+"${COMPOSE[@]}" exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
+health >"$WORK/health.json" || fail '/health stopped answering after the reload'
+echo 'ok'
+
 FAILED=0
 printf '\nDEPLOY SMOKE PASSED\n'

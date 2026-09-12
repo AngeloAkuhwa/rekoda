@@ -1,8 +1,20 @@
 import { Controller, Get, Inject } from '@nestjs/common';
-import { identity, type Db } from '@rekoda/db';
+import { bundledMigrationCount, identity, type Db } from '@rekoda/db';
 import type { HealthResponse } from '@rekoda/contracts';
 import { DB } from '../db/db.module.js';
 import { CONFIG, type ApiConfig } from '../config.js';
+
+/**
+ * `ok` means the schema THIS build needs is there, not merely some schema: a
+ * new image started before its migrate job ran would otherwise pass its
+ * container health check, let web and Caddy start behind it, and fail at the
+ * first route that touches the new tables. More migrations than the build
+ * carries is still `ok`, because a rollback runs an older image against the
+ * newer, expand-only schema (G-01).
+ */
+export function healthStatus(applied: number, required: number): 'ok' | 'degraded' {
+  return applied > 0 && applied >= required ? 'ok' : 'degraded';
+}
 
 /**
  * The boot doctor's runtime half (MASTER-PLAN §3.4).
@@ -18,6 +30,9 @@ import { CONFIG, type ApiConfig } from '../config.js';
  */
 @Controller('health')
 export class HealthController {
+  /** The migrations this build carries, read once from its journal. */
+  private readonly required = bundledMigrationCount();
+
   constructor(
     @Inject(DB) private readonly db: Db,
     @Inject(CONFIG) private readonly config: ApiConfig,
@@ -34,6 +49,11 @@ export class HealthController {
       return { status: 'degraded', database: 'down', migrations: 0, ...build };
     }
     const migrations = await identity.migrationCount(this.db).catch(() => 0);
-    return { status: migrations > 0 ? 'ok' : 'degraded', database: 'up', migrations, ...build };
+    return {
+      status: healthStatus(migrations, this.required),
+      database: 'up',
+      migrations,
+      ...build,
+    };
   }
 }

@@ -199,10 +199,14 @@ export function problemsFor({ compose, dockerfile, caddyfile, dockerignore, giti
     }
   }
 
-  // Caddy reads a read-only copy of the committed Caddyfile.
+  // Caddy reads the committed deploy/ directory, read-only. The directory,
+  // not the file: a checkout replaces the Caddyfile with a new file, which a
+  // single-file bind mount never shows, so a reload would re-read stale config.
   const caddyMounts = asList(svc('caddy')?.volumes).map(String);
-  if (!caddyMounts.some((v) => /deploy\/Caddyfile:\/etc\/caddy\/Caddyfile:ro$/.test(v))) {
-    problems.push('caddy must mount deploy/Caddyfile read-only at /etc/caddy/Caddyfile');
+  if (!caddyMounts.some((v) => /^\.\/deploy:\/etc\/caddy:ro$/.test(v))) {
+    problems.push(
+      'caddy must mount ./deploy read-only at /etc/caddy (the directory, not the file)',
+    );
   }
 
   // The images: Node from .nvmrc, run as a non-root user, built from no secret.
