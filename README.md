@@ -65,7 +65,7 @@ packages/core       Pure domain rules: money, ledger, statements, gates, replies
 packages/db         Drizzle schema, SQL migrations 0000–0151, RLS policies, repos
 packages/contracts  zod schemas shared between api, web and the AI border
 packages/shared     Branded types and utilities
-scripts/            CI guard scripts (boundaries, node version, UI copy, retired claims, OpenAPI)
+scripts/            CI guard scripts (boundaries, env template, node version, UI copy, retired claims, OpenAPI)
 docs/               Canonical documentation (see below)
 ```
 
@@ -121,7 +121,7 @@ exercise the inbound path.
 
 ```bash
 pnpm turbo typecheck lint test build          # unit tests across every package
-node scripts/check-boundaries.mjs             # architectural boundaries (CI runs five guard scripts)
+node scripts/check-boundaries.mjs             # architectural boundaries (CI runs six guard scripts)
 
 # Integration suites need a real PostgreSQL and three roles; run them SERIALLY.
 # Both suites read the three URLs (requireUrls in packages/db/src/testing.ts),

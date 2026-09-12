@@ -34,7 +34,7 @@
 | Integration tests                         | db 104 files, api 49 files (about 2,350 cases); run serially against three DB roles in CI                                                                       |
 | Playwright                                | 5 specs, 51 tests, production build of web + api + Postgres                                                                                                     |
 | Skipped tests, TODO/FIXME markers         | zero                                                                                                                                                            |
-| CI jobs                                   | secret scan (gitleaks, full history), typecheck/lint/test/build + five guard scripts, foreign-owner migration replay, integration, e2e                          |
+| CI jobs                                   | secret scan (gitleaks, full history), typecheck/lint/test/build + six guard scripts, foreign-owner migration replay, integration, e2e                           |
 | HTTP surface                              | 43 report routes, 7 public-API routes, 8 operator routes, 2 inbound webhooks, storefront, billing, bank, catalogue, payments, auth (per-area route lists in §5) |
 | Web routes                                | 30 pages (15 outside `/app`, 15 under it; the two `/setup` steps sit outside), all server components with real data; no placeholders                            |
 

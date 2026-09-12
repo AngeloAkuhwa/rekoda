@@ -164,6 +164,24 @@ function envObjects(code) {
       if (key === 'env') ids.add(alias || 'env');
     }
   }
+  /* Transitively: `const initial = process.env; const runtime = initial`. */
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (const id of [...ids]) {
+      const escaped = id.replace(/\$/g, '\\$');
+      const hop = new RegExp(
+        `\\b(?:const|let|var)\\s+([A-Za-z_$][\\w$]*)\\s*=\\s*${escaped}\\b(?![.[(])`,
+        'g',
+      );
+      for (const m of code.matchAll(hop)) {
+        if (!ids.has(m[1])) {
+          ids.add(m[1]);
+          grew = true;
+        }
+      }
+    }
+  }
   return [...ids].map((id) => id.replace(/\$/g, '\\$'));
 }
 
@@ -204,7 +222,12 @@ function readsInFile(code) {
     if (computedAccess.test(code)) computed = true;
   }
   if (computed) {
+    /* Every environment-shaped literal, and every member of an array of
+     * uppercase literals (an inventory), including single words like PORT. */
     for (const m of code.matchAll(/['"]([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)['"]/g)) names.push(m[1]);
+    for (const m of code.matchAll(/\[\s*((?:['"][A-Z][A-Z0-9_]*['"]\s*,?\s*)+)\]/g)) {
+      for (const member of m[1].matchAll(/['"]([A-Z][A-Z0-9_]*)['"]/g)) names.push(member[1]);
+    }
   }
   return names;
 }
@@ -227,8 +250,11 @@ function walk(path, out) {
   return out;
 }
 
-const isSource = (file) => /\.(ts|tsx|mjs|js)$/.test(file);
-const isTest = (file) => /\.test\.tsx?$/.test(file) || /[\\/]e2e[\\/]/.test(file);
+const isSource = (file) => /\.(ts|tsx|mts|cts|mjs|cjs|js)$/.test(file);
+/* Vitest's default include takes both `.test.` and `.spec.` names. */
+const isTest = (file) =>
+  /\.(test|spec)\.(ts|tsx|mts|cts|mjs|cjs|js)$/.test(file) ||
+  /[\\/](e2e|__tests__)[\\/]/.test(file);
 
 function readsIn(paths, { includeTests }) {
   const names = new Map();

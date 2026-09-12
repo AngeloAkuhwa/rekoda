@@ -7,8 +7,12 @@ import { cookies } from 'next/headers';
  * that is where dev-only branches are correctly switched off.
  *
  * Gated on an environment variable set nowhere but `playwright.config.ts`. It
- * is absent from the Dockerfile, the deploy runbook and `.env.example`, and
+ * appears in `.env.example` only as a commented must-be-unset test hook, it
+ * is absent from the Dockerfile and the deploy runbook, and
  * `e2e/onboarding.spec.ts` asserts the code is not rendered when it is unset.
+ * There is deliberately no boot guard on it: the API's guard is on
+ * REKODA_REVEAL_OTP; this switch only decides whether the web tier shows a
+ * code the API already chose to return.
  *
  * A cookie rather than a query parameter deliberately: a live credential in a
  * URL survives in history, referrers and access logs. The API applies the same

@@ -21,7 +21,9 @@ ssh rekoda@server
 cd /opt/rekoda
 git fetch --tags && git checkout vX.Y.Z     # never deploy a branch tip
 docker compose build                        # build BEFORE touching anything live
-docker compose run --rm api pnpm --filter @rekoda/db migrate   # expand-only migrations
+# Migrations run as the table OWNER (a role holding BYPASSRLS), never as the
+# app role: pass the owner connection to this one command only (G-08).
+docker compose run --rm -e DATABASE_URL="$OWNER_DB_URL" api pnpm --filter @rekoda/db migrate:apply   # expand-only migrations
 docker compose up -d                        # atomic swap
 curl -fsS https://rekoda.app/health         # must return ok
 ```
