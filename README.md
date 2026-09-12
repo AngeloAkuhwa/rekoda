@@ -121,7 +121,7 @@ exercise the inbound path.
 
 ```bash
 pnpm turbo typecheck lint test build          # unit tests across every package
-node scripts/check-boundaries.mjs             # architectural boundaries (CI runs six guard scripts)
+node scripts/check-boundaries.mjs             # architectural boundaries (CI runs seven guard scripts)
 
 # Integration suites need a real PostgreSQL and three roles; run them SERIALLY.
 # Both suites read the three URLs (requireUrls in packages/db/src/testing.ts),

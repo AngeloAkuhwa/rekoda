@@ -9,12 +9,28 @@
  * keeps the two in step the way check-boundaries keeps withBusiness() the
  * only path to the database: mechanically, in CI, on every change.
  *
- * Two rules:
+ * Two rules for the code:
  *   1. every variable PRODUCT code reads must be documented (active or as a
  *      commented `# NAME=` line, which is how optional knobs are shown);
  *   2. every variable the template documents must be read by SOME scanned
- *      file (product code, a test file, or a harness), so a dead name cannot
- *      sit in the template pretending to matter.
+ *      file (product code, a test file, a harness, or a deployment file), so
+ *      a dead name cannot sit in the template pretending to matter.
+ *
+ * And four for the deployment (G-01), which reads the environment too and
+ * whose names would otherwise look dead to rule 2 or go missing silently:
+ *   3. every `${NAME}` docker-compose.prod.yml interpolates is documented,
+ *      because the operator supplies it in the same `.env`;
+ *   4. every `{$NAME}` the Caddyfile reads is in the caddy service's
+ *      environment, or Caddy sees it blank;
+ *   5. every NEXT_PUBLIC_* name the web code reads is a build argument of
+ *      the compose web build and of the image's web stages, and baked into
+ *      the web image; no other NEXT_PUBLIC_* name is. Next inlines them at
+ *      build, so a name missing here ships blank with nothing to say so;
+ *   6. the web container's environment is exactly the other names the web
+ *      code reads: missing, the site boots blind; extra, a secret has
+ *      reached a process that never needed it.
+ * No test hook or development-only name (NEVER_DEPLOYED) may appear in any
+ * deployment file at all.
  *
  * What counts as a read. Comments and string contents are removed first
  * (a name that survives only in a comment is not a read), then the
@@ -44,6 +60,7 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { parse as parseYaml } from 'yaml';
 
 export const ROOT = join(fileURLToPath(import.meta.url), '..', '..');
 
@@ -396,7 +413,11 @@ export function scan() {
   return { product, harness };
 }
 
-export function problemsFor({ product, harness }, { example, duplicates, odd }) {
+export function problemsFor(
+  { product, harness },
+  { example, duplicates, odd },
+  deployed = new Set(),
+) {
   const problems = [];
   for (const name of [...duplicates].sort()) {
     problems.push(
@@ -414,9 +435,270 @@ export function problemsFor({ product, harness }, { example, duplicates, odd }) 
     }
   }
   for (const [name] of [...example].sort()) {
-    if (!product.has(name) && !harness.has(name)) {
-      problems.push(`in .env.example but read by no code or harness: ${name}`);
+    if (!product.has(name) && !harness.has(name) && !deployed.has(name)) {
+      problems.push(`in .env.example but read by no code, harness or deployment file: ${name}`);
     }
+  }
+  return problems;
+}
+
+// ── The deployment (rules 3 to 6, G-01) ─────────────────────────────────
+
+/** The files a deployment reads the environment through. */
+export const DEPLOY = {
+  compose: 'docker-compose.prod.yml',
+  caddyfile: 'deploy/Caddyfile',
+  dockerfile: 'Dockerfile',
+};
+/** The compose services and image stage the site is built and run in. */
+export const WEB_SERVICE = 'web';
+export const CADDY_SERVICE = 'caddy';
+export const WEB_BUILD_STAGE = 'web-build';
+/** The web code: the roots of PRODUCT that apps/web runs. */
+const WEB_CODE = /^apps\/web\//;
+/**
+ * Names the template marks as test hooks or development-only. A deployment
+ * that carries one has switched off a gate (the legal facts, the OTP reveal)
+ * or pointed a provider at a fake, so no deployment file may name them.
+ */
+export const NEVER_DEPLOYED = [
+  'REKODA_REVEAL_OTP',
+  'REKODA_E2E_REVEAL_OTP',
+  'REKODA_E2E_PLACEHOLDER_LEGAL',
+  'REKODA_OPERATOR_SECRET',
+  'REKODA_LOCAL_STORAGE',
+  'PAYSTACK_BASE_URL',
+  'MONO_BASE_URL',
+];
+
+const IDENT = '[A-Za-z_][A-Za-z0-9_]*';
+
+/** `${NAME}`, `${NAME:-x}`, `${NAME:?x}` and `$NAME`; `$$` is a literal dollar. */
+export function interpolations(value) {
+  const names = [];
+  const text = String(value).replace(/\$\$/g, '');
+  for (const m of text.matchAll(new RegExp(`\\$\\{(${IDENT})`, 'g'))) names.push(m[1]);
+  for (const m of text.matchAll(new RegExp(`\\$(${IDENT})`, 'g'))) names.push(m[1]);
+  return names;
+}
+
+function keyed(value) {
+  if (value === undefined || value === null) return new Map();
+  if (Array.isArray(value)) {
+    return new Map(
+      value.map((entry) => {
+        const [key, ...rest] = String(entry).split('=');
+        return [key.trim(), rest.length > 0 ? rest.join('=') : null];
+      }),
+    );
+  }
+  return new Map(
+    Object.entries(value).map(([key, v]) => [
+      key,
+      v === null || v === undefined ? null : String(v),
+    ]),
+  );
+}
+
+/**
+ * The compose file: every interpolated name, and each service's environment,
+ * build arguments, target and env files. Comments never count: the YAML is
+ * parsed and only its values are scanned.
+ */
+export function parseCompose(text) {
+  const doc = parseYaml(text, { merge: true }) ?? {};
+  const interpolated = new Set();
+  const visit = (node) => {
+    if (typeof node === 'string') for (const name of interpolations(node)) interpolated.add(name);
+    else if (Array.isArray(node)) node.forEach(visit);
+    else if (node && typeof node === 'object') Object.values(node).forEach(visit);
+  };
+  visit(doc);
+  const services = new Map();
+  for (const [name, svc] of Object.entries(doc.services ?? {})) {
+    const envFiles = [svc?.env_file]
+      .flat()
+      .filter(Boolean)
+      .map((entry) => (typeof entry === 'string' ? entry : entry.path));
+    services.set(name, {
+      environment: keyed(svc?.environment),
+      buildArgs: keyed(svc?.build?.args),
+      target: svc?.build?.target ?? null,
+      envFiles,
+    });
+  }
+  return { doc, interpolated, services };
+}
+
+/** `{$NAME}`, `{$NAME:default}` and `{env.NAME}`, outside comments. */
+export function caddyNames(text) {
+  const names = new Set();
+  const re = new RegExp(`\\{\\$(${IDENT})(?::[^}]*)?\\}|\\{env\\.(${IDENT})\\}`, 'g');
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.replace(/(^|\s)#.*$/, '$1');
+    for (const m of line.matchAll(re)) names.add(m[1] ?? m[2]);
+  }
+  return names;
+}
+
+/**
+ * The Dockerfile's stages, each with its ARGs, the names it sets with ENV,
+ * its base, its last USER and its instructions. Continuation lines are
+ * joined first; comment lines never count.
+ */
+export function parseDockerfile(text) {
+  const globalArgs = new Map();
+  const stages = new Map();
+  const argRe = new RegExp(`^ARG\\s+(${IDENT})(?:=(.*))?$`, 'i');
+  let current = null;
+  for (const raw of text.replace(/\\\r?\n/g, ' ').split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#')) continue;
+    const from = line.match(/^FROM\s+(\S+)(?:\s+AS\s+(\S+))?/i);
+    if (from) {
+      current = {
+        name: from[2] ?? `#${stages.size}`,
+        base: from[1],
+        args: new Map(),
+        env: new Set(),
+        user: null,
+        lines: [],
+      };
+      stages.set(current.name, current);
+      continue;
+    }
+    const arg = line.match(argRe);
+    if (!current) {
+      if (arg) globalArgs.set(arg[1], arg[2] ?? null);
+      continue;
+    }
+    current.lines.push(line);
+    if (arg) current.args.set(arg[1], arg[2] ?? null);
+    const env = line.match(/^ENV\s+(.*)$/i);
+    if (env) {
+      for (const m of env[1].matchAll(/(?:^|\s)([A-Z_][A-Z0-9_]*)=/g)) current.env.add(m[1]);
+    }
+    const user = line.match(/^USER\s+(\S+)/i);
+    if (user) current.user = user[1];
+  }
+  return { globalArgs, stages };
+}
+
+export function deploymentFiles(root = ROOT) {
+  const read = (path) => readFileSync(join(root, path), 'utf8');
+  return {
+    compose: parseCompose(read(DEPLOY.compose)),
+    caddy: caddyNames(read(DEPLOY.caddyfile)),
+    dockerfile: parseDockerfile(read(DEPLOY.dockerfile)),
+  };
+}
+
+const sorted = (set) => [...set].sort();
+
+export function deploymentProblemsFor({ product }, { example }, deployment) {
+  const problems = [];
+  const { compose, caddy, dockerfile } = deployment;
+  const web = compose.services.get(WEB_SERVICE);
+  const caddyService = compose.services.get(CADDY_SERVICE);
+
+  // Rule 3: the operator supplies every interpolated name, from the template.
+  for (const name of sorted(compose.interpolated)) {
+    if (!example.has(name)) {
+      problems.push(`${DEPLOY.compose} interpolates ${name}, which .env.example does not document`);
+    }
+  }
+
+  // Rule 4: Caddy reads only what its service is given.
+  if (!caddyService) problems.push(`${DEPLOY.compose} has no ${CADDY_SERVICE} service`);
+  for (const name of sorted(caddy)) {
+    if (!caddyService?.environment.has(name)) {
+      problems.push(
+        `${DEPLOY.caddyfile} reads {$${name}}, which the ${CADDY_SERVICE} service is not given`,
+      );
+    }
+  }
+
+  // The names the web code reads, split into build time and run time.
+  const webReads = new Set(
+    [...product].filter(([, files]) => [...files].some((f) => WEB_CODE.test(f))).map(([n]) => n),
+  );
+  const publicNames = new Set([...webReads].filter((n) => n.startsWith('NEXT_PUBLIC_')));
+  const runtimeNames = new Set(
+    [...webReads].filter((n) => !n.startsWith('NEXT_PUBLIC_') && !NEVER_DEPLOYED.includes(n)),
+  );
+
+  // Rule 5: every public name reaches the build and is baked into the image.
+  if (!web) problems.push(`${DEPLOY.compose} has no ${WEB_SERVICE} service`);
+  const webTarget = web?.target ? dockerfile.stages.get(web.target) : undefined;
+  const webBuild = dockerfile.stages.get(WEB_BUILD_STAGE);
+  if (web && !webTarget) {
+    problems.push(
+      `the ${WEB_SERVICE} service builds target ${web.target ?? '(none)'}, which ${DEPLOY.dockerfile} does not define`,
+    );
+  }
+  if (!webBuild) problems.push(`${DEPLOY.dockerfile} has no ${WEB_BUILD_STAGE} stage`);
+  const targetName = web?.target ?? WEB_SERVICE;
+  const places = [
+    ['the compose web build arguments', new Set(web?.buildArgs.keys() ?? [])],
+    [`the ${WEB_BUILD_STAGE} stage ARGs`, new Set(webBuild?.args.keys() ?? [])],
+    [`the ${WEB_BUILD_STAGE} stage ENV`, webBuild?.env ?? new Set()],
+    [`the ${targetName} stage ARGs`, new Set(webTarget?.args.keys() ?? [])],
+    [`the ${targetName} stage ENV`, webTarget?.env ?? new Set()],
+  ];
+  for (const [where, names] of places) {
+    for (const name of sorted(publicNames)) {
+      if (!names.has(name)) problems.push(`web code reads ${name}, missing from ${where}`);
+    }
+    for (const name of sorted(names)) {
+      if (name.startsWith('NEXT_PUBLIC_') && !publicNames.has(name)) {
+        problems.push(`${where} carry ${name}, which no web code reads`);
+      }
+    }
+  }
+
+  // Rule 6: the web container gets exactly its run-time names, and no public
+  // one (those are the image's, so the legal gate checks what the pages show).
+  if (web) {
+    for (const name of sorted(runtimeNames)) {
+      if (!web.environment.has(name)) {
+        problems.push(
+          `web code reads ${name} at run time; the ${WEB_SERVICE} service is not given it`,
+        );
+      }
+    }
+    for (const name of sorted(web.environment.keys())) {
+      if (name.startsWith('NEXT_PUBLIC_')) {
+        problems.push(
+          `the ${WEB_SERVICE} service overrides ${name} at run time; it is baked into the image`,
+        );
+      } else if (!runtimeNames.has(name) && !NEVER_DEPLOYED.includes(name)) {
+        problems.push(`the ${WEB_SERVICE} service is given ${name}, which no web code reads`);
+      }
+    }
+    if (web.envFiles.length > 0) {
+      problems.push(
+        `the ${WEB_SERVICE} service loads an env_file; list its names instead (rule 6)`,
+      );
+    }
+  }
+
+  // Never deployed: not interpolated, set, passed or baked anywhere.
+  for (const name of NEVER_DEPLOYED) {
+    if (!example.has(name)) {
+      problems.push(`NEVER_DEPLOYED names ${name}, which .env.example does not document`);
+    }
+    const found = [];
+    if (compose.interpolated.has(name)) found.push(`interpolated by ${DEPLOY.compose}`);
+    for (const [service, svc] of compose.services) {
+      if (svc.environment.has(name)) found.push(`set on the ${service} service`);
+      if (svc.buildArgs.has(name)) found.push(`a build argument of the ${service} service`);
+    }
+    if (caddy.has(name)) found.push(`read by ${DEPLOY.caddyfile}`);
+    for (const [stage, st] of dockerfile.stages) {
+      if (st.args.has(name) || st.env.has(name)) found.push(`in the ${stage} stage`);
+    }
+    if (dockerfile.globalArgs.has(name)) found.push(`a global ARG of ${DEPLOY.dockerfile}`);
+    for (const place of found) problems.push(`${name} must never be deployed, but is ${place}`);
   }
   return problems;
 }
@@ -424,17 +706,22 @@ export function problemsFor({ product, harness }, { example, duplicates, odd }) 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   const reads = scan();
   const template = parseTemplate(readFileSync(join(ROOT, '.env.example'), 'utf8'));
-  const problems = problemsFor(reads, template);
+  const deployment = deploymentFiles();
+  const problems = [
+    ...problemsFor(reads, template, deployment.compose.interpolated),
+    ...deploymentProblemsFor(reads, template, deployment),
+  ];
   if (problems.length > 0) {
     console.error('Environment template drift:');
     for (const p of problems) console.error(`  ${p}`);
     console.error(
       '\nEvery name product code reads must be in .env.example (active or as `# NAME=`),\n' +
-        'and every documented name must be read by product code or a test harness.',
+        'every documented name must be read by product code, a test harness or a deployment\n' +
+        'file, and the deployment files must agree with the code (rules 3 to 6 above).',
     );
     process.exit(1);
   }
   console.log(
-    `Environment template OK — ${reads.product.size} names read by code, ${template.example.size} documented, no drift.`,
+    `Environment template OK — ${reads.product.size} names read by code, ${deployment.compose.interpolated.size} by the deployment, ${template.example.size} documented, no drift.`,
   );
 }

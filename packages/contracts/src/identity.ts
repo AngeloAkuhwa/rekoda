@@ -134,6 +134,9 @@ export const healthResponse = z.object({
   database: z.enum(['up', 'down']),
   /** Names of migrations recorded as applied — empty means the schema is bare. */
   migrations: z.number(),
+  /** The running build: the image's release tag and short commit (G-01). */
+  release: z.string(),
+  commit: z.string(),
 });
 export type HealthResponse = z.infer<typeof healthResponse>;
 

@@ -8,14 +8,14 @@
 
 ## Current state at a glance
 
-| Field                       | Value                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Current date**            | 12 September 2026                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| **Current `main` SHA**      | `7b9fd8f` (12 Sep 2026, "build(deps-dev): bump vitest from 4.1.11 to 5.0.0 (#236)"); before it `2dce181` (#239), `e993885` (#235) and the G-06 merge `8f07a6d` (#238, the squash of `a9096db`)                                                                                                                                                                                                                                                                                                                                                                                                       |
-| **Open branches**           | none of Rekoda's own beyond the G-08 PR (#240, `fix/env-example-matches-code`); Dependabot #235 (minor and patch group: Playwright 1.63, Anthropic SDK 0.124, OpenAI SDK 7.10, Next 16.3.4, jose 6.2.12, aws-sdk-client-s3 3.1128, @types/react-dom 19.2.7) MERGED as `e993885` on 11 Sep 2026 after a fresh breaking-change review; #236 (Vitest 5.0.0, head `c2f2120`) MERGED as `7b9fd8f` on 12 Sep 2026 after the breaking-change check and a fresh review; dependency housekeeping is closed; #225, #226 and #227 (NestJS 12, one package each) were closed as deferred post-launch work (G-70) |
-| **Product version / state** | 0.1.0. Build plan complete (138 rows, PR-001…PR-132; PR-006–009 and PR-115 gated); 152 migrations; never deployed; no live provider has been exercised                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| **Launch verdict**          | **NOT READY** (`REKODA_LAUNCH_READINESS.md` §1)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| **Engineering model**       | Simple: Angelo assigns, Claude reads `CLAUDE.md` and the canonical docs, implements with tests, normal CI, Angelo reviews and merges. The multi-agent control plane (PR #233) was removed by PR #237 (merged 11 Sep 2026) and PR #234 closed unmerged                                                                                                                                                                                                                                                                                                                                                |
+| Field                       | Value                                                                                                                                                                                                                                                                                                                                                                                            |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Current date**            | 12 September 2026                                                                                                                                                                                                                                                                                                                                                                                |
+| **Current `main` SHA**      | `b81ef90` (12 Sep 2026, "fix: make .env.example match the code, and keep it so in CI (G-08) (#240)"); before it `7b9fd8f` (#236), `2dce181` (#239), `e993885` (#235) and the G-06 merge `8f07a6d` (#238)                                                                                                                                                                                         |
+| **Open branches**           | the G-01 PR (`feat/deployment-runtime`: Dockerfile, production compose, Caddy, migrate job, deployment guards and CI smoke job). #240 (G-08 template half) MERGED as `b81ef90` on 12 Sep 2026; #236 (Vitest 5) as `7b9fd8f`; #235 (Dependabot minor and patch group) as `e993885`; dependency housekeeping is closed; #225, #226 and #227 (NestJS 12) closed as deferred post-launch work (G-70) |
+| **Product version / state** | 0.1.0. Build plan complete (138 rows, PR-001…PR-132; PR-006–009 and PR-115 gated); 152 migrations; never deployed to a host (the production stack boots on a clean CI runner since G-01); no live provider has been exercised                                                                                                                                                                    |
+| **Launch verdict**          | **NOT READY** (`REKODA_LAUNCH_READINESS.md` §1)                                                                                                                                                                                                                                                                                                                                                  |
+| **Engineering model**       | Simple: Angelo assigns, Claude reads `CLAUDE.md` and the canonical docs, implements with tests, normal CI, Angelo reviews and merges. The multi-agent control plane (PR #233) was removed by PR #237 (merged 11 Sep 2026) and PR #234 closed unmerged                                                                                                                                            |
 
 **Last completed work (10–11 Sep 2026):** the repository reset. Removed
 `AGENTS.md`, `GEMINI.md`, `docs/AUTONOMOUS-ENGINEERING.md`, `docs/agents/`,
@@ -73,22 +73,45 @@ provider facts) and OD-12 (gross processed volume) recorded in
 `REKODA_LAUNCH_READINESS.md` §6. G-06 is CODE COMPLETE and NOT LIVE
 PROVIDER VERIFIED until the G-05 drill.
 
+**Last completed work (12 Sep 2026, G-01, on `feat/deployment-runtime`; CODE COMPLETE, NOT YET ON A HOST):**
+the production runtime. `Dockerfile` builds one app image (api, worker
+and the migrate job) and one web image (public values baked in, refuses to
+build without the legal facts), both non-root on the Node in `.nvmrc`;
+`docker-compose.prod.yml` runs postgres (internal network, no port), a
+one-off migrate job (the only holder of the owner password besides
+postgres), api, worker (same image, `REKODA_WORKER=1`), web and Caddy;
+`deploy/Caddyfile` serves the site and API over HTTPS and replaces
+`X-Forwarded-For` with the address it resolved; `/health` now reports
+`release` and `commit`; `packages/db/src/provision.ts` sets the runtime
+roles' passwords as SCRAM verifiers from `.env`; the entrypoint guard
+now compares real paths (the image runs `migrate.js` through a pnpm
+symlink, where it had exited 0 applying nothing). CI's new "Deployment
+(Docker)" job boots and attacks the stack with `scripts/deploy-smoke.sh`;
+`scripts/check-deploy.mjs` and rules 3 to 6 of `check-env-example.mjs`
+(with fixtures) hold the files' shape and their agreement with the code.
+`docs/runbooks/deploy.md` is rewritten to the shipped files. New gaps:
+G-71 (web's server-side calls share one per-IP bucket, P1) and G-72
+(production does not refuse `PAYSTACK_BASE_URL`, `MONO_BASE_URL`,
+`REKODA_LOCAL_STORAGE`, P2).
+
 **Next three actions:**
 
-1. Angelo merges the G-08 PR (`.env.example` matches the code; guard in
-   CI), then fills the staging `.env` from `REKODA_LAUNCH_READINESS.md`
-   §11.1 and rules OD-4 (which command-bus flags ship on); deletes the leftover GitHub
+1. Angelo merges the G-01 PR, then provisions the staging host by
+   `docs/runbooks/deploy.md` "First deployment" (a machine, Cloudflare DNS
+   for the site and API hostnames), fills the staging `.env` and
+   `secrets/` from `REKODA_LAUNCH_READINESS.md` §11.1 (the G-08 owner
+   half) and rules OD-4 (which command-bus flags ship on); deletes the leftover GitHub
    environments `agents*` and the `builder:*`, `risk:*`, `status:*`,
    `agent-task` labels (gap G-45); turns on branch protection (G-09).
 2. Rule on OD-1 to OD-7 in `REKODA_LAUNCH_READINESS.md` §6 (R0A-i on an
    empty database, VAT, which unwired modules ship, command-bus flags,
    renewal copy, erasure scope, backup design).
-3. Claude continues the P0 code gaps in order: G-01 (Dockerfile, production compose, Caddy, worker; next, the staging enabler),
-   G-02 (backups per OD-7), G-07 (fix the eval harness, then the owner runs
-   the live eval). G-06 is code complete and NOT live-verified until the G-05 drill
+3. Claude continues: G-71 (web forwards the client address; P1, found by
+   G-01, before real traffic), G-02 (backups per OD-7, which a real host now
+   needs), G-07 (fix the eval harness, then the owner runs the live eval). G-06 is code complete and NOT live-verified until the G-05 drill
    confirms the real Paystack envelopes.
 
-**Known P0 blockers:** G-01 deployment artifacts · G-02 backups · G-03
+**Known P0 blockers:** G-01 staging host (code complete) · G-02 backups · G-03
 Meta number, app review, templates · G-04 legal facts · G-05 Paystack §47
 and live drill · G-07 AI eval never run · G-08 production environment
 (`REKODA_LAUNCH_READINESS.md` §4). G-06 code complete on 11 Sep 2026, not live-verified until G-05.

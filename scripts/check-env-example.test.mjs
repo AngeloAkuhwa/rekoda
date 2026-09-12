@@ -7,7 +7,18 @@
  */
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { parseTemplate, readsInFile, stripCommentsAndStrings } from './check-env-example.mjs';
+import {
+  NEVER_DEPLOYED,
+  caddyNames,
+  deploymentProblemsFor,
+  interpolations,
+  parseCompose,
+  parseDockerfile,
+  parseTemplate,
+  problemsFor,
+  readsInFile,
+  stripCommentsAndStrings,
+} from './check-env-example.mjs';
 
 const reads = (source) => new Set(readsInFile(source));
 
@@ -277,4 +288,214 @@ test('template parsing: forms, duplicates, odd names, multi-line values, BOM', (
   assert.ok(!t.example.has('FAKE_INSIDE_VALUE'), 'a line inside a quoted value is not a name');
   assert.deepEqual([...t.duplicates], ['NODE_ENV']);
   assert.deepEqual(t.odd, ['lower_case']);
+});
+
+// ── The deployment (rules 3 to 6, G-01) ─────────────────────────────────
+// A minimal deployment that satisfies every rule; each test below breaks it
+// one way and names the problem it must produce.
+
+const BASE_COMPOSE = `
+services:
+  api:
+    image: rekoda-app:\${REKODA_RELEASE:?set it}
+    env_file: .env
+  web:
+    build:
+      target: web
+      args:
+        NEXT_PUBLIC_SITE_URL: \${NEXT_PUBLIC_SITE_URL}
+    environment:
+      REKODA_API_URL: http://api:3001
+  caddy:
+    environment:
+      REKODA_API_PUBLIC_URL: \${REKODA_API_PUBLIC_URL}
+`;
+const BASE_CADDY = `# {$IN_A_COMMENT} is not a read
+{$REKODA_API_PUBLIC_URL} {
+\treverse_proxy api:3001
+}
+`;
+const BASE_DOCKERFILE = `ARG NODE_VERSION=24
+FROM node:\${NODE_VERSION} AS web-build
+ARG NEXT_PUBLIC_SITE_URL
+ENV NEXT_PUBLIC_SITE_URL=\${NEXT_PUBLIC_SITE_URL}
+FROM node:\${NODE_VERSION} AS web
+ARG NEXT_PUBLIC_SITE_URL
+ENV NEXT_PUBLIC_SITE_URL=\${NEXT_PUBLIC_SITE_URL}
+USER node
+`;
+const PRODUCT_READS = {
+  NEXT_PUBLIC_SITE_URL: 'apps/web/src/lib/site.ts',
+  REKODA_API_URL: 'apps/web/src/server/api.ts',
+  REKODA_E2E_REVEAL_OTP: 'apps/web/src/server/dev-otp.ts',
+  VAULT_KEY: 'apps/api/src/config.ts',
+};
+const DOCUMENTED = [
+  'REKODA_RELEASE',
+  'NEXT_PUBLIC_SITE_URL',
+  'REKODA_API_URL',
+  'REKODA_API_PUBLIC_URL',
+  'VAULT_KEY',
+  ...NEVER_DEPLOYED,
+];
+
+function deploymentProblems({
+  compose = BASE_COMPOSE,
+  caddy = BASE_CADDY,
+  dockerfile = BASE_DOCKERFILE,
+  product = PRODUCT_READS,
+  documented = DOCUMENTED,
+} = {}) {
+  const reads = {
+    product: new Map(Object.entries(product).map(([n, f]) => [n, new Set([f])])),
+    harness: new Map(),
+  };
+  const template = { example: new Map(documented.map((n) => [n, 'active'])) };
+  return deploymentProblemsFor(reads, template, {
+    compose: parseCompose(compose),
+    caddy: caddyNames(caddy),
+    dockerfile: parseDockerfile(dockerfile),
+  });
+}
+const expectProblem = (problems, pattern) =>
+  assert.ok(
+    problems.some((p) => pattern.test(p)),
+    `expected a problem matching ${pattern}, got:\n  ${problems.join('\n  ')}`,
+  );
+
+test('deployment: the base fixture has no problems', () => {
+  assert.deepEqual(deploymentProblems(), []);
+});
+
+test('deployment: interpolation forms, escapes and nesting', () => {
+  assert.deepEqual(interpolations('${A} ${B:-x} ${C:?err} ${D-y} $E $$NOT_ONE ${F:-${G}}'), [
+    'A',
+    'B',
+    'C',
+    'D',
+    'F',
+    'G',
+    'E',
+  ]);
+});
+
+test('rule 3: a compose interpolation the template does not document', () => {
+  const compose = BASE_COMPOSE.replace('http://api:3001', '${REKODA_NEW_KNOB}');
+  expectProblem(deploymentProblems({ compose }), /interpolates REKODA_NEW_KNOB/);
+});
+
+test('rule 3: comments and escaped dollars are not interpolations', () => {
+  const compose = `${BASE_COMPOSE}# \${IN_A_COMMENT}\nx-note: 'costs $$5'\n`;
+  assert.deepEqual(deploymentProblems({ compose }), []);
+});
+
+test('rule 2: a name only the deployment uses is not dead', () => {
+  const reads = { product: new Map(), harness: new Map() };
+  const template = parseTemplate('REKODA_ACME_EMAIL=\n');
+  const t = { ...template, duplicates: new Set(), odd: [] };
+  assert.deepEqual(problemsFor(reads, t, new Set(['REKODA_ACME_EMAIL'])), []);
+  assert.equal(problemsFor(reads, t).length, 1, 'without the deployment it is dead');
+});
+
+test('rule 4: a Caddyfile placeholder the caddy service is not given', () => {
+  const caddy = `${BASE_CADDY}{$REKODA_ACME_EMAIL}\n{env.REKODA_OTHER}\n`;
+  const problems = deploymentProblems({ caddy });
+  expectProblem(problems, /reads \{\$REKODA_ACME_EMAIL\}/);
+  expectProblem(problems, /reads \{\$REKODA_OTHER\}/);
+  assert.ok(!problems.some((p) => /IN_A_COMMENT/.test(p)));
+});
+
+test('rule 5: a public name the web code reads but the build does not pass', () => {
+  const problems = deploymentProblems({
+    product: { ...PRODUCT_READS, NEXT_PUBLIC_NEW: 'apps/web/src/app/page.tsx' },
+    documented: [...DOCUMENTED, 'NEXT_PUBLIC_NEW'],
+  });
+  for (const where of [
+    'the compose web build arguments',
+    'the web-build stage ARGs',
+    'the web-build stage ENV',
+    'the web stage ARGs',
+    'the web stage ENV',
+  ]) {
+    expectProblem(problems, new RegExp(`NEXT_PUBLIC_NEW, missing from ${where}`));
+  }
+});
+
+test('rule 5: a public build argument no web code reads', () => {
+  const dockerfile = BASE_DOCKERFILE.replace(
+    'ARG NEXT_PUBLIC_SITE_URL\n',
+    'ARG NEXT_PUBLIC_SITE_URL\nARG NEXT_PUBLIC_STALE\n',
+  );
+  expectProblem(deploymentProblems({ dockerfile }), /carry NEXT_PUBLIC_STALE, which no web code/);
+});
+
+test('rule 5: continuation lines are joined and comment lines ignored', () => {
+  const dockerfile = BASE_DOCKERFILE.replace(
+    'ENV NEXT_PUBLIC_SITE_URL=${NEXT_PUBLIC_SITE_URL}\nFROM',
+    'ENV A=1 \\\n    NEXT_PUBLIC_SITE_URL=${NEXT_PUBLIC_SITE_URL}\n# ARG NEXT_PUBLIC_IN_A_COMMENT\nFROM',
+  );
+  assert.deepEqual(deploymentProblems({ dockerfile }), []);
+});
+
+test('rule 5: the web service builds a target the Dockerfile does not define', () => {
+  const compose = BASE_COMPOSE.replace('target: web', 'target: website');
+  expectProblem(deploymentProblems({ compose }), /builds target website/);
+});
+
+test('rule 6: the web service is not given a name its code reads at run time', () => {
+  const compose = BASE_COMPOSE.replace('      REKODA_API_URL: http://api:3001\n', '      {}\n');
+  expectProblem(
+    deploymentProblems({ compose: compose.replace('    environment:\n      {}\n', '') }),
+    /reads REKODA_API_URL at run time/,
+  );
+});
+
+test('rule 6: a secret given to the web service', () => {
+  const compose = BASE_COMPOSE.replace(
+    'REKODA_API_URL: http://api:3001',
+    'REKODA_API_URL: http://api:3001\n      VAULT_KEY: ${VAULT_KEY}',
+  );
+  expectProblem(deploymentProblems({ compose }), /given VAULT_KEY, which no web code reads/);
+});
+
+test('rule 6: a public value overridden at run time, and an env_file on web', () => {
+  const compose = BASE_COMPOSE.replace(
+    'REKODA_API_URL: http://api:3001',
+    'REKODA_API_URL: http://api:3001\n      NEXT_PUBLIC_SITE_URL: https://elsewhere',
+  ).replace('  web:\n', '  web:\n    env_file: .env\n');
+  const problems = deploymentProblems({ compose });
+  expectProblem(problems, /overrides NEXT_PUBLIC_SITE_URL at run time/);
+  expectProblem(problems, /loads an env_file/);
+});
+
+test('never deployed: a test hook anywhere in the deployment files', () => {
+  const compose = BASE_COMPOSE.replace(
+    'REKODA_API_URL: http://api:3001',
+    'REKODA_API_URL: http://api:3001\n      REKODA_E2E_PLACEHOLDER_LEGAL: "1"',
+  ).replace(
+    '    env_file: .env\n',
+    '    env_file: .env\n    environment:\n      - REKODA_REVEAL_OTP=1\n',
+  );
+  const dockerfile = `${BASE_DOCKERFILE}ENV REKODA_LOCAL_STORAGE=/data\n`;
+  const caddy = `${BASE_CADDY}{$PAYSTACK_BASE_URL}\n`;
+  const problems = deploymentProblems({
+    compose: `${compose}x-fake: \${MONO_BASE_URL}\n`,
+    dockerfile,
+    caddy,
+  });
+  expectProblem(
+    problems,
+    /REKODA_E2E_PLACEHOLDER_LEGAL must never be deployed, but is set on the web/,
+  );
+  expectProblem(problems, /REKODA_REVEAL_OTP must never be deployed, but is set on the api/);
+  expectProblem(problems, /REKODA_LOCAL_STORAGE must never be deployed, but is in the web stage/);
+  expectProblem(problems, /PAYSTACK_BASE_URL must never be deployed, but is read by/);
+  expectProblem(problems, /MONO_BASE_URL must never be deployed, but is interpolated/);
+});
+
+test('never deployed: every listed name is one the template documents', () => {
+  expectProblem(
+    deploymentProblems({ documented: DOCUMENTED.filter((n) => n !== 'REKODA_REVEAL_OTP') }),
+    /NEVER_DEPLOYED names REKODA_REVEAL_OTP/,
+  );
 });

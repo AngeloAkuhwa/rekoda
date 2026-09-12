@@ -10,6 +10,14 @@ import type { OperatorAuthConfig } from './auth/operator-identity.js';
 
 export interface ApiConfig {
   port: number;
+  /**
+   * Which build is running, reported by `/health` so an operator can tell
+   * after a deploy or a rollback which image answered. Baked into the image
+   * by the Dockerfile from build arguments (G-01); a process started any
+   * other way reports "unversioned" and "unknown" rather than guessing.
+   */
+  release: string;
+  commit: string;
   databaseUrl: string;
   /** Server-side pepper for OTP hashing. Never stored beside the hash. */
   otpPepper: string;
@@ -491,6 +499,26 @@ function webUrl(env: NodeJS.ProcessEnv): string | null {
  * product being broken and to an engineer as a metering bug rather than a
  * typo. Boot is the right place to say so.
  */
+/**
+ * A release or commit label, shown on the unauthenticated `/health`.
+ *
+ * Validated rather than echoed: whatever this holds is served to anyone who
+ * asks, so it is a short, printable token (a tag such as `v0.4.1`, a short
+ * SHA) and never free text. Unset or blank takes the fallback; a value
+ * outside the shape refuses to boot, like every other bad config value.
+ */
+const RELEASE_LABEL = /^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$/;
+function releaseLabel(env: NodeJS.ProcessEnv, key: string, fallback: string): string {
+  const raw = env[key]?.trim();
+  if (!raw) return fallback;
+  if (!RELEASE_LABEL.test(raw)) {
+    throw new ConfigError(
+      `${key} must be 1 to 64 letters, digits, dots, dashes, underscores or plus signs`,
+    );
+  }
+  return raw;
+}
+
 function voiceWindowSeconds(env: NodeJS.ProcessEnv): number {
   return positiveInteger(env, 'VOICE_NOTE_MAX_DURATION_SECONDS', 120);
 }
@@ -900,6 +928,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
 
   return {
     port: boundedInteger(env, 'PORT', 3001, 1, 65535),
+    release: releaseLabel(env, 'REKODA_RELEASE', 'unversioned'),
+    commit: releaseLabel(env, 'REKODA_COMMIT', 'unknown'),
     databaseUrl: required(env, 'DATABASE_URL'),
     otpPepper: required(env, 'OTP_PEPPER', 32),
     secret: required(env, 'REKODA_API_SECRET', 32),

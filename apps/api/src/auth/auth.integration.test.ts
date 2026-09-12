@@ -165,6 +165,7 @@ describe('dependency wiring', () => {
       ['SessionGuard', app.get(SessionGuard), 'auth'],
       ['RolesGuard', app.get(RolesGuard), 'reflector'],
       ['HealthController', app.get(HealthController), 'db'],
+      ['HealthController', app.get(HealthController), 'config'],
       ['AuthService', app.get(AuthService), 'db'],
     ];
     for (const [name, instance, dependency] of cases) {
@@ -181,6 +182,20 @@ describe('health', () => {
     const res = await app.inject({ method: 'GET', url: '/health' });
     expect(res.json()).toMatchObject({ status: 'ok', database: 'up' });
     expect((res.json() as { migrations: number }).migrations).toBeGreaterThan(0);
+  });
+
+  it('names the build that answered, and nothing about the host (G-01)', async () => {
+    const res = await app.inject({ method: 'GET', url: '/health' });
+    const body = res.json() as Record<string, unknown>;
+    expect(Object.keys(body).sort()).toEqual([
+      'commit',
+      'database',
+      'migrations',
+      'release',
+      'status',
+    ]);
+    expect(body['release']).toMatch(/^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$/);
+    expect(body['commit']).toMatch(/^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$/);
   });
 });
 

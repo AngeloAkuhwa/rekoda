@@ -18,6 +18,7 @@
     "screenshots": "node scripts/screenshots.mjs",
     "boundaries": "node scripts/check-boundaries.mjs",
     "env:check": "node --test scripts/check-env-example.test.mjs && node scripts/check-env-example.mjs",
+    "deploy:check": "node --test scripts/check-deploy.test.mjs && node scripts/check-deploy.mjs",
     "test:integration": "pnpm --filter @rekoda/db test:integration && pnpm --filter @rekoda/api test:integration",
     "e2e": "pnpm --filter @rekoda/web e2e",
     "migrate": "pnpm --filter @rekoda/db migrate:apply",
@@ -27,7 +28,8 @@
     "playwright": "1.63.0",
     "prettier": "^3.4.2",
     "turbo": "^2.10.12",
-    "typescript": "^7.0.2"
+    "typescript": "^7.0.2",
+    "yaml": "2.9.1"
   },
   "pnpm": {
     "overrides": {

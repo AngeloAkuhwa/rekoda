@@ -5,7 +5,9 @@
  * space cases on every platform: these fixtures pin the fix.
  */
 import { describe, expect, it } from 'vitest';
-import { resolve, sep } from 'node:path';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { isEntrypoint } from './entrypoint.js';
 
@@ -46,6 +48,30 @@ describe('isEntrypoint', () => {
     const script = abs('srv', 'app', 'dist', 'main.js');
     const runner = abs('srv', 'app', 'node_modules', '.bin', 'vitest');
     expect(isEntrypoint(pathToFileURL(script).href, runner)).toBe(false);
+  });
+
+  /**
+   * The production image runs `node node_modules/@rekoda/db/dist/migrate.js`,
+   * and in a pnpm install that path goes through a symlink into
+   * `node_modules/.pnpm`. Node gives the main module its REAL path, so a
+   * comparison against the path as typed never matched and the migrator
+   * exited 0 having applied nothing: the #237 failure again, by another road
+   * (G-01).
+   */
+  it('is true when argv[1] reaches the script through a symlinked directory', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'entrypoint-'));
+    try {
+      const real = join(dir, 'real', 'dist');
+      mkdirSync(real, { recursive: true });
+      const script = join(real, 'migrate.js');
+      writeFileSync(script, '');
+      // A junction on Windows needs no privilege; a plain symlink elsewhere.
+      symlinkSync(join(dir, 'real'), join(dir, 'linked'), 'junction');
+      const typed = join(dir, 'linked', 'dist', 'migrate.js');
+      expect(isEntrypoint(pathToFileURL(script).href, typed)).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('is false when Node was started without a script', () => {

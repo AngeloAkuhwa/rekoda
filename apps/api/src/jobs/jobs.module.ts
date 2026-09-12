@@ -299,6 +299,9 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
       { concurrency: this.config.workerConcurrency },
     );
     this.runner.start();
+    /* The line an operator greps for after a deploy (docs/runbooks/deploy.md):
+     * the disabled branch above says so out loud, and so must this one. */
+    this.log.log(`job runner started (${this.config.workerConcurrency} lanes)`);
 
     /**
      * The attribution pump rides the same worker credential on its own small
