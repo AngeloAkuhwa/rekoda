@@ -37,16 +37,20 @@ FROM fetch AS source
 COPY . .
 RUN pnpm install --offline --frozen-lockfile
 
-# pnpm links workspace packages by absolute path, so each production copy is
-# made at the path it will run from (/app) and copied across unchanged.
-# Pruned afterwards: sources, compiled tests, the db test harness, build
-# caches and tool configs are not part of what runs.
+# Each target is built, then its build dependencies are replaced by a
+# production-only install from the same frozen lockfile (never a fresh
+# resolution: the image carries exactly the versions CI tested), then what
+# does not run is pruned: sources, compiled tests, the db test harness, build
+# caches, tool configs and the other app. The tree stays at /repo, where its
+# links point, and is copied into the runtime stage unchanged.
 FROM source AS app-build
 RUN pnpm turbo run build --filter=@rekoda/api...
-RUN pnpm --filter @rekoda/api --prod --offline deploy /app
+RUN rm -rf node_modules apps/*/node_modules packages/*/node_modules \
+ && pnpm install --offline --frozen-lockfile --prod --filter "@rekoda/api..."
 RUN set -eu; \
-    cd /app; \
-    for dir in /app node_modules/.pnpm/@rekoda+*/node_modules/@rekoda/*; do \
+    rm -rf apps/web scripts deploy .github .turbo; \
+    find /repo -maxdepth 1 -type f ! -name package.json -delete; \
+    for dir in apps/api packages/*; do \
       rm -rf "$dir/src" "$dir/.turbo" "$dir"/tsconfig*.json "$dir"/vitest*.ts "$dir/drizzle.config.ts"; \
       if [ -d "$dir/dist" ]; then \
         find "$dir/dist" \( -name '*.test.*' -o -name 'testing.*' \) -delete; \
@@ -85,18 +89,27 @@ RUN node --input-type=module -e " \
         process.exit(1); \
       }"
 RUN pnpm turbo run build --filter=@rekoda/web...
-RUN pnpm --filter @rekoda/web --prod --offline deploy /app
+RUN rm -rf node_modules apps/*/node_modules packages/*/node_modules \
+ && pnpm install --offline --frozen-lockfile --prod --filter "@rekoda/web..."
 RUN set -eu; \
-    cd /app; \
+    rm -rf apps/api scripts deploy .github .turbo; \
+    find /repo -maxdepth 1 -type f ! -name package.json -delete; \
+    for dir in packages/*; do \
+      rm -rf "$dir/src" "$dir/.turbo" "$dir"/tsconfig*.json "$dir"/vitest*.ts "$dir/drizzle.config.ts"; \
+      if [ -d "$dir/dist" ]; then \
+        find "$dir/dist" \( -name '*.test.*' -o -name 'testing.*' \) -delete; \
+      fi; \
+    done; \
+    cd apps/web; \
     rm -rf src e2e test-results playwright-report .turbo .next/cache \
       tsconfig.json tsconfig.tsbuildinfo next-env.d.ts vitest.config.ts playwright.config.ts \
       legal-gate.d.mts
 
 FROM node:${NODE_VERSION}-bookworm-slim AS app
 ENV NODE_ENV=production
-WORKDIR /app
-COPY --from=app-build /app /app
-COPY deploy/migrate.sh /app/deploy/migrate.sh
+COPY --from=app-build /repo /repo
+COPY deploy/migrate.sh /repo/deploy/migrate.sh
+WORKDIR /repo/apps/api
 ARG REKODA_RELEASE
 ARG REKODA_COMMIT=unknown
 RUN test -n "${REKODA_RELEASE}" || { echo 'build with REKODA_RELEASE set (the release tag)' >&2; exit 1; }
@@ -114,10 +127,10 @@ CMD ["node", "dist/main.js"]
 FROM node:${NODE_VERSION}-bookworm-slim AS web
 ENV NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1
-WORKDIR /app
-COPY --from=web-build /app /app
+COPY --from=web-build /repo /repo
+WORKDIR /repo/apps/web
 # Next writes its runtime cache under .next; everything else stays root's.
-RUN chown -R node:node /app/.next
+RUN chown -R node:node /repo/apps/web/.next
 ARG NEXT_PUBLIC_SITE_URL
 ARG NEXT_PUBLIC_REKODA_WHATSAPP
 ARG NEXT_PUBLIC_LEGAL_ENTITY

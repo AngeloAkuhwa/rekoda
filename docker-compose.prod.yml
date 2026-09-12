@@ -59,7 +59,7 @@ services:
     pull_policy: never
     profiles:
       - ops
-    command: ['sh', '/app/deploy/migrate.sh']
+    command: ['sh', '/repo/deploy/migrate.sh']
     environment:
       NODE_ENV: production
       POSTGRES_OWNER: rekoda_owner

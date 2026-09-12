@@ -33,5 +33,5 @@ fi
 DATABASE_URL="postgres://${POSTGRES_OWNER:?}:${password}@${POSTGRES_HOST:?}:5432/${POSTGRES_DB:?}"
 export DATABASE_URL
 
-node node_modules/@rekoda/db/dist/migrate.js
-node node_modules/@rekoda/db/dist/provision.js
+node /repo/packages/db/dist/migrate.js
+node /repo/packages/db/dist/provision.js

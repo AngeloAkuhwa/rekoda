@@ -113,12 +113,13 @@ COMMIT=$(git rev-parse --short HEAD)
 "${COMPOSE[@]}" build --build-arg "REKODA_COMMIT=$COMMIT"
 
 step 'no secret reached an image: not in any layer, not in the config'
+# Counted over the whole stream, never `grep -q`: under pipefail an early
+# match kills `docker save` with SIGPIPE and the pipeline reads as a miss.
 for image in rekoda-app:ci-a rekoda-web:ci-a; do
-  if docker save "$image" | grep -a -q -F -f "$WORK/secrets.txt"; then
-    fail "$image contains one of the generated secrets"
-  fi
-  if docker image inspect --format '{{json .Config.Env}}' "$image" |
-    grep -E -q '"(VAULT_KEY|MATCH_KEY|CONNECTION_KEY|OTP_PEPPER|REKODA_API_SECRET|META_APP_SECRET|DATABASE_URL|WORKER_DATABASE_URL)='; then
+  hits=$(docker save "$image" | grep -a -c -F -f "$WORK/secrets.txt" || true)
+  [ "${hits:-0}" = 0 ] || fail "$image contains one of the generated secrets"
+  config=$(docker image inspect --format '{{json .Config.Env}}' "$image")
+  if grep -E -q '"(VAULT_KEY|MATCH_KEY|CONNECTION_KEY|OTP_PEPPER|REKODA_API_SECRET|META_APP_SECRET|DATABASE_URL|WORKER_DATABASE_URL)=' <<<"$config"; then
     fail "$image bakes a secret-shaped variable"
   fi
 done
@@ -129,9 +130,11 @@ for image in rekoda-app:ci-a rekoda-web:ci-a; do
   uid=$(docker run --rm --entrypoint id "$image" -u)
   [ "$uid" != 0 ] || fail "$image runs as root"
 done
-docker run --rm --entrypoint sh rekoda-app:ci-a -c 'test ! -w /app/dist/main.js' ||
+docker run --rm --entrypoint sh rekoda-app:ci-a -c 'test -f /repo/apps/api/dist/main.js && test ! -w /repo/apps/api/dist/main.js' ||
   fail 'the app image can rewrite its own code'
-docker run --rm --entrypoint sh rekoda-web:ci-a -c 'grep -q CI-PLACEHOLDER-ENTITY /app/.next/server/app/terms.html' ||
+docker run --rm --entrypoint sh rekoda-app:ci-a -c 'test -f /repo/packages/db/migrations/meta/_journal.json && test ! -e /repo/apps/api/src && test ! -e /repo/apps/web' ||
+  fail 'the app image is missing its migrations or carries sources it does not run'
+docker run --rm --entrypoint sh rekoda-web:ci-a -c 'grep -q CI-PLACEHOLDER-ENTITY /repo/apps/web/.next/server/app/terms.html' ||
   fail 'the web image was not built with its legal facts'
 echo 'ok'
 
@@ -166,8 +169,8 @@ step 'the stack comes up healthy'
 "${COMPOSE[@]}" up -d --wait --wait-timeout 300
 for service in api worker web; do
   for container in $("${COMPOSE[@]}" ps -q "$service"); do
-    if docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}{{range .Mounts}}{{println .Destination}}{{end}}' "$container" |
-      grep -q -F -e "$OWNER_PW" -e /run/secrets; then
+    seen=$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}{{range .Mounts}}{{println .Destination}}{{end}}' "$container")
+    if grep -q -F -e "$OWNER_PW" -e /run/secrets <<<"$seen"; then
       fail "$service holds the owner credential"
     fi
   done
@@ -194,7 +197,8 @@ jq -e 'keys == ["commit","database","migrations","release","status"]' "$WORK/hea
 step 'the site through the proxy: pages, legal facts, headers, redirect'
 site() { curl -sS --resolve "$SITE:443:127.0.0.1" --cacert "$WORK/root.crt" "$@"; }
 [ "$(site -o /dev/null -w '%{http_code}' "https://$SITE/")" = 200 ] || fail 'the home page is not 200'
-site "https://$SITE/terms" | grep -q CI-PLACEHOLDER-ENTITY || fail '/terms does not show the built legal facts'
+site "https://$SITE/terms" >"$WORK/terms.html"
+grep -q CI-PLACEHOLDER-ENTITY "$WORK/terms.html" || fail '/terms does not show the built legal facts'
 site -D - -o /dev/null "https://$SITE/" | tr -d '\r' >"$WORK/site-headers.txt"
 grep -qi '^content-security-policy:' "$WORK/site-headers.txt" || fail 'the site sends no CSP'
 grep -qi '^strict-transport-security:' "$WORK/site-headers.txt" || fail 'the site sends no HSTS'
@@ -234,12 +238,14 @@ done
 echo "ok: limited at request $limited despite a fresh forged address on each"
 
 step 'the worker claims and finishes a job, with the worker and app roles over SCRAM'
-"${COMPOSE[@]}" logs worker | grep -q 'job runner started' || fail 'the worker did not start its runner'
-"${COMPOSE[@]}" logs api | grep -q 'job runner disabled' || fail 'the api is running jobs too'
+"${COMPOSE[@]}" logs --no-color worker >"$WORK/worker.log"
+"${COMPOSE[@]}" logs --no-color api >"$WORK/api.log"
+grep -q 'job runner started' "$WORK/worker.log" || fail 'the worker did not start its runner'
+grep -q 'job runner disabled' "$WORK/api.log" || fail 'the api is running jobs too'
 JOB=$(psql_owner "WITH u AS (INSERT INTO users (phone) VALUES ('+2348000000001') RETURNING id),
   b AS (INSERT INTO businesses (name, owner_user_id) SELECT 'Deploy smoke probe', id FROM u RETURNING id)
   INSERT INTO jobs (business_id, kind) SELECT id, 'deploy.smoke.probe' FROM b RETURNING id")
-JOB=$(printf '%s' "$JOB" | head -n 1)
+JOB=$(head -n 1 <<<"$JOB")
 state=''
 for _ in $(seq 1 30); do
   state=$(psql_owner "SELECT state FROM jobs WHERE id = '$JOB'")
@@ -247,7 +253,8 @@ for _ in $(seq 1 30); do
   sleep 1
 done
 [ "$state" = dead ] || fail "the probe job is '$state', not claimed and settled by the worker"
-psql_owner "SELECT last_error FROM jobs WHERE id = '$JOB'" | grep -q 'no handler registered for job kind "deploy.smoke.probe"' ||
+reason=$(psql_owner "SELECT last_error FROM jobs WHERE id = '$JOB'")
+grep -q 'no handler registered for job kind "deploy.smoke.probe"' <<<"$reason" ||
   fail 'the probe job was not settled by the runner'
 echo 'ok'
 
