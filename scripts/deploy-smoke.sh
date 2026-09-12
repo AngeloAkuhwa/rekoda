@@ -136,6 +136,8 @@ docker run --rm --entrypoint sh rekoda-app:ci-a -c 'test -f /repo/packages/db/mi
   fail 'the app image is missing its migrations or carries sources it does not run'
 docker run --rm --entrypoint sh rekoda-web:ci-a -c 'grep -q CI-PLACEHOLDER-ENTITY /repo/apps/web/.next/server/app/terms.html' ||
   fail 'the web image was not built with its legal facts'
+docker run --rm --entrypoint sh rekoda-web:ci-a -c 'test ! -w /repo/apps/web/.next/server/app/terms.html && test ! -w /repo/apps/web/.next/server && test -w /repo/apps/web/.next/cache' ||
+  fail 'the web image can rewrite its compiled pages, or cannot write its cache'
 echo 'ok'
 
 step 'PostgreSQL starts, and is not reachable from the host'

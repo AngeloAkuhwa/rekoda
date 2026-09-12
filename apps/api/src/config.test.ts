@@ -613,7 +613,7 @@ describe('the release label on /health', () => {
     expect(loadConfig({ ...BASE, REKODA_RELEASE: '  ' }).release).toBe('unversioned');
   });
 
-  it.each(['v1 beta', '<script>', 'a'.repeat(65), '-leading-dash', 'v1/2'])(
+  it.each(['v1 beta', '<script>', 'a'.repeat(65), '-leading-dash', 'v1/2', 'v1.2.3+build.4'])(
     'refuses %s at boot rather than serve it',
     (value) => {
       expect(() => loadConfig({ ...BASE, REKODA_RELEASE: value })).toThrow(/REKODA_RELEASE/);

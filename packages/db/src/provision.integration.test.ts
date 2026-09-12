@@ -66,6 +66,23 @@ describe('provisionRuntimeRoles', () => {
     expect((await verifiers())['rekoda_app']).toMatch(/^SCRAM-SHA-256\$/);
   });
 
+  it('changes neither password when one role is missing', async () => {
+    await provisionRuntimeRoles(urls.owner, runtime());
+    const before = await verifiers();
+    await owner`ALTER ROLE rekoda_worker RENAME TO rekoda_worker_absent`;
+    try {
+      await expect(
+        provisionRuntimeRoles(urls.owner, {
+          app: withRole(urls.owner, 'rekoda_app', 'c'.repeat(32)),
+          worker: withRole(urls.owner, 'rekoda_worker', workerPw),
+        }),
+      ).rejects.toThrow(/role rekoda_worker does not exist/);
+    } finally {
+      await owner`ALTER ROLE rekoda_worker_absent RENAME TO rekoda_worker`;
+    }
+    expect((await verifiers())['rekoda_app']).toBe(before['rekoda_app']);
+  });
+
   it('changes nothing when a runtime URL names the owner', async () => {
     const before = await verifiers();
     const ownerRole = decodeURIComponent(new URL(urls.owner).username);

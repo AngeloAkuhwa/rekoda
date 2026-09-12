@@ -194,8 +194,8 @@ describe('health', () => {
       'release',
       'status',
     ]);
-    expect(body['release']).toMatch(/^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$/);
-    expect(body['commit']).toMatch(/^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$/);
+    expect(body['release']).toMatch(/^[0-9A-Za-z][0-9A-Za-z._-]{0,63}$/);
+    expect(body['commit']).toMatch(/^[0-9A-Za-z][0-9A-Za-z._-]{0,63}$/);
   });
 });
 

@@ -490,6 +490,29 @@ function webUrl(env: NodeJS.ProcessEnv): string | null {
 }
 
 /**
+ * A release or commit label, shown on the unauthenticated `/health`.
+ *
+ * Validated rather than echoed: whatever this holds is served to anyone who
+ * asks, so it is a short, printable token (a tag such as `v0.4.1`, a short
+ * SHA) and never free text. It is also the Docker image tag the production
+ * compose file builds and starts (`rekoda-app:<release>`), so it keeps to
+ * that grammar: no `+`, which Docker refuses in a tag. Unset or blank takes
+ * the fallback; a value outside the shape refuses to boot, like every other
+ * bad config value.
+ */
+const RELEASE_LABEL = /^[0-9A-Za-z][0-9A-Za-z._-]{0,63}$/;
+function releaseLabel(env: NodeJS.ProcessEnv, key: string, fallback: string): string {
+  const raw = env[key]?.trim();
+  if (!raw) return fallback;
+  if (!RELEASE_LABEL.test(raw)) {
+    throw new ConfigError(
+      `${key} must be 1 to 64 letters, digits, dots, dashes or underscores (a Docker image tag)`,
+    );
+  }
+  return raw;
+}
+
+/**
  * The voice length limit, which now gates a capability rather than merely
  * describing one.
  *
@@ -499,26 +522,6 @@ function webUrl(env: NodeJS.ProcessEnv): string | null {
  * product being broken and to an engineer as a metering bug rather than a
  * typo. Boot is the right place to say so.
  */
-/**
- * A release or commit label, shown on the unauthenticated `/health`.
- *
- * Validated rather than echoed: whatever this holds is served to anyone who
- * asks, so it is a short, printable token (a tag such as `v0.4.1`, a short
- * SHA) and never free text. Unset or blank takes the fallback; a value
- * outside the shape refuses to boot, like every other bad config value.
- */
-const RELEASE_LABEL = /^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$/;
-function releaseLabel(env: NodeJS.ProcessEnv, key: string, fallback: string): string {
-  const raw = env[key]?.trim();
-  if (!raw) return fallback;
-  if (!RELEASE_LABEL.test(raw)) {
-    throw new ConfigError(
-      `${key} must be 1 to 64 letters, digits, dots, dashes, underscores or plus signs`,
-    );
-  }
-  return raw;
-}
-
 function voiceWindowSeconds(env: NodeJS.ProcessEnv): number {
   return positiveInteger(env, 'VOICE_NOTE_MAX_DURATION_SECONDS', 120);
 }

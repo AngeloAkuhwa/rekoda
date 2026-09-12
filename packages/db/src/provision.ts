@@ -129,20 +129,30 @@ export async function provisionRuntimeRoles(
   ];
   const sql = postgres(migrationUrl, { max: 1, onnotice: () => {} });
   try {
-    for (const { role, password } of credentials) {
+    /* Both roles, or neither. A rotation that set rekoda_app's password and
+     * then failed on rekoda_worker would leave the running api holding a
+     * password the database no longer accepts, while the deploy stops before
+     * recreating it. So every check runs first, and the two ALTERs commit
+     * together (ALTER ROLE is transactional). */
+    for (const { role } of credentials) {
       const found = await sql`SELECT 1 FROM pg_roles WHERE rolname = ${role}`;
       if (found.length === 0) {
         throw new Error(`role ${role} does not exist: run the migrations first`);
       }
-      /* A utility statement takes no bind parameters. The role is one of two
-       * constants and the verifier is base64, digits, `$` and `:`, so the
-       * literal cannot be broken out of; the check below keeps it that way. */
+    }
+    /* A utility statement takes no bind parameters. The role is one of two
+     * constants and the verifier is base64, digits, `$` and `:`, so the
+     * literal cannot be broken out of; the check below keeps it that way. */
+    const statements = credentials.map(({ role, password }) => {
       const verifier = scramVerifier(password);
       if (!/^SCRAM-SHA-256\$\d+:[A-Za-z0-9+/=]+\$[A-Za-z0-9+/=]+:[A-Za-z0-9+/=]+$/.test(verifier)) {
         throw new Error('refusing a malformed SCRAM verifier');
       }
-      await sql.unsafe(`ALTER ROLE ${role} WITH LOGIN PASSWORD '${verifier}'`);
-    }
+      return `ALTER ROLE ${role} WITH LOGIN PASSWORD '${verifier}'`;
+    });
+    await sql.begin(async (tx) => {
+      for (const statement of statements) await tx.unsafe(statement);
+    });
   } finally {
     await sql.end();
   }

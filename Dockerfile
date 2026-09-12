@@ -129,8 +129,10 @@ ENV NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1
 COPY --from=web-build /repo /repo
 WORKDIR /repo/apps/web
-# Next writes its runtime cache under .next; everything else stays root's.
-RUN chown -R node:node /repo/apps/web/.next
+# The compiled site stays root's, so the process cannot rewrite the pages and
+# server chunks it serves. Only Next's runtime cache (optimised images, the
+# fetch cache) is the node user's; nothing here regenerates a page on disk.
+RUN mkdir -p /repo/apps/web/.next/cache && chown node:node /repo/apps/web/.next/cache
 ARG NEXT_PUBLIC_SITE_URL
 ARG NEXT_PUBLIC_REKODA_WHATSAPP
 ARG NEXT_PUBLIC_LEGAL_ENTITY
