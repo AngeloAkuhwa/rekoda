@@ -51,12 +51,12 @@ describe('isEntrypoint', () => {
   });
 
   /**
-   * The production image runs `node node_modules/@rekoda/db/dist/migrate.js`,
-   * and in a pnpm install that path goes through a symlink into
-   * `node_modules/.pnpm`. Node gives the main module its REAL path, so a
-   * comparison against the path as typed never matched and the migrator
-   * exited 0 having applied nothing: the #237 failure again, by another road
-   * (G-01).
+   * Run from an app that depends on the package, `node
+   * node_modules/@rekoda/db/dist/migrate.js` reaches the script through a
+   * pnpm symlink. Node gives the main module its REAL path, so a comparison
+   * against the path as typed never matched and the migrator exited 0 having
+   * applied nothing: the #237 failure again, by another road (found building
+   * G-01, whose migrate job first ran it that way).
    */
   it('is true when argv[1] reaches the script through a symlinked directory', () => {
     const dir = mkdtempSync(join(tmpdir(), 'entrypoint-'));

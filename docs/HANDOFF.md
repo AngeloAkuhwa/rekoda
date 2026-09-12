@@ -84,8 +84,8 @@ postgres), api, worker (same image, `REKODA_WORKER=1`), web and Caddy;
 `X-Forwarded-For` with the address it resolved; `/health` now reports
 `release` and `commit`; `packages/db/src/provision.ts` sets the runtime
 roles' passwords as SCRAM verifiers from `.env`; the entrypoint guard
-now compares real paths (the image runs `migrate.js` through a pnpm
-symlink, where it had exited 0 applying nothing). CI's new "Deployment
+now compares real paths (`migrate.js` started through a pnpm symlink had
+exited 0 applying nothing; the migrate job now calls the real path too). CI's new "Deployment
 (Docker)" job boots and attacks the stack with `scripts/deploy-smoke.sh`;
 `scripts/check-deploy.mjs` and rules 3 to 6 of `check-env-example.mjs`
 (with fixtures) hold the files' shape and their agreement with the code.
