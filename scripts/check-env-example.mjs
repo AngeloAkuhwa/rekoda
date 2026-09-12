@@ -165,12 +165,23 @@ function readsInFile(code) {
   const objects = ['process\\.env', ...envObjects(code)];
   let computed = false;
   for (const obj of objects) {
-    const dot = new RegExp(`\\b${obj}\\.(${NAME})\\b`, 'g');
-    const bracket = new RegExp(`\\b${obj}\\[\\s*['"](${NAME})['"]\\s*\\]`, 'g');
+    /* `?.` is a read like `.`; an assignment (`= v`, `??=`, `||=`, `+=`) or a
+     * `delete` names a variable without reading it and does not count. */
+    /* The object must start the expression: `env` inside `process.env` is
+     * not a second object, so a lookbehind refuses a preceding `.`. */
+    const start = `(?<![.\\w$])${obj}`;
+    const dot = new RegExp(`${start}(?:\\?\\.|\\.)(${NAME})\\b`, 'g');
+    const bracket = new RegExp(`${start}(?:\\?\\.)?\\[\\s*['"](${NAME})['"]\\s*\\]`, 'g');
+    const isWrite = (m) =>
+      /^\s*(?:=(?!=)|\?\?=|\|\|=|&&=|[+\-*/%]=)/.test(code.slice(m.index + m[0].length)) ||
+      /\bdelete\s+$/.test(code.slice(0, m.index));
     const helper = new RegExp(`\\(\\s*${obj}\\s*,\\s*['"](${NAME})['"]`, 'g');
-    const destructure = new RegExp(`\\{([^}]*)\\}\\s*=\\s*${obj}\\b(?![.[])`, 'g');
-    const computedAccess = new RegExp(`\\b${obj}\\[\\s*[A-Za-z_$][\\w$]*\\s*\\]`);
-    for (const re of [dot, bracket, helper]) for (const m of code.matchAll(re)) names.push(m[1]);
+    const destructure = new RegExp(`\\{([^}]*)\\}\\s*=\\s*${start}\\b(?![.[])`, 'g');
+    const computedAccess = new RegExp(`${start}\\[\\s*[A-Za-z_$][\\w$]*\\s*\\]`);
+    for (const re of [dot, bracket]) {
+      for (const m of code.matchAll(re)) if (!isWrite(m)) names.push(m[1]);
+    }
+    for (const m of code.matchAll(helper)) names.push(m[1]);
     for (const m of code.matchAll(destructure)) {
       for (const part of m[1].split(',')) {
         const key = part.split(/[:=]/)[0].trim();
