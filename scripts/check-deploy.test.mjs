@@ -100,8 +100,8 @@ test('the database network given a route out, or web joining it', () => {
     compose: REAL.compose
       .replace('  db:\n    internal: true\n', '  db: {}\n')
       .replace(
-        '    networks:\n      - edge\n    depends_on:\n      api:',
-        '    networks:\n      - edge\n      - db\n    depends_on:\n      api:',
+        '        ipv4_address: 172.30.10.11\n',
+        '        ipv4_address: 172.30.10.11\n      db: {}\n',
       ),
   });
   expectProblem(found, /network must be internal/);
@@ -225,13 +225,32 @@ test("Caddy's log keeping request URIs, or a proxy that skips the client address
   expectProblem(problems(unfiltered), /must delete request>uri and request>headers from its log/);
   const bare = edited(
     'caddyfile',
-    '\treverse_proxy web:3000 {\n\t\timport client_address\n\t}\n',
-    '\treverse_proxy web:3000\n',
+    '\treverse_proxy web:3000 {\n\t\timport client_address\n',
+    '\treverse_proxy web:3000 {\n',
   );
   expectProblem(
     problems(bare),
     /every reverse_proxy in deploy\/Caddyfile must import client_address/,
   );
+});
+
+test('the visitor header: set for web, removed on the API host (G-71)', () => {
+  const unset = edited('caddyfile', '\t\theader_up X-Rekoda-Client-IP {client_ip}\n', '');
+  expectProblem(problems(unset), /the site must set X-Rekoda-Client-IP to \{client_ip\} for web/);
+  const passed = edited('caddyfile', '\t\theader_up -X-Rekoda-Client-IP\n', '');
+  expectProblem(problems(passed), /the API host must remove X-Rekoda-Client-IP/);
+  const untrusted = edited(
+    'compose',
+    '      REKODA_TRUSTED_WEB: 172.30.10.11\n',
+    '      REKODA_TRUSTED_WEB: 172.30.10.0/24\n',
+  );
+  expectProblem(problems(untrusted), /^api must trust exactly web's fixed address/);
+  const floating = edited(
+    'compose',
+    '        ipv4_address: 172.30.10.11\n',
+    '        ipv4_address: 172.30.10.10\n',
+  );
+  expectProblem(problems(floating), /web must have its own fixed address/);
 });
 
 test('secrets/ bind-mounted, a root user by override, or a second env_file', () => {

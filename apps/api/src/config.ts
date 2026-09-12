@@ -7,6 +7,7 @@
  * valid-looking value.
  */
 import type { OperatorAuthConfig } from './auth/operator-identity.js';
+import { parseTrustedWeb } from './client-address.js';
 
 export interface ApiConfig {
   port: number;
@@ -58,6 +59,13 @@ export interface ApiConfig {
   corsOrigins: string[];
   /** Requests per IP per minute. See the note in main.ts. */
   rateLimitMax: number;
+  /**
+   * The web tier's addresses (G-71): the only peers whose
+   * X-Rekoda-Client-IP header names the visitor a request is for. Empty
+   * means no peer is believed and web's calls count against web's own
+   * address. Required in production, where the web tier is always there.
+   */
+  trustedWeb: ReturnType<typeof parseTrustedWeb>;
   /**
    * Storefront orders one shop takes per hour before answering `busy`
    * (fix-plan 7, H7b). Counted in the database, so every replica shares one
@@ -522,6 +530,29 @@ function releaseLabel(env: NodeJS.ProcessEnv, key: string, fallback: string): st
  * product being broken and to an engineer as a metering bug rather than a
  * typo. Boot is the right place to say so.
  */
+/**
+ * Required in production, like REKODA_TRUSTED_PROXIES: without it every
+ * visitor the web tier calls for shares web's one address, so one busy
+ * dashboard throttles everyone's sign-in (G-71). A value that does not parse
+ * refuses to boot everywhere.
+ */
+function trustedWeb(env: NodeJS.ProcessEnv, isProduction: boolean) {
+  const raw = env['REKODA_TRUSTED_WEB']?.trim();
+  if (!raw) {
+    if (isProduction) {
+      throw new ConfigError(
+        'REKODA_TRUSTED_WEB is required in production: the address of the web tier, or every visitor it calls for shares one rate-limit bucket',
+      );
+    }
+    return [];
+  }
+  try {
+    return parseTrustedWeb(raw);
+  } catch (error) {
+    throw new ConfigError((error as Error).message);
+  }
+}
+
 function voiceWindowSeconds(env: NodeJS.ProcessEnv): number {
   return positiveInteger(env, 'VOICE_NOTE_MAX_DURATION_SECONDS', 120);
 }
@@ -955,6 +986,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     // Raised by the integration suite, which legitimately makes a few hundred
     // requests from one address in well under a minute.
     rateLimitMax: positiveInteger(env, 'REKODA_RATE_LIMIT_MAX', 60),
+    trustedWeb: trustedWeb(env, isProduction),
     /* Two orders a minute, sustained for an hour, from ONE shop page is a
      * very good day for a small merchant; a flood is something else. */
     /* A BRAKE, so zero is a value: the gate is `recent >= limit`, and 0

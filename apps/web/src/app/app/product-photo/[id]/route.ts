@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { readSessionToken } from '@/server/session-cookies';
+import { clientAddressHeaders } from '@/server/client-address';
 
 /**
  * A product photo, proxied.
@@ -35,7 +36,7 @@ export async function GET(
 
   const base = process.env.REKODA_API_URL ?? 'http://127.0.0.1:3001';
   const upstream = await fetch(`${base}/v1/catalogue/${id}/image`, {
-    headers: { authorization: `Bearer ${token}` },
+    headers: { authorization: `Bearer ${token}`, ...(await clientAddressHeaders()) },
     cache: 'no-store',
   });
   if (!upstream.ok) return new NextResponse('Not found', { status: 404 });

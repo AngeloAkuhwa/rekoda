@@ -12,7 +12,9 @@
 #   webhooks and the security headers through Caddy over HTTPS; a forged
 #   X-Forwarded-For unable to reset the per-IP bucket; the worker claiming
 #   and finishing a job; restarts and a full down/up losing nothing; a
-#   rollback to the previous image by changing one line.
+#   rollback to the previous image by changing one line; and two visitors
+#   through Caddy -> web -> API keeping their own rate-limit buckets, with
+#   no browser able to choose one (G-71).
 #
 # It writes .env and secrets/ in the checkout and removes them (and the
 # stack's volumes) on exit, so it refuses to run where a .env already exists.
@@ -309,6 +311,66 @@ echo 'ok: rolled back without a rebuild'
 step "Caddy reloads the checked-out Caddyfile (the runbook's last deploy step)"
 "${COMPOSE[@]}" exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
 health >"$WORK/health.json" || fail '/health stopped answering after the reload'
+echo 'ok'
+
+step 'visitors through Caddy -> web -> API keep their own buckets (G-71)'
+# Caddy is told to trust this host the way it trusts Cloudflare in front of a
+# real deployment, so each request names its visitor in CF-Connecting-IP.
+# The observable is the site itself: an unknown shop is the site's 404 while
+# the visitor has budget, and anything else once the API refuses the calls
+# web makes for them (two per storefront view).
+set_env REKODA_EDGE_PROXIES private_ranges
+"${COMPOSE[@]}" up -d --wait --wait-timeout 300 caddy
+shop() {
+  # $1: the visitor Cloudflare would name; any further arguments go to curl.
+  local visitor=$1
+  shift
+  site -o /dev/null -w '%{http_code}' -H "CF-Connecting-IP: $visitor" "$@" "https://$SITE/s/deploy-smoke-no-such-shop"
+}
+exhaust() {
+  # Views as visitor $1 until the site stops answering 404; prints how many.
+  local first views code
+  first=$(shop "$1")
+  [ "$first" = 404 ] || fail "visitor $1 was refused before spending anything (got $first)"
+  for views in $(seq 2 40); do
+    code=$(shop "$1")
+    if [ "$code" != 404 ]; then
+      echo "$views"
+      return 0
+    fi
+  done
+  fail "visitor $1 was never limited through web"
+}
+for _ in $(seq 1 30); do [ "$(shop 203.0.113.70)" = 404 ] && break || sleep 2; done
+A=203.0.113.71
+B=203.0.113.72
+# An assignment, so set -e stops the run if exhaust fails in its subshell.
+views=$(exhaust "$A")
+echo "visitor $A limited after $views storefront views"
+[ "$(shop "$B")" = 404 ] || fail 'visitor B shared visitor A’s bucket through web'
+[ "$(shop "$A")" != 404 ] || fail 'visitor A got a fresh bucket back'
+# A browser cannot choose its bucket through the site: Caddy replaces the
+# header with the address it decided, in both directions.
+[ "$(shop 203.0.113.73 -H "X-Rekoda-Client-IP: $A")" = 404 ] ||
+  fail 'a browser borrowed another visitor’s bucket through the site'
+[ "$(shop "$A" -H 'X-Rekoda-Client-IP: 203.0.113.74')" != 404 ] ||
+  fail 'a limited browser escaped by naming a fresh address to the site'
+# Direct API traffic still keys on the address Caddy decided, and one visitor
+# is one bucket whichever road they take; the header is removed on this host.
+direct() {
+  api -o /dev/null -w '%{http_code}' -H "CF-Connecting-IP: $1" "${@:2}" "https://$API/v1/auth/me"
+}
+[ "$(direct "$A")" = 429 ] || fail 'visitor A was not limited on the direct API road'
+[ "$(direct "$A" -H 'X-Rekoda-Client-IP: 203.0.113.75')" = 429 ] ||
+  fail 'a limited caller escaped by sending the header to the API host'
+[ "$(direct 203.0.113.76 -H "X-Rekoda-Client-IP: $A")" = 401 ] ||
+  fail 'a caller borrowed another visitor’s bucket on the API host'
+# IPv6 visitors count by /64: a fresh address from the same allocation is
+# already spent, and the next allocation is not.
+views=$(exhaust 2001:db8:71::1)
+echo "visitor 2001:db8:71::1 limited after $views storefront views"
+[ "$(shop 2001:db8:71::ffff)" != 404 ] || fail 'a new address in the same IPv6 /64 got a fresh bucket'
+[ "$(shop 2001:db8:72::1)" = 404 ] || fail 'the next IPv6 /64 shared a bucket'
 echo 'ok'
 
 step 'nothing tried to write where the images keep code read-only'

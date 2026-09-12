@@ -8,14 +8,14 @@
 
 ## Current state at a glance
 
-| Field                       | Value                                                                                                                                                                                                                                                                                                                                                                                            |
-| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **Current date**            | 12 September 2026                                                                                                                                                                                                                                                                                                                                                                                |
-| **Current `main` SHA**      | `b81ef90` (12 Sep 2026, "fix: make .env.example match the code, and keep it so in CI (G-08) (#240)"); before it `7b9fd8f` (#236), `2dce181` (#239), `e993885` (#235) and the G-06 merge `8f07a6d` (#238)                                                                                                                                                                                         |
-| **Open branches**           | the G-01 PR (`feat/deployment-runtime`: Dockerfile, production compose, Caddy, migrate job, deployment guards and CI smoke job). #240 (G-08 template half) MERGED as `b81ef90` on 12 Sep 2026; #236 (Vitest 5) as `7b9fd8f`; #235 (Dependabot minor and patch group) as `e993885`; dependency housekeeping is closed; #225, #226 and #227 (NestJS 12) closed as deferred post-launch work (G-70) |
-| **Product version / state** | 0.1.0. Build plan complete (138 rows, PR-001…PR-132; PR-006–009 and PR-115 gated); 152 migrations; never deployed to a host (the production stack boots on a clean CI runner since G-01); no live provider has been exercised                                                                                                                                                                    |
-| **Launch verdict**          | **NOT READY** (`REKODA_LAUNCH_READINESS.md` §1)                                                                                                                                                                                                                                                                                                                                                  |
-| **Engineering model**       | Simple: Angelo assigns, Claude reads `CLAUDE.md` and the canonical docs, implements with tests, normal CI, Angelo reviews and merges. The multi-agent control plane (PR #233) was removed by PR #237 (merged 11 Sep 2026) and PR #234 closed unmerged                                                                                                                                            |
+| Field                       | Value                                                                                                                                                                                                                                                                                                                                              |
+| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Current date**            | 12 September 2026                                                                                                                                                                                                                                                                                                                                  |
+| **Current `main` SHA**      | `c508709` (12 Sep 2026, "feat: production deployment runtime: images, compose, Caddy, migrate job (G-01) (#241)"); before it `b81ef90` (#240, G-08), `7b9fd8f` (#236), `2dce181` (#239), `e993885` (#235) and the G-06 merge `8f07a6d` (#238)                                                                                                      |
+| **Open branches**           | the G-71 PR (`fix/web-client-address`: the web tier hands the visitor Caddy decided to the API, which believes it from web's address alone). #241 (G-01) MERGED as `c508709` on 12 Sep 2026; #240 (G-08 template half) as `b81ef90`; dependency housekeeping is closed; #225, #226 and #227 (NestJS 12) closed as deferred post-launch work (G-70) |
+| **Product version / state** | 0.1.0. Build plan complete (138 rows, PR-001…PR-132; PR-006–009 and PR-115 gated); 152 migrations; never deployed to a host (the production stack boots on a clean CI runner since G-01); no live provider has been exercised                                                                                                                      |
+| **Launch verdict**          | **NOT READY** (`REKODA_LAUNCH_READINESS.md` §1)                                                                                                                                                                                                                                                                                                    |
+| **Engineering model**       | Simple: Angelo assigns, Claude reads `CLAUDE.md` and the canonical docs, implements with tests, normal CI, Angelo reviews and merges. The multi-agent control plane (PR #233) was removed by PR #237 (merged 11 Sep 2026) and PR #234 closed unmerged                                                                                              |
 
 **Last completed work (10–11 Sep 2026):** the repository reset. Removed
 `AGENTS.md`, `GEMINI.md`, `docs/AUTONOMOUS-ENGINEERING.md`, `docs/agents/`,
@@ -73,7 +73,22 @@ provider facts) and OD-12 (gross processed volume) recorded in
 `REKODA_LAUNCH_READINESS.md` §6. G-06 is CODE COMPLETE and NOT LIVE
 PROVIDER VERIFIED until the G-05 drill.
 
-**Last completed work (12 Sep 2026, G-01, on `feat/deployment-runtime`; CODE COMPLETE, NOT YET ON A HOST):**
+**Last completed work (12 Sep 2026, G-71, on `fix/web-client-address`):**
+every visitor now has their own per-IP bucket on both roads to the API.
+Caddy, still the only trust boundary, writes the address it decided to web
+as `X-Rekoda-Client-IP` (replacing any browser copy) and removes that header
+on the API host; web hands the one value on, in the same header, from all
+five places it calls the API (`apps/web/src/server/client-address.ts`; a
+unit test fails if a new caller forgets); the API believes it only when the
+TCP peer is web's fixed address `172.30.10.11` (`REKODA_TRUSTED_WEB`,
+required in production) and otherwise keys on Fastify's proxy-derived address
+as before (`apps/api/src/client-address.ts`). Keys are per IPv4 address and
+per IPv6 /64. Proved by an API integration suite (seven cases, six of which
+fail with the old key), and by `deploy-smoke.sh` driving two visitors and an
+IPv6 /64 through the real Caddy, web and API. G-43's OTP half is met on both
+roads; its replica half remains.
+
+**Previous work (12 Sep 2026, G-01, merged as `c508709`; CODE COMPLETE, NOT YET ON A HOST):**
 the production runtime. `Dockerfile` builds one app image (api, worker
 and the migrate job) and one web image (public values baked in, refuses to
 build without the legal facts), both non-root on the Node in `.nvmrc`;
@@ -96,7 +111,7 @@ G-71 (web's server-side calls share one per-IP bucket, P1) and G-72
 
 **Next three actions:**
 
-1. Angelo merges the G-01 PR, then provisions the staging host by
+1. Angelo merges the G-71 PR, then provisions the staging host by
    `docs/runbooks/deploy.md` "First deployment" (a machine, Cloudflare DNS
    for the site and API hostnames), fills the staging `.env` and
    `secrets/` from `REKODA_LAUNCH_READINESS.md` §11.1 (the G-08 owner
@@ -106,9 +121,9 @@ G-71 (web's server-side calls share one per-IP bucket, P1) and G-72
 2. Rule on OD-1 to OD-7 in `REKODA_LAUNCH_READINESS.md` §6 (R0A-i on an
    empty database, VAT, which unwired modules ship, command-bus flags,
    renewal copy, erasure scope, backup design).
-3. Claude continues: G-71 (web forwards the client address; P1, found by
-   G-01, before real traffic), G-02 (backups per OD-7, which a real host now
-   needs), G-07 (fix the eval harness, then the owner runs the live eval). G-06 is code complete and NOT live-verified until the G-05 drill
+3. Claude continues: G-02 (backups per OD-7, which a real host now needs),
+   G-07 (fix the eval harness, then the owner runs the live eval), G-72
+   (production refusals for the dev-only names). G-06 is code complete and NOT live-verified until the G-05 drill
    confirms the real Paystack envelopes.
 
 **Known P0 blockers:** G-01 staging host (code complete) · G-02 backups · G-03
