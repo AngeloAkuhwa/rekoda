@@ -649,6 +649,10 @@ describe('the trusted web tier (G-71)', () => {
     expect(loadConfig({ ...PROD, REKODA_TRUSTED_WEB: '172.30.10.11' }).trustedWeb).toHaveLength(1);
   });
 
+  it('is not satisfied in production by a value that names no address', () => {
+    expect(() => loadConfig({ ...PROD, REKODA_TRUSTED_WEB: ',' })).toThrow(/REKODA_TRUSTED_WEB/);
+  });
+
   it('takes addresses and CIDRs, IPv4 and IPv6', () => {
     expect(
       loadConfig({ ...BASE, REKODA_TRUSTED_WEB: '172.30.10.11, 10.0.0.0/8, fd00::/8' }).trustedWeb,

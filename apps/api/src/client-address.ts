@@ -33,22 +33,48 @@ type Range = [ipaddr.IPv4 | ipaddr.IPv6, number];
 /**
  * The web tier's addresses or CIDRs, comma-separated. Anything that does not
  * parse refuses to boot: a trust list that silently drops an entry is a trust
- * list that silently changes who is believed.
+ * list that silently changes who is believed. For the same reason a value
+ * that is set but names nothing (bare commas) is refused rather than read as
+ * an empty list, which would pass production's "is it set" check while
+ * trusting nobody.
  */
 export function parseTrustedWeb(raw: string | undefined): Range[] {
   const entries = (raw ?? '')
     .split(',')
     .map((part) => part.trim())
     .filter((part) => part.length > 0);
+  if (entries.length === 0 && (raw ?? '').trim() !== '') {
+    throw new Error(`REKODA_TRUSTED_WEB is set but names no address or CIDR: ${raw}`);
+  }
   return entries.map((entry) => {
+    let range: Range;
     try {
-      if (entry.includes('/')) return ipaddr.parseCIDR(entry) as Range;
-      const address = ipaddr.process(entry);
-      return [address, address.kind() === 'ipv4' ? 32 : 128] as Range;
+      if (entry.includes('/')) {
+        range = ipaddr.parseCIDR(entry) as Range;
+      } else {
+        const address = ipaddr.process(entry);
+        range = [address, address.kind() === 'ipv4' ? 32 : 128];
+      }
     } catch {
       throw new Error(`REKODA_TRUSTED_WEB has an entry that is not an address or CIDR: ${entry}`);
     }
+    return inIpv4Form(range, entry);
   });
+}
+
+/**
+ * A range written in IPv4-mapped form, as the IPv4 range it means. Peers are
+ * compared in canonical form, where a mapped address is IPv4, so a mapped
+ * range left as IPv6 would match no peer at all and quietly put every
+ * visitor back in the web tier's bucket. A mapped prefix shorter than /96
+ * reaches outside the mapped block, so it has no IPv4 meaning and is refused.
+ */
+function inIpv4Form([base, bits]: Range, entry: string): Range {
+  if (!(base instanceof ipaddr.IPv6) || !base.isIPv4MappedAddress()) return [base, bits];
+  if (bits < 96) {
+    throw new Error(`REKODA_TRUSTED_WEB has a range wider than the IPv4-mapped block: ${entry}`);
+  }
+  return [base.toIPv4Address(), bits - 96];
 }
 
 /** An address in one canonical form (IPv4-mapped IPv6 becomes IPv4), or null. */

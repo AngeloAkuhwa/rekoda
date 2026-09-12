@@ -94,4 +94,33 @@ describe('parseTrustedWeb', () => {
   it('refuses an entry that is not an address or CIDR, naming it', () => {
     expect(() => parseTrustedWeb('172.30.10.11,web')).toThrow(/not an address or CIDR: web/);
   });
+
+  it('is empty only when nothing was set', () => {
+    expect(parseTrustedWeb(undefined)).toEqual([]);
+    expect(parseTrustedWeb('  ')).toEqual([]);
+  });
+
+  /* Production requires the list, and a value of bare separators would pass
+   * a "set" check while trusting nobody: every visitor back in web's bucket. */
+  it.each([',', ' , ', ',,'])('refuses %j, which is set but names no address', (value) => {
+    expect(() => parseTrustedWeb(value)).toThrow(/names no address/);
+  });
+
+  /* Peers are compared in canonical form, where an IPv4-mapped address is
+   * IPv4; a range written in mapped form must mean the same IPv4 range, or
+   * it silently matches no peer at all. */
+  it.each(['::ffff:172.30.10.0/120', '::ffff:172.30.10.11/128', '::ffff:172.30.10.11'])(
+    'reads %s as the IPv4 range it means',
+    (value) => {
+      const web = parseTrustedWeb(value);
+      for (const peer of ['172.30.10.11', '::ffff:172.30.10.11']) {
+        const r = request(peer, peer, { [CLIENT_ADDRESS_HEADER]: '203.0.113.7' });
+        expect(clientAddress(r, web), `${value} from ${peer}`).toBe('203.0.113.7');
+      }
+    },
+  );
+
+  it('refuses a mapped range wider than the IPv4-mapped block', () => {
+    expect(() => parseTrustedWeb('::ffff:0:0/95')).toThrow(/wider than the IPv4-mapped block/);
+  });
 });
