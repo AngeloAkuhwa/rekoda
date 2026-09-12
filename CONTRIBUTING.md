@@ -58,7 +58,8 @@ what passed and what was skipped:
   claim matches the code.
 - **Ordinary behaviour change:** targeted tests for the change, then
   `pnpm turbo typecheck lint test build` and the guard scripts CI runs
-  (`node scripts/check-boundaries.mjs`, `check-env-example.mjs`,
+  (`node scripts/check-boundaries.mjs`, `check-env-example.mjs` after its
+  fixture test `node --test scripts/check-env-example.test.mjs`,
   `check-node-version.mjs`, `check-ui-copy.mjs`, `check-retired-claims.mjs`,
   `check-openapi.mjs`).
 - **Schema, migrations, payments, auth, privacy, jobs, or anything
