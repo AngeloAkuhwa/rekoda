@@ -26,6 +26,14 @@ secrets/
 **/playwright-report/
 **/.vitest/
 
+# Runtime data a host checkout may hold (.gitignore keeps them out of git);
+# a dump or an upload left here must never be baked into an image.
+data/
+uploads/
+storage/
+logs/
+backups/
+
 # Not part of any image.
 docs/
 design-system/

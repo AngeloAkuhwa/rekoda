@@ -126,7 +126,11 @@ step 'no secret reached an image: not in any layer, not in the config'
 # layers are compressed (the containerd image store) and a miss proves nothing.
 for image in rekoda-app:ci-a rekoda-web:ci-a; do
   docker save -o "$WORK/image.tar" "$image" || fail "could not export $image for the scan"
-  hits=$(grep -a -c -F -f "$WORK/secrets.txt" "$WORK/image.tar" || true)
+  set +e
+  hits=$(grep -a -c -F -f "$WORK/secrets.txt" "$WORK/image.tar")
+  status=$?
+  set -e
+  [ "$status" -le 1 ] || fail "the scan of $image failed (grep exit $status)"
   [ "${hits:-0}" = 0 ] || fail "$image contains one of the generated secrets"
   if [ "$image" = rekoda-web:ci-a ] && ! grep -a -q -F CI-PLACEHOLDER-ENTITY "$WORK/image.tar"; then
     fail 'the scan cannot see inside the layers (not even the baked legal entity), so it proves nothing'

@@ -129,6 +129,27 @@ export function problemsFor({ compose, dockerfile, caddyfile, dockerignore, giti
     }
   }
 
+  // Nothing reaches the host's secrets/ except through the compose secret,
+  // and no service runs as root by override.
+  for (const [name, s] of Object.entries(services)) {
+    for (const volume of asList(s?.volumes)) {
+      const source =
+        typeof volume === 'string' ? volume.split(':')[0] : String(volume?.source ?? '');
+      if (/(^|\/)secrets(\/|$)/.test(source)) {
+        problems.push(
+          `${name} mounts ${source}; the owner secret travels only as a compose secret`,
+        );
+      }
+    }
+    if (/^(?:root|0)(?::|$)/.test(String(s?.user ?? ''))) {
+      problems.push(`${name} overrides its user to root`);
+    }
+    if (ENV_FILE_LOADERS.includes(name)) {
+      const files = asList(s?.env_file).map((f) => (typeof f === 'string' ? f : f?.path));
+      if (files.length > 1) problems.push(`${name} loads more than .env: ${files.join(', ')}`);
+    }
+  }
+
   // Rekoda's images are built on the host and never pulled: a registry image
   // under the same name would otherwise run in place of the checked-out code.
   for (const [name, s] of Object.entries(services)) {
@@ -296,13 +317,24 @@ export function problemsFor({ compose, dockerfile, caddyfile, dockerignore, giti
     if (!ignored.has(line)) problems.push(`${FILES.dockerignore} must exclude ${line}`);
   }
 
-  // No access log: query strings carry sign-in links and the webhook verify token.
+  // No access log: query strings carry sign-in links and the webhook verify
+  // token. The one log allowed is Caddy's filtered default, which must drop
+  // the request's URI and headers (proxy errors name the request).
   const caddyCode = caddyfile
     .split(/\r?\n/)
     .map((l) => l.replace(/(^|\s)#.*$/, '$1'))
     .join('\n');
-  if (/(^|\s)log(\s|\{|$)/m.test(caddyCode)) {
+  const logLines = caddyCode.split('\n').filter((l) => /^\s*log(\s|\{|$)/.test(l));
+  if (logLines.some((l) => !/^\s*log default \{\s*$/.test(l))) {
     problems.push(`${FILES.caddyfile} enables a log; access lines would record sign-in tokens`);
+  }
+  if (!/request>uri\s+delete/.test(caddyCode) || !/request>headers\s+delete/.test(caddyCode)) {
+    problems.push(`${FILES.caddyfile} must delete request>uri and request>headers from its log`);
+  }
+  const proxies = (caddyCode.match(/^\s*reverse_proxy\b/gm) ?? []).length;
+  const addressed = (caddyCode.match(/^\s*import client_address\b/gm) ?? []).length;
+  if (proxies !== addressed) {
+    problems.push(`every reverse_proxy in ${FILES.caddyfile} must import client_address`);
   }
   if (!/header_up\s+X-Forwarded-For\s+\{client_ip\}/.test(caddyCode)) {
     problems.push(

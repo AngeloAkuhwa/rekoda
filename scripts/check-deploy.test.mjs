@@ -219,3 +219,41 @@ test('a Rekoda image that compose may pull from a registry', () => {
   );
   expectProblem(problems(edit), /^web runs a Rekoda image and must set pull_policy: never/);
 });
+
+test("Caddy's log keeping request URIs, or a proxy that skips the client address", () => {
+  const unfiltered = edited('caddyfile', '\t\t\trequest>uri delete\n', '');
+  expectProblem(problems(unfiltered), /must delete request>uri and request>headers from its log/);
+  const bare = edited(
+    'caddyfile',
+    '\treverse_proxy web:3000 {\n\t\timport client_address\n\t}\n',
+    '\treverse_proxy web:3000\n',
+  );
+  expectProblem(
+    problems(bare),
+    /every reverse_proxy in deploy\/Caddyfile must import client_address/,
+  );
+});
+
+test('secrets/ bind-mounted, a root user by override, or a second env_file', () => {
+  const mounted = edited(
+    'compose',
+    '    networks:\n      - edge\n      - db\n',
+    '    volumes:\n      - ./secrets:/run/owner:ro\n    networks:\n      - edge\n      - db\n',
+  );
+  expectProblem(
+    problems(mounted),
+    /^api mounts \.\/secrets; the owner secret travels only as a compose secret/,
+  );
+  const root = edited(
+    'compose',
+    '  caddy:\n    image: caddy:2.11.4-alpine\n',
+    '  caddy:\n    image: caddy:2.11.4-alpine\n    user: root\n',
+  );
+  expectProblem(problems(root), /^caddy overrides its user to root/);
+  const twice = edited(
+    'compose',
+    '    # Requests in flight (a webhook, a report render) finish before the stop.\n    stop_grace_period: 30s\n    env_file: .env\n',
+    '    # Requests in flight (a webhook, a report render) finish before the stop.\n    stop_grace_period: 30s\n    env_file:\n      - .env\n      - extra.env\n',
+  );
+  expectProblem(problems(twice), /^api loads more than \.env: \.env, extra\.env/);
+});

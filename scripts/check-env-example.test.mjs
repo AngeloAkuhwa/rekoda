@@ -510,3 +510,22 @@ test('never deployed: every listed name is one the template documents', () => {
     /NEVER_DEPLOYED names REKODA_REVEAL_OTP/,
   );
 });
+
+test('rule 2: a pass-through into the api environment keeps no dead name alive', () => {
+  const compose = parseCompose(
+    BASE_COMPOSE.replace(
+      '    env_file: .env\n',
+      '    env_file: .env\n    environment:\n      DEAD_THING: ${DEAD_THING:-}\n',
+    ),
+  );
+  assert.ok(
+    compose.interpolated.has('DEAD_THING'),
+    'it is interpolated, so rule 3 still demands it be documented',
+  );
+  assert.ok(!compose.consumed.has('DEAD_THING'), 'but nothing the guard checks consumes it');
+  assert.ok(compose.consumed.has('REKODA_API_PUBLIC_URL'), "Caddy's environment does consume");
+  assert.ok(compose.consumed.has('REKODA_RELEASE'), 'an image tag does consume');
+  const reads = { product: new Map(), harness: new Map() };
+  const template = { example: new Map([['DEAD_THING', 'active']]), duplicates: new Set(), odd: [] };
+  assert.equal(problemsFor(reads, template, compose.consumed).length, 1);
+});

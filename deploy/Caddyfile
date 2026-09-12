@@ -5,10 +5,19 @@
 #
 # No access log, deliberately: query strings on these hosts carry one-tap
 # sign-in links and Meta's webhook verify token, and a log line holding
-# either is a credential at rest.
+# either is a credential at rest. Caddy's own log still records proxy
+# errors (a request that meets a restarting upstream), so its default log
+# drops the request's URI and headers from every line.
 
 {
 	email {$REKODA_ACME_EMAIL}
+
+	log default {
+		format filter {
+			request>uri delete
+			request>headers delete
+		}
+	}
 
 	servers {
 		# A request's address is its TCP peer, unless that peer is one of the

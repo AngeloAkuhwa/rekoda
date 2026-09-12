@@ -527,7 +527,19 @@ export function parseCompose(text) {
       envFiles,
     });
   }
-  return { doc, interpolated, services };
+  /* What rule 2 may count as a read: an interpolation that reaches a consumer
+   * the other rules check (an image tag, a build argument, Caddy's
+   * environment). A pass-through into the api's environment reaches code that
+   * reads the name or nothing, so it keeps no dead name alive. */
+  const consumed = new Set();
+  for (const [name, svc] of Object.entries(doc.services ?? {})) {
+    const sources = [svc?.image, ...keyed(svc?.build?.args).values()];
+    if (name === CADDY_SERVICE) sources.push(...keyed(svc?.environment).values());
+    for (const value of sources) {
+      for (const n of interpolations(value ?? '')) consumed.add(n);
+    }
+  }
+  return { doc, interpolated, consumed, services };
 }
 
 /** `{$NAME}`, `{$NAME:default}` and `{env.NAME}`, outside comments. */
@@ -716,7 +728,7 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   const template = parseTemplate(readFileSync(join(ROOT, '.env.example'), 'utf8'));
   const deployment = deploymentFiles();
   const problems = [
-    ...problemsFor(reads, template, deployment.compose.interpolated),
+    ...problemsFor(reads, template, deployment.compose.consumed),
     ...deploymentProblemsFor(reads, template, deployment),
   ];
   if (problems.length > 0) {
@@ -730,6 +742,6 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
     process.exit(1);
   }
   console.log(
-    `Environment template OK — ${reads.product.size} names read by code, ${deployment.compose.interpolated.size} by the deployment, ${template.example.size} documented, no drift.`,
+    `Environment template OK — ${reads.product.size} names read by code, ${deployment.compose.consumed.size} by the deployment, ${template.example.size} documented, no drift.`,
   );
 }

@@ -50,7 +50,9 @@ services:
     networks:
       - db
     healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U rekoda_owner -d rekoda']
+      # Over TCP, not the socket: on first boot the image's init server
+      # answers on the socket before PostgreSQL listens on the network.
+      test: ['CMD-SHELL', 'pg_isready -h 127.0.0.1 -U rekoda_owner -d rekoda']
       interval: 5s
       timeout: 3s
       retries: 20
@@ -252,6 +254,10 @@ services:
       - ./deploy:/etc/caddy:ro
       - caddy_data:/data
       - caddy_config:/config
+    # Caddy writes only to its two volumes.
+    read_only: true
+    tmpfs:
+      - /tmp
     networks:
       edge:
         ipv4_address: 172.30.10.10
@@ -275,6 +281,9 @@ networks:
     ipam:
       config:
         - subnet: 172.30.10.0/24
+          # Dynamic addresses come from the upper half only, so a recreated
+          # container can never take Caddy's fixed .10.
+          ip_range: 172.30.10.128/25
   # PostgreSQL and the three processes that may reach it. No egress at all.
   db:
     internal: true
