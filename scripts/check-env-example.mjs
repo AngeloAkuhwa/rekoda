@@ -68,7 +68,7 @@ const DESTRUCTURING = /\{([^}]*)\}\s*=\s*(?:process\.env|env)\b/g;
  * whose computed access is a helper fed by literal call sites (loadConfig's
  * `required(env, 'X')`) contribute the same literals twice, harmlessly.
  */
-const COMPUTED = /(?:process.)?env[s*[A-Za-z_$][w$]*s*]/;
+const COMPUTED = /(?:process\.)?env\[\s*[A-Za-z_$][\w$]*\s*\]/;
 const INVENTORY_LITERAL = /['"]([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)['"]/g;
 function inventoryNames(text) {
   if (!COMPUTED.test(text)) return [];
