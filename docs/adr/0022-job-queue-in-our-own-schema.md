@@ -123,9 +123,11 @@ command alone, `DATABASE_URL` pointed at the owner connection (migrations).
 > not `OWNER_DATABASE_URL`, and no code ever read the latter, so the sentence
 > was corrected on 12 Sep 2026; the decision (three roles, no fallback from
 > the worker to the app connection) is unchanged. The owner connection is supplied to the migrate command alone:
-> `DATABASE_URL=<owner connection> pnpm migrate`. The application is never
-> started with that value; the boot doctor refuses a role that can bypass
-> RLS. `.env.example` no longer lists `OWNER_DATABASE_URL` and
+> `DATABASE_URL=<owner connection> pnpm migrate`; that role must hold
+> SUPERUSER or BYPASSRLS, because every tenant table is under FORCE ROW
+> LEVEL SECURITY and `migrate.ts` refuses a role without the privilege. The
+> application is never started with that value; the boot doctor refuses a
+> role that can bypass RLS. `.env.example` no longer lists `OWNER_DATABASE_URL` and
 > `scripts/check-env-example.mjs` forbids its return. Three roles, no
 > fallback from the worker to the app connection: as decided. `WORKER_DATABASE_URL` deliberately does **not** fall back to
 > `DATABASE_URL`: that convenience would hand the runner a role with no claim

@@ -157,6 +157,13 @@ function envObjects(code) {
   for (const m of code.matchAll(/\b([A-Za-z_$][\w$]*)\s*=\s*process\.env\b(?![.[])/g))
     ids.add(m[1]);
   for (const m of code.matchAll(/\b([A-Za-z_$][\w$]*)\s*:\s*NodeJS\.ProcessEnv\b/g)) ids.add(m[1]);
+  /* `const { env } = process` and `const { env: runtime } = process`. */
+  for (const m of code.matchAll(/\{([^}]*)\}\s*=\s*process\b(?![.[])/g)) {
+    for (const part of m[1].split(',')) {
+      const [key, alias] = part.split(':').map((s) => s.trim());
+      if (key === 'env') ids.add(alias || 'env');
+    }
+  }
   return [...ids].map((id) => id.replace(/\$/g, '\\$'));
 }
 
