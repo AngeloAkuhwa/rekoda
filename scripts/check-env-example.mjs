@@ -165,19 +165,20 @@ function readsInFile(code) {
   const objects = ['process\\.env', ...envObjects(code)];
   let computed = false;
   for (const obj of objects) {
-    /* `?.` is a read like `.`; an assignment (`= v`, `??=`, `||=`, `+=`) or a
-     * `delete` names a variable without reading it and does not count. */
-    /* The object must start the expression: `env` inside `process.env` is
-     * not a second object, so a lookbehind refuses a preceding `.`. */
+    /* `?.` is a read like `.`. The object must start the expression: `env`
+     * inside `process.env` is not a second object, so a lookbehind refuses a
+     * preceding `.`. */
     const start = `(?<![.\\w$])${obj}`;
     const dot = new RegExp(`${start}(?:\\?\\.|\\.)(${NAME})\\b`, 'g');
     const bracket = new RegExp(`${start}(?:\\?\\.)?\\[\\s*['"](${NAME})['"]\\s*\\]`, 'g');
+    /* Only a plain assignment or a delete is a pure write; `??=`, `||=` and
+     * the other compound forms read the value first and count as reads. */
     const isWrite = (m) =>
-      /^\s*(?:=(?!=)|\?\?=|\|\|=|&&=|[+\-*/%]=)/.test(code.slice(m.index + m[0].length)) ||
+      /^\s*=(?!=)/.test(code.slice(m.index + m[0].length)) ||
       /\bdelete\s+$/.test(code.slice(0, m.index));
     const helper = new RegExp(`\\(\\s*${obj}\\s*,\\s*['"](${NAME})['"]`, 'g');
     const destructure = new RegExp(`\\{([^}]*)\\}\\s*=\\s*${start}\\b(?![.[])`, 'g');
-    const computedAccess = new RegExp(`${start}\\[\\s*[A-Za-z_$][\\w$]*\\s*\\]`);
+    const computedAccess = new RegExp(`${start}(?:\\?\\.)?\\[\\s*[A-Za-z_$][\\w$]*\\s*\\]`);
     for (const re of [dot, bracket]) {
       for (const m of code.matchAll(re)) if (!isWrite(m)) names.push(m[1]);
     }
@@ -236,12 +237,22 @@ const product = readsIn(PRODUCT, { includeTests: false });
 const harness = readsIn(HARNESS, { includeTests: true });
 
 const example = new Map();
+const duplicates = new Set();
 for (const line of readFileSync(join(ROOT, '.env.example'), 'utf8').split('\n')) {
   const m = line.match(/^(#\s*)?([A-Z][A-Z0-9_]+)=/);
-  if (m) example.set(m[2], m[1] ? 'commented' : 'active');
+  if (!m) continue;
+  /* Two ACTIVE lines for one name: which value wins depends on the loader.
+   * A commented `#   NAME='…'` beside an active line is an illustration. */
+  if (!m[1] && example.get(m[2]) === 'active') duplicates.add(m[2]);
+  if (!m[1] || !example.has(m[2])) example.set(m[2], m[1] ? 'commented' : 'active');
 }
 
 const problems = [];
+for (const name of [...duplicates].sort()) {
+  problems.push(
+    `documented more than once in .env.example (which value wins depends on the loader): ${name}`,
+  );
+}
 for (const [name, files] of [...product].sort()) {
   if (!example.has(name)) {
     problems.push(

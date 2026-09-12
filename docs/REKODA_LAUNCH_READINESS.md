@@ -585,7 +585,7 @@ Legend: **avail** = value exists today · **placeholder** = any value works in s
 
 ### 11.2 Bring-up order
 
-1. Close G-08: correct `.env.example`; generate the five security keys for staging; decide OD-4 flags.
+1. Close G-08's owner half (the template was corrected on 12 Sep 2026 and is guarded in CI): fill the staging `.env` from §11.1, generate the five security keys for staging, decide OD-4 flags.
 2. Close G-01: build the images; provision one host (or a compose stack) with Postgres 16, Caddy, Cloudflare DNS for a staging hostname; set `REKODA_TRUSTED_PROXIES`.
 3. Database: create the owner, `rekoda_app` and `rekoda_worker` roles with passwords held in the host secret store; run `migrate:apply` as the owner; confirm `GET /health` reports 152 migrations.
 4. Storage: create the staging R2 bucket; boot the API with the R2 keys; write and read one document (G-40).
