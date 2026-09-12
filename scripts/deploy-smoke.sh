@@ -201,6 +201,8 @@ site() { curl -sS --resolve "$SITE:443:127.0.0.1" --cacert "$WORK/root.crt" "$@"
 [ "$(site -o /dev/null -w '%{http_code}' "https://$SITE/")" = 200 ] || fail 'the home page is not 200'
 site "https://$SITE/terms" >"$WORK/terms.html"
 grep -q CI-PLACEHOLDER-ENTITY "$WORK/terms.html" || fail '/terms does not show the built legal facts'
+[ "$(site -o /dev/null -w '%{http_code}' "https://$SITE/sitemap.xml")" = 200 ] ||
+  fail 'the sitemap (the one revalidating route) is not 200'
 site -D - -o /dev/null "https://$SITE/" | tr -d '\r' >"$WORK/site-headers.txt"
 grep -qi '^content-security-policy:' "$WORK/site-headers.txt" || fail 'the site sends no CSP'
 grep -qi '^strict-transport-security:' "$WORK/site-headers.txt" || fail 'the site sends no HSTS'
@@ -289,6 +291,14 @@ echo 'ok: rolled back without a rebuild'
 step "Caddy reloads the checked-out Caddyfile (the runbook's last deploy step)"
 "${COMPOSE[@]}" exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
 health >"$WORK/health.json" || fail '/health stopped answering after the reload'
+echo 'ok'
+
+step 'nothing tried to write where the images keep code read-only'
+"${COMPOSE[@]}" logs --no-color api worker web >"$WORK/all.log"
+if grep -E -q 'EACCES|EROFS|read-only file system' "$WORK/all.log"; then
+  grep -E -m 20 'EACCES|EROFS|read-only file system' "$WORK/all.log" || true
+  fail 'a service tried to write to a read-only path'
+fi
 echo 'ok'
 
 FAILED=0

@@ -86,6 +86,15 @@ const securityHeaders = [
 const nextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
+  experimental: {
+    /* Regenerated pages stay in memory, never written back into the build.
+     * The production image keeps .next/server read-only, so the running site
+     * cannot rewrite the chunks it serves (G-01); by default Next would write
+     * each regeneration of a revalidating route (the hourly sitemap) into
+     * that directory and fail. Prerendered pages are still read from the
+     * build; a restart simply regenerates on the next request. */
+    isrFlushToDisk: false,
+  },
   transpilePackages: ['@rekoda/core'],
   async headers() {
     return [{ source: '/:path*', headers: securityHeaders }];
