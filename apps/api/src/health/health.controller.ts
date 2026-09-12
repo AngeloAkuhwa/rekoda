@@ -1,5 +1,5 @@
 import { Controller, Get, Inject } from '@nestjs/common';
-import { bundledMigrationCount, identity, type Db } from '@rekoda/db';
+import { bundledMigrationTags, identity, type Db } from '@rekoda/db';
 import type { HealthResponse } from '@rekoda/contracts';
 import { DB } from '../db/db.module.js';
 import { CONFIG, type ApiConfig } from '../config.js';
@@ -8,12 +8,17 @@ import { CONFIG, type ApiConfig } from '../config.js';
  * `ok` means the schema THIS build needs is there, not merely some schema: a
  * new image started before its migrate job ran would otherwise pass its
  * container health check, let web and Caddy start behind it, and fail at the
- * first route that touches the new tables. More migrations than the build
- * carries is still `ok`, because a rollback runs an older image against the
- * newer, expand-only schema (G-01).
+ * first route that touches the new tables. Every migration the build carries
+ * must be applied, checked by tag (the runner records completion by tag, and
+ * two diverging histories can agree on a count). Migrations the build does
+ * not know about are fine: a rollback runs an older image against the newer,
+ * expand-only schema (G-01).
  */
-export function healthStatus(applied: number, required: number): 'ok' | 'degraded' {
-  return applied > 0 && applied >= required ? 'ok' : 'degraded';
+export function healthStatus(
+  applied: ReadonlySet<string>,
+  required: readonly string[],
+): 'ok' | 'degraded' {
+  return applied.size > 0 && required.every((tag) => applied.has(tag)) ? 'ok' : 'degraded';
 }
 
 /**
@@ -31,7 +36,7 @@ export function healthStatus(applied: number, required: number): 'ok' | 'degrade
 @Controller('health')
 export class HealthController {
   /** The migrations this build carries, read once from its journal. */
-  private readonly required = bundledMigrationCount();
+  private readonly required = bundledMigrationTags();
 
   constructor(
     @Inject(DB) private readonly db: Db,
@@ -48,11 +53,11 @@ export class HealthController {
     if (!(await identity.ping(this.db))) {
       return { status: 'degraded', database: 'down', migrations: 0, ...build };
     }
-    const migrations = await identity.migrationCount(this.db).catch(() => 0);
+    const applied = await identity.appliedMigrationTags(this.db).catch(() => new Set<string>());
     return {
-      status: healthStatus(migrations, this.required),
+      status: healthStatus(applied, this.required),
       database: 'up',
-      migrations,
+      migrations: applied.size,
       ...build,
     };
   }

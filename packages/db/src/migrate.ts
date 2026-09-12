@@ -64,20 +64,22 @@ export async function applyMigrations(
 }
 
 /**
- * How many migrations this build carries: the entries in the journal shipped
- * beside it. `/health` compares the database against this (G-01), so a new
- * image started before its migrations ran reports `degraded` instead of
- * `ok`. Read synchronously and once, at start-up; a build with no journal
- * throws, because a process that cannot say which schema it needs should
- * not say it is healthy.
+ * The migrations this build carries, by tag: the entries in the journal
+ * shipped beside it. `/health` requires every one of them in
+ * `rekoda_migrations` (G-01), so a new image started before its migrations
+ * ran reports `degraded` instead of `ok`. By tag, not by count, because the
+ * runner records completion by tag and two diverging histories can agree on
+ * a count while one lacks a migration the other needs. Read synchronously
+ * and once, at start-up; a build with no journal throws, because a process
+ * that cannot say which schema it needs should not say it is healthy.
  */
-export function bundledMigrationCount(migrationsDir = MIGRATIONS_DIR): number {
+export function bundledMigrationTags(migrationsDir = MIGRATIONS_DIR): string[] {
   const journal = JSON.parse(
     readFileSync(join(migrationsDir, 'meta', '_journal.json'), 'utf8'),
   ) as {
     entries: JournalEntry[];
   };
-  return journal.entries.length;
+  return journal.entries.map((entry) => entry.tag);
 }
 
 /* Runnable directly: `node dist/migrate.js` */

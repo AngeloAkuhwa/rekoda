@@ -517,6 +517,12 @@ export async function migrationCount(q: Queryable): Promise<number> {
   return [...rows][0]?.n ?? 0;
 }
 
+/** The tags of every applied migration: what `/health` checks this build against. */
+export async function appliedMigrationTags(q: Queryable): Promise<Set<string>> {
+  const rows = await q.execute<{ tag: string }>(sql`SELECT tag FROM rekoda_migrations`);
+  return new Set([...rows].map((r) => r.tag));
+}
+
 /** Liveness only — can we reach the server at all? Never throws. */
 export async function ping(q: Queryable): Promise<boolean> {
   try {
