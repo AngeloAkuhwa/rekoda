@@ -4,7 +4,7 @@
 #   docker compose -f docker-compose.prod.yml <command>
 #
 # from the checkout, where `.env` (filled from .env.example) supplies every
-# ${NAME} below and the api and worker environments, and `secrets/` holds the
+# ${NAME} below and the api, worker and migrate environments, and `secrets/` holds the
 # PostgreSQL owner password. Neither is ever committed.
 #
 # The rules this file keeps, each checked in CI by scripts/check-deploy.mjs:
@@ -69,13 +69,15 @@ services:
     profiles:
       - ops
     command: ['sh', '/repo/deploy/migrate.sh']
+    # The runtime URLs come from .env itself, the file the api and worker
+    # load, never from compose interpolation, where an exported shell value
+    # would win and the roles would get passwords the services never see.
+    env_file: .env
     environment:
       NODE_ENV: production
       POSTGRES_OWNER: rekoda_owner
       POSTGRES_HOST: postgres
       POSTGRES_DB: rekoda
-      APP_DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL in .env}
-      WORKER_DATABASE_URL: ${WORKER_DATABASE_URL:?set WORKER_DATABASE_URL in .env}
     secrets:
       - postgres_owner_password
     networks:
@@ -100,6 +102,8 @@ services:
       args:
         REKODA_RELEASE: ${REKODA_RELEASE:?set REKODA_RELEASE in .env}
     restart: unless-stopped
+    # Requests in flight (a webhook, a report render) finish before the stop.
+    stop_grace_period: 30s
     env_file: .env
     environment:
       NODE_ENV: production
@@ -142,6 +146,11 @@ services:
     # registry, so a missing image is an error rather than a stranger's image.
     pull_policy: never
     restart: unless-stopped
+    # A stop lets in-flight jobs finish: one job can chain a media fetch, a
+    # 60 s transcription, two 20 s model calls and a send. Killed mid-job, it
+    # would sit 'running' until the five-minute reclaim and could repeat its
+    # message or document.
+    stop_grace_period: 150s
     env_file: .env
     environment:
       NODE_ENV: production

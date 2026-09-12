@@ -222,8 +222,10 @@ holding either is a credential at rest. Do not switch one on.
 ## Safe restart
 
 - **One service:** `dc restart api` (or `worker`, `web`, `caddy`). Meta and
-  Paystack retry a webhook that meets a restart; a job claimed by a worker
-  that stops is requeued once it is stale (five minutes).
+  Paystack retry a webhook that meets a restart. A stopping worker finishes
+  the jobs it holds first (it is given 150 seconds, the api 30), so a restart
+  or a deploy can take that long; a worker killed anyway leaves its job to be
+  requeued once it is stale (five minutes).
 - **After editing `.env`:** `dc up -d --wait` recreates the api, worker and
   Caddy when their values changed. **Not the site's public values:** every
   `NEXT_PUBLIC_*` value (the site URL, the legal facts, the WhatsApp number,

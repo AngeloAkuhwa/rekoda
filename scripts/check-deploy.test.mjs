@@ -89,8 +89,8 @@ test('the worker on a different image', () => {
 test('the api trusting a proxy that is not caddy', () => {
   const edit = edited(
     'compose',
-    "      # believes an X-Forwarded-For from.\n      REKODA_TRUSTED_PROXIES: 172.30.10.10\n",
-    "      # believes an X-Forwarded-For from.\n      REKODA_TRUSTED_PROXIES: 0.0.0.0/0\n",
+    '      # believes an X-Forwarded-For from.\n      REKODA_TRUSTED_PROXIES: 172.30.10.10\n',
+    '      # believes an X-Forwarded-For from.\n      REKODA_TRUSTED_PROXIES: 0.0.0.0/0\n',
   );
   expectProblem(problems(edit), /api must trust exactly caddy's fixed address/);
 });
@@ -199,7 +199,14 @@ test('.env loaded by the proxy, or a nested .env let into the build context', ()
     '  caddy:\n    image: caddy:2.11.4-alpine\n',
     '  caddy:\n    image: caddy:2.11.4-alpine\n    env_file: .env\n',
   );
-  expectProblem(problems(caddy), /^caddy loads an env_file; only api and worker may/);
+  expectProblem(problems(caddy), /^caddy loads an env_file; only api, migrate and worker may/);
   const nested = edited('dockerignore', '\n**/.env\n', '\n');
   expectProblem(problems(nested), /\.dockerignore must exclude \*\*\/\.env$/);
+});
+
+test('a worker stopped before its jobs can finish', () => {
+  const edit = edited('compose', '    stop_grace_period: 150s\n', '');
+  expectProblem(problems(edit), /worker must set stop_grace_period to at least 120s/);
+  const short = edited('compose', '    stop_grace_period: 150s\n', '    stop_grace_period: 10s\n');
+  expectProblem(problems(short), /found "10s"/);
 });

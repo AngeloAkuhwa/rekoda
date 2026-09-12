@@ -53,7 +53,9 @@ export const DOCKERIGNORE_REQUIRED = [
   '.git/',
 ];
 /** The only services that may load .env, which holds every application secret. */
-export const ENV_FILE_LOADERS = ['api', 'worker'];
+export const ENV_FILE_LOADERS = ['api', 'migrate', 'worker'];
+/** The worker's stop grace must outlast the longest job (seconds). */
+export const WORKER_GRACE_SECONDS = 120;
 
 const asList = (value) => (value === undefined || value === null ? [] : [value].flat());
 function keyed(value) {
@@ -116,12 +118,25 @@ export function problemsFor({ compose, dockerfile, caddyfile, dockerignore, giti
     problems.push(`${FILES.gitignore} must ignore secrets/`);
   }
 
-  // .env holds every application secret: the api and the worker load it, and
-  // nothing else does (least of all the internet-facing proxy).
+  // .env holds every application secret: the api, the worker and the migrate
+  // job (which must read the runtime URLs from the same file the services do)
+  // load it, and nothing else does, least of all the internet-facing proxy.
   for (const [name, s] of Object.entries(services)) {
     if (asList(s?.env_file).length > 0 && !ENV_FILE_LOADERS.includes(name)) {
-      problems.push(`${name} loads an env_file; only ${ENV_FILE_LOADERS.join(' and ')} may`);
+      problems.push(
+        `${name} loads an env_file; only ${ENV_FILE_LOADERS.slice(0, -1).join(', ')} and ${ENV_FILE_LOADERS.at(-1)} may`,
+      );
     }
+  }
+
+  // The worker's jobs finish before a stop kills them.
+  const grace = String(svc('worker')?.stop_grace_period ?? '');
+  const m = grace.match(/^(\d+)(s|m)$/);
+  const graceSeconds = m ? Number(m[1]) * (m[2] === 'm' ? 60 : 1) : 0;
+  if (svc('worker') && graceSeconds < WORKER_GRACE_SECONDS) {
+    problems.push(
+      `worker must set stop_grace_period to at least ${WORKER_GRACE_SECONDS}s (found "${grace || 'unset'}")`,
+    );
   }
 
   // The migrate job runs only when asked, and is the only way in as the owner.
