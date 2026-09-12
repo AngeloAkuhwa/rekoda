@@ -1,0 +1,301 @@
+# Rekoda on one host: Caddy in front of web and api, a worker, PostgreSQL
+# (ADR 0006; G-01). Operated by docs/runbooks/deploy.md, always as
+#
+#   docker compose -f docker-compose.prod.yml <command>
+#
+# from the checkout, where `.env` (filled from .env.example) supplies every
+# ${NAME} below and the api, worker and migrate environments, and `secrets/` holds the
+# PostgreSQL owner password. Neither is ever committed.
+#
+# The rules this file keeps, each checked in CI by scripts/check-deploy.mjs:
+#   - only caddy publishes a port; PostgreSQL is reachable from nothing but
+#     the api, the worker and the migrate job, on a network with no egress;
+#   - the owner (migration) credential is mounted into postgres and the
+#     migrate job only. The api and worker hold the rekoda_app and
+#     rekoda_worker URLs from .env and can never start as the owner (their
+#     boot doctor refuses a role that can bypass RLS as well);
+#   - the api and the worker run the SAME image; the worker is the one with
+#     REKODA_WORKER=1;
+#   - web receives exactly the runtime names its code reads, and no secret;
+#     its public NEXT_PUBLIC_* values are baked in at build;
+#   - no test hook appears anywhere in this file.
+
+# The project name is fixed, so the volumes are always rekoda-prod_pgdata and
+# rekoda-prod_caddy_data: a checkout in another directory must find the same
+# database, not open an empty one that looks like data loss. Not `rekoda`,
+# which is docker-compose.dev.yml's default project name in a checkout called
+# rekoda, so the two can never share a volume.
+name: rekoda-prod
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: '5'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    # Docker's 64 MB default /dev/shm is exhausted by parallel queries.
+    shm_size: 256mb
+    environment:
+      POSTGRES_USER: rekoda_owner
+      POSTGRES_DB: rekoda
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_owner_password
+    secrets:
+      - postgres_owner_password
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - db
+    healthcheck:
+      # Over TCP, not the socket: on first boot the image's init server
+      # answers on the socket before PostgreSQL listens on the network.
+      test: ['CMD-SHELL', 'pg_isready -h 127.0.0.1 -U rekoda_owner -d rekoda']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    security_opt:
+      - no-new-privileges:true
+    logging: *logging
+
+  # One-off, never started by `up`: `docker compose ... run --rm migrate`.
+  # Applies migrations as the owner, then sets the runtime roles' passwords
+  # from the two URLs in .env (deploy/migrate.sh).
+  migrate:
+    image: rekoda-app:${REKODA_RELEASE:?set REKODA_RELEASE in .env}
+    # Built by the api service's build, on this host; never pulled from a
+    # registry, so a missing image is an error rather than a stranger's image.
+    pull_policy: never
+    profiles:
+      - ops
+    command: ['sh', '/repo/deploy/migrate.sh']
+    # The runtime URLs come from .env itself, the file the api and worker
+    # load, never from compose interpolation, where an exported shell value
+    # would win and the roles would get passwords the services never see.
+    # It receives the whole file, like the api it shares an image with; the
+    # owner password is the one thing it holds that they do not.
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      POSTGRES_OWNER: rekoda_owner
+      POSTGRES_HOST: postgres
+      POSTGRES_DB: rekoda
+    secrets:
+      - postgres_owner_password
+    networks:
+      - db
+    depends_on:
+      postgres:
+        condition: service_healthy
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    logging: *logging
+
+  api:
+    image: rekoda-app:${REKODA_RELEASE:?set REKODA_RELEASE in .env}
+    # Built here, never pulled: a missing release image is built from the
+    # checkout or fails, never fetched under the same name from a registry.
+    pull_policy: never
+    build:
+      context: .
+      target: app
+      args:
+        REKODA_RELEASE: ${REKODA_RELEASE:?set REKODA_RELEASE in .env}
+    restart: unless-stopped
+    # Requests in flight (a webhook, a report render) finish before the stop.
+    stop_grace_period: 30s
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      PORT: '3001'
+      REKODA_WORKER: '0'
+      # The same value that tags the image, so /health names what is running
+      # even when the shell exports a different one than .env.
+      REKODA_RELEASE: ${REKODA_RELEASE:?set REKODA_RELEASE in .env}
+      # Caddy's fixed address on the edge network: the only proxy the API
+      # believes an X-Forwarded-For from.
+      REKODA_TRUSTED_PROXIES: 172.30.10.10
+    networks:
+      - edge
+      - db
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3001/health').then((r) => r.json()).then((b) => process.exit(b.status === 'ok' ? 0 : 1), () => process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    logging: *logging
+
+  worker:
+    image: rekoda-app:${REKODA_RELEASE:?set REKODA_RELEASE in .env}
+    # Built by the api service's build, on this host; never pulled from a
+    # registry, so a missing image is an error rather than a stranger's image.
+    pull_policy: never
+    restart: unless-stopped
+    # A stop lets in-flight jobs finish: one job can chain a media fetch, a
+    # 60 s transcription, two 20 s model calls and a send. Killed mid-job, it
+    # would sit 'running' until the five-minute reclaim and could repeat its
+    # message or document.
+    stop_grace_period: 150s
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      PORT: '3001'
+      REKODA_WORKER: '1'
+      REKODA_RELEASE: ${REKODA_RELEASE:?set REKODA_RELEASE in .env}
+      REKODA_TRUSTED_PROXIES: 172.30.10.10
+    networks:
+      - db
+      - worker-egress
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3001/health').then((r) => r.json()).then((b) => process.exit(b.status === 'ok' ? 0 : 1), () => process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    logging: *logging
+
+  web:
+    image: rekoda-web:${REKODA_RELEASE:?set REKODA_RELEASE in .env}
+    pull_policy: never
+    build:
+      context: .
+      target: web
+      args:
+        REKODA_RELEASE: ${REKODA_RELEASE:?set REKODA_RELEASE in .env}
+        NEXT_PUBLIC_SITE_URL: ${NEXT_PUBLIC_SITE_URL:?set NEXT_PUBLIC_SITE_URL in .env}
+        NEXT_PUBLIC_REKODA_WHATSAPP: ${NEXT_PUBLIC_REKODA_WHATSAPP:-}
+        NEXT_PUBLIC_LEGAL_ENTITY: ${NEXT_PUBLIC_LEGAL_ENTITY:-}
+        NEXT_PUBLIC_LEGAL_RC_NUMBER: ${NEXT_PUBLIC_LEGAL_RC_NUMBER:-}
+        NEXT_PUBLIC_LEGAL_ADDRESS: ${NEXT_PUBLIC_LEGAL_ADDRESS:-}
+        NEXT_PUBLIC_PRIVACY_EMAIL: ${NEXT_PUBLIC_PRIVACY_EMAIL:-}
+        NEXT_PUBLIC_SUPPORT_EMAIL: ${NEXT_PUBLIC_SUPPORT_EMAIL:-}
+        NEXT_PUBLIC_NDPR_AUDITOR: ${NEXT_PUBLIC_NDPR_AUDITOR:-}
+        NEXT_PUBLIC_MONO_PUBLIC_KEY: ${NEXT_PUBLIC_MONO_PUBLIC_KEY:-}
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      # Web talks to the API over the internal network, never through the
+      # public hostname.
+      REKODA_API_URL: http://api:3001
+      REKODA_WEB_URL: ${REKODA_WEB_URL:?set REKODA_WEB_URL in .env}
+    networks:
+      - edge
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/terms').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    logging: *logging
+
+  caddy:
+    image: caddy:2.11.4-alpine
+    restart: unless-stopped
+    ports:
+      - '80:80'
+      - '443:443'
+      - '443:443/udp'
+    environment:
+      NEXT_PUBLIC_SITE_URL: ${NEXT_PUBLIC_SITE_URL:?set NEXT_PUBLIC_SITE_URL in .env}
+      REKODA_API_PUBLIC_URL: ${REKODA_API_PUBLIC_URL:?set REKODA_API_PUBLIC_URL in .env}
+      REKODA_ACME_EMAIL: ${REKODA_ACME_EMAIL:?set REKODA_ACME_EMAIL in .env}
+      REKODA_EDGE_PROXIES: ${REKODA_EDGE_PROXIES:-}
+    volumes:
+      # The directory, not the file: `git checkout` replaces the Caddyfile with
+      # a new file, and a single-file bind mount would keep showing the old
+      # one, so a reload after a deploy would re-read stale configuration.
+      - ./deploy:/etc/caddy:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    # Caddy writes only to its two volumes.
+    read_only: true
+    tmpfs:
+      - /tmp
+    networks:
+      edge:
+        ipv4_address: 172.30.10.10
+    depends_on:
+      web:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    security_opt:
+      - no-new-privileges:true
+    logging: *logging
+
+networks:
+  # Caddy, web and api. Fixed so REKODA_TRUSTED_PROXIES can name Caddy
+  # exactly; change both together if the range collides with the host's.
+  edge:
+    ipam:
+      config:
+        - subnet: 172.30.10.0/24
+          # Dynamic addresses come from the upper half only, so a recreated
+          # container can never take Caddy's fixed .10.
+          ip_range: 172.30.10.128/25
+  # PostgreSQL and the three processes that may reach it. No egress at all.
+  db:
+    internal: true
+  # The worker's route out (Meta, the model providers, Paystack), without
+  # joining the network web and Caddy share.
+  worker-egress: {}
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:
+
+secrets:
+  postgres_owner_password:
+    file: ./secrets/postgres_owner_password

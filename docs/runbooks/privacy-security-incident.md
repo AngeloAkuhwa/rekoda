@@ -25,7 +25,7 @@ steps is to assemble facts and start the clock, not to conclude.
 3. **Contain, narrowest first.** Revoke or rotate the credential involved
    (`key-rotation.md` — the stateless keys rotate in minutes); disable the
    affected route or operator secret; as a last resort take the API down
-   (`docker compose stop api`). A contained incident with a down service
+   (`docker compose -f docker-compose.prod.yml stop api worker`). A contained incident with a down service
    beats a live exfiltration with a green health check.
 4. **Preserve evidence before changing anything else.** Snapshot the
    database, copy container logs off-box, note the running image digests.

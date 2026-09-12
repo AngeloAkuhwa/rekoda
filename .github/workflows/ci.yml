@@ -77,6 +77,12 @@ jobs:
       - name: Environment template matches the code
         if: steps.ws.outputs.present == 'true'
         run: node --test scripts/check-env-example.test.mjs && node scripts/check-env-example.mjs
+      # The production deployment keeps its shape: only Caddy publishes a port,
+      # the owner credential reaches postgres and the migrate job only, the
+      # images run as non-root and are built from no secret (G-01).
+      - name: Deployment files keep their shape
+        if: steps.ws.outputs.present == 'true'
+        run: node --test scripts/check-deploy.test.mjs && node scripts/check-deploy.mjs
       # One Node version, and an LTS. `.nvmrc` is the source of truth; this
       # checks engines, every @types/node, AND the version actually running,
       # because a project can be consistent in four files and still be tested
@@ -100,6 +106,20 @@ jobs:
       - name: Docs-only repository — nothing to build yet
         if: steps.ws.outputs.present == 'false'
         run: echo "No pnpm workspace yet (pre-M0). Skipping build steps."
+
+  # The production stack, from a clean checkout on a clean machine (G-01):
+  # built, migrated as the owner, booted behind Caddy over HTTPS, attacked
+  # (secrets in layers, root, the owner credential, a forged X-Forwarded-For),
+  # restarted and rolled back, following docs/runbooks/deploy.md step for
+  # step. scripts/deploy-smoke.sh says what each step proves.
+  deployment:
+    name: Deployment (Docker)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - name: Boot, attack, restart and roll back the production stack
+        run: bash scripts/deploy-smoke.sh
 
   # Every migration, replayed on a cluster that has never heard of us
   # (remediation R10).

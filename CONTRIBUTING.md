@@ -60,8 +60,15 @@ what passed and what was skipped:
   `pnpm turbo typecheck lint test build` and the guard scripts CI runs
   (`node scripts/check-boundaries.mjs`, `check-env-example.mjs` after its
   fixture test `node --test scripts/check-env-example.test.mjs`,
+  `check-deploy.mjs` after `node --test scripts/check-deploy.test.mjs`,
   `check-node-version.mjs`, `check-ui-copy.mjs`, `check-retired-claims.mjs`,
   `check-openapi.mjs`).
+- **Deployment files** (`Dockerfile`, `docker-compose.prod.yml`, `deploy/`):
+  `pnpm deploy:check` and `pnpm env:check`, then the CI "Deployment (Docker)"
+  job, which boots the stack with `bash scripts/deploy-smoke.sh` (it needs a
+  Docker engine and free ports 80 and 443; it refuses to run where a `.env`
+  already exists or beside a running `rekoda-prod` stack, and runs as its own
+  compose project).
 - **Schema, migrations, payments, auth, privacy, jobs, or anything
   cross-cutting:** all of the above plus the integration suites,
   **serially, never in parallel** (they share one PostgreSQL):

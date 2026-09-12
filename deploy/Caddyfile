@@ -1,0 +1,70 @@
+# Rekoda's edge (G-01): TLS for the two public hostnames, routing to web and
+# api, and the one place a client's address is decided. Mounted read-only by
+# docker-compose.prod.yml; every {$NAME} comes from the caddy service's
+# environment there. See docs/runbooks/deploy.md.
+#
+# No access log, deliberately: query strings on these hosts carry one-tap
+# sign-in links and Meta's webhook verify token, and a log line holding
+# either is a credential at rest. Caddy's own log still records proxy
+# errors (a request that meets a restarting upstream), so its default log
+# drops the request's URI and headers from every line.
+
+{
+	email {$REKODA_ACME_EMAIL}
+
+	log default {
+		format filter {
+			request>uri delete
+			request>headers delete
+		}
+	}
+
+	servers {
+		# A request's address is its TCP peer, unless that peer is one of the
+		# edge proxies named here (Cloudflare's published ranges when the DNS
+		# records are proxied; empty when they are not). Only then is
+		# CF-Connecting-IP, or X-Forwarded-For read right to left, believed.
+		trusted_proxies static {$REKODA_EDGE_PROXIES}
+		trusted_proxies_strict
+		client_ip_headers CF-Connecting-IP X-Forwarded-For
+	}
+}
+
+# Upstream sees exactly one address: the one decided above. A forged
+# X-Forwarded-For from the internet is replaced, never appended to, so it
+# cannot mint a fresh per-IP rate-limit bucket (G-43). The API trusts only
+# this container's fixed address (REKODA_TRUSTED_PROXIES in the compose file).
+(client_address) {
+	header_up X-Forwarded-For {client_ip}
+}
+
+{$NEXT_PUBLIC_SITE_URL} {
+	encode zstd gzip
+	# The site sets its own security headers (apps/web/next.config.mjs).
+	header -Server
+	reverse_proxy web:3000 {
+		import client_address
+	}
+}
+
+{$REKODA_API_PUBLIC_URL} {
+	encode zstd gzip
+	header {
+		Strict-Transport-Security "max-age=63072000; includeSubDomains"
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy no-referrer
+		-Server
+	}
+	# The API's own limits are the authority (a 2 MB JSON body, a 2 MB photo,
+	# 128 KB webhooks); this only stops the edge buffering anything larger.
+	request_body {
+		max_size 4MB
+	}
+	# Everything on this host is the API: /health, /v1, the public /api/v1,
+	# and the Meta and Paystack webhooks, whose signatures the API verifies
+	# over the exact bytes Caddy forwards.
+	reverse_proxy api:3001 {
+		import client_address
+	}
+}

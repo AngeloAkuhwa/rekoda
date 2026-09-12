@@ -591,3 +591,33 @@ describe('numeric configuration fails closed (launch closeout)', () => {
     expect(config.port).toBe(3001);
   });
 });
+
+/**
+ * `/health` names the build that answered (G-01). Whatever these hold is
+ * served to anyone who asks, so they are validated tokens, never free text.
+ */
+describe('the release label on /health', () => {
+  it('reports unversioned and unknown when the process was not started from an image', () => {
+    const config = loadConfig({ ...BASE });
+    expect(config.release).toBe('unversioned');
+    expect(config.commit).toBe('unknown');
+  });
+
+  it('carries the tag and short commit the image was built with', () => {
+    const config = loadConfig({ ...BASE, REKODA_RELEASE: 'v0.4.1', REKODA_COMMIT: 'b81ef90' });
+    expect(config.release).toBe('v0.4.1');
+    expect(config.commit).toBe('b81ef90');
+  });
+
+  it('treats a blank value as unset', () => {
+    expect(loadConfig({ ...BASE, REKODA_RELEASE: '  ' }).release).toBe('unversioned');
+  });
+
+  it.each(['v1 beta', '<script>', 'a'.repeat(65), '-leading-dash', 'v1/2', 'v1.2.3+build.4'])(
+    'refuses %s at boot rather than serve it',
+    (value) => {
+      expect(() => loadConfig({ ...BASE, REKODA_RELEASE: value })).toThrow(/REKODA_RELEASE/);
+      expect(() => loadConfig({ ...BASE, REKODA_COMMIT: value })).toThrow(/REKODA_COMMIT/);
+    },
+  );
+});

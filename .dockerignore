@@ -1,0 +1,42 @@
+# The build context is the repository minus anything secret, generated or
+# irrelevant. The first block is the security boundary: a secret that is not
+# in the context cannot reach a layer. scripts/check-deploy.mjs fails CI if
+# any of it is removed.
+.env
+.env.*
+**/.env
+**/.env.*
+!.env.example
+secrets/
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
+.git/
+.claude/
+
+# Generated: rebuilt inside the image from source.
+**/node_modules/
+**/dist/
+**/.next/
+**/.turbo/
+**/*.tsbuildinfo
+**/coverage/
+**/test-results/
+**/playwright-report/
+**/.vitest/
+
+# Runtime data a host checkout may hold (.gitignore keeps them out of git);
+# a dump or an upload left here must never be baked into an image.
+data/
+uploads/
+storage/
+logs/
+backups/
+
+# Not part of any image.
+docs/
+design-system/
+*.log
+*.zip
+.DS_Store

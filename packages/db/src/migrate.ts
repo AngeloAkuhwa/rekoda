@@ -10,6 +10,7 @@
  * Runs as the OWNER, not `rekoda_app`. The application role is deliberately
  * not allowed to reshape the schema it is constrained by.
  */
+import { readFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -60,6 +61,25 @@ export async function applyMigrations(
     await sql.end();
   }
   return applied;
+}
+
+/**
+ * The migrations this build carries, by tag: the entries in the journal
+ * shipped beside it. `/health` requires every one of them in
+ * `rekoda_migrations` (G-01), so a new image started before its migrations
+ * ran reports `degraded` instead of `ok`. By tag, not by count, because the
+ * runner records completion by tag and two diverging histories can agree on
+ * a count while one lacks a migration the other needs. Read synchronously
+ * and once, at start-up; a build with no journal throws, because a process
+ * that cannot say which schema it needs should not say it is healthy.
+ */
+export function bundledMigrationTags(migrationsDir = MIGRATIONS_DIR): string[] {
+  const journal = JSON.parse(
+    readFileSync(join(migrationsDir, 'meta', '_journal.json'), 'utf8'),
+  ) as {
+    entries: JournalEntry[];
+  };
+  return journal.entries.map((entry) => entry.tag);
 }
 
 /* Runnable directly: `node dist/migrate.js` */
