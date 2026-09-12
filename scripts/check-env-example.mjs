@@ -94,10 +94,12 @@ function stripCommentsAndStrings(text) {
       const quote = c;
       let j = i + 1;
       let body = '';
+      /* Template expressions are CODE, not string content: `${process.env.X}`
+       * is a read. They are emitted outside the quotes, stripped in turn. */
+      const expressions = [];
       while (j < n && text[j] !== quote) {
         if (text[j] === '\\') j += 1;
         else if (quote === '`' && text[j] === '$' && text[j + 1] === '{') {
-          // Keep template expressions: they may contain reads.
           let depth = 1;
           let k = j + 2;
           while (k < n && depth > 0) {
@@ -105,19 +107,16 @@ function stripCommentsAndStrings(text) {
             else if (text[k] === '}') depth -= 1;
             k += 1;
           }
-          body += ` ${text.slice(j + 2, k - 1)} `;
+          expressions.push(text.slice(j + 2, k - 1));
           j = k;
           continue;
         } else body += text[j];
         j += 1;
       }
       const raw = text.slice(i + 1, j);
-      out +=
-        quote +
-        (ENV_SHAPED.test(raw) || /^[A-Z][A-Z0-9_]+$/.test(raw)
-          ? raw
-          : body.replace(/[^\s${}()A-Za-z0-9_.,:[\]]/g, ' ').replace(/[A-Z][A-Z0-9_]*/g, '')) +
-        quote;
+      const keepWhole = expressions.length === 0 && /^[A-Z][A-Z0-9_]+$/.test(raw);
+      out += quote + (keepWhole ? raw : body.replace(/[A-Z][A-Z0-9_]*/g, '')) + quote;
+      for (const expression of expressions) out += ` (${stripCommentsAndStrings(expression)}) `;
       i = j + 1;
       lastSignificant = quote;
       continue;
