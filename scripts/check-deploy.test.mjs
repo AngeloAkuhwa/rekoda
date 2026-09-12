@@ -236,9 +236,33 @@ test("Caddy's log keeping request URIs, or a proxy that skips the client address
 
 test('the visitor header: set for web, removed on the API host (G-71)', () => {
   const unset = edited('caddyfile', '\t\theader_up X-Rekoda-Client-IP {client_ip}\n', '');
-  expectProblem(problems(unset), /the site must set X-Rekoda-Client-IP to \{client_ip\} for web/);
+  expectProblem(problems(unset), /reverse_proxy web:3000 must set X-Rekoda-Client-IP/);
   const passed = edited('caddyfile', '\t\theader_up -X-Rekoda-Client-IP\n', '');
-  expectProblem(problems(passed), /the API host must remove X-Rekoda-Client-IP/);
+  expectProblem(problems(passed), /reverse_proxy api:3001 must remove X-Rekoda-Client-IP/);
+  /* A second route to web inside the site, and a new hostname for web: each
+   * would hand web whatever a browser sent under the name, so the visitor
+   * picks their own bucket. Both carry client_address, so only this catches
+   * them. */
+  const secondRoute = edited(
+    'caddyfile',
+    '\theader -Server\n\treverse_proxy web:3000 {\n',
+    '\theader -Server\n\thandle /s/* {\n\t\treverse_proxy web:3000 {\n\t\t\timport client_address\n\t\t}\n\t}\n\treverse_proxy web:3000 {\n',
+  );
+  expectProblem(problems(secondRoute), /reverse_proxy web:3000 must set X-Rekoda-Client-IP/);
+  const newHost = edited(
+    'caddyfile',
+    '{$REKODA_API_PUBLIC_URL} {\n',
+    'www.example.com {\n\treverse_proxy web:3000 {\n\t\timport client_address\n\t}\n}\n\n{$REKODA_API_PUBLIC_URL} {\n',
+  );
+  expectProblem(problems(newHost), /reverse_proxy web:3000 must set X-Rekoda-Client-IP/);
+  /* Any other upstream must not receive it either: only web is believed,
+   * but nothing else should be handed a browser's claim under this name. */
+  const other = edited(
+    'caddyfile',
+    '{$REKODA_API_PUBLIC_URL} {\n',
+    'status.example.com {\n\treverse_proxy api:3001 {\n\t\timport client_address\n\t}\n}\n\n{$REKODA_API_PUBLIC_URL} {\n',
+  );
+  expectProblem(problems(other), /reverse_proxy api:3001 must remove X-Rekoda-Client-IP/);
   const untrusted = edited(
     'compose',
     '      REKODA_TRUSTED_WEB: 172.30.10.11\n',

@@ -95,6 +95,15 @@ describe('parseTrustedWeb', () => {
     expect(() => parseTrustedWeb('172.30.10.11,web')).toThrow(/not an address or CIDR: web/);
   });
 
+  /* ipaddr.js reads these as real addresses (172.30.10 is 172.30.0.10), so a
+   * typo would boot trusting some other peer and quietly believe nobody. */
+  it.each(['172.30.10', '0xac.30.10.11', '2886732299', '0254.30.10.11/32', '172.30.10.0/2x'])(
+    'refuses %s, which is not written as a plain address',
+    (value) => {
+      expect(() => parseTrustedWeb(value)).toThrow(/not an address or CIDR/);
+    },
+  );
+
   it('is empty only when nothing was set', () => {
     expect(parseTrustedWeb(undefined)).toEqual([]);
     expect(parseTrustedWeb('  ')).toEqual([]);

@@ -283,13 +283,14 @@ services:
 
 networks:
   # Caddy, web and api. Fixed so REKODA_TRUSTED_PROXIES can name Caddy
-  # exactly; change both together if the range collides with the host's.
+  # (.10) and REKODA_TRUSTED_WEB can name web (.11) exactly; change them
+  # together if the range collides with the host's.
   edge:
     ipam:
       config:
         - subnet: 172.30.10.0/24
           # Dynamic addresses come from the upper half only, so a recreated
-          # container can never take Caddy's fixed .10.
+          # container can never take Caddy's fixed .10 or web's fixed .11.
           ip_range: 172.30.10.128/25
   # PostgreSQL and the three processes that may reach it. No egress at all.
   db:

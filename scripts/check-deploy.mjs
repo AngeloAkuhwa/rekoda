@@ -342,28 +342,36 @@ export function problemsFor({ compose, dockerfile, caddyfile, dockerignore, giti
   if (!/request>uri\s+delete/.test(caddyCode) || !/request>headers\s+delete/.test(caddyCode)) {
     problems.push(`${FILES.caddyfile} must delete request>uri and request>headers from its log`);
   }
-  /* The visitor header (G-71): the site sets it from the address decided
-   * above, so a browser's own copy is replaced; the API host removes it, so
-   * only the web tier ever delivers it to the API. */
-  const siteBlock = (opener) => {
-    const start = caddyCode.indexOf(`${opener} {`);
-    if (start < 0) return '';
+  /* The visitor header (G-71), checked on every reverse_proxy rather than
+   * one site block, so a second route or a new hostname cannot skip it.
+   * Every proxy to web sets it from the address decided above, so a
+   * browser's own copy is replaced; every other proxy removes it, so only
+   * the web tier ever delivers it to the API. */
+  const blockFrom = (start) => {
+    const open = caddyCode.indexOf('{', start);
+    const lineEnd = caddyCode.indexOf('\n', start);
+    if (open < 0 || (lineEnd >= 0 && open > lineEnd)) return '';
     let depth = 0;
-    for (let i = caddyCode.indexOf('{', start + opener.length); i < caddyCode.length; i++) {
+    for (let i = open; i < caddyCode.length; i++) {
       if (caddyCode[i] === '{') depth += 1;
-      else if (caddyCode[i] === '}' && --depth === 0) return caddyCode.slice(start, i + 1);
+      else if (caddyCode[i] === '}' && --depth === 0) return caddyCode.slice(open, i + 1);
     }
-    return caddyCode.slice(start);
+    return caddyCode.slice(open);
   };
-  const siteBody = siteBlock('{$NEXT_PUBLIC_SITE_URL}');
-  const apiBody = siteBlock('{$REKODA_API_PUBLIC_URL}');
-  if (!/header_up\s+X-Rekoda-Client-IP\s+\{client_ip\}/i.test(siteBody)) {
-    problems.push(
-      `${FILES.caddyfile}: the site must set X-Rekoda-Client-IP to {client_ip} for web`,
-    );
-  }
-  if (!/header_up\s+-X-Rekoda-Client-IP\b/i.test(apiBody)) {
-    problems.push(`${FILES.caddyfile}: the API host must remove X-Rekoda-Client-IP`);
+  for (const proxy of caddyCode.matchAll(/^[ \t]*reverse_proxy[ \t]+([^\n{]*)/gm)) {
+    const upstreams = proxy[1].trim();
+    const body = blockFrom(proxy.index);
+    if (/(^|\s)web:/.test(upstreams)) {
+      if (!/header_up\s+X-Rekoda-Client-IP\s+\{client_ip\}/i.test(body)) {
+        problems.push(
+          `${FILES.caddyfile}: reverse_proxy ${upstreams} must set X-Rekoda-Client-IP to {client_ip} for web`,
+        );
+      }
+    } else if (!/header_up\s+-X-Rekoda-Client-IP\b/i.test(body)) {
+      problems.push(
+        `${FILES.caddyfile}: reverse_proxy ${upstreams} must remove X-Rekoda-Client-IP; only web may receive it`,
+      );
+    }
   }
   const proxies = (caddyCode.match(/^\s*reverse_proxy\b/gm) ?? []).length;
   const addressed = (caddyCode.match(/^\s*import client_address\b/gm) ?? []).length;

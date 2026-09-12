@@ -376,12 +376,14 @@ direct() {
   fail 'a limited caller escaped by sending the header to the API host'
 [ "$(direct 203.0.113.76 -H "X-Rekoda-Client-IP: $A")" = 401 ] ||
   fail 'a caller borrowed another visitor’s bucket on the API host'
-# IPv6 visitors count by /64: a fresh address from the same allocation is
-# already spent, and the next allocation is not.
+# IPv6 visitors count by exactly /64: the far end of the same /64 is already
+# spent (so the key is no longer than /64), and the neighbouring /64, which
+# shares the first 63 bits, is not (so it is no shorter).
 exhaust 2001:db8:71::1
 echo "visitor 2001:db8:71::1 refused at view $((LIMIT + 1)) through web"
-[ "$(view 2001:db8:71::ffff)" = 429 ] || fail 'a new address in the same IPv6 /64 got a fresh bucket'
-[ "$(view 2001:db8:72::1)" = 401 ] || fail 'the next IPv6 /64 shared a bucket'
+[ "$(view 2001:db8:71:0:ffff:ffff:ffff:ffff)" = 429 ] ||
+  fail 'a new address in the same IPv6 /64 got a fresh bucket'
+[ "$(view 2001:db8:71:1::1)" = 401 ] || fail 'the neighbouring IPv6 /64 shared a bucket'
 echo 'ok'
 
 step 'nothing tried to write where the images keep code read-only'

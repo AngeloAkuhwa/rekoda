@@ -78,14 +78,19 @@ every visitor now has their own per-IP bucket on both roads to the API.
 Caddy, still the only trust boundary, writes the address it decided to web
 as `X-Rekoda-Client-IP` (replacing any browser copy) and removes that header
 on the API host; web hands the one value on, in the same header, from all
-five places it calls the API (`apps/web/src/server/client-address.ts`; a
-unit test fails if a new caller forgets); the API believes it only when the
+five places it calls the API (`apps/web/src/server/client-address.ts`;
+`visitor-forwarding.test.ts` runs all five against a stubbed `fetch` and
+fails if one stops carrying the visitor, and a source scan catches a new
+caller that never calls the helper); the API believes it only when the
 TCP peer is web's fixed address `172.30.10.11` (`REKODA_TRUSTED_WEB`,
 required in production) and otherwise keys on Fastify's proxy-derived address
 as before (`apps/api/src/client-address.ts`). Keys are per IPv4 address and
 per IPv6 /64. Proved by an API integration suite (seven cases, six of which
 fail with the old key), and by `deploy-smoke.sh` driving two visitors and an
-IPv6 /64 through the real Caddy, web and API. G-43's OTP half is met on both
+IPv6 /64 through the real Caddy, web's export route and the API (Caddy
+trusting the runner as it would Cloudflare). Found in review and recorded,
+not solved: G-73 (a page of many product photos spends its visitor's
+minute) and a separator-only `REKODA_TRUSTED_PROXIES` booting (G-43 row). G-43's OTP half is met on both
 roads; its replica half remains.
 
 **Previous work (12 Sep 2026, G-01, merged as `c508709`; CODE COMPLETE, NOT YET ON A HOST):**

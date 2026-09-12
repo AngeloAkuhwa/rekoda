@@ -23,6 +23,7 @@
  * request the web tier made (every dashboard page, every storefront order,
  * every sign-in code) arrived from web's one address and shared one bucket.
  */
+import { isIP } from 'node:net';
 import ipaddr from 'ipaddr.js';
 
 /** The one header the web tier uses to say which visitor it is calling for. */
@@ -47,6 +48,17 @@ export function parseTrustedWeb(raw: string | undefined): Range[] {
     throw new Error(`REKODA_TRUSTED_WEB is set but names no address or CIDR: ${raw}`);
   }
   return entries.map((entry) => {
+    /* Written as a plain address, as the compose file writes it. ipaddr.js
+     * also reads shorthand, octal and integer forms (172.30.10 is
+     * 172.30.0.10), so a typo would boot trusting some other peer. */
+    const [address = '', prefix, ...extra] = entry.split('/');
+    if (
+      isIP(address) === 0 ||
+      extra.length > 0 ||
+      (prefix !== undefined && !/^\d{1,3}$/.test(prefix))
+    ) {
+      throw new Error(`REKODA_TRUSTED_WEB has an entry that is not an address or CIDR: ${entry}`);
+    }
     let range: Range;
     try {
       if (entry.includes('/')) {

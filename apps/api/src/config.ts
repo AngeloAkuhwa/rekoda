@@ -521,16 +521,6 @@ function releaseLabel(env: NodeJS.ProcessEnv, key: string, fallback: string): st
 }
 
 /**
- * The voice length limit, which now gates a capability rather than merely
- * describing one.
- *
- * A blank or mistyped value used to be harmless; since this is the limit a
- * note is measured against before the transcriber runs, a NaN or a zero would
- * refuse every voice note as too long, which reads to a merchant as the
- * product being broken and to an engineer as a metering bug rather than a
- * typo. Boot is the right place to say so.
- */
-/**
  * Required in production, like REKODA_TRUSTED_PROXIES: without it every
  * visitor the web tier calls for shares web's one address, so one busy
  * dashboard throttles everyone's sign-in (G-71). A value that does not parse
@@ -553,6 +543,16 @@ function trustedWeb(env: NodeJS.ProcessEnv, isProduction: boolean) {
   }
 }
 
+/**
+ * The voice length limit, which now gates a capability rather than merely
+ * describing one.
+ *
+ * A blank or mistyped value used to be harmless; since this is the limit a
+ * note is measured against before the transcriber runs, a NaN or a zero would
+ * refuse every voice note as too long, which reads to a merchant as the
+ * product being broken and to an engineer as a metering bug rather than a
+ * typo. Boot is the right place to say so.
+ */
 function voiceWindowSeconds(env: NodeJS.ProcessEnv): number {
   return positiveInteger(env, 'VOICE_NOTE_MAX_DURATION_SECONDS', 120);
 }
