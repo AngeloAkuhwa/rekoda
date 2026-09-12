@@ -177,7 +177,12 @@ function readsInFile(code) {
       /^\s*=(?!=)/.test(code.slice(m.index + m[0].length)) ||
       /\bdelete\s+$/.test(code.slice(0, m.index));
     const helper = new RegExp(`\\(\\s*${obj}\\s*,\\s*['"](${NAME})['"]`, 'g');
-    const destructure = new RegExp(`\\{([^}]*)\\}\\s*=\\s*${start}\\b(?![.[])`, 'g');
+    /* `const { X } = obj`, a parameter `({ X } = process.env)`, and a typed
+     * parameter `({ X }: NodeJS.ProcessEnv)` all read X. */
+    const destructure = new RegExp(
+      `\\{([^}]*)\\}\\s*(?:=\\s*${start}\\b(?![.[])|:\\s*NodeJS\\.ProcessEnv\\b)`,
+      'g',
+    );
     const computedAccess = new RegExp(`${start}(?:\\?\\.)?\\[\\s*[A-Za-z_$][\\w$]*\\s*\\]`);
     for (const re of [dot, bracket]) {
       for (const m of code.matchAll(re)) if (!isWrite(m)) names.push(m[1]);
