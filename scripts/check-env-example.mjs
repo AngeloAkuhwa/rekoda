@@ -30,7 +30,8 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = join(fileURLToPath(import.meta.url), '..', '..');
 
-/** Product code: every source tree a deployment runs. Test files and the
+/** Product code: every source tree a deployment runs, plus the package-level
+ * executable configs (drizzle) that read the environment. Test files and the
  * harness files below are skipped here and scanned as harnesses instead. */
 const PRODUCT = [
   'apps/api/src',
@@ -38,6 +39,7 @@ const PRODUCT = [
   'apps/web/legal-gate.mjs',
   'apps/web/next.config.mjs',
   'packages/db/src',
+  'packages/db/drizzle.config.ts',
   'packages/core/src',
   'packages/contracts/src',
   'packages/shared/src',
@@ -58,6 +60,21 @@ const ACCESSORS = [
  * on the left is a read. Nothing in the tree does this today; the form is
  * common enough that a guard which cannot see it is a guard with a hole. */
 const DESTRUCTURING = /\{([^}]*)\}\s*=\s*(?:process\.env|env)\b/g;
+/**
+ * Computed access, `env[name]` with `name` a variable: the guard cannot
+ * resolve it, so it treats every environment-shaped string literal in that
+ * file as a read. `apps/web/legal-gate.mjs` walks `MANDATORY_LEGAL_VARS` this
+ * way; a name added to that inventory is then demanded of the template. Files
+ * whose computed access is a helper fed by literal call sites (loadConfig's
+ * `required(env, 'X')`) contribute the same literals twice, harmlessly.
+ */
+const COMPUTED = /(?:process.)?env[s*[A-Za-z_$][w$]*s*]/;
+const INVENTORY_LITERAL = /['"]([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)['"]/g;
+function inventoryNames(text) {
+  if (!COMPUTED.test(text)) return [];
+  return [...text.matchAll(INVENTORY_LITERAL)].map((m) => m[1]);
+}
+
 function destructuredNames(text) {
   const names = [];
   for (const match of text.matchAll(DESTRUCTURING)) {
@@ -102,6 +119,7 @@ function readsIn(paths, { includeTests }) {
       };
       for (const re of ACCESSORS) for (const match of text.matchAll(re)) record(match[1]);
       for (const name of destructuredNames(text)) record(name);
+      for (const name of inventoryNames(text)) record(name);
     }
   }
   return names;
