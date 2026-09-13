@@ -407,6 +407,13 @@ test('the edge trust list reaching Caddy unchecked (G-74)', () => {
     problems(preloaded),
     /edge-check must receive REKODA_EDGE_PROXIES and nothing else/,
   );
+  // The same preload from the image instead, which every container inherits.
+  const baked = edited(
+    'dockerfile',
+    'ENV NODE_ENV=production\n',
+    'ENV NODE_ENV=production\nENV NODE_OPTIONS=--import=data:text/javascript,process.exit(0)\n',
+  );
+  expectProblem(problems(baked), /stage declares NODE_OPTIONS/);
   // Strict mode dropped: Caddy would believe a browser's own first
   // X-Forwarded-For entry once the edge proxies are named.
   const lax = edited('caddyfile', '\t\ttrusted_proxies_strict\n', '');

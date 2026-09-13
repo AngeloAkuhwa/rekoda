@@ -385,6 +385,15 @@ export function problemsFor({ compose, dockerfile, caddyfile, dockerignore, giti
       if (SECRET_SHAPED.test(name) && !name.startsWith('NEXT_PUBLIC_')) {
         problems.push(`the ${stageName} stage declares ${name}; a secret would stay in the image`);
       }
+      /* The image's own environment reaches every container built from it,
+       * ${EDGE_CHECK} included, and NODE_OPTIONS can preload a module that
+       * exits before the check runs (G-74). Giving the job one variable is
+       * no use if the image hands it another. */
+      if (name === 'NODE_OPTIONS') {
+        problems.push(
+          `the ${stageName} stage declares NODE_OPTIONS; it would preload into every container, ${EDGE_CHECK} included`,
+        );
+      }
     }
   }
   const ignored = new Set(
