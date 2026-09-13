@@ -183,7 +183,8 @@ G-71 (web's server-side calls share one per-IP bucket, P1) and G-72
 3. Claude supports the staging bring-up. G-02 (backups per OD-7, which a
    real host needs before real data), G-07 (the eval harness), G-73 (the
    photo budget) and G-76 (the G-75 review's carry-forward findings) wait
-   until staging is online (owner, 13 Sep 2026). G-06 is code complete and NOT live-verified until the G-05 drill
+   until staging is online (owner, 13 Sep 2026); G-76's cases 2 and 3
+   (caddy's fields and mounts, top-level `include:`) close before private beta. G-06 is code complete and NOT live-verified until the G-05 drill
    confirms the real Paystack envelopes.
 
 **Known P0 blockers:** G-01 staging host (code complete) · G-02 backups · G-03
