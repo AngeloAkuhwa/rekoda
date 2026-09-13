@@ -54,6 +54,10 @@ export const DOCKERIGNORE_REQUIRED = [
 ];
 /** The only services that may load .env, which holds every application secret. */
 export const ENV_FILE_LOADERS = ['api', 'migrate', 'worker'];
+/** The one-shot job that checks Caddy's own trust list before it serves (G-74). */
+export const EDGE_CHECK = 'edge-check';
+export const EDGE_PROXIES = 'REKODA_EDGE_PROXIES';
+export const EDGE_CHECK_COMMAND = 'dist/edge-proxies.js';
 /** The worker's stop grace must outlast the longest job (seconds). */
 export const WORKER_GRACE_SECONDS = 120;
 
@@ -76,7 +80,12 @@ const secretsOf = (svc) => asList(svc?.secrets).map((s) => (typeof s === 'string
 const conditionOf = (svc, dep) => {
   const d = svc?.depends_on;
   if (Array.isArray(d)) return d.includes(dep) ? 'service_started' : null;
-  return d?.[dep] ? (d[dep].condition ?? 'service_started') : null;
+  const entry = d?.[dep];
+  if (!entry) return null;
+  /* `required: false` turns a dependency that never arrives into a warning,
+   * so the condition no longer gates anything: read it as no dependency. */
+  if (entry.required === false) return null;
+  return entry.condition ?? 'service_started';
 };
 
 export function problemsFor({ compose, dockerfile, caddyfile, dockerignore, gitignore, nvmrc }) {
@@ -263,6 +272,83 @@ export function problemsFor({ compose, dockerfile, caddyfile, dockerignore, giti
     }
   }
 
+  /* The edge trust list is Caddy's alone: no Rekoda process reads it, so
+   * the boot rules cannot refuse a universal value (G-74). A one-shot job
+   * in the app image checks it, and Caddy waits for that job to succeed. */
+  const edge = svc(EDGE_CHECK);
+  if (!edge) {
+    problems.push(
+      `${FILES.compose} has no ${EDGE_CHECK} service; ${EDGE_PROXIES} would go unchecked`,
+    );
+  } else {
+    if (edge.image !== svc('api')?.image) {
+      problems.push(`${EDGE_CHECK} must run the same image as the api, which holds the check`);
+    }
+    const edgeEnv = keyed(edge.environment);
+    if (edgeEnv.get(EDGE_PROXIES) !== `\${${EDGE_PROXIES}:-}`) {
+      problems.push(`${EDGE_CHECK} must receive ${EDGE_PROXIES} exactly as caddy does`);
+    }
+    /* That variable and nothing else: NODE_OPTIONS can preload a module
+     * (`--import=data:text/javascript,process.exit(0)`) that exits 0 before
+     * the check runs, and caddy would take the exit as a pass. */
+    if (edgeEnv.size !== 1) {
+      problems.push(
+        `${EDGE_CHECK} must receive ${EDGE_PROXIES} and nothing else; another variable can stop the check running`,
+      );
+    }
+    if (asList(edge.profiles).length > 0) {
+      problems.push(`${EDGE_CHECK} sits behind a profile; \`up\` would start caddy without it`);
+    }
+    /* The exact command, not a command mentioning the file: `node -e
+     * 'process.exit(0)' dist/edge-proxies.js` would leave caddy waiting on a
+     * job that checked nothing. */
+    const edgeCommand = asList(edge.command).map(String);
+    if (
+      edgeCommand.length !== 2 ||
+      edgeCommand[0] !== 'node' ||
+      edgeCommand[1] !== EDGE_CHECK_COMMAND
+    ) {
+      problems.push(
+        `${EDGE_CHECK} must run exactly \`node ${EDGE_CHECK_COMMAND}\`, the check itself`,
+      );
+    }
+    /* An entrypoint makes the command its arguments: `entrypoint: ['true']`
+     * exits 0 without reading anything, and caddy would serve. */
+    /* Every rule here reads the service as written. `extends` would merge in
+     * fields from elsewhere (an entrypoint, a mount) that none of them sees. */
+    if (edge.extends !== undefined) {
+      problems.push(`${EDGE_CHECK} must not extend another service; inherited fields go unchecked`);
+    }
+    if (edge.entrypoint !== undefined) {
+      problems.push(`${EDGE_CHECK} must not override its entrypoint; the command is the check`);
+    }
+    /* A mount can replace the file the command runs
+     * (`/dev/null:/repo/apps/api/dist/edge-proxies.js:ro` exits 0 having read
+     * nothing), and read_only does not stop a bind mount. */
+    /* Not tmpfs, which the job uses and which can only hide the code, never
+     * substitute it: the module would be missing and the check would fail. */
+    const mounts = ['volumes', 'volumes_from', 'configs', 'secrets', 'devices'].filter(
+      (key) => asList(edge[key]).length > 0,
+    );
+    if (mounts.length > 0) {
+      problems.push(
+        `${EDGE_CHECK} must mount nothing (found ${mounts.join(', ')}); any mount can replace the check it runs`,
+      );
+    }
+    /* A one-shot with no healthcheck: `up --wait` waits for it to COMPLETE
+     * only because it is not expected to keep running. Left to restart, the
+     * wait would hang or pass on a container that never checked anything. */
+    if (String(edge.restart ?? '') !== 'no') {
+      problems.push(`${EDGE_CHECK} must set restart: 'no'; it runs once, before caddy`);
+    }
+  }
+  if (conditionOf(svc('caddy'), EDGE_CHECK) !== 'service_completed_successfully') {
+    problems.push(`caddy must wait for ${EDGE_CHECK} to succeed before it serves`);
+  }
+  if (keyed(svc('caddy')?.environment).get(EDGE_PROXIES) !== `\${${EDGE_PROXIES}:-}`) {
+    problems.push(`caddy must read ${EDGE_PROXIES} from .env, the value ${EDGE_CHECK} checks`);
+  }
+
   // Third-party images carry a version, never a moving default.
   for (const name of ['postgres', 'caddy']) {
     const image = String(svc(name)?.image ?? '');
@@ -290,7 +376,32 @@ export function problemsFor({ compose, dockerfile, caddyfile, dockerignore, giti
     );
   }
   for (const [name, s] of Object.entries(services)) {
-    const target = s?.build?.target;
+    /* Every stage rule below reads THIS file, so a build that names another
+     * Dockerfile, or carries one inline, is checked against the wrong one. */
+    const build = s?.build;
+    /* The short form is the context itself: `build: ./alternate` builds that
+     * directory's Dockerfile while every stage rule reads the root one. */
+    if (typeof build === 'string' && build !== '.') {
+      problems.push(`${name} builds from context ${build}; only the repository root is checked`);
+    }
+    if (build && typeof build === 'object') {
+      if (build.dockerfile !== undefined && build.dockerfile !== FILES.dockerfile) {
+        problems.push(
+          `${name} builds from ${build.dockerfile}; only ${FILES.dockerfile} is checked`,
+        );
+      }
+      if (build.dockerfile_inline !== undefined) {
+        problems.push(`${name} carries an inline Dockerfile, which no guard reads`);
+      }
+      /* The context decides which Dockerfile a bare `target` means: another
+       * directory builds its own Dockerfile while this guard reads the root. */
+      if (build.context !== undefined && build.context !== '.') {
+        problems.push(
+          `${name} builds from context ${build.context}; only the repository root is checked`,
+        );
+      }
+    }
+    const target = build?.target;
     if (!target) continue;
     const stage = stages.get(target);
     if (!stage) {
@@ -316,6 +427,23 @@ export function problemsFor({ compose, dockerfile, caddyfile, dockerignore, giti
       if (SECRET_SHAPED.test(name) && !name.startsWith('NEXT_PUBLIC_')) {
         problems.push(`the ${stageName} stage declares ${name}; a secret would stay in the image`);
       }
+      /* The image's own environment reaches every container built from it,
+       * ${EDGE_CHECK} included, and NODE_OPTIONS can preload a module that
+       * exits before the check runs (G-74). Giving the job one variable is
+       * no use if the image hands it another. */
+      if (name === 'NODE_OPTIONS') {
+        problems.push(
+          `the ${stageName} stage declares NODE_OPTIONS; it would preload into every container, ${EDGE_CHECK} included`,
+        );
+      }
+    }
+    /* The images run a CMD only. An image ENTRYPOINT would make every
+     * command its arguments, ${EDGE_CHECK}'s included, which is the same
+     * neutering the compose-level rule refuses. */
+    if (stage.entrypoint) {
+      problems.push(
+        `the ${stageName} stage declares ENTRYPOINT; it would take over every command, ${EDGE_CHECK}'s included`,
+      );
     }
   }
   const ignored = new Set(
@@ -338,6 +466,63 @@ export function problemsFor({ compose, dockerfile, caddyfile, dockerignore, giti
   const logLines = caddyCode.split('\n').filter((l) => /^\s*log(\s|\{|$)/.test(l));
   if (logLines.some((l) => !/^\s*log default \{\s*$/.test(l))) {
     problems.push(`${FILES.caddyfile} enables a log; access lines would record sign-in tokens`);
+  }
+  /* Caddy's client address comes from the value edge-check reads (G-74):
+   * a literal list here, or a different variable, would be unchecked. */
+  /* The whole directive, not a substring: `trusted_proxies static
+   * {$REKODA_EDGE_PROXIES} 0.0.0.0/0` would keep the variable and still
+   * trust everyone, which is the likeliest way to undo this. */
+  /* The three directives that decide a client's address. Each must appear
+   * exactly once in the whole file, written exactly as pinned, inside the
+   * address-less `servers` block that applies to every listener:
+   *
+   *   - trusted_proxies: from the value edge-check checks, and nothing else
+   *     (a literal list, or a second directive, would be unchecked);
+   *   - trusted_proxies_strict: without it Caddy takes the LEFTMOST
+   *     X-Forwarded-For entry, which a browser writes and Cloudflare appends
+   *     to, the forged address G-43 and G-71 close;
+   *   - client_ip_headers: exactly these two. Caddy merges repeated lines, so
+   *     a second line naming X-Client-IP (which Cloudflare passes through
+   *     untouched) would put a browser-set header first.
+   *
+   * Counting across the file, not just the block, is what keeps a copy in a
+   * snippet or a listener-specific block from being mistaken for the real
+   * one; a quoted directive name is the same directive to Caddy. */
+  const PINNED = [
+    ['trusted_proxies', `trusted_proxies static {$${EDGE_PROXIES}}`],
+    ['trusted_proxies_strict', 'trusted_proxies_strict'],
+    ['client_ip_headers', 'client_ip_headers CF-Connecting-IP X-Forwarded-For'],
+  ];
+  const directive = (line) => line.trim().replace(/^"([^"\s]+)"/, '$1');
+  const serversBlock = (() => {
+    const found = /(?:^|\s)servers\s*\{/.exec(caddyCode);
+    if (!found) return '';
+    let depth = 0;
+    for (let i = caddyCode.indexOf('{', found.index); i < caddyCode.length; i++) {
+      if (caddyCode[i] === '{') depth += 1;
+      else if (caddyCode[i] === '}' && --depth === 0) return caddyCode.slice(found.index, i + 1);
+    }
+    return '';
+  })();
+  const blockLines = serversBlock.split('\n').map(directive);
+  /* An import there brings in lines this guard never reads (`import
+   * unsafe.caddy` can add `trusted_proxies static 0.0.0.0/0`). The deploy
+   * smoke checks what Caddy actually computes; this refuses it sooner. */
+  if (blockLines.some((line) => line.split(/\s+/)[0] === 'import')) {
+    problems.push(
+      `${FILES.caddyfile} must not import anything into the servers block; the client address depends on what it holds`,
+    );
+  }
+  for (const [name, pinned] of PINNED) {
+    const everywhere = caddyCode
+      .split('\n')
+      .map(directive)
+      .filter((line) => line.split(/\s+/)[0] === name);
+    if (everywhere.length !== 1 || everywhere[0] !== pinned || !blockLines.includes(pinned)) {
+      problems.push(
+        `${FILES.caddyfile} must set \`${pinned}\` exactly once, in the servers block, and nowhere else (found ${everywhere.length}); the client address depends on it`,
+      );
+    }
   }
   if (!/request>uri\s+delete/.test(caddyCode) || !/request>headers\s+delete/.test(caddyCode)) {
     problems.push(`${FILES.caddyfile} must delete request>uri and request>headers from its log`);

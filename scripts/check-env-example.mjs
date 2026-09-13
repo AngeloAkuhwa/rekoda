@@ -589,9 +589,18 @@ export function parseDockerfile(text) {
     const env = line.match(/^ENV\s+(.*)$/i);
     if (env) {
       for (const m of env[1].matchAll(/(?:^|\s)([A-Z_][A-Z0-9_]*)=/g)) current.env.add(m[1]);
+      /* Docker still takes the space-separated `ENV NAME value` form, which
+       * sets exactly one name and carries no `=`. Missing it would leave
+       * every rule about what an image declares half blind. */
+      const legacy = env[1].match(/^([A-Z_][A-Z0-9_]*)[ \t]+\S/);
+      if (legacy) current.env.add(legacy[1]);
     }
     const user = line.match(/^USER\s+(\S+)/i);
     if (user) current.user = user[1];
+    /* An ENTRYPOINT takes over every command the image is given, which
+     * check-deploy refuses for the stage the edge check runs in (G-74). */
+    const entrypoint = line.match(/^ENTRYPOINT\s+(.*)$/i);
+    if (entrypoint) current.entrypoint = entrypoint[1].trim();
   }
   return { globalArgs, stages };
 }

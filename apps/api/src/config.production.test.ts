@@ -245,6 +245,9 @@ describe('REKODA_TRUSTED_PROXIES', () => {
     '::/16',
     '::/80',
     '::/64',
+    /* No entry too wide on its own, the union still the whole internet
+     * (G-74's aggregate rule, which this list shares). */
+    '1.0.0.0/9, 20.0.0.0/9, 40.0.0.0/9',
   ])('production refuses %s, which trusts effectively the whole internet', (value) => {
     expect(() => trustedProxies({ ...PROD, REKODA_TRUSTED_PROXIES: value })).toThrow(
       /REKODA_TRUSTED_PROXIES trusts .* effectively the whole internet/,

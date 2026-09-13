@@ -10,7 +10,7 @@ import type { OperatorAuthConfig } from './auth/operator-identity.js';
 import {
   parseTrustedProxies,
   parseTrustedWeb,
-  universalRange,
+  universalProblem,
   type Range,
 } from './client-address.js';
 import { MONO_API, PAYSTACK_API, nonPublicReason } from './endpoints.js';
@@ -596,13 +596,8 @@ export function trustedProxies(env: NodeJS.ProcessEnv): true | string[] {
 }
 
 function refuseUniversal(name: string, ranges: readonly Range[]): void {
-  const universal = universalRange(ranges);
-  if (!universal) return;
-  throw new ConfigError(
-    `${name} trusts ${universal[0].toString()}/${universal[1]}, which is effectively the whole ` +
-      'internet: any caller in it could claim to be any visitor. Name the actual addresses ' +
-      '(the compose file uses one fixed address).',
-  );
+  const problem = universalProblem(name, ranges);
+  if (problem) throw new ConfigError(problem);
 }
 
 /**
