@@ -137,6 +137,8 @@ const LOCAL_ENDPOINTS = [
   ['a .invalid name', 'https://model.example.invalid/v1'],
   ['a .test name', 'https://issuer.test/v1'],
   ['a .example name', 'https://service.example/v1'],
+  ['a .onion name', 'https://model.onion/v1'],
+  ['an .alt name', 'https://model.alt/v1'],
   ['credentials in the URL', 'https://user:pw@api.groq.com/openai/v1'],
   ['not a URL', 'api.groq.com/openai/v1'],
 ] as const;

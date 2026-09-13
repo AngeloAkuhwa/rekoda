@@ -35,6 +35,11 @@ const LOCAL_SUFFIXES = [
   'invalid',
   'test',
   'example',
+  /* Special-use namespaces that are not DNS at all: Tor's `.onion`
+   * (RFC 7686), which this runtime cannot reach, and `.alt` (RFC 9476),
+   * for non-DNS resolution. Either can be answered by a local resolver. */
+  'onion',
+  'alt',
 ];
 
 /**

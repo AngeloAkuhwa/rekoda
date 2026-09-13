@@ -290,7 +290,8 @@ restore from backup, and **there is no backup mechanism yet** (G-02 in
   `REKODA_LOCAL_STORAGE`, `PAYSTACK_BASE_URL`, `MONO_BASE_URL`. The compose
   file names none of them and CI keeps it that way, but `.env` reaches the
   api and the worker whole, so the api and the worker also refuse to boot
-  with the last three set (G-72).
+  with `REKODA_LOCAL_STORAGE` set, or with either provider URL set to
+  anything but that provider's own host (G-72; the exact rules are below).
 - **Never `dc down -v`** outside a throwaway machine.
 - **Never read an empty `psql` result as the app role as data loss:** RLS
   shows `rekoda_app` nothing until a tenant is pinned.
