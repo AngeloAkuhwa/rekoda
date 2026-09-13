@@ -247,8 +247,8 @@ for value in '173.245.48.0/20 104.16.0.0/13 2400:cb00::/32 2a06:98c0::/29' 'priv
   }
 done
 # And the gate is really in front of Caddy. The same `up`, on the same
-# stack, twice: with a universal value it must fail and Caddy must never be
-# created; with the documented empty value it must succeed. That pair is what
+# stack, twice: with a universal value it must fail and Caddy must never
+# start; with the documented empty value it must succeed. That pair is what
 # attributes the failure to the value rather than to an unhealthy api, which
 # would fail both. Compose's own wording is not used: it differs by version
 # and by dependency condition.
@@ -256,9 +256,16 @@ set_env REKODA_EDGE_PROXIES 0.0.0.0/0
 if timeout 300 "${COMPOSE[@]}" up -d --wait --wait-timeout 240 caddy >"$WORK/edge-up.log" 2>&1; then
   fail 'caddy started with a universal edge trust list'
 fi
-# `ps -aq`, not `ps -q`: a caddy that started and then exited is not running
-# either, and that is not the same as never having served.
-[ -z "$("${COMPOSE[@]}" ps -aq caddy)" ] || fail 'caddy was created despite a refused edge trust list'
+# Compose creates the container for a service whose dependency then fails,
+# so the question is not whether one exists: it is whether it ever ran.
+# `created` is the state of a container that was never started; `running` or
+# `exited` would both mean Caddy served, or tried to.
+caddy_container=$("${COMPOSE[@]}" ps -aq caddy | head -n 1)
+if [ -n "$caddy_container" ]; then
+  caddy_state=$(docker inspect -f '{{.State.Status}}' "$caddy_container")
+  [ "$caddy_state" = created ] ||
+    fail "caddy is $caddy_state after a refused edge trust list, so it started"
+fi
 "${COMPOSE[@]}" logs --no-color edge-check >"$WORK/edge-job.log" 2>&1 || true
 grep -q -F 'REKODA_EDGE_PROXIES trusts' "$WORK/edge-job.log" || {
   cat "$WORK/edge-up.log" "$WORK/edge-job.log"
