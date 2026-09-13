@@ -10,6 +10,7 @@ import { bootChecks, isEntrypoint, type Db } from '@rekoda/db';
 import { MAX_IMAGE_BYTES } from '@rekoda/core';
 import { publicApi } from '@rekoda/contracts';
 import { CONFIG, isProductionEnv, loadConfig, type ApiConfig } from './config.js';
+import { clientAddress, rateLimitKey } from './client-address.js';
 
 function trustedProxies(): boolean | string[] {
   const raw = process.env['REKODA_TRUSTED_PROXIES']?.trim();
@@ -227,7 +228,10 @@ export async function createApp(): Promise<NestFastifyApplication> {
       request.url === '/health' ||
       request.url === '/webhooks/meta' ||
       request.url === '/webhooks/paystack',
-    keyGenerator: (request) => request.ip,
+    /* The visitor, not the hop: Caddy's X-Forwarded-For entry on a direct
+     * call, the web tier's X-Rekoda-Client-IP when web calls for a visitor
+     * (and only when the peer IS the web tier), IPv6 by its /64 (G-71). */
+    keyGenerator: (request) => rateLimitKey(clientAddress(request, config.trustedWeb)),
     /* The public API gets the public envelope. A client that branches on
      * `error.code` must not meet a different body just because the refusal
      * came from the per-IP limiter rather than from its key's ceiling. */

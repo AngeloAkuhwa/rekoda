@@ -44,6 +44,10 @@
 	header -Server
 	reverse_proxy web:3000 {
 		import client_address
+		# The address decided above, for web to hand on to the API on every
+		# call it makes for this visitor (G-71). Set, so whatever a browser
+		# sent under this name is replaced, never passed through.
+		header_up X-Rekoda-Client-IP {client_ip}
 	}
 }
 
@@ -66,5 +70,8 @@
 	# over the exact bytes Caddy forwards.
 	reverse_proxy api:3001 {
 		import client_address
+		# Only the web tier may name the visitor, and only from its own address;
+		# a browser cannot even deliver the header to the API (G-71).
+		header_up -X-Rekoda-Client-IP
 	}
 }

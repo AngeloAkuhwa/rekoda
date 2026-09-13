@@ -313,6 +313,7 @@ describe('operator identity configuration', () => {
     NODE_ENV: 'production',
     META_APP_SECRET: 'm'.repeat(40),
     META_VERIFY_TOKEN: 'v'.repeat(40),
+    REKODA_TRUSTED_WEB: '172.30.10.11',
   } as NodeJS.ProcessEnv;
 
   it('is absent by default outside production, where the secret stands in', () => {
@@ -456,6 +457,7 @@ describe('the dark FX capability', () => {
       OPERATOR_OIDC_JWKS_URL: 'https://issuer.example/jwks',
       META_APP_SECRET: 'm'.repeat(40),
       META_VERIFY_TOKEN: 'v'.repeat(40),
+      REKODA_TRUSTED_WEB: '172.30.10.11',
     } as NodeJS.ProcessEnv;
 
     /* Off and shadow are fine in production: observing a rate moves no money
@@ -618,6 +620,51 @@ describe('the release label on /health', () => {
     (value) => {
       expect(() => loadConfig({ ...BASE, REKODA_RELEASE: value })).toThrow(/REKODA_RELEASE/);
       expect(() => loadConfig({ ...BASE, REKODA_COMMIT: value })).toThrow(/REKODA_COMMIT/);
+    },
+  );
+});
+
+/**
+ * The web tier's address is the only peer whose X-Rekoda-Client-IP names the
+ * visitor (G-71). Production cannot run without it, and a malformed entry
+ * refuses to boot rather than silently changing who is believed.
+ */
+describe('the trusted web tier (G-71)', () => {
+  const PROD = {
+    ...BASE,
+    NODE_ENV: 'production',
+    META_APP_SECRET: 'm'.repeat(40),
+    META_VERIFY_TOKEN: 'v'.repeat(40),
+    OPERATOR_OIDC_ISSUER: 'https://issuer.example',
+    OPERATOR_OIDC_AUDIENCE: 'rekoda-ops',
+    OPERATOR_OIDC_JWKS_URL: 'https://issuer.example/jwks',
+  } as NodeJS.ProcessEnv;
+
+  it('is empty outside production when unset, so no peer is believed', () => {
+    expect(loadConfig({ ...BASE }).trustedWeb).toEqual([]);
+  });
+
+  it('is required in production', () => {
+    expect(() => loadConfig(PROD)).toThrow(/REKODA_TRUSTED_WEB is required in production/);
+    expect(loadConfig({ ...PROD, REKODA_TRUSTED_WEB: '172.30.10.11' }).trustedWeb).toHaveLength(1);
+  });
+
+  it('is not satisfied in production by a value that names no address', () => {
+    expect(() => loadConfig({ ...PROD, REKODA_TRUSTED_WEB: ',' })).toThrow(/REKODA_TRUSTED_WEB/);
+  });
+
+  it('takes addresses and CIDRs, IPv4 and IPv6', () => {
+    expect(
+      loadConfig({ ...BASE, REKODA_TRUSTED_WEB: '172.30.10.11, 10.0.0.0/8, fd00::/8' }).trustedWeb,
+    ).toHaveLength(3);
+  });
+
+  it.each(['web', '172.30.10.300', '10.0.0.0/40', '172.30.10.11,,nonsense'])(
+    'refuses %s at boot',
+    (value) => {
+      expect(() => loadConfig({ ...BASE, REKODA_TRUSTED_WEB: value })).toThrow(
+        /REKODA_TRUSTED_WEB/,
+      );
     },
   );
 });

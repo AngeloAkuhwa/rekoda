@@ -36,8 +36,14 @@ alias dc='docker compose -f docker-compose.prod.yml'
 
 The compose file sets some values itself, whatever `.env` says:
 `NODE_ENV=production` everywhere, `PORT`, `REKODA_WORKER`, the API's
-`REKODA_TRUSTED_PROXIES` (Caddy's fixed address, `172.30.10.10`) and web's
-`REKODA_API_URL` (`http://api:3001`, the internal network). Two CI guards keep
+`REKODA_TRUSTED_PROXIES` (Caddy's fixed address, `172.30.10.10`), the API's
+`REKODA_TRUSTED_WEB` (web's fixed address, `172.30.10.11`) and web's
+`REKODA_API_URL` (`http://api:3001`, the internal network). Caddy is the one
+place a visitor's address is decided: it writes it to the API as
+`X-Forwarded-For` and to web as `X-Rekoda-Client-IP`, which web hands on to
+the API for every call it makes for that visitor, and which the API believes
+from web's address alone, so each visitor has their own rate-limit bucket
+(G-71). Two CI guards keep
 this shape: `scripts/check-deploy.mjs` (ports, the owner secret, networks,
 users, no secret in an image) and `scripts/check-env-example.mjs` (every name
 the deployment reads is documented, and web gets exactly what it reads).

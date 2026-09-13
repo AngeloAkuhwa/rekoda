@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { clientAddressHeaders } from '@/server/client-address';
 
 /**
  * A product photo on a public shop page.
@@ -30,7 +31,10 @@ export async function GET(
   }
 
   const base = process.env.REKODA_API_URL ?? 'http://127.0.0.1:3001';
-  const upstream = await fetch(`${base}/v1/shop/${slug}/photo/${id}`, { cache: 'no-store' });
+  const upstream = await fetch(`${base}/v1/shop/${slug}/photo/${id}`, {
+    headers: await clientAddressHeaders(),
+    cache: 'no-store',
+  });
   if (!upstream.ok) return new NextResponse('Not found', { status: 404 });
 
   const type = upstream.headers.get('content-type') ?? '';

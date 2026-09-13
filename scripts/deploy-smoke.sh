@@ -12,7 +12,9 @@
 #   webhooks and the security headers through Caddy over HTTPS; a forged
 #   X-Forwarded-For unable to reset the per-IP bucket; the worker claiming
 #   and finishing a job; restarts and a full down/up losing nothing; a
-#   rollback to the previous image by changing one line.
+#   rollback to the previous image by changing one line; and two visitors
+#   through Caddy -> web -> API keeping their own rate-limit buckets, with
+#   no browser able to choose one (G-71).
 #
 # It writes .env and secrets/ in the checkout and removes them (and the
 # stack's volumes) on exit, so it refuses to run where a .env already exists.
@@ -309,6 +311,79 @@ echo 'ok: rolled back without a rebuild'
 step "Caddy reloads the checked-out Caddyfile (the runbook's last deploy step)"
 "${COMPOSE[@]}" exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
 health >"$WORK/health.json" || fail '/health stopped answering after the reload'
+echo 'ok'
+
+step 'visitors through Caddy -> web -> API keep their own buckets (G-71)'
+# Caddy is told to trust this host the way it trusts Cloudflare in front of a
+# real deployment, so each request names its visitor in CF-Connecting-IP.
+# The observable is a web route handler that makes exactly one API call and
+# passes the API's refusal through: the dashboard export, with a session
+# cookie that names no session. It answers 401 (the API read the made-up
+# session) while the visitor has budget, and 429 once the API refuses the
+# visitor. A page would not do: the storefront streams, so it answers 200
+# whatever the API said.
+set_env REKODA_EDGE_PROXIES private_ranges
+"${COMPOSE[@]}" up -d --wait --wait-timeout 300 caddy
+LIMIT=$(sed -n 's/^REKODA_RATE_LIMIT_MAX=//p' .env)
+view() {
+  # $1: the visitor Cloudflare would name; any further arguments go to curl.
+  local visitor=$1
+  shift
+  site -o /dev/null -w '%{http_code}' -H "CF-Connecting-IP: $visitor" \
+    -H 'Cookie: rk_session=deploy-smoke-not-a-session' "$@" "https://$SITE/app/export/invoices"
+}
+exhaust() {
+  # Views as visitor $1 until the API refuses them. A fresh bucket of the
+  # visitor's own is spent by exactly LIMIT views, so the refusal must land
+  # on view LIMIT + 1: sooner means someone else's calls shared it, later
+  # means a view escaped the count.
+  local views code
+  for views in $(seq 1 $((LIMIT + 5))); do
+    code=$(view "$1")
+    case "$code" in
+      401) ;;
+      429)
+        [ "$views" = $((LIMIT + 1)) ] ||
+          fail "visitor $1 was refused at view $views, not $((LIMIT + 1)): not a bucket of their own"
+        return 0
+        ;;
+      *) fail "view $views as visitor $1 answered $code, not 401 or 429" ;;
+    esac
+  done
+  fail "visitor $1 was never limited through web"
+}
+for _ in $(seq 1 30); do [ "$(view 203.0.113.70)" = 401 ] && break || sleep 2; done
+A=203.0.113.71
+B=203.0.113.72
+# A call, not a substitution, so fail stops the whole run.
+exhaust "$A"
+echo "visitor $A refused at view $((LIMIT + 1)) through web"
+[ "$(view "$B")" = 401 ] || fail 'visitor B shared visitor A’s bucket through web'
+[ "$(view "$A")" = 429 ] || fail 'visitor A got a fresh bucket back'
+# A browser cannot choose its bucket through the site: Caddy replaces the
+# header with the address it decided, in both directions.
+[ "$(view 203.0.113.73 -H "X-Rekoda-Client-IP: $A")" = 401 ] ||
+  fail 'a browser borrowed another visitor’s bucket through the site'
+[ "$(view "$A" -H 'X-Rekoda-Client-IP: 203.0.113.74')" = 429 ] ||
+  fail 'a limited browser escaped by naming a fresh address to the site'
+# Direct API traffic still keys on the address Caddy decided, and one visitor
+# is one bucket whichever road they take; the header is removed on this host.
+direct() {
+  api -o /dev/null -w '%{http_code}' -H "CF-Connecting-IP: $1" "${@:2}" "https://$API/v1/auth/me"
+}
+[ "$(direct "$A")" = 429 ] || fail 'visitor A was not limited on the direct API road'
+[ "$(direct "$A" -H 'X-Rekoda-Client-IP: 203.0.113.75')" = 429 ] ||
+  fail 'a limited caller escaped by sending the header to the API host'
+[ "$(direct 203.0.113.76 -H "X-Rekoda-Client-IP: $A")" = 401 ] ||
+  fail 'a caller borrowed another visitor’s bucket on the API host'
+# IPv6 visitors count by exactly /64: the far end of the same /64 is already
+# spent (so the key is no longer than /64), and the neighbouring /64, which
+# shares the first 63 bits, is not (so it is no shorter).
+exhaust 2001:db8:71::1
+echo "visitor 2001:db8:71::1 refused at view $((LIMIT + 1)) through web"
+[ "$(view 2001:db8:71:0:ffff:ffff:ffff:ffff)" = 429 ] ||
+  fail 'a new address in the same IPv6 /64 got a fresh bucket'
+[ "$(view 2001:db8:71:1::1)" = 401 ] || fail 'the neighbouring IPv6 /64 shared a bucket'
 echo 'ok'
 
 step 'nothing tried to write where the images keep code read-only'

@@ -1,6 +1,11 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+
+/* The shop card renders while serving a request, where the API client reads
+ * the visitor from the request's headers (G-71); here, a request that did
+ * not come through Caddy. */
+vi.mock('next/headers', () => ({ headers: async () => new Headers() }));
 import { MARK_PATH } from '@/lib/mark';
 import OpenGraphImage from './opengraph-image';
 import AppleIcon from './apple-icon';

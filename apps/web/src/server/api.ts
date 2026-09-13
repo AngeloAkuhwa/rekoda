@@ -1,4 +1,5 @@
 import 'server-only';
+import { clientAddressHeaders } from './client-address';
 import {
   type CancelPurchaseOrderResponse,
   type CancelQuoteResponse,
@@ -228,6 +229,10 @@ interface CallOptions {
 }
 
 async function call(options: CallOptions): Promise<{ status: number; json: unknown }> {
+  /* The visitor this call is for, read before the fetch so the API counts
+   * it against their budget and not this tier's (G-71). Outside the try: it
+   * reads the request, and a failure there is not the API being down. */
+  const visitor = await clientAddressHeaders();
   let response: Response;
   try {
     response = await fetch(`${BASE}${options.path}`, {
@@ -237,6 +242,7 @@ async function call(options: CallOptions): Promise<{ status: number; json: unkno
         // request that claims to carry JSON, which is how sign-out broke.
         ...(options.body === undefined ? {} : { 'content-type': 'application/json' }),
         ...options.headers,
+        ...visitor,
       },
       // Spread rather than `body: undefined` — under exactOptionalPropertyTypes
       // an explicit undefined is not the same as an absent property.
@@ -1229,11 +1235,12 @@ export async function uploadProductImage(
   const body = new FormData();
   body.set('file', file, file.name);
 
+  const visitor = await clientAddressHeaders();
   let response: Response;
   try {
     response = await fetch(`${BASE}/v1/catalogue/${productId}/image`, {
       method: 'POST',
-      headers: { authorization: `Bearer ${sessionToken}` },
+      headers: { authorization: `Bearer ${sessionToken}`, ...visitor },
       body,
       cache: 'no-store',
     });

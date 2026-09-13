@@ -122,6 +122,9 @@ services:
       # Caddy's fixed address on the edge network: the only proxy the API
       # believes an X-Forwarded-For from.
       REKODA_TRUSTED_PROXIES: 172.30.10.10
+      # The web tier's fixed address: the only peer whose X-Rekoda-Client-IP
+      # names the visitor a call is for (G-71).
+      REKODA_TRUSTED_WEB: 172.30.10.11
     networks:
       - edge
       - db
@@ -165,6 +168,7 @@ services:
       REKODA_WORKER: '1'
       REKODA_RELEASE: ${REKODA_RELEASE:?set REKODA_RELEASE in .env}
       REKODA_TRUSTED_PROXIES: 172.30.10.10
+      REKODA_TRUSTED_WEB: 172.30.10.11
     networks:
       - db
       - worker-egress
@@ -215,7 +219,10 @@ services:
       REKODA_API_URL: http://api:3001
       REKODA_WEB_URL: ${REKODA_WEB_URL:?set REKODA_WEB_URL in .env}
     networks:
-      - edge
+      edge:
+        # Fixed, so the API can believe this address, and only this one,
+        # about which visitor a call is for (REKODA_TRUSTED_WEB, G-71).
+        ipv4_address: 172.30.10.11
     depends_on:
       api:
         condition: service_healthy
@@ -276,13 +283,14 @@ services:
 
 networks:
   # Caddy, web and api. Fixed so REKODA_TRUSTED_PROXIES can name Caddy
-  # exactly; change both together if the range collides with the host's.
+  # (.10) and REKODA_TRUSTED_WEB can name web (.11) exactly; change them
+  # together if the range collides with the host's.
   edge:
     ipam:
       config:
         - subnet: 172.30.10.0/24
           # Dynamic addresses come from the upper half only, so a recreated
-          # container can never take Caddy's fixed .10.
+          # container can never take Caddy's fixed .10 or web's fixed .11.
           ip_range: 172.30.10.128/25
   # PostgreSQL and the three processes that may reach it. No egress at all.
   db:

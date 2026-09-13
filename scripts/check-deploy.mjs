@@ -185,9 +185,17 @@ export function problemsFor({ compose, dockerfile, caddyfile, dockerignore, giti
   if (api && worker && api.image !== worker.image) {
     problems.push('the api and the worker must run the same image');
   }
-  const caddyAddress = Object.values(svc('caddy')?.networks ?? {})
-    .map((n) => n?.ipv4_address)
-    .find(Boolean);
+  const fixedAddress = (name) =>
+    Object.values(svc(name)?.networks ?? {})
+      .map((n) => n?.ipv4_address)
+      .find(Boolean);
+  const caddyAddress = fixedAddress('caddy');
+  /* The web tier has a fixed address too, distinct from Caddy's: the API
+   * believes X-Rekoda-Client-IP from that peer alone (G-71). */
+  const webAddress = fixedAddress('web');
+  if (!webAddress || webAddress === caddyAddress) {
+    problems.push('web must have its own fixed address on the edge network');
+  }
   for (const [name, role] of [
     ['api', '0'],
     ['worker', '1'],
@@ -209,6 +217,9 @@ export function problemsFor({ compose, dockerfile, caddyfile, dockerignore, giti
     }
     if (!caddyAddress || env.get('REKODA_TRUSTED_PROXIES') !== caddyAddress) {
       problems.push(`${name} must trust exactly caddy's fixed address as its proxy`);
+    }
+    if (!webAddress || env.get('REKODA_TRUSTED_WEB') !== webAddress) {
+      problems.push(`${name} must trust exactly web's fixed address to name the visitor`);
     }
   }
 
@@ -330,6 +341,37 @@ export function problemsFor({ compose, dockerfile, caddyfile, dockerignore, giti
   }
   if (!/request>uri\s+delete/.test(caddyCode) || !/request>headers\s+delete/.test(caddyCode)) {
     problems.push(`${FILES.caddyfile} must delete request>uri and request>headers from its log`);
+  }
+  /* The visitor header (G-71), checked on every reverse_proxy rather than
+   * one site block, so a second route or a new hostname cannot skip it.
+   * Every proxy to web sets it from the address decided above, so a
+   * browser's own copy is replaced; every other proxy removes it, so only
+   * the web tier ever delivers it to the API. */
+  const blockFrom = (start) => {
+    const open = caddyCode.indexOf('{', start);
+    const lineEnd = caddyCode.indexOf('\n', start);
+    if (open < 0 || (lineEnd >= 0 && open > lineEnd)) return '';
+    let depth = 0;
+    for (let i = open; i < caddyCode.length; i++) {
+      if (caddyCode[i] === '{') depth += 1;
+      else if (caddyCode[i] === '}' && --depth === 0) return caddyCode.slice(open, i + 1);
+    }
+    return caddyCode.slice(open);
+  };
+  for (const proxy of caddyCode.matchAll(/^[ \t]*reverse_proxy[ \t]+([^\n{]*)/gm)) {
+    const upstreams = proxy[1].trim();
+    const body = blockFrom(proxy.index);
+    if (/(^|\s)web:/.test(upstreams)) {
+      if (!/header_up\s+X-Rekoda-Client-IP\s+\{client_ip\}/i.test(body)) {
+        problems.push(
+          `${FILES.caddyfile}: reverse_proxy ${upstreams} must set X-Rekoda-Client-IP to {client_ip} for web`,
+        );
+      }
+    } else if (!/header_up\s+-X-Rekoda-Client-IP\b/i.test(body)) {
+      problems.push(
+        `${FILES.caddyfile}: reverse_proxy ${upstreams} must remove X-Rekoda-Client-IP; only web may receive it`,
+      );
+    }
   }
   const proxies = (caddyCode.match(/^\s*reverse_proxy\b/gm) ?? []).length;
   const addressed = (caddyCode.match(/^\s*import client_address\b/gm) ?? []).length;
