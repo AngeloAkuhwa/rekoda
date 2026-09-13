@@ -151,6 +151,14 @@ const NON_PUBLIC = [
 const WIDEST_PUBLIC = { ipv4: 8, ipv6: 16 } as const;
 
 /**
+ * The first address of the IPv4-mapped block. Fastify's proxy matcher turns
+ * an IPv4 peer into its mapped form before testing it against an IPv6 range,
+ * so an IPv6 range that swallows this block (`::/16`, `::/80`) trusts every
+ * IPv4 caller on the internet however long its prefix looks.
+ */
+const MAPPED_BLOCK = ipaddr.parse('::ffff:0:0');
+
+/**
  * The first entry that trusts effectively the whole internet (G-72): wider
  * than a /8 of IPv4 or a /16 of IPv6 while reaching public address space, so
  * 0.0.0.0/0, ::/0, the mapped ::ffff:0:0/96, and their halves and quarters.
@@ -160,6 +168,9 @@ const WIDEST_PUBLIC = { ipv4: 8, ipv6: 16 } as const;
 export function universalRange(ranges: readonly Range[]): Range | null {
   return (
     ranges.find(([base, bits]) => {
+      /* An IPv6 range holding the whole mapped block covers every IPv4
+       * address, whatever its own prefix length says. */
+      if (base.kind() === 'ipv6' && bits <= 96 && MAPPED_BLOCK.match(base, bits)) return true;
       if (bits >= WIDEST_PUBLIC[base.kind()]) return false;
       const insideNonPublic = NON_PUBLIC.some(
         ([block, blockBits]) =>

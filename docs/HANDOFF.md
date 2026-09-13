@@ -81,9 +81,10 @@ Refused in production: a `PAYSTACK_BASE_URL` or `MONO_BASE_URL` other
 than blank or the provider's own host; `REKODA_LOCAL_STORAGE`; an
 `AI_BASE_URL` or operator OIDC URL that is not a public https host
 (`apps/api/src/endpoints.ts`, judged after the URL parser normalises
-alternate spellings of an address); a `REKODA_TRUSTED_WEB` or
+alternate spellings of an address, and including the reserved `.invalid`,
+`.test` and `.example` names); a `REKODA_TRUSTED_WEB` or
 `REKODA_TRUSTED_PROXIES` entry that trusts effectively the whole
-internet. Refused everywhere: a malformed `R2_ACCOUNT_ID` (it becomes the
+internet, an IPv6 range holding the IPv4-mapped block included. Refused everywhere: a malformed `R2_ACCOUNT_ID` (it becomes the
 storage host) and a separator-only proxy list (the G-43 case). The proxy
 list is now parsed in `config.ts` (`trustedProxies`) and strictly.
 Proved by `config.production.test.ts` and a Docker smoke step where the

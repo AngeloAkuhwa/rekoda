@@ -22,7 +22,20 @@ export const MONO_API = 'https://api.withmono.com';
  * `.home.arpa` (RFC 8375), and the `.lan` and `.localdomain` that home
  * routers and resolvers hand out.
  */
-const LOCAL_SUFFIXES = ['localhost', 'local', 'internal', 'home.arpa', 'lan', 'localdomain'];
+const LOCAL_SUFFIXES = [
+  'localhost',
+  'local',
+  'internal',
+  'home.arpa',
+  'lan',
+  'localdomain',
+  /* Reserved by RFC 2606 and RFC 6761 and never delegated, so they resolve
+   * to nothing on the internet and to whatever a local resolver says: the
+   * conventional names for a mock. */
+  'invalid',
+  'test',
+  'example',
+];
 
 /**
  * Why `value` is not a public https endpoint, or null when it is.

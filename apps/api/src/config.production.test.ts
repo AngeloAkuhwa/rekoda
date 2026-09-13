@@ -25,9 +25,9 @@ const PROD = {
   NODE_ENV: 'production',
   META_APP_SECRET: 'm'.repeat(40),
   META_VERIFY_TOKEN: 'v'.repeat(40),
-  OPERATOR_OIDC_ISSUER: 'https://issuer.example',
+  OPERATOR_OIDC_ISSUER: 'https://issuer.example.com',
   OPERATOR_OIDC_AUDIENCE: 'rekoda-ops',
-  OPERATOR_OIDC_JWKS_URL: 'https://issuer.example/jwks',
+  OPERATOR_OIDC_JWKS_URL: 'https://issuer.example.com/jwks',
   REKODA_TRUSTED_PROXIES: '172.30.10.10',
   REKODA_TRUSTED_WEB: '172.30.10.11',
 } as NodeJS.ProcessEnv;
@@ -134,6 +134,9 @@ const LOCAL_ENDPOINTS = [
   ['a .local name', 'https://llm.local/v1'],
   ['a .lan name', 'https://llm.lan/v1'],
   ['a .home.arpa name', 'https://llm.home.arpa/v1'],
+  ['a .invalid name', 'https://model.example.invalid/v1'],
+  ['a .test name', 'https://issuer.test/v1'],
+  ['a .example name', 'https://service.example/v1'],
   ['credentials in the URL', 'https://user:pw@api.groq.com/openai/v1'],
   ['not a URL', 'api.groq.com/openai/v1'],
 ] as const;
@@ -237,6 +240,9 @@ describe('REKODA_TRUSTED_PROXIES', () => {
     '128.0.0.0/2',
     '2000::/3',
     '172.30.10.10, 0.0.0.0/0',
+    '::/16',
+    '::/80',
+    '::/64',
   ])('production refuses %s, which trusts effectively the whole internet', (value) => {
     expect(() => trustedProxies({ ...PROD, REKODA_TRUSTED_PROXIES: value })).toThrow(
       /REKODA_TRUSTED_PROXIES trusts .* effectively the whole internet/,

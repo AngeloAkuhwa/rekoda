@@ -318,7 +318,9 @@ failure below is a one-line startup error naming the variable:
   neither trust list may be empty or trust effectively the whole internet;
   `PAYSTACK_BASE_URL` and `MONO_BASE_URL` may only be blank or the
   provider's own host, and `REKODA_LOCAL_STORAGE` must be blank;
-  `AI_BASE_URL` and the operator OIDC URLs must be public https hosts;
+  `AI_BASE_URL` and the operator OIDC URLs must be public https hosts (not
+  localhost, a container name, a private address, or a reserved `.invalid`,
+  `.test` or `.example` name);
   `R2_ACCOUNT_ID` must be the 32-hex account id (G-72);
   `REKODA_RELEASE` and `REKODA_COMMIT` must be short tokens.
 - **Web** (`next start`): every mandatory legal fact must be set, or the

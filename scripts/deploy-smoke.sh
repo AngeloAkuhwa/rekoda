@@ -107,9 +107,9 @@ set_env REKODA_API_SECRET "$API_SECRET"
 set_env OTP_PEPPER "$PEPPER"
 set_env META_APP_SECRET "$META_SECRET"
 set_env META_VERIFY_TOKEN "$VERIFY"
-set_env OPERATOR_OIDC_ISSUER https://idp.example.invalid/
+set_env OPERATOR_OIDC_ISSUER https://idp.example.com/
 set_env OPERATOR_OIDC_AUDIENCE rekoda-ci
-set_env OPERATOR_OIDC_JWKS_URL https://idp.example.invalid/.well-known/jwks.json
+set_env OPERATOR_OIDC_JWKS_URL https://idp.example.com/.well-known/jwks.json
 set_env REKODA_RATE_LIMIT_MAX 20
 printf '%s\n' "$OWNER_PW" "$APP_PW" "$WORKER_PW" "$VAULT" "$MATCH" "$CONNECTION" \
   "$API_SECRET" "$PEPPER" "$META_SECRET" "$VERIFY" >"$WORK/secrets.txt"
