@@ -94,32 +94,15 @@ function trustEntries(name: string, raw: string | undefined): string[] {
 }
 
 /**
- * Caddy's own name for the private blocks, as the ranges it expands to.
- *
- * NOT safe on a real host, and accepted only because it is not universal:
- * Caddy publishes its ports, and a caller Docker proxies (every IPv6 visitor,
- * since the edge network is IPv4, and any hairpin connection) reaches Caddy
- * from the bridge gateway, which sits inside 172.16.0.0/12. Trusting these
- * blocks therefore lets such a caller name its own address in
- * CF-Connecting-IP. The API's own lists do not share the problem: the API
- * publishes no port. The deploy smoke uses this value on purpose, to play
- * Cloudflare from the runner host; production uses Cloudflare's ranges or
- * nothing. Whether to refuse it outright is G-75, an owner decision.
- */
-const CADDY_PRIVATE_RANGES = [
-  '192.168.0.0/16',
-  '172.16.0.0/12',
-  '10.0.0.0/8',
-  '127.0.0.1/8',
-  'fd00::/8',
-  '::1',
-];
-
-/**
  * The proxies IN FRONT of Caddy whose client-address headers Caddy believes
  * (G-74), as Caddy reads them: `trusted_proxies static a b c`, so
- * space-separated, and `private_ranges` is a name Caddy knows. Empty is the
- * documented no-edge-proxy mode and means Caddy trusts the TCP peer alone.
+ * space-separated. Empty is the documented no-edge-proxy mode and means
+ * Caddy trusts the TCP peer alone.
+ *
+ * Caddy also knows `private_ranges`, which is refused by name (G-75, ruled
+ * by the owner as OD-13): it holds 172.16.0.0/12 and with it the edge
+ * network's gateway, the address Docker hands Caddy every IPv6 visitor and
+ * every hairpin connection from.
  *
  * Unlike the API's own two lists this one is never read by a Rekoda process
  * at all, which is why it is checked before Caddy starts rather than at boot.
@@ -140,7 +123,12 @@ export function parseEdgeProxies(raw: string | undefined): { entries: string[]; 
       );
     }
     if (entry === 'private_ranges') {
-      return CADDY_PRIVATE_RANGES.map((cidr) => parseRange(name, cidr));
+      throw new Error(
+        `${name} must not name private_ranges: it trusts 172.16.0.0/12, which holds the edge ` +
+          "network's gateway, and Docker hands Caddy every IPv6 visitor and every hairpin " +
+          'connection from that address, so any of them could claim to be any visitor. Name ' +
+          "the actual proxy addresses or CIDRs (Cloudflare's published ranges), or leave it empty.",
+      );
     }
     return [parseRange(name, entry)];
   });

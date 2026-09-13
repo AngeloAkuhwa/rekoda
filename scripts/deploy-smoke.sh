@@ -10,13 +10,15 @@
 #   runtime roles' passwords; the api and the worker refusing the owner
 #   credential, and refusing a fake provider, local storage or an empty or
 #   universal trust list (G-72); Caddy refusing to serve with an edge trust
-#   list a browser could exploit (G-74); the stack healthy; /health, the site, the legal facts, the
+#   list a browser could exploit, universal or holding the edge network's
+#   gateway (G-74, G-75); the stack healthy; /health, the site, the legal facts, the
 #   webhooks and the security headers through Caddy over HTTPS; a forged
 #   X-Forwarded-For unable to reset the per-IP bucket; the worker claiming
 #   and finishing a job; restarts and a full down/up losing nothing; a
 #   rollback to the previous image by changing one line; and two visitors
 #   through Caddy -> web -> API keeping their own rate-limit buckets, with
-#   no browser able to choose one (G-71).
+#   no browser able to choose one (G-71), named by a stand-in for Cloudflare
+#   while a caller Docker proxies from the gateway names nobody (G-75).
 #
 # It writes .env and secrets/ in the checkout and removes them (and the
 # stack's volumes) on exit, so it refuses to run where a .env already exists.
@@ -32,6 +34,16 @@ SITE=rekoda.localhost
 API=api.rekoda.localhost
 WORK=$(mktemp -d)
 FAILED=1
+# The edge network, the address Docker hands Caddy its proxied callers from
+# (pinned in the compose file, G-75), and Caddy's own fixed address on it.
+EDGE_NET="${PROJECT}_edge"
+EDGE_GATEWAY=172.30.10.1
+CADDY_ADDRESS=172.30.10.10
+# The stand-in for Cloudflare in front of Caddy (G-75): a container at a
+# fixed address on the edge network, never the host.
+CLOUDFLARE="${PROJECT}-cloudflare"
+CLOUDFLARE_ADDRESS=172.30.10.20
+CLOUDFLARE_IMAGE=curlimages/curl:8.16.0
 
 step() { printf '\n== %s\n' "$*"; }
 fail() {
@@ -44,6 +56,7 @@ cleanup() {
     "${COMPOSE[@]}" ps -a || true
     "${COMPOSE[@]}" logs --no-color --tail 150 || true
   fi
+  docker rm -f "$CLOUDFLARE" >/dev/null 2>&1 || true
   if [ -f .env ]; then "${COMPOSE[@]}" --profile ops down -v --remove-orphans >/dev/null 2>&1 || true; fi
   rm -rf .env secrets "$WORK"
 }
@@ -82,7 +95,10 @@ caddy_trusts() {
   # caller set its own address). Quoting, an import, a listener-specific
   # servers block: whatever the spelling, this is what it has to add up to.
   "${COMPOSE[@]}" exec -T caddy caddy adapt --config /etc/caddy/Caddyfile --adapter caddyfile \
-    >"$WORK/caddy.json" 2>/dev/null || fail 'caddy could not adapt its own Caddyfile'
+    >"$WORK/caddy.json" 2>"$WORK/caddy-adapt.log" || {
+    cat "$WORK/caddy-adapt.log"
+    fail 'caddy could not adapt its own Caddyfile'
+  }
   jq -e --argjson want "$1" '
     (.apps.http.servers | length) >= 1 and
     ([.apps.http.servers[] |
@@ -151,6 +167,9 @@ step 'compose config'
 step 'build both images, tagged ci-a'
 COMMIT=$(git rev-parse --short HEAD)
 "${COMPOSE[@]}" build --build-arg "REKODA_COMMIT=$COMMIT"
+# The stand-in for Cloudflare (G-75), fetched now rather than at the end of a
+# long run, so a registry hiccup fails the run before anything is proved.
+docker pull -q "$CLOUDFLARE_IMAGE" >/dev/null
 
 step 'no secret reached an image: not in any layer, not in the config'
 # Exported to a file first, so a failed export fails the run instead of
@@ -241,7 +260,7 @@ refuses api 'REKODA_TRUSTED_WEB=0.0.0.0/0' 'REKODA_TRUSTED_WEB trusts 0.0.0.0/0'
 refuses worker 'REKODA_TRUSTED_PROXIES=::/0' 'REKODA_TRUSTED_PROXIES trusts ::/0'
 echo 'ok: every one refused, naming the variable'
 
-step 'Caddy will not serve with an edge trust list a browser could exploit (G-74)'
+step 'Caddy will not serve with an edge trust list a browser could exploit (G-74, G-75)'
 # REKODA_EDGE_PROXIES is Caddy's own: no Rekoda process reads it, so the boot
 # rules above never see it. A one-shot job checks it and Caddy waits for that
 # job, so a universal value fails the deployment instead of letting Caddy
@@ -260,11 +279,23 @@ for value in '0.0.0.0/0' '::/0' '::ffff:0:0/96' '::/80' '104.16.0.0/13 0.0.0.0/1
     fail "the edge check refused $value without naming the variable"
   }
 done
-# Cloudflare's published ranges and the documented empty value pass: the
-# check refuses the dangerous shape, not the deployment's real values. So
-# does `private_ranges`, which is not universal; it is unsafe on a real host
-# for another reason (G-75), and the G-71 step below uses it on purpose.
-for value in '173.245.48.0/20 104.16.0.0/13 2400:cb00::/32 2a06:98c0::/29' 'private_ranges' ''; do
+# Nor with one holding the edge network's gateway, the address Docker hands
+# Caddy every IPv6 visitor and every hairpin connection from (G-75): Caddy's
+# own private_ranges, the block it sits in, and the gateway itself.
+for value in 'private_ranges' '172.16.0.0/12' "$EDGE_GATEWAY" "104.16.0.0/13 $EDGE_GATEWAY"; do
+  if edge "$value"; then
+    cat "$WORK/edge.log"
+    fail "the edge check accepted $value"
+  fi
+  grep -q -F "the edge network's gateway" "$WORK/edge.log" || {
+    cat "$WORK/edge.log"
+    fail "the edge check refused $value without naming the gateway"
+  }
+done
+# Cloudflare's published ranges, one proxy address beside the gateway (the
+# stand-in below) and the documented empty value pass: the check refuses the
+# dangerous shapes, not the deployment's real values.
+for value in '173.245.48.0/20 104.16.0.0/13 2400:cb00::/32 2a06:98c0::/29' "$CLOUDFLARE_ADDRESS" ''; do
   edge "$value" || {
     cat "$WORK/edge.log"
     fail "the edge check refused a legitimate value: ${value:-(empty)}"
@@ -313,6 +344,12 @@ timeout 300 "${COMPOSE[@]}" up -d --wait --wait-timeout 240 caddy >"$WORK/edge-u
 # The empty value: Caddy trusts no proxy at all, and nothing else in the
 # Caddyfile adds one.
 caddy_trusts '[]'
+# The gateway the check refuses is the one Docker actually gave the edge
+# network, and the network has no IPv6 gateway the check would not know.
+gateway=$(docker network inspect -f '{{range .IPAM.Config}}{{.Gateway}}{{end}}' "$EDGE_NET")
+[ "$gateway" = "$EDGE_GATEWAY" ] || fail "the edge network's gateway is $gateway, not $EDGE_GATEWAY"
+[ "$(docker network inspect -f '{{.EnableIPv6}}' "$EDGE_NET")" = false ] ||
+  fail 'the edge network carries IPv6, whose gateway the edge check does not know'
 echo 'ok: refused before Caddy served, the empty value accepted, and Caddy trusts nothing else'
 
 step 'the stack comes up healthy'
@@ -442,24 +479,39 @@ health >"$WORK/health.json" || fail '/health stopped answering after the reload'
 echo 'ok'
 
 step 'visitors through Caddy -> web -> API keep their own buckets (G-71)'
-# Caddy is told to trust this host the way it trusts Cloudflare in front of a
-# real deployment, so each request names its visitor in CF-Connecting-IP.
+# A stand-in for Cloudflare does what Cloudflare does in front of a real
+# deployment: it is the one proxy Caddy trusts, a container at a fixed
+# address on the edge network, and each request it sends names its visitor
+# in CF-Connecting-IP. Never the host, which reaches Caddy through Docker's
+# proxy from the edge gateway, as an IPv6 visitor would (G-75).
 # The observable is a web route handler that makes exactly one API call and
 # passes the API's refusal through: the dashboard export, with a session
 # cookie that names no session. It answers 401 (the API read the made-up
 # session) while the visitor has budget, and 429 once the API refuses the
 # visitor. A page would not do: the storefront streams, so it answers 200
 # whatever the API said.
-set_env REKODA_EDGE_PROXIES private_ranges
+set_env REKODA_EDGE_PROXIES "$CLOUDFLARE_ADDRESS"
 "${COMPOSE[@]}" up -d --wait --wait-timeout 300 caddy
-# The value reaches Caddy as Caddy's own expansion, and nothing more.
-caddy_trusts '["192.168.0.0/16","172.16.0.0/12","10.0.0.0/8","127.0.0.1/8","fd00::/8","::1"]'
+# The value reaches Caddy as that one address, and nothing more.
+caddy_trusts "[\"$CLOUDFLARE_ADDRESS\"]"
+# Readable by the stand-in's own user; it verifies Caddy's certificate.
+chmod 644 "$WORK/root.crt"
+docker run -d --name "$CLOUDFLARE" --network "$EDGE_NET" --ip "$CLOUDFLARE_ADDRESS" \
+  -v "$WORK/root.crt:/etc/rekoda-smoke/root.crt:ro" --read-only --cap-drop ALL \
+  --entrypoint sleep "$CLOUDFLARE_IMAGE" 3600 >/dev/null
+[ "$(docker inspect -f "{{(index .NetworkSettings.Networks \"$EDGE_NET\").IPAddress}}" "$CLOUDFLARE")" = "$CLOUDFLARE_ADDRESS" ] ||
+  fail "the stand-in for Cloudflare is not at $CLOUDFLARE_ADDRESS"
+cloudflare() {
+  # A request from the stand-in straight to Caddy on the edge network.
+  docker exec "$CLOUDFLARE" curl -sS --cacert /etc/rekoda-smoke/root.crt \
+    --resolve "$SITE:443:$CADDY_ADDRESS" --resolve "$API:443:$CADDY_ADDRESS" "$@"
+}
 LIMIT=$(sed -n 's/^REKODA_RATE_LIMIT_MAX=//p' .env)
 view() {
   # $1: the visitor Cloudflare would name; any further arguments go to curl.
   local visitor=$1
   shift
-  site -o /dev/null -w '%{http_code}' -H "CF-Connecting-IP: $visitor" \
+  cloudflare -o /dev/null -w '%{http_code}' -H "CF-Connecting-IP: $visitor" \
     -H 'Cookie: rk_session=deploy-smoke-not-a-session' "$@" "https://$SITE/app/export/invoices"
 }
 exhaust() {
@@ -499,7 +551,7 @@ echo "visitor $A refused at view $((LIMIT + 1)) through web"
 # Direct API traffic still keys on the address Caddy decided, and one visitor
 # is one bucket whichever road they take; the header is removed on this host.
 direct() {
-  api -o /dev/null -w '%{http_code}' -H "CF-Connecting-IP: $1" "${@:2}" "https://$API/v1/auth/me"
+  cloudflare -o /dev/null -w '%{http_code}' -H "CF-Connecting-IP: $1" "${@:2}" "https://$API/v1/auth/me"
 }
 [ "$(direct "$A")" = 429 ] || fail 'visitor A was not limited on the direct API road'
 [ "$(direct "$A" -H 'X-Rekoda-Client-IP: 203.0.113.75')" = 429 ] ||
@@ -514,7 +566,35 @@ echo "visitor 2001:db8:71::1 refused at view $((LIMIT + 1)) through web"
 [ "$(view 2001:db8:71:0:ffff:ffff:ffff:ffff)" = 429 ] ||
   fail 'a new address in the same IPv6 /64 got a fresh bucket'
 [ "$(view 2001:db8:71:1::1)" = 401 ] || fail 'the neighbouring IPv6 /64 shared a bucket'
-echo 'ok'
+# The caller G-75 is about. The host reaches Caddy through Docker's proxy,
+# from the edge gateway, exactly as an IPv6 visitor or a hairpin connection
+# does on a real host. Caddy does not trust it, so the CF-Connecting-IP it
+# sends names nobody: its views count against the gateway's own bucket, and
+# the visitor it names keeps a fresh one. Were the gateway trusted, these
+# views would spend that visitor's bucket instead.
+C=203.0.113.77
+hostile=0
+for views in $(seq 1 $((LIMIT + 5))); do
+  code=$(site -o /dev/null -w '%{http_code}' -H "CF-Connecting-IP: $C" \
+    -H 'Cookie: rk_session=deploy-smoke-not-a-session' "https://$SITE/app/export/invoices")
+  case "$code" in
+    401) ;;
+    429)
+      hostile=$views
+      break
+      ;;
+    *) fail "view $views from the host answered $code, not 401 or 429" ;;
+  esac
+done
+[ "$hostile" != 0 ] || fail 'the host was never limited, so its views counted against nobody'
+# The bucket the host spent is the gateway's: the stand-in naming the
+# gateway as its visitor finds it limited already. That is the address the
+# edge check refuses, seen here as the one Docker hands Caddy the host from.
+[ "$(view "$EDGE_GATEWAY")" = 429 ] ||
+  fail "the host's views did not count against the edge gateway, $EDGE_GATEWAY"
+[ "$(view "$C")" = 401 ] ||
+  fail 'the host spent the bucket of the visitor it named: Caddy trusts the edge gateway'
+echo "ok: the host was limited at view $hostile as the gateway, and visitor $C kept their own bucket"
 
 step 'nothing tried to write where the images keep code read-only'
 "${COMPOSE[@]}" logs --no-color api worker web >"$WORK/all.log"

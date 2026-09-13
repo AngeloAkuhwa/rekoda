@@ -247,11 +247,12 @@ services:
   # worker (G-72) cannot reach it. This one-shot job checks it in the app
   # image, and Caddy waits for it: a universal value (0.0.0.0/0, ::/0) fails
   # the deployment instead of letting Caddy believe a browser's
-  # CF-Connecting-IP and hand that address on as the visitor (G-74).
+  # CF-Connecting-IP and hand that address on as the visitor (G-74). So does
+  # private_ranges, or any range holding the edge network's gateway (G-75).
   edge-check:
     image: rekoda-app:${REKODA_RELEASE:?set REKODA_RELEASE in .env}
     pull_policy: never
-    command: ['node', 'dist/edge-proxies.js']
+    command: ['node', 'dist/edge-check.js']
     environment:
       # Exactly what compose gives Caddy below, checked before Caddy runs.
       REKODA_EDGE_PROXIES: ${REKODA_EDGE_PROXIES:-}
@@ -314,9 +315,15 @@ networks:
   # (.10) and REKODA_TRUSTED_WEB can name web (.11) exactly; change them
   # together if the range collides with the host's.
   edge:
+    # IPv4 only, with the gateway pinned: Docker hands Caddy every IPv6
+    # visitor and every hairpin connection from that one address, and the
+    # edge check refuses any REKODA_EDGE_PROXIES range holding it (G-75,
+    # EDGE_GATEWAY in apps/api/src/edge-proxies.ts). Change them together.
+    enable_ipv6: false
     ipam:
       config:
         - subnet: 172.30.10.0/24
+          gateway: 172.30.10.1
           # Dynamic addresses come from the upper half only, so a recreated
           # container can never take Caddy's fixed .10 or web's fixed .11.
           ip_range: 172.30.10.128/25

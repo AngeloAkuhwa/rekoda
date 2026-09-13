@@ -17,15 +17,15 @@ alias dc='docker compose -f docker-compose.prod.yml'
 
 ## What runs, and who holds which credential
 
-| Service      | Image                  | What it is                                                                                                 |
-| ------------ | ---------------------- | ---------------------------------------------------------------------------------------------------------- |
-| `caddy`      | `caddy:2.11.4-alpine`  | The only published ports (80, 443, 443/udp). TLS, the two hostnames, the client address                    |
-| `web`        | `rekoda-web:<release>` | `next start`, with the site's public values baked in at build                                              |
-| `api`        | `rekoda-app:<release>` | The API, `REKODA_WORKER=0`                                                                                 |
-| `worker`     | `rekoda-app:<release>` | The same image, `REKODA_WORKER=1`: the job runner and the sweeps                                           |
-| `postgres`   | `postgres:16-alpine`   | The database, on the `pgdata` volume, on a network with no route in or out and no published port           |
-| `migrate`    | `rekoda-app:<release>` | A one-off, never started by `up`: `dc run --rm -T migrate` (migrations, then the runtime passwords)        |
-| `edge-check` | `rekoda-app:<release>` | A one-shot `up` runs before Caddy: exits 0 when `REKODA_EDGE_PROXIES` is safe, 1 when it refuses it (G-74) |
+| Service      | Image                  | What it is                                                                                                                                   |
+| ------------ | ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `caddy`      | `caddy:2.11.4-alpine`  | The only published ports (80, 443, 443/udp). TLS, the two hostnames, the client address                                                      |
+| `web`        | `rekoda-web:<release>` | `next start`, with the site's public values baked in at build                                                                                |
+| `api`        | `rekoda-app:<release>` | The API, `REKODA_WORKER=0`                                                                                                                   |
+| `worker`     | `rekoda-app:<release>` | The same image, `REKODA_WORKER=1`: the job runner and the sweeps                                                                             |
+| `postgres`   | `postgres:16-alpine`   | The database, on the `pgdata` volume, on a network with no route in or out and no published port                                             |
+| `migrate`    | `rekoda-app:<release>` | A one-off, never started by `up`: `dc run --rm -T migrate` (migrations, then the runtime passwords)                                          |
+| `edge-check` | `rekoda-app:<release>` | A one-shot `up` runs before Caddy (`node dist/edge-check.js`): exits 0 when `REKODA_EDGE_PROXIES` is safe, 1 when it refuses it (G-74, G-75) |
 
 | Credential                                     | Lives in                          | Reaches                                                                                                         |
 | ---------------------------------------------- | --------------------------------- | --------------------------------------------------------------------------------------------------------------- |
@@ -94,7 +94,9 @@ treat it as a variable. Every generated value above is hex.
    arrive over plain HTTP), and set `REKODA_EDGE_PROXIES` to Cloudflare's
    published ranges (https://www.cloudflare.com/ips/, space-separated). A
    universal value there is refused before Caddy starts (G-74), because it
-   would let any browser choose the address the per-IP limits count.
+   would let any browser choose the address the per-IP limits count, and so
+   is `private_ranges` or any range holding the edge network's gateway
+   (G-75), which would let every IPv6 visitor do the same.
    Without that, every visitor shares Cloudflare's addresses in the per-IP
    limits.
 3. **Checkout.** `git clone` to `/opt/rekoda` and `git checkout vX.Y.Z`
@@ -135,7 +137,11 @@ treat it as a variable. Every generated value above is hex.
    `runtime role passwords set: rekoda_app, rekoda_worker`.
 
 8. **Start everything.** `dc up -d --wait`. Caddy obtains the certificates on
-   first start.
+   first start. Then confirm the edge network is the one the edge check
+   knows (G-75):
+   `docker network inspect rekoda-prod_edge -f '{{range .IPAM.Config}}{{.Gateway}}{{end}} {{.EnableIPv6}}'`
+   must print `172.30.10.1 false`. Anything else means Docker kept an older
+   network: `dc down` (never `-v`) and `dc up -d --wait` recreate it.
 9. **Health.** `curl -fsS https://<api host>/health` must show
    `"status":"ok"`, `"database":"up"`, `"migrations":152` (the count of
    entries in `packages/db/migrations/meta/_journal.json`), and the
@@ -171,10 +177,13 @@ it does not parse.
 The previous release's images stay on the host (`rekoda-app:<previous>`,
 `rekoda-web:<previous>`); that is what makes rollback a one-line change. Keep
 at least the last two releases before any `docker image prune`. Roll the
-checkout back with the release: the compose file and the images move
-together, and rolling only `REKODA_RELEASE` back to a release older than the
-edge check (G-74) points that job at an image without it, and the `up`
-fails loudly. Caddy keeps serving throughout, because it proxies by service
+checkout back with the release, always together: the compose file names the
+edge check's entry inside the image (`dist/edge-check.js` since G-75,
+`dist/edge-proxies.js` before it). Rolling only `REKODA_RELEASE` back points
+the job at an image without the entry it names, and the `up` fails loudly;
+rolling only the checkout back is worse, because the older command then runs
+a file of the newer image that no longer checks anything, and exits 0.
+Caddy keeps serving throughout, because it proxies by service
 name and is never recreated; the api, worker and web may already have been
 recreated on the older images by then, so finish the rollback rather than
 leaving it half applied.
@@ -261,7 +270,7 @@ holding either is a credential at rest. Do not switch one on.
 - **After editing `.env`:** `dc up -d --wait` recreates the api, worker and
   Caddy when their values changed, and re-runs the edge check, which refuses
   a `REKODA_EDGE_PROXIES` that would trust effectively the whole internet
-  (G-74). `dc ps -a` shows `edge-check` as `Exited (0)` when the check
+  (G-74) or the edge network's gateway (G-75). `dc ps -a` shows `edge-check` as `Exited (0)` when the check
   passed and `Exited (1)` when it refused; neither is a crashed service.
   **Changing `REKODA_EDGE_PROXIES` on a live host:** run the check first,
   `dc run --rm -T edge-check`, which reads the edited `.env` and prints
@@ -279,9 +288,11 @@ holding either is a credential at rest. Do not switch one on.
   `deploy/` directory so the container sees a file a checkout replaced).
 - **The whole stack:** `dc down` then `dc up -d --wait`. The `pgdata`,
   `caddy_data` and `caddy_config` volumes survive.
-- **Never `dc up -d --no-deps caddy`**: it skips the edge check and starts
-  Caddy with whatever `.env` now says (G-74). Bring Caddy up the ordinary
-  way, which runs the check first.
+- **Never `dc up -d --no-deps caddy`, never `--scale edge-check=0`, and
+  never a second compose file** (`-f override.yml`): each skips the edge
+  check, or can (an override may `!reset` Caddy's wait on it, and CI checks
+  only `docker-compose.prod.yml`), and starts Caddy with whatever `.env` now
+  says (G-74). Bring Caddy up the ordinary way, which runs the check first.
 - **Never `dc down -v`** on a real host: it deletes the database and the
   certificates.
 
@@ -328,6 +339,12 @@ restore from backup, and **there is no backup mechanism yet** (G-02 in
   with `REKODA_LOCAL_STORAGE` set, or with either provider URL set to
   anything but that provider's own host (G-72; the exact rules are below).
 - **Never `dc down -v`** outside a throwaway machine.
+- **Never start Caddy past the edge check:** not `dc up --no-deps caddy`,
+  not `--scale edge-check=0`, not `dc start` or `dc restart` on a Caddy an
+  `up` left in `created`, not a second compose file beside
+  `docker-compose.prod.yml`, and never an edit that scales, deploys,
+  replaces, moves or `!reset`s `edge-check` in the compose file (CI refuses
+  those). Each would serve a trust list nothing checked (G-74, G-75).
 - **Never read an empty `psql` result as the app role as data loss:** RLS
   shows `rekoda_app` nothing until a tenant is pinned.
 
@@ -362,11 +379,12 @@ only says a dependency failed, and the line is in `dc logs edge-check`:
   `R2_ACCOUNT_ID` must be the 32-hex account id (G-72);
   `REKODA_RELEASE` and `REKODA_COMMIT` must be short tokens.
 - **The edge** (`edge-check`, before caddy starts): `REKODA_EDGE_PROXIES`
-  must not trust effectively the whole internet; `up` fails and Caddy never
-  serves otherwise (G-74). On a real host set it to Cloudflare's ranges or
-  leave it empty. The check also accepts `private_ranges`, but **never use it
-  here**: Docker hands Caddy every IPv6 visitor from its bridge gateway, a
-  private address, so it would let them choose their own address (G-75).
+  must not trust effectively the whole internet (G-74), nor name
+  `private_ranges` or any range holding the edge network's gateway,
+  172.30.10.1 (G-75): Docker hands Caddy every IPv6 visitor and every
+  hairpin connection from that address, so trusting it would let them
+  choose their own. `up` fails and Caddy never serves otherwise. On a real
+  host set it to Cloudflare's ranges or leave it empty.
 - **Web** (`next start`): every mandatory legal fact must be set, or the
   server refuses to serve policy pages with placeholder badges (R8). In this
   deployment the facts are baked into the image at build and checked again
@@ -383,6 +401,7 @@ check out.
 
 - [ ] `/health` returns `ok`, 152 migrations (or the new count), and the new release
 - [ ] `dc ps`: every service healthy
+- [ ] `docker network inspect rekoda-prod_edge -f '{{range .IPAM.Config}}{{.Gateway}}{{end}} {{.EnableIPv6}}'` prints `172.30.10.1 false` (the gateway the edge check refuses, G-75)
 - [ ] Worker: `job runner started` in its log, and no growing `pending` backlog
 - [ ] Send a WhatsApp message to the Rekoda number; the reply arrives
 - [ ] Dashboard sign-in completes

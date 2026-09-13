@@ -1,5 +1,5 @@
 /**
- * The proxies in front of Caddy, checked before Caddy serves (G-74).
+ * The proxies in front of Caddy, checked before Caddy serves (G-74, G-75).
  *
  * REKODA_EDGE_PROXIES is the one client-address trust list no Rekoda process
  * reads: Caddy takes it straight from the environment
@@ -10,34 +10,48 @@
  * address on as the visitor, which is the forged-address hole G-43 and G-71
  * close, reopened in front of them.
  *
- * So the compose file runs this as a one-shot service that Caddy waits for:
- * a bad value fails the deployment instead of serving with it. The rules and
- * the parser are the ones G-72 already uses; only the spelling differs,
- * because Caddy's list is space-separated and may name `private_ranges`.
+ * So the compose file runs a one-shot job (edge-check.ts) that Caddy waits
+ * for: a bad value fails the deployment instead of serving with it. The
+ * universal rule and the parser are the ones G-72 already uses; only the
+ * spelling differs, because Caddy's list is space-separated. The gateway
+ * rule is Caddy's alone, because Caddy alone publishes a port.
  */
-import { isEntrypoint } from '@rekoda/db';
+import ipaddr from 'ipaddr.js';
 import { parseEdgeProxies, universalProblem } from './client-address.js';
+
+/**
+ * The edge network's gateway, pinned in docker-compose.prod.yml (a test holds
+ * the two together). Caddy publishes its ports and the edge network is IPv4
+ * only, so Docker hands Caddy every connection it proxies from this address:
+ * every IPv6 visitor, and any caller that reaches the host's own address from
+ * the host or another container. Trusting it would let any of them name its
+ * own address in CF-Connecting-IP (G-75).
+ */
+export const EDGE_GATEWAY = '172.30.10.1';
+const GATEWAY = ipaddr.parse(EDGE_GATEWAY);
 
 /** Why this value must not reach Caddy, or null when it is safe. */
 export function edgeProxyProblem(raw: string | undefined): string | null {
   try {
-    return universalProblem('REKODA_EDGE_PROXIES', parseEdgeProxies(raw).ranges);
+    const { ranges } = parseEdgeProxies(raw);
+    const universal = universalProblem('REKODA_EDGE_PROXIES', ranges);
+    if (universal) return universal;
+    /* Mapped forms were folded to IPv4 by the parser, so the gateway can
+     * only hide in an IPv4 range. */
+    const gateway = ranges.find(
+      ([base, bits]) => base.kind() === GATEWAY.kind() && GATEWAY.match(base, bits),
+    );
+    if (gateway) {
+      return (
+        `REKODA_EDGE_PROXIES trusts ${gateway[0].toString()}/${gateway[1]}, which holds the edge ` +
+        `network's gateway (${EDGE_GATEWAY}). Docker hands Caddy every IPv6 visitor and every ` +
+        'hairpin connection from that address, so any of them could claim to be any visitor. ' +
+        "Name the actual proxy addresses or CIDRs (Cloudflare's published ranges), or leave it " +
+        'empty.'
+      );
+    }
+    return null;
   } catch (error) {
     return (error as Error).message;
   }
-}
-
-if (isEntrypoint(import.meta.url, process.argv[1])) {
-  const raw = process.env['REKODA_EDGE_PROXIES'];
-  const problem = edgeProxyProblem(raw);
-  if (problem) {
-    console.error(problem);
-    process.exit(1);
-  }
-  const named = parseEdgeProxies(raw).entries;
-  console.log(
-    named.length === 0
-      ? 'edge proxies: none, so Caddy believes the TCP peer alone'
-      : `edge proxies: ${named.join(' ')}`,
-  );
 }
