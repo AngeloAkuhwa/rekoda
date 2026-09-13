@@ -315,12 +315,14 @@ export function problemsFor({ compose, dockerfile, caddyfile, dockerignore, giti
     /* A mount can replace the file the command runs
      * (`/dev/null:/repo/apps/api/dist/edge-proxies.js:ro` exits 0 having read
      * nothing), and read_only does not stop a bind mount. */
-    if (
-      asList(edge.volumes).length + asList(edge.configs).length + asList(edge.secrets).length >
-      0
-    ) {
+    /* Not tmpfs, which the job uses and which can only hide the code, never
+     * substitute it: the module would be missing and the check would fail. */
+    const mounts = ['volumes', 'configs', 'secrets', 'devices'].filter(
+      (key) => asList(edge[key]).length > 0,
+    );
+    if (mounts.length > 0) {
       problems.push(
-        `${EDGE_CHECK} must mount nothing, by volume, config or secret; any of them can replace the check it runs`,
+        `${EDGE_CHECK} must mount nothing (found ${mounts.join(', ')}); any mount can replace the check it runs`,
       );
     }
     /* A one-shot with no healthcheck: `up --wait` waits for it to COMPLETE
@@ -364,7 +366,20 @@ export function problemsFor({ compose, dockerfile, caddyfile, dockerignore, giti
     );
   }
   for (const [name, s] of Object.entries(services)) {
-    const target = s?.build?.target;
+    /* Every stage rule below reads THIS file, so a build that names another
+     * Dockerfile, or carries one inline, is checked against the wrong one. */
+    const build = s?.build;
+    if (build && typeof build === 'object') {
+      if (build.dockerfile !== undefined && build.dockerfile !== FILES.dockerfile) {
+        problems.push(
+          `${name} builds from ${build.dockerfile}; only ${FILES.dockerfile} is checked`,
+        );
+      }
+      if (build.dockerfile_inline !== undefined) {
+        problems.push(`${name} carries an inline Dockerfile, which no guard reads`);
+      }
+    }
+    const target = build?.target;
     if (!target) continue;
     const stage = stages.get(target);
     if (!stage) {

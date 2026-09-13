@@ -249,6 +249,14 @@ holding either is a credential at rest. Do not switch one on.
   the jobs it holds first (it is given 150 seconds, the api 30), so a restart
   or a deploy can take that long; a worker killed anyway leaves its job to be
   requeued once it is stale (five minutes).
+- **Not after an `up` the edge check refused** (G-74). That `up` leaves a
+  Caddy container in `created`, holding the value that was rejected, and
+  `dc restart caddy` (or `dc start caddy`) would start it and serve exactly
+  the trust list the check refused. Fix `REKODA_EDGE_PROXIES` in `.env` and
+  run `dc up -d --wait` again, which re-runs the check; `dc rm -f caddy`
+  first if you want the loaded container gone before you do. The same goes
+  for any service left in `created` by a refused `up`: `dc ps -a` shows the
+  state, and `up` is what applies a corrected `.env`.
 - **After editing `.env`:** `dc up -d --wait` recreates the api, worker and
   Caddy when their values changed, and re-runs the edge check, which refuses
   a `REKODA_EDGE_PROXIES` that would trust effectively the whole internet

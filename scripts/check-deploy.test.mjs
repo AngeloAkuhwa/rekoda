@@ -405,6 +405,28 @@ test('the edge trust list reaching Caddy unchecked (G-74)', () => {
     );
     expectProblem(problems(overlaid), /edge-check must mount nothing/);
   }
+  // A device mapping, which is a path substitution like the others.
+  const deviced = edited(
+    'compose',
+    "    command: ['node', 'dist/edge-proxies.js']\n",
+    "    command: ['node', 'dist/edge-proxies.js']\n    devices:\n      - /dev/null:/repo/apps/api/dist/edge-proxies.js\n",
+  );
+  expectProblem(problems(deviced), /edge-check must mount nothing \(found devices\)/);
+  // The preload in Docker's older `ENV NAME value` form, which the stage
+  // parser used to miss entirely.
+  const legacyEnv = edited(
+    'dockerfile',
+    'ENV NODE_ENV=production\n',
+    'ENV NODE_ENV=production\nENV NODE_OPTIONS --import=data:text/javascript,process.exit(0)\n',
+  );
+  expectProblem(problems(legacyEnv), /stage declares NODE_OPTIONS/);
+  // A build that names another Dockerfile: every stage rule reads this one.
+  const elsewhere = edited(
+    'compose',
+    '      target: app\n',
+    '      target: app\n      dockerfile: Dockerfile.other\n',
+  );
+  expectProblem(problems(elsewhere), /builds from Dockerfile\.other/);
   // An image entrypoint, which takes over every command the image is given.
   const imageEntrypoint = edited(
     'dockerfile',
