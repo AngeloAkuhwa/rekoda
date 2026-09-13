@@ -240,12 +240,18 @@ for value in '173.245.48.0/20 104.16.0.0/13 2400:cb00::/32 2a06:98c0::/29' 'priv
     fail "the edge check refused a legitimate value: ${value:-(empty)}"
   }
 done
-# And the gate is really in front of Caddy: `up` fails rather than serving.
+# And the gate is really in front of Caddy: `up` fails rather than serving,
+# and fails ON THE CHECK. Without the last test an unrelated failure (an
+# unhealthy api, a missing image) would read as the gate working.
 set_env REKODA_EDGE_PROXIES 0.0.0.0/0
 if timeout 300 "${COMPOSE[@]}" up -d --wait --wait-timeout 240 caddy >"$WORK/edge-up.log" 2>&1; then
   fail 'caddy started with a universal edge trust list'
 fi
 [ -z "$("${COMPOSE[@]}" ps -q caddy)" ] || fail 'caddy is running after a refused edge trust list'
+grep -q -F 'edge-check' "$WORK/edge-up.log" || {
+  cat "$WORK/edge-up.log"
+  fail 'the stack refused to come up, but not because of the edge check'
+}
 set_env REKODA_EDGE_PROXIES ''
 echo 'ok: refused before Caddy served, and the real values accepted'
 

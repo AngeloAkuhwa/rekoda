@@ -340,6 +340,17 @@ test('the edge trust list reaching Caddy unchecked (G-74)', () => {
     'trusted_proxies static 0.0.0.0/0',
   );
   expectProblem(problems(literal), /must take its trusted proxies from \{\$REKODA_EDGE_PROXIES\}/);
+  // The job neutered: the service is there, running something else.
+  const hollow = edited(
+    'compose',
+    "    command: ['node', 'dist/edge-proxies.js']\n",
+    "    command: ['node', '-e', '0']\n",
+  );
+  expectProblem(problems(hollow), /edge-check must run dist\/edge-proxies\.js/);
+  // The job left to restart: `up --wait` waits for a one-shot to COMPLETE
+  // only because it is not expected to keep running.
+  const restarted = edited('compose', "    restart: 'no'\n", '    restart: unless-stopped\n');
+  expectProblem(problems(restarted), /edge-check must set restart: 'no'/);
   // The job gone entirely.
   const gone = { compose: REAL.compose.replace(/ {2}edge-check:\n(?: {4}.*\n|\n(?= {4}))*/, '') };
   expectProblem(problems(gone), /has no edge-check service/);

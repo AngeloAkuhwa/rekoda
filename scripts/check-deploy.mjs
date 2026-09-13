@@ -57,6 +57,7 @@ export const ENV_FILE_LOADERS = ['api', 'migrate', 'worker'];
 /** The one-shot job that checks Caddy's own trust list before it serves (G-74). */
 export const EDGE_CHECK = 'edge-check';
 export const EDGE_PROXIES = 'REKODA_EDGE_PROXIES';
+export const EDGE_CHECK_COMMAND = 'dist/edge-proxies.js';
 /** The worker's stop grace must outlast the longest job (seconds). */
 export const WORKER_GRACE_SECONDS = 120;
 
@@ -283,6 +284,15 @@ export function problemsFor({ compose, dockerfile, caddyfile, dockerignore, giti
     }
     if (asList(edge.profiles).length > 0) {
       problems.push(`${EDGE_CHECK} sits behind a profile; \`up\` would start caddy without it`);
+    }
+    if (!asList(edge.command).join(' ').includes(EDGE_CHECK_COMMAND)) {
+      problems.push(`${EDGE_CHECK} must run ${EDGE_CHECK_COMMAND}, the check itself`);
+    }
+    /* A one-shot with no healthcheck: `up --wait` waits for it to COMPLETE
+     * only because it is not expected to keep running. Left to restart, the
+     * wait would hang or pass on a container that never checked anything. */
+    if (String(edge.restart ?? '') !== 'no') {
+      problems.push(`${EDGE_CHECK} must set restart: 'no'; it runs once, before caddy`);
     }
   }
   if (conditionOf(svc('caddy'), EDGE_CHECK) !== 'service_completed_successfully') {

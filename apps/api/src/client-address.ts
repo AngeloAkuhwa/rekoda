@@ -94,8 +94,10 @@ function trustEntries(name: string, raw: string | undefined): string[] {
 }
 
 /**
- * Caddy's own name for the private blocks, as the ranges it expands to. All
- * of them are non-public, so it is always a safe value.
+ * Caddy's own name for the private blocks, as the ranges it expands to. No
+ * internet caller can hold one of these addresses, so the value is safe from
+ * outside; on the host itself, traffic arriving through Docker's gateway is
+ * inside them, exactly as it is for the API's own lists.
  */
 const CADDY_PRIVATE_RANGES = [
   '192.168.0.0/16',
@@ -117,7 +119,13 @@ const CADDY_PRIVATE_RANGES = [
  */
 export function parseEdgeProxies(raw: string | undefined): { entries: string[]; ranges: Range[] } {
   const name = 'REKODA_EDGE_PROXIES';
-  const entries = (raw ?? '').split(/\s+/).filter((part) => part.length > 0);
+  /* One line: a line break travels into the Caddyfile as part of the value
+   * and Caddy refuses the whole file, so saying so here names the line
+   * rather than leaving an operator with a parse error. */
+  if (/[\r\n]/.test(raw ?? '') && (raw ?? '').trim() !== '') {
+    throw new Error(`${name} must be one line; Caddy reads the line break as part of the value`);
+  }
+  const entries = (raw ?? '').split(/[ \t]+/).filter((part) => part.length > 0);
   const ranges = entries.flatMap((entry) => {
     if (entry.includes(',')) {
       throw new Error(

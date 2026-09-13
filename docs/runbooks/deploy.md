@@ -77,7 +77,10 @@ treat it as a variable. Every generated value above is hex.
 
 1. **Host.** Ubuntu LTS, a non-root deploy user, SSH keys only
    (`PasswordAuthentication no`), `ufw` allowing 22, 80, 443 and 443/udp
-   only. Install Docker Engine and the compose plugin.
+   only. Install Docker Engine and the Compose v2 plugin (`docker compose
+version`; CI proves this stack on the version its Deployment job prints).
+   The edge check runs as a one-shot service that Caddy waits for, which
+   needs a Compose that treats a completed dependency as satisfied.
 2. **DNS.** Point the site and API hostnames at the host with **A records
    only** (no AAAA): the compose networks are IPv4, and Docker would present
    every IPv6 visitor to Caddy as one internal address. Leave the

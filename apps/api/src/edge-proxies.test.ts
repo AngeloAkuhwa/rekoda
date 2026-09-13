@@ -33,7 +33,7 @@ describe('values a deployment legitimately uses', () => {
   });
 
   it.each([
-    ['the tabs and newlines an editor leaves', ' 104.16.0.0/13\t2606:4700::/32\n'],
+    ['the spaces and tabs an editor leaves', ' 104.16.0.0/13\t2606:4700::/32 '],
     ["Caddy's own name for the private blocks", 'private_ranges'],
     ['a single proxy address', '203.0.113.7'],
     ['an internal load balancer', '10.0.0.0/8'],
@@ -71,6 +71,14 @@ describe('values Caddy would read as something else', () => {
    * than let Caddy fail with its own error after the images are built. */
   it('refuses a comma-separated list, which is the other lists’ format', () => {
     expect(edgeProxyProblem('104.16.0.0/13,2606:4700::/32')).toMatch(/space-separated/);
+  });
+
+  /* A line break reaches Caddy as part of the value and it refuses the whole
+   * file, so the deployment stops either way; saying so here names the line
+   * instead of leaving an operator with a Caddyfile parse error. */
+  it('refuses a value broken across lines, which Caddy cannot read', () => {
+    expect(edgeProxyProblem('104.16.0.0/13\n2606:4700::/32')).toMatch(/one line/);
+    expect(edgeProxyProblem('104.16.0.0/13\r\n2606:4700::/32')).toMatch(/one line/);
   });
 
   it.each([
