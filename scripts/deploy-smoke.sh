@@ -167,6 +167,9 @@ step 'compose config'
 step 'build both images, tagged ci-a'
 COMMIT=$(git rev-parse --short HEAD)
 "${COMPOSE[@]}" build --build-arg "REKODA_COMMIT=$COMMIT"
+# The stand-in for Cloudflare (G-75), fetched now rather than at the end of a
+# long run, so a registry hiccup fails the run before anything is proved.
+docker pull -q "$CLOUDFLARE_IMAGE" >/dev/null
 
 step 'no secret reached an image: not in any layer, not in the config'
 # Exported to a file first, so a failed export fails the run instead of
@@ -584,6 +587,11 @@ for views in $(seq 1 $((LIMIT + 5))); do
   esac
 done
 [ "$hostile" != 0 ] || fail 'the host was never limited, so its views counted against nobody'
+# The bucket the host spent is the gateway's: the stand-in naming the
+# gateway as its visitor finds it limited already. That is the address the
+# edge check refuses, seen here as the one Docker hands Caddy the host from.
+[ "$(view "$EDGE_GATEWAY")" = 429 ] ||
+  fail "the host's views did not count against the edge gateway, $EDGE_GATEWAY"
 [ "$(view "$C")" = 401 ] ||
   fail 'the host spent the bucket of the visitor it named: Caddy trusts the edge gateway'
 echo "ok: the host was limited at view $hostile as the gateway, and visitor $C kept their own bucket"

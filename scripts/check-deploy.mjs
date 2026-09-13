@@ -19,7 +19,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
-import { parse as parseYaml } from 'yaml';
+import { parseDocument, visit } from 'yaml';
 import { parseDockerfile } from './check-env-example.mjs';
 
 export const ROOT = join(fileURLToPath(import.meta.url), '..', '..');
@@ -134,7 +134,24 @@ const conditionOf = (svc, dep) => {
 
 export function problemsFor({ compose, dockerfile, caddyfile, dockerignore, gitignore, nvmrc }) {
   const problems = [];
-  const doc = parseYaml(compose, { merge: true }) ?? {};
+  const parsed = parseDocument(compose, { merge: true });
+  if (parsed.errors.length > 0) throw parsed.errors[0];
+  /* Every rule reads the file as plain YAML, and compose acts on tags the
+   * YAML library only warns about: `!reset` deletes the value it marks and
+   * `!override` replaces it, so `REKODA_EDGE_PROXIES: !reset ...` or caddy's
+   * `edge-check: !reset {...}` would pass every rule below while compose ran
+   * something else (G-75). The file uses no tag; none is allowed. */
+  visit(parsed, {
+    Node(_key, node) {
+      if (node.tag) {
+        const line = compose.slice(0, node.range?.[0] ?? 0).split('\n').length;
+        problems.push(
+          `${FILES.compose} uses the YAML tag ${node.tag} (line ${line}); compose acts on tags this guard reads past`,
+        );
+      }
+    },
+  });
+  const doc = parsed.toJS() ?? {};
   const services = doc.services ?? {};
   const svc = (name) => services[name];
   for (const name of [...SERVING, 'migrate']) {

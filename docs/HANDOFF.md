@@ -85,7 +85,8 @@ own `CF-Connecting-IP` is shown to name nobody. Carried in from the final
 G-74 review: the job runs `dist/edge-check.js`, an entry with no
 entry-point test, so it cannot skip itself and exit 0; the guard refuses
 any field on the job no rule reads (`scale: 0`, `deploy.replicas: 0`,
-`provider`), pins the edge network and keeps Caddy on it alone; a real
+`provider`) and any YAML tag compose acts on (`!reset`, `!override`),
+pins the edge network and keeps Caddy on it alone; a real
 IPv6 aggregate test; `caddy adapt` failures print Caddy's own error.
 
 **Previous work (13 Sep 2026, G-74, merged as `3cab9dd`; CODE COMPLETE):**

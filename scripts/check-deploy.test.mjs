@@ -603,4 +603,35 @@ test('the edge check switched off, or the edge network changed under it (G-75)',
     '    network_mode: host\n',
   );
   expectProblem(problems(hostNetwork), /^caddy must join the edge network alone/);
+
+  // Compose's YAML tags, which the YAML library only warns about: every
+  // rule would read the value while compose deleted or replaced it.
+  for (const [label, from, to] of [
+    [
+      "caddy's wait on the check, deleted",
+      '      edge-check:\n        condition: service_completed_successfully\n',
+      '      edge-check: !reset\n        condition: service_completed_successfully\n',
+    ],
+    [
+      'the checked value, deleted',
+      '      REKODA_EDGE_PROXIES: ${REKODA_EDGE_PROXIES:-}\n    # It reads',
+      '      REKODA_EDGE_PROXIES: !reset ${REKODA_EDGE_PROXIES:-}\n    # It reads',
+    ],
+    [
+      'the pinned gateway, deleted',
+      '          gateway: 172.30.10.1\n',
+      '          gateway: !reset 172.30.10.1\n',
+    ],
+    [
+      'the command, replaced',
+      "    command: ['node', 'dist/edge-check.js']\n",
+      "    command: !override ['node', 'dist/edge-check.js']\n",
+    ],
+  ]) {
+    assert.ok(label);
+    expectProblem(
+      problems(edited('compose', from, to)),
+      /^docker-compose\.prod\.yml uses the YAML tag !(?:reset|override) \(line \d+\)/,
+    );
+  }
 });

@@ -137,7 +137,11 @@ treat it as a variable. Every generated value above is hex.
    `runtime role passwords set: rekoda_app, rekoda_worker`.
 
 8. **Start everything.** `dc up -d --wait`. Caddy obtains the certificates on
-   first start.
+   first start. Then confirm the edge network is the one the edge check
+   knows (G-75):
+   `docker network inspect rekoda-prod_edge -f '{{range .IPAM.Config}}{{.Gateway}}{{end}} {{.EnableIPv6}}'`
+   must print `172.30.10.1 false`. Anything else means Docker kept an older
+   network: `dc down` (never `-v`) and `dc up -d --wait` recreate it.
 9. **Health.** `curl -fsS https://<api host>/health` must show
    `"status":"ok"`, `"database":"up"`, `"migrations":152` (the count of
    entries in `packages/db/migrations/meta/_journal.json`), and the
@@ -173,10 +177,13 @@ it does not parse.
 The previous release's images stay on the host (`rekoda-app:<previous>`,
 `rekoda-web:<previous>`); that is what makes rollback a one-line change. Keep
 at least the last two releases before any `docker image prune`. Roll the
-checkout back with the release: the compose file and the images move
-together, and rolling only `REKODA_RELEASE` back to a release older than the
-edge check (G-74) points that job at an image without it, and the `up`
-fails loudly. Caddy keeps serving throughout, because it proxies by service
+checkout back with the release, always together: the compose file names the
+edge check's entry inside the image (`dist/edge-check.js` since G-75,
+`dist/edge-proxies.js` before it). Rolling only `REKODA_RELEASE` back points
+the job at an image without the entry it names, and the `up` fails loudly;
+rolling only the checkout back is worse, because the older command then runs
+a file of the newer image that no longer checks anything, and exits 0.
+Caddy keeps serving throughout, because it proxies by service
 name and is never recreated; the api, worker and web may already have been
 recreated on the older images by then, so finish the rollback rather than
 leaving it half applied.
@@ -281,9 +288,11 @@ holding either is a credential at rest. Do not switch one on.
   `deploy/` directory so the container sees a file a checkout replaced).
 - **The whole stack:** `dc down` then `dc up -d --wait`. The `pgdata`,
   `caddy_data` and `caddy_config` volumes survive.
-- **Never `dc up -d --no-deps caddy`, and never `--scale edge-check=0`**:
-  each skips the edge check and starts Caddy with whatever `.env` now says
-  (G-74). Bring Caddy up the ordinary way, which runs the check first.
+- **Never `dc up -d --no-deps caddy`, never `--scale edge-check=0`, and
+  never a second compose file** (`-f override.yml`): each skips the edge
+  check, or can (an override may `!reset` Caddy's wait on it, and CI checks
+  only `docker-compose.prod.yml`), and starts Caddy with whatever `.env` now
+  says (G-74). Bring Caddy up the ordinary way, which runs the check first.
 - **Never `dc down -v`** on a real host: it deletes the database and the
   certificates.
 
@@ -332,9 +341,10 @@ restore from backup, and **there is no backup mechanism yet** (G-02 in
 - **Never `dc down -v`** outside a throwaway machine.
 - **Never start Caddy past the edge check:** not `dc up --no-deps caddy`,
   not `--scale edge-check=0`, not `dc start` or `dc restart` on a Caddy an
-  `up` left in `created`, and never an edit that scales, deploys, replaces
-  or moves `edge-check` in the compose file (CI refuses those). Each would
-  serve a trust list nothing checked (G-74, G-75).
+  `up` left in `created`, not a second compose file beside
+  `docker-compose.prod.yml`, and never an edit that scales, deploys,
+  replaces, moves or `!reset`s `edge-check` in the compose file (CI refuses
+  those). Each would serve a trust list nothing checked (G-74, G-75).
 - **Never read an empty `psql` result as the app role as data loss:** RLS
   shows `rekoda_app` nothing until a tenant is pinned.
 
@@ -391,6 +401,7 @@ check out.
 
 - [ ] `/health` returns `ok`, 152 migrations (or the new count), and the new release
 - [ ] `dc ps`: every service healthy
+- [ ] `docker network inspect rekoda-prod_edge -f '{{range .IPAM.Config}}{{.Gateway}}{{end}} {{.EnableIPv6}}'` prints `172.30.10.1 false` (the gateway the edge check refuses, G-75)
 - [ ] Worker: `job runner started` in its log, and no growing `pending` backlog
 - [ ] Send a WhatsApp message to the Rekoda number; the reply arrives
 - [ ] Dashboard sign-in completes
