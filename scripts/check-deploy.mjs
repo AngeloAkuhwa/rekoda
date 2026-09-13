@@ -80,7 +80,12 @@ const secretsOf = (svc) => asList(svc?.secrets).map((s) => (typeof s === 'string
 const conditionOf = (svc, dep) => {
   const d = svc?.depends_on;
   if (Array.isArray(d)) return d.includes(dep) ? 'service_started' : null;
-  return d?.[dep] ? (d[dep].condition ?? 'service_started') : null;
+  const entry = d?.[dep];
+  if (!entry) return null;
+  /* `required: false` turns a dependency that never arrives into a warning,
+   * so the condition no longer gates anything: read it as no dependency. */
+  if (entry.required === false) return null;
+  return entry.condition ?? 'service_started';
 };
 
 export function problemsFor({ compose, dockerfile, caddyfile, dockerignore, gitignore, nvmrc }) {
@@ -297,6 +302,12 @@ export function problemsFor({ compose, dockerfile, caddyfile, dockerignore, giti
      * exits 0 without reading anything, and caddy would serve. */
     if (edge.entrypoint !== undefined) {
       problems.push(`${EDGE_CHECK} must not override its entrypoint; the command is the check`);
+    }
+    /* A mount can replace the file the command runs
+     * (`/dev/null:/repo/apps/api/dist/edge-proxies.js:ro` exits 0 having read
+     * nothing), and read_only does not stop a bind mount. */
+    if (asList(edge.volumes).length > 0) {
+      problems.push(`${EDGE_CHECK} must mount nothing; a mount can replace the check it runs`);
     }
     /* A one-shot with no healthcheck: `up --wait` waits for it to COMPLETE
      * only because it is not expected to keep running. Left to restart, the

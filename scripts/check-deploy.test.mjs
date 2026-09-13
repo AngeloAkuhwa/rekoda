@@ -382,6 +382,20 @@ test('the edge trust list reaching Caddy unchecked (G-74)', () => {
     '\t\ttrusted_proxies_strict\n\t\ttrusted_proxies static 0.0.0.0/0\n',
   );
   expectProblem(problems(second), /in one directive/);
+  // The dependency made advisory: a failed check becomes a warning.
+  const optional = edited(
+    'compose',
+    '      edge-check:\n        condition: service_completed_successfully\n',
+    '      edge-check:\n        condition: service_completed_successfully\n        required: false\n',
+  );
+  expectProblem(problems(optional), /caddy must wait for edge-check to succeed/);
+  // A mount over the script: node runs an empty file and exits 0.
+  const mounted = edited(
+    'compose',
+    "    command: ['node', 'dist/edge-proxies.js']\n",
+    "    command: ['node', 'dist/edge-proxies.js']\n    volumes:\n      - /dev/null:/repo/apps/api/dist/edge-proxies.js:ro\n",
+  );
+  expectProblem(problems(mounted), /edge-check must mount nothing/);
   // The job gone entirely.
   const gone = { compose: REAL.compose.replace(/ {2}edge-check:\n(?: {4}.*\n|\n(?= {4}))*/, '') };
   expectProblem(problems(gone), /has no edge-check service/);

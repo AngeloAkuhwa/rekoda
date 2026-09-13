@@ -37,6 +37,9 @@ describe('values a deployment legitimately uses', () => {
     ["Caddy's own name for the private blocks", 'private_ranges'],
     ['a single proxy address', '203.0.113.7'],
     ['an internal load balancer', '10.0.0.0/8'],
+    /* Accepted for parity with the API's own lists, which fold a mapped
+     * range to the IPv4 one it means. Caddy unmaps the peer instead, so a
+     * mapped range there matches nothing; harmless either way. */
     ['an IPv4-mapped range', '::ffff:172.30.10.0/120'],
   ])('accepts %s', (_label, value) => {
     expect(edgeProxyProblem(value)).toBeNull();

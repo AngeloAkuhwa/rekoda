@@ -246,24 +246,34 @@ for value in '173.245.48.0/20 104.16.0.0/13 2400:cb00::/32 2a06:98c0::/29' 'priv
     fail "the edge check refused a legitimate value: ${value:-(empty)}"
   }
 done
-# And the gate is really in front of Caddy: `up` fails rather than serving,
-# and fails ON THE CHECK. Without the last test an unrelated failure (an
-# unhealthy api, a missing image) would read as the gate working.
+# And the gate is really in front of Caddy. The same `up`, on the same
+# stack, twice: with a universal value it must fail and Caddy must never be
+# created; with the documented empty value it must succeed. That pair is what
+# attributes the failure to the value rather than to an unhealthy api, which
+# would fail both. Compose's own wording is not used: it differs by version
+# and by dependency condition.
 set_env REKODA_EDGE_PROXIES 0.0.0.0/0
 if timeout 300 "${COMPOSE[@]}" up -d --wait --wait-timeout 240 caddy >"$WORK/edge-up.log" 2>&1; then
   fail 'caddy started with a universal edge trust list'
 fi
-[ -z "$("${COMPOSE[@]}" ps -q caddy)" ] || fail 'caddy is running after a refused edge trust list'
-# Compose names every container it converges, so the job's name appearing in
-# that log proves nothing. The dependency failure, or the check's own refusal
-# in its container log, is what tells a gate refusal from an unhealthy api.
+# `ps -aq`, not `ps -q`: a caddy that started and then exited is not running
+# either, and that is not the same as never having served.
+[ -z "$("${COMPOSE[@]}" ps -aq caddy)" ] || fail 'caddy was created despite a refused edge trust list'
 "${COMPOSE[@]}" logs --no-color edge-check >"$WORK/edge-job.log" 2>&1 || true
-grep -qE 'dependency failed to start: container .*edge-check.* exited \(1\)' "$WORK/edge-up.log" ||
-  grep -q -F 'REKODA_EDGE_PROXIES trusts' "$WORK/edge-job.log" || {
-    cat "$WORK/edge-up.log" "$WORK/edge-job.log"
-    fail 'the stack refused to come up, but not because of the edge check'
-  }
+grep -q -F 'REKODA_EDGE_PROXIES trusts' "$WORK/edge-job.log" || {
+  cat "$WORK/edge-up.log" "$WORK/edge-job.log"
+  fail 'the stack refused to come up, but the edge check never refused the value'
+}
+edge_container=$("${COMPOSE[@]}" ps -aq edge-check | head -n 1)
+[ -n "$edge_container" ] || fail 'the edge check never ran'
+edge_exit=$(docker inspect -f '{{.State.ExitCode}}' "$edge_container")
+[ "$edge_exit" = 1 ] || fail "the edge check exited $edge_exit, not refusing the value"
 set_env REKODA_EDGE_PROXIES ''
+timeout 300 "${COMPOSE[@]}" up -d --wait --wait-timeout 240 caddy >"$WORK/edge-up-ok.log" 2>&1 || {
+  cat "$WORK/edge-up-ok.log"
+  fail 'the same stack would not come up with the documented empty value either'
+}
+[ -n "$("${COMPOSE[@]}" ps -q caddy)" ] || fail 'caddy is not running with an accepted edge trust list'
 echo 'ok: refused before Caddy served, and the real values accepted'
 
 step 'the stack comes up healthy'
