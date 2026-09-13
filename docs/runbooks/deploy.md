@@ -17,14 +17,15 @@ alias dc='docker compose -f docker-compose.prod.yml'
 
 ## What runs, and who holds which credential
 
-| Service    | Image                  | What it is                                                                                          |
-| ---------- | ---------------------- | --------------------------------------------------------------------------------------------------- |
-| `caddy`    | `caddy:2.11.4-alpine`  | The only published ports (80, 443, 443/udp). TLS, the two hostnames, the client address             |
-| `web`      | `rekoda-web:<release>` | `next start`, with the site's public values baked in at build                                       |
-| `api`      | `rekoda-app:<release>` | The API, `REKODA_WORKER=0`                                                                          |
-| `worker`   | `rekoda-app:<release>` | The same image, `REKODA_WORKER=1`: the job runner and the sweeps                                    |
-| `postgres` | `postgres:16-alpine`   | The database, on the `pgdata` volume, on a network with no route in or out and no published port    |
-| `migrate`  | `rekoda-app:<release>` | A one-off, never started by `up`: `dc run --rm -T migrate` (migrations, then the runtime passwords) |
+| Service      | Image                  | What it is                                                                                            |
+| ------------ | ---------------------- | ----------------------------------------------------------------------------------------------------- |
+| `caddy`      | `caddy:2.11.4-alpine`  | The only published ports (80, 443, 443/udp). TLS, the two hostnames, the client address               |
+| `web`        | `rekoda-web:<release>` | `next start`, with the site's public values baked in at build                                         |
+| `api`        | `rekoda-app:<release>` | The API, `REKODA_WORKER=0`                                                                            |
+| `worker`     | `rekoda-app:<release>` | The same image, `REKODA_WORKER=1`: the job runner and the sweeps                                      |
+| `postgres`   | `postgres:16-alpine`   | The database, on the `pgdata` volume, on a network with no route in or out and no published port      |
+| `migrate`    | `rekoda-app:<release>` | A one-off, never started by `up`: `dc run --rm -T migrate` (migrations, then the runtime passwords)   |
+| `edge-check` | `rekoda-app:<release>` | A one-shot `up` runs before Caddy: it refuses an unsafe `REKODA_EDGE_PROXIES` (G-74) and then exits 0 |
 
 | Credential                                     | Lives in                          | Reaches                                                                                                         |
 | ---------------------------------------------- | --------------------------------- | --------------------------------------------------------------------------------------------------------------- |
@@ -339,7 +340,9 @@ production anyway.
 ## What a production boot refuses
 
 Each process validates its environment before serving anything, and each
-failure below is a one-line startup error naming the variable:
+failure below is a one-line startup error naming the variable. For the api
+and the worker it is in `dc logs api`; for the edge check the `up` itself
+only says a dependency failed, and the line is in `dc logs edge-check`:
 
 - **API and worker:** every required variable is shape-checked
   (`loadConfig`); the database roles must not be SUPERUSER or BYPASSRLS;

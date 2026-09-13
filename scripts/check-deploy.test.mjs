@@ -456,6 +456,29 @@ test('the edge trust list reaching Caddy unchecked (G-74)', () => {
   // X-Forwarded-For entry once the edge proxies are named.
   const lax = edited('caddyfile', '\t\ttrusted_proxies_strict\n', '');
   expectProblem(problems(lax), /must keep trusted_proxies_strict/);
+  // Strict mode moved into a snippet nothing imports: present in the file,
+  // and applied nowhere.
+  const parked = edited(
+    'caddyfile',
+    '\t\ttrusted_proxies_strict\n',
+    '\t}\n}\n\n(unused) {\n\ttrusted_proxies_strict\n',
+  );
+  expectProblem(problems(parked), /trusted_proxies_strict in the servers block/);
+  // Another client-address header, which Cloudflare passes through and a
+  // browser can therefore set.
+  const extraHeader = edited(
+    'caddyfile',
+    'client_ip_headers CF-Connecting-IP X-Forwarded-For',
+    'client_ip_headers X-Client-IP CF-Connecting-IP X-Forwarded-For',
+  );
+  expectProblem(problems(extraHeader), /CF-Connecting-IP and X-Forwarded-For only/);
+  // The command as one argv element, which is a program name, not a program.
+  const oneWord = edited(
+    'compose',
+    "    command: ['node', 'dist/edge-proxies.js']\n",
+    "    command: ['node dist/edge-proxies.js']\n",
+  );
+  expectProblem(problems(oneWord), /edge-check must run exactly/);
   // The job gone entirely.
   const gone = { compose: REAL.compose.replace(/ {2}edge-check:\n(?: {4}.*\n|\n(?= {4}))*/, '') };
   expectProblem(problems(gone), /has no edge-check service/);

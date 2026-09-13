@@ -302,7 +302,12 @@ export function problemsFor({ compose, dockerfile, caddyfile, dockerignore, giti
     /* The exact command, not a command mentioning the file: `node -e
      * 'process.exit(0)' dist/edge-proxies.js` would leave caddy waiting on a
      * job that checked nothing. */
-    if (asList(edge.command).join(' ') !== `node ${EDGE_CHECK_COMMAND}`) {
+    const edgeCommand = asList(edge.command).map(String);
+    if (
+      edgeCommand.length !== 2 ||
+      edgeCommand[0] !== 'node' ||
+      edgeCommand[1] !== EDGE_CHECK_COMMAND
+    ) {
       problems.push(
         `${EDGE_CHECK} must run exactly \`node ${EDGE_CHECK_COMMAND}\`, the check itself`,
       );
@@ -459,12 +464,42 @@ export function problemsFor({ compose, dockerfile, caddyfile, dockerignore, giti
       `${FILES.caddyfile} must take its trusted proxies from {$${EDGE_PROXIES}} and nothing else, in one directive, the value ${EDGE_CHECK} checks (found ${trustLines.length})`,
     );
   }
+  /* The three lines that decide a client's address live in the global
+   * `servers` block, which is the only place Caddy applies them. A directive
+   * moved into a snippet nothing imports reads as present and does nothing. */
+  const serversBlock = (() => {
+    const start = caddyCode.indexOf('servers {');
+    if (start < 0) return '';
+    let depth = 0;
+    for (let i = caddyCode.indexOf('{', start); i < caddyCode.length; i++) {
+      if (caddyCode[i] === '{') depth += 1;
+      else if (caddyCode[i] === '}' && --depth === 0) return caddyCode.slice(start, i + 1);
+    }
+    return '';
+  })();
+  const serverLines = serversBlock
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (!serverLines.includes(`trusted_proxies static {$${EDGE_PROXIES}}`)) {
+    problems.push(
+      `${FILES.caddyfile} must set its trusted proxies inside the servers block, where Caddy reads them`,
+    );
+  }
   /* Strict mode, or Caddy takes the LEFTMOST X-Forwarded-For entry once the
    * edge proxies are named: a browser writes that one and Cloudflare appends
    * to it, which is the forged address G-43 and G-71 close. */
-  if (!/^[ \t]*trusted_proxies_strict[ \t]*$/m.test(caddyCode)) {
+  if (!serverLines.includes('trusted_proxies_strict')) {
     problems.push(
-      `${FILES.caddyfile} must keep trusted_proxies_strict; without it a browser's own X-Forwarded-For entry is believed`,
+      `${FILES.caddyfile} must keep trusted_proxies_strict in the servers block; without it a browser's own X-Forwarded-For entry is believed`,
+    );
+  }
+  /* And exactly these two client-address headers: another name (X-Client-IP,
+   * say) is one Cloudflare passes through untouched, so a browser could set
+   * it and choose its own address. */
+  if (!serverLines.includes('client_ip_headers CF-Connecting-IP X-Forwarded-For')) {
+    problems.push(
+      `${FILES.caddyfile} must read the client address from CF-Connecting-IP and X-Forwarded-For only; another header is one a browser can set`,
     );
   }
   if (!/request>uri\s+delete/.test(caddyCode) || !/request>headers\s+delete/.test(caddyCode)) {
