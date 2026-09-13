@@ -289,7 +289,9 @@ restore from backup, and **there is no backup mechanism yet** (G-02 in
   `REKODA_E2E_REVEAL_OTP`, `REKODA_REVEAL_OTP`, `REKODA_OPERATOR_SECRET`,
   `REKODA_LOCAL_STORAGE`, `PAYSTACK_BASE_URL`, `MONO_BASE_URL`. The compose
   file names none of them and CI keeps it that way, but `.env` reaches the
-  api and the worker whole.
+  api and the worker whole, so the api and the worker also refuse to boot
+  with `REKODA_LOCAL_STORAGE` set, or with either provider URL set to
+  anything but that provider's own host (G-72; the exact rules are below).
 - **Never `dc down -v`** outside a throwaway machine.
 - **Never read an empty `psql` result as the app role as data loss:** RLS
   shows `rekoda_app` nothing until a tenant is pinned.
@@ -314,6 +316,13 @@ failure below is a one-line startup error naming the variable:
   (`loadConfig`); the database roles must not be SUPERUSER or BYPASSRLS;
   `VAULT_KEY` and `MATCH_KEY` must match their enrolled fingerprints;
   `REKODA_TRUSTED_PROXIES` must be set (the compose file sets it);
+  neither trust list may be empty or trust effectively the whole internet;
+  `PAYSTACK_BASE_URL` and `MONO_BASE_URL` may only be blank or the
+  provider's own host, and `REKODA_LOCAL_STORAGE` must be blank;
+  `AI_BASE_URL` and the operator OIDC URLs must be public https hosts (not
+  localhost, a container name, a private address, or a reserved `.invalid`,
+  `.test` or `.example` name);
+  `R2_ACCOUNT_ID` must be the 32-hex account id (G-72);
   `REKODA_RELEASE` and `REKODA_COMMIT` must be short tokens.
 - **Web** (`next start`): every mandatory legal fact must be set, or the
   server refuses to serve policy pages with placeholder badges (R8). In this

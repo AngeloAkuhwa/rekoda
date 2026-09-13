@@ -304,13 +304,14 @@ describe('PlaceOrder is the default door (remediation R2)', () => {
  */
 describe('operator identity configuration', () => {
   const OIDC = {
-    OPERATOR_OIDC_ISSUER: 'https://issuer.example',
+    OPERATOR_OIDC_ISSUER: 'https://issuer.example.com',
     OPERATOR_OIDC_AUDIENCE: 'rekoda-ops',
-    OPERATOR_OIDC_JWKS_URL: 'https://issuer.example/jwks',
+    OPERATOR_OIDC_JWKS_URL: 'https://issuer.example.com/jwks',
   };
   const PROD = {
     ...BASE,
     NODE_ENV: 'production',
+    REKODA_TRUSTED_PROXIES: '172.30.10.10',
     META_APP_SECRET: 'm'.repeat(40),
     META_VERIFY_TOKEN: 'v'.repeat(40),
     REKODA_TRUSTED_WEB: '172.30.10.11',
@@ -322,9 +323,9 @@ describe('operator identity configuration', () => {
 
   it('reads issuer, audience and key set, with OIDC scope as the default claim', () => {
     expect(loadConfig({ ...BASE, ...OIDC }).operatorAuth).toEqual({
-      issuer: 'https://issuer.example',
+      issuer: 'https://issuer.example.com',
       audience: 'rekoda-ops',
-      jwksUrl: 'https://issuer.example/jwks',
+      jwksUrl: 'https://issuer.example.com/jwks',
       scopeClaim: 'scope',
     });
   });
@@ -347,10 +348,10 @@ describe('operator identity configuration', () => {
 
   it('refuses a plaintext issuer or key set', () => {
     expect(() =>
-      loadConfig({ ...BASE, ...OIDC, OPERATOR_OIDC_ISSUER: 'http://issuer.example' }),
+      loadConfig({ ...BASE, ...OIDC, OPERATOR_OIDC_ISSUER: 'http://issuer.example.com' }),
     ).toThrow(/must be an https URL/);
     expect(() =>
-      loadConfig({ ...BASE, ...OIDC, OPERATOR_OIDC_JWKS_URL: 'http://issuer.example/jwks' }),
+      loadConfig({ ...BASE, ...OIDC, OPERATOR_OIDC_JWKS_URL: 'http://issuer.example.com/jwks' }),
     ).toThrow(/must be an https URL/);
   });
 
@@ -452,9 +453,10 @@ describe('the dark FX capability', () => {
     const PROD = {
       ...BASE,
       NODE_ENV: 'production',
-      OPERATOR_OIDC_ISSUER: 'https://issuer.example',
+      REKODA_TRUSTED_PROXIES: '172.30.10.10',
+      OPERATOR_OIDC_ISSUER: 'https://issuer.example.com',
       OPERATOR_OIDC_AUDIENCE: 'rekoda-ops',
-      OPERATOR_OIDC_JWKS_URL: 'https://issuer.example/jwks',
+      OPERATOR_OIDC_JWKS_URL: 'https://issuer.example.com/jwks',
       META_APP_SECRET: 'm'.repeat(40),
       META_VERIFY_TOKEN: 'v'.repeat(40),
       REKODA_TRUSTED_WEB: '172.30.10.11',
@@ -633,11 +635,12 @@ describe('the trusted web tier (G-71)', () => {
   const PROD = {
     ...BASE,
     NODE_ENV: 'production',
+    REKODA_TRUSTED_PROXIES: '172.30.10.10',
     META_APP_SECRET: 'm'.repeat(40),
     META_VERIFY_TOKEN: 'v'.repeat(40),
-    OPERATOR_OIDC_ISSUER: 'https://issuer.example',
+    OPERATOR_OIDC_ISSUER: 'https://issuer.example.com',
     OPERATOR_OIDC_AUDIENCE: 'rekoda-ops',
-    OPERATOR_OIDC_JWKS_URL: 'https://issuer.example/jwks',
+    OPERATOR_OIDC_JWKS_URL: 'https://issuer.example.com/jwks',
   } as NodeJS.ProcessEnv;
 
   it('is empty outside production when unset, so no peer is believed', () => {

@@ -7,7 +7,13 @@
  * valid-looking value.
  */
 import type { OperatorAuthConfig } from './auth/operator-identity.js';
-import { parseTrustedWeb } from './client-address.js';
+import {
+  parseTrustedProxies,
+  parseTrustedWeb,
+  universalRange,
+  type Range,
+} from './client-address.js';
+import { MONO_API, PAYSTACK_API, nonPublicReason } from './endpoints.js';
 
 export interface ApiConfig {
   port: number;
@@ -66,6 +72,13 @@ export interface ApiConfig {
    * address. Required in production, where the web tier is always there.
    */
   trustedWeb: ReturnType<typeof parseTrustedWeb>;
+  /**
+   * The proxies whose X-Forwarded-For Fastify believes (G-43), as Fastify's
+   * `trustProxy` takes them. main.ts reads it through `trustedProxies()`
+   * before the app exists; it is here too so a bad value fails the same
+   * boot check as everything else.
+   */
+  trustedProxies: true | string[];
   /**
    * Storefront orders one shop takes per hour before answering `busy`
    * (fix-plan 7, H7b). Counted in the database, so every replica shares one
@@ -536,11 +549,138 @@ function trustedWeb(env: NodeJS.ProcessEnv, isProduction: boolean) {
     }
     return [];
   }
+  let ranges: Range[];
   try {
-    return parseTrustedWeb(raw);
+    ranges = parseTrustedWeb(raw);
   } catch (error) {
     throw new ConfigError((error as Error).message);
   }
+  if (isProduction) refuseUniversal('REKODA_TRUSTED_WEB', ranges);
+  return ranges;
+}
+
+/**
+ * The proxies whose X-Forwarded-For Fastify believes (G-43), as Fastify's
+ * `trustProxy` takes them: `true` (every proxy) only outside production and
+ * only when unset, which is development's long-standing default. Exported
+ * because main.ts needs it before the app, and so its config, exists.
+ *
+ * Production must name its proxies, and "production" is anything not
+ * explicitly dev or test, so a typo'd NODE_ENV fails closed. A value that is
+ * set but names nothing (bare commas) is refused everywhere: it used to pass
+ * the "is it set" check and trust no proxy at all, putting every direct
+ * caller on Caddy's one address. In production an entry that trusts
+ * effectively the whole internet is refused too (G-72).
+ */
+export function trustedProxies(env: NodeJS.ProcessEnv): true | string[] {
+  const isProduction = isProductionEnv(env);
+  const raw = env['REKODA_TRUSTED_PROXIES']?.trim();
+  if (!raw) {
+    if (isProduction) {
+      throw new ConfigError(
+        'REKODA_TRUSTED_PROXIES is required in production: set it to your ' +
+          'proxy/load-balancer addresses or CIDRs, or the per-IP rate limit ' +
+          'is defeated by a forged X-Forwarded-For.',
+      );
+    }
+    return true;
+  }
+  let parsed: ReturnType<typeof parseTrustedProxies>;
+  try {
+    parsed = parseTrustedProxies(raw);
+  } catch (error) {
+    throw new ConfigError((error as Error).message);
+  }
+  if (isProduction) refuseUniversal('REKODA_TRUSTED_PROXIES', parsed.ranges);
+  return parsed.entries;
+}
+
+function refuseUniversal(name: string, ranges: readonly Range[]): void {
+  const universal = universalRange(ranges);
+  if (!universal) return;
+  throw new ConfigError(
+    `${name} trusts ${universal[0].toString()}/${universal[1]}, which is effectively the whole ` +
+      'internet: any caller in it could claim to be any visitor. Name the actual addresses ' +
+      '(the compose file uses one fixed address).',
+  );
+}
+
+/**
+ * A provider's base URL (G-72). Tests and sandboxes point it at a fake;
+ * production refuses any value but the provider's own host, written exactly,
+ * because every request carries the secret key and a different host is a
+ * different party holding it. Blank means unset everywhere.
+ */
+function providerBaseUrl(
+  env: NodeJS.ProcessEnv,
+  name: string,
+  canonical: string,
+  isProduction: boolean,
+): string {
+  const raw = env[name]?.trim();
+  if (!raw) return canonical;
+  if (isProduction && raw !== canonical) {
+    throw new ConfigError(
+      `${name} must not be set in production: it points the provider's requests, and the ` +
+        `secret key they carry, at a host other than ${canonical}. Remove it.`,
+    );
+  }
+  return raw;
+}
+
+/** An endpoint production may choose, but only on the public internet (G-72). */
+function publicInProduction(name: string, value: string, isProduction: boolean): void {
+  if (!isProduction) return;
+  const reason = nonPublicReason(value);
+  if (reason) {
+    throw new ConfigError(`${name} ${reason}; production only calls public https hosts`);
+  }
+}
+
+/**
+ * An OpenAI-compatible host (see `aiBaseUrl`). Production may choose one,
+ * which is a compliance decision, but only a public https host: a model
+ * server on this machine or its network is a sidecar ADR 0032 rules out,
+ * and a local mock would receive every merchant message (G-72).
+ */
+function aiBaseUrl(env: NodeJS.ProcessEnv, isProduction: boolean): string | null {
+  const raw = env['AI_BASE_URL']?.trim();
+  if (!raw) return null;
+  publicInProduction('AI_BASE_URL', raw, isProduction);
+  return raw;
+}
+
+/**
+ * The documents folder, for development only (G-72). A production container
+ * loses its disk on every restart and its code is read-only, so a merchant's
+ * invoices written there would vanish; production uses R2 or refuses
+ * document storage loudly (NoStorageConfigured), never the filesystem.
+ */
+function localStorageRoot(env: NodeJS.ProcessEnv, isProduction: boolean): string {
+  const raw = env['REKODA_LOCAL_STORAGE']?.trim() ?? '';
+  if (raw && isProduction) {
+    throw new ConfigError(
+      'REKODA_LOCAL_STORAGE must not be set in production: documents written to the ' +
+        "container's disk are lost on restart. Configure R2 (R2_ACCOUNT_ID and its keys).",
+    );
+  }
+  return raw;
+}
+
+/**
+ * The R2 account id becomes the storage host
+ * (`https://<id>.r2.cloudflarestorage.com`), so anything but an account id
+ * (`evil.example#`, `x@evil.example/`) moves every document to another host
+ * (G-72). Cloudflare account ids are 32 hex characters; blank means no R2.
+ */
+function r2AccountId(env: NodeJS.ProcessEnv): string {
+  const raw = env['R2_ACCOUNT_ID']?.trim() ?? '';
+  if (raw && !/^[0-9a-f]{32}$/i.test(raw)) {
+    throw new ConfigError(
+      'R2_ACCOUNT_ID must be the 32-character hex Cloudflare account id: it becomes the storage host',
+    );
+  }
+  return raw;
 }
 
 /**
@@ -773,6 +913,9 @@ function operatorAuth(env: NodeJS.ProcessEnv, isProduction: boolean): OperatorAu
     if (!/^https:\/\//.test(value!)) {
       throw new ConfigError(`${name} must be an https URL`);
     }
+    /* A local identity provider would let whoever runs it sign operator
+     * tokens (G-72). */
+    publicInProduction(name, value!, isProduction);
   }
   return {
     issuer: issuer!,
@@ -987,6 +1130,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     // requests from one address in well under a minute.
     rateLimitMax: positiveInteger(env, 'REKODA_RATE_LIMIT_MAX', 60),
     trustedWeb: trustedWeb(env, isProduction),
+    trustedProxies: trustedProxies(env),
     /* Two orders a minute, sustained for an hour, from ONE shop page is a
      * very good day for a small merchant; a flood is something else. */
     /* A BRAKE, so zero is a value: the gate is `recent >= limit`, and 0
@@ -1069,7 +1213,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     aiModelEscalation: env['AI_MODEL_ESCALATION'] ?? ROLE_DEFAULTS.escalation,
     aiModelTranscriber: env['AI_MODEL_TRANSCRIBER'] ?? ROLE_DEFAULTS.transcriber,
     aiModelVisionVerifier: env['AI_MODEL_VISION_VERIFIER'] || null,
-    aiBaseUrl: env['AI_BASE_URL'] || null,
+    aiBaseUrl: aiBaseUrl(env, isProduction),
     aiModelPrices: env['AI_MODEL_PRICES'] || null,
     aiTranscriptionPrices: env['AI_TRANSCRIPTION_PRICES'] || null,
     voiceTranscriptionEnabled: flag(env['VOICE_TRANSCRIPTION_ENABLED']),
@@ -1106,10 +1250,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     fxMode: fxMode(env, isProduction),
     operatorAuth: operatorAuth(env, isProduction),
     paystackSecretKey: env['PAYSTACK_SECRET_KEY'] ?? '',
-    paystackBaseUrl: env['PAYSTACK_BASE_URL'] ?? 'https://api.paystack.co',
+    paystackBaseUrl: providerBaseUrl(env, 'PAYSTACK_BASE_URL', PAYSTACK_API, isProduction),
     paystackPlatformConfirmed: env['REKODA_PAYSTACK_PLATFORM_CONFIRMED'] === '1',
     monoSecretKey: env['MONO_SECRET_KEY'] ?? '',
-    monoBaseUrl: env['MONO_BASE_URL'] ?? 'https://api.withmono.com',
+    monoBaseUrl: providerBaseUrl(env, 'MONO_BASE_URL', MONO_API, isProduction),
     connectionKey: optionalHexKey(env, 'CONNECTION_KEY'),
     metaAccessToken: env['META_ACCESS_TOKEN'] ?? '',
     metaPhoneNumberId: env['META_PHONE_NUMBER_ID'] ?? '',
@@ -1123,11 +1267,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     metaServiceReplyCostMicros: nonNegativeInteger(env, 'META_SERVICE_REPLY_COST_MICROS', 0),
     metaWabaRegisteredInNigeria: env['META_WABA_REGISTERED_IN_NIGERIA'] !== 'false',
     planCatalogueReads: env['REKODA_PLAN_CATALOGUE_READS'] !== '0',
-    r2AccountId: env['R2_ACCOUNT_ID'] ?? '',
+    r2AccountId: r2AccountId(env),
     r2AccessKeyId: env['R2_ACCESS_KEY_ID'] ?? '',
     r2SecretAccessKey: env['R2_SECRET_ACCESS_KEY'] ?? '',
     r2Bucket: env['R2_BUCKET'] ?? '',
-    localStorageRoot: env['REKODA_LOCAL_STORAGE'] ?? '',
+    localStorageRoot: localStorageRoot(env, isProduction),
   };
 }
 
