@@ -285,8 +285,13 @@ export function problemsFor({ compose, dockerfile, caddyfile, dockerignore, giti
     if (asList(edge.profiles).length > 0) {
       problems.push(`${EDGE_CHECK} sits behind a profile; \`up\` would start caddy without it`);
     }
-    if (!asList(edge.command).join(' ').includes(EDGE_CHECK_COMMAND)) {
-      problems.push(`${EDGE_CHECK} must run ${EDGE_CHECK_COMMAND}, the check itself`);
+    /* The exact command, not a command mentioning the file: `node -e
+     * 'process.exit(0)' dist/edge-proxies.js` would leave caddy waiting on a
+     * job that checked nothing. */
+    if (asList(edge.command).join(' ') !== `node ${EDGE_CHECK_COMMAND}`) {
+      problems.push(
+        `${EDGE_CHECK} must run exactly \`node ${EDGE_CHECK_COMMAND}\`, the check itself`,
+      );
     }
     /* A one-shot with no healthcheck: `up --wait` waits for it to COMPLETE
      * only because it is not expected to keep running. Left to restart, the

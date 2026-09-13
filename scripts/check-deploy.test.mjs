@@ -356,7 +356,14 @@ test('the edge trust list reaching Caddy unchecked (G-74)', () => {
     "    command: ['node', 'dist/edge-proxies.js']\n",
     "    command: ['node', '-e', '0']\n",
   );
-  expectProblem(problems(hollow), /edge-check must run dist\/edge-proxies\.js/);
+  expectProblem(problems(hollow), /edge-check must run exactly `node dist\/edge-proxies\.js`/);
+  // The file named, but never run: caddy would wait on a successful no-op.
+  const noop = edited(
+    'compose',
+    "    command: ['node', 'dist/edge-proxies.js']\n",
+    "    command: ['node', '-e', 'process.exit(0)', 'dist/edge-proxies.js']\n",
+  );
+  expectProblem(problems(noop), /edge-check must run exactly `node dist\/edge-proxies\.js`/);
   // The job left to restart: `up --wait` waits for a one-shot to COMPLETE
   // only because it is not expected to keep running.
   const restarted = edited('compose', "    restart: 'no'\n", '    restart: unless-stopped\n');
