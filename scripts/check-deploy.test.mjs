@@ -300,3 +300,103 @@ test('secrets/ bind-mounted, a root user by override, or a second env_file', () 
   );
   expectProblem(problems(twice), /^api loads more than \.env: \.env, extra\.env/);
 });
+
+test('the edge trust list reaching Caddy unchecked (G-74)', () => {
+  // Caddy serving before the check, which is the whole point of the job.
+  const ungated = edited(
+    'compose',
+    '      # Never serve with an edge trust list a browser could exploit (G-74).\n      edge-check:\n        condition: service_completed_successfully\n',
+    '',
+  );
+  expectProblem(problems(ungated), /caddy must wait for edge-check to succeed before it serves/);
+  // The job started but not waited for: `up` would race it.
+  const started = edited(
+    'compose',
+    '      edge-check:\n        condition: service_completed_successfully\n',
+    '      edge-check:\n        condition: service_started\n',
+  );
+  expectProblem(problems(started), /caddy must wait for edge-check to succeed before it serves/);
+  // The job behind a profile, so `up` never runs it.
+  const profiled = edited(
+    'compose',
+    '  edge-check:\n    image: rekoda-app:${REKODA_RELEASE:?set REKODA_RELEASE in .env}\n',
+    '  edge-check:\n    profiles:\n      - ops\n    image: rekoda-app:${REKODA_RELEASE:?set REKODA_RELEASE in .env}\n',
+  );
+  expectProblem(problems(profiled), /edge-check sits behind a profile/);
+  // The job checking a value that is not the one Caddy reads.
+  const other = edited(
+    'compose',
+    '      # Exactly what compose gives Caddy below, checked before Caddy runs.\n      REKODA_EDGE_PROXIES: ${REKODA_EDGE_PROXIES:-}\n',
+    '      REKODA_EDGE_PROXIES: private_ranges\n',
+  );
+  expectProblem(
+    problems(other),
+    /edge-check must receive REKODA_EDGE_PROXIES exactly as caddy does/,
+  );
+  // Caddy taking the list from somewhere the job never sees.
+  const literal = edited(
+    'caddyfile',
+    'trusted_proxies static {$REKODA_EDGE_PROXIES}',
+    'trusted_proxies static 0.0.0.0/0',
+  );
+  expectProblem(problems(literal), /must take its trusted proxies from \{\$REKODA_EDGE_PROXIES\}/);
+  // The variable kept, and everyone trusted beside it.
+  const appended = edited(
+    'caddyfile',
+    'trusted_proxies static {$REKODA_EDGE_PROXIES}',
+    'trusted_proxies static {$REKODA_EDGE_PROXIES} 0.0.0.0/0',
+  );
+  expectProblem(
+    problems(appended),
+    /must take its trusted proxies from \{\$REKODA_EDGE_PROXIES\} and nothing else/,
+  );
+  // The job neutered: the service is there, running something else.
+  const hollow = edited(
+    'compose',
+    "    command: ['node', 'dist/edge-proxies.js']\n",
+    "    command: ['node', '-e', '0']\n",
+  );
+  expectProblem(problems(hollow), /edge-check must run exactly `node dist\/edge-proxies\.js`/);
+  // The file named, but never run: caddy would wait on a successful no-op.
+  const noop = edited(
+    'compose',
+    "    command: ['node', 'dist/edge-proxies.js']\n",
+    "    command: ['node', '-e', 'process.exit(0)', 'dist/edge-proxies.js']\n",
+  );
+  expectProblem(problems(noop), /edge-check must run exactly `node dist\/edge-proxies\.js`/);
+  // The job left to restart: `up --wait` waits for a one-shot to COMPLETE
+  // only because it is not expected to keep running.
+  const restarted = edited('compose', "    restart: 'no'\n", '    restart: unless-stopped\n');
+  expectProblem(problems(restarted), /edge-check must set restart: 'no'/);
+  // An entrypoint override: the command becomes arguments to `true`.
+  const entrypointed = edited(
+    'compose',
+    "    command: ['node', 'dist/edge-proxies.js']\n",
+    "    entrypoint: ['true']\n    command: ['node', 'dist/edge-proxies.js']\n",
+  );
+  expectProblem(problems(entrypointed), /edge-check must not override its entrypoint/);
+  // A second, unchecked trusted_proxies directive beside the checked one.
+  const second = edited(
+    'caddyfile',
+    '\t\ttrusted_proxies_strict\n',
+    '\t\ttrusted_proxies_strict\n\t\ttrusted_proxies static 0.0.0.0/0\n',
+  );
+  expectProblem(problems(second), /in one directive/);
+  // The dependency made advisory: a failed check becomes a warning.
+  const optional = edited(
+    'compose',
+    '      edge-check:\n        condition: service_completed_successfully\n',
+    '      edge-check:\n        condition: service_completed_successfully\n        required: false\n',
+  );
+  expectProblem(problems(optional), /caddy must wait for edge-check to succeed/);
+  // A mount over the script: node runs an empty file and exits 0.
+  const mounted = edited(
+    'compose',
+    "    command: ['node', 'dist/edge-proxies.js']\n",
+    "    command: ['node', 'dist/edge-proxies.js']\n    volumes:\n      - /dev/null:/repo/apps/api/dist/edge-proxies.js:ro\n",
+  );
+  expectProblem(problems(mounted), /edge-check must mount nothing/);
+  // The job gone entirely.
+  const gone = { compose: REAL.compose.replace(/ {2}edge-check:\n(?: {4}.*\n|\n(?= {4}))*/, '') };
+  expectProblem(problems(gone), /has no edge-check service/);
+});

@@ -77,6 +77,11 @@ export function parseTrustedProxies(raw: string | undefined): {
   return { entries, ranges };
 }
 
+/**
+ * The entries of a trust list. Comma-separated, as the API's own variables
+ * are written; a value that is set but names nothing is refused rather than
+ * read as an empty list.
+ */
 function trustEntries(name: string, raw: string | undefined): string[] {
   const entries = (raw ?? '')
     .split(',')
@@ -88,6 +93,53 @@ function trustEntries(name: string, raw: string | undefined): string[] {
   return entries;
 }
 
+/**
+ * Caddy's own name for the private blocks, as the ranges it expands to. No
+ * internet caller can hold one of these addresses, so the value is safe from
+ * outside; on the host itself, traffic arriving through Docker's gateway is
+ * inside them, exactly as it is for the API's own lists.
+ */
+const CADDY_PRIVATE_RANGES = [
+  '192.168.0.0/16',
+  '172.16.0.0/12',
+  '10.0.0.0/8',
+  '127.0.0.1/8',
+  'fd00::/8',
+  '::1',
+];
+
+/**
+ * The proxies IN FRONT of Caddy whose client-address headers Caddy believes
+ * (G-74), as Caddy reads them: `trusted_proxies static a b c`, so
+ * space-separated, and `private_ranges` is a name Caddy knows. Empty is the
+ * documented no-edge-proxy mode and means Caddy trusts the TCP peer alone.
+ *
+ * Unlike the API's own two lists this one is never read by a Rekoda process
+ * at all, which is why it is checked before Caddy starts rather than at boot.
+ */
+export function parseEdgeProxies(raw: string | undefined): { entries: string[]; ranges: Range[] } {
+  const name = 'REKODA_EDGE_PROXIES';
+  /* One line: a line break travels into the Caddyfile as part of the value
+   * and Caddy refuses the whole file, so saying so here names the line
+   * rather than leaving an operator with a parse error. */
+  if (/[\r\n]/.test(raw ?? '')) {
+    throw new Error(`${name} must be one line; Caddy reads the line break as part of the value`);
+  }
+  const entries = (raw ?? '').split(/[ \t]+/).filter((part) => part.length > 0);
+  const ranges = entries.flatMap((entry) => {
+    if (entry.includes(',')) {
+      throw new Error(
+        `${name} is space-separated, the way Caddy reads trusted_proxies, not comma-separated: ${entry}`,
+      );
+    }
+    if (entry === 'private_ranges') {
+      return CADDY_PRIVATE_RANGES.map((cidr) => parseRange(name, cidr));
+    }
+    return [parseRange(name, entry)];
+  });
+  return { entries, ranges };
+}
+
 function parseRange(name: string, entry: string): Range {
   /* Written as a plain address, as the compose file writes it. ipaddr.js
    * also reads shorthand, octal and integer forms (172.30.10 is
@@ -96,7 +148,9 @@ function parseRange(name: string, entry: string): Range {
   if (
     isIP(address) === 0 ||
     extra.length > 0 ||
-    (prefix !== undefined && !/^\d{1,3}$/.test(prefix))
+    /* Plain digits, no leading zero: `/012` is a prefix ipaddr.js reads as
+     * 12 and Caddy refuses outright, so the two would disagree. */
+    (prefix !== undefined && !/^(?:0|[1-9]\d{0,2})$/.test(prefix))
   ) {
     throw new Error(`${name} has an entry that is not an address or CIDR: ${entry}`);
   }
@@ -152,6 +206,16 @@ const NON_PUBLIC = [
 
 /** No real proxy fleet or web tier reaches public space wider than these. */
 const WIDEST_PUBLIC = { ipv4: 8, ipv6: 16 } as const;
+/** Address bits per family, for counting what a list reaches in total. */
+const WIDTH = { ipv4: 32, ipv6: 128 } as const;
+
+/** Whether a range lies wholly inside a block no internet caller can hold. */
+function insideNonPublic(base: ipaddr.IPv4 | ipaddr.IPv6, bits: number): boolean {
+  return NON_PUBLIC.some(
+    ([block, blockBits]) =>
+      block.kind() === base.kind() && bits >= blockBits && base.match(block, blockBits),
+  );
+}
 
 /**
  * The first address of the IPv4-mapped block. Fastify's proxy matcher turns
@@ -175,13 +239,43 @@ export function universalRange(ranges: readonly Range[]): Range | null {
        * address, whatever its own prefix length says. */
       if (base.kind() === 'ipv6' && bits <= 96 && MAPPED_BLOCK.match(base, bits)) return true;
       if (bits >= WIDEST_PUBLIC[base.kind()]) return false;
-      const insideNonPublic = NON_PUBLIC.some(
-        ([block, blockBits]) =>
-          block.kind() === base.kind() && bits >= blockBits && base.match(block, blockBits),
-      );
-      return !insideNonPublic;
+      return !insideNonPublic(base, bits);
     }) ?? null
   );
+}
+
+/**
+ * Why a trust list trusts effectively the whole internet, naming the entry
+ * and the variable, or null when it does not. One wording for all three
+ * lists: the API's two (checked at boot, G-72) and Caddy's (checked before
+ * it serves, G-74).
+ */
+export function universalProblem(name: string, ranges: readonly Range[]): string | null {
+  const universal = universalRange(ranges);
+  if (universal) {
+    return (
+      `${name} trusts ${universal[0].toString()}/${universal[1]}, which is effectively the whole ` +
+      'internet: any caller in it could claim to be any visitor. Name the actual proxy addresses ' +
+      'or CIDRs.'
+    );
+  }
+  /* The same reach, written as many entries none of which is too wide on its
+   * own: 256 slices of /8 cover every IPv4 address. Only public space counts,
+   * so a list of private blocks stays as wide as it likes; overlapping
+   * entries count twice, which errs towards refusing. */
+  for (const kind of ['ipv4', 'ipv6'] as const) {
+    const reach = ranges
+      .filter(([base, bits]) => base.kind() === kind && !insideNonPublic(base, bits))
+      .reduce((total, [, bits]) => total + (1n << BigInt(WIDTH[kind] - bits)), 0n);
+    if (reach > 1n << BigInt(WIDTH[kind] - WIDEST_PUBLIC[kind])) {
+      return (
+        `${name} trusts ${reach} ${kind === 'ipv4' ? 'IPv4' : 'IPv6'} addresses between its ` +
+        `entries, which is effectively the whole internet however narrow each one looks. Name ` +
+        'the actual proxy addresses or CIDRs.'
+      );
+    }
+  }
+  return null;
 }
 
 /** An address in one canonical form (IPv4-mapped IPv6 becomes IPv4), or null. */

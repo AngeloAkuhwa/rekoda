@@ -54,6 +54,10 @@ export const DOCKERIGNORE_REQUIRED = [
 ];
 /** The only services that may load .env, which holds every application secret. */
 export const ENV_FILE_LOADERS = ['api', 'migrate', 'worker'];
+/** The one-shot job that checks Caddy's own trust list before it serves (G-74). */
+export const EDGE_CHECK = 'edge-check';
+export const EDGE_PROXIES = 'REKODA_EDGE_PROXIES';
+export const EDGE_CHECK_COMMAND = 'dist/edge-proxies.js';
 /** The worker's stop grace must outlast the longest job (seconds). */
 export const WORKER_GRACE_SECONDS = 120;
 
@@ -76,7 +80,12 @@ const secretsOf = (svc) => asList(svc?.secrets).map((s) => (typeof s === 'string
 const conditionOf = (svc, dep) => {
   const d = svc?.depends_on;
   if (Array.isArray(d)) return d.includes(dep) ? 'service_started' : null;
-  return d?.[dep] ? (d[dep].condition ?? 'service_started') : null;
+  const entry = d?.[dep];
+  if (!entry) return null;
+  /* `required: false` turns a dependency that never arrives into a warning,
+   * so the condition no longer gates anything: read it as no dependency. */
+  if (entry.required === false) return null;
+  return entry.condition ?? 'service_started';
 };
 
 export function problemsFor({ compose, dockerfile, caddyfile, dockerignore, gitignore, nvmrc }) {
@@ -263,6 +272,57 @@ export function problemsFor({ compose, dockerfile, caddyfile, dockerignore, giti
     }
   }
 
+  /* The edge trust list is Caddy's alone: no Rekoda process reads it, so
+   * the boot rules cannot refuse a universal value (G-74). A one-shot job
+   * in the app image checks it, and Caddy waits for that job to succeed. */
+  const edge = svc(EDGE_CHECK);
+  if (!edge) {
+    problems.push(
+      `${FILES.compose} has no ${EDGE_CHECK} service; ${EDGE_PROXIES} would go unchecked`,
+    );
+  } else {
+    if (edge.image !== svc('api')?.image) {
+      problems.push(`${EDGE_CHECK} must run the same image as the api, which holds the check`);
+    }
+    if (keyed(edge.environment).get(EDGE_PROXIES) !== `\${${EDGE_PROXIES}:-}`) {
+      problems.push(`${EDGE_CHECK} must receive ${EDGE_PROXIES} exactly as caddy does`);
+    }
+    if (asList(edge.profiles).length > 0) {
+      problems.push(`${EDGE_CHECK} sits behind a profile; \`up\` would start caddy without it`);
+    }
+    /* The exact command, not a command mentioning the file: `node -e
+     * 'process.exit(0)' dist/edge-proxies.js` would leave caddy waiting on a
+     * job that checked nothing. */
+    if (asList(edge.command).join(' ') !== `node ${EDGE_CHECK_COMMAND}`) {
+      problems.push(
+        `${EDGE_CHECK} must run exactly \`node ${EDGE_CHECK_COMMAND}\`, the check itself`,
+      );
+    }
+    /* An entrypoint makes the command its arguments: `entrypoint: ['true']`
+     * exits 0 without reading anything, and caddy would serve. */
+    if (edge.entrypoint !== undefined) {
+      problems.push(`${EDGE_CHECK} must not override its entrypoint; the command is the check`);
+    }
+    /* A mount can replace the file the command runs
+     * (`/dev/null:/repo/apps/api/dist/edge-proxies.js:ro` exits 0 having read
+     * nothing), and read_only does not stop a bind mount. */
+    if (asList(edge.volumes).length > 0) {
+      problems.push(`${EDGE_CHECK} must mount nothing; a mount can replace the check it runs`);
+    }
+    /* A one-shot with no healthcheck: `up --wait` waits for it to COMPLETE
+     * only because it is not expected to keep running. Left to restart, the
+     * wait would hang or pass on a container that never checked anything. */
+    if (String(edge.restart ?? '') !== 'no') {
+      problems.push(`${EDGE_CHECK} must set restart: 'no'; it runs once, before caddy`);
+    }
+  }
+  if (conditionOf(svc('caddy'), EDGE_CHECK) !== 'service_completed_successfully') {
+    problems.push(`caddy must wait for ${EDGE_CHECK} to succeed before it serves`);
+  }
+  if (keyed(svc('caddy')?.environment).get(EDGE_PROXIES) !== `\${${EDGE_PROXIES}:-}`) {
+    problems.push(`caddy must read ${EDGE_PROXIES} from .env, the value ${EDGE_CHECK} checks`);
+  }
+
   // Third-party images carry a version, never a moving default.
   for (const name of ['postgres', 'caddy']) {
     const image = String(svc(name)?.image ?? '');
@@ -338,6 +398,20 @@ export function problemsFor({ compose, dockerfile, caddyfile, dockerignore, giti
   const logLines = caddyCode.split('\n').filter((l) => /^\s*log(\s|\{|$)/.test(l));
   if (logLines.some((l) => !/^\s*log default \{\s*$/.test(l))) {
     problems.push(`${FILES.caddyfile} enables a log; access lines would record sign-in tokens`);
+  }
+  /* Caddy's client address comes from the value edge-check reads (G-74):
+   * a literal list here, or a different variable, would be unchecked. */
+  /* The whole directive, not a substring: `trusted_proxies static
+   * {$REKODA_EDGE_PROXIES} 0.0.0.0/0` would keep the variable and still
+   * trust everyone, which is the likeliest way to undo this. */
+  const trustLines = caddyCode
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => /^trusted_proxies\b/.test(line));
+  if (trustLines.length !== 1 || trustLines[0] !== `trusted_proxies static {$${EDGE_PROXIES}}`) {
+    problems.push(
+      `${FILES.caddyfile} must take its trusted proxies from {$${EDGE_PROXIES}} and nothing else, in one directive, the value ${EDGE_CHECK} checks (found ${trustLines.length})`,
+    );
   }
   if (!/request>uri\s+delete/.test(caddyCode) || !/request>headers\s+delete/.test(caddyCode)) {
     problems.push(`${FILES.caddyfile} must delete request>uri and request>headers from its log`);

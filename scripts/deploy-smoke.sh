@@ -9,7 +9,8 @@
 #   PostgreSQL unreachable from the host; migrations as the owner, then the
 #   runtime roles' passwords; the api and the worker refusing the owner
 #   credential, and refusing a fake provider, local storage or an empty or
-#   universal trust list (G-72); the stack healthy; /health, the site, the legal facts, the
+#   universal trust list (G-72); Caddy refusing to serve with an edge trust
+#   list a browser could exploit (G-74); the stack healthy; /health, the site, the legal facts, the
 #   webhooks and the security headers through Caddy over HTTPS; a forged
 #   X-Forwarded-For unable to reset the per-IP bucket; the worker claiming
 #   and finishing a job; restarts and a full down/up losing nothing; a
@@ -65,6 +66,12 @@ set_env() {
   fi
 }
 health() { curl -fsS --resolve "$API:443:127.0.0.1" --cacert "$WORK/root.crt" "https://$API/health"; }
+# The versions this run proves the stack on. The one-shot edge check (G-74)
+# needs a Compose that treats an exited dependency as satisfied, so the
+# runbook points an operator at this line.
+step 'the engine and compose this run proves the stack on'
+docker --version
+docker compose version
 psql_owner() { "${COMPOSE[@]}" exec -T postgres psql -U rekoda_owner -d rekoda -v ON_ERROR_STOP=1 -tA -c "$1"; }
 
 step 'a throwaway .env and owner secret (placeholders, generated here, nothing real)'
@@ -210,6 +217,71 @@ refuses api 'REKODA_TRUSTED_PROXIES=,' 'REKODA_TRUSTED_PROXIES is set but names 
 refuses api 'REKODA_TRUSTED_WEB=0.0.0.0/0' 'REKODA_TRUSTED_WEB trusts 0.0.0.0/0'
 refuses worker 'REKODA_TRUSTED_PROXIES=::/0' 'REKODA_TRUSTED_PROXIES trusts ::/0'
 echo 'ok: every one refused, naming the variable'
+
+step 'Caddy will not serve with an edge trust list a browser could exploit (G-74)'
+# REKODA_EDGE_PROXIES is Caddy's own: no Rekoda process reads it, so the boot
+# rules above never see it. A one-shot job checks it and Caddy waits for that
+# job, so a universal value fails the deployment instead of letting Caddy
+# believe any browser's CF-Connecting-IP.
+edge() {
+  timeout 120 "${COMPOSE[@]}" run --rm -T --no-deps -e "REKODA_EDGE_PROXIES=$1" edge-check \
+    >"$WORK/edge.log" 2>&1
+}
+for value in '0.0.0.0/0' '::/0' '::ffff:0:0/96' '::/80' '104.16.0.0/13 0.0.0.0/1'; do
+  if edge "$value"; then
+    cat "$WORK/edge.log"
+    fail "the edge check accepted $value"
+  fi
+  grep -q -F 'REKODA_EDGE_PROXIES trusts' "$WORK/edge.log" || {
+    cat "$WORK/edge.log"
+    fail "the edge check refused $value without naming the variable"
+  }
+done
+# Cloudflare's published ranges, Caddy's own name for the private blocks, and
+# the documented empty value all pass: the check refuses the dangerous shape,
+# not the deployment's real ones.
+for value in '173.245.48.0/20 104.16.0.0/13 2400:cb00::/32 2a06:98c0::/29' 'private_ranges' ''; do
+  edge "$value" || {
+    cat "$WORK/edge.log"
+    fail "the edge check refused a legitimate value: ${value:-(empty)}"
+  }
+done
+# And the gate is really in front of Caddy. The same `up`, on the same
+# stack, twice: with a universal value it must fail and Caddy must never
+# start; with the documented empty value it must succeed. That pair is what
+# attributes the failure to the value rather than to an unhealthy api, which
+# would fail both. Compose's own wording is not used: it differs by version
+# and by dependency condition.
+set_env REKODA_EDGE_PROXIES 0.0.0.0/0
+if timeout 300 "${COMPOSE[@]}" up -d --wait --wait-timeout 240 caddy >"$WORK/edge-up.log" 2>&1; then
+  fail 'caddy started with a universal edge trust list'
+fi
+# Compose creates the container for a service whose dependency then fails,
+# so the question is not whether one exists: it is whether it ever ran.
+# `created` is the state of a container that was never started; `running` or
+# `exited` would both mean Caddy served, or tried to.
+caddy_container=$("${COMPOSE[@]}" ps -aq caddy | head -n 1)
+if [ -n "$caddy_container" ]; then
+  caddy_state=$(docker inspect -f '{{.State.Status}}' "$caddy_container")
+  [ "$caddy_state" = created ] ||
+    fail "caddy is $caddy_state after a refused edge trust list, so it started"
+fi
+"${COMPOSE[@]}" logs --no-color edge-check >"$WORK/edge-job.log" 2>&1 || true
+grep -q -F 'REKODA_EDGE_PROXIES trusts' "$WORK/edge-job.log" || {
+  cat "$WORK/edge-up.log" "$WORK/edge-job.log"
+  fail 'the stack refused to come up, but the edge check never refused the value'
+}
+edge_container=$("${COMPOSE[@]}" ps -aq edge-check | head -n 1)
+[ -n "$edge_container" ] || fail 'the edge check never ran'
+edge_exit=$(docker inspect -f '{{.State.ExitCode}}' "$edge_container")
+[ "$edge_exit" = 1 ] || fail "the edge check exited $edge_exit, not refusing the value"
+set_env REKODA_EDGE_PROXIES ''
+timeout 300 "${COMPOSE[@]}" up -d --wait --wait-timeout 240 caddy >"$WORK/edge-up-ok.log" 2>&1 || {
+  cat "$WORK/edge-up-ok.log"
+  fail 'the same stack would not come up with the documented empty value either'
+}
+[ -n "$("${COMPOSE[@]}" ps -q caddy)" ] || fail 'caddy is not running with an accepted edge trust list'
+echo 'ok: refused before Caddy served, and the real values accepted'
 
 step 'the stack comes up healthy'
 "${COMPOSE[@]}" up -d --wait --wait-timeout 300
