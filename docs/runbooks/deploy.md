@@ -17,15 +17,15 @@ alias dc='docker compose -f docker-compose.prod.yml'
 
 ## What runs, and who holds which credential
 
-| Service      | Image                  | What it is                                                                                            |
-| ------------ | ---------------------- | ----------------------------------------------------------------------------------------------------- |
-| `caddy`      | `caddy:2.11.4-alpine`  | The only published ports (80, 443, 443/udp). TLS, the two hostnames, the client address               |
-| `web`        | `rekoda-web:<release>` | `next start`, with the site's public values baked in at build                                         |
-| `api`        | `rekoda-app:<release>` | The API, `REKODA_WORKER=0`                                                                            |
-| `worker`     | `rekoda-app:<release>` | The same image, `REKODA_WORKER=1`: the job runner and the sweeps                                      |
-| `postgres`   | `postgres:16-alpine`   | The database, on the `pgdata` volume, on a network with no route in or out and no published port      |
-| `migrate`    | `rekoda-app:<release>` | A one-off, never started by `up`: `dc run --rm -T migrate` (migrations, then the runtime passwords)   |
-| `edge-check` | `rekoda-app:<release>` | A one-shot `up` runs before Caddy: it refuses an unsafe `REKODA_EDGE_PROXIES` (G-74) and then exits 0 |
+| Service      | Image                  | What it is                                                                                                 |
+| ------------ | ---------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `caddy`      | `caddy:2.11.4-alpine`  | The only published ports (80, 443, 443/udp). TLS, the two hostnames, the client address                    |
+| `web`        | `rekoda-web:<release>` | `next start`, with the site's public values baked in at build                                              |
+| `api`        | `rekoda-app:<release>` | The API, `REKODA_WORKER=0`                                                                                 |
+| `worker`     | `rekoda-app:<release>` | The same image, `REKODA_WORKER=1`: the job runner and the sweeps                                           |
+| `postgres`   | `postgres:16-alpine`   | The database, on the `pgdata` volume, on a network with no route in or out and no published port           |
+| `migrate`    | `rekoda-app:<release>` | A one-off, never started by `up`: `dc run --rm -T migrate` (migrations, then the runtime passwords)        |
+| `edge-check` | `rekoda-app:<release>` | A one-shot `up` runs before Caddy: exits 0 when `REKODA_EDGE_PROXIES` is safe, 1 when it refuses it (G-74) |
 
 | Credential                                     | Lives in                          | Reaches                                                                                                         |
 | ---------------------------------------------- | --------------------------------- | --------------------------------------------------------------------------------------------------------------- |
@@ -261,8 +261,13 @@ holding either is a credential at rest. Do not switch one on.
 - **After editing `.env`:** `dc up -d --wait` recreates the api, worker and
   Caddy when their values changed, and re-runs the edge check, which refuses
   a `REKODA_EDGE_PROXIES` that would trust effectively the whole internet
-  (G-74). `dc ps -a` always shows `edge-check` as `Exited (0)`: that is the
-  check having passed, not a crashed service. **Not the site's public values:** every
+  (G-74). `dc ps -a` shows `edge-check` as `Exited (0)` when the check
+  passed and `Exited (1)` when it refused; neither is a crashed service.
+  **Changing `REKODA_EDGE_PROXIES` on a live host:** run the check first,
+  `dc run --rm -T edge-check`, which reads the edited `.env` and prints
+  the refusal if there is one. Only then `dc up -d --wait`: compose
+  recreates Caddy before the check runs, so a value the check refuses takes
+  the site down until a corrected `up`. **Not the site's public values:** every
   `NEXT_PUBLIC_*` value (the site URL, the legal facts, the WhatsApp number,
   the Mono public key) is baked into the web image at build, and compose does
   not rebuild or recreate it for a changed build argument. Change one, then

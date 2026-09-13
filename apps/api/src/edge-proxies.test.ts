@@ -74,7 +74,7 @@ describe('values that would let a browser choose its own address', () => {
     expect(edgeProxyProblem(everyIpv6)).toMatch(/REKODA_EDGE_PROXIES trusts/);
   });
 
-  it('keeps a real fleet, whose entries add up to far less', () => {
+  it('keeps lists whose public entries add up to far less, or none at all', () => {
     expect(edgeProxyProblem(CLOUDFLARE)).toBeNull();
     expect(edgeProxyProblem('10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 fc00::/7')).toBeNull();
   });

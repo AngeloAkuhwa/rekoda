@@ -433,6 +433,20 @@ test('the edge trust list reaching Caddy unchecked (G-74)', () => {
     "    extends:\n      service: api\n    command: ['node', 'dist/edge-proxies.js']\n",
   );
   expectProblem(problems(extended), /edge-check must not extend another service/);
+  // The same, in compose's short form, where the string is the context.
+  const shortForm = edited(
+    'compose',
+    '    build:\n      context: .\n      target: app\n      args:\n        REKODA_RELEASE: ${REKODA_RELEASE:?set REKODA_RELEASE in .env}\n',
+    '    build: ./alternate\n',
+  );
+  expectProblem(problems(shortForm), /builds from context \.\/alternate/);
+  // An import into the servers block, which brings in unread lines.
+  const imported = edited(
+    'caddyfile',
+    '\t\ttrusted_proxies_strict\n',
+    '\t\ttrusted_proxies_strict\n\t\timport unsafe.caddy\n',
+  );
+  expectProblem(problems(imported), /must not import anything into the servers block/);
   // A build from another directory, which has its own Dockerfile.
   const otherContext = edited(
     'compose',

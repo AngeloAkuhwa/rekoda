@@ -159,7 +159,7 @@ G-71 (web's server-side calls share one per-IP bucket, P1) and G-72
    half) and rules OD-4 (which command-bus flags ship on); deletes the leftover GitHub
    environments `agents*` and the `builder:*`, `risk:*`, `status:*`,
    `agent-task` labels (gap G-45); turns on branch protection (G-09).
-2. Rule on OD-1 to OD-7 in `REKODA_LAUNCH_READINESS.md` §6 (R0A-i on an
+2. Rule on OD-13 (G-75: refuse `private_ranges` as an edge trust list) and OD-1 to OD-7 in `REKODA_LAUNCH_READINESS.md` §6 (R0A-i on an
    empty database, VAT, which unwired modules ship, command-bus flags,
    renewal copy, erasure scope, backup design).
 3. Claude continues: G-02 (backups per OD-7, which a real host now needs),

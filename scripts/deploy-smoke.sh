@@ -73,6 +73,29 @@ step 'the engine and compose this run proves the stack on'
 docker --version
 docker compose version
 psql_owner() { "${COMPOSE[@]}" exec -T postgres psql -U rekoda_owner -d rekoda -v ON_ERROR_STOP=1 -tA -c "$1"; }
+caddy_trusts() {
+  # $1: the trusted ranges Caddy must end up with, as a JSON array.
+  # Asserts what Caddy actually computes from the mounted Caddyfile, not what
+  # a regex reads in it (G-74): every server takes its client address from
+  # exactly these ranges, in strict mode, from exactly CF-Connecting-IP and
+  # X-Forwarded-For, with no listener wrapper (proxy_protocol would let any
+  # caller set its own address). Quoting, an import, a listener-specific
+  # servers block: whatever the spelling, this is what it has to add up to.
+  "${COMPOSE[@]}" exec -T caddy caddy adapt --config /etc/caddy/Caddyfile --adapter caddyfile \
+    >"$WORK/caddy.json" 2>/dev/null || fail 'caddy could not adapt its own Caddyfile'
+  jq -e --argjson want "$1" '
+    (.apps.http.servers | length) >= 1 and
+    ([.apps.http.servers[] |
+      (.trusted_proxies.source == "static")
+      and ((.trusted_proxies.ranges // []) == $want)
+      and (.trusted_proxies_strict == 1)
+      and (.client_ip_headers == ["CF-Connecting-IP", "X-Forwarded-For"])
+      and ((.listener_wrappers // []) | all(.wrapper == "tls"))
+    ] | all)' "$WORK/caddy.json" >/dev/null || {
+    jq '.apps.http.servers' "$WORK/caddy.json"
+    fail "caddy does not take the client address from exactly $1, strictly, from CF-Connecting-IP and X-Forwarded-For"
+  }
+}
 
 step 'a throwaway .env and owner secret (placeholders, generated here, nothing real)'
 OWNER_PW=$(rand)
@@ -237,9 +260,10 @@ for value in '0.0.0.0/0' '::/0' '::ffff:0:0/96' '::/80' '104.16.0.0/13 0.0.0.0/1
     fail "the edge check refused $value without naming the variable"
   }
 done
-# Cloudflare's published ranges, Caddy's own name for the private blocks, and
-# the documented empty value all pass: the check refuses the dangerous shape,
-# not the deployment's real ones.
+# Cloudflare's published ranges and the documented empty value pass: the
+# check refuses the dangerous shape, not the deployment's real values. So
+# does `private_ranges`, which is not universal; it is unsafe on a real host
+# for another reason (G-75), and the G-71 step below uses it on purpose.
 for value in '173.245.48.0/20 104.16.0.0/13 2400:cb00::/32 2a06:98c0::/29' 'private_ranges' ''; do
   edge "$value" || {
     cat "$WORK/edge.log"
@@ -286,7 +310,10 @@ timeout 300 "${COMPOSE[@]}" up -d --wait --wait-timeout 240 caddy >"$WORK/edge-u
   fail 'the same stack would not come up with the documented empty value either'
 }
 [ -n "$("${COMPOSE[@]}" ps -q caddy)" ] || fail 'caddy is not running with an accepted edge trust list'
-echo 'ok: refused before Caddy served, and the real values accepted'
+# The empty value: Caddy trusts no proxy at all, and nothing else in the
+# Caddyfile adds one.
+caddy_trusts '[]'
+echo 'ok: refused before Caddy served, the empty value accepted, and Caddy trusts nothing else'
 
 step 'the stack comes up healthy'
 "${COMPOSE[@]}" up -d --wait --wait-timeout 300
@@ -425,6 +452,8 @@ step 'visitors through Caddy -> web -> API keep their own buckets (G-71)'
 # whatever the API said.
 set_env REKODA_EDGE_PROXIES private_ranges
 "${COMPOSE[@]}" up -d --wait --wait-timeout 300 caddy
+# The value reaches Caddy as Caddy's own expansion, and nothing more.
+caddy_trusts '["192.168.0.0/16","172.16.0.0/12","10.0.0.0/8","127.0.0.1/8","fd00::/8","::1"]'
 LIMIT=$(sed -n 's/^REKODA_RATE_LIMIT_MAX=//p' .env)
 view() {
   # $1: the visitor Cloudflare would name; any further arguments go to curl.

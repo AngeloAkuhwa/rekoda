@@ -379,6 +379,11 @@ export function problemsFor({ compose, dockerfile, caddyfile, dockerignore, giti
     /* Every stage rule below reads THIS file, so a build that names another
      * Dockerfile, or carries one inline, is checked against the wrong one. */
     const build = s?.build;
+    /* The short form is the context itself: `build: ./alternate` builds that
+     * directory's Dockerfile while every stage rule reads the root one. */
+    if (typeof build === 'string' && build !== '.') {
+      problems.push(`${name} builds from context ${build}; only the repository root is checked`);
+    }
     if (build && typeof build === 'object') {
       if (build.dockerfile !== undefined && build.dockerfile !== FILES.dockerfile) {
         problems.push(
@@ -500,6 +505,14 @@ export function problemsFor({ compose, dockerfile, caddyfile, dockerignore, giti
     return '';
   })();
   const blockLines = serversBlock.split('\n').map(directive);
+  /* An import there brings in lines this guard never reads (`import
+   * unsafe.caddy` can add `trusted_proxies static 0.0.0.0/0`). The deploy
+   * smoke checks what Caddy actually computes; this refuses it sooner. */
+  if (blockLines.some((line) => line.split(/\s+/)[0] === 'import')) {
+    problems.push(
+      `${FILES.caddyfile} must not import anything into the servers block; the client address depends on what it holds`,
+    );
+  }
   for (const [name, pinned] of PINNED) {
     const everywhere = caddyCode
       .split('\n')
