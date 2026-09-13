@@ -9,31 +9,8 @@ import { DB, WORKER_DB } from './db/db.module.js';
 import { bootChecks, isEntrypoint, type Db } from '@rekoda/db';
 import { MAX_IMAGE_BYTES } from '@rekoda/core';
 import { publicApi } from '@rekoda/contracts';
-import { CONFIG, isProductionEnv, loadConfig, type ApiConfig } from './config.js';
+import { CONFIG, loadConfig, trustedProxies, type ApiConfig } from './config.js';
 import { clientAddress, rateLimitKey } from './client-address.js';
-
-function trustedProxies(): boolean | string[] {
-  const raw = process.env['REKODA_TRUSTED_PROXIES']?.trim();
-  if (!raw) {
-    /* Trust-all is a development-only default: it believes any
-     * X-Forwarded-For, which lets a direct caller reset every per-IP bucket
-     * with a spoofed header per request. Production must name its proxies -
-     * and "production" is anything not explicitly dev or test, so a typo'd
-     * NODE_ENV fails CLOSED into requiring the proxy list rather than open. */
-    if (isProductionEnv(process.env)) {
-      throw new Error(
-        'REKODA_TRUSTED_PROXIES is required in production: set it to your ' +
-          'proxy/load-balancer addresses or CIDRs, or the per-IP rate limit ' +
-          'is defeated by a forged X-Forwarded-For.',
-      );
-    }
-    return true;
-  }
-  return raw
-    .split(',')
-    .map((part) => part.trim())
-    .filter((part) => part.length > 0);
-}
 
 /**
  * The most a webhook body may be, in bytes.
@@ -62,7 +39,10 @@ export async function createApp(): Promise<NestFastifyApplication> {
      * contract allows 2 MB (reports-api.ts), and the un-set Fastify default
      * is 1 MB, so a year-long statement was already being rejected. Set it
      * once, intentionally, a hair above the largest legitimate JSON body. */
-    new FastifyAdapter({ trustProxy: trustedProxies(), bodyLimit: 2 * 1024 * 1024 + 64 * 1024 }),
+    new FastifyAdapter({
+      trustProxy: trustedProxies(process.env),
+      bodyLimit: 2 * 1024 * 1024 + 64 * 1024,
+    }),
     /**
      * `rawBody` keeps the exact bytes of each request alongside the parsed
      * body, which the Meta webhook needs: `X-Hub-Signature-256` is an HMAC

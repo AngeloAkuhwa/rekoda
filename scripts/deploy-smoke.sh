@@ -8,7 +8,8 @@
 #   config and build; no secret in any image layer; images run as non-root;
 #   PostgreSQL unreachable from the host; migrations as the owner, then the
 #   runtime roles' passwords; the api and the worker refusing the owner
-#   credential; the stack healthy; /health, the site, the legal facts, the
+#   credential, and refusing a fake provider, local storage or an empty or
+#   universal trust list (G-72); the stack healthy; /health, the site, the legal facts, the
 #   webhooks and the security headers through Caddy over HTTPS; a forged
 #   X-Forwarded-For unable to reset the per-IP bucket; the worker claiming
 #   and finishing a job; restarts and a full down/up losing nothing; a
@@ -186,6 +187,29 @@ if timeout 120 "${COMPOSE[@]}" run --rm -T --no-deps -e "WORKER_DATABASE_URL=$OW
 fi
 grep -q 'SUPERUSER' "$WORK/owner-worker.log" || { cat "$WORK/owner-worker.log"; fail 'the worker did not name the bypass role'; }
 echo 'ok: both refused'
+
+step 'production refuses non-production infrastructure and unsafe trust (G-72)'
+# Each value is one a development or test setup uses legitimately, one copied
+# line from a production .env. The production image must refuse to start with
+# it, naming the variable, while the canonical values above keep booting.
+refuses() {
+  # $1: service; $2: NAME=value; $3: what the refusal must say.
+  if timeout 120 "${COMPOSE[@]}" run --rm -T --no-deps -e "$2" "$1" >"$WORK/refused.log" 2>&1; then
+    fail "$1 started with $2"
+  fi
+  grep -q -F -e "$3" "$WORK/refused.log" || {
+    cat "$WORK/refused.log"
+    fail "$1 refused $2 without saying: $3"
+  }
+}
+refuses api 'PAYSTACK_BASE_URL=http://127.0.0.1:4010' 'PAYSTACK_BASE_URL must not be set in production'
+refuses api 'MONO_BASE_URL=https://api.withmono.com.evil.example' 'MONO_BASE_URL must not be set in production'
+refuses api 'REKODA_LOCAL_STORAGE=/tmp/rekoda' 'REKODA_LOCAL_STORAGE must not be set in production'
+refuses api 'AI_BASE_URL=https://ollama:11434/v1' 'AI_BASE_URL names ollama'
+refuses api 'REKODA_TRUSTED_PROXIES=,' 'REKODA_TRUSTED_PROXIES is set but names no'
+refuses api 'REKODA_TRUSTED_WEB=0.0.0.0/0' 'REKODA_TRUSTED_WEB trusts 0.0.0.0/0'
+refuses worker 'REKODA_TRUSTED_PROXIES=::/0' 'REKODA_TRUSTED_PROXIES trusts ::/0'
+echo 'ok: every one refused, naming the variable'
 
 step 'the stack comes up healthy'
 "${COMPOSE[@]}" up -d --wait --wait-timeout 300

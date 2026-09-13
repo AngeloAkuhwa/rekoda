@@ -29,7 +29,7 @@ import ipaddr from 'ipaddr.js';
 /** The one header the web tier uses to say which visitor it is calling for. */
 export const CLIENT_ADDRESS_HEADER = 'x-rekoda-client-ip';
 
-type Range = [ipaddr.IPv4 | ipaddr.IPv6, number];
+export type Range = [ipaddr.IPv4 | ipaddr.IPv6, number];
 
 /**
  * The web tier's addresses or CIDRs, comma-separated. Anything that does not
@@ -40,38 +40,75 @@ type Range = [ipaddr.IPv4 | ipaddr.IPv6, number];
  * trusting nobody.
  */
 export function parseTrustedWeb(raw: string | undefined): Range[] {
+  return trustEntries('REKODA_TRUSTED_WEB', raw).map((entry) =>
+    parseRange('REKODA_TRUSTED_WEB', entry),
+  );
+}
+
+/**
+ * The names proxy-addr (Fastify's trustProxy) accepts besides addresses,
+ * as the ranges it gives them. All three are non-public by definition.
+ */
+const PROXY_RANGE_NAMES: Readonly<Record<string, readonly string[]>> = {
+  loopback: ['127.0.0.0/8', '::1/128'],
+  linklocal: ['169.254.0.0/16', 'fe80::/10'],
+  uniquelocal: ['10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', 'fc00::/7'],
+};
+
+/**
+ * The proxies whose X-Forwarded-For Fastify believes: the entries exactly as
+ * Fastify will read them, and the ranges they mean. Same rules as the web
+ * tier's list (plain addresses or CIDRs, nothing set-but-empty), plus
+ * proxy-addr's three range names.
+ */
+export function parseTrustedProxies(raw: string | undefined): {
+  entries: string[];
+  ranges: Range[];
+} {
+  const entries = trustEntries('REKODA_TRUSTED_PROXIES', raw);
+  const ranges = entries.flatMap((entry) => {
+    const named = PROXY_RANGE_NAMES[entry];
+    if (named) return named.map((cidr) => ipaddr.parseCIDR(cidr) as Range);
+    return [parseRange('REKODA_TRUSTED_PROXIES', entry)];
+  });
+  return { entries, ranges };
+}
+
+function trustEntries(name: string, raw: string | undefined): string[] {
   const entries = (raw ?? '')
     .split(',')
     .map((part) => part.trim())
     .filter((part) => part.length > 0);
   if (entries.length === 0 && (raw ?? '').trim() !== '') {
-    throw new Error(`REKODA_TRUSTED_WEB is set but names no address or CIDR: ${raw}`);
+    throw new Error(`${name} is set but names no address or CIDR: ${raw}`);
   }
-  return entries.map((entry) => {
-    /* Written as a plain address, as the compose file writes it. ipaddr.js
-     * also reads shorthand, octal and integer forms (172.30.10 is
-     * 172.30.0.10), so a typo would boot trusting some other peer. */
-    const [address = '', prefix, ...extra] = entry.split('/');
-    if (
-      isIP(address) === 0 ||
-      extra.length > 0 ||
-      (prefix !== undefined && !/^\d{1,3}$/.test(prefix))
-    ) {
-      throw new Error(`REKODA_TRUSTED_WEB has an entry that is not an address or CIDR: ${entry}`);
+  return entries;
+}
+
+function parseRange(name: string, entry: string): Range {
+  /* Written as a plain address, as the compose file writes it. ipaddr.js
+   * also reads shorthand, octal and integer forms (172.30.10 is
+   * 172.30.0.10), so a typo would boot trusting some other peer. */
+  const [address = '', prefix, ...extra] = entry.split('/');
+  if (
+    isIP(address) === 0 ||
+    extra.length > 0 ||
+    (prefix !== undefined && !/^\d{1,3}$/.test(prefix))
+  ) {
+    throw new Error(`${name} has an entry that is not an address or CIDR: ${entry}`);
+  }
+  let range: Range;
+  try {
+    if (entry.includes('/')) {
+      range = ipaddr.parseCIDR(entry) as Range;
+    } else {
+      const parsed = ipaddr.process(entry);
+      range = [parsed, parsed.kind() === 'ipv4' ? 32 : 128];
     }
-    let range: Range;
-    try {
-      if (entry.includes('/')) {
-        range = ipaddr.parseCIDR(entry) as Range;
-      } else {
-        const address = ipaddr.process(entry);
-        range = [address, address.kind() === 'ipv4' ? 32 : 128];
-      }
-    } catch {
-      throw new Error(`REKODA_TRUSTED_WEB has an entry that is not an address or CIDR: ${entry}`);
-    }
-    return inIpv4Form(range, entry);
-  });
+  } catch {
+    throw new Error(`${name} has an entry that is not an address or CIDR: ${entry}`);
+  }
+  return inIpv4Form(name, range, entry);
 }
 
 /**
@@ -81,12 +118,56 @@ export function parseTrustedWeb(raw: string | undefined): Range[] {
  * visitor back in the web tier's bucket. A mapped prefix shorter than /96
  * reaches outside the mapped block, so it has no IPv4 meaning and is refused.
  */
-function inIpv4Form([base, bits]: Range, entry: string): Range {
+function inIpv4Form(name: string, [base, bits]: Range, entry: string): Range {
   if (!(base instanceof ipaddr.IPv6) || !base.isIPv4MappedAddress()) return [base, bits];
   if (bits < 96) {
-    throw new Error(`REKODA_TRUSTED_WEB has a range wider than the IPv4-mapped block: ${entry}`);
+    throw new Error(`${name} has a range wider than the IPv4-mapped block: ${entry}`);
   }
   return [base.toIPv4Address(), bits - 96];
+}
+
+/**
+ * Blocks no internet client can hold an address in. A trust range inside
+ * one of them, however wide, cannot be claimed from outside the host's own
+ * networks.
+ */
+const NON_PUBLIC = [
+  '0.0.0.0/8',
+  '10.0.0.0/8',
+  '100.64.0.0/10',
+  '127.0.0.0/8',
+  '169.254.0.0/16',
+  '172.16.0.0/12',
+  '192.168.0.0/16',
+  '224.0.0.0/4',
+  '240.0.0.0/4',
+  '::1/128',
+  'fc00::/7',
+  'fe80::/10',
+  'ff00::/8',
+].map((cidr) => ipaddr.parseCIDR(cidr) as Range);
+
+/** No real proxy fleet or web tier reaches public space wider than these. */
+const WIDEST_PUBLIC = { ipv4: 8, ipv6: 16 } as const;
+
+/**
+ * The first entry that trusts effectively the whole internet (G-72): wider
+ * than a /8 of IPv4 or a /16 of IPv6 while reaching public address space, so
+ * 0.0.0.0/0, ::/0, the mapped ::ffff:0:0/96, and their halves and quarters.
+ * Cloudflare's widest published ranges (/13, /29) and every private block
+ * pass. Null when there is none.
+ */
+export function universalRange(ranges: readonly Range[]): Range | null {
+  return (
+    ranges.find(([base, bits]) => {
+      if (bits >= WIDEST_PUBLIC[base.kind()]) return false;
+      const insideNonPublic = NON_PUBLIC.some(
+        ([block, blockBits]) =>
+          block.kind() === base.kind() && bits >= blockBits && base.match(block, blockBits),
+      );
+      return !insideNonPublic;
+    }) ?? null
+  );
 }
 
 /** An address in one canonical form (IPv4-mapped IPv6 becomes IPv4), or null. */

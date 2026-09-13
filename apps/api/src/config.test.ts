@@ -311,6 +311,7 @@ describe('operator identity configuration', () => {
   const PROD = {
     ...BASE,
     NODE_ENV: 'production',
+    REKODA_TRUSTED_PROXIES: '172.30.10.10',
     META_APP_SECRET: 'm'.repeat(40),
     META_VERIFY_TOKEN: 'v'.repeat(40),
     REKODA_TRUSTED_WEB: '172.30.10.11',
@@ -452,6 +453,7 @@ describe('the dark FX capability', () => {
     const PROD = {
       ...BASE,
       NODE_ENV: 'production',
+      REKODA_TRUSTED_PROXIES: '172.30.10.10',
       OPERATOR_OIDC_ISSUER: 'https://issuer.example',
       OPERATOR_OIDC_AUDIENCE: 'rekoda-ops',
       OPERATOR_OIDC_JWKS_URL: 'https://issuer.example/jwks',
@@ -633,6 +635,7 @@ describe('the trusted web tier (G-71)', () => {
   const PROD = {
     ...BASE,
     NODE_ENV: 'production',
+    REKODA_TRUSTED_PROXIES: '172.30.10.10',
     META_APP_SECRET: 'm'.repeat(40),
     META_VERIFY_TOKEN: 'v'.repeat(40),
     OPERATOR_OIDC_ISSUER: 'https://issuer.example',
