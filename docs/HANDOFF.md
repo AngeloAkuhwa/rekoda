@@ -8,14 +8,14 @@
 
 ## Current state at a glance
 
-| Field                       | Value                                                                                                                                                                                                                                                                                                                                                                                         |
-| --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Current date**            | 13 September 2026                                                                                                                                                                                                                                                                                                                                                                             |
-| **Current `main` SHA**      | `48ba9d5` (13 Sep 2026, "fix: rate-limit each visitor, not the web tier (G-71) (#242)"); before it `c508709` (#241, G-01), `b81ef90` (#240, G-08), `7b9fd8f` (#236), `2dce181` (#239), `e993885` (#235) and the G-06 merge `8f07a6d` (#238)                                                                                                                                                   |
-| **Open branches**           | the G-72 PR (`fix/production-config-hardening`: production refuses fake providers, local storage, local endpoints and universal trust). #242 (G-71) MERGED as `48ba9d5` on 13 Sep 2026; #241 (G-01) MERGED as `c508709` on 12 Sep 2026; #240 (G-08 template half) as `b81ef90`; dependency housekeeping is closed; #225, #226 and #227 (NestJS 12) closed as deferred post-launch work (G-70) |
-| **Product version / state** | 0.1.0. Build plan complete (138 rows, PR-001…PR-132; PR-006–009 and PR-115 gated); 152 migrations; never deployed to a host (the production stack boots on a clean CI runner since G-01); no live provider has been exercised                                                                                                                                                                 |
-| **Launch verdict**          | **NOT READY** (`REKODA_LAUNCH_READINESS.md` §1)                                                                                                                                                                                                                                                                                                                                               |
-| **Engineering model**       | Simple: Angelo assigns, Claude reads `CLAUDE.md` and the canonical docs, implements with tests, normal CI, Angelo reviews and merges. The multi-agent control plane (PR #233) was removed by PR #237 (merged 11 Sep 2026) and PR #234 closed unmerged                                                                                                                                         |
+| Field                       | Value                                                                                                                                                                                                                                                                                                                                                                                              |
+| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Current date**            | 13 September 2026                                                                                                                                                                                                                                                                                                                                                                                  |
+| **Current `main` SHA**      | `1bbe1f1` (13 Sep 2026, "fix: refuse non-production infrastructure and unsafe trust at boot (G-72) (#243)"); before it `48ba9d5` (#242, G-71), `c508709` (#241, G-01), `b81ef90` (#240, G-08), `7b9fd8f` (#236), `2dce181` (#239), `e993885` (#235) and the G-06 merge `8f07a6d` (#238)                                                                                                            |
+| **Open branches**           | the G-74 PR (`fix/edge-proxy-trust`: Caddy's own trust list is checked before Caddy serves). #243 (G-72) MERGED as `1bbe1f1` on 13 Sep 2026; #242 (G-71) MERGED as `48ba9d5` on 13 Sep 2026; #241 (G-01) MERGED as `c508709` on 12 Sep 2026; #240 (G-08 template half) as `b81ef90`; dependency housekeeping is closed; #225, #226 and #227 (NestJS 12) closed as deferred post-launch work (G-70) |
+| **Product version / state** | 0.1.0. Build plan complete (138 rows, PR-001…PR-132; PR-006–009 and PR-115 gated); 152 migrations; never deployed to a host (the production stack boots on a clean CI runner since G-01); no live provider has been exercised                                                                                                                                                                      |
+| **Launch verdict**          | **NOT READY** (`REKODA_LAUNCH_READINESS.md` §1)                                                                                                                                                                                                                                                                                                                                                    |
+| **Engineering model**       | Simple: Angelo assigns, Claude reads `CLAUDE.md` and the canonical docs, implements with tests, normal CI, Angelo reviews and merges. The multi-agent control plane (PR #233) was removed by PR #237 (merged 11 Sep 2026) and PR #234 closed unmerged                                                                                                                                              |
 
 **Last completed work (10–11 Sep 2026):** the repository reset. Removed
 `AGENTS.md`, `GEMINI.md`, `docs/AUTONOMOUS-ENGINEERING.md`, `docs/agents/`,
@@ -73,7 +73,20 @@ provider facts) and OD-12 (gross processed volume) recorded in
 `REKODA_LAUNCH_READINESS.md` §6. G-06 is CODE COMPLETE and NOT LIVE
 PROVIDER VERIFIED until the G-05 drill.
 
-**Last completed work (13 Sep 2026, G-72, on `fix/production-config-hardening`):**
+**Last completed work (13 Sep 2026, G-74, on `fix/edge-proxy-trust`):**
+`REKODA_EDGE_PROXIES` is the one client-address trust list no Rekoda
+process reads: Caddy takes it from the environment, so the G-72 boot
+rules never saw it, and a universal value there would let Caddy believe
+any browser's forwarding headers. A one-shot `edge-check` job in the app
+image now reads the same value compose gives Caddy and refuses a
+universal list by the same rule (`apps/api/src/edge-proxies.ts`, sharing
+`client-address.ts`'s parser); Caddy waits for it
+(`service_completed_successfully`), so a bad value fails the deployment
+instead of serving. Cloudflare's ranges, `private_ranges` and the empty
+no-edge-proxy mode still pass. `check-deploy.mjs` pins the wiring and the
+smoke drives it in the production image.
+
+**Previous work (13 Sep 2026, G-72, merged as `1bbe1f1`; CODE COMPLETE):**
 a production process now refuses to start on configuration that would
 point it at non-production infrastructure or make client-address trust
 meaningless, naming the variable; development and test keep their fakes.
@@ -89,8 +102,7 @@ storage host) and a separator-only proxy list (the G-43 case). The proxy
 list is now parsed in `config.ts` (`trustedProxies`) and strictly.
 Proved by `config.production.test.ts` and a Docker smoke step where the
 production images refuse seven such values while the compose values boot.
-Found in review and recorded, not solved: G-74 (`REKODA_EDGE_PROXIES`,
-Caddy’s own trust list, is still unvalidated).
+Found in review and recorded: G-74, closed by the work above.
 
 **Previous work (13 Sep 2026, G-71, merged as `48ba9d5`; CODE COMPLETE):**
 every visitor now has their own per-IP bucket on both roads to the API.
@@ -135,7 +147,7 @@ G-71 (web's server-side calls share one per-IP bucket, P1) and G-72
 
 **Next three actions:**
 
-1. Angelo merges the G-72 PR, then provisions the staging host by
+1. Angelo merges the G-74 PR, then provisions the staging host by
    `docs/runbooks/deploy.md` "First deployment" (a machine, Cloudflare DNS
    for the site and API hostnames), fills the staging `.env` and
    `secrets/` from `REKODA_LAUNCH_READINESS.md` §11.1 (the G-08 owner

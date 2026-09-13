@@ -54,6 +54,9 @@ export const DOCKERIGNORE_REQUIRED = [
 ];
 /** The only services that may load .env, which holds every application secret. */
 export const ENV_FILE_LOADERS = ['api', 'migrate', 'worker'];
+/** The one-shot job that checks Caddy's own trust list before it serves (G-74). */
+export const EDGE_CHECK = 'edge-check';
+export const EDGE_PROXIES = 'REKODA_EDGE_PROXIES';
 /** The worker's stop grace must outlast the longest job (seconds). */
 export const WORKER_GRACE_SECONDS = 120;
 
@@ -263,6 +266,32 @@ export function problemsFor({ compose, dockerfile, caddyfile, dockerignore, giti
     }
   }
 
+  /* The edge trust list is Caddy's alone: no Rekoda process reads it, so
+   * the boot rules cannot refuse a universal value (G-74). A one-shot job
+   * in the app image checks it, and Caddy waits for that job to succeed. */
+  const edge = svc(EDGE_CHECK);
+  if (!edge) {
+    problems.push(
+      `${FILES.compose} has no ${EDGE_CHECK} service; ${EDGE_PROXIES} would go unchecked`,
+    );
+  } else {
+    if (edge.image !== svc('api')?.image) {
+      problems.push(`${EDGE_CHECK} must run the same image as the api, which holds the check`);
+    }
+    if (keyed(edge.environment).get(EDGE_PROXIES) !== `\${${EDGE_PROXIES}:-}`) {
+      problems.push(`${EDGE_CHECK} must receive ${EDGE_PROXIES} exactly as caddy does`);
+    }
+    if (asList(edge.profiles).length > 0) {
+      problems.push(`${EDGE_CHECK} sits behind a profile; \`up\` would start caddy without it`);
+    }
+  }
+  if (conditionOf(svc('caddy'), EDGE_CHECK) !== 'service_completed_successfully') {
+    problems.push(`caddy must wait for ${EDGE_CHECK} to succeed before it serves`);
+  }
+  if (keyed(svc('caddy')?.environment).get(EDGE_PROXIES) !== `\${${EDGE_PROXIES}:-}`) {
+    problems.push(`caddy must read ${EDGE_PROXIES} from .env, the value ${EDGE_CHECK} checks`);
+  }
+
   // Third-party images carry a version, never a moving default.
   for (const name of ['postgres', 'caddy']) {
     const image = String(svc(name)?.image ?? '');
@@ -338,6 +367,13 @@ export function problemsFor({ compose, dockerfile, caddyfile, dockerignore, giti
   const logLines = caddyCode.split('\n').filter((l) => /^\s*log(\s|\{|$)/.test(l));
   if (logLines.some((l) => !/^\s*log default \{\s*$/.test(l))) {
     problems.push(`${FILES.caddyfile} enables a log; access lines would record sign-in tokens`);
+  }
+  /* Caddy's client address comes from the value edge-check reads (G-74):
+   * a literal list here, or a different variable, would be unchecked. */
+  if (!new RegExp(`trusted_proxies\\s+static\\s+\\{\\$${EDGE_PROXIES}\\}`).test(caddyCode)) {
+    problems.push(
+      `${FILES.caddyfile} must take its trusted proxies from {$${EDGE_PROXIES}}, the value ${EDGE_CHECK} checks`,
+    );
   }
   if (!/request>uri\s+delete/.test(caddyCode) || !/request>headers\s+delete/.test(caddyCode)) {
     problems.push(`${FILES.caddyfile} must delete request>uri and request>headers from its log`);

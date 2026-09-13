@@ -77,6 +77,11 @@ export function parseTrustedProxies(raw: string | undefined): {
   return { entries, ranges };
 }
 
+/**
+ * The entries of a trust list. Comma-separated, as the API's own variables
+ * are written; a value that is set but names nothing is refused rather than
+ * read as an empty list.
+ */
 function trustEntries(name: string, raw: string | undefined): string[] {
   const entries = (raw ?? '')
     .split(',')
@@ -86,6 +91,45 @@ function trustEntries(name: string, raw: string | undefined): string[] {
     throw new Error(`${name} is set but names no address or CIDR: ${raw}`);
   }
   return entries;
+}
+
+/**
+ * Caddy's own name for the private blocks, as the ranges it expands to. All
+ * of them are non-public, so it is always a safe value.
+ */
+const CADDY_PRIVATE_RANGES = [
+  '192.168.0.0/16',
+  '172.16.0.0/12',
+  '10.0.0.0/8',
+  '127.0.0.1/8',
+  'fd00::/8',
+  '::1',
+];
+
+/**
+ * The proxies IN FRONT of Caddy whose client-address headers Caddy believes
+ * (G-74), as Caddy reads them: `trusted_proxies static a b c`, so
+ * space-separated, and `private_ranges` is a name Caddy knows. Empty is the
+ * documented no-edge-proxy mode and means Caddy trusts the TCP peer alone.
+ *
+ * Unlike the API's own two lists this one is never read by a Rekoda process
+ * at all, which is why it is checked before Caddy starts rather than at boot.
+ */
+export function parseEdgeProxies(raw: string | undefined): { entries: string[]; ranges: Range[] } {
+  const name = 'REKODA_EDGE_PROXIES';
+  const entries = (raw ?? '').split(/\s+/).filter((part) => part.length > 0);
+  const ranges = entries.flatMap((entry) => {
+    if (entry.includes(',')) {
+      throw new Error(
+        `${name} is space-separated, the way Caddy reads trusted_proxies, not comma-separated: ${entry}`,
+      );
+    }
+    if (entry === 'private_ranges') {
+      return CADDY_PRIVATE_RANGES.map((cidr) => parseRange(name, cidr));
+    }
+    return [parseRange(name, entry)];
+  });
+  return { entries, ranges };
 }
 
 function parseRange(name: string, entry: string): Range {
@@ -181,6 +225,22 @@ export function universalRange(ranges: readonly Range[]): Range | null {
       );
       return !insideNonPublic;
     }) ?? null
+  );
+}
+
+/**
+ * Why a trust list trusts effectively the whole internet, naming the entry
+ * and the variable, or null when it does not. One wording for all three
+ * lists: the API's two (checked at boot, G-72) and Caddy's (checked before
+ * it serves, G-74).
+ */
+export function universalProblem(name: string, ranges: readonly Range[]): string | null {
+  const universal = universalRange(ranges);
+  if (!universal) return null;
+  return (
+    `${name} trusts ${universal[0].toString()}/${universal[1]}, which is effectively the whole ` +
+    'internet: any caller in it could claim to be any visitor. Name the actual proxy addresses ' +
+    'or CIDRs.'
   );
 }
 

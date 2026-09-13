@@ -242,6 +242,31 @@ services:
       - no-new-privileges:true
     logging: *logging
 
+  # Caddy reads REKODA_EDGE_PROXIES itself, so no Rekoda process ever sees it
+  # and the boot rules that refuse an unsafe trust list in the api and the
+  # worker (G-72) cannot reach it. This one-shot job checks it in the app
+  # image, and Caddy waits for it: a universal value (0.0.0.0/0, ::/0) fails
+  # the deployment instead of letting Caddy believe a browser's
+  # CF-Connecting-IP and hand that address on as the visitor (G-74).
+  edge-check:
+    image: rekoda-app:${REKODA_RELEASE:?set REKODA_RELEASE in .env}
+    pull_policy: never
+    command: ['node', 'dist/edge-proxies.js']
+    environment:
+      # Exactly what compose gives Caddy below, checked before Caddy runs.
+      REKODA_EDGE_PROXIES: ${REKODA_EDGE_PROXIES:-}
+    # It reads one environment variable; it needs no network and no database.
+    network_mode: none
+    restart: 'no'
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    logging: *logging
+
   caddy:
     image: caddy:2.11.4-alpine
     restart: unless-stopped
@@ -273,6 +298,9 @@ services:
         condition: service_healthy
       api:
         condition: service_healthy
+      # Never serve with an edge trust list a browser could exploit (G-74).
+      edge-check:
+        condition: service_completed_successfully
     cap_drop:
       - ALL
     cap_add:

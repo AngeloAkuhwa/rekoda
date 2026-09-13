@@ -85,7 +85,9 @@ treat it as a variable. Every generated value above is hex.
    proxy them with SSL/TLS mode **Full (strict)**, keep Cloudflare's "Always
    Use HTTPS" **off** (Caddy redirects already, and certificate renewals
    arrive over plain HTTP), and set `REKODA_EDGE_PROXIES` to Cloudflare's
-   published ranges (https://www.cloudflare.com/ips/, space-separated).
+   published ranges (https://www.cloudflare.com/ips/, space-separated). A
+   universal value there is refused before Caddy starts (G-74), because it
+   would let any browser choose the address the per-IP limits count.
    Without that, every visitor shares Cloudflare's addresses in the per-IP
    limits.
 3. **Checkout.** `git clone` to `/opt/rekoda` and `git checkout vX.Y.Z`
@@ -324,6 +326,10 @@ failure below is a one-line startup error naming the variable:
   `.test` or `.example` name);
   `R2_ACCOUNT_ID` must be the 32-hex account id (G-72);
   `REKODA_RELEASE` and `REKODA_COMMIT` must be short tokens.
+- **The edge** (`edge-check`, before caddy starts): `REKODA_EDGE_PROXIES`
+  must be empty, Cloudflare's ranges, `private_ranges`, or addresses and
+  CIDRs that do not trust effectively the whole internet; `up` fails and
+  Caddy never serves otherwise (G-74).
 - **Web** (`next start`): every mandatory legal fact must be set, or the
   server refuses to serve policy pages with placeholder badges (R8). In this
   deployment the facts are baked into the image at build and checked again

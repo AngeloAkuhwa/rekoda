@@ -9,7 +9,8 @@
 #   PostgreSQL unreachable from the host; migrations as the owner, then the
 #   runtime roles' passwords; the api and the worker refusing the owner
 #   credential, and refusing a fake provider, local storage or an empty or
-#   universal trust list (G-72); the stack healthy; /health, the site, the legal facts, the
+#   universal trust list (G-72); Caddy refusing to serve with an edge trust
+#   list a browser could exploit (G-74); the stack healthy; /health, the site, the legal facts, the
 #   webhooks and the security headers through Caddy over HTTPS; a forged
 #   X-Forwarded-For unable to reset the per-IP bucket; the worker claiming
 #   and finishing a job; restarts and a full down/up losing nothing; a
@@ -210,6 +211,43 @@ refuses api 'REKODA_TRUSTED_PROXIES=,' 'REKODA_TRUSTED_PROXIES is set but names 
 refuses api 'REKODA_TRUSTED_WEB=0.0.0.0/0' 'REKODA_TRUSTED_WEB trusts 0.0.0.0/0'
 refuses worker 'REKODA_TRUSTED_PROXIES=::/0' 'REKODA_TRUSTED_PROXIES trusts ::/0'
 echo 'ok: every one refused, naming the variable'
+
+step 'Caddy will not serve with an edge trust list a browser could exploit (G-74)'
+# REKODA_EDGE_PROXIES is Caddy's own: no Rekoda process reads it, so the boot
+# rules above never see it. A one-shot job checks it and Caddy waits for that
+# job, so a universal value fails the deployment instead of letting Caddy
+# believe any browser's CF-Connecting-IP.
+edge() {
+  timeout 120 "${COMPOSE[@]}" run --rm -T --no-deps -e "REKODA_EDGE_PROXIES=$1" edge-check \
+    >"$WORK/edge.log" 2>&1
+}
+for value in '0.0.0.0/0' '::/0' '::ffff:0:0/96' '::/80' '104.16.0.0/13 0.0.0.0/1'; do
+  if edge "$value"; then
+    cat "$WORK/edge.log"
+    fail "the edge check accepted $value"
+  fi
+  grep -q -F 'REKODA_EDGE_PROXIES trusts' "$WORK/edge.log" || {
+    cat "$WORK/edge.log"
+    fail "the edge check refused $value without naming the variable"
+  }
+done
+# Cloudflare's published ranges, Caddy's own name for the private blocks, and
+# the documented empty value all pass: the check refuses the dangerous shape,
+# not the deployment's real ones.
+for value in '173.245.48.0/20 104.16.0.0/13 2400:cb00::/32 2a06:98c0::/29' 'private_ranges' ''; do
+  edge "$value" || {
+    cat "$WORK/edge.log"
+    fail "the edge check refused a legitimate value: ${value:-(empty)}"
+  }
+done
+# And the gate is really in front of Caddy: `up` fails rather than serving.
+set_env REKODA_EDGE_PROXIES 0.0.0.0/0
+if timeout 300 "${COMPOSE[@]}" up -d --wait --wait-timeout 240 caddy >"$WORK/edge-up.log" 2>&1; then
+  fail 'caddy started with a universal edge trust list'
+fi
+[ -z "$("${COMPOSE[@]}" ps -q caddy)" ] || fail 'caddy is running after a refused edge trust list'
+set_env REKODA_EDGE_PROXIES ''
+echo 'ok: refused before Caddy served, and the real values accepted'
 
 step 'the stack comes up healthy'
 "${COMPOSE[@]}" up -d --wait --wait-timeout 300

@@ -300,3 +300,47 @@ test('secrets/ bind-mounted, a root user by override, or a second env_file', () 
   );
   expectProblem(problems(twice), /^api loads more than \.env: \.env, extra\.env/);
 });
+
+test('the edge trust list reaching Caddy unchecked (G-74)', () => {
+  // Caddy serving before the check, which is the whole point of the job.
+  const ungated = edited(
+    'compose',
+    '      # Never serve with an edge trust list a browser could exploit (G-74).\n      edge-check:\n        condition: service_completed_successfully\n',
+    '',
+  );
+  expectProblem(problems(ungated), /caddy must wait for edge-check to succeed before it serves/);
+  // The job started but not waited for: `up` would race it.
+  const started = edited(
+    'compose',
+    '      edge-check:\n        condition: service_completed_successfully\n',
+    '      edge-check:\n        condition: service_started\n',
+  );
+  expectProblem(problems(started), /caddy must wait for edge-check to succeed before it serves/);
+  // The job behind a profile, so `up` never runs it.
+  const profiled = edited(
+    'compose',
+    '  edge-check:\n    image: rekoda-app:${REKODA_RELEASE:?set REKODA_RELEASE in .env}\n',
+    '  edge-check:\n    profiles:\n      - ops\n    image: rekoda-app:${REKODA_RELEASE:?set REKODA_RELEASE in .env}\n',
+  );
+  expectProblem(problems(profiled), /edge-check sits behind a profile/);
+  // The job checking a value that is not the one Caddy reads.
+  const other = edited(
+    'compose',
+    '      # Exactly what compose gives Caddy below, checked before Caddy runs.\n      REKODA_EDGE_PROXIES: ${REKODA_EDGE_PROXIES:-}\n',
+    '      REKODA_EDGE_PROXIES: private_ranges\n',
+  );
+  expectProblem(
+    problems(other),
+    /edge-check must receive REKODA_EDGE_PROXIES exactly as caddy does/,
+  );
+  // Caddy taking the list from somewhere the job never sees.
+  const literal = edited(
+    'caddyfile',
+    'trusted_proxies static {$REKODA_EDGE_PROXIES}',
+    'trusted_proxies static 0.0.0.0/0',
+  );
+  expectProblem(problems(literal), /must take its trusted proxies from \{\$REKODA_EDGE_PROXIES\}/);
+  // The job gone entirely.
+  const gone = { compose: REAL.compose.replace(/ {2}edge-check:\n(?: {4}.*\n|\n(?= {4}))*/, '') };
+  expectProblem(problems(gone), /has no edge-check service/);
+});
