@@ -87,6 +87,8 @@ describe('values Caddy would read as something else', () => {
     ['an impossible prefix', '10.0.0.0/33'],
     ['a mapped range wider than the mapped block', '::ffff:0:0/95'],
     ['an unknown keyword', 'public_ranges'],
+    ['a prefix written with a leading zero, which Caddy refuses', '172.16.0.0/012'],
+    ['nothing but a line break', '\n'],
     ['a property of every object', 'constructor'],
   ])('refuses %s', (_label, value) => {
     expect(edgeProxyProblem(value)).toMatch(/REKODA_EDGE_PROXIES/);

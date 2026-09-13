@@ -340,6 +340,16 @@ test('the edge trust list reaching Caddy unchecked (G-74)', () => {
     'trusted_proxies static 0.0.0.0/0',
   );
   expectProblem(problems(literal), /must take its trusted proxies from \{\$REKODA_EDGE_PROXIES\}/);
+  // The variable kept, and everyone trusted beside it.
+  const appended = edited(
+    'caddyfile',
+    'trusted_proxies static {$REKODA_EDGE_PROXIES}',
+    'trusted_proxies static {$REKODA_EDGE_PROXIES} 0.0.0.0/0',
+  );
+  expectProblem(
+    problems(appended),
+    /must take its trusted proxies from \{\$REKODA_EDGE_PROXIES\} and nothing else/,
+  );
   // The job neutered: the service is there, running something else.
   const hollow = edited(
     'compose',

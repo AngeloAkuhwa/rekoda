@@ -380,9 +380,17 @@ export function problemsFor({ compose, dockerfile, caddyfile, dockerignore, giti
   }
   /* Caddy's client address comes from the value edge-check reads (G-74):
    * a literal list here, or a different variable, would be unchecked. */
-  if (!new RegExp(`trusted_proxies\\s+static\\s+\\{\\$${EDGE_PROXIES}\\}`).test(caddyCode)) {
+  /* The whole directive, not a substring: `trusted_proxies static
+   * {$REKODA_EDGE_PROXIES} 0.0.0.0/0` would keep the variable and still
+   * trust everyone, which is the likeliest way to undo this. */
+  if (
+    !new RegExp(
+      `^[ \\t]*trusted_proxies[ \\t]+static[ \\t]+\\{\\$${EDGE_PROXIES}\\}[ \\t]*$`,
+      'm',
+    ).test(caddyCode)
+  ) {
     problems.push(
-      `${FILES.caddyfile} must take its trusted proxies from {$${EDGE_PROXIES}}, the value ${EDGE_CHECK} checks`,
+      `${FILES.caddyfile} must take its trusted proxies from {$${EDGE_PROXIES}} and nothing else, the value ${EDGE_CHECK} checks`,
     );
   }
   if (!/request>uri\s+delete/.test(caddyCode) || !/request>headers\s+delete/.test(caddyCode)) {

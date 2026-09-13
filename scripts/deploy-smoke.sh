@@ -66,6 +66,12 @@ set_env() {
   fi
 }
 health() { curl -fsS --resolve "$API:443:127.0.0.1" --cacert "$WORK/root.crt" "https://$API/health"; }
+# The versions this run proves the stack on. The one-shot edge check (G-74)
+# needs a Compose that treats an exited dependency as satisfied, so the
+# runbook points an operator at this line.
+step 'the engine and compose this run proves the stack on'
+docker --version
+docker compose version
 psql_owner() { "${COMPOSE[@]}" exec -T postgres psql -U rekoda_owner -d rekoda -v ON_ERROR_STOP=1 -tA -c "$1"; }
 
 step 'a throwaway .env and owner secret (placeholders, generated here, nothing real)'
@@ -248,10 +254,15 @@ if timeout 300 "${COMPOSE[@]}" up -d --wait --wait-timeout 240 caddy >"$WORK/edg
   fail 'caddy started with a universal edge trust list'
 fi
 [ -z "$("${COMPOSE[@]}" ps -q caddy)" ] || fail 'caddy is running after a refused edge trust list'
-grep -q -F 'edge-check' "$WORK/edge-up.log" || {
-  cat "$WORK/edge-up.log"
-  fail 'the stack refused to come up, but not because of the edge check'
-}
+# Compose names every container it converges, so the job's name appearing in
+# that log proves nothing. The dependency failure, or the check's own refusal
+# in its container log, is what tells a gate refusal from an unhealthy api.
+"${COMPOSE[@]}" logs --no-color edge-check >"$WORK/edge-job.log" 2>&1 || true
+grep -qE 'dependency failed to start: container .*edge-check.* exited \(1\)' "$WORK/edge-up.log" ||
+  grep -q -F 'REKODA_EDGE_PROXIES trusts' "$WORK/edge-job.log" || {
+    cat "$WORK/edge-up.log" "$WORK/edge-job.log"
+    fail 'the stack refused to come up, but not because of the edge check'
+  }
 set_env REKODA_EDGE_PROXIES ''
 echo 'ok: refused before Caddy served, and the real values accepted'
 

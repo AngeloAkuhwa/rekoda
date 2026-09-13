@@ -122,7 +122,7 @@ export function parseEdgeProxies(raw: string | undefined): { entries: string[]; 
   /* One line: a line break travels into the Caddyfile as part of the value
    * and Caddy refuses the whole file, so saying so here names the line
    * rather than leaving an operator with a parse error. */
-  if (/[\r\n]/.test(raw ?? '') && (raw ?? '').trim() !== '') {
+  if (/[\r\n]/.test(raw ?? '')) {
     throw new Error(`${name} must be one line; Caddy reads the line break as part of the value`);
   }
   const entries = (raw ?? '').split(/[ \t]+/).filter((part) => part.length > 0);
@@ -148,7 +148,9 @@ function parseRange(name: string, entry: string): Range {
   if (
     isIP(address) === 0 ||
     extra.length > 0 ||
-    (prefix !== undefined && !/^\d{1,3}$/.test(prefix))
+    /* Plain digits, no leading zero: `/012` is a prefix ipaddr.js reads as
+     * 12 and Caddy refuses outright, so the two would disagree. */
+    (prefix !== undefined && !/^(?:0|[1-9]\d{0,2})$/.test(prefix))
   ) {
     throw new Error(`${name} has an entry that is not an address or CIDR: ${entry}`);
   }

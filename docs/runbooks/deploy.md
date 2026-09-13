@@ -77,10 +77,12 @@ treat it as a variable. Every generated value above is hex.
 
 1. **Host.** Ubuntu LTS, a non-root deploy user, SSH keys only
    (`PasswordAuthentication no`), `ufw` allowing 22, 80, 443 and 443/udp
-   only. Install Docker Engine and the Compose v2 plugin (`docker compose
-version`; CI proves this stack on the version its Deployment job prints).
-   The edge check runs as a one-shot service that Caddy waits for, which
-   needs a Compose that treats a completed dependency as satisfied.
+   only. Install Docker Engine and a current Compose v2 plugin: the edge
+   check is a one-shot service Caddy waits for, so `up --wait` must treat a
+   dependency that exited 0 as satisfied rather than waiting for it to keep
+   running. The smoke prints the engine and Compose versions it proved the
+   stack on at the top of the CI Deployment job; match or exceed them, and
+   `dc up -d --wait` on this host will say so plainly if yours is older.
 2. **DNS.** Point the site and API hostnames at the host with **A records
    only** (no AAAA): the compose networks are IPv4, and Docker would present
    every IPv6 visitor to Caddy as one internal address. Leave the
@@ -240,7 +242,10 @@ holding either is a credential at rest. Do not switch one on.
   or a deploy can take that long; a worker killed anyway leaves its job to be
   requeued once it is stale (five minutes).
 - **After editing `.env`:** `dc up -d --wait` recreates the api, worker and
-  Caddy when their values changed. **Not the site's public values:** every
+  Caddy when their values changed, and re-runs the edge check, which refuses
+  a `REKODA_EDGE_PROXIES` that would trust effectively the whole internet
+  (G-74). `dc ps -a` always shows `edge-check` as `Exited (0)`: that is the
+  check having passed, not a crashed service. **Not the site's public values:** every
   `NEXT_PUBLIC_*` value (the site URL, the legal facts, the WhatsApp number,
   the Mono public key) is baked into the web image at build, and compose does
   not rebuild or recreate it for a changed build argument. Change one, then
