@@ -85,6 +85,11 @@ universal list by the same rule (`apps/api/src/edge-proxies.ts`, sharing
 instead of serving. Cloudflare's ranges, `private_ranges` and the empty
 no-edge-proxy mode still pass. `check-deploy.mjs` pins the wiring and the
 smoke drives it in the production image.
+Found in review and recorded as an OPEN OWNER DECISION: G-75.
+`private_ranges` passes the check but is unsafe here, because Docker
+hands Caddy every IPv6 visitor from its private bridge gateway; the
+recommendation is to refuse it and move the G-71 smoke to a sidecar that
+plays Cloudflare. The code, the runbook and `.env.example` warn meanwhile.
 
 **Previous work (13 Sep 2026, G-72, merged as `1bbe1f1`; CODE COMPLETE):**
 a production process now refuses to start on configuration that would

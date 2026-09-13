@@ -94,10 +94,17 @@ function trustEntries(name: string, raw: string | undefined): string[] {
 }
 
 /**
- * Caddy's own name for the private blocks, as the ranges it expands to. No
- * internet caller can hold one of these addresses, so the value is safe from
- * outside; on the host itself, traffic arriving through Docker's gateway is
- * inside them, exactly as it is for the API's own lists.
+ * Caddy's own name for the private blocks, as the ranges it expands to.
+ *
+ * NOT safe on a real host, and accepted only because it is not universal:
+ * Caddy publishes its ports, and a caller Docker proxies (every IPv6 visitor,
+ * since the edge network is IPv4, and any hairpin connection) reaches Caddy
+ * from the bridge gateway, which sits inside 172.16.0.0/12. Trusting these
+ * blocks therefore lets such a caller name its own address in
+ * CF-Connecting-IP. The API's own lists do not share the problem: the API
+ * publishes no port. The deploy smoke uses this value on purpose, to play
+ * Cloudflare from the runner host; production uses Cloudflare's ranges or
+ * nothing. Whether to refuse it outright is G-75, an owner decision.
  */
 const CADDY_PRIVATE_RANGES = [
   '192.168.0.0/16',

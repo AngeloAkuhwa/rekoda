@@ -357,9 +357,11 @@ only says a dependency failed, and the line is in `dc logs edge-check`:
   `R2_ACCOUNT_ID` must be the 32-hex account id (G-72);
   `REKODA_RELEASE` and `REKODA_COMMIT` must be short tokens.
 - **The edge** (`edge-check`, before caddy starts): `REKODA_EDGE_PROXIES`
-  must be empty, Cloudflare's ranges, `private_ranges`, or addresses and
-  CIDRs that do not trust effectively the whole internet; `up` fails and
-  Caddy never serves otherwise (G-74).
+  must not trust effectively the whole internet; `up` fails and Caddy never
+  serves otherwise (G-74). On a real host set it to Cloudflare's ranges or
+  leave it empty. The check also accepts `private_ranges`, but **never use it
+  here**: Docker hands Caddy every IPv6 visitor from its bridge gateway, a
+  private address, so it would let them choose their own address (G-75).
 - **Web** (`next start`): every mandatory legal fact must be set, or the
   server refuses to serve policy pages with placeholder badges (R8). In this
   deployment the facts are baked into the image at build and checked again

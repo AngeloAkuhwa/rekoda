@@ -314,6 +314,11 @@ export function problemsFor({ compose, dockerfile, caddyfile, dockerignore, giti
     }
     /* An entrypoint makes the command its arguments: `entrypoint: ['true']`
      * exits 0 without reading anything, and caddy would serve. */
+    /* Every rule here reads the service as written. `extends` would merge in
+     * fields from elsewhere (an entrypoint, a mount) that none of them sees. */
+    if (edge.extends !== undefined) {
+      problems.push(`${EDGE_CHECK} must not extend another service; inherited fields go unchecked`);
+    }
     if (edge.entrypoint !== undefined) {
       problems.push(`${EDGE_CHECK} must not override its entrypoint; the command is the check`);
     }
@@ -322,7 +327,7 @@ export function problemsFor({ compose, dockerfile, caddyfile, dockerignore, giti
      * nothing), and read_only does not stop a bind mount. */
     /* Not tmpfs, which the job uses and which can only hide the code, never
      * substitute it: the module would be missing and the check would fail. */
-    const mounts = ['volumes', 'configs', 'secrets', 'devices'].filter(
+    const mounts = ['volumes', 'volumes_from', 'configs', 'secrets', 'devices'].filter(
       (key) => asList(edge[key]).length > 0,
     );
     if (mounts.length > 0) {
@@ -382,6 +387,13 @@ export function problemsFor({ compose, dockerfile, caddyfile, dockerignore, giti
       }
       if (build.dockerfile_inline !== undefined) {
         problems.push(`${name} carries an inline Dockerfile, which no guard reads`);
+      }
+      /* The context decides which Dockerfile a bare `target` means: another
+       * directory builds its own Dockerfile while this guard reads the root. */
+      if (build.context !== undefined && build.context !== '.') {
+        problems.push(
+          `${name} builds from context ${build.context}; only the repository root is checked`,
+        );
       }
     }
     const target = build?.target;
@@ -455,52 +467,49 @@ export function problemsFor({ compose, dockerfile, caddyfile, dockerignore, giti
   /* The whole directive, not a substring: `trusted_proxies static
    * {$REKODA_EDGE_PROXIES} 0.0.0.0/0` would keep the variable and still
    * trust everyone, which is the likeliest way to undo this. */
-  const trustLines = caddyCode
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => /^trusted_proxies\b/.test(line));
-  if (trustLines.length !== 1 || trustLines[0] !== `trusted_proxies static {$${EDGE_PROXIES}}`) {
-    problems.push(
-      `${FILES.caddyfile} must take its trusted proxies from {$${EDGE_PROXIES}} and nothing else, in one directive, the value ${EDGE_CHECK} checks (found ${trustLines.length})`,
-    );
-  }
-  /* The three lines that decide a client's address live in the global
-   * `servers` block, which is the only place Caddy applies them. A directive
-   * moved into a snippet nothing imports reads as present and does nothing. */
+  /* The three directives that decide a client's address. Each must appear
+   * exactly once in the whole file, written exactly as pinned, inside the
+   * address-less `servers` block that applies to every listener:
+   *
+   *   - trusted_proxies: from the value edge-check checks, and nothing else
+   *     (a literal list, or a second directive, would be unchecked);
+   *   - trusted_proxies_strict: without it Caddy takes the LEFTMOST
+   *     X-Forwarded-For entry, which a browser writes and Cloudflare appends
+   *     to, the forged address G-43 and G-71 close;
+   *   - client_ip_headers: exactly these two. Caddy merges repeated lines, so
+   *     a second line naming X-Client-IP (which Cloudflare passes through
+   *     untouched) would put a browser-set header first.
+   *
+   * Counting across the file, not just the block, is what keeps a copy in a
+   * snippet or a listener-specific block from being mistaken for the real
+   * one; a quoted directive name is the same directive to Caddy. */
+  const PINNED = [
+    ['trusted_proxies', `trusted_proxies static {$${EDGE_PROXIES}}`],
+    ['trusted_proxies_strict', 'trusted_proxies_strict'],
+    ['client_ip_headers', 'client_ip_headers CF-Connecting-IP X-Forwarded-For'],
+  ];
+  const directive = (line) => line.trim().replace(/^"([^"\s]+)"/, '$1');
   const serversBlock = (() => {
-    const start = caddyCode.indexOf('servers {');
-    if (start < 0) return '';
+    const found = /(?:^|\s)servers\s*\{/.exec(caddyCode);
+    if (!found) return '';
     let depth = 0;
-    for (let i = caddyCode.indexOf('{', start); i < caddyCode.length; i++) {
+    for (let i = caddyCode.indexOf('{', found.index); i < caddyCode.length; i++) {
       if (caddyCode[i] === '{') depth += 1;
-      else if (caddyCode[i] === '}' && --depth === 0) return caddyCode.slice(start, i + 1);
+      else if (caddyCode[i] === '}' && --depth === 0) return caddyCode.slice(found.index, i + 1);
     }
     return '';
   })();
-  const serverLines = serversBlock
-    .split('\n')
-    .map((line) => line.trim())
-    .filter(Boolean);
-  if (!serverLines.includes(`trusted_proxies static {$${EDGE_PROXIES}}`)) {
-    problems.push(
-      `${FILES.caddyfile} must set its trusted proxies inside the servers block, where Caddy reads them`,
-    );
-  }
-  /* Strict mode, or Caddy takes the LEFTMOST X-Forwarded-For entry once the
-   * edge proxies are named: a browser writes that one and Cloudflare appends
-   * to it, which is the forged address G-43 and G-71 close. */
-  if (!serverLines.includes('trusted_proxies_strict')) {
-    problems.push(
-      `${FILES.caddyfile} must keep trusted_proxies_strict in the servers block; without it a browser's own X-Forwarded-For entry is believed`,
-    );
-  }
-  /* And exactly these two client-address headers: another name (X-Client-IP,
-   * say) is one Cloudflare passes through untouched, so a browser could set
-   * it and choose its own address. */
-  if (!serverLines.includes('client_ip_headers CF-Connecting-IP X-Forwarded-For')) {
-    problems.push(
-      `${FILES.caddyfile} must read the client address from CF-Connecting-IP and X-Forwarded-For only; another header is one a browser can set`,
-    );
+  const blockLines = serversBlock.split('\n').map(directive);
+  for (const [name, pinned] of PINNED) {
+    const everywhere = caddyCode
+      .split('\n')
+      .map(directive)
+      .filter((line) => line.split(/\s+/)[0] === name);
+    if (everywhere.length !== 1 || everywhere[0] !== pinned || !blockLines.includes(pinned)) {
+      problems.push(
+        `${FILES.caddyfile} must set \`${pinned}\` exactly once, in the servers block, and nowhere else (found ${everywhere.length}); the client address depends on it`,
+      );
+    }
   }
   if (!/request>uri\s+delete/.test(caddyCode) || !/request>headers\s+delete/.test(caddyCode)) {
     problems.push(`${FILES.caddyfile} must delete request>uri and request>headers from its log`);

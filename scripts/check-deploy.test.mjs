@@ -339,7 +339,10 @@ test('the edge trust list reaching Caddy unchecked (G-74)', () => {
     'trusted_proxies static {$REKODA_EDGE_PROXIES}',
     'trusted_proxies static 0.0.0.0/0',
   );
-  expectProblem(problems(literal), /must take its trusted proxies from \{\$REKODA_EDGE_PROXIES\}/);
+  expectProblem(
+    problems(literal),
+    /must set \`trusted_proxies static \{\$REKODA_EDGE_PROXIES\}\` exactly once/,
+  );
   // The variable kept, and everyone trusted beside it.
   const appended = edited(
     'caddyfile',
@@ -348,7 +351,7 @@ test('the edge trust list reaching Caddy unchecked (G-74)', () => {
   );
   expectProblem(
     problems(appended),
-    /must take its trusted proxies from \{\$REKODA_EDGE_PROXIES\} and nothing else/,
+    /must set \`trusted_proxies static \{\$REKODA_EDGE_PROXIES\}\` exactly once/,
   );
   // The job neutered: the service is there, running something else.
   const hollow = edited(
@@ -381,7 +384,10 @@ test('the edge trust list reaching Caddy unchecked (G-74)', () => {
     '\t\ttrusted_proxies_strict\n',
     '\t\ttrusted_proxies_strict\n\t\ttrusted_proxies static 0.0.0.0/0\n',
   );
-  expectProblem(problems(second), /in one directive/);
+  expectProblem(
+    problems(second),
+    /must set \`trusted_proxies static \{\$REKODA_EDGE_PROXIES\}\` exactly once/,
+  );
   // The dependency made advisory: a failed check becomes a warning.
   const optional = edited(
     'compose',
@@ -420,6 +426,20 @@ test('the edge trust list reaching Caddy unchecked (G-74)', () => {
     'ENV NODE_ENV=production\nENV NODE_OPTIONS --import=data:text/javascript,process.exit(0)\n',
   );
   expectProblem(problems(legacyEnv), /stage declares NODE_OPTIONS/);
+  // The job extending another service, whose fields would merge in unseen.
+  const extended = edited(
+    'compose',
+    "    command: ['node', 'dist/edge-proxies.js']\n",
+    "    extends:\n      service: api\n    command: ['node', 'dist/edge-proxies.js']\n",
+  );
+  expectProblem(problems(extended), /edge-check must not extend another service/);
+  // A build from another directory, which has its own Dockerfile.
+  const otherContext = edited(
+    'compose',
+    '      context: .\n      target: app\n',
+    '      context: ./elsewhere\n      target: app\n',
+  );
+  expectProblem(problems(otherContext), /builds from context \.\/elsewhere/);
   // A build that names another Dockerfile: every stage rule reads this one.
   const elsewhere = edited(
     'compose',
@@ -455,7 +475,7 @@ test('the edge trust list reaching Caddy unchecked (G-74)', () => {
   // Strict mode dropped: Caddy would believe a browser's own first
   // X-Forwarded-For entry once the edge proxies are named.
   const lax = edited('caddyfile', '\t\ttrusted_proxies_strict\n', '');
-  expectProblem(problems(lax), /must keep trusted_proxies_strict/);
+  expectProblem(problems(lax), /must set \`trusted_proxies_strict\` exactly once/);
   // Strict mode moved into a snippet nothing imports: present in the file,
   // and applied nowhere.
   const parked = edited(
@@ -463,7 +483,7 @@ test('the edge trust list reaching Caddy unchecked (G-74)', () => {
     '\t\ttrusted_proxies_strict\n',
     '\t}\n}\n\n(unused) {\n\ttrusted_proxies_strict\n',
   );
-  expectProblem(problems(parked), /trusted_proxies_strict in the servers block/);
+  expectProblem(problems(parked), /must set \`trusted_proxies_strict\` exactly once/);
   // Another client-address header, which Cloudflare passes through and a
   // browser can therefore set.
   const extraHeader = edited(
@@ -471,7 +491,31 @@ test('the edge trust list reaching Caddy unchecked (G-74)', () => {
     'client_ip_headers CF-Connecting-IP X-Forwarded-For',
     'client_ip_headers X-Client-IP CF-Connecting-IP X-Forwarded-For',
   );
-  expectProblem(problems(extraHeader), /CF-Connecting-IP and X-Forwarded-For only/);
+  expectProblem(
+    problems(extraHeader),
+    /must set \`client_ip_headers CF-Connecting-IP X-Forwarded-For\` exactly once/,
+  );
+  // A second client_ip_headers line: Caddy merges them, so a browser-set
+  // header would come first while the pinned line still reads as present.
+  const secondHeaders = edited(
+    'caddyfile',
+    '\t\tclient_ip_headers CF-Connecting-IP X-Forwarded-For\n',
+    '\t\tclient_ip_headers X-Client-IP\n\t\tclient_ip_headers CF-Connecting-IP X-Forwarded-For\n',
+  );
+  expectProblem(
+    problems(secondHeaders),
+    /must set \`client_ip_headers CF-Connecting-IP X-Forwarded-For\` exactly once/,
+  );
+  // A quoted directive name, which Caddy applies like the bare one.
+  const quoted = edited(
+    'caddyfile',
+    '\t\ttrusted_proxies_strict\n',
+    '\t\ttrusted_proxies_strict\n\t\t"trusted_proxies" static 0.0.0.0/0\n',
+  );
+  expectProblem(
+    problems(quoted),
+    /must set \`trusted_proxies static \{\$REKODA_EDGE_PROXIES\}\` exactly once/,
+  );
   // The command as one argv element, which is a program name, not a program.
   const oneWord = edited(
     'compose',
