@@ -18,6 +18,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isDeepStrictEqual } from 'node:util';
 import { parse as parseYaml } from 'yaml';
 import { parseDockerfile } from './check-env-example.mjs';
 
@@ -57,7 +58,50 @@ export const ENV_FILE_LOADERS = ['api', 'migrate', 'worker'];
 /** The one-shot job that checks Caddy's own trust list before it serves (G-74). */
 export const EDGE_CHECK = 'edge-check';
 export const EDGE_PROXIES = 'REKODA_EDGE_PROXIES';
-export const EDGE_CHECK_COMMAND = 'dist/edge-proxies.js';
+export const EDGE_CHECK_COMMAND = 'dist/edge-check.js';
+/**
+ * The fields the job may set: each is read by a rule below or cannot stop
+ * the check running. Anything else is refused rather than trusted, because
+ * compose keeps adding ways to skip a service (`scale: 0`, `deploy.replicas:
+ * 0` and `provider` all make caddy's wait pass with no check at all).
+ */
+const EDGE_CHECK_FIELDS = new Set([
+  'image',
+  'pull_policy',
+  'command',
+  'environment',
+  'network_mode',
+  'restart',
+  'read_only',
+  'tmpfs',
+  'cap_drop',
+  'security_opt',
+  'logging',
+]);
+/** The fields a rule below already refuses by name, with its own message. */
+const EDGE_CHECK_REFUSED = new Set([
+  'profiles',
+  'extends',
+  'entrypoint',
+  'env_file',
+  'volumes',
+  'volumes_from',
+  'configs',
+  'secrets',
+  'devices',
+]);
+/**
+ * The edge network, exactly (G-75). The edge check refuses any trust range
+ * holding its gateway (EDGE_GATEWAY in apps/api/src/edge-proxies.ts), which
+ * is only this network's gateway while compose pins it and the network
+ * carries no IPv6, whose gateway the check would not know.
+ */
+export const EDGE_NETWORK = {
+  enable_ipv6: false,
+  ipam: {
+    config: [{ subnet: '172.30.10.0/24', gateway: '172.30.10.1', ip_range: '172.30.10.128/25' }],
+  },
+};
 /** The worker's stop grace must outlast the longest job (seconds). */
 export const WORKER_GRACE_SECONDS = 120;
 
@@ -300,7 +344,7 @@ export function problemsFor({ compose, dockerfile, caddyfile, dockerignore, giti
       problems.push(`${EDGE_CHECK} sits behind a profile; \`up\` would start caddy without it`);
     }
     /* The exact command, not a command mentioning the file: `node -e
-     * 'process.exit(0)' dist/edge-proxies.js` would leave caddy waiting on a
+     * 'process.exit(0)' dist/edge-check.js` would leave caddy waiting on a
      * job that checked nothing. */
     const edgeCommand = asList(edge.command).map(String);
     if (
@@ -323,7 +367,7 @@ export function problemsFor({ compose, dockerfile, caddyfile, dockerignore, giti
       problems.push(`${EDGE_CHECK} must not override its entrypoint; the command is the check`);
     }
     /* A mount can replace the file the command runs
-     * (`/dev/null:/repo/apps/api/dist/edge-proxies.js:ro` exits 0 having read
+     * (`/dev/null:/repo/apps/api/dist/edge-check.js:ro` exits 0 having read
      * nothing), and read_only does not stop a bind mount. */
     /* Not tmpfs, which the job uses and which can only hide the code, never
      * substitute it: the module would be missing and the check would fail. */
@@ -341,6 +385,30 @@ export function problemsFor({ compose, dockerfile, caddyfile, dockerignore, giti
     if (String(edge.restart ?? '') !== 'no') {
       problems.push(`${EDGE_CHECK} must set restart: 'no'; it runs once, before caddy`);
     }
+    /* Everything else, by allowlist (G-75): the rules above each name one
+     * way round the check, and compose has more than any list of names. */
+    for (const key of Object.keys(edge)) {
+      if (!EDGE_CHECK_FIELDS.has(key) && !EDGE_CHECK_REFUSED.has(key)) {
+        problems.push(
+          `${EDGE_CHECK} must not set ${key}; a field no rule reads can stop the check running (scale: 0 and provider skip it)`,
+        );
+      }
+    }
+  }
+  /* The gateway the check refuses must be the one Docker hands Caddy its
+   * proxied callers from: the edge network pinned exactly, and Caddy on it
+   * alone. A second network brings a second gateway, and host networking
+   * none the check could name (G-75). */
+  if (!isDeepStrictEqual(doc.networks?.edge, EDGE_NETWORK)) {
+    problems.push(
+      `the edge network must be exactly the pinned one (${JSON.stringify(EDGE_NETWORK)}); the edge check refuses its gateway and knows no other`,
+    );
+  }
+  const caddy = svc('caddy');
+  if (caddy && (caddy.network_mode !== undefined || networksOf(caddy).join() !== 'edge')) {
+    problems.push(
+      'caddy must join the edge network alone; the edge check knows that gateway and no other',
+    );
   }
   if (conditionOf(svc('caddy'), EDGE_CHECK) !== 'service_completed_successfully') {
     problems.push(`caddy must wait for ${EDGE_CHECK} to succeed before it serves`);

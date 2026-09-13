@@ -327,7 +327,7 @@ test('the edge trust list reaching Caddy unchecked (G-74)', () => {
   const other = edited(
     'compose',
     '      # Exactly what compose gives Caddy below, checked before Caddy runs.\n      REKODA_EDGE_PROXIES: ${REKODA_EDGE_PROXIES:-}\n',
-    '      REKODA_EDGE_PROXIES: private_ranges\n',
+    '      REKODA_EDGE_PROXIES: 104.16.0.0/13\n',
   );
   expectProblem(
     problems(other),
@@ -356,17 +356,17 @@ test('the edge trust list reaching Caddy unchecked (G-74)', () => {
   // The job neutered: the service is there, running something else.
   const hollow = edited(
     'compose',
-    "    command: ['node', 'dist/edge-proxies.js']\n",
+    "    command: ['node', 'dist/edge-check.js']\n",
     "    command: ['node', '-e', '0']\n",
   );
-  expectProblem(problems(hollow), /edge-check must run exactly `node dist\/edge-proxies\.js`/);
+  expectProblem(problems(hollow), /edge-check must run exactly `node dist\/edge-check\.js`/);
   // The file named, but never run: caddy would wait on a successful no-op.
   const noop = edited(
     'compose',
-    "    command: ['node', 'dist/edge-proxies.js']\n",
-    "    command: ['node', '-e', 'process.exit(0)', 'dist/edge-proxies.js']\n",
+    "    command: ['node', 'dist/edge-check.js']\n",
+    "    command: ['node', '-e', 'process.exit(0)', 'dist/edge-check.js']\n",
   );
-  expectProblem(problems(noop), /edge-check must run exactly `node dist\/edge-proxies\.js`/);
+  expectProblem(problems(noop), /edge-check must run exactly `node dist\/edge-check\.js`/);
   // The job left to restart: `up --wait` waits for a one-shot to COMPLETE
   // only because it is not expected to keep running.
   const restarted = edited('compose', "    restart: 'no'\n", '    restart: unless-stopped\n');
@@ -374,8 +374,8 @@ test('the edge trust list reaching Caddy unchecked (G-74)', () => {
   // An entrypoint override: the command becomes arguments to `true`.
   const entrypointed = edited(
     'compose',
-    "    command: ['node', 'dist/edge-proxies.js']\n",
-    "    entrypoint: ['true']\n    command: ['node', 'dist/edge-proxies.js']\n",
+    "    command: ['node', 'dist/edge-check.js']\n",
+    "    entrypoint: ['true']\n    command: ['node', 'dist/edge-check.js']\n",
   );
   expectProblem(problems(entrypointed), /edge-check must not override its entrypoint/);
   // A second, unchecked trusted_proxies directive beside the checked one.
@@ -398,24 +398,24 @@ test('the edge trust list reaching Caddy unchecked (G-74)', () => {
   // A mount over the script: node runs an empty file and exits 0.
   const mounted = edited(
     'compose',
-    "    command: ['node', 'dist/edge-proxies.js']\n",
-    "    command: ['node', 'dist/edge-proxies.js']\n    volumes:\n      - /dev/null:/repo/apps/api/dist/edge-proxies.js:ro\n",
+    "    command: ['node', 'dist/edge-check.js']\n",
+    "    command: ['node', 'dist/edge-check.js']\n    volumes:\n      - /dev/null:/repo/apps/api/dist/edge-check.js:ro\n",
   );
   expectProblem(problems(mounted), /edge-check must mount nothing/);
   // The same replacement through compose's other mounts.
   for (const kind of ['configs', 'secrets']) {
     const overlaid = edited(
       'compose',
-      "    command: ['node', 'dist/edge-proxies.js']\n",
-      `    command: ['node', 'dist/edge-proxies.js']\n    ${kind}:\n      - source: anything\n        target: /repo/apps/api/dist/edge-proxies.js\n`,
+      "    command: ['node', 'dist/edge-check.js']\n",
+      `    command: ['node', 'dist/edge-check.js']\n    ${kind}:\n      - source: anything\n        target: /repo/apps/api/dist/edge-check.js\n`,
     );
     expectProblem(problems(overlaid), /edge-check must mount nothing/);
   }
   // A device mapping, which is a path substitution like the others.
   const deviced = edited(
     'compose',
-    "    command: ['node', 'dist/edge-proxies.js']\n",
-    "    command: ['node', 'dist/edge-proxies.js']\n    devices:\n      - /dev/null:/repo/apps/api/dist/edge-proxies.js\n",
+    "    command: ['node', 'dist/edge-check.js']\n",
+    "    command: ['node', 'dist/edge-check.js']\n    devices:\n      - /dev/null:/repo/apps/api/dist/edge-check.js\n",
   );
   expectProblem(problems(deviced), /edge-check must mount nothing \(found devices\)/);
   // The preload in Docker's older `ENV NAME value` form, which the stage
@@ -429,8 +429,8 @@ test('the edge trust list reaching Caddy unchecked (G-74)', () => {
   // The job extending another service, whose fields would merge in unseen.
   const extended = edited(
     'compose',
-    "    command: ['node', 'dist/edge-proxies.js']\n",
-    "    extends:\n      service: api\n    command: ['node', 'dist/edge-proxies.js']\n",
+    "    command: ['node', 'dist/edge-check.js']\n",
+    "    extends:\n      service: api\n    command: ['node', 'dist/edge-check.js']\n",
   );
   expectProblem(problems(extended), /edge-check must not extend another service/);
   // The same, in compose's short form, where the string is the context.
@@ -533,11 +533,74 @@ test('the edge trust list reaching Caddy unchecked (G-74)', () => {
   // The command as one argv element, which is a program name, not a program.
   const oneWord = edited(
     'compose',
-    "    command: ['node', 'dist/edge-proxies.js']\n",
-    "    command: ['node dist/edge-proxies.js']\n",
+    "    command: ['node', 'dist/edge-check.js']\n",
+    "    command: ['node dist/edge-check.js']\n",
   );
   expectProblem(problems(oneWord), /edge-check must run exactly/);
   // The job gone entirely.
   const gone = { compose: REAL.compose.replace(/ {2}edge-check:\n(?: {4}.*\n|\n(?= {4}))*/, '') };
   expectProblem(problems(gone), /has no edge-check service/);
+});
+
+test('the edge check switched off, or the edge network changed under it (G-75)', () => {
+  const COMMAND = "    command: ['node', 'dist/edge-check.js']\n";
+  const beside = (extra) => edited('compose', COMMAND, `${COMMAND}${extra}`);
+  // Compose skips a dependency it has no instance of, and a provider
+  // service runs something else entirely: caddy would serve unchecked.
+  for (const [label, extra, key] of [
+    ['scaled to nothing', '    scale: 0\n', 'scale'],
+    ['no replicas', '    deploy:\n      replicas: 0\n', 'deploy'],
+    ['a provider', '    provider:\n      type: anything\n', 'provider'],
+    // The command is relative to the working directory, so another one runs
+    // whatever sits at dist/edge-check.js there.
+    ['another working directory', '    working_dir: /repo/packages/db\n', 'working_dir'],
+  ]) {
+    assert.ok(label);
+    expectProblem(problems(beside(extra)), new RegExp(`^edge-check must not set ${key};`));
+  }
+  // The same, arriving through a YAML merge rather than written out.
+  const merged = edited('compose', '  edge-check:\n', '  edge-check:\n    <<: { scale: 0 }\n');
+  expectProblem(problems(merged), /^edge-check must not set scale;/);
+
+  // The gateway the check refuses is the edge network's own only while
+  // compose pins it; left to Docker it could be another address.
+  const EDGE =
+    '    enable_ipv6: false\n    ipam:\n      config:\n        - subnet: 172.30.10.0/24\n          gateway: 172.30.10.1\n';
+  for (const [label, to] of [
+    ['an unpinned gateway', EDGE.replace('          gateway: 172.30.10.1\n', '')],
+    ['another gateway', EDGE.replace('gateway: 172.30.10.1', 'gateway: 172.30.10.254')],
+    ['another subnet', EDGE.replace('subnet: 172.30.10.0/24', 'subnet: 172.31.10.0/24')],
+    // An IPv6 edge network has a second gateway the check knows nothing of.
+    ['IPv6 on the edge network', EDGE.replace('enable_ipv6: false', 'enable_ipv6: true')],
+    ['IPv6 left to the daemon default', EDGE.replace('    enable_ipv6: false\n', '')],
+    // Another driver or an existing network: the topology is not this one.
+    [
+      'another driver',
+      EDGE.replace('    enable_ipv6: false\n', '    enable_ipv6: false\n    driver: macvlan\n'),
+    ],
+    [
+      'an external network',
+      EDGE.replace('    enable_ipv6: false\n', '    enable_ipv6: false\n    external: true\n'),
+    ],
+  ]) {
+    assert.ok(label);
+    expectProblem(
+      problems(edited('compose', EDGE, to)),
+      /^the edge network must be exactly the pinned one/,
+    );
+  }
+  // Caddy reached another way than the edge network: a second network has
+  // a second gateway, and host networking has none the check could name.
+  const twoNetworks = edited(
+    'compose',
+    '    networks:\n      edge:\n        ipv4_address: 172.30.10.10\n',
+    '    networks:\n      edge:\n        ipv4_address: 172.30.10.10\n      worker-egress: {}\n',
+  );
+  expectProblem(problems(twoNetworks), /^caddy must join the edge network alone/);
+  const hostNetwork = edited(
+    'compose',
+    '    networks:\n      edge:\n        ipv4_address: 172.30.10.10\n',
+    '    network_mode: host\n',
+  );
+  expectProblem(problems(hostNetwork), /^caddy must join the edge network alone/);
 });
