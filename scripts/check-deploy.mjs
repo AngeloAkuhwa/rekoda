@@ -315,8 +315,13 @@ export function problemsFor({ compose, dockerfile, caddyfile, dockerignore, giti
     /* A mount can replace the file the command runs
      * (`/dev/null:/repo/apps/api/dist/edge-proxies.js:ro` exits 0 having read
      * nothing), and read_only does not stop a bind mount. */
-    if (asList(edge.volumes).length > 0) {
-      problems.push(`${EDGE_CHECK} must mount nothing; a mount can replace the check it runs`);
+    if (
+      asList(edge.volumes).length + asList(edge.configs).length + asList(edge.secrets).length >
+      0
+    ) {
+      problems.push(
+        `${EDGE_CHECK} must mount nothing, by volume, config or secret; any of them can replace the check it runs`,
+      );
     }
     /* A one-shot with no healthcheck: `up --wait` waits for it to COMPLETE
      * only because it is not expected to keep running. Left to restart, the
@@ -394,6 +399,14 @@ export function problemsFor({ compose, dockerfile, caddyfile, dockerignore, giti
           `the ${stageName} stage declares NODE_OPTIONS; it would preload into every container, ${EDGE_CHECK} included`,
         );
       }
+    }
+    /* The images run a CMD only. An image ENTRYPOINT would make every
+     * command its arguments, ${EDGE_CHECK}'s included, which is the same
+     * neutering the compose-level rule refuses. */
+    if (stage.entrypoint) {
+      problems.push(
+        `the ${stageName} stage declares ENTRYPOINT; it would take over every command, ${EDGE_CHECK}'s included`,
+      );
     }
   }
   const ignored = new Set(

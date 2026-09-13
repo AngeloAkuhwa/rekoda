@@ -81,8 +81,9 @@ treat it as a variable. Every generated value above is hex.
    check is a one-shot service Caddy waits for, so `up --wait` must treat a
    dependency that exited 0 as satisfied rather than waiting for it to keep
    running. The smoke prints the engine and Compose versions it proved the
-   stack on at the top of the CI Deployment job; match or exceed them, and
-   `dc up -d --wait` on this host will say so plainly if yours is older.
+   stack on at the top of the CI Deployment job; match or exceed them. An
+   older Compose tends to hang on that wait rather than report, so give the
+   command a deadline the first time: `dc up -d --wait --wait-timeout 300`.
 2. **DNS.** Point the site and API hostnames at the host with **A records
    only** (no AAAA): the compose networks are IPv4, and Docker would present
    every IPv6 visitor to Caddy as one internal address. Leave the
@@ -171,8 +172,11 @@ The previous release's images stay on the host (`rekoda-app:<previous>`,
 at least the last two releases before any `docker image prune`. Roll the
 checkout back with the release: the compose file and the images move
 together, and rolling only `REKODA_RELEASE` back to a release older than the
-edge check (G-74) points that job at an image without it, which fails the
-`up` loudly and leaves the running Caddy untouched.
+edge check (G-74) points that job at an image without it, and the `up`
+fails loudly. Caddy keeps serving throughout, because it proxies by service
+name and is never recreated; the api, worker and web may already have been
+recreated on the older images by then, so finish the rollback rather than
+leaving it half applied.
 
 Migration discipline: **expand, deploy, contract.** A migration in the same
 release as the code that needs it must be backward-compatible with the
@@ -261,6 +265,9 @@ holding either is a credential at rest. Do not switch one on.
   `deploy/` directory so the container sees a file a checkout replaced).
 - **The whole stack:** `dc down` then `dc up -d --wait`. The `pgdata`,
   `caddy_data` and `caddy_config` volumes survive.
+- **Never `dc up -d --no-deps caddy`**: it skips the edge check and starts
+  Caddy with whatever `.env` now says (G-74). Bring Caddy up the ordinary
+  way, which runs the check first.
 - **Never `dc down -v`** on a real host: it deletes the database and the
   certificates.
 

@@ -592,6 +592,10 @@ export function parseDockerfile(text) {
     }
     const user = line.match(/^USER\s+(\S+)/i);
     if (user) current.user = user[1];
+    /* An ENTRYPOINT takes over every command the image is given, which
+     * check-deploy refuses for the stage the edge check runs in (G-74). */
+    const entrypoint = line.match(/^ENTRYPOINT\s+(.*)$/i);
+    if (entrypoint) current.entrypoint = entrypoint[1].trim();
   }
   return { globalArgs, stages };
 }

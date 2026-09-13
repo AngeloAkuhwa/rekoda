@@ -396,6 +396,22 @@ test('the edge trust list reaching Caddy unchecked (G-74)', () => {
     "    command: ['node', 'dist/edge-proxies.js']\n    volumes:\n      - /dev/null:/repo/apps/api/dist/edge-proxies.js:ro\n",
   );
   expectProblem(problems(mounted), /edge-check must mount nothing/);
+  // The same replacement through compose's other mounts.
+  for (const kind of ['configs', 'secrets']) {
+    const overlaid = edited(
+      'compose',
+      "    command: ['node', 'dist/edge-proxies.js']\n",
+      `    command: ['node', 'dist/edge-proxies.js']\n    ${kind}:\n      - source: anything\n        target: /repo/apps/api/dist/edge-proxies.js\n`,
+    );
+    expectProblem(problems(overlaid), /edge-check must mount nothing/);
+  }
+  // An image entrypoint, which takes over every command the image is given.
+  const imageEntrypoint = edited(
+    'dockerfile',
+    'CMD ["node", "dist/main.js"]',
+    'ENTRYPOINT ["true"]\nCMD ["node", "dist/main.js"]',
+  );
+  expectProblem(problems(imageEntrypoint), /stage declares ENTRYPOINT/);
   // A second variable: NODE_OPTIONS can preload a module that exits 0
   // before the check runs, and caddy would take that as a pass.
   const preloaded = edited(
