@@ -261,10 +261,15 @@ fi
 # `created` is the state of a container that was never started; `running` or
 # `exited` would both mean Caddy served, or tried to.
 caddy_container=$("${COMPOSE[@]}" ps -aq caddy | head -n 1)
-if [ -n "$caddy_container" ]; then
+# No container at all is stronger still, and says so rather than passing
+# quietly: the evidence is which of the two happened.
+if [ -z "$caddy_container" ]; then
+  echo 'caddy was never created'
+else
   caddy_state=$(docker inspect -f '{{.State.Status}}' "$caddy_container")
   [ "$caddy_state" = created ] ||
     fail "caddy is $caddy_state after a refused edge trust list, so it started"
+  echo 'caddy was created and never started'
 fi
 "${COMPOSE[@]}" logs --no-color edge-check >"$WORK/edge-job.log" 2>&1 || true
 grep -q -F 'REKODA_EDGE_PROXIES trusts' "$WORK/edge-job.log" || {

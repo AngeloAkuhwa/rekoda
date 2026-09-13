@@ -284,8 +284,17 @@ export function problemsFor({ compose, dockerfile, caddyfile, dockerignore, giti
     if (edge.image !== svc('api')?.image) {
       problems.push(`${EDGE_CHECK} must run the same image as the api, which holds the check`);
     }
-    if (keyed(edge.environment).get(EDGE_PROXIES) !== `\${${EDGE_PROXIES}:-}`) {
+    const edgeEnv = keyed(edge.environment);
+    if (edgeEnv.get(EDGE_PROXIES) !== `\${${EDGE_PROXIES}:-}`) {
       problems.push(`${EDGE_CHECK} must receive ${EDGE_PROXIES} exactly as caddy does`);
+    }
+    /* That variable and nothing else: NODE_OPTIONS can preload a module
+     * (`--import=data:text/javascript,process.exit(0)`) that exits 0 before
+     * the check runs, and caddy would take the exit as a pass. */
+    if (edgeEnv.size !== 1) {
+      problems.push(
+        `${EDGE_CHECK} must receive ${EDGE_PROXIES} and nothing else; another variable can stop the check running`,
+      );
     }
     if (asList(edge.profiles).length > 0) {
       problems.push(`${EDGE_CHECK} sits behind a profile; \`up\` would start caddy without it`);
@@ -411,6 +420,14 @@ export function problemsFor({ compose, dockerfile, caddyfile, dockerignore, giti
   if (trustLines.length !== 1 || trustLines[0] !== `trusted_proxies static {$${EDGE_PROXIES}}`) {
     problems.push(
       `${FILES.caddyfile} must take its trusted proxies from {$${EDGE_PROXIES}} and nothing else, in one directive, the value ${EDGE_CHECK} checks (found ${trustLines.length})`,
+    );
+  }
+  /* Strict mode, or Caddy takes the LEFTMOST X-Forwarded-For entry once the
+   * edge proxies are named: a browser writes that one and Cloudflare appends
+   * to it, which is the forged address G-43 and G-71 close. */
+  if (!/^[ \t]*trusted_proxies_strict[ \t]*$/m.test(caddyCode)) {
+    problems.push(
+      `${FILES.caddyfile} must keep trusted_proxies_strict; without it a browser's own X-Forwarded-For entry is believed`,
     );
   }
   if (!/request>uri\s+delete/.test(caddyCode) || !/request>headers\s+delete/.test(caddyCode)) {

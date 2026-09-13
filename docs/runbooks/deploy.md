@@ -168,7 +168,11 @@ it does not parse.
 
 The previous release's images stay on the host (`rekoda-app:<previous>`,
 `rekoda-web:<previous>`); that is what makes rollback a one-line change. Keep
-at least the last two releases before any `docker image prune`.
+at least the last two releases before any `docker image prune`. Roll the
+checkout back with the release: the compose file and the images move
+together, and rolling only `REKODA_RELEASE` back to a release older than the
+edge check (G-74) points that job at an image without it, which fails the
+`up` loudly and leaves the running Caddy untouched.
 
 Migration discipline: **expand, deploy, contract.** A migration in the same
 release as the code that needs it must be backward-compatible with the

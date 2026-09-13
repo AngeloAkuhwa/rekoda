@@ -396,6 +396,21 @@ test('the edge trust list reaching Caddy unchecked (G-74)', () => {
     "    command: ['node', 'dist/edge-proxies.js']\n    volumes:\n      - /dev/null:/repo/apps/api/dist/edge-proxies.js:ro\n",
   );
   expectProblem(problems(mounted), /edge-check must mount nothing/);
+  // A second variable: NODE_OPTIONS can preload a module that exits 0
+  // before the check runs, and caddy would take that as a pass.
+  const preloaded = edited(
+    'compose',
+    '      REKODA_EDGE_PROXIES: ${REKODA_EDGE_PROXIES:-}\n',
+    '      REKODA_EDGE_PROXIES: ${REKODA_EDGE_PROXIES:-}\n      NODE_OPTIONS: --import=data:text/javascript,process.exit(0)\n',
+  );
+  expectProblem(
+    problems(preloaded),
+    /edge-check must receive REKODA_EDGE_PROXIES and nothing else/,
+  );
+  // Strict mode dropped: Caddy would believe a browser's own first
+  // X-Forwarded-For entry once the edge proxies are named.
+  const lax = edited('caddyfile', '\t\ttrusted_proxies_strict\n', '');
+  expectProblem(problems(lax), /must keep trusted_proxies_strict/);
   // The job gone entirely.
   const gone = { compose: REAL.compose.replace(/ {2}edge-check:\n(?: {4}.*\n|\n(?= {4}))*/, '') };
   expectProblem(problems(gone), /has no edge-check service/);
