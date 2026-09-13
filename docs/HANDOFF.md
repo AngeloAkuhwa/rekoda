@@ -89,6 +89,8 @@ storage host) and a separator-only proxy list (the G-43 case). The proxy
 list is now parsed in `config.ts` (`trustedProxies`) and strictly.
 Proved by `config.production.test.ts` and a Docker smoke step where the
 production images refuse seven such values while the compose values boot.
+Found in review and recorded, not solved: G-74 (`REKODA_EDGE_PROXIES`,
+Caddy’s own trust list, is still unvalidated).
 
 **Previous work (13 Sep 2026, G-71, merged as `48ba9d5`; CODE COMPLETE):**
 every visitor now has their own per-IP bucket on both roads to the API.

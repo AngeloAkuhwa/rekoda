@@ -263,8 +263,18 @@ describe('REKODA_TRUSTED_PROXIES', () => {
     );
   });
 
-  it('development may trust everything, as its default already does', () => {
+  /* Development's own trust-all is the unset path above, which answers
+   * `true`. This only says the universal-range rule is a production rule;
+   * Fastify itself refuses `0.0.0.0/0` as a range when it compiles one. */
+  it('does not apply the universal-range rule outside production', () => {
     expect(trustedProxies({ ...DEV, REKODA_TRUSTED_PROXIES: '0.0.0.0/0' })).toEqual(['0.0.0.0/0']);
+  });
+
+  /* A name that is not a range name, but is a property of every object. */
+  it.each(['constructor', '__proto__', 'toString'])('refuses %s, naming the variable', (value) => {
+    expect(() => trustedProxies({ ...DEV, REKODA_TRUSTED_PROXIES: value })).toThrow(
+      /REKODA_TRUSTED_PROXIES has an entry/,
+    );
   });
 });
 

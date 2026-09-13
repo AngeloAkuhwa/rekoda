@@ -67,8 +67,11 @@ export function parseTrustedProxies(raw: string | undefined): {
 } {
   const entries = trustEntries('REKODA_TRUSTED_PROXIES', raw);
   const ranges = entries.flatMap((entry) => {
-    const named = PROXY_RANGE_NAMES[entry];
-    if (named) return named.map((cidr) => ipaddr.parseCIDR(cidr) as Range);
+    /* Own properties only: `constructor` and `__proto__` are not range
+     * names, and an inherited hit would fail without naming the variable. */
+    if (Object.hasOwn(PROXY_RANGE_NAMES, entry)) {
+      return PROXY_RANGE_NAMES[entry]!.map((cidr) => ipaddr.parseCIDR(cidr) as Range);
+    }
     return [parseRange('REKODA_TRUSTED_PROXIES', entry)];
   });
   return { entries, ranges };
