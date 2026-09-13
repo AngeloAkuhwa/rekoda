@@ -368,6 +368,20 @@ test('the edge trust list reaching Caddy unchecked (G-74)', () => {
   // only because it is not expected to keep running.
   const restarted = edited('compose', "    restart: 'no'\n", '    restart: unless-stopped\n');
   expectProblem(problems(restarted), /edge-check must set restart: 'no'/);
+  // An entrypoint override: the command becomes arguments to `true`.
+  const entrypointed = edited(
+    'compose',
+    "    command: ['node', 'dist/edge-proxies.js']\n",
+    "    entrypoint: ['true']\n    command: ['node', 'dist/edge-proxies.js']\n",
+  );
+  expectProblem(problems(entrypointed), /edge-check must not override its entrypoint/);
+  // A second, unchecked trusted_proxies directive beside the checked one.
+  const second = edited(
+    'caddyfile',
+    '\t\ttrusted_proxies_strict\n',
+    '\t\ttrusted_proxies_strict\n\t\ttrusted_proxies static 0.0.0.0/0\n',
+  );
+  expectProblem(problems(second), /in one directive/);
   // The job gone entirely.
   const gone = { compose: REAL.compose.replace(/ {2}edge-check:\n(?: {4}.*\n|\n(?= {4}))*/, '') };
   expectProblem(problems(gone), /has no edge-check service/);

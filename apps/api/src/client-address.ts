@@ -206,6 +206,16 @@ const NON_PUBLIC = [
 
 /** No real proxy fleet or web tier reaches public space wider than these. */
 const WIDEST_PUBLIC = { ipv4: 8, ipv6: 16 } as const;
+/** Address bits per family, for counting what a list reaches in total. */
+const WIDTH = { ipv4: 32, ipv6: 128 } as const;
+
+/** Whether a range lies wholly inside a block no internet caller can hold. */
+function insideNonPublic(base: ipaddr.IPv4 | ipaddr.IPv6, bits: number): boolean {
+  return NON_PUBLIC.some(
+    ([block, blockBits]) =>
+      block.kind() === base.kind() && bits >= blockBits && base.match(block, blockBits),
+  );
+}
 
 /**
  * The first address of the IPv4-mapped block. Fastify's proxy matcher turns
@@ -229,11 +239,7 @@ export function universalRange(ranges: readonly Range[]): Range | null {
        * address, whatever its own prefix length says. */
       if (base.kind() === 'ipv6' && bits <= 96 && MAPPED_BLOCK.match(base, bits)) return true;
       if (bits >= WIDEST_PUBLIC[base.kind()]) return false;
-      const insideNonPublic = NON_PUBLIC.some(
-        ([block, blockBits]) =>
-          block.kind() === base.kind() && bits >= blockBits && base.match(block, blockBits),
-      );
-      return !insideNonPublic;
+      return !insideNonPublic(base, bits);
     }) ?? null
   );
 }
@@ -246,12 +252,30 @@ export function universalRange(ranges: readonly Range[]): Range | null {
  */
 export function universalProblem(name: string, ranges: readonly Range[]): string | null {
   const universal = universalRange(ranges);
-  if (!universal) return null;
-  return (
-    `${name} trusts ${universal[0].toString()}/${universal[1]}, which is effectively the whole ` +
-    'internet: any caller in it could claim to be any visitor. Name the actual proxy addresses ' +
-    'or CIDRs.'
-  );
+  if (universal) {
+    return (
+      `${name} trusts ${universal[0].toString()}/${universal[1]}, which is effectively the whole ` +
+      'internet: any caller in it could claim to be any visitor. Name the actual proxy addresses ' +
+      'or CIDRs.'
+    );
+  }
+  /* The same reach, written as many entries none of which is too wide on its
+   * own: 256 slices of /8 cover every IPv4 address. Only public space counts,
+   * so a list of private blocks stays as wide as it likes; overlapping
+   * entries count twice, which errs towards refusing. */
+  for (const kind of ['ipv4', 'ipv6'] as const) {
+    const reach = ranges
+      .filter(([base, bits]) => base.kind() === kind && !insideNonPublic(base, bits))
+      .reduce((total, [, bits]) => total + (1n << BigInt(WIDTH[kind] - bits)), 0n);
+    if (reach > 1n << BigInt(WIDTH[kind] - WIDEST_PUBLIC[kind])) {
+      return (
+        `${name} trusts ${reach} ${kind === 'ipv4' ? 'IPv4' : 'IPv6'} addresses between its ` +
+        `entries, which is effectively the whole internet however narrow each one looks. Name ` +
+        'the actual proxy addresses or CIDRs.'
+      );
+    }
+  }
+  return null;
 }
 
 /** An address in one canonical form (IPv4-mapped IPv6 becomes IPv4), or null. */

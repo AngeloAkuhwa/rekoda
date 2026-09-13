@@ -59,6 +59,23 @@ describe('values that would let a browser choose its own address', () => {
     );
   });
 
+  /* Every entry inside the per-entry width, and the union still the whole
+   * internet: 256 slices of /8, or two halves written as quarters. */
+  it('refuses a universal list assembled out of allowed-size entries', () => {
+    const everyEighth = Array.from({ length: 256 }, (_, i) => `${i}.0.0.0/8`).join(' ');
+    expect(edgeProxyProblem(everyEighth)).toMatch(/REKODA_EDGE_PROXIES trusts/);
+    expect(edgeProxyProblem('8.0.0.0/8 9.0.0.0/8 11.0.0.0/8')).toMatch(
+      /REKODA_EDGE_PROXIES trusts/,
+    );
+    const everyIpv6 = Array.from({ length: 8 }, (_, i) => `${i}000::/16`).join(' ');
+    expect(edgeProxyProblem(everyIpv6)).toMatch(/REKODA_EDGE_PROXIES trusts/);
+  });
+
+  it('keeps a real fleet, whose entries add up to far less', () => {
+    expect(edgeProxyProblem(CLOUDFLARE)).toBeNull();
+    expect(edgeProxyProblem('10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 fc00::/7')).toBeNull();
+  });
+
   it('refuses a universal entry hidden in a list of good ones', () => {
     expect(edgeProxyProblem(`${CLOUDFLARE} 0.0.0.0/0`)).toMatch(/REKODA_EDGE_PROXIES trusts/);
     expect(edgeProxyProblem(`0.0.0.0/0 ${CLOUDFLARE}`)).toMatch(/REKODA_EDGE_PROXIES trusts/);

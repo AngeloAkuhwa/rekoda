@@ -293,6 +293,11 @@ export function problemsFor({ compose, dockerfile, caddyfile, dockerignore, giti
         `${EDGE_CHECK} must run exactly \`node ${EDGE_CHECK_COMMAND}\`, the check itself`,
       );
     }
+    /* An entrypoint makes the command its arguments: `entrypoint: ['true']`
+     * exits 0 without reading anything, and caddy would serve. */
+    if (edge.entrypoint !== undefined) {
+      problems.push(`${EDGE_CHECK} must not override its entrypoint; the command is the check`);
+    }
     /* A one-shot with no healthcheck: `up --wait` waits for it to COMPLETE
      * only because it is not expected to keep running. Left to restart, the
      * wait would hang or pass on a container that never checked anything. */
@@ -388,14 +393,13 @@ export function problemsFor({ compose, dockerfile, caddyfile, dockerignore, giti
   /* The whole directive, not a substring: `trusted_proxies static
    * {$REKODA_EDGE_PROXIES} 0.0.0.0/0` would keep the variable and still
    * trust everyone, which is the likeliest way to undo this. */
-  if (
-    !new RegExp(
-      `^[ \\t]*trusted_proxies[ \\t]+static[ \\t]+\\{\\$${EDGE_PROXIES}\\}[ \\t]*$`,
-      'm',
-    ).test(caddyCode)
-  ) {
+  const trustLines = caddyCode
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => /^trusted_proxies\b/.test(line));
+  if (trustLines.length !== 1 || trustLines[0] !== `trusted_proxies static {$${EDGE_PROXIES}}`) {
     problems.push(
-      `${FILES.caddyfile} must take its trusted proxies from {$${EDGE_PROXIES}} and nothing else, the value ${EDGE_CHECK} checks`,
+      `${FILES.caddyfile} must take its trusted proxies from {$${EDGE_PROXIES}} and nothing else, in one directive, the value ${EDGE_CHECK} checks (found ${trustLines.length})`,
     );
   }
   if (!/request>uri\s+delete/.test(caddyCode) || !/request>headers\s+delete/.test(caddyCode)) {
