@@ -18,7 +18,7 @@
     "lint": "prettier --check src"
   },
   "dependencies": {
-    "zod": "^4.5.4"
+    "zod": "^4.6.4"
   },
   "devDependencies": {
     "prettier": "^3.4.2",
