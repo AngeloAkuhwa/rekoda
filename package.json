@@ -26,8 +26,8 @@
   },
   "devDependencies": {
     "playwright": "1.63.0",
-    "prettier": "^3.4.2",
-    "turbo": "^2.10.12",
+    "prettier": "^3.9.8",
+    "turbo": "^2.11.2",
     "typescript": "^7.0.2",
     "yaml": "2.9.1"
   },
