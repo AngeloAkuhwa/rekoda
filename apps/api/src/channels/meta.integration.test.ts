@@ -3034,6 +3034,10 @@ describe('collecting money from chat (payments-v1 §160)', () => {
       'https://books.example.test/app/payments',
     ]);
     expect(stubSender.lastText).toMatch(/\nhttps:\/\/books\.example\.test\/app\/payments$/);
+    // No bare domain beside the link either.
+    expect(
+      (stubSender.lastText ?? '').replace('https://books.example.test/app/payments', ''),
+    ).not.toMatch(/www\.|[a-z0-9-]\.[a-z]{2,}/i);
   });
 
   it('payment details without a connection or a web URL names no link at all', async () => {
@@ -3289,6 +3293,10 @@ describe('consent (STOP/START) and erasure, as facts not sentences', () => {
       'https://books.example.test/data-deletion',
     ]);
     expect(stubSender.lastText).toMatch(/\nhttps:\/\/books\.example\.test\/data-deletion$/);
+    // No bare domain beside the link either.
+    expect(
+      (stubSender.lastText ?? '').replace('https://books.example.test/data-deletion', ''),
+    ).not.toMatch(/www\.|[a-z0-9-]\.[a-z]{2,}/i);
 
     const left = await withBusiness(db, business.id, (tx) =>
       customersRepo.identityFacetsFor(tx, business.id, customer.id),

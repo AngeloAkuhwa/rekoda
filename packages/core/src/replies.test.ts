@@ -510,6 +510,11 @@ describe('links into the web app', () => {
       const text = build('https://web.example.test').text;
       expect(linkIn(text)).toBe(`https://web.example.test/${page}`);
       expect(text.match(/\S+:\/\/\S+/g)).toEqual([`https://web.example.test/${page}`]);
+      /* And no bare domain beside it: `see name.tld/page or:` would pass the
+       * two checks above, and is exactly the bug this reply was fixed for. */
+      expect(text.replace(`https://web.example.test/${page}`, '')).not.toMatch(
+        /www\.|[a-z0-9-]\.[a-z]{2,}/i,
+      );
     });
 
     it('never doubles a slash, however many trail the web URL', () => {
