@@ -130,19 +130,13 @@ export async function find(
   tx: TenantDb,
   businessId: string,
   key: string,
-): Promise<{
-  commandName: string;
-  requestHash: string;
-  response: unknown;
-  completedAt: Date | null;
-} | null> {
+): Promise<{ commandName: string; response: unknown; completedAt: Date | null } | null> {
   const rows = await tx.execute<{
     command_name: string;
-    request_hash: string;
     response_snapshot: unknown;
     completed_at: Date | null;
   }>(sql`
-    SELECT command_name, request_hash, response_snapshot, completed_at
+    SELECT command_name, response_snapshot, completed_at
     FROM idempotency_records
     WHERE business_id = ${businessId}::uuid AND key = ${key}::text
   `);
@@ -150,7 +144,6 @@ export async function find(
   if (!row) return null;
   return {
     commandName: row.command_name,
-    requestHash: row.request_hash,
     response: row.response_snapshot,
     completedAt: row.completed_at === null ? null : new Date(row.completed_at),
   };

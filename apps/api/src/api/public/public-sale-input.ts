@@ -1,11 +1,13 @@
 /**
  * The command a public API sale becomes.
  *
- * Pure, so the route and its tests build the SAME payload: the command bus
- * fingerprints this object (`requestHash`), and a retry is recognised only
- * if every field comes out identical. The totals are computed here from the
- * caller's lines rather than taken from them: a program that sends a total
- * is a program that can send one that does not match its own items.
+ * Pure, so the route and its tests build the SAME object. The route calls it
+ * twice: with the sale's event id, for the command that is booked, and with
+ * the application id, for the retry fingerprint the command bus hashes
+ * (`requestHash`), which is the pre-G-77 payload exactly. The totals are
+ * computed here from the caller's lines rather than taken from them: a
+ * program that sends a total is a program that can send one that does not
+ * match its own items.
  */
 import { computeMoneyFromKobo } from '@rekoda/core';
 import type { publicApi } from '@rekoda/contracts';
@@ -44,7 +46,8 @@ export function publicSaleInput(
     balanceDueK: money.balanceDueK,
     method: data.method ?? 'transfer',
     sourceType: 'api',
-    /* The sale's own event identity, never the application's (G-77). */
+    /* The event id for the booked command; the application id only for the
+     * retry fingerprint (see the route). */
     sourceId,
     saleSource: null,
     dueDate: data.dueDate ? new Date(data.dueDate) : null,

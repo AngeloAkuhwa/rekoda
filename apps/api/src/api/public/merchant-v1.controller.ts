@@ -37,7 +37,7 @@ import {
 import { computeMoneyFromKobo } from '@rekoda/core';
 import { mayWrite } from '@rekoda/core/api-keys';
 import { publicApi } from '@rekoda/contracts';
-import { idempotencyRepo, merchantApiRepo, withBusiness, type Db } from '@rekoda/db';
+import { merchantApiRepo, withBusiness, type Db } from '@rekoda/db';
 import { CommandBus } from '../../commands/command-bus.service.js';
 import { recordSaleWork, type RecordSaleInput } from '../../commands/sale-commands.js';
 import { recordPaymentWork, type RecordPaymentInput } from '../../commands/payment-commands.js';
@@ -50,7 +50,7 @@ import {
   PublicApiExceptionFilter,
   SandboxWriteException,
 } from './public-api.filter.js';
-import { requestHash, type CommandOutcome } from '../../commands/command-bus.service.js';
+import type { CommandOutcome } from '../../commands/command-bus.service.js';
 import { apiSaleEventId } from './sale-event-id.js';
 import { publicSaleInput } from './public-sale-input.js';
 
@@ -181,42 +181,31 @@ export class MerchantV1Controller {
       apiSaleEventId(request.api!.applicationId, idempotencyKey ?? null),
     );
 
+    /*
+     * What the command bus fingerprints to recognise a retry: the request as
+     * the caller sent it, identified by its APPLICATION, exactly the shape
+     * every release has hashed. The event id above is derived from the
+     * application and the Idempotency-Key, so it adds nothing to "is this
+     * the same request", and keeping it out makes the fingerprint the same
+     * on either side of G-77: a keyed sale recorded before it replays on
+     * this release, and one recorded by this release replays on the
+     * previous image after a rollback. Only the fingerprint uses this; the
+     * sale is always booked with the event id.
+     */
+    const fingerprint = publicSaleInput(parsed.data, caller, request.api!.applicationId);
+
     return withBusiness(this.db, businessId, async (tx) => {
-      /*
-       * A keyed sale completed BEFORE G-77 was fingerprinted with the
-       * application id as its source, and idempotency records are kept for
-       * good. Its retry must still replay, not be refused as a reused key.
-       * If the key's record matches that old payload exactly, the command
-       * goes to the bus as it was first sent; the record exists, so the bus
-       * can only replay it (or answer that it is in progress). The work is
-       * never run with the old identity: a guard refuses it outright.
-       * Removable only once no idempotency record from before G-77 can be
-       * retried (records are never deleted today, so not yet).
-       */
-      let payload = input;
-      if (idempotencyKey) {
-        const legacy = publicSaleInput(parsed.data, caller, request.api!.applicationId);
-        const prior = await idempotencyRepo.find(tx, businessId, idempotencyKey);
-        if (prior?.commandName === 'RecordSale' && prior.requestHash === requestHash(legacy)) {
-          payload = legacy;
-        }
-      }
       const run = await this.commandBus.run(
         tx,
         {
           businessId,
           command: 'RecordSale',
-          payload,
+          payload: fingerprint,
           actor: input.actor,
           ingress: 'PUBLIC_API',
           idempotencyKey: idempotencyKey ?? null,
         },
-        () => {
-          if (payload !== input) {
-            throw new Error('RecordSale: a pre-G-77 identity is replayed, never run');
-          }
-          return recordSaleWork(tx, input);
-        },
+        () => recordSaleWork(tx, input),
       );
       const done = this.requireDone(run, 'RecordSale');
       return publicApi.v1.recordSaleResponse.parse({

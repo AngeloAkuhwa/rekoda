@@ -13,10 +13,11 @@
  * The route used the application id as the event, so every paid sale after
  * the first from one application collided with that claim and failed.
  *
- * With an Idempotency-Key the event is DERIVED from it: a retry of the same
- * request must carry the same sourceId, because the command bus fingerprints
- * the payload (`requestHash`) and a fresh id would turn a legitimate retry
- * into `key_reused`. The key is hashed, never stored: namespaced to the
+ * With an Idempotency-Key the event is DERIVED from it, so one keyed request
+ * is one event however often it is retried. (The bus's retry fingerprint does
+ * not include this id: the route fingerprints the request as sent, with the
+ * application as its source, the same on either side of G-77.) The key is
+ * hashed, never stored: namespaced to the
  * application and the event kind, bounded, opaque. Without a key the caller
  * has accepted that a retry may run again (the bus's contract), so each
  * request is its own event and gets a fresh id.

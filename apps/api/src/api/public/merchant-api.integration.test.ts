@@ -640,11 +640,11 @@ describe('G-77: every public API sale is its own financial event', () => {
     expect(net['2300'] ?? 0).toBe(0);
   });
 
-  it('a keyed sale recorded before G-77 still replays on retry, never refused as reused', async () => {
-    /* Idempotency records are kept for good, and one written before G-77
-     * fingerprinted the payload with the APPLICATION id as its source. This
-     * makes a keyed sale, then rewrites its stored fingerprint to exactly the
-     * pre-G-77 payload's, which is what such a record holds. */
+  it('a keyed sale has the same fingerprint on either side of G-77, so retries replay across deploy and rollback', async () => {
+    /* Idempotency records are kept for good. The command bus must compute
+     * the SAME fingerprint the pre-G-77 route did (the request as sent, with
+     * the application as its source), or a retry across the deploy, or after
+     * a rollback to the previous image, is refused as a reused key. */
     const shop = await merchant('+2348192000059', 'Legacy Key Co');
     const first = await sale(shop, PAID, 'legacy-1');
     expect(first.statusCode).toBe(200);
@@ -690,14 +690,21 @@ describe('G-77: every public API sale is its own financial event', () => {
         shop.applicationId,
       ),
     ).toEqual(legacy);
-    const { db: ownerDb, close: closeOwner } = createDb(urls.owner, { max: 1 });
-    try {
-      await ownerDb.execute(sql`
-        UPDATE idempotency_records SET request_hash = ${requestHash(legacy)}
-        WHERE business_id = ${shop.businessId}::uuid AND key = 'legacy-1'`);
-    } finally {
-      await closeOwner();
-    }
+    const [stored] = [
+      ...(await withBusiness(db, shop.businessId, (tx) =>
+        tx.execute<{ request_hash: string }>(sql`
+          SELECT request_hash FROM idempotency_records
+          WHERE business_id = ${shop.businessId}::uuid AND key = 'legacy-1'`),
+      )),
+    ];
+    /* What this release stored is what the previous release computes, and
+     * what the previous release stored is what this one computes. */
+    expect(stored?.request_hash).toBe(requestHash(legacy));
+    /* While the sale itself is booked with its own event id, never the
+     * application's. */
+    const ids = await identities(shop.businessId);
+    expect(ids).toHaveLength(1);
+    expect(ids[0]!.source_id).toMatch(/^sale-k-[0-9a-f]{32}$/);
 
     const retried = await sale(shop, PAID, 'legacy-1');
     expect(retried.statusCode).toBe(200);
