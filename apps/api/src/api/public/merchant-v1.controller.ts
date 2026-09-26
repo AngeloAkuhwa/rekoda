@@ -34,12 +34,11 @@ import {
   UseFilters,
   UseGuards,
 } from '@nestjs/common';
-import { computeMoneyFromKobo } from '@rekoda/core';
 import { mayWrite } from '@rekoda/core/api-keys';
 import { publicApi } from '@rekoda/contracts';
 import { merchantApiRepo, withBusiness, type Db } from '@rekoda/db';
 import { CommandBus } from '../../commands/command-bus.service.js';
-import { recordSaleWork, type RecordSaleInput } from '../../commands/sale-commands.js';
+import { recordSaleWork } from '../../commands/sale-commands.js';
 import { recordPaymentWork, type RecordPaymentInput } from '../../commands/payment-commands.js';
 import { DB } from '../../db/db.module.js';
 import { ApiKeyGuard, type ApiKeyedRequest } from '../api-key.guard.js';
