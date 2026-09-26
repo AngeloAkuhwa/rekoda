@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 import { redirect } from 'next/navigation';
 import { InvalidPhoneError, normalisePhone } from '@rekoda/core/identity';
+import { safeReturnPath } from '@/lib/return-path';
 import { firstParam } from '@/lib/search-params';
 import { readDevCode } from '@/server/dev-otp';
 import { VerifyForm } from './VerifyForm';
@@ -13,9 +14,12 @@ export const metadata: Metadata = {
 export default async function VerifyPage({
   searchParams,
 }: {
-  searchParams: Promise<{ phone?: string | string[] }>;
+  searchParams: Promise<{ phone?: string | string[]; next?: string | string[] }>;
 }) {
-  const phone = firstParam((await searchParams).phone);
+  const params = await searchParams;
+  const phone = firstParam(params.phone);
+  // Validated again: a query string is whatever the browser sent.
+  const next = safeReturnPath(firstParam(params.next)) ?? undefined;
   if (!phone) redirect('/start');
 
   // Normalised for DISPLAY only. This page guards nothing — the code is checked
@@ -32,5 +36,5 @@ export default async function VerifyPage({
   }
 
   // undefined unless REKODA_E2E_REVEAL_OTP=1 — see the note in dev-otp.
-  return <VerifyForm phone={normalised} e2eCode={await readDevCode()} />;
+  return <VerifyForm phone={normalised} e2eCode={await readDevCode()} next={next} />;
 }

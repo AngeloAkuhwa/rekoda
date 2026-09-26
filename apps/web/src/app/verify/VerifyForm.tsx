@@ -6,7 +6,17 @@ import { Field } from '@/components/ui/Field';
 import { Stepper } from '@/components/ui/Stepper';
 import { confirmCode, resendCode, type FormState, type ResendState } from '../start/actions';
 
-export function VerifyForm({ phone, e2eCode }: { phone: string; e2eCode?: string | undefined }) {
+export function VerifyForm({
+  phone,
+  e2eCode,
+  next,
+}: {
+  phone: string;
+  e2eCode?: string | undefined;
+  /** The dashboard page to return to after sign-in, already validated. */
+  next?: string | undefined;
+}) {
+  const nextQuery = next ? `&next=${encodeURIComponent(next)}` : '';
   const [state, action, pending] = useActionState<FormState, FormData>(confirmCode, {});
   const [resendState, resend, resending] = useActionState<ResendState, FormData>(resendCode, {});
 
@@ -16,7 +26,7 @@ export function VerifyForm({ phone, e2eCode }: { phone: string; e2eCode?: string
       <h1>Enter the code</h1>
       <p className="rk-lede">
         We sent a 6-digit code to <strong>{phone}</strong> on WhatsApp.{' '}
-        <a href={`/start?phone=${encodeURIComponent(phone)}`}>Not your number?</a>
+        <a href={`/start?phone=${encodeURIComponent(phone)}${nextQuery}`}>Not your number?</a>
       </p>
 
       {/* Present only under REKODA_E2E_REVEAL_OTP=1. Never in a deployment. */}
@@ -24,6 +34,7 @@ export function VerifyForm({ phone, e2eCode }: { phone: string; e2eCode?: string
 
       <form action={action} className="rk-form" noValidate>
         <input type="hidden" name="phone" value={phone} />
+        {next ? <input type="hidden" name="next" value={next} /> : null}
         <Field id="code" label="6-digit code" error={state.error}>
           <input
             name="code"

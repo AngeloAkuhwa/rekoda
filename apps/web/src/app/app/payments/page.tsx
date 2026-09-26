@@ -30,7 +30,9 @@ export const metadata: Metadata = {
  * this list, because this page's entire promise is "these ones are real".
  */
 export default async function PaymentsPage() {
-  const { identity, token } = await requireSessionWithToken();
+  // WhatsApp links here (a payment link asked for with no settlement account),
+  // so sign-in returns to this page rather than the dashboard's front door.
+  const { identity, token } = await requireSessionWithToken('/app/payments');
   const [connection, payments, exceptions] = await Promise.all([
     paymentConnection(token),
     paymentsList(token),
