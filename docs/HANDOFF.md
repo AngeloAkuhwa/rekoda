@@ -24,8 +24,11 @@ for that payment (same transaction, no second payment, verification,
 allocation or posting), and the receipt is the merchant's PDF instead of the
 invoice; a merchant-recorded overpayment receipt no longer promises a
 review, refund or credit. After merge: confirm `/health` names the merged
-SHA on staging, then run J2 from a real handset. Build 2 (G-61) starts only
-after that acceptance.
+SHA on staging, then run J2 from a real handset. **G-49 (merchant
+overpayment correctness) is the next implementation PR after G-48's staging
+acceptance.** The agreed sequence: G-48 staging acceptance, then G-49, then
+the proposed G-77 (public API paid-sale verification claim collision, found
+during G-48), then G-61 (purchase payment method and accounting truth).
 
 **Last completed work (10–11 Sep 2026):** the repository reset. Removed
 `AGENTS.md`, `GEMINI.md`, `docs/AUTONOMOUS-ENGINEERING.md`, `docs/agents/`,
