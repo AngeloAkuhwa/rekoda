@@ -38,7 +38,17 @@ beforeEach(async () => {
   sender.reset();
 });
 
-const deps = () => ({ workerDb, sender, vaultKey, matchKey, metaPhoneNumberId: 'PNID' });
+/* A made-up origin, deliberately not a real Rekoda one: the reply must link
+ * whatever the deployment is configured with, never a domain of its own. */
+const WEB_URL = 'https://web.rekoda.test';
+const deps = (webUrl: string | null = WEB_URL) => ({
+  workerDb,
+  sender,
+  vaultKey,
+  matchKey,
+  metaPhoneNumberId: 'PNID',
+  webUrl,
+});
 
 function messageBody(from: string, wamid: string, text = 'hello', phoneNumberId = 'PNID') {
   return {
@@ -87,8 +97,29 @@ describe('sweeping unknown senders', () => {
 
     expect(answered).toBe(1);
     expect(sender.sent).toHaveLength(1);
-    expect(sender.sent[0]?.text).toBe(replies.noAccount().text);
+    expect(sender.sent[0]?.text).toBe(replies.noAccount(WEB_URL).text);
     expect(sender.sent[0]?.to).toBe('+2348031111111');
+  });
+
+  it("links the configured web origin's /start, and no other domain", async () => {
+    await arrive('2348031111111', 'wamid.stranger.1');
+
+    await sweepUnknownSenders(deps('https://web.rekoda.test/'));
+
+    const text = sender.sent[0]?.text ?? '';
+    expect(text).toContain('https://web.rekoda.test/start');
+    expect(text).not.toContain('rekoda.app');
+    expect(text).not.toMatch(/[^:]\/\//);
+  });
+
+  it('still answers, with no link, when the deployment has no web origin', async () => {
+    await arrive('2348031111111', 'wamid.stranger.1');
+
+    const answered = await sweepUnknownSenders(deps(null));
+
+    expect(answered).toBe(1);
+    expect(sender.sent[0]?.text).toBe(replies.noAccount(null).text);
+    expect(sender.sent[0]?.text).not.toMatch(/rekoda\.app|https?:/);
   });
 
   it('does not answer the same person again on the next pass', async () => {

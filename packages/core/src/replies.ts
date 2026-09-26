@@ -1207,12 +1207,36 @@ export function purchaseSaved(
  *
  * Not silence: someone messaging a business number expects an answer, and
  * "who are you" is a worse first impression than an honest one.
+ *
+ * `webUrl` is the deployment's own web origin (REKODA_WEB_URL, passed in: this
+ * package reads no environment), and the link is its sign-up page. Without a
+ * usable origin the reply says so plainly rather than naming a domain that may
+ * not be this deployment's, or not be live: a stranger who taps a dead link
+ * learns that Rekoda's links do not work.
  */
-export function noAccount(): Reply {
-  return reply(
+export function noAccount(webUrl: string | null): Reply {
+  const greeting =
     'Hello 👋 I keep the books for businesses on Rekoda, and I do not have an ' +
-      'account for this number yet.\n\nVisit rekoda.app to set one up. It takes a minute.',
+    'account for this number yet.';
+  const start = signUpLink(webUrl);
+  return reply(
+    start
+      ? `${greeting}\n\nSet one up at ${start}. It takes a minute.`
+      : `${greeting}\n\nSign-up is not open from here yet. Please check back soon.`,
   );
+}
+
+/** `<origin>/start`, or null when `webUrl` is not an http(s) origin. */
+function signUpLink(webUrl: string | null): string | null {
+  const origin = webUrl?.trim().replace(/\/+$/, '');
+  if (!origin) return null;
+  try {
+    const url = new URL(origin);
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') return null;
+  } catch {
+    return null;
+  }
+  return `${origin}/start`;
 }
 
 /** Length ceiling. WhatsApp accepts 4096; nobody reads that far. */

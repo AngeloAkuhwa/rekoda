@@ -15,6 +15,8 @@ export interface StrangerSweepDeps {
   matchKey: string;
   /** Rekoda's own Chat number id; '' when the deployment has not pinned one. */
   metaPhoneNumberId: string;
+  /** The web origin (REKODA_WEB_URL) whose `/start` the reply links; null when unset. */
+  webUrl: string | null;
 }
 
 /**
@@ -95,7 +97,7 @@ export async function sweepUnknownSenders(deps: StrangerSweepDeps, limit = 25): 
       if (!claimed) continue;
 
       try {
-        await deps.sender.send({ to: from, text: replies.noAccount().text });
+        await deps.sender.send({ to: from, text: replies.noAccount(deps.webUrl).text });
         answered += 1;
       } catch {
         // The number is not ours to retry against and the event is already

@@ -184,7 +184,7 @@ const ALL: Record<string, readonly replies.Reply[]> = {
     replies.purchaseSaved(NAIRA_MILLIONS, NAIRA_MILLIONS),
     replies.purchaseSaved(NAIRA_MILLIONS, 0, { name: LONG_NAME, onHand: 412 }),
   ],
-  noAccount: [replies.noAccount()],
+  noAccount: [replies.noAccount('https://staging.myrekoda.com'), replies.noAccount(null)],
   stockList: [
     replies.stockList([], 0, 0),
     replies.stockList(shelf, 20, 1),
@@ -252,7 +252,8 @@ describe('every reply', () => {
     replies.busyRightNow(),
     replies.couldNotRead(),
     replies.notYet('Your debtor list'),
-    replies.noAccount(),
+    replies.noAccount('https://staging.myrekoda.com'),
+    replies.noAccount(null),
     replies.voiceUnavailable(),
     replies.photoUnavailable(),
     replies.onlyText(),
@@ -400,6 +401,39 @@ describe('the money-in moment', () => {
     const candidate = replies.paymentConfirmed(123_456_789, 'INV-2026-000001', 'RCT-2026-000001');
     expect(replies.isSendable(candidate)).toBe(true);
     expect(candidate.text).not.toMatch(/[–—]/);
+  });
+});
+
+describe('a stranger', () => {
+  it("links the deployment's own sign-up page", () => {
+    expect(replies.noAccount('https://staging.myrekoda.com').text).toContain(
+      'https://staging.myrekoda.com/start',
+    );
+    expect(replies.noAccount('https://myrekoda.com').text).toContain('https://myrekoda.com/start');
+  });
+
+  it('never doubles the slash, however the origin was written', () => {
+    for (const origin of ['https://staging.myrekoda.com/', 'https://staging.myrekoda.com//']) {
+      const text = replies.noAccount(origin).text;
+      expect(text).toContain('https://staging.myrekoda.com/start');
+      expect(text).not.toMatch(/[^:]\/\//);
+    }
+  });
+
+  it('names no domain at all when the deployment has no web origin', () => {
+    for (const origin of [
+      null,
+      '',
+      '   ',
+      'not a url',
+      'javascript:alert(1)',
+      'ftp://example.com',
+    ]) {
+      const text = replies.noAccount(origin).text;
+      expect(text, String(origin)).not.toMatch(/rekoda\.app|https?:|\/start|www\./i);
+      expect(text).toContain('do not have an account for this number yet');
+      expect(replies.isSendable(replies.noAccount(origin))).toBe(true);
+    }
   });
 });
 
