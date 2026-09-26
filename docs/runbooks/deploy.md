@@ -366,8 +366,12 @@ Staging follows `main`. When the CI workflow succeeds on a push to `main`,
 and runs `scripts/deploy-staging.sh <sha>` there, for the exact commit CI
 passed. It deploys that commit, never the newest `main`, and never a commit
 that is not on `origin/main`. It can also be started by hand from the Actions
-tab (`workflow_dispatch`) with a full SHA of a commit on `main`; it first
-confirms a successful CI push run exists for that commit. Production has no
+tab (`workflow_dispatch`), run from `main`, with a full SHA of a commit on
+`main`; it first confirms a successful CI push run exists for that commit.
+Either way the script that runs on the host is the one at the workflow's own
+revision (the tip of `main`), never the deployed commit's copy, so
+redeploying an older commit never brings back an older, less careful
+script. Production has no
 such workflow and is deployed by hand, by tag, with "Deploy a release" above.
 
 The script is "Deploy a release" for a commit instead of a tag, with the
@@ -385,7 +389,13 @@ refuse a host whose `.env` does not name `https://staging-api.myrekoda.com` as
 `database` up, the `REKODA_RELEASE` in `.env`, and a commit of at least
 seven characters that the checked-out commit starts with (the running
 release is the one a failure's rollback would name, not merely what the
-checkout and `.env` claim), `git fetch --prune origin`, check out the commit
+checkout and `.env` claim), `git fetch --prune origin`, refuse a commit whose
+code does not know the schema staging already has (one missing a migration
+tag the running commit carries, or carrying fewer migrations than `/health`
+says the database has applied: `/health` asks only for the build's own
+migrations, so it would read ok even after a later contraction removed what
+the older code uses; a rollback across a migration is done by hand, as "Roll
+back" says), check out the commit
 (detached), change only the `REKODA_RELEASE` line of `.env`, `dc build`,
 `dc run --rm -T migrate`, `dc up -d --wait --wait-timeout 300`, reload the
 Caddyfile, confirm the edge network, and require
@@ -436,11 +446,18 @@ Set up once:
   from the network. Limit the environment's deployment branches to `main`.
   Every application secret stays in `.env` and `secrets/` on the host.
 
-By hand on the host, the same deploy is
-`bash scripts/deploy-staging.sh <40-character sha>` from `/opt/rekoda`.
-That runs the copy in the current checkout, where the workflow runs the copy
-the commit carries; the script is one brace group, read whole before it
-runs, so the checkout it performs cannot change it mid-run.
+By hand on the host, the same deploy, with the same driver the workflow uses,
+is, from `/opt/rekoda`:
+
+```bash
+git fetch --prune origin
+git show origin/main:scripts/deploy-staging.sh | bash -s -- <40-character sha>
+```
+
+Not `bash scripts/deploy-staging.sh`: that runs the copy in the current
+checkout, which after a deploy of an older commit is that commit's older
+script. The script is one brace group, read whole before it runs, so the
+checkout it performs cannot change it mid-run.
 
 ## What a production boot refuses
 

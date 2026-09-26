@@ -3,7 +3,9 @@ name: Deploy staging
 # Staging follows main, one exact commit at a time, and only a commit CI
 # passed. The host does the work (scripts/deploy-staging.sh, the runbook's
 # "Deploy a release" sequence); this workflow only chooses the commit and
-# hands the host that commit's copy of the script over SSH. Secrets stay on
+# hands the host the script from its own revision, the tip of main, over SSH.
+# The deployed commit's own copy never runs: redeploying an older commit must
+# not bring back an older, less careful driver. Secrets stay on
 # the host in .env and secrets/: the only ones here are the SSH key, the host
 # key, the host and the user, all from the "staging" environment.
 #
@@ -19,7 +21,9 @@ on:
     types: [completed]
     branches: [main]
   # Manual runs for testing, or to redeploy an earlier commit of main. The
-  # commit must be on main and must have a successful CI push run.
+  # run must be started from main (its revision is the driver that runs), and
+  # the commit must be on main with a successful CI push run. The host refuses
+  # a commit whose code does not know the schema staging already has.
   workflow_dispatch:
     inputs:
       sha:
@@ -42,7 +46,7 @@ jobs:
   deploy:
     name: Deploy to staging
     if: >-
-      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
       (github.event.workflow_run.conclusion == 'success' &&
        github.event.workflow_run.event == 'push' &&
        github.event.workflow_run.head_branch == 'main' &&
@@ -93,16 +97,18 @@ jobs:
             exit 1
           fi
 
-      - name: Check out the commit
+      # The driver: this workflow's own revision, the tip of main, not the
+      # commit being deployed. The host checks that commit out itself.
+      - name: Check out the deployment driver
         uses: actions/checkout@v7
         with:
-          ref: ${{ steps.commit.outputs.sha }}
+          ref: ${{ github.sha }}
           persist-credentials: false
 
-      - name: The checkout is the commit
+      - name: The checkout is the workflow's revision
         env:
-          SHA: ${{ steps.commit.outputs.sha }}
-        run: test "$(git rev-parse HEAD)" = "$SHA"
+          DRIVER_SHA: ${{ github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$DRIVER_SHA"
 
       # The host key is pinned from the environment. Nothing here learns a
       # key from the network or accepts one it has not seen.
@@ -131,9 +137,9 @@ jobs:
             echo "STAGING_HOST and STAGING_USER must be set in the staging environment" >&2
             exit 1
           fi
-          # This commit's copy of the script, run by bash on the host. The SHA
-          # is 40 hex characters (checked above), so it is safe on the remote
-          # command line.
+          # The driver's copy of the script, run by bash on the host, for the
+          # chosen commit. The SHA is 40 hex characters (checked above), so it
+          # is safe on the remote command line.
           ssh -i "$RUNNER_TEMP/ssh/id" \
             -o IdentitiesOnly=yes \
             -o BatchMode=yes \

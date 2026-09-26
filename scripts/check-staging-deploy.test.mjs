@@ -377,8 +377,8 @@ test('an application secret moved into GitHub', () => {
 test('an expression pasted into a script', () => {
   const edit = edited(
     'workflow',
-    'run: test "$(git rev-parse HEAD)" = "$SHA"',
-    'run: test "$(git rev-parse HEAD)" = "${{ steps.commit.outputs.sha }}"',
+    'run: test "$(git rev-parse HEAD)" = "$DRIVER_SHA"',
+    'run: test "$(git rev-parse HEAD)" = "${{ github.sha }}"',
   );
   expectProblem(problems(edit), /pastes an expression into its script/);
 });
@@ -401,6 +401,91 @@ test('the workflow driving compose itself', () => {
   );
   expectProblem(problems(edit), /drives the stack itself/);
   expectProblem(problems(edit), /no longer hands the host this commit's copy/);
+});
+
+/* ---- the driver is the workflow's own revision ---- */
+
+// Regression (Codex on #249): the workflow piped the deployed commit's own
+// script, so redeploying an older commit also ran its older, less careful
+// driver, without every safety fix added since.
+test("the deployed commit's copy of the script as the driver", () => {
+  const edit = edited(
+    'workflow',
+    '          ref: ${{ github.sha }}\n',
+    '          ref: ${{ steps.commit.outputs.sha }}\n',
+  );
+  expectProblem(problems(edit), /must check out exactly its own revision/);
+});
+
+test('a second checkout, of the deployed commit, beside the driver', () => {
+  const edit = edited(
+    'workflow',
+    '      - name: The checkout is the workflow',
+    '      - name: Check out the commit\n        uses: actions/checkout@v7\n        with:\n          ref: ${{ steps.commit.outputs.sha }}\n\n      - name: The checkout is the workflow',
+  );
+  expectProblem(problems(edit), /must check out exactly its own revision/);
+});
+
+test('a manual run from a branch other than main', () => {
+  const edit = edited(
+    'workflow',
+    "(github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||",
+    "github.event_name == 'workflow_dispatch' ||",
+  );
+  expectProblem(
+    problems(edit),
+    /must require \(github\.event_name == 'workflow_dispatch' && github\.ref == 'refs\/heads\/main'\)/,
+  );
+});
+
+/* ---- the commit must know staging's schema ---- */
+
+// Regression (Codex on #249): a manual redeploy could pick any older commit of
+// main, and its /health reads ok against a newer schema, even one whose later
+// contraction removed what that commit's code uses.
+test('an older commit deployed without checking the schema it meets', () => {
+  const lines = REAL.script.split('\n');
+  const from = lines.findIndex((line) => line === 'step "the commit knows staging\'s schema"');
+  const to = lines.findIndex((line, i) => i > from && /^\s*fail "commit \$SHA carries/.test(line));
+  assert.ok(from > 0 && to > from, 'fixture: the schema check is not where expected');
+  const edit = edited('script', `${lines.slice(from, to + 1).join('\n')}\n`, '');
+  expectProblem(problems(edit), /no longer refuses a commit missing a running migration/);
+  expectProblem(problems(edit), /no longer refuses a commit carrying fewer migrations/);
+});
+
+test('a commit missing a running migration, not refused', () => {
+  const edit = edited('script', '[ -z "$unknown" ] ||\n  fail "', '[ -z "$unknown" ] ||\n  echo "');
+  expectProblem(
+    problems(edit),
+    /refuses a commit missing a running migration: the check does not fail/,
+  );
+});
+
+test('the schema compared by count alone', () => {
+  const edit = edited(
+    'script',
+    "'[$run.entries[].tag] - [$new.entries[].tag]",
+    "'[$run.entries | length] - [$new.entries | length]",
+  );
+  expectProblem(
+    problems(edit),
+    /no longer lists the running migrations the commit does not carry, by tag/,
+  );
+});
+
+test('the schema checked only after the checkout changed', () => {
+  const block = '[ "$MIGRATIONS" -ge "$APPLIED" ] ||\n';
+  const lines = REAL.script.split('\n');
+  const at = lines.indexOf(block.trimEnd());
+  const both = `${block}${lines[at + 1]}\n`;
+  const without = edited('script', both, '').script;
+  const anchor = 'step "build both images';
+  assert.ok(without.includes(anchor), `fixture text not found in script: ${anchor}`);
+  const moved = without.replace(anchor, () => `${both}${anchor}`);
+  expectProblem(
+    problems({ script: moved }),
+    /fewer migrations than the database has applied only after the prepared phase/,
+  );
 });
 
 test('the runbook forgetting the automation', () => {

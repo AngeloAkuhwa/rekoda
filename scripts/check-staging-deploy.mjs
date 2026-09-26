@@ -243,6 +243,54 @@ function strayProblems(lines, dockerignore) {
   return problems;
 }
 
+/**
+ * Staging's database keeps every migration ever applied, and /health asks only
+ * for the build's own, so an older commit can report ok against a schema that
+ * contracted what its code uses. Before anything changes, the script must
+ * refuse a commit missing a migration the running commit carries, or carrying
+ * fewer than the database has applied.
+ */
+const SCHEMA_REQUIRES = [
+  [
+    /^running_journal=\$\(git show "\$PREV_SHA:\$JOURNAL"\) \|\|/,
+    "reads the running commit's journal",
+  ],
+  [/^target_journal=\$\(git show "\$SHA:\$JOURNAL"\) \|\|/, "reads the deployed commit's journal"],
+  [
+    /^\s*'\[\$run\.entries\[\]\.tag\] - \[\$new\.entries\[\]\.tag\] \| join\(" "\)'\) \|\|$/,
+    'lists the running migrations the commit does not carry, by tag',
+  ],
+  [/^\[ -z "\$unknown" \] \|\|$/, 'refuses a commit missing a running migration'],
+  [/^APPLIED=\$\(jq '\.migrations' <<<"\$running"\)$/, "reads the database's applied count"],
+  [
+    /^\[ "\$MIGRATIONS" -ge "\$APPLIED" \] \|\|$/,
+    'refuses a commit carrying fewer migrations than the database has applied',
+  ],
+];
+
+function schemaProblems(lines) {
+  const problems = [];
+  const prepared = lines.indexOf('PHASE=prepared');
+  const baseline = lines.findIndex((line) => BASELINE_CALL.test(line));
+  for (const [pattern, what] of SCHEMA_REQUIRES) {
+    const at = lines.findIndex((line) => pattern.test(line));
+    if (at < 0) {
+      problems.push(`${FILES.script} no longer ${what} (the schema-compatibility check)`);
+      continue;
+    }
+    if (/refuses/.test(what) && !/^\s*fail\b/.test(lines[at + 1] ?? '')) {
+      problems.push(`${FILES.script} no longer ${what}: the check does not fail the deploy`);
+    }
+    if (prepared >= 0 && at > prepared) {
+      problems.push(`${FILES.script} ${what} only after the prepared phase`);
+    }
+    if (baseline >= 0 && at < baseline) {
+      problems.push(`${FILES.script} ${what} before /health has proved what is running`);
+    }
+  }
+  return problems;
+}
+
 export function problemsFor({ runbook, script, workflow, ci, dockerignore }) {
   const problems = [];
 
@@ -351,6 +399,7 @@ export function problemsFor({ runbook, script, workflow, ci, dockerignore }) {
   }
   problems.push(...baselineProblems(lines));
   problems.push(...strayProblems(lines, dockerignore));
+  problems.push(...schemaProblems(lines));
 
   /* ---- The workflow. ---- */
   let wf;
@@ -401,9 +450,21 @@ export function problemsFor({ runbook, script, workflow, ci, dockerignore }) {
       "github.event.workflow_run.event == 'push'",
       "github.event.workflow_run.head_branch == 'main'",
       'github.event.workflow_run.head_repository.full_name == github.repository',
+      // A manual run's revision is the driver that runs on the host.
+      "(github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')",
     ]) {
       if (!cond.includes(needed))
         problems.push(`${FILES.workflow} job ${id} must require ${needed}`);
+    }
+    // The driver is the workflow's own revision, never the deployed commit's
+    // copy, which for an older commit is an older, less careful script.
+    const checkouts = (job.steps ?? []).filter((step) =>
+      String(step.uses ?? '').startsWith('actions/checkout@'),
+    );
+    if (checkouts.length !== 1 || checkouts[0].with?.ref !== '${{ github.sha }}') {
+      problems.push(
+        `${FILES.workflow} job ${id} must check out exactly its own revision (ref: \${{ github.sha }}) as the deployment driver, never the commit it deploys`,
+      );
     }
     for (const step of job.steps ?? []) {
       if (typeof step.run === 'string' && step.run.includes('${{')) {

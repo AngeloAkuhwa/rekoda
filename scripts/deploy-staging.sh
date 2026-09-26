@@ -2,12 +2,14 @@
 # Deploy one exact commit to the staging host. The runbook's "Deploy a
 # release" sequence (docs/runbooks/deploy.md), for a commit rather than a tag:
 #
-#   bash scripts/deploy-staging.sh <40-character commit SHA>
+#   git show origin/main:scripts/deploy-staging.sh | bash -s -- <40-character commit SHA>
 #
 # .github/workflows/deploy-staging.yml runs it on the host over SSH after CI
-# has passed on main, piping the copy from the commit being deployed, so the
-# script that runs is always the one that commit carries. An operator on the
-# host can run it by hand the same way.
+# has passed on main, piping the copy from the workflow's own revision (the
+# tip of main), never the copy the deployed commit carries: redeploying an
+# older commit must not also bring back that commit's older, less careful
+# driver. The SHA only chooses what is checked out and built. By hand, run
+# origin/main's copy the same way (see the runbook).
 #
 # What it refuses, before anything live is touched:
 #   - a SHA that is not 40 hex characters, is not on origin/main, or is not
@@ -19,6 +21,9 @@
 #     staging API), so a mis-set STAGING_HOST can never deploy production;
 #   - a running staging that is not healthy, or is not the release and commit
 #     the checkout and .env name (the rollback this run would print);
+#   - a commit whose code does not know the schema staging already has: one
+#     missing a migration the running commit carries, or carrying fewer
+#     migrations than the database has applied;
 #   - a second deployment while one is running.
 #
 # It never runs `down -v`, never prunes an image and never touches secrets/:
@@ -142,6 +147,29 @@ git fetch --prune origin
 git cat-file -e "${SHA}^{commit}" 2>/dev/null || fail "commit $SHA is not in origin"
 git merge-base --is-ancestor "$SHA" origin/main || fail "commit $SHA is not on origin/main"
 
+# The database keeps every migration ever applied, and a migration may contract
+# what older code still uses (expand, deploy, contract: the contraction ships a
+# release later). /health cannot see that, since it asks only for the build's
+# own migrations. So deploy only a commit whose code knows the schema staging
+# has: every migration tag the running commit carries, and at least as many
+# migrations as the database has applied. A rollback across a migration is a
+# deliberate act, done by hand as the runbook's "Roll back" says.
+step "the commit knows staging's schema"
+JOURNAL=packages/db/migrations/meta/_journal.json
+running_journal=$(git show "$PREV_SHA:$JOURNAL") || fail "the running commit has no $JOURNAL"
+target_journal=$(git show "$SHA:$JOURNAL") || fail "commit $SHA has no $JOURNAL"
+unknown=$(jq -rn --argjson run "$running_journal" --argjson new "$target_journal" \
+  '[$run.entries[].tag] - [$new.entries[].tag] | join(" ")') ||
+  fail "the migration journals could not be compared"
+[ -z "$unknown" ] ||
+  fail "commit $SHA does not carry migrations staging already runs ($unknown); roll back across a migration by hand, as the runbook's \"Roll back\" says"
+MIGRATIONS=$(jq '.entries | length' <<<"$target_journal")
+APPLIED=$(jq '.migrations' <<<"$running")
+[[ "$MIGRATIONS" =~ ^[0-9]+$ && "$APPLIED" =~ ^[0-9]+$ ]] ||
+  fail "could not count migrations (commit carries '$MIGRATIONS', /health reports '$APPLIED')"
+[ "$MIGRATIONS" -ge "$APPLIED" ] ||
+  fail "commit $SHA carries $MIGRATIONS migrations and staging's database has applied $APPLIED; roll back across a migration by hand, as the runbook's \"Roll back\" says"
+
 SHORT=$(git rev-parse --short=7 "$SHA")
 RELEASE="staging-${SHORT}"
 # Compose interpolates the image tags from the shell before .env, so pin the
@@ -155,7 +183,6 @@ git -c advice.detachedHead=false checkout -q --detach "$SHA"
 [ "$(git rev-parse HEAD)" = "$SHA" ] || fail 'the checkout is not at the requested commit'
 sed -i "s/^REKODA_RELEASE=.*/REKODA_RELEASE=${RELEASE}/" .env
 [ "$(sed -n 's/^REKODA_RELEASE=//p' .env)" = "$RELEASE" ] || fail 'REKODA_RELEASE was not updated in .env'
-MIGRATIONS=$(jq '.entries | length' packages/db/migrations/meta/_journal.json)
 
 step "build both images, tagged $RELEASE (nothing live changes)"
 dc config -q
@@ -188,8 +215,8 @@ for _ in $(seq 1 30); do
 done
 [ -n "$health" ] || fail "$API_URL/health never reported status ok, database up, release $RELEASE and commit $SHORT"
 printf '%s\n' "$health"
-# At least, not exactly: a deliberate redeploy of an older commit runs against
-# the newer schema, which expand-only migrations allow.
+# At least, not exactly: the database may hold migrations applied before an
+# earlier by-hand rollback, which this commit also carries under their tags.
 jq -e --argjson m "$MIGRATIONS" '.migrations >= $m' <<<"$health" >/dev/null ||
   fail "/health reports fewer migrations than the $MIGRATIONS this commit carries"
 [[ "$SHA" == "$(jq -r .commit <<<"$health")"* ]] || fail '/health names a commit that is not the deployed SHA'
