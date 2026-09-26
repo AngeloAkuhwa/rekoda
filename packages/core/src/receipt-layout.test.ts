@@ -95,6 +95,16 @@ describe('overpayment', () => {
     expect(text).toContain('remaining ₦30,000 is being reviewed');
   });
 
+  it('a merchant-recorded overpayment states the fact and promises nothing', () => {
+    // G-48: money taken with a sale can be more than the total, and nothing
+    // reviews, refunds or credits the excess on that path yet (G-49).
+    const text = textOf({ ...RECORDED, amountK: 18_000_000, allocatedK: 15_000_000 });
+    expect(text).toContain('Amount received ₦180,000');
+    expect(text).toContain('Applied to INV-2026-000041 ₦150,000');
+    expect(text).toContain('The remaining ₦30,000 was not applied to this invoice.');
+    expect(text).not.toMatch(/review|refund|credit/i);
+  });
+
   it('an exact payment carries no overpayment lines at all', () => {
     const text = textOf(RECEIPT);
     expect(text).not.toContain('Applied to');

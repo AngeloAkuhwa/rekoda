@@ -555,11 +555,14 @@ describe('the registers (§5.3.7)', () => {
     const list = await withBusiness(db, businessId, (tx) =>
       reportsRepo.receiptsFor(tx, businessId, 50),
     );
-    expect(list.count).toBe(1);
-    const row = list.rows[0];
-    expect(row?.receiptNumber).toMatch(/^RCT-/);
-    expect(row?.amountK).toBe(5_000_000);
-    expect(row?.invoiceNumber).toBe(invoiceNumber);
+    /* One receipt per confirmed payment (spec §15): the ₦40,000 taken with
+     * the sale has its own since G-48, beside the ₦50,000 booked later. */
+    expect(list.count).toBe(2);
+    for (const row of list.rows) {
+      expect(row.receiptNumber).toMatch(/^RCT-/);
+      expect(row.invoiceNumber).toBe(invoiceNumber);
+    }
+    expect(list.rows.map((r) => r.amountK).sort((a, b) => a - b)).toEqual([4_000_000, 5_000_000]);
   });
 
   it("NEVER shows one tenant another tenant's registers", async () => {

@@ -77,7 +77,11 @@ const ALL: Record<string, readonly replies.Reply[]> = {
   alreadyConfirmed: [replies.alreadyConfirmed()],
   nothingToConfirm: [replies.nothingToConfirm()],
   correctionTaken: [replies.correctionTaken()],
-  issued: [replies.issued('INV-2026-000041', NAIRA_MILLIONS, NAIRA_MILLIONS)],
+  issued: [
+    replies.issued('INV-2026-000041', NAIRA_MILLIONS, NAIRA_MILLIONS),
+    replies.issued('INV-2026-000041', NAIRA_MILLIONS, NAIRA_MILLIONS, 'RCT-2026-000007'),
+    replies.issued('INV-2026-000041', NAIRA_MILLIONS, 0, 'RCT-2026-000007'),
+  ],
   documentSent: [replies.documentSent('INV-2026-000041')],
   paymentConfirmed: [
     replies.paymentConfirmed(NAIRA_MILLIONS, 'INV-2026-000041', 'RCT-2026-000007'),
@@ -391,6 +395,32 @@ describe('erasure', () => {
     // The one place a second message is worth the friction: an accidental
     // deletion cannot be undone by any amount of apology.
     expect(text).toMatch(/again to confirm/i);
+  });
+});
+
+describe('a sale paid at issue (G-48)', () => {
+  it('names the receipt that is on its way, and never says the money was confirmed', () => {
+    const text = replies.issued('INV-2026-000041', 1_000_000, 0, 'RCT-2026-000007').text;
+    expect(text).toBe(
+      'Saved ✅ INV-2026-000041 for ₦10,000.\nReceipt RCT-2026-000007 is on its way.',
+    );
+    expect(text).not.toMatch(/confirm|verif/i);
+  });
+
+  it('keeps the balance line for a part-paid sale', () => {
+    expect(replies.issued('INV-2026-000041', 1_000_000, 600_000, 'RCT-2026-000007').text).toBe(
+      'Saved ✅ INV-2026-000041 for ₦10,000.\n₦6,000 still owed.\n' +
+        'Receipt RCT-2026-000007 is on its way.',
+    );
+  });
+
+  it('is unchanged for a sale on credit, which has no receipt', () => {
+    expect(replies.issued('INV-2026-000041', 1_000_000, 1_000_000).text).toBe(
+      'Saved ✅ INV-2026-000041 for ₦10,000.\n₦10,000 still owed.',
+    );
+    expect(replies.issued('INV-2026-000041', 1_000_000, 1_000_000, null).text).not.toContain(
+      'Receipt',
+    );
   });
 });
 

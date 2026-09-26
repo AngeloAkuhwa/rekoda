@@ -34,7 +34,7 @@ import {
   lagosDay,
   postCreditApplication,
 } from '@rekoda/core';
-import { snapshotHash, type DocumentSnapshot } from '@rekoda/core/documents';
+import { documentHash, snapshotHash, type DocumentSnapshot } from '@rekoda/core/documents';
 import { normalisePaymentMethod } from '@rekoda/core';
 import type { TenantDb } from '../client.js';
 import { auditEvents, documents } from '../schema/ops.js';
@@ -48,6 +48,7 @@ import {
   ledgerTransactions,
   paymentAllocations,
   payments,
+  receipts,
   customerCredits,
 } from '../schema/finance.js';
 import { assertPeriodOpen } from './close.js';
@@ -101,6 +102,78 @@ export interface IssuedSale {
   docHash: string;
   ledgerTransactionId: string;
   paymentId: string | null;
+  /** The receipt for the payment taken with the sale (spec §15, journey C5):
+   * present exactly when `paymentId` is, null for a sale on credit. */
+  receiptId: string | null;
+  receiptNumber: string | null;
+}
+
+export interface MerchantAttestedReceiptInput {
+  businessId: string;
+  customerId: string | null;
+  /** The payment this receipt acknowledges. It must already exist: minting a
+   * receipt never creates, allocates or posts money. */
+  paymentId: string;
+  invoiceId: string;
+  invoiceNumber: string;
+  /** What the payment was for, as recorded on the payment row. */
+  amountK: number;
+  /** What of it was applied to `invoiceId`, as recorded on the allocation. */
+  allocatedK: number;
+  at: Date;
+}
+
+/**
+ * The receipt for a payment the MERCHANT reported, and nothing else.
+ *
+ * Spec §15: one immutable receipt per confirmed payment. This numbers it
+ * (inside the caller's transaction, so a rollback un-bumps the counter) and
+ * writes it with its snapshot and hash. It does not create the payment, its
+ * verification or its allocation, and it posts nothing: those belong to the
+ * writer that took the money, which must already have done them. A receipt
+ * minted twice for one payment is that writer's bug to prevent.
+ *
+ * `verified: false` is stated, never implied (ADR 0014): the renderer and the
+ * delivery caption read it to decide that nobody confirmed this money with a
+ * provider. The snapshot carries document numbers and figures only, never a
+ * customer's name or number.
+ */
+export async function mintMerchantAttestedReceipt(
+  tx: TenantDb,
+  input: MerchantAttestedReceiptInput,
+): Promise<{ receiptId: string; receiptNumber: string }> {
+  const receiptNumber = await nextDocumentNumber(
+    tx,
+    input.businessId,
+    'receipt',
+    lagosYear(input.at),
+  );
+  const snapshot = {
+    documentNumber: receiptNumber,
+    issuedAtIso: input.at.toISOString(),
+    invoiceNumber: input.invoiceNumber,
+    amountK: input.amountK,
+    allocatedK: input.allocatedK,
+    currency: 'NGN',
+    verified: false,
+  };
+  const rows = await tx
+    .insert(receipts)
+    .values({
+      businessId: input.businessId,
+      customerId: input.customerId,
+      receiptNumber,
+      paymentId: input.paymentId,
+      invoiceId: input.invoiceId,
+      amountK: input.amountK,
+      currency: 'NGN',
+      snapshotJson: snapshot as never,
+      docHash: documentHash(snapshot),
+    })
+    .returning({ id: receipts.id });
+  const receiptId = rows[0]?.id;
+  if (!receiptId) throw new Error('mintMerchantAttestedReceipt: receipt insert returned no row');
+  return { receiptId, receiptNumber };
 }
 
 /**
@@ -378,6 +451,7 @@ export async function issueSale(tx: TenantDb, input: IssueSaleInput): Promise<Is
   }
 
   let paymentId: string | null = null;
+  let receipt: { receiptId: string; receiptNumber: string } | null = null;
   if (input.paidK > 0) {
     const paymentRows = await tx
       .insert(payments)
@@ -416,11 +490,33 @@ export async function issueSale(tx: TenantDb, input: IssueSaleInput): Promise<Is
       actorId: input.actor,
     });
 
+    const allocatedK = Math.min(input.paidK, input.totalK);
     await tx.insert(paymentAllocations).values({
       businessId: input.businessId,
       paymentId: payment.id,
       invoiceId: invoice.id,
-      amountK: Math.min(input.paidK, input.totalK),
+      amountK: allocatedK,
+    });
+
+    /* The receipt for THIS payment (spec §15, journey C5: a cash sale ends in
+     * a receipt), fully or part paid alike. It acknowledges the payment and
+     * allocation just written and adds no money of its own: the only posting
+     * for this sale is the one below. Same transaction, so a failure anywhere
+     * after this un-bumps the receipt counter with everything else (G-48).
+     *
+     * `amountK` is what arrived, the payment's own figure; `allocatedK` what
+     * was applied to this invoice. For an overpaid sale the two differ, which
+     * is how a receipt represents an overpayment; nothing here books or
+     * credits the difference (that is G-49's). */
+    receipt = await mintMerchantAttestedReceipt(tx, {
+      businessId: input.businessId,
+      customerId: input.customerId,
+      paymentId,
+      invoiceId: invoice.id,
+      invoiceNumber,
+      amountK: input.paidK,
+      allocatedK,
+      at: issuedAt,
     });
   }
 
@@ -501,7 +597,15 @@ export async function issueSale(tx: TenantDb, input: IssueSaleInput): Promise<Is
     sourceType: input.sourceType,
   });
 
-  return { invoiceId: invoice.id, invoiceNumber, docHash, ledgerTransactionId, paymentId };
+  return {
+    invoiceId: invoice.id,
+    invoiceNumber,
+    docHash,
+    ledgerTransactionId,
+    paymentId,
+    receiptId: receipt?.receiptId ?? null,
+    receiptNumber: receipt?.receiptNumber ?? null,
+  };
 }
 
 /**

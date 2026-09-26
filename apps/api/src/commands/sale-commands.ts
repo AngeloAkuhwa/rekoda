@@ -25,6 +25,10 @@ export interface RecordedSale {
   totalK: number;
   balanceDueK: number;
   paymentId: string | null;
+  /** The receipt for money taken with the sale (G-48); null on credit. A
+   * snapshot stored before G-48 has no such key, which reads as null. */
+  receiptId: string | null;
+  receiptNumber: string | null;
 }
 
 export type RecordSaleInput = Parameters<typeof issueRepo.issueSale>[1];
@@ -37,16 +41,32 @@ export type RecordSaleInput = Parameters<typeof issueRepo.issueSale>[1];
 export async function recordSaleWork(tx: TenantDb, input: RecordSaleInput): Promise<RecordedSale> {
   const issued = await issueRepo.issueSale(tx, input);
 
-  /* The invoice and "render its PDF" commit together (MASTER-PLAN §5.3.5
+  /* The document and "render its PDF" commit together (MASTER-PLAN §5.3.5
    * step 9): no window where a document exists that nothing will produce
-   * paper for, and a rollback takes the job with it. The singleton key is
-   * the invoice id, so a re-enqueue cannot mint two PDFs for one sale. */
-  await jobsRepo.enqueue(tx, {
-    businessId: input.businessId,
-    kind: 'document.render',
-    payload: { invoiceId: issued.invoiceId },
-    singletonKey: issued.invoiceId,
-  });
+   * paper for, and a rollback takes the job with it.
+   *
+   * Which document is the merchant's (journeys C5 and C6): money taken with
+   * the sale ends in its RECEIPT, a sale on credit in its INVOICE. One paper,
+   * not both. The invoice row exists either way, for the books, the
+   * allocation and the statements. Singleton keys match the existing paths
+   * (the invoice id; `receipt:<id>` as a recorded payment's), so a re-enqueue
+   * cannot mint two PDFs for one sale. */
+  await jobsRepo.enqueue(
+    tx,
+    issued.receiptId
+      ? {
+          businessId: input.businessId,
+          kind: 'document.render',
+          payload: { receiptId: issued.receiptId },
+          singletonKey: `receipt:${issued.receiptId}`,
+        }
+      : {
+          businessId: input.businessId,
+          kind: 'document.render',
+          payload: { invoiceId: issued.invoiceId },
+          singletonKey: issued.invoiceId,
+        },
+  );
 
   /* Stock off the shelf in the same transaction, only for lines naming
    * something the shop already counts; then what those goods cost, as a
@@ -78,6 +98,8 @@ export async function recordSaleWork(tx: TenantDb, input: RecordSaleInput): Prom
     totalK: input.totalK,
     balanceDueK: input.balanceDueK,
     paymentId: issued.paymentId,
+    receiptId: issued.receiptId,
+    receiptNumber: issued.receiptNumber,
   };
 }
 

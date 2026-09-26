@@ -1582,11 +1582,22 @@ async function confirmPendingDraft(
       /* The first run already paid for this invoice. */
       await refundReserved();
     }
-    return replies.issued(run.result.invoiceNumber, run.result.totalK, run.result.balanceDueK);
+    return replies.issued(
+      run.result.invoiceNumber,
+      run.result.totalK,
+      run.result.balanceDueK,
+      /* A replayed snapshot from before G-48 carries no receipt key. */
+      run.result.receiptNumber ?? null,
+    );
   }
 
   const issued = await recordSaleWork(tx, input);
-  return replies.issued(issued.invoiceNumber, money.totalK, money.balanceDueK);
+  return replies.issued(
+    issued.invoiceNumber,
+    money.totalK,
+    money.balanceDueK,
+    issued.receiptNumber,
+  );
 }
 
 /**

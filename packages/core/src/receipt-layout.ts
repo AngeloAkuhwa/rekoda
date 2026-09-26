@@ -6,10 +6,12 @@
  * blocks into ink. The block kinds are shared with the invoice so one style
  * table in the renderer keeps the two documents from drifting apart.
  *
- * A receipt exists because money REALLY moved: it is only ever written by
- * `bookVerifiedPayment`, after the provider confirmed the charge server-side.
- * The layout says so out loud, because "confirmed, not claimed" is the entire
- * reason a customer can trust this piece of paper over a transfer screenshot.
+ * A receipt acknowledges a payment the business accepted (spec §15). Most are
+ * written by `bookVerifiedPayment`, after the provider confirmed the charge
+ * server-side; the rest are payments the MERCHANT reported (a recorded
+ * payment, or money taken with a sale), written with `verified: false`. The
+ * layout says which, out loud, because "confirmed, not claimed" is the entire
+ * reason a customer can trust a verified receipt over a transfer screenshot.
  */
 import { formatKobo } from './money.js';
 import { nairaInWords } from './words.js';
@@ -76,8 +78,15 @@ export function layoutReceipt(doc: ReceiptDocument): LayoutBlock[] {
    * invoice's balance (settle.ts is conservative by design); a receipt that
    * silently showed the full figure as "applied" would claim the merchant may
    * keep money a human has not yet ruled on.
+   *
+   * The review-and-refund promise is made only where something keeps it: a
+   * provider-verified overpayment goes to reconciliation. A payment the
+   * MERCHANT reported, such as money taken with a sale, has no such
+   * machinery behind it yet (G-49), so its receipt states the fact and
+   * promises nothing.
    */
   if (doc.allocatedK < doc.amountK) {
+    const remainingK = doc.amountK - doc.allocatedK;
     blocks.push({
       kind: 'total',
       text: `Applied to ${doc.invoiceNumber}`,
@@ -85,7 +94,9 @@ export function layoutReceipt(doc: ReceiptDocument): LayoutBlock[] {
     });
     blocks.push({
       kind: 'memo',
-      text: `The remaining ${formatKobo(doc.amountK - doc.allocatedK)} is being reviewed and will be refunded or credited.`,
+      text: doc.verified
+        ? `The remaining ${formatKobo(remainingK)} is being reviewed and will be refunded or credited.`
+        : `The remaining ${formatKobo(remainingK)} was not applied to this invoice.`,
     });
   }
 
