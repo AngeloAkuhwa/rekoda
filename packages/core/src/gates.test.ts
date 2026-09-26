@@ -110,6 +110,27 @@ describe('CG2 — nothing is issued unread', () => {
     expect(gate.money.balanceDueK).toBe(0);
   });
 
+  it('promises customer credit only when the sale is resolved to a customer (G-49)', () => {
+    const tokened = {
+      ...WIGS,
+      reportedPayment: 200_000,
+      customer: { kind: 'token', token: 'CUSTOMER_7K2' },
+    } as const;
+    const named = gateSale(tokened, { customerLinked: true });
+    /* A token with no customer record behind it is not a customer to credit. */
+    const unfiled = gateSale(tokened);
+    const nobody = gateSale({ ...WIGS, reportedPayment: 200_000, customer: { kind: 'none' } });
+    if (named.gate !== 'CG2' || nobody.gate !== 'CG2' || unfiled.gate !== 'CG2') {
+      throw new Error('unreachable');
+    }
+    expect(unfiled.preview).not.toContain('note it as a credit');
+    expect(named.preview).toContain('Paid over by ₦50,000. I will note it as a credit.');
+    expect(nobody.preview).toContain(
+      'Paid over by ₦50,000. I will record it as unapplied; it is not linked to a customer yet.',
+    );
+    expect(nobody.preview).not.toContain('note it as a credit');
+  });
+
   it('shows a discount and a delivery fee as their own lines', () => {
     const gate = gateSale({
       items: [{ name: 'bag', quantity: 2, unitPrice: 20_000 }],
@@ -306,13 +327,41 @@ describe('reported payments (gatePayment)', () => {
     expect(gate.question).toContain('₦50,000');
   });
 
-  it('NEVER absorbs more than the invoice owes — an overpayment is a question', () => {
+  it('previews a deliberate overpayment with what was received, applied and credited (OWN-16)', () => {
+    const gate = gatePayment({ amount: 80_000, paymentMethod: 'transfer' }, INV, 5_000_000, {
+      customerLinked: true,
+    });
+    expect(gate.gate).toBe('CG2');
+    if (gate.gate !== 'CG2') return;
+    expect(gate).toMatchObject({
+      amountK: 8_000_000,
+      allocatedK: 5_000_000,
+      creditK: 3_000_000,
+      balanceAfterK: 0,
+    });
+    /* Every figure the confirmation will be held to is in front of them. */
+    expect(gate.preview).toContain('Amount received: ₦80,000');
+    expect(gate.preview).toContain(`Applied to ${INV}: ₦50,000`);
+    expect(gate.preview).toContain('Customer credit: ₦30,000');
+    expect(gate.preview).toContain('Received by transfer');
+    expect(gate.preview).toContain('Reply *yes*');
+  });
+
+  it('never calls an excess customer credit when the invoice has no customer', () => {
     const gate = gatePayment({ amount: 80_000 }, INV, 5_000_000);
-    expect(gate.gate).toBe('CG1');
-    if (gate.gate !== 'CG1') return;
-    // Both figures are in the question: the merchant decides, we do not round.
-    expect(gate.question).toContain('₦50,000');
-    expect(gate.question).toContain('₦80,000');
+    if (gate.gate !== 'CG2') throw new Error('expected a preview');
+    expect(gate.creditK).toBe(3_000_000);
+    expect(gate.preview).toContain('Unapplied: ₦30,000. It is not linked to a customer yet.');
+    expect(gate.preview).not.toContain('Customer credit');
+  });
+
+  it('an exact or partial payment carries no credit', () => {
+    const exact = gatePayment({ relativeAmount: 'remainder' }, INV, 5_000_000);
+    const part = gatePayment({ amount: 20_000 }, INV, 5_000_000);
+    if (exact.gate !== 'CG2' || part.gate !== 'CG2') throw new Error('expected previews');
+    expect(exact).toMatchObject({ allocatedK: 5_000_000, creditK: 0 });
+    expect(part).toMatchObject({ allocatedK: 2_000_000, creditK: 0 });
+    expect(part.preview).not.toMatch(/credit|Unapplied/i);
   });
 });
 

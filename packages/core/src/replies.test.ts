@@ -89,6 +89,24 @@ const ALL: Record<string, readonly replies.Reply[]> = {
   paymentRecorded: [
     replies.paymentRecorded('RCT-2026-000007', NAIRA_MILLIONS, 'INV-2026-000041', NAIRA_MILLIONS),
   ],
+  paymentRecordedOverpaid: [
+    replies.paymentRecordedOverpaid(
+      'RCT-2026-000007',
+      12_000_000,
+      10_000_000,
+      2_000_000,
+      'INV-2026-000041',
+      true,
+    ),
+    replies.paymentRecordedOverpaid(
+      'RCT-2026-000007',
+      12_000_000,
+      10_000_000,
+      2_000_000,
+      'INV-2026-000041',
+      false,
+    ),
+  ],
   receiptRecordedReady: [
     replies.receiptRecordedReady(NAIRA_MILLIONS, 'INV-2026-000041', 'RCT-2026-000007'),
   ],
@@ -421,6 +439,46 @@ describe('a sale paid at issue (G-48)', () => {
     expect(replies.issued('INV-2026-000041', 1_000_000, 1_000_000, null).text).not.toContain(
       'Receipt',
     );
+  });
+});
+
+describe('a confirmed overpayment (G-49, OWN-16)', () => {
+  it('names what arrived, what settled the invoice, and the customer credit', () => {
+    expect(
+      replies.paymentRecordedOverpaid(
+        'RCT-2026-000007',
+        12_000_000,
+        10_000_000,
+        2_000_000,
+        'INV-2026-000041',
+        true,
+      ).text,
+    ).toBe(
+      'Saved ✅ ₦120,000 received on INV-2026-000041.\n' +
+        '₦100,000 applied. That settles it. Nothing left owing.\n' +
+        '₦20,000 noted as customer credit.\n' +
+        'Receipt RCT-2026-000007 is on its way.',
+    );
+  });
+
+  it('with no customer, calls the excess unapplied and owes it to nobody', () => {
+    const text = replies.paymentRecordedOverpaid(
+      'RCT-2026-000007',
+      12_000_000,
+      10_000_000,
+      2_000_000,
+      'INV-2026-000041',
+      false,
+    ).text;
+    expect(text).toContain('₦20,000 recorded as unapplied. It is not linked to a customer yet.');
+    expect(text).not.toMatch(/customer credit|owed to|refund/i);
+  });
+
+  it('a balance that ROSE is refused without claiming it fell', () => {
+    const text = replies.paymentBalanceMoved('INV-2026-000041', 15_000_000, 0).text;
+    expect(text).toContain('INV-2026-000041 now has ₦150,000 owing');
+    expect(text).toContain('I have not recorded anything');
+    expect(text).not.toContain('less than you said');
   });
 });
 

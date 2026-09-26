@@ -523,6 +523,34 @@ export function paymentRecorded(
 }
 
 /**
+ * A confirmed OVERPAYMENT, recorded (G-49, OWN-16).
+ *
+ * Three figures, all from the write: what arrived, what settled the invoice,
+ * and where the rest went. With no customer on the invoice the excess is
+ * named for what it is, unapplied and unlinked, and never as something owed
+ * to anyone or a promise to refund it.
+ */
+export function paymentRecordedOverpaid(
+  receiptNumber: string,
+  receivedK: number,
+  appliedK: number,
+  creditK: number,
+  invoiceNumber: string,
+  customerLinked: boolean,
+): Reply {
+  return reply(
+    [
+      `Saved ✅ ${formatKobo(receivedK)} received on ${invoiceNumber}.`,
+      `${formatKobo(appliedK)} applied. That settles it. Nothing left owing.`,
+      customerLinked
+        ? `${formatKobo(creditK)} noted as customer credit.`
+        : `${formatKobo(creditK)} recorded as unapplied. It is not linked to a customer yet.`,
+      `Receipt ${receiptNumber} is on its way.`,
+    ].join('\n'),
+  );
+}
+
+/**
  * The receipt for a merchant-reported payment, arriving as a document.
  *
  * The delivery caption for `paymentRecorded`, and the same discipline: the
@@ -601,6 +629,16 @@ export function paymentBalanceMoved(
   balanceDueK: number,
   excessK: number,
 ): Reply {
+  /* G-49: a confirmed overpayment is refused on ANY balance change, and the
+   * balance can also have risen (a reversed payment reopens it). "Less than
+   * you said" would then be false, so that case says only what is true. */
+  if (excessK <= 0) {
+    return reply(
+      `${invoiceNumber} now has ${formatKobo(balanceDueK)} owing, which is not what I ` +
+        'showed you, so I have not recorded anything. Tell me the payment again and ' +
+        'I will check the new figures with you.',
+    );
+  }
   return reply(
     `${invoiceNumber} only has ${formatKobo(balanceDueK)} owing now, which is ` +
       `${formatKobo(excessK)} less than you said. Another payment came in while you ` +

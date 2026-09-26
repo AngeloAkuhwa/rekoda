@@ -49,6 +49,12 @@ export interface RecordPaymentInput {
   /** The PaymentEvidence row this attestation cites, when an image came
    * with the claim. */
   paymentEvidenceId?: string | null;
+  /**
+   * The merchant's explicit confirmation of an overpayment and the balance
+   * they were shown (OWN-16). Only chat and the dashboard set it, after a
+   * real confirmation; the public API never does, so it cannot overpay.
+   */
+  confirmedOverpayment?: { expectedBalanceK: number } | null;
 }
 
 /**
@@ -67,6 +73,12 @@ export type RecordPaymentResult =
       amountK: number;
       balanceDueK: number;
       invoiceStatus: string;
+      /** What arrived and the confirmed excess (OWN-16). Absent from a
+       * snapshot stored before G-49: read as `amountK` and 0. */
+      receivedK?: number;
+      creditK?: number;
+      /** Where the excess went, as the write decided it (G-49). */
+      excessDisposition?: 'customer_credit' | 'unattributed' | null;
     }
   | { outcome: 'not_found' }
   | { outcome: 'already_settled'; invoiceNumber: string }
@@ -87,6 +99,7 @@ export async function recordPaymentWork(
       actor: input.actor,
       clientRef: input.clientRef ?? null,
       evidenceBasis: input.evidenceBasis ?? null,
+      confirmedOverpayment: input.confirmedOverpayment ?? null,
     });
     if (done.outcome !== 'recorded') return done;
     result = {
@@ -101,6 +114,9 @@ export async function recordPaymentWork(
       amountK: done.amountK,
       balanceDueK: done.balanceDueK,
       invoiceStatus: done.balanceDueK === 0 ? 'paid' : 'partially_paid',
+      receivedK: done.receivedK,
+      creditK: done.creditK,
+      excessDisposition: done.excessDisposition,
     };
   } else {
     try {
@@ -115,6 +131,7 @@ export async function recordPaymentWork(
         clientRef: input.clientRef ?? null,
         evidenceBasis: input.evidenceBasis ?? null,
         paymentEvidenceId: input.paymentEvidenceId ?? null,
+        confirmedOverpayment: input.confirmedOverpayment ?? null,
       });
       result = { outcome: 'recorded', ...recorded };
     } catch (error) {

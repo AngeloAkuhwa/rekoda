@@ -413,6 +413,14 @@ export const commandDrafts = pgTable(
      * `yes` (migration 0023). Null on almost every draft.
      */
     identityLink: jsonb('identity_link'),
+    /**
+     * What the preview SHOWED, computed from SQL (migration 0152, OWN-16):
+     * today only a deliberate overpayment's balance, amount, allocation and
+     * credit, checked again at `yes`. System-owned, never the model's; ids
+     * and kobo only. Read through `parseConfirmationContext`. Null on almost
+     * every draft.
+     */
+    confirmationContext: jsonb('confirmation_context'),
     /** pending | superseded | confirmed | abandoned */
     state: text('state').notNull().default('pending'),
     /**

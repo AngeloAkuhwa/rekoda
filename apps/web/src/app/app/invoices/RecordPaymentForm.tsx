@@ -37,12 +37,14 @@ export function RecordPaymentForm({ invoices }: { invoices: PayableInvoice[] }) 
    * payment reuse it — the server saw the same rekoda_reference and answered
    * "already recorded", silently dropping real cash. The key is bumped the
    * moment a submission settles (recorded OR duplicate), so the next payment
-   * is a fresh intention; an error leaves it, so a corrected retry keeps it.
+   * is a fresh intention; an error leaves it, so a corrected retry keeps it,
+   * except a balance refusal (`freshKey`), whose answer may already be
+   * recorded against the key: the retry after it is a new intention (G-49).
    */
   const [generation, setGeneration] = useState(0);
   const clientRef = useMemo(() => crypto.randomUUID(), [generation]);
   useEffect(() => {
-    if (state.done) setGeneration((g) => g + 1);
+    if (state.done || state.freshKey) setGeneration((g) => g + 1);
   }, [state]);
   const owed = invoices.find((i) => i.invoiceNumber === chosen)?.balanceDueK ?? 0;
 
@@ -113,6 +115,25 @@ export function RecordPaymentForm({ invoices }: { invoices: PayableInvoice[] }) 
         </select>
       </Field>
 
+      {/* An overpayment is asked about before anything is saved (G-49).
+          The second submit carries the figures that were shown; the action
+          drops them if the amount or invoice was changed since. */}
+      {state.overpayment && state.overpayment.invoiceNumber === chosen ? (
+        <>
+          <input type="hidden" name="confirmOverpayment" value="1" />
+          <input type="hidden" name="expectedBalanceK" value={state.overpayment.expectedBalanceK} />
+          <input type="hidden" name="confirmedAmountK" value={state.overpayment.amountK} />
+          <input
+            type="hidden"
+            name="confirmedInvoiceNumber"
+            value={state.overpayment.invoiceNumber}
+          />
+          <p className="rk-fineprint" role="alert">
+            {state.overpayment.consequence}
+          </p>
+        </>
+      ) : null}
+
       {state.done ? (
         <p className="rk-fineprint" role="status">
           {state.done}
@@ -120,7 +141,11 @@ export function RecordPaymentForm({ invoices }: { invoices: PayableInvoice[] }) 
       ) : null}
 
       <Button type="submit" disabled={pending}>
-        {pending ? 'Recording…' : 'Record this payment'}
+        {pending
+          ? 'Recording…'
+          : state.overpayment && state.overpayment.invoiceNumber === chosen
+            ? 'Yes, record it'
+            : 'Record this payment'}
       </Button>
     </form>
   );

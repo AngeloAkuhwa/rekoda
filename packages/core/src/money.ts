@@ -280,6 +280,32 @@ export function applyPayment(
   };
 }
 
+/**
+ * How money received answers a balance (G-49, spec §14.1, journey C11).
+ *
+ * The invoice takes at most what it owes; anything beyond that is excess, a
+ * customer-credit liability and never revenue. Exact and partial payments
+ * have no excess, and `remainingK` is what the invoice still owes after.
+ * Pure arithmetic over integer kobo: callers decide whether an excess is
+ * allowed at all, and only a merchant's explicit confirmation allows it.
+ */
+export function splitPayment(
+  balanceK: Kobo,
+  receivedK: Kobo,
+): { allocatedK: Kobo; excessK: Kobo; remainingK: Kobo } {
+  assertKobo(balanceK, 'balance');
+  assertKobo(receivedK, 'received');
+  if (balanceK < 0 || receivedK < 0) {
+    throw new MoneyError(`balance and received must not be negative (${balanceK}, ${receivedK})`);
+  }
+  const allocatedK = Math.min(balanceK, receivedK);
+  return {
+    allocatedK,
+    excessK: receivedK - allocatedK,
+    remainingK: balanceK - allocatedK,
+  };
+}
+
 /** Format kobo for humans: ₦1,234,567.89 (presentation edge only). */
 export function formatKobo(kobo: Kobo, currency = 'NGN'): string {
   const sign = kobo < 0 ? '-' : '';

@@ -17,6 +17,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import {
   createDb,
+  customerCreditsRepo,
   customersRepo,
   identity,
   ordersRepo,
@@ -27,6 +28,7 @@ import {
   type Db,
 } from '@rekoda/db';
 import { layoutReceipt, replies } from '@rekoda/core';
+import { documentHash } from '@rekoda/core/documents';
 import { migrate, requireUrls, truncateAll, type Urls } from '@rekoda/db/testing';
 import { CommandBus } from './command-bus.service.js';
 import { RiskPolicyService } from '../risk/risk-policy.service.js';
@@ -39,6 +41,12 @@ import {
   type RecordSaleInput,
 } from './sale-commands.js';
 import { buildOutboxDispatcher } from '../jobs/jobs.module.js';
+import { recordPaymentWork } from './payment-commands.js';
+import {
+  chargebackPaymentWork,
+  refundPaymentWork,
+  reversePaymentWork,
+} from './payment-adjustment-commands.js';
 
 let urls: Urls;
 let appDb: Db;
@@ -519,11 +527,10 @@ describe('G-48: a sale paid at issue ends in its receipt', () => {
   });
 
   it('an overpaid sale is receipted for all that arrived, and promises nothing about the excess', async () => {
-    /* ₦12,000 stated against a ₦10,000 sale. Overpayment itself is not
-     * G-48's to change: the payment row keeps the stated figure and the books
-     * the total, as before. The receipt says what arrived (amountK) and what
-     * was applied (allocatedK); nothing books, refunds or credits the excess
-     * on this path yet (G-49), so the receipt must not promise it. */
+    /* ₦12,000 stated against a ₦10,000 sale with no customer on it. The
+     * receipt says what arrived (amountK) and what was applied (allocatedK).
+     * Since G-49 the excess is booked, as an unapplied liability no customer
+     * is named for, and the receipt says exactly that and promises nothing. */
     const businessId = await seedBusiness();
     const done = await withBusiness(appDb, businessId, (tx) =>
       recordSaleWork(tx, sale(businessId, { paidK: 1_200_000, balanceDueK: 0 })),
@@ -559,6 +566,7 @@ describe('G-48: a sale paid at issue ends in its receipt', () => {
       amountK: 1_200_000,
       allocatedK: 1_000_000,
       verified: false,
+      excessDisposition: 'unattributed',
     });
 
     /* What the customer reads: the stored snapshot through the real receipt
@@ -573,13 +581,15 @@ describe('G-48: a sale paid at issue ends in its receipt', () => {
       amountK: Number(snapshot['amountK']),
       allocatedK: Number(snapshot['allocatedK']),
       verified: snapshot['verified'] !== false,
+      excessDisposition: snapshot['excessDisposition'] as 'unattributed',
     })
       .map((block) => `${block.text} ${block.value ?? ''}`)
       .join('\n');
     expect(printed).toContain('Amount received ₦12,000');
     expect(printed).toContain(`Applied to ${done.invoiceNumber} ₦10,000`);
-    expect(printed).toContain('The remaining ₦2,000 was not applied to this invoice.');
-    expect(printed).not.toMatch(/review|refund|credited/i);
+    expect(printed).toContain('Unapplied amount ₦2,000');
+    expect(printed).toContain('This amount is not linked to a customer yet.');
+    expect(printed).not.toMatch(/review|refund|credited|owed to/i);
 
     /* And the caption the merchant forwards with it, built from the same
      * snapshot the way deliver-document does: what arrived, never confirmed. */
@@ -594,9 +604,16 @@ describe('G-48: a sale paid at issue ends in its receipt', () => {
     );
     expect(caption).not.toMatch(/confirm|verif|refund|credit/i);
 
-    /* The books, unchanged: one posting, Cash and Revenue at the total. */
+    /* The books (G-49): one posting, all the cash that arrived, revenue at
+     * the total, and the excess a liability. No customer is invented for it. */
     expect(await count(businessId, 'ledger_transactions')).toBe(1);
-    expect(await ledgerByCode(businessId)).toEqual({ '1000': 1_000_000, '4000': -1_000_000 });
+    expect(await ledgerByCode(businessId)).toEqual({
+      '1000': 1_200_000,
+      '2300': -200_000,
+      '4000': -1_000_000,
+    });
+    expect(await count(businessId, 'customer_credits')).toBe(0);
+    expect(await count(businessId, 'reconciliations', "AND reason = 'overpaid'")).toBe(1);
   });
 
   it('the receipt snapshot names the money and never the customer', async () => {
@@ -806,6 +823,604 @@ describe('G-48: a sale paid at issue ends in its receipt', () => {
       allocatedK: 600_000,
       currency: 'NGN',
       verified: false,
+    });
+  });
+});
+
+/**
+ * G-49, owner ruling OWN-16: a merchant may deliberately confirm a genuine
+ * overpayment. The full amount received is real money, the invoice is
+ * settled only up to its balance, and the excess becomes a customer-credit
+ * liability. A confirmation made stale by a balance change is never turned
+ * into credit.
+ */
+describe('G-49: a merchant overpayment is real money and customer credit', () => {
+  const TOKEN = 'cus_tok_g49';
+
+  async function rows<T extends Record<string, unknown>>(
+    businessId: string,
+    query: ReturnType<typeof sql>,
+  ): Promise<T[]> {
+    const result = await withBusiness(appDb, businessId, (tx) => tx.execute<T>(query));
+    return [...result] as T[];
+  }
+
+  async function ledgerByCode(businessId: string): Promise<Record<string, number>> {
+    const found = await rows<{ code: string; net: string }>(
+      businessId,
+      sql`SELECT a.code, SUM(e.debit_k - e.credit_k)::text AS net
+          FROM ledger_entries e JOIN accounts a ON a.id = e.account_id
+          WHERE e.business_id = ${businessId}::uuid
+          GROUP BY a.code`,
+    );
+    return Object.fromEntries(found.map((r) => [r.code, Number(r.net)]));
+  }
+
+  async function namedCustomer(businessId: string): Promise<string> {
+    const customer = await customersRepo.createCustomerWithIdentities(appDb, businessId, TOKEN, [
+      { facet: 'phone', ciphertext: 'sealed-phone', matchKey: 'mk-g49' },
+    ]);
+    return customer.id;
+  }
+
+  function sale(
+    businessId: string,
+    customerId: string | null,
+    over: Partial<RecordSaleInput> = {},
+  ): RecordSaleInput {
+    return {
+      ...saleInput(businessId),
+      customerId,
+      customerToken: customerId ? TOKEN : null,
+      totalK: 10_000_000,
+      subtotalK: 10_000_000,
+      items: [{ name: 'Ankara bale', quantity: 1, unitPriceK: 10_000_000 }],
+      paidK: 12_000_000,
+      balanceDueK: 0,
+      ...over,
+    };
+  }
+
+  /** Everything a merchant overpayment can write, counted. */
+  async function footprint(businessId: string) {
+    const out: Record<string, number> = {};
+    for (const table of [
+      'invoices',
+      'payments',
+      'payment_verifications',
+      'payment_allocations',
+      'receipts',
+      'customer_credits',
+      'reconciliations',
+      'ledger_transactions',
+      'ledger_entries',
+      'jobs',
+      'outbox_events',
+      'doc_counters',
+    ]) {
+      out[table] = await count(businessId, table);
+    }
+    return out;
+  }
+
+  describe('a sale paid over at issue: 100,000 sold, 120,000 received', () => {
+    for (const method of ['cash', 'transfer'] as const) {
+      it(`${method}, named customer: one of everything, credit 20,000 keyed on the payment`, async () => {
+        const businessId = await seedBusiness();
+        const customerId = await namedCustomer(businessId);
+        const done = await withBusiness(appDb, businessId, (tx) =>
+          recordSaleWork(tx, sale(businessId, customerId, { method })),
+        );
+
+        expect(await count(businessId, 'invoices')).toBe(1);
+        expect(await count(businessId, 'payments')).toBe(1);
+        expect(
+          await count(businessId, 'payment_verifications', "AND source = 'MERCHANT_ATTESTED'"),
+        ).toBe(1);
+        expect(await count(businessId, 'payment_verifications')).toBe(1);
+        expect(await count(businessId, 'payment_allocations')).toBe(1);
+        expect(await count(businessId, 'receipts')).toBe(1);
+
+        const [payment] = await rows<{ id: string; amount_k: string; verified: number }>(
+          businessId,
+          sql`SELECT id, amount_k::text, verified FROM payments
+              WHERE business_id = ${businessId}::uuid`,
+        );
+        expect(payment?.id).toBe(done.paymentId);
+        expect(payment?.amount_k).toBe('12000000');
+        expect(Number(payment?.verified)).toBe(0);
+
+        const [allocation] = await rows<{ amount_k: string }>(
+          businessId,
+          sql`SELECT amount_k::text FROM payment_allocations
+              WHERE business_id = ${businessId}::uuid`,
+        );
+        expect(allocation?.amount_k).toBe('10000000');
+
+        const [invoice] = await rows<{ paid_k: string; balance_due_k: string; status: string }>(
+          businessId,
+          sql`SELECT paid_k::text, balance_due_k::text, status FROM invoices
+              WHERE business_id = ${businessId}::uuid`,
+        );
+        expect(invoice?.balance_due_k).toBe('0');
+        expect(invoice?.paid_k).toBe('10000000');
+
+        const [receipt] = await rows<{ amount_k: string; snapshot_json: Record<string, unknown> }>(
+          businessId,
+          sql`SELECT amount_k::text, snapshot_json FROM receipts
+              WHERE business_id = ${businessId}::uuid`,
+        );
+        expect(receipt?.amount_k).toBe('12000000');
+        expect(receipt?.snapshot_json).toMatchObject({
+          amountK: 12_000_000,
+          allocatedK: 10_000_000,
+          verified: false,
+          excessDisposition: 'customer_credit',
+        });
+        expect(JSON.stringify(receipt?.snapshot_json)).not.toContain(TOKEN);
+        /* The hash is of exactly the snapshot stored, disposition included. */
+        const [hashed] = await rows<{ doc_hash: string; snapshot_json: unknown }>(
+          businessId,
+          sql`SELECT doc_hash, snapshot_json FROM receipts WHERE business_id = ${businessId}::uuid`,
+        );
+        expect(hashed?.doc_hash).toBe(documentHash(hashed?.snapshot_json));
+
+        const credits = await rows<{
+          customer_id: string;
+          amount_minor: string;
+          source_type: string;
+          source_id: string;
+        }>(
+          businessId,
+          sql`SELECT customer_id, amount_minor::text, source_type, source_id
+              FROM customer_credits WHERE business_id = ${businessId}::uuid`,
+        );
+        expect(credits).toEqual([
+          {
+            customer_id: customerId,
+            amount_minor: '2000000',
+            source_type: 'overpayment',
+            source_id: done.paymentId,
+          },
+        ]);
+
+        const recon = await rows<{
+          status: string;
+          reason: string;
+          expectation_kind: string;
+          expectation_id: string;
+          payment_id: string;
+          outstanding_k: string;
+        }>(
+          businessId,
+          sql`SELECT status, reason, expectation_kind, expectation_id::text, payment_id::text,
+                     outstanding_k::text
+              FROM reconciliations WHERE business_id = ${businessId}::uuid`,
+        );
+        expect(recon).toEqual([
+          {
+            status: 'EXCEPTION',
+            reason: 'overpaid',
+            expectation_kind: 'invoice',
+            expectation_id: done.invoiceId,
+            payment_id: done.paymentId,
+            outstanding_k: '-2000000',
+          },
+        ]);
+
+        /* One posting: all that arrived in Cash or Bank, revenue at the
+         * total, the excess a customer-credit liability. Never revenue. */
+        expect(await count(businessId, 'ledger_transactions')).toBe(1);
+        expect(await ledgerByCode(businessId)).toEqual({
+          [method === 'cash' ? '1000' : '1020']: 12_000_000,
+          '2300': -2_000_000,
+          '4000': -10_000_000,
+        });
+        const [owed] = await rows<{ n: string }>(
+          businessId,
+          sql`SELECT COALESCE(SUM(amount_minor), 0)::text AS n FROM customer_credits
+              WHERE business_id = ${businessId}::uuid AND customer_id = ${customerId}::uuid`,
+        );
+        expect(owed?.n).toBe('2000000');
+        /* And the read the customer-credit surfaces use agrees. */
+        expect(
+          await withBusiness(appDb, businessId, (tx) =>
+            customerCreditsRepo.customerCreditBalanceMinor(tx, businessId, customerId),
+          ),
+        ).toBe(2_000_000);
+      });
+    }
+
+    it('anonymous: the liability is booked and marked, and no customer is invented', async () => {
+      const businessId = await seedBusiness();
+      const done = await withBusiness(appDb, businessId, (tx) =>
+        recordSaleWork(tx, sale(businessId, null)),
+      );
+
+      expect(await count(businessId, 'customers')).toBe(0);
+      expect(await count(businessId, 'customer_credits')).toBe(0);
+      expect(
+        await count(
+          businessId,
+          'reconciliations',
+          `AND reason = 'overpaid' AND payment_id = '${done.paymentId}'::uuid`,
+        ),
+      ).toBe(1);
+      const [receipt] = await rows<{ snapshot_json: Record<string, unknown> }>(
+        businessId,
+        sql`SELECT snapshot_json FROM receipts WHERE business_id = ${businessId}::uuid`,
+      );
+      expect(receipt?.snapshot_json).toMatchObject({ excessDisposition: 'unattributed' });
+      expect(await ledgerByCode(businessId)).toEqual({
+        '1000': 12_000_000,
+        '2300': -2_000_000,
+        '4000': -10_000_000,
+      });
+    });
+
+    it('exact and part-paid sales keep their pre-G-49 shape: no excess field, no marks', async () => {
+      const businessId = await seedBusiness();
+      const customerId = await namedCustomer(businessId);
+      await withBusiness(appDb, businessId, (tx) =>
+        recordSaleWork(tx, sale(businessId, customerId, { paidK: 10_000_000 })),
+      );
+      await withBusiness(appDb, businessId, (tx) =>
+        recordSaleWork(
+          tx,
+          sale(businessId, customerId, {
+            paidK: 4_000_000,
+            balanceDueK: 6_000_000,
+            sourceId: 'draft-part',
+          }),
+        ),
+      );
+      const snapshots = await rows<{ snapshot_json: Record<string, unknown> }>(
+        businessId,
+        sql`SELECT snapshot_json FROM receipts WHERE business_id = ${businessId}::uuid`,
+      );
+      expect(snapshots).toHaveLength(2);
+      for (const r of snapshots) expect(r.snapshot_json).not.toHaveProperty('excessDisposition');
+      expect(await count(businessId, 'customer_credits')).toBe(0);
+      expect(await count(businessId, 'reconciliations')).toBe(0);
+      expect(await ledgerByCode(businessId)).not.toHaveProperty('2300');
+    });
+
+    it('a replayed or competing yes grants the credit once', async () => {
+      const businessId = await seedBusiness();
+      const customerId = await namedCustomer(businessId);
+      const input = sale(businessId, customerId);
+      const envelope = {
+        businessId,
+        command: 'RecordSale' as const,
+        payload: input,
+        actor: 'system',
+        ingress: 'CHAT' as const,
+        idempotencyKey: 'draft:draft-g49',
+      };
+      const run = () =>
+        withBusiness(appDb, businessId, (tx) =>
+          bus.run(tx, envelope, () => recordSaleWork(tx, input)),
+        );
+      const raced = await Promise.allSettled([run(), run()]);
+      expect(raced.some((r) => r.status === 'fulfilled')).toBe(true);
+      const replay = await run();
+      expect(replay.outcome).toBe('done');
+      if (replay.outcome === 'done') expect(replay.replayed).toBe(true);
+
+      for (const table of [
+        'invoices',
+        'payments',
+        'payment_verifications',
+        'payment_allocations',
+        'receipts',
+        'customer_credits',
+        'reconciliations',
+        'ledger_transactions',
+      ]) {
+        expect(await count(businessId, table), table).toBe(1);
+      }
+    });
+
+    it('a failure late in the sale takes the credit and its marks down with everything', async () => {
+      const businessId = await seedBusiness();
+      const customerId = await namedCustomer(businessId);
+      expect(businessId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+      const { db: ownerDb, close: closeOwner } = createDb(urls.owner, { max: 1 });
+      await ownerDb.execute(sql`DROP TRIGGER IF EXISTS g49_fail_sale_outbox ON outbox_events`);
+      await ownerDb.execute(sql`
+        CREATE OR REPLACE FUNCTION g49_fail_sale_outbox() RETURNS trigger
+        LANGUAGE plpgsql AS $$
+        BEGIN
+          IF NEW.business_id = '${sql.raw(businessId)}'::uuid AND NEW.type = 'sale.recorded' THEN
+            RAISE EXCEPTION 'g49: forced failure at the last write';
+          END IF;
+          RETURN NEW;
+        END $$`);
+      await ownerDb.execute(sql`
+        CREATE TRIGGER g49_fail_sale_outbox BEFORE INSERT ON outbox_events
+        FOR EACH ROW EXECUTE FUNCTION g49_fail_sale_outbox()`);
+      try {
+        const failed = await withBusiness(appDb, businessId, (tx) =>
+          recordSaleWork(tx, sale(businessId, customerId)),
+        ).then(
+          () => null,
+          (error: unknown) => error as Error & { cause?: unknown },
+        );
+        expect(String(failed) + String(failed?.cause)).toContain(
+          'g49: forced failure at the last write',
+        );
+      } finally {
+        await ownerDb.execute(sql`DROP TRIGGER IF EXISTS g49_fail_sale_outbox ON outbox_events`);
+        await ownerDb.execute(sql`DROP FUNCTION IF EXISTS g49_fail_sale_outbox()`);
+        await closeOwner();
+      }
+      expect(await footprint(businessId)).toEqual({
+        invoices: 0,
+        payments: 0,
+        payment_verifications: 0,
+        payment_allocations: 0,
+        receipts: 0,
+        customer_credits: 0,
+        reconciliations: 0,
+        ledger_transactions: 0,
+        ledger_entries: 0,
+        jobs: 0,
+        outbox_events: 0,
+        doc_counters: 0,
+      });
+    });
+
+    it('the overpaid payment is refused by the refund guard, like a provider overpayment', async () => {
+      const businessId = await seedBusiness();
+      const customerId = await namedCustomer(businessId);
+      const done = await withBusiness(appDb, businessId, (tx) =>
+        recordSaleWork(tx, sale(businessId, customerId)),
+      );
+      const refused = await withBusiness(appDb, businessId, (tx) =>
+        refundPaymentWork(tx, {
+          businessId,
+          paymentId: done.paymentId!,
+          paymentAmountK: 12_000_000,
+          amountK: 1_000_000,
+          providerRefundId: 'rf_g49',
+          paymentConnectionId: null,
+          reason: 'test',
+          actor: 'system',
+          eventId: 'evt_g49',
+        }),
+      );
+      expect(refused).toEqual({ outcome: 'overpaid_payment' });
+
+      /* And so are a reversal and a chargeback of it: the credit half has no
+       * posting rule (OD-8), so none of the three moves anything. */
+      const reversed = await withBusiness(appDb, businessId, (tx) =>
+        reversePaymentWork(tx, {
+          businessId,
+          paymentId: done.paymentId!,
+          paymentAmountK: 12_000_000,
+          paymentConnectionId: '00000000-0000-4000-8000-000000000000',
+          providerReversalId: 'rv_g49',
+          reason: 'test',
+          actor: 'system',
+          eventId: 'evt_g49_rv',
+        }),
+      );
+      expect(reversed).toEqual({ outcome: 'overpaid_payment' });
+      const charged = await withBusiness(appDb, businessId, (tx) =>
+        chargebackPaymentWork(tx, {
+          businessId,
+          paymentId: done.paymentId!,
+          paymentAmountK: 12_000_000,
+          paymentConnectionId: '00000000-0000-4000-8000-000000000000',
+          providerChargebackId: 'cb_g49',
+          amountK: 1_000_000,
+          reason: 'test',
+          actor: 'system',
+          eventId: 'evt_g49_cb',
+        }),
+      );
+      expect(charged).toEqual({ outcome: 'overpaid_payment' });
+      expect(await count(businessId, 'customer_credits')).toBe(1);
+      expect(await count(businessId, 'ledger_transactions')).toBe(1);
+    });
+  });
+
+  describe('a later payment: the invoice owes 100,000 and 120,000 comes in', () => {
+    async function openInvoice(businessId: string, customerId: string | null) {
+      return withBusiness(appDb, businessId, (tx) =>
+        recordSaleWork(tx, sale(businessId, customerId, { paidK: 0, balanceDueK: 10_000_000 })),
+      );
+    }
+
+    function pay(
+      businessId: string,
+      invoiceId: string,
+      over: Partial<Parameters<typeof recordPaymentWork>[1]> = {},
+    ) {
+      return withBusiness(appDb, businessId, (tx) =>
+        recordPaymentWork(tx, {
+          businessId,
+          invoice: { id: invoiceId },
+          amountK: 12_000_000,
+          method: 'cash',
+          sourceType: 'chat',
+          sourceId: 'draft-later',
+          actor: 'system',
+          ...over,
+        }),
+      );
+    }
+
+    it('without the explicit confirmation it is refused as always, writing nothing', async () => {
+      const businessId = await seedBusiness();
+      const customerId = await namedCustomer(businessId);
+      const inv = await openInvoice(businessId, customerId);
+      const before = await footprint(businessId);
+
+      const refused = await pay(businessId, inv.invoiceId);
+      expect(refused).toMatchObject({ outcome: 'balance_moved', balanceDueK: 10_000_000 });
+      expect(await footprint(businessId)).toEqual(before);
+    });
+
+    for (const method of ['cash', 'transfer'] as const) {
+      it(`${method}: confirmed at the balance shown, 100,000 settles it and 20,000 is credit`, async () => {
+        const businessId = await seedBusiness();
+        const customerId = await namedCustomer(businessId);
+        const inv = await openInvoice(businessId, customerId);
+
+        const done = await pay(businessId, inv.invoiceId, {
+          method,
+          confirmedOverpayment: { expectedBalanceK: 10_000_000 },
+        });
+        expect(done).toMatchObject({
+          outcome: 'recorded',
+          amountK: 10_000_000,
+          receivedK: 12_000_000,
+          creditK: 2_000_000,
+          balanceDueK: 0,
+        });
+
+        const [payment] = await rows<{ id: string; amount_k: string }>(
+          businessId,
+          sql`SELECT id, amount_k::text FROM payments WHERE business_id = ${businessId}::uuid`,
+        );
+        expect(payment?.amount_k).toBe('12000000');
+        expect(await count(businessId, 'payment_allocations')).toBe(1);
+        expect(
+          await count(businessId, 'payment_verifications', "AND source = 'MERCHANT_ATTESTED'"),
+        ).toBe(1);
+        const [receipt] = await rows<{ amount_k: string; snapshot_json: Record<string, unknown> }>(
+          businessId,
+          sql`SELECT amount_k::text, snapshot_json FROM receipts
+              WHERE business_id = ${businessId}::uuid`,
+        );
+        expect(receipt?.amount_k).toBe('12000000');
+        expect(receipt?.snapshot_json).toMatchObject({
+          amountK: 12_000_000,
+          allocatedK: 10_000_000,
+          verified: false,
+          excessDisposition: 'customer_credit',
+        });
+        const credits = await rows<{
+          amount_minor: string;
+          source_type: string;
+          source_id: string;
+        }>(
+          businessId,
+          sql`SELECT amount_minor::text, source_type, source_id FROM customer_credits
+              WHERE business_id = ${businessId}::uuid`,
+        );
+        expect(credits).toEqual([
+          { amount_minor: '2000000', source_type: 'overpayment', source_id: payment!.id },
+        ]);
+        expect(
+          await count(
+            businessId,
+            'reconciliations',
+            "AND reason = 'overpaid' AND status = 'EXCEPTION'",
+          ),
+        ).toBe(1);
+        /* The sale on credit, then the payment: AR cleared, the excess credit. */
+        expect(await ledgerByCode(businessId)).toEqual({
+          [method === 'cash' ? '1000' : '1020']: 12_000_000,
+          '1100': 0,
+          '2300': -2_000_000,
+          '4000': -10_000_000,
+        });
+      });
+    }
+
+    it('a stale confirmation (the balance moved) writes nothing at all', async () => {
+      const businessId = await seedBusiness();
+      const customerId = await namedCustomer(businessId);
+      const inv = await openInvoice(businessId, customerId);
+      /* Another 40,000 lands after the preview showed 100,000 owing. */
+      await pay(businessId, inv.invoiceId, { amountK: 4_000_000, sourceId: 'other' });
+      const before = await footprint(businessId);
+
+      const stale = await pay(businessId, inv.invoiceId, {
+        confirmedOverpayment: { expectedBalanceK: 10_000_000 },
+      });
+      expect(stale).toMatchObject({ outcome: 'balance_moved', balanceDueK: 6_000_000 });
+      expect(await footprint(businessId)).toEqual(before);
+      expect(await count(businessId, 'customer_credits')).toBe(0);
+    });
+
+    it('a failure at the last write takes the payment, credit, marks, receipt and job down', async () => {
+      const businessId = await seedBusiness();
+      const customerId = await namedCustomer(businessId);
+      const inv = await openInvoice(businessId, customerId);
+      const before = await footprint(businessId);
+      expect(businessId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+      const { db: ownerDb, close: closeOwner } = createDb(urls.owner, { max: 1 });
+      await ownerDb.execute(sql`DROP TRIGGER IF EXISTS g49_fail_pay_outbox ON outbox_events`);
+      await ownerDb.execute(sql`
+        CREATE OR REPLACE FUNCTION g49_fail_pay_outbox() RETURNS trigger
+        LANGUAGE plpgsql AS $$
+        BEGIN
+          IF NEW.business_id = '${sql.raw(businessId)}'::uuid AND NEW.type = 'payment.recorded' THEN
+            RAISE EXCEPTION 'g49: forced failure after the payment';
+          END IF;
+          RETURN NEW;
+        END $$`);
+      await ownerDb.execute(sql`
+        CREATE TRIGGER g49_fail_pay_outbox BEFORE INSERT ON outbox_events
+        FOR EACH ROW EXECUTE FUNCTION g49_fail_pay_outbox()`);
+      try {
+        const failed = await pay(businessId, inv.invoiceId, {
+          confirmedOverpayment: { expectedBalanceK: 10_000_000 },
+        }).then(
+          () => null,
+          (error: unknown) => error as Error & { cause?: unknown },
+        );
+        expect(String(failed) + String(failed?.cause)).toContain(
+          'g49: forced failure after the payment',
+        );
+      } finally {
+        await ownerDb.execute(sql`DROP TRIGGER IF EXISTS g49_fail_pay_outbox ON outbox_events`);
+        await ownerDb.execute(sql`DROP FUNCTION IF EXISTS g49_fail_pay_outbox()`);
+        await closeOwner();
+      }
+      /* Nothing of the payment survives, and the invoice still owes it all. */
+      expect(await footprint(businessId)).toEqual(before);
+      const [invoice] = await rows<{ balance_due_k: string; paid_k: string }>(
+        businessId,
+        sql`SELECT balance_due_k::text, paid_k::text FROM invoices
+            WHERE business_id = ${businessId}::uuid`,
+      );
+      expect(invoice).toEqual({ balance_due_k: '10000000', paid_k: '0' });
+    });
+
+    it('a balance that ROSE since the preview is stale too, and writes nothing', async () => {
+      /* Confirmed against 80,000 while the locked balance is 100,000 (a
+       * reversal reopened it): applying 120,000 would now credit 20,000 the
+       * merchant was never shown, and apply 20,000 more than they saw. */
+      const businessId = await seedBusiness();
+      const customerId = await namedCustomer(businessId);
+      const inv = await openInvoice(businessId, customerId);
+      const before = await footprint(businessId);
+
+      const stale = await pay(businessId, inv.invoiceId, {
+        confirmedOverpayment: { expectedBalanceK: 8_000_000 },
+      });
+      expect(stale).toMatchObject({ outcome: 'balance_moved', balanceDueK: 10_000_000 });
+      expect(await footprint(businessId)).toEqual(before);
+    });
+
+    it('two confirmations of one overpayment race: exactly one payment and one credit', async () => {
+      const businessId = await seedBusiness();
+      const customerId = await namedCustomer(businessId);
+      const inv = await openInvoice(businessId, customerId);
+      const confirmed = { confirmedOverpayment: { expectedBalanceK: 10_000_000 } };
+      const [a, b] = await Promise.all([
+        pay(businessId, inv.invoiceId, confirmed),
+        pay(businessId, inv.invoiceId, { ...confirmed, sourceId: 'second' }),
+      ]);
+      const outcomes = [a.outcome, b.outcome].sort();
+      expect(outcomes).toEqual(['already_settled', 'recorded']);
+      expect(await count(businessId, 'payments')).toBe(1);
+      expect(await count(businessId, 'customer_credits')).toBe(1);
+      expect(await count(businessId, 'reconciliations')).toBe(1);
     });
   });
 });

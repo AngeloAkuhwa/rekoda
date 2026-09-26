@@ -43,6 +43,14 @@ export interface ReceiptDocument {
    * would be a lie printed on their letterhead.
    */
   readonly verified: boolean;
+  /**
+   * Where a merchant-recorded overpayment's excess went, once G-49 books it:
+   * `customer_credit` when the invoice's customer now holds it as credit,
+   * `unattributed` when it is booked as owed but to nobody Rekoda can name.
+   * Absent on every other receipt, including overpaid ones written before
+   * G-49, which keep their neutral wording.
+   */
+  readonly excessDisposition?: 'customer_credit' | 'unattributed';
 }
 
 function issuedLine(at: Date): string {
@@ -92,12 +100,23 @@ export function layoutReceipt(doc: ReceiptDocument): LayoutBlock[] {
       text: `Applied to ${doc.invoiceNumber}`,
       value: formatKobo(doc.allocatedK),
     });
-    blocks.push({
-      kind: 'memo',
-      text: doc.verified
-        ? `The remaining ${formatKobo(remainingK)} is being reviewed and will be refunded or credited.`
-        : `The remaining ${formatKobo(remainingK)} was not applied to this invoice.`,
-    });
+    if (doc.verified) {
+      blocks.push({
+        kind: 'memo',
+        text: `The remaining ${formatKobo(remainingK)} is being reviewed and will be refunded or credited.`,
+      });
+    } else if (doc.excessDisposition === 'customer_credit') {
+      /* Booked already (G-49): stated as a fact, not a promise. */
+      blocks.push({ kind: 'total', text: 'Customer credit', value: formatKobo(remainingK) });
+    } else if (doc.excessDisposition === 'unattributed') {
+      blocks.push({ kind: 'total', text: 'Unapplied amount', value: formatKobo(remainingK) });
+      blocks.push({ kind: 'memo', text: 'This amount is not linked to a customer yet.' });
+    } else {
+      blocks.push({
+        kind: 'memo',
+        text: `The remaining ${formatKobo(remainingK)} was not applied to this invoice.`,
+      });
+    }
   }
 
   /**

@@ -8,27 +8,32 @@
 
 ## Current state at a glance
 
-| Field                       | Value                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **Current date**            | 13 September 2026                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| **Current `main` SHA**      | `3cab9dd` (13 Sep 2026, "fix: check Caddy's own trust list before Caddy serves (G-74) (#244)"); before it `1bbe1f1` (#243, G-72), `48ba9d5` (#242, G-71), `c508709` (#241, G-01), `b81ef90` (#240, G-08), `7b9fd8f` (#236), `2dce181` (#239), `e993885` (#235) and the G-06 merge `8f07a6d` (#238)                                                                                                                                                                                         |
-| **Open branches**           | the G-75 PR (`fix/edge-private-ranges`: the edge check refuses `private_ranges` and the edge gateway, per the owner's OD-13 ruling). #244 (G-74) MERGED as `3cab9dd` on 13 Sep 2026; #243 (G-72) MERGED as `1bbe1f1` on 13 Sep 2026; #242 (G-71) MERGED as `48ba9d5` on 13 Sep 2026; #241 (G-01) MERGED as `c508709` on 12 Sep 2026; #240 (G-08 template half) as `b81ef90`; dependency housekeeping is closed; #225, #226 and #227 (NestJS 12) closed as deferred post-launch work (G-70) |
-| **Product version / state** | 0.1.0. Build plan complete (138 rows, PR-001…PR-132; PR-006–009 and PR-115 gated); 152 migrations; never deployed to a host (the production stack boots on a clean CI runner since G-01); no live provider has been exercised                                                                                                                                                                                                                                                              |
-| **Launch verdict**          | **NOT READY** (`REKODA_LAUNCH_READINESS.md` §1)                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| **Engineering model**       | Simple: Angelo assigns, Claude reads `CLAUDE.md` and the canonical docs, implements with tests, normal CI, Angelo reviews and merges. The multi-agent control plane (PR #233) was removed by PR #237 (merged 11 Sep 2026) and PR #234 closed unmerged                                                                                                                                                                                                                                      |
+| Field                       | Value                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Current date**            | 26 September 2026                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| **Current `main` SHA**      | `b9c9562` (26 Sep 2026, "fix: issue receipt for initially paid sales (#252)", G-48); before it `e02925d` (#251), `a61e08d` (#250), `0a99293` (#249), `33ddb33` (#245, G-75), `3cab9dd` (#244, G-74), `1bbe1f1` (#243, G-72), `48ba9d5` (#242, G-71), `c508709` (#241, G-01), `b81ef90` (#240, G-08), `7b9fd8f` (#236), `2dce181` (#239), `e993885` (#235) and the G-06 merge `8f07a6d` (#238)                                                                                                                                         |
+| **Open branches**           | the G-49 PR (`fix/g49-merchant-overpayment`, merchant overpayment as customer credit, OWN-16). #252 (G-48) MERGED as `b9c9562` on 26 Sep 2026; #245 (G-75) MERGED as `33ddb33`; #244 (G-74) MERGED as `3cab9dd` on 13 Sep 2026; #243 (G-72) MERGED as `1bbe1f1` on 13 Sep 2026; #242 (G-71) MERGED as `48ba9d5` on 13 Sep 2026; #241 (G-01) MERGED as `c508709` on 12 Sep 2026; #240 (G-08 template half) as `b81ef90`; dependency housekeeping is closed; #225, #226 and #227 (NestJS 12) closed as deferred post-launch work (G-70) |
+| **Product version / state** | 0.1.0. Build plan complete (138 rows, PR-001…PR-132; PR-006–009 and PR-115 gated); 153 migrations; deployed to staging (automatic after CI on main since #249); never to production (the production stack boots on a clean CI runner since G-01); no live provider has been exercised                                                                                                                                                                                                                                                 |
+| **Launch verdict**          | **NOT READY** (`REKODA_LAUNCH_READINESS.md` §1)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| **Engineering model**       | Simple: Angelo assigns, Claude reads `CLAUDE.md` and the canonical docs, implements with tests, normal CI, Angelo reviews and merges. The multi-agent control plane (PR #233) was removed by PR #237 (merged 11 Sep 2026) and PR #234 closed unmerged                                                                                                                                                                                                                                                                                 |
 
-**In review (26 Sep 2026, Build 1, G-48; CODE COMPLETE, staging acceptance
-pending):** branch `fix/initial-paid-sale-receipt` off `main` at `e02925d`.
-A sale with money taken at issue now ends in one merchant-attested receipt
-for that payment (same transaction, no second payment, verification,
-allocation or posting), and the receipt is the merchant's PDF instead of the
-invoice; a merchant-recorded overpayment receipt no longer promises a
-review, refund or credit. After merge: confirm `/health` names the merged
-SHA on staging, then run J2 from a real handset. **G-49 (merchant
-overpayment correctness) is the next implementation PR after G-48's staging
-acceptance.** The agreed sequence: G-48 staging acceptance, then G-49, then
-the proposed G-77 (public API paid-sale verification claim collision, found
-during G-48), then G-61 (purchase payment method and accounting truth).
+**Build 1 (G-48) accepted (26 Sep 2026):**
+
+- G-48: STAGING ACCEPTED (#252, merged as `b9c9562`, deployed to staging).
+- J2 real-handset acceptance: PASS.
+
+**In review (26 Sep 2026, Build 2, G-49; CODE COMPLETE, staging acceptance
+pending):** branch `fix/g49-merchant-overpayment` off `main` at `b9c9562`
+(G-48, #252, CLOSED as above). Owner ruling OWN-16: a
+merchant may deliberately confirm a genuine overpayment; the full amount is
+real money, the invoice settles up to its balance, the excess is a
+customer-credit liability, and a confirmation made stale by a balance change
+is never turned into credit. Migration 0152 adds
+`command_drafts.confirmation_context`. After merge: confirm `/health` names
+the merged SHA on staging, then run J9's overpayment step (chat) and the
+dashboard two-step from a real handset. Next in the agreed sequence: the
+proposed G-77 (public API paid-sale verification claim collision), then G-61
+(purchase payment method and accounting truth).
 
 **Last completed work (10–11 Sep 2026):** the repository reset. Removed
 `AGENTS.md`, `GEMINI.md`, `docs/AUTONOMOUS-ENGINEERING.md`, `docs/agents/`,

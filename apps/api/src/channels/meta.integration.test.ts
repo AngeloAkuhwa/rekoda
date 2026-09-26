@@ -5754,18 +5754,262 @@ describe('a payment the merchant reports (RecordPayment)', () => {
     expect(invoices.outstandingK).toBe(0);
   });
 
-  it('refuses to absorb more than the invoice owes, and asks instead', async () => {
-    await seedMerchant('+2348031234567');
+  it('shows an overpayment as received, applied and the rest, and saves nothing yet', async () => {
+    const business = await seedMerchant('+2348031234567');
     await issueUnpaidInvoice('wamid.P3');
 
     stubTransport.replyWith(paymentOf({ amount: 400_000 }));
     await post(messagePayload('2348031234567', 'wamid.P3-pay', 'Ada paid 400k'));
     await drain();
 
-    // A question, not a preview: an overpayment is a real event a merchant
-    // decides, never something the books quietly round away.
-    expect(stubSender.lastText).toContain('only has ₦150,000 owing');
+    // OWN-16: a preview the merchant decides on, never something the books
+    // quietly round away. Nothing moves until the yes.
+    expect(stubSender.lastText).toContain('*Amount received: ₦400,000*');
+    expect(stubSender.lastText).toContain('₦150,000');
+    expect(stubSender.lastText).toContain('₦250,000');
+    expect(stubSender.lastText).toContain('Reply *yes*');
+    const { rows: payments } = await withBusiness(db, business.id, (tx) =>
+      settleRepo.paymentsFor(tx),
+    );
+    expect(payments).toHaveLength(0);
+
+    // The draft carries exactly the figures shown, ids and kobo only.
+    const draft = await withBusiness(db, business.id, (tx) =>
+      conversationsRepo.pendingDraft(tx, business.id),
+    );
+    expect(draft?.confirmationContext).toEqual({
+      kind: 'payment_overpayment',
+      invoiceId: expect.any(String),
+      balanceShownK: 15_000_000,
+      amountReceivedK: 40_000_000,
+      allocatedK: 15_000_000,
+      creditK: 25_000_000,
+    });
+
+    // The database refuses any other shape, so no writer can park text here:
+    // an extra key, a missing key, a name where the id goes, a fraction, a
+    // negative figure, or an object with nothing in it.
+    for (const change of [
+      `confirmation_context || '{"note":"Ada"}'::jsonb`,
+      `confirmation_context - 'creditK'`,
+      `confirmation_context || '{"invoiceId":"Ada Obi 08031234567"}'::jsonb`,
+      `confirmation_context || '{"creditK":1.5}'::jsonb`,
+      `confirmation_context || '{"allocatedK":-3}'::jsonb`,
+      `'{}'::jsonb`,
+      `'{"kind":"payment_overpayment"}'::jsonb`,
+      `confirmation_context || '{"kind":null}'::jsonb`,
+      `confirmation_context || '{"kind":"sale_overpayment"}'::jsonb`,
+      `'[]'::jsonb`,
+      `'"x"'::jsonb`,
+      `confirmation_context || '{"creditK":"5"}'::jsonb`,
+      `confirmation_context || '{"invoiceId":5}'::jsonb`,
+    ]) {
+      const parked = await withBusiness(db, business.id, (tx) =>
+        tx.execute(
+          sql`UPDATE command_drafts SET confirmation_context = ${sql.raw(change)}
+              WHERE id = ${draft!.id}::uuid`,
+        ),
+      ).then(
+        () => null,
+        (error: unknown) => error as Error & { cause?: unknown },
+      );
+      expect(String(parked) + String(parked?.cause), change).toContain(
+        'command_drafts_confirmation_context_ck',
+      );
+    }
+  });
+
+  /** G-49: the chat invoice names a customer on file, so the excess is theirs. */
+  async function issueUnpaidInvoiceToCustomer(businessId: string, wamid: string) {
+    await customersRepo.createCustomerWithIdentities(db, businessId, 'CUSTOMER_7K2', [
+      { facet: 'phone', ciphertext: 'sealed-phone', matchKey: `mk-${wamid}` },
+    ]);
+    await issueUnpaidInvoice(wamid);
+  }
+
+  for (const method of ['cash', 'transfer'] as const) {
+    it(`a confirmed ${method} overpayment settles the invoice and the rest is customer credit (G-49)`, async () => {
+      const business = await seedMerchant('+2348031234567');
+      await issueUnpaidInvoiceToCustomer(business.id, `wamid.PO-${method}`);
+
+      stubTransport.replyWith(paymentOf({ amount: 180_000, paymentMethod: method }));
+      await post(messagePayload('2348031234567', `wamid.PO-${method}-pay`, 'Ada paid 180k'));
+      await drain();
+      expect(stubSender.lastText).toContain('Customer credit: ₦30,000');
+
+      await post(messagePayload('2348031234567', `wamid.PO-${method}-confirm`, 'yes'));
+      await drain();
+      expect(stubSender.lastText).toContain('₦180,000 received on INV-');
+      expect(stubSender.lastText).toContain('₦150,000 applied. That settles it.');
+      expect(stubSender.lastText).toContain('₦30,000 noted as customer credit.');
+
+      // The receipt was rendered and delivered for ALL that arrived, with the
+      // merchant-recorded caption, never "confirmed".
+      const delivered = stubSender.documents.at(-1);
+      expect(delivered?.caption).toMatch(/^Receipt RCT-\S+ for ₦180,000 on INV-/);
+      expect(delivered?.caption ?? '').not.toMatch(/confirm|verif|refund/i);
+
+      const { rows: payments } = await withBusiness(db, business.id, (tx) =>
+        settleRepo.paymentsFor(tx),
+      );
+      expect(payments).toHaveLength(1);
+      expect(payments[0]?.amountK).toBe(18_000_000);
+      expect(payments[0]?.verified).toBe(0);
+
+      const credits = await withBusiness(db, business.id, (tx) =>
+        tx.execute<{ amount_minor: string; source_type: string }>(
+          sql`SELECT amount_minor::text, source_type FROM customer_credits
+              WHERE business_id = ${business.id}::uuid`,
+        ),
+      );
+      expect([...credits]).toEqual([{ amount_minor: '3000000', source_type: 'overpayment' }]);
+
+      const entries = await withBusiness(db, business.id, (tx) =>
+        issueRepo.ledgerEntriesFor(tx, business.id),
+      );
+      expect(entries.reduce((n, e) => n + e.debitK, 0)).toBe(
+        entries.reduce((n, e) => n + e.creditK, 0),
+      );
+      const net = (account: string) =>
+        entries.filter((e) => e.account === account).reduce((n, e) => n + e.debitK - e.creditK, 0);
+      expect(net(method === 'cash' ? 'CASH' : 'BANK')).toBe(18_000_000);
+      expect(net('CUSTOMER_CREDIT')).toBe(-3_000_000);
+      expect(net('ACCOUNTS_RECEIVABLE')).toBe(0);
+    });
+  }
+
+  it('a correction from an overpayment to the exact balance drops the overpayment figures (G-49)', async () => {
+    const business = await seedMerchant('+2348031234567');
+    await issueUnpaidInvoiceToCustomer(business.id, 'wamid.PC');
+
+    stubTransport.replyWith(paymentOf({ amount: 180_000 }));
+    await post(messagePayload('2348031234567', 'wamid.PC-pay', 'Ada paid 180k'));
+    await drain();
+    expect(stubSender.lastText).toContain('Customer credit: ₦30,000');
+
+    // CG5: the correction replaces the draft, and the new one shows no excess.
+    stubTransport.replyWith(paymentOf({ amount: 150_000 }));
+    await post(messagePayload('2348031234567', 'wamid.PC-fix', 'no, 150k not 180k'));
+    await drain();
+    expect(stubSender.lastText).not.toContain('Customer credit');
+    const draft = await withBusiness(db, business.id, (tx) =>
+      conversationsRepo.pendingDraft(tx, business.id),
+    );
+    expect(draft?.confirmationContext ?? null).toBeNull();
+
+    await post(messagePayload('2348031234567', 'wamid.PC-confirm', 'yes'));
+    await drain();
+    expect(stubSender.lastText).toContain('₦150,000 recorded against INV-');
+
+    const { rows: payments } = await withBusiness(db, business.id, (tx) =>
+      settleRepo.paymentsFor(tx),
+    );
+    expect(payments).toHaveLength(1);
+    expect(payments[0]?.amountK).toBe(15_000_000);
+    const credits = await withBusiness(db, business.id, (tx) =>
+      tx.execute(sql`SELECT 1 FROM customer_credits WHERE business_id = ${business.id}::uuid`),
+    );
+    expect([...credits]).toHaveLength(0);
+  });
+
+  it('an overpayment on an invoice with no customer is unapplied, never owed to anyone (G-49)', async () => {
+    const business = await seedMerchant('+2348031234567');
+    await issueUnpaidInvoice('wamid.PU');
+
+    stubTransport.replyWith(paymentOf({ amount: 180_000 }));
+    await post(messagePayload('2348031234567', 'wamid.PU-pay', 'Ada paid 180k'));
+    await drain();
+    expect(stubSender.lastText).toContain(
+      'Unapplied: ₦30,000. It is not linked to a customer yet.',
+    );
+    expect(stubSender.lastText).not.toContain('Customer credit');
+
+    await post(messagePayload('2348031234567', 'wamid.PU-confirm', 'yes'));
+    await drain();
+    expect(stubSender.lastText).toContain('₦30,000 recorded as unapplied.');
+
+    const credits = await withBusiness(db, business.id, (tx) =>
+      tx.execute(sql`SELECT 1 FROM customer_credits WHERE business_id = ${business.id}::uuid`),
+    );
+    expect([...credits]).toHaveLength(0);
+    // The mark is on THIS payment, which is what the refund guard reads.
+    const marks = await withBusiness(db, business.id, (tx) =>
+      tx.execute(
+        sql`SELECT 1 FROM reconciliations r JOIN payments p ON p.id = r.payment_id
+            WHERE r.business_id = ${business.id}::uuid AND r.reason = 'overpaid'
+              AND r.outstanding_k = -3000000 AND p.amount_k = 18000000`,
+      ),
+    );
+    expect([...marks]).toHaveLength(1);
+
+    // The liability is booked even with nobody to hold it.
+    const entries = await withBusiness(db, business.id, (tx) =>
+      issueRepo.ledgerEntriesFor(tx, business.id),
+    );
+    const net = (account: string) =>
+      entries.filter((e) => e.account === account).reduce((n, e) => n + e.debitK - e.creditK, 0);
+    expect(net('CASH')).toBe(18_000_000);
+    expect(net('CUSTOMER_CREDIT')).toBe(-3_000_000);
+    expect(net('ACCOUNTS_RECEIVABLE')).toBe(0);
+  });
+
+  /**
+   * The race OWN-16 is about. The preview showed 150,000 owing and the
+   * merchant confirmed 180,000; 100,000 lands before the yes. Booking now
+   * would turn 130,000 into credit nobody was shown. Nothing is written.
+   */
+  it('a stale overpayment confirmation writes nothing and asks again (G-49)', async () => {
+    const business = await seedMerchant('+2348031234567');
+    await issueUnpaidInvoiceToCustomer(business.id, 'wamid.PS');
+
+    stubTransport.replyWith(paymentOf({ amount: 180_000 }));
+    await post(messagePayload('2348031234567', 'wamid.PS-pay', 'Ada paid 180k'));
+    await drain();
+    expect(stubSender.lastText).toContain('Reply *yes*');
+
+    const open = await withBusiness(db, business.id, (tx) =>
+      issueRepo.latestOpenInvoice(tx, business.id),
+    );
+    await withBusiness(db, business.id, (tx) =>
+      settleRepo.recordMerchantPayment(tx, {
+        businessId: business.id,
+        invoiceId: open!.id,
+        amountK: 10_000_000,
+        method: 'transfer',
+        sourceType: 'chat',
+        sourceId: 'landed-meanwhile',
+        actor: 'test',
+      }),
+    );
+    const count = async (table: string) =>
+      Number(
+        [
+          ...(await withBusiness(db, business.id, (tx) =>
+            tx.execute<{ n: string }>(
+              sql`SELECT count(*)::text AS n FROM ${sql.raw(table)}
+                  WHERE business_id = ${business.id}::uuid`,
+            ),
+          )),
+        ][0]?.n ?? 0,
+      );
+    const tables = [
+      'payments',
+      'payment_allocations',
+      'receipts',
+      'customer_credits',
+      'reconciliations',
+      'ledger_transactions',
+    ];
+    const before = await Promise.all(tables.map(count));
+
+    await post(messagePayload('2348031234567', 'wamid.PS-confirm', 'yes'));
+    await drain();
+
+    // Figures were on the draft, so the reply names what changed, not why.
+    expect(stubSender.lastText).toContain('now has ₦50,000 owing, which is not what I');
+    expect(stubSender.lastText).toContain('I have not recorded anything');
     expect(stubSender.lastText).not.toContain('Reply *yes*');
+    expect(await Promise.all(tables.map(count))).toEqual(before);
   });
 
   it('never invents an allocation when nothing is open', async () => {
@@ -6001,8 +6245,10 @@ describe('a payment the merchant reports (RecordPayment)', () => {
     await post(messagePayload('2348031234567', 'wamid.PD-confirm', 'yes'));
     await drain();
 
+    // G-49: the fresh balance makes this an overpayment nobody was shown, so
+    // it is refused as stale rather than turned into ₦100,000 of credit.
     expect(stubSender.lastText).toContain('only has ₦50,000 owing');
-    expect(stubSender.lastText).toContain('you said ₦150,000');
+    expect(stubSender.lastText).toContain('I have not recorded anything');
     // A question, never a preview: nothing here invites another yes.
     expect(stubSender.lastText).not.toContain('Reply *yes*');
 
@@ -6011,6 +6257,23 @@ describe('a payment the merchant reports (RecordPayment)', () => {
       settleRepo.paymentsFor(tx),
     );
     expect(payments).toHaveLength(1);
+    // And nothing else of the stale yes: one receipt, one allocation, one
+    // payment posting beside the sale's, no credit and no overpaid mark.
+    const n = async (query: ReturnType<typeof sql>) =>
+      [...(await withBusiness(db, business.id, (tx) => tx.execute(query)))].length;
+    expect(await n(sql`SELECT 1 FROM receipts WHERE business_id = ${business.id}::uuid`)).toBe(1);
+    expect(
+      await n(sql`SELECT 1 FROM payment_allocations WHERE business_id = ${business.id}::uuid`),
+    ).toBe(1);
+    expect(
+      await n(sql`SELECT 1 FROM customer_credits WHERE business_id = ${business.id}::uuid`),
+    ).toBe(0);
+    expect(
+      await n(sql`SELECT 1 FROM reconciliations WHERE business_id = ${business.id}::uuid`),
+    ).toBe(0);
+    expect(
+      await n(sql`SELECT 1 FROM ledger_transactions WHERE business_id = ${business.id}::uuid`),
+    ).toBe(2);
   });
 
   it('tells the customer on the receipt that the seller recorded it, not a provider', async () => {

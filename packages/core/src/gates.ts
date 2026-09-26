@@ -109,7 +109,7 @@ function mismatchQuestion(sale: SaleLike, money: MoneyBlock): string {
  * omits a line is worse than no preview, because it teaches the merchant that
  * skimming is safe.
  */
-function previewOf(sale: SaleLike, money: MoneyBlock): string {
+function previewOf(sale: SaleLike, money: MoneyBlock, customerLinked: boolean): string {
   const lines: string[] = ['Please check this before I save it:', ''];
 
   const who = nameOf(sale);
@@ -134,7 +134,15 @@ function previewOf(sale: SaleLike, money: MoneyBlock): string {
    * and the merchant is the one who decides which.
    */
   if (money.overpaymentK > 0) {
-    lines.push(`Paid over by ${formatKobo(money.overpaymentK)}. I will note it as a credit.`);
+    /* A promise the write can keep (G-49): customer credit needs a customer
+     * RECORD the sale resolves to, which only the caller can look up (a token
+     * alone may name nobody on file). Otherwise the excess is booked as a
+     * liability that is not linked to anyone yet, and the preview says so. */
+    lines.push(
+      customerLinked
+        ? `Paid over by ${formatKobo(money.overpaymentK)}. I will note it as a credit.`
+        : `Paid over by ${formatKobo(money.overpaymentK)}. I will record it as unapplied; it is not linked to a customer yet.`,
+    );
   }
 
   lines.push('', 'Reply *yes* to save it, or tell me what to change.');
@@ -147,12 +155,16 @@ function previewOf(sale: SaleLike, money: MoneyBlock): string {
  * CG1 before CG2, always: a preview of numbers we already know are wrong is a
  * request to approve a mistake.
  */
-export function gateSale(sale: SaleLike): Gate {
+export function gateSale(sale: SaleLike, options: { customerLinked?: boolean } = {}): Gate {
   const money = computeMoney(saleToDraft(sale));
   if (money.mismatch) {
     return { gate: 'CG1', question: mismatchQuestion(sale, money), money };
   }
-  return { gate: 'CG2', preview: previewOf(sale, money), money };
+  return {
+    gate: 'CG2',
+    preview: previewOf(sale, money, options.customerLinked === true),
+    money,
+  };
 }
 
 /* ── money going OUT: expenses and stock purchases ───────────────────────── */
@@ -280,7 +292,17 @@ export interface PaymentLike {
 
 export type PaymentGate =
   | { gate: 'CG1'; question: string }
-  | { gate: 'CG2'; preview: string; amountK: number; balanceAfterK: number };
+  | {
+      gate: 'CG2';
+      preview: string;
+      /** What was received. */
+      amountK: number;
+      balanceAfterK: number;
+      /** What the invoice takes: `amountK`, or its balance when paid over. */
+      allocatedK: number;
+      /** The excess the merchant is confirming as customer credit; 0 if none. */
+      creditK: number;
+    };
 
 /**
  * A merchant reporting money received against an invoice they already issued.
@@ -291,16 +313,22 @@ export type PaymentGate =
  * model's: a model that guesses what "the rest" means is a model deciding how
  * much a customer owes.
  *
- * Two things become CG1 questions rather than previews, both for the same
- * reason — the books must never absorb a number nobody confirmed:
- *   - no amount at all, absolute or relative;
- *   - more than the invoice still owes, which is a real event (change due, a
- *     credit for next time) that a merchant decides, not a rounding.
+ * No amount at all, absolute or relative, is a CG1 question: the books must
+ * never absorb a number nobody stated.
+ *
+ * More than the invoice still owes is a deliberate overpayment (OWN-16): the
+ * preview shows what was received, what the invoice takes and the excess, and
+ * only the merchant's "yes" to exactly those figures books it. The excess is
+ * customer credit when the invoice has a customer, and otherwise an amount
+ * not linked to anyone yet; `customerLinked` comes from SQL, never the model.
+ * The figures shown here are what the confirmation is checked against: a
+ * balance that has moved by then is never turned into credit.
  */
 export function gatePayment(
   payment: PaymentLike,
   invoiceNumber: string,
   balanceDueK: number,
+  options: { customerLinked?: boolean } = {},
 ): PaymentGate {
   const amountK =
     typeof payment.amount === 'number'
@@ -318,13 +346,29 @@ export function gatePayment(
     };
   }
 
+  const received = `Received by ${payment.paymentMethod === 'cash' ? 'cash' : 'transfer'}`;
+
   if (amountK > balanceDueK) {
+    const creditK = amountK - balanceDueK;
+    const lines: string[] = ['Please check this before I save it:', ''];
+    lines.push(`Payment on ${invoiceNumber}`);
+    lines.push(`*Amount received: ${formatKobo(amountK)}*`);
+    lines.push(`Applied to ${invoiceNumber}: ${formatKobo(balanceDueK)}`);
+    lines.push(
+      options.customerLinked
+        ? `Customer credit: ${formatKobo(creditK)}`
+        : `Unapplied: ${formatKobo(creditK)}. It is not linked to a customer yet.`,
+    );
+    lines.push(received);
+    lines.push('This settles the invoice.');
+    lines.push('', 'Reply *yes* to save it, or tell me what to change.');
     return {
-      gate: 'CG1',
-      question:
-        `${invoiceNumber} only has ${formatKobo(balanceDueK)} owing, and you said ` +
-        `${formatKobo(amountK)}. Tell me the amount to record, or say *${formatKobo(balanceDueK)}* ` +
-        'to settle it.',
+      gate: 'CG2',
+      preview: lines.join('\n'),
+      amountK,
+      balanceAfterK: 0,
+      allocatedK: balanceDueK,
+      creditK,
     };
   }
 
@@ -332,14 +376,21 @@ export function gatePayment(
   const lines: string[] = ['Please check this before I save it:', ''];
   lines.push(`Payment on ${invoiceNumber}`);
   lines.push(`*Amount: ${formatKobo(amountK)}*`);
-  lines.push(`Received by ${payment.paymentMethod === 'cash' ? 'cash' : 'transfer'}`);
+  lines.push(received);
   lines.push(
     balanceAfterK === 0
       ? 'This settles the invoice.'
       : `Still owing after this: ${formatKobo(balanceAfterK)}`,
   );
   lines.push('', 'Reply *yes* to save it, or tell me what to change.');
-  return { gate: 'CG2', preview: lines.join('\n'), amountK, balanceAfterK };
+  return {
+    gate: 'CG2',
+    preview: lines.join('\n'),
+    amountK,
+    balanceAfterK,
+    allocatedK: amountK,
+    creditK: 0,
+  };
 }
 
 /* ── stock ────────────────────────────────────────────────────────────────── */
