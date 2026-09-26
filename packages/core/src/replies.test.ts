@@ -405,19 +405,38 @@ describe('the money-in moment', () => {
 });
 
 describe('a stranger', () => {
+  /** The exact link the reply hands out, or null when it names none. */
+  const linkIn = (webUrl: string | null) =>
+    /Set one up at (\S+)\. It takes a minute\./.exec(replies.noAccount(webUrl).text)?.[1] ?? null;
+
   it("links the deployment's own sign-up page", () => {
-    expect(replies.noAccount('https://staging.myrekoda.com').text).toContain(
-      'https://staging.myrekoda.com/start',
-    );
-    expect(replies.noAccount('https://myrekoda.com').text).toContain('https://myrekoda.com/start');
+    expect(linkIn('https://staging.myrekoda.com')).toBe('https://staging.myrekoda.com/start');
+    expect(linkIn('https://myrekoda.com')).toBe('https://myrekoda.com/start');
+    expect(linkIn('http://localhost:3000')).toBe('http://localhost:3000/start');
   });
 
-  it('never doubles the slash, however the origin was written', () => {
-    for (const origin of ['https://staging.myrekoda.com/', 'https://staging.myrekoda.com//']) {
-      const text = replies.noAccount(origin).text;
-      expect(text).toContain('https://staging.myrekoda.com/start');
-      expect(text).not.toMatch(/[^:]\/\//);
+  it('never doubles the slash, however many trail the origin', () => {
+    for (const origin of [
+      'https://staging.myrekoda.com/',
+      'https://staging.myrekoda.com//',
+      'https://staging.myrekoda.com///',
+    ]) {
+      expect(linkIn(origin), origin).toBe('https://staging.myrekoda.com/start');
     }
+  });
+
+  it('keeps a base path the web app is served under', () => {
+    expect(linkIn('https://host.example/app')).toBe('https://host.example/app/start');
+    expect(linkIn('https://host.example/app/')).toBe('https://host.example/app/start');
+    expect(linkIn('https://host.example/app//')).toBe('https://host.example/app/start');
+  });
+
+  it('drops a query, a fragment and credentials rather than let them swallow the path', () => {
+    expect(linkIn('https://host.example/app?x=1#section')).toBe('https://host.example/app/start');
+    expect(linkIn('https://host.example/app/?x=1')).toBe('https://host.example/app/start');
+    expect(linkIn('https://host.example#top')).toBe('https://host.example/start');
+    expect(linkIn('https://host.example?x=1')).toBe('https://host.example/start');
+    expect(linkIn('https://user:secret@host.example/app')).toBe('https://host.example/app/start');
   });
 
   it('names no domain at all when the deployment has no web origin', () => {
@@ -428,7 +447,12 @@ describe('a stranger', () => {
       'not a url',
       'javascript:alert(1)',
       'ftp://example.com',
+      'data:text/html,hi',
+      'mailto:someone@example.com',
+      'staging.myrekoda.com',
+      'https://',
     ]) {
+      expect(linkIn(origin), String(origin)).toBeNull();
       const text = replies.noAccount(origin).text;
       expect(text, String(origin)).not.toMatch(/rekoda\.app|https?:|\/start|www\./i);
       expect(text).toContain('do not have an account for this number yet');

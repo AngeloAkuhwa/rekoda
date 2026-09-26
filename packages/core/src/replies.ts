@@ -1226,17 +1226,31 @@ export function noAccount(webUrl: string | null): Reply {
   );
 }
 
-/** `<origin>/start`, or null when `webUrl` is not an http(s) origin. */
+/**
+ * `start` under the web origin's path, or null when `webUrl` is not http(s).
+ *
+ * Built with the URL API, not by appending to the string: a query or fragment
+ * in the configured value would otherwise swallow the path (`/app?x=1/start`).
+ * A base path is kept (`/app` gives `/app/start`), trailing slashes do not
+ * double, and the query, fragment and any credentials are dropped, since
+ * this is a link handed to a stranger.
+ */
 function signUpLink(webUrl: string | null): string | null {
-  const origin = webUrl?.trim().replace(/\/+$/, '');
-  if (!origin) return null;
+  const raw = webUrl?.trim();
+  if (!raw) return null;
+  let url: URL;
   try {
-    const url = new URL(origin);
-    if (url.protocol !== 'https:' && url.protocol !== 'http:') return null;
+    url = new URL(raw);
   } catch {
     return null;
   }
-  return `${origin}/start`;
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') return null;
+  url.username = '';
+  url.password = '';
+  url.search = '';
+  url.hash = '';
+  url.pathname = `${url.pathname.replace(/\/+$/, '')}/start`;
+  return url.toString();
 }
 
 /** Length ceiling. WhatsApp accepts 4096; nobody reads that far. */
