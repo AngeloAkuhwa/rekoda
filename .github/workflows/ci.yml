@@ -83,6 +83,16 @@ jobs:
       - name: Deployment files keep their shape
         if: steps.ws.outputs.present == 'true'
         run: node --test scripts/check-deploy.test.mjs && node scripts/check-deploy.mjs
+      # Staging deploys itself after this workflow passes on main
+      # (deploy-staging.yml running scripts/deploy-staging.sh on the host).
+      # Both must keep performing the runbook's "Deploy a release", and keep
+      # what makes that safe unattended: the exact commit, one at a time, a
+      # pinned host key, no secret in GitHub, nothing destructive.
+      - name: Staging deployment follows the runbook
+        if: steps.ws.outputs.present == 'true'
+        run: |
+          bash -n scripts/deploy-staging.sh
+          node --test scripts/check-staging-deploy.test.mjs && node scripts/check-staging-deploy.mjs
       # One Node version, and an LTS. `.nvmrc` is the source of truth; this
       # checks engines, every @types/node, AND the version actually running,
       # because a project can be consistent in four files and still be tested
