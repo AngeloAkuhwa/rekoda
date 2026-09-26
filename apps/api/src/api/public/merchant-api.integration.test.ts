@@ -17,7 +17,15 @@ import { randomBytes } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { publicApi } from '@rekoda/contracts';
-import { createDb, entitlementsRepo, sql, usageRepo, withBusiness, type Db } from '@rekoda/db';
+import {
+  createDb,
+  entitlementsRepo,
+  provenanceRepo,
+  sql,
+  usageRepo,
+  withBusiness,
+  type Db,
+} from '@rekoda/db';
 import { usagePeriod } from '@rekoda/core';
 import {
   grantCapacityAddOn,
@@ -74,6 +82,7 @@ function get(url: string, headers: Record<string, string> = {}) {
 
 interface Merchant {
   businessId: string;
+  applicationId: string;
   session: Record<string, string>;
   key: Record<string, string>;
 }
@@ -113,6 +122,7 @@ async function merchant(phone: string, name: string): Promise<Merchant> {
 
   return {
     businessId: created.businessId,
+    applicationId: application.id,
     session,
     key: { authorization: `Bearer ${minted.token}` },
   };
@@ -345,6 +355,310 @@ describe('an overpayment through the public API (G-49)', () => {
       });
     }
     expect(await footprintOf(shop.businessId)).toEqual(before);
+  });
+});
+
+/**
+ * G-77: one API application, many sales.
+ *
+ * The public sale route used the API APPLICATION's id as the sale's source
+ * id, and a paid sale's MERCHANT_ATTESTED verification claims
+ * `<sourceType>:<sourceId>`. So the first paid sale from an application
+ * took the claim `api:<applicationId>` and every later paid sale from the
+ * same application collided with it (payment_verification_claims is unique
+ * per business and confirmation event), aborting the sale. The application
+ * says WHO asked; it is not WHICH financial event this is.
+ */
+describe('G-77: every public API sale is its own financial event', () => {
+  const PAID = { ...SALE, amountPaidK: 10_030_000 };
+
+  async function footprint(businessId: string) {
+    const [row] = [
+      ...(await withBusiness(db, businessId, (tx) =>
+        tx.execute<Record<string, number>>(sql`
+          SELECT
+            (SELECT count(*)::int FROM invoices WHERE business_id = ${businessId}) AS invoices,
+            (SELECT count(*)::int FROM payments WHERE business_id = ${businessId}) AS payments,
+            (SELECT count(*)::int FROM payment_verifications
+              WHERE business_id = ${businessId} AND source = 'MERCHANT_ATTESTED') AS verifications,
+            (SELECT count(*)::int FROM payment_verification_claims
+              WHERE business_id = ${businessId}) AS claims,
+            (SELECT count(*)::int FROM payment_allocations
+              WHERE business_id = ${businessId}) AS allocations,
+            (SELECT count(*)::int FROM receipts WHERE business_id = ${businessId}) AS receipts,
+            (SELECT count(*)::int FROM ledger_transactions
+              WHERE business_id = ${businessId}) AS postings
+        `),
+      )),
+    ];
+    return row;
+  }
+
+  /** The claim each sale's payment holds, and the source id its invoice carries. */
+  async function identities(businessId: string) {
+    return [
+      ...(await withBusiness(db, businessId, (tx) =>
+        tx.execute<{
+          invoice_id: string;
+          source_id: string;
+          payment_id: string;
+          claim: string;
+        }>(sql`
+          SELECT i.id AS invoice_id, i.source_id, p.id AS payment_id,
+                 c.confirmation_event_id AS claim
+          FROM invoices i
+          JOIN payments p ON p.business_id = i.business_id AND p.source_id = i.source_id
+          JOIN payment_verifications v ON v.payment_id = p.id
+          JOIN payment_verification_claims c ON c.verification_id = v.id
+          WHERE i.business_id = ${businessId}::uuid
+          ORDER BY i.created_at
+        `),
+      )),
+    ];
+  }
+
+  function sale(shop: Merchant, body: object, idempotencyKey?: string) {
+    return post(
+      '/api/v1/sales',
+      body,
+      idempotencyKey ? { ...shop.key, 'idempotency-key': idempotencyKey } : shop.key,
+    );
+  }
+
+  it('two distinct paid sales from one application both succeed, each with its own claim', async () => {
+    const shop = await merchant('+2348192000050', 'Two Sales Co');
+    const first = await sale(shop, PAID);
+    expect(first.statusCode).toBe(200);
+    const second = await sale(shop, {
+      ...PAID,
+      items: [{ name: 'Beans', quantity: 1, unitPriceK: 10_030_000 }],
+    });
+    expect(second.statusCode).toBe(200);
+
+    expect(await footprint(shop.businessId)).toEqual({
+      invoices: 2,
+      payments: 2,
+      verifications: 2,
+      claims: 2,
+      allocations: 2,
+      receipts: 2,
+      postings: 2,
+    });
+    const ids = await identities(shop.businessId);
+    expect(ids).toHaveLength(2);
+    expect(ids[0]!.claim).not.toBe(ids[1]!.claim);
+    expect(ids[0]!.source_id).not.toBe(ids[1]!.source_id);
+    /* The event is not the application: neither carries the application id. */
+    for (const row of ids) {
+      expect(row.source_id).not.toBe(shop.applicationId);
+      expect(row.claim).not.toContain(shop.applicationId);
+    }
+  });
+
+  it('two identical paid sales without an Idempotency-Key are two events, never one', async () => {
+    /* No key means the caller accepts a retry may run again; it never means
+     * every request from the application is the same sale. */
+    const shop = await merchant('+2348192000051', 'No Key Co');
+    expect((await sale(shop, PAID)).statusCode).toBe(200);
+    expect((await sale(shop, PAID)).statusCode).toBe(200);
+    expect(await footprint(shop.businessId)).toMatchObject({ invoices: 2, payments: 2, claims: 2 });
+    const ids = await identities(shop.businessId);
+    expect(new Set(ids.map((r) => r.claim)).size).toBe(2);
+  });
+
+  it('distinct Idempotency-Keys run independently with distinct identities', async () => {
+    const shop = await merchant('+2348192000052', 'Keyed Co');
+    expect((await sale(shop, PAID, 'sale-a')).statusCode).toBe(200);
+    expect((await sale(shop, PAID, 'sale-b')).statusCode).toBe(200);
+    expect(await footprint(shop.businessId)).toMatchObject({ invoices: 2, payments: 2, claims: 2 });
+    const ids = await identities(shop.businessId);
+    expect(new Set(ids.map((r) => r.source_id)).size).toBe(2);
+    expect(new Set(ids.map((r) => r.claim)).size).toBe(2);
+    /* Opaque and bounded: the caller's key is not stored in the books. */
+    for (const row of ids) {
+      expect(row.source_id).not.toContain('sale-a');
+      expect(row.source_id).not.toContain('sale-b');
+      expect(row.source_id.length).toBeLessThanOrEqual(64);
+    }
+  });
+
+  it('the same key and body replays the first sale, writing nothing new', async () => {
+    const shop = await merchant('+2348192000053', 'Replay Co');
+    const first = await sale(shop, PAID, 'sale-a');
+    const again = await sale(shop, PAID, 'sale-a');
+    expect(first.statusCode).toBe(200);
+    expect(again.statusCode).toBe(200);
+    expect(again.json()).toEqual(first.json());
+    expect(await footprint(shop.businessId)).toEqual({
+      invoices: 1,
+      payments: 1,
+      verifications: 1,
+      claims: 1,
+      allocations: 1,
+      receipts: 1,
+      postings: 1,
+    });
+  });
+
+  it('the same key with a different body is refused as reused, writing nothing', async () => {
+    const shop = await merchant('+2348192000054', 'Reuse Co');
+    expect((await sale(shop, PAID, 'sale-a')).statusCode).toBe(200);
+    const before = await footprint(shop.businessId);
+    const reused = await sale(shop, { ...PAID, deliveryFeeK: 0, amountPaidK: 9_780_000 }, 'sale-a');
+    expect(reused.statusCode).toBe(400);
+    expect(reused.body).toContain('Idempotency-Key already answered a different request');
+    expect(await footprint(shop.businessId)).toEqual(before);
+  });
+
+  it('two overpaid sales from one application both keep the G-49 books, each its own claim', async () => {
+    const shop = await merchant('+2348192000055', 'Overpaid Twice Co');
+    const OVER = { ...SALE, amountPaidK: 12_000_000 };
+    expect((await sale(shop, OVER)).statusCode).toBe(200);
+    expect((await sale(shop, OVER)).statusCode).toBe(200);
+
+    const rows = [
+      ...(await withBusiness(db, shop.businessId, (tx) =>
+        tx.execute<{
+          payment_k: string;
+          allocated_k: string;
+          receipt_k: string;
+          overpaid: number;
+          verification: string;
+        }>(sql`
+          SELECT p.amount_k::text AS payment_k,
+                 (SELECT sum(a.amount_k) FROM payment_allocations a WHERE a.payment_id = p.id)::text AS allocated_k,
+                 (SELECT r.amount_k FROM receipts r WHERE r.payment_id = p.id)::text AS receipt_k,
+                 (SELECT count(*)::int FROM reconciliations c
+                   WHERE c.payment_id = p.id AND c.reason = 'overpaid') AS overpaid,
+                 (SELECT v.source FROM payment_verifications v WHERE v.payment_id = p.id) AS verification
+          FROM payments p WHERE p.business_id = ${shop.businessId}::uuid
+        `),
+      )),
+    ];
+    expect(rows).toHaveLength(2);
+    for (const row of rows) {
+      expect(row).toEqual({
+        payment_k: '12000000',
+        allocated_k: '10030000',
+        receipt_k: '12000000',
+        overpaid: 1,
+        verification: 'MERCHANT_ATTESTED',
+      });
+    }
+    const [liability] = [
+      ...(await withBusiness(db, shop.businessId, (tx) =>
+        tx.execute<{ net: string }>(sql`
+          SELECT COALESCE(SUM(e.credit_k - e.debit_k), 0)::text AS net
+          FROM ledger_entries e JOIN accounts a ON a.id = e.account_id
+          WHERE e.business_id = ${shop.businessId}::uuid AND a.code = '2300'`),
+      )),
+    ];
+    expect(liability?.net).toBe(String(2 * (12_000_000 - 10_030_000)));
+    const ids = await identities(shop.businessId);
+    expect(new Set(ids.map((r) => r.claim)).size).toBe(2);
+  });
+
+  it('two overpaid sales to a named customer each grant that customer their own credit', async () => {
+    const shop = await merchant('+2348192000058', 'Named Twice Co');
+    const [customer] = [
+      ...(await withBusiness(db, shop.businessId, (tx) =>
+        tx.execute<{ id: string }>(
+          sql`INSERT INTO customers (business_id, token)
+              VALUES (${shop.businessId}, 'CUSTOMER_G77') RETURNING id`,
+        ),
+      )),
+    ];
+    const OVER = { ...SALE, amountPaidK: 12_000_000, customerId: customer!.id };
+    expect((await sale(shop, OVER)).statusCode).toBe(200);
+    expect((await sale(shop, OVER)).statusCode).toBe(200);
+
+    const credits = [
+      ...(await withBusiness(db, shop.businessId, (tx) =>
+        tx.execute<{
+          customer_id: string;
+          amount_minor: string;
+          source_type: string;
+          source_id: string;
+        }>(sql`
+          SELECT customer_id, amount_minor::text, source_type, source_id
+          FROM customer_credits WHERE business_id = ${shop.businessId}::uuid`),
+      )),
+    ];
+    expect(credits).toHaveLength(2);
+    for (const credit of credits) {
+      expect(credit).toMatchObject({
+        customer_id: customer!.id,
+        amount_minor: String(12_000_000 - 10_030_000),
+        source_type: 'overpayment',
+      });
+    }
+    /* One credit per payment, never one per application. */
+    const payments = (await identities(shop.businessId)).map((r) => r.payment_id).sort();
+    expect(credits.map((c) => c.source_id).sort()).toEqual(payments);
+  });
+
+  it('unpaid, part-paid and exact cash sales from one application keep their G-48 shapes', async () => {
+    const shop = await merchant('+2348192000057', 'Shapes Co');
+    /* Unpaid: the invoice and nothing else. */
+    expect((await sale(shop, { ...SALE, amountPaidK: 0 })).statusCode).toBe(200);
+    expect(await footprint(shop.businessId)).toEqual({
+      invoices: 1,
+      payments: 0,
+      verifications: 0,
+      claims: 0,
+      allocations: 0,
+      receipts: 0,
+      postings: 1,
+    });
+    /* Part paid, by transfer (the default), then exact, by cash. */
+    expect((await sale(shop, SALE)).statusCode).toBe(200);
+    expect((await sale(shop, { ...PAID, method: 'cash' })).statusCode).toBe(200);
+    expect(await footprint(shop.businessId)).toEqual({
+      invoices: 3,
+      payments: 2,
+      verifications: 2,
+      claims: 2,
+      allocations: 2,
+      receipts: 2,
+      postings: 3,
+    });
+    const nets = [
+      ...(await withBusiness(db, shop.businessId, (tx) =>
+        tx.execute<{ code: string; net: string }>(sql`
+          SELECT a.code, SUM(e.debit_k - e.credit_k)::text AS net
+          FROM ledger_entries e JOIN accounts a ON a.id = e.account_id
+          WHERE e.business_id = ${shop.businessId}::uuid GROUP BY a.code`),
+      )),
+    ];
+    const net = Object.fromEntries(nets.map((r) => [r.code, Number(r.net)]));
+    /* Cash took the exact sale, Bank the part payment, AR what is still owed. */
+    expect(net['1000']).toBe(10_030_000);
+    expect(net['1020']).toBe(5_000_000);
+    expect(net['1100']).toBe(10_030_000 + 5_030_000);
+    expect(net['2300'] ?? 0).toBe(0);
+  });
+
+  it('claim integrity still holds: one API sale claim cannot confirm a second payment', async () => {
+    const shop = await merchant('+2348192000056', 'Integrity Co');
+    expect((await sale(shop, PAID)).statusCode).toBe(200);
+    expect((await sale(shop, PAID)).statusCode).toBe(200);
+    const [a, b] = await identities(shop.businessId);
+
+    /* Reusing sale A's confirmation event for sale B's payment is refused. */
+    const refused = await withBusiness(db, shop.businessId, (tx) =>
+      provenanceRepo.appendVerification(tx, {
+        businessId: shop.businessId,
+        paymentId: b!.payment_id,
+        source: 'MERCHANT_ATTESTED',
+        confirmationEventId: a!.claim,
+        actorId: 'test',
+      }),
+    ).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    expect(refused).toBeInstanceOf(provenanceRepo.ClaimConflict);
+    expect(await footprint(shop.businessId)).toMatchObject({ verifications: 2, claims: 2 });
   });
 });
 

@@ -285,7 +285,8 @@ called from `apps/api/src/commands/`.
 
 - **Routes:** `GET /api/v1/identity`, `/customers`, `/products`, `/invoices`, `/invoices/{invoiceNumber}`, `POST /api/v1/sales`, `POST /api/v1/payments`; key management under `/v1/api-keys`; outbound webhooks under `/v1/webhooks`. Method and path match `docs/openapi.json` (`scripts/check-openapi.mjs` compares only those; `/v1/api-keys` and `/v1/webhooks` are session routes outside its scope).
 - **Works:** identical 401 for unknown, revoked, expired and malformed keys; sandbox keys read real books and write nothing; monthly `API_REQUEST_UNITS` and standing `API_APPLICATIONS` metered separately; writes go through the same command bus as chat; outbound webhooks signed `t=<unix>,v1=<hmac>` with a 300 s window and a DNS-rebinding-proof SSRF allowlist.
-- **Not yet:** real delivery to an external endpoint not live-verified; no dashboard UI.
+- **Sale identity (G-77, CODE COMPLETE 26 Sep 2026, staging acceptance pending):** each `POST /api/v1/sales` is its own financial event. Its `sourceId` is `sale-k-<hash of application and Idempotency-Key>` when the caller sends a key (so a retry replays through the command bus) and a fresh `sale-<uuid>` when it does not; it is never the application id, which before G-77 made every paid sale after the first from one application collide on its verification claim and fail. The application stays recorded in the actor `api:<keyPrefix>`. Evidence: `merchant-api.integration.test.ts` (G-77 block), `sale-event-id.test.ts`.
+- **Not yet:** real delivery to an external endpoint not live-verified; no dashboard UI; an API payment recorded by invoice number is stamped `sourceType: 'dashboard'` (`recordPaymentByNumber`) and its reference shares the dashboard's `manual:` namespace; `Idempotency-Key` is scoped to the business, not the application (G-77 follow-ups).
 
 ### 5.25 Storefront and order capture — VERIFIED COMPLETE
 

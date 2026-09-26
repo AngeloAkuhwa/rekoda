@@ -51,6 +51,7 @@ import {
   SandboxWriteException,
 } from './public-api.filter.js';
 import type { CommandOutcome } from '../../commands/command-bus.service.js';
+import { apiSaleEventId } from './sale-event-id.js';
 
 @Controller('api/v1')
 @UseGuards(ApiKeyGuard)
@@ -198,7 +199,10 @@ export class MerchantV1Controller {
       balanceDueK: money.balanceDueK,
       method: parsed.data.method ?? 'transfer',
       sourceType: 'api',
-      sourceId: request.api!.applicationId,
+      /* The sale's own event identity, never the application's (G-77): a
+       * paid sale's verification claims it, and one application sends many
+       * sales. Deterministic under an Idempotency-Key so a retry replays. */
+      sourceId: apiSaleEventId(request.api!.applicationId, idempotencyKey ?? null),
       saleSource: null,
       dueDate: parsed.data.dueDate ? new Date(parsed.data.dueDate) : null,
       actor: `api:${request.api!.keyPrefix}`,
