@@ -359,6 +359,117 @@ certificates; the web build still refuses them blank). `NODE_ENV` is
 `production` in both; the API treats anything but development and test as
 production anyway.
 
+### Staging deploys itself; production never does
+
+Staging follows `main`. When the CI workflow succeeds on a push to `main`,
+`.github/workflows/deploy-staging.yml` connects to the staging host over SSH
+and runs `scripts/deploy-staging.sh <sha>` there, for the exact commit CI
+passed. It deploys that commit, never the newest `main`, and never a commit
+that is not on `origin/main`. It can also be started by hand from the Actions
+tab (`workflow_dispatch`), run from `main`, with a full SHA of a commit on
+`main`. Production has no
+such workflow and is deployed by hand, by tag, with "Deploy a release" above.
+
+The script that runs on the host (the driver) is always a revision that has
+passed CI on `main`, and never an older commit's copy, which may be older and
+less careful:
+
+- **After CI**, the driver is the commit CI just passed, which is also the
+  commit deployed. It runs with `--newer-only`: the workflow runs one
+  deployment at a time but does not keep them in order, so a delayed run for
+  an older commit could start after a newer one deployed. If staging already
+  runs a newer commit of `main`, the script changes nothing and exits 75, and
+  the workflow reports the run as skipped. No failure exits 75.
+- **By hand from the Actions tab**, the driver is the tip of `main`. The
+  workflow first confirms a successful CI push run on `main` for both the
+  commit and the driver.
+
+The script is "Deploy a release" for a commit instead of a tag, with the
+release named `staging-<short sha>` (`git rev-parse --short=7`: at least
+seven characters, more when seven would be ambiguous; `REKODA_RELEASE` and
+the build's `REKODA_COMMIT` from the same value). In order, from
+`/opt/rekoda`: refuse a checkout with tracked local modifications, refuse a
+checkout holding any path no commit has (ignored by git or not) other than
+the host-local ones `.dockerignore` keeps out of every image (`.env` and
+`.env.*` at any depth, `secrets/`, `data/`, `uploads/`, `storage/`, `logs/`,
+`backups/`, a top-level `*.log`), because the build context is the checkout
+and anything else would be built into staging without CI having seen it,
+refuse a host whose `.env` does not name `https://staging-api.myrekoda.com` as
+`REKODA_API_PUBLIC_URL`, refuse unless `/health` answers `status` ok,
+`database` up, the `REKODA_RELEASE` in `.env`, and a commit of at least
+seven characters that the checked-out commit starts with (the running
+release is the one a failure's rollback would name, not merely what the
+checkout and `.env` claim), `git fetch --prune origin`, refuse a commit whose
+code does not know the schema staging already has (one missing a migration
+tag the running commit carries, or carrying fewer migrations than `/health`
+says the database has applied: `/health` asks only for the build's own
+migrations, so it would read ok even after a later contraction removed what
+the older code uses; a rollback across a migration is done by hand, as "Roll
+back" says), check out the commit
+(detached), change only the `REKODA_RELEASE` line of `.env`, `dc build`,
+`dc run --rm -T migrate`, `dc up -d --wait --wait-timeout 300`, reload the
+Caddyfile, confirm the edge network, and require
+`https://staging-api.myrekoda.com/health` to answer `status` ok, `database`
+up, and this release and commit. It ends with `dc ps`. The workflow then asks
+`/health` the same question from outside, through Cloudflare. CI
+(`scripts/check-staging-deploy.mjs`) fails a pull request that changes a
+command in "Deploy a release" without changing the script to match, or that
+takes away one of the properties above.
+
+What a failure leaves:
+
+- **Before migrate** (a refused check, a failed fetch or build): nothing
+  live changed. The script puts the checkout and `REKODA_RELEASE` back to the
+  running release, so the host is as it was.
+- **At or after migrate:** the stack may be part-way to the new release.
+  The script prints the exact rollback commands (the previous commit and
+  release) and `dc ps -a`, and exits non-zero. Read `dc logs <service>` on the
+  host; the workflow log never holds container logs. Then roll forward with a
+  fixed commit, or roll back as "Roll back" says, with the previous commit in
+  place of `vPREVIOUS` and `staging-<its short sha>` as the release. Those
+  images are still on the host.
+
+Two deployments never overlap: the workflow runs one at a time and waits
+rather than cancelling, and the script holds a lock
+(`.git/rekoda-deploy-staging.lock`) against a second run on the host,
+including one started by hand.
+
+Set up once:
+
+- **On the host:** `jq` and `flock` installed (with `git`, `curl`, Docker and
+  Compose); the checkout's `origin` fetchable by the deploy user without a
+  prompt; a dedicated SSH key for the workflow in the deploy user's
+  `authorized_keys`, used for nothing else. The deploy user can drive Docker,
+  which is root on the host, so this key is as powerful as root there: keep
+  it only in the GitHub environment, and rotate it by replacing both halves.
+  Nothing else lives in `/opt/rekoda` beyond the checkout and the host-local
+  paths above (no `node_modules/`, no copied files, no scratch directories);
+  `git ls-files --others --directory` there shows what the script would
+  refuse.
+- **In GitHub,** the `staging` environment holds four secrets and nothing
+  else: `STAGING_HOST`, `STAGING_USER`, `STAGING_SSH_PRIVATE_KEY` and
+  `STAGING_KNOWN_HOSTS`. `STAGING_KNOWN_HOSTS` is the host's `known_hosts`
+  line under the same name as `STAGING_HOST`, taken from a machine that has
+  already verified the fingerprint against the host's own
+  (`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` on the host). The
+  workflow insists on it (`StrictHostKeyChecking=yes`) and never learns a key
+  from the network. Limit the environment's deployment branches to `main`.
+  Every application secret stays in `.env` and `secrets/` on the host.
+
+By hand on the host, the same deploy, with the same driver the workflow uses,
+is, from `/opt/rekoda`:
+
+```bash
+git fetch --prune origin
+git show origin/main:scripts/deploy-staging.sh | bash -s -- <40-character sha>
+```
+
+Not `bash scripts/deploy-staging.sh`: that runs the copy in the current
+checkout, which after a deploy of an older commit is that commit's older
+script. Confirm first that CI passed on the tip of `main`, as the workflow
+does. The script is one brace group, read whole before it runs, so the
+checkout it performs cannot change it mid-run.
+
 ## What a production boot refuses
 
 Each process validates its environment before serving anything, and each

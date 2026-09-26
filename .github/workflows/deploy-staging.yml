@@ -1,0 +1,209 @@
+name: Deploy staging
+
+# Staging follows main, one exact commit at a time, and only a commit CI
+# passed. The host does the work (scripts/deploy-staging.sh, the runbook's
+# "Deploy a release" sequence); this workflow only chooses the commit, and
+# the driver (the revision whose copy of the script runs on the host), and
+# hands the host that script over SSH. The driver has always passed CI on
+# main: after CI, the commit just deployed, never older than what is running
+# (older automatic runs are skipped); by hand, the tip of main, never the older
+# commit being redeployed, whose script may be older and less careful.
+# Secrets stay on the host in .env and secrets/: the only ones here are the
+# SSH key, the host key, the host and the user, all from the "staging"
+# environment.
+#
+# Production is not deployed from here, or from anywhere automatic.
+# CI keeps this file in step with the runbook: scripts/check-staging-deploy.mjs.
+
+on:
+  # After CI finishes on main. The job below also insists the run succeeded
+  # and was a push to this repository's main: `branches` matches a head
+  # branch NAME, which a pull request from a fork can share.
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  # Manual runs for testing, or to redeploy an earlier commit of main. The
+  # run must be started from main (its revision is the driver that runs), and
+  # both the driver and the commit must have a successful CI push run on main.
+  # The host refuses a commit whose code does not know the schema staging
+  # already has.
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: Full 40-character SHA of a commit on main that CI passed (blank means the tip of the chosen branch)
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+  # To confirm CI passed for a manual run's commit and driver.
+  actions: read
+
+# One deployment at a time, and never cancelled halfway: a newer request
+# waits for the running one to finish rather than killing a migration. The
+# group excludes but does not order, so a delayed automatic run for an older
+# commit can start after a newer one deployed; the host skips it
+# (--newer-only), leaving staging on the newer commit.
+concurrency:
+  group: deploy-staging
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy to staging
+    if: >-
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_branch == 'main' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment:
+      name: staging
+      url: https://staging.myrekoda.com
+    steps:
+      # Every expression reaches the shell through env, never pasted into a
+      # script, so no event field can become a command.
+      - name: Choose the commit
+        id: commit
+        env:
+          EVENT: ${{ github.event_name }}
+          RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+          INPUT_SHA: ${{ inputs.sha }}
+          REF_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = workflow_run ]; then
+            # CI just passed on this commit, so it is its own driver; the host
+            # skips it if staging already runs a newer commit of main.
+            sha=$RUN_SHA
+            driver=$RUN_SHA
+            mode=--newer-only
+          else
+            # A deliberate redeploy, possibly of an older commit, driven by
+            # main's tip (checked below to have passed CI too).
+            sha=${INPUT_SHA:-$REF_SHA}
+            driver=$REF_SHA
+            mode=
+          fi
+          for value in "$sha" "$driver"; do
+            if ! [[ "$value" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "not a full 40-character commit SHA: '$value'" >&2
+              exit 1
+            fi
+          done
+          {
+            echo "sha=$sha"
+            echo "driver=$driver"
+            echo "mode=$mode"
+          } >>"$GITHUB_OUTPUT"
+          echo "deploying $sha with the driver at $driver"
+
+      # A workflow_run already carries a successful CI push run on main for
+      # its commit, which is also its driver. A manual run proves the same for
+      # the commit it names and for the driver, whose script runs on the host.
+      - name: CI passed on main for the commit and the driver
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ steps.commit.outputs.sha }}
+          DRIVER_SHA: ${{ steps.commit.outputs.driver }}
+        run: |
+          set -euo pipefail
+          for commit in "$SHA" "$DRIVER_SHA"; do
+            passed=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml \
+              --branch main --event push --commit "$commit" --status success \
+              --limit 1 --json databaseId --jq length)
+            if [ "$passed" != 1 ]; then
+              echo "no successful CI run on a push to main for $commit" >&2
+              exit 1
+            fi
+          done
+
+      # The driver, not necessarily the commit being deployed: the host checks
+      # that commit out itself.
+      - name: Check out the deployment driver
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ steps.commit.outputs.driver }}
+          persist-credentials: false
+
+      - name: The checkout is the driver
+        env:
+          DRIVER_SHA: ${{ steps.commit.outputs.driver }}
+        run: test "$(git rev-parse HEAD)" = "$DRIVER_SHA"
+
+      # The host key is pinned from the environment. Nothing here learns a
+      # key from the network or accepts one it has not seen.
+      - name: SSH key and pinned host key
+        env:
+          STAGING_SSH_PRIVATE_KEY: ${{ secrets.STAGING_SSH_PRIVATE_KEY }}
+          STAGING_KNOWN_HOSTS: ${{ secrets.STAGING_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          if [ -z "$STAGING_SSH_PRIVATE_KEY" ] || [ -z "$STAGING_KNOWN_HOSTS" ]; then
+            echo "STAGING_SSH_PRIVATE_KEY and STAGING_KNOWN_HOSTS must be set in the staging environment" >&2
+            exit 1
+          fi
+          install -d -m 700 "$RUNNER_TEMP/ssh"
+          (umask 077 && printf '%s\n' "$STAGING_SSH_PRIVATE_KEY" >"$RUNNER_TEMP/ssh/id")
+          (umask 077 && printf '%s\n' "$STAGING_KNOWN_HOSTS" >"$RUNNER_TEMP/ssh/known_hosts")
+
+      - name: Deploy on the host
+        id: deploy
+        env:
+          STAGING_HOST: ${{ secrets.STAGING_HOST }}
+          STAGING_USER: ${{ secrets.STAGING_USER }}
+          SHA: ${{ steps.commit.outputs.sha }}
+          MODE: ${{ steps.commit.outputs.mode }}
+        run: |
+          set -euo pipefail
+          if [ -z "$STAGING_HOST" ] || [ -z "$STAGING_USER" ]; then
+            echo "STAGING_HOST and STAGING_USER must be set in the staging environment" >&2
+            exit 1
+          fi
+          # The driver's copy of the script, run by bash on the host, for the
+          # chosen commit. The SHA is 40 hex characters and MODE empty or
+          # --newer-only (both set above), so both are safe on the remote
+          # command line. Exit 75 is the script's "skipped, nothing changed".
+          set +e
+          ssh -i "$RUNNER_TEMP/ssh/id" \
+            -o IdentitiesOnly=yes \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$RUNNER_TEMP/ssh/known_hosts" \
+            -o ConnectTimeout=20 \
+            -o ServerAliveInterval=30 \
+            -o ServerAliveCountMax=6 \
+            "$STAGING_USER@$STAGING_HOST" \
+            "bash -s -- $MODE $SHA" <scripts/deploy-staging.sh
+          status=$?
+          set -e
+          if [ "$status" = 75 ]; then
+            echo "skipped=true" >>"$GITHUB_OUTPUT"
+            echo "::notice::staging already runs a newer commit of main; $SHA was not deployed"
+            exit 0
+          fi
+          exit "$status"
+
+      # The same answer, asked from outside the host through Cloudflare.
+      - name: Staging answers with this commit
+        if: steps.deploy.outputs.skipped != 'true'
+        env:
+          SHA: ${{ steps.commit.outputs.sha }}
+        run: |
+          set -euo pipefail
+          curl -fsS --max-time 15 https://staging-api.myrekoda.com/health | tee "$RUNNER_TEMP/health.json"
+          echo
+          # The host abbreviates the SHA (at least 7 characters, longer only
+          # if its clone needs it), so match the prefix rather than recompute.
+          jq -e --arg sha "$SHA" \
+            '.commit as $c | .status == "ok" and .database == "up" and ($c | length >= 7)
+             and ($sha | startswith($c)) and .release == "staging-\($c)"' \
+            "$RUNNER_TEMP/health.json" >/dev/null
+
+      - name: Remove the SSH key
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/ssh"
