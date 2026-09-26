@@ -184,7 +184,7 @@ const ALL: Record<string, readonly replies.Reply[]> = {
     replies.purchaseSaved(NAIRA_MILLIONS, NAIRA_MILLIONS),
     replies.purchaseSaved(NAIRA_MILLIONS, 0, { name: LONG_NAME, onHand: 412 }),
   ],
-  noAccount: [replies.noAccount('https://staging.myrekoda.com'), replies.noAccount(null)],
+  noAccount: [replies.noAccount('https://web.example.test'), replies.noAccount(null)],
   stockList: [
     replies.stockList([], 0, 0),
     replies.stockList(shelf, 20, 1),
@@ -252,7 +252,7 @@ describe('every reply', () => {
     replies.busyRightNow(),
     replies.couldNotRead(),
     replies.notYet('Your debtor list'),
-    replies.noAccount('https://staging.myrekoda.com'),
+    replies.noAccount('https://web.example.test'),
     replies.noAccount(null),
     replies.voiceUnavailable(),
     replies.photoUnavailable(),
@@ -411,8 +411,8 @@ describe('a stranger', () => {
     /set one up here:\n(\S+)$/.exec(replies.noAccount(webUrl).text)?.[1] ?? null;
 
   it('ends on the link, with nothing after it', () => {
-    expect(replies.noAccount('https://staging.myrekoda.com').text).toMatch(
-      /\nhttps:\/\/staging\.myrekoda\.com\/start$/,
+    expect(replies.noAccount('https://web.example.test').text).toMatch(
+      /\nhttps:\/\/web\.example\.test\/start$/,
     );
   });
 
@@ -422,19 +422,19 @@ describe('a stranger', () => {
     expect(text).not.toMatch(/soon|later|check back/i);
   });
 
-  it("links the deployment's own sign-up page", () => {
-    expect(linkIn('https://staging.myrekoda.com')).toBe('https://staging.myrekoda.com/start');
-    expect(linkIn('https://myrekoda.com')).toBe('https://myrekoda.com/start');
+  it('links /start under whatever web URL it is given', () => {
+    expect(linkIn('https://web.example.test')).toBe('https://web.example.test/start');
+    expect(linkIn('https://example.test')).toBe('https://example.test/start');
     expect(linkIn('http://localhost:3000')).toBe('http://localhost:3000/start');
   });
 
   it('never doubles the slash, however many trail the origin', () => {
     for (const origin of [
-      'https://staging.myrekoda.com/',
-      'https://staging.myrekoda.com//',
-      'https://staging.myrekoda.com///',
+      'https://web.example.test/',
+      'https://web.example.test//',
+      'https://web.example.test///',
     ]) {
-      expect(linkIn(origin), origin).toBe('https://staging.myrekoda.com/start');
+      expect(linkIn(origin), origin).toBe('https://web.example.test/start');
     }
   });
 
@@ -467,12 +467,14 @@ describe('a stranger', () => {
       'ftp://example.com',
       'data:text/html,hi',
       'mailto:someone@example.com',
-      'staging.myrekoda.com',
+      'web.example.test',
       'https://',
     ]) {
       expect(linkIn(origin), String(origin)).toBeNull();
       const text = replies.noAccount(origin).text;
-      expect(text, String(origin)).not.toMatch(/rekoda\.app|https?:|\/start|www\./i);
+      // Exactly the no-link reply, which names no URL or domain of its own.
+      expect(text, String(origin)).toBe(replies.noAccount(null).text);
+      expect(text, String(origin)).not.toMatch(/:\/\/|www\.|\/start/i);
       expect(text).toContain('do not have an account for this number yet');
       expect(replies.isSendable(replies.noAccount(origin))).toBe(true);
     }
