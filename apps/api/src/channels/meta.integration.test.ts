@@ -2597,6 +2597,8 @@ describe("the plan's own example, end to end", () => {
     await sendFlagged('yes', 'wamid.YES');
 
     expect(stubSender.lastText).toMatch(/Saved ✅ INV-\d{4}-000001 for ₦150,000/);
+    // The bus path names the receipt too (G-48), from the run's own result.
+    expect(stubSender.lastText).toContain('Receipt RCT-2026-000001 is on its way.');
     expect(await invoiceCount(business.id)).toBe(1);
 
     const claims = await withBusiness(db, business.id, (tx) =>
@@ -2609,7 +2611,10 @@ describe("the plan's own example, end to end", () => {
     expect([...claims]).toHaveLength(1);
     expect(claim?.command_name).toBe('RecordSale');
     expect(claim?.key).toMatch(/^draft:/);
-    expect(claim?.response_snapshot).toMatchObject({ invoiceNumber: 'INV-2026-000001' });
+    expect(claim?.response_snapshot).toMatchObject({
+      invoiceNumber: 'INV-2026-000001',
+      receiptNumber: 'RCT-2026-000001',
+    });
   });
 
   it('renders and stores the PDF, and it opens', async () => {
@@ -2619,17 +2624,19 @@ describe("the plan's own example, end to end", () => {
     await send('yes', 'wamid.YES');
 
     // Issuing enqueues the render inside the same transaction, so draining the
-    // queue after the confirmation is all it takes.
+    // queue after the confirmation is all it takes. Money was taken with the
+    // sale (₦100,000 of ₦150,000), so the paper is its RECEIPT (G-48, journey
+    // C5) — one document, not the invoice as well.
     const stored = await withBusiness(db, business.id, (tx) =>
       issueRepo.documentsFor(tx, business.id),
     );
     expect(stored).toHaveLength(1);
-    expect(stored[0]).toMatchObject({ kind: 'invoice_pdf', refNumber: 'INV-2026-000001' });
+    expect(stored[0]).toMatchObject({ kind: 'receipt_pdf', refNumber: 'RCT-2026-000001' });
 
     // The key is unguessable — a sequential one would let anyone holding one
     // document's URL walk the merchant's whole sales history by counting.
     expect(stored[0]!.storageKey).toMatch(
-      new RegExp(`^documents/${business.id}/invoice_pdf/[0-9a-f]{32}\\.pdf$`),
+      new RegExp(`^documents/${business.id}/receipt_pdf/[0-9a-f]{32}\\.pdf$`),
     );
 
     // And the bytes are really there, and really a PDF.
@@ -2653,10 +2660,17 @@ describe("the plan's own example, end to end", () => {
     const sent = stubSender.lastDocument!;
 
     // Named so a merchant can find it again in three weeks, not by a uuid.
-    expect(sent.filename).toBe('INV-2026-000001.pdf');
+    // Money was taken with the sale, so it is the receipt (G-48, journey C5).
+    expect(sent.filename).toBe('RCT-2026-000001.pdf');
     expect(sent.contentType).toBe('application/pdf');
     expect(sent.to).toBe('+2348031234567');
-    expect(sent.caption).toContain('INV-2026-000001');
+    // The merchant-recorded caption, naming the invoice it was paid against.
+    // Never "confirmed": nobody verified this money with a provider (ADR 0014).
+    expect(sent.caption).toBe(
+      'Receipt RCT-2026-000001 for ₦100,000 on INV-2026-000001 is attached. ' +
+        'Forward it to your customer.',
+    );
+    expect(sent.caption).not.toMatch(/confirm|verif/i);
 
     // The real bytes, not a link — a link would need the PDF to be publicly
     // reachable, which is what the unguessable key exists to avoid.
@@ -2667,6 +2681,40 @@ describe("the plan's own example, end to end", () => {
       conversationsRepo.messagesFor(tx, business.id),
     );
     expect(messages.some((m) => m.kind === 'media' && m.direction === 'outbound')).toBe(true);
+  });
+
+  it('a sale on credit still delivers its INVOICE, and no receipt exists', async () => {
+    // Journey C6: nothing was paid, so the invoice is the merchant's paper.
+    const business = await seedMerchant('+2348031234567', 'Ada Fashion');
+    stubTransport.replyWith({ ...THE_SALE, reportedPayment: null });
+    await send('Ada bought 3 wigs for 150k, she will pay later', 'wamid.SALE');
+    await send('yes', 'wamid.YES');
+
+    expect(stubSender.lastText).toMatch(/Saved ✅ INV-\d{4}-000001 for ₦150,000/);
+    expect(stubSender.lastText).not.toContain('Receipt');
+    expect(stubSender.documents).toHaveLength(1);
+    expect(stubSender.lastDocument!.filename).toBe('INV-2026-000001.pdf');
+    const receipts = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ n: number }>(
+        sql`SELECT count(*)::int AS n FROM receipts WHERE business_id = ${business.id}::uuid`,
+      ),
+    );
+    expect([...receipts][0]?.n).toBe(0);
+  });
+
+  it('the yes for a paid sale names the receipt that follows', async () => {
+    await seedMerchant('+2348031234567', 'Ada Fashion');
+    stubTransport.replyWith(THE_SALE);
+    await send('Ada bought 3 wigs for 150k, paid 100k', 'wamid.SALE');
+    await post(messagePayload('2348031234567', 'wamid.YES', 'yes'));
+    // One job: the reply is sent before the render is drained.
+    const runner = buildRunner(workerDb, db, deps);
+    expect(await runner.runOnce()).toBe(true);
+
+    expect(stubSender.lastText).toBe(
+      'Saved ✅ INV-2026-000001 for ₦150,000.\n₦50,000 still owed.\n' +
+        'Receipt RCT-2026-000001 is on its way.',
+    );
   });
 
   it('retries delivery rather than losing the document', async () => {

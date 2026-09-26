@@ -45,7 +45,12 @@ import {
   reconciliations,
 } from '../schema/finance.js';
 import { accountByRole } from './accounts.js';
-import { accountIdsForKeys, nextDocumentNumber, writePosting } from './issue.js';
+import {
+  accountIdsForKeys,
+  mintMerchantAttestedReceipt,
+  nextDocumentNumber,
+  writePosting,
+} from './issue.js';
 import { appendVerification } from './provenance.js';
 import { grantCustomerCredit } from './customer-credits.js';
 import { recordPaymentAttempt, resolvePaymentAttempt } from './payments-hub.js';
@@ -281,7 +286,10 @@ export async function bookVerifiedPayment(
     .where(and(eq(invoices.id, invoice.id), eq(invoices.businessId, input.businessId)));
 
   /* 4 ── the receipt. Numbered inside this transaction, so a failure below
-   * un-bumps the counter and numbering stays dense. */
+   * un-bumps the counter and numbering stays dense. Written here, not by
+   * `mintMerchantAttestedReceipt`: a provider-verified receipt's snapshot
+   * carries the reference, provider and `verified: true`, and its shape is
+   * part of its hash. */
   const receiptNumber = await nextDocumentNumber(
     tx,
     input.businessId,
@@ -1074,32 +1082,18 @@ export async function recordMerchantPayment(
     })
     .where(and(eq(invoices.id, invoice.id), eq(invoices.businessId, input.businessId)));
 
-  const receiptNumber = await nextDocumentNumber(tx, input.businessId, 'receipt', lagosYear(at));
-  const snapshot = {
-    documentNumber: receiptNumber,
-    issuedAtIso: at.toISOString(),
+  /* The one writer of merchant-attested receipts, shared with a sale paid at
+   * issue (G-48): same numbering, same snapshot, same hash. */
+  const { receiptId, receiptNumber } = await mintMerchantAttestedReceipt(tx, {
+    businessId: input.businessId,
+    customerId: invoice.customer_id,
+    paymentId,
+    invoiceId: invoice.id,
     invoiceNumber: invoice.invoice_number,
     amountK: applied,
     allocatedK: applied,
-    currency: 'NGN',
-    verified: false,
-  };
-  const receiptRows = await tx
-    .insert(receipts)
-    .values({
-      businessId: input.businessId,
-      customerId: invoice.customer_id,
-      receiptNumber,
-      paymentId,
-      invoiceId: invoice.id,
-      amountK: applied,
-      currency: 'NGN',
-      snapshotJson: snapshot as never,
-      docHash: documentHash(snapshot),
-    })
-    .returning({ id: receipts.id });
-  const receiptId = receiptRows[0]?.id;
-  if (!receiptId) throw new Error('recordMerchantPayment: receipt insert returned no row');
+    at,
+  });
 
   /* Cash or bank debited, receivable cleared. Built in core, asserted
    * balanced there, written here. */

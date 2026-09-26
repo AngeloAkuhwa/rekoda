@@ -17,6 +17,16 @@
 | **Launch verdict**          | **NOT READY** (`REKODA_LAUNCH_READINESS.md` §1)                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | **Engineering model**       | Simple: Angelo assigns, Claude reads `CLAUDE.md` and the canonical docs, implements with tests, normal CI, Angelo reviews and merges. The multi-agent control plane (PR #233) was removed by PR #237 (merged 11 Sep 2026) and PR #234 closed unmerged                                                                                                                                                                                                                                      |
 
+**In review (26 Sep 2026, Build 1, G-48; CODE COMPLETE, staging acceptance
+pending):** branch `fix/initial-paid-sale-receipt` off `main` at `e02925d`.
+A sale with money taken at issue now ends in one merchant-attested receipt
+for that payment (same transaction, no second payment, verification,
+allocation or posting), and the receipt is the merchant's PDF instead of the
+invoice; a merchant-recorded overpayment receipt no longer promises a
+review, refund or credit. After merge: confirm `/health` names the merged
+SHA on staging, then run J2 from a real handset. Build 2 (G-61) starts only
+after that acceptance.
+
 **Last completed work (10–11 Sep 2026):** the repository reset. Removed
 `AGENTS.md`, `GEMINI.md`, `docs/AUTONOMOUS-ENGINEERING.md`, `docs/agents/`,
 `scripts/agents/`, the seven `agent-*.yml` workflows and the agent-task

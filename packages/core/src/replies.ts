@@ -446,10 +446,20 @@ export function correctionTaken(): Reply {
  * The number is in it because that is what a merchant quotes down the phone
  * when a customer asks, and the balance is in it because "what is still owed"
  * is the question they will be asked next.
+ *
+ * When money was taken with the sale the paper that follows is its RECEIPT
+ * (G-48), so the reply names it, in `paymentRecorded`'s words: the receipt is
+ * on its way, and nothing here says anybody confirmed the money.
  */
-export function issued(documentNumber: string, totalK: number, balanceDueK: number): Reply {
+export function issued(
+  documentNumber: string,
+  totalK: number,
+  balanceDueK: number,
+  receiptNumber: string | null = null,
+): Reply {
   const lines = [`Saved ✅ ${documentNumber} for ${formatKobo(totalK)}.`];
   if (balanceDueK > 0) lines.push(`${formatKobo(balanceDueK)} still owed.`);
+  if (receiptNumber) lines.push(`Receipt ${receiptNumber} is on its way.`);
   return reply(lines.join('\n'));
 }
 

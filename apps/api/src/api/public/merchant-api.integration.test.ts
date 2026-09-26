@@ -159,6 +159,64 @@ describe('recording a sale', () => {
     expect(Number(totals.debits)).toBeGreaterThan(0);
   });
 
+  it('a sale paid at issue ends in one receipt, and the response is unchanged (G-48)', async () => {
+    /* ₦50,000 of ₦100,300 paid through the API: the same RecordSale work as
+     * chat, so one invoice, one payment, one allocation, one merchant-attested
+     * receipt, and the receipt (not also the invoice) queued as paper. */
+    const shop = await merchant('+2348192000007', 'Receipted Co');
+    const response = await post('/api/v1/sales', SALE, shop.key);
+    expect(response.statusCode).toBe(200);
+    /* The public contract does not grow: no receipt id leaks into it. */
+    expect(Object.keys(response.json() as object).sort()).toEqual([
+      'balanceDueK',
+      'invoiceId',
+      'invoiceNumber',
+      'totalK',
+    ]);
+
+    const counted = await withBusiness(db, shop.businessId, (tx) =>
+      tx.execute<Record<string, number>>(sql`
+        SELECT
+          (SELECT count(*)::int FROM invoices WHERE business_id = ${shop.businessId}) AS invoices,
+          (SELECT count(*)::int FROM payments WHERE business_id = ${shop.businessId}) AS payments,
+          (SELECT count(*)::int FROM payment_allocations
+            WHERE business_id = ${shop.businessId}) AS allocations,
+          (SELECT count(*)::int FROM payment_verifications
+            WHERE business_id = ${shop.businessId}
+              AND source = 'MERCHANT_ATTESTED') AS verifications,
+          (SELECT count(*)::int FROM receipts WHERE business_id = ${shop.businessId}) AS receipts,
+          (SELECT count(*)::int FROM ledger_transactions
+            WHERE business_id = ${shop.businessId}) AS postings
+      `),
+    );
+    expect([...counted][0]).toEqual({
+      invoices: 1,
+      payments: 1,
+      allocations: 1,
+      verifications: 1,
+      receipts: 1,
+      postings: 1,
+    });
+
+    const receipts = await withBusiness(db, shop.businessId, (tx) =>
+      tx.execute<{ id: string; amount_k: string; verified: boolean }>(sql`
+        SELECT r.id, r.amount_k::text, (r.snapshot_json->>'verified')::boolean AS verified
+          FROM receipts r WHERE r.business_id = ${shop.businessId}
+      `),
+    );
+    const receipt = [...receipts][0]!;
+    expect(receipt.amount_k).toBe('5000000');
+    expect(receipt.verified).toBe(false);
+
+    const renders = await withBusiness(db, shop.businessId, (tx) =>
+      tx.execute<{ payload: Record<string, unknown> }>(sql`
+        SELECT payload FROM jobs
+         WHERE business_id = ${shop.businessId} AND kind = 'document.render'
+      `),
+    );
+    expect([...renders].map((r) => r.payload)).toEqual([{ receiptId: receipt.id }]);
+  });
+
   it('runs once for one Idempotency-Key, however many times it is sent', async () => {
     const shop = await merchant('+2348192000003', 'Retried Co');
     const headers = { ...shop.key, 'idempotency-key': 'order-4471' };
