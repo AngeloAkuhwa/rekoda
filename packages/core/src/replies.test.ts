@@ -446,23 +446,24 @@ describe('a stranger', () => {
     }
   });
 
-  it('keeps a path on the configured value rather than discarding it', () => {
-    expect(linkIn('https://host.example/app')).toBe('https://host.example/app/start');
-    expect(linkIn('https://host.example/app/')).toBe('https://host.example/app/start');
-    expect(linkIn('https://host.example/app//')).toBe('https://host.example/app/start');
-  });
-
-  it('never doubles a slash inside the base path either', () => {
-    expect(linkIn('https://host.example//app//')).toBe('https://host.example/app/start');
-    expect(linkIn('https://host.example/a//b/')).toBe('https://host.example/a/b/start');
+  it('refuses a configured path: the web app is mounted at the root of its origin', () => {
+    for (const origin of [
+      'https://host.example/app',
+      'https://host.example/app/',
+      'https://host.example//app//',
+      'https://host.example/a//b/',
+      'https://host.example/base?x=1#section',
+    ]) {
+      expect(linkIn(origin), origin).toBeNull();
+      expect(replies.noAccount(origin).text, origin).toBe(replies.noAccount(null).text);
+    }
   });
 
   it('drops a query, a fragment and credentials rather than let them swallow the path', () => {
-    expect(linkIn('https://host.example/app?x=1#section')).toBe('https://host.example/app/start');
-    expect(linkIn('https://host.example/app/?x=1')).toBe('https://host.example/app/start');
+    expect(linkIn('https://host.example/?x=1#section')).toBe('https://host.example/start');
     expect(linkIn('https://host.example#top')).toBe('https://host.example/start');
     expect(linkIn('https://host.example?x=1')).toBe('https://host.example/start');
-    expect(linkIn('https://user:secret@host.example/app')).toBe('https://host.example/app/start');
+    expect(linkIn('https://user:secret@host.example')).toBe('https://host.example/start');
   });
 
   it('names no domain at all when the deployment has no web origin', () => {
@@ -527,13 +528,16 @@ describe('links into the web app', () => {
       }
     });
 
-    it('keeps a path on the configured value rather than discarding it', () => {
-      expect(linkIn(build('https://host.example/app').text)).toBe(
-        `https://host.example/app/${page}`,
-      );
-      expect(linkIn(build('https://host.example//app//').text)).toBe(
-        `https://host.example/app/${page}`,
-      );
+    it('refuses a configured path, giving the no-link reply', () => {
+      for (const webUrl of [
+        'https://host.example/base',
+        'https://host.example/app',
+        'https://host.example//app//',
+        'https://user:secret@host.example/base/?x=1#top',
+      ]) {
+        expect(linkIn(build(webUrl).text), webUrl).toBeNull();
+        expect(build(webUrl).text, webUrl).toBe(build(null).text);
+      }
     });
 
     it('drops a query, a fragment and credentials from the web URL', () => {

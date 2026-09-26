@@ -1252,17 +1252,19 @@ export function noAccount(webUrl: string | null): Reply {
 /**
  * A page of the deployment's web app, as an absolute link: `path` under the
  * configured web origin (REKODA_WEB_URL, passed in; this package reads no
- * environment), or null when `webUrl` is not an http(s) URL. The one place a
- * reply turns the configured origin into a link.
+ * environment), or null when `webUrl` is not an http(s) origin. The one place
+ * a reply turns the configured origin into a link.
+ *
+ * REKODA_WEB_URL is the deployment's web ORIGIN. The web app is mounted at its
+ * root and its sign-in redirects are root-relative, so a configured path
+ * (`https://host/app`) is not a base path Rekoda can serve: it gives null,
+ * and the reply's honest no-link copy, rather than a link that leads nowhere.
+ * Trailing slashes alone are the root.
  *
  * Built with the URL API, not by appending to the string: a query or fragment
- * in the configured value would otherwise swallow the path (`/app?x=1/start`).
- * A path on the configured value is kept rather than silently discarded
- * (`/app` gives `/app/start`), repeated slashes do not double on either side
- * of the join, and the query, fragment and any credentials are dropped, since
- * the link is sent to whoever is on WhatsApp. REKODA_WEB_URL is meant to be a
- * bare origin, though: the web app is served at its origin's root, and its
- * sign-in redirects are root-relative (see .env.example).
+ * in the configured value would otherwise swallow the path (`?x=1/start`).
+ * The query, fragment and any credentials are dropped, since the link is sent
+ * to whoever is on WhatsApp, and repeated slashes in `path` do not double.
  */
 function webLink(webUrl: string | null, path: string): string | null {
   const raw = webUrl?.trim();
@@ -1274,13 +1276,15 @@ function webLink(webUrl: string | null, path: string): string | null {
     return null;
   }
   if (url.protocol !== 'https:' && url.protocol !== 'http:') return null;
+  // An origin, not an origin plus a base path: the web app is mounted at the
+  // root (no Next basePath; Caddy serves it by hostname), so a link under a
+  // configured path would lead nowhere. Only slashes count as the root.
+  if (url.pathname.replace(/\/+/g, '') !== '') return null;
   url.username = '';
   url.password = '';
   url.search = '';
   url.hash = '';
-  const base = url.pathname.replace(/\/{2,}/g, '/').replace(/\/+$/, '');
-  const page = path.replace(/\/{2,}/g, '/').replace(/^\/+/, '');
-  url.pathname = `${base}/${page}`;
+  url.pathname = `/${path.replace(/\/{2,}/g, '/').replace(/^\/+/, '')}`;
   return url.toString();
 }
 
