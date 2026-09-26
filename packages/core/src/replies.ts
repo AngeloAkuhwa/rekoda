@@ -1257,9 +1257,12 @@ export function noAccount(webUrl: string | null): Reply {
  *
  * Built with the URL API, not by appending to the string: a query or fragment
  * in the configured value would otherwise swallow the path (`/app?x=1/start`).
- * A base path is kept (`/app` gives `/app/start`), repeated slashes do not
- * double on either side of the join, and the query, fragment and any
- * credentials are dropped, since the link is sent to whoever is on WhatsApp.
+ * A path on the configured value is kept rather than silently discarded
+ * (`/app` gives `/app/start`), repeated slashes do not double on either side
+ * of the join, and the query, fragment and any credentials are dropped, since
+ * the link is sent to whoever is on WhatsApp. REKODA_WEB_URL is meant to be a
+ * bare origin, though: the web app is served at its origin's root, and its
+ * sign-in redirects are root-relative (see .env.example).
  */
 function webLink(webUrl: string | null, path: string): string | null {
   const raw = webUrl?.trim();
