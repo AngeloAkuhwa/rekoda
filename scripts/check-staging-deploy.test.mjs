@@ -55,7 +55,7 @@ test('the script skipping the migrate job', () => {
 });
 
 test('the script starting the release before migrating', () => {
-  const up = 'timeout 600 dc up -d --wait --wait-timeout 300\n';
+  const up = 'dc up -d --wait --wait-timeout 300\n';
   const moved = edited('script', up, '').script.replace(
     "step 'migrate (expand-only, as the owner)'\n",
     () => `${up}step 'migrate (expand-only, as the owner)'\n`,
@@ -158,6 +158,64 @@ test('the rollback baseline checked before PREV_SHA is known', () => {
     () => `\n${prev}step 'fetch and verify the commit'\n`,
   );
   expectProblem(problems({ script: moved }), /before it knows PREV_SHA/);
+});
+
+/* ---- dc is a shell function ---- */
+
+// Regression (Codex on #249): `timeout 600 dc up ...` exits 127, since an
+// external command cannot run a shell function, so every deploy failed after
+// migrating, before the new release started.
+test('the dc function handed to timeout', () => {
+  const edit = edited(
+    'script',
+    '\ndc up -d --wait --wait-timeout 300\n',
+    '\ntimeout 600 dc up -d --wait --wait-timeout 300\n',
+  );
+  expectProblem(problems(edit), /hands the dc shell function to an external command/);
+});
+
+test('the dc function handed to another external command', () => {
+  const edit = edited('script', '\ndc config -q\n', '\nnohup dc config -q\n');
+  expectProblem(problems(edit), /`nohup dc config -q` hands the dc shell function/);
+});
+
+/* ---- paths no commit has, which the build context would include ---- */
+
+// Regression (Codex on #249): --untracked-files=no hid files that `COPY . .`
+// then built into staging although no commit held them and CI never saw them.
+test('a checkout holding paths no commit has, not refused', () => {
+  const edit = edited('script', '[ -z "$stray" ] ||\n  fail "', '[ -z "$stray" ] ||\n  echo "');
+  expectProblem(problems(edit), /no longer refuses a checkout holding paths no commit has/);
+});
+
+test('the untracked check reading only what git does not ignore', () => {
+  const edit = edited(
+    'script',
+    'ls-files --others --directory --no-empty-directory',
+    'ls-files --others --exclude-standard --directory --no-empty-directory',
+  );
+  expectProblem(problems(edit), /no longer refuses a checkout holding paths no commit has/);
+});
+
+test('the host-local allowlist widened', () => {
+  const edit = edited('script', '|storage|logs|backups)/', '|storage|logs|backups|tmp)/');
+  expectProblem(problems(edit), /must allow exactly the host-local paths/);
+});
+
+test('paths no commit has checked only after the checkout changed', () => {
+  const lines = REAL.script.split('\n');
+  const from = lines.findIndex((line) => line.startsWith('HOST_LOCAL='));
+  const block = `${lines.slice(from, from + 4).join('\n')}\n`;
+  const without = edited('script', block, '').script;
+  const anchor = 'step "build both images';
+  assert.ok(without.includes(anchor), `fixture text not found in script: ${anchor}`);
+  const moved = without.replace(anchor, () => `${block}${anchor}`);
+  expectProblem(problems({ script: moved }), /paths no commit has only after the prepared phase/);
+});
+
+test('.dockerignore no longer excluding a host-local path the script allows', () => {
+  const edit = edited('dockerignore', '\nbackups/\n', '\n');
+  expectProblem(problems(edit), /\.dockerignore no longer excludes backups\//);
 });
 
 test('a volume-deleting down', () => {

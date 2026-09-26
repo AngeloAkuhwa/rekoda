@@ -27,7 +27,29 @@ export const FILES = {
   script: 'scripts/deploy-staging.sh',
   workflow: '.github/workflows/deploy-staging.yml',
   ci: '.github/workflows/ci.yml',
+  dockerignore: '.dockerignore',
 };
+
+/**
+ * The build context is the host's checkout (`COPY . .`), so the script
+ * refuses any path no commit holds, ignored by git or not, except these
+ * host-local ones. Each must stay excluded by .dockerignore, or a file the
+ * script lets through would be built into staging without CI having seen it.
+ */
+export const HOST_LOCAL = String.raw`^((.+/)?\.env(\.[^/]+)?|(secrets|data|uploads|storage|logs|backups)/.*|[^/]+\.log)$`;
+export const HOST_LOCAL_DOCKERIGNORED = [
+  '.env',
+  '.env.*',
+  '**/.env',
+  '**/.env.*',
+  'secrets/',
+  'data/',
+  'uploads/',
+  'storage/',
+  'logs/',
+  'backups/',
+  '*.log',
+];
 
 /** The only secrets the workflow may read, all from the staging environment. */
 export const ALLOWED_SECRETS = [
@@ -74,7 +96,7 @@ export const STEPS = [
   {
     name: 'start the release and wait for health',
     runbook: /^dc up -d --wait$/,
-    script: /^timeout \d+ dc up -d --wait --wait-timeout \d+$/,
+    script: /^dc up -d --wait --wait-timeout \d+$/,
   },
   {
     name: 'reload the Caddyfile',
@@ -100,6 +122,10 @@ const SCRIPT_FORBIDDEN = [
   [/--no-deps|--scale\b/, 'can start Caddy past the edge check (G-74)'],
   [/\bset -x\b|\bxtrace\b/, 'echoes every command, and so anything it expands'],
   [/secrets\//, 'touches secrets/, which the deploy never needs'],
+  [
+    /\b(timeout|nohup|xargs|env|sudo|nice|watch|setsid|stdbuf)\s+(-\S+\s+|\d+\w*\s+)*dc\b/,
+    'hands the dc shell function to an external command, which cannot run it (exit 127)',
+  ],
 ];
 
 const codeLines = (text) =>
@@ -180,7 +206,44 @@ function baselineProblems(lines) {
   return problems;
 }
 
-export function problemsFor({ runbook, script, workflow, ci }) {
+const STRAY_CALL =
+  /^stray=\$\(git -c core\.quotePath=false ls-files --others --directory --no-empty-directory \| grep -Ev "\$HOST_LOCAL" \|\| true\)$/;
+
+function strayProblems(lines, dockerignore) {
+  const problems = [];
+  if (!lines.includes(`HOST_LOCAL='${HOST_LOCAL}'`)) {
+    problems.push(
+      `${FILES.script} must allow exactly the host-local paths HOST_LOCAL in scripts/check-staging-deploy.mjs names`,
+    );
+  }
+  const at = lines.findIndex((line) => STRAY_CALL.test(line));
+  if (at < 0 || lines[at + 1] !== '[ -z "$stray" ] ||' || !/^\s*fail\b/.test(lines[at + 2] ?? '')) {
+    problems.push(
+      `${FILES.script} no longer refuses a checkout holding paths no commit has (they would enter the image build)`,
+    );
+  } else {
+    const prepared = lines.indexOf('PHASE=prepared');
+    if (prepared >= 0 && prepared < at) {
+      problems.push(`${FILES.script} checks for paths no commit has only after the prepared phase`);
+    }
+  }
+  const ignored = new Set(
+    dockerignore
+      .split('\n')
+      .map((line) => line.replace(/\r$/, '').trim())
+      .filter((line) => line && !line.startsWith('#')),
+  );
+  for (const pattern of HOST_LOCAL_DOCKERIGNORED) {
+    if (!ignored.has(pattern)) {
+      problems.push(
+        `${FILES.dockerignore} no longer excludes ${pattern}, which ${FILES.script} lets stay in the build context`,
+      );
+    }
+  }
+  return problems;
+}
+
+export function problemsFor({ runbook, script, workflow, ci, dockerignore }) {
   const problems = [];
 
   /* ---- The runbook and the script perform the same steps, in order. ---- */
@@ -287,6 +350,7 @@ export function problemsFor({ runbook, script, workflow, ci }) {
     if (!pattern.test(script)) problems.push(`${FILES.script} no longer ${what}`);
   }
   problems.push(...baselineProblems(lines));
+  problems.push(...strayProblems(lines, dockerignore));
 
   /* ---- The workflow. ---- */
   let wf;

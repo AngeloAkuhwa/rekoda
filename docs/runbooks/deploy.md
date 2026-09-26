@@ -375,14 +375,19 @@ release named `staging-<short sha>` (`git rev-parse --short=7`: at least
 seven characters, more when seven would be ambiguous; `REKODA_RELEASE` and
 the build's `REKODA_COMMIT` from the same value). In order, from
 `/opt/rekoda`: refuse a checkout with tracked local modifications, refuse a
-host whose `.env` does not name `https://staging-api.myrekoda.com` as
+checkout holding any path no commit has (ignored by git or not) other than
+the host-local ones `.dockerignore` keeps out of every image (`.env` and
+`.env.*` at any depth, `secrets/`, `data/`, `uploads/`, `storage/`, `logs/`,
+`backups/`, a top-level `*.log`), because the build context is the checkout
+and anything else would be built into staging without CI having seen it,
+refuse a host whose `.env` does not name `https://staging-api.myrekoda.com` as
 `REKODA_API_PUBLIC_URL`, refuse unless `/health` answers `status` ok,
 `database` up, the `REKODA_RELEASE` in `.env`, and a commit of at least
 seven characters that the checked-out commit starts with (the running
 release is the one a failure's rollback would name, not merely what the
 checkout and `.env` claim), `git fetch --prune origin`, check out the commit
 (detached), change only the `REKODA_RELEASE` line of `.env`, `dc build`,
-`dc run --rm -T migrate`, `dc up -d --wait` (under a deadline), reload the
+`dc run --rm -T migrate`, `dc up -d --wait --wait-timeout 300`, reload the
 Caddyfile, confirm the edge network, and require
 `https://staging-api.myrekoda.com/health` to answer `status` ok, `database`
 up, and this release and commit. It ends with `dc ps`. The workflow then asks
@@ -417,6 +422,10 @@ Set up once:
   `authorized_keys`, used for nothing else. The deploy user can drive Docker,
   which is root on the host, so this key is as powerful as root there: keep
   it only in the GitHub environment, and rotate it by replacing both halves.
+  Nothing else lives in `/opt/rekoda` beyond the checkout and the host-local
+  paths above (no `node_modules/`, no copied files, no scratch directories);
+  `git ls-files --others --directory` there shows what the script would
+  refuse.
 - **In GitHub,** the `staging` environment holds four secrets and nothing
   else: `STAGING_HOST`, `STAGING_USER`, `STAGING_SSH_PRIVATE_KEY` and
   `STAGING_KNOWN_HOSTS`. `STAGING_KNOWN_HOSTS` is the host's `known_hosts`

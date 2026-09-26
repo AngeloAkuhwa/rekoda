@@ -12,7 +12,9 @@
 # What it refuses, before anything live is touched:
 #   - a SHA that is not 40 hex characters, is not on origin/main, or is not
 #     in the repository at all;
-#   - a checkout with tracked local modifications;
+#   - a checkout with tracked local modifications, or holding any file that is
+#     not in the commit other than the host-local paths .dockerignore keeps
+#     out of every image (the build context is the checkout);
 #   - a host whose .env is not staging's (REKODA_API_PUBLIC_URL must be the
 #     staging API), so a mis-set STAGING_HOST can never deploy production;
 #   - a running staging that is not healthy, or is not the release and commit
@@ -113,6 +115,14 @@ PREV_RELEASE=$(sed -n 's/^REKODA_RELEASE=//p' .env)
 
 [ -z "$(git status --porcelain --untracked-files=no)" ] ||
   fail 'the checkout has tracked local modifications; resolve them by hand first'
+# The build context is the checkout (`COPY . .`), so a file the commit does not
+# hold, ignored by git or not, would be built into staging without CI having
+# seen it. Only the host-local paths .dockerignore keeps out of every image may
+# sit in the checkout; scripts/check-staging-deploy.mjs holds the two in step.
+HOST_LOCAL='^((.+/)?\.env(\.[^/]+)?|(secrets|data|uploads|storage|logs|backups)/.*|[^/]+\.log)$'
+stray=$(git -c core.quotePath=false ls-files --others --directory --no-empty-directory | grep -Ev "$HOST_LOCAL" || true)
+[ -z "$stray" ] ||
+  fail "the checkout holds paths no commit has, which the image build would include; move them out of $REKODA_DIR first: $(head -n 20 <<<"$stray" | tr '\n' ' ')"
 PREV_SHA=$(git rev-parse HEAD)
 
 # PREV_SHA and PREV_RELEASE are the rollback this run prints if it fails, so
@@ -156,7 +166,7 @@ PHASE=live
 dc run --rm -T migrate
 
 step 'start the new release'
-timeout 600 dc up -d --wait --wait-timeout 300
+dc up -d --wait --wait-timeout 300
 
 step 'reload the Caddyfile this commit carries'
 dc exec -T caddy caddy reload --config /etc/caddy/Caddyfile
