@@ -3047,7 +3047,8 @@ describe('collecting money from chat (payments-v1 §160)', () => {
     while (worked) worked = await runner.runOnce();
 
     expect(stubSender.lastText).toContain('open your Rekoda dashboard and go to Payments');
-    expect(stubSender.lastText).not.toMatch(/:\/\/|www\./);
+    // No scheme, no www, and no bare `name.tld` a phone would still link.
+    expect(stubSender.lastText).not.toMatch(/:\/\/|www\.|[a-z0-9-]\.[a-z]{2,}/i);
   });
 
   it('a provider outage degrades to an honest sentence, and the next try works', async () => {
@@ -3312,7 +3313,8 @@ describe('consent (STOP/START) and erasure, as facts not sentences', () => {
 
     expect(stubSender.lastText).toContain('deleted (1 record)');
     expect(stubSender.lastText).toContain('Your conversations and account can be deleted too');
-    expect(stubSender.lastText).not.toMatch(/:\/\/|www\./);
+    // No scheme, no www, and no bare `name.tld` a phone would still link.
+    expect(stubSender.lastText).not.toMatch(/:\/\/|www\.|[a-z0-9-]\.[a-z]{2,}/i);
     const left = await withBusiness(db, business.id, (tx) =>
       customersRepo.identityFacetsFor(tx, business.id, customer.id),
     );

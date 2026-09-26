@@ -143,8 +143,8 @@ export function erasureDone(erasedFacets: number, webUrl: string | null): Reply 
   return reply(
     page
       ? `${done}\n\nFor anything more, including your conversations and account, see:\n${page}`
-      : `${done}\n\nYour conversations and account can be deleted too: the Data deletion ` +
-          "page on Rekoda's website explains how.",
+      : `${done}\n\nYour conversations and account can be deleted too: the "Delete my ` +
+          'data" page on Rekoda\'s website explains how.',
   );
 }
 

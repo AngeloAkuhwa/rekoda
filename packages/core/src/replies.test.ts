@@ -541,6 +541,19 @@ describe('links into the web app', () => {
       }
     });
 
+    it('normalises the web URL however it was written', () => {
+      expect(linkIn(build('HTTPS://WEB.EXAMPLE.TEST').text)).toBe(
+        `https://web.example.test/${page}`,
+      );
+      expect(linkIn(build('  https://web.example.test/  ').text)).toBe(
+        `https://web.example.test/${page}`,
+      );
+      expect(linkIn(build('https://web.example.test:8443/app').text)).toBe(
+        `https://web.example.test:8443/app/${page}`,
+      );
+      expect(linkIn(build('http://[::1]:3000').text)).toBe(`http://[::1]:3000/${page}`);
+    });
+
     it('claims no link, and names no domain, when the web URL is unusable', () => {
       const fallback = build(null).text;
       for (const webUrl of [
@@ -555,7 +568,9 @@ describe('links into the web app', () => {
       ]) {
         const text = build(webUrl).text;
         expect(text, String(webUrl)).toBe(fallback);
-        expect(text, String(webUrl)).not.toMatch(/:\/\/|www\.|\.[a-z]{2,}\//i);
+        /* No scheme, no www, and no bare host either: `name.tld` with no
+         * `://` is still a domain a phone turns into a link. */
+        expect(text, String(webUrl)).not.toMatch(/:\/\/|www\.|[a-z0-9-]\.[a-z]{2,}/i);
         expect(linkIn(text)).toBeNull();
       }
     });
@@ -565,7 +580,8 @@ describe('links into the web app', () => {
     const text = replies.erasureDone(2, null).text;
     expect(text).toContain('deleted (2 records)');
     expect(text).toContain('Your conversations and account can be deleted too');
-    expect(text).toContain('Data deletion');
+    // The page by the title it carries on the website and in its footer.
+    expect(text).toContain('"Delete my data" page');
   });
 
   it('still says where Payments is, with no link', () => {
