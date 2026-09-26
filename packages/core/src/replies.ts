@@ -128,13 +128,23 @@ export function viewOnlyRole(): Reply {
 /**
  * Erasure, performed. The count makes the claim checkable: a merchant who
  * knows they had customers and reads "0 records" knows to ask questions.
+ *
+ * The rest (conversations, the account) is explained on the deployment's own
+ * data deletion page, linked from `webUrl` (REKODA_WEB_URL, passed in). With
+ * no usable origin the reply names the page rather than a domain that may not
+ * be this deployment's.
  */
-export function erasureDone(erasedFacets: number): Reply {
-  return reply(
+export function erasureDone(erasedFacets: number, webUrl: string | null): Reply {
+  const done =
     `Done. Your customers' saved details are deleted (${erasedFacets} ` +
-      `record${erasedFacets === 1 ? '' : 's'}). Your invoices and books keep only their ` +
-      'reference numbers.\n\nFor anything more, including your conversations and account, ' +
-      'see rekoda.app/data-deletion.',
+    `record${erasedFacets === 1 ? '' : 's'}). Your invoices and books keep only their ` +
+    'reference numbers.';
+  const page = webLink(webUrl, '/data-deletion');
+  return reply(
+    page
+      ? `${done}\n\nFor anything more, including your conversations and account, see:\n${page}`
+      : `${done}\n\nYour conversations and account can be deleted too: the Data deletion ` +
+          "page on Rekoda's website explains how.",
   );
 }
 
@@ -748,11 +758,20 @@ export function paymentLinkNothingOwed(): Reply {
   );
 }
 
-/** Collection needs a settlement account first (§47 posture: honest, never a dead link). */
-export function paymentLinkNeedsConnection(): Reply {
+/**
+ * Collection needs a settlement account first (§47 posture: honest, never a
+ * dead link). The Payments page is linked from `webUrl` (REKODA_WEB_URL,
+ * passed in); it asks for a sign-in when there is no session. With no usable
+ * origin the reply says where to go, and claims no link.
+ */
+export function paymentLinkNeedsConnection(webUrl: string | null): Reply {
+  const payments = webLink(webUrl, '/app/payments');
   return reply(
-    'To collect payments straight to your bank, first add your settlement account ' +
-      'at rekoda.app under Payments. It takes one minute, once.',
+    payments
+      ? 'To collect payments straight to your bank, first add your settlement account ' +
+          `under Payments. It takes one minute, once:\n${payments}`
+      : 'To collect payments straight to your bank, first add your settlement account: ' +
+          'open your Rekoda dashboard and go to Payments. It takes one minute, once.',
   );
 }
 
@@ -1218,7 +1237,7 @@ export function noAccount(webUrl: string | null): Reply {
   const greeting =
     'Hello 👋 I keep the books for businesses on Rekoda, and I do not have an ' +
     'account for this number yet.';
-  const start = signUpLink(webUrl);
+  const start = webLink(webUrl, '/start');
   return reply(
     start
       ? // The link ends the message, on its own line: no punctuation after it
@@ -1231,15 +1250,18 @@ export function noAccount(webUrl: string | null): Reply {
 }
 
 /**
- * `start` under the web origin's path, or null when `webUrl` is not http(s).
+ * A page of the deployment's web app, as an absolute link: `path` under the
+ * configured web origin (REKODA_WEB_URL, passed in; this package reads no
+ * environment), or null when `webUrl` is not an http(s) URL. The one place a
+ * reply turns the configured origin into a link.
  *
  * Built with the URL API, not by appending to the string: a query or fragment
  * in the configured value would otherwise swallow the path (`/app?x=1/start`).
  * A base path is kept (`/app` gives `/app/start`), repeated slashes do not
- * double, and the query, fragment and any credentials are dropped, since
- * this is a link handed to a stranger.
+ * double on either side of the join, and the query, fragment and any
+ * credentials are dropped, since the link is sent to whoever is on WhatsApp.
  */
-function signUpLink(webUrl: string | null): string | null {
+function webLink(webUrl: string | null, path: string): string | null {
   const raw = webUrl?.trim();
   if (!raw) return null;
   let url: URL;
@@ -1253,7 +1275,9 @@ function signUpLink(webUrl: string | null): string | null {
   url.password = '';
   url.search = '';
   url.hash = '';
-  url.pathname = `${url.pathname.replace(/\/{2,}/g, '/').replace(/\/+$/, '')}/start`;
+  const base = url.pathname.replace(/\/{2,}/g, '/').replace(/\/+$/, '');
+  const page = path.replace(/\/{2,}/g, '/').replace(/^\/+/, '');
+  url.pathname = `${base}/${page}`;
   return url.toString();
 }
 

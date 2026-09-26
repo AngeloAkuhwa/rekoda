@@ -1004,7 +1004,7 @@ async function deterministicReply(
           () => eraseDataWork(tx, { businessId, sourceType: 'chat' }),
         );
         if (run.outcome !== 'done') return replies.erasureKept();
-        return replies.erasureDone(run.result.erased);
+        return replies.erasureDone(run.result.erased, deps.config.webUrl);
       }
       const discarded = await conversationsRepo.supersedePendingDrafts(tx, businessId);
       const parked = await conversationsRepo.recordDraft(tx, {
@@ -1292,7 +1292,7 @@ async function paymentDetailsReply(
       return replies.paymentLinkReady(invoice.invoiceNumber, outcome.amountK, outcome.checkoutUrl);
     }
     case 'connection_not_active':
-      return replies.paymentLinkNeedsConnection();
+      return replies.paymentLinkNeedsConnection(deps.config.webUrl);
     case 'requires_customer_information':
       /* Only the pre-mint no-email case is the merchant's records; a post-mint
        * provider rejection must not be blamed on them. */

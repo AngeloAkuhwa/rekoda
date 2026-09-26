@@ -3022,13 +3022,32 @@ describe('collecting money from chat (payments-v1 §160)', () => {
     expect(stubSender.lastText).toMatch(/https:\/\/checkout\.stub\/RKD-PAY-/);
   });
 
-  it('payment details without a connection points at onboarding, never a dead link', async () => {
+  it('payment details without a connection links the configured Payments page', async () => {
     const business = await seedMerchant('+2348031234567', 'Ada Fashion');
     await openInvoiceWithEmail(business.id, deps.config);
 
     await send('payment details', 'wamid.PAY2');
     expect(stubSender.lastText).toContain('add your settlement account');
-    expect(stubSender.lastText).not.toContain('http');
+    /* REKODA_WEB_URL, through config.webUrl: the only link in the reply, and
+     * the last thing in it. */
+    expect((stubSender.lastText ?? '').match(/\S+:\/\/\S+/g)).toEqual([
+      'https://books.example.test/app/payments',
+    ]);
+    expect(stubSender.lastText).toMatch(/\nhttps:\/\/books\.example\.test\/app\/payments$/);
+  });
+
+  it('payment details without a connection or a web URL names no link at all', async () => {
+    const business = await seedMerchant('+2348031234567', 'Ada Fashion');
+    await openInvoiceWithEmail(business.id, deps.config);
+
+    await post(messagePayload('2348031234567', 'wamid.PAY2N', 'payment details'));
+    const runner = buildRunner(workerDb, db, { ...deps, config: { ...deps.config, webUrl: null } });
+    let worked = await runner.runOnce();
+    expect(worked).toBe(true);
+    while (worked) worked = await runner.runOnce();
+
+    expect(stubSender.lastText).toContain('open your Rekoda dashboard and go to Payments');
+    expect(stubSender.lastText).not.toMatch(/:\/\/|www\./);
   });
 
   it('a provider outage degrades to an honest sentence, and the next try works', async () => {
@@ -3263,7 +3282,37 @@ describe('consent (STOP/START) and erasure, as facts not sentences', () => {
     await post(messagePayload('2348031234567', 'wamid.DEL2', 'delete my data'));
     expect(await buildRunner(workerDb, db, deps).runOnce()).toBe(true);
     expect(stubSender.lastText).toContain('deleted (2 records)');
+    /* The rest is on the deployment's own data deletion page: REKODA_WEB_URL,
+     * through config.webUrl, the only link and the last thing in the reply. */
+    expect((stubSender.lastText ?? '').match(/\S+:\/\/\S+/g)).toEqual([
+      'https://books.example.test/data-deletion',
+    ]);
+    expect(stubSender.lastText).toMatch(/\nhttps:\/\/books\.example\.test\/data-deletion$/);
 
+    const left = await withBusiness(db, business.id, (tx) =>
+      customersRepo.identityFacetsFor(tx, business.id, customer.id),
+    );
+    expect(left).toEqual([]);
+  });
+
+  it('erasure with no web URL still deletes, and names no link at all', async () => {
+    const business = await seedMerchant('+2348031234567', 'Ada Fashion');
+    const customer = await customersRepo.createCustomerWithIdentities(
+      db,
+      business.id,
+      'CUSTOMER_T2',
+      [{ facet: 'phone', ciphertext: 'sealed-phone', matchKey: 'mk-phone-2' }],
+    );
+    const noWeb = { ...deps, config: { ...deps.config, webUrl: null } };
+
+    await post(messagePayload('2348031234567', 'wamid.DELN1', 'delete my data'));
+    expect(await buildRunner(workerDb, db, noWeb).runOnce()).toBe(true);
+    await post(messagePayload('2348031234567', 'wamid.DELN2', 'delete my data'));
+    expect(await buildRunner(workerDb, db, noWeb).runOnce()).toBe(true);
+
+    expect(stubSender.lastText).toContain('deleted (1 record)');
+    expect(stubSender.lastText).toContain('Your conversations and account can be deleted too');
+    expect(stubSender.lastText).not.toMatch(/:\/\/|www\./);
     const left = await withBusiness(db, business.id, (tx) =>
       customersRepo.identityFacetsFor(tx, business.id, customer.id),
     );
