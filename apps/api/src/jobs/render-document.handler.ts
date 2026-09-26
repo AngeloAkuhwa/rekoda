@@ -135,21 +135,7 @@ async function renderReceipt(
   }
 
   const business = await identity.businessById(deps.db, businessId);
-  const snapshot = receipt.snapshot as Record<string, unknown>;
-
-  const doc: ReceiptDocument = {
-    documentNumber: receipt.receiptNumber,
-    issuedAt: receipt.issuedAt ?? new Date(),
-    businessName: business?.name ?? 'Rekoda',
-    invoiceNumber: String(snapshot['invoiceNumber'] ?? ''),
-    reference: String(snapshot['rekodaReference'] ?? ''),
-    amountK: Number(snapshot['amountK'] ?? 0),
-    allocatedK: Number(snapshot['allocatedK'] ?? 0),
-    /* The snapshot is written with `verified: false` for a payment the
-     * merchant reported. Absent means an older verified receipt, from before
-     * the merchant path existed. */
-    verified: snapshot['verified'] !== false,
-  };
+  const doc = receiptDocumentOf(receipt, business?.name ?? 'Rekoda');
 
   const bytes = await renderReceiptPdf(doc);
 
@@ -229,4 +215,37 @@ async function renderQuote(
   });
 
   log.debug(`rendered ${quote.quoteNumber} (${stored.bytes} bytes)`);
+}
+
+/**
+ * The stored receipt snapshot, as the document the PDF is drawn from.
+ *
+ * Pure, and exported so what the paper says is tested without a PDF parser.
+ * The snapshot is immutable and hashed; this only reads it.
+ */
+export function receiptDocumentOf(
+  receipt: { receiptNumber: string; issuedAt: Date | null; snapshot: unknown },
+  businessName: string,
+): ReceiptDocument {
+  const snapshot = receipt.snapshot as Record<string, unknown>;
+  return {
+    documentNumber: receipt.receiptNumber,
+    issuedAt: receipt.issuedAt ?? new Date(),
+    businessName,
+    invoiceNumber: String(snapshot['invoiceNumber'] ?? ''),
+    reference: String(snapshot['rekodaReference'] ?? ''),
+    amountK: Number(snapshot['amountK'] ?? 0),
+    allocatedK: Number(snapshot['allocatedK'] ?? 0),
+    /* The snapshot is written with `verified: false` for a payment the
+     * merchant reported. Absent means an older verified receipt, from before
+     * the merchant path existed. */
+    verified: snapshot['verified'] !== false,
+    /* Where a merchant-attested overpayment's excess went (G-49). Only the
+     * two written values are honoured; anything else, including its absence
+     * on a G-48 snapshot, keeps the neutral wording. */
+    ...(snapshot['excessDisposition'] === 'customer_credit' ||
+    snapshot['excessDisposition'] === 'unattributed'
+      ? { excessDisposition: snapshot['excessDisposition'] }
+      : {}),
+  };
 }

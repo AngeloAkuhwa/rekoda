@@ -18,6 +18,24 @@ export interface VoidFormState {
   done?: string;
   /** The API named the consequence and waits for the merchant to agree. */
   confirm?: { confirmationId: string; consequence: string; invoiceNumber: string; reason: string };
+  /**
+   * More came in than the invoice owes (G-49, OWN-16). Nothing was written;
+   * these are the server's figures for the merchant to confirm. The second
+   * submit carries the balance shown, and books only if it has not moved.
+   */
+  /**
+   * The submission was answered with an outcome that booked nothing but may
+   * have spent this form's key (a refusal the command bus records as the
+   * key's answer). The next try is a new intention and needs a new key, or
+   * it would be refused as a reused one.
+   */
+  freshKey?: boolean;
+  overpayment?: {
+    invoiceNumber: string;
+    amountK: number;
+    expectedBalanceK: number;
+    consequence: string;
+  };
 }
 
 /**
@@ -196,17 +214,32 @@ async function recordPaymentActionUnguarded(
   const method = String(formData.get('method') ?? 'cash') === 'transfer' ? 'transfer' : 'cash';
   const clientRefRaw = String(formData.get('clientRef') ?? '');
   const clientRef = /^[0-9a-f-]{36}$/i.test(clientRefRaw) ? clientRefRaw : undefined;
+  const amountK = toKobo(naira);
+
+  /* The second submit of an overpayment, and only for the figures that were
+   * shown: a changed amount or invoice is a new question, not a yes. */
+  const expectedBalanceK = Number(formData.get('expectedBalanceK') ?? '');
+  const confirming =
+    formData.get('confirmOverpayment') === '1' &&
+    Number.isSafeInteger(expectedBalanceK) &&
+    expectedBalanceK > 0 &&
+    Number(formData.get('confirmedAmountK') ?? '') === amountK &&
+    String(formData.get('confirmedInvoiceNumber') ?? '') === invoiceNumber;
 
   const outcome = await recordPayment(token, {
     invoiceNumber,
-    amountK: toKobo(naira),
+    amountK,
     method,
     ...(clientRef ? { clientRef } : {}),
+    ...(confirming ? { confirmOverpayment: true as const, expectedBalanceK } : {}),
   });
   if (!outcome) return { error: 'That did not go through. Nothing was changed.' };
 
   if (outcome.outcome === 'not_found') {
-    return { error: 'That invoice is no longer here. Reload the page and try again.' };
+    return {
+      error: 'That invoice is no longer here. Reload the page and try again.',
+      freshKey: true,
+    };
   }
   if (outcome.outcome === 'duplicate') {
     /* The same form reached us twice; the first submission booked. */
@@ -214,20 +247,49 @@ async function recordPaymentActionUnguarded(
     return { done: 'Already recorded. Nothing was recorded twice.' };
   }
   if (outcome.outcome === 'already_settled') {
-    return { error: `${outcome.invoiceNumber} is already paid in full. Nothing was recorded.` };
+    return {
+      error: `${outcome.invoiceNumber} is already paid in full. Nothing was recorded.`,
+      freshKey: true,
+    };
+  }
+  if (outcome.outcome === 'confirm_overpayment') {
+    const excess = outcome.customerLinked
+      ? `${formatKobo(outcome.creditK)} becomes customer credit`
+      : `${formatKobo(outcome.creditK)} is recorded as unapplied, because this invoice is not linked to a customer`;
+    return {
+      overpayment: {
+        invoiceNumber: outcome.invoiceNumber,
+        amountK: outcome.amountReceivedK,
+        expectedBalanceK: outcome.balanceDueK,
+        consequence: `${outcome.invoiceNumber} owes ${formatKobo(outcome.balanceDueK)}. You are recording ${formatKobo(outcome.amountReceivedK)}: ${formatKobo(outcome.allocatedK)} settles the invoice and ${excess}. Nothing is saved until you confirm.`,
+      },
+    };
+  }
+  if (outcome.outcome === 'balance_moved' && confirming) {
+    /* The overpayment they confirmed was worked out on a balance that has
+     * since changed. Nothing was saved; the figures must be shown again. */
+    return {
+      error: `${outcome.invoiceNumber} now owes ${formatKobo(outcome.balanceDueK)}, not what you confirmed, so nothing was recorded. Check the amount and record it again.`,
+      freshKey: true,
+    };
   }
   if (outcome.outcome === 'balance_moved') {
-    /* Never claim a cause. The same refusal covers a merchant typing more
-     * than the invoice owes and a provider payment landing while they were
-     * typing, and Rekoda cannot tell the two apart from here. Saying
-     * "something settled it while you were on this page" would be a
-     * fabrication in the ordinary case and the ordinary case is a typo. */
+    /* Since G-49 an amount over the balance is asked about before anything
+     * is tried, so this is reached only when the balance changed between that
+     * check and the write. Never claim a cause; nothing was saved, and a new
+     * try shows the current figures (an overpayment is asked about again). */
     return {
-      error: `${outcome.invoiceNumber} owes ${formatKobo(outcome.balanceDueK)}, and you typed ${formatKobo(outcome.excessK)} more than that. Record ${formatKobo(outcome.balanceDueK)} against this invoice. If more money really came in, the rest was for something else and belongs on its own invoice.`,
+      error: `${outcome.invoiceNumber} now owes ${formatKobo(outcome.balanceDueK)}, so nothing was recorded. Check the amount and record it again.`,
+      freshKey: true,
     };
   }
 
   revalidatePath('/app/invoices');
+  if (outcome.creditK) {
+    return {
+      done: `Recorded. Receipt ${outcome.receiptNumber} for ${formatKobo(outcome.receivedK ?? outcome.amountK + outcome.creditK)}: ${formatKobo(outcome.amountK)} paid ${outcome.invoiceNumber} in full and the extra ${formatKobo(outcome.creditK)} is recorded as you confirmed.`,
+    };
+  }
   return {
     done:
       outcome.balanceDueK > 0

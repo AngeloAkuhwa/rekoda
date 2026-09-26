@@ -584,6 +584,9 @@ export async function recordPayment(
     amountK: number;
     method: 'cash' | 'transfer';
     clientRef?: string;
+    /** The confirmed second submit of an overpayment (G-49). */
+    confirmOverpayment?: true;
+    expectedBalanceK?: number;
   },
 ): Promise<RecordPaymentResponse | null> {
   const { status, json } = await call({

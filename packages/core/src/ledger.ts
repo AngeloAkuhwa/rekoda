@@ -206,18 +206,34 @@ const cashOrBank = (method: PaymentMethod): AccountKey => (method === 'cash' ? '
 export function postSale(args: {
   memo: string;
   totalK: Kobo;
+  /** What was paid TOWARDS the sale: never more than the total. */
   paidK: Kobo;
   vatK?: Kobo;
   method?: PaymentMethod;
+  /**
+   * Money received BEYOND the total (G-49, spec §14.1). It is real money, so
+   * it is debited to Cash or Bank with the rest, and it is owed back, so it
+   * is credited to CUSTOMER_CREDIT: never revenue. Separate from `paidK` on
+   * purpose: a caller passing `paidK > totalK` is still refused, so nothing
+   * can overpay by accident, and an excess is only accepted on a sale paid
+   * in full (there is no excess while any of the total is still owed).
+   */
+  overpaidK?: Kobo;
 }): Posting {
   const vatK = args.vatK ?? 0;
+  const overpaidK = args.overpaidK ?? 0;
   const receivableK = args.totalK - args.paidK;
   if (receivableK < 0) throw new UnbalancedPostingError(args.memo, args.paidK, args.totalK);
+  if (overpaidK < 0 || (overpaidK > 0 && receivableK !== 0)) {
+    throw new UnbalancedPostingError(args.memo, args.paidK + overpaidK, args.totalK);
+  }
+  const receivedK = args.paidK + overpaidK;
   const lines: LedgerLine[] = [];
-  if (args.paidK > 0) lines.push(line(cashOrBank(args.method ?? 'transfer'), args.paidK, 0));
+  if (receivedK > 0) lines.push(line(cashOrBank(args.method ?? 'transfer'), receivedK, 0));
   if (receivableK > 0) lines.push(line('ACCOUNTS_RECEIVABLE', receivableK, 0));
   if (args.totalK - vatK > 0) lines.push(line('SALES_REVENUE', 0, args.totalK - vatK));
   if (vatK > 0) lines.push(line('VAT_PAYABLE', 0, vatK));
+  if (overpaidK > 0) lines.push(line('CUSTOMER_CREDIT', 0, overpaidK));
   const posting = { memo: args.memo, lines };
   assertBalanced(posting);
   return posting;
@@ -305,16 +321,23 @@ export function postOpeningBalances(args: {
 /** A later payment against an outstanding receivable. */
 export function postReceivablePayment(args: {
   memo: string;
+  /** What is applied to the receivable: never more than the balance. */
   amountK: Kobo;
   method?: PaymentMethod;
+  /**
+   * Money received beyond the balance, which the merchant confirmed as an
+   * overpayment (G-49). Debited with the rest, credited to CUSTOMER_CREDIT.
+   */
+  overpaidK?: Kobo;
 }): Posting {
-  const posting: Posting = {
-    memo: args.memo,
-    lines: [
-      line(cashOrBank(args.method ?? 'transfer'), args.amountK, 0),
-      line('ACCOUNTS_RECEIVABLE', 0, args.amountK),
-    ],
-  };
+  const overpaidK = args.overpaidK ?? 0;
+  if (overpaidK < 0) throw new UnbalancedPostingError(args.memo, args.amountK, overpaidK);
+  const lines: LedgerLine[] = [
+    line(cashOrBank(args.method ?? 'transfer'), args.amountK + overpaidK, 0),
+    line('ACCOUNTS_RECEIVABLE', 0, args.amountK),
+  ];
+  if (overpaidK > 0) lines.push(line('CUSTOMER_CREDIT', 0, overpaidK));
+  const posting: Posting = { memo: args.memo, lines };
   assertBalanced(posting);
   return posting;
 }

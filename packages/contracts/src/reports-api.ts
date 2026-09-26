@@ -847,17 +847,30 @@ export type ReportsAuditResponse = z.infer<typeof reportsAuditResponse>;
  * Named by invoice number, which is what a merchant reads and what the
  * register shows. No customer is named on this surface at all.
  */
-export const recordPaymentRequest = z.object({
-  invoiceNumber: z.string().trim().min(1),
-  amountK: z.number().int().finite().positive(),
-  method: z.enum(['cash', 'transfer']),
-  /**
-   * One-shot key the form mints when it renders. A resubmission of the same
-   * form carries the same key and books NOTHING twice; a fresh form is a
-   * fresh intention and gets its own.
-   */
-  clientRef: z.string().uuid().optional(),
-});
+export const recordPaymentRequest = z
+  .object({
+    invoiceNumber: z.string().trim().min(1),
+    amountK: z.number().int().finite().positive(),
+    method: z.enum(['cash', 'transfer']),
+    /**
+     * One-shot key the form mints when it renders. A resubmission of the same
+     * form carries the same key and books NOTHING twice; a fresh form is a
+     * fresh intention and gets its own.
+     */
+    clientRef: z.string().uuid().optional(),
+    /**
+     * The SECOND submit of an overpayment (G-49, OWN-16): the merchant saw the
+     * `confirm_overpayment` answer and confirmed it. `expectedBalanceK` is the
+     * balance that answer showed; the server books only if the invoice's
+     * locked balance is still exactly that, and recomputes the split itself.
+     * Nothing the browser says about what is applied or credited is read.
+     */
+    confirmOverpayment: z.literal(true).optional(),
+    expectedBalanceK: z.number().int().finite().positive().optional(),
+  })
+  .refine((v) => (v.confirmOverpayment === true) === (v.expectedBalanceK !== undefined), {
+    message: 'confirmOverpayment and expectedBalanceK go together',
+  });
 
 /**
  * RECORDED, never VERIFIED (ADR 0014).
@@ -875,13 +888,34 @@ export const recordPaymentResponse = z.discriminatedUnion('outcome', [
     outcome: z.literal('recorded'),
     receiptNumber: z.string(),
     invoiceNumber: z.string(),
+    /** What was applied to the invoice. */
     amountK: kobo,
     balanceDueK: kobo,
+    /** A confirmed overpayment only (G-49): what arrived, and the excess. */
+    receivedK: kobo.optional(),
+    creditK: kobo.optional(),
   }),
   z.object({ outcome: z.literal('not_found') }),
   z.object({ outcome: z.literal('already_settled'), invoiceNumber: z.string() }),
   /** The same clientRef arrived twice: the first submission already booked. */
   z.object({ outcome: z.literal('duplicate') }),
+  /**
+   * The amount is more than the invoice owes (G-49, OWN-16). NOTHING was
+   * written: this is the figures, computed on the server from the current
+   * balance, for the merchant to confirm. Submitting again with
+   * `confirmOverpayment` and this `balanceDueK` as `expectedBalanceK` books
+   * it; the excess becomes customer credit when the invoice names a
+   * customer, and is recorded as unapplied when it does not.
+   */
+  z.object({
+    outcome: z.literal('confirm_overpayment'),
+    invoiceNumber: z.string(),
+    balanceDueK: kobo,
+    amountReceivedK: kobo,
+    allocatedK: kobo,
+    creditK: kobo,
+    customerLinked: z.boolean(),
+  }),
   z.object({
     outcome: z.literal('balance_moved'),
     invoiceNumber: z.string(),

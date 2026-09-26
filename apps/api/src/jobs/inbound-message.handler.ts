@@ -2,6 +2,8 @@ import { Logger } from '@nestjs/common';
 import {
   gateExpense,
   gatePayment,
+  parseConfirmationContext,
+  type ConfirmationContext,
   daysOverdue,
   resolveDueDate,
   resolvePeriod,
@@ -1991,7 +1993,7 @@ async function confirmPayment(
   deps: InboundMessageDeps,
   tx: TenantDb,
   businessId: string,
-  draft: { id: string; messageKind: string | null },
+  draft: { id: string; messageKind: string | null; confirmationContext?: unknown },
   command: Record<string, unknown>,
   refundDocumentUnit: () => Promise<void>,
 ): Promise<Reply> {
@@ -2009,10 +2011,44 @@ async function confirmPayment(
   }
   const invoice = target.invoice;
 
-  const gate = gatePayment(command as never, invoice.invoiceNumber, invoice.balanceDueK);
+  const gate = gatePayment(command as never, invoice.invoiceNumber, invoice.balanceDueK, {
+    customerLinked: invoice.customerId !== null,
+  });
   if (gate.gate !== 'CG2') {
     await refundDocumentUnit();
     return replies.arithmeticQuestion(gate.question);
+  }
+
+  /*
+   * OWN-16: an overpayment is booked only as the merchant SAW it. The draft
+   * carries the figures its preview showed; if the payment is an overpayment
+   * now, or was one when previewed, those figures must still be the truth:
+   * same invoice, same amount, same balance. Anything else is a stale
+   * confirmation, so nothing is written and they are asked again. An exact
+   * payment previewed at 150,000 that finds 50,000 owing is never turned into
+   * 100,000 of credit nobody was shown. The repository repeats the balance
+   * check under the invoice's row lock; this one answers before any work.
+   */
+  const shown = parseConfirmationContext(draft.confirmationContext);
+  let confirmedOverpayment: { expectedBalanceK: number } | null = null;
+  if (gate.creditK > 0 || shown !== null) {
+    if (
+      shown === null ||
+      shown.invoiceId !== invoice.id ||
+      shown.amountReceivedK !== gate.amountK ||
+      shown.balanceShownK !== invoice.balanceDueK
+    ) {
+      await refundDocumentUnit();
+      /* With figures on the draft, the balance may have risen as well as
+       * fallen (a reversed payment reopens it), so the reply names no cause;
+       * with none, the preview was not an overpayment and the balance fell. */
+      return replies.paymentBalanceMoved(
+        invoice.invoiceNumber,
+        invoice.balanceDueK,
+        shown === null ? gate.amountK - invoice.balanceDueK : 0,
+      );
+    }
+    confirmedOverpayment = { expectedBalanceK: shown.balanceShownK };
   }
 
   /* How the merchant's assertion reached us (spec E.7) — from the DRAFTING
@@ -2067,6 +2103,7 @@ async function confirmPayment(
     actor: 'system',
     evidenceBasis: basis,
     paymentEvidenceId,
+    ...(confirmedOverpayment ? { confirmedOverpayment } : {}),
   };
 
   /* The A1 rollout seam (spec §25): the work books the payment, enqueues the
@@ -2108,10 +2145,12 @@ async function confirmPayment(
   }
   if (recorded.outcome === 'balance_moved') {
     await refundDocumentUnit();
+    /* A confirmed overpayment is refused under the lock on ANY change, up or
+     * down, so that refusal names no cause (G-49). */
     return replies.paymentBalanceMoved(
       recorded.invoiceNumber,
       recorded.balanceDueK,
-      recorded.excessK,
+      confirmedOverpayment ? 0 : recorded.excessK,
     );
   }
   if (recorded.outcome !== 'recorded') {
@@ -2122,7 +2161,22 @@ async function confirmPayment(
 
   /* Every figure here comes from the WRITE, never from the gate. The gate
    * read the balance without a lock, so its amount is what we hoped to post;
-   * `recorded.amountK` is what the ledger actually took. */
+   * `recorded.amountK` is what the ledger actually took. A snapshot from
+   * before G-49 carries no `creditK`, and had none. */
+  const creditK = recorded.creditK ?? 0;
+  if (creditK > 0) {
+    return replies.paymentRecordedOverpaid(
+      recorded.receiptNumber,
+      recorded.receivedK ?? recorded.amountK + creditK,
+      recorded.amountK,
+      creditK,
+      recorded.invoiceNumber,
+      /* The write decided where the excess went, under the lock. */
+      recorded.excessDisposition
+        ? recorded.excessDisposition === 'customer_credit'
+        : invoice.customerId !== null,
+    );
+  }
   return replies.paymentRecorded(
     recorded.receiptNumber,
     recorded.amountK,
@@ -2331,6 +2385,7 @@ async function interpretedReply(
     command: stored,
     model: deps.config.aiModelDefault,
     identityLink: answered.linkAsked ? link : null,
+    confirmationContext: answered.confirmationContext ?? null,
   });
 
   /* Appendix D: a preview that shows stock DISAPPEARING opens the
@@ -2369,7 +2424,12 @@ async function acknowledge(
   command: StructuredBusinessCommand,
   correcting: boolean,
   link: IdentityLinkProposal | null = null,
-): Promise<{ reply: Reply; linkAsked: boolean }> {
+): Promise<{
+  reply: Reply;
+  linkAsked: boolean;
+  /** What an overpayment preview showed, stored on the draft (OWN-16). */
+  confirmationContext?: ConfirmationContext;
+}> {
   /**
    * The link question rides a PREVIEW and nothing else. A clarification, an
    * answered query and a CG1 arithmetic question are all the wrong moment:
@@ -2421,17 +2481,33 @@ async function acknowledge(
     }
     const invoice = target.invoice;
 
-    const paymentGate = gatePayment(command, invoice.invoiceNumber, invoice.balanceDueK);
+    const paymentGate = gatePayment(command, invoice.invoiceNumber, invoice.balanceDueK, {
+      customerLinked: invoice.customerId !== null,
+    });
     if (paymentGate.gate === 'CG1') {
       return plain(replies.arithmeticQuestion(paymentGate.question));
     }
-    return withLink(
+    const previewed = withLink(
       replies.preview(
         correcting
           ? `${replies.correctionTaken().text}\n\n${paymentGate.preview}`
           : paymentGate.preview,
       ),
     );
+    /* An overpayment preview is a promise about specific figures; the draft
+     * keeps them so `yes` can prove it is confirming what was shown. */
+    if (paymentGate.creditK === 0) return previewed;
+    return {
+      ...previewed,
+      confirmationContext: {
+        kind: 'payment_overpayment',
+        invoiceId: invoice.id,
+        balanceShownK: invoice.balanceDueK,
+        amountReceivedK: paymentGate.amountK,
+        allocatedK: paymentGate.allocatedK,
+        creditK: paymentGate.creditK,
+      },
+    };
   }
 
   /**
@@ -2498,7 +2574,13 @@ async function acknowledge(
    */
   const gate =
     command.intent === 'RecordSale'
-      ? gateSale(command)
+      ? gateSale(command, {
+          /* The preview promises customer credit for an overpayment only if
+           * the sale will carry a customer record (G-49): the same lookup the
+           * confirmation makes. */
+          customerLinked:
+            (await customerIdFor(tx, businessId, customerTokenOf(command as never))) !== null,
+        })
       : command.intent === 'RecordExpense'
         ? gateExpense(command)
         : command.intent === 'RecordPurchase'

@@ -8,6 +8,7 @@ import {
   fromKobo,
   isBalanced,
   parseAmountText,
+  splitPayment,
   toKobo,
 } from './money.js';
 
@@ -173,6 +174,38 @@ describe('applyPayment', () => {
   it('overpayment is refused with the exact excess, never silently kept', () => {
     const r = applyPayment(10_000_000, 15_000_000, 6_000_000);
     expect(r).toEqual({ ok: false, reason: 'overpayment', excessK: 1_000_000 });
+  });
+});
+
+describe('splitPayment (G-49)', () => {
+  it('an exact payment settles the balance and leaves no excess', () => {
+    expect(splitPayment(10_000_000, 10_000_000)).toEqual({
+      allocatedK: 10_000_000,
+      excessK: 0,
+      remainingK: 0,
+    });
+  });
+
+  it('a partial payment applies all of it and leaves the rest owing', () => {
+    expect(splitPayment(10_000_000, 4_000_000)).toEqual({
+      allocatedK: 4_000_000,
+      excessK: 0,
+      remainingK: 6_000_000,
+    });
+  });
+
+  it('a deliberate overpayment settles the balance and the excess is separate', () => {
+    expect(splitPayment(10_000_000, 12_000_000)).toEqual({
+      allocatedK: 10_000_000,
+      excessK: 2_000_000,
+      remainingK: 0,
+    });
+  });
+
+  it('refuses anything that is not a whole, non-negative kobo amount', () => {
+    expect(() => splitPayment(10_000_000, 1.5)).toThrow();
+    expect(() => splitPayment(-1, 100)).toThrow();
+    expect(() => splitPayment(100, -1)).toThrow();
   });
 });
 

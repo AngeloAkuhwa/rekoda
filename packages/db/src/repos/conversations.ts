@@ -10,7 +10,7 @@
  * could happen, it is a value the caller would have to construct by hand.
  */
 import { and, desc, eq, sql } from 'drizzle-orm';
-import { sanitizeCommandForPersistence } from '@rekoda/core';
+import { sanitizeCommandForPersistence, type ConfirmationContext } from '@rekoda/core';
 import type { TenantDb } from '../client.js';
 import { commandDrafts, conversationMessages, conversations } from '../schema/ops.js';
 
@@ -300,6 +300,13 @@ export interface DraftInput {
    * it is the same preview the merchant is reading.
    */
   identityLink?: unknown;
+  /**
+   * What the preview showed, computed from SQL (OWN-16): a deliberate
+   * overpayment's figures, checked again at `yes`. Typed by core; ids and
+   * kobo only, never the model's content, so it does NOT pass the
+   * transient-field policy that `command` does.
+   */
+  confirmationContext?: ConfirmationContext | null;
 }
 
 export interface DraftRow {
@@ -308,6 +315,8 @@ export interface DraftRow {
   state: string;
   command: unknown;
   identityLink?: unknown;
+  /** Raw as stored; read it through `parseConfirmationContext`. */
+  confirmationContext?: unknown;
   /**
    * How the DRAFTING message arrived — text | voice | media | interactive.
    * Spec E.7's evidenceBasis is derived from this at confirmation time: a
@@ -342,6 +351,7 @@ export async function recordDraft(
       command: sanitizeCommandForPersistence(draft.command) as never,
       model: draft.model,
       identityLink: (draft.identityLink ?? null) as never,
+      confirmationContext: (draft.confirmationContext ?? null) as never,
     })
     .onConflictDoNothing({ target: [commandDrafts.conversationMessageId] })
     .returning({ id: commandDrafts.id });
@@ -445,6 +455,7 @@ export async function pendingDraft(tx: TenantDb, businessId: string): Promise<Dr
       state: commandDrafts.state,
       command: commandDrafts.command,
       identityLink: commandDrafts.identityLink,
+      confirmationContext: commandDrafts.confirmationContext,
       messageKind: conversationMessages.kind,
     })
     .from(commandDrafts)

@@ -55,6 +55,11 @@ import { assertPeriodOpen } from './close.js';
 import { appendVerification } from './provenance.js';
 import { recordTaxEvent, taxStandingFor } from './tax.js';
 import { applyCustomerCredit, grantCustomerCredit } from './customer-credits.js';
+import {
+  excessDispositionFor,
+  markMerchantOverpayment,
+  type ExcessDisposition,
+} from './merchant-overpayment.js';
 
 export interface IssueItem {
   name: string;
@@ -121,6 +126,13 @@ export interface MerchantAttestedReceiptInput {
   /** What of it was applied to `invoiceId`, as recorded on the allocation. */
   allocatedK: number;
   at: Date;
+  /**
+   * Where the excess went, for an overpayment G-49 booked (customer credit,
+   * or a liability not linked to a customer). Only ever set when
+   * `amountK > allocatedK`, and only then written into the snapshot, so an
+   * exact or partial receipt keeps the snapshot shape (and hash) it had.
+   */
+  excessDisposition?: ExcessDisposition;
 }
 
 /**
@@ -156,6 +168,7 @@ export async function mintMerchantAttestedReceipt(
     allocatedK: input.allocatedK,
     currency: 'NGN',
     verified: false,
+    ...(input.excessDisposition ? { excessDisposition: input.excessDisposition } : {}),
   };
   const rows = await tx
     .insert(receipts)
@@ -422,7 +435,10 @@ export async function issueSale(tx: TenantDb, input: IssueSaleInput): Promise<Is
       deliveryFeeK: input.deliveryFeeK,
       vatK: input.vatK,
       totalK: input.totalK,
-      paidK: input.paidK,
+      /* What the invoice was paid, never more than it cost: an excess is the
+       * customer's credit, not the invoice's (G-49). The snapshot above keeps
+       * the figure the merchant stated. */
+      paidK: Math.min(input.paidK, input.totalK),
       balanceDueK: input.balanceDueK,
       snapshotJson: snapshot as never,
       docHash,
@@ -505,9 +521,14 @@ export async function issueSale(tx: TenantDb, input: IssueSaleInput): Promise<Is
      * after this un-bumps the receipt counter with everything else (G-48).
      *
      * `amountK` is what arrived, the payment's own figure; `allocatedK` what
-     * was applied to this invoice. For an overpaid sale the two differ, which
-     * is how a receipt represents an overpayment; nothing here books or
-     * credits the difference (that is G-49's). */
+     * was applied to this invoice. For an overpaid sale the two differ.
+     *
+     * An overpaid sale (OWN-16) is a deliberate one: the preview showed the
+     * excess and the merchant said yes to it. The excess is real money owed
+     * back, so it leaves the overpayment marks (the `overpaid` reconciliation
+     * row always, the customer's credit when there is a customer) and the
+     * posting below credits it to CUSTOMER_CREDIT. */
+    const excessK = input.paidK - allocatedK;
     receipt = await mintMerchantAttestedReceipt(tx, {
       businessId: input.businessId,
       customerId: input.customerId,
@@ -517,7 +538,19 @@ export async function issueSale(tx: TenantDb, input: IssueSaleInput): Promise<Is
       amountK: input.paidK,
       allocatedK,
       at: issuedAt,
+      ...(excessK > 0 ? { excessDisposition: excessDispositionFor(input.customerId) } : {}),
     });
+    if (excessK > 0) {
+      await markMerchantOverpayment(tx, {
+        businessId: input.businessId,
+        invoiceId: invoice.id,
+        invoiceNumber,
+        paymentId,
+        customerId: input.customerId,
+        receivedK: input.paidK,
+        excessK,
+      });
+    }
   }
 
   /**
@@ -531,6 +564,9 @@ export async function issueSale(tx: TenantDb, input: IssueSaleInput): Promise<Is
     memo: `Sale ${invoiceNumber}`,
     totalK: input.totalK,
     paidK: Math.min(input.paidK, input.totalK),
+    /* The excess, stated, so Cash or Bank takes all of it and none of it is
+     * revenue (G-49). Zero for every sale not paid over. */
+    overpaidK: Math.max(0, input.paidK - input.totalK),
     vatK: input.vatK,
     method: input.method,
   });
@@ -1031,6 +1067,9 @@ export interface OpenInvoice {
   id: string;
   invoiceNumber: string;
   balanceDueK: number;
+  /** The invoice's own customer, when it has one: what an overpayment's
+   * excess would be credited to (G-49). Null for an unnamed sale. */
+  customerId: string | null;
 }
 
 /**
@@ -1071,7 +1110,7 @@ export async function openInvoiceForPayment(
 ): Promise<PaymentTarget> {
   if (hint.invoiceNumber) {
     const rows = await tx.execute<OpenInvoiceRow>(sql`
-      SELECT id, invoice_number, balance_due_k::bigint AS balance_due_k
+      SELECT id, invoice_number, balance_due_k::bigint AS balance_due_k, customer_id
       FROM invoices
       WHERE business_id = ${businessId}::uuid
         AND upper(invoice_number) = upper(${hint.invoiceNumber})
@@ -1084,7 +1123,7 @@ export async function openInvoiceForPayment(
 
   if (hint.customerToken) {
     const rows = await tx.execute<OpenInvoiceRow>(sql`
-      SELECT i.id, i.invoice_number, i.balance_due_k::bigint AS balance_due_k
+      SELECT i.id, i.invoice_number, i.balance_due_k::bigint AS balance_due_k, i.customer_id
       FROM invoices i
       LEFT JOIN customers c ON c.id = i.customer_id AND c.business_id = i.business_id
       WHERE i.business_id = ${businessId}::uuid
@@ -1101,7 +1140,7 @@ export async function openInvoiceForPayment(
   /* Nobody named. `count(*) OVER ()` is evaluated before LIMIT, so one pass
    * reads the candidate and how many candidates there were. */
   const rows = await tx.execute<OpenInvoiceRow & { open_count: number }>(sql`
-    SELECT id, invoice_number, balance_due_k::bigint AS balance_due_k,
+    SELECT id, invoice_number, balance_due_k::bigint AS balance_due_k, customer_id,
            count(*) OVER ()::int AS open_count
     FROM invoices
     WHERE business_id = ${businessId}::uuid AND status IN ('issued', 'partially_paid')
@@ -1118,6 +1157,7 @@ type OpenInvoiceRow = {
   id: string;
   invoice_number: string;
   balance_due_k: string;
+  customer_id: string | null;
 };
 
 function readOpenInvoice(row: OpenInvoiceRow): OpenInvoice {
@@ -1125,6 +1165,7 @@ function readOpenInvoice(row: OpenInvoiceRow): OpenInvoice {
     id: row.id,
     invoiceNumber: row.invoice_number,
     balanceDueK: Number(row.balance_due_k),
+    customerId: row.customer_id ?? null,
   };
 }
 
@@ -1140,13 +1181,19 @@ export async function invoiceByNumber(
   tx: TenantDb,
   businessId: string,
   invoiceNumber: string,
-): Promise<{ invoiceNumber: string; balanceDueK: number; dueDate: Date | null } | null> {
+): Promise<{
+  invoiceNumber: string;
+  balanceDueK: number;
+  dueDate: Date | null;
+  customerId: string | null;
+} | null> {
   const rows = await tx.execute<{
     invoice_number: string;
     balance_due_k: string;
     due_date: Date | null;
+    customer_id: string | null;
   }>(sql`
-    SELECT invoice_number, balance_due_k::bigint AS balance_due_k, due_date
+    SELECT invoice_number, balance_due_k::bigint AS balance_due_k, due_date, customer_id
     FROM invoices
     WHERE business_id = ${businessId}::uuid AND upper(invoice_number) = upper(${invoiceNumber})
     LIMIT 1
@@ -1157,6 +1204,7 @@ export async function invoiceByNumber(
     invoiceNumber: row.invoice_number,
     balanceDueK: Number(row.balance_due_k),
     dueDate: row.due_date === null ? null : new Date(row.due_date),
+    customerId: row.customer_id ?? null,
   };
 }
 

@@ -105,6 +105,37 @@ describe('overpayment', () => {
     expect(text).not.toMatch(/review|refund|credit/i);
   });
 
+  it('a merchant overpayment booked as customer credit says so, as a fact (G-49)', () => {
+    const text = textOf({
+      ...RECORDED,
+      amountK: 18_000_000,
+      allocatedK: 15_000_000,
+      excessDisposition: 'customer_credit',
+    });
+    expect(text).toContain('Amount received ₦180,000');
+    expect(text).toContain('Applied to INV-2026-000041 ₦150,000');
+    expect(text).toContain('Customer credit ₦30,000');
+    expect(text).not.toMatch(/review|refund|will be|not linked/i);
+  });
+
+  it('a merchant overpayment with no customer says it is unapplied and unlinked (G-49)', () => {
+    const text = textOf({
+      ...RECORDED,
+      amountK: 18_000_000,
+      allocatedK: 15_000_000,
+      excessDisposition: 'unattributed',
+    });
+    expect(text).toContain('Unapplied amount ₦30,000');
+    expect(text).toContain('This amount is not linked to a customer yet.');
+    expect(text).not.toMatch(/customer credit|owed to|review|refund|will be/i);
+  });
+
+  it('a provider-verified overpayment ignores the disposition and keeps its wording', () => {
+    const text = textOf({ ...OVERPAID, excessDisposition: 'customer_credit' });
+    expect(text).toContain('remaining ₦30,000 is being reviewed');
+    expect(text).not.toContain('Customer credit');
+  });
+
   it('an exact payment carries no overpayment lines at all', () => {
     const text = textOf(RECEIPT);
     expect(text).not.toContain('Applied to');

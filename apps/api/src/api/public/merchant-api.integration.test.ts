@@ -261,6 +261,93 @@ describe('recording a sale', () => {
   });
 });
 
+/** Every row a merchant payment or an overpayment could write, counted. */
+async function footprintOf(businessId: string) {
+  const [row] = [
+    ...(await withBusiness(db, businessId, (tx) =>
+      tx.execute<Record<string, number>>(sql`
+        SELECT
+          (SELECT count(*)::int FROM payments WHERE business_id = ${businessId}) AS payments,
+          (SELECT count(*)::int FROM payment_allocations
+            WHERE business_id = ${businessId}) AS allocations,
+          (SELECT count(*)::int FROM receipts WHERE business_id = ${businessId}) AS receipts,
+          (SELECT count(*)::int FROM customer_credits
+            WHERE business_id = ${businessId}) AS credits,
+          (SELECT count(*)::int FROM reconciliations
+            WHERE business_id = ${businessId}) AS reconciliations,
+          (SELECT count(*)::int FROM ledger_transactions
+            WHERE business_id = ${businessId}) AS postings
+      `),
+    )),
+  ];
+  return row;
+}
+
+describe('an overpayment through the public API (G-49)', () => {
+  it('a sale paid over at issue books the excess, and the response does not grow', async () => {
+    const shop = await merchant('+2348192000040', 'Overpaid Sale Co');
+    /* 100,300 of goods, 120,000 paid, no customer named. */
+    const response = await post('/api/v1/sales', { ...SALE, amountPaidK: 12_000_000 }, shop.key);
+    expect(response.statusCode).toBe(200);
+    expect(Object.keys(response.json() as object).sort()).toEqual([
+      'balanceDueK',
+      'invoiceId',
+      'invoiceNumber',
+      'totalK',
+    ]);
+    const body = publicApi.v1.recordSaleResponse.parse(response.json());
+    expect(body.balanceDueK).toBe(0);
+
+    expect(await footprintOf(shop.businessId)).toEqual({
+      payments: 1,
+      allocations: 1,
+      receipts: 1,
+      credits: 0,
+      reconciliations: 1,
+      postings: 1,
+    });
+    const [liability] = [
+      ...(await withBusiness(db, shop.businessId, (tx) =>
+        tx.execute<{ net: string }>(sql`
+          SELECT COALESCE(SUM(e.credit_k - e.debit_k), 0)::text AS net
+          FROM ledger_entries e JOIN accounts a ON a.id = e.account_id
+          WHERE e.business_id = ${shop.businessId}::uuid AND a.code = '2300'`),
+      )),
+    ];
+    expect(liability?.net).toBe(String(12_000_000 - 10_030_000));
+  });
+
+  it('a later payment over the balance is refused and writes nothing, even if it asks to confirm', async () => {
+    /* The public API never opts in to an overpayment (OWN-16 is a merchant
+     * confirming what they were shown; a program was shown nothing). */
+    const shop = await merchant('+2348192000041', 'No Opt-in Co');
+    const sale = publicApi.v1.recordSaleResponse.parse(
+      (await post('/api/v1/sales', { ...SALE, amountPaidK: 0 }, shop.key)).json(),
+    );
+    expect(sale.balanceDueK).toBe(10_030_000);
+    const before = await footprintOf(shop.businessId);
+
+    for (const payload of [
+      { invoiceNumber: sale.invoiceNumber, amountK: sale.balanceDueK + 2_000_000 },
+      {
+        invoiceNumber: sale.invoiceNumber,
+        amountK: sale.balanceDueK + 2_000_000,
+        confirmOverpayment: true,
+        expectedBalanceK: sale.balanceDueK,
+        confirmedOverpayment: { expectedBalanceK: sale.balanceDueK },
+      },
+    ]) {
+      const response = await post('/api/v1/payments', payload, shop.key);
+      expect(response.statusCode).toBe(200);
+      expect(publicApi.v1.recordPaymentResponse.parse(response.json())).toMatchObject({
+        outcome: 'balance_moved',
+        balanceDueK: sale.balanceDueK,
+      });
+    }
+    expect(await footprintOf(shop.businessId)).toEqual(before);
+  });
+});
+
 describe('recording a payment', () => {
   it('settles the invoice the merchant issued and answers the receipt', async () => {
     const shop = await merchant('+2348192000010', 'Settled Co');

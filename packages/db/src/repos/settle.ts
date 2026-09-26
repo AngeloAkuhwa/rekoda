@@ -32,7 +32,7 @@ import {
   lagosYear,
 } from '@rekoda/core';
 import { documentHash } from '@rekoda/core/documents';
-import { applyPayment, normalisePaymentMethod } from '@rekoda/core';
+import { applyPayment, normalisePaymentMethod, splitPayment } from '@rekoda/core';
 import type { Db, TenantDb } from '../client.js';
 import { auditEvents } from '../schema/ops.js';
 import {
@@ -53,6 +53,11 @@ import {
 } from './issue.js';
 import { appendVerification } from './provenance.js';
 import { grantCustomerCredit } from './customer-credits.js';
+import {
+  excessDispositionFor,
+  markMerchantOverpayment,
+  type ExcessDisposition,
+} from './merchant-overpayment.js';
 import { recordPaymentAttempt, resolvePaymentAttempt } from './payments-hub.js';
 
 /** The same rekoda_reference booked twice — the terminal-intent gate's job,
@@ -572,6 +577,29 @@ export async function lockPayment(
   return [...rows].length === 1;
 }
 
+/**
+ * Whether a merchant payment already carries this form's one-shot key.
+ *
+ * The unique index on `rekoda_reference` is the real guard, but it is only
+ * reached AFTER the balance checks: a resubmission of a form that already
+ * booked would otherwise be answered "already paid" or "the balance moved",
+ * both of which say nothing was recorded when it was (G-49 review).
+ */
+export async function merchantPaymentWithClientRef(
+  tx: TenantDb,
+  businessId: string,
+  clientRef: string,
+): Promise<boolean> {
+  const rows = await tx
+    .select({ id: payments.id })
+    .from(payments)
+    .where(
+      and(eq(payments.businessId, businessId), eq(payments.rekodaReference, `manual:${clientRef}`)),
+    )
+    .limit(1);
+  return rows.length === 1;
+}
+
 export async function paymentWasOverpaid(
   tx: TenantDb,
   businessId: string,
@@ -938,6 +966,18 @@ export interface RecordMerchantPaymentInput {
   /** The PaymentEvidence row this attestation cites, when an image came with
    * the claim. The evidence proves nothing; the link says it was shown. */
   paymentEvidenceId?: string | null;
+  /**
+   * The merchant's explicit confirmation of an OVERPAYMENT (OWN-16), and the
+   * only way one is booked. `expectedBalanceK` is the balance the preview
+   * showed them; under the invoice's row lock the balance must still be
+   * exactly that, or nothing is written (`BalanceMoved`): a balance that
+   * moved is never turned into credit they did not see. The split is
+   * recomputed here from the amount and that locked balance, never taken
+   * from a caller. Absent, an amount over the balance is refused as it
+   * always was. Chat and the dashboard pass it after a real confirmation;
+   * the public API never does.
+   */
+  confirmedOverpayment?: { expectedBalanceK: number } | null;
 }
 
 export interface RecordedPayment {
@@ -956,6 +996,12 @@ export interface RecordedPayment {
   /** What the invoice still owes AFTER this payment. */
   balanceDueK: number;
   invoiceStatus: string;
+  /** What arrived: `amountK` plus any confirmed excess (OWN-16). */
+  receivedK: number;
+  /** The confirmed excess, booked as customer credit or unattributed; 0 if none. */
+  creditK: number;
+  /** Where the excess went, decided under the lock; null when there was none. */
+  excessDisposition: ExcessDisposition | null;
 }
 
 /**
@@ -1007,23 +1053,42 @@ export async function recordMerchantPayment(
    * with no story — the excess is real and belongs to somebody. So core
    * refuses instead, with the exact excess, and the caller asks.
    */
-  const outcome = applyPayment(Number(invoice.paid_k), Number(invoice.total_k), input.amountK);
-  if (!outcome.ok) {
-    throw new BalanceMoved(invoice.invoice_number, balanceK, outcome.excessK);
+  let applied: number;
+  let excessK = 0;
+  if (input.confirmedOverpayment) {
+    /* What the merchant confirmed was checked against THIS balance. Any
+     * other figure means the confirmation is stale: refused, nothing written. */
+    if (balanceK !== input.confirmedOverpayment.expectedBalanceK) {
+      throw new BalanceMoved(
+        invoice.invoice_number,
+        balanceK,
+        Math.max(0, input.amountK - balanceK),
+      );
+    }
+    const split = splitPayment(balanceK, input.amountK);
+    applied = split.allocatedK;
+    excessK = split.excessK;
+  } else {
+    const outcome = applyPayment(Number(invoice.paid_k), Number(invoice.total_k), input.amountK);
+    if (!outcome.ok) {
+      throw new BalanceMoved(invoice.invoice_number, balanceK, outcome.excessK);
+    }
+    applied = input.amountK;
   }
-  const applied = input.amountK;
+  /* What arrived: the whole amount, applied part and excess alike. */
+  const receivedK = applied + excessK;
 
   const paymentRows = await tx
     .insert(payments)
     .values({
       businessId: input.businessId,
       customerId: invoice.customer_id,
-      amountK: applied,
+      amountK: receivedK,
       currency: 'NGN',
       method: input.method,
       /** RECORDED: the merchant told us, and no provider confirmed it. */
       verified: 0,
-      grossAmountK: applied,
+      grossAmountK: receivedK,
       status: 'confirmed',
       /* No provider, so no settlement to track — `not_applicable` in the
        * §26-28 vocabulary, which this column spells as NULL. */
@@ -1090,9 +1155,10 @@ export async function recordMerchantPayment(
     paymentId,
     invoiceId: invoice.id,
     invoiceNumber: invoice.invoice_number,
-    amountK: applied,
+    amountK: receivedK,
     allocatedK: applied,
     at,
+    ...(excessK > 0 ? { excessDisposition: excessDispositionFor(invoice.customer_id) } : {}),
   });
 
   /* Cash or bank debited, receivable cleared. Built in core, asserted
@@ -1104,6 +1170,7 @@ export async function recordMerchantPayment(
       memo: `Payment on ${invoice.invoice_number}`,
       amountK: applied,
       method: input.method === 'cash' ? 'cash' : 'transfer',
+      overpaidK: excessK,
     }),
     input.sourceType,
     input.sourceId,
@@ -1115,6 +1182,18 @@ export async function recordMerchantPayment(
      * path above. */
   );
 
+  if (excessK > 0) {
+    await markMerchantOverpayment(tx, {
+      businessId: input.businessId,
+      invoiceId: invoice.id,
+      invoiceNumber: invoice.invoice_number,
+      paymentId,
+      customerId: invoice.customer_id,
+      receivedK,
+      excessK,
+    });
+  }
+
   await tx.insert(auditEvents).values({
     businessId: input.businessId,
     actor: input.actor,
@@ -1124,6 +1203,7 @@ export async function recordMerchantPayment(
     newValue: {
       invoiceNumber: invoice.invoice_number,
       amountK: applied,
+      ...(excessK > 0 ? { receivedK, creditK: excessK } : {}),
       receiptNumber,
       verified: false,
       at: at.toISOString(),
@@ -1137,6 +1217,9 @@ export async function recordMerchantPayment(
     receiptNumber,
     invoiceNumber: invoice.invoice_number,
     amountK: applied,
+    receivedK,
+    creditK: excessK,
+    excessDisposition: excessK > 0 ? excessDispositionFor(invoice.customer_id) : null,
     balanceDueK: newBalanceK,
     invoiceStatus,
   };
@@ -1162,6 +1245,11 @@ export type RecordPaymentOutcome =
       invoiceNumber: string;
       balanceDueK: number;
       receiptId: string;
+      /** What arrived, and the confirmed excess (OWN-16); equal to `amountK`
+       * and 0 for every payment that is not a confirmed overpayment. */
+      receivedK: number;
+      creditK: number;
+      excessDisposition: ExcessDisposition | null;
     }
   | { outcome: 'not_found' }
   | { outcome: 'already_settled'; invoiceNumber: string }
@@ -1177,6 +1265,9 @@ export async function recordPaymentByNumber(
     actor: string;
     clientRef?: string | null;
     evidenceBasis?: string | null;
+    /** A dashboard confirmation of an overpayment (OWN-16); see
+     * `recordMerchantPayment`. */
+    confirmedOverpayment?: { expectedBalanceK: number } | null;
   },
 ): Promise<RecordPaymentOutcome> {
   const rows = await tx.execute<{ id: string }>(sql`
@@ -1199,6 +1290,7 @@ export async function recordPaymentByNumber(
       sourceType: 'dashboard',
       sourceId: input.invoiceNumber,
       actor: input.actor,
+      confirmedOverpayment: input.confirmedOverpayment ?? null,
     });
     return {
       outcome: 'recorded',
@@ -1207,6 +1299,9 @@ export async function recordPaymentByNumber(
       invoiceNumber: recorded.invoiceNumber,
       balanceDueK: recorded.balanceDueK,
       receiptId: recorded.receiptId,
+      receivedK: recorded.receivedK,
+      creditK: recorded.creditK,
+      excessDisposition: recorded.excessDisposition,
     };
   } catch (error) {
     if (error instanceof AlreadySettled) {

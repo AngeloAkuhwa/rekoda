@@ -89,6 +89,68 @@ describe('posting builders balance by construction', () => {
     expect(() => postSale({ memo: 'x', totalK: 100, paidK: 200 })).toThrow(UnbalancedPostingError);
   });
 
+  /* G-49: a confirmed overpayment is stated explicitly, never implied. */
+  it('an overpaid cash sale debits all the cash and credits the excess to customer credit', () => {
+    const p = postSale({
+      memo: 'overpaid',
+      totalK: 10_000_000,
+      paidK: 10_000_000,
+      overpaidK: 2_000_000,
+      method: 'cash',
+    });
+    expect(p.lines).toEqual([
+      { account: 'CASH', debitK: 12_000_000, creditK: 0 },
+      { account: 'SALES_REVENUE', debitK: 0, creditK: 10_000_000 },
+      { account: 'CUSTOMER_CREDIT', debitK: 0, creditK: 2_000_000 },
+    ]);
+  });
+
+  it('an overpaid transfer sale keeps VAT a liability and the excess out of revenue', () => {
+    const p = postSale({
+      memo: 'overpaid vat',
+      totalK: 4_000_000,
+      paidK: 4_000_000,
+      vatK: 279_070,
+      overpaidK: 500_000,
+      method: 'transfer',
+    });
+    expect(p.lines).toEqual([
+      { account: 'BANK', debitK: 4_500_000, creditK: 0 },
+      { account: 'SALES_REVENUE', debitK: 0, creditK: 3_720_930 },
+      { account: 'VAT_PAYABLE', debitK: 0, creditK: 279_070 },
+      { account: 'CUSTOMER_CREDIT', debitK: 0, creditK: 500_000 },
+    ]);
+  });
+
+  it('an excess on a sale not yet paid in full, or a negative excess, is refused', () => {
+    expect(() => postSale({ memo: 'x', totalK: 1_000, paidK: 600, overpaidK: 100 })).toThrow(
+      UnbalancedPostingError,
+    );
+    expect(() => postSale({ memo: 'x', totalK: 1_000, paidK: 1_000, overpaidK: -1 })).toThrow(
+      UnbalancedPostingError,
+    );
+  });
+
+  it('a later overpayment clears the receivable and credits the excess to customer credit', () => {
+    const p = postReceivablePayment({
+      memo: 'paid over',
+      amountK: 10_000_000,
+      overpaidK: 2_000_000,
+      method: 'cash',
+    });
+    expect(p.lines).toEqual([
+      { account: 'CASH', debitK: 12_000_000, creditK: 0 },
+      { account: 'ACCOUNTS_RECEIVABLE', debitK: 0, creditK: 10_000_000 },
+      { account: 'CUSTOMER_CREDIT', debitK: 0, creditK: 2_000_000 },
+    ]);
+    expect(
+      postReceivablePayment({ memo: 'exact', amountK: 10_000_000, method: 'transfer' }).lines,
+    ).toEqual([
+      { account: 'BANK', debitK: 10_000_000, creditK: 0 },
+      { account: 'ACCOUNTS_RECEIVABLE', debitK: 0, creditK: 10_000_000 },
+    ]);
+  });
+
   it('expense and purchase support paid-now and on-credit splits', () => {
     const e = postExpense({ memo: 'diesel', amountK: 4_500_000, method: 'cash' });
     expect(e.lines).toContainEqual({ account: 'CASH', debitK: 0, creditK: 4_500_000 });

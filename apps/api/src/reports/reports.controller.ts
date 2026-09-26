@@ -43,6 +43,7 @@ interface FileReply {
 }
 import {
   postCostOfSale,
+  splitPayment,
   buildBalanceSheet,
   buildCashflowStatement,
   buildProfitAndLoss,
@@ -705,6 +706,48 @@ export class ReportsController {
       throw new BadRequestException('invoiceNumber, a positive amount in kobo, and a method');
     }
     const businessId = request.auth!.businessId;
+
+    /* A form that already booked answers as the duplicate it is, BEFORE any
+     * balance is read: after it booked, the balance says "already paid" or
+     * "moved", and either would tell the merchant nothing was recorded. */
+    const clientRef = parsed.data.clientRef;
+    if (
+      clientRef &&
+      (await withBusiness(this.db, businessId, (tx) =>
+        settleRepo.merchantPaymentWithClientRef(tx, businessId, clientRef),
+      ))
+    ) {
+      return { outcome: 'duplicate' };
+    }
+
+    /*
+     * G-49, OWN-16: more than the invoice owes is a question first. The
+     * answer is computed here from the balance as it is now, and NOTHING is
+     * written: no bus claim, no clientRef consumed, no unit metered, no
+     * receipt. The form shows it and, if the merchant confirms, submits again
+     * with the balance it showed; that second submit is the only one that
+     * can book an overpayment, and only if the balance has not moved.
+     */
+    if (!parsed.data.confirmOverpayment) {
+      const current = await withBusiness(this.db, businessId, (tx) =>
+        issueRepo.invoiceByNumber(tx, businessId, parsed.data.invoiceNumber),
+      );
+      if (current && current.balanceDueK > 0 && parsed.data.amountK > current.balanceDueK) {
+        const split = splitPayment(current.balanceDueK, parsed.data.amountK);
+        return {
+          outcome: 'confirm_overpayment',
+          invoiceNumber: current.invoiceNumber,
+          balanceDueK: current.balanceDueK,
+          amountReceivedK: parsed.data.amountK,
+          allocatedK: split.allocatedK,
+          creditK: split.excessK,
+          customerLinked: current.customerId !== null,
+        };
+      }
+    } else if (parsed.data.amountK <= parsed.data.expectedBalanceK!) {
+      throw new BadRequestException('an overpayment is more than the balance it confirms');
+    }
+
     const input: RecordPaymentInput = {
       businessId,
       invoice: { number: parsed.data.invoiceNumber },
@@ -716,6 +759,9 @@ export class ReportsController {
       clientRef: parsed.data.clientRef ?? null,
       /* A form, not a message (spec E.7). */
       evidenceBasis: 'NOT_A_MESSAGE',
+      ...(parsed.data.confirmOverpayment
+        ? { confirmedOverpayment: { expectedBalanceK: parsed.data.expectedBalanceK! } }
+        : {}),
     };
     let outcome: Awaited<ReturnType<typeof recordPaymentWork>>;
     try {
@@ -763,6 +809,12 @@ export class ReportsController {
           invoiceNumber: outcome.invoiceNumber,
           amountK: outcome.amountK,
           balanceDueK: outcome.balanceDueK,
+          ...(outcome.creditK
+            ? {
+                receivedK: outcome.receivedK ?? outcome.amountK + outcome.creditK,
+                creditK: outcome.creditK,
+              }
+            : {}),
         }
       : outcome;
   }
