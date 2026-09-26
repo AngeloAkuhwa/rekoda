@@ -294,15 +294,41 @@ test.describe('the onboarding journey', () => {
     await page.fill('#phone', phone);
     await submit(page);
     await expect(page).toHaveURL(/\/verify\?.*next=%2Fapp%2Fpayments/);
-    await page.fill('#code', await codeFor(page));
+
+    // A mistyped code first: the destination must survive the retry.
+    const code = await codeFor(page);
+    await page.fill('#code', code === '000000' ? '111111' : '000000');
+    await submit(page);
+    await expect(fieldError(page, 'code')).toContainText('not right');
+    await page.fill('#code', code);
     await submit(page);
 
     await expect(page).toHaveURL(/\/app\/payments$/);
   });
 
+  test('never lands a merchant on a dashboard download after sign-in', async ({
+    page,
+    context,
+  }) => {
+    // A dashboard GET that does something (an export spends the monthly
+    // download allowance) is not a return destination, even on this site.
+    const phone = freshPhone();
+    await onboard(page, phone, 'Efe Wholesale');
+    await context.clearCookies();
+
+    await page.goto(`/start?next=${encodeURIComponent('/app/export/statements')}`);
+    await page.fill('#phone', phone);
+    await submit(page);
+    await expect(page).toHaveURL(/\/verify\?phone=[^&]+$/);
+    await page.fill('#code', await codeFor(page));
+    await submit(page);
+
+    await expect(page).toHaveURL(/\/app$/);
+  });
+
   test('never follows a return path that leaves the dashboard', async ({ page, context }) => {
     // `next` is attacker-controlled: an open redirect from a sign-in page is a
-    // phishing tool. Anything but a plain /app path is dropped before /verify.
+    // phishing tool. Anything not on the allow-list is dropped before /verify.
     const phone = freshPhone();
     await onboard(page, phone, 'Dayo Stores');
     await context.clearCookies();
