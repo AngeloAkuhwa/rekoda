@@ -446,7 +446,7 @@ describe('a stranger', () => {
     }
   });
 
-  it('keeps a base path the web app is served under', () => {
+  it('keeps a path on the configured value rather than discarding it', () => {
     expect(linkIn('https://host.example/app')).toBe('https://host.example/app/start');
     expect(linkIn('https://host.example/app/')).toBe('https://host.example/app/start');
     expect(linkIn('https://host.example/app//')).toBe('https://host.example/app/start');
@@ -527,7 +527,7 @@ describe('links into the web app', () => {
       }
     });
 
-    it('keeps a base path the web app is served under', () => {
+    it('keeps a path on the configured value rather than discarding it', () => {
       expect(linkIn(build('https://host.example/app').text)).toBe(
         `https://host.example/app/${page}`,
       );
@@ -553,8 +553,8 @@ describe('links into the web app', () => {
       expect(linkIn(build('  https://web.example.test/  ').text)).toBe(
         `https://web.example.test/${page}`,
       );
-      expect(linkIn(build('https://web.example.test:8443/app').text)).toBe(
-        `https://web.example.test:8443/app/${page}`,
+      expect(linkIn(build('https://web.example.test:8443').text)).toBe(
+        `https://web.example.test:8443/${page}`,
       );
       expect(linkIn(build('http://[::1]:3000').text)).toBe(`http://[::1]:3000/${page}`);
     });
