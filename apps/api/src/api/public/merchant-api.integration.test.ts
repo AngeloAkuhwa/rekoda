@@ -16,6 +16,8 @@
 import { randomBytes } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
+import { publicSaleInput } from './public-sale-input.js';
+import { requestHash } from '../../commands/command-bus.service.js';
 import { publicApi } from '@rekoda/contracts';
 import {
   createDb,
@@ -636,6 +638,77 @@ describe('G-77: every public API sale is its own financial event', () => {
     expect(net['1020']).toBe(5_000_000);
     expect(net['1100']).toBe(10_030_000 + 5_030_000);
     expect(net['2300'] ?? 0).toBe(0);
+  });
+
+  it('a keyed sale recorded before G-77 still replays on retry, never refused as reused', async () => {
+    /* Idempotency records are kept for good, and one written before G-77
+     * fingerprinted the payload with the APPLICATION id as its source. This
+     * makes a keyed sale, then rewrites its stored fingerprint to exactly the
+     * pre-G-77 payload's, which is what such a record holds. */
+    const shop = await merchant('+2348192000059', 'Legacy Key Co');
+    const first = await sale(shop, PAID, 'legacy-1');
+    expect(first.statusCode).toBe(200);
+    const before = await footprint(shop.businessId);
+
+    const [key] = [
+      ...(await withBusiness(db, shop.businessId, (tx) =>
+        tx.execute<{ prefix: string }>(sql`
+          SELECT prefix FROM api_keys
+          WHERE business_id = ${shop.businessId}::uuid
+            AND application_id = ${shop.applicationId}::uuid`),
+      )),
+    ];
+    /* Written out as the pre-G-77 route built it (ea7c7db and before), NOT
+     * through the builder under test: if the builder drifts from it, the
+     * equality below fails instead of the test quietly agreeing with itself. */
+    const legacy = {
+      businessId: shop.businessId,
+      customerId: null,
+      customerToken: null,
+      items: [
+        { name: 'Bag of rice', quantity: 2, unitPriceK: 4_500_000 },
+        { name: 'Groundnut oil', quantity: 1, unitPriceK: 780_000 },
+      ],
+      subtotalK: 9_780_000,
+      discountK: 0,
+      deliveryFeeK: 250_000,
+      vatK: 0,
+      totalK: 10_030_000,
+      paidK: 10_030_000,
+      balanceDueK: 0,
+      method: 'transfer',
+      sourceType: 'api',
+      sourceId: shop.applicationId,
+      saleSource: null,
+      dueDate: null,
+      actor: `api:${key!.prefix}`,
+    };
+    expect(
+      publicSaleInput(
+        publicApi.v1.recordSaleRequest.parse(PAID),
+        { businessId: shop.businessId, keyPrefix: key!.prefix },
+        shop.applicationId,
+      ),
+    ).toEqual(legacy);
+    const { db: ownerDb, close: closeOwner } = createDb(urls.owner, { max: 1 });
+    try {
+      await ownerDb.execute(sql`
+        UPDATE idempotency_records SET request_hash = ${requestHash(legacy)}
+        WHERE business_id = ${shop.businessId}::uuid AND key = 'legacy-1'`);
+    } finally {
+      await closeOwner();
+    }
+
+    const retried = await sale(shop, PAID, 'legacy-1');
+    expect(retried.statusCode).toBe(200);
+    expect(retried.json()).toEqual(first.json());
+    expect(await footprint(shop.businessId)).toEqual(before);
+
+    /* The same key with another body is still a reused key. */
+    const reused = await sale(shop, { ...PAID, deliveryFeeK: 0 }, 'legacy-1');
+    expect(reused.statusCode).toBe(400);
+    expect(reused.body).toContain('Idempotency-Key already answered a different request');
+    expect(await footprint(shop.businessId)).toEqual(before);
   });
 
   it('claim integrity still holds: one API sale claim cannot confirm a second payment', async () => {

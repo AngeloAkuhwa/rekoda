@@ -37,7 +37,7 @@ import {
 import { computeMoneyFromKobo } from '@rekoda/core';
 import { mayWrite } from '@rekoda/core/api-keys';
 import { publicApi } from '@rekoda/contracts';
-import { merchantApiRepo, withBusiness, type Db } from '@rekoda/db';
+import { idempotencyRepo, merchantApiRepo, withBusiness, type Db } from '@rekoda/db';
 import { CommandBus } from '../../commands/command-bus.service.js';
 import { recordSaleWork, type RecordSaleInput } from '../../commands/sale-commands.js';
 import { recordPaymentWork, type RecordPaymentInput } from '../../commands/payment-commands.js';
@@ -50,8 +50,9 @@ import {
   PublicApiExceptionFilter,
   SandboxWriteException,
 } from './public-api.filter.js';
-import type { CommandOutcome } from '../../commands/command-bus.service.js';
+import { requestHash, type CommandOutcome } from '../../commands/command-bus.service.js';
 import { apiSaleEventId } from './sale-event-id.js';
+import { publicSaleInput } from './public-sale-input.js';
 
 @Controller('api/v1')
 @UseGuards(ApiKeyGuard)
@@ -170,56 +171,52 @@ export class MerchantV1Controller {
     refuseSandboxWrite(request);
 
     const businessId = request.api!.businessId;
-    const money = computeMoneyFromKobo({
-      items: parsed.data.items,
-      discountK: parsed.data.discountK ?? 0,
-      deliveryFeeK: parsed.data.deliveryFeeK ?? 0,
-      vatK: parsed.data.vatK ?? 0,
-      amountPaidK: parsed.data.amountPaidK ?? 0,
-    });
-
-    const input: RecordSaleInput = {
-      businessId,
-      customerId: parsed.data.customerId ?? null,
-      /* No pseudonym minted here. A token names a customer the merchant's
-       * own channels met; an API caller naming one it invented would put a
-       * stranger in the merchant's customer list. */
-      customerToken: null,
-      items: parsed.data.items.map((item) => ({
-        name: item.name,
-        quantity: item.quantity,
-        unitPriceK: item.unitPriceK,
-      })),
-      subtotalK: money.subtotalK,
-      discountK: money.discountK,
-      deliveryFeeK: money.deliveryFeeK,
-      vatK: money.vatK,
-      totalK: money.totalK,
-      paidK: money.amountPaidK,
-      balanceDueK: money.balanceDueK,
-      method: parsed.data.method ?? 'transfer',
-      sourceType: 'api',
-      /* The sale's own event identity, never the application's (G-77): a
-       * paid sale's verification claims it, and one application sends many
-       * sales. Deterministic under an Idempotency-Key so a retry replays. */
-      sourceId: apiSaleEventId(request.api!.applicationId, idempotencyKey ?? null),
-      saleSource: null,
-      dueDate: parsed.data.dueDate ? new Date(parsed.data.dueDate) : null,
-      actor: `api:${request.api!.keyPrefix}`,
-    };
+    const caller = { businessId, keyPrefix: request.api!.keyPrefix };
+    /* The sale's own event identity, never the application's (G-77): a paid
+     * sale's verification claims it, and one application sends many sales.
+     * Deterministic under an Idempotency-Key so a retry replays. */
+    const input = publicSaleInput(
+      parsed.data,
+      caller,
+      apiSaleEventId(request.api!.applicationId, idempotencyKey ?? null),
+    );
 
     return withBusiness(this.db, businessId, async (tx) => {
+      /*
+       * A keyed sale completed BEFORE G-77 was fingerprinted with the
+       * application id as its source, and idempotency records are kept for
+       * good. Its retry must still replay, not be refused as a reused key.
+       * If the key's record matches that old payload exactly, the command
+       * goes to the bus as it was first sent; the record exists, so the bus
+       * can only replay it (or answer that it is in progress). The work is
+       * never run with the old identity: a guard refuses it outright.
+       * Removable only once no idempotency record from before G-77 can be
+       * retried (records are never deleted today, so not yet).
+       */
+      let payload = input;
+      if (idempotencyKey) {
+        const legacy = publicSaleInput(parsed.data, caller, request.api!.applicationId);
+        const prior = await idempotencyRepo.find(tx, businessId, idempotencyKey);
+        if (prior?.commandName === 'RecordSale' && prior.requestHash === requestHash(legacy)) {
+          payload = legacy;
+        }
+      }
       const run = await this.commandBus.run(
         tx,
         {
           businessId,
           command: 'RecordSale',
-          payload: input,
+          payload,
           actor: input.actor,
           ingress: 'PUBLIC_API',
           idempotencyKey: idempotencyKey ?? null,
         },
-        () => recordSaleWork(tx, input),
+        () => {
+          if (payload !== input) {
+            throw new Error('RecordSale: a pre-G-77 identity is replayed, never run');
+          }
+          return recordSaleWork(tx, input);
+        },
       );
       const done = this.requireDone(run, 'RecordSale');
       return publicApi.v1.recordSaleResponse.parse({
