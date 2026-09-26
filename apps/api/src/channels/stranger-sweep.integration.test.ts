@@ -38,7 +38,17 @@ beforeEach(async () => {
   sender.reset();
 });
 
-const deps = () => ({ workerDb, sender, vaultKey, matchKey, metaPhoneNumberId: 'PNID' });
+/* A made-up origin, deliberately not a real Rekoda one: the reply must link
+ * whatever the deployment is configured with, never a domain of its own. */
+const WEB_URL = 'https://web.example.test';
+const deps = (webUrl: string | null = WEB_URL) => ({
+  workerDb,
+  sender,
+  vaultKey,
+  matchKey,
+  metaPhoneNumberId: 'PNID',
+  webUrl,
+});
 
 function messageBody(from: string, wamid: string, text = 'hello', phoneNumberId = 'PNID') {
   return {
@@ -87,8 +97,40 @@ describe('sweeping unknown senders', () => {
 
     expect(answered).toBe(1);
     expect(sender.sent).toHaveLength(1);
-    expect(sender.sent[0]?.text).toBe(replies.noAccount().text);
+    expect(sender.sent[0]?.text).toBe(replies.noAccount(WEB_URL).text);
     expect(sender.sent[0]?.to).toBe('+2348031111111');
+  });
+
+  it("links the configured web origin's /start, and no other domain", async () => {
+    await arrive('2348031111111', 'wamid.stranger.1');
+
+    await sweepUnknownSenders(deps('https://web.example.test/'));
+
+    const text = sender.sent[0]?.text ?? '';
+    expect(text).toMatch(/set one up here:\nhttps:\/\/web\.example\.test\/start$/);
+    // One link, and it is the configured one: no domain of the reply's own.
+    expect(text.match(/\S+:\/\/\S+/g)).toEqual(['https://web.example.test/start']);
+    expect(text).not.toMatch(/[^:]\/\//);
+  });
+
+  it('keeps the configured base path and drops its query and fragment', async () => {
+    await arrive('2348031111111', 'wamid.stranger.1');
+
+    await sweepUnknownSenders(deps('https://web.example.test/app?x=1#section'));
+
+    expect(sender.sent[0]?.text).toMatch(
+      /set one up here:\nhttps:\/\/web\.example\.test\/app\/start$/,
+    );
+  });
+
+  it('still answers, with no link, when the deployment has no web origin', async () => {
+    await arrive('2348031111111', 'wamid.stranger.1');
+
+    const answered = await sweepUnknownSenders(deps(null));
+
+    expect(answered).toBe(1);
+    expect(sender.sent[0]?.text).toBe(replies.noAccount(null).text);
+    expect(sender.sent[0]?.text).not.toMatch(/:\/\/|www\./);
   });
 
   it('does not answer the same person again on the next pass', async () => {

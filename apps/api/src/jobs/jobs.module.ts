@@ -421,6 +421,7 @@ class JobRunnerLifecycle implements OnModuleInit, OnApplicationShutdown {
           vaultKey: this.config.vaultKey,
           matchKey: this.config.matchKey,
           metaPhoneNumberId: this.config.metaPhoneNumberId,
+          webUrl: this.config.webUrl,
         }),
       )
         .catch((error: unknown) => {

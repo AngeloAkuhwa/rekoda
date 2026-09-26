@@ -184,7 +184,7 @@ const ALL: Record<string, readonly replies.Reply[]> = {
     replies.purchaseSaved(NAIRA_MILLIONS, NAIRA_MILLIONS),
     replies.purchaseSaved(NAIRA_MILLIONS, 0, { name: LONG_NAME, onHand: 412 }),
   ],
-  noAccount: [replies.noAccount()],
+  noAccount: [replies.noAccount('https://web.example.test'), replies.noAccount(null)],
   stockList: [
     replies.stockList([], 0, 0),
     replies.stockList(shelf, 20, 1),
@@ -252,7 +252,8 @@ describe('every reply', () => {
     replies.busyRightNow(),
     replies.couldNotRead(),
     replies.notYet('Your debtor list'),
-    replies.noAccount(),
+    replies.noAccount('https://web.example.test'),
+    replies.noAccount(null),
     replies.voiceUnavailable(),
     replies.photoUnavailable(),
     replies.onlyText(),
@@ -400,6 +401,83 @@ describe('the money-in moment', () => {
     const candidate = replies.paymentConfirmed(123_456_789, 'INV-2026-000001', 'RCT-2026-000001');
     expect(replies.isSendable(candidate)).toBe(true);
     expect(candidate.text).not.toMatch(/[–—]/);
+  });
+});
+
+describe('a stranger', () => {
+  /** The exact link the reply hands out, or null when it names none. It is
+   * the whole last line, so nothing after it can be read as part of it. */
+  const linkIn = (webUrl: string | null) =>
+    /set one up here:\n(\S+)$/.exec(replies.noAccount(webUrl).text)?.[1] ?? null;
+
+  it('ends on the link, with nothing after it', () => {
+    expect(replies.noAccount('https://web.example.test').text).toMatch(
+      /\nhttps:\/\/web\.example\.test\/start$/,
+    );
+  });
+
+  it('says plainly that it has no link, and promises nothing, when it has none', () => {
+    const text = replies.noAccount(null).text;
+    expect(text).toMatch(/I cannot share a sign-up link from here right now\.$/);
+    expect(text).not.toMatch(/soon|later|check back/i);
+  });
+
+  it('links /start under whatever web URL it is given', () => {
+    expect(linkIn('https://web.example.test')).toBe('https://web.example.test/start');
+    expect(linkIn('https://example.test')).toBe('https://example.test/start');
+    expect(linkIn('http://localhost:3000')).toBe('http://localhost:3000/start');
+  });
+
+  it('never doubles the slash, however many trail the origin', () => {
+    for (const origin of [
+      'https://web.example.test/',
+      'https://web.example.test//',
+      'https://web.example.test///',
+    ]) {
+      expect(linkIn(origin), origin).toBe('https://web.example.test/start');
+    }
+  });
+
+  it('keeps a base path the web app is served under', () => {
+    expect(linkIn('https://host.example/app')).toBe('https://host.example/app/start');
+    expect(linkIn('https://host.example/app/')).toBe('https://host.example/app/start');
+    expect(linkIn('https://host.example/app//')).toBe('https://host.example/app/start');
+  });
+
+  it('never doubles a slash inside the base path either', () => {
+    expect(linkIn('https://host.example//app//')).toBe('https://host.example/app/start');
+    expect(linkIn('https://host.example/a//b/')).toBe('https://host.example/a/b/start');
+  });
+
+  it('drops a query, a fragment and credentials rather than let them swallow the path', () => {
+    expect(linkIn('https://host.example/app?x=1#section')).toBe('https://host.example/app/start');
+    expect(linkIn('https://host.example/app/?x=1')).toBe('https://host.example/app/start');
+    expect(linkIn('https://host.example#top')).toBe('https://host.example/start');
+    expect(linkIn('https://host.example?x=1')).toBe('https://host.example/start');
+    expect(linkIn('https://user:secret@host.example/app')).toBe('https://host.example/app/start');
+  });
+
+  it('names no domain at all when the deployment has no web origin', () => {
+    for (const origin of [
+      null,
+      '',
+      '   ',
+      'not a url',
+      'javascript:alert(1)',
+      'ftp://example.com',
+      'data:text/html,hi',
+      'mailto:someone@example.com',
+      'web.example.test',
+      'https://',
+    ]) {
+      expect(linkIn(origin), String(origin)).toBeNull();
+      const text = replies.noAccount(origin).text;
+      // Exactly the no-link reply, which names no URL or domain of its own.
+      expect(text, String(origin)).toBe(replies.noAccount(null).text);
+      expect(text, String(origin)).not.toMatch(/:\/\/|www\.|\/start/i);
+      expect(text).toContain('do not have an account for this number yet');
+      expect(replies.isSendable(replies.noAccount(origin))).toBe(true);
+    }
   });
 });
 

@@ -1207,12 +1207,54 @@ export function purchaseSaved(
  *
  * Not silence: someone messaging a business number expects an answer, and
  * "who are you" is a worse first impression than an honest one.
+ *
+ * `webUrl` is the deployment's own web origin (REKODA_WEB_URL, passed in: this
+ * package reads no environment), and the link is its sign-up page. Without a
+ * usable origin the reply says so plainly rather than naming a domain that may
+ * not be this deployment's, or not be live: a stranger who taps a dead link
+ * learns that Rekoda's links do not work.
  */
-export function noAccount(): Reply {
-  return reply(
+export function noAccount(webUrl: string | null): Reply {
+  const greeting =
     'Hello 👋 I keep the books for businesses on Rekoda, and I do not have an ' +
-      'account for this number yet.\n\nVisit rekoda.app to set one up. It takes a minute.',
+    'account for this number yet.';
+  const start = signUpLink(webUrl);
+  return reply(
+    start
+      ? // The link ends the message, on its own line: no punctuation after it
+        // for a phone to fold into what it opens.
+        `${greeting}\n\nIt takes a minute to set one up here:\n${start}`
+      : // What is true: this deployment has no link to give. Not "check back
+        // soon", which nothing here would make come true.
+        `${greeting}\n\nI cannot share a sign-up link from here right now.`,
   );
+}
+
+/**
+ * `start` under the web origin's path, or null when `webUrl` is not http(s).
+ *
+ * Built with the URL API, not by appending to the string: a query or fragment
+ * in the configured value would otherwise swallow the path (`/app?x=1/start`).
+ * A base path is kept (`/app` gives `/app/start`), repeated slashes do not
+ * double, and the query, fragment and any credentials are dropped, since
+ * this is a link handed to a stranger.
+ */
+function signUpLink(webUrl: string | null): string | null {
+  const raw = webUrl?.trim();
+  if (!raw) return null;
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') return null;
+  url.username = '';
+  url.password = '';
+  url.search = '';
+  url.hash = '';
+  url.pathname = `${url.pathname.replace(/\/{2,}/g, '/').replace(/\/+$/, '')}/start`;
+  return url.toString();
 }
 
 /** Length ceiling. WhatsApp accepts 4096; nobody reads that far. */
