@@ -368,8 +368,8 @@ test('a newer deploy cancelling a running one', () => {
 test('an application secret moved into GitHub', () => {
   const edit = edited(
     'workflow',
-    '          SHA: ${{ steps.commit.outputs.sha }}\n        run: |\n          set -euo pipefail\n          if [ -z "$STAGING_HOST" ]',
-    '          SHA: ${{ steps.commit.outputs.sha }}\n          VAULT_KEY: ${{ secrets.VAULT_KEY }}\n        run: |\n          set -euo pipefail\n          if [ -z "$STAGING_HOST" ]',
+    '          MODE: ${{ steps.commit.outputs.mode }}\n',
+    '          MODE: ${{ steps.commit.outputs.mode }}\n          VAULT_KEY: ${{ secrets.VAULT_KEY }}\n',
   );
   expectProblem(problems(edit), /must read exactly STAGING_HOST.*found: .*VAULT_KEY/);
 });
@@ -396,34 +396,122 @@ test('a write permission', () => {
 test('the workflow driving compose itself', () => {
   const edit = edited(
     'workflow',
-    '"bash -s -- $SHA" <scripts/deploy-staging.sh',
+    '"bash -s -- $MODE $SHA" <scripts/deploy-staging.sh',
     '"cd /opt/rekoda && docker compose -f docker-compose.prod.yml up -d"',
   );
   expectProblem(problems(edit), /drives the stack itself/);
-  expectProblem(problems(edit), /no longer hands the host this commit's copy/);
+  expectProblem(problems(edit), /no longer hands the host the driver's copy/);
 });
 
-/* ---- the driver is the workflow's own revision ---- */
+/* ---- the driver: a revision that has passed CI on main ---- */
 
 // Regression (Codex on #249): the workflow piped the deployed commit's own
 // script, so redeploying an older commit also ran its older, less careful
 // driver, without every safety fix added since.
-test("the deployed commit's copy of the script as the driver", () => {
+test("an older commit's copy of the script driving a manual redeploy", () => {
+  const edit = edited('workflow', '            driver=$REF_SHA\n', '            driver=$sha\n');
+  expectProblem(problems(edit), /drive an automatic run with the commit CI passed/);
+});
+
+test('the checkout not being the driver', () => {
   const edit = edited(
     'workflow',
-    '          ref: ${{ github.sha }}\n',
+    '          ref: ${{ steps.commit.outputs.driver }}\n',
     '          ref: ${{ steps.commit.outputs.sha }}\n',
   );
-  expectProblem(problems(edit), /must check out exactly its own revision/);
+  expectProblem(problems(edit), /must check out exactly the driver/);
 });
 
 test('a second checkout, of the deployed commit, beside the driver', () => {
   const edit = edited(
     'workflow',
-    '      - name: The checkout is the workflow',
-    '      - name: Check out the commit\n        uses: actions/checkout@v7\n        with:\n          ref: ${{ steps.commit.outputs.sha }}\n\n      - name: The checkout is the workflow',
+    '      - name: The checkout is the driver',
+    '      - name: Check out the commit\n        uses: actions/checkout@v7\n        with:\n          ref: ${{ steps.commit.outputs.sha }}\n\n      - name: The checkout is the driver',
   );
-  expectProblem(problems(edit), /must check out exactly its own revision/);
+  expectProblem(problems(edit), /must check out exactly the driver/);
+});
+
+// Regression (Codex on #249): a manual run checked CI only for the commit it
+// deployed, while the script it ran came from main's tip, whose CI could be
+// pending or failed; and an automatic run drove with main's tip too, not the
+// commit whose CI had just passed.
+test('a manual run whose driver has not passed CI', () => {
+  const edit = edited(
+    'workflow',
+    'for commit in "$SHA" "$DRIVER_SHA"; do',
+    'for commit in "$SHA"; do',
+  );
+  expectProblem(
+    problems(edit),
+    /successful CI push run on main for both the commit and the driver/,
+  );
+});
+
+test("an automatic run driven by main's tip rather than the commit CI passed", () => {
+  const edit = edited('workflow', '            driver=$RUN_SHA\n', '            driver=$REF_SHA\n');
+  expectProblem(problems(edit), /drive an automatic run with the commit CI passed/);
+});
+
+/* ---- automatic runs only go forward ---- */
+
+// Regression (Codex on #249): the concurrency group serialises but does not
+// order, so a delayed automatic run for an older commit could deploy after a
+// newer one, rolling staging back silently.
+test('an automatic run without --newer-only', () => {
+  const edit = edited('workflow', '            mode=--newer-only\n', '            mode=\n');
+  expectProblem(
+    problems(edit),
+    /drive an automatic run with the commit CI passed \(--newer-only\)/,
+  );
+});
+
+test('the host never told the mode', () => {
+  const edit = edited('workflow', '"bash -s -- $MODE $SHA"', '"bash -s -- $SHA"');
+  expectProblem(problems(edit), /must pass the mode to the host/);
+});
+
+test('a skip reported as a failure, or every failure as a skip', () => {
+  const edit = edited('workflow', 'if [ "$status" = 75 ]; then', 'if [ "$status" != 0 ]; then');
+  expectProblem(problems(edit), /report its exit 75 \(and only that\) as skipped/);
+});
+
+test('a skipped run still asking /health for the commit it skipped', () => {
+  const edit = edited('workflow', "        if: steps.deploy.outputs.skipped != 'true'\n", '');
+  expectProblem(problems(edit), /unless the host skipped the deploy/);
+});
+
+test('the script deploying an older commit although --newer-only', () => {
+  const edit = edited(
+    'script',
+    '  git merge-base --is-ancestor "$SHA" "$PREV_SHA"; then\n',
+    '  false; then\n',
+  );
+  expectProblem(problems(edit), /no longer skips, changing nothing, a --newer-only commit older/);
+});
+
+test('the skip decided only after the checkout changed', () => {
+  const lines = REAL.script.split('\n');
+  const at = lines.findIndex((line) => line.startsWith('if [ "$NEWER_ONLY" = true ]'));
+  const block = `${lines.slice(at, at + 6).join('\n')}\n`;
+  const without = edited('script', block, '').script;
+  const anchor = 'step "build both images';
+  assert.ok(without.includes(anchor), `fixture text not found in script: ${anchor}`);
+  const moved = without.replace(anchor, () => `${block}${anchor}`);
+  expectProblem(problems({ script: moved }), /--newer-only skip only after the prepared phase/);
+});
+
+test('a failure able to exit with the "skipped" status', () => {
+  const edit = edited('script', '  [ "$status" -ne "$SKIPPED" ] || exit 1\n', '');
+  expectProblem(problems(edit), /keeps every failure off the "skipped" status/);
+});
+
+test('a second way to exit "skipped"', () => {
+  const edit = edited(
+    'script',
+    '\ndc config -q\n',
+    '\n[ -n "$RELEASE" ] || exit "$SKIPPED"\ndc config -q\n',
+  );
+  expectProblem(problems(edit), /exit "skipped" from the --newer-only check alone/);
 });
 
 test('a manual run from a branch other than main', () => {

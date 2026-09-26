@@ -268,6 +268,62 @@ const SCHEMA_REQUIRES = [
   ],
 ];
 
+/**
+ * --newer-only. Deployments are serialised but not ordered, so a delayed
+ * automatic run for an older commit could start after a newer one deployed.
+ * With the flag, the script must change nothing and exit 75 when staging
+ * already runs a newer commit, after /health has proved what runs and before
+ * anything changes; and no failure may exit 75, which the workflow reads as
+ * "skipped".
+ */
+const NEWER_ONLY_REQUIRES = [
+  [/^SKIPPED=75$/, 'names 75 as its "skipped" exit status'],
+  [/^if \[ "\$\{1:-\}" = --newer-only \]; then$/, 'accepts --newer-only'],
+  [/^\s*\[ "\$PHASE" = skipped \] && return$/, 'treats a skip as no failure on exit'],
+  [
+    /^\s*\[ "\$status" -ne "\$SKIPPED" \] \|\| exit 1$/,
+    'keeps every failure off the "skipped" status',
+  ],
+];
+const SKIP_BLOCK = [
+  /^if \[ "\$NEWER_ONLY" = true \] && \[ "\$SHA" != "\$PREV_SHA" \] &&$/,
+  /^\s*git merge-base --is-ancestor "\$SHA" "\$PREV_SHA"; then$/,
+  /^\s*PHASE=skipped$/,
+  /^\s*printf /,
+  /^\s*exit "\$SKIPPED"$/,
+  /^fi$/,
+];
+
+function newerOnlyProblems(lines) {
+  const problems = [];
+  for (const [pattern, what] of NEWER_ONLY_REQUIRES) {
+    if (!lines.some((line) => pattern.test(line))) {
+      problems.push(`${FILES.script} no longer ${what} (--newer-only)`);
+    }
+  }
+  const at = lines.findIndex((line) => SKIP_BLOCK[0].test(line));
+  if (at < 0 || !SKIP_BLOCK.every((pattern, i) => pattern.test(lines[at + i] ?? ''))) {
+    problems.push(
+      `${FILES.script} no longer skips, changing nothing, a --newer-only commit older than the one running`,
+    );
+    return problems;
+  }
+  const baseline = lines.findIndex((line) => BASELINE_CALL.test(line));
+  if (baseline < 0 || at < baseline) {
+    problems.push(
+      `${FILES.script} decides a --newer-only skip before /health has proved what is running`,
+    );
+  }
+  const prepared = lines.indexOf('PHASE=prepared');
+  if (prepared >= 0 && prepared < at) {
+    problems.push(`${FILES.script} decides a --newer-only skip only after the prepared phase`);
+  }
+  if (lines.filter((line) => /\bexit "\$SKIPPED"/.test(line)).length !== 1) {
+    problems.push(`${FILES.script} must exit "skipped" from the --newer-only check alone`);
+  }
+  return problems;
+}
+
 function schemaProblems(lines) {
   const problems = [];
   const prepared = lines.indexOf('PHASE=prepared');
@@ -400,6 +456,7 @@ export function problemsFor({ runbook, script, workflow, ci, dockerignore }) {
   problems.push(...baselineProblems(lines));
   problems.push(...strayProblems(lines, dockerignore));
   problems.push(...schemaProblems(lines));
+  problems.push(...newerOnlyProblems(lines));
 
   /* ---- The workflow. ---- */
   let wf;
@@ -456,17 +513,58 @@ export function problemsFor({ runbook, script, workflow, ci, dockerignore }) {
       if (!cond.includes(needed))
         problems.push(`${FILES.workflow} job ${id} must require ${needed}`);
     }
-    // The driver is the workflow's own revision, never the deployed commit's
-    // copy, which for an older commit is an older, less careful script.
-    const checkouts = (job.steps ?? []).filter((step) =>
+    // The driver (the revision whose script runs on the host) has always
+    // passed CI on main: after CI, the commit CI just passed; by hand, main's
+    // tip, checked too, never an older commit's older, less careful script.
+    const steps = job.steps ?? [];
+    const checkouts = steps.filter((step) =>
       String(step.uses ?? '').startsWith('actions/checkout@'),
     );
-    if (checkouts.length !== 1 || checkouts[0].with?.ref !== '${{ github.sha }}') {
+    if (checkouts.length !== 1 || checkouts[0].with?.ref !== '${{ steps.commit.outputs.driver }}') {
       problems.push(
-        `${FILES.workflow} job ${id} must check out exactly its own revision (ref: \${{ github.sha }}) as the deployment driver, never the commit it deploys`,
+        `${FILES.workflow} job ${id} must check out exactly the driver (ref: \${{ steps.commit.outputs.driver }}), never the commit it deploys`,
       );
     }
-    for (const step of job.steps ?? []) {
+    const choose = String(steps.find((step) => step.id === 'commit')?.run ?? '');
+    for (const [pattern, what] of [
+      [
+        /if \[ "\$EVENT" = workflow_run \]; then\n(\s*#.*\n)*\s*sha=\$RUN_SHA\n\s*driver=\$RUN_SHA\n\s*mode=--newer-only\n\s*else\n(\s*#.*\n)*\s*sha=\$\{INPUT_SHA:-\$REF_SHA\}\n\s*driver=\$REF_SHA\n\s*mode=\n\s*fi\n/,
+        "drive an automatic run with the commit CI passed (--newer-only), and a manual one with main's tip",
+      ],
+    ]) {
+      if (!pattern.test(choose)) problems.push(`${FILES.workflow} job ${id} must ${what}`);
+    }
+    const ciCheck = steps.find((step) => /\bgh run list\b/.test(String(step.run ?? '')));
+    if (
+      !ciCheck ||
+      ciCheck.env?.DRIVER_SHA !== '${{ steps.commit.outputs.driver }}' ||
+      !/for commit in "\$SHA" "\$DRIVER_SHA"; do/.test(ciCheck.run) ||
+      !/--commit "\$commit" --status success/.test(ciCheck.run)
+    ) {
+      problems.push(
+        `${FILES.workflow} job ${id} must confirm a successful CI push run on main for both the commit and the driver of a manual run`,
+      );
+    }
+    const deploy = steps.find((step) => step.id === 'deploy');
+    const deployRun = String(deploy?.run ?? '');
+    if (
+      deploy?.env?.MODE !== '${{ steps.commit.outputs.mode }}' ||
+      !/"bash -s -- \$MODE \$SHA" <scripts\/deploy-staging\.sh\n\s*status=\$\?\n/.test(deployRun) ||
+      !/if \[ "\$status" = 75 \]; then\n\s*echo "skipped=true" >>"\$GITHUB_OUTPUT"\n(.*\n)*?\s*exit 0\n\s*fi\n\s*exit "\$status"\n/.test(
+        deployRun,
+      )
+    ) {
+      problems.push(
+        `${FILES.workflow} job ${id} must pass the mode to the host and report its exit 75 (and only that) as skipped`,
+      );
+    }
+    const answers = steps.find((step) => step.name === 'Staging answers with this commit');
+    if (answers?.if !== "steps.deploy.outputs.skipped != 'true'") {
+      problems.push(
+        `${FILES.workflow} job ${id} must check /health from outside unless the host skipped the deploy`,
+      );
+    }
+    for (const step of steps) {
       if (typeof step.run === 'string' && step.run.includes('${{')) {
         problems.push(
           `${FILES.workflow} step "${step.name ?? step.run.slice(0, 40)}" pastes an expression into its script; pass it through env`,
@@ -501,7 +599,7 @@ export function problemsFor({ runbook, script, workflow, ci, dockerignore }) {
     [/github\.event\.workflow_run\.head_sha/, 'deploys the exact commit CI ran on'],
     [
       /<scripts\/deploy-staging\.sh$/m,
-      "hands the host this commit's copy of scripts/deploy-staging.sh",
+      "hands the host the driver's copy of scripts/deploy-staging.sh",
     ],
   ];
   for (const [pattern, what] of workflowRequires) {

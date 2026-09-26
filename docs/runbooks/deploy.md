@@ -367,12 +367,22 @@ and runs `scripts/deploy-staging.sh <sha>` there, for the exact commit CI
 passed. It deploys that commit, never the newest `main`, and never a commit
 that is not on `origin/main`. It can also be started by hand from the Actions
 tab (`workflow_dispatch`), run from `main`, with a full SHA of a commit on
-`main`; it first confirms a successful CI push run exists for that commit.
-Either way the script that runs on the host is the one at the workflow's own
-revision (the tip of `main`), never the deployed commit's copy, so
-redeploying an older commit never brings back an older, less careful
-script. Production has no
+`main`. Production has no
 such workflow and is deployed by hand, by tag, with "Deploy a release" above.
+
+The script that runs on the host (the driver) is always a revision that has
+passed CI on `main`, and never an older commit's copy, which may be older and
+less careful:
+
+- **After CI**, the driver is the commit CI just passed, which is also the
+  commit deployed. It runs with `--newer-only`: the workflow runs one
+  deployment at a time but does not keep them in order, so a delayed run for
+  an older commit could start after a newer one deployed. If staging already
+  runs a newer commit of `main`, the script changes nothing and exits 75, and
+  the workflow reports the run as skipped. No failure exits 75.
+- **By hand from the Actions tab**, the driver is the tip of `main`. The
+  workflow first confirms a successful CI push run on `main` for both the
+  commit and the driver.
 
 The script is "Deploy a release" for a commit instead of a tag, with the
 release named `staging-<short sha>` (`git rev-parse --short=7`: at least
@@ -456,7 +466,8 @@ git show origin/main:scripts/deploy-staging.sh | bash -s -- <40-character sha>
 
 Not `bash scripts/deploy-staging.sh`: that runs the copy in the current
 checkout, which after a deploy of an older commit is that commit's older
-script. The script is one brace group, read whole before it runs, so the
+script. Confirm first that CI passed on the tip of `main`, as the workflow
+does. The script is one brace group, read whole before it runs, so the
 checkout it performs cannot change it mid-run.
 
 ## What a production boot refuses

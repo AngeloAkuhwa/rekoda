@@ -2,14 +2,19 @@
 # Deploy one exact commit to the staging host. The runbook's "Deploy a
 # release" sequence (docs/runbooks/deploy.md), for a commit rather than a tag:
 #
-#   git show origin/main:scripts/deploy-staging.sh | bash -s -- <40-character commit SHA>
+#   git show origin/main:scripts/deploy-staging.sh | bash -s -- [--newer-only] <40-character commit SHA>
 #
-# .github/workflows/deploy-staging.yml runs it on the host over SSH after CI
-# has passed on main, piping the copy from the workflow's own revision (the
-# tip of main), never the copy the deployed commit carries: redeploying an
-# older commit must not also bring back that commit's older, less careful
-# driver. The SHA only chooses what is checked out and built. By hand, run
+# .github/workflows/deploy-staging.yml runs it on the host over SSH, piping a
+# copy that has passed CI on main (the driver): after CI, the copy of the
+# commit just deployed, with --newer-only; for a manual redeploy, main's tip,
+# never the copy an older commit carries, which may be older and less
+# careful. The SHA only chooses what is checked out and built. By hand, run
 # origin/main's copy the same way (see the runbook).
+#
+# --newer-only (automatic runs): if staging already runs a newer commit of
+# main, change nothing and exit 75, which the workflow reports as skipped.
+# Deployments are serialised but not ordered, so a delayed run for an older
+# commit would otherwise roll staging back silently.
 #
 # What it refuses, before anything live is touched:
 #   - a SHA that is not 40 hex characters, is not on origin/main, or is not
@@ -53,11 +58,14 @@ fail() {
 
 # Where the run got to, so a failure says what state it left behind.
 #   checks    nothing on the host has changed
+#   skipped   --newer-only and staging runs a newer commit; nothing changed
 #   prepared  the checkout and .env name the new release; nothing live changed
 #   live      migrate or `up` has run; the running stack may be the new one
 PHASE=checks
 PREV_SHA=
 PREV_RELEASE=
+# The exit status meaning "skipped, nothing changed"; no failure may use it.
+SKIPPED=75
 RELEASE=
 
 restore_prepared() {
@@ -71,6 +79,7 @@ restore_prepared() {
 on_exit() {
   local status=$?
   [ "$status" -eq 0 ] && return
+  [ "$PHASE" = skipped ] && return
   case "$PHASE" in
     checks) ;;
     prepared)
@@ -87,12 +96,19 @@ on_exit() {
       dc ps -a >&2 || true
       ;;
   esac
+  # The workflow reads $SKIPPED as "nothing changed"; a failure never may.
+  [ "$status" -ne "$SKIPPED" ] || exit 1
 }
 trap on_exit EXIT
 trap 'printf "failed at line %s: %s\n" "$LINENO" "$BASH_COMMAND" >&2' ERR
 
+NEWER_ONLY=false
+if [ "${1:-}" = --newer-only ]; then
+  NEWER_ONLY=true
+  shift
+fi
 SHA=${1:-}
-[ "$#" -eq 1 ] || fail 'usage: deploy-staging.sh <40-character commit SHA>'
+[ "$#" -eq 1 ] || fail 'usage: deploy-staging.sh [--newer-only] <40-character commit SHA>'
 [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || fail 'the commit must be a full 40-character lowercase SHA'
 
 step 'preflight'
@@ -146,6 +162,15 @@ step 'fetch and verify the commit'
 git fetch --prune origin
 git cat-file -e "${SHA}^{commit}" 2>/dev/null || fail "commit $SHA is not in origin"
 git merge-base --is-ancestor "$SHA" origin/main || fail "commit $SHA is not on origin/main"
+
+# After CI, only forward. The running commit is proved above, and the lock
+# holds it there until this run ends.
+if [ "$NEWER_ONLY" = true ] && [ "$SHA" != "$PREV_SHA" ] &&
+  git merge-base --is-ancestor "$SHA" "$PREV_SHA"; then
+  PHASE=skipped
+  printf '\nstaging already runs %s, which is newer than %s; nothing changed\n' "$PREV_SHA" "$SHA"
+  exit "$SKIPPED"
+fi
 
 # The database keeps every migration ever applied, and a migration may contract
 # what older code still uses (expand, deploy, contract: the contraction ships a
