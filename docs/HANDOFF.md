@@ -8,14 +8,14 @@
 
 ## Current state at a glance
 
-| Field                       | Value                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **Current date**            | 13 September 2026                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| **Current `main` SHA**      | `3cab9dd` (13 Sep 2026, "fix: check Caddy's own trust list before Caddy serves (G-74) (#244)"); before it `1bbe1f1` (#243, G-72), `48ba9d5` (#242, G-71), `c508709` (#241, G-01), `b81ef90` (#240, G-08), `7b9fd8f` (#236), `2dce181` (#239), `e993885` (#235) and the G-06 merge `8f07a6d` (#238)                                                                                                                                                                                         |
-| **Open branches**           | the G-75 PR (`fix/edge-private-ranges`: the edge check refuses `private_ranges` and the edge gateway, per the owner's OD-13 ruling). #244 (G-74) MERGED as `3cab9dd` on 13 Sep 2026; #243 (G-72) MERGED as `1bbe1f1` on 13 Sep 2026; #242 (G-71) MERGED as `48ba9d5` on 13 Sep 2026; #241 (G-01) MERGED as `c508709` on 12 Sep 2026; #240 (G-08 template half) as `b81ef90`; dependency housekeeping is closed; #225, #226 and #227 (NestJS 12) closed as deferred post-launch work (G-70) |
-| **Product version / state** | 0.1.0. Build plan complete (138 rows, PR-001…PR-132; PR-006–009 and PR-115 gated); 152 migrations; never deployed to a host (the production stack boots on a clean CI runner since G-01); no live provider has been exercised                                                                                                                                                                                                                                                              |
-| **Launch verdict**          | **NOT READY** (`REKODA_LAUNCH_READINESS.md` §1)                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| **Engineering model**       | Simple: Angelo assigns, Claude reads `CLAUDE.md` and the canonical docs, implements with tests, normal CI, Angelo reviews and merges. The multi-agent control plane (PR #233) was removed by PR #237 (merged 11 Sep 2026) and PR #234 closed unmerged                                                                                                                                                                                                                                      |
+| Field                       | Value                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Current date**            | 13 September 2026                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| **Current `main` SHA**      | `33ddb33` (13 Sep 2026, "fix: refuse private_ranges and the edge gateway as Caddy's trust list (G-75) (#245)"); before it `3cab9dd` (#244, G-74), `1bbe1f1` (#243, G-72), `48ba9d5` (#242, G-71), `c508709` (#241, G-01), `b81ef90` (#240, G-08), `7b9fd8f` (#236), `2dce181` (#239), `e993885` (#235) and the G-06 merge `8f07a6d` (#238)                                                                                                                                                                                     |
+| **Open branches**           | `docs/staging-carry-forward` (records the G-75 review's carry-forward findings as G-76 and points this file at staging). #245 (G-75) MERGED as `33ddb33` on 13 Sep 2026; #244 (G-74) MERGED as `3cab9dd` on 13 Sep 2026; #243 (G-72) MERGED as `1bbe1f1` on 13 Sep 2026; #242 (G-71) MERGED as `48ba9d5` on 13 Sep 2026; #241 (G-01) MERGED as `c508709` on 12 Sep 2026; #240 (G-08 template half) as `b81ef90`; dependency housekeeping is closed; #225, #226 and #227 (NestJS 12) closed as deferred post-launch work (G-70) |
+| **Product version / state** | 0.1.0. Build plan complete (138 rows, PR-001…PR-132; PR-006–009 and PR-115 gated); 152 migrations; never deployed to a host (the production stack boots on a clean CI runner since G-01); no live provider has been exercised                                                                                                                                                                                                                                                                                                  |
+| **Launch verdict**          | **NOT READY** (`REKODA_LAUNCH_READINESS.md` §1)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| **Engineering model**       | Simple: Angelo assigns, Claude reads `CLAUDE.md` and the canonical docs, implements with tests, normal CI, Angelo reviews and merges. The multi-agent control plane (PR #233) was removed by PR #237 (merged 11 Sep 2026) and PR #234 closed unmerged                                                                                                                                                                                                                                                                          |
 
 **Last completed work (10–11 Sep 2026):** the repository reset. Removed
 `AGENTS.md`, `GEMINI.md`, `docs/AUTONOMOUS-ENGINEERING.md`, `docs/agents/`,
@@ -73,7 +73,7 @@ provider facts) and OD-12 (gross processed volume) recorded in
 `REKODA_LAUNCH_READINESS.md` §6. G-06 is CODE COMPLETE and NOT LIVE
 PROVIDER VERIFIED until the G-05 drill.
 
-**Last completed work (13 Sep 2026, G-75, on `fix/edge-private-ranges`):**
+**Last completed work (13 Sep 2026, G-75, merged as `33ddb33`; CODE COMPLETE):**
 the owner ruled OD-13: `REKODA_EDGE_PROXIES=private_ranges` must not be
 accepted for a real deployment (`REKODA_OWNER_DECISIONS.md` OWN-15). The
 edge check now refuses it by name, and any range holding the edge
@@ -165,19 +165,26 @@ G-71 (web's server-side calls share one per-IP bucket, P1) and G-72
 
 **Next three actions:**
 
-1. Angelo merges the G-75 PR, then provisions the staging host by
+1. **Milestone: STAGING HOST ONLINE** (the owner ended the preventive
+   hardening phase on 13 Sep 2026). Angelo provisions the staging host by
    `docs/runbooks/deploy.md` "First deployment" (a machine, Cloudflare DNS
-   for the site and API hostnames), fills the staging `.env` and
-   `secrets/` from `REKODA_LAUNCH_READINESS.md` §11.1 (the G-08 owner
-   half) and rules OD-4 (which command-bus flags ship on); deletes the leftover GitHub
-   environments `agents*` and the `builder:*`, `risk:*`, `status:*`,
-   `agent-task` labels (gap G-45); turns on branch protection (G-09).
+   for the staging site and API hostnames), approves the first release tag
+   (there is none yet; the runbook deploys only from a tag), fills the
+   staging `.env` and `secrets/` from `REKODA_LAUNCH_READINESS.md` §11.1
+   (the G-08 owner half) and rules OD-4 (which command-bus flags ship on).
+   Merchant sign-in is a WhatsApp OTP, so the first browser login needs the
+   Meta test number and an approved authentication template. Also: delete
+   the leftover GitHub environments `agents*` and the `builder:*`,
+   `risk:*`, `status:*`, `agent-task` labels (gap G-45); turn on branch
+   protection (G-09).
 2. Rule on OD-1 to OD-7 in `REKODA_LAUNCH_READINESS.md` §6 (R0A-i on an
    empty database, VAT, which unwired modules ship, command-bus flags,
    renewal copy, erasure scope, backup design).
-3. Claude continues: G-02 (backups per OD-7, which a real host now needs),
-   G-07 (fix the eval harness, then the owner runs the live eval), G-73
-   (owner decision on the photo budget). G-06 is code complete and NOT live-verified until the G-05 drill
+3. Claude supports the staging bring-up. G-02 (backups per OD-7, which a
+   real host needs before real data), G-07 (the eval harness), G-73 (the
+   photo budget) and G-76 (the G-75 review's carry-forward findings) wait
+   until staging is online (owner, 13 Sep 2026); G-76's cases 2 and 3
+   (caddy's fields and mounts, top-level `include:`) close before private beta. G-06 is code complete and NOT live-verified until the G-05 drill
    confirms the real Paystack envelopes.
 
 **Known P0 blockers:** G-01 staging host (code complete) · G-02 backups · G-03
