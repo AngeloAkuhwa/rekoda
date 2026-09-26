@@ -107,7 +107,7 @@ describe('sweeping unknown senders', () => {
     await sweepUnknownSenders(deps('https://web.rekoda.test/'));
 
     const text = sender.sent[0]?.text ?? '';
-    expect(text).toContain('Set one up at https://web.rekoda.test/start. It takes a minute.');
+    expect(text).toMatch(/set one up here:\nhttps:\/\/web\.rekoda\.test\/start$/);
     expect(text).not.toContain('rekoda.app');
     expect(text).not.toMatch(/[^:]\/\//);
   });
@@ -117,8 +117,8 @@ describe('sweeping unknown senders', () => {
 
     await sweepUnknownSenders(deps('https://web.rekoda.test/app?x=1#section'));
 
-    expect(sender.sent[0]?.text).toContain(
-      'Set one up at https://web.rekoda.test/app/start. It takes a minute.',
+    expect(sender.sent[0]?.text).toMatch(
+      /set one up here:\nhttps:\/\/web\.rekoda\.test\/app\/start$/,
     );
   });
 

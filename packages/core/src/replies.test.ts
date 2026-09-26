@@ -405,9 +405,22 @@ describe('the money-in moment', () => {
 });
 
 describe('a stranger', () => {
-  /** The exact link the reply hands out, or null when it names none. */
+  /** The exact link the reply hands out, or null when it names none. It is
+   * the whole last line, so nothing after it can be read as part of it. */
   const linkIn = (webUrl: string | null) =>
-    /Set one up at (\S+)\. It takes a minute\./.exec(replies.noAccount(webUrl).text)?.[1] ?? null;
+    /set one up here:\n(\S+)$/.exec(replies.noAccount(webUrl).text)?.[1] ?? null;
+
+  it('ends on the link, with nothing after it', () => {
+    expect(replies.noAccount('https://staging.myrekoda.com').text).toMatch(
+      /\nhttps:\/\/staging\.myrekoda\.com\/start$/,
+    );
+  });
+
+  it('says plainly that it has no link, and promises nothing, when it has none', () => {
+    const text = replies.noAccount(null).text;
+    expect(text).toMatch(/I cannot share a sign-up link from here right now\.$/);
+    expect(text).not.toMatch(/soon|later|check back/i);
+  });
 
   it("links the deployment's own sign-up page", () => {
     expect(linkIn('https://staging.myrekoda.com')).toBe('https://staging.myrekoda.com/start');
@@ -429,6 +442,11 @@ describe('a stranger', () => {
     expect(linkIn('https://host.example/app')).toBe('https://host.example/app/start');
     expect(linkIn('https://host.example/app/')).toBe('https://host.example/app/start');
     expect(linkIn('https://host.example/app//')).toBe('https://host.example/app/start');
+  });
+
+  it('never doubles a slash inside the base path either', () => {
+    expect(linkIn('https://host.example//app//')).toBe('https://host.example/app/start');
+    expect(linkIn('https://host.example/a//b/')).toBe('https://host.example/a/b/start');
   });
 
   it('drops a query, a fragment and credentials rather than let them swallow the path', () => {
