@@ -45,7 +45,11 @@ const ALL: Record<string, readonly replies.Reply[]> = {
   confirmErasure: [replies.confirmErasure(), replies.confirmErasure(4)],
   confirmationLapsed: [replies.confirmationLapsed('that stock change')],
   erasureNotYours: [replies.erasureNotYours()],
-  erasureDone: [replies.erasureDone(0), replies.erasureDone(12)],
+  erasureDone: [
+    replies.erasureDone(0, 'https://web.example.test'),
+    replies.erasureDone(12, 'https://web.example.test'),
+    replies.erasureDone(12, null),
+  ],
   erasureKept: [replies.erasureKept()],
   viewOnlyRole: [replies.viewOnlyRole()],
   strayNumber: [replies.strayNumber()],
@@ -121,7 +125,10 @@ const ALL: Record<string, readonly replies.Reply[]> = {
   paymentLinkSettled: [replies.paymentLinkSettled('INV-2026-000041')],
   paymentLinkUnavailable: [replies.paymentLinkUnavailable()],
   paymentLinkNothingOwed: [replies.paymentLinkNothingOwed()],
-  paymentLinkNeedsConnection: [replies.paymentLinkNeedsConnection()],
+  paymentLinkNeedsConnection: [
+    replies.paymentLinkNeedsConnection('https://web.example.test'),
+    replies.paymentLinkNeedsConnection(null),
+  ],
   paymentLinkNeedsEmail: [replies.paymentLinkNeedsEmail('INV-2026-000041')],
   debtorList: [
     replies.debtorList([], 0, 0),
@@ -263,7 +270,8 @@ describe('every reply', () => {
     replies.nothingToResend(),
     replies.dashboardUnavailable(),
     replies.paymentLinkUnavailable(),
-    replies.paymentLinkNeedsConnection(),
+    replies.paymentLinkNeedsConnection('https://web.example.test'),
+    replies.paymentLinkNeedsConnection(null),
     replies.assistantHandoff(),
     replies.assistantHandoffNotice(),
   ];
@@ -438,23 +446,24 @@ describe('a stranger', () => {
     }
   });
 
-  it('keeps a base path the web app is served under', () => {
-    expect(linkIn('https://host.example/app')).toBe('https://host.example/app/start');
-    expect(linkIn('https://host.example/app/')).toBe('https://host.example/app/start');
-    expect(linkIn('https://host.example/app//')).toBe('https://host.example/app/start');
-  });
-
-  it('never doubles a slash inside the base path either', () => {
-    expect(linkIn('https://host.example//app//')).toBe('https://host.example/app/start');
-    expect(linkIn('https://host.example/a//b/')).toBe('https://host.example/a/b/start');
+  it('refuses a configured path: the web app is mounted at the root of its origin', () => {
+    for (const origin of [
+      'https://host.example/app',
+      'https://host.example/app/',
+      'https://host.example//app//',
+      'https://host.example/a//b/',
+      'https://host.example/base?x=1#section',
+    ]) {
+      expect(linkIn(origin), origin).toBeNull();
+      expect(replies.noAccount(origin).text, origin).toBe(replies.noAccount(null).text);
+    }
   });
 
   it('drops a query, a fragment and credentials rather than let them swallow the path', () => {
-    expect(linkIn('https://host.example/app?x=1#section')).toBe('https://host.example/app/start');
-    expect(linkIn('https://host.example/app/?x=1')).toBe('https://host.example/app/start');
+    expect(linkIn('https://host.example/?x=1#section')).toBe('https://host.example/start');
     expect(linkIn('https://host.example#top')).toBe('https://host.example/start');
     expect(linkIn('https://host.example?x=1')).toBe('https://host.example/start');
-    expect(linkIn('https://user:secret@host.example/app')).toBe('https://host.example/app/start');
+    expect(linkIn('https://user:secret@host.example')).toBe('https://host.example/start');
   });
 
   it('names no domain at all when the deployment has no web origin', () => {
@@ -478,6 +487,116 @@ describe('a stranger', () => {
       expect(text).toContain('do not have an account for this number yet');
       expect(replies.isSendable(replies.noAccount(origin))).toBe(true);
     }
+  });
+});
+
+/* The two other replies that point at the web app, built by the same helper as
+ * the stranger's /start link: each ends on its link, which comes only from
+ * the web URL it is given. */
+describe('links into the web app', () => {
+  const PAGES = [
+    ['data deletion', (webUrl: string | null) => replies.erasureDone(2, webUrl), 'data-deletion'],
+    [
+      'payments',
+      (webUrl: string | null) => replies.paymentLinkNeedsConnection(webUrl),
+      'app/payments',
+    ],
+  ] as const;
+
+  /** The link a reply ends on, or null when it ends on none. */
+  const linkIn = (text: string) => /\n(\S+:\/\/\S+)$/.exec(text)?.[1] ?? null;
+
+  describe.each(PAGES)('%s', (_name, build, page) => {
+    it('links the page under whatever web URL it is given, and nothing else', () => {
+      const text = build('https://web.example.test').text;
+      expect(linkIn(text)).toBe(`https://web.example.test/${page}`);
+      expect(text.match(/\S+:\/\/\S+/g)).toEqual([`https://web.example.test/${page}`]);
+      /* And no bare domain beside it: `see name.tld/page or:` would pass the
+       * two checks above, and is exactly the bug this reply was fixed for. */
+      expect(text.replace(`https://web.example.test/${page}`, '')).not.toMatch(
+        /www\.|[a-z0-9-]\.[a-z]{2,}/i,
+      );
+    });
+
+    it('never doubles a slash, however many trail the web URL', () => {
+      for (const webUrl of [
+        'https://web.example.test/',
+        'https://web.example.test//',
+        'https://web.example.test///',
+      ]) {
+        expect(linkIn(build(webUrl).text), webUrl).toBe(`https://web.example.test/${page}`);
+      }
+    });
+
+    it('refuses a configured path, giving the no-link reply', () => {
+      for (const webUrl of [
+        'https://host.example/base',
+        'https://host.example/app',
+        'https://host.example//app//',
+        'https://user:secret@host.example/base/?x=1#top',
+      ]) {
+        expect(linkIn(build(webUrl).text), webUrl).toBeNull();
+        expect(build(webUrl).text, webUrl).toBe(build(null).text);
+      }
+    });
+
+    it('drops a query, a fragment and credentials from the web URL', () => {
+      for (const webUrl of [
+        'https://web.example.test/?x=1#section',
+        'https://user:secret@web.example.test',
+        'https://user:secret@web.example.test/?x=1#top',
+      ]) {
+        expect(linkIn(build(webUrl).text), webUrl).toBe(`https://web.example.test/${page}`);
+      }
+    });
+
+    it('normalises the web URL however it was written', () => {
+      expect(linkIn(build('HTTPS://WEB.EXAMPLE.TEST').text)).toBe(
+        `https://web.example.test/${page}`,
+      );
+      expect(linkIn(build('  https://web.example.test/  ').text)).toBe(
+        `https://web.example.test/${page}`,
+      );
+      expect(linkIn(build('https://web.example.test:8443').text)).toBe(
+        `https://web.example.test:8443/${page}`,
+      );
+      expect(linkIn(build('http://[::1]:3000').text)).toBe(`http://[::1]:3000/${page}`);
+    });
+
+    it('claims no link, and names no domain, when the web URL is unusable', () => {
+      const fallback = build(null).text;
+      for (const webUrl of [
+        null,
+        '',
+        '   ',
+        'not a url',
+        'javascript:alert(1)',
+        'ftp://web.example.test',
+        'web.example.test',
+        'https://',
+      ]) {
+        const text = build(webUrl).text;
+        expect(text, String(webUrl)).toBe(fallback);
+        /* No scheme, no www, and no bare host either: `name.tld` with no
+         * `://` is still a domain a phone turns into a link. */
+        expect(text, String(webUrl)).not.toMatch(/:\/\/|www\.|[a-z0-9-]\.[a-z]{2,}/i);
+        expect(linkIn(text)).toBeNull();
+      }
+    });
+  });
+
+  it('still says what was deleted, and that the rest can go too, with no link', () => {
+    const text = replies.erasureDone(2, null).text;
+    expect(text).toContain('deleted (2 records)');
+    expect(text).toContain('Your conversations and account can be deleted too');
+    // The page by the title it carries on the website and in its footer.
+    expect(text).toContain('"Delete my data" page');
+  });
+
+  it('still says where Payments is, with no link', () => {
+    const text = replies.paymentLinkNeedsConnection(null).text;
+    expect(text).toContain('add your settlement account');
+    expect(text).toContain('open your Rekoda dashboard and go to Payments');
   });
 });
 

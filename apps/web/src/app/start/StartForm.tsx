@@ -15,9 +15,12 @@ const PLAN_WORDS: Record<string, string> = {
 export function StartForm({
   initialPhone = '',
   plan,
+  next,
 }: {
   initialPhone?: string;
   plan?: string | undefined;
+  /** The dashboard page to return to after sign-in, already validated. */
+  next?: string | undefined;
 }) {
   const [state, action, pending] = useActionState<FormState, FormData>(requestCode, {});
   const planWord = plan ? PLAN_WORDS[plan] : undefined;
@@ -37,6 +40,7 @@ export function StartForm({
       ) : null}
 
       <form action={action} className="rk-form" noValidate>
+        {next ? <input type="hidden" name="next" value={next} /> : null}
         <Field
           id="phone"
           label="WhatsApp number"

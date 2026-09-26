@@ -113,14 +113,23 @@ describe('sweeping unknown senders', () => {
     expect(text).not.toMatch(/[^:]\/\//);
   });
 
-  it('keeps the configured base path and drops its query and fragment', async () => {
+  it('drops a query and fragment from the configured web origin', async () => {
     await arrive('2348031111111', 'wamid.stranger.1');
 
-    await sweepUnknownSenders(deps('https://web.example.test/app?x=1#section'));
+    await sweepUnknownSenders(deps('https://web.example.test/?x=1#section'));
 
-    expect(sender.sent[0]?.text).toMatch(
-      /set one up here:\nhttps:\/\/web\.example\.test\/app\/start$/,
-    );
+    expect(sender.sent[0]?.text).toMatch(/set one up here:\nhttps:\/\/web\.example\.test\/start$/);
+  });
+
+  it('answers with no link when the web URL carries a path the app cannot serve', async () => {
+    /* The web app is mounted at the root of its origin, so a configured path
+     * is not a base path: the link would lead nowhere. */
+    await arrive('2348031111111', 'wamid.stranger.1');
+
+    const answered = await sweepUnknownSenders(deps('https://web.example.test/base'));
+
+    expect(answered).toBe(1);
+    expect(sender.sent[0]?.text).toBe(replies.noAccount(null).text);
   });
 
   it('still answers, with no link, when the deployment has no web origin', async () => {

@@ -281,6 +281,68 @@ test.describe('the onboarding journey', () => {
     await expect(page.getByRole('heading', { level: 1 })).toHaveText('Bola Electronics');
   });
 
+  test('returns a merchant to the page a WhatsApp link sent them to', async ({ page, context }) => {
+    // The payments reply links /app/payments. Signed out, that page used to
+    // send the merchant to /start and sign-in always ended at /app, so the
+    // destination was lost on the way.
+    const phone = freshPhone();
+    await onboard(page, phone, 'Chika Provisions');
+    await context.clearCookies();
+
+    await page.goto('/app/payments');
+    await expect(page).toHaveURL(/\/start\?next=%2Fapp%2Fpayments$/);
+    await page.fill('#phone', phone);
+    await submit(page);
+    await expect(page).toHaveURL(/\/verify\?.*next=%2Fapp%2Fpayments/);
+
+    // A mistyped code first: the destination must survive the retry.
+    const code = await codeFor(page);
+    await page.fill('#code', code === '000000' ? '111111' : '000000');
+    await submit(page);
+    await expect(fieldError(page, 'code')).toContainText('not right');
+    await page.fill('#code', code);
+    await submit(page);
+
+    await expect(page).toHaveURL(/\/app\/payments$/);
+  });
+
+  test('never lands a merchant on a dashboard download after sign-in', async ({
+    page,
+    context,
+  }) => {
+    // A dashboard GET that does something (an export spends the monthly
+    // download allowance) is not a return destination, even on this site.
+    const phone = freshPhone();
+    await onboard(page, phone, 'Efe Wholesale');
+    await context.clearCookies();
+
+    await page.goto(`/start?next=${encodeURIComponent('/app/export/statements')}`);
+    await page.fill('#phone', phone);
+    await submit(page);
+    await expect(page).toHaveURL(/\/verify\?phone=[^&]+$/);
+    await page.fill('#code', await codeFor(page));
+    await submit(page);
+
+    await expect(page).toHaveURL(/\/app$/);
+  });
+
+  test('never follows a return path that leaves the dashboard', async ({ page, context }) => {
+    // `next` is attacker-controlled: an open redirect from a sign-in page is a
+    // phishing tool. Anything not on the allow-list is dropped before /verify.
+    const phone = freshPhone();
+    await onboard(page, phone, 'Dayo Stores');
+    await context.clearCookies();
+
+    await page.goto(`/start?next=${encodeURIComponent('//evil.example.test/app')}`);
+    await page.fill('#phone', phone);
+    await submit(page);
+    await expect(page).toHaveURL(/\/verify\?phone=[^&]+$/);
+    await page.fill('#code', await codeFor(page));
+    await submit(page);
+
+    await expect(page).toHaveURL(/\/app$/);
+  });
+
   test('never asks an informal merchant for CAC or TIN', async ({ page }) => {
     // ADR 0012: requiring registration would exclude exactly the merchants
     // Rekoda exists for, so the field must not be on the form at all.

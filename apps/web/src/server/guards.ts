@@ -1,6 +1,7 @@
 import 'server-only';
 import { redirect } from 'next/navigation';
 import type { MeResponse, SetupStateResponse } from '@rekoda/contracts';
+import { startPath } from '@/lib/return-path';
 import { me, readSetupState } from './api';
 import { readSessionToken, readSetupToken } from './session-cookies';
 
@@ -54,14 +55,17 @@ export async function optionalSession(): Promise<MeResponse | null> {
  * Same guarantee as `requireSession`, and hands back the TOKEN too — for
  * pages that make further API calls on the merchant's behalf. The token
  * never reaches a client component; it lives for one server render.
+ *
+ * `returnTo` is the page's own dashboard path, for pages a WhatsApp reply
+ * links to: sign-in then brings the merchant back to it instead of `/app`.
  */
-export async function requireSessionWithToken(): Promise<{
+export async function requireSessionWithToken(returnTo?: string): Promise<{
   identity: MeResponse;
   token: string;
 }> {
   const token = await readSessionToken();
-  if (!token) redirect('/start');
+  if (!token) redirect(startPath(returnTo));
   const identity = await me(token);
-  if (!identity) redirect('/start');
+  if (!identity) redirect(startPath(returnTo));
   return { identity, token };
 }

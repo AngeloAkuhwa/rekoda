@@ -1,6 +1,7 @@
 'use server';
 
 import { redirect } from 'next/navigation';
+import { safeReturnPath } from '@/lib/return-path';
 import { ApiUnavailable, requestOtp, verifyOtp } from '@/server/api';
 import { setSessionToken, setSetupToken } from '@/server/session-cookies';
 import { stashDevCode } from '@/server/dev-otp';
@@ -38,7 +39,12 @@ export async function requestCode(_prev: FormState, formData: FormData): Promise
 
   // `resend_too_soon` still goes forward: the merchant has a live code, and
   // stranding them on /start holding it is the worst of both outcomes.
-  redirect(`/verify?phone=${encodeURIComponent(result.phone)}`);
+  // A safe `next` rides along to /verify; anything else is dropped here.
+  const next = safeReturnPath(formData.get('next'));
+  redirect(
+    `/verify?phone=${encodeURIComponent(result.phone)}` +
+      (next ? `&next=${encodeURIComponent(next)}` : ''),
+  );
 }
 
 export interface ResendState {
@@ -91,9 +97,11 @@ export async function confirmCode(_prev: FormState, formData: FormData): Promise
 
   switch (result.status) {
     case 'signed_in':
-      // A returning merchant skips setup entirely and lands in the dashboard.
+      // A returning merchant skips setup entirely and lands in the dashboard,
+      // or on the dashboard page that sent them to sign in (validated again
+      // here: the form field is whatever the browser posted).
       await setSessionToken(result.sessionToken);
-      redirect('/app');
+      redirect(safeReturnPath(formData.get('next')) ?? '/app');
     // eslint-disable-next-line no-fallthrough
     case 'setup_required':
       await setSetupToken(result.setupToken);
