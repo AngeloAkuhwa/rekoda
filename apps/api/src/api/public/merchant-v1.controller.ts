@@ -34,12 +34,11 @@ import {
   UseFilters,
   UseGuards,
 } from '@nestjs/common';
-import { computeMoneyFromKobo } from '@rekoda/core';
 import { mayWrite } from '@rekoda/core/api-keys';
 import { publicApi } from '@rekoda/contracts';
 import { merchantApiRepo, withBusiness, type Db } from '@rekoda/db';
 import { CommandBus } from '../../commands/command-bus.service.js';
-import { recordSaleWork, type RecordSaleInput } from '../../commands/sale-commands.js';
+import { recordSaleWork } from '../../commands/sale-commands.js';
 import { recordPaymentWork, type RecordPaymentInput } from '../../commands/payment-commands.js';
 import { DB } from '../../db/db.module.js';
 import { ApiKeyGuard, type ApiKeyedRequest } from '../api-key.guard.js';
@@ -51,6 +50,8 @@ import {
   SandboxWriteException,
 } from './public-api.filter.js';
 import type { CommandOutcome } from '../../commands/command-bus.service.js';
+import { apiSaleEventId } from './sale-event-id.js';
+import { publicSaleInput } from './public-sale-input.js';
 
 @Controller('api/v1')
 @UseGuards(ApiKeyGuard)
@@ -169,40 +170,28 @@ export class MerchantV1Controller {
     refuseSandboxWrite(request);
 
     const businessId = request.api!.businessId;
-    const money = computeMoneyFromKobo({
-      items: parsed.data.items,
-      discountK: parsed.data.discountK ?? 0,
-      deliveryFeeK: parsed.data.deliveryFeeK ?? 0,
-      vatK: parsed.data.vatK ?? 0,
-      amountPaidK: parsed.data.amountPaidK ?? 0,
-    });
+    const caller = { businessId, keyPrefix: request.api!.keyPrefix };
+    /* The sale's own event identity, never the application's (G-77): a paid
+     * sale's verification claims it, and one application sends many sales.
+     * Deterministic under an Idempotency-Key so a retry replays. */
+    const input = publicSaleInput(
+      parsed.data,
+      caller,
+      apiSaleEventId(request.api!.applicationId, idempotencyKey ?? null),
+    );
 
-    const input: RecordSaleInput = {
-      businessId,
-      customerId: parsed.data.customerId ?? null,
-      /* No pseudonym minted here. A token names a customer the merchant's
-       * own channels met; an API caller naming one it invented would put a
-       * stranger in the merchant's customer list. */
-      customerToken: null,
-      items: parsed.data.items.map((item) => ({
-        name: item.name,
-        quantity: item.quantity,
-        unitPriceK: item.unitPriceK,
-      })),
-      subtotalK: money.subtotalK,
-      discountK: money.discountK,
-      deliveryFeeK: money.deliveryFeeK,
-      vatK: money.vatK,
-      totalK: money.totalK,
-      paidK: money.amountPaidK,
-      balanceDueK: money.balanceDueK,
-      method: parsed.data.method ?? 'transfer',
-      sourceType: 'api',
-      sourceId: request.api!.applicationId,
-      saleSource: null,
-      dueDate: parsed.data.dueDate ? new Date(parsed.data.dueDate) : null,
-      actor: `api:${request.api!.keyPrefix}`,
-    };
+    /*
+     * What the command bus fingerprints to recognise a retry: the request as
+     * the caller sent it, identified by its APPLICATION, exactly the shape
+     * every release has hashed. The event id above is derived from the
+     * application and the Idempotency-Key, so it adds nothing to "is this
+     * the same request", and keeping it out makes the fingerprint the same
+     * on either side of G-77: a keyed sale recorded before it replays on
+     * this release, and one recorded by this release replays on the
+     * previous image after a rollback. Only the fingerprint uses this; the
+     * sale is always booked with the event id.
+     */
+    const fingerprint = publicSaleInput(parsed.data, caller, request.api!.applicationId);
 
     return withBusiness(this.db, businessId, async (tx) => {
       const run = await this.commandBus.run(
@@ -210,7 +199,7 @@ export class MerchantV1Controller {
         {
           businessId,
           command: 'RecordSale',
-          payload: input,
+          payload: fingerprint,
           actor: input.actor,
           ingress: 'PUBLIC_API',
           idempotencyKey: idempotencyKey ?? null,
