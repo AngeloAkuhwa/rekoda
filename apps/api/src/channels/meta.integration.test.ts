@@ -6705,6 +6705,8 @@ describe('stock arriving with a purchase', () => {
       'You paid ₦100,000 for this stock. Was that cash or transfer?',
     );
     expect(stubSender.lastText).not.toContain('Reply *yes*');
+    /* Kept on the record, never confirmable. */
+    expect(await purchaseFootprint(business.id)).toMatchObject({ pending: 0, retired: 1 });
 
     /* The draft that asked is retired, never confirmable: a yes straight
      * after it gets the question again, and writes nothing. */
@@ -6753,7 +6755,7 @@ describe('stock arriving with a purchase', () => {
             (SELECT count(*)::int FROM command_drafts
               WHERE business_id = ${businessId}::uuid AND state = 'pending') AS pending,
             (SELECT count(*)::int FROM command_drafts
-              WHERE business_id = ${businessId}::uuid AND state = 'superseded') AS superseded
+              WHERE business_id = ${businessId}::uuid AND state = 'abandoned') AS retired
         `),
       )),
     ];
@@ -6771,7 +6773,7 @@ describe('stock arriving with a purchase', () => {
       'did it come from your bank account or from physical cash?',
     );
     /* The clarification is on the record but not confirmable. */
-    expect(await purchaseFootprint(business.id)).toMatchObject({ pending: 0, superseded: 1 });
+    expect(await purchaseFootprint(business.id)).toMatchObject({ pending: 0, retired: 1 });
 
     await say(
       'wamid.G61-dup-bank',
@@ -6794,7 +6796,7 @@ describe('stock arriving with a purchase', () => {
       bills: 0,
       announced: 1,
       pending: 0,
-      superseded: 1,
+      retired: 1,
     });
     expect(await nets(business.id)).toEqual({ INVENTORY: 18_000_000, BANK: -18_000_000 });
   });
@@ -6828,7 +6830,7 @@ describe('stock arriving with a purchase', () => {
       bills: 1,
       announced: 1,
       pending: 0,
-      superseded: 1,
+      retired: 1,
     });
     expect(await nets(business.id)).toEqual({
       INVENTORY: 18_000_000,
@@ -6845,7 +6847,7 @@ describe('stock arriving with a purchase', () => {
       'I bought 10 cartons for 0 from Emeka',
     );
     expect(stubSender.lastText).toContain('I read the stock as costing ₦0');
-    expect(await purchaseFootprint(business.id)).toMatchObject({ pending: 0, superseded: 1 });
+    expect(await purchaseFootprint(business.id)).toMatchObject({ pending: 0, retired: 1 });
 
     await say(
       'wamid.G61-zero-resend',
@@ -6864,7 +6866,7 @@ describe('stock arriving with a purchase', () => {
       bills: 0,
       announced: 1,
       pending: 0,
-      superseded: 1,
+      retired: 1,
     });
   });
 
@@ -6916,6 +6918,41 @@ describe('stock arriving with a purchase', () => {
       )),
     ];
     expect(counts).toEqual({ invoices: 0, purchases: 0, pending: 1 });
+  });
+
+  it('G-61: a question the merchant cancels with "no" is never asked again by a later yes', async () => {
+    const business = await seedMerchant('+2348031234567');
+    /* The arithmetic question (paid more than it cost) keeps its old
+     * behaviour: "no" cancels it and a later yes has nothing to confirm. */
+    await say(
+      'wamid.G61-over',
+      cartons({ reportedPayment: 200_000, paymentMethod: 'cash' }),
+      'I bought 10 cartons for 180k from Emeka, paid 200k cash',
+    );
+    expect(stubSender.lastText).toContain('which is ₦20,000 more');
+    await plain('wamid.G61-over-no', 'no');
+    await plain('wamid.G61-over-yes', 'yes');
+    expect(stubSender.lastText).toContain('There is nothing waiting for a yes');
+
+    /* The funding question too: "no" closes it for good. */
+    await say(
+      'wamid.G61-no-pos',
+      cartons({ reportedPayment: 180_000, paymentMethod: 'pos' }),
+      'I bought 10 cartons for 180k from Emeka, paid by POS',
+    );
+    expect(stubSender.lastText).toContain(
+      'did it come from your bank account or from physical cash?',
+    );
+    await plain('wamid.G61-no-pos-no', 'no');
+    expect(stubSender.lastText).toContain('Cancelled');
+    await plain('wamid.G61-no-pos-yes', 'yes');
+    expect(stubSender.lastText).toContain('There is nothing waiting for a yes');
+    expect(await purchaseFootprint(business.id)).toMatchObject({
+      purchases: 0,
+      postings: 0,
+      pending: 0,
+      retired: 0,
+    });
   });
 
   it('G-61: a POS payer is asked where the money came from, and the answer posts to it', async () => {

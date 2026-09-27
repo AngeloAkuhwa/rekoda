@@ -930,7 +930,10 @@ async function deterministicReply(
   if (intent.kind === 'deny' || intent.kind === 'cancel') {
     // A refusal after a preview discards the draft rather than leaving it to
     // be confirmed by an accidental "yes" ten minutes later.
-    const dropped = await conversationsRepo.supersedePendingDrafts(tx, businessId);
+    /* A retired purchase question is closed by a "no" too (G-61). */
+    const dropped =
+      (await conversationsRepo.supersedePendingDrafts(tx, businessId)) +
+      (await conversationsRepo.closeRetiredDrafts(tx, businessId));
     return dropped > 0
       ? replies.cancelled()
       : intent.kind === 'cancel'
@@ -1362,7 +1365,9 @@ async function confirmPendingDraft(
    * nothing is claimed.
    */
   const latest = await conversationsRepo.latestDraft(tx, businessId);
-  if (latest?.state === 'superseded') {
+  /* `abandoned` is only ever a retired purchase question; a draft the
+   * merchant cancelled is `superseded` and is never asked again. */
+  if (latest?.state === 'abandoned') {
     const asked = latest.command as { intent?: string } & Record<string, unknown>;
     if (asked.intent === 'RecordPurchase') {
       const gate = gatePurchase(asked as never);
@@ -2411,7 +2416,7 @@ async function interpretedReply(
    * so only the replacement can ever be confirmed: a second "yes" finds
    * nothing to resurrect, and nothing can record the purchase twice. */
   if (answered.retireDraft) {
-    await conversationsRepo.supersedeDraft(tx, businessId, draft.id);
+    await conversationsRepo.retireDraft(tx, businessId, draft.id);
   }
 
   /* Appendix D: a preview that shows stock DISAPPEARING opens the

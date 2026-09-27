@@ -514,7 +514,7 @@ export async function supersedePendingDrafts(tx: TenantDb, businessId: string): 
 /**
  * The newest draft in ANY state, by the database ordinal (G-61).
  *
- * A retired clarification is superseded, so `pendingDraft` skips it; this
+ * A retired clarification is `abandoned`, so `pendingDraft` skips it; this
  * is how a "yes" sent straight after the question can tell that the thing
  * the merchant is looking at is that question, not some older preview.
  */
@@ -534,20 +534,22 @@ export async function latestDraft(
 /**
  * Retire ONE pending draft, keeping it on the record (G-61).
  *
- * A purchase that could only be answered with a funding-source question is
- * stored for the audit trail but must never be confirmable: the merchant
- * answers it by sending the purchase again, and a later "yes" that claimed
- * the old draft would ask again and invite the same purchase twice. Only
- * this draft, and only while pending; every other draft is left alone.
+ * A purchase that could only be answered with a question the merchant
+ * answers by sending the purchase AGAIN (the funding source, a ₦0 amount)
+ * is stored for the audit trail but must never be confirmable: a later
+ * "yes" that claimed it would ask again and invite the same purchase twice.
+ * `abandoned`, not `superseded`: a retired question is still the last
+ * thing the merchant was asked, which a cancelled draft is not. Only this
+ * draft, and only while pending; every other draft is left alone.
  */
-export async function supersedeDraft(
+export async function retireDraft(
   tx: TenantDb,
   businessId: string,
   draftId: string,
 ): Promise<boolean> {
   const updated = await tx
     .update(commandDrafts)
-    .set({ state: 'superseded', updatedAt: new Date() })
+    .set({ state: 'abandoned', updatedAt: new Date() })
     .where(
       and(
         eq(commandDrafts.businessId, businessId),
@@ -557,6 +559,19 @@ export async function supersedeDraft(
     )
     .returning({ id: commandDrafts.id });
   return updated.length === 1;
+}
+
+/**
+ * A "no" closes a retired question too (G-61): it becomes an ordinary
+ * cancelled draft, so a later "yes" does not ask it again.
+ */
+export async function closeRetiredDrafts(tx: TenantDb, businessId: string): Promise<number> {
+  const updated = await tx
+    .update(commandDrafts)
+    .set({ state: 'superseded', updatedAt: new Date() })
+    .where(and(eq(commandDrafts.businessId, businessId), eq(commandDrafts.state, 'abandoned')))
+    .returning({ id: commandDrafts.id });
+  return updated.length;
 }
 
 /**
