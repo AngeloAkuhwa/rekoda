@@ -13,7 +13,7 @@
 | **Current date**            | 27 September 2026                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | **Current `main` SHA**      | `ce4755a` (27 Sep 2026, "fix: give public API sales unique claim identities (#254)", G-77); before it `ea7c7db` (#253, G-49), `b9c9562` (#252, G-48), `e02925d` (#251), `a61e08d` (#250), `0a99293` (#249), `33ddb33` (#245, G-75), `3cab9dd` (#244, G-74), `1bbe1f1` (#243, G-72), `48ba9d5` (#242, G-71), `c508709` (#241, G-01), `b81ef90` (#240, G-08), `7b9fd8f` (#236), `2dce181` (#239), `e993885` (#235) and the G-06 merge `8f07a6d` (#238)                                                                                                                                                              |
 | **Open branches**           | the G-61 PR (`fix/g61-purchase-payment-method`, purchase funding account). #254 (G-77) MERGED as `ce4755a` on 27 Sep 2026; #253 (G-49) MERGED as `ea7c7db` on 26 Sep 2026; #252 (G-48) MERGED as `b9c9562` on 26 Sep 2026; #245 (G-75) MERGED as `33ddb33`; #244 (G-74) MERGED as `3cab9dd` on 13 Sep 2026; #243 (G-72) MERGED as `1bbe1f1` on 13 Sep 2026; #242 (G-71) MERGED as `48ba9d5` on 13 Sep 2026; #241 (G-01) MERGED as `c508709` on 12 Sep 2026; #240 (G-08 template half) as `b81ef90`; dependency housekeeping is closed; #225, #226 and #227 (NestJS 12) closed as deferred post-launch work (G-70) |
-| **Product version / state** | 0.1.0. Build plan complete (138 rows, PR-001…PR-132; PR-006–009 and PR-115 gated); 153 migrations; deployed to staging (automatic after CI on main since #249); never to production (the production stack boots on a clean CI runner since G-01); no live provider has been exercised                                                                                                                                                                                                                                                                                                                             |
+| **Product version / state** | 0.1.0. Build plan complete (138 rows, PR-001…PR-132; PR-006–009 and PR-115 gated); 153 migrations; deployed to staging (automatic after CI on main since #249); never to production (the production stack boots on a clean CI runner since G-01); the Meta WhatsApp transport has been live-exercised on staging (real webhook ingress, outbound text and media); production Meta App Review and templates remain open; payment-provider live verification remains pending                                                                                                                                        |
 | **Launch verdict**          | **NOT READY** (`REKODA_LAUNCH_READINESS.md` §1)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | **Engineering model**       | Simple: Angelo assigns, Claude reads `CLAUDE.md` and the canonical docs, implements with tests, normal CI, Angelo reviews and merges. The multi-agent control plane (PR #233) was removed by PR #237 (merged 11 Sep 2026) and PR #234 closed unmerged                                                                                                                                                                                                                                                                                                                                                             |
 
@@ -22,10 +22,15 @@
 - G-48: STAGING ACCEPTED (#252, merged as `b9c9562`, deployed to staging).
 - J2 real-handset acceptance: PASS.
 
-**Builds 2 and 3 (G-49, G-77) accepted (27 Sep 2026, reported by the owner):**
+**Build 3 (G-77) accepted (27 Sep 2026, reported by the owner):**
 
-- G-49: STAGING ACCEPTED (#253, merged as `ea7c7db`).
 - G-77: STAGING ACCEPTED (#254, merged as `ce4755a`).
+
+**Build 2 (G-49): CODE COMPLETE and MERGED (#253 as `ea7c7db`); staging
+acceptance pending.** Still to run on staging: a real WhatsApp merchant
+overpayment (received/applied/credit preview, confirmed write, receipt,
+customer credit, `overpaid` reconciliation), the dashboard two-step, and a
+stale-balance refusal with zero financial writes.
 
 **In review (27 Sep 2026, Build 4, G-61; CODE COMPLETE, staging acceptance
 pending):** branch `fix/g61-purchase-payment-method` off `main` at

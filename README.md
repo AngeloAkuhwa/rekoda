@@ -15,8 +15,11 @@ run their business in WhatsApp and cannot produce books when a bank, a buyer
 or the tax authority asks. Launch is Nigeria and naira only.
 
 **Maturity.** Pre-launch. The build plan is complete and the test estate is
-large, but Rekoda has never been deployed and no live provider has been
-exercised. The launch verdict and every open gap are in
+large. Rekoda runs on staging, where the Meta WhatsApp transport has been
+live-exercised (real webhook ingress, outbound text and media); it has never
+been deployed to production, production Meta App Review and templates remain
+open, and payment-provider live verification is still pending. The launch
+verdict and every open gap are in
 [docs/REKODA_LAUNCH_READINESS.md](docs/REKODA_LAUNCH_READINESS.md).
 
 ## Product surfaces
