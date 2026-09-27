@@ -203,11 +203,12 @@ export type SpendGate =
       gate: 'CG1';
       question: string;
       /**
-       * Set when the question is the G-61 funding-source clarification. The
-       * merchant answers it by sending the purchase again, so the draft that
-       * raised it must never stay confirmable beside the replacement.
+       * Set when the merchant answers the question by sending the purchase
+       * AGAIN (G-61): the funding-source clarification, and the ₦0 amount.
+       * The draft that raised it must never stay confirmable beside the
+       * replacement. Unset for a question answered some other way.
        */
-      reason?: 'funding_source';
+      reason?: 'funding_source' | 'zero_amount';
     }
   | {
       gate: 'CG2';
@@ -251,6 +252,7 @@ export function gatePurchase(purchase: PurchaseLike): SpendGate {
   if (amountK === 0) {
     return {
       gate: 'CG1',
+      reason: 'zero_amount',
       question:
         'I read the stock as costing ₦0, which I cannot record. What did it cost?' +
         '\n\nSend it again with the amount, for example: ' +

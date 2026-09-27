@@ -331,7 +331,7 @@ describe('money out — a stock purchase states what is owed', () => {
     const zero = gatePurchase({ description: 'stock', amount: 0, reportedPayment: 0 });
     if (zero.gate !== 'CG1') throw new Error('a ₦0 purchase must be asked about');
     expect(zero.question).toContain('I read the stock as costing ₦0');
-    expect(zero.reason).toBeUndefined();
+    expect(zero.reason).toBe('zero_amount');
   });
 
   it('marks the funding-source question as such, and only that one', () => {

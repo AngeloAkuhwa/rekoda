@@ -6706,10 +6706,12 @@ describe('stock arriving with a purchase', () => {
     );
     expect(stubSender.lastText).not.toContain('Reply *yes*');
 
-    /* The draft that asked is retired, never confirmable: a yes finds
-     * nothing to say yes to, and writes nothing. */
+    /* The draft that asked is retired, never confirmable: a yes straight
+     * after it gets the question again, and writes nothing. */
     await plain('wamid.G61-ask-yes', 'yes');
-    expect(stubSender.lastText).toContain('There is nothing waiting for a yes');
+    expect(stubSender.lastText).toContain(
+      'You paid ₦100,000 for this stock. Was that cash or transfer?',
+    );
 
     /* "Bought 20 bags for 400k" reads as paid in full, from an account nobody
      * named: also a question, whatever the model thought of the method. */
@@ -6833,6 +6835,87 @@ describe('stock arriving with a purchase', () => {
       BANK: -10_000_000,
       ACCOUNTS_PAYABLE: -8_000_000,
     });
+  });
+
+  it('G-61: a ₦0 purchase, then the resend with an amount, then yes twice: exactly once', async () => {
+    const business = await seedMerchant('+2348031234567');
+    await say(
+      'wamid.G61-zero',
+      cartons({ amount: 0, reportedPayment: 0, paymentMethod: null }),
+      'I bought 10 cartons for 0 from Emeka',
+    );
+    expect(stubSender.lastText).toContain('I read the stock as costing ₦0');
+    expect(await purchaseFootprint(business.id)).toMatchObject({ pending: 0, superseded: 1 });
+
+    await say(
+      'wamid.G61-zero-resend',
+      cartons({ reportedPayment: 180_000, paymentMethod: 'transfer' }),
+      'I bought 10 cartons for 180k from Emeka, paid transfer',
+    );
+    await plain('wamid.G61-zero-yes1', 'yes');
+    await plain('wamid.G61-zero-yes2', 'yes');
+    /* The retired ₦0 question is never answered again as if still open. */
+    expect(stubSender.lastText).toContain('There is nothing waiting for a yes');
+    expect(stubSender.lastText).not.toContain('costing ₦0');
+    expect(await purchaseFootprint(business.id)).toEqual({
+      purchases: 1,
+      postings: 1,
+      arrivals: 1,
+      bills: 0,
+      announced: 1,
+      pending: 0,
+      superseded: 1,
+    });
+  });
+
+  it('G-61: a yes straight after the question never confirms an OLDER preview behind it', async () => {
+    const business = await seedMerchant('+2348031234567');
+    /* A sale previewed and left waiting. */
+    await say(
+      'wamid.G61-older-sale',
+      {
+        intent: 'RecordSale',
+        customer: { kind: 'none' },
+        items: [{ name: 'wig', quantity: 1, unitPrice: 10_000 }],
+        statedTotal: 10_000,
+        reportedPayment: 0,
+        paymentMethod: 'cash',
+        discount: null,
+        deliveryFee: null,
+        dueDescription: null,
+      },
+      'sold a wig for 10k',
+    );
+    expect(stubSender.lastText).toContain('Reply *yes*');
+
+    /* Then a purchase that can only be asked about. */
+    await say(
+      'wamid.G61-older-pos',
+      cartons({ reportedPayment: 180_000, paymentMethod: 'pos' }),
+      'I bought 10 cartons for 180k from Emeka, paid by POS',
+    );
+    expect(stubSender.lastText).toContain(
+      'did it come from your bank account or from physical cash?',
+    );
+
+    /* "yes", aimed at that question: it is asked again, the sale is not
+     * confirmed behind the merchant's back, and nothing is written. */
+    await plain('wamid.G61-older-yes', 'yes');
+    expect(stubSender.lastText).toContain(
+      'did it come from your bank account or from physical cash?',
+    );
+    const [counts] = [
+      ...(await withBusiness(db, business.id, (tx) =>
+        tx.execute<Record<string, number>>(sql`
+          SELECT
+            (SELECT count(*)::int FROM invoices WHERE business_id = ${business.id}::uuid) AS invoices,
+            (SELECT count(*)::int FROM expenses WHERE business_id = ${business.id}::uuid) AS purchases,
+            (SELECT count(*)::int FROM command_drafts
+              WHERE business_id = ${business.id}::uuid AND state = 'pending') AS pending
+        `),
+      )),
+    ];
+    expect(counts).toEqual({ invoices: 0, purchases: 0, pending: 1 });
   });
 
   it('G-61: a POS payer is asked where the money came from, and the answer posts to it', async () => {

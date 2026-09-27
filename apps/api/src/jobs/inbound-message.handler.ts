@@ -1354,6 +1354,22 @@ async function confirmPendingDraft(
   businessId: string,
   retrying: boolean,
 ): Promise<Reply | null> {
+  /*
+   * G-61: the last thing the merchant was shown may be a purchase question
+   * answered by sending the purchase again, whose draft is retired. A "yes"
+   * straight after it is aimed at that question, never at some OLDER
+   * preview still pending behind it: the question is asked again and
+   * nothing is claimed.
+   */
+  const latest = await conversationsRepo.latestDraft(tx, businessId);
+  if (latest?.state === 'superseded') {
+    const asked = latest.command as { intent?: string } & Record<string, unknown>;
+    if (asked.intent === 'RecordPurchase') {
+      const gate = gatePurchase(asked as never);
+      if (gate.gate === 'CG1') return replies.arithmeticQuestion(gate.question);
+    }
+  }
+
   const draft = await conversationsRepo.pendingDraft(tx, businessId);
   if (!draft) return replies.nothingToConfirm();
 
@@ -2603,9 +2619,9 @@ async function acknowledge(
 
   if (gate.gate === 'CG1') {
     const asked = plain(replies.arithmeticQuestion(gate.question));
-    return 'reason' in gate && gate.reason === 'funding_source'
-      ? { ...asked, retireDraft: true }
-      : asked;
+    /* Answered by sending the purchase again (funding source, ₦0): the
+     * asking draft is retired so only the replacement is confirmable. */
+    return 'reason' in gate && gate.reason !== undefined ? { ...asked, retireDraft: true } : asked;
   }
 
   /* A sale names a customer; an expense and a purchase do not. Only the first

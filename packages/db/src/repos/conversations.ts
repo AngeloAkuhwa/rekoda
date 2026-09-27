@@ -512,6 +512,26 @@ export async function supersedePendingDrafts(tx: TenantDb, businessId: string): 
 }
 
 /**
+ * The newest draft in ANY state, by the database ordinal (G-61).
+ *
+ * A retired clarification is superseded, so `pendingDraft` skips it; this
+ * is how a "yes" sent straight after the question can tell that the thing
+ * the merchant is looking at is that question, not some older preview.
+ */
+export async function latestDraft(
+  tx: TenantDb,
+  businessId: string,
+): Promise<{ id: string; state: string; command: unknown } | null> {
+  const rows = await tx
+    .select({ id: commandDrafts.id, state: commandDrafts.state, command: commandDrafts.command })
+    .from(commandDrafts)
+    .where(eq(commandDrafts.businessId, businessId))
+    .orderBy(desc(commandDrafts.insertionSeq))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+/**
  * Retire ONE pending draft, keeping it on the record (G-61).
  *
  * A purchase that could only be answered with a funding-source question is
