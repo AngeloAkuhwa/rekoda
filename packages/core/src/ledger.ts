@@ -130,6 +130,23 @@ export class UnbalancedPostingError extends Error {
   }
 }
 
+/**
+ * Money left the business and nobody said from where (G-61).
+ *
+ * Cash on Hand and Bank are different accounts on the balance sheet, and a
+ * posting that picks one by default puts a real movement on the wrong line.
+ * A builder that needs to know refuses instead: the caller asks the merchant.
+ */
+export class PaymentMethodRequiredError extends Error {
+  override readonly name = 'PaymentMethodRequiredError';
+  constructor(memo: string, paidK: Kobo) {
+    super(
+      `Posting "${memo}" pays out ${paidK} kobo with no method: say cash or transfer. ` +
+        'This is a bug in the calling code: a paid amount needs its account.',
+    );
+  }
+}
+
 /** The invariant. Called by every builder and again by the persistence layer. */
 export function assertBalanced(posting: Posting): void {
   let debits = 0;
@@ -360,18 +377,30 @@ export function postExpense(args: {
   return posting;
 }
 
-/** Stock purchase from a supplier, possibly partly on credit. */
+/**
+ * Stock purchase from a supplier, possibly partly on credit.
+ *
+ * The method funds only what was PAID: the unpaid rest is ACCOUNTS_PAYABLE
+ * whatever the method. A paid amount with no method is refused (G-61): the
+ * builder used to credit Bank by default while its only persisting caller
+ * passed Cash, and either default puts a real payment on the wrong account.
+ */
 export function postPurchase(args: {
   memo: string;
   amountK: Kobo;
   paidK?: Kobo;
-  method?: PaymentMethod;
+  method?: PaymentMethod | null;
 }): Posting {
   const paidK = args.paidK ?? args.amountK;
   const owedK = args.amountK - paidK;
   if (owedK < 0) throw new UnbalancedPostingError(args.memo, paidK, args.amountK);
   const lines: LedgerLine[] = [line('INVENTORY', args.amountK, 0)];
-  if (paidK > 0) lines.push(line(cashOrBank(args.method ?? 'transfer'), 0, paidK));
+  if (paidK > 0) {
+    if (args.method !== 'cash' && args.method !== 'transfer') {
+      throw new PaymentMethodRequiredError(args.memo, paidK);
+    }
+    lines.push(line(cashOrBank(args.method), 0, paidK));
+  }
   if (owedK > 0) lines.push(line('ACCOUNTS_PAYABLE', 0, owedK));
   const posting = { memo: args.memo, lines };
   assertBalanced(posting);

@@ -185,6 +185,12 @@ export interface PurchaseLike {
   /** Stock that arrived with the purchase, when the merchant counted it. */
   readonly productMention?: string | null;
   readonly quantity?: number | null;
+  /**
+   * How the PAID part left the business, as the merchant said it (G-61).
+   * Only cash and transfer name an account Rekoda posts to; anything else,
+   * including nothing, is not known, and a paid amount then needs asking.
+   */
+  readonly paymentMethod?: string | null | undefined;
 }
 
 /**
@@ -194,7 +200,14 @@ export interface PurchaseLike {
  */
 export type SpendGate =
   | { gate: 'CG1'; question: string }
-  | { gate: 'CG2'; preview: string; amountK: number; paidK: number };
+  | {
+      gate: 'CG2';
+      preview: string;
+      amountK: number;
+      paidK: number;
+      /** The account the paid part leaves. Null only when nothing was paid. */
+      method: 'cash' | 'transfer' | null;
+    };
 
 const toKobo = (naira: number): number => Math.round(naira * 100);
 
@@ -210,9 +223,10 @@ export function gateExpense(expense: ExpenseLike): SpendGate {
   lines.push(`Expense: ${expense.description}`);
   if (expense.category) lines.push(`Category: ${expense.category}`);
   lines.push(`*Amount: ${formatKobo(amountK)}*`);
-  lines.push(`Paid by ${expense.paymentMethod === 'transfer' ? 'transfer' : 'cash'}`);
+  const method = expense.paymentMethod === 'transfer' ? 'transfer' : 'cash';
+  lines.push(`Paid by ${method}`);
   lines.push('', 'Reply *yes* to save it, or tell me what to change.');
-  return { gate: 'CG2', preview: lines.join('\n'), amountK, paidK: amountK };
+  return { gate: 'CG2', preview: lines.join('\n'), amountK, paidK: amountK, method };
 }
 
 /**
@@ -234,6 +248,46 @@ export function gatePurchase(purchase: PurchaseLike): SpendGate {
     };
   }
 
+  /*
+   * Where the paid part came from (G-61). Cash on Hand and Bank are different
+   * lines on the balance sheet, so a payment whose account nobody named is a
+   * question, never a default. With nothing paid there is no account to name,
+   * and none is asked for or shown.
+   */
+  const method =
+    purchase.paymentMethod === 'cash' || purchase.paymentMethod === 'transfer'
+      ? purchase.paymentMethod
+      : null;
+  if (paidK > 0 && method === null) {
+    /*
+     * POS or card names the CHANNEL, not the account the money left, and the
+     * books need the account (owner ruling OWN-17): money out of the
+     * bank is Bank, physical cash is Cash. Asking "cash or transfer?" again
+     * of somebody who just said POS would loop, so they are asked where the
+     * money came from, and shown how to say it.
+     */
+    if (purchase.paymentMethod === 'pos') {
+      return {
+        gate: 'CG1',
+        question:
+          'I know you paid by POS. I just need the source of the money for your books: ' +
+          'did it come from your bank account or from physical cash?' +
+          '\n\nSend it again with where the money came from, for example: ' +
+          '"bought 10 cartons from Emeka for 180k, paid by POS from my bank account".',
+      };
+    }
+    return {
+      gate: 'CG1',
+      question:
+        (purchase.reportedPayment == null
+          ? `For the ${formatKobo(amountK)} stock, did you pay it all by cash or by transfer? ` +
+            'If you have not paid it all yet, say how much you paid.'
+          : `You paid ${formatKobo(paidK)} for this stock. Was that cash or transfer?`) +
+        '\n\nSend it again with how you paid, for example: ' +
+        '"bought 10 cartons from Emeka for 180k, paid transfer".',
+    };
+  }
+
   const owedK = amountK - paidK;
   const lines: string[] = ['Please check this before I save it:', ''];
   lines.push(`Stock: ${purchase.description}`);
@@ -245,13 +299,20 @@ export function gatePurchase(purchase: PurchaseLike): SpendGate {
   if (arriving) lines.push(`Adding to stock: ${arriving.quantity} ${arriving.productMention}`);
   lines.push(`*Amount: ${formatKobo(amountK)}*`);
   if (owedK > 0) {
-    lines.push(`Paid: ${paidK > 0 ? formatKobo(paidK) : 'nothing yet'}`);
+    lines.push(`Paid: ${paidK > 0 ? `${formatKobo(paidK)} by ${method}` : 'nothing yet'}`);
     lines.push(`Owing to supplier: ${formatKobo(owedK)}`);
   } else {
-    lines.push('Paid in full');
+    lines.push(`Paid in full by ${method}`);
   }
   lines.push('', 'Reply *yes* to save it, or tell me what to change.');
-  return { gate: 'CG2', preview: lines.join('\n'), amountK, paidK };
+  /* Nothing paid: no account is funded, whatever the model reported. */
+  return {
+    gate: 'CG2',
+    preview: lines.join('\n'),
+    amountK,
+    paidK,
+    method: paidK > 0 ? method : null,
+  };
 }
 
 /**

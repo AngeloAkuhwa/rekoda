@@ -119,7 +119,8 @@ class OracleTransport implements ModelTransport {
           supplierMention: null,
           description: 'stock',
           amount: checks.amount ?? 107_500,
-          reportedPayment: null,
+          reportedPayment: checks.reportedPayment ?? null,
+          ...(checks.paymentMethod ? { paymentMethod: checks.paymentMethod } : {}),
           productMention: null,
           quantity: null,
         });

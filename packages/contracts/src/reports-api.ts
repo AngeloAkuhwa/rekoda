@@ -512,7 +512,8 @@ export const reportsExpensesResponse = z.object({
       /** What the merchant called it. Null when they did not say. */
       category: z.string().nullable(),
       amountK: kobo,
-      /** cash | transfer */
+      /** cash | transfer, or credit for a purchase bought wholly on credit
+       * (G-61): how it was bought, not whether it has since been paid. */
       method: z.string(),
       /** expense | purchase, decided by what the posting debited. */
       kind: z.union([z.literal('expense'), z.literal('purchase')]),
@@ -710,11 +711,21 @@ export const createPurchaseOrderResponse = z.discriminatedUnion('outcome', [
  * chat purchase takes (stock in, cash out for what was paid, the rest owed to
  * the supplier) and every line becomes counted stock at its line cost.
  */
-export const receivePurchaseOrderRequest = z.object({
-  poNumber: z.string().trim().min(1),
-  /** What was handed over on delivery. Zero is a delivery wholly on credit. */
-  paidK: z.number().int().finite().nonnegative(),
-});
+export const receivePurchaseOrderRequest = z
+  .object({
+    poNumber: z.string().trim().min(1),
+    /** What was handed over on delivery. Zero is a delivery wholly on credit. */
+    paidK: z.number().int().finite().nonnegative(),
+    /**
+     * How it was handed over (G-61), required when anything was: cash and
+     * transfer leave different accounts, and nothing below this picks one.
+     */
+    method: z.enum(['cash', 'transfer']).optional(),
+  })
+  .refine((v) => v.paidK === 0 || v.method !== undefined, {
+    message: 'say how it was paid: cash or transfer',
+    path: ['method'],
+  });
 
 export const receivePurchaseOrderResponse = z.discriminatedUnion('outcome', [
   z.object({

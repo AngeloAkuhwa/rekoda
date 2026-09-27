@@ -62,7 +62,7 @@ const postDated = (businessId: string, day: string, ref = 'p1') =>
     issueRepo.writePosting(
       tx,
       businessId,
-      postPurchase({ memo: 'Restocked the shop', amountK: 5_000_000 }),
+      postPurchase({ memo: 'Restocked the shop', amountK: 5_000_000, method: 'transfer' }),
       'purchase',
       ref,
       { occurredAt: lagosNoon(day) },

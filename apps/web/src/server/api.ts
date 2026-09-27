@@ -1348,11 +1348,13 @@ export async function receivePurchaseOrder(
   sessionToken: string,
   poNumber: string,
   paidK: number,
+  /** How the paid part was handed over; required by the API when paidK > 0. */
+  method: 'cash' | 'transfer' | null,
 ): Promise<ReceivePurchaseOrderResponse | null> {
   const { status, json } = await call({
     method: 'POST',
     path: '/v1/reports/purchase-orders/receive',
-    body: { poNumber, paidK },
+    body: { poNumber, paidK, ...(method ? { method } : {}) },
     headers: { authorization: `Bearer ${sessionToken}` },
     expect: [200, 400],
   });

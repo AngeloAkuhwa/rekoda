@@ -59,6 +59,9 @@ export interface RecordPurchaseCmdInput {
   amountK: number;
   /** What the merchant says they have paid so far. */
   paidK: number;
+  /** The account the paid part left, stated by the merchant (G-61). Null
+   * only when nothing was paid; the repository refuses it otherwise. */
+  method: 'cash' | 'transfer' | null;
   sourceType: string;
   sourceId: string;
   /** The vaulted supplier reference (migration 0050), never a name. */
@@ -88,6 +91,7 @@ export async function recordPurchaseWork(
     description: input.description,
     amountK: input.amountK,
     paidK: input.paidK,
+    method: input.method,
     sourceType: input.sourceType,
     sourceId: input.sourceId,
     supplierId: input.supplierId ?? null,

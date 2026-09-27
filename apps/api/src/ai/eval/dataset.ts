@@ -48,6 +48,8 @@ export type EvalExpectation =
         unitPrice?: number;
         customerToken?: string;
         reportedPayment?: number;
+        /** How a purchase was paid, only when the merchant said (G-61). */
+        paymentMethod?: string;
       };
     }
   /** The honest question: Unclear, never a guessed command. */
@@ -78,6 +80,9 @@ const expense = (amount: number): EvalExpectation => ({
   checks: { amount },
 });
 const ask: EvalExpectation = { kind: 'clarification' };
+const purchase = (
+  checks: NonNullable<Extract<EvalExpectation, { kind: 'command' }>['checks']>,
+): EvalExpectation => ({ kind: 'command', intent: 'RecordPurchase', checks });
 
 export const EVAL_CASES: readonly EvalCase[] = [
   /* ── formal English ─────────────────────────────────────────────────── */
@@ -269,6 +274,42 @@ export const EVAL_CASES: readonly EvalCase[] = [
     input:
       'INVOICE\nSUBTOTAL 100,000\nVAT (7.5%) 7,500\nTOTAL 107,500\nsupplier invoice for shop stock',
     expect: { kind: 'command', intent: 'RecordPurchase', checks: {} },
+  },
+  /* G-61: the method a purchase was paid by, only as the merchant said it. */
+  {
+    id: 'purchase-transfer',
+    category: 'formal_english',
+    source: 'typed',
+    input: 'I bought 10 cartons from Emeka for 180,000 naira, paid by transfer',
+    expect: purchase({ amount: 180_000, paymentMethod: 'transfer' }),
+  },
+  {
+    id: 'purchase-cash',
+    category: 'pidgin',
+    source: 'typed',
+    input: 'bought stock 50k cash',
+    expect: purchase({ amount: 50_000, paymentMethod: 'cash' }),
+  },
+  {
+    id: 'purchase-part-transfer',
+    category: 'formal_english',
+    source: 'typed',
+    input: 'Bought 20 bags for 400k, paid 150k transfer, balance later',
+    expect: purchase({ amount: 400_000, reportedPayment: 150_000, paymentMethod: 'transfer' }),
+  },
+  {
+    id: 'purchase-pos-bank',
+    category: 'formal_english',
+    source: 'typed',
+    input: 'Bought 10 cartons for 180k from Emeka, paid by POS from my bank account',
+    expect: purchase({ amount: 180_000, paymentMethod: 'transfer' }),
+  },
+  {
+    id: 'purchase-credit',
+    category: 'formal_english',
+    source: 'typed',
+    input: 'Bought 20 bags on credit for 400k',
+    expect: purchase({ amount: 400_000, reportedPayment: 0 }),
   },
 
   /* ── corrections and reversals ──────────────────────────────────────── */

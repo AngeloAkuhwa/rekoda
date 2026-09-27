@@ -1868,6 +1868,8 @@ async function confirmPurchase(
     description: String(command['description'] ?? ''),
     amountK: gate.amountK,
     paidK: gate.paidK,
+    /* The account the merchant named, which the gate required (G-61). */
+    method: gate.method,
     sourceType: 'chat',
     sourceId: draftId,
     supplierId,

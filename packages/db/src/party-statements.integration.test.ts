@@ -179,6 +179,7 @@ describe('the supplier statement', () => {
         description: '10 bales of ankara',
         amountK: 20_000_000,
         paidK: 5_000_000,
+        method: 'cash',
         sourceType: 'chat',
         sourceId: 'purchase-1',
         supplierId,

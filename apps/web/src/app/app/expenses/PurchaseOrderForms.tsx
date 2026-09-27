@@ -151,6 +151,16 @@ export function ReceivePurchaseOrderForm({ orders }: { orders: OpenPurchaseOrder
           placeholder="0"
         />
       </Field>
+      {/* No default: money handed over left Cash or Bank, and a preset
+          choice is a guess the merchant never made (G-61). Only asked when
+          something was paid. */}
+      <Field id="receiveMethod" label="How you paid it" hint="Only needed if you paid something.">
+        <select id="receiveMethod" name="method" className="rk-input" defaultValue="">
+          <option value="">Choose one</option>
+          <option value="cash">Cash</option>
+          <option value="transfer">Bank transfer</option>
+        </select>
+      </Field>
       {state.done ? (
         <p className="rk-fineprint" role="status">
           {state.done}

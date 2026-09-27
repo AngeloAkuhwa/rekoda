@@ -2924,6 +2924,7 @@ describe("the plan's own example, end to end", () => {
       description: 'ankara fabric',
       amount: 50_000,
       reportedPayment: 20_000,
+      paymentMethod: 'cash',
       productMention: null,
       quantity: null,
     });
@@ -2974,6 +2975,7 @@ describe("the plan's own example, end to end", () => {
       description: 'more ankara',
       amount: 10_000,
       reportedPayment: 10_000,
+      paymentMethod: 'cash',
       productMention: null,
       quantity: null,
     });
@@ -6581,6 +6583,7 @@ describe('stock arriving with a purchase', () => {
     description: '10 crates of ankara',
     amount: 50_000,
     reportedPayment: 50_000,
+    paymentMethod: 'cash',
     productMention: 'crates of ankara',
     quantity: 10,
     ...over,
@@ -6614,6 +6617,145 @@ describe('stock arriving with a purchase', () => {
 
   const onHand = (businessId: string, name: string) =>
     withBusiness(db, businessId, (tx) => stockRepo.productByName(tx, businessId, name));
+
+  /* G-61: the paid part leaves the account the merchant named, the preview
+   * says which before the yes, and an account nobody named is asked about. */
+  const cartons = (over: Record<string, unknown>) =>
+    buy({
+      supplierMention: 'Emeka',
+      description: '10 cartons',
+      amount: 180_000,
+      productMention: 'cartons',
+      quantity: 10,
+      ...over,
+    });
+
+  async function nets(businessId: string): Promise<Record<string, number>> {
+    const out: Record<string, number> = {};
+    const entries = await withBusiness(db, businessId, (tx) =>
+      issueRepo.ledgerEntriesFor(tx, businessId),
+    );
+    for (const e of entries) out[e.account] = (out[e.account] ?? 0) + e.debitK - e.creditK;
+    return out;
+  }
+
+  const purchaseRows = (businessId: string) =>
+    withBusiness(db, businessId, (tx) => spendRepo.expensesFor(tx, businessId));
+
+  for (const c of [
+    {
+      name: 'paid in full by transfer',
+      over: { reportedPayment: 180_000, paymentMethod: 'transfer' },
+      text: 'I bought 10 cartons for 180k from Emeka, paid transfer',
+      preview: ['Paid in full by transfer'],
+      ledger: { INVENTORY: 18_000_000, BANK: -18_000_000 },
+      register: 'transfer',
+    },
+    {
+      name: 'paid in full by cash',
+      over: { reportedPayment: 180_000, paymentMethod: 'cash' },
+      text: 'I bought 10 cartons for 180k from Emeka, paid cash',
+      preview: ['Paid in full by cash'],
+      ledger: { INVENTORY: 18_000_000, CASH: -18_000_000 },
+      register: 'cash',
+    },
+    {
+      name: 'wholly on credit',
+      over: { reportedPayment: 0, paymentMethod: null },
+      text: 'I bought 10 cartons for 180k from Emeka on credit',
+      preview: ['Paid: nothing yet', 'Owing to supplier: ₦180,000'],
+      ledger: { INVENTORY: 18_000_000, ACCOUNTS_PAYABLE: -18_000_000 },
+      register: 'credit',
+    },
+    {
+      name: 'part paid by transfer',
+      over: { reportedPayment: 100_000, paymentMethod: 'transfer' },
+      text: 'I bought 10 cartons for 180k from Emeka, paid 100k transfer',
+      preview: ['Paid: ₦100,000 by transfer', 'Owing to supplier: ₦80,000'],
+      ledger: { INVENTORY: 18_000_000, BANK: -10_000_000, ACCOUNTS_PAYABLE: -8_000_000 },
+      register: 'transfer',
+    },
+  ] as const) {
+    it(`G-61: ${c.name}, the preview names the account and yes posts to it`, async () => {
+      const business = await seedMerchant('+2348031234567');
+      await say(`wamid.G61-${c.name}`, cartons(c.over), c.text);
+      for (const line of c.preview) expect(stubSender.lastText).toContain(line);
+      if (c.register === 'credit') expect(stubSender.lastText).not.toMatch(/by cash|by transfer/);
+      /* Nothing is written before the yes. */
+      expect(await purchaseRows(business.id)).toHaveLength(0);
+
+      await plain(`wamid.G61-${c.name}-yes`, 'yes');
+      expect(await nets(business.id)).toEqual(c.ledger);
+      const rows = await purchaseRows(business.id);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ amountK: 18_000_000, method: c.register });
+      expect((await onHand(business.id, 'cartons'))?.onHand).toBe(10);
+    });
+  }
+
+  it('G-61: money paid with no stated account is asked about, never guessed', async () => {
+    const business = await seedMerchant('+2348031234567');
+    /* Part paid, method not said. */
+    await say(
+      'wamid.G61-ask',
+      cartons({ reportedPayment: 100_000, paymentMethod: null }),
+      'I bought 10 cartons for 180k from Emeka, paid 100k',
+    );
+    expect(stubSender.lastText).toContain(
+      'You paid ₦100,000 for this stock. Was that cash or transfer?',
+    );
+    expect(stubSender.lastText).not.toContain('Reply *yes*');
+
+    /* A yes to it still writes nothing: the question stands. */
+    await plain('wamid.G61-ask-yes', 'yes');
+    expect(stubSender.lastText).toContain('Was that cash or transfer?');
+
+    /* "Bought 20 bags for 400k" reads as paid in full, from an account nobody
+     * named: also a question, whatever the model thought of the method. */
+    for (const paymentMethod of [null, 'unknown']) {
+      await say(
+        `wamid.G61-implied-${String(paymentMethod)}`,
+        buy({
+          description: '20 bags',
+          amount: 400_000,
+          reportedPayment: null,
+          paymentMethod,
+          productMention: 'bags',
+          quantity: 20,
+        }),
+        'Bought 20 bags for 400k from Chima',
+      );
+      expect(stubSender.lastText).toContain('did you pay it all by cash or by transfer?');
+    }
+
+    expect(await purchaseRows(business.id)).toHaveLength(0);
+    expect(await nets(business.id)).toEqual({});
+    expect(await onHand(business.id, 'cartons')).toBeNull();
+  });
+
+  it('G-61: a POS payer is asked where the money came from, and the answer posts to it', async () => {
+    const business = await seedMerchant('+2348031234567');
+    await say(
+      'wamid.G61-pos',
+      cartons({ reportedPayment: 180_000, paymentMethod: 'pos' }),
+      'I bought 10 cartons for 180k from Emeka, paid by POS',
+    );
+    expect(stubSender.lastText).toContain(
+      'I know you paid by POS. I just need the source of the money for your books',
+    );
+    expect(stubSender.lastText).not.toContain('Was that cash or transfer?');
+    expect(await purchaseRows(business.id)).toHaveLength(0);
+
+    /* Sent again with the source: "POS from my bank account" reads as transfer. */
+    await say(
+      'wamid.G61-pos-bank',
+      cartons({ reportedPayment: 180_000, paymentMethod: 'transfer' }),
+      'I bought 10 cartons for 180k from Emeka, paid by POS from my bank account',
+    );
+    expect(stubSender.lastText).toContain('Paid in full by transfer');
+    await plain('wamid.G61-pos-bank-yes', 'yes');
+    expect(await nets(business.id)).toEqual({ INVENTORY: 18_000_000, BANK: -18_000_000 });
+  });
 
   it('names the delivery in the preview and writes nothing yet', async () => {
     const business = await seedMerchant('+2348031234567');

@@ -535,8 +535,20 @@ async function receivePurchaseOrderActionUnguarded(
   if (paidNaira === null || paidNaira < 0) {
     return { error: 'Say what you paid in naira, or leave it empty for nothing yet.' };
   }
+  /* Money handed over left Cash or Bank, and the books need to know which
+   * (G-61). Nothing paid needs no answer; anything paid is never defaulted. */
+  const methodRaw = String(formData.get('method') ?? '');
+  const method = methodRaw === 'cash' || methodRaw === 'transfer' ? methodRaw : null;
+  if (paidNaira > 0 && method === null) {
+    return { error: 'Say how you paid it: cash or transfer.' };
+  }
 
-  const outcome = await receivePurchaseOrder(token, poNumber, toKobo(paidNaira));
+  const outcome = await receivePurchaseOrder(
+    token,
+    poNumber,
+    toKobo(paidNaira),
+    paidNaira > 0 ? method : null,
+  );
   if (!outcome) return { error: 'That did not go through. Nothing was recorded.' };
 
   if (outcome.outcome === 'not_found') return { error: 'No purchase order with that number.' };

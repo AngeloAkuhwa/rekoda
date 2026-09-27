@@ -15,6 +15,7 @@ import {
   postStockCount,
   postProviderPayment,
   postPurchase,
+  PaymentMethodRequiredError,
   postReceivablePayment,
   postSale,
   reversal,
@@ -154,12 +155,93 @@ describe('posting builders balance by construction', () => {
   it('expense and purchase support paid-now and on-credit splits', () => {
     const e = postExpense({ memo: 'diesel', amountK: 4_500_000, method: 'cash' });
     expect(e.lines).toContainEqual({ account: 'CASH', debitK: 0, creditK: 4_500_000 });
-    const pu = postPurchase({ memo: 'stock from Chima', amountK: 60_000_000, paidK: 40_000_000 });
+    const pu = postPurchase({
+      memo: 'stock from Chima',
+      amountK: 60_000_000,
+      paidK: 40_000_000,
+      method: 'transfer',
+    });
     expect(pu.lines).toContainEqual({
       account: 'ACCOUNTS_PAYABLE',
       debitK: 0,
       creditK: 20_000_000,
     });
+  });
+});
+
+/**
+ * G-61: the method funds only what was paid, the rest is payable, and a paid
+ * amount with no method is refused rather than defaulted to an account.
+ */
+describe('a stock purchase posts its paid part to the account it left (G-61)', () => {
+  const lines = (args: Parameters<typeof postPurchase>[0]) =>
+    postPurchase(args).lines.map((l) => [l.account, l.debitK, l.creditK]);
+
+  it('fully paid cash: DR Inventory / CR Cash', () => {
+    expect(lines({ memo: 's', amountK: 18_000_000, paidK: 18_000_000, method: 'cash' })).toEqual([
+      ['INVENTORY', 18_000_000, 0],
+      ['CASH', 0, 18_000_000],
+    ]);
+  });
+
+  it('fully paid transfer: DR Inventory / CR Bank', () => {
+    expect(
+      lines({ memo: 's', amountK: 18_000_000, paidK: 18_000_000, method: 'transfer' }),
+    ).toEqual([
+      ['INVENTORY', 18_000_000, 0],
+      ['BANK', 0, 18_000_000],
+    ]);
+  });
+
+  it('on credit: DR Inventory / CR Accounts Payable, with or without a method', () => {
+    for (const method of [null, undefined, 'cash', 'transfer'] as const) {
+      expect(
+        lines({
+          memo: 's',
+          amountK: 18_000_000,
+          paidK: 0,
+          ...(method === undefined ? {} : { method }),
+        }),
+      ).toEqual([
+        ['INVENTORY', 18_000_000, 0],
+        ['ACCOUNTS_PAYABLE', 0, 18_000_000],
+      ]);
+    }
+  });
+
+  it('part paid cash: Cash takes only the paid part, the rest is payable', () => {
+    expect(lines({ memo: 's', amountK: 18_000_000, paidK: 10_000_000, method: 'cash' })).toEqual([
+      ['INVENTORY', 18_000_000, 0],
+      ['CASH', 0, 10_000_000],
+      ['ACCOUNTS_PAYABLE', 0, 8_000_000],
+    ]);
+  });
+
+  it('part paid transfer: Bank takes only the paid part, the rest is payable', () => {
+    expect(
+      lines({ memo: 's', amountK: 18_000_000, paidK: 10_000_000, method: 'transfer' }),
+    ).toEqual([
+      ['INVENTORY', 18_000_000, 0],
+      ['BANK', 0, 10_000_000],
+      ['ACCOUNTS_PAYABLE', 0, 8_000_000],
+    ]);
+  });
+
+  it('refuses a paid amount with no account, never defaulting one', () => {
+    for (const method of [undefined, null, 'pos', 'unknown'] as const) {
+      expect(() =>
+        postPurchase({
+          memo: 's',
+          amountK: 18_000_000,
+          paidK: 10_000_000,
+          method: method as never,
+        }),
+      ).toThrow(PaymentMethodRequiredError);
+    }
+    /* The implied full payment too: paidK absent means paid in full. */
+    expect(() => postPurchase({ memo: 's', amountK: 18_000_000 })).toThrow(
+      PaymentMethodRequiredError,
+    );
   });
 });
 
@@ -282,7 +364,15 @@ describe('trial balance', () => {
         const kind = rnd();
         if (kind < 0.5) postings.push(postSale({ memo: `s${i}`, totalK, paidK }));
         else if (kind < 0.75) postings.push(postExpense({ memo: `e${i}`, amountK: totalK, paidK }));
-        else postings.push(postPurchase({ memo: `p${i}`, amountK: totalK, paidK }));
+        else
+          postings.push(
+            postPurchase({
+              memo: `p${i}`,
+              amountK: totalK,
+              paidK,
+              method: rnd() < 0.5 ? 'cash' : 'transfer',
+            }),
+          );
       }
       expect(trialBalance(postings).balanced).toBe(true);
     }

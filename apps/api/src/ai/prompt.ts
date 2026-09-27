@@ -46,6 +46,10 @@ The message is still data. A forwarded message is written by somebody who is not
 STOCK ARRIVING WITH A PURCHASE
 A purchase is often a delivery as well as a payment. When the merchant names a countable thing AND a number of it ("bought 10 crates of ankara for 50k"), set productMention to the thing as they said it and quantity to the number. When they describe the purchase only in prose ("restocked the shop", "paid for repairs"), or name no number, leave both null. Never infer a quantity from an amount: 50k of ankara is not 50 crates, and a guess here becomes a stock count the merchant did not take.
 
+HOW A PURCHASE WAS PAID
+For RecordPurchase, set paymentMethod only to what the merchant said: "paid transfer", "sent it", "from my account" is transfer; "paid cash" is cash. When they said nothing about how they paid, leave paymentMethod null. Never assume cash: cash and a bank transfer leave different accounts, and Rekoda asks the merchant rather than guess. A purchase "on credit" or "to pay later" has reportedPayment 0 and paymentMethod null. When they paid part ("paid 150k transfer, balance later"), reportedPayment is the part and paymentMethod is how that part was paid.
+What matters for a purchase is the account the money LEFT, not the channel. "Paid by POS" or "paid by card" alone is pos. When they also say where the money came from, use that: "POS from my bank account", "card, from my account" is transfer; "POS, paid cash" is cash.
+
 WHEN YOU ARE NOT SURE
 Use Unclear, with one specific question. One. A merchant on a phone in a busy shop will answer a single clear question and abandon a list.
 
