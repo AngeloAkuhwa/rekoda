@@ -6706,9 +6706,10 @@ describe('stock arriving with a purchase', () => {
     );
     expect(stubSender.lastText).not.toContain('Reply *yes*');
 
-    /* A yes to it still writes nothing: the question stands. */
+    /* The draft that asked is retired, never confirmable: a yes finds
+     * nothing to say yes to, and writes nothing. */
     await plain('wamid.G61-ask-yes', 'yes');
-    expect(stubSender.lastText).toContain('Was that cash or transfer?');
+    expect(stubSender.lastText).toContain('There is nothing waiting for a yes');
 
     /* "Bought 20 bags for 400k" reads as paid in full, from an account nobody
      * named: also a question, whatever the model thought of the method. */
@@ -6731,6 +6732,107 @@ describe('stock arriving with a purchase', () => {
     expect(await purchaseRows(business.id)).toHaveLength(0);
     expect(await nets(business.id)).toEqual({});
     expect(await onHand(business.id, 'cartons')).toBeNull();
+  });
+
+  /** Everything one purchase writes, counted, plus the drafts' states. */
+  async function purchaseFootprint(businessId: string) {
+    const [row] = [
+      ...(await withBusiness(db, businessId, (tx) =>
+        tx.execute<Record<string, number>>(sql`
+          SELECT
+            (SELECT count(*)::int FROM expenses WHERE business_id = ${businessId}::uuid) AS purchases,
+            (SELECT count(*)::int FROM ledger_transactions
+              WHERE business_id = ${businessId}::uuid) AS postings,
+            (SELECT count(*)::int FROM inventory_movements
+              WHERE business_id = ${businessId}::uuid) AS arrivals,
+            (SELECT count(*)::int FROM bills WHERE business_id = ${businessId}::uuid) AS bills,
+            (SELECT count(*)::int FROM outbox_events
+              WHERE business_id = ${businessId}::uuid AND type = 'purchase.recorded') AS announced,
+            (SELECT count(*)::int FROM command_drafts
+              WHERE business_id = ${businessId}::uuid AND state = 'pending') AS pending,
+            (SELECT count(*)::int FROM command_drafts
+              WHERE business_id = ${businessId}::uuid AND state = 'superseded') AS superseded
+        `),
+      )),
+    ];
+    return row;
+  }
+
+  it('G-61: POS, then the bank answer, then yes twice records the purchase exactly once', async () => {
+    const business = await seedMerchant('+2348031234567');
+    await say(
+      'wamid.G61-dup-pos',
+      cartons({ reportedPayment: 180_000, paymentMethod: 'pos' }),
+      'I bought 10 cartons for 180k from Emeka, paid by POS',
+    );
+    expect(stubSender.lastText).toContain(
+      'did it come from your bank account or from physical cash?',
+    );
+    /* The clarification is on the record but not confirmable. */
+    expect(await purchaseFootprint(business.id)).toMatchObject({ pending: 0, superseded: 1 });
+
+    await say(
+      'wamid.G61-dup-bank',
+      cartons({ reportedPayment: 180_000, paymentMethod: 'transfer' }),
+      'I bought 10 cartons for 180k from Emeka, paid by POS from my bank account',
+    );
+    expect(stubSender.lastText).toContain('Paid in full by transfer');
+
+    await plain('wamid.G61-dup-yes1', 'yes');
+    expect(stubSender.lastText).toContain('Saved');
+    /* The second, double-tapped yes resurrects nothing. */
+    await plain('wamid.G61-dup-yes2', 'yes');
+    expect(stubSender.lastText).toContain('There is nothing waiting for a yes');
+    expect(stubSender.lastText).not.toContain('did it come from your bank account');
+
+    expect(await purchaseFootprint(business.id)).toEqual({
+      purchases: 1,
+      postings: 1,
+      arrivals: 1,
+      bills: 0,
+      announced: 1,
+      pending: 0,
+      superseded: 1,
+    });
+    expect(await nets(business.id)).toEqual({ INVENTORY: 18_000_000, BANK: -18_000_000 });
+  });
+
+  it('G-61: part paid from an unnamed account, then the transfer answer, then yes twice: exactly once', async () => {
+    const business = await seedMerchant('+2348031234567');
+    await say(
+      'wamid.G61-dup-part',
+      cartons({ reportedPayment: 100_000, paymentMethod: null }),
+      'I bought 10 cartons for 180k from Emeka, paid 100k',
+    );
+    expect(stubSender.lastText).toContain(
+      'You paid ₦100,000 for this stock. Was that cash or transfer?',
+    );
+
+    await say(
+      'wamid.G61-dup-part-transfer',
+      cartons({ reportedPayment: 100_000, paymentMethod: 'transfer' }),
+      'I bought 10 cartons for 180k from Emeka, paid 100k transfer',
+    );
+    expect(stubSender.lastText).toContain('Paid: ₦100,000 by transfer');
+
+    await plain('wamid.G61-dup-part-yes1', 'yes');
+    await plain('wamid.G61-dup-part-yes2', 'yes');
+    expect(stubSender.lastText).toContain('There is nothing waiting for a yes');
+
+    expect(await purchaseFootprint(business.id)).toEqual({
+      purchases: 1,
+      postings: 1,
+      arrivals: 1,
+      bills: 1,
+      announced: 1,
+      pending: 0,
+      superseded: 1,
+    });
+    expect(await nets(business.id)).toEqual({
+      INVENTORY: 18_000_000,
+      BANK: -10_000_000,
+      ACCOUNTS_PAYABLE: -8_000_000,
+    });
   });
 
   it('G-61: a POS payer is asked where the money came from, and the answer posts to it', async () => {

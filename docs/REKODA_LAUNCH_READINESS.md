@@ -40,7 +40,7 @@ external dependencies in §5 close and GATE 12 passes.
 
 ## 3. Current verified state (summary)
 
-See `REKODA_CURRENT_STATE.md` §3 for the capability table. In one paragraph: identity, tenancy, RLS, webhook verification, the chat gates, the ledger kernel, statements, exports, the storefront, the public API and metering are verified complete in CI; the WhatsApp transport, voice, vision, AI interpretation, payments, R2 storage, retention, the queue and billing are implemented but have never been exercised against a live provider; suppliers, tax calculation, notifications, sweeps scheduling, observability, legal pages and the admin surface are partial; the deployment runtime is code complete and proved on a clean CI runner, with no host provisioned yet (G-01); backups do not exist as code.
+See `REKODA_CURRENT_STATE.md` §3 for the capability table. In one paragraph: identity, tenancy, RLS, webhook verification, the chat gates, the ledger kernel, statements, exports, the storefront, the public API and metering are verified complete in CI; the Meta WhatsApp transport has been live-exercised on staging (real webhook ingress, outbound text and media), while production Meta App Review and templates are still pending; payment-provider live verification is pending; voice, vision, AI interpretation, R2 storage, retention, the queue and billing are implemented and remain unverified against their live providers; suppliers, tax calculation, notifications, sweeps scheduling, observability, legal pages and the admin surface are partial; the deployment runtime is code complete and proved on a clean CI runner; staging runs `main` and no production host is provisioned yet (G-01); backups do not exist as code.
 
 ## 4. Known blockers (P0)
 

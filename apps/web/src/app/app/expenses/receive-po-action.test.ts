@@ -50,7 +50,9 @@ describe('receiving a purchase order', () => {
       {},
       form({ poNumber: 'PO-2026-000001', paid: '100000', method: '' }),
     );
-    expect(state.error).toBe('Say how you paid it: cash or transfer.');
+    expect(state.error).toBe(
+      'Say where the payment came from: physical cash or your bank account.',
+    );
     expect(receive).not.toHaveBeenCalled();
   });
 

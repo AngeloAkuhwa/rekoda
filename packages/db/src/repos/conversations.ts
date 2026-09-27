@@ -512,6 +512,34 @@ export async function supersedePendingDrafts(tx: TenantDb, businessId: string): 
 }
 
 /**
+ * Retire ONE pending draft, keeping it on the record (G-61).
+ *
+ * A purchase that could only be answered with a funding-source question is
+ * stored for the audit trail but must never be confirmable: the merchant
+ * answers it by sending the purchase again, and a later "yes" that claimed
+ * the old draft would ask again and invite the same purchase twice. Only
+ * this draft, and only while pending; every other draft is left alone.
+ */
+export async function supersedeDraft(
+  tx: TenantDb,
+  businessId: string,
+  draftId: string,
+): Promise<boolean> {
+  const updated = await tx
+    .update(commandDrafts)
+    .set({ state: 'superseded', updatedAt: new Date() })
+    .where(
+      and(
+        eq(commandDrafts.businessId, businessId),
+        eq(commandDrafts.id, draftId),
+        eq(commandDrafts.state, 'pending'),
+      ),
+    )
+    .returning({ id: commandDrafts.id });
+  return updated.length === 1;
+}
+
+/**
  * Fill in the body of a message that was already claimed.
  *
  * The voice path inserts the row FIRST, as its idempotency claim, before the

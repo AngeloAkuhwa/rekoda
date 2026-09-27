@@ -2390,6 +2390,14 @@ async function interpretedReply(
     confirmationContext: answered.confirmationContext ?? null,
   });
 
+  /* G-61: the merchant answers a funding-source question by sending the
+   * purchase again. The draft that asked stays on the record, superseded,
+   * so only the replacement can ever be confirmed: a second "yes" finds
+   * nothing to resurrect, and nothing can record the purchase twice. */
+  if (answered.retireDraft) {
+    await conversationsRepo.supersedeDraft(tx, businessId, draft.id);
+  }
+
   /* Appendix D: a preview that shows stock DISAPPEARING opens the
    * confirmation the yes will claim, recording the exact consequence the
    * merchant read. Additions stay STANDARD and open nothing. */
@@ -2431,6 +2439,9 @@ async function acknowledge(
   linkAsked: boolean;
   /** What an overpayment preview showed, stored on the draft (OWN-16). */
   confirmationContext?: ConfirmationContext;
+  /** The answer was the G-61 funding-source question: the draft is kept for
+   * the record but must not stay confirmable. */
+  retireDraft?: boolean;
 }> {
   /**
    * The link question rides a PREVIEW and nothing else. A clarification, an
@@ -2590,7 +2601,12 @@ async function acknowledge(
           : null;
   if (!gate) return plain(replies.notYet('Recording that kind of entry'));
 
-  if (gate.gate === 'CG1') return plain(replies.arithmeticQuestion(gate.question));
+  if (gate.gate === 'CG1') {
+    const asked = plain(replies.arithmeticQuestion(gate.question));
+    return 'reason' in gate && gate.reason === 'funding_source'
+      ? { ...asked, retireDraft: true }
+      : asked;
+  }
 
   /* A sale names a customer; an expense and a purchase do not. Only the first
    * ends in a `yes` that is about the person the question asks about. */

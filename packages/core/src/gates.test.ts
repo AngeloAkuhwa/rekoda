@@ -309,6 +309,50 @@ describe('money out — a stock purchase states what is owed', () => {
     expect(implied.question).not.toMatch(/[–—]/);
   });
 
+  it('never previews a null method, and asks about a ₦0 purchase instead of posting it', () => {
+    /* Every purchase shape the contract allows, including amount 0. */
+    for (const amount of [0, 180_000]) {
+      for (const reportedPayment of [null, 0, amount]) {
+        for (const paymentMethod of [null, undefined, 'unknown', 'pos', 'cash', 'transfer']) {
+          const gate = gatePurchase({
+            description: 'stock',
+            amount,
+            reportedPayment,
+            ...(paymentMethod === undefined ? {} : { paymentMethod }),
+          });
+          const text = gate.gate === 'CG1' ? gate.question : gate.preview;
+          expect(text).not.toMatch(/\bnull\b|\bundefined\b/);
+          if (gate.gate === 'CG2' && gate.paidK === 0) {
+            expect(gate.preview).not.toMatch(/by cash|by transfer/);
+          }
+        }
+      }
+    }
+    const zero = gatePurchase({ description: 'stock', amount: 0, reportedPayment: 0 });
+    if (zero.gate !== 'CG1') throw new Error('a ₦0 purchase must be asked about');
+    expect(zero.question).toContain('I read the stock as costing ₦0');
+    expect(zero.reason).toBeUndefined();
+  });
+
+  it('marks the funding-source question as such, and only that one', () => {
+    const pos = gatePurchase({
+      description: 's',
+      amount: 100,
+      reportedPayment: 100,
+      paymentMethod: 'pos',
+    });
+    const unknown = gatePurchase({ description: 's', amount: 100, reportedPayment: 50 });
+    const over = gatePurchase({
+      description: 's',
+      amount: 100,
+      reportedPayment: 200,
+      paymentMethod: 'cash',
+    });
+    expect(pos.gate === 'CG1' && pos.reason).toBe('funding_source');
+    expect(unknown.gate === 'CG1' && unknown.reason).toBe('funding_source');
+    expect(over.gate === 'CG1' && over.reason).toBeUndefined();
+  });
+
   it('asks a POS or card payer for the ACCOUNT, not "cash or transfer" again (owner ruling)', () => {
     for (const reportedPayment of [150_000, null]) {
       const gate = gatePurchase({

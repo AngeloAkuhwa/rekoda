@@ -152,13 +152,18 @@ export function ReceivePurchaseOrderForm({ orders }: { orders: OpenPurchaseOrder
         />
       </Field>
       {/* No default: money handed over left Cash or Bank, and a preset
-          choice is a guess the merchant never made (G-61). Only asked when
-          something was paid. */}
-      <Field id="receiveMethod" label="How you paid it" hint="Only needed if you paid something.">
+          choice is a guess the merchant never made (G-61). The SOURCE of the
+          money, not the channel (OWN-17); still submits cash | transfer.
+          Only asked when something was paid. */}
+      <Field
+        id="receiveMethod"
+        label="Where did the payment come from?"
+        hint="Only needed if you paid something. A POS or card payment from your bank is Bank account."
+      >
         <select id="receiveMethod" name="method" className="rk-input" defaultValue="">
           <option value="">Choose one</option>
-          <option value="cash">Cash</option>
-          <option value="transfer">Bank transfer</option>
+          <option value="cash">Physical cash</option>
+          <option value="transfer">Bank account</option>
         </select>
       </Field>
       {state.done ? (

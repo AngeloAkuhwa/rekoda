@@ -540,7 +540,7 @@ async function receivePurchaseOrderActionUnguarded(
   const methodRaw = String(formData.get('method') ?? '');
   const method = methodRaw === 'cash' || methodRaw === 'transfer' ? methodRaw : null;
   if (paidNaira > 0 && method === null) {
-    return { error: 'Say how you paid it: cash or transfer.' };
+    return { error: 'Say where the payment came from: physical cash or your bank account.' };
   }
 
   const outcome = await receivePurchaseOrder(

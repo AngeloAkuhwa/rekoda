@@ -199,7 +199,16 @@ export interface PurchaseLike {
  * inventing a subtotal nobody stated.
  */
 export type SpendGate =
-  | { gate: 'CG1'; question: string }
+  | {
+      gate: 'CG1';
+      question: string;
+      /**
+       * Set when the question is the G-61 funding-source clarification. The
+       * merchant answers it by sending the purchase again, so the draft that
+       * raised it must never stay confirmable beside the replacement.
+       */
+      reason?: 'funding_source';
+    }
   | {
       gate: 'CG2';
       preview: string;
@@ -236,6 +245,18 @@ export function gateExpense(expense: ExpenseLike): SpendGate {
  */
 export function gatePurchase(purchase: PurchaseLike): SpendGate {
   const amountK = toKobo(purchase.amount);
+  /* Nothing costs nothing: a ₦0 purchase cannot be posted (a ledger line
+   * must carry a debit or a credit, migration 0070), so it is asked about,
+   * never previewed. */
+  if (amountK === 0) {
+    return {
+      gate: 'CG1',
+      question:
+        'I read the stock as costing ₦0, which I cannot record. What did it cost?' +
+        '\n\nSend it again with the amount, for example: ' +
+        '"bought 10 cartons from Emeka for 180k, paid transfer".',
+    };
+  }
   const paidK = purchase.reportedPayment == null ? amountK : toKobo(purchase.reportedPayment);
 
   if (paidK > amountK) {
@@ -269,6 +290,7 @@ export function gatePurchase(purchase: PurchaseLike): SpendGate {
     if (purchase.paymentMethod === 'pos') {
       return {
         gate: 'CG1',
+        reason: 'funding_source',
         question:
           'I know you paid by POS. I just need the source of the money for your books: ' +
           'did it come from your bank account or from physical cash?' +
@@ -278,6 +300,7 @@ export function gatePurchase(purchase: PurchaseLike): SpendGate {
     }
     return {
       gate: 'CG1',
+      reason: 'funding_source',
       question:
         (purchase.reportedPayment == null
           ? `For the ${formatKobo(amountK)} stock, did you pay it all by cash or by transfer? ` +
