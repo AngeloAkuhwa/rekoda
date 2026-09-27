@@ -6799,6 +6799,16 @@ describe('stock arriving with a purchase', () => {
       retired: 1,
     });
     expect(await nets(business.id)).toEqual({ INVENTORY: 18_000_000, BANK: -18_000_000 });
+
+    /* A stray "no" later, with nothing waiting, cancels nothing: it never
+     * says "Cancelled" over the recorded purchase, and the answered
+     * question keeps its record. */
+    const sentBefore = stubSender.sent.length;
+    await plain('wamid.G61-dup-no', 'no');
+    expect(stubSender.sent.slice(sentBefore).map((m) => m.text ?? '')).not.toContainEqual(
+      expect.stringContaining('Cancelled'),
+    );
+    expect(await purchaseFootprint(business.id)).toMatchObject({ purchases: 1, retired: 1 });
   });
 
   it('G-61: part paid from an unnamed account, then the transfer answer, then yes twice: exactly once', async () => {
@@ -6918,6 +6928,29 @@ describe('stock arriving with a purchase', () => {
       )),
     ];
     expect(counts).toEqual({ invoices: 0, purchases: 0, pending: 1 });
+
+    /* The merchant answers by resending, then double-taps yes: the
+     * replacement is saved once and the older sale is still never
+     * confirmed behind the merchant's back. */
+    await say(
+      'wamid.G61-older-bank',
+      cartons({ reportedPayment: 180_000, paymentMethod: 'transfer' }),
+      'I bought 10 cartons for 180k from Emeka, paid by POS from my bank account',
+    );
+    await plain('wamid.G61-older-yes1', 'yes');
+    expect(stubSender.lastText).toContain('Saved');
+    await plain('wamid.G61-older-yes2', 'yes');
+    expect(stubSender.lastText).toContain('There is nothing waiting for a yes');
+    const [after] = [
+      ...(await withBusiness(db, business.id, (tx) =>
+        tx.execute<Record<string, number>>(sql`
+          SELECT
+            (SELECT count(*)::int FROM invoices WHERE business_id = ${business.id}::uuid) AS invoices,
+            (SELECT count(*)::int FROM expenses WHERE business_id = ${business.id}::uuid) AS purchases
+        `),
+      )),
+    ];
+    expect(after).toEqual({ invoices: 0, purchases: 1 });
   });
 
   it('G-61: a question the merchant cancels with "no" is never asked again by a later yes', async () => {

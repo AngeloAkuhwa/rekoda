@@ -541,6 +541,9 @@ export async function latestDraft(
  * `abandoned`, not `superseded`: a retired question is still the last
  * thing the merchant was asked, which a cancelled draft is not. Only this
  * draft, and only while pending; every other draft is left alone.
+ *
+ * Nothing else writes `abandoned` to a draft (the 0008 comment predates
+ * this use): a future sweep that did would make a "yes" re-ask it.
  */
 export async function retireDraft(
   tx: TenantDb,
@@ -562,16 +565,54 @@ export async function retireDraft(
 }
 
 /**
- * A "no" closes a retired question too (G-61): it becomes an ordinary
- * cancelled draft, so a later "yes" does not ask it again.
+ * A "no" to a retired question closes it (G-61): it becomes an ordinary
+ * cancelled draft, so a later "yes" does not ask it again. Only the one
+ * draft named, and only while retired: a question already answered by a
+ * resend keeps its `abandoned` state on the record.
  */
-export async function closeRetiredDrafts(tx: TenantDb, businessId: string): Promise<number> {
+export async function closeRetiredDraft(
+  tx: TenantDb,
+  businessId: string,
+  draftId: string,
+): Promise<boolean> {
   const updated = await tx
     .update(commandDrafts)
     .set({ state: 'superseded', updatedAt: new Date() })
-    .where(and(eq(commandDrafts.businessId, businessId), eq(commandDrafts.state, 'abandoned')))
+    .where(
+      and(
+        eq(commandDrafts.businessId, businessId),
+        eq(commandDrafts.id, draftId),
+        eq(commandDrafts.state, 'abandoned'),
+      ),
+    )
     .returning({ id: commandDrafts.id });
-  return updated.length;
+  return updated.length === 1;
+}
+
+/**
+ * Whether a retired purchase question was asked AFTER this draft (G-61).
+ *
+ * The merchant answers such a question by sending the purchase again, so
+ * a preview left waiting from before it is no longer what a "yes" is
+ * about: neither straight after the question nor after the replacement is
+ * confirmed (a double-tapped yes). The older draft stays pending, never
+ * confirmable by yes; a "no" clears it as before.
+ */
+export async function isBehindRetiredQuestion(
+  tx: TenantDb,
+  businessId: string,
+  draftId: string,
+): Promise<boolean> {
+  const rows = await tx.execute<{ behind: boolean }>(sql`
+    SELECT EXISTS (
+      SELECT 1 FROM command_drafts q
+       WHERE q.business_id = ${businessId}::uuid
+         AND q.state = 'abandoned'
+         AND q.insertion_seq > (
+           SELECT d.insertion_seq FROM command_drafts d
+            WHERE d.id = ${draftId}::uuid AND d.business_id = ${businessId}::uuid)
+    ) AS behind`);
+  return [...rows][0]?.behind === true;
 }
 
 /**

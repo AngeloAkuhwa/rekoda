@@ -930,10 +930,16 @@ async function deterministicReply(
   if (intent.kind === 'deny' || intent.kind === 'cancel') {
     // A refusal after a preview discards the draft rather than leaving it to
     // be confirmed by an accidental "yes" ten minutes later.
-    /* A retired purchase question is closed by a "no" too (G-61). */
+    /* A "no" straight after a retired purchase question closes that
+     * question too (G-61). Only when it is the LAST thing asked: a question
+     * answered long ago by a resend is not what this "no" is about. */
+    const latest = await conversationsRepo.latestDraft(tx, businessId);
+    const closedQuestion =
+      latest?.state === 'abandoned'
+        ? await conversationsRepo.closeRetiredDraft(tx, businessId, latest.id)
+        : false;
     const dropped =
-      (await conversationsRepo.supersedePendingDrafts(tx, businessId)) +
-      (await conversationsRepo.closeRetiredDrafts(tx, businessId));
+      (await conversationsRepo.supersedePendingDrafts(tx, businessId)) + (closedQuestion ? 1 : 0);
     return dropped > 0
       ? replies.cancelled()
       : intent.kind === 'cancel'
@@ -1373,10 +1379,18 @@ async function confirmPendingDraft(
       const gate = gatePurchase(asked as never);
       if (gate.gate === 'CG1') return replies.arithmeticQuestion(gate.question);
     }
+    /* Never fall through to an older preview behind the question, even if
+     * the stored question no longer gates (rules changed since). */
+    return replies.nothingToConfirm();
   }
 
   const draft = await conversationsRepo.pendingDraft(tx, businessId);
   if (!draft) return replies.nothingToConfirm();
+  /* A preview from before a retired question is never confirmed by a yes,
+   * including a double-tapped yes after the replacement was saved. */
+  if (await conversationsRepo.isBehindRetiredQuestion(tx, businessId, draft.id)) {
+    return replies.nothingToConfirm();
+  }
 
   const command = draft.command as { intent?: string } & Record<string, unknown>;
 
@@ -2412,7 +2426,7 @@ async function interpretedReply(
   });
 
   /* G-61: the merchant answers a funding-source question by sending the
-   * purchase again. The draft that asked stays on the record, superseded,
+   * purchase again. The draft that asked stays on the record, abandoned,
    * so only the replacement can ever be confirmed: a second "yes" finds
    * nothing to resurrect, and nothing can record the purchase twice. */
   if (answered.retireDraft) {
