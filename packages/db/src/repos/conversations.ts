@@ -512,6 +512,31 @@ export async function supersedePendingDrafts(tx: TenantDb, businessId: string): 
 }
 
 /**
+ * Supersede every draft still pending from BEFORE this one (G-61).
+ *
+ * A purchase question the merchant answers by sending the purchase again
+ * becomes the conversation: a preview left waiting from before it is no
+ * longer what a "yes" or a "no" is about. Superseding it keeps its record
+ * and stops it lingering, pending but never confirmable, where a later
+ * stray "no" would count it as cancelled. The ordinal decides "before".
+ */
+export async function supersedeDraftsBefore(
+  tx: TenantDb,
+  businessId: string,
+  draftId: string,
+): Promise<number> {
+  const rows = await tx.execute<{ id: string }>(sql`
+    UPDATE command_drafts SET state = 'superseded', updated_at = now()
+     WHERE business_id = ${businessId}::uuid
+       AND state = 'pending'
+       AND insertion_seq < (
+         SELECT d.insertion_seq FROM command_drafts d
+          WHERE d.id = ${draftId}::uuid AND d.business_id = ${businessId}::uuid)
+    RETURNING id`);
+  return [...rows].length;
+}
+
+/**
  * The newest draft in ANY state, by the database ordinal (G-61).
  *
  * A retired clarification is `abandoned`, so `pendingDraft` skips it; this

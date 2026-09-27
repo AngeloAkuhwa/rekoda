@@ -2430,6 +2430,10 @@ async function interpretedReply(
    * so only the replacement can ever be confirmed: a second "yes" finds
    * nothing to resurrect, and nothing can record the purchase twice. */
   if (answered.retireDraft) {
+    /* Only on the first delivery: a replayed message changes nothing. The
+     * question becomes the conversation, so a preview left waiting from
+     * before it is closed, not left pending and never confirmable. */
+    if (draft.isNew) await conversationsRepo.supersedeDraftsBefore(tx, businessId, draft.id);
     await conversationsRepo.retireDraft(tx, businessId, draft.id);
   }
 

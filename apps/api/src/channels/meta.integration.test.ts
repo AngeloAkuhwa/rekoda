@@ -6927,7 +6927,8 @@ describe('stock arriving with a purchase', () => {
         `),
       )),
     ];
-    expect(counts).toEqual({ invoices: 0, purchases: 0, pending: 1 });
+    /* The older sale is closed by the question, kept on the record. */
+    expect(counts).toEqual({ invoices: 0, purchases: 0, pending: 0 });
 
     /* The merchant answers by resending, then double-taps yes: the
      * replacement is saved once and the older sale is still never
@@ -6951,6 +6952,65 @@ describe('stock arriving with a purchase', () => {
       )),
     ];
     expect(after).toEqual({ invoices: 0, purchases: 1 });
+
+    /* A stray "no" days later finds nothing hidden to cancel. */
+    const sentBefore = stubSender.sent.length;
+    await plain('wamid.G61-older-no', 'no');
+    expect(stubSender.sent.slice(sentBefore).map((m) => m.text ?? '')).not.toContainEqual(
+      expect.stringContaining('Cancelled'),
+    );
+
+    /* And a NEW sale previewed after all this is confirmed as normal. */
+    await say(
+      'wamid.G61-older-new-sale',
+      {
+        intent: 'RecordSale',
+        customer: { kind: 'none' },
+        items: [{ name: 'wig', quantity: 1, unitPrice: 10_000 }],
+        statedTotal: 10_000,
+        reportedPayment: 0,
+        paymentMethod: 'cash',
+        discount: null,
+        deliveryFee: null,
+        dueDescription: null,
+      },
+      'sold a wig for 10k',
+    );
+    await plain('wamid.G61-older-new-yes', 'yes');
+    const [last] = [
+      ...(await withBusiness(db, business.id, (tx) =>
+        tx.execute<Record<string, number>>(sql`
+          SELECT
+            (SELECT count(*)::int FROM invoices WHERE business_id = ${business.id}::uuid) AS invoices,
+            (SELECT count(*)::int FROM expenses WHERE business_id = ${business.id}::uuid) AS purchases
+        `),
+      )),
+    ];
+    expect(last).toEqual({ invoices: 1, purchases: 1 });
+  });
+
+  it('G-61: two purchase questions in a row, then yes, asks the second one again', async () => {
+    const business = await seedMerchant('+2348031234567');
+    await say(
+      'wamid.G61-two-pos',
+      cartons({ reportedPayment: 180_000, paymentMethod: 'pos' }),
+      'I bought 10 cartons for 180k from Emeka, paid by POS',
+    );
+    await say(
+      'wamid.G61-two-part',
+      cartons({ reportedPayment: 100_000, paymentMethod: null }),
+      'I bought 10 cartons for 180k from Emeka, paid 100k',
+    );
+    await plain('wamid.G61-two-yes', 'yes');
+    expect(stubSender.lastText).toContain(
+      'You paid ₦100,000 for this stock. Was that cash or transfer?',
+    );
+    expect(await purchaseFootprint(business.id)).toMatchObject({
+      purchases: 0,
+      postings: 0,
+      pending: 0,
+      retired: 2,
+    });
   });
 
   it('G-61: a question the merchant cancels with "no" is never asked again by a later yes', async () => {
