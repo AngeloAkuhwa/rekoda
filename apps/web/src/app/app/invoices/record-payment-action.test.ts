@@ -45,6 +45,7 @@ const CONFIRMING = {
   expectedBalanceK: '15000000',
   confirmedAmountK: '18000000',
   confirmedInvoiceNumber: 'INV-2026-000001',
+  confirmedMethod: 'cash',
 };
 
 beforeEach(() => recordPayment.mockReset());
@@ -122,6 +123,34 @@ describe('recording more than an invoice owes, from the dashboard', () => {
     const sent = recordPayment.mock.calls[0]?.[1];
     expect(sent).not.toHaveProperty('confirmOverpayment');
     expect(sent).not.toHaveProperty('expectedBalanceK');
+  });
+
+  it('a changed method is a new question, not a yes', async () => {
+    recordPayment.mockResolvedValue({ outcome: 'not_found' });
+    /* Asked about cash; the merchant switched to transfer before the yes. */
+    await recordPaymentAction({}, form({ ...CONFIRMING, method: 'transfer' }));
+    const sent = recordPayment.mock.calls[0]?.[1];
+    expect(sent).toMatchObject({ method: 'transfer' });
+    expect(sent).not.toHaveProperty('confirmOverpayment');
+    /* And a confirmation that carries no method at all is no yes either. */
+    recordPayment.mockClear();
+    const { confirmedMethod: _dropped, ...noMethod } = CONFIRMING;
+    await recordPaymentAction({}, form(noMethod));
+    expect(recordPayment.mock.calls[0]?.[1]).not.toHaveProperty('confirmOverpayment');
+  });
+
+  it('the question remembers the method it was asked about', async () => {
+    recordPayment.mockResolvedValue({
+      outcome: 'confirm_overpayment',
+      invoiceNumber: 'INV-2026-000001',
+      balanceDueK: 15_000_000,
+      amountReceivedK: 18_000_000,
+      allocatedK: 15_000_000,
+      creditK: 3_000_000,
+      customerLinked: false,
+    });
+    const state = await recordPaymentAction({}, form({ ...FIRST, method: 'transfer' }));
+    expect(state.overpayment).toMatchObject({ amountK: 18_000_000, method: 'transfer' });
   });
 
   it('a stale confirmation says the balance changed and nothing was recorded', async () => {

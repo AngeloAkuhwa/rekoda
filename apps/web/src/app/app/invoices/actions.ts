@@ -33,6 +33,8 @@ export interface VoidFormState {
   overpayment?: {
     invoiceNumber: string;
     amountK: number;
+    /** The method the question was asked about; a yes must carry the same. */
+    method: 'cash' | 'transfer';
     expectedBalanceK: number;
     consequence: string;
   };
@@ -217,14 +219,15 @@ async function recordPaymentActionUnguarded(
   const amountK = toKobo(naira);
 
   /* The second submit of an overpayment, and only for the figures that were
-   * shown: a changed amount or invoice is a new question, not a yes. */
+   * shown: a changed amount, invoice or method is a new question, not a yes. */
   const expectedBalanceK = Number(formData.get('expectedBalanceK') ?? '');
   const confirming =
     formData.get('confirmOverpayment') === '1' &&
     Number.isSafeInteger(expectedBalanceK) &&
     expectedBalanceK > 0 &&
     Number(formData.get('confirmedAmountK') ?? '') === amountK &&
-    String(formData.get('confirmedInvoiceNumber') ?? '') === invoiceNumber;
+    String(formData.get('confirmedInvoiceNumber') ?? '') === invoiceNumber &&
+    String(formData.get('confirmedMethod') ?? '') === method;
 
   const outcome = await recordPayment(token, {
     invoiceNumber,
@@ -260,6 +263,7 @@ async function recordPaymentActionUnguarded(
       overpayment: {
         invoiceNumber: outcome.invoiceNumber,
         amountK: outcome.amountReceivedK,
+        method,
         expectedBalanceK: outcome.balanceDueK,
         consequence: `${outcome.invoiceNumber} owes ${formatKobo(outcome.balanceDueK)}. You are recording ${formatKobo(outcome.amountReceivedK)}: ${formatKobo(outcome.allocatedK)} settles the invoice and ${excess}. Nothing is saved until you confirm.`,
       },
