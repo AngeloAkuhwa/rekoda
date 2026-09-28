@@ -1,7 +1,7 @@
 'use client';
 
-import { useActionState, useEffect, useMemo, useState } from 'react';
-import { formatKobo } from '@rekoda/core';
+import { startTransition, useActionState, useEffect, useMemo, useRef, useState } from 'react';
+import { formatKobo, parseAmountText, toKobo } from '@rekoda/core';
 import { Button } from '@/components/ui/Button';
 import { Field } from '@/components/ui/Field';
 import { recordPaymentAction, type VoidFormState } from './actions';
@@ -9,6 +9,20 @@ import { recordPaymentAction, type VoidFormState } from './actions';
 export interface PayableInvoice {
   invoiceNumber: string;
   balanceDueK: number;
+}
+
+/** A balance as the figure the amount field starts from, in naira. */
+const nairaText = (balanceK: number) => (balanceK / 100).toString();
+
+/** What the amount field currently says, in kobo, or null if it says nothing usable. */
+function typedKobo(text: string): number | null {
+  const naira = parseAmountText(text);
+  if (naira === null) return null;
+  try {
+    return toKobo(naira);
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -28,6 +42,31 @@ export function RecordPaymentForm({ invoices }: { invoices: PayableInvoice[] }) 
   const [state, action, pending] = useActionState<VoidFormState, FormData>(recordPaymentAction, {});
   const [chosen, setChosen] = useState(invoices[0]?.invoiceNumber ?? '');
   /**
+   * The amount and the method are CONTROLLED, never `defaultValue` (G-49).
+   *
+   * React resets an uncontrolled form after its server action returns. When
+   * that return was the overpayment question, the reset put the balance back
+   * in the amount and "cash" back in the method while the question still
+   * named what the merchant typed, so "Yes, record it" sent the balance: an
+   * ordinary payment, and the excess silently gone. Held in state, what the
+   * merchant entered is exactly what the confirmation shows and submits. The
+   * amount is refilled from a balance only when the merchant picks another
+   * invoice, or once a payment has committed.
+   */
+  const [amount, setAmount] = useState(() => nairaText(invoices[0]?.balanceDueK ?? 0));
+  const [method, setMethod] = useState<'cash' | 'transfer'>('cash');
+  const balanceOf = (invoiceNumber: string) =>
+    invoices.find((i) => i.invoiceNumber === invoiceNumber)?.balanceDueK ?? 0;
+  /* A question the merchant has moved away from (another invoice, another
+   * method) is closed: coming back to the same figures asks again rather
+   * than re-arming a yes to a question about a different payment. */
+  const [dismissed, setDismissed] = useState<VoidFormState['overpayment'] | null>(null);
+  const choose = (invoiceNumber: string) => {
+    if (state.overpayment) setDismissed(state.overpayment);
+    setChosen(invoiceNumber);
+    setAmount(nairaText(balanceOf(invoiceNumber)));
+  };
+  /**
    * One key per PAYMENT, not per mounted form.
    *
    * A resubmission of the same payment (a dropped response, an impatient
@@ -46,7 +85,42 @@ export function RecordPaymentForm({ invoices }: { invoices: PayableInvoice[] }) 
   useEffect(() => {
     if (state.done || state.freshKey) setGeneration((g) => g + 1);
   }, [state]);
-  const owed = invoices.find((i) => i.invoiceNumber === chosen)?.balanceDueK ?? 0;
+  /* A committed payment starts the next one afresh, from the revalidated
+   * balances: the same invoice if it still owes, else the first that does.
+   * Once per answer, so it never overwrites what the merchant types next. */
+  const settled = useRef<VoidFormState | null>(null);
+  useEffect(() => {
+    if (!state.done || settled.current === state) return;
+    settled.current = state;
+    const next = invoices.find((i) => i.invoiceNumber === chosen) ?? invoices[0];
+    if (next) {
+      setChosen(next.invoiceNumber);
+      setAmount(nairaText(next.balanceDueK));
+    }
+    setMethod('cash');
+  }, [state, invoices, chosen]);
+  /* The list changes under the form (an invoice paid off, a quote just
+   * converted): a choice no longer offered moves to the first that is, with
+   * its balance, rather than pointing at an invoice the select cannot show. */
+  useEffect(() => {
+    const first = invoices[0];
+    if (first && !invoices.some((i) => i.invoiceNumber === chosen)) {
+      setChosen(first.invoiceNumber);
+      setAmount(nairaText(first.balanceDueK));
+    }
+  }, [invoices, chosen]);
+  const owed = balanceOf(chosen);
+  /* The question stands only for the invoice, the amount and the method it
+   * was asked about. A change is a new payment: the button says so and no
+   * confirmation is sent, so the server asks again (the action checks the
+   * invoice and amount too, and the balance under lock). */
+  const asking =
+    state.overpayment !== undefined &&
+    state.overpayment !== dismissed &&
+    state.overpayment.invoiceNumber === chosen &&
+    typedKobo(amount) === state.overpayment.amountK
+      ? state.overpayment
+      : null;
 
   if (invoices.length === 0) {
     return (
@@ -70,7 +144,21 @@ export function RecordPaymentForm({ invoices }: { invoices: PayableInvoice[] }) 
   }
 
   return (
-    <form action={action} className="rk-form" noValidate>
+    <form
+      action={action}
+      /* Dispatched here rather than by React's form action, which resets the
+         form after every answer: a controlled select is put back to the
+         option it first rendered with, so the method the merchant chose
+         became cash again under the overpayment question (G-49). The action
+         prop stays for a browser without JavaScript. */
+      onSubmit={(e) => {
+        e.preventDefault();
+        const data = new FormData(e.currentTarget);
+        startTransition(() => action(data));
+      }}
+      className="rk-form"
+      noValidate
+    >
       <input type="hidden" name="clientRef" value={clientRef} />
       <Field id="payInvoiceNumber" label="What the money was for" error={state.error}>
         <select
@@ -79,7 +167,7 @@ export function RecordPaymentForm({ invoices }: { invoices: PayableInvoice[] }) 
           required
           className="rk-input"
           value={chosen}
-          onChange={(e) => setChosen(e.target.value)}
+          onChange={(e) => choose(e.target.value)}
         >
           {invoices.map((i) => (
             <option key={i.invoiceNumber} value={i.invoiceNumber}>
@@ -100,36 +188,39 @@ export function RecordPaymentForm({ invoices }: { invoices: PayableInvoice[] }) 
           required
           inputMode="decimal"
           className="rk-input"
-          /* Keyed on the choice so switching invoice refills the figure.
-             Without the key React keeps the first invoice's amount in a
-             field now labelled with a different one. */
-          key={chosen}
-          defaultValue={(owed / 100).toString()}
+          value={amount}
+          onChange={(e) => setAmount(e.target.value)}
         />
       </Field>
 
       <Field id="payMethod" label="How it came in">
-        <select name="method" id="payMethod" className="rk-input" defaultValue="cash">
+        <select
+          name="method"
+          id="payMethod"
+          className="rk-input"
+          value={method}
+          onChange={(e) => {
+            if (state.overpayment) setDismissed(state.overpayment);
+            setMethod(e.target.value === 'transfer' ? 'transfer' : 'cash');
+          }}
+        >
           <option value="cash">Cash</option>
           <option value="transfer">Bank transfer</option>
         </select>
       </Field>
 
       {/* An overpayment is asked about before anything is saved (G-49).
-          The second submit carries the figures that were shown; the action
-          drops them if the amount or invoice was changed since. */}
-      {state.overpayment && state.overpayment.invoiceNumber === chosen ? (
+          The second submit carries the figures that were shown, only while
+          the form still says them; the action drops them too if the amount
+          or invoice was changed since. */}
+      {asking ? (
         <>
           <input type="hidden" name="confirmOverpayment" value="1" />
-          <input type="hidden" name="expectedBalanceK" value={state.overpayment.expectedBalanceK} />
-          <input type="hidden" name="confirmedAmountK" value={state.overpayment.amountK} />
-          <input
-            type="hidden"
-            name="confirmedInvoiceNumber"
-            value={state.overpayment.invoiceNumber}
-          />
+          <input type="hidden" name="expectedBalanceK" value={asking.expectedBalanceK} />
+          <input type="hidden" name="confirmedAmountK" value={asking.amountK} />
+          <input type="hidden" name="confirmedInvoiceNumber" value={asking.invoiceNumber} />
           <p className="rk-fineprint" role="alert">
-            {state.overpayment.consequence}
+            {asking.consequence}
           </p>
         </>
       ) : null}
@@ -141,11 +232,7 @@ export function RecordPaymentForm({ invoices }: { invoices: PayableInvoice[] }) 
       ) : null}
 
       <Button type="submit" disabled={pending}>
-        {pending
-          ? 'Recording…'
-          : state.overpayment && state.overpayment.invoiceNumber === chosen
-            ? 'Yes, record it'
-            : 'Record this payment'}
+        {pending ? 'Recording…' : asking ? 'Yes, record it' : 'Record this payment'}
       </Button>
     </form>
   );
