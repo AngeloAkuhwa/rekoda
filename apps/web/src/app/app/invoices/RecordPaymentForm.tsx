@@ -40,7 +40,14 @@ function typedKobo(text: string): number | null {
  */
 export function RecordPaymentForm({ invoices }: { invoices: PayableInvoice[] }) {
   const [state, action, pending] = useActionState<VoidFormState, FormData>(recordPaymentAction, {});
-  const [chosen, setChosen] = useState(invoices[0]?.invoiceNumber ?? '');
+  /* Seeded from a question already on the page: a submit made before the
+   * script loads posts the form in full and remounts it with the action's
+   * answer, and the question must come back with the figures it asked
+   * about, not the balance and "cash". */
+  const asked = state.overpayment;
+  const [chosen, setChosen] = useState(
+    () => asked?.invoiceNumber ?? invoices[0]?.invoiceNumber ?? '',
+  );
   /**
    * The amount and the method are CONTROLLED, never `defaultValue` (G-49).
    *
@@ -53,8 +60,10 @@ export function RecordPaymentForm({ invoices }: { invoices: PayableInvoice[] }) 
    * amount is refilled from a balance only when the merchant picks another
    * invoice, or once a payment has committed.
    */
-  const [amount, setAmount] = useState(() => nairaText(invoices[0]?.balanceDueK ?? 0));
-  const [method, setMethod] = useState<'cash' | 'transfer'>('cash');
+  const [amount, setAmount] = useState(() =>
+    nairaText(asked ? asked.amountK : (invoices[0]?.balanceDueK ?? 0)),
+  );
+  const [method, setMethod] = useState<'cash' | 'transfer'>(() => asked?.method ?? 'cash');
   const balanceOf = (invoiceNumber: string) =>
     invoices.find((i) => i.invoiceNumber === invoiceNumber)?.balanceDueK ?? 0;
   /* A question the merchant has moved away from (another invoice, another
@@ -118,6 +127,7 @@ export function RecordPaymentForm({ invoices }: { invoices: PayableInvoice[] }) 
     state.overpayment !== undefined &&
     state.overpayment !== dismissed &&
     state.overpayment.invoiceNumber === chosen &&
+    state.overpayment.method === method &&
     typedKobo(amount) === state.overpayment.amountK
       ? state.overpayment
       : null;
@@ -150,7 +160,9 @@ export function RecordPaymentForm({ invoices }: { invoices: PayableInvoice[] }) 
          form after every answer: a controlled select is put back to the
          option it first rendered with, so the method the merchant chose
          became cash again under the overpayment question (G-49). The action
-         prop stays for a browser without JavaScript. */
+         prop stays for a submit made before the script has loaded: the form
+         then posts in full and the page comes back with the answer, which
+         the state above is seeded from. */
       onSubmit={(e) => {
         e.preventDefault();
         const data = new FormData(e.currentTarget);
@@ -219,6 +231,7 @@ export function RecordPaymentForm({ invoices }: { invoices: PayableInvoice[] }) 
           <input type="hidden" name="expectedBalanceK" value={asking.expectedBalanceK} />
           <input type="hidden" name="confirmedAmountK" value={asking.amountK} />
           <input type="hidden" name="confirmedInvoiceNumber" value={asking.invoiceNumber} />
+          <input type="hidden" name="confirmedMethod" value={asking.method} />
           <p className="rk-fineprint" role="alert">
             {asking.consequence}
           </p>
