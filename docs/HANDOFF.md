@@ -8,40 +8,52 @@
 
 ## Current state at a glance
 
-| Field                       | Value                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Current date**            | 26 September 2026                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| **Current `main` SHA**      | `ea7c7db` (26 Sep 2026, "fix: preserve merchant overpayments as customer credit (#253)", G-49); before it `b9c9562` (#252, G-48), `e02925d` (#251), `a61e08d` (#250), `0a99293` (#249), `33ddb33` (#245, G-75), `3cab9dd` (#244, G-74), `1bbe1f1` (#243, G-72), `48ba9d5` (#242, G-71), `c508709` (#241, G-01), `b81ef90` (#240, G-08), `7b9fd8f` (#236), `2dce181` (#239), `e993885` (#235) and the G-06 merge `8f07a6d` (#238)                                                                                                                                           |
-| **Open branches**           | the G-77 PR (`fix/g77-public-api-paid-sale-claim`, public API sale claim identity). #253 (G-49) MERGED as `ea7c7db` on 26 Sep 2026; #252 (G-48) MERGED as `b9c9562` on 26 Sep 2026; #245 (G-75) MERGED as `33ddb33`; #244 (G-74) MERGED as `3cab9dd` on 13 Sep 2026; #243 (G-72) MERGED as `1bbe1f1` on 13 Sep 2026; #242 (G-71) MERGED as `48ba9d5` on 13 Sep 2026; #241 (G-01) MERGED as `c508709` on 12 Sep 2026; #240 (G-08 template half) as `b81ef90`; dependency housekeeping is closed; #225, #226 and #227 (NestJS 12) closed as deferred post-launch work (G-70) |
-| **Product version / state** | 0.1.0. Build plan complete (138 rows, PR-001…PR-132; PR-006–009 and PR-115 gated); 153 migrations; deployed to staging (automatic after CI on main since #249); never to production (the production stack boots on a clean CI runner since G-01); no live provider has been exercised                                                                                                                                                                                                                                                                                      |
-| **Launch verdict**          | **NOT READY** (`REKODA_LAUNCH_READINESS.md` §1)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| **Engineering model**       | Simple: Angelo assigns, Claude reads `CLAUDE.md` and the canonical docs, implements with tests, normal CI, Angelo reviews and merges. The multi-agent control plane (PR #233) was removed by PR #237 (merged 11 Sep 2026) and PR #234 closed unmerged                                                                                                                                                                                                                                                                                                                      |
+| Field                       | Value                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Current date**            | 27 September 2026                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| **Current `main` SHA**      | `ce4755a` (27 Sep 2026, "fix: give public API sales unique claim identities (#254)", G-77); before it `ea7c7db` (#253, G-49), `b9c9562` (#252, G-48), `e02925d` (#251), `a61e08d` (#250), `0a99293` (#249), `33ddb33` (#245, G-75), `3cab9dd` (#244, G-74), `1bbe1f1` (#243, G-72), `48ba9d5` (#242, G-71), `c508709` (#241, G-01), `b81ef90` (#240, G-08), `7b9fd8f` (#236), `2dce181` (#239), `e993885` (#235) and the G-06 merge `8f07a6d` (#238)                                                                                                                                                              |
+| **Open branches**           | the G-61 PR (`fix/g61-purchase-payment-method`, purchase funding account). #254 (G-77) MERGED as `ce4755a` on 27 Sep 2026; #253 (G-49) MERGED as `ea7c7db` on 26 Sep 2026; #252 (G-48) MERGED as `b9c9562` on 26 Sep 2026; #245 (G-75) MERGED as `33ddb33`; #244 (G-74) MERGED as `3cab9dd` on 13 Sep 2026; #243 (G-72) MERGED as `1bbe1f1` on 13 Sep 2026; #242 (G-71) MERGED as `48ba9d5` on 13 Sep 2026; #241 (G-01) MERGED as `c508709` on 12 Sep 2026; #240 (G-08 template half) as `b81ef90`; dependency housekeeping is closed; #225, #226 and #227 (NestJS 12) closed as deferred post-launch work (G-70) |
+| **Product version / state** | 0.1.0. Build plan complete (138 rows, PR-001…PR-132; PR-006–009 and PR-115 gated); 153 migrations; deployed to staging (automatic after CI on main since #249); never to production (the production stack boots on a clean CI runner since G-01); the Meta WhatsApp transport has been live-exercised on staging (real webhook ingress, outbound text and media); production Meta App Review and templates remain open; payment-provider live verification remains pending                                                                                                                                        |
+| **Launch verdict**          | **NOT READY** (`REKODA_LAUNCH_READINESS.md` §1)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| **Engineering model**       | Simple: Angelo assigns, Claude reads `CLAUDE.md` and the canonical docs, implements with tests, normal CI, Angelo reviews and merges. The multi-agent control plane (PR #233) was removed by PR #237 (merged 11 Sep 2026) and PR #234 closed unmerged                                                                                                                                                                                                                                                                                                                                                             |
 
 **Build 1 (G-48) accepted (26 Sep 2026):**
 
 - G-48: STAGING ACCEPTED (#252, merged as `b9c9562`, deployed to staging).
 - J2 real-handset acceptance: PASS.
 
-**In review (26 Sep 2026, Build 3, G-77; CODE COMPLETE, staging acceptance
-pending):** branch `fix/g77-public-api-paid-sale-claim` off `main` at
-`ea7c7db`. Every public API sale is now its own financial event: its
-`sourceId` (which a paid sale's verification claims) is an opaque hash of
-the application and the `Idempotency-Key`, or a fresh id without a key,
-never the application id, so a second paid sale from one application no
-longer collides and fails. No migration, no public contract change. After
-merge: two paid API sales from one application, and a keyed retry, on
-staging. Next: G-61 (purchase payment method and accounting truth).
+**Build 3 (G-77) accepted (27 Sep 2026, reported by the owner):**
 
-**Merged, staging acceptance NOT RUN (26 Sep 2026, Build 2, G-49):** #253
-merged as `ea7c7db`, off `b9c9562`
+- G-77: STAGING ACCEPTED (#254, merged as `ce4755a`).
+
+**Build 2 (G-49): CODE COMPLETE and MERGED (#253 as `ea7c7db`); staging
+acceptance pending.** Still to run on staging: a real WhatsApp merchant
+overpayment (received/applied/credit preview, confirmed write, receipt,
+customer credit, `overpaid` reconciliation), the dashboard two-step, and a
+stale-balance refusal with zero financial writes.
+
+**In review (27 Sep 2026, Build 4, G-61; CODE COMPLETE, staging acceptance
+pending):** branch `fix/g61-purchase-payment-method` off `main` at
+`ce4755a`. The paid part of a stock purchase now leaves the account the
+merchant named (cash or transfer), the preview says which, and money paid
+from an account nobody named is asked about, never defaulted; the ledger
+builder and the repository refuse a paid amount with no method.
+Purchase-order receive requires the method when anything is paid. No
+migration. After merge: a transfer, a cash, a credit and a part-paid
+purchase in chat, and a paid PO receive, on staging. G-23 and later builds
+are not started.
+
+**G-77 (#254), for the record:** every public API sale is its own financial
+event (its `sourceId` is an opaque per-request id, never the application
+id), and the retry fingerprint is unchanged across releases.
+
+**G-49 (#253), for the record:** off `b9c9562`
 (G-48, #252, CLOSED as above). Owner ruling OWN-16: a
 merchant may deliberately confirm a genuine overpayment; the full amount is
 real money, the invoice settles up to its balance, the excess is a
 customer-credit liability, and a confirmation made stale by a balance change
 is never turned into credit. Migration 0152 adds
-`command_drafts.confirmation_context`. After merge: confirm `/health` names
-the merged SHA on staging, then run J9's overpayment step (chat) and the
-dashboard two-step from a real handset.
+`command_drafts.confirmation_context`.
 
 **Last completed work (10–11 Sep 2026):** the repository reset. Removed
 `AGENTS.md`, `GEMINI.md`, `docs/AUTONOMOUS-ENGINEERING.md`, `docs/agents/`,

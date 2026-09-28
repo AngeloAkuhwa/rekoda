@@ -49,7 +49,7 @@ function loosePurchase(businessId: string, amountK: number, ref = 'p1'): Promise
     issueRepo.writePosting(
       tx,
       businessId,
-      postPurchase({ memo: 'Restocked the shop', amountK }),
+      postPurchase({ memo: 'Restocked the shop', amountK, method: 'transfer' }),
       'purchase',
       ref,
     ),
@@ -113,7 +113,7 @@ describe('what the shelf is worth, against what the books say', () => {
       issueRepo.writePosting(
         tx,
         businessId,
-        postPurchase({ memo: 'Rice', amountK: 4_000_000 }),
+        postPurchase({ memo: 'Rice', amountK: 4_000_000, method: 'transfer' }),
         'purchase',
         'p1',
       ),

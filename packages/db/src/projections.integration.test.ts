@@ -168,6 +168,7 @@ async function battery(businessId: string) {
       description: 'ankara bales',
       amountK: 6_000_000,
       paidK: 2_000_000,
+      method: 'cash',
       sourceType: 'chat',
       sourceId: 'p84-buy-1',
     });
@@ -183,6 +184,7 @@ async function battery(businessId: string) {
       description: 'lace bales',
       amountK: 4_000_000,
       paidK: 0,
+      method: null,
       sourceType: 'chat',
       sourceId: 'p84-buy-2',
     });

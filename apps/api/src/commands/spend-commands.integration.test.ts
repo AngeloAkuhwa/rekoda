@@ -163,6 +163,7 @@ describe('RecordPurchase through the bus', () => {
     description: '50 cartons from the market',
     amountK: 1_400_000,
     paidK: 1_000_000,
+    method: 'cash',
     sourceType: 'chat',
     sourceId: 'draft-pur-1',
     supplierId: null,
@@ -223,6 +224,113 @@ describe('RecordPurchase through the bus', () => {
   });
 });
 
+/**
+ * G-61: one confirmed purchase, paid part by transfer, is one financial event
+ * however it is retried or raced, and a failure inside it leaves nothing.
+ */
+describe('a part-paid transfer purchase, raced and failed (G-61)', () => {
+  const input = (businessId: string): RecordPurchaseCmdInput => ({
+    businessId,
+    description: '10 cartons from Emeka',
+    amountK: 18_000_000,
+    paidK: 10_000_000,
+    method: 'transfer',
+    sourceType: 'chat',
+    sourceId: 'draft-g61',
+    supplierId: null,
+    arrivals: [{ product: 'carton of noodles', quantity: 10, costK: 18_000_000 }],
+  });
+
+  async function nets(businessId: string): Promise<Record<string, number>> {
+    const rows = await withBusiness(appDb, businessId, (tx) =>
+      tx.execute<{ code: string; net: string }>(sql`
+        SELECT a.code, SUM(e.debit_k - e.credit_k)::text AS net
+        FROM ledger_entries e JOIN accounts a ON a.id = e.account_id
+        WHERE e.business_id = ${businessId}::uuid GROUP BY a.code`),
+    );
+    return Object.fromEntries([...rows].map((r) => [r.code, Number(r.net)]));
+  }
+
+  it('two confirmations at once make one purchase, one posting, one arrival, one bill', async () => {
+    const businessId = await seedBusiness();
+    const run = () =>
+      withBusiness(appDb, businessId, (tx) =>
+        bus.run(
+          tx,
+          {
+            businessId,
+            command: 'RecordPurchase',
+            payload: input(businessId),
+            actor: 'system',
+            ingress: 'CHAT',
+            idempotencyKey: 'draft:draft-g61',
+          },
+          () => recordPurchaseWork(tx, input(businessId)),
+        ),
+      );
+    const raced = await Promise.allSettled([run(), run()]);
+    expect(raced.some((r) => r.status === 'fulfilled')).toBe(true);
+
+    expect(await count(businessId, 'expenses')).toBe(1);
+    expect(await count(businessId, 'bills')).toBe(1);
+    expect(await count(businessId, 'ledger_transactions')).toBe(1);
+    expect(await count(businessId, 'outbox_events', "AND type = 'purchase.recorded'")).toBe(1);
+    const product = await withBusiness(appDb, businessId, (tx) =>
+      stockRepo.productByName(tx, businessId, 'carton of noodles'),
+    );
+    expect(product?.onHand).toBe(10);
+    /* Inventory 1000-series, Bank 1020 for the paid part, AP 2000 for the
+     * rest, and Cash untouched. */
+    const net = await nets(businessId);
+    expect(net['1020']).toBe(-10_000_000);
+    expect(net['1000'] ?? 0).toBe(0);
+    expect(Object.values(net).reduce((a, b) => a + b, 0)).toBe(0);
+  });
+
+  it('a failure at the last write takes the posting, the row, the bill and the stock down', async () => {
+    const businessId = await seedBusiness();
+    expect(businessId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+    const { db: ownerDb, close: closeOwner } = createDb(urls.owner, { max: 1 });
+    await ownerDb.execute(sql`DROP TRIGGER IF EXISTS g61_fail_purchase_outbox ON outbox_events`);
+    await ownerDb.execute(sql`
+      CREATE OR REPLACE FUNCTION g61_fail_purchase_outbox() RETURNS trigger
+      LANGUAGE plpgsql AS $$
+      BEGIN
+        IF NEW.business_id = '${sql.raw(businessId)}'::uuid AND NEW.type = 'purchase.recorded' THEN
+          RAISE EXCEPTION 'g61: forced failure at the last write';
+        END IF;
+        RETURN NEW;
+      END $$`);
+    await ownerDb.execute(sql`
+      CREATE TRIGGER g61_fail_purchase_outbox BEFORE INSERT ON outbox_events
+      FOR EACH ROW EXECUTE FUNCTION g61_fail_purchase_outbox()`);
+    try {
+      const failed = await withBusiness(appDb, businessId, (tx) =>
+        recordPurchaseWork(tx, input(businessId)),
+      ).then(
+        () => null,
+        (error: unknown) => error as Error & { cause?: unknown },
+      );
+      expect(String(failed) + String(failed?.cause)).toContain('g61: forced failure');
+    } finally {
+      await ownerDb.execute(sql`DROP TRIGGER IF EXISTS g61_fail_purchase_outbox ON outbox_events`);
+      await ownerDb.execute(sql`DROP FUNCTION IF EXISTS g61_fail_purchase_outbox()`);
+      await closeOwner();
+    }
+    for (const table of [
+      'expenses',
+      'bills',
+      'ledger_transactions',
+      'ledger_entries',
+      'inventory_movements',
+      'outbox_events',
+      'doc_counters',
+    ]) {
+      expect(await count(businessId, table), table).toBe(0);
+    }
+  });
+});
+
 describe('the announcements reach the production dispatcher', () => {
   it('spend events are types the dispatcher handles', async () => {
     const businessId = await seedBusiness();
@@ -241,6 +349,7 @@ describe('the announcements reach the production dispatcher', () => {
         description: 'stock',
         amountK: 200_000,
         paidK: 200_000,
+        method: 'cash',
         sourceType: 'chat',
         sourceId: 'draft-d2',
         arrivals: [],

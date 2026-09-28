@@ -1158,7 +1158,9 @@ export class ReportsController {
     @Body() body: unknown,
   ): Promise<ReceivePurchaseOrderResponse> {
     const parsed = receivePurchaseOrderRequest.safeParse(body);
-    if (!parsed.success) throw new BadRequestException('the PO number and what was paid');
+    if (!parsed.success) {
+      throw new BadRequestException('the PO number, what was paid, and how it was paid');
+    }
     const businessId = request.auth!.businessId;
     const poNumber = parsed.data.poNumber.toUpperCase();
 
@@ -1191,6 +1193,9 @@ export class ReportsController {
         description: `Purchase order ${poNumber}`,
         amountK: po.totalK,
         paidK: parsed.data.paidK,
+        /* The account the paid part left, required by the request whenever
+         * something was paid (G-61); nothing paid funds no account. */
+        method: parsed.data.paidK > 0 ? (parsed.data.method ?? null) : null,
         sourceType: 'purchase_order',
         sourceId: po.id,
         /* Every line arrives with the money: receiving a PO is exactly the

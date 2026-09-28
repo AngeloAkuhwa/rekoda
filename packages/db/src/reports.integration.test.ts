@@ -114,6 +114,7 @@ async function seedTradingMonth(businessId: string): Promise<{ invoiceNumber: st
       description: 'ankara fabric',
       amountK: 5_000_000,
       paidK: 2_000_000,
+      method: 'cash',
       sourceType: 'chat',
       sourceId: 'draft-3',
     });

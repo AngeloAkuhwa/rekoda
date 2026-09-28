@@ -157,6 +157,7 @@ describe('the golden business (§32)', () => {
         description: 'Brazilian wigs, 10 units',
         amountK: 200_000,
         paidK: 50_000,
+        method: 'cash',
         sourceType: 'dashboard',
         sourceId: 'golden-po-1',
         supplierId: supplier.supplierId,

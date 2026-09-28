@@ -48,6 +48,7 @@ const buy = (businessId: string, amountK: number, paidK: number, description = '
       description,
       amountK,
       paidK,
+      method: 'cash',
       sourceType: 'chat',
       sourceId: `draft-${Math.abs(amountK - paidK)}`,
     }),

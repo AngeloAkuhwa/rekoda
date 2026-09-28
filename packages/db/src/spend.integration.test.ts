@@ -95,6 +95,7 @@ describe('a stock purchase', () => {
         description: 'ankara fabric',
         amountK: 5_000_000,
         paidK: 2_000_000,
+        method: 'cash',
         sourceType: 'chat',
         sourceId: 'draft-y',
       }),
@@ -121,12 +122,162 @@ describe('a stock purchase', () => {
         description: 'thread',
         amountK: 500_000,
         paidK: 500_000,
+        method: 'cash',
         sourceType: 'chat',
         sourceId: 'draft-z',
       }),
     );
     const entries = await entriesOf(businessId);
     expect(entries.some((e) => e.account === 'ACCOUNTS_PAYABLE')).toBe(false);
+  });
+});
+
+/**
+ * G-61: the paid part of a purchase leaves the account the merchant named.
+ * The unpaid rest is ACCOUNTS_PAYABLE whatever the method, and a paid amount
+ * with no method is refused here, whoever the caller is.
+ */
+describe('a stock purchase posts its paid part to the account it left (G-61)', () => {
+  async function purchase(
+    businessId: string,
+    paidK: number,
+    method: 'cash' | 'transfer' | null,
+    sourceId = `draft-${paidK}-${method}`,
+  ) {
+    return withBusiness(db, businessId, (tx) =>
+      spendRepo.recordPurchase(tx, {
+        businessId,
+        description: '10 cartons',
+        amountK: 18_000_000,
+        paidK,
+        method,
+        sourceType: 'chat',
+        sourceId,
+      }),
+    );
+  }
+
+  /** Net per account for this business: debit minus credit. */
+  async function nets(businessId: string): Promise<Record<string, number>> {
+    const out: Record<string, number> = {};
+    for (const e of await entriesOf(businessId)) {
+      out[e.account] = (out[e.account] ?? 0) + Number(e.debitK) - Number(e.creditK);
+    }
+    return out;
+  }
+
+  const cases = [
+    {
+      name: 'fully paid cash',
+      paidK: 18_000_000,
+      method: 'cash',
+      ledger: { INVENTORY: 18_000_000, CASH: -18_000_000 },
+      register: 'cash',
+      billK: null,
+    },
+    {
+      name: 'fully paid transfer',
+      paidK: 18_000_000,
+      method: 'transfer',
+      ledger: { INVENTORY: 18_000_000, BANK: -18_000_000 },
+      register: 'transfer',
+      billK: null,
+    },
+    {
+      name: 'on credit',
+      paidK: 0,
+      method: null,
+      ledger: { INVENTORY: 18_000_000, ACCOUNTS_PAYABLE: -18_000_000 },
+      register: 'credit',
+      billK: 18_000_000,
+    },
+    {
+      name: 'part paid cash',
+      paidK: 10_000_000,
+      method: 'cash',
+      ledger: { INVENTORY: 18_000_000, CASH: -10_000_000, ACCOUNTS_PAYABLE: -8_000_000 },
+      register: 'cash',
+      billK: 8_000_000,
+    },
+    {
+      name: 'part paid transfer',
+      paidK: 10_000_000,
+      method: 'transfer',
+      ledger: { INVENTORY: 18_000_000, BANK: -10_000_000, ACCOUNTS_PAYABLE: -8_000_000 },
+      register: 'transfer',
+      billK: 8_000_000,
+    },
+  ] as const;
+
+  for (const c of cases) {
+    it(`${c.name}: the ledger, the register and the bill agree`, async () => {
+      const businessId = await seedBusiness();
+      const recorded = await purchase(businessId, c.paidK, c.method);
+      expect(recorded.owedK).toBe(18_000_000 - c.paidK);
+
+      expect(await nets(businessId)).toEqual(c.ledger);
+
+      const rows = await withBusiness(db, businessId, (tx) =>
+        spendRepo.expensesFor(tx, businessId),
+      );
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ amountK: 18_000_000, method: c.register });
+
+      const bills = await withBusiness(db, businessId, (tx) => spendRepo.billsFor(tx, businessId));
+      if (c.billK === null) {
+        expect(bills).toHaveLength(0);
+      } else {
+        expect(bills).toHaveLength(1);
+        expect(Number(bills[0]!.totalK)).toBe(c.billK);
+      }
+    });
+  }
+
+  it('refuses a paid amount with no account, writing nothing at all', async () => {
+    const businessId = await seedBusiness();
+    const refused = await purchase(businessId, 10_000_000, null).then(
+      () => null,
+      (error: unknown) => error as Error,
+    );
+    expect(refused?.name).toBe('PaymentMethodRequiredError');
+
+    const [counts] = [
+      ...(await withBusiness(db, businessId, (tx) =>
+        tx.execute<Record<string, number>>(sql`
+          SELECT
+            (SELECT count(*)::int FROM expenses WHERE business_id = ${businessId}::uuid) AS expenses,
+            (SELECT count(*)::int FROM bills WHERE business_id = ${businessId}::uuid) AS bills,
+            (SELECT count(*)::int FROM ledger_transactions
+              WHERE business_id = ${businessId}::uuid) AS postings,
+            (SELECT count(*)::int FROM doc_counters WHERE business_id = ${businessId}::uuid) AS counters
+        `),
+      )),
+    ];
+    expect(counts).toEqual({ expenses: 0, bills: 0, postings: 0, counters: 0 });
+  });
+
+  it('a withdrawn transfer purchase reverses Bank, never Cash', async () => {
+    const businessId = await seedBusiness();
+    const recorded = await purchase(businessId, 10_000_000, 'transfer');
+    const outcome = await withBusiness(db, businessId, (tx) =>
+      spendRepo.voidExpense(tx, businessId, recorded.expenseId, 'never delivered', 'user:1'),
+    );
+    expect(outcome).toMatchObject({ outcome: 'voided', kind: 'purchase' });
+
+    const after = await nets(businessId);
+    expect(after).toEqual({ INVENTORY: 0, BANK: 0, ACCOUNTS_PAYABLE: 0 });
+    expect(after).not.toHaveProperty('CASH');
+  });
+
+  it('a withdrawn cash purchase reverses Cash, never Bank', async () => {
+    const businessId = await seedBusiness();
+    const recorded = await purchase(businessId, 18_000_000, 'cash');
+    await withBusiness(db, businessId, (tx) =>
+      spendRepo.voidExpense(tx, businessId, recorded.expenseId, 'never delivered', 'user:1'),
+    );
+    const after = await nets(businessId);
+    expect(after).toEqual({ INVENTORY: 0, CASH: 0 });
+    expect(after).not.toHaveProperty('BANK');
   });
 });
 
@@ -157,6 +308,7 @@ describe('the spend register', () => {
         description: 'ankara bales',
         amountK: 5_000_000,
         paidK: 2_000_000,
+        method: 'cash',
         sourceType: 'chat',
         sourceId: 'd3',
       });
@@ -189,6 +341,7 @@ describe('the spend register', () => {
         description: 'lace',
         amountK: 900_000,
         paidK: 900_000,
+        method: 'cash',
         sourceType: 'chat',
         sourceId: 'd2',
       });
@@ -207,6 +360,7 @@ describe('the spend register', () => {
         description: 'ankara bales',
         amountK: 5_000_000,
         paidK: 2_000_000,
+        method: 'cash',
         sourceType: 'chat',
         sourceId: 'd1',
       }),
@@ -223,6 +377,7 @@ describe('the spend register', () => {
         description: 'thread',
         amountK: 500_000,
         paidK: 500_000,
+        method: 'cash',
         sourceType: 'chat',
         sourceId: 'd1',
       }),
@@ -329,6 +484,7 @@ describe('withdrawing an entry', () => {
         description: 'ankara bales',
         amountK: 5_000_000,
         paidK: 2_000_000,
+        method: 'cash',
         sourceType: 'chat',
         sourceId: 'draft-p',
       }),
@@ -355,6 +511,7 @@ describe('withdrawing an entry', () => {
         description: 'lace',
         amountK: 900_000,
         paidK: 900_000,
+        method: 'cash',
         sourceType: 'chat',
         sourceId: 'draft-s',
       });
@@ -474,6 +631,7 @@ describe('ageing what is owed to suppliers', () => {
         description: `bales ${daysAgo}d`,
         amountK,
         paidK,
+        method: 'cash',
         sourceType: 'chat',
         sourceId: `p-${daysAgo}`,
       }),
@@ -702,6 +860,7 @@ describe('ageing what is owed to suppliers', () => {
           description: 'bales',
           amountK: 5_000_000,
           paidK: 0,
+          method: null,
           sourceType: 'chat',
           sourceId: 'x-1',
         }),

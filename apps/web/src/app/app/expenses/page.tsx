@@ -24,6 +24,7 @@ import { DisposeAssetForm, RecordAssetForm, WithdrawAssetForm } from './AssetFor
 import { CreateRecurringForm, StopRecurringForm, type StoppableSchedule } from './RecurringForms';
 import { SignOutButton } from '../SignOutButton';
 import { heldBy } from '@/lib/capabilities';
+import { paidBy } from './paid-by';
 
 export const metadata: Metadata = {
   title: 'Expenses',
@@ -477,7 +478,7 @@ export default async function ExpensesPage({
                       <td>{entry.description}</td>
                       <td>{entry.kind === 'purchase' ? 'Stock purchase' : 'Expense'}</td>
                       <td>{describeCategory(entry.category)}</td>
-                      <td>{entry.method === 'transfer' ? 'Transfer' : 'Cash'}</td>
+                      <td>{paidBy(entry.method)}</td>
                       <td>{describeSource(entry.sourceType)}</td>
                       <td>{entry.status === 'voided' ? 'Withdrawn' : 'Recorded'}</td>
                       <td className="rk-num">

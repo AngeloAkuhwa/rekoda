@@ -221,20 +221,155 @@ describe('money out — a stock purchase states what is owed', () => {
       amount: 50_000,
       supplierMention: 'Mama Nkechi',
       reportedPayment: 20_000,
+      paymentMethod: 'cash',
     });
     if (gate.gate !== 'CG2') throw new Error('unexpected gate');
     expect(gate.preview).toContain('Stock: ankara fabric');
     expect(gate.preview).toContain('From: Mama Nkechi');
-    expect(gate.preview).toContain('Paid: ₦20,000');
+    expect(gate.preview).toContain('Paid: ₦20,000 by cash');
     expect(gate.preview).toContain('Owing to supplier: ₦30,000');
     expect(gate.paidK).toBe(2_000_000);
   });
 
   it('says "Paid in full" when nothing is owed, not "Owing: ₦0"', () => {
-    const gate = gatePurchase({ description: 'ankara fabric', amount: 50_000 });
+    const gate = gatePurchase({
+      description: 'ankara fabric',
+      amount: 50_000,
+      paymentMethod: 'transfer',
+    });
     if (gate.gate !== 'CG2') throw new Error('unexpected gate');
-    expect(gate.preview).toContain('Paid in full');
+    expect(gate.preview).toContain('Paid in full by transfer');
     expect(gate.preview).not.toContain('Owing');
+  });
+
+  it('names the account the payment left, and none when nothing was paid (G-61)', () => {
+    const cases = [
+      {
+        reportedPayment: 180_000,
+        paymentMethod: 'cash',
+        line: 'Paid in full by cash',
+        method: 'cash',
+      },
+      {
+        reportedPayment: 180_000,
+        paymentMethod: 'transfer',
+        line: 'Paid in full by transfer',
+        method: 'transfer',
+      },
+      {
+        reportedPayment: 100_000,
+        paymentMethod: 'transfer',
+        line: 'Paid: ₦100,000 by transfer',
+        method: 'transfer',
+      },
+      { reportedPayment: 0, paymentMethod: null, line: 'Paid: nothing yet', method: null },
+      /* Nothing paid: a method the model reported anyway is not shown or used. */
+      { reportedPayment: 0, paymentMethod: 'cash', line: 'Paid: nothing yet', method: null },
+    ] as const;
+    for (const c of cases) {
+      const gate = gatePurchase({
+        description: '10 cartons',
+        amount: 180_000,
+        supplierMention: 'Emeka',
+        reportedPayment: c.reportedPayment,
+        paymentMethod: c.paymentMethod,
+      });
+      if (gate.gate !== 'CG2') throw new Error(`unexpected gate for ${c.line}`);
+      expect(gate.preview).toContain(c.line);
+      expect(gate.method).toBe(c.method);
+    }
+    const credit = gatePurchase({
+      description: '10 cartons',
+      amount: 180_000,
+      reportedPayment: 0,
+      paymentMethod: null,
+    });
+    if (credit.gate !== 'CG2') throw new Error('unexpected gate');
+    expect(credit.preview).not.toMatch(/by cash|by transfer/);
+  });
+
+  it('asks how money was paid rather than guessing an account (G-61)', () => {
+    for (const paymentMethod of [null, undefined, 'unknown']) {
+      const part = gatePurchase({
+        description: '20 bags',
+        amount: 400_000,
+        reportedPayment: 150_000,
+        ...(paymentMethod === undefined ? {} : { paymentMethod }),
+      });
+      if (part.gate !== 'CG1') throw new Error(`a paid purchase with ${paymentMethod} must ask`);
+      expect(part.question).toContain(
+        'You paid ₦150,000 for this stock. Was that cash or transfer?',
+      );
+    }
+    /* "Bought 20 bags for 400k" says nothing about payment, which reads as
+     * paid in full: still an account nobody named, so still a question. */
+    const implied = gatePurchase({ description: '20 bags', amount: 400_000 });
+    if (implied.gate !== 'CG1') throw new Error('an implied full payment with no method must ask');
+    expect(implied.question).toContain('did you pay it all by cash or by transfer?');
+    expect(implied.question).not.toMatch(/[–—]/);
+  });
+
+  it('never previews a null method, and asks about a ₦0 purchase instead of posting it', () => {
+    /* Every purchase shape the contract allows, including amount 0. */
+    for (const amount of [0, 180_000]) {
+      for (const reportedPayment of [null, 0, amount]) {
+        for (const paymentMethod of [null, undefined, 'unknown', 'pos', 'cash', 'transfer']) {
+          const gate = gatePurchase({
+            description: 'stock',
+            amount,
+            reportedPayment,
+            ...(paymentMethod === undefined ? {} : { paymentMethod }),
+          });
+          const text = gate.gate === 'CG1' ? gate.question : gate.preview;
+          expect(text).not.toMatch(/\bnull\b|\bundefined\b/);
+          if (gate.gate === 'CG2' && gate.paidK === 0) {
+            expect(gate.preview).not.toMatch(/by cash|by transfer/);
+          }
+        }
+      }
+    }
+    const zero = gatePurchase({ description: 'stock', amount: 0, reportedPayment: 0 });
+    if (zero.gate !== 'CG1') throw new Error('a ₦0 purchase must be asked about');
+    expect(zero.question).toContain('I read the stock as costing ₦0');
+    expect(zero.reason).toBe('zero_amount');
+  });
+
+  it('marks the funding-source question as such, and only that one', () => {
+    const pos = gatePurchase({
+      description: 's',
+      amount: 100,
+      reportedPayment: 100,
+      paymentMethod: 'pos',
+    });
+    const unknown = gatePurchase({ description: 's', amount: 100, reportedPayment: 50 });
+    const over = gatePurchase({
+      description: 's',
+      amount: 100,
+      reportedPayment: 200,
+      paymentMethod: 'cash',
+    });
+    expect(pos.gate === 'CG1' && pos.reason).toBe('funding_source');
+    expect(unknown.gate === 'CG1' && unknown.reason).toBe('funding_source');
+    expect(over.gate === 'CG1' && over.reason).toBeUndefined();
+  });
+
+  it('asks a POS or card payer for the ACCOUNT, not "cash or transfer" again (owner ruling)', () => {
+    for (const reportedPayment of [150_000, null]) {
+      const gate = gatePurchase({
+        description: '20 bags',
+        amount: 400_000,
+        reportedPayment,
+        paymentMethod: 'pos',
+      });
+      if (gate.gate !== 'CG1') throw new Error('a POS purchase with no account must ask');
+      expect(gate.question).toContain(
+        'I know you paid by POS. I just need the source of the money for your books: ' +
+          'did it come from your bank account or from physical cash?',
+      );
+      expect(gate.question).toContain('paid by POS from my bank account');
+      expect(gate.question).not.toContain('Was that cash or transfer?');
+      expect(gate.question).not.toMatch(/[–—]/);
+    }
   });
 
   it('CG1: paying MORE than the stock cost is a question with the figures in it', () => {
@@ -430,6 +565,7 @@ describe('a purchase that is also a delivery', () => {
     amount: 50_000,
     supplierMention: 'Mama Nkechi',
     reportedPayment: 50_000,
+    paymentMethod: 'cash',
   };
 
   it('names the stock arriving in the preview', () => {

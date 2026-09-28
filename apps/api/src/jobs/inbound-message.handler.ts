@@ -930,7 +930,16 @@ async function deterministicReply(
   if (intent.kind === 'deny' || intent.kind === 'cancel') {
     // A refusal after a preview discards the draft rather than leaving it to
     // be confirmed by an accidental "yes" ten minutes later.
-    const dropped = await conversationsRepo.supersedePendingDrafts(tx, businessId);
+    /* A "no" straight after a retired purchase question closes that
+     * question too (G-61). Only when it is the LAST thing asked: a question
+     * answered long ago by a resend is not what this "no" is about. */
+    const latest = await conversationsRepo.latestDraft(tx, businessId);
+    const closedQuestion =
+      latest?.state === 'abandoned'
+        ? await conversationsRepo.closeRetiredDraft(tx, businessId, latest.id)
+        : false;
+    const dropped =
+      (await conversationsRepo.supersedePendingDrafts(tx, businessId)) + (closedQuestion ? 1 : 0);
     return dropped > 0
       ? replies.cancelled()
       : intent.kind === 'cancel'
@@ -1354,8 +1363,34 @@ async function confirmPendingDraft(
   businessId: string,
   retrying: boolean,
 ): Promise<Reply | null> {
+  /*
+   * G-61: the last thing the merchant was shown may be a purchase question
+   * answered by sending the purchase again, whose draft is retired. A "yes"
+   * straight after it is aimed at that question, never at some OLDER
+   * preview still pending behind it: the question is asked again and
+   * nothing is claimed.
+   */
+  const latest = await conversationsRepo.latestDraft(tx, businessId);
+  /* `abandoned` is only ever a retired purchase question; a draft the
+   * merchant cancelled is `superseded` and is never asked again. */
+  if (latest?.state === 'abandoned') {
+    const asked = latest.command as { intent?: string } & Record<string, unknown>;
+    if (asked.intent === 'RecordPurchase') {
+      const gate = gatePurchase(asked as never);
+      if (gate.gate === 'CG1') return replies.arithmeticQuestion(gate.question);
+    }
+    /* Never fall through to an older preview behind the question, even if
+     * the stored question no longer gates (rules changed since). */
+    return replies.nothingToConfirm();
+  }
+
   const draft = await conversationsRepo.pendingDraft(tx, businessId);
   if (!draft) return replies.nothingToConfirm();
+  /* A preview from before a retired question is never confirmed by a yes,
+   * including a double-tapped yes after the replacement was saved. */
+  if (await conversationsRepo.isBehindRetiredQuestion(tx, businessId, draft.id)) {
+    return replies.nothingToConfirm();
+  }
 
   const command = draft.command as { intent?: string } & Record<string, unknown>;
 
@@ -1868,6 +1903,8 @@ async function confirmPurchase(
     description: String(command['description'] ?? ''),
     amountK: gate.amountK,
     paidK: gate.paidK,
+    /* The account the merchant named, which the gate required (G-61). */
+    method: gate.method,
     sourceType: 'chat',
     sourceId: draftId,
     supplierId,
@@ -2388,6 +2425,18 @@ async function interpretedReply(
     confirmationContext: answered.confirmationContext ?? null,
   });
 
+  /* G-61: the merchant answers a funding-source question by sending the
+   * purchase again. The draft that asked stays on the record, abandoned,
+   * so only the replacement can ever be confirmed: a second "yes" finds
+   * nothing to resurrect, and nothing can record the purchase twice. */
+  if (answered.retireDraft) {
+    /* Only on the first delivery: a replayed message changes nothing. The
+     * question becomes the conversation, so a preview left waiting from
+     * before it is closed, not left pending and never confirmable. */
+    if (draft.isNew) await conversationsRepo.supersedeDraftsBefore(tx, businessId, draft.id);
+    await conversationsRepo.retireDraft(tx, businessId, draft.id);
+  }
+
   /* Appendix D: a preview that shows stock DISAPPEARING opens the
    * confirmation the yes will claim, recording the exact consequence the
    * merchant read. Additions stay STANDARD and open nothing. */
@@ -2429,6 +2478,9 @@ async function acknowledge(
   linkAsked: boolean;
   /** What an overpayment preview showed, stored on the draft (OWN-16). */
   confirmationContext?: ConfirmationContext;
+  /** The answer was the G-61 funding-source question: the draft is kept for
+   * the record but must not stay confirmable. */
+  retireDraft?: boolean;
 }> {
   /**
    * The link question rides a PREVIEW and nothing else. A clarification, an
@@ -2588,7 +2640,12 @@ async function acknowledge(
           : null;
   if (!gate) return plain(replies.notYet('Recording that kind of entry'));
 
-  if (gate.gate === 'CG1') return plain(replies.arithmeticQuestion(gate.question));
+  if (gate.gate === 'CG1') {
+    const asked = plain(replies.arithmeticQuestion(gate.question));
+    /* Answered by sending the purchase again (funding source, ₦0): the
+     * asking draft is retired so only the replacement is confirmable. */
+    return 'reason' in gate && gate.reason !== undefined ? { ...asked, retireDraft: true } : asked;
+  }
 
   /* A sale names a customer; an expense and a purchase do not. Only the first
    * ends in a `yes` that is about the person the question asks about. */

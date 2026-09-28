@@ -512,6 +512,135 @@ export async function supersedePendingDrafts(tx: TenantDb, businessId: string): 
 }
 
 /**
+ * Supersede every draft still pending from BEFORE this one (G-61).
+ *
+ * A purchase question the merchant answers by sending the purchase again
+ * becomes the conversation: a preview left waiting from before it is no
+ * longer what a "yes" or a "no" is about. Superseding it keeps its record
+ * and stops it lingering, pending but never confirmable, where a later
+ * stray "no" would count it as cancelled. The ordinal decides "before".
+ */
+export async function supersedeDraftsBefore(
+  tx: TenantDb,
+  businessId: string,
+  draftId: string,
+): Promise<number> {
+  const rows = await tx.execute<{ id: string }>(sql`
+    UPDATE command_drafts SET state = 'superseded', updated_at = now()
+     WHERE business_id = ${businessId}::uuid
+       AND state = 'pending'
+       AND insertion_seq < (
+         SELECT d.insertion_seq FROM command_drafts d
+          WHERE d.id = ${draftId}::uuid AND d.business_id = ${businessId}::uuid)
+    RETURNING id`);
+  return [...rows].length;
+}
+
+/**
+ * The newest draft in ANY state, by the database ordinal (G-61).
+ *
+ * A retired clarification is `abandoned`, so `pendingDraft` skips it; this
+ * is how a "yes" sent straight after the question can tell that the thing
+ * the merchant is looking at is that question, not some older preview.
+ */
+export async function latestDraft(
+  tx: TenantDb,
+  businessId: string,
+): Promise<{ id: string; state: string; command: unknown } | null> {
+  const rows = await tx
+    .select({ id: commandDrafts.id, state: commandDrafts.state, command: commandDrafts.command })
+    .from(commandDrafts)
+    .where(eq(commandDrafts.businessId, businessId))
+    .orderBy(desc(commandDrafts.insertionSeq))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+/**
+ * Retire ONE pending draft, keeping it on the record (G-61).
+ *
+ * A purchase that could only be answered with a question the merchant
+ * answers by sending the purchase AGAIN (the funding source, a ₦0 amount)
+ * is stored for the audit trail but must never be confirmable: a later
+ * "yes" that claimed it would ask again and invite the same purchase twice.
+ * `abandoned`, not `superseded`: a retired question is still the last
+ * thing the merchant was asked, which a cancelled draft is not. Only this
+ * draft, and only while pending; every other draft is left alone.
+ *
+ * Nothing else writes `abandoned` to a draft (the 0008 comment predates
+ * this use): a future sweep that did would make a "yes" re-ask it.
+ */
+export async function retireDraft(
+  tx: TenantDb,
+  businessId: string,
+  draftId: string,
+): Promise<boolean> {
+  const updated = await tx
+    .update(commandDrafts)
+    .set({ state: 'abandoned', updatedAt: new Date() })
+    .where(
+      and(
+        eq(commandDrafts.businessId, businessId),
+        eq(commandDrafts.id, draftId),
+        eq(commandDrafts.state, 'pending'),
+      ),
+    )
+    .returning({ id: commandDrafts.id });
+  return updated.length === 1;
+}
+
+/**
+ * A "no" to a retired question closes it (G-61): it becomes an ordinary
+ * cancelled draft, so a later "yes" does not ask it again. Only the one
+ * draft named, and only while retired: a question already answered by a
+ * resend keeps its `abandoned` state on the record.
+ */
+export async function closeRetiredDraft(
+  tx: TenantDb,
+  businessId: string,
+  draftId: string,
+): Promise<boolean> {
+  const updated = await tx
+    .update(commandDrafts)
+    .set({ state: 'superseded', updatedAt: new Date() })
+    .where(
+      and(
+        eq(commandDrafts.businessId, businessId),
+        eq(commandDrafts.id, draftId),
+        eq(commandDrafts.state, 'abandoned'),
+      ),
+    )
+    .returning({ id: commandDrafts.id });
+  return updated.length === 1;
+}
+
+/**
+ * Whether a retired purchase question was asked AFTER this draft (G-61).
+ *
+ * The merchant answers such a question by sending the purchase again, so
+ * a preview left waiting from before it is no longer what a "yes" is
+ * about: neither straight after the question nor after the replacement is
+ * confirmed (a double-tapped yes). The older draft stays pending, never
+ * confirmable by yes; a "no" clears it as before.
+ */
+export async function isBehindRetiredQuestion(
+  tx: TenantDb,
+  businessId: string,
+  draftId: string,
+): Promise<boolean> {
+  const rows = await tx.execute<{ behind: boolean }>(sql`
+    SELECT EXISTS (
+      SELECT 1 FROM command_drafts q
+       WHERE q.business_id = ${businessId}::uuid
+         AND q.state = 'abandoned'
+         AND q.insertion_seq > (
+           SELECT d.insertion_seq FROM command_drafts d
+            WHERE d.id = ${draftId}::uuid AND d.business_id = ${businessId}::uuid)
+    ) AS behind`);
+  return [...rows][0]?.behind === true;
+}
+
+/**
  * Fill in the body of a message that was already claimed.
  *
  * The voice path inserts the row FIRST, as its idempotency claim, before the

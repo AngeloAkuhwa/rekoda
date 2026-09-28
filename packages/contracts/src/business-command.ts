@@ -102,6 +102,13 @@ export const RecordPurchase = z.object({
   amount: naira,
   reportedPayment: naira.nullable(),
   /**
+   * How the merchant said they paid, and only when they said it (G-61).
+   * Cash and transfer leave different accounts, so a paid purchase with no
+   * stated method is asked about, never defaulted. Optional because nothing
+   * paid needs no method, and because drafts written before G-61 carry none.
+   */
+  paymentMethod: PaymentMethod.nullish(),
+  /**
    * The stock that arrived, when the merchant named a countable thing and a
    * number for it. "bought 10 crates of ankara for 50k" is both a payment and
    * a delivery, and until these existed only the payment was recorded.

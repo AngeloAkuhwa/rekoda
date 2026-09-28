@@ -27,6 +27,7 @@ import {
   postExpense,
   postJournal,
   postPurchase,
+  PaymentMethodRequiredError,
   reversal,
   type PaymentMethod,
   type LedgerLine,
@@ -73,6 +74,13 @@ export interface RecordPurchaseInput {
   amountK: number;
   /** What the merchant says they have paid so far. */
   paidK: number;
+  /**
+   * The account the PAID part left (G-61). Required whenever `paidK > 0`
+   * and refused when missing: Cash on Hand and Bank are different lines on
+   * the balance sheet, and this layer never picks one. Irrelevant, and may
+   * be null, when nothing was paid.
+   */
+  method: 'cash' | 'transfer' | null;
   sourceType: string;
   sourceId: string;
   /** The vaulted supplier this purchase came from (migration 0050), when
@@ -147,11 +155,16 @@ export async function recordPurchase(
   tx: TenantDb,
   input: RecordPurchaseInput,
 ): Promise<RecordedSpend> {
+  /* Refused before anything is written, whoever the caller is: a paid
+   * amount with no account would otherwise land on a default one. */
+  if (input.paidK > 0 && input.method !== 'cash' && input.method !== 'transfer') {
+    throw new PaymentMethodRequiredError(`Stock: ${input.description}`, input.paidK);
+  }
   const posting = postPurchase({
     memo: `Stock: ${input.description}`,
     amountK: input.amountK,
     paidK: input.paidK,
-    method: 'cash',
+    method: input.paidK > 0 ? input.method : null,
   });
   const ledgerTransactionId = await writePosting(
     tx,
@@ -169,9 +182,10 @@ export async function recordPurchase(
       /** The fixed marker the read layer filters on — not merchant testimony. */
       category: 'stock',
       amountK: input.amountK,
-      /* The contract carries no method for purchases yet; 'cash' is the
-       * honest default for money out of pocket that no provider tracks. */
-      method: 'cash',
+      /* How the paid part left, or 'credit' when nothing was paid: the
+       * register says "Paid by", and a purchase wholly on credit was paid by
+       * nothing. Never the column's 'cash' default (G-61). */
+      method: input.paidK > 0 ? (input.method as 'cash' | 'transfer') : 'credit',
       sourceType: input.sourceType,
       sourceId: input.sourceId,
       supplierId: input.supplierId ?? null,

@@ -185,6 +185,12 @@ export interface PurchaseLike {
   /** Stock that arrived with the purchase, when the merchant counted it. */
   readonly productMention?: string | null;
   readonly quantity?: number | null;
+  /**
+   * How the PAID part left the business, as the merchant said it (G-61).
+   * Only cash and transfer name an account Rekoda posts to; anything else,
+   * including nothing, is not known, and a paid amount then needs asking.
+   */
+  readonly paymentMethod?: string | null | undefined;
 }
 
 /**
@@ -193,8 +199,25 @@ export interface PurchaseLike {
  * inventing a subtotal nobody stated.
  */
 export type SpendGate =
-  | { gate: 'CG1'; question: string }
-  | { gate: 'CG2'; preview: string; amountK: number; paidK: number };
+  | {
+      gate: 'CG1';
+      question: string;
+      /**
+       * Set when the merchant answers the question by sending the purchase
+       * AGAIN (G-61): the funding-source clarification, and the ₦0 amount.
+       * The draft that raised it must never stay confirmable beside the
+       * replacement. Unset for a question answered some other way.
+       */
+      reason?: 'funding_source' | 'zero_amount';
+    }
+  | {
+      gate: 'CG2';
+      preview: string;
+      amountK: number;
+      paidK: number;
+      /** The account the paid part leaves. Null only when nothing was paid. */
+      method: 'cash' | 'transfer' | null;
+    };
 
 const toKobo = (naira: number): number => Math.round(naira * 100);
 
@@ -210,9 +233,10 @@ export function gateExpense(expense: ExpenseLike): SpendGate {
   lines.push(`Expense: ${expense.description}`);
   if (expense.category) lines.push(`Category: ${expense.category}`);
   lines.push(`*Amount: ${formatKobo(amountK)}*`);
-  lines.push(`Paid by ${expense.paymentMethod === 'transfer' ? 'transfer' : 'cash'}`);
+  const method = expense.paymentMethod === 'transfer' ? 'transfer' : 'cash';
+  lines.push(`Paid by ${method}`);
   lines.push('', 'Reply *yes* to save it, or tell me what to change.');
-  return { gate: 'CG2', preview: lines.join('\n'), amountK, paidK: amountK };
+  return { gate: 'CG2', preview: lines.join('\n'), amountK, paidK: amountK, method };
 }
 
 /**
@@ -222,6 +246,19 @@ export function gateExpense(expense: ExpenseLike): SpendGate {
  */
 export function gatePurchase(purchase: PurchaseLike): SpendGate {
   const amountK = toKobo(purchase.amount);
+  /* Nothing costs nothing: a ₦0 purchase cannot be posted (a ledger line
+   * must carry a debit or a credit, migration 0070), so it is asked about,
+   * never previewed. */
+  if (amountK === 0) {
+    return {
+      gate: 'CG1',
+      reason: 'zero_amount',
+      question:
+        'I read the stock as costing ₦0, which I cannot record. What did it cost?' +
+        '\n\nSend it again with the amount, for example: ' +
+        '"bought 10 cartons from Emeka for 180k, paid transfer".',
+    };
+  }
   const paidK = purchase.reportedPayment == null ? amountK : toKobo(purchase.reportedPayment);
 
   if (paidK > amountK) {
@@ -231,6 +268,48 @@ export function gatePurchase(purchase: PurchaseLike): SpendGate {
         `You said the stock cost ${formatKobo(amountK)} but that you paid ` +
         `${formatKobo(paidK)}, which is ${formatKobo(paidK - amountK)} more.\n\n` +
         'Did I get a figure wrong? Tell me the right one.',
+    };
+  }
+
+  /*
+   * Where the paid part came from (G-61). Cash on Hand and Bank are different
+   * lines on the balance sheet, so a payment whose account nobody named is a
+   * question, never a default. With nothing paid there is no account to name,
+   * and none is asked for or shown.
+   */
+  const method =
+    purchase.paymentMethod === 'cash' || purchase.paymentMethod === 'transfer'
+      ? purchase.paymentMethod
+      : null;
+  if (paidK > 0 && method === null) {
+    /*
+     * POS or card names the CHANNEL, not the account the money left, and the
+     * books need the account (owner ruling OWN-17): money out of the
+     * bank is Bank, physical cash is Cash. Asking "cash or transfer?" again
+     * of somebody who just said POS would loop, so they are asked where the
+     * money came from, and shown how to say it.
+     */
+    if (purchase.paymentMethod === 'pos') {
+      return {
+        gate: 'CG1',
+        reason: 'funding_source',
+        question:
+          'I know you paid by POS. I just need the source of the money for your books: ' +
+          'did it come from your bank account or from physical cash?' +
+          '\n\nSend it again with where the money came from, for example: ' +
+          '"bought 10 cartons from Emeka for 180k, paid by POS from my bank account".',
+      };
+    }
+    return {
+      gate: 'CG1',
+      reason: 'funding_source',
+      question:
+        (purchase.reportedPayment == null
+          ? `For the ${formatKobo(amountK)} stock, did you pay it all by cash or by transfer? ` +
+            'If you have not paid it all yet, say how much you paid.'
+          : `You paid ${formatKobo(paidK)} for this stock. Was that cash or transfer?`) +
+        '\n\nSend it again with how you paid, for example: ' +
+        '"bought 10 cartons from Emeka for 180k, paid transfer".',
     };
   }
 
@@ -245,13 +324,20 @@ export function gatePurchase(purchase: PurchaseLike): SpendGate {
   if (arriving) lines.push(`Adding to stock: ${arriving.quantity} ${arriving.productMention}`);
   lines.push(`*Amount: ${formatKobo(amountK)}*`);
   if (owedK > 0) {
-    lines.push(`Paid: ${paidK > 0 ? formatKobo(paidK) : 'nothing yet'}`);
+    lines.push(`Paid: ${paidK > 0 ? `${formatKobo(paidK)} by ${method}` : 'nothing yet'}`);
     lines.push(`Owing to supplier: ${formatKobo(owedK)}`);
   } else {
-    lines.push('Paid in full');
+    lines.push(`Paid in full by ${method}`);
   }
   lines.push('', 'Reply *yes* to save it, or tell me what to change.');
-  return { gate: 'CG2', preview: lines.join('\n'), amountK, paidK };
+  /* Nothing paid: no account is funded, whatever the model reported. */
+  return {
+    gate: 'CG2',
+    preview: lines.join('\n'),
+    amountK,
+    paidK,
+    method: paidK > 0 ? method : null,
+  };
 }
 
 /**
