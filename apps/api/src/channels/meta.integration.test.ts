@@ -7,7 +7,8 @@
  * claim about a unique constraint under concurrency.
  */
 import { createHmac, randomBytes } from 'node:crypto';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { Logger } from '@nestjs/common';
 import {
   conversationsRepo,
   createDb,
@@ -9051,13 +9052,32 @@ describe('a short reply continues what Rekoda just asked (Build 6)', () => {
     expect(stubSender.lastText).toBe(STRAY);
   });
 
-  it('a continuation never writes: no draft, no record, and a yes after it confirms nothing new', async () => {
+  it('a continuation never writes a record, and a yes after it confirms nothing new', async () => {
     const business = await seedMerchant();
     await say('wamid.B6-w-ask', HOW_MUCH_DID_I_SELL, 'How much did I sell?');
     const before = await footprint(business.id);
 
     await reply('wamid.B6-w-answer', 'last month');
-    expect(await footprint(business.id)).toEqual(before);
+    /* Only the footprint the same message left before Build 6: one
+     * read-only question draft, which nothing can confirm. */
+    expect(await footprint(business.id)).toEqual({ ...before, drafts: (before.drafts ?? 0) + 1 });
+    expect(await draftStates(business.id)).toEqual(['Query:pending', 'Query:pending']);
+    const stored = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ command: Record<string, unknown>; model: string | null }>(sql`
+        SELECT command, model FROM command_drafts WHERE business_id = ${business.id}::uuid
+         ORDER BY insertion_seq DESC LIMIT 1`),
+    );
+    expect([...stored][0]).toEqual({
+      command: {
+        intent: 'Query',
+        topic: 'sales_summary',
+        customer: null,
+        period: 'custom',
+        periodText: null,
+        format: null,
+      },
+      model: null,
+    });
 
     await reply('wamid.B6-w-yes', 'yes');
     expect(await footprint(business.id)).toMatchObject({
@@ -9285,6 +9305,227 @@ describe('a short reply continues what Rekoda just asked (Build 6)', () => {
     expect(stubSender.lastText).not.toContain(replies.correctionTaken().text);
     /* The question's draft was not superseded as if it had been corrected. */
     expect(await draftStates(business.id)).toEqual(['Query:pending', 'RecordSale:pending']);
+  });
+
+  /* ---- Build 6 final-head round 3 ---- */
+
+  async function addDelegate(businessId: string) {
+    const delegate = await identity.upsertUserByPhone(db, `+${DELEGATE}`);
+    await identity.addMembership(db, businessId, delegate.id, 'delegate');
+  }
+
+  it("a member's resumed read stands between a preview and a later yes, like any question", async () => {
+    const business = await seedMerchant();
+    await addDelegate(business.id);
+
+    await say('wamid.B6-x-ask', HOW_MUCH_DID_I_SELL, 'How much did I sell?', OWNER);
+    expect(stubSender.lastText).toBe(WHICH_PERIOD);
+    await say('wamid.B6-x-sale', A_SALE, 'sold Ada 3 wigs for 300k', DELEGATE);
+    /* The owner's "last month" resumes the owner's question, answered from
+     * SQL, with the delegate's preview older than it. */
+    await reply('wamid.B6-x-answer', 'last month', OWNER);
+    expect(stubSender.lastText).toContain('sales');
+    expect(modelCalls()).toBe(0);
+
+    /* "correct" is about the figure just read, never the older preview. */
+    await reply('wamid.B6-x-correct', 'correct', OWNER);
+    expect(stubSender.lastText).toBe(BEHIND);
+    expect(await footprint(business.id)).toMatchObject({ invoices: 0, postings: 0 });
+    expect((await draftStates(business.id))[1]).toBe('RecordSale:pending');
+  });
+
+  it("a member's resumed read between the two erasure asks breaks the pair: nothing is erased", async () => {
+    const business = await seedMerchant();
+    await addDelegate(business.id);
+    const customer = await customersRepo.createCustomerWithIdentities(
+      db,
+      business.id,
+      'CUSTOMER_T8',
+      [{ facet: 'phone', ciphertext: 'sealed-phone', matchKey: 'mk-b6-erase-x' }],
+    );
+    const facets = () =>
+      withBusiness(db, business.id, (tx) =>
+        customersRepo.identityFacetsFor(tx, business.id, customer.id),
+      );
+
+    await say('wamid.B6-xd-ask', HOW_MUCH_DID_I_SELL, 'How much did I sell?', DELEGATE);
+    expect(stubSender.lastText).toBe(WHICH_PERIOD);
+    await reply('wamid.B6-xd-del1', 'delete my data', OWNER);
+    expect(stubSender.lastText).toContain('Reply *DELETE MY DATA* again');
+
+    await reply('wamid.B6-xd-answer', 'last month', DELEGATE);
+    expect(stubSender.lastText).toContain('sales');
+    expect(modelCalls()).toBe(0);
+
+    await reply('wamid.B6-xd-del2', 'delete my data', OWNER);
+    expect(stubSender.lastText).toContain('Reply *DELETE MY DATA* again');
+    expect(await facets()).toHaveLength(1);
+  });
+
+  it('a junk photo after "Which period?" retires the question', async () => {
+    const business = await seedMerchant();
+    await say('wamid.B6-j-ask', HOW_MUCH_DID_I_SELL, 'How much did I sell?');
+    expect(stubSender.lastText).toBe(WHICH_PERIOD);
+
+    stubSender.media.set('photo-1', {
+      bytes: Buffer.from('JFIF-fake-photo'),
+      mimeType: 'image/jpeg',
+    });
+    stubOcr.answerWith({ text: 'when the beat drops and nobody is ready', confidence: 0.9 });
+    stubTransport.script({
+      toolInput: { type: 'junk' },
+      usage: { inputTokens: 400, outputTokens: 12 },
+      stopReason: 'tool_use',
+    });
+    const photo = messagePayload(OWNER, 'wamid.B6-j-photo', '');
+    const sent = photo.entry[0]!.changes[0]!.value.messages[0]! as Record<string, unknown>;
+    delete sent['text'];
+    sent['type'] = 'image';
+    sent['image'] = { id: 'photo-1', mime_type: 'image/jpeg' };
+    await post(photo);
+    await drain();
+    expect(stubSender.lastText).toBe(replies.notABusinessDocument().text);
+    expect((await continuations(business.id)).map((c) => c.state)).toEqual(['superseded']);
+
+    /* "last month" now answers nothing: the newest thing said was the photo. */
+    await reply('wamid.B6-j-late', 'last month');
+    expect(modelCalls()).toBeGreaterThan(0);
+    expect(stubSender.lastText).toBe(UNCLEAR.clarification);
+  });
+
+  it('a question or an answer that was never delivered is not continued', async () => {
+    const business = await seedMerchant();
+    await seedTwoMonths(business.id);
+
+    /* "Which period?" never reached the merchant. */
+    stubSender.failWith();
+    await say('wamid.B6-f1-ask', HOW_MUCH_DID_I_SELL, 'How much did I sell?');
+    expect((await continuations(business.id)).map((c) => c.state)).toEqual(['superseded']);
+    await reply('wamid.B6-f1-late', 'last month');
+    expect(modelCalls()).toBeGreaterThan(0);
+    expect(stubSender.lastText).toBe(UNCLEAR.clarification);
+
+    /* Nor did the resumed answer: there is no read to follow up. */
+    await say('wamid.B6-f2-ask', HOW_MUCH_DID_I_SELL, 'How much did I sell?');
+    stubSender.failWith();
+    await reply('wamid.B6-f2-answer', 'last month');
+    expect(modelCalls()).toBe(0);
+    expect((await continuations(business.id)).map((c) => `${c.kind}:${c.state}`)).toEqual([
+      'clarification:superseded',
+      'clarification:consumed',
+      'query:superseded',
+    ]);
+    await reply('wamid.B6-f2-follow', 'what about this month');
+    expect(modelCalls()).toBeGreaterThan(0);
+    expect(stubSender.lastText).toBe(UNCLEAR.clarification);
+  });
+
+  it('a "no" after nothing but a question cancels nothing and says it cancelled nothing', async () => {
+    const business = await seedMerchant();
+    await say('wamid.B6-no-ask', THIS_MONTH, 'How much did I sell this month?');
+    const sentBefore = stubSender.sent.length;
+
+    await reply('wamid.B6-no', 'no');
+    /* What a "no" with nothing waiting gets: no "Cancelled". */
+    expect(stubSender.sent.slice(sentBefore).map((m) => m.text)).not.toContain(
+      replies.cancelled().text,
+    );
+    expect(stubSender.sent.length).toBe(sentBefore);
+    /* The read is still dropped, as every pending draft is. */
+    expect(await draftStates(business.id)).toEqual(['Query:superseded']);
+  });
+
+  it("a question's draft never keeps the merchant's words for the window", async () => {
+    const business = await seedMerchant();
+    await say(
+      'wamid.B6-pt',
+      { ...HOW_MUCH_DID_I_SELL, period: 'custom', periodText: 'the month I sold to Ada' },
+      'sales in the month I sold to Ada',
+    );
+    const rows = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ command: Record<string, unknown> }>(sql`
+        SELECT command FROM command_drafts WHERE business_id = ${business.id}::uuid`),
+    );
+    const stored = [...rows].map((r) => r.command);
+    expect(stored).toHaveLength(1);
+    expect(stored[0]!['periodText']).toBeNull();
+    expect(JSON.stringify(stored)).not.toContain('Ada');
+  });
+
+  it('a named window with words that draw a different window, or none, is asked about', async () => {
+    const business = await seedMerchant();
+    const { lastMonthLabel } = await seedTwoMonths(business.id);
+    const asked = async (wamid: string, period: string, periodText: string) => {
+      await say(wamid, { ...HOW_MUCH_DID_I_SELL, period, periodText }, `sales ${periodText}`);
+      return stubSender.lastText;
+    };
+
+    /* Words core cannot draw: said so, never answered for the named window. */
+    expect(await asked('wamid.B6-t7-1', 'month', 'yesterday')).toBe(NOT_COUNTABLE);
+    expect(await asked('wamid.B6-t7-2', 'today', 'yesterday')).toBe(NOT_COUNTABLE);
+    expect(await asked('wamid.B6-t7-3', 'week', 'last week')).toBe(NOT_COUNTABLE);
+    /* Words that draw another window: asked. */
+    expect(await asked('wamid.B6-t7-4', 'month', 'last month')).toBe(WHICH_PERIOD);
+    /* Words that draw the same window: answered. */
+    expect(await asked('wamid.B6-t7-5', 'month', 'this month')).toContain('₦40,000');
+
+    /* The question stays open: "last month" resumes it. */
+    await asked('wamid.B6-t7-6', 'month', 'yesterday');
+    await reply('wamid.B6-t7-answer', 'last month');
+    expect(stubSender.lastText).toContain(`${lastMonthLabel}: ₦150,000`);
+    expect(modelCalls()).toBe(0);
+  });
+
+  it('a yes behind a question Rekoda asked is never told a preview is waiting', async () => {
+    const business = await seedMerchant();
+    await say(
+      'wamid.B6-uq-half',
+      { intent: 'Unclear', clarification: 'How much did she pay?' },
+      'she paid half',
+    );
+    await say('wamid.B6-uq-ask', THIS_MONTH, 'How much did I sell this month?');
+    expect(stubSender.lastText).toContain('sales');
+
+    await reply('wamid.B6-uq-yes', 'yes');
+    expect(stubSender.lastText).not.toBe(BEHIND);
+    expect(stubSender.lastText).not.toContain('preview');
+    expect(await footprint(business.id)).toMatchObject({
+      invoices: 0,
+      payments: 0,
+      expenses: 0,
+      postings: 0,
+    });
+    /* As before Build 6: the yes was about the newest thing, the question. */
+    expect(await draftStates(business.id)).toEqual(['Unclear:pending', 'Query:confirmed']);
+  });
+
+  it('a yes behind a parked erasure ask and a question is not pointed at a preview', async () => {
+    const business = await seedMerchant();
+    await reply('wamid.B6-ue-del1', 'delete my data');
+    await say('wamid.B6-ue-ask', THIS_MONTH, 'How much did I sell this month?');
+
+    await reply('wamid.B6-ue-yes', 'yes');
+    expect(stubSender.lastText).not.toBe(BEHIND);
+    expect(await draftStates(business.id)).toEqual(['EraseData:pending', 'Query:confirmed']);
+  });
+
+  it('logs no message text on the continuation path', async () => {
+    const business = await seedMerchant();
+    await seedTwoMonths(business.id);
+    const spies = (['log', 'debug', 'verbose', 'warn', 'error'] as const).map((level) =>
+      vi.spyOn(Logger.prototype, level).mockImplementation(() => undefined),
+    );
+    try {
+      await say('wamid.B6-log-ask', HOW_MUCH_DID_I_SELL, 'How much did I sell?');
+      await reply('wamid.B6-log-answer', 'Last month please');
+      await reply('wamid.B6-log-follow', 'what about this month');
+      const logged = spies.flatMap((spy) => spy.mock.calls.flat().map((arg) => String(arg)));
+      for (const words of ['How much did I sell', 'Last month please', 'what about this month']) {
+        expect(logged.some((line) => line.includes(words))).toBe(false);
+      }
+    } finally {
+      for (const spy of spies) spy.mockRestore();
+    }
   });
 
   it('keeps a customer as a vault token, never a name', async () => {

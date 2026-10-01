@@ -63,8 +63,8 @@ week" continues the read just answered. State is `conversation_continuations`
 (migration 0154): typed, scoped to the business AND the member who was asked,
 newest wins, one-shot clarifications claimed atomically, expiring after
 `CONTINUATION_TTL_SECONDS` (600, an implementation value for the owner to
-confirm, OD-14). It only ever resumes a read and never touches a command
-draft (G-23, G-61 unchanged). Numbered-option state is representable; number
+confirm, OD-14). It only ever resumes a read and never claims or revives a
+command draft (G-23, G-61 unchanged). Numbered-option state is representable; number
 routing, Pidgin answers and "send it as PDF" belong to later builds.
 Answering the G-61 funding-source question ("bank", "cash") is NOT
 representable yet: Build 7 must widen the `expects` CHECK in a new migration
@@ -78,8 +78,14 @@ supersession still count it), but a "yes" never reaches past a read: after a
 question asked since the newest live preview, the first "yes" retires the
 question's draft and points back at the preview ("You still have a preview
 waiting from before your question..."), and the next "yes" confirms it. Two
-deliberate yeses, as on base; a single-yes confirmation past a read is an
-option the owner MAY choose later, not implemented. For Build 7: a reply to "Which period?" that
+deliberate yeses, as on base for one question (several questions in between
+also take two, where base took one each); the pointer fires only for a
+delivered financial preview, and any other waiting draft gets base's answer.
+A resumed read records a read-only Query draft, the footprint base left, so
+it shields a preview and breaks an erasure pair like any question. A
+single-yes confirmation past a read is an option the owner MAY choose later,
+not implemented; whose reads interpose, and whose preview a member may
+confirm, is OD-15. For Build 7: a reply to "Which period?" that
 names a window core cannot count ("last week", "yesterday", "in March")
 retires the question and goes to the model today; consider keeping the
 question open with `periodNotCountable` instead. After

@@ -270,6 +270,30 @@ describe('the newest wins', () => {
     ).rejects.toThrow();
   });
 
+  it('a reply that never reached the member retires only what its message opened', async () => {
+    const { businessId, ownerId } = await seedBusiness();
+    const delegate = await addMember(businessId);
+    const sourceMessageId = await message(businessId);
+    await withBusiness(app, businessId, (tx) =>
+      continuationsRepo.openContinuation(tx, {
+        businessId,
+        userId: ownerId,
+        sourceMessageId,
+        state: PERIOD_QUESTION,
+        now: OPENED,
+      }),
+    );
+    await open(businessId, delegate);
+    const retire = () =>
+      withBusiness(app, businessId, (tx) =>
+        continuationsRepo.retireContinuationOpenedBy(tx, businessId, sourceMessageId),
+      );
+    expect(await retire()).toBe(1);
+    expect(await retire()).toBe(0);
+    expect(await current(businessId, ownerId, at(1000))).toBeNull();
+    expect(await current(businessId, delegate, at(1000))).not.toBeNull();
+  });
+
   it('a replayed message opens nothing new', async () => {
     const { businessId, ownerId } = await seedBusiness();
     const sourceMessageId = await message(businessId);
@@ -451,6 +475,59 @@ describe('typed state, and durable', () => {
     ).rejects.toThrow(/vault token/);
   });
 
+  it('the database refuses a numbered list that is anything but invoice numbers', async () => {
+    const { businessId, ownerId } = await seedBusiness();
+    const insert = async (options: unknown) => {
+      const sourceMessageId = await message(businessId);
+      return withBusiness(app, businessId, (tx) =>
+        tx.execute(sql`
+          INSERT INTO conversation_continuations
+            (business_id, user_id, source_message_id, kind, expects, topic, options)
+          VALUES (${businessId}::uuid, ${ownerId}::uuid, ${sourceMessageId}::uuid,
+                  'clarification', 'choice', 'customer_balance',
+                  ${JSON.stringify(options)}::jsonb)`),
+      );
+    };
+    const line = (ordinal: unknown, invoiceNumber: unknown = 'INV-2026-000001') => ({
+      ordinal,
+      ref: { kind: 'invoice', invoiceNumber },
+    });
+    const refused = /conversation_continuations_options_check/;
+    const why = (p: Promise<unknown>) =>
+      p.then(
+        () => 'accepted',
+        (error: Error & { cause?: unknown }) => String(error.cause ?? error),
+      );
+    /* A customer's name, as the whole element or beside a valid one. */
+    expect(await why(insert([{ customerName: 'Ada' }]))).toMatch(refused);
+    expect(await why(insert([{ ...line(1), customerName: 'Ada' }]))).toMatch(refused);
+    expect(
+      await why(
+        insert([
+          { ordinal: 1, ref: { kind: 'invoice', invoiceNumber: 'INV-2026-000001', name: 'Ada' } },
+        ]),
+      ),
+    ).toMatch(refused);
+    /* A number that is not a document number, or a reference of another kind. */
+    expect(await why(insert([line(1, 'Ada Obi')]))).toMatch(refused);
+    expect(await why(insert([line(1, 'INV-26-1')]))).toMatch(refused);
+    expect(
+      await why(
+        insert([{ ordinal: 1, ref: { kind: 'customer', invoiceNumber: 'INV-2026-000001' } }]),
+      ),
+    ).toMatch(refused);
+    /* Ordinals 1..n, each once; 1 to 9 lines; an array. */
+    expect(await why(insert([line(1), line(1, 'INV-2026-000002')]))).toMatch(refused);
+    expect(await why(insert([line(2)]))).toMatch(refused);
+    expect(await why(insert([line('1')]))).toMatch(refused);
+    expect(await why(insert([]))).toMatch(refused);
+    expect(await why(insert(Array.from({ length: 10 }, (_, i) => line(i + 1))))).toMatch(refused);
+    expect(await why(insert({ ordinal: 1 }))).toMatch(refused);
+    expect(await why(insert(['INV-2026-000001']))).toMatch(refused);
+    /* The exact shape core writes is accepted, in any order. */
+    expect(await why(insert([line(2, 'INV-2026-000004'), line(1)]))).toBe('accepted');
+  });
+
   it('cannot point at another tenant’s message, even as the owner outside RLS', async () => {
     const a = await seedBusiness();
     const b = await seedBusiness();
@@ -552,6 +629,47 @@ describe('a question to the books, among the drafts', () => {
         conversationsRepo.retireReadsAfter(tx, businessId, question),
       ),
     ).toBe(0);
+  });
+
+  it('tells whether a question was asked since a draft, changing nothing', async () => {
+    const { businessId } = await seedBusiness();
+    const { sale, question } = await draftsWithAQuestionLast(businessId);
+    const since = (id: string) =>
+      withBusiness(app, businessId, (tx) => conversationsRepo.hasReadsAfter(tx, businessId, id));
+    expect(await since(sale)).toBe(true);
+    expect(await since(sale)).toBe(true);
+    expect(await since(question)).toBe(false);
+    await withBusiness(app, businessId, (tx) =>
+      conversationsRepo.retireReadsAfter(tx, businessId, sale),
+    );
+    expect(await since(sale)).toBe(false);
+  });
+
+  it("a question's draft never stores the merchant's words for the window", async () => {
+    const { businessId } = await seedBusiness();
+    const questionMessage = await message(businessId);
+    const stored = await withBusiness(app, businessId, async (tx) => {
+      await conversationsRepo.recordDraft(tx, {
+        businessId,
+        conversationMessageId: questionMessage,
+        intent: 'Query',
+        command: {
+          intent: 'Query',
+          topic: 'sales_summary',
+          customer: null,
+          period: 'custom',
+          periodText: 'the month I sold to Ada',
+          format: null,
+        },
+        model: null,
+      });
+      return tx.execute<{ command: Record<string, unknown> }>(sql`
+        SELECT command FROM command_drafts WHERE business_id = ${businessId}::uuid`);
+    });
+    const command = [...stored][0]!.command;
+    expect(command['periodText']).toBeNull();
+    expect(JSON.stringify(command)).not.toContain('Ada');
+    expect(command['topic']).toBe('sales_summary');
   });
 
   it('the erasure ceremony, expiry and supersession still count it', async () => {

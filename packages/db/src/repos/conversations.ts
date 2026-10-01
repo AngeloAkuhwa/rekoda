@@ -509,9 +509,11 @@ const seenBy = (asOf: Date | undefined) =>
  *    the data. Erasure is irreversible, so it must never be narrowed by a
  *    rule written for a "yes".
  *
- * Skipping a read never lets a "yes" reach PAST it: a "yes" whose preview
- * is older than a read the merchant asked since is answered by
- * `retireReadsAfter` and a pointer back at the preview, never by a claim.
+ * Skipping a read never lets a "yes" reach PAST it: a "yes" whose newest
+ * confirmable draft is older than a read asked since (`hasReadsAfter`) is
+ * answered by a pointer back at the preview (`retireReadsAfter`) when that
+ * draft is a delivered financial preview, and otherwise exactly as before
+ * Build 6, as a "yes" to the read; never by a claim of the older draft.
  */
 export type ReadDrafts = 'skip' | 'count';
 
@@ -734,6 +736,34 @@ export async function supersedeDraftsBefore(
 }
 
 /**
+ * Whether a read-only Query draft, still pending and seen by `asOf`, was
+ * recorded AFTER `draftId` (Build 6): the merchant asked the books something
+ * since that draft, so a "yes" now is not plainly agreement to it. Changes
+ * nothing; `retireReadsAfter` is the write.
+ */
+export async function hasReadsAfter(
+  tx: TenantDb,
+  businessId: string,
+  draftId: string,
+  options: { asOf?: Date } = {},
+): Promise<boolean> {
+  const seen = options.asOf
+    ? sql`AND created_at <= ${options.asOf.toISOString()}::timestamptz`
+    : sql``;
+  const rows = await tx.execute<{ found: boolean }>(sql`
+    SELECT EXISTS (
+      SELECT 1 FROM command_drafts
+       WHERE business_id = ${businessId}::uuid
+         AND state = 'pending'
+         AND intent = 'Query'
+         AND insertion_seq > (
+           SELECT d.insertion_seq FROM command_drafts d
+            WHERE d.id = ${draftId}::uuid AND d.business_id = ${businessId}::uuid)
+         ${seen}) AS found`);
+  return [...rows][0]?.found === true;
+}
+
+/**
  * Retire the read-only Query drafts asked AFTER a preview (Build 6).
  *
  * A "yes" whose newest confirmable draft is a preview older than a question
@@ -742,9 +772,12 @@ export async function supersedeDraftsBefore(
  * Nothing is claimed; these Query drafts, which can never be confirmed, are
  * superseded so they no longer stand between the merchant and the preview,
  * and the merchant is pointed back at it. The NEXT "yes" confirms the
- * preview through the ordinary claim, if it is still inside its window:
- * two deliberate yeses, as before Build 6. Only pending Query drafts
- * newer than `draftId` and seen by `asOf` move; the preview is untouched.
+ * preview through the ordinary claim, if it is still inside its window.
+ * With ONE read in between that is two deliberate yeses, as before Build 6.
+ * With several reads it is still two: the pointer retires them all at once
+ * and names the waiting preview, where before Build 6 each read took a yes
+ * of its own. Only pending Query drafts newer than `draftId` and seen by
+ * `asOf` move; the preview is untouched.
  */
 export async function retireReadsAfter(
   tx: TenantDb,

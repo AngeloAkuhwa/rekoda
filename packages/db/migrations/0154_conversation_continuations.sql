@@ -49,6 +49,70 @@
 -- context or an unrelated reply), expired (the window lapsed). One-way:
 -- nothing moves a row back to open.
 
+-- The numbered list a choice clarification showed, validated element by
+-- element so a careless or hostile INSERT cannot park free text here: 1 to 9
+-- elements, each EXACTLY {"ordinal": n, "ref": {"kind": "invoice",
+-- "invoiceNumber": "INV-2026-000001"}} with no other key, the number in the
+-- same shape `document_ref` takes, and the ordinals exactly 1..n, each once.
+-- plpgsql so every step is guarded in order (SQL's AND does not promise to
+-- short-circuit, and jsonb_object_keys on a non-object raises).
+CREATE FUNCTION conversation_continuation_options_valid(options jsonb)
+  RETURNS boolean
+  LANGUAGE plpgsql
+  IMMUTABLE
+  SET search_path = pg_catalog
+AS $$
+DECLARE
+  element jsonb;
+  ref jsonb;
+  n integer;
+  ordinals integer[] := ARRAY[]::integer[];
+BEGIN
+  IF options IS NULL THEN
+    RETURN true;
+  END IF;
+  IF jsonb_typeof(options) <> 'array' THEN
+    RETURN false;
+  END IF;
+  n := jsonb_array_length(options);
+  IF n < 1 OR n > 9 THEN
+    RETURN false;
+  END IF;
+  FOR element IN SELECT value FROM jsonb_array_elements(options) LOOP
+    IF jsonb_typeof(element) <> 'object' THEN
+      RETURN false;
+    END IF;
+    IF (SELECT array_agg(k ORDER BY k) FROM jsonb_object_keys(element) AS k)
+       IS DISTINCT FROM ARRAY['ordinal', 'ref']::text[] THEN
+      RETURN false;
+    END IF;
+    IF jsonb_typeof(element -> 'ordinal') <> 'number'
+       OR (element ->> 'ordinal') !~ '^[1-9]$' THEN
+      RETURN false;
+    END IF;
+    ref := element -> 'ref';
+    IF jsonb_typeof(ref) <> 'object' THEN
+      RETURN false;
+    END IF;
+    IF (SELECT array_agg(k ORDER BY k) FROM jsonb_object_keys(ref) AS k)
+       IS DISTINCT FROM ARRAY['invoiceNumber', 'kind']::text[] THEN
+      RETURN false;
+    END IF;
+    IF jsonb_typeof(ref -> 'kind') <> 'string' OR ref ->> 'kind' <> 'invoice' THEN
+      RETURN false;
+    END IF;
+    IF jsonb_typeof(ref -> 'invoiceNumber') <> 'string'
+       OR (ref ->> 'invoiceNumber') !~ '^[A-Z]{2,4}-[0-9]{4}-[0-9]{6}$' THEN
+      RETURN false;
+    END IF;
+    ordinals := ordinals || (element ->> 'ordinal')::integer;
+  END LOOP;
+  -- Exactly 1..n, each once: "2" must have exactly one meaning.
+  RETURN (SELECT array_agg(o ORDER BY o) FROM unnest(ordinals) AS o)
+         = (SELECT array_agg(i ORDER BY i) FROM generate_series(1, n) AS i);
+END;
+$$;
+
 CREATE TABLE conversation_continuations (
   id                 uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   business_id        uuid NOT NULL REFERENCES businesses(id),
@@ -68,9 +132,7 @@ CREATE TABLE conversation_continuations (
   period             text CHECK (period IN ('today', 'week', 'month', 'last_month')),
   customer_token     text CHECK (customer_token ~ '^CUSTOMER_[A-Z0-9]{2,12}$'),
   document_ref       text CHECK (document_ref ~ '^[A-Z]{2,4}-[0-9]{4}-[0-9]{6}$'),
-  options            jsonb CHECK (options IS NULL
-                                  OR (jsonb_typeof(options) = 'array'
-                                      AND jsonb_array_length(options) BETWEEN 1 AND 9)),
+  options            jsonb CHECK (conversation_continuation_options_valid(options)),
   state              text NOT NULL DEFAULT 'open'
                      CHECK (state IN ('open', 'consumed', 'superseded', 'expired')),
   -- Ordering authority for "newest", assigned by PostgreSQL (the 0149

@@ -213,3 +213,25 @@ export async function consumeContinuation(
     RETURNING id`);
   return [...rows].length === 1;
 }
+
+/**
+ * Retire the continuation this message's answer opened, if it is still open
+ * (Build 6): the reply never reached the member (the send failed and was
+ * swallowed so the transaction commits), so a question they never saw, or an
+ * answer they never read, is not something their next message continues.
+ * The continuation-side twin of `markDraftUnseen`. Returns how many moved.
+ */
+export async function retireContinuationOpenedBy(
+  tx: TenantDb,
+  businessId: string,
+  sourceMessageId: string,
+): Promise<number> {
+  const rows = await tx.execute<{ id: string }>(sql`
+    UPDATE conversation_continuations
+       SET state = 'superseded', updated_at = clock_timestamp()
+     WHERE business_id = ${businessId}::uuid
+       AND source_message_id = ${sourceMessageId}::uuid
+       AND state = 'open'
+    RETURNING id`);
+  return [...rows].length;
+}

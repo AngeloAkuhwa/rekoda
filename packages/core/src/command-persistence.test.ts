@@ -41,6 +41,24 @@ describe('sanitising a command for draft persistence', () => {
     expect(stored['quantity']).toBe(10);
   });
 
+  it("nulls a Query's periodText, which can carry a name the model copied (Build 6)", () => {
+    const command = {
+      intent: 'Query',
+      topic: 'sales_summary',
+      customer: null,
+      period: 'custom',
+      periodText: 'the month I sold to Ada',
+      format: null,
+    };
+    const stored = sanitizeCommandForPersistence(command) as Record<string, unknown>;
+
+    expect(stored['periodText']).toBeNull();
+    expect(JSON.stringify(stored)).not.toContain('Ada');
+    expect(stored['topic']).toBe('sales_summary');
+    expect(stored['period']).toBe('custom');
+    expect(command.periodText).toContain('Ada');
+  });
+
   it('passes commands with no transient fields through unchanged, by identity', () => {
     const sale = {
       intent: 'RecordSale',
