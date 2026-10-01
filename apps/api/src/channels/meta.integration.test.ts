@@ -6811,19 +6811,20 @@ describe('stock arriving with a purchase', () => {
       bills: 0,
       announced: 1,
       pending: 0,
-      retired: 1,
+      retired: 0,
     });
     expect(await nets(business.id)).toEqual({ INVENTORY: 18_000_000, BANK: -18_000_000 });
 
     /* A stray "no" later, with nothing waiting, cancels nothing: it never
-     * says "Cancelled" over the recorded purchase, and the answered
-     * question keeps its record. */
+     * says "Cancelled" over the recorded purchase. The answered question
+     * keeps its record, CLOSED by the resend (G-68 review: a new preview
+     * closes every older retired question, so nobody can rebuild it). */
     const sentBefore = stubSender.sent.length;
     await plain('wamid.G61-dup-no', 'no');
     expect(stubSender.sent.slice(sentBefore).map((m) => m.text ?? '')).not.toContainEqual(
       expect.stringContaining('Cancelled'),
     );
-    expect(await purchaseFootprint(business.id)).toMatchObject({ purchases: 1, retired: 1 });
+    expect(await purchaseFootprint(business.id)).toMatchObject({ purchases: 1, retired: 0 });
   });
 
   it('G-61: part paid from an unnamed account, then the transfer answer, then yes twice: exactly once', async () => {
@@ -6855,7 +6856,7 @@ describe('stock arriving with a purchase', () => {
       bills: 1,
       announced: 1,
       pending: 0,
-      retired: 1,
+      retired: 0,
     });
     expect(await nets(business.id)).toEqual({
       INVENTORY: 18_000_000,
@@ -6891,7 +6892,7 @@ describe('stock arriving with a purchase', () => {
       bills: 0,
       announced: 1,
       pending: 0,
-      retired: 1,
+      retired: 0,
     });
   });
 
@@ -8152,7 +8153,7 @@ describe('a preview has a time limit (G-23)', () => {
     await plain('wamid.G23-q-bank-yes', 'yes');
     await plain('wamid.G23-q-bank-yes-2', 'yes');
     expect((await footprint(business.id)).expenses).toBe(1);
-    expect(await states(business.id)).toEqual(['abandoned', 'confirmed']);
+    expect(await states(business.id)).toEqual(['superseded', 'confirmed']);
   });
 
   it('a "no" after an expired preview cancels nothing, not even an older preview', async () => {
@@ -10513,7 +10514,8 @@ describe('Nigerian and Pidgin answers continue what was asked (G-68 Phase 2)', (
       await reply('wamid.P2-e-no', 'no be so');
       expect(stubSender.lastText).toBe(replies.cancelled().text);
       await reply('wamid.P2-e-no-bank', 'bank');
-      expect(stubSender.lastText).toBe(UNCLEAR.clarification);
+      /* Told the question was closed, with no model call (G-68 review). */
+      expect(stubSender.lastText).toBe(replies.fundingQuestionClosed().text);
       expect(await written(business.id)).toEqual({ purchases: 0, postings: 0, arrivals: 0 });
     });
 
@@ -11085,6 +11087,15 @@ describe('G-68 final review 2: one-shot rebuild, strict erasure pair, answer win
     return [...rows].map((r) => r.state);
   }
 
+  async function continuationStates(businessId: string): Promise<string[]> {
+    const rows = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ state: string }>(sql`
+        SELECT state FROM conversation_continuations
+         WHERE business_id = ${businessId}::uuid ORDER BY insertion_seq`),
+    );
+    return [...rows].map((r) => r.state);
+  }
+
   describe('F2. the rebuild is one-shot', () => {
     it('owner "bank" then delegate "cash", then two yeses: the purchase is booked ONCE', async () => {
       const business = await seedMerchant();
@@ -11095,8 +11106,10 @@ describe('G-68 final review 2: one-shot rebuild, strict erasure pair, answer win
 
       await reply('wamid.F2-o-bank', 'bank');
       expect(stubSender.lastText).toContain('Paid in full by transfer');
+      /* The delegate's short answer was retired by the owner's rebuild. */
+      expect(await continuationStates(business.id)).toEqual(['consumed', 'superseded']);
       await reply('wamid.F2-d-cash', 'cash', DELEGATE);
-      expect(stubSender.lastText).not.toContain('Please check this before I save it');
+      expect(stubSender.lastText).toBe(replies.fundingQuestionClosed().text);
 
       await reply('wamid.F2-yes-1', 'yes', DELEGATE);
       await reply('wamid.F2-yes-2', 'yes');
@@ -11233,5 +11246,149 @@ describe('G-68 final review 2: one-shot rebuild, strict erasure pair, answer win
       expect(stubSender.lastText).toBe(UNCLEAR.clarification);
       expect(await purchaseStates(business.id)).toEqual(['abandoned']);
     });
+  });
+});
+
+/**
+ * G-68 final-head review 3: a resend closes the question for everyone, the
+ * funding continuation lives exactly as long as its answer window, and any
+ * message (media included) between the erasure asks keeps the data.
+ */
+describe('G-68 final review 3: resend closes the question, window-long answer, media between asks', () => {
+  const OWNER = '2348031234567';
+  const DELEGATE = '2348039990002';
+  const UNCLEAR = { intent: 'Unclear', clarification: 'What would you like me to do?' };
+  const POS_PURCHASE = {
+    intent: 'RecordPurchase',
+    supplierMention: 'Emeka',
+    description: '10 cartons',
+    amount: 180_000,
+    reportedPayment: 180_000,
+    paymentMethod: 'pos',
+    productMention: 'cartons',
+    quantity: 10,
+  };
+
+  async function seedMerchant(phone = `+${OWNER}`) {
+    const user = await identity.upsertUserByPhone(db, phone);
+    return identity.createBusinessWithOwner(db, {
+      name: 'Ada Fashion',
+      businessType: null,
+      ownerUserId: user.id,
+    });
+  }
+
+  async function drain() {
+    const runner = buildRunner(workerDb, db, deps);
+    let worked = await runner.runOnce();
+    while (worked) worked = await runner.runOnce();
+  }
+
+  async function say(wamid: string, command: Record<string, unknown>, text: string, from = OWNER) {
+    stubTransport.replyWith(command);
+    await post(messagePayload(from, wamid, text));
+    await drain();
+  }
+
+  async function reply(wamid: string, text: string, from = OWNER) {
+    stubTransport.replyWith(UNCLEAR);
+    await post(messagePayload(from, wamid, text));
+    await drain();
+  }
+
+  async function purchases(businessId: string): Promise<number> {
+    const rows = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ n: number }>(sql`
+        SELECT count(*)::int AS n FROM expenses WHERE business_id = ${businessId}::uuid`),
+    );
+    return [...rows][0]!.n;
+  }
+
+  it('the owner resends the purchase while the delegate holds a short answer: booked ONCE', async () => {
+    const business = await seedMerchant();
+    const delegate = await identity.upsertUserByPhone(db, `+${DELEGATE}`);
+    await identity.addMembership(db, business.id, delegate.id, 'delegate');
+
+    await say('wamid.R3-pos', POS_PURCHASE, 'I bought 10 cartons for 180k, paid by POS');
+    await reply('wamid.R3-d-yes', 'yes', DELEGATE);
+    await say(
+      'wamid.R3-resend',
+      { ...POS_PURCHASE, paymentMethod: 'transfer' },
+      'I bought 10 cartons for 180k, paid by POS from my bank account',
+    );
+    expect(stubSender.lastText).toContain('Paid in full by transfer');
+    await reply('wamid.R3-o-yes', 'yes');
+    expect(await purchases(business.id)).toBe(1);
+
+    await reply('wamid.R3-d-cash', 'cash', DELEGATE);
+    expect(stubSender.lastText).toBe(replies.fundingQuestionClosed().text);
+    await reply('wamid.R3-yes-2', 'yes', DELEGATE);
+    await reply('wamid.R3-yes-3', 'yes');
+    expect(await purchases(business.id)).toBe(1);
+  });
+
+  const shift = (businessId: string, minutes: number) =>
+    withBusiness(db, businessId, async (tx) => {
+      await tx.execute(sql`
+        UPDATE command_drafts SET created_at = created_at - make_interval(mins => ${minutes})
+         WHERE business_id = ${businessId}::uuid AND state = 'abandoned'`);
+      await tx.execute(sql`
+        UPDATE conversation_continuations
+           SET created_at = created_at - make_interval(mins => ${minutes}),
+               expires_at = expires_at - make_interval(mins => ${minutes})
+         WHERE business_id = ${businessId}::uuid`);
+    });
+
+  it('"bank" at minute 11, with no re-ask, still rebuilds: the offer lasts the whole window', async () => {
+    const business = await seedMerchant();
+    await say('wamid.W-pos', POS_PURCHASE, 'I bought 10 cartons for 180k, paid by POS');
+    await shift(business.id, 11);
+    await reply('wamid.W-bank', 'bank');
+    expect(stubSender.lastText).toContain('Paid in full by transfer');
+  });
+
+  it('"bank" at minute 31, with no re-ask, rebuilds nothing', async () => {
+    const business = await seedMerchant();
+    await say('wamid.W2-pos', POS_PURCHASE, 'I bought 10 cartons for 180k, paid by POS');
+    await shift(business.id, 31);
+    await reply('wamid.W2-bank', 'bank');
+    expect(stubSender.lastText).toBe(UNCLEAR.clarification);
+    expect(await purchases(business.id)).toBe(0);
+  });
+
+  it('a photo between the two erasure asks breaks the pair: nothing is erased', async () => {
+    const business = await seedMerchant();
+    const customer = await customersRepo.createCustomerWithIdentities(
+      db,
+      business.id,
+      'CUSTOMER_T9',
+      [{ facet: 'phone', ciphertext: 'sealed-phone', matchKey: 'mk-g68-media' }],
+    );
+    await reply('wamid.M-del1', 'delete my data');
+    await post({
+      object: 'whatsapp_business_account',
+      entry: [
+        {
+          id: 'WABA',
+          changes: [
+            {
+              field: 'messages',
+              value: {
+                messaging_product: 'whatsapp',
+                metadata: { phone_number_id: 'PNID' },
+                messages: [{ id: 'wamid.M-photo', from: OWNER, timestamp: '1', type: 'image' }],
+              },
+            },
+          ],
+        },
+      ],
+    });
+    await drain();
+    await reply('wamid.M-del2', 'delete my data');
+    expect(stubSender.lastText).toContain('Reply *DELETE MY DATA* again');
+    const facets = await withBusiness(db, business.id, (tx) =>
+      customersRepo.identityFacetsFor(tx, business.id, customer.id),
+    );
+    expect(facets).toHaveLength(1);
   });
 });

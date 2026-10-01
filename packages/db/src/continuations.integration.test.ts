@@ -844,3 +844,19 @@ describe('the funding-source question (migration 0155)', () => {
     ).toContain('conversation_continuations_draft_business_fk');
   });
 });
+
+describe('the two-ask erasure pair fails closed (G-68 review)', () => {
+  it('a parked ask whose message cannot be found counts as broken, never intact', async () => {
+    const { businessId } = await seedBusiness();
+    const asking = await message(businessId);
+    const n = await withBusiness(app, businessId, (tx) =>
+      conversationsRepo.inboundSinceDraft(
+        tx,
+        businessId,
+        '3f1d6a9e-2b4c-4d8e-9a1b-7c5e6f708192',
+        asking,
+      ),
+    );
+    expect(n).toBeGreaterThan(0);
+  });
+});

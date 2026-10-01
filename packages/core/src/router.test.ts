@@ -1082,7 +1082,15 @@ describe('parity forms added on review (G-68)', () => {
 });
 
 describe('final-head review: marks, faces, run-together STOP (G-68, G-24)', () => {
-  it.each(['yes \uFE56', 'yes \u061F', 'yes 😬', 'yes :/', 'na so :/'])('%j is unsure', (m) => {
+  it.each([
+    'yes \uFE56',
+    'yes \u061F',
+    'yes 😬',
+    'yes :/',
+    'na so :/',
+    'yes :-/',
+    'na so \u{1FAE4}',
+  ])('%j is unsure', (m) => {
     expect(intentOf(m)).toEqual({ kind: 'unsure' });
   });
 

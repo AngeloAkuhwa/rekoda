@@ -934,8 +934,62 @@ export async function retiredPurchaseDraft(
         eq(commandDrafts.id, draftId),
         eq(commandDrafts.state, 'abandoned'),
         eq(commandDrafts.intent, 'RecordPurchase'),
+        /* Defence in depth (G-68 review): a question that anything newer
+         * already answered (the merchant sent the purchase again and got a
+         * preview, or anything else that is not a read or a question) is
+         * not answerable, whatever state it was left in. */
+        sql`NOT EXISTS (
+          SELECT 1 FROM command_drafts newer
+           WHERE newer.business_id = ${businessId}::uuid
+             AND newer.insertion_seq > ${commandDrafts.insertionSeq}
+             AND newer.intent NOT IN ('Query', 'Unclear'))`,
       ),
     )
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+/**
+ * Close every retired G-61 purchase question asked BEFORE this draft
+ * (`abandoned` to `superseded`) and return their ids (G-68 review). Called
+ * when a new financial preview is recorded: whatever the question was, the
+ * merchant has moved on to a preview, and the question must not stay
+ * answerable by a short "cash" from somebody else, or the purchase could be
+ * booked twice. Conditional on `abandoned`, in the caller's transaction.
+ */
+export async function closeRetiredQuestionsBefore(
+  tx: TenantDb,
+  businessId: string,
+  draftId: string,
+): Promise<string[]> {
+  const rows = await tx.execute<{ id: string }>(sql`
+    UPDATE command_drafts q
+       SET state = 'superseded', updated_at = clock_timestamp()
+      FROM command_drafts current
+     WHERE current.id = ${draftId}::uuid
+       AND current.business_id = ${businessId}::uuid
+       AND q.business_id = ${businessId}::uuid
+       AND q.state = 'abandoned'
+       AND q.intent = 'RecordPurchase'
+       AND q.insertion_seq < current.insertion_seq
+    RETURNING q.id`);
+  return [...rows].map((r) => r.id);
+}
+
+/** A draft's state and creation time, or null; read-only. */
+export async function draftStateOf(
+  tx: TenantDb,
+  businessId: string,
+  draftId: string,
+): Promise<{ state: string; intent: string; createdAt: Date } | null> {
+  const rows = await tx
+    .select({
+      state: commandDrafts.state,
+      intent: commandDrafts.intent,
+      createdAt: commandDrafts.createdAt,
+    })
+    .from(commandDrafts)
+    .where(and(eq(commandDrafts.businessId, businessId), eq(commandDrafts.id, draftId)))
     .limit(1);
   return rows[0] ?? null;
 }
@@ -954,6 +1008,14 @@ export async function inboundSinceDraft(
   draftId: string,
   excludeMessageId: string,
 ): Promise<number> {
+  /* Fail CLOSED: if the parked ask's message cannot be found, the pair is
+   * treated as broken (the data is kept), never as intact. */
+  const parked = await tx.execute<{ id: string }>(sql`
+    SELECT m.id FROM command_drafts d
+      JOIN conversation_messages m
+        ON m.id = d.conversation_message_id AND m.business_id = d.business_id
+     WHERE d.id = ${draftId}::uuid AND d.business_id = ${businessId}::uuid`);
+  if ([...parked].length === 0) return Number.MAX_SAFE_INTEGER;
   const rows = await tx.execute<{ n: number }>(sql`
     SELECT count(*)::int AS n
       FROM conversation_messages later

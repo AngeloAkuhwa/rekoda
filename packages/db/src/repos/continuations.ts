@@ -39,6 +39,12 @@ export interface OpenContinuationInput {
   state: ContinuationState;
   /** Tests only: when the window opens. Production uses the database clock. */
   now?: Date;
+  /**
+   * When it closes, if not CONTINUATION_TTL_SECONDS after it opens: a G-61
+   * funding question stays answerable exactly as long as its answer window
+   * (G-68 review), so the "Reply *bank* or *cash*" it offered stays true.
+   */
+  expiresAt?: Date;
 }
 
 export interface OpenContinuation {
@@ -115,7 +121,11 @@ export async function openContinuation(
       ${columns.customerToken}, ${columns.documentRef},
       ${columns.options === null ? null : JSON.stringify(columns.options)}::jsonb,
       ${columns.draftId}::uuid,
-      ${clock(input.now)} + make_interval(secs => ${CONTINUATION_TTL_SECONDS}))
+      ${
+        input.expiresAt
+          ? sql`${input.expiresAt.toISOString()}::timestamptz`
+          : sql`${clock(input.now)} + make_interval(secs => ${CONTINUATION_TTL_SECONDS})`
+      })
     ON CONFLICT DO NOTHING
     RETURNING id`);
   const created = [...inserted][0];
@@ -258,4 +268,35 @@ export async function retireContinuationsForDraft(
        AND state = 'open'
     RETURNING id`);
   return [...rows].length;
+}
+
+/**
+ * This member's NEWEST continuation, in any state, or null (G-68 review).
+ * Read only to tell a member, truthfully and without a model, that the
+ * funding question their short answer is about was already answered or
+ * closed.
+ */
+export async function newestContinuation(
+  tx: TenantDb,
+  businessId: string,
+  userId: string,
+): Promise<ContinuationState | null> {
+  const rows = await tx.execute<Row>(sql`
+    SELECT id, kind, expects, topic, period, customer_token, document_ref, options, draft_id
+      FROM conversation_continuations
+     WHERE business_id = ${businessId}::uuid AND user_id = ${userId}::uuid
+     ORDER BY insertion_seq DESC
+     LIMIT 1`);
+  const row = [...rows][0];
+  if (!row) return null;
+  return parseContinuation({
+    kind: row.kind,
+    expects: row.expects,
+    topic: row.topic,
+    period: row.period,
+    customerToken: row.customer_token,
+    documentRef: row.document_ref,
+    options: row.options,
+    draftId: row.draft_id,
+  });
 }

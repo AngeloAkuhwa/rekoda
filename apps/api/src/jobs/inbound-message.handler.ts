@@ -30,6 +30,7 @@ import {
   FUNDING_ANSWER_WINDOW_SECONDS,
   uncountablePeriod,
   soundsDoubtful,
+  fundingSourceAnswer,
   type FundingSource,
   periodAnswer,
   resumedRead,
@@ -2595,10 +2596,16 @@ async function reaskRetiredQuestion(
         sourceMessageId: sender.messageId,
         state: { kind: 'clarification', expects: 'funding_source', draftId: retired.id },
         now: sender.receivedAt,
+        expiresAt: fundingWindowEnd(row!.createdAt),
       });
     }
   }
   return replies.arithmeticQuestion(gate.question);
+}
+
+/** When a funding question's answer window closes (OD-19). */
+function fundingWindowEnd(askedAt: Date): Date {
+  return new Date(askedAt.getTime() + FUNDING_ANSWER_WINDOW_SECONDS * 1000);
 }
 
 /** Was the retired funding question asked within FUNDING_ANSWER_WINDOW_SECONDS? */
@@ -2637,6 +2644,25 @@ async function continueConversation(
 ): Promise<Reply | null> {
   const now = { now: message.receivedAt };
   const open = await continuationsRepo.currentContinuation(tx, businessId, actorId, now);
+
+  /* A short "cash" or "bank" with nothing open, when this member's newest
+   * continuation was a funding question whose purchase has since been
+   * answered or closed (by them, by another member, by a "no", or by the
+   * purchase being sent again), inside its window: told so, truthfully,
+   * with no model call (G-68 review). Never a rebuild. */
+  if (!open && message.route.route === 'model' && fundingSourceAnswer(message.text)) {
+    const newest = await continuationsRepo.newestContinuation(tx, businessId, actorId);
+    if (newest?.kind === 'clarification' && newest.expects === 'funding_source') {
+      const asked = await conversationsRepo.draftStateOf(tx, businessId, newest.draftId);
+      if (
+        asked &&
+        asked.state !== 'abandoned' &&
+        insideFundingWindow(asked.createdAt, message.receivedAt)
+      ) {
+        return replies.fundingQuestionClosed();
+      }
+    }
+  }
 
   /* G-61: a "yes" (or "na so", "oya") to the funding-source question is
    * about the question itself, and is answered by asking it again, exactly
@@ -3220,6 +3246,22 @@ async function interpretedReply(
     });
   }
 
+  /* G-68 review: a NEW financial preview means the merchant has moved on
+   * from any retired purchase question asked before it (typically they sent
+   * the purchase again, the base way to answer it). Each such question is
+   * closed in this transaction, and every member's short answer to it is
+   * retired, so nobody can rebuild it into a second preview of the same
+   * purchase. */
+  if (answered.previewed === true && draft.isNew) {
+    for (const closed of await conversationsRepo.closeRetiredQuestionsBefore(
+      tx,
+      businessId,
+      draft.id,
+    )) {
+      await continuationsRepo.retireContinuationsForDraft(tx, businessId, closed);
+    }
+  }
+
   /* G-61: the merchant answers a funding-source question by sending the
    * purchase again. The draft that asked stays on the record, abandoned,
    * so only the replacement can ever be confirmed: a second "yes" finds
@@ -3235,11 +3277,15 @@ async function interpretedReply(
      * continuation naming this retired draft. The answer rebuilds the
      * purchase and shows a FRESH preview; it never executes this draft. */
     if (answered.fundingQuestion && actorId && draft.isNew) {
+      const asked = await conversationsRepo.draftStateOf(tx, businessId, draft.id);
       await continuationsRepo.openContinuation(tx, {
         businessId,
         userId: actorId,
         sourceMessageId: conversationMessageId,
         state: { kind: 'clarification', expects: 'funding_source', draftId: draft.id },
+        /* The short answer works for the whole answer window it offers
+         * (OD-19), not just the 600-second continuation default. */
+        ...(asked ? { expiresAt: fundingWindowEnd(asked.createdAt) } : {}),
       });
     }
   }
