@@ -1023,11 +1023,10 @@ async function deterministicReply(
     });
     await conversationsRepo.supersedePendingDrafts(tx, businessId, { asOf: ctx.receivedAt });
     const dropped = (cancellable ? 1 : 0) + (closedQuestion ? 1 : 0);
-    return dropped > 0
-      ? replies.cancelled()
-      : intent.kind === 'cancel'
-        ? replies.cancelled()
-        : null;
+    /* A bare "no" or "cancel" with nothing to refuse is answered, never met
+     * with silence, and never told something was cancelled (G-68). */
+    if (dropped > 0) return replies.cancelled();
+    return intent.kind === 'cancel' ? replies.nothingToCancel() : replies.nothingToDecline();
   }
 
   switch (intent.kind) {

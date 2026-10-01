@@ -386,3 +386,469 @@ describe('asking for the dashboard', () => {
     expect(kindOf('I sold a dashboard camera for 20k')).toBe('model');
   });
 });
+
+/**
+ * Nigerian Pidgin, Nigerian English and code-switching are first-class
+ * registers (OWN-18, G-68). Normalisation may remove presentation noise; it
+ * must not remove language meaning.
+ */
+describe('"na so" survives normalisation (G-68)', () => {
+  it.each(['na so', 'Na So', 'NA SO', 'na so!', 'na so 👍', 'abeg na so'])(
+    '%j is an affirmation',
+    (message) => {
+      expect(intentOf(message)).toEqual({ kind: 'affirm' });
+    },
+  );
+
+  it('keeps a leading "na", which is the Pidgin copula and carries the meaning', () => {
+    /* Each of these means something; none is a bare command. Stripping "na"
+     * would leave "cash", "transfer" or "so", and a wrong word is worse than
+     * a model call. */
+    expect(goesToModel('na cash')).toBe(true);
+    expect(goesToModel('na transfer')).toBe(true);
+    expect(goesToModel('na 20k remain')).toBe(true);
+    expect(goesToModel('na Ada buy am')).toBe(true);
+  });
+
+  it('treats a trailing emphatic "o" as noise, never a lone one as a command', () => {
+    expect(intentOf('na so o')).toEqual({ kind: 'affirm' });
+    expect(intentOf('no be so o')).toEqual({ kind: 'deny' });
+    expect(goesToModel('o')).toBe(true);
+    expect(goesToModel('oo')).toBe(true);
+  });
+
+  it('treats only a TRAILING "na" as noise', () => {
+    expect(intentOf('who dey owe me na')).toEqual({ kind: 'debtors' });
+    expect(intentOf('e correct na')).toEqual({ kind: 'affirm' });
+  });
+
+  it('never reads a qualified "na so" as a bare yes', () => {
+    expect(goesToModel('na so but change am to 40k')).toBe(true);
+    expect(goesToModel('na so, but na 3 cartons')).toBe(true);
+  });
+});
+
+describe('high-confidence Pidgin whole-message commands (G-68)', () => {
+  const cases: ReadonlyArray<readonly [string, DeterministicIntent['kind']]> = [
+    ['yes o', 'affirm'],
+    ['correct', 'affirm'],
+    ['e correct', 'affirm'],
+    ['na correct', 'affirm'],
+    ['oya', 'affirm'],
+    ['oya yes', 'affirm'],
+    ['Oya, yes!', 'affirm'],
+    ['go ahead', 'affirm'],
+    ['proceed', 'affirm'],
+    ['send am', 'affirm'],
+    ['no', 'deny'],
+    ['no o', 'deny'],
+    ['nope', 'deny'],
+    ['nah', 'deny'],
+    ['e no correct', 'deny'],
+    ['no be so', 'deny'],
+    ['No be so!', 'deny'],
+    ['that one no correct', 'deny'],
+    ['cancel', 'cancel'],
+    ['forget am', 'cancel'],
+    ['leave am', 'cancel'],
+    ['no do am', 'cancel'],
+    ['make we leave am', 'cancel'],
+    ['cancel am', 'cancel'],
+    ['cancel it', 'cancel'],
+    ['abeg cancel am', 'cancel'],
+    ['na so o', 'affirm'],
+    ['e correct o', 'affirm'],
+    ['correct o', 'affirm'],
+    ['yes oo', 'affirm'],
+    ['no oo', 'deny'],
+    ['nah o', 'deny'],
+    ['no be so o', 'deny'],
+    ['help', 'help'],
+    ['how e dey work', 'help'],
+    ['wetin you fit do', 'help'],
+    ['wetin I fit do here', 'help'],
+    ['stock', 'stock'],
+    ['my stock', 'stock'],
+    ['wetin remain', 'stock'],
+    ['wetin dey left', 'stock'],
+    ['how many remain', 'stock'],
+    ['who owes me', 'debtors'],
+    ['who owe me', 'debtors'],
+    ['who dey owe me', 'debtors'],
+    ['who still dey owe', 'debtors'],
+    ['show me people wey owe me', 'debtors'],
+    ['dashboard', 'dashboard'],
+    ['my dashboard', 'dashboard'],
+    ['my books', 'dashboard'],
+    ['show me my books', 'dashboard'],
+    ['make I see my books', 'dashboard'],
+    ['payment details', 'payment_details'],
+    ['send payment details', 'payment_details'],
+    ['send payment link', 'payment_details'],
+    ['resend', 'resend'],
+    ['send again', 'resend'],
+    ['send am again', 'resend'],
+    ['upgrade', 'upgrade'],
+    ['upgrade me', 'upgrade'],
+    ['I want to upgrade', 'upgrade'],
+    ['I wan upgrade', 'upgrade'],
+    ['I want upgrade', 'upgrade'],
+  ];
+
+  it.each(cases)('%j is %s, with no model', (message, kind) => {
+    const route = routeMessage(message);
+    expect(route.route === 'deterministic' ? route.intent.kind : 'model').toBe(kind);
+    expect(staysLocal(route)).toBe(true);
+  });
+
+  it('gives an English command and its Pidgin twin the same answer', () => {
+    for (const [english, pidgin] of [
+      ['yes', 'na so'],
+      ['no', 'no be so'],
+      ['forget it', 'forget am'],
+      ['what is left', 'wetin remain'],
+      ['who owes me', 'who dey owe me'],
+      ['send it again', 'send am again'],
+      ['i want to upgrade', 'i wan upgrade'],
+      ['how does this work', 'how e dey work'],
+      ['show me my books', 'make i see my books'],
+    ] as const) {
+      expect(intentOf(pidgin)).toEqual(intentOf(english));
+    }
+  });
+});
+
+describe('Pidgin false positives stay with the model (G-68)', () => {
+  it.each([
+    'no be so, na 40k',
+    'oya make we change quantity',
+    'send Ada 3 cartons again',
+    'wetin remain for Ada invoice',
+    'how many remain for the red wig',
+    'leave am for Ada',
+    'no do am like that, na 5 bags',
+    'who dey owe me pass 50k',
+    'make I see my books for March',
+    'how dem go pay for Ada invoice',
+    'e correct but the price na 40k',
+  ])('%j is not a bare command', (message) => {
+    expect(goesToModel(message)).toBe(true);
+  });
+
+  it('reads "oya o" as a whole affirmation, and nothing longer', () => {
+    expect(intentOf('oya o')).toEqual({ kind: 'affirm' });
+    expect(intentOf('Oya o!')).toEqual({ kind: 'affirm' });
+    expect(goesToModel('oya o make we change am')).toBe(true);
+    expect(goesToModel('oya o Ada go pay tomorrow')).toBe(true);
+    /* "ok" is not an affirmation here, so neither is "ok o". */
+    expect(goesToModel('ok o')).toBe(true);
+  });
+
+  it('does not let a bare "na" make anything up', () => {
+    expect(goesToModel('na')).toBe(true);
+  });
+
+  it('declines phrases whose deterministic intent would drop their meaning', () => {
+    /* Rejected on review, not forgotten. "how she go pay" names one person,
+     * while payment details sends to the newest open invoice's customer,
+     * who may not be her; "I wan add Chat" names a product the upgrade
+     * request does not record. Both go to the model. */
+    expect(goesToModel('how she go pay')).toBe(true);
+    expect(goesToModel('how he go pay')).toBe(true);
+    expect(goesToModel('I wan add Chat')).toBe(true);
+    expect(goesToModel('I wan add Integrate')).toBe(true);
+    /* "am" names one person, who may not be the newest open invoice's
+     * customer, and "how dem go pay" is a question (often "how do customers
+     * pay me?") that would trigger an irreversible send. Same rule. */
+    expect(goesToModel('send am payment details')).toBe(true);
+    expect(goesToModel('how dem go pay')).toBe(true);
+  });
+});
+
+/**
+ * One consent matcher for every path (G-24): the merchant's router, the
+ * customer's thread, and a tapped button's id or title. The raw message has
+ * to credibly BE the command; reducing to it under normalisation is not
+ * enough.
+ */
+describe('STOP and START are exact, on every path (G-24)', () => {
+  /* One displayed emoji made of several code points joined by ZWJ. */
+  const FAMILY = '\u{1F468}\u200D\u{1F469}\u200D\u{1F467}';
+  /* Generous AFTER the word: a missed STOP keeps messaging a person who
+   * asked us not to. */
+  const STOPS = [
+    'STOP',
+    'stop',
+    'stop!',
+    'Stop.',
+    ' STOP ',
+    'STOP!!!',
+    'STOP!!!!!!!!!!',
+    'STOP,',
+    'stop?',
+    'stop!?',
+    '"STOP"',
+    "'stop'",
+    '\u201CSTOP\u201D',
+    'stop 🛑',
+    'stop 🙏 🙏',
+    'STOP 🙏🏾🙏🏾🙏🏾',
+    'stop 🛑🛑🛑🛑🛑🛑',
+    'stop ™',
+    '\u200Estop\u200F',
+    'st\u00ADop',
+    'sto\u2060p',
+    '\u200Bstop',
+    'unsubscribe',
+    'UNSUBSCRIBE!!',
+    'QUIT',
+    'quit.',
+    'stop all',
+    'STOP  ALL',
+    /* Decorated, as people actually send it: WhatsApp formatting, brackets,
+     * emoji on both sides, a list bullet, an emoticon, CJK punctuation. */
+    '*STOP*',
+    '_stop_',
+    '~stop~',
+    '```stop```',
+    '🛑STOP🛑',
+    '- stop',
+    '\u2022 stop',
+    '(stop)',
+    '[STOP]',
+    'STOP :)',
+    'stop :(',
+    'stop;',
+    'stop -',
+    'stop\u3002',
+    '\u00ABstop\u00BB',
+    'STOP 🇳🇬',
+    '*UNSUBSCRIBE*',
+    '(quit)',
+    /* Dashes, an emoticon, and a trailing line break. */
+    'stop \u2014',
+    'stop \u2013',
+    'stop =)',
+    'stop\n',
+    /* Punctuation-like pictographs read as punctuation: fine after a STOP. */
+    'stop \u203C',
+    'stop \u2049\uFE0F',
+    /* The decoration cap, at its edge: sixteen on each side is heard. */
+    `STOP${'!'.repeat(16)}`,
+    `${'*'.repeat(16)}stop`,
+    /* Any punctuation or symbol decorates a STOP, not only a chosen few. */
+    'STOP/',
+    'STOP#',
+    'STOP&',
+    'STOP\\',
+    'STOP|',
+    'STOP+',
+    'STOP=',
+    'STOP^',
+    'STOP%',
+    /* Judged as GRAPHEMES on their raw form (Codex 6xOG, 6xOV): a keycap is
+     * one emoji, not a digit; "№" and "℃" are symbols, whatever NFKC makes
+     * of them. */
+    'STOP 1\uFE0F\u20E3',
+    'STOP #\uFE0F\u20E3',
+    'STOP \u2116',
+    'STOP \u00AE',
+    'STOP \u00A9',
+    /* Keycaps are carved out: a cheap-direction STOP. */
+    'stop 5\uFE0F\u20E3 0\uFE0F\u20E3 0\uFE0F\u20E3',
+    /* STOP keeps any emoji, refusals included. */
+    'stop 👎❌',
+    'STOP \u{1F1F3}\u{1F1F4}',
+    'STOP \u2103',
+    'STOP ™',
+    `STOP ${FAMILY}`,
+    'STOP \u2753',
+    /* Reviewed again (T1): a quote marker, braces and angle brackets are
+     * decoration like any other, and so are leading dots. A leading run of
+     * DASHES is still refused ("-----stop-----"). */
+    '> stop',
+    '{stop}',
+    '<stop>',
+    '...quit...',
+  ];
+  /* Strict: a false START re-subscribes somebody who opted out. */
+  const STARTS = [
+    'START',
+    'start',
+    'start!',
+    'Start.',
+    'unstop',
+    'subscribe',
+    'START 👍',
+    '\u200Estart',
+    /* A flag is one emoji; a single-exclamation pictograph is a "!". */
+    'START 🇳🇬',
+    'start \u2757',
+    'START\u2755',
+    /* Affirming emoji only, skin tones included, and country flags. */
+    'start \u2705\u{1F64F}\u{1F3FE}',
+    'START \u{1F44C}\u{1F3FD}',
+    'start \u2764\uFE0F',
+    'start \u2714\uFE0F',
+    'Start 😊🎉',
+    /* "…" is three full stops in one character. */
+    'start\u2026',
+    'start ...',
+  ];
+  const NOT_CONSENT = [
+    'stop by my shop tomorrow',
+    'stop by my shop',
+    'start the generator',
+    'start generator',
+    'please stop sending invoices to Ada',
+    'start recording another sale',
+    'please stop',
+    'oya stop',
+    'abeg start',
+    'stop now',
+    'start?',
+    'start,',
+    "'start'",
+    'start!!!!!!',
+    'start 👍👍👍👍👍👍',
+    'start now',
+    /* Pathological normalisation: each of these collapses to the bare word
+     * under the forgiving normaliser, and none is somebody asking. */
+    `${'-'.repeat(400)} start ${'-'.repeat(400)}`,
+    `${'-'.repeat(400)} stop ${'-'.repeat(400)}`,
+    '-----start-----',
+    '-----stop-----',
+    '!!!start',
+    '"start"',
+    'start!!!!!!!!!!!!!!!!!!!!',
+    's.t.o.p',
+    'st-op',
+    'subscribe:',
+    'start\n\nAda bought 3 wigs',
+    'stop.\nI will pay tomorrow',
+    /* A run of dashes is not a bullet, and only ONE bullet is allowed. */
+    '--- stop',
+    '- - stop',
+    /* Cyrillic look-alikes: not the word. */
+    '\u0455\u0442\u043E\u0440',
+    '\u0441top',
+    /* START stays strict: the same decorations re-subscribe nobody. */
+    '*start*',
+    '🛑START🛑',
+    '- start',
+    '(start)',
+    '_subscribe_',
+    /* A wall of characters with a STOP in it is a paste, not a STOP. */
+    `stop${'-'.repeat(400)}`,
+    `STOP${'!'.repeat(2000)}`,
+    `stop\n${'.'.repeat(500)}`,
+    /* One past the cap, on either side. */
+    `STOP${'!'.repeat(17)}`,
+    `${'*'.repeat(17)}stop`,
+    /* More than one line is a message with a STOP in it. */
+    'stop\nstop',
+    'stop\n\n!',
+    /* Punctuation-like pictographs are punctuation for START too. */
+    'start \u2049\uFE0F',
+    'start \u203C',
+    'start \u3030',
+    /* Bidi overrides reorder what is shown: this displays as "pots". */
+    '\u202Estop',
+    '\u2066stop\u2069',
+    '\u202Bstart',
+    /* Not decoration either. */
+    '1. stop',
+    /* Letters and digits are never decoration. */
+    'stop2',
+    'stopx',
+    '2stop',
+    'xstop',
+    'stop 2',
+    'STOP 7',
+    'STOP 1',
+    /* START carries only emoji that mean yes. A family is still ONE emoji
+     * (two are two), but it does not mean yes, so it is refused: a
+     * deliberate change from the previous round. */
+    `START ${FAMILY}${FAMILY}`,
+    'start 🛑',
+    'start \u274C',
+    'start 🚫',
+    'start \u26D4',
+    'start 👎',
+    'start 🙅',
+    'start 😡',
+    'start 🤔',
+    'start 🤷',
+    'start 😕',
+    'START 👍👎',
+    'start 1\uFE0F\u20E3',
+    /* A flag that spells NO. */
+    'start \u{1F1F3}\u{1F1F4}',
+    /* Genuine forms still refused, the safe direction: a START with an
+     * emoticon, a numbered or dashed STOP. */
+    'start :)',
+    'start ;)',
+    '-stop',
+    '--stop',
+    /* Letter-like symbols spell words, so they are not decoration. */
+    'stop \u24D1\u24E8 \u24DC\u24E8 \u24E2\u24D7\u24DE\u24DF',
+    'STOP \u24B6\u24D3\u24D0',
+    'stop \u{1F151}\u{1F168} \u{1F15C}\u{1F168} \u{1F162}\u{1F157}\u{1F15E}\u{1F15F}',
+    'stop \u249D\u24B4 \u24A8\u24B4',
+    'stop \u{1F1E7} \u{1F1FE} \u{1F1F2} \u{1F1FE}',
+    'STOP \u2460',
+    'STOP \u2139',
+    /* Far past any genuine consent message: refused before segmenting. */
+    `STOP ${'\u{1F6D1}'.repeat(400)}`,
+    /* Six families are six emoji, one past START's five. */
+    `START ${FAMILY.repeat(6)}`,
+    /* Every line-breaking control is a second line (Codex 6xOO). */
+    'START\v!',
+    'START\f!',
+    'STOP\u2028!',
+    'START\u2029!',
+    'START\u0085!',
+    'stop\r\nstop',
+    /* A question mark in any form never completes a START. */
+    'START \u2753',
+    'START \u2754',
+    /* Five emoji at most: six flags are not a START. */
+    'START 🇳🇬🇳🇬🇳🇬🇳🇬🇳🇬🇳🇬',
+    /* Prototype names: an object lookup would have answered these. */
+    'constructor',
+    'tostring',
+    '__proto__',
+    'hasownproperty',
+  ];
+
+  it.each(STOPS)('%j stops, on every path', (message) => {
+    expect(intentOf(message)).toEqual({ kind: 'stop' });
+    expect(customerConsentIntent(message)).toBe('stop');
+    expect(consentIntentOf({ text: message, replyId: null, replyTitle: null })).toBe('stop');
+    expect(consentIntentOf({ text: null, replyId: message, replyTitle: null })).toBe('stop');
+    expect(consentIntentOf({ text: null, replyId: null, replyTitle: message })).toBe('stop');
+  });
+
+  it.each(STARTS)('%j starts, on every path', (message) => {
+    expect(intentOf(message)).toEqual({ kind: 'start' });
+    expect(customerConsentIntent(message)).toBe('start');
+    expect(consentIntentOf({ text: message, replyId: null, replyTitle: null })).toBe('start');
+    expect(consentIntentOf({ text: null, replyId: message, replyTitle: null })).toBe('start');
+    expect(consentIntentOf({ text: null, replyId: null, replyTitle: message })).toBe('start');
+  });
+
+  it.each(NOT_CONSENT)('%j changes nobody\u2019s consent, on any path', (message) => {
+    const route = routeMessage(message);
+    const kind = route.route === 'deterministic' ? route.intent.kind : null;
+    expect(kind).not.toBe('stop');
+    expect(kind).not.toBe('start');
+    expect(customerConsentIntent(message)).toBeNull();
+    expect(consentIntentOf({ text: message, replyId: message, replyTitle: message })).toBeNull();
+  });
+
+  it('sends a padded keyword to the model, never to another free command', () => {
+    expect(goesToModel(`${'-'.repeat(400)} start ${'-'.repeat(400)}`)).toBe(true);
+    expect(goesToModel('-----start-----')).toBe(true);
+    expect(goesToModel('constructor')).toBe(true);
+  });
+});

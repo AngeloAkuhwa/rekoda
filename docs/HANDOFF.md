@@ -51,8 +51,23 @@ itself, and a new `expired` state (separate from G-61's `abandoned`). A
 "yes" to an expired preview records and meters nothing and says it expired.
 After merge, on staging: a sale confirmed inside five minutes records
 normally; a fresh sale answered "yes" after more than five minutes gets the
-expiry sentence and zero financial rows. G-68 and later builds are not
-started.
+expiry sentence and zero financial rows. (G-23 has since MERGED as
+`f5fb1ce`, #258.)
+
+**In review (1 Oct 2026, Build 7, G-68 Phase 1 and G-24; CODE COMPLETE,
+staging acceptance pending):** branch `fix/g68-g24-nigerian-chat-routing`
+off `main` at `f5fb1ce`. Owner decision OWN-18: standard English, Nigerian
+English, Nigerian Pidgin and code-switching are first-class merchant
+registers. `na so` confirms like `yes` (a leading `na` is no longer stripped
+as a filler), high-confidence Pidgin whole-message commands are free and
+deterministic, a bare "no" with nothing waiting gets an honest reply instead
+of silence, and STOP/START are read by one exact matcher on the raw message
+for the merchant router, the customer thread and tapped replies, so a
+padded keyword changes nobody's consent. No migration. G-68 Phase 2 (period
+answers, contextual numbers, Pidgin answers to typed questions, "bank" for a
+G-61 funding question) waits for Build 6's continuation state. After merge,
+on staging: `na so` to a fresh preview records it; `no` with nothing waiting
+is answered; J17 including the padded `start`.
 
 **In review (1 Oct 2026, Build 6, conversational continuation state; CODE
 COMPLETE, staging acceptance pending):** branch

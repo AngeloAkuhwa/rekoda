@@ -481,6 +481,32 @@ export function nothingToConfirm(): Reply {
   );
 }
 
+/**
+ * A bare "no" (or "nope", "nah", "no be so") with nothing outstanding to
+ * refuse (G-68). It used to get silence, which on WhatsApp reads as a dead
+ * number. Nothing was cancelled, because nothing was waiting, so it does not
+ * say "Cancelled".
+ */
+export function nothingToDecline(): Reply {
+  return reply(
+    'Nothing is waiting for a yes or no. Tell me a sale and I will show it to ' +
+      'you before saving.',
+  );
+}
+
+/**
+ * A "cancel" ("forget am", "leave am", "no do am") with nothing outstanding
+ * to cancel (G-68). Never "Cancelled": a merchant who has just confirmed an
+ * invoice and sends "forget am" may mean "void it", and being told it was
+ * cancelled while it stays live is the one lie this file must not tell.
+ */
+export function nothingToCancel(): Reply {
+  return reply(
+    'There is nothing waiting to cancel, so nothing has changed. Anything ' +
+      'already saved is still saved.',
+  );
+}
+
 /** CG5 — the correction landed and replaced what came before. */
 export function correctionTaken(): Reply {
   return reply('Got it. I have replaced the earlier version.');
