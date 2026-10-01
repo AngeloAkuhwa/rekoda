@@ -25,11 +25,17 @@
  * reply can never become permission to record money because of some older
  * conversation.
  *
+ * The one answer that leads toward a write (G-68 Phase 2) still is not one:
+ * a funding-source answer ("bank", "cash") rebuilds the retired purchase
+ * with that account and shows a FRESH preview through the ordinary gates.
+ * The retired draft is never claimed or revived, and only a normal "yes" to
+ * the new preview records anything.
+ *
  * Pure: no database, no clock. The repository persists it, keyed to the
  * actual person who was asked (`user_id`), never just the business.
  */
-import type { AnsweredPeriod, Route } from './router.js';
-import { periodAnswer } from './router.js';
+import type { AnsweredPeriod, FundingSource, Route } from './router.js';
+import { fundingSourceAnswer, periodAnswer } from './router.js';
 
 /**
  * How long a question Rekoda asked, or a read it just answered, stays open
@@ -114,12 +120,27 @@ export interface QueryContinuation {
   readonly documentRef: string | null;
 }
 
-export type ContinuationState = PeriodClarification | ChoiceClarification | QueryContinuation;
+/**
+ * B: Rekoda asked where a purchase's money came from (G-61, OWN-17: POS is a
+ * channel, the books need the account). Holds ONLY the id of the retired
+ * purchase draft that asked; the answer rebuilds that purchase with the
+ * account filled in and shows a FRESH preview through the ordinary gates.
+ * It never executes the retired draft (G-68 Phase 2, migration 0155).
+ */
+export interface FundingSourceClarification {
+  readonly kind: 'clarification';
+  readonly expects: 'funding_source';
+  readonly draftId: string;
+}
+
+export type ContinuationState =
+  PeriodClarification | ChoiceClarification | FundingSourceClarification | QueryContinuation;
 
 /** What a short reply answered, when it fits what was expected. */
 export type ContinuationAnswer =
   | { readonly kind: 'period'; readonly period: AnsweredPeriod }
-  | { readonly kind: 'choice'; readonly option: ChoiceOption };
+  | { readonly kind: 'choice'; readonly option: ChoiceOption }
+  | { readonly kind: 'funding_source'; readonly source: FundingSource };
 
 /**
  * Does this message answer the open state? Null when it does not fit, and
@@ -149,9 +170,14 @@ export function continuationAnswer(
     return option ? { kind: 'choice', option } : null;
   }
 
-  /* A period is never a deterministic command, so a message the router
-   * classified (a "yes", a "2", "who owes me") is never a period answer. */
+  /* A period or an account is never a deterministic command, so a message
+   * the router classified (a "yes", a "2", "who owes me") is never one. */
   if (message.route.route === 'deterministic') return null;
+
+  if (state.kind === 'clarification' && state.expects === 'funding_source') {
+    const source = fundingSourceAnswer(message.text);
+    return source ? { kind: 'funding_source', source } : null;
+  }
 
   if (state.kind === 'clarification') {
     const period = periodAnswer(message.text);
@@ -208,6 +234,9 @@ function isQueryTopic(topic: unknown): topic is QueryTopic {
   return typeof topic === 'string' && (QUERY_TOPICS as readonly string[]).includes(topic);
 }
 
+/** A command draft's id: a uuid, nothing else. */
+const DRAFT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
 function isPeriod(value: unknown): value is AnsweredPeriod {
   return typeof value === 'string' && (CONTINUATION_PERIODS as readonly string[]).includes(value);
 }
@@ -221,6 +250,8 @@ export interface ContinuationColumns {
   readonly customerToken: string | null;
   readonly documentRef: string | null;
   readonly options: unknown;
+  /** The retired purchase draft a funding-source question asked about (0155). */
+  readonly draftId: string | null;
 }
 
 function parseOptions(value: unknown): ChoiceOption[] | null {
@@ -272,6 +303,11 @@ export function parseContinuation(row: ContinuationColumns): ContinuationState |
       if (row.topic !== null && !isQueryTopic(row.topic)) return null;
       return { kind: 'clarification', expects: 'choice', topic: row.topic, options };
     }
+    if (row.expects === 'funding_source') {
+      if (row.draftId === null || !DRAFT_ID.test(row.draftId)) return null;
+      if (row.topic !== null || row.options !== null) return null;
+      return { kind: 'clarification', expects: 'funding_source', draftId: row.draftId };
+    }
     return null;
   }
   if (row.kind === 'query' && row.expects === null) {
@@ -306,6 +342,22 @@ export function continuationColumns(state: ContinuationState): ContinuationColum
       customerToken: null,
       documentRef: null,
       options: null,
+      draftId: null,
+    };
+  }
+  if (state.kind === 'clarification' && state.expects === 'funding_source') {
+    if (!DRAFT_ID.test(state.draftId)) {
+      throw new Error('continuation: a funding-source question names its draft by id');
+    }
+    return {
+      kind: 'clarification',
+      expects: 'funding_source',
+      topic: null,
+      period: null,
+      customerToken: null,
+      documentRef: null,
+      options: null,
+      draftId: state.draftId,
     };
   }
   if (state.kind === 'clarification') {
@@ -319,6 +371,7 @@ export function continuationColumns(state: ContinuationState): ContinuationColum
       customerToken: null,
       documentRef: null,
       options,
+      draftId: null,
     };
   }
   if (state.customerToken !== null && !CUSTOMER_TOKEN.test(state.customerToken)) {
@@ -335,5 +388,6 @@ export function continuationColumns(state: ContinuationState): ContinuationColum
     customerToken: state.customerToken,
     documentRef: state.documentRef,
     options: null,
+    draftId: null,
   };
 }

@@ -9,6 +9,9 @@
 import { describe, expect, it } from 'vitest';
 import {
   consentIntentOf,
+  fundingSourceAnswer,
+  periodAnswer,
+  uncountablePeriod,
   customerConsentIntent,
   routeMessage,
   staysLocal,
@@ -850,5 +853,82 @@ describe('STOP and START are exact, on every path (G-24)', () => {
     expect(goesToModel(`${'-'.repeat(400)} start ${'-'.repeat(400)}`)).toBe(true);
     expect(goesToModel('-----start-----')).toBe(true);
     expect(goesToModel('constructor')).toBe(true);
+  });
+});
+
+/**
+ * G-68 Phase 2: Nigerian English and Pidgin answers to Rekoda's own
+ * questions. Each is consulted only while the matching question is open.
+ */
+describe('Pidgin and Nigerian period answers (G-68 Phase 2)', () => {
+  it.each([
+    ['last month o', 'last_month'],
+    ['na last month', 'last_month'],
+    ['the month wey pass', 'last_month'],
+    ['dis month', 'month'],
+    ['this month so far', 'month'],
+    ['dis week', 'week'],
+    ['for dis month', 'month'],
+  ])('%j is %s', (text, period) => {
+    expect(periodAnswer(text)).toBe(period);
+  });
+
+  it.each([
+    /* "today today" is Pidgin emphasis for "right now", not a window. */
+    'today today',
+    'dis month i sold 3 wigs',
+    'last month o i buy rice',
+    'na',
+    'month wey pass i pay Emeka',
+  ])('%j is not a period answer', (text) => {
+    expect(periodAnswer(text)).toBeNull();
+  });
+
+  it.each(['yesterday', 'yesterday o', 'last week', 'in March', 'march 2025', 'this year'])(
+    '%j names a window Rekoda cannot count here',
+    (text) => {
+      expect(uncountablePeriod(text)).toBe(true);
+      expect(periodAnswer(text)).toBeNull();
+    },
+  );
+
+  it.each(['last month', 'I bought rice yesterday', 'yesterday Ada paid 20k', 'march on'])(
+    '%j is not an uncountable window',
+    (text) => {
+      expect(uncountablePeriod(text)).toBe(false);
+    },
+  );
+});
+
+describe('funding-source answers to the G-61 question (G-68 Phase 2)', () => {
+  it.each([
+    ['bank', 'transfer'],
+    ['transfer', 'transfer'],
+    ['bank transfer', 'transfer'],
+    ['from my bank account', 'transfer'],
+    ['na bank', 'transfer'],
+    ['Na bank o', 'transfer'],
+    ['cash', 'cash'],
+    ['physical cash', 'cash'],
+    ['na cash', 'cash'],
+    ['cash in hand', 'cash'],
+  ])('%j is %s', (text, source) => {
+    expect(fundingSourceAnswer(text)).toBe(source);
+  });
+
+  it.each([
+    /* POS and card are channels, never the account (OWN-17). */
+    'pos',
+    'card',
+    'atm',
+    /* Two accounts, or a sentence, are not one answer. */
+    'bank and cash',
+    'part cash part transfer',
+    'cash 20k',
+    'I paid cash for the rice',
+    'na pos',
+    `${'-'.repeat(200)} bank ${'-'.repeat(200)}`,
+  ])('%j is not an answer', (text) => {
+    expect(fundingSourceAnswer(text)).toBeNull();
   });
 });

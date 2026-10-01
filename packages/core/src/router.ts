@@ -905,16 +905,33 @@ const PERIOD_ANSWERS: ReadonlyArray<readonly [readonly string[], AnsweredPeriod]
   ],
   [['this month', 'month', 'the month', 'so far this month'], 'month'],
   [['last month', 'previous month', 'the previous month'], 'last_month'],
+  /*
+   * Nigerian English and Pidgin forms of the same four windows (G-68 Phase 2,
+   * OWN-18), each reviewed for a second reading:
+   *  - "dis" is how "this" is written in Pidgin and texting; it never means
+   *    anything else at the head of a window.
+   *  - "this month so far" is "so far this month" said the other way round.
+   *  - "the month wey pass" is Pidgin for the month that has passed: last
+   *    month, and nothing else.
+   * Rejected: "today today" (Pidgin emphasis for "right now", an urgency
+   * idiom, not a window); "last week" and "past month" stay out for the
+   * reasons above. A trailing "o" ("last month o") is presentation noise,
+   * stripped before this table is read.
+   */
+  [['dis week', 'dis week so far'], 'week'],
+  [['dis month', 'dis month so far', 'this month so far'], 'month'],
+  [['the month wey pass', 'month wey pass'], 'last_month'],
 ];
 
 /** A window a short answer may name; the `PeriodName`s `resolvePeriod` draws. */
 export type AnsweredPeriod = 'today' | 'week' | 'month' | 'last_month';
 
 /**
- * Leading words that turn a period into an answer or a follow-up without
+ * Leading words that turn a period into an answer (including the Pidgin
+ * copula: "na last month" is "it is last month") or a follow-up without
  * changing which period it is: "for last month", "what about this week".
  */
-const PERIOD_LEADS = ['what about', 'how about', 'and for', 'and', 'for', 'in'];
+const PERIOD_LEADS = ['what about', 'how about', 'and for', 'and', 'for', 'in', 'na'];
 
 /**
  * Which period a message names, when the whole message is a period and
@@ -951,4 +968,124 @@ export function periodAnswer(raw: string): AnsweredPeriod | null {
  */
 export function staysLocal(route: Route): boolean {
   return route.route === 'deterministic';
+}
+
+/**
+ * Windows a merchant can NAME that Rekoda cannot count here (Build 6's
+ * `periodNotCountable`): "yesterday", "last week", "in March", "this year".
+ * Only consulted while "Which period?" is open, so the question can stay
+ * open and say which windows it can count, instead of being dropped and the
+ * reply sent to the model as if nothing was asked. A whole-message match,
+ * after the same normalisation as a period answer: "I bought rice yesterday"
+ * is a purchase, never this.
+ */
+const UNCOUNTABLE_WINDOWS = new Set([
+  'yesterday',
+  'last week',
+  'the last week',
+  'previous week',
+  'the previous week',
+  'past week',
+  'this year',
+  'dis year',
+  'last year',
+  'the year',
+  'past month',
+  'the past month',
+  'last 30 days',
+  'the last 30 days',
+  'past 30 days',
+  'last thirty days',
+  'last two weeks',
+  'last 2 weeks',
+  'last three months',
+  'last 3 months',
+]);
+const MONTH_NAMES =
+  'january|february|march|april|may|june|july|august|september|october|november|december';
+const NAMED_MONTH = new RegExp(String.raw`^(?:last )?(?:${MONTH_NAMES})(?: \d{4})?$`);
+
+export function uncountablePeriod(raw: string): boolean {
+  const normalised = normalise(raw);
+  if (!normalised) return false;
+  let text = stripFillers(normalised);
+  if (!text || text.length > MAX_COMMAND_CHARS) return false;
+  if (!survivedNormalisation(raw, text)) return false;
+  for (const lead of PERIOD_LEADS) {
+    if (text.startsWith(`${lead} `)) {
+      text = text.slice(lead.length + 1);
+      break;
+    }
+  }
+  return UNCOUNTABLE_WINDOWS.has(text) || NAMED_MONTH.test(text);
+}
+
+/**
+ * Where a purchase's money came from, as the answer to the G-61 question
+ * "did it come from your bank account or from physical cash?" (G-68 Phase 2).
+ * The two funding ACCOUNTS (OWN-17): money out of the bank is a transfer,
+ * physical cash is cash. POS and card are channels, never an answer here.
+ */
+export type FundingSource = 'transfer' | 'cash';
+
+/**
+ * A whole-message answer naming one funding account, and nothing else.
+ * Only consulted while that question is open for this member.
+ *
+ * Each phrase reviewed for a second reading. "bank" and "cash" are the
+ * question's own words. The Pidgin copula is meaning, not noise: "na bank",
+ * "na cash" ("it was the bank", "it was cash"). Rejected: "pos", "card",
+ * "atm", "both", "part cash part transfer" (a channel, or two accounts, which
+ * a single answer cannot record), and anything longer, which goes to the
+ * model as an ordinary message.
+ */
+const FUNDING_ANSWERS: ReadonlyArray<readonly [readonly string[], FundingSource]> = [
+  [
+    [
+      'bank',
+      'transfer',
+      'bank transfer',
+      'my bank',
+      'bank account',
+      'my bank account',
+      'from bank',
+      'from my bank',
+      'from the bank',
+      'from bank account',
+      'from my bank account',
+      'na bank',
+      'na transfer',
+      'na from bank',
+      'na my bank',
+      'na my bank account',
+      'na from my bank account',
+    ],
+    'transfer',
+  ],
+  [
+    [
+      'cash',
+      'physical cash',
+      'my cash',
+      'from cash',
+      'from my cash',
+      'cash in hand',
+      'na cash',
+      'na physical cash',
+      'na my cash',
+    ],
+    'cash',
+  ],
+];
+
+export function fundingSourceAnswer(raw: string): FundingSource | null {
+  const normalised = normalise(raw);
+  if (!normalised) return null;
+  const text = stripFillers(normalised);
+  if (!text || text.length > MAX_COMMAND_CHARS) return null;
+  if (!survivedNormalisation(raw, text)) return null;
+  for (const [phrases, source] of FUNDING_ANSWERS) {
+    if (phrases.includes(text)) return source;
+  }
+  return null;
 }

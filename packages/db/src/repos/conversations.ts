@@ -907,6 +907,36 @@ export async function retireDraft(
 }
 
 /**
+ * The retired (abandoned) draft a G-61 funding-source question was asked
+ * about, read for the answer to rebuild from (G-68 Phase 2). Null unless it
+ * is this business's, it is still `abandoned`, and it is a purchase: a
+ * question since closed by "no", or anything else, rebuilds nothing.
+ *
+ * Read-only on purpose. The draft is never claimed, confirmed or revived:
+ * the answer builds a NEW command and a fresh preview, and the retired
+ * draft stays on the record exactly as it was.
+ */
+export async function retiredPurchaseDraft(
+  tx: TenantDb,
+  businessId: string,
+  draftId: string,
+): Promise<{ id: string; command: unknown } | null> {
+  const rows = await tx
+    .select({ id: commandDrafts.id, command: commandDrafts.command })
+    .from(commandDrafts)
+    .where(
+      and(
+        eq(commandDrafts.businessId, businessId),
+        eq(commandDrafts.id, draftId),
+        eq(commandDrafts.state, 'abandoned'),
+        eq(commandDrafts.intent, 'RecordPurchase'),
+      ),
+    )
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+/**
  * A "no" to a retired question closes it (G-61): it becomes an ordinary
  * cancelled draft, so a later "yes" does not ask it again. Only the one
  * draft named, and only while retired: a question already answered by a

@@ -507,6 +507,18 @@ export function nothingToCancel(): Reply {
   );
 }
 
+/**
+ * A number picked from an explicit numbered list Rekoda showed (G-68 Phase
+ * 2). The choice is a reference, not an action: it names the invoice chosen
+ * and a command that takes it, and does nothing on its own.
+ */
+export function optionChosen(invoiceNumber: string): Reply {
+  return reply(
+    `You picked ${invoiceNumber}. Tell me what to do with it, for example ` +
+      `*remind ${invoiceNumber}*.`,
+  );
+}
+
 /** CG5 — the correction landed and replaced what came before. */
 export function correctionTaken(): Reply {
   return reply('Got it. I have replaced the earlier version.');

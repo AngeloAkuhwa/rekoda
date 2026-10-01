@@ -507,6 +507,8 @@ export const conversationContinuations = pgTable(
     documentRef: text('document_ref'),
     /** The exact lines of a numbered list shown; invoice numbers only. */
     options: jsonb('options'),
+    /** The retired purchase draft a funding-source question asked about (0155). */
+    draftId: uuid('draft_id'),
     /** open | consumed | superseded | expired; one-way out of open. */
     state: text('state').notNull().default('open'),
     insertionSeq: bigint('insertion_seq', { mode: 'number' }).notNull().generatedAlwaysAsIdentity(),

@@ -108,12 +108,13 @@ export async function openContinuation(
   const inserted = await tx.execute<{ id: string }>(sql`
     INSERT INTO conversation_continuations
       (business_id, user_id, source_message_id, kind, expects, topic, period,
-       customer_token, document_ref, options, expires_at)
+       customer_token, document_ref, options, draft_id, expires_at)
     VALUES (
       ${input.businessId}::uuid, ${input.userId}::uuid, ${input.sourceMessageId}::uuid,
       ${columns.kind}, ${columns.expects}, ${columns.topic}, ${columns.period},
       ${columns.customerToken}, ${columns.documentRef},
       ${columns.options === null ? null : JSON.stringify(columns.options)}::jsonb,
+      ${columns.draftId}::uuid,
       ${clock(input.now)} + make_interval(secs => ${CONTINUATION_TTL_SECONDS}))
     ON CONFLICT DO NOTHING
     RETURNING id`);
@@ -146,6 +147,7 @@ type Row = {
   customer_token: string | null;
   document_ref: string | null;
   options: unknown;
+  draft_id: string | null;
 };
 
 /**
@@ -162,7 +164,7 @@ export async function currentContinuation(
 ): Promise<OpenContinuation | null> {
   const now = clock(options.now);
   const rows = await tx.execute<Row>(sql`
-    SELECT id, kind, expects, topic, period, customer_token, document_ref, options
+    SELECT id, kind, expects, topic, period, customer_token, document_ref, options, draft_id
       FROM conversation_continuations
      WHERE business_id = ${businessId}::uuid
        AND user_id = ${userId}::uuid
@@ -181,6 +183,7 @@ export async function currentContinuation(
     customerToken: row.customer_token,
     documentRef: row.document_ref,
     options: row.options,
+    draftId: row.draft_id,
   });
   return state ? { id: row.id, state } : null;
 }

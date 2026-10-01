@@ -727,3 +727,120 @@ describe('a question to the books, among the drafts', () => {
     expect(superseded).toBe(2);
   });
 });
+
+/**
+ * Migration 0155 (G-68 Phase 2): the G-61 funding-source question as a
+ * continuation. It names ONE retired purchase draft of its own business,
+ * and nothing else; no other row names a draft.
+ */
+describe('the funding-source question (migration 0155)', () => {
+  async function retiredPurchase(businessId: string): Promise<string> {
+    const asked = await message(businessId);
+    return withBusiness(app, businessId, async (tx) => {
+      const draft = await conversationsRepo.recordDraft(tx, {
+        businessId,
+        conversationMessageId: asked,
+        intent: 'RecordPurchase',
+        command: { intent: 'RecordPurchase', amount: 180_000, paymentMethod: 'pos' },
+        model: null,
+      });
+      await conversationsRepo.retireDraft(tx, businessId, draft.id);
+      return draft.id;
+    });
+  }
+
+  const raw = (
+    businessId: string,
+    userId: string,
+    sourceMessageId: string,
+    expects: string,
+    draftId: string | null,
+    topic: string | null = null,
+  ) =>
+    owner
+      .execute(
+        sql`
+        INSERT INTO conversation_continuations
+          (business_id, user_id, source_message_id, kind, expects, topic, draft_id)
+        VALUES (${businessId}::uuid, ${userId}::uuid, ${sourceMessageId}::uuid,
+                'clarification', ${expects}, ${topic}, ${draftId}::uuid)`,
+      )
+      .then(
+        () => 'accepted',
+        (error: Error & { cause?: unknown }) => String(error.cause ?? error.message),
+      );
+
+  it('opens, reads back and is claimed once, naming its retired draft', async () => {
+    const { businessId, ownerId } = await seedBusiness();
+    const draftId = await retiredPurchase(businessId);
+    const opened = await open(businessId, ownerId, {
+      kind: 'clarification',
+      expects: 'funding_source',
+      draftId,
+    });
+    const live = await current(businessId, ownerId, at(1000));
+    expect(live?.state).toEqual({ kind: 'clarification', expects: 'funding_source', draftId });
+    expect(await consume(businessId, ownerId, opened!.id, at(1000))).toBe(true);
+    expect(await consume(businessId, ownerId, opened!.id, at(1000))).toBe(false);
+    expect(await states(businessId)).toEqual(['consumed']);
+  });
+
+  it('reads the retired purchase back without claiming or reviving it', async () => {
+    const { businessId } = await seedBusiness();
+    const draftId = await retiredPurchase(businessId);
+    const read = await withBusiness(app, businessId, (tx) =>
+      conversationsRepo.retiredPurchaseDraft(tx, businessId, draftId),
+    );
+    expect(read?.id).toBe(draftId);
+    const after = await withBusiness(app, businessId, (tx) =>
+      tx.execute<{ state: string }>(sql`
+        SELECT state FROM command_drafts WHERE id = ${draftId}::uuid`),
+    );
+    expect([...after][0]?.state).toBe('abandoned');
+    /* Closed by "no", it rebuilds nothing. */
+    await withBusiness(app, businessId, (tx) =>
+      conversationsRepo.closeRetiredDraft(tx, businessId, draftId),
+    );
+    expect(
+      await withBusiness(app, businessId, (tx) =>
+        conversationsRepo.retiredPurchaseDraft(tx, businessId, draftId),
+      ),
+    ).toBeNull();
+  });
+
+  it('the database refuses a funding question without a draft, and a draft on anything else', async () => {
+    const { businessId, ownerId } = await seedBusiness();
+    const draftId = await retiredPurchase(businessId);
+    expect(
+      await raw(businessId, ownerId, await message(businessId), 'funding_source', null),
+    ).toContain('conversation_continuations_funding_shape_check');
+    expect(
+      await raw(businessId, ownerId, await message(businessId), 'period', draftId, 'sales_summary'),
+    ).toContain('conversation_continuations_funding_shape_check');
+    expect(
+      await raw(
+        businessId,
+        ownerId,
+        await message(businessId),
+        'funding_source',
+        draftId,
+        'debtors',
+      ),
+    ).toContain('conversation_continuations_funding_shape_check');
+    expect(
+      await raw(businessId, ownerId, await message(businessId), 'transfer_money', null),
+    ).toContain('conversation_continuations_expects_check');
+    expect(
+      await raw(businessId, ownerId, await message(businessId), 'funding_source', draftId),
+    ).toBe('accepted');
+  });
+
+  it('cannot name another tenant’s draft, even as the owner outside RLS', async () => {
+    const a = await seedBusiness();
+    const b = await seedBusiness();
+    const theirs = await retiredPurchase(b.businessId);
+    expect(
+      await raw(a.businessId, a.ownerId, await message(a.businessId), 'funding_source', theirs),
+    ).toContain('conversation_continuations_draft_business_fk');
+  });
+});

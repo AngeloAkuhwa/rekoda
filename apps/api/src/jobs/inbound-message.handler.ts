@@ -27,6 +27,8 @@ import {
   CUSTOMER_TOKEN,
   continuationAnswer,
   isOneShot,
+  uncountablePeriod,
+  type FundingSource,
   periodAnswer,
   resumedRead,
   type AiModelRole,
@@ -388,6 +390,7 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
           route,
           messageId: message.id,
           receivedAt: event.receivedAt,
+          from: inbound.from,
         })
       : null;
 
@@ -2398,6 +2401,55 @@ async function retireSenderContinuation(
 }
 
 /**
+ * The G-61 funding-source question answered with a short "bank" or "cash"
+ * (G-68 Phase 2): the purchase it asked about, rebuilt with the account
+ * filled in, shown as a FRESH preview.
+ *
+ * Never an execution. The retired draft is read, never claimed, confirmed or
+ * revived, and stays `abandoned`. The rebuilt command walks the same gates a
+ * typed purchase does at this point: the role rule (only a member who may
+ * transact gets a draft to say yes to), a lapsed trial, the Chat entitlement,
+ * and `gatePurchase` (CG1 before CG2). It records a NEW draft, previewed,
+ * which only a normal "yes" confirms (CG3, inside its own G-23 window). No
+ * model is called, so no `AI_ACTIONS` unit is taken, as for every
+ * router-served turn; the stock and ledger rules run at the yes, unchanged.
+ *
+ * The supplier's name is not on the rebuilt preview: it is never stored
+ * (ADR 0005), only the vault row it resolved to, which the confirmation
+ * stamps on the purchase exactly as before.
+ */
+async function answerFundingSource(
+  tx: TenantDb,
+  businessId: string,
+  draftId: string,
+  source: FundingSource,
+  message: { messageId: string; from: string },
+): Promise<Reply> {
+  const retired = await conversationsRepo.retiredPurchaseDraft(tx, businessId, draftId);
+  if (!retired) return replies.nothingToConfirm();
+  if (!(await mayTransact(tx, businessId, message.from))) return replies.viewOnlyRole();
+  const plan = await usageRepo.planFor(tx, businessId);
+  if (plan === 'expired') return replies.trialEnded();
+  if (await entitlementsRepo.requireEntitlement(tx, businessId, 'REKODA_CHAT')) {
+    return replies.chatNotInPlan();
+  }
+
+  const stored = retired.command as Record<string, unknown>;
+  const rebuilt = { ...stored, paymentMethod: source };
+  const gate = gatePurchase(rebuilt as never);
+  if (gate.gate !== 'CG2') return replies.arithmeticQuestion(gate.question);
+  await conversationsRepo.recordDraft(tx, {
+    businessId,
+    conversationMessageId: message.messageId,
+    intent: 'RecordPurchase',
+    command: rebuilt,
+    model: null,
+    previewed: true,
+  });
+  return replies.preview(gate.preview);
+}
+
+/**
  * A short reply that continues what was open for this member (Build 6), or
  * null to be understood as an ordinary message.
  *
@@ -2417,11 +2469,83 @@ async function continueConversation(
   tx: TenantDb,
   businessId: string,
   actorId: string,
-  message: { text: string; route: Route; messageId: string; receivedAt: Date },
+  message: { text: string; route: Route; messageId: string; receivedAt: Date; from: string },
 ): Promise<Reply | null> {
   const now = { now: message.receivedAt };
   const open = await continuationsRepo.currentContinuation(tx, businessId, actorId, now);
+
+  /* G-61: a "yes" (or "na so", "oya") to the funding-source question is
+   * about the question itself, and is answered by asking it again, exactly
+   * as before (G-68 Phase 2). The question stays open for the short answer
+   * it asks for; the "yes" goes down its ordinary path. */
+  if (
+    open?.state.kind === 'clarification' &&
+    open.state.expects === 'funding_source' &&
+    message.route.route === 'deterministic' &&
+    message.route.intent.kind === 'affirm'
+  ) {
+    return null;
+  }
+
   const answer = open ? continuationAnswer(open.state, message) : null;
+
+  /* A short answer naming a funding account (G-68 Phase 2). Claimed once,
+   * then answered by a FRESH preview of the rebuilt purchase. */
+  if (
+    open &&
+    answer?.kind === 'funding_source' &&
+    open.state.kind === 'clarification' &&
+    open.state.expects === 'funding_source'
+  ) {
+    const draftId = open.state.draftId;
+    const claimed = await continuationsRepo.consumeContinuation(
+      tx,
+      businessId,
+      actorId,
+      open.id,
+      now,
+    );
+    if (!claimed) {
+      await continuationsRepo.retireContinuations(tx, businessId, actorId, now);
+      return null;
+    }
+    return answerFundingSource(tx, businessId, draftId, answer.source, message);
+  }
+
+  /* "2" from an explicit numbered list this member was shown and that is
+   * still open (G-68 Phase 2): the list is CONSUMED by its answer, never
+   * merely superseded. No question in Rekoda presents a numbered list yet,
+   * so nothing opens one in production; the answer names the line chosen
+   * and the commands that take it, and acts on nothing. */
+  if (open && answer?.kind === 'choice') {
+    const claimed = await continuationsRepo.consumeContinuation(
+      tx,
+      businessId,
+      actorId,
+      open.id,
+      now,
+    );
+    if (!claimed) {
+      await continuationsRepo.retireContinuations(tx, businessId, actorId, now);
+      return null;
+    }
+    return replies.optionChosen(answer.option.ref.invoiceNumber);
+  }
+
+  /* "Which period?" answered with a window Rekoda cannot count here
+   * ("yesterday", "last week", "in March"): the question stays OPEN and says
+   * which windows it can count, so the next reply can still answer it
+   * (Build 6's note, G-68 Phase 2). Nothing is retired or consumed. */
+  if (
+    open?.state.kind === 'clarification' &&
+    open.state.expects === 'period' &&
+    !answer &&
+    message.route.route === 'model' &&
+    uncountablePeriod(message.text)
+  ) {
+    return replies.periodNotCountable(open.state.topic === 'sales_summary' ? 'sales' : 'spending');
+  }
+
   const read = open && answer ? resumedRead(open.state, answer) : null;
   const claimed =
     open && read && isOneShot(open.state)
@@ -2920,6 +3044,18 @@ async function interpretedReply(
      * before it is closed, not left pending and never confirmable. */
     if (draft.isNew) await conversationsRepo.supersedeDraftsBefore(tx, businessId, draft.id);
     await conversationsRepo.retireDraft(tx, businessId, draft.id);
+    /* G-68 Phase 2: the question also takes a short answer ("bank",
+     * "cash", "na cash") from the member who was asked, through a typed
+     * continuation naming this retired draft. The answer rebuilds the
+     * purchase and shows a FRESH preview; it never executes this draft. */
+    if (answered.fundingQuestion && actorId && draft.isNew) {
+      await continuationsRepo.openContinuation(tx, {
+        businessId,
+        userId: actorId,
+        sourceMessageId: conversationMessageId,
+        state: { kind: 'clarification', expects: 'funding_source', draftId: draft.id },
+      });
+    }
   }
 
   /* Appendix D: a preview that shows stock DISAPPEARING opens the
@@ -2974,6 +3110,9 @@ async function acknowledge(
   /** The answer was the G-61 funding-source question: the draft is kept for
    * the record but must not stay confirmable. */
   retireDraft?: boolean;
+  /** That question was WHERE THE MONEY CAME FROM, which a short "bank" or
+   * "cash" may answer through a continuation (G-68 Phase 2). */
+  fundingQuestion?: boolean;
   /** The answer was a PREVIEW a "yes" confirms, not a question (G-23). */
   previewed?: boolean;
 }> {
@@ -3145,7 +3284,13 @@ async function acknowledge(
     const asked = plain(replies.arithmeticQuestion(gate.question));
     /* Answered by sending the purchase again (funding source, ₦0): the
      * asking draft is retired so only the replacement is confirmable. */
-    return 'reason' in gate && gate.reason !== undefined ? { ...asked, retireDraft: true } : asked;
+    if (!('reason' in gate) || gate.reason === undefined) return asked;
+    /* The funding-source question (G-61) may also be answered with a short
+     * "bank" or "cash" (G-68 Phase 2): the caller opens a typed continuation
+     * for it. A ₦0 amount is answered only by sending the purchase again. */
+    return gate.reason === 'funding_source'
+      ? { ...asked, retireDraft: true, fundingQuestion: true }
+      : { ...asked, retireDraft: true };
   }
 
   /* A sale names a customer; an expense and a purchase do not. Only the first
