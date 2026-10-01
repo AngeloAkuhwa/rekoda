@@ -71,7 +71,7 @@ takes a short "bank" or "cash" (migration 0155, `expects = funding_source`)
 with a FRESH preview, never executing the retired draft. After merge, on
 staging: `na so` to a fresh preview records it; `no` with nothing waiting is
 answered; J17 including the padded `start`; a POS purchase answered "bank"
-shows a new preview and records only after yes.
+shows a new preview and records only after yes. Review rounds since added: a questioned yes ("na so?") confirms nothing; the funding rebuild is one-shot and taken only within 1800 seconds (OD-19); the two-ask erasure breaks on ANY message between the asks (stricter than base for free English commands); the STOP decoration cap is OD-20.
 
 **In review (1 Oct 2026, Build 6, conversational continuation state; CODE
 COMPLETE, staging acceptance pending):** branch

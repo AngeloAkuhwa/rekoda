@@ -244,7 +244,17 @@ export function gateExpense(expense: ExpenseLike): SpendGate {
  * make — "I paid more than it cost" — gets a CG1 question with the figures in
  * it, exactly like a sale that does not add up.
  */
-export function gatePurchase(purchase: PurchaseLike): SpendGate {
+export function gatePurchase(
+  purchase: PurchaseLike,
+  /**
+   * Whether the funding-source question may offer the short answer
+   * ("Reply *bank* or *cash*"). Only while Rekoda can still take that answer
+   * (G-68): a question re-asked after its answer window offers only the
+   * send-it-again wording, so it never promises what cannot work.
+   */
+  options: { shortAnswer?: boolean } = {},
+): SpendGate {
+  const shortAnswer = options.shortAnswer ?? true;
   const amountK = toKobo(purchase.amount);
   /* Nothing costs nothing: a ₦0 purchase cannot be posted (a ledger line
    * must carry a debit or a credit, migration 0070), so it is asked about,
@@ -296,7 +306,9 @@ export function gatePurchase(purchase: PurchaseLike): SpendGate {
         question:
           'I know you paid by POS. I just need the source of the money for your books: ' +
           'did it come from your bank account or from physical cash?' +
-          '\n\nReply *bank* or *cash*, or send it again with where the money came ' +
+          (shortAnswer
+            ? '\n\nReply *bank* or *cash*, or send it again with where the money came '
+            : '\n\nSend it again with where the money came ') +
           'from, for example: ' +
           '"bought 10 cartons from Emeka for 180k, paid by POS from my bank account".',
       };
@@ -309,7 +321,9 @@ export function gatePurchase(purchase: PurchaseLike): SpendGate {
           ? `For the ${formatKobo(amountK)} stock, did you pay it all by cash or by transfer? ` +
             'If you have not paid it all yet, say how much you paid.'
           : `You paid ${formatKobo(paidK)} for this stock. Was that cash or transfer?`) +
-        '\n\nReply *cash* or *transfer*, or send it again with how you paid, for example: ' +
+        (shortAnswer
+          ? '\n\nReply *cash* or *transfer*, or send it again with how you paid, for example: '
+          : '\n\nSend it again with how you paid, for example: ') +
         '"bought 10 cartons from Emeka for 180k, paid transfer".',
     };
   }

@@ -1080,3 +1080,23 @@ describe('parity forms added on review (G-68)', () => {
     expect(soundsDoubtful('na bank o')).toBe(false);
   });
 });
+
+describe('final-head review: marks, faces, run-together STOP (G-68, G-24)', () => {
+  it.each(['yes \uFE56', 'yes \u061F', 'yes 😬', 'yes :/', 'na so :/'])('%j is unsure', (m) => {
+    expect(intentOf(m)).toEqual({ kind: 'unsure' });
+  });
+
+  it('a double exclamation is emphasis, not doubt', () => {
+    expect(intentOf('yes\u203C\uFE0F')).toEqual({ kind: 'affirm' });
+    expect(soundsDoubtful('cash\u203C\uFE0F')).toBe(false);
+    expect(fundingSourceAnswer('cash\u203C\uFE0F')).toBe('cash');
+  });
+
+  it('"na bank transfer" is the bank', () => {
+    expect(fundingSourceAnswer('na bank transfer')).toBe('transfer');
+  });
+
+  it.each(['stopquit', 'quitstop', 'stopstopquit'])('mixed run-together %j is refused', (m) => {
+    expect(customerConsentIntent(m)).toBeNull();
+  });
+});

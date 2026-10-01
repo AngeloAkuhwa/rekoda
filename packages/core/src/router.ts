@@ -706,7 +706,7 @@ function consentKeyword(raw: string): 'stop' | 'start' | null {
   const units: string[] = [];
   for (let i = 0; i < runs.length; i++) {
     const spaced = (separators[i] ?? []).every((g) => g.kind === 'space');
-    const together = /^(stop|quit){2,5}$/.exec(runs[i]!);
+    const together = /^(stop|quit)\1{1,4}$/.exec(runs[i]!);
     if (runs[i] === 'stop' && runs[i + 1] === 'all' && spaced) {
       units.push('stop all');
       i++;
@@ -1022,20 +1022,21 @@ export function periodAnswer(raw: string): AnsweredPeriod | null {
 /**
  * A question mark ANYWHERE in a short affirmation makes it a question (G-68
  * review): "yes?!", "na so ?!", "e correct?.", "yes ?)", "yes? 👍", "yes?? ok",
- * "na so?o", "yes¿". Plain and full-width "?", the inverted "¿", and the
- * pictographs "❓", "❔", "⁉", "‼". Affirmation phrases are a few words long,
- * so a question mark anywhere in one is never decoration.
+ * "na so?o", "yes¿". Plain, full-width and small "?", the inverted "¿", the
+ * Arabic "؟", and the pictographs "❓", "❔", "⁉". Not "‼": a double
+ * exclamation is emphasis, so "yes‼️" still agrees. Affirmation phrases are
+ * a few words long, so a question mark anywhere in one is never decoration.
  */
-const QUESTION_MARK = /[?\uFF1F\u00BF\u2753\u2754\u2049\u203C]/u;
+const QUESTION_MARK = /[?\uFF1F\uFE56\u00BF\u061F\u2753\u2754\u2049]/u;
 
 /**
  * Faces that mean doubt, wherever they sit in the message: thinking face,
  * flushed face, face with monocle, confused face, face with raised eyebrow,
- * face with rolling eyes. Kept small on purpose: each is read as "I am not
+ * face with rolling eyes, grimacing face, and the typed ":/". Kept small on purpose: each is read as "I am not
  * sure", and none is ever sent to mean yes. A smile or a thumbs up still
  * affirms.
  */
-const DOUBT_FACES = /[\u{1F914}\u{1F633}\u{1F9D0}\u{1F615}\u{1F928}\u{1F644}]/u;
+const DOUBT_FACES = /[\u{1F914}\u{1F633}\u{1F9D0}\u{1F615}\u{1F928}\u{1F644}\u{1F62C}]|:\//u;
 
 /**
  * Does this short message read as a question or as doubt? Invisible format
@@ -1159,6 +1160,7 @@ const FUNDING_ANSWERS: ReadonlyArray<readonly [readonly string[], FundingSource]
       'na my bank',
       'na my bank account',
       'na bank account',
+      'na bank transfer',
       'na from my bank',
       'na from my bank account',
     ],

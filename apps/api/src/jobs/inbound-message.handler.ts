@@ -27,6 +27,7 @@ import {
   CUSTOMER_TOKEN,
   continuationAnswer,
   isOneShot,
+  FUNDING_ANSWER_WINDOW_SECONDS,
   uncountablePeriod,
   soundsDoubtful,
   type FundingSource,
@@ -1001,6 +1002,7 @@ async function deterministicReply(
     return confirmPendingDraft(deps, tx, businessId, ctx.retrying, ctx.receivedAt, ctx.eventId, {
       messageId: ctx.messageId,
       from: ctx.from,
+      receivedAt: ctx.receivedAt,
     });
   }
   if (intent.kind === 'deny' || intent.kind === 'cancel') {
@@ -1052,6 +1054,7 @@ async function deterministicReply(
       return unsureReply(tx, businessId, ctx.receivedAt, {
         messageId: ctx.messageId,
         from: ctx.from,
+        receivedAt: ctx.receivedAt,
       });
     case 'greeting':
       return replies.greeting();
@@ -1072,13 +1075,12 @@ async function deterministicReply(
 
       /* Two-message erasure (CG-style): the first ask parks an EraseData
        * draft, the second ask claims it and deletes. Anything else in
-       * between claims the draft through the ordinary yes/no paths and
-       * keeps the data: a "yes", a questioned "yes?" or "na so?" (G-68), a
-       * "no", or anything that goes to the model and records a draft. A
-       * free deterministic command (a debtors list, stock, help, the
-       * dashboard link), in English or in Pidgin ("who still dey owe me",
-       * "wetin you fit do", "make i see my books"), records no draft and so
-       * does not break the pair, exactly as English commands did before. */
+       * between keeps the data: ANY inbound message on the thread after
+       * the first ask breaks the pair (G-68 review), whatever path it took
+       * and whether or not it recorded a draft. That is stricter than
+       * before for free deterministic commands ("who owes me" between the
+       * asks used to leave the pair intact), which is the safe direction
+       * for an irreversible action, and it is what the copy promises. */
       /* G-23: a first ask whose window closed is not waiting any more. */
       await conversationsRepo.expireStaleDrafts(tx, businessId, { now: ctx.receivedAt });
       /* EVERY pending draft counts here, a question to the books included
@@ -1092,10 +1094,20 @@ async function deterministicReply(
         asOf: ctx.receivedAt,
       });
       const pendingCommand = pending?.command as { intent?: string } | undefined;
-      const claim =
-        pending && pendingCommand?.intent === 'EraseData'
-          ? await conversationsRepo.claimDraft(tx, pending.id, { now: ctx.receivedAt })
-          : null;
+      /* A PAIR only when nothing at all was said in between (G-68 review):
+       * any inbound message on this business's thread after the first ask,
+       * from any member and by any path (a free command, a Pidgin phrase,
+       * another member's answer to their own question), breaks it. The copy
+       * says "anything else keeps it", and an irreversible erasure must not
+       * depend on which messages happen to record a draft. */
+      const paired =
+        pending &&
+        pendingCommand?.intent === 'EraseData' &&
+        (await conversationsRepo.inboundSinceDraft(tx, businessId, pending.id, ctx.messageId)) ===
+          0;
+      const claim = paired
+        ? await conversationsRepo.claimDraft(tx, pending.id, { now: ctx.receivedAt })
+        : null;
       if (claim?.outcome === 'not_pending') return replies.alreadyConfirmed();
       /* Only a claim inside the window erases. A first ask that expired (even
        * between the line above and the claim) is no confirmation: this ask
@@ -1540,7 +1552,7 @@ async function confirmPendingDraft(
   /** The stored event this "yes" came in on, where its reservations are recorded. */
   eventId: string,
   /** The message and its sender, for re-opening a re-asked funding question. */
-  sender: { messageId: string; from: string },
+  sender: { messageId: string; from: string; receivedAt: Date },
 ): Promise<Reply | null> {
   /*
    * G-61: the last thing the merchant was shown may be a purchase question
@@ -2429,8 +2441,9 @@ async function retireSenderContinuation(
  * (G-68 Phase 2): the purchase it asked about, rebuilt with the account
  * filled in, shown as a FRESH preview.
  *
- * Never an execution. The retired draft is read, never claimed, confirmed or
- * revived, and stays `abandoned`. The rebuilt command walks the same gates a
+ * Never an execution. The retired draft is never claimed, confirmed or
+ * revived: it is CLOSED (`superseded`) by the one answer that rebuilds it, so
+ * it can be answered only once. The rebuilt command walks the same gates a
  * typed purchase does at this point: the role rule (only a member who may
  * transact gets a draft to say yes to), a lapsed trial, the Chat entitlement,
  * and `gatePurchase` (CG1 before CG2). It records a NEW draft, previewed,
@@ -2464,6 +2477,17 @@ async function answerFundingSource(
   const rebuilt = { ...stored, paymentMethod: source };
   const gate = gatePurchase(rebuilt as never);
   if (gate.gate !== 'CG2') return replies.arithmeticQuestion(gate.question);
+  /* ONE-SHOT (G-68 review): the question is answered once, by whoever
+   * answers first. Closing the retired draft (abandoned -> superseded) is a
+   * conditional UPDATE in this transaction, so of two answers, from two
+   * members or racing, exactly one rebuilds; the other is told the question
+   * was closed. Two previews of one purchase would let two yeses book it
+   * twice, which G-61 exists to prevent. */
+  if (!(await conversationsRepo.closeRetiredDraft(tx, businessId, retired.id))) {
+    return replies.fundingQuestionClosed();
+  }
+  /* Nobody else's short answer can reach it now. */
+  await continuationsRepo.retireContinuationsForDraft(tx, businessId, retired.id);
   await conversationsRepo.recordDraft(tx, {
     businessId,
     conversationMessageId: message.messageId,
@@ -2488,7 +2512,7 @@ async function unsureReply(
   tx: TenantDb,
   businessId: string,
   receivedAt: Date,
-  sender: { messageId: string; from: string },
+  sender: { messageId: string; from: string; receivedAt: Date },
 ): Promise<Reply> {
   /* The yes it is not would carry the role rule; so does this answer. A
    * view-only member is never told "reply yes to save it". */
@@ -2541,18 +2565,24 @@ async function reaskRetiredQuestion(
   tx: TenantDb,
   businessId: string,
   retired: { id: string; state: string; command: unknown },
-  sender: { messageId: string; from: string },
+  sender: { messageId: string; from: string; receivedAt: Date },
 ): Promise<Reply | null> {
   if (retired.state !== 'abandoned') return null;
   const asked = retired.command as { intent?: string } & Record<string, unknown>;
   if (asked.intent !== 'RecordPurchase') return null;
-  const gate = gatePurchase(asked as never);
+  /* The short answer is offered, and re-opened, only inside the answer
+   * window (F3, OD-19); after it the question offers only "send it again",
+   * so it never promises an answer Rekoda will not take. */
+  const row = await conversationsRepo.retiredPurchaseDraft(tx, businessId, retired.id);
+  const inWindow = row !== null && insideFundingWindow(row.createdAt, sender.receivedAt);
+  const gate = gatePurchase(asked as never, { shortAnswer: inWindow });
   if (gate.gate !== 'CG1') return null;
-  if ('reason' in gate && gate.reason === 'funding_source') {
+  if (inWindow && 'reason' in gate && gate.reason === 'funding_source') {
+    const now = { now: sender.receivedAt };
     const actorId = await actorOf(tx, businessId, sender.from);
     /* Already open for this member, about this draft: nothing to re-open. */
     const live = actorId
-      ? await continuationsRepo.currentContinuation(tx, businessId, actorId)
+      ? await continuationsRepo.currentContinuation(tx, businessId, actorId, now)
       : null;
     const alreadyOpen =
       live?.state.kind === 'clarification' &&
@@ -2564,10 +2594,16 @@ async function reaskRetiredQuestion(
         userId: actorId,
         sourceMessageId: sender.messageId,
         state: { kind: 'clarification', expects: 'funding_source', draftId: retired.id },
+        now: sender.receivedAt,
       });
     }
   }
   return replies.arithmeticQuestion(gate.question);
+}
+
+/** Was the retired funding question asked within FUNDING_ANSWER_WINDOW_SECONDS? */
+function insideFundingWindow(askedAt: Date, receivedAt: Date): boolean {
+  return receivedAt.getTime() - askedAt.getTime() < FUNDING_ANSWER_WINDOW_SECONDS * 1000;
 }
 
 /**
@@ -2626,10 +2662,16 @@ async function continueConversation(
     open.state.expects === 'funding_source'
   ) {
     const draftId = open.state.draftId;
+    const retired = await conversationsRepo.retiredPurchaseDraft(tx, businessId, draftId);
+    /* Past the answer window (F3, OD-19) a short "bank" rebuilds nothing:
+     * the question is retired and the message routes as it otherwise would. */
+    if (retired && !insideFundingWindow(retired.createdAt, message.receivedAt)) {
+      await continuationsRepo.retireContinuations(tx, businessId, actorId, now);
+      return null;
+    }
     /* "cash?", "bank 🤔": asked, not answered (G-68 review). The question
      * stays open and is asked again; nothing is rebuilt. */
     if (soundsDoubtful(message.text)) {
-      const retired = await conversationsRepo.retiredPurchaseDraft(tx, businessId, draftId);
       return retired
         ? ((await reaskRetiredQuestion(
             tx,

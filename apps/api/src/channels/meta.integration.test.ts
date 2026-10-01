@@ -9349,7 +9349,8 @@ describe('a short reply continues what Rekoda just asked (Build 6)', () => {
     expect(modelCalls()).toBe(0);
     expect(stubSender.lastText).toContain('Paid in full by transfer');
     expect(await footprint(business.id)).toMatchObject({ expenses: 0, postings: 0 });
-    expect((await draftStates(business.id))[1]).toBe('RecordPurchase:abandoned');
+    /* Answered once: the retired question is closed by its rebuild. */
+    expect((await draftStates(business.id))[1]).toBe('RecordPurchase:superseded');
     expect((await draftStates(business.id))[2]).toBe('RecordPurchase:pending');
   });
 
@@ -10426,8 +10427,9 @@ describe('Nigerian and Pidgin answers continue what was asked (G-68 Phase 2)', (
         expect(modelCalls()).toBe(0);
         expect(await aiActions(business.id)).toBe(unitsAfterQuestion);
         expect(await written(business.id)).toEqual({ purchases: 0, postings: 0, arrivals: 0 });
+        /* The question is answered ONCE: closed by its rebuild. */
         expect(await draftStates(business.id)).toEqual([
-          'RecordPurchase:abandoned',
+          'RecordPurchase:superseded',
           'RecordPurchase:pending',
         ]);
         expect((await continuations(business.id)).map((c) => c.state)).toEqual(['consumed']);
@@ -10437,7 +10439,7 @@ describe('Nigerian and Pidgin answers continue what was asked (G-68 Phase 2)', (
         await reply('wamid.P2-e-yes-2', 'yes');
         expect((await written(business.id)).purchases).toBe(1);
         expect(await draftStates(business.id)).toEqual([
-          'RecordPurchase:abandoned',
+          'RecordPurchase:superseded',
           'RecordPurchase:confirmed',
         ]);
         expect(await nets(business.id)).toEqual({ INVENTORY: 18_000_000, [account]: -18_000_000 });
@@ -10738,7 +10740,7 @@ describe('G-68 review: doubt, the funding gates, and closing a question', () => 
       const business = await seedMerchant();
       await askFunding(business.id);
       await reply('wamid.R-g-cash', 'cash');
-      expect(await purchaseStates(business.id)).toEqual(['abandoned', 'pending']);
+      expect(await purchaseStates(business.id)).toEqual(['superseded', 'pending']);
       await withBusiness(db, business.id, (tx) =>
         tx.execute(sql`
           UPDATE command_drafts SET expires_at = clock_timestamp() - interval '1 day'
@@ -10746,7 +10748,7 @@ describe('G-68 review: doubt, the funding gates, and closing a question', () => 
       );
       await reply('wamid.R-g-late-yes', 'na so');
       expect(stubSender.lastText).toBe(replies.draftExpired().text);
-      expect(await purchaseStates(business.id)).toEqual(['abandoned', 'expired']);
+      expect(await purchaseStates(business.id)).toEqual(['superseded', 'expired']);
       expect(await footprint(business.id)).toEqual({ invoices: 0, purchases: 0, postings: 0 });
     });
 
@@ -10945,7 +10947,7 @@ describe('G-68 final review: erasure, doubt anywhere, re-asked funding question'
       await reply('wamid.F-r-bank', 'bank');
       expect(stubSender.lastText).toContain('Paid in full by transfer');
       expect(modelCalls()).toBe(0);
-      expect(await purchaseStates(business.id)).toEqual(['abandoned', 'pending']);
+      expect(await purchaseStates(business.id)).toEqual(['superseded', 'pending']);
     });
 
     it('after an unrelated free command retired it, a yes re-opens it', async () => {
@@ -10957,7 +10959,7 @@ describe('G-68 final review: erasure, doubt anywhere, re-asked funding question'
       expect(stubSender.lastText).toContain(POS_QUESTION);
       await reply('wamid.F-r2-cash', 'cash');
       expect(stubSender.lastText).toContain('Paid in full by cash');
-      expect(await purchaseStates(business.id)).toEqual(['abandoned', 'pending']);
+      expect(await purchaseStates(business.id)).toEqual(['superseded', 'pending']);
     });
 
     it("a second member's yes opens it for THEM, and their answer passes their own gates", async () => {
@@ -10971,7 +10973,7 @@ describe('G-68 final review: erasure, doubt anywhere, re-asked funding question'
       await reply('wamid.F-r3-bank', 'bank', DELEGATE);
       expect(stubSender.lastText).toContain('Paid in full by transfer');
       expect(modelCalls()).toBe(0);
-      expect(await purchaseStates(business.id)).toEqual(['abandoned', 'pending']);
+      expect(await purchaseStates(business.id)).toEqual(['superseded', 'pending']);
     });
 
     it('a questioned answer ("cash?") rebuilds nothing and asks again, keeping it open', async () => {
@@ -10994,6 +10996,242 @@ describe('G-68 final review: erasure, doubt anywhere, re-asked funding question'
       await reply('wamid.F-v-q', 'na so?', DELEGATE);
       expect(stubSender.lastText).toBe(replies.viewOnlyRole().text);
       expect((await footprint(business.id)).invoices).toBe(0);
+    });
+  });
+});
+
+/**
+ * G-68 final-head review 2: the G-61 rebuild is ONE-SHOT, the two-ask
+ * erasure breaks on ANY message between the asks, and a funding answer is
+ * taken only inside its window.
+ */
+describe('G-68 final review 2: one-shot rebuild, strict erasure pair, answer window', () => {
+  const OWNER = '2348031234567';
+  const DELEGATE = '2348039990002';
+  const UNCLEAR = { intent: 'Unclear', clarification: 'What would you like me to do?' };
+  const HOW_MUCH_DID_I_SELL = {
+    intent: 'Query',
+    topic: 'sales_summary',
+    customer: null,
+    period: null,
+    periodText: null,
+    format: 'chat',
+  };
+  const POS_PURCHASE = {
+    intent: 'RecordPurchase',
+    supplierMention: 'Emeka',
+    description: '10 cartons',
+    amount: 180_000,
+    reportedPayment: 180_000,
+    paymentMethod: 'pos',
+    productMention: 'cartons',
+    quantity: 10,
+  };
+  const POS_QUESTION = 'did it come from your bank account or from physical cash?';
+
+  async function seedMerchant(phone = `+${OWNER}`) {
+    const user = await identity.upsertUserByPhone(db, phone);
+    return identity.createBusinessWithOwner(db, {
+      name: 'Ada Fashion',
+      businessType: null,
+      ownerUserId: user.id,
+    });
+  }
+
+  async function addDelegate(businessId: string) {
+    const delegate = await identity.upsertUserByPhone(db, `+${DELEGATE}`);
+    await identity.addMembership(db, businessId, delegate.id, 'delegate');
+  }
+
+  async function drain() {
+    const runner = buildRunner(workerDb, db, deps);
+    let worked = await runner.runOnce();
+    while (worked) worked = await runner.runOnce();
+  }
+
+  async function say(wamid: string, command: Record<string, unknown>, text: string, from = OWNER) {
+    stubTransport.replyWith(command);
+    await post(messagePayload(from, wamid, text));
+    await drain();
+  }
+
+  async function reply(wamid: string, text: string, from = OWNER) {
+    stubTransport.replyWith(UNCLEAR);
+    await post(messagePayload(from, wamid, text));
+    await drain();
+  }
+
+  async function written(businessId: string) {
+    const [row] = [
+      ...(await withBusiness(db, businessId, (tx) =>
+        tx.execute<Record<string, number>>(sql`
+          SELECT
+            (SELECT count(*)::int FROM expenses WHERE business_id = ${businessId}::uuid) AS purchases,
+            (SELECT count(*)::int FROM inventory_movements WHERE business_id = ${businessId}::uuid) AS arrivals,
+            (SELECT count(*)::int FROM ledger_transactions WHERE business_id = ${businessId}::uuid) AS postings
+        `),
+      )),
+    ];
+    return row!;
+  }
+
+  async function purchaseStates(businessId: string): Promise<string[]> {
+    const rows = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ state: string }>(sql`
+        SELECT state FROM command_drafts
+         WHERE business_id = ${businessId}::uuid AND intent = 'RecordPurchase'
+         ORDER BY insertion_seq`),
+    );
+    return [...rows].map((r) => r.state);
+  }
+
+  describe('F2. the rebuild is one-shot', () => {
+    it('owner "bank" then delegate "cash", then two yeses: the purchase is booked ONCE', async () => {
+      const business = await seedMerchant();
+      await addDelegate(business.id);
+      await say('wamid.F2-pos', POS_PURCHASE, 'I bought 10 cartons for 180k, paid by POS');
+      await reply('wamid.F2-d-yes', 'yes', DELEGATE);
+      expect(stubSender.lastText).toContain(POS_QUESTION);
+
+      await reply('wamid.F2-o-bank', 'bank');
+      expect(stubSender.lastText).toContain('Paid in full by transfer');
+      await reply('wamid.F2-d-cash', 'cash', DELEGATE);
+      expect(stubSender.lastText).not.toContain('Please check this before I save it');
+
+      await reply('wamid.F2-yes-1', 'yes', DELEGATE);
+      await reply('wamid.F2-yes-2', 'yes');
+      await reply('wamid.F2-yes-3', 'yes');
+      expect(await written(business.id)).toMatchObject({ purchases: 1, arrivals: 1 });
+      expect(await purchaseStates(business.id)).toEqual(['superseded', 'confirmed']);
+    });
+
+    it('a second answer from the same member after the rebuild makes no second preview', async () => {
+      const business = await seedMerchant();
+      await say('wamid.F2b-pos', POS_PURCHASE, 'I bought 10 cartons for 180k, paid by POS');
+      await reply('wamid.F2b-bank', 'bank');
+      await reply('wamid.F2b-cash', 'cash');
+      expect(stubSender.lastText).not.toContain('Please check this before I save it');
+      expect(await purchaseStates(business.id)).toEqual(['superseded', 'pending']);
+    });
+  });
+
+  describe('F1. any message between the two erasure asks keeps the data', () => {
+    async function seedCustomer(businessId: string) {
+      const customer = await customersRepo.createCustomerWithIdentities(
+        db,
+        businessId,
+        'CUSTOMER_T9',
+        [{ facet: 'phone', ciphertext: 'sealed-phone', matchKey: 'mk-g68-f1' }],
+      );
+      return () =>
+        withBusiness(db, businessId, (tx) =>
+          customersRepo.identityFacetsFor(tx, businessId, customer.id),
+        );
+    }
+
+    it.each([
+      ['who still dey owe me', OWNER],
+      ['wetin you fit do', OWNER],
+      ['make i see my books', OWNER],
+      ['how many remain', OWNER],
+      ['i wan upgrade', OWNER],
+      /* An English free command now breaks the pair too: stricter than base,
+       * the safe direction, and what the copy promises. */
+      ['who owes me', OWNER],
+    ])('%j between the asks breaks the pair', async (between, from) => {
+      const business = await seedMerchant();
+      const facets = await seedCustomer(business.id);
+      await reply('wamid.F1-del1', 'delete my data');
+      await reply('wamid.F1-between', between, from);
+      await reply('wamid.F1-del2', 'delete my data');
+      expect(stubSender.lastText).toContain('Reply *DELETE MY DATA* again');
+      expect(await facets()).toHaveLength(1);
+    });
+
+    it("another member's answer to their own question breaks the pair", async () => {
+      const business = await seedMerchant();
+      await addDelegate(business.id);
+      const facets = await seedCustomer(business.id);
+      await say('wamid.F1-d-ask', HOW_MUCH_DID_I_SELL, 'How much did I sell?', DELEGATE);
+      await reply('wamid.F1b-del1', 'delete my data');
+      await reply('wamid.F1b-y', 'yesterday', DELEGATE);
+      expect(stubSender.lastText).toBe(replies.periodNotCountable('sales').text);
+      await reply('wamid.F1b-del2', 'delete my data');
+      expect(await facets()).toHaveLength(1);
+    });
+
+    it("another member's doubtful funding answer breaks the pair", async () => {
+      const business = await seedMerchant();
+      await addDelegate(business.id);
+      const facets = await seedCustomer(business.id);
+      await say(
+        'wamid.F1c-pos',
+        POS_PURCHASE,
+        'I bought 10 cartons for 180k, paid by POS',
+        DELEGATE,
+      );
+      await reply('wamid.F1c-del1', 'delete my data');
+      await reply('wamid.F1c-q', 'cash?', DELEGATE);
+      await reply('wamid.F1c-del2', 'delete my data');
+      expect(await facets()).toHaveLength(1);
+    });
+
+    it('the two asks with nothing between still erase', async () => {
+      const business = await seedMerchant();
+      const facets = await seedCustomer(business.id);
+      await reply('wamid.F1d-del1', 'delete my data');
+      await reply('wamid.F1d-del2', 'delete my data');
+      expect(stubSender.lastText).toContain('deleted (1 record)');
+      expect(await facets()).toHaveLength(0);
+    });
+  });
+
+  describe('F3. a funding answer is taken only inside its window', () => {
+    const age = (businessId: string, minutes: number) =>
+      withBusiness(db, businessId, (tx) =>
+        tx.execute(sql`
+          UPDATE command_drafts
+             SET created_at = clock_timestamp() - make_interval(mins => ${minutes})
+           WHERE business_id = ${businessId}::uuid AND state = 'abandoned'`),
+      );
+
+    it('inside the window, a re-ask after the continuation expired still rebuilds', async () => {
+      const business = await seedMerchant();
+      await say('wamid.F3a-pos', POS_PURCHASE, 'I bought 10 cartons for 180k, paid by POS');
+      await age(business.id, 20);
+      await withBusiness(db, business.id, (tx) =>
+        tx.execute(sql`
+          UPDATE conversation_continuations SET expires_at = clock_timestamp() - interval '1 second'
+           WHERE business_id = ${business.id}::uuid`),
+      );
+      await reply('wamid.F3a-yes', 'yes');
+      expect(stubSender.lastText).toContain('Reply *bank* or *cash*');
+      await reply('wamid.F3a-bank', 'bank');
+      expect(stubSender.lastText).toContain('Paid in full by transfer');
+    });
+
+    it('after the window, the re-ask offers no short answer and "bank" rebuilds nothing', async () => {
+      const business = await seedMerchant();
+      await say('wamid.F3b-pos', POS_PURCHASE, 'I bought 10 cartons for 180k, paid by POS');
+      await age(business.id, 31);
+      await reply('wamid.F3b-yes', 'yes');
+      expect(stubSender.lastText).toContain(POS_QUESTION);
+      expect(stubSender.lastText).not.toContain('Reply *bank*');
+      expect(stubSender.lastText).toContain('Send it again with where the money came');
+
+      await reply('wamid.F3b-bank', 'bank');
+      expect(stubSender.lastText).toBe(UNCLEAR.clarification);
+      expect(await purchaseStates(business.id)).toEqual(['abandoned']);
+      expect(await written(business.id)).toEqual({ purchases: 0, arrivals: 0, postings: 0 });
+    });
+
+    it('an open continuation past the window does not rebuild either', async () => {
+      const business = await seedMerchant();
+      await say('wamid.F3c-pos', POS_PURCHASE, 'I bought 10 cartons for 180k, paid by POS');
+      await age(business.id, 31);
+      await reply('wamid.F3c-bank', 'bank');
+      expect(stubSender.lastText).toBe(UNCLEAR.clarification);
+      expect(await purchaseStates(business.id)).toEqual(['abandoned']);
     });
   });
 });

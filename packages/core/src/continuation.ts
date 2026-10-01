@@ -55,6 +55,17 @@ import { fundingSourceAnswer, periodAnswer } from './router.js';
  */
 export const CONTINUATION_TTL_SECONDS = 600;
 
+/**
+ * How long after a G-61 funding-source question was FIRST asked a short
+ * "bank" or "cash" may still rebuild that purchase (G-68 review): thirty
+ * minutes from the retired draft's creation, judged at the moment the answer
+ * reached Rekoda. Past it, a re-ask no longer offers the short answer and a
+ * late "bank" is an ordinary message, so a Monday purchase is never rebuilt
+ * and booked on Friday. An implementation value for the owner to confirm
+ * (OPEN OWNER DECISION OD-19).
+ */
+export const FUNDING_ANSWER_WINDOW_SECONDS = 1800;
+
 /** The Query topics a continuation may carry (the command contract's list). */
 export const QUERY_TOPICS = [
   'debtors',

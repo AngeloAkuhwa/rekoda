@@ -920,9 +920,13 @@ export async function retiredPurchaseDraft(
   tx: TenantDb,
   businessId: string,
   draftId: string,
-): Promise<{ id: string; command: unknown } | null> {
+): Promise<{ id: string; command: unknown; createdAt: Date } | null> {
   const rows = await tx
-    .select({ id: commandDrafts.id, command: commandDrafts.command })
+    .select({
+      id: commandDrafts.id,
+      command: commandDrafts.command,
+      createdAt: commandDrafts.createdAt,
+    })
     .from(commandDrafts)
     .where(
       and(
@@ -934,6 +938,35 @@ export async function retiredPurchaseDraft(
     )
     .limit(1);
   return rows[0] ?? null;
+}
+
+/**
+ * How many inbound messages reached this business's thread AFTER the message
+ * that parked a draft, not counting `excludeMessageId` (the message asking
+ * now). The two-ask erasure (G-68 review) is a PAIR only when nothing at all
+ * was said between the two asks: any inbound message, from any member, by
+ * any path, breaks it, so the copy's "anything else keeps it" is literally
+ * true and no new no-draft path can narrow it. Outbound replies do not count.
+ */
+export async function inboundSinceDraft(
+  tx: TenantDb,
+  businessId: string,
+  draftId: string,
+  excludeMessageId: string,
+): Promise<number> {
+  const rows = await tx.execute<{ n: number }>(sql`
+    SELECT count(*)::int AS n
+      FROM conversation_messages later
+      JOIN command_drafts d ON d.id = ${draftId}::uuid AND d.business_id = ${businessId}::uuid
+      JOIN conversation_messages parked
+        ON parked.id = d.conversation_message_id AND parked.business_id = d.business_id
+     WHERE later.business_id = ${businessId}::uuid
+       AND later.conversation_id = parked.conversation_id
+       AND later.direction = 'inbound'
+       AND later.created_at > parked.created_at
+       AND later.id <> parked.id
+       AND later.id <> ${excludeMessageId}::uuid`);
+  return [...rows][0]?.n ?? 0;
 }
 
 /**
