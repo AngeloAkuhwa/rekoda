@@ -6,6 +6,7 @@
 import { sql } from 'drizzle-orm';
 import {
   bigint,
+  boolean,
   date,
   index,
   integer,
@@ -144,6 +145,15 @@ export const externalEvents = pgTable(
     resolvedBy: text('resolved_by'),
     /** What they decided. Never overwrites `error`, which is why it was flagged. */
     resolution: text('resolution'),
+    /**
+     * Metered units a "yes" carried in this message reserved, recorded with
+     * the consume (migration 0153, G-23), so a retry that executes nothing
+     * refunds exactly these. Unit names only.
+     */
+    reservedUnits: text('reserved_units')
+      .array()
+      .notNull()
+      .default(sql`'{}'::text[]`),
     createdAt: createdAt(),
   },
   (t) => [
@@ -421,7 +431,11 @@ export const commandDrafts = pgTable(
      * every draft.
      */
     confirmationContext: jsonb('confirmation_context'),
-    /** pending | superseded | confirmed | abandoned */
+    /**
+     * pending | superseded | confirmed | abandoned | expired (migration 0153).
+     * `abandoned` is a retired purchase question (G-61), re-asked by a yes;
+     * `expired` is a preview whose confirmation window closed (G-23).
+     */
     state: text('state').notNull().default('pending'),
     /**
      * The ordering AUTHORITY for drafts (migration 0149). `pendingDraft`
@@ -436,6 +450,25 @@ export const commandDrafts = pgTable(
      * before it existed: `now()` here would be the transaction's start, which
      * is EARLIER than the `created_at` beside it. */
     updatedAt: insertedAt('updated_at'),
+    /**
+     * When the confirmation window closes (migration 0153, G-23): a draft is
+     * confirmable only while pending AND before this instant, and the claim
+     * itself carries that predicate. Set from CONFIRMATION_TTL_SECONDS by
+     * `recordDraft`; the column default is the same window, pinned to the
+     * constant by a test.
+     */
+    expiresAt: timestamp('expires_at', { withTimezone: true })
+      .notNull()
+      .default(sql`clock_timestamp() + interval '300 seconds'`),
+    /**
+     * Whether a preview a "yes" confirms was SENT, accepted by WhatsApp
+     * (migration 0153, G-23), rather than a question stored with the same
+     * financial intent, or a preview whose send failed. Decides whether an
+     * expired draft is answered "that request has expired". An asynchronous
+     * delivery failure after acceptance is not reflected (status webhooks are
+     * unread, G-20).
+     */
+    previewed: boolean('previewed').notNull().default(false),
   },
   (t) => [
     // One draft per message — a job that runs twice must not give the merchant

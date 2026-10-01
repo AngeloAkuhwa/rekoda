@@ -10,7 +10,11 @@
  * could happen, it is a value the caller would have to construct by hand.
  */
 import { and, desc, eq, sql } from 'drizzle-orm';
-import { sanitizeCommandForPersistence, type ConfirmationContext } from '@rekoda/core';
+import {
+  CONFIRMATION_TTL_SECONDS,
+  sanitizeCommandForPersistence,
+  type ConfirmationContext,
+} from '@rekoda/core';
 import type { TenantDb } from '../client.js';
 import { commandDrafts, conversationMessages, conversations } from '../schema/ops.js';
 
@@ -307,7 +311,29 @@ export interface DraftInput {
    * transient-field policy that `command` does.
    */
   confirmationContext?: ConfirmationContext | null;
+  /**
+   * The merchant was shown a preview a "yes" confirms, not a question
+   * (G-23). Only an expired preview is answered "that request has expired".
+   */
+  previewed?: boolean;
+  /**
+   * The instant the confirmation window opens. Tests only: production leaves
+   * it unset and the database clock decides, the same clock as `created_at`.
+   */
+  now?: Date;
 }
+
+/**
+ * "Now" for a draft's confirmation window (G-23): the instant the caller
+ * names, else the database clock. A confirmation names the moment the
+ * merchant's message reached Rekoda (the webhook's own timestamp, on the
+ * database clock), so a "yes" sent inside the window is judged inside it
+ * however long the queue, a retry or a voice transcription takes; tests
+ * name an instant to reach the boundary without sleeping. Never a process's
+ * own clock.
+ */
+const draftClock = (now: Date | undefined) =>
+  sql`coalesce(${now ? now.toISOString() : null}::timestamptz, clock_timestamp())`;
 
 export interface DraftRow {
   id: string;
@@ -317,6 +343,8 @@ export interface DraftRow {
   identityLink?: unknown;
   /** Raw as stored; read it through `parseConfirmationContext`. */
   confirmationContext?: unknown;
+  /** Shown as a preview, not asked as a question (G-23). */
+  previewed?: boolean;
   /**
    * How the DRAFTING message arrived — text | voice | media | interactive.
    * Spec E.7's evidenceBasis is derived from this at confirmation time: a
@@ -352,6 +380,12 @@ export async function recordDraft(
       model: draft.model,
       identityLink: (draft.identityLink ?? null) as never,
       confirmationContext: (draft.confirmationContext ?? null) as never,
+      previewed: draft.previewed ?? false,
+      /* G-23: a preview is confirmable for CONFIRMATION_TTL_SECONDS, the same
+       * window as a HIGH_RISK confirmation. Set once, at the only INSERT: a
+       * redelivered message hits the conflict below and keeps the window its
+       * first delivery opened, so a replay never extends it. */
+      expiresAt: sql`${draftClock(draft.now)} + make_interval(secs => ${CONFIRMATION_TTL_SECONDS})`,
     })
     .onConflictDoNothing({ target: [commandDrafts.conversationMessageId] })
     .returning({ id: commandDrafts.id });
@@ -447,7 +481,22 @@ export async function markOutboundSent(
 }
 
 /** The draft this business is waiting to confirm, if there is one. */
-export async function pendingDraft(tx: TenantDb, businessId: string): Promise<DraftRow | null> {
+/**
+ * "Only what the merchant could have been answering" (G-23): a draft
+ * written after a message was received is not what that message is about.
+ * A retried "yes" can run after a newer request has been previewed; it must
+ * confirm the preview it was sent for, never one that did not exist yet, and
+ * a "no" or a correction must not touch a preview it never saw. Both sides
+ * are on the database clock.
+ */
+const seenBy = (asOf: Date | undefined) =>
+  asOf ? sql`${commandDrafts.createdAt} <= ${asOf.toISOString()}::timestamptz` : undefined;
+
+export async function pendingDraft(
+  tx: TenantDb,
+  businessId: string,
+  options: { asOf?: Date } = {},
+): Promise<DraftRow | null> {
   const rows = await tx
     .select({
       id: commandDrafts.id,
@@ -456,6 +505,7 @@ export async function pendingDraft(tx: TenantDb, businessId: string): Promise<Dr
       command: commandDrafts.command,
       identityLink: commandDrafts.identityLink,
       confirmationContext: commandDrafts.confirmationContext,
+      previewed: commandDrafts.previewed,
       messageKind: conversationMessages.kind,
     })
     .from(commandDrafts)
@@ -463,7 +513,13 @@ export async function pendingDraft(tx: TenantDb, businessId: string): Promise<Dr
       conversationMessages,
       eq(conversationMessages.id, commandDrafts.conversationMessageId),
     )
-    .where(and(eq(commandDrafts.businessId, businessId), eq(commandDrafts.state, 'pending')))
+    .where(
+      and(
+        eq(commandDrafts.businessId, businessId),
+        eq(commandDrafts.state, 'pending'),
+        seenBy(options.asOf),
+      ),
+    )
     /* The newest PENDING draft is what the merchant's "yes" will execute, so
      * "newest" is decided by `insertion_seq` - the database-assigned ordinal
      * (0149) - never by `created_at` (two drafts can share a microsecond)
@@ -474,25 +530,105 @@ export async function pendingDraft(tx: TenantDb, businessId: string): Promise<Dr
   return rows[0] ?? null;
 }
 
+/** What a claim found (CG3, G-23). */
+export type DraftClaim =
+  /** This call, and only this call, now owns the draft: execute it. */
+  | { readonly outcome: 'claimed' }
+  /** The window had closed: nothing may execute, and the merchant is told. */
+  | { readonly outcome: 'expired' }
+  /** Confirmed by another "yes", corrected, cancelled or retired. */
+  | { readonly outcome: 'not_pending' };
+
 /**
- * CG3 — claim a draft for issuing, exactly once.
+ * CG3 — claim a draft for issuing, exactly once, and only inside its window.
  *
  * `WHERE state = 'pending'` IS the mutual exclusion. Two rapid "yes" messages
  * become two jobs on two connections; both read the draft, both decide to
  * issue, and the merchant's customer receives two invoices with two numbers
  * for one sale. On WhatsApp a double-tap is not an edge case, it is Tuesday.
  *
- * Returns false for the loser, which is not an error — it means the document
- * is being issued by somebody else, and the right response is to say nothing
+ * G-23: the same UPDATE carries `expires_at > now`, so the age check is part
+ * of the claim itself, never a read that a later write trusts. A draft that
+ * is still pending but whose window has closed is moved to `expired` by the
+ * second statement, exactly once (its own `state = 'pending'` predicate),
+ * and can never become `confirmed` afterwards. Valid iff now < expires_at:
+ * at the instant itself the draft has expired.
+ *
+ * `not_pending` for the loser of a race is not an error: the document is
+ * being issued by somebody else, and the right response is to say nothing
  * further rather than to apologise for a success.
  */
-export async function claimDraft(tx: TenantDb, draftId: string): Promise<boolean> {
-  const claimed = await tx
-    .update(commandDrafts)
-    .set({ state: 'confirmed', updatedAt: new Date() })
-    .where(and(eq(commandDrafts.id, draftId), eq(commandDrafts.state, 'pending')))
-    .returning({ id: commandDrafts.id });
-  return claimed.length === 1;
+export async function claimDraft(
+  tx: TenantDb,
+  draftId: string,
+  options: { now?: Date } = {},
+): Promise<DraftClaim> {
+  const now = draftClock(options.now);
+  const claimed = await tx.execute<{ id: string }>(sql`
+    UPDATE command_drafts SET state = 'confirmed', updated_at = clock_timestamp()
+     WHERE id = ${draftId}::uuid AND state = 'pending' AND expires_at > ${now}
+       AND created_at <= ${now}
+    RETURNING id`);
+  if ([...claimed].length === 1) return { outcome: 'claimed' };
+
+  const expired = await tx.execute<{ id: string }>(sql`
+    UPDATE command_drafts SET state = 'expired', updated_at = clock_timestamp()
+     WHERE id = ${draftId}::uuid AND state = 'pending' AND expires_at <= ${now}
+    RETURNING id`);
+  if ([...expired].length === 1) return { outcome: 'expired' };
+
+  /* Neither: somebody else moved it first. A concurrent "yes" that expired
+   * it is still an expiry to this caller, never a success it should be
+   * quiet about. */
+  const [row] = [
+    ...(await tx.execute<{ state: string }>(
+      sql`SELECT state FROM command_drafts WHERE id = ${draftId}::uuid`,
+    )),
+  ];
+  return row?.state === 'expired' ? { outcome: 'expired' } : { outcome: 'not_pending' };
+}
+
+/**
+ * The preview this message produced never reached the merchant (G-23): the
+ * send failed and was swallowed so the draft could survive. Without this the
+ * draft would still say `previewed`, and a later "yes" after its window
+ * would be told an unseen request expired.
+ */
+export async function markDraftUnseen(
+  tx: TenantDb,
+  businessId: string,
+  conversationMessageId: string,
+): Promise<void> {
+  await tx.execute(sql`
+    UPDATE command_drafts SET previewed = false, updated_at = clock_timestamp()
+     WHERE business_id = ${businessId}::uuid
+       AND conversation_message_id = ${conversationMessageId}::uuid
+       AND previewed`);
+}
+
+/**
+ * Close every confirmation window that has lapsed for this business (G-23).
+ *
+ * Lazy and interaction-time: called when the merchant next speaks (a yes, a
+ * no, a new request, the erasure phrase), before anything reads "the pending
+ * draft". A stale preview stops being pending at that moment, so nothing that
+ * follows can pick it as the thing a "yes" executes, correct it, or count it
+ * as cancelled. Only `pending` rows past their window move; a retired
+ * question (`abandoned`) is not a window and is left alone. The claim still
+ * carries its own predicate for a window that closes after this runs.
+ */
+export async function expireStaleDrafts(
+  tx: TenantDb,
+  businessId: string,
+  options: { now?: Date } = {},
+): Promise<number> {
+  const rows = await tx.execute<{ id: string }>(sql`
+    UPDATE command_drafts SET state = 'expired', updated_at = clock_timestamp()
+     WHERE business_id = ${businessId}::uuid
+       AND state = 'pending'
+       AND expires_at <= ${draftClock(options.now)}
+    RETURNING id`);
+  return [...rows].length;
 }
 
 /**
@@ -502,11 +638,21 @@ export async function claimDraft(tx: TenantDb, draftId: string): Promise<boolean
  * said is part of the record even after they changed their mind. It is also
  * the only way to answer "why does this invoice say 3 when I first said 4".
  */
-export async function supersedePendingDrafts(tx: TenantDb, businessId: string): Promise<number> {
+export async function supersedePendingDrafts(
+  tx: TenantDb,
+  businessId: string,
+  options: { asOf?: Date } = {},
+): Promise<number> {
   const updated = await tx
     .update(commandDrafts)
     .set({ state: 'superseded', updatedAt: new Date() })
-    .where(and(eq(commandDrafts.businessId, businessId), eq(commandDrafts.state, 'pending')))
+    .where(
+      and(
+        eq(commandDrafts.businessId, businessId),
+        eq(commandDrafts.state, 'pending'),
+        seenBy(options.asOf),
+      ),
+    )
     .returning({ id: commandDrafts.id });
   return updated.length;
 }
@@ -541,16 +687,31 @@ export async function supersedeDraftsBefore(
  *
  * A retired clarification is `abandoned`, so `pendingDraft` skips it; this
  * is how a "yes" sent straight after the question can tell that the thing
- * the merchant is looking at is that question, not some older preview.
+ * the merchant is looking at is that question, not some older preview. The
+ * same holds for a preview whose window closed (`expired`, G-23): it is
+ * still the last thing the merchant was shown.
  */
 export async function latestDraft(
   tx: TenantDb,
   businessId: string,
-): Promise<{ id: string; state: string; command: unknown } | null> {
+  options: { asOf?: Date } = {},
+): Promise<{
+  id: string;
+  state: string;
+  command: unknown;
+  expiresAt: Date;
+  previewed: boolean;
+} | null> {
   const rows = await tx
-    .select({ id: commandDrafts.id, state: commandDrafts.state, command: commandDrafts.command })
+    .select({
+      id: commandDrafts.id,
+      state: commandDrafts.state,
+      command: commandDrafts.command,
+      expiresAt: commandDrafts.expiresAt,
+      previewed: commandDrafts.previewed,
+    })
     .from(commandDrafts)
-    .where(eq(commandDrafts.businessId, businessId))
+    .where(and(eq(commandDrafts.businessId, businessId), seenBy(options.asOf)))
     .orderBy(desc(commandDrafts.insertionSeq))
     .limit(1);
   return rows[0] ?? null;

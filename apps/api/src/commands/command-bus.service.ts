@@ -44,6 +44,14 @@ export interface CommandEnvelope<T> {
   /** The merchant's confirmation, for a HIGH_RISK command. */
   confirmationId?: string | null;
   /**
+   * The instant that confirmation is judged at. Absent means now. A chat
+   * "yes" names the moment it reached Rekoda (G-23), the same instant its
+   * draft's window is judged at, so a yes sent in time is not refused because
+   * a queue or a retry ran it later. Never later than now: it only ever looks
+   * back to when the merchant actually answered.
+   */
+  now?: Date;
+  /**
    * The caller's retry key. Absent means the caller accepts that a retry may
    * run the command again, which is the honest default for an ingress that
    * has no key of its own to offer.
@@ -99,15 +107,19 @@ export class CommandBus {
 
     /* 2. RISK TIER. Before the key, so a command the away assistant may never
      *    run does not leave a record suggesting it once tried to. */
-    const decision = await this.risk.authorise(tx, {
-      businessId: envelope.businessId,
-      command: envelope.command,
-      subject: envelope.subject ?? null,
-      actor: envelope.actor,
-      ingress: envelope.ingress,
-      ...(envelope.context ? { context: envelope.context } : {}),
-      confirmationId: envelope.confirmationId ?? null,
-    });
+    const decision = await this.risk.authorise(
+      tx,
+      {
+        businessId: envelope.businessId,
+        command: envelope.command,
+        subject: envelope.subject ?? null,
+        actor: envelope.actor,
+        ingress: envelope.ingress,
+        ...(envelope.context ? { context: envelope.context } : {}),
+        confirmationId: envelope.confirmationId ?? null,
+      },
+      envelope.now,
+    );
     if (decision.outcome !== 'allowed') return decision;
 
     /* 3. IDEMPOTENCY, where the caller offered a key. */

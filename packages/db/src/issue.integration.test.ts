@@ -334,7 +334,7 @@ describe('CG3 — two rapid "yes" produce exactly one document', () => {
       ),
     );
 
-    expect(claims.filter(Boolean)).toHaveLength(1);
+    expect(claims.filter((c) => c.outcome === 'claimed')).toHaveLength(1);
   });
 
   it('issues one document when eight confirmations race', async () => {
@@ -345,7 +345,7 @@ describe('CG3 — two rapid "yes" produce exactly one document', () => {
       Array.from({ length: 8 }, () =>
         withBusiness(db, businessId, async (tx: TenantDb) => {
           const won = await conversationsRepo.claimDraft(tx, draftId);
-          if (!won) return;
+          if (won.outcome !== 'claimed') return;
           await issueRepo.issueSale(tx, { ...theSale(businessId), sourceId: draftId });
         }),
       ),
@@ -368,7 +368,7 @@ describe('CG3 — two rapid "yes" produce exactly one document', () => {
     const claimed = await withBusiness(db, businessId, (tx) =>
       conversationsRepo.claimDraft(tx, draftId),
     );
-    expect(claimed).toBe(false);
+    expect(claimed).toEqual({ outcome: 'not_pending' });
   });
 
   it('finds the pending draft, and stops finding it once superseded', async () => {

@@ -27,6 +27,7 @@ import {
   type AiModelRole,
   type DeterministicIntent,
   type Reply,
+  type UsageUnit,
 } from '@rekoda/core';
 import { normalisePhone, InvalidPhoneError } from '@rekoda/core/identity';
 import { extractInboundEvents, metaWebhookBody } from '@rekoda/contracts';
@@ -359,6 +360,7 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
             messageId: message.id,
             from: inbound.from,
             retrying,
+            receivedAt: event.receivedAt,
           })
         : await interpretedReply(
             deps,
@@ -368,6 +370,7 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
             tokenised!.text,
             message.id,
             retrying,
+            event.receivedAt,
             tokenised!.link,
             inbound.from,
             liveTokens!,
@@ -376,13 +379,20 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
           );
 
     if (answer) {
-      await deps.replySender.send(tx, {
+      const sent = await deps.replySender.send(tx, {
         businessId,
         to: inbound.from,
         reply: answer,
         // Only the model path can produce a reply that names a customer.
         ...(liveTokens ? { tokens: liveTokens } : {}),
       });
+      /* G-23: "previewed" means WhatsApp accepted the preview for delivery.
+       * A preview whose send failed (swallowed so the draft survives) was
+       * not sent. A delivery that fails later, after acceptance, comes back
+       * as a status webhook nothing reads yet (G-20) and is not reflected. */
+      if (!sent.delivered) {
+        await conversationsRepo.markDraftUnseen(tx, businessId, message.id);
+      }
     }
 
     await events.markProcessed(tx, eventId, null, businessId);
@@ -907,6 +917,14 @@ interface CommandContext {
   from: string;
   /** True on attempt 2 and later. See the note where it is set. */
   retrying: boolean;
+  /**
+   * When this message reached Rekoda (the webhook's stored event, on the
+   * database clock). A draft's confirmation window is judged at THIS
+   * instant, never at whenever a worker gets to it (G-23): a "yes" sent in
+   * time stays in time through a queue backlog or a retry, and a retry
+   * decides exactly as the first attempt did.
+   */
+  receivedAt: Date;
 }
 
 /**
@@ -925,21 +943,31 @@ async function deterministicReply(
    * even a draft the owner parked. */
   if (intent.kind === 'affirm') {
     if (!(await mayTransact(tx, businessId, ctx.from))) return replies.viewOnlyRole();
-    return confirmPendingDraft(deps, tx, businessId, ctx.retrying);
+    return confirmPendingDraft(deps, tx, businessId, ctx.retrying, ctx.receivedAt, ctx.eventId);
   }
   if (intent.kind === 'deny' || intent.kind === 'cancel') {
     // A refusal after a preview discards the draft rather than leaving it to
     // be confirmed by an accidental "yes" ten minutes later.
+    /* G-23: a preview whose window closed is expired, not cancelled. */
+    await conversationsRepo.expireStaleDrafts(tx, businessId, { now: ctx.receivedAt });
     /* A "no" straight after a retired purchase question closes that
      * question too (G-61). Only when it is the LAST thing asked: a question
      * answered long ago by a resend is not what this "no" is about. */
-    const latest = await conversationsRepo.latestDraft(tx, businessId);
+    const latest = await conversationsRepo.latestDraft(tx, businessId, { asOf: ctx.receivedAt });
+    /* The last thing the merchant saw had already expired: this "no" is
+     * about it, so nothing else is touched. A clarification or a question
+     * that lapsed was never a preview, and is answered as before. */
+    if (latest?.state === 'expired') {
+      const lapsed = expiredAnswer(latest.command, latest.previewed, 'no');
+      if (lapsed) return lapsed;
+    }
     const closedQuestion =
       latest?.state === 'abandoned'
         ? await conversationsRepo.closeRetiredDraft(tx, businessId, latest.id)
         : false;
     const dropped =
-      (await conversationsRepo.supersedePendingDrafts(tx, businessId)) + (closedQuestion ? 1 : 0);
+      (await conversationsRepo.supersedePendingDrafts(tx, businessId, { asOf: ctx.receivedAt })) +
+      (closedQuestion ? 1 : 0);
     return dropped > 0
       ? replies.cancelled()
       : intent.kind === 'cancel'
@@ -969,12 +997,21 @@ async function deterministicReply(
        * draft, the second ask claims it and deletes. Anything else in
        * between claims the draft through the ordinary yes/no paths and
        * keeps the data. */
-      const pending = await conversationsRepo.pendingDraft(tx, businessId);
+      /* G-23: a first ask whose window closed is not waiting any more. */
+      await conversationsRepo.expireStaleDrafts(tx, businessId, { now: ctx.receivedAt });
+      const pending = await conversationsRepo.pendingDraft(tx, businessId, {
+        asOf: ctx.receivedAt,
+      });
       const pendingCommand = pending?.command as { intent?: string } | undefined;
-      if (pending && pendingCommand?.intent === 'EraseData') {
-        if (!(await conversationsRepo.claimDraft(tx, pending.id))) {
-          return replies.alreadyConfirmed();
-        }
+      const claim =
+        pending && pendingCommand?.intent === 'EraseData'
+          ? await conversationsRepo.claimDraft(tx, pending.id, { now: ctx.receivedAt })
+          : null;
+      if (claim?.outcome === 'not_pending') return replies.alreadyConfirmed();
+      /* Only a claim inside the window erases. A first ask that expired (even
+       * between the line above and the claim) is no confirmation: this ask
+       * becomes a new first ask below, and nothing is deleted. */
+      if (pending && claim?.outcome === 'claimed') {
         /* No rollout seam (spec §25, Appendix D). EraseData is HIGH_RISK and
          * always crosses the bus: the phrase gate above is the router's own,
          * and it was never the thing a flag could turn off, but the pending
@@ -1017,7 +1054,9 @@ async function deterministicReply(
         if (run.outcome !== 'done') return replies.erasureKept();
         return replies.erasureDone(run.result.erased, deps.config.webUrl);
       }
-      const discarded = await conversationsRepo.supersedePendingDrafts(tx, businessId);
+      const discarded = await conversationsRepo.supersedePendingDrafts(tx, businessId, {
+        asOf: ctx.receivedAt,
+      });
       const parked = await conversationsRepo.recordDraft(tx, {
         businessId,
         conversationMessageId: ctx.messageId,
@@ -1357,11 +1396,60 @@ function identityLinkOf(value: unknown): { survivorId: string; orphanId: string 
     : null;
 }
 
+/**
+ * What to say to a "yes" or a "no" whose draft expired (G-23), or null when
+ * it was never a preview (answered as if nothing waited).
+ *
+ * Decided by what the merchant was SHOWN, recorded on the draft, never
+ * inferred from its intent: a sale whose total disagreed, or a payment with
+ * no invoice to place it on, is stored with a financial intent but was only
+ * ever a question, and "that request has expired" would tell the merchant a
+ * confirmable request lapsed when they were never invited to confirm one.
+ * An erasure ask is never "saved": it was not, and nothing was deleted.
+ */
+function expiredAnswer(command: unknown, previewed: boolean, answer: 'yes' | 'no'): Reply | null {
+  const intent = (command as { intent?: string } | null)?.intent;
+  if (intent === 'EraseData') return replies.erasureKept();
+  if (!previewed) return null;
+  return answer === 'yes' ? replies.draftExpired() : replies.expiredNothingToCancel();
+}
+
+/**
+ * Give back what a crashed earlier attempt of this "yes" reserved, when the
+ * retry executes nothing (G-23).
+ *
+ * A confirmation meters in its own committed transaction, recording each
+ * unit on the message in that same transaction (`noteReservedUnit`), and a
+ * retry never meters again. If the retry then executes nothing (the window
+ * closed, a correction superseded the draft, another "yes" confirmed it),
+ * exactly the recorded units go back, read and cleared in the JOB's
+ * transaction: the refund commits only with the attempt that answers, so a
+ * retry that dies gives nothing back and leaves the record for the next.
+ * Facts, not inference: nothing is refunded that was not reserved, nothing
+ * twice. The month is the message's arrival month, which is the month it
+ * metered in.
+ */
+async function refundRecordedReservations(
+  tx: TenantDb,
+  businessId: string,
+  eventId: string,
+  period: string,
+): Promise<void> {
+  const units = await events.takeReservedUnits(tx, businessId, eventId);
+  for (const unit of units) {
+    await usageRepo.refundUnit(tx, businessId, period, unit as UsageUnit);
+  }
+}
+
 async function confirmPendingDraft(
   deps: InboundMessageDeps,
   tx: TenantDb,
   businessId: string,
   retrying: boolean,
+  /** When the "yes" reached Rekoda: the instant its window is judged at. */
+  receivedAt: Date,
+  /** The stored event this "yes" came in on, where its reservations are recorded. */
+  eventId: string,
 ): Promise<Reply | null> {
   /*
    * G-61: the last thing the merchant was shown may be a purchase question
@@ -1370,7 +1458,13 @@ async function confirmPendingDraft(
    * preview still pending behind it: the question is asked again and
    * nothing is claimed.
    */
-  const latest = await conversationsRepo.latestDraft(tx, businessId);
+  /* G-23: every confirmation window that has closed is closed NOW, before
+   * anything below picks the draft this "yes" executes, and before a unit
+   * is metered for it. */
+  await conversationsRepo.expireStaleDrafts(tx, businessId, { now: receivedAt });
+  /* Only drafts that existed when this "yes" arrived: a retry overtaken by a
+   * newer request confirms what it was sent for, never the newer preview. */
+  const latest = await conversationsRepo.latestDraft(tx, businessId, { asOf: receivedAt });
   /* `abandoned` is only ever a retired purchase question; a draft the
    * merchant cancelled is `superseded` and is never asked again. */
   if (latest?.state === 'abandoned') {
@@ -1383,9 +1477,34 @@ async function confirmPendingDraft(
      * the stored question no longer gates (rules changed since). */
     return replies.nothingToConfirm();
   }
+  /* The last thing the merchant was shown expired (G-23): this "yes" is
+   * about it. Say so, and never fall through to an older preview behind it,
+   * which the merchant is not looking at. Nothing is metered or claimed. */
+  if (latest?.state === 'expired') {
+    /* A retry, its "yes" sent inside the window but overtaken by a later
+     * message that closed it: nothing executes, and exactly the units an
+     * earlier attempt recorded for this message go back. */
+    if (retrying) {
+      await refundRecordedReservations(tx, businessId, eventId, usagePeriod(receivedAt));
+    }
+    return expiredAnswer(latest.command, latest.previewed, 'yes') ?? replies.nothingToConfirm();
+  }
 
-  const draft = await conversationsRepo.pendingDraft(tx, businessId);
-  if (!draft) return replies.nothingToConfirm();
+  const draft = await conversationsRepo.pendingDraft(tx, businessId, { asOf: receivedAt });
+  if (!draft) {
+    /* Nothing existed for this yes to agree to. If a preview has been
+     * written since (the yes was typed before it arrived, or its job was
+     * retried and wrote it again after the merchant had already read it),
+     * it is waiting: say so, and let the next yes confirm it. Never confirm
+     * it from this one, which cannot be agreement to what it had not seen. */
+    /* A retry whose draft was superseded or confirmed while it waited
+     * executes nothing either: what its first attempt metered goes back. */
+    if (retrying) {
+      await refundRecordedReservations(tx, businessId, eventId, usagePeriod(receivedAt));
+    }
+    const since = await conversationsRepo.pendingDraft(tx, businessId);
+    return since?.previewed ? replies.previewAwaitingYes() : replies.nothingToConfirm();
+  }
   /* A preview from before a retired question is never confirmed by a yes,
    * including a double-tapped yes after the replacement was saved. */
   if (await conversationsRepo.isBehindRetiredQuestion(tx, businessId, draft.id)) {
@@ -1412,7 +1531,10 @@ async function confirmPendingDraft(
      * exactly like a sale does. Leaving it free would be a second door into
      * the same metered thing. */
     command.intent === 'RecordOrder';
-  const period = usagePeriod(new Date());
+  /* Dated by the message's arrival (G-23): the month a "yes" spends from is
+   * the month it was sent, the same instant its window is judged at, so a
+   * retry's refund lands in the month attempt 1 charged. */
+  const period = usagePeriod(receivedAt);
   let documentTaken = false;
   let orderTaken = false;
   /**
@@ -1425,9 +1547,27 @@ async function confirmPendingDraft(
    * nothing about the branch would look wrong. Reading the counters at call
    * time rather than choosing per branch makes that class of bug unwritable.
    */
+  const giveBack = (unit: UsageUnit) =>
+    withBusiness(deps.db, businessId, async (own) => {
+      await usageRepo.refundUnit(own, businessId, period, unit);
+      await events.releaseReservedUnit(own, businessId, eventId, unit);
+    });
   const refundReserved = async (): Promise<void> => {
-    if (documentTaken) await refundDocument(deps, businessId, period);
-    if (orderTaken) await refundOrder(deps, businessId, period);
+    /* A retry took nothing itself; what an earlier attempt took is on the
+     * message (G-23). */
+    if (retrying) {
+      await refundRecordedReservations(tx, businessId, eventId, period);
+      return;
+    }
+    /* Each unit at most once, however many exits call this. */
+    if (documentTaken) {
+      documentTaken = false;
+      await giveBack('DOCUMENT_GENERATION');
+    }
+    if (orderTaken) {
+      orderTaken = false;
+      await giveBack('CATALOGUE_ORDERS');
+    }
   };
   if (issuesDocument && !retrying) {
     const plan = await usageRepo.planFor(tx, businessId);
@@ -1443,9 +1583,18 @@ async function confirmPendingDraft(
       plan,
       'DOCUMENT_GENERATION',
     );
-    const granted = await withBusiness(deps.db, businessId, (own) =>
-      usageRepo.consumeUnit(own, businessId, period, 'DOCUMENT_GENERATION', allowance),
-    );
+    /* The reservation is recorded with the consume, in its transaction. */
+    const granted = await withBusiness(deps.db, businessId, async (own) => {
+      const ok = await usageRepo.consumeUnit(
+        own,
+        businessId,
+        period,
+        'DOCUMENT_GENERATION',
+        allowance,
+      );
+      if (ok) await events.noteReservedUnit(own, businessId, eventId, 'DOCUMENT_GENERATION');
+      return ok;
+    });
     if (!granted) return replies.allowanceExhausted(allowance, 'DOCUMENT_GENERATION');
     documentTaken = true;
 
@@ -1473,9 +1622,17 @@ async function confirmPendingDraft(
         plan,
         'CATALOGUE_ORDERS',
       );
-      const orderGranted = await withBusiness(deps.db, businessId, (own) =>
-        usageRepo.consumeUnit(own, businessId, period, 'CATALOGUE_ORDERS', orderAllowance),
-      );
+      const orderGranted = await withBusiness(deps.db, businessId, async (own) => {
+        const ok = await usageRepo.consumeUnit(
+          own,
+          businessId,
+          period,
+          'CATALOGUE_ORDERS',
+          orderAllowance,
+        );
+        if (ok) await events.noteReservedUnit(own, businessId, eventId, 'CATALOGUE_ORDERS');
+        return ok;
+      });
       if (!orderGranted) {
         await refundReserved();
         return replies.allowanceExhausted(orderAllowance, 'CATALOGUE_ORDERS');
@@ -1484,12 +1641,20 @@ async function confirmPendingDraft(
     }
   }
 
-  if (!(await conversationsRepo.claimDraft(tx, draft.id))) {
-    /* The other "yes" won. It is issuing the invoice and it took its own
-     * unit, so this one goes back: two rapid confirmations must cost one
-     * document, which is how many the merchant ends up with. */
+  /* The claim carries the window itself (G-23), and only for a draft that
+   * existed when the "yes" arrived. With the instant fixed, the sweep above
+   * has normally settled expiry already; this is the database's last word,
+   * not a check that a later write trusts. */
+  const claim = await conversationsRepo.claimDraft(tx, draft.id, { now: receivedAt });
+  if (claim.outcome !== 'claimed') {
+    /* Nothing executes, so whatever this "yes" reserved goes back: two
+     * rapid confirmations must cost one document, which is how many the
+     * merchant ends up with, and an expired one costs nothing at all. */
     await refundReserved();
-    return replies.alreadyConfirmed();
+    /* The other "yes" won and is issuing the invoice; or the window closed. */
+    return claim.outcome === 'expired'
+      ? (expiredAnswer(command, draft.previewed === true, 'yes') ?? replies.nothingToConfirm())
+      : replies.alreadyConfirmed();
   }
   /**
    * The link the merchant was asked about in the preview, applied by the same
@@ -1526,7 +1691,7 @@ async function confirmPendingDraft(
      * count produces nothing to send and must not cost the merchant one of
      * the documents they are allowed to generate. */
     await refundReserved();
-    return confirmStockChange(deps, tx, businessId, draft.id, command as never);
+    return confirmStockChange(deps, tx, businessId, draft.id, command as never, receivedAt);
   }
   if (command.intent === 'RecordOrder') {
     return confirmOrder(deps, tx, businessId, draft.id, command as never, refundReserved);
@@ -1757,6 +1922,15 @@ async function confirmStockChange(
   businessId: string,
   draftId: string,
   command: StructuredBusinessCommand & { intent: 'AdjustInventory' },
+  /**
+   * When the "yes" reached Rekoda (G-23). The write-off's HIGH_RISK
+   * confirmation is judged at the same instant as the draft that carries
+   * it: the confirmation is opened just after the draft, so a yes inside the
+   * draft's window is inside its window too. Judged at the wall clock, a
+   * queued or retried yes claimed the draft and was then refused here,
+   * leaving it confirmed with nothing applied.
+   */
+  receivedAt: Date,
 ): Promise<Reply> {
   const product = await stockRepo.findOrCreateProduct(tx, businessId, command.productMention);
   const gate = gateStockChange(command, product.onHand);
@@ -1785,7 +1959,7 @@ async function confirmStockChange(
   if (destructive || deps.config.commandAdjustInventory) {
     let confirmationId: string | null = null;
     if (destructive) {
-      const open = (await riskRepo.openConfirmationsFor(tx, businessId)).find(
+      const open = (await riskRepo.openConfirmationsFor(tx, businessId, receivedAt)).find(
         (c) => c.command === 'AdjustInventory' && c.subject === `draft:${draftId}`,
       );
       if (!open) return replies.confirmationLapsed('that stock change');
@@ -1800,6 +1974,7 @@ async function confirmStockChange(
         subject: `draft:${draftId}`,
         ...(destructive ? { context: { destructive: true } } : {}),
         confirmationId,
+        now: receivedAt,
         actor: 'system',
         ingress: 'CHAT',
         idempotencyKey: `draft:${draftId}`,
@@ -2236,6 +2411,8 @@ async function interpretedReply(
   safeText: string,
   conversationMessageId: string,
   retrying: boolean,
+  /** When this message reached Rekoda; see CommandContext.receivedAt. */
+  receivedAt: Date,
   /** Two records this message may have made of one person. Usually null. */
   link: IdentityLinkProposal | null,
   /** The sender's wa id, for the role check on write commands. */
@@ -2386,9 +2563,14 @@ async function interpretedReply(
    * 4". Getting the direction wrong makes a merchant fixing a quantity lose
    * the sale they were fixing.
    */
-  const existing = await conversationsRepo.pendingDraft(tx, businessId);
+  /* G-23: an expired preview is not there to be corrected; a "sorry, 3 not
+   * 4" after it is a new request with its own fresh window. */
+  await conversationsRepo.expireStaleDrafts(tx, businessId, { now: receivedAt });
+  const existing = await conversationsRepo.pendingDraft(tx, businessId, { asOf: receivedAt });
   const correcting = looksLikeCorrection(rawText, existing !== null);
-  if (correcting) await conversationsRepo.supersedePendingDrafts(tx, businessId);
+  if (correcting) {
+    await conversationsRepo.supersedePendingDrafts(tx, businessId, { asOf: receivedAt });
+  }
 
   /**
    * The answer is built BEFORE the draft is stored, because what the draft
@@ -2422,6 +2604,7 @@ async function interpretedReply(
     command: stored,
     model: deps.config.aiModelDefault,
     identityLink: answered.linkAsked ? link : null,
+    previewed: answered.previewed === true,
     confirmationContext: answered.confirmationContext ?? null,
   });
 
@@ -2444,7 +2627,7 @@ async function interpretedReply(
     const product = await stockRepo.productByName(tx, businessId, command.productMention);
     const gate = gateStockChange(command, product?.onHand ?? 0);
     if (gate.gate === 'CG2' && gate.quantityDelta < 0) {
-      await deps.commandBus.riskPolicy.ask(tx, {
+      const asked = await deps.commandBus.riskPolicy.ask(tx, {
         businessId,
         command: 'AdjustInventory',
         subject: `draft:${draft.id}`,
@@ -2454,6 +2637,10 @@ async function interpretedReply(
         reason: 'stock written off by merchant count',
         context: { destructive: true },
       });
+      /* The draft's window, exactly, on the database clock, never this
+       * host's (G-23): a yes inside one is inside the other. `asked.expiresAt`
+       * is the figure before this line; the row holds the draft's. */
+      await riskRepo.alignConfirmationWithDraft(tx, businessId, asked.id, draft.id);
     }
   }
 
@@ -2481,22 +2668,27 @@ async function acknowledge(
   /** The answer was the G-61 funding-source question: the draft is kept for
    * the record but must not stay confirmable. */
   retireDraft?: boolean;
+  /** The answer was a PREVIEW a "yes" confirms, not a question (G-23). */
+  previewed?: boolean;
 }> {
   /**
    * The link question rides a PREVIEW and nothing else. A clarification, an
    * answered query and a CG1 arithmetic question are all the wrong moment:
    * none of them ends in the `yes` that would confirm it.
    */
-  const withLink = (preview: Reply): { reply: Reply; linkAsked: boolean } => {
-    if (!link) return { reply: preview, linkAsked: false };
+  const withLink = (preview: Reply): { reply: Reply; linkAsked: boolean; previewed: true } => {
+    if (!link) return { reply: preview, linkAsked: false, previewed: true };
     return {
       reply: replies.preview(
         `${preview.text}\n\n${replies.linkQuestion(link.survivorToken, link.orphanToken)}`,
       ),
       linkAsked: true,
+      previewed: true,
     };
   };
   const plain = (reply: Reply) => ({ reply, linkAsked: false });
+  /* A preview with no customer to ask about: still a preview (G-23). */
+  const shown = (preview: Reply) => ({ reply: preview, linkAsked: false, previewed: true });
 
   if (command.intent === 'Unclear') return plain(replies.clarification(command.clarification));
 
@@ -2610,7 +2802,7 @@ async function acknowledge(
     /* Stock has no customer, so a link proposal in the same message is about
      * somebody the merchant mentioned rather than about this entry. Asked
      * only where the `yes` is about a customer. */
-    return plain(
+    return shown(
       replies.preview(
         correcting
           ? `${replies.correctionTaken().text}\n\n${stockGate.preview}`
@@ -2649,7 +2841,7 @@ async function acknowledge(
 
   /* A sale names a customer; an expense and a purchase do not. Only the first
    * ends in a `yes` that is about the person the question asks about. */
-  const wrap = command.intent === 'RecordSale' ? withLink : plain;
+  const wrap = command.intent === 'RecordSale' ? withLink : shown;
   return wrap(
     replies.preview(
       correcting ? `${replies.correctionTaken().text}\n\n${gate.preview}` : gate.preview,
@@ -2673,24 +2865,6 @@ function consumeMessage(
 ): Promise<boolean> {
   return withBusiness(deps.db, businessId, (tx) =>
     usageRepo.consumeUnit(tx, businessId, period, 'AI_ACTIONS', allowance),
-  );
-}
-
-/** Put an order unit back. Same standalone transaction as taking one. */
-function refundOrder(deps: InboundMessageDeps, businessId: string, period: string): Promise<void> {
-  return withBusiness(deps.db, businessId, (tx) =>
-    usageRepo.refundUnit(tx, businessId, period, 'CATALOGUE_ORDERS'),
-  );
-}
-
-/** Put a document unit back. Same standalone transaction as taking one. */
-function refundDocument(
-  deps: InboundMessageDeps,
-  businessId: string,
-  period: string,
-): Promise<void> {
-  return withBusiness(deps.db, businessId, (tx) =>
-    usageRepo.refundUnit(tx, businessId, period, 'DOCUMENT_GENERATION'),
   );
 }
 

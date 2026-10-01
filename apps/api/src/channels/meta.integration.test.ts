@@ -7699,3 +7699,1016 @@ describe('a forwarded order', () => {
     expect(invoices.rows[0]?.dueDate).toBeNull();
   });
 });
+
+/**
+ * A preview has a time limit (G-23, migration 0153).
+ *
+ * A "yes" executes a preview only inside its confirmation window. Monday's
+ * preview answered on Thursday records nothing, costs nothing, and the
+ * merchant is told it expired and to send it again. Time is moved by closing
+ * the window in the database (`expires_at` set into the past), never by
+ * sleeping; the boundary instant itself is pinned in draft-expiry.
+ */
+describe('a preview has a time limit (G-23)', () => {
+  const A_SALE = {
+    intent: 'RecordSale',
+    customer: { kind: 'token', token: 'CUSTOMER_7K2' },
+    items: [{ name: 'wig', quantity: 3, unitPrice: 100_000 }],
+    statedTotal: 300_000,
+    reportedPayment: 0,
+    paymentMethod: 'transfer',
+    discount: null,
+    deliveryFee: null,
+    dueDescription: null,
+  };
+  const AN_EXPENSE = {
+    intent: 'RecordExpense',
+    description: 'fuel for generator',
+    amount: 20_000,
+    category: 'utilities',
+    paymentMethod: 'cash',
+  };
+  const A_PURCHASE = {
+    intent: 'RecordPurchase',
+    supplierMention: 'Emeka',
+    description: '10 cartons',
+    amount: 180_000,
+    reportedPayment: 180_000,
+    paymentMethod: 'transfer',
+    productMention: 'cartons',
+    quantity: 10,
+  };
+  const EXPIRED = replies.draftExpired().text;
+
+  async function seedMerchant(phone = '+2348031234567') {
+    const user = await identity.upsertUserByPhone(db, phone);
+    return identity.createBusinessWithOwner(db, {
+      name: 'Ada Fashion',
+      businessType: null,
+      ownerUserId: user.id,
+    });
+  }
+
+  async function drain() {
+    const runner = buildRunner(workerDb, db, deps);
+    let worked = await runner.runOnce();
+    while (worked) worked = await runner.runOnce();
+  }
+
+  async function say(wamid: string, command: Record<string, unknown>, text: string) {
+    stubTransport.replyWith(command);
+    await post(messagePayload('2348031234567', wamid, text));
+    await drain();
+  }
+
+  async function plain(wamid: string, text: string) {
+    await post(messagePayload('2348031234567', wamid, text));
+    await drain();
+  }
+
+  /** Days pass: every open window of this business closes. */
+  const lapse = (businessId: string, where = sql`state = 'pending'`) =>
+    withBusiness(db, businessId, (tx) =>
+      tx.execute(sql`
+        UPDATE command_drafts SET expires_at = clock_timestamp() - interval '3 days'
+         WHERE business_id = ${businessId}::uuid AND ${where}`),
+    );
+
+  async function states(businessId: string): Promise<string[]> {
+    const rows = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ state: string }>(sql`
+        SELECT state FROM command_drafts WHERE business_id = ${businessId}::uuid
+         ORDER BY insertion_seq`),
+    );
+    return [...rows].map((r) => r.state);
+  }
+
+  /** Every row a confirmation can write, counted. */
+  async function footprint(businessId: string) {
+    const [row] = [
+      ...(await withBusiness(db, businessId, (tx) =>
+        tx.execute<Record<string, number>>(sql`
+          SELECT
+            (SELECT count(*)::int FROM invoices WHERE business_id = ${businessId}::uuid) AS invoices,
+            (SELECT count(*)::int FROM payments WHERE business_id = ${businessId}::uuid) AS payments,
+            (SELECT count(*)::int FROM payment_allocations WHERE business_id = ${businessId}::uuid) AS allocations,
+            (SELECT count(*)::int FROM receipts WHERE business_id = ${businessId}::uuid) AS receipts,
+            (SELECT count(*)::int FROM customer_credits WHERE business_id = ${businessId}::uuid) AS credits,
+            (SELECT count(*)::int FROM reconciliations WHERE business_id = ${businessId}::uuid) AS reconciliations,
+            (SELECT count(*)::int FROM expenses WHERE business_id = ${businessId}::uuid) AS expenses,
+            (SELECT count(*)::int FROM orders WHERE business_id = ${businessId}::uuid) AS orders,
+            (SELECT count(*)::int FROM ledger_transactions WHERE business_id = ${businessId}::uuid) AS postings
+        `),
+      )),
+    ];
+    return row!;
+  }
+
+  async function used(businessId: string) {
+    const rows = await withBusiness(db, businessId, (tx) =>
+      usageRepo.usageFor(tx, businessId, usagePeriod(new Date())),
+    );
+    return {
+      documents: rows.find((r) => r.unit === 'DOCUMENT_GENERATION')?.used ?? 0,
+      orders: rows.find((r) => r.unit === 'CATALOGUE_ORDERS')?.used ?? 0,
+    };
+  }
+
+  it('a yes inside the window records the sale, as it always has', async () => {
+    const business = await seedMerchant();
+    await say('wamid.G23-fresh', A_SALE, 'sold Ada 3 wigs for 300k');
+    expect(stubSender.lastText).toContain('Please check this before I save it');
+    await plain('wamid.G23-fresh-yes', 'yes');
+    expect((await footprint(business.id)).invoices).toBe(1);
+    expect(await states(business.id)).toEqual(['confirmed']);
+  });
+
+  it("Monday's preview and Thursday's yes: nothing recorded, nothing charged, and it says why", async () => {
+    const business = await seedMerchant();
+    await say('wamid.G23-mon', A_SALE, 'sold Ada 3 wigs for 300k');
+    const before = await footprint(business.id);
+    const documentsBefore = stubSender.documents.length;
+
+    await lapse(business.id);
+    await plain('wamid.G23-thu', 'yes');
+
+    expect(stubSender.lastText).toBe(EXPIRED);
+    expect(stubSender.lastText).not.toBe(replies.nothingToConfirm().text);
+    expect(await footprint(business.id)).toEqual(before);
+    expect(before.invoices).toBe(0);
+    expect(await used(business.id)).toEqual({ documents: 0, orders: 0 });
+    expect(stubSender.documents.length).toBe(documentsBefore);
+    /* Kept for the record, never deleted, never confirmable. */
+    expect(await states(business.id)).toEqual(['expired']);
+
+    /* Another yes is still about that request, and still records nothing. */
+    await plain('wamid.G23-thu-2', 'yes');
+    expect(stubSender.lastText).toBe(EXPIRED);
+    expect(await footprint(business.id)).toEqual(before);
+  });
+
+  it('an expired preview never lets a yes reach an older preview behind it', async () => {
+    const business = await seedMerchant();
+    await say('wamid.G23-older', A_SALE, 'sold Ada 3 wigs for 300k');
+    await say('wamid.G23-newer', AN_EXPENSE, 'bought fuel 20k cash');
+    /* Only the newest, the one on the merchant's screen, has lapsed. */
+    await withBusiness(db, business.id, (tx) =>
+      tx.execute(sql`
+        UPDATE command_drafts SET expires_at = clock_timestamp() - interval '1 second'
+         WHERE business_id = ${business.id}::uuid AND intent = 'RecordExpense'`),
+    );
+
+    await plain('wamid.G23-older-yes', 'yes');
+    expect(stubSender.lastText).toBe(EXPIRED);
+    expect(await footprint(business.id)).toMatchObject({ invoices: 0, expenses: 0, postings: 0 });
+    /* The older sale was not touched by that yes. */
+    expect(await states(business.id)).toEqual(['pending', 'expired']);
+  });
+
+  it('a new request after an expired one is confirmed alone, never the old one', async () => {
+    const business = await seedMerchant();
+    await say('wamid.G23-a', A_SALE, 'sold Ada rice 300k');
+    await lapse(business.id);
+    await say('wamid.G23-b', AN_EXPENSE, 'bought fuel 20k cash');
+    expect(stubSender.lastText).toContain('Expense: fuel for generator');
+
+    await plain('wamid.G23-b-yes', 'yes');
+    expect(await footprint(business.id)).toMatchObject({ invoices: 0, expenses: 1 });
+    expect(await states(business.id)).toEqual(['expired', 'confirmed']);
+
+    /* And a stray yes afterwards resurrects nothing. */
+    await plain('wamid.G23-b-yes-2', 'yes');
+    expect(stubSender.lastText).toBe(replies.nothingToConfirm().text);
+    expect(await footprint(business.id)).toMatchObject({ invoices: 0, expenses: 1 });
+  });
+
+  it('a correction inside the window supersedes the first preview and gets its own window', async () => {
+    const business = await seedMerchant();
+    await say('wamid.G23-c1', A_SALE, 'sold Ada 3 wigs for 300k');
+    await say(
+      'wamid.G23-c2',
+      {
+        ...A_SALE,
+        items: [{ name: 'wig', quantity: 4, unitPrice: 100_000 }],
+        statedTotal: 400_000,
+      },
+      'sorry, 4 wigs not 3',
+    );
+    expect(await states(business.id)).toEqual(['superseded', 'pending']);
+    const windows = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ fresh: boolean }>(sql`
+        SELECT expires_at > clock_timestamp() AS fresh FROM command_drafts
+         WHERE business_id = ${business.id}::uuid ORDER BY insertion_seq`),
+    );
+    expect([...windows].map((w) => w.fresh)).toEqual([true, true]);
+
+    /* The correction lapses too: the superseded first preview never revives. */
+    await lapse(business.id);
+    await plain('wamid.G23-c-yes', 'yes');
+    expect(stubSender.lastText).toBe(EXPIRED);
+    expect(await states(business.id)).toEqual(['superseded', 'expired']);
+    expect((await footprint(business.id)).invoices).toBe(0);
+  });
+
+  it('a "sorry, 4 not 3" after the preview expired is a new request with a fresh window', async () => {
+    const business = await seedMerchant();
+    await say('wamid.G23-e1', A_SALE, 'sold Ada 3 wigs for 300k');
+    await lapse(business.id);
+    await say(
+      'wamid.G23-e2',
+      {
+        ...A_SALE,
+        items: [{ name: 'wig', quantity: 4, unitPrice: 100_000 }],
+        statedTotal: 400_000,
+      },
+      'sorry, 4 wigs not 3',
+    );
+    /* The expired one was expired, not "corrected". */
+    expect(await states(business.id)).toEqual(['expired', 'pending']);
+    await plain('wamid.G23-e-yes', 'yes');
+    const invoices = await withBusiness(db, business.id, (tx) =>
+      reportsRepo.invoicesFor(tx, business.id, 10),
+    );
+    expect(invoices.rows).toHaveLength(1);
+    expect(invoices.rows[0]?.totalK).toBe(40_000_000);
+  });
+
+  it('two yes messages inside the window: one invoice, one document unit', async () => {
+    const business = await seedMerchant();
+    await say('wamid.G23-r1', A_SALE, 'sold Ada 3 wigs for 300k');
+    await post(messagePayload('2348031234567', 'wamid.G23-r1-yes-a', 'yes'));
+    await post(messagePayload('2348031234567', 'wamid.G23-r1-yes-b', 'yes'));
+    /* Delivered together; one business's messages are handled one at a time
+     * (the per-business lock), so they are worked in turn. The parallel
+     * race on the claim itself is pinned in draft-expiry.integration. */
+    await drain();
+    expect((await footprint(business.id)).invoices).toBe(1);
+    expect((await used(business.id)).documents).toBe(1);
+  });
+
+  it('two yes messages after the window: nothing executes, nothing is charged', async () => {
+    const business = await seedMerchant();
+    await say('wamid.G23-r2', A_SALE, 'sold Ada 3 wigs for 300k');
+    await lapse(business.id);
+    const before = stubSender.sent.length;
+    await post(messagePayload('2348031234567', 'wamid.G23-r2-yes-a', 'yes'));
+    await post(messagePayload('2348031234567', 'wamid.G23-r2-yes-b', 'yes'));
+    /* Delivered together; one business's messages are handled one at a time
+     * (the per-business lock), so they are worked in turn. The parallel
+     * race on the claim itself is pinned in draft-expiry.integration. */
+    await drain();
+    expect(await footprint(business.id)).toMatchObject({ invoices: 0, postings: 0 });
+    expect(await used(business.id)).toEqual({ documents: 0, orders: 0 });
+    expect(await states(business.id)).toEqual(['expired']);
+    const answers = stubSender.sent.slice(before).map((m) => m.text);
+    expect(answers).toEqual([EXPIRED, EXPIRED]);
+  });
+
+  it('a window that closes between the metering and the claim refunds the unit and records nothing', async () => {
+    const business = await seedMerchant();
+    await say('wamid.G23-edge', A_SALE, 'sold Ada 3 wigs for 300k');
+    /* Deterministic: the moment this business's document unit is consumed,
+     * its open preview's window closes, exactly the race the claim's own
+     * predicate exists for. Test-scoped, on the owner connection. */
+    const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
+    try {
+      await ownerDb.execute(sql`
+        CREATE OR REPLACE FUNCTION g23_close_window() RETURNS trigger AS $$
+        BEGIN
+          UPDATE command_drafts SET expires_at = clock_timestamp() - interval '1 day'
+           WHERE business_id = NEW.business_id AND state = 'pending';
+          RETURN NEW;
+        END $$ LANGUAGE plpgsql`);
+      await ownerDb.execute(sql`
+        CREATE TRIGGER g23_close_window AFTER INSERT OR UPDATE ON usage_counters
+          FOR EACH ROW WHEN (NEW.unit = 'DOCUMENT_GENERATION' AND NEW.used > 0)
+          EXECUTE FUNCTION g23_close_window()`);
+
+      await plain('wamid.G23-edge-yes', 'yes');
+    } finally {
+      await ownerDb.execute(sql`DROP TRIGGER IF EXISTS g23_close_window ON usage_counters`);
+      await ownerDb.execute(sql`DROP FUNCTION IF EXISTS g23_close_window()`);
+      await close();
+    }
+
+    expect(stubSender.lastText).toBe(EXPIRED);
+    expect(await footprint(business.id)).toMatchObject({ invoices: 0, postings: 0 });
+    /* Taken, then given back: the merchant paid nothing for expired work. */
+    expect((await used(business.id)).documents).toBe(0);
+    expect(await states(business.id)).toEqual(['expired']);
+  });
+
+  it('a yes sent inside the window is honoured by a retry that runs after it, charged once', async () => {
+    const business = await seedMerchant();
+    await say('wamid.G23-retry', A_SALE, 'sold Ada 3 wigs for 300k');
+
+    /* Attempt 1 meters the unit (its own committed transaction), claims the
+     * draft, then fails issuing: the job rolls back, the unit stays spent. */
+    const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
+    try {
+      await ownerDb.execute(sql`CREATE SEQUENCE IF NOT EXISTS g23_once`);
+      await ownerDb.execute(sql`
+        CREATE OR REPLACE FUNCTION g23_fail_once() RETURNS trigger
+          SECURITY DEFINER AS $$
+        BEGIN
+          IF nextval('g23_once') = 1 THEN RAISE EXCEPTION 'g23: first attempt fails'; END IF;
+          RETURN NEW;
+        END $$ LANGUAGE plpgsql`);
+      await ownerDb.execute(sql`
+        CREATE TRIGGER g23_fail_once BEFORE INSERT ON invoices
+          FOR EACH ROW EXECUTE FUNCTION g23_fail_once()`);
+
+      await post(messagePayload('2348031234567', 'wamid.G23-retry-yes', 'yes'));
+      await buildRunner(workerDb, db, deps).runOnce();
+      expect((await footprint(business.id)).invoices).toBe(0);
+      expect(await states(business.id)).toEqual(['pending']);
+      expect((await used(business.id)).documents).toBe(1);
+
+      /* The window closes AFTER the yes arrived and BEFORE the retry runs,
+       * as a backoff can make it. */
+      await ownerDb.execute(sql`
+        UPDATE command_drafts SET expires_at = (
+          SELECT created_at + interval '1 millisecond' FROM external_events
+           WHERE business_id = ${business.id}::uuid ORDER BY created_at DESC LIMIT 1)
+         WHERE business_id = ${business.id}::uuid`);
+      await ownerDb.execute(sql`
+        UPDATE jobs SET run_at = now() WHERE business_id = ${business.id}::uuid
+           AND state <> 'done'`);
+      await drain();
+    } finally {
+      await ownerDb.execute(sql`DROP TRIGGER IF EXISTS g23_fail_once ON invoices`);
+      await ownerDb.execute(sql`DROP FUNCTION IF EXISTS g23_fail_once()`);
+      await ownerDb.execute(sql`DROP SEQUENCE IF EXISTS g23_once`);
+      await close();
+    }
+
+    /* The merchant said yes in time: the sale is recorded once, the unit
+     * attempt 1 took is the one it cost, and nobody is told it expired. */
+    expect(stubSender.lastText).not.toBe(EXPIRED);
+    expect((await footprint(business.id)).invoices).toBe(1);
+    expect((await used(business.id)).documents).toBe(1);
+    expect(await states(business.id)).toEqual(['confirmed']);
+  });
+
+  it('an expired overpayment preview writes no payment, credit, reconciliation or posting (G-49)', async () => {
+    const business = await seedMerchant();
+    await customersRepo.createCustomerWithIdentities(db, business.id, 'CUSTOMER_7K2', [
+      { facet: 'phone', ciphertext: 'sealed-phone', matchKey: 'mk-g23-over' },
+    ]);
+    await say('wamid.G23-o-sale', A_SALE, 'sold Ada 3 wigs for 300k');
+    await plain('wamid.G23-o-sale-yes', 'yes');
+    expect((await footprint(business.id)).invoices).toBe(1);
+
+    await say(
+      'wamid.G23-o-pay',
+      {
+        intent: 'RecordPayment',
+        customer: { kind: 'token', token: 'CUSTOMER_7K2' },
+        amount: 400_000,
+        relativeAmount: null,
+        documentRef: null,
+        paymentMethod: 'cash',
+      },
+      'Ada paid 400k',
+    );
+    expect(stubSender.lastText).toContain('Customer credit: ₦100,000');
+    const before = await footprint(business.id);
+    const documentsUsed = (await used(business.id)).documents;
+
+    await lapse(business.id);
+    await plain('wamid.G23-o-yes', 'yes');
+
+    expect(stubSender.lastText).toBe(EXPIRED);
+    expect(await footprint(business.id)).toEqual(before);
+    expect(before).toMatchObject({
+      payments: 0,
+      allocations: 0,
+      receipts: 0,
+      credits: 0,
+      reconciliations: 0,
+    });
+    expect((await used(business.id)).documents).toBe(documentsUsed);
+    /* The figures the merchant was shown stay on the record, unexecutable. */
+    const kept = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ state: string; kind: string | null }>(sql`
+        SELECT state, confirmation_context->>'kind' AS kind FROM command_drafts
+         WHERE business_id = ${business.id}::uuid AND intent = 'RecordPayment'`),
+    );
+    expect([...kept]).toEqual([{ state: 'expired', kind: 'payment_overpayment' }]);
+  });
+
+  it('an expired purchase preview is an expiry, never mistaken for a retired question (G-61)', async () => {
+    const business = await seedMerchant();
+    await say('wamid.G23-p', A_PURCHASE, 'I bought 10 cartons for 180k from Emeka, paid transfer');
+    expect(stubSender.lastText).toContain('Paid in full by transfer');
+    await lapse(business.id);
+    await plain('wamid.G23-p-yes', 'yes');
+    expect(stubSender.lastText).toBe(EXPIRED);
+    expect(stubSender.lastText).not.toContain('cash or transfer');
+    expect(await states(business.id)).toEqual(['expired']);
+    expect((await footprint(business.id)).expenses).toBe(0);
+  });
+
+  it('a retired purchase question is still re-asked by a yes, however old (G-61)', async () => {
+    const business = await seedMerchant();
+    await say(
+      'wamid.G23-q',
+      { ...A_PURCHASE, paymentMethod: 'pos' },
+      'I bought 10 cartons for 180k from Emeka, paid by POS',
+    );
+    expect(stubSender.lastText).toContain(
+      'did it come from your bank account or from physical cash?',
+    );
+    expect(await states(business.id)).toEqual(['abandoned']);
+    /* Its window is long past: the question is still a question, not an expiry. */
+    await lapse(business.id, sql`state = 'abandoned'`);
+    await plain('wamid.G23-q-yes', 'yes');
+    expect(stubSender.lastText).toContain(
+      'did it come from your bank account or from physical cash?',
+    );
+    expect(await states(business.id)).toEqual(['abandoned']);
+
+    /* The resend is a fresh preview with its own window, recorded once. */
+    await say(
+      'wamid.G23-q-bank',
+      A_PURCHASE,
+      'I bought 10 cartons for 180k from Emeka, paid by POS from my bank account',
+    );
+    await plain('wamid.G23-q-bank-yes', 'yes');
+    await plain('wamid.G23-q-bank-yes-2', 'yes');
+    expect((await footprint(business.id)).expenses).toBe(1);
+    expect(await states(business.id)).toEqual(['abandoned', 'confirmed']);
+  });
+
+  it('a "no" after an expired preview cancels nothing, not even an older preview', async () => {
+    const business = await seedMerchant();
+    await say('wamid.G23-n1', A_SALE, 'sold Ada 3 wigs for 300k');
+    await say('wamid.G23-n2', AN_EXPENSE, 'bought fuel 20k cash');
+    await withBusiness(db, business.id, (tx) =>
+      tx.execute(sql`
+        UPDATE command_drafts SET expires_at = clock_timestamp() - interval '1 second'
+         WHERE business_id = ${business.id}::uuid AND intent = 'RecordExpense'`),
+    );
+    await plain('wamid.G23-n-no', 'no');
+    expect(stubSender.lastText).toBe(replies.expiredNothingToCancel().text);
+    /* The sale behind it is exactly as it was. */
+    expect(await states(business.id)).toEqual(['pending', 'expired']);
+  });
+
+  it('an expired order quote raises no order, no invoice, and takes no order or document unit', async () => {
+    const business = await seedMerchant();
+    await withBusiness(db, business.id, async (tx) => {
+      const bale = await stockRepo.findOrCreateProduct(tx, business.id, 'Ankara bale');
+      await stockRepo.recordMovement(tx, {
+        businessId: business.id,
+        productId: bale.id,
+        delta: 10,
+        reason: 'adjustment',
+        sourceType: 'chat',
+        sourceId: 'seed',
+      });
+      await catalogueRepo.editProduct(tx, business.id, bale.id, { unitPriceK: 850_000 });
+    });
+    await say(
+      'wamid.G23-ord',
+      {
+        intent: 'RecordOrder',
+        customer: { kind: 'token', token: 'CUSTOMER_7K2' },
+        items: [{ name: 'Ankara bale', quantity: 2 }],
+        note: null,
+      },
+      'please I want 2 ankara bale',
+    );
+    expect(stubSender.lastText).toContain('Total: ₦17,000');
+    await lapse(business.id);
+    await plain('wamid.G23-ord-yes', 'yes');
+
+    expect(stubSender.lastText).toBe(EXPIRED);
+    expect(await footprint(business.id)).toMatchObject({ orders: 0, invoices: 0, postings: 0 });
+    expect(await used(business.id)).toEqual({ documents: 0, orders: 0 });
+    const stock = await withBusiness(db, business.id, (tx) => stockRepo.stockList(tx, business.id));
+    expect(stock.rows.find((p) => p.name === 'Ankara bale')?.onHand).toBe(10);
+  });
+
+  it('an expired stock write-off removes nothing', async () => {
+    const business = await seedMerchant();
+    const adjust = (delta: number) => ({
+      intent: 'AdjustInventory',
+      productMention: 'bags of rice',
+      quantityDelta: delta,
+    });
+    await say('wamid.G23-s1', adjust(20), 'add 20 bags of rice');
+    await plain('wamid.G23-s1-yes', 'yes');
+    await say('wamid.G23-s2', adjust(-15), '15 bags got water damage');
+    expect(stubSender.lastText).toContain('Removing 15 bags of rice');
+    await lapse(business.id);
+    await plain('wamid.G23-s2-yes', 'yes');
+    expect(stubSender.lastText).toBe(EXPIRED);
+    const rice = await withBusiness(db, business.id, (tx) =>
+      stockRepo.productByName(tx, business.id, 'bags of rice'),
+    );
+    expect(rice?.onHand).toBe(20);
+  });
+
+  it('an expired expense preview records no expense', async () => {
+    const business = await seedMerchant();
+    await say('wamid.G23-x', AN_EXPENSE, 'bought fuel 20k cash');
+    await lapse(business.id);
+    await plain('wamid.G23-x-yes', 'yes');
+    expect(stubSender.lastText).toBe(EXPIRED);
+    expect(await footprint(business.id)).toMatchObject({ expenses: 0, postings: 0 });
+  });
+
+  /**
+   * Attempt 1 of the next "yes" meters, claims, then fails issuing (a
+   * fail-once trigger on invoices): the job rolls back and is retried later,
+   * so other messages can be handled before it. Test-scoped, on the owner.
+   */
+  async function withFirstInvoiceFailing(run: (owner: Db) => Promise<void>) {
+    const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
+    try {
+      await ownerDb.execute(sql`CREATE SEQUENCE IF NOT EXISTS g23_once`);
+      await ownerDb.execute(sql`
+        CREATE OR REPLACE FUNCTION g23_fail_once() RETURNS trigger
+          SECURITY DEFINER AS $$
+        BEGIN
+          IF nextval('g23_once') = 1 THEN RAISE EXCEPTION 'g23: first attempt fails'; END IF;
+          RETURN NEW;
+        END $$ LANGUAGE plpgsql`);
+      await ownerDb.execute(sql`
+        CREATE TRIGGER g23_fail_once BEFORE INSERT ON invoices
+          FOR EACH ROW EXECUTE FUNCTION g23_fail_once()`);
+      await run(ownerDb);
+    } finally {
+      await ownerDb.execute(sql`DROP TRIGGER IF EXISTS g23_fail_once ON invoices`);
+      await ownerDb.execute(sql`DROP FUNCTION IF EXISTS g23_fail_once()`);
+      await ownerDb.execute(sql`DROP SEQUENCE IF EXISTS g23_once`);
+      await close();
+    }
+  }
+
+  /** Push every job still waiting for this business an hour out. */
+  const holdRetries = (owner: Db, businessId: string) =>
+    owner.execute(sql`
+      UPDATE jobs SET run_at = now() + interval '1 hour'
+       WHERE business_id = ${businessId}::uuid AND state <> 'done'`);
+
+  /** Make every job still waiting for this business due now. */
+  const runRetriesNow = (owner: Db, businessId: string) =>
+    owner.execute(sql`
+      UPDATE jobs SET run_at = now() WHERE business_id = ${businessId}::uuid AND state <> 'done'`);
+
+  it('a retried yes overtaken by a newer request confirms what it was sent for, never the newer preview', async () => {
+    const business = await seedMerchant();
+    await say('wamid.G23-ot1', A_SALE, 'sold Ada 3 wigs for 300k');
+
+    await withFirstInvoiceFailing(async (owner) => {
+      await post(messagePayload('2348031234567', 'wamid.G23-ot1-yes', 'yes'));
+      await buildRunner(workerDb, db, deps).runOnce();
+      /* Hold the retry back until the test releases it, so the newer message
+       * is handled first however slow the runner is. */
+      await holdRetries(owner, business.id);
+      expect((await footprint(business.id)).invoices).toBe(0);
+
+      /* A newer request is previewed while the yes waits to be retried. */
+      await say(
+        'wamid.G23-ot2',
+        {
+          ...A_SALE,
+          customer: { kind: 'none' },
+          items: [{ name: 'shoes', quantity: 2, unitPrice: 25_000 }],
+          statedTotal: 50_000,
+        },
+        'sold Bayo 2 shoes',
+      );
+      expect(stubSender.lastText).toContain('Total: ₦50,000');
+      await runRetriesNow(owner, business.id);
+      await drain();
+    });
+
+    /* The yes confirmed the 300k sale it answered, once; the shoes, which
+     * did not exist when it was sent, are still only a preview. */
+    const invoices = await withBusiness(db, business.id, (tx) =>
+      reportsRepo.invoicesFor(tx, business.id, 10),
+    );
+    expect(invoices.rows.map((i) => i.totalK)).toEqual([30_000_000]);
+    expect(await states(business.id)).toEqual(['confirmed', 'pending']);
+    expect((await used(business.id)).documents).toBe(1);
+  });
+
+  it('a retried yes whose window a later message closed records nothing and gives the unit back', async () => {
+    const business = await seedMerchant();
+    await say('wamid.G23-cl1', A_SALE, 'sold Ada 3 wigs for 300k');
+
+    await withFirstInvoiceFailing(async (owner) => {
+      await post(messagePayload('2348031234567', 'wamid.G23-cl1-yes', 'yes'));
+      await buildRunner(workerDb, db, deps).runOnce();
+      /* Hold the retry back until the test releases it, so the newer message
+       * is handled first however slow the runner is. */
+      await holdRetries(owner, business.id);
+      expect((await used(business.id)).documents).toBe(1);
+
+      /* The window closes just after the yes arrived, and a later request
+       * (handled before the retry) closes it for good. */
+      await owner.execute(sql`
+        UPDATE command_drafts SET expires_at = (
+          SELECT created_at + interval '1 millisecond' FROM external_events
+           WHERE business_id = ${business.id}::uuid ORDER BY created_at DESC LIMIT 1)
+         WHERE business_id = ${business.id}::uuid`);
+      await say('wamid.G23-cl2', AN_EXPENSE, 'bought fuel 20k cash');
+      expect(await states(business.id)).toEqual(['expired', 'pending']);
+
+      await runRetriesNow(owner, business.id);
+      await drain();
+    });
+
+    expect((await footprint(business.id)).invoices).toBe(0);
+    /* Attempt 1's unit is back: nothing was charged for work that never ran. */
+    expect((await used(business.id)).documents).toBe(0);
+    expect(stubSender.sent.map((m) => m.text)).toContain(EXPIRED);
+  });
+
+  it('a yes that arrived after the window, retried, gives back nothing it never took', async () => {
+    const business = await seedMerchant();
+    /* One real sale first, so the counter has a unit a wrong refund would show. */
+    await say('wamid.G23-nr-0', A_SALE, 'sold Ada 3 wigs for 300k');
+    await plain('wamid.G23-nr-0-yes', 'yes');
+    expect((await used(business.id)).documents).toBe(1);
+
+    await say('wamid.G23-nr-1', A_SALE, 'sold Ada 3 more wigs for 300k');
+    await lapse(business.id);
+
+    /* The answer to the late yes fails to be recorded once, so the job is
+     * retried: attempt 1 metered nothing (the window had closed before the
+     * yes arrived), and the retry must not refund a unit it never took. */
+    const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
+    try {
+      await ownerDb.execute(sql`CREATE SEQUENCE IF NOT EXISTS g23_out_once`);
+      await ownerDb.execute(sql`
+        CREATE OR REPLACE FUNCTION g23_fail_out_once() RETURNS trigger
+          SECURITY DEFINER AS $$
+        BEGIN
+          IF nextval('g23_out_once') = 1 THEN RAISE EXCEPTION 'g23: first answer fails'; END IF;
+          RETURN NEW;
+        END $$ LANGUAGE plpgsql`);
+      await ownerDb.execute(sql`
+        CREATE TRIGGER g23_fail_out_once BEFORE INSERT ON conversation_messages
+          FOR EACH ROW WHEN (NEW.direction = 'outbound') EXECUTE FUNCTION g23_fail_out_once()`);
+
+      await post(messagePayload('2348031234567', 'wamid.G23-nr-yes', 'yes'));
+      await buildRunner(workerDb, db, deps).runOnce();
+      await runRetriesNow(ownerDb, business.id);
+      await drain();
+    } finally {
+      await ownerDb.execute(sql`DROP TRIGGER IF EXISTS g23_fail_out_once ON conversation_messages`);
+      await ownerDb.execute(sql`DROP FUNCTION IF EXISTS g23_fail_out_once()`);
+      await ownerDb.execute(sql`DROP SEQUENCE IF EXISTS g23_out_once`);
+      await close();
+    }
+
+    expect(stubSender.lastText).toBe(EXPIRED);
+    expect((await footprint(business.id)).invoices).toBe(1);
+    /* Still the one unit the real sale cost: no free unit from the retry. */
+    expect((await used(business.id)).documents).toBe(1);
+  });
+
+  it('a yes that reached Rekoda before the preview existed confirms nothing (CG2)', async () => {
+    const business = await seedMerchant();
+    /* Both arrive before either is handled: the yes was typed before the
+     * merchant could have read any preview, so it is not their consent. */
+    stubTransport.replyWith(AN_EXPENSE);
+    await post(messagePayload('2348031234567', 'wamid.G23-pre', 'bought fuel 20k cash'));
+    await post(messagePayload('2348031234567', 'wamid.G23-pre-yes', 'yes'));
+    await drain();
+
+    /* Never "nothing is waiting": a preview is. It just is not this yes's. */
+    expect(stubSender.lastText).toBe(replies.previewAwaitingYes().text);
+    expect((await footprint(business.id)).expenses).toBe(0);
+    /* The preview stands, for a yes sent after reading it. */
+    expect(await states(business.id)).toEqual(['pending']);
+    await plain('wamid.G23-pre-yes-2', 'yes');
+    expect((await footprint(business.id)).expenses).toBe(1);
+  });
+
+  it('a lapsed question stored with a financial intent is never called an expired request', async () => {
+    const business = await seedMerchant();
+    const previewedOf = async () => {
+      const rows = await withBusiness(db, business.id, (tx) =>
+        tx.execute<{ intent: string; previewed: boolean }>(sql`
+          SELECT intent, previewed FROM command_drafts
+           WHERE business_id = ${business.id}::uuid ORDER BY insertion_seq`),
+      );
+      return [...rows];
+    };
+
+    /* A sale whose total disagrees with its items: a CG1 question, stored
+     * as a RecordSale draft, never a preview. */
+    await say('wamid.G23-cg1', { ...A_SALE, statedTotal: 350_000 }, 'sold Ada 3 wigs for 350k');
+    expect(stubSender.lastText).toContain('Tell me the right one');
+    /* A payment with no open invoice to place it on: a question too. */
+    await say(
+      'wamid.G23-noinv',
+      {
+        intent: 'RecordPayment',
+        customer: { kind: 'token', token: 'CUSTOMER_7K2' },
+        amount: 50_000,
+        relativeAmount: null,
+        documentRef: null,
+        paymentMethod: 'cash',
+      },
+      'Ada paid 50k',
+    );
+    /* And a real preview, for contrast. */
+    await say('wamid.G23-real', AN_EXPENSE, 'bought fuel 20k cash');
+    expect(await previewedOf()).toEqual([
+      { intent: 'RecordSale', previewed: false },
+      { intent: 'RecordPayment', previewed: false },
+      { intent: 'RecordExpense', previewed: true },
+    ]);
+
+    /* The expense lapses: its yes is told it expired. */
+    await lapse(business.id);
+    await plain('wamid.G23-real-yes', 'yes');
+    expect(stubSender.lastText).toBe(EXPIRED);
+
+    /* A business whose LAST thing was a question: never "expired". */
+    const second = await seedMerchant('+2348031234568');
+    stubTransport.replyWith({ ...A_SALE, statedTotal: 350_000 });
+    await post(messagePayload('2348031234568', 'wamid.G23-cg1b', 'sold Ada 3 wigs for 350k'));
+    await drain();
+    await lapse(second.id);
+    await post(messagePayload('2348031234568', 'wamid.G23-cg1b-yes', 'yes'));
+    await drain();
+    expect(stubSender.lastText).toBe(replies.nothingToConfirm().text);
+    await post(messagePayload('2348031234568', 'wamid.G23-cg1b-no', 'no'));
+    await drain();
+    expect(stubSender.lastText).not.toBe(replies.expiredNothingToCancel().text);
+  });
+
+  it('a preview whose send failed is not "previewed": its lapse is never called an expired request', async () => {
+    const business = await seedMerchant();
+    stubSender.failWith();
+    await say('wamid.G23-unsent', AN_EXPENSE, 'bought fuel 20k cash');
+    const flags = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ previewed: boolean }>(sql`
+        SELECT previewed FROM command_drafts WHERE business_id = ${business.id}::uuid`),
+    );
+    expect([...flags].map((r) => r.previewed)).toEqual([false]);
+
+    await lapse(business.id);
+    await plain('wamid.G23-unsent-yes', 'yes');
+    expect(stubSender.lastText).toBe(replies.nothingToConfirm().text);
+    expect((await footprint(business.id)).expenses).toBe(0);
+  });
+
+  it('a preview re-sent after its job rolled back is pointed at, never confirmed by the earlier yes', async () => {
+    const business = await seedMerchant();
+    const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
+    try {
+      /* The preview reaches the merchant, then a later statement in the same
+       * job fails (recording that it was sent): the draft rolls back. */
+      await ownerDb.execute(sql`CREATE SEQUENCE IF NOT EXISTS g23_sent_once`);
+      await ownerDb.execute(sql`
+        CREATE OR REPLACE FUNCTION g23_fail_sent_once() RETURNS trigger
+          SECURITY DEFINER AS $$
+        BEGIN
+          IF nextval('g23_sent_once') = 1 THEN RAISE EXCEPTION 'g23: after the send'; END IF;
+          RETURN NEW;
+        END $$ LANGUAGE plpgsql`);
+      await ownerDb.execute(sql`
+        CREATE TRIGGER g23_fail_sent_once BEFORE UPDATE ON conversation_messages
+          FOR EACH ROW WHEN (NEW.direction = 'outbound') EXECUTE FUNCTION g23_fail_sent_once()`);
+
+      stubTransport.replyWith(AN_EXPENSE);
+      await post(messagePayload('2348031234567', 'wamid.G23-rb', 'bought fuel 20k cash'));
+      await buildRunner(workerDb, db, deps).runOnce();
+      expect(stubSender.lastText).toContain('Expense: fuel for generator');
+      expect(await states(business.id)).toEqual([]);
+
+      /* The merchant read it and said yes; the preview's retry runs first
+       * and writes the draft again, after that yes had arrived. */
+      await post(messagePayload('2348031234567', 'wamid.G23-rb-yes', 'yes'));
+      await ownerDb.execute(sql`
+        UPDATE jobs SET run_at = now() - interval '1 hour'
+         WHERE business_id = ${business.id}::uuid AND state <> 'done' AND attempts > 0`);
+      await drain();
+    } finally {
+      await ownerDb.execute(
+        sql`DROP TRIGGER IF EXISTS g23_fail_sent_once ON conversation_messages`,
+      );
+      await ownerDb.execute(sql`DROP FUNCTION IF EXISTS g23_fail_sent_once()`);
+      await ownerDb.execute(sql`DROP SEQUENCE IF EXISTS g23_sent_once`);
+      await close();
+    }
+
+    /* Pointed at, not "nothing waiting", and nothing saved by that yes. */
+    expect(stubSender.lastText).toBe(replies.previewAwaitingYes().text);
+    expect((await footprint(business.id)).expenses).toBe(0);
+    expect(await states(business.id)).toEqual(['pending']);
+
+    /* The next yes confirms it, once. */
+    await plain('wamid.G23-rb-yes-2', 'yes');
+    expect((await footprint(business.id)).expenses).toBe(1);
+  });
+
+  it('a write-off confirmed in time but run late applies, its HIGH_RISK confirmation judged at the same instant', async () => {
+    const business = await seedMerchant();
+    const adjust = (delta: number) => ({
+      intent: 'AdjustInventory',
+      productMention: 'bags of rice',
+      quantityDelta: delta,
+    });
+    await say('wamid.G23-wo1', adjust(20), 'add 20 bags of rice');
+    await plain('wamid.G23-wo1-yes', 'yes');
+    await say('wamid.G23-wo2', adjust(-15), '15 bags got water damage');
+    expect(stubSender.lastText).toContain('Removing 15 bags of rice');
+    /* The HIGH_RISK confirmation opens from the draft's own database
+     * timestamp, never this host's clock: the two windows close together. */
+    const [windows] = [
+      ...(await withBusiness(db, business.id, (tx) =>
+        tx.execute<{ same: boolean }>(sql`
+          SELECT (SELECT expires_at FROM command_drafts
+                   WHERE business_id = ${business.id}::uuid AND state = 'pending')
+               = (SELECT expires_at FROM pending_confirmations
+                   WHERE business_id = ${business.id}::uuid AND claimed_at IS NULL) AS same`),
+      )),
+    ];
+    expect(windows?.same).toBe(true);
+
+    /* The yes arrives inside both windows; by the time it runs, both have
+     * closed on the wall clock. */
+    await post(messagePayload('2348031234567', 'wamid.G23-wo2-yes', 'yes'));
+    await withBusiness(db, business.id, async (tx) => {
+      const [arrived] = [
+        ...(await tx.execute<{ at: string }>(sql`
+          SELECT (created_at + interval '1 millisecond')::text AS at FROM external_events
+           WHERE business_id = ${business.id}::uuid ORDER BY created_at DESC LIMIT 1`)),
+      ];
+      await tx.execute(sql`
+        UPDATE command_drafts SET expires_at = ${arrived!.at}::timestamptz
+         WHERE business_id = ${business.id}::uuid AND state = 'pending'`);
+      await tx.execute(sql`
+        UPDATE pending_confirmations SET expires_at = ${arrived!.at}::timestamptz
+         WHERE business_id = ${business.id}::uuid AND claimed_at IS NULL`);
+    });
+    await drain();
+
+    expect(stubSender.lastText).toContain('Removed 15 bags of rice');
+    const rice = await withBusiness(db, business.id, (tx) =>
+      stockRepo.productByName(tx, business.id, 'bags of rice'),
+    );
+    expect(rice?.onHand).toBe(5);
+    const claimed = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ claimed: boolean }>(sql`
+        SELECT claimed_at IS NOT NULL AS claimed FROM pending_confirmations
+         WHERE business_id = ${business.id}::uuid`),
+    );
+    expect([...claimed].map((r) => r.claimed)).toEqual([true]);
+  });
+
+  it('a retried yes whose draft a correction superseded while it waited gives the unit back', async () => {
+    const business = await seedMerchant();
+    await say('wamid.G23-sup1', A_SALE, 'sold Ada 3 wigs for 300k');
+
+    await withFirstInvoiceFailing(async (owner) => {
+      await post(messagePayload('2348031234567', 'wamid.G23-sup1-yes', 'yes'));
+      await buildRunner(workerDb, db, deps).runOnce();
+      expect((await used(business.id)).documents).toBe(1);
+      await holdRetries(owner, business.id);
+
+      /* The merchant corrects it before the retry runs. */
+      await say(
+        'wamid.G23-sup2',
+        {
+          ...A_SALE,
+          items: [{ name: 'wig', quantity: 4, unitPrice: 100_000 }],
+          statedTotal: 400_000,
+        },
+        'sorry, 4 wigs not 3',
+      );
+      expect(await states(business.id)).toEqual(['superseded', 'pending']);
+
+      await runRetriesNow(owner, business.id);
+      await drain();
+    });
+
+    /* Nothing issued for that yes, and the unit its first attempt took is back. */
+    expect((await footprint(business.id)).invoices).toBe(0);
+    expect((await used(business.id)).documents).toBe(0);
+    expect(stubSender.lastText).toBe(replies.previewAwaitingYes().text);
+
+    /* The corrected preview is confirmed by the next yes, charged once. */
+    await plain('wamid.G23-sup2-yes', 'yes');
+    expect((await footprint(business.id)).invoices).toBe(1);
+    expect((await used(business.id)).documents).toBe(1);
+  });
+
+  it('a yes queued behind a correction, retried, refunds nothing it never reserved', async () => {
+    const business = await seedMerchant();
+    /* One real sale, so the counter holds a unit a wrong refund would take. */
+    await say('wamid.G23-q0', A_SALE, 'sold Ada 3 wigs for 300k');
+    await plain('wamid.G23-q0-yes', 'yes');
+    expect((await used(business.id)).documents).toBe(1);
+    await say('wamid.G23-q1', A_SALE, 'sold Ada 3 more wigs for 300k');
+
+    const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
+    try {
+      /* The yes's answer fails to be recorded once, so its job is retried. */
+      await ownerDb.execute(sql`CREATE SEQUENCE IF NOT EXISTS g23_ptr_once`);
+      await ownerDb.execute(sql`
+        CREATE OR REPLACE FUNCTION g23_fail_ptr_once() RETURNS trigger
+          SECURITY DEFINER AS $$
+        BEGIN
+          IF nextval('g23_ptr_once') = 1 THEN RAISE EXCEPTION 'g23: answer fails once'; END IF;
+          RETURN NEW;
+        END $$ LANGUAGE plpgsql`);
+      await ownerDb.execute(sql`
+        CREATE TRIGGER g23_fail_ptr_once BEFORE INSERT ON conversation_messages
+          FOR EACH ROW WHEN (NEW.direction = 'outbound' AND NEW.body LIKE 'I sent you a preview%')
+          EXECUTE FUNCTION g23_fail_ptr_once()`);
+
+      /* The correction reaches Rekoda first, the yes after; both queue, and
+       * the correction is handled (superseding the draft) after the yes had
+       * already arrived. The yes meters nothing: there is nothing for it. */
+      stubTransport.replyWith({
+        ...A_SALE,
+        items: [{ name: 'wig', quantity: 4, unitPrice: 100_000 }],
+        statedTotal: 400_000,
+      });
+      await post(messagePayload('2348031234567', 'wamid.G23-q2', 'sorry, 4 wigs not 3'));
+      await post(messagePayload('2348031234567', 'wamid.G23-q2-yes', 'yes'));
+      await drain();
+      await runRetriesNow(ownerDb, business.id);
+      await drain();
+    } finally {
+      await ownerDb.execute(sql`DROP TRIGGER IF EXISTS g23_fail_ptr_once ON conversation_messages`);
+      await ownerDb.execute(sql`DROP FUNCTION IF EXISTS g23_fail_ptr_once()`);
+      await ownerDb.execute(sql`DROP SEQUENCE IF EXISTS g23_ptr_once`);
+      await close();
+    }
+
+    expect(stubSender.lastText).toBe(replies.previewAwaitingYes().text);
+    /* Still the one unit the real sale cost: nothing reserved, nothing back. */
+    expect((await used(business.id)).documents).toBe(1);
+    expect((await footprint(business.id)).invoices).toBe(1);
+  });
+
+  it('a lapsed clarification was never a preview: a later yes or no is not told it expired', async () => {
+    const business = await seedMerchant();
+    await say(
+      'wamid.G23-unclear',
+      { intent: 'Unclear', clarification: 'How many wigs?' },
+      'sold some wigs',
+    );
+    expect(stubSender.lastText).toContain('How many wigs?');
+    await lapse(business.id);
+
+    await plain('wamid.G23-unclear-yes', 'yes');
+    expect(stubSender.lastText).toBe(replies.nothingToConfirm().text);
+    const before = stubSender.sent.length;
+    await plain('wamid.G23-unclear-no', 'no');
+    expect(stubSender.sent.slice(before).map((m) => m.text)).not.toContain(
+      replies.expiredNothingToCancel().text,
+    );
+  });
+
+  it('an expired erasure ask answered yes or no says nothing was deleted, never "saved"', async () => {
+    const business = await seedMerchant();
+    await plain('wamid.G23-ex-del', 'delete my data');
+    await lapse(business.id);
+    await plain('wamid.G23-ex-yes', 'yes');
+    expect(stubSender.lastText).toBe(replies.erasureKept().text);
+    await plain('wamid.G23-ex-no', 'no');
+    expect(stubSender.lastText).toBe(replies.erasureKept().text);
+    expect(await states(business.id)).toEqual(['expired']);
+  });
+
+  it('a second erasure ask after the first ask expired deletes nothing and asks again', async () => {
+    const business = await seedMerchant();
+    const customer = await customersRepo.createCustomerWithIdentities(
+      db,
+      business.id,
+      'CUSTOMER_T9',
+      [{ facet: 'phone', ciphertext: 'sealed-phone', matchKey: 'mk-g23-erase' }],
+    );
+    const facets = () =>
+      withBusiness(db, business.id, (tx) =>
+        customersRepo.identityFacetsFor(tx, business.id, customer.id),
+      );
+
+    await plain('wamid.G23-del1', 'delete my data');
+    expect(stubSender.lastText).toContain('Reply *DELETE MY DATA* again');
+    await lapse(business.id);
+
+    /* Too late to be the confirmation: it is a new first ask. */
+    await plain('wamid.G23-del2', 'delete my data');
+    expect(stubSender.lastText).toContain('Reply *DELETE MY DATA* again');
+    expect(await facets()).toHaveLength(1);
+    expect(await states(business.id)).toEqual(['expired', 'pending']);
+
+    /* Inside the new window, the exact phrase erases, as it always has. */
+    await plain('wamid.G23-del3', 'delete my data');
+    expect(stubSender.lastText).toContain('deleted (1 record)');
+    expect(await facets()).toEqual([]);
+  });
+});

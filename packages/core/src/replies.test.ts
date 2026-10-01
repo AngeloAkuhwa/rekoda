@@ -76,6 +76,9 @@ const ALL: Record<string, readonly replies.Reply[]> = {
   arithmeticQuestion: [replies.arithmeticQuestion('45,000 times 12 is 540,000.')],
   alreadyConfirmed: [replies.alreadyConfirmed()],
   nothingToConfirm: [replies.nothingToConfirm()],
+  draftExpired: [replies.draftExpired()],
+  previewAwaitingYes: [replies.previewAwaitingYes()],
+  expiredNothingToCancel: [replies.expiredNothingToCancel()],
   correctionTaken: [replies.correctionTaken()],
   issued: [
     replies.issued('INV-2026-000041', NAIRA_MILLIONS, NAIRA_MILLIONS),
@@ -289,6 +292,9 @@ describe('every reply', () => {
     replies.trialEnded(),
     replies.allowanceExhausted(50),
     replies.nothingToConfirm(),
+    replies.draftExpired(),
+    replies.previewAwaitingYes(),
+    replies.expiredNothingToCancel(),
     replies.nothingToResend(),
     replies.dashboardUnavailable(),
     replies.paymentLinkUnavailable(),
@@ -722,5 +728,25 @@ describe('sending guards', () => {
 
   it('passes a clarification through as the model wrote it', () => {
     expect(replies.clarification('  How many wigs?  ').text).toBe('How many wigs?');
+  });
+});
+
+describe('an expired preview (G-23)', () => {
+  it('says why nothing was saved and what to do, never "nothing waiting"', () => {
+    const text = replies.draftExpired().text;
+    expect(text).toContain('expired');
+    expect(text).toContain('did not save anything');
+    expect(text).toContain('Send it again');
+    expect(text).toContain('fresh preview');
+    expect(text).not.toBe(replies.nothingToConfirm().text);
+    /* A safety refusal, not a fault. */
+    expect(text).not.toMatch(/fail|error|database|session|technical/i);
+  });
+
+  it('a "no" to an expired preview cancels nothing and says so', () => {
+    const text = replies.expiredNothingToCancel().text;
+    expect(text).toContain('already expired');
+    expect(text).toContain('nothing was saved');
+    expect(text).not.toMatch(/^Cancelled/);
   });
 });

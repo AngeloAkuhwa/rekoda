@@ -48,6 +48,26 @@ export interface ConfirmationRow {
  * command is dispatched: the whole point of the tier is that a human read a
  * sentence about money leaving and said yes to that sentence.
  */
+/**
+ * Give a confirmation exactly the window of the chat draft that carries it
+ * (G-23): the draft's own `expires_at`, copied in SQL, so the two close at
+ * the same instant to the microsecond, on the database clock. A destructive
+ * stock "yes" inside the draft's window is then always inside this one, and
+ * a draft can never be claimed and its confirmation found lapsed.
+ */
+export async function alignConfirmationWithDraft(
+  tx: TenantDb,
+  businessId: string,
+  confirmationId: string,
+  draftId: string,
+): Promise<void> {
+  await tx.execute(sql`
+    UPDATE pending_confirmations c SET expires_at = d.expires_at
+      FROM command_drafts d
+     WHERE c.id = ${confirmationId}::uuid AND c.business_id = ${businessId}::uuid
+       AND d.id = ${draftId}::uuid AND d.business_id = ${businessId}::uuid`);
+}
+
 export async function openConfirmation(
   tx: TenantDb,
   input: OpenConfirmation,

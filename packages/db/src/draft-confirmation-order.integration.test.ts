@@ -260,17 +260,17 @@ describe('confirmation selects the later draft, whatever the clock and the uuids
     const claimed = await withBusiness(app, businessId, async (tx: TenantDb) => {
       const pending = await conversationsRepo.pendingDraft(tx, businessId);
       if (!pending) throw new Error('no pending draft');
-      return { id: pending.id, won: await conversationsRepo.claimDraft(tx, pending.id) };
+      return { id: pending.id, won: (await conversationsRepo.claimDraft(tx, pending.id)).outcome };
     });
     expect(claimed.id).toBe(second);
-    expect(claimed.won).toBe(true);
+    expect(claimed.won).toBe('claimed');
 
     /* Exactly once: the same claim loses the second time, and the draft that
      * was NOT selected is still pending, untouched by the confirmation. */
     const again = await withBusiness(app, businessId, (tx) =>
       conversationsRepo.claimDraft(tx, claimed.id),
     );
-    expect(again).toBe(false);
+    expect(again).toEqual({ outcome: 'not_pending' });
 
     const rows = await owner.execute<{ state: string }>(
       sql`SELECT state FROM command_drafts WHERE id = ${first}::uuid`,

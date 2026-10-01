@@ -98,6 +98,60 @@ export async function recordEvent(q: Queryable, event: IncomingEvent): Promise<R
 }
 
 /**
+ * Record that this message's "yes" reserved a metered unit (G-23). Called in
+ * the same transaction as the consume, so the record exists iff the unit was
+ * taken. Left in place when the attempt executes: the unit paid for what was
+ * issued, and only a retry of this same event ever reads it, which an event
+ * that committed never gets.
+ */
+export async function noteReservedUnit(
+  tx: TenantDb,
+  businessId: string,
+  eventId: string,
+  unit: string,
+): Promise<void> {
+  await tx.execute(sql`
+    UPDATE external_events SET reserved_units = array_append(reserved_units, ${unit})
+     WHERE id = ${eventId}::uuid AND business_id = ${businessId}::uuid`);
+}
+
+/** The unit went back in this attempt: no longer reserved (same transaction as the refund). */
+export async function releaseReservedUnit(
+  tx: TenantDb,
+  businessId: string,
+  eventId: string,
+  unit: string,
+): Promise<void> {
+  await tx.execute(sql`
+    UPDATE external_events SET reserved_units = array_remove(reserved_units, ${unit})
+     WHERE id = ${eventId}::uuid AND business_id = ${businessId}::uuid`);
+}
+
+/**
+ * Take every unit this message still has reserved, clearing the record in
+ * the same statement. Run in the job's transaction by a retry that executes
+ * nothing, so the refund it pays commits only with the attempt that answers:
+ * a retry that dies gives nothing back and leaves the record for the next.
+ */
+export async function takeReservedUnits(
+  tx: TenantDb,
+  businessId: string,
+  eventId: string,
+): Promise<string[]> {
+  const rows = await tx.execute<{ units: string[] }>(sql`
+    WITH held AS (
+      SELECT reserved_units AS units FROM external_events
+       WHERE id = ${eventId}::uuid AND business_id = ${businessId}::uuid
+       FOR UPDATE
+    )
+    UPDATE external_events e SET reserved_units = '{}'
+      FROM held
+     WHERE e.id = ${eventId}::uuid AND e.business_id = ${businessId}::uuid
+    RETURNING held.units`);
+  return [...rows][0]?.units ?? [];
+}
+
+/**
  * Mark an event handled. Errors are recorded, not thrown away.
  *
  * `businessId` is optional but callers holding a tenant pin should pass it.
@@ -131,13 +185,21 @@ export async function eventForBusiness(
   q: Queryable,
   id: string,
   businessId: string,
-): Promise<{ id: string; eventType: string; externalId: string; payload: unknown } | null> {
+): Promise<{
+  id: string;
+  eventType: string;
+  externalId: string;
+  payload: unknown;
+  /** When the webhook stored it: the moment the message reached Rekoda. */
+  receivedAt: Date;
+} | null> {
   const rows = await q
     .select({
       id: externalEvents.id,
       eventType: externalEvents.eventType,
       externalId: externalEvents.externalId,
       payload: externalEvents.payload,
+      receivedAt: externalEvents.createdAt,
     })
     .from(externalEvents)
     .where(and(eq(externalEvents.id, id), eq(externalEvents.businessId, businessId)))

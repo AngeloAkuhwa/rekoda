@@ -8,14 +8,14 @@
 
 ## Current state at a glance
 
-| Field                       | Value                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Current date**            | 28 September 2026                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| **Current `main` SHA**      | `6df1b91` (28 Sep 2026, "fix: post purchases to the account the merchant paid from (#255)", G-61); before it `ce4755a` (#254, G-77), `ea7c7db` (#253, G-49), `b9c9562` (#252, G-48), `e02925d` (#251), `a61e08d` (#250), `0a99293` (#249), `33ddb33` (#245, G-75), `3cab9dd` (#244, G-74), `1bbe1f1` (#243, G-72), `48ba9d5` (#242, G-71), `c508709` (#241, G-01), `b81ef90` (#240, G-08), `7b9fd8f` (#236), `2dce181` (#239), `e993885` (#235) and the G-06 merge `8f07a6d` (#238)                                                                                                                                                                         |
-| **Open branches**           | the G-49 dashboard fix (`fix/g49-dashboard-overpayment-form-state`). #255 (G-61) MERGED as `6df1b91` on 28 Sep 2026; #254 (G-77) MERGED as `ce4755a` on 27 Sep 2026; #253 (G-49) MERGED as `ea7c7db` on 26 Sep 2026; #252 (G-48) MERGED as `b9c9562` on 26 Sep 2026; #245 (G-75) MERGED as `33ddb33`; #244 (G-74) MERGED as `3cab9dd` on 13 Sep 2026; #243 (G-72) MERGED as `1bbe1f1` on 13 Sep 2026; #242 (G-71) MERGED as `48ba9d5` on 13 Sep 2026; #241 (G-01) MERGED as `c508709` on 12 Sep 2026; #240 (G-08 template half) as `b81ef90`; dependency housekeeping is closed; #225, #226 and #227 (NestJS 12) closed as deferred post-launch work (G-70) |
-| **Product version / state** | 0.1.0. Build plan complete (138 rows, PR-001…PR-132; PR-006–009 and PR-115 gated); 153 migrations; deployed to staging (automatic after CI on main since #249); never to production (the production stack boots on a clean CI runner since G-01); the Meta WhatsApp transport has been live-exercised on staging (real webhook ingress, outbound text and media); production Meta App Review and templates remain open; payment-provider live verification remains pending                                                                                                                                                                                  |
-| **Launch verdict**          | **NOT READY** (`REKODA_LAUNCH_READINESS.md` §1)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| **Engineering model**       | Simple: Angelo assigns, Claude reads `CLAUDE.md` and the canonical docs, implements with tests, normal CI, Angelo reviews and merges. The multi-agent control plane (PR #233) was removed by PR #237 (merged 11 Sep 2026) and PR #234 closed unmerged                                                                                                                                                                                                                                                                                                                                                                                                       |
+| Field                       | Value                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Current date**            | 1 October 2026                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| **Current `main` SHA**      | `2abb8a1` (28 Sep 2026, "fix: preserve dashboard overpayment confirmation values (#256)", G-49); before it `6df1b91` (#255, G-61), `ce4755a` (#254, G-77), `ea7c7db` (#253, G-49), `b9c9562` (#252, G-48), `e02925d` (#251), `a61e08d` (#250), `0a99293` (#249), `33ddb33` (#245, G-75), `3cab9dd` (#244, G-74), `1bbe1f1` (#243, G-72), `48ba9d5` (#242, G-71), `c508709` (#241, G-01), `b81ef90` (#240, G-08), `7b9fd8f` (#236), `2dce181` (#239), `e993885` (#235) and the G-06 merge `8f07a6d` (#238)                                                                                                                                                                                 |
+| **Open branches**           | the G-23 PR (`fix/g23-draft-expiry`, draft expiry). #256 (G-49 dashboard fix) MERGED as `2abb8a1`; #255 (G-61) MERGED as `6df1b91` on 28 Sep 2026; #254 (G-77) MERGED as `ce4755a` on 27 Sep 2026; #253 (G-49) MERGED as `ea7c7db` on 26 Sep 2026; #252 (G-48) MERGED as `b9c9562` on 26 Sep 2026; #245 (G-75) MERGED as `33ddb33`; #244 (G-74) MERGED as `3cab9dd` on 13 Sep 2026; #243 (G-72) MERGED as `1bbe1f1` on 13 Sep 2026; #242 (G-71) MERGED as `48ba9d5` on 13 Sep 2026; #241 (G-01) MERGED as `c508709` on 12 Sep 2026; #240 (G-08 template half) as `b81ef90`; dependency housekeeping is closed; #225, #226 and #227 (NestJS 12) closed as deferred post-launch work (G-70) |
+| **Product version / state** | 0.1.0. Build plan complete (138 rows, PR-001…PR-132; PR-006–009 and PR-115 gated); 154 migrations; deployed to staging (automatic after CI on main since #249); never to production (the production stack boots on a clean CI runner since G-01); the Meta WhatsApp transport has been live-exercised on staging (real webhook ingress, outbound text and media); production Meta App Review and templates remain open; payment-provider live verification remains pending                                                                                                                                                                                                                |
+| **Launch verdict**          | **NOT READY** (`REKODA_LAUNCH_READINESS.md` §1)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| **Engineering model**       | Simple: Angelo assigns, Claude reads `CLAUDE.md` and the canonical docs, implements with tests, normal CI, Angelo reviews and merges. The multi-agent control plane (PR #233) was removed by PR #237 (merged 11 Sep 2026) and PR #234 closed unmerged                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 
 **Build 1 (G-48) accepted (26 Sep 2026):**
 
@@ -26,29 +26,33 @@
 
 - G-77: STAGING ACCEPTED (#254, merged as `ce4755a`).
 
-**Build 2 (G-49): CODE COMPLETE and MERGED (#253 as `ea7c7db`); STAGING
-ACCEPTANCE FAILED (28 Sep 2026) on the dashboard two-step, re-test pending.**
-On staging (`main` `6df1b91`) the confirmation screen reset the amount to the
-invoice balance (₦150,000) while the question named ₦180,000, so "Yes,
-record it" booked an ordinary ₦150,000 payment and the ₦30,000 excess was
-lost from the payment event. Fix in review on
-`fix/g49-dashboard-overpayment-form-state` (controlled amount and method;
-Playwright coverage `apps/web/e2e/overpayment.spec.ts`). After it deploys,
-still to run on staging: the dashboard two-step physically re-tested, a real
-WhatsApp merchant overpayment (received/applied/credit preview, confirmed
-write, receipt, customer credit, `overpaid` reconciliation), and a
-stale-balance refusal with zero financial writes.
+**Build 2 (G-49) accepted (reported by the owner):**
+
+- G-49: STAGING ACCEPTED (#253 merged as `ea7c7db`; the dashboard
+  confirmation form fixed by #256, merged as `2abb8a1`, after staging found
+  it resetting the amount to the balance on 28 Sep 2026).
 
 **Build 4 (G-61): CODE COMPLETE and MERGED (#255 as `6df1b91`, 28 Sep
-2026); staging acceptance not run.** Was branch
+2026); staging acceptance in progress (run by the owner), not yet accepted.** Was branch
 `fix/g61-purchase-payment-method` off `main` at `ce4755a`. The paid part
 of a stock purchase now leaves the account the merchant named (cash or transfer), the preview says which, and money paid
 from an account nobody named is asked about, never defaulted; the ledger
 builder and the repository refuse a paid amount with no method.
 Purchase-order receive requires the method when anything is paid. No
 migration. After merge: a transfer, a cash, a credit and a part-paid
-purchase in chat, and a paid PO receive, on staging. G-23 and later builds
-are not started.
+purchase in chat, and a paid PO receive, on staging.
+
+**In review (1 Oct 2026, Build 5, G-23; CODE COMPLETE, staging acceptance
+pending):** branch `fix/g23-draft-expiry` off `main` at `2abb8a1`. A
+preview is confirmable only inside its confirmation window:
+`command_drafts.expires_at` (migration 0153) from `CONFIRMATION_TTL_SECONDS`
+(300 seconds, the HIGH_RISK window), a claim that carries `expires_at > now`
+itself, and a new `expired` state (separate from G-61's `abandoned`). A
+"yes" to an expired preview records and meters nothing and says it expired.
+After merge, on staging: a sale confirmed inside five minutes records
+normally; a fresh sale answered "yes" after more than five minutes gets the
+expiry sentence and zero financial rows. G-68 and later builds are not
+started.
 
 **G-77 (#254), for the record:** every public API sale is its own financial
 event (its `sourceId` is an opaque per-request id, never the application

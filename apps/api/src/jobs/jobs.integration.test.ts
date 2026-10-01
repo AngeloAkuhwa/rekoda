@@ -20,6 +20,7 @@ import {
   jobsRepo,
   ordersRepo,
   schema,
+  sql,
   withBusiness,
   type Db,
 } from '@rekoda/db';
@@ -149,6 +150,23 @@ function recordPinned(event: Parameters<typeof eventsRepo.recordEvent>[1]) {
   const { businessId } = event;
   if (!businessId) throw new Error('recordPinned is for attributed events only');
   return withBusiness(appDb, businessId, (tx) => eventsRepo.recordEvent(tx, event));
+}
+
+/**
+ * Stamp a stored message as reaching Rekoda a minute from now (G-23).
+ *
+ * A "yes" can confirm only a preview that existed when it arrived: a reply
+ * to a preview always reaches Rekoda after the preview was written, because
+ * the preview is sent only after its draft is. Tests that enqueue a request
+ * and its "yes" together, to prove the lanes keep them in order, model that
+ * real arrival here rather than a "yes" sent before anything was shown.
+ */
+function arrivesAfterPreview(businessId: string, stored: Parameters<typeof storedEventId>[0]) {
+  return withBusiness(appDb, businessId, (tx) =>
+    tx.execute(sql`
+      UPDATE external_events SET created_at = now() + interval '1 minute'
+       WHERE id = ${storedEventId(stored)}::uuid`),
+  );
 }
 
 function jobsOf(businessId: string) {
@@ -701,6 +719,7 @@ describe('inbound messages for one business never overlap across lanes', () => {
       payload: sealPayload(bodyFor('wamid.order2', 'yes'), config.vaultKey, 'meta', 'wamid.order2'),
       businessId,
     });
+    await arrivesAfterPreview(businessId, second);
     await enqueue(businessId, 'inbound.message', { eventId: storedEventId(first) });
     await enqueue(businessId, 'inbound.message', { eventId: storedEventId(second) });
 
@@ -798,6 +817,7 @@ describe('inbound messages for one business never overlap across lanes', () => {
       payload: sealPayload(bodyFor('wamid.stall2', 'yes'), config.vaultKey, 'meta', 'wamid.stall2'),
       businessId,
     });
+    await arrivesAfterPreview(businessId, second);
     const draftJob = await enqueue(businessId, 'inbound.message', {
       eventId: storedEventId(first),
     });
