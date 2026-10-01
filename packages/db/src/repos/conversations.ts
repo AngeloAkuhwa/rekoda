@@ -934,10 +934,12 @@ export async function retiredPurchaseDraft(
         eq(commandDrafts.id, draftId),
         eq(commandDrafts.state, 'abandoned'),
         eq(commandDrafts.intent, 'RecordPurchase'),
-        /* Defence in depth (G-68 review): a question that anything newer
-         * already answered (the merchant sent the purchase again and got a
-         * preview, or anything else that is not a read or a question) is
-         * not answerable, whatever state it was left in. */
+        /* Defence in depth (G-68 review): a question with ANY newer draft
+         * other than a read (`Query`) or a model clarification (`Unclear`)
+         * is not answerable, whatever state that draft was left in: a
+         * preview of the purchase sent again, another purchase, even a newer
+         * CG1 question. This also blocks older questions behind a rebuilt
+         * preview, which does not itself run `closeRetiredQuestionsBefore`. */
         sql`NOT EXISTS (
           SELECT 1 FROM command_drafts newer
            WHERE newer.business_id = ${businessId}::uuid
@@ -1034,8 +1036,10 @@ export async function inboundSinceDraft(
 /**
  * A "no" to a retired question closes it (G-61): it becomes an ordinary
  * cancelled draft, so a later "yes" does not ask it again. Only the one
- * draft named, and only while retired: a question already answered by a
- * resend keeps its `abandoned` state on the record.
+ * draft named, and only while retired. Also used as the one-shot claim of
+ * a short funding answer's rebuild (G-68). A question answered by a resend
+ * is closed the same way, by `closeRetiredQuestionsBefore`, and stays on
+ * the record as `superseded`.
  */
 export async function closeRetiredDraft(
   tx: TenantDb,

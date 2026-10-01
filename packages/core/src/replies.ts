@@ -520,8 +520,8 @@ export function questionLeft(): Reply {
  */
 export function fundingQuestionClosed(): Reply {
   return reply(
-    'That question was already answered or closed. Check the latest preview, or send ' +
-      'the purchase again to record it.',
+    'That question was already answered or closed, so nothing was saved from this ' +
+      'message. Check your records before you send the purchase again.',
   );
 }
 

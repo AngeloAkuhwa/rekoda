@@ -1089,8 +1089,9 @@ async function deterministicReply(
        * question between the two asks records a draft, breaks the pair, and
        * the data is kept. A resumed read ("last month", answered from
        * continuation state) records one too, as that message did before
-       * Build 6. A deterministic command records none and does not break
-       * it, exactly as before. */
+       * Build 6. A message that records no draft (a free deterministic
+       * command, media, a Pidgin phrase) breaks the pair too, through the
+       * inbound-message check just below (G-68 review). */
       const pending = await conversationsRepo.pendingDraft(tx, businessId, {
         asOf: ctx.receivedAt,
       });
@@ -3262,10 +3263,12 @@ async function interpretedReply(
     }
   }
 
-  /* G-61: the merchant answers a funding-source question by sending the
-   * purchase again. The draft that asked stays on the record, abandoned,
-   * so only the replacement can ever be confirmed: a second "yes" finds
-   * nothing to resurrect, and nothing can record the purchase twice. */
+  /* G-61: the draft that asked a purchase question is kept on the record,
+   * retired (`abandoned`), so it can never be confirmed. It is closed
+   * (`superseded`) when the question is answered: by a short "bank" or
+   * "cash" (a one-shot rebuild), or by any new financial preview such as
+   * the purchase sent again (above). A second "yes" finds nothing to
+   * resurrect, and nothing can record the purchase twice. */
   if (answered.retireDraft) {
     /* Only on the first delivery: a replayed message changes nothing. The
      * question becomes the conversation, so a preview left waiting from
