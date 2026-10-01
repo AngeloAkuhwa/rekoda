@@ -493,23 +493,54 @@ const seenBy = (asOf: Date | undefined) =>
   asOf ? sql`${commandDrafts.createdAt} <= ${asOf.toISOString()}::timestamptz` : undefined;
 
 /**
- * A question to the books is never what a "yes" is about (Build 6).
+ * Whether a read-only Query's draft counts (Build 6). Stated by every caller,
+ * never defaulted inside one function:
  *
- * A Query is answered at once and its draft is kept only for the record:
- * nothing about it can be confirmed. Left in the running, a question asked
- * between a preview and its "yes" ("How much did I sell?", "Last month.")
- * became the newest pending draft, so the "yes" claimed the QUESTION and
- * the preview the merchant was answering never confirmed; and after an
- * expired preview it hid the expiry ("that request has expired") behind a
- * draft nobody could confirm. The drafts a "yes" or a "no" can be about are
- * therefore the writes and the questions about writes, never a read.
+ *  - `skip`: what a "yes", a "no" or a correction is ABOUT. A Query is
+ *    answered at once and its draft is kept only for the record; nothing
+ *    about it can be confirmed. Counted, a question asked between a preview
+ *    and its "yes" ("How much did I sell?", "Last month.") became the newest
+ *    pending draft, so the "yes" claimed the QUESTION and the preview never
+ *    confirmed; and after an expired preview it hid the expiry behind a
+ *    draft nobody could confirm.
+ *  - `count`: everything else, exactly as before Build 6. In particular the
+ *    two-ask erasure: ANY message between the two asks, a question
+ *    included, breaks the pair and keeps the data. Erasure is irreversible,
+ *    so it must never be narrowed by a rule written for a "yes".
  */
-const notARead = sql`${commandDrafts.intent} <> 'Query'`;
+export type ReadDrafts = 'skip' | 'count';
 
-export async function pendingDraft(
+const readsFilter = (reads: ReadDrafts) =>
+  reads === 'skip' ? sql`${commandDrafts.intent} <> 'Query'` : undefined;
+
+/**
+ * The newest pending draft, every intent counted, a Query included (the
+ * pre-Build-6 rule). The erasure ceremony reads this one.
+ */
+export function pendingDraft(
   tx: TenantDb,
   businessId: string,
   options: { asOf?: Date } = {},
+): Promise<DraftRow | null> {
+  return newestPendingDraft(tx, businessId, { ...options, reads: 'count' });
+}
+
+/**
+ * The newest pending draft a "yes", a "no" or a correction can be about:
+ * a read-only Query's draft is skipped (Build 6).
+ */
+export function pendingDraftToAnswer(
+  tx: TenantDb,
+  businessId: string,
+  options: { asOf?: Date } = {},
+): Promise<DraftRow | null> {
+  return newestPendingDraft(tx, businessId, { ...options, reads: 'skip' });
+}
+
+async function newestPendingDraft(
+  tx: TenantDb,
+  businessId: string,
+  options: { asOf?: Date | undefined; reads: ReadDrafts },
 ): Promise<DraftRow | null> {
   const rows = await tx
     .select({
@@ -531,7 +562,7 @@ export async function pendingDraft(
       and(
         eq(commandDrafts.businessId, businessId),
         eq(commandDrafts.state, 'pending'),
-        notARead,
+        readsFilter(options.reads),
         seenBy(options.asOf),
       ),
     )
@@ -706,17 +737,40 @@ export async function supersedeDraftsBefore(
  * same holds for a preview whose window closed (`expired`, G-23): it is
  * still the last thing the merchant was shown.
  */
-export async function latestDraft(
+export function latestDraft(
   tx: TenantDb,
   businessId: string,
   options: { asOf?: Date } = {},
-): Promise<{
+): Promise<LatestDraft | null> {
+  return newestDraft(tx, businessId, { ...options, reads: 'count' });
+}
+
+/**
+ * The newest draft in any state that a "yes" or a "no" can be about, which
+ * also decides whether an expired preview is what gets reported: a
+ * read-only Query's draft is skipped (Build 6).
+ */
+export function latestDraftToAnswer(
+  tx: TenantDb,
+  businessId: string,
+  options: { asOf?: Date } = {},
+): Promise<LatestDraft | null> {
+  return newestDraft(tx, businessId, { ...options, reads: 'skip' });
+}
+
+export interface LatestDraft {
   id: string;
   state: string;
   command: unknown;
   expiresAt: Date;
   previewed: boolean;
-} | null> {
+}
+
+async function newestDraft(
+  tx: TenantDb,
+  businessId: string,
+  options: { asOf?: Date | undefined; reads: ReadDrafts },
+): Promise<LatestDraft | null> {
   const rows = await tx
     .select({
       id: commandDrafts.id,
@@ -726,7 +780,13 @@ export async function latestDraft(
       previewed: commandDrafts.previewed,
     })
     .from(commandDrafts)
-    .where(and(eq(commandDrafts.businessId, businessId), notARead, seenBy(options.asOf)))
+    .where(
+      and(
+        eq(commandDrafts.businessId, businessId),
+        readsFilter(options.reads),
+        seenBy(options.asOf),
+      ),
+    )
     .orderBy(desc(commandDrafts.insertionSeq))
     .limit(1);
   return rows[0] ?? null;

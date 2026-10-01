@@ -490,3 +490,63 @@ describe('typed state, and durable', () => {
     ).rejects.toThrow();
   });
 });
+
+/**
+ * Which draft lookups skip a read-only Query's draft (Build 6), pinned per
+ * function so a change to one cannot silently move another. What a "yes",
+ * a "no" or a correction is about skips it; the erasure ceremony, expiry and
+ * supersession count it exactly as before.
+ */
+describe('a question to the books, among the drafts', () => {
+  async function draftsWithAQuestionLast(businessId: string) {
+    const saleMessage = await message(businessId);
+    const questionMessage = await message(businessId);
+    return withBusiness(app, businessId, async (tx) => {
+      const sale = await conversationsRepo.recordDraft(tx, {
+        businessId,
+        conversationMessageId: saleMessage,
+        intent: 'RecordSale',
+        command: { intent: 'RecordSale' },
+        model: null,
+        previewed: true,
+      });
+      const question = await conversationsRepo.recordDraft(tx, {
+        businessId,
+        conversationMessageId: questionMessage,
+        intent: 'Query',
+        command: { intent: 'Query', topic: 'sales_summary' },
+        model: null,
+      });
+      return { sale: sale.id, question: question.id };
+    });
+  }
+
+  it('what a yes, a no or a correction is about skips it', async () => {
+    const { businessId } = await seedBusiness();
+    const { sale } = await draftsWithAQuestionLast(businessId);
+    await withBusiness(app, businessId, async (tx) => {
+      expect((await conversationsRepo.pendingDraftToAnswer(tx, businessId))?.id).toBe(sale);
+      expect((await conversationsRepo.latestDraftToAnswer(tx, businessId))?.id).toBe(sale);
+    });
+  });
+
+  it('the erasure ceremony, expiry and supersession still count it', async () => {
+    const { businessId } = await seedBusiness();
+    const { question } = await draftsWithAQuestionLast(businessId);
+    await withBusiness(app, businessId, async (tx) => {
+      expect((await conversationsRepo.pendingDraft(tx, businessId))?.id).toBe(question);
+      expect((await conversationsRepo.latestDraft(tx, businessId))?.id).toBe(question);
+    });
+    const expired = await withBusiness(app, businessId, (tx) =>
+      conversationsRepo.expireStaleDrafts(tx, businessId, { now: at(10 * TTL_MS) }),
+    );
+    expect(expired).toBe(2);
+
+    const other = await seedBusiness();
+    await draftsWithAQuestionLast(other.businessId);
+    const superseded = await withBusiness(app, other.businessId, (tx) =>
+      conversationsRepo.supersedePendingDrafts(tx, other.businessId),
+    );
+    expect(superseded).toBe(2);
+  });
+});

@@ -123,6 +123,11 @@ describe('scoring one case', () => {
     };
     expect(scoreCase(lastMonth, query('custom', 'Last month')).correct).toBe(true);
     expect(scoreCase(lastMonth, query('custom', 'March')).failedChecks).toEqual(['periodText']);
+    /* Contains the words, but the runtime would not resolve it: a fail. */
+    expect(scoreCase(lastMonth, query('custom', "last month's")).failedChecks).toEqual([
+      'periodText',
+    ]);
+    expect(scoreCase(lastMonth, query('custom', 'Last month.')).correct).toBe(true);
     expect(scoreCase(lastMonth, query('custom', null)).failedChecks).toEqual(['periodText']);
   });
 

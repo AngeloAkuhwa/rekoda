@@ -73,7 +73,11 @@ preview, never by executing the retired draft. Resumed reads are free (no
 `AI_ACTIONS` unit) and not plan- or entitlement-gated, like the other free
 reads; each re-opens the 600-second window. Retired rows persist (opaque
 tokens and enums only) until the business is deleted. A Query's draft is no
-longer what a "yes" or "no" is about. After
+longer what a "yes", "no" or correction is about (erasure, expiry and
+supersession still count it). For Build 7: a reply to "Which period?" that
+names a window core cannot count ("last week", "yesterday", "in March")
+retires the question and goes to the model today; consider keeping the
+question open with `periodNotCountable` instead. After
 merge, on staging: ask "how much did I sell?", answer "last month", check the
 figure; a delegate's "last month" must not answer the owner's question.
 

@@ -9184,6 +9184,42 @@ describe('a short reply continues what Rekoda just asked (Build 6)', () => {
     expect((await draftStates(business.id))[1]).toBe('RecordPurchase:abandoned');
   });
 
+  it('a question between the two erasure asks breaks the pair: nothing is erased', async () => {
+    const business = await seedMerchant();
+    const customer = await customersRepo.createCustomerWithIdentities(
+      db,
+      business.id,
+      'CUSTOMER_T9',
+      [{ facet: 'phone', ciphertext: 'sealed-phone', matchKey: 'mk-b6-erase' }],
+    );
+    const facets = () =>
+      withBusiness(db, business.id, (tx) =>
+        customersRepo.identityFacetsFor(tx, business.id, customer.id),
+      );
+
+    await reply('wamid.B6-del1', 'delete my data');
+    expect(stubSender.lastText).toContain('Reply *DELETE MY DATA* again');
+
+    /* Anything in between keeps the data, a question to the books included. */
+    await say('wamid.B6-del-ask', HOW_MUCH_DID_I_SELL, 'How much did I sell?');
+    expect(stubSender.lastText).toBe(WHICH_PERIOD);
+
+    /* Inside the window, but no longer the second of a pair: a new first ask. */
+    await reply('wamid.B6-del2', 'delete my data');
+    expect(stubSender.lastText).toContain('Reply *DELETE MY DATA* again');
+    expect(await facets()).toHaveLength(1);
+  });
+
+  it('a correction after only a question is a new request, not a correction', async () => {
+    const business = await seedMerchant();
+    await say('wamid.B6-corr-ask', HOW_MUCH_DID_I_SELL, 'How much did I sell?');
+    await say('wamid.B6-corr-sale', A_SALE, 'sorry, 3 wigs not 4');
+
+    expect(stubSender.lastText).not.toContain(replies.correctionTaken().text);
+    /* The question's draft was not superseded as if it had been corrected. */
+    expect(await draftStates(business.id)).toEqual(['Query:pending', 'RecordSale:pending']);
+  });
+
   it('keeps a customer as a vault token, never a name', async () => {
     const business = await seedMerchant();
     await say(

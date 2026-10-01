@@ -987,7 +987,9 @@ async function deterministicReply(
     /* A "no" straight after a retired purchase question closes that
      * question too (G-61). Only when it is the LAST thing asked: a question
      * answered long ago by a resend is not what this "no" is about. */
-    const latest = await conversationsRepo.latestDraft(tx, businessId, { asOf: ctx.receivedAt });
+    const latest = await conversationsRepo.latestDraftToAnswer(tx, businessId, {
+      asOf: ctx.receivedAt,
+    });
     /* The last thing the merchant saw had already expired: this "no" is
      * about it, so nothing else is touched. A clarification or a question
      * that lapsed was never a preview, and is answered as before. */
@@ -1033,6 +1035,9 @@ async function deterministicReply(
        * keeps the data. */
       /* G-23: a first ask whose window closed is not waiting any more. */
       await conversationsRepo.expireStaleDrafts(tx, businessId, { now: ctx.receivedAt });
+      /* EVERY pending draft counts here, a question to the books included
+       * (`pendingDraft`, never `pendingDraftToAnswer`): a question asked
+       * between the two asks breaks the pair, and the data is kept. */
       const pending = await conversationsRepo.pendingDraft(tx, businessId, {
         asOf: ctx.receivedAt,
       });
@@ -1498,7 +1503,9 @@ async function confirmPendingDraft(
   await conversationsRepo.expireStaleDrafts(tx, businessId, { now: receivedAt });
   /* Only drafts that existed when this "yes" arrived: a retry overtaken by a
    * newer request confirms what it was sent for, never the newer preview. */
-  const latest = await conversationsRepo.latestDraft(tx, businessId, { asOf: receivedAt });
+  const latest = await conversationsRepo.latestDraftToAnswer(tx, businessId, {
+    asOf: receivedAt,
+  });
   /* `abandoned` is only ever a retired purchase question; a draft the
    * merchant cancelled is `superseded` and is never asked again. */
   if (latest?.state === 'abandoned') {
@@ -1524,7 +1531,9 @@ async function confirmPendingDraft(
     return expiredAnswer(latest.command, latest.previewed, 'yes') ?? replies.nothingToConfirm();
   }
 
-  const draft = await conversationsRepo.pendingDraft(tx, businessId, { asOf: receivedAt });
+  const draft = await conversationsRepo.pendingDraftToAnswer(tx, businessId, {
+    asOf: receivedAt,
+  });
   if (!draft) {
     /* Nothing existed for this yes to agree to. If a preview has been
      * written since (the yes was typed before it arrived, or its job was
@@ -1536,7 +1545,7 @@ async function confirmPendingDraft(
     if (retrying) {
       await refundRecordedReservations(tx, businessId, eventId, usagePeriod(receivedAt));
     }
-    const since = await conversationsRepo.pendingDraft(tx, businessId);
+    const since = await conversationsRepo.pendingDraftToAnswer(tx, businessId);
     return since?.previewed ? replies.previewAwaitingYes() : replies.nothingToConfirm();
   }
   /* A preview from before a retired question is never confirmed by a yes,
@@ -2730,7 +2739,11 @@ async function interpretedReply(
   /* G-23: an expired preview is not there to be corrected; a "sorry, 3 not
    * 4" after it is a new request with its own fresh window. */
   await conversationsRepo.expireStaleDrafts(tx, businessId, { now: receivedAt });
-  const existing = await conversationsRepo.pendingDraft(tx, businessId, { asOf: receivedAt });
+  /* A correction is about something a "yes" could confirm, never a read:
+   * "sorry, 3 not 4" after only a question is a new request (Build 6). */
+  const existing = await conversationsRepo.pendingDraftToAnswer(tx, businessId, {
+    asOf: receivedAt,
+  });
   const correcting = looksLikeCorrection(rawText, existing !== null);
   if (correcting) {
     await conversationsRepo.supersedePendingDrafts(tx, businessId, { asOf: receivedAt });
