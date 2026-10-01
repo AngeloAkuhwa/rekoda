@@ -612,7 +612,7 @@ describe('a question to the books, among the drafts', () => {
     const { sale, question } = await draftsWithAQuestionLast(businessId);
     const retire = () =>
       withBusiness(app, businessId, (tx) =>
-        conversationsRepo.retireReadsAfter(tx, businessId, sale),
+        conversationsRepo.retireNewestReadAfter(tx, businessId, sale),
       );
     expect(await retire()).toBe(1);
     expect(await retire()).toBe(0);
@@ -626,9 +626,44 @@ describe('a question to the books, among the drafts', () => {
     /* Nothing newer than the question: retiring after it moves nothing. */
     expect(
       await withBusiness(app, businessId, (tx) =>
-        conversationsRepo.retireReadsAfter(tx, businessId, question),
+        conversationsRepo.retireNewestReadAfter(tx, businessId, question),
       ),
     ).toBe(0);
+  });
+
+  it('retires one question per call, newest first, as a yes claimed them before Build 6', async () => {
+    const { businessId } = await seedBusiness();
+    const { sale, question: first } = await draftsWithAQuestionLast(businessId);
+    const secondMessage = await message(businessId);
+    const second = await withBusiness(app, businessId, (tx) =>
+      conversationsRepo.recordDraft(tx, {
+        businessId,
+        conversationMessageId: secondMessage,
+        intent: 'Query',
+        command: { intent: 'Query', topic: 'expenses_summary' },
+        model: null,
+      }),
+    );
+    const retire = () =>
+      withBusiness(app, businessId, (tx) =>
+        conversationsRepo.retireNewestReadAfter(tx, businessId, sale),
+      );
+    const stateOf = async () => {
+      const rows = await withBusiness(app, businessId, (tx) =>
+        tx.execute<{ id: string; state: string }>(sql`
+          SELECT id, state FROM command_drafts WHERE business_id = ${businessId}::uuid`),
+      );
+      return new Map([...rows].map((r) => [r.id, r.state]));
+    };
+    expect(await retire()).toBe(1);
+    let states = await stateOf();
+    expect(states.get(second.id)).toBe('superseded');
+    expect(states.get(first)).toBe('pending');
+    expect(await retire()).toBe(1);
+    states = await stateOf();
+    expect(states.get(first)).toBe('superseded');
+    expect(states.get(sale)).toBe('pending');
+    expect(await retire()).toBe(0);
   });
 
   it('tells whether a question was asked since a draft, changing nothing', async () => {
@@ -640,7 +675,7 @@ describe('a question to the books, among the drafts', () => {
     expect(await since(sale)).toBe(true);
     expect(await since(question)).toBe(false);
     await withBusiness(app, businessId, (tx) =>
-      conversationsRepo.retireReadsAfter(tx, businessId, sale),
+      conversationsRepo.retireNewestReadAfter(tx, businessId, sale),
     );
     expect(await since(sale)).toBe(false);
   });

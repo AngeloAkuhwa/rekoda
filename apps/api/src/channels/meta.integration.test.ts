@@ -9086,7 +9086,7 @@ describe('a short reply continues what Rekoda just asked (Build 6)', () => {
       expenses: before.expenses,
       postings: before.postings,
     });
-    expect(stubSender.lastText).not.toContain('Saved');
+    expect(stubSender.lastText).toBe(replies.nothingToConfirm().text);
   });
 
   it('a G-23 expired preview stays expired through a question, its answer and a yes', async () => {
@@ -9117,7 +9117,7 @@ describe('a short reply continues what Rekoda just asked (Build 6)', () => {
   const BEHIND = replies.previewBehindQuestion().text;
   const THIS_MONTH = { ...HOW_MUCH_DID_I_SELL, period: 'month' };
 
-  it('a live preview behind a question and its answer takes two deliberate yeses', async () => {
+  it('a live preview behind a question and its answer takes three yeses, as on base', async () => {
     const business = await seedMerchant();
     await say('wamid.B6-live-sale', A_SALE, 'sold Ada 3 wigs for 300k');
     await say('wamid.B6-live-ask', HOW_MUCH_DID_I_SELL, 'How much did I sell?');
@@ -9125,15 +9125,78 @@ describe('a short reply continues what Rekoda just asked (Build 6)', () => {
     await reply('wamid.B6-live-answer', 'Last month');
     expect(modelCalls()).toBe(0);
 
-    /* The first yes is not agreement to the older preview. */
+    /* Two questions since the preview ("Which period?" and the resumed
+     * read): each yes retires the newest one, exactly the draft that yes
+     * claimed before Build 6, and saves nothing. */
     await reply('wamid.B6-live-yes1', 'yes');
+    expect(stubSender.lastText).toBe(BEHIND);
+    expect(await draftStates(business.id)).toEqual([
+      'RecordSale:pending',
+      'Query:pending',
+      'Query:superseded',
+    ]);
+    await reply('wamid.B6-live-yes2', 'yes');
     expect(stubSender.lastText).toBe(BEHIND);
     expect(await footprint(business.id)).toMatchObject({ invoices: 0 });
 
-    /* The second, deliberate yes confirms it through the ordinary claim. */
-    await reply('wamid.B6-live-yes2', 'yes');
+    /* The third, as on base, confirms it through the ordinary claim. */
+    await reply('wamid.B6-live-yes3', 'yes');
     expect(await footprint(business.id)).toMatchObject({ invoices: 1 });
     expect((await draftStates(business.id))[0]).toBe('RecordSale:confirmed');
+  });
+
+  it('two model-answered questions after a preview take a yes each before the yes that saves', async () => {
+    const business = await seedMerchant();
+    await say('wamid.B6-two-sale', A_SALE, 'sold Ada 3 wigs for 300k');
+    await say('wamid.B6-two-q1', THIS_MONTH, 'How much did I sell this month?');
+    await say(
+      'wamid.B6-two-q2',
+      { ...THIS_MONTH, topic: 'expenses_summary' },
+      'How much did I spend this month?',
+    );
+
+    await reply('wamid.B6-two-yes1', 'yes');
+    expect(stubSender.lastText).toBe(BEHIND);
+    await reply('wamid.B6-two-yes2', 'yes');
+    expect(stubSender.lastText).toBe(BEHIND);
+    expect(await footprint(business.id)).toMatchObject({ invoices: 0, postings: 0 });
+    expect(await draftStates(business.id)).toEqual([
+      'RecordSale:pending',
+      'Query:superseded',
+      'Query:superseded',
+    ]);
+
+    await reply('wamid.B6-two-yes3', 'yes');
+    expect(await footprint(business.id)).toMatchObject({ invoices: 1 });
+    await reply('wamid.B6-two-yes4', 'yes');
+    expect(await footprint(business.id)).toMatchObject({ invoices: 1 });
+  });
+
+  it('a yes behind [live preview, expired preview, question] reports the expiry and leaves the live one alone', async () => {
+    const business = await seedMerchant();
+    await say('wamid.B6-m7-p1', A_SALE, 'sold Ada 3 wigs for 300k');
+    await say(
+      'wamid.B6-m7-p2',
+      { ...A_SALE, items: [{ name: 'bag', quantity: 1, unitPrice: 50_000 }], statedTotal: 50_000 },
+      'sold Ada 1 bag for 50k',
+    );
+    await withBusiness(db, business.id, (tx) =>
+      tx.execute(sql`
+        UPDATE command_drafts SET expires_at = clock_timestamp() - interval '1 second'
+         WHERE business_id = ${business.id}::uuid
+           AND insertion_seq = (SELECT max(insertion_seq) FROM command_drafts
+                                 WHERE business_id = ${business.id}::uuid)`),
+    );
+    await say('wamid.B6-m7-ask', THIS_MONTH, 'How much did I sell this month?');
+
+    await reply('wamid.B6-m7-yes', 'yes');
+    expect(stubSender.lastText).toBe(replies.draftExpired().text);
+    expect(await draftStates(business.id)).toEqual([
+      'RecordSale:pending',
+      'RecordSale:expired',
+      'Query:pending',
+    ]);
+    expect(await footprint(business.id)).toMatchObject({ invoices: 0, postings: 0 });
   });
 
   it('"correct" after reading a figure never saves the older preview', async () => {
@@ -9393,6 +9456,65 @@ describe('a short reply continues what Rekoda just asked (Build 6)', () => {
     expect(stubSender.lastText).toBe(UNCLEAR.clarification);
   });
 
+  /** An inbound message of another kind, on the same envelope as a text. */
+  function mediaMessage(wamid: string, fields: Record<string, unknown>, from = OWNER) {
+    const payload = messagePayload(from, wamid, '');
+    const sent = payload.entry[0]!.changes[0]!.value.messages[0]! as Record<string, unknown>;
+    delete sent['text'];
+    Object.assign(sent, fields);
+    return payload;
+  }
+
+  it.each([
+    {
+      name: 'a voice note that could not be transcribed',
+      arrange: () => {
+        const page = Buffer.alloc(28);
+        page.write('OggS', 0, 'ascii');
+        page.writeBigUInt64LE(BigInt(5 * 48_000), 6);
+        page.writeUInt32LE(1, 14);
+        page.writeUInt8(1, 26);
+        stubSender.media.set('media-1', { bytes: page, mimeType: 'audio/ogg' });
+        stubStt.failWith();
+      },
+      fields: { type: 'audio', audio: { id: 'media-1', mime_type: 'audio/ogg', voice: true } },
+      answer: 'could not listen to that voice note',
+    },
+    {
+      name: 'unsupported media',
+      arrange: () => undefined,
+      fields: { type: 'sticker', sticker: { id: 'sticker-1', mime_type: 'image/webp' } },
+      answer: replies.onlyText().text,
+    },
+    {
+      name: 'a photo that could not be read',
+      arrange: () => {
+        stubSender.media.set('photo-1', {
+          bytes: Buffer.from('JFIF-fake-photo'),
+          mimeType: 'image/jpeg',
+        });
+        stubOcr.failWith();
+      },
+      fields: { type: 'image', image: { id: 'photo-1', mime_type: 'image/jpeg' } },
+      answer: null,
+    },
+  ])('$name after "Which period?" retires the question', async ({ arrange, fields, answer }) => {
+    const business = await seedMerchant();
+    await say('wamid.B6-ee-ask', HOW_MUCH_DID_I_SELL, 'How much did I sell?');
+    expect(stubSender.lastText).toBe(WHICH_PERIOD);
+
+    arrange();
+    await post(mediaMessage('wamid.B6-ee-media', fields));
+    await drain();
+    if (answer) expect(stubSender.lastText).toContain(answer);
+    expect(stubSender.lastText).not.toBe(WHICH_PERIOD);
+    expect((await continuations(business.id)).map((c) => c.state)).toEqual(['superseded']);
+
+    await reply('wamid.B6-ee-late', 'last month');
+    expect(modelCalls()).toBeGreaterThan(0);
+    expect(stubSender.lastText).toBe(UNCLEAR.clarification);
+  });
+
   it('a question or an answer that was never delivered is not continued', async () => {
     const business = await seedMerchant();
     await seedTwoMonths(business.id);
@@ -9520,6 +9642,8 @@ describe('a short reply continues what Rekoda just asked (Build 6)', () => {
       await reply('wamid.B6-log-answer', 'Last month please');
       await reply('wamid.B6-log-follow', 'what about this month');
       const logged = spies.flatMap((spy) => spy.mock.calls.flat().map((arg) => String(arg)));
+      /* Positive control: the spies did capture the handler's own lines. */
+      expect(logged.some((line) => line.includes('answered an inbound message'))).toBe(true);
       for (const words of ['How much did I sell', 'Last month please', 'what about this month']) {
         expect(logged.some((line) => line.includes(words))).toBe(false);
       }

@@ -75,17 +75,20 @@ reads; each re-opens the 600-second window. Retired rows persist (opaque
 tokens and enums only) until the business is deleted. A Query's draft is no
 longer what a "yes", "no" or correction is about (erasure, expiry and
 supersession still count it), but a "yes" never reaches past a read: after a
-question asked since the newest live preview, the first "yes" retires the
-question's draft and points back at the preview ("You still have a preview
-waiting from before your question..."), and the next "yes" confirms it. Two
-deliberate yeses, as on base for one question (several questions in between
-also take two, where base took one each); the pointer fires only for a
-delivered financial preview, and any other waiting draft gets base's answer.
+question asked since the newest live preview, each "yes" retires the newest
+such question's draft and points back at the preview ("There is still a
+preview waiting from before the last question..."), and the yes after the
+last question confirms it: exactly as many yeses as base took (one per
+question, then one). The pointer fires only for a delivered financial
+preview, and any other waiting draft gets base's answer.
 A resumed read records a read-only Query draft, the footprint base left, so
 it shields a preview and breaks an erasure pair like any question. A
 single-yes confirmation past a read is an option the owner MAY choose later,
 not implemented; whose reads interpose, and whose preview a member may
-confirm, is OD-15. For Build 7: a reply to "Which period?" that
+confirm, is OD-15. For Build 7: a correct answer to a numbered-choice list
+currently retires the list as `superseded`, not `consumed`, because
+`resumedRead` returns null for a choice; Build 7 must consume it when it
+wires numbered choices. Also for Build 7: a reply to "Which period?" that
 names a window core cannot count ("last week", "yesterday", "in March")
 retires the question and goes to the model today; consider keeping the
 question open with `periodNotCountable` instead. After

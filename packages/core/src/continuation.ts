@@ -236,7 +236,7 @@ function parseOptions(value: unknown): ChoiceOption[] | null {
       typeof e['ordinal'] !== 'number' ||
       !Number.isInteger(e['ordinal']) ||
       e['ordinal'] < 1 ||
-      e['ordinal'] > MAX_CHOICE_OPTIONS ||
+      e['ordinal'] > value.length ||
       !ref ||
       ref['kind'] !== 'invoice' ||
       typeof ref['invoiceNumber'] !== 'string' ||
@@ -249,7 +249,9 @@ function parseOptions(value: unknown): ChoiceOption[] | null {
       ref: { kind: 'invoice', invoiceNumber: ref['invoiceNumber'] },
     });
   }
-  /* Each ordinal once: "2" must have exactly one meaning. */
+  /* Each ordinal once, and (with every ordinal in 1..n) therefore exactly
+   * 1..n, as the 0154 CHECK requires: "2" must have exactly one meaning,
+   * and no list skips a number it showed. */
   if (new Set(options.map((o) => o.ordinal)).size !== options.length) return null;
   return options;
 }

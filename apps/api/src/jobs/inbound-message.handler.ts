@@ -994,9 +994,12 @@ async function deterministicReply(
     // be confirmed by an accidental "yes" ten minutes later.
     /* G-23: a preview whose window closed is expired, not cancelled. */
     await conversationsRepo.expireStaleDrafts(tx, businessId, { now: ctx.receivedAt });
-    /* A "no" straight after a retired purchase question closes that
-     * question too (G-61). Only when it is the LAST thing asked: a question
-     * answered long ago by a resend is not what this "no" is about. */
+    /* A "no" after a retired purchase question closes that question too
+     * (G-61), when it is the last thing a "no" can be about: the newest
+     * draft that is not a question to the books (`latestDraftToAnswer`), so
+     * it still closes past a read asked since (Build 6), exactly as a "yes"
+     * there still re-asks it. A question answered long ago by a resend is
+     * not what this "no" is about. */
     const latest = await conversationsRepo.latestDraftToAnswer(tx, businessId, {
       asOf: ctx.receivedAt,
     });
@@ -1578,10 +1581,12 @@ async function confirmPendingDraft(
    * figure. Never claimed from this yes.
    *
    * Only a PREVIEW of a financial request (previewed: WhatsApp accepted it)
-   * is pointed back at: the question's draft is retired so it no longer
-   * stands in the way, the merchant is told the preview is waiting, and the
-   * next yes confirms it through the ordinary claim, if its window is still
-   * open. Nothing is metered before this point.
+   * is pointed back at: the NEWEST question's draft is retired (the draft
+   * this yes claimed before Build 6), and the merchant is told the preview
+   * is waiting. Each yes retires one question, so it takes exactly as many
+   * yeses as before Build 6 to reach the preview, which the yes after the
+   * last question confirms through the ordinary claim, if its window is
+   * still open. Nothing is metered before this point.
    *
    * Anything else waiting (a question Rekoda asked, a parked erasure ask, a
    * preview whose send failed) is not a preview, and saying one is waiting
@@ -1590,7 +1595,7 @@ async function confirmPendingDraft(
    * about, and it is answered as that, writing nothing. */
   if (await conversationsRepo.hasReadsAfter(tx, businessId, draft.id, { asOf: receivedAt })) {
     if (draft.previewed === true && !NOT_A_FINANCIAL_PREVIEW.has(draft.intent)) {
-      await conversationsRepo.retireReadsAfter(tx, businessId, draft.id, { asOf: receivedAt });
+      await conversationsRepo.retireNewestReadAfter(tx, businessId, draft.id, { asOf: receivedAt });
       if (retrying) {
         await refundRecordedReservations(tx, businessId, eventId, usagePeriod(receivedAt));
       }

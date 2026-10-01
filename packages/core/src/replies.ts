@@ -454,7 +454,8 @@ export function previewAwaitingYes(): Reply {
 }
 
 /**
- * A "yes" after the merchant asked a question since their preview (Build 6).
+ * A "yes" after a question was asked since the preview (Build 6), by this
+ * member or another, so the wording names neither.
  *
  * They were last reading an answer, and "correct" may be about that figure,
  * so the older preview is NOT saved by it. Pointed back at, so the next
@@ -462,8 +463,8 @@ export function previewAwaitingYes(): Reply {
  */
 export function previewBehindQuestion(): Reply {
   return reply(
-    'You still have a preview waiting from before your question. Check it, then reply ' +
-      '*yes* to save it.',
+    'There is still a preview waiting from before the last question. Check it, then ' +
+      'reply *yes* to save it.',
   );
 }
 

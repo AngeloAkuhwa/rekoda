@@ -191,6 +191,26 @@ describe('stored as typed columns, read back defensively', () => {
     expect(() => continuationColumns({ ...INVOICE_LIST, options: [] } as never)).toThrow();
   });
 
+  it('refuses a numbered list whose ordinals are distinct but not exactly 1..n', () => {
+    const line = (ordinal: number, n: string) => ({
+      ordinal,
+      ref: { kind: 'invoice', invoiceNumber: `INV-2026-00000${n}` },
+    });
+    for (const options of [
+      [line(1, '1'), line(3, '3')],
+      [line(2, '2')],
+      [line(2, '2'), line(3, '3')],
+    ]) {
+      expect(() => continuationColumns({ ...INVOICE_LIST, options } as never)).toThrow();
+      expect(parseContinuation({ ...continuationColumns(INVOICE_LIST), options })).toBeNull();
+    }
+    /* Any order, as long as it is exactly 1..n. */
+    const reordered = [line(2, '4'), line(1, '1')];
+    expect(
+      parseContinuation({ ...continuationColumns(INVOICE_LIST), options: reordered }),
+    ).not.toBeNull();
+  });
+
   it('reads anything it did not write as nothing', () => {
     const base = continuationColumns(SALES_READ);
     expect(parseContinuation({ ...base, topic: 'transfer_money' })).toBeNull();
