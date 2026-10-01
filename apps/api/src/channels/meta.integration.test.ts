@@ -10058,6 +10058,8 @@ describe('Nigerian and chat routing (G-68, G-24)', () => {
       'STOP 🙏🏾🙏🏾🙏🏾',
       '*STOP*',
       '🛑STOP🛑',
+      'STOP STOP',
+      'stop!!! stop!!!',
       'STOP/',
       'STOP#',
       'STOP 1\uFE0F\u20E3',
@@ -10518,6 +10520,273 @@ describe('Nigerian and Pidgin answers continue what was asked (G-68 Phase 2)', (
       await askFunding(business.id);
       await reply('wamid.P2-e-body', 'na bank');
       expect(await lastInboundBody(business.id)).toBe('na bank');
+    });
+  });
+});
+
+/**
+ * G-68 post-rebase review: a questioned "yes" confirms nothing; every gate
+ * on the funding answer is load-bearing; a "no" that closes a question says
+ * so truthfully.
+ */
+describe('G-68 review: doubt, the funding gates, and closing a question', () => {
+  const OWNER = '2348031234567';
+  const DELEGATE = '2348039990002';
+  const UNCLEAR = { intent: 'Unclear', clarification: 'What would you like me to do?' };
+  const A_SALE = {
+    intent: 'RecordSale',
+    customer: { kind: 'token', token: 'CUSTOMER_7K2' },
+    items: [{ name: 'wig', quantity: 3, unitPrice: 15_000 }],
+    statedTotal: 45_000,
+    reportedPayment: 0,
+    paymentMethod: 'transfer',
+    discount: null,
+    deliveryFee: null,
+    dueDescription: null,
+  };
+  const HOW_MUCH_DID_I_SELL = {
+    intent: 'Query',
+    topic: 'sales_summary',
+    customer: null,
+    period: null,
+    periodText: null,
+    format: 'chat',
+  };
+  const POS_PURCHASE = {
+    intent: 'RecordPurchase',
+    supplierMention: 'Emeka',
+    description: '10 cartons',
+    amount: 180_000,
+    reportedPayment: 180_000,
+    paymentMethod: 'pos',
+    productMention: 'cartons',
+    quantity: 10,
+  };
+  const POS_QUESTION = 'did it come from your bank account or from physical cash?';
+
+  async function seedMerchant(phone = `+${OWNER}`) {
+    const user = await identity.upsertUserByPhone(db, phone);
+    return identity.createBusinessWithOwner(db, {
+      name: 'Ada Fashion',
+      businessType: null,
+      ownerUserId: user.id,
+    });
+  }
+
+  async function addDelegate(businessId: string) {
+    const delegate = await identity.upsertUserByPhone(db, `+${DELEGATE}`);
+    await identity.addMembership(db, businessId, delegate.id, 'delegate');
+    return delegate.id;
+  }
+
+  async function drain() {
+    const runner = buildRunner(workerDb, db, deps);
+    let worked = await runner.runOnce();
+    while (worked) worked = await runner.runOnce();
+  }
+
+  async function say(wamid: string, command: Record<string, unknown>, text: string, from = OWNER) {
+    stubTransport.replyWith(command);
+    await post(messagePayload(from, wamid, text));
+    await drain();
+  }
+
+  async function reply(wamid: string, text: string, from = OWNER) {
+    stubTransport.replyWith(UNCLEAR);
+    await post(messagePayload(from, wamid, text));
+    await drain();
+  }
+
+  const modelCalls = () => stubTransport.requests.length;
+
+  async function footprint(businessId: string) {
+    const [row] = [
+      ...(await withBusiness(db, businessId, (tx) =>
+        tx.execute<Record<string, number>>(sql`
+          SELECT
+            (SELECT count(*)::int FROM invoices WHERE business_id = ${businessId}::uuid) AS invoices,
+            (SELECT count(*)::int FROM expenses WHERE business_id = ${businessId}::uuid) AS purchases,
+            (SELECT count(*)::int FROM ledger_transactions WHERE business_id = ${businessId}::uuid) AS postings
+        `),
+      )),
+    ];
+    return row!;
+  }
+
+  async function purchaseStates(businessId: string): Promise<string[]> {
+    const rows = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ state: string }>(sql`
+        SELECT state FROM command_drafts
+         WHERE business_id = ${businessId}::uuid AND intent = 'RecordPurchase'
+         ORDER BY insertion_seq`),
+    );
+    return [...rows].map((r) => r.state);
+  }
+
+  async function continuationStates(businessId: string): Promise<string[]> {
+    const rows = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ state: string }>(sql`
+        SELECT state FROM conversation_continuations
+         WHERE business_id = ${businessId}::uuid ORDER BY insertion_seq`),
+    );
+    return [...rows].map((r) => r.state);
+  }
+
+  describe('I1. an affirmation asked as a question confirms nothing', () => {
+    it.each(['na so?', 'yes?', 'e correct?', 'oya?', 'na so 🤔', 'Na so ❓'])(
+      '%j to a live ₦45,000 preview writes nothing, and only a plain yes saves it',
+      async (text) => {
+        const business = await seedMerchant();
+        await say('wamid.R-q-sale', A_SALE, 'sold Ada 3 wigs for 45k');
+        expect(stubSender.lastText).toContain('Please check this before I save it');
+
+        await reply('wamid.R-q-doubt', text);
+        expect(stubSender.lastText).toBe(replies.plainYesNeeded().text);
+        expect(await footprint(business.id)).toEqual({ invoices: 0, purchases: 0, postings: 0 });
+        /* `reply` resets the transport log: zero means no model since. */
+        expect(modelCalls()).toBe(0);
+
+        await reply('wamid.R-q-yes', 'yes');
+        expect((await footprint(business.id)).invoices).toBe(1);
+      },
+    );
+
+    it('with nothing waiting, it says nothing is waiting for a yes', async () => {
+      await seedMerchant();
+      await reply('wamid.R-q-none', 'na so?');
+      expect(stubSender.lastText).toBe(replies.nothingToConfirm().text);
+      expect(modelCalls()).toBe(0);
+    });
+
+    it('to the funding question, it re-asks and keeps the question open', async () => {
+      const business = await seedMerchant();
+      await say('wamid.R-q-pos', POS_PURCHASE, 'I bought 10 cartons for 180k, paid by POS');
+      await reply('wamid.R-q-pos-doubt', 'na so?');
+      expect(stubSender.lastText).toContain(POS_QUESTION);
+      expect(stubSender.lastText).toContain('Reply *bank* or *cash*');
+      expect(await continuationStates(business.id)).toEqual(['open']);
+      expect(await footprint(business.id)).toEqual({ invoices: 0, purchases: 0, postings: 0 });
+    });
+
+    it('to an expired preview, it is told the request expired', async () => {
+      const business = await seedMerchant();
+      await say('wamid.R-q-exp', A_SALE, 'sold Ada 3 wigs for 45k');
+      await withBusiness(db, business.id, (tx) =>
+        tx.execute(sql`
+          UPDATE command_drafts SET expires_at = clock_timestamp() - interval '1 day'
+           WHERE business_id = ${business.id}::uuid AND state = 'pending'`),
+      );
+      await reply('wamid.R-q-exp-doubt', 'na so?');
+      expect(stubSender.lastText).toBe(replies.draftExpired().text);
+      expect((await footprint(business.id)).invoices).toBe(0);
+    });
+  });
+
+  describe('I2. every gate on the funding answer refuses, and writes nothing', () => {
+    async function askFunding(businessId: string, from = OWNER) {
+      await say('wamid.R-g-ask', POS_PURCHASE, 'I bought 10 cartons for 180k, paid by POS', from);
+      expect(stubSender.lastText).toContain(POS_QUESTION);
+      expect(await purchaseStates(businessId)).toEqual(['abandoned']);
+    }
+
+    it('a member made view-only since the question gets no draft', async () => {
+      const business = await seedMerchant();
+      const delegateId = await addDelegate(business.id);
+      await askFunding(business.id, DELEGATE);
+      await withBusiness(db, business.id, (tx) =>
+        tx.execute(sql`
+          UPDATE memberships SET role = 'accountant'
+           WHERE business_id = ${business.id}::uuid AND user_id = ${delegateId}::uuid`),
+      );
+      await reply('wamid.R-g-view', 'cash', DELEGATE);
+      expect(stubSender.lastText).toBe(replies.viewOnlyRole().text);
+      expect(await purchaseStates(business.id)).toEqual(['abandoned']);
+      expect(await footprint(business.id)).toEqual({ invoices: 0, purchases: 0, postings: 0 });
+    });
+
+    it('a trial that lapsed since the question gets no draft', async () => {
+      const business = await seedMerchant();
+      await askFunding(business.id);
+      await billingRepo.setPlan(db, {
+        businessId: business.id,
+        plan: 'trial',
+        expiresAt: new Date(Date.now() - 1_000),
+        actor: 'operator:test-clock',
+      });
+      await reply('wamid.R-g-lapsed', 'cash');
+      expect(stubSender.lastText).toBe(replies.trialEnded().text);
+      expect(await purchaseStates(business.id)).toEqual(['abandoned']);
+      expect(await footprint(business.id)).toEqual({ invoices: 0, purchases: 0, postings: 0 });
+    });
+
+    it('a plan without Chat since the question gets no draft', async () => {
+      const business = await seedMerchant();
+      await askFunding(business.id);
+      await billingRepo.setPlan(db, {
+        businessId: business.id,
+        plan: 'integrate',
+        expiresAt: null,
+        actor: 'operator:test',
+      });
+      await reply('wamid.R-g-nochat', 'bank');
+      expect(stubSender.lastText).toBe(replies.chatNotInPlan().text);
+      expect(await purchaseStates(business.id)).toEqual(['abandoned']);
+      expect(await footprint(business.id)).toEqual({ invoices: 0, purchases: 0, postings: 0 });
+    });
+
+    it('"na so" after the REBUILT preview window closed writes nothing', async () => {
+      const business = await seedMerchant();
+      await askFunding(business.id);
+      await reply('wamid.R-g-cash', 'cash');
+      expect(await purchaseStates(business.id)).toEqual(['abandoned', 'pending']);
+      await withBusiness(db, business.id, (tx) =>
+        tx.execute(sql`
+          UPDATE command_drafts SET expires_at = clock_timestamp() - interval '1 day'
+           WHERE business_id = ${business.id}::uuid AND state = 'pending'`),
+      );
+      await reply('wamid.R-g-late-yes', 'na so');
+      expect(stubSender.lastText).toBe(replies.draftExpired().text);
+      expect(await purchaseStates(business.id)).toEqual(['abandoned', 'expired']);
+      expect(await footprint(business.id)).toEqual({ invoices: 0, purchases: 0, postings: 0 });
+    });
+
+    it('a question closed by another member is said to be closed, and nothing is rebuilt', async () => {
+      const business = await seedMerchant();
+      await addDelegate(business.id);
+      await askFunding(business.id);
+      await reply('wamid.R-g-dno', 'no', DELEGATE);
+      expect(stubSender.lastText).toBe(replies.cancelled().text);
+
+      await reply('wamid.R-g-cash-after', 'cash');
+      expect(stubSender.lastText).toBe(replies.fundingQuestionClosed().text);
+      expect(await purchaseStates(business.id)).toEqual(['superseded']);
+      expect(await footprint(business.id)).toEqual({ invoices: 0, purchases: 0, postings: 0 });
+    });
+  });
+
+  describe('M4. a "no" that closes only a question says so', () => {
+    it('"no" to "Which period?" leaves the question, never "nothing is waiting"', async () => {
+      const business = await seedMerchant();
+      await say('wamid.R-m4-ask', HOW_MUCH_DID_I_SELL, 'How much did I sell?');
+      await reply('wamid.R-m4-no', 'no');
+      expect(stubSender.lastText).toBe(replies.questionLeft().text);
+      expect(stubSender.lastText).not.toBe(replies.nothingToDecline().text);
+      expect(await continuationStates(business.id)).toEqual(['superseded']);
+      expect(modelCalls()).toBe(0);
+    });
+
+    it('"forget am" to "Which period?" leaves the question too', async () => {
+      await seedMerchant();
+      await say('wamid.R-m4b-ask', HOW_MUCH_DID_I_SELL, 'How much did I sell?');
+      await reply('wamid.R-m4b-cancel', 'forget am');
+      expect(stubSender.lastText).toBe(replies.questionLeft().text);
+    });
+
+    it('"no" to the funding question still cancels it (G-61)', async () => {
+      await seedMerchant();
+      await say('wamid.R-m4c-pos', POS_PURCHASE, 'I bought 10 cartons for 180k, paid by POS');
+      await reply('wamid.R-m4c-no', 'no be so');
+      expect(stubSender.lastText).toBe(replies.cancelled().text);
     });
   });
 });

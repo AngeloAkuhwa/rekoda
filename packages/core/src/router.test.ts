@@ -932,3 +932,113 @@ describe('funding-source answers to the G-61 question (G-68 Phase 2)', () => {
     expect(fundingSourceAnswer(text)).toBeNull();
   });
 });
+
+/**
+ * An affirmation asked as a question is not agreement (G-68 review): in
+ * Pidgin "Na so?" is "Really?". Every affirm phrase, every register.
+ */
+describe('a questioned affirmation confirms nothing', () => {
+  it.each([
+    'na so?',
+    'Na so??',
+    'na so o?',
+    'na correct?',
+    'oya?',
+    'yes?',
+    'correct?',
+    'e correct?',
+    'confirm?',
+    'na so ？',
+    'na so ❓',
+    'na so ⁉️',
+    'na so 🤔',
+    'yes 😳',
+    'e correct 🧐',
+    'oya 😕',
+    'na so 🤨',
+  ])('%j is unsure, never affirm', (message) => {
+    expect(intentOf(message)).toEqual({ kind: 'unsure' });
+    expect(staysLocal(routeMessage(message))).toBe(true);
+  });
+
+  it.each(['yes!', 'na so!', 'na so 👍', 'yes 😊', 'e correct!!!', 'oya oo', 'oya ooo'])(
+    '%j still affirms',
+    (message) => {
+      expect(intentOf(message)).toEqual({ kind: 'affirm' });
+    },
+  );
+
+  it('leaves every other intent alone: "who owes me?" is still the list', () => {
+    expect(intentOf('who owes me?')).toEqual({ kind: 'debtors' });
+    expect(intentOf('no?')).toEqual({ kind: 'deny' });
+    expect(intentOf('help?')).toEqual({ kind: 'help' });
+  });
+});
+
+describe('the trailing "ooo" (G-68 review)', () => {
+  it('is noise at the end of a command, never a command alone', () => {
+    expect(intentOf('na so ooo')).toEqual({ kind: 'affirm' });
+    expect(intentOf('who dey owe me ooo')).toEqual({ kind: 'debtors' });
+    expect(goesToModel('ooo')).toBe(true);
+  });
+});
+
+describe('a repeated STOP is still a STOP; START never repeats (G-24 review)', () => {
+  it.each([
+    'STOP STOP',
+    'stop stop stop',
+    'STOP!!! STOP!!!',
+    'stop, stop',
+    'Unsubscribe unsubscribe',
+    'QUIT QUIT QUIT',
+    'stop all stop all',
+  ])('%j opts out, on every path', (message) => {
+    expect(intentOf(message)).toEqual({ kind: 'stop' });
+    expect(customerConsentIntent(message)).toBe('stop');
+    expect(consentIntentOf({ text: null, replyId: null, replyTitle: message })).toBe('stop');
+  });
+
+  it.each([
+    'stop stop stop stop',
+    'start start',
+    'START START!',
+    'stop start',
+    'start stop',
+    'STOP quit',
+    'stop unsubscribe',
+    'stop by stop',
+    'please stop stop',
+    'stop stop please',
+    `stop ${'!'.repeat(17)} stop`,
+  ])('%j changes nobody’s consent', (message) => {
+    const route = routeMessage(message);
+    const kind = route.route === 'deterministic' ? route.intent.kind : null;
+    expect(kind).not.toBe('stop');
+    expect(kind).not.toBe('start');
+    expect(customerConsentIntent(message)).toBeNull();
+  });
+});
+
+describe('the length gate counts what is left after trimming (G-24 review)', () => {
+  it('a STOP followed by many spaces is still a STOP', () => {
+    expect(customerConsentIntent(`stop${' '.repeat(600)}`)).toBe('stop');
+    expect(customerConsentIntent(`${' '.repeat(600)}STOP`)).toBe('stop');
+  });
+
+  it('a long message is still refused', () => {
+    expect(customerConsentIntent(`stop ${'🛑'.repeat(400)}`)).toBeNull();
+  });
+});
+
+describe('Pidgin cash answers to the funding question (G-68 review)', () => {
+  it.each(['money for hand', 'na money for hand', 'from my pocket'])('%j is cash', (text) => {
+    expect(fundingSourceAnswer(text)).toBe('cash');
+  });
+
+  it.each(['money for bank', 'my pocket money', 'money for hand na 20k'])(
+    '%j is not an answer',
+    (text) => {
+      expect(fundingSourceAnswer(text)).toBeNull();
+    },
+  );
+});

@@ -490,7 +490,38 @@ export function nothingToConfirm(): Reply {
 export function nothingToDecline(): Reply {
   return reply(
     'Nothing is waiting for a yes or no. Tell me a sale and I will show it to ' +
-      'you before saving.',
+      'you before saving. Anything already saved is still saved.',
+  );
+}
+
+/**
+ * "na so?", "yes?", "e correct 🤔" while a preview is waiting (G-68): a
+ * question, not agreement, so nothing is saved and only a plain yes will.
+ */
+export function plainYesNeeded(): Reply {
+  return reply(
+    'I have not saved anything. Check the preview, then reply *yes* to save it ' +
+      'or *no* to drop it.',
+  );
+}
+
+/**
+ * A "no" or "cancel" that closed a question Rekoda had asked (which period,
+ * where the money came from) and nothing else (G-68). Something WAS waiting,
+ * so it is not "nothing is waiting"; and nothing was saved or cancelled.
+ */
+export function questionLeft(): Reply {
+  return reply('OK, I will leave that question. Nothing was saved.');
+}
+
+/**
+ * A short "bank" or "cash" to a funding question that was closed since it
+ * was asked (a "no", from this member or another) (G-68 Phase 2).
+ */
+export function fundingQuestionClosed(): Reply {
+  return reply(
+    'That purchase question was already closed, so nothing was saved. Send the ' +
+      'purchase again to record it.',
   );
 }
 

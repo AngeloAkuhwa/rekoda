@@ -296,7 +296,8 @@ export function gatePurchase(purchase: PurchaseLike): SpendGate {
         question:
           'I know you paid by POS. I just need the source of the money for your books: ' +
           'did it come from your bank account or from physical cash?' +
-          '\n\nSend it again with where the money came from, for example: ' +
+          '\n\nReply *bank* or *cash*, or send it again with where the money came ' +
+          'from, for example: ' +
           '"bought 10 cartons from Emeka for 180k, paid by POS from my bank account".',
       };
     }
@@ -308,7 +309,7 @@ export function gatePurchase(purchase: PurchaseLike): SpendGate {
           ? `For the ${formatKobo(amountK)} stock, did you pay it all by cash or by transfer? ` +
             'If you have not paid it all yet, say how much you paid.'
           : `You paid ${formatKobo(paidK)} for this stock. Was that cash or transfer?`) +
-        '\n\nSend it again with how you paid, for example: ' +
+        '\n\nReply *cash* or *transfer*, or send it again with how you paid, for example: ' +
         '"bought 10 cartons from Emeka for 180k, paid transfer".',
     };
   }

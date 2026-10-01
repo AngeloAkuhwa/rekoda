@@ -384,6 +384,9 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
      * claimed and not reachable from this branch.
      */
     const actorId = await actorOf(tx, businessId, inbound.from);
+    /* Whether this message retired a question Rekoda had asked this member
+     * (G-68): a "no" that drops nothing else must not say nothing waited. */
+    const outcome = { retiredQuestion: false };
     const continued = actorId
       ? await continueConversation(tx, businessId, actorId, {
           text,
@@ -391,6 +394,7 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
           messageId: message.id,
           receivedAt: event.receivedAt,
           from: inbound.from,
+          outcome,
         })
       : null;
 
@@ -403,6 +407,7 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
             from: inbound.from,
             retrying,
             receivedAt: event.receivedAt,
+            retiredQuestion: outcome.retiredQuestion,
           })
         : await interpretedReply(
             deps,
@@ -972,6 +977,8 @@ interface CommandContext {
    * decides exactly as the first attempt did.
    */
   receivedAt: Date;
+  /** This message retired a question Rekoda had asked the sender (G-68). */
+  retiredQuestion?: boolean;
 }
 
 /**
@@ -1029,10 +1036,16 @@ async function deterministicReply(
     /* A bare "no" or "cancel" with nothing to refuse is answered, never met
      * with silence, and never told something was cancelled (G-68). */
     if (dropped > 0) return replies.cancelled();
+    /* The "no" closed a question Rekoda asked (which period, where the money
+     * came from) and nothing else: true to say so, untrue to say nothing
+     * was waiting (G-68). */
+    if (ctx.retiredQuestion) return replies.questionLeft();
     return intent.kind === 'cancel' ? replies.nothingToCancel() : replies.nothingToDecline();
   }
 
   switch (intent.kind) {
+    case 'unsure':
+      return unsureReply(tx, businessId, ctx.receivedAt);
     case 'greeting':
       return replies.greeting();
     case 'help':
@@ -2426,7 +2439,9 @@ async function answerFundingSource(
   message: { messageId: string; from: string },
 ): Promise<Reply> {
   const retired = await conversationsRepo.retiredPurchaseDraft(tx, businessId, draftId);
-  if (!retired) return replies.nothingToConfirm();
+  /* Closed since it was asked (a "no", from this member or another one), or
+   * no longer a retired purchase: nothing to rebuild, and that is said. */
+  if (!retired) return replies.fundingQuestionClosed();
   if (!(await mayTransact(tx, businessId, message.from))) return replies.viewOnlyRole();
   const plan = await usageRepo.planFor(tx, businessId);
   if (plan === 'expired') return replies.trialEnded();
@@ -2450,6 +2465,35 @@ async function answerFundingSource(
 }
 
 /**
+ * "na so?", "yes?", "e correct 🤔": an affirmation asked as a question
+ * (G-68). It confirms NOTHING, ever, and calls no model. What it is told
+ * depends on what is waiting, read without claiming anything:
+ *  - a retired G-61 question: the question again, as a "yes" gets it;
+ *  - an expired preview: that it expired, as a "yes" is told;
+ *  - a live preview: that only a plain yes saves it;
+ *  - nothing: that nothing is waiting for a yes.
+ */
+async function unsureReply(tx: TenantDb, businessId: string, receivedAt: Date): Promise<Reply> {
+  await conversationsRepo.expireStaleDrafts(tx, businessId, { now: receivedAt });
+  const latest = await conversationsRepo.latestDraftToAnswer(tx, businessId, { asOf: receivedAt });
+  if (latest?.state === 'abandoned') {
+    const asked = latest.command as { intent?: string } & Record<string, unknown>;
+    if (asked.intent === 'RecordPurchase') {
+      const gate = gatePurchase(asked as never);
+      if (gate.gate === 'CG1') return replies.arithmeticQuestion(gate.question);
+    }
+    return replies.nothingToConfirm();
+  }
+  if (latest?.state === 'expired') {
+    return expiredAnswer(latest.command, latest.previewed, 'yes') ?? replies.nothingToConfirm();
+  }
+  const pending = await conversationsRepo.pendingDraftToAnswer(tx, businessId, {
+    asOf: receivedAt,
+  });
+  return pending?.previewed ? replies.plainYesNeeded() : replies.nothingToConfirm();
+}
+
+/**
  * A short reply that continues what was open for this member (Build 6), or
  * null to be understood as an ordinary message.
  *
@@ -2469,7 +2513,14 @@ async function continueConversation(
   tx: TenantDb,
   businessId: string,
   actorId: string,
-  message: { text: string; route: Route; messageId: string; receivedAt: Date; from: string },
+  message: {
+    text: string;
+    route: Route;
+    messageId: string;
+    receivedAt: Date;
+    from: string;
+    outcome?: { retiredQuestion: boolean };
+  },
 ): Promise<Reply | null> {
   const now = { now: message.receivedAt };
   const open = await continuationsRepo.currentContinuation(tx, businessId, actorId, now);
@@ -2482,7 +2533,7 @@ async function continueConversation(
     open?.state.kind === 'clarification' &&
     open.state.expects === 'funding_source' &&
     message.route.route === 'deterministic' &&
-    message.route.intent.kind === 'affirm'
+    (message.route.intent.kind === 'affirm' || message.route.intent.kind === 'unsure')
   ) {
     return null;
   }
@@ -2552,7 +2603,10 @@ async function continueConversation(
       ? await continuationsRepo.consumeContinuation(tx, businessId, actorId, open.id, now)
       : read !== null;
   if (!read || !claimed) {
-    await continuationsRepo.retireContinuations(tx, businessId, actorId, now);
+    const retired = await continuationsRepo.retireContinuations(tx, businessId, actorId, now);
+    if (retired > 0 && open?.state.kind === 'clarification' && message.outcome) {
+      message.outcome.retiredQuestion = true;
+    }
     return null;
   }
 

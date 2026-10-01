@@ -82,6 +82,9 @@ const ALL: Record<string, readonly replies.Reply[]> = {
   nothingToDecline: [replies.nothingToDecline()],
   nothingToCancel: [replies.nothingToCancel()],
   optionChosen: [replies.optionChosen('INV-2026-000041')],
+  plainYesNeeded: [replies.plainYesNeeded()],
+  questionLeft: [replies.questionLeft()],
+  fundingQuestionClosed: [replies.fundingQuestionClosed()],
   correctionTaken: [replies.correctionTaken()],
   issued: [
     replies.issued('INV-2026-000041', NAIRA_MILLIONS, NAIRA_MILLIONS),
@@ -307,6 +310,9 @@ describe('every reply', () => {
     replies.nothingToDecline(),
     replies.nothingToCancel(),
     replies.optionChosen('INV-2026-000041'),
+    replies.plainYesNeeded(),
+    replies.questionLeft(),
+    replies.fundingQuestionClosed(),
     replies.nothingToResend(),
     replies.dashboardUnavailable(),
     replies.paymentLinkUnavailable(),
@@ -806,6 +812,7 @@ describe('a bare "no" or "cancel" with nothing waiting (G-68)', () => {
     expect(text).not.toContain(replies.nothingToConfirm().text.slice(0, 30));
     /* It names the way forward, and never implies a saved record can be edited. */
     expect(text).toContain('Tell me a sale');
+    expect(text).toContain('Anything already saved is still saved');
     expect(text).not.toMatch(/change|edit|correct/i);
   });
 

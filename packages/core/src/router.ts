@@ -30,6 +30,12 @@ export type DeterministicIntent =
   /** A bare number. What it MEANS depends on what was asked — see the note below. */
   | { kind: 'number'; value: number }
   | { kind: 'affirm' }
+  /**
+   * An affirmation asked as a QUESTION or with a doubting face: "na so?",
+   * "yes?", "e correct 🤔". In Pidgin "Na so?" is "Really?". It confirms
+   * nothing; the merchant is asked for a plain yes (G-68).
+   */
+  | { kind: 'unsure' }
   | { kind: 'deny' }
   | { kind: 'cancel' }
   /** Regulatory opt-out. Must be honoured whatever the conversation was doing. */
@@ -105,7 +111,7 @@ const FILLERS = new Set([
  * and the emphatic `o` / `oo` ("na so o", "no oo"). A message that is only
  * "o" survives, because the strip never empties a message.
  */
-const TRAILING_FILLERS = new Set(['na', 'o', 'oo']);
+const TRAILING_FILLERS = new Set(['na', 'o', 'oo', 'ooo']);
 
 /**
  * Normalise for matching: case, punctuation, spacing, and the variation
@@ -229,6 +235,8 @@ const PHRASES: ReadonlyArray<readonly [readonly string[], DeterministicIntent]> 
       /* "oya" is an edge filler, so this whole phrase would strip to a bare
        * "o"; it is matched before stripping (see `routeMessage`). */
       'oya o',
+      'oya oo',
+      'oya ooo',
       'that is right',
       'right',
       'approved',
@@ -650,11 +658,13 @@ function consentKeyword(raw: string): 'stop' | 'start' | null {
   /* The longest genuine consent message is a word with sixteen decorations
    * on each side, well under this; anything longer is not consent, and is
    * refused before it is segmented. */
-  if (raw.length > MAX_CONSENT_CODE_UNITS) return null;
   if (BIDI_CONTROLS.test(raw)) return null;
   /* Surrounding whitespace, a trailing line break included, is not part of
-   * the message. A line break anywhere else is a second line. */
+   * the message, and neither are the invisible format characters: both go
+   * BEFORE the length gate, so trailing spaces never refuse a STOP. A line
+   * break anywhere else is a second line. */
   const text = raw.replace(INVISIBLE, '').trim();
+  if (text.length > MAX_CONSENT_CODE_UNITS) return null;
   if (!text || LINE_BREAKS.test(text)) return null;
 
   segmenter ??= new Intl.Segmenter('en', { granularity: 'grapheme' });
@@ -670,17 +680,57 @@ function consentKeyword(raw: string): 'stop' | 'start' | null {
     }
   }
 
-  /* The word: letters, with spaces between them collapsed to one. */
-  let word = '';
+  /* The words: runs of letters, and what separates them. Anything inside
+   * the span that is neither a letter nor decoration refuses. */
+  const runs: string[] = [];
+  const separators: Grapheme[][] = [];
+  let run = '';
+  let separator: Grapheme[] = [];
   for (const g of graphemes.slice(first, last + 1)) {
-    if (g.kind === 'letter') word += g.value;
-    else if (g.kind === 'space') word = word.endsWith(' ') ? word : `${word} `;
-    else return null;
+    if (g.kind === 'letter') {
+      if (run === '' && runs.length > 0) separators.push(separator);
+      run += g.value;
+      separator = [];
+    } else if (decoratesStop(g)) {
+      if (run !== '') runs.push(run);
+      run = '';
+      separator.push(g);
+    } else {
+      return null;
+    }
+  }
+  runs.push(run);
+  /* The one keyword with a space inside: "stop all", spaces only between. */
+  const units: string[] = [];
+  for (let i = 0; i < runs.length; i++) {
+    const spaced = (separators[i] ?? []).every((g) => g.kind === 'space');
+    if (runs[i] === 'stop' && runs[i + 1] === 'all' && spaced) {
+      units.push('stop all');
+      i++;
+    } else {
+      units.push(runs[i]!);
+    }
   }
   const before = graphemes.slice(0, first);
   const after = graphemes.slice(last + 1);
+  const inside = separators.flat();
 
-  if (STOP_WORDS.has(word)) {
+  /*
+   * A STOP may be said up to three times ("STOP STOP", "stop!!! stop!!!"),
+   * the same word each time, separated only by decoration: someone who
+   * repeats it means it more, not less. Mixed words ("stop start",
+   * "STOP quit") stay refused, and START is never repeated (G-24).
+   */
+  const repeatedStop =
+    units.length >= 2 &&
+    units.length <= 3 &&
+    units.every((u) => u === units[0]) &&
+    STOP_WORDS.has(units[0]!) &&
+    inside.length <= DECORATION;
+  if (units.length > 1 && !repeatedStop) return null;
+  const word = units[0]!;
+
+  if (STOP_WORDS.has(word) && (units.length === 1 || repeatedStop)) {
     /* One list bullet ("-" or "•", then a space) is a list item. */
     const lead =
       before.length >= 2 &&
@@ -695,7 +745,7 @@ function consentKeyword(raw: string): 'stop' | 'start' | null {
     return 'stop';
   }
 
-  if (START_WORDS.has(word)) {
+  if (START_WORDS.has(word) && units.length === 1) {
     if (before.length > 0) return null;
     /* Spaces may separate the word from its marks, never the marks. */
     let spaces = 0;
@@ -864,13 +914,15 @@ export function routeMessage(raw: string): Route {
   }
 
   for (const [phrases, intent] of PHRASES) {
-    if (phrases.includes(text)) return { route: 'deterministic', intent };
+    if (phrases.includes(text)) return { route: 'deterministic', intent: doubted(raw, intent) };
   }
   /* A whole phrase built only of edge words ("oya o") is stripped down to
    * nothing meaningful above, so it is also tried exactly as sent. Still a
    * whole-message match: nothing is added, nothing is guessed. */
   for (const [phrases, intent] of PHRASES) {
-    if (phrases.includes(normalised)) return { route: 'deterministic', intent };
+    if (phrases.includes(normalised)) {
+      return { route: 'deterministic', intent: doubted(raw, intent) };
+    }
   }
 
   return { route: 'model', reason: 'unrecognised' };
@@ -958,6 +1010,34 @@ export function periodAnswer(raw: string): AnsweredPeriod | null {
     if (phrases.includes(text)) return period;
   }
   return null;
+}
+
+/**
+ * Marks that turn a whole-message affirmation into a QUESTION when it ends
+ * the message: "?" in its plain and full-width forms, and the pictographs
+ * "❓", "❔", "⁉", "‼" (the same set the consent matcher treats as a
+ * question). "na so?" is "Really?", not "go ahead".
+ */
+const QUESTION_ENDINGS = /[?\uFF1F\u2753\u2754\u2049\u203C][\s\uFE0E\uFE0F]*$/u;
+
+/**
+ * Faces that mean doubt, wherever they sit in the message: thinking face,
+ * flushed face, face with monocle, confused face, face with raised eyebrow.
+ * Kept small on purpose: each is read as "I am not sure", and none is ever
+ * sent to mean yes. A smile or a thumbs up still affirms.
+ */
+const DOUBT_FACES = /[\u{1F914}\u{1F633}\u{1F9D0}\u{1F615}\u{1F928}]/u;
+
+/**
+ * Normalisation removes punctuation and emoji, so "yes?" and "yes" match the
+ * same phrase. That is right for presentation noise and wrong for a question
+ * mark or a doubting face, which change the MEANING of an affirmation: the
+ * merchant is asking, not agreeing (G-68). Only an affirmation is affected;
+ * "who owes me?" is still the debtors list.
+ */
+function doubted(raw: string, intent: DeterministicIntent): DeterministicIntent {
+  if (intent.kind !== 'affirm') return intent;
+  return QUESTION_ENDINGS.test(raw.trim()) || DOUBT_FACES.test(raw) ? { kind: 'unsure' } : intent;
 }
 
 /**
@@ -1069,6 +1149,11 @@ const FUNDING_ANSWERS: ReadonlyArray<readonly [readonly string[], FundingSource]
       'my cash',
       'from cash',
       'from my cash',
+      /* "Money for hand" is cash held in the hand; "from my pocket" is
+       * physical money. Neither has a bank reading. */
+      'money for hand',
+      'na money for hand',
+      'from my pocket',
       'cash in hand',
       'na cash',
       'na physical cash',
