@@ -312,6 +312,11 @@ export interface DraftInput {
    */
   confirmationContext?: ConfirmationContext | null;
   /**
+   * The merchant was shown a preview a "yes" confirms, not a question
+   * (G-23). Only an expired preview is answered "that request has expired".
+   */
+  previewed?: boolean;
+  /**
    * The instant the confirmation window opens. Tests only: production leaves
    * it unset and the database clock decides, the same clock as `created_at`.
    */
@@ -338,6 +343,8 @@ export interface DraftRow {
   identityLink?: unknown;
   /** Raw as stored; read it through `parseConfirmationContext`. */
   confirmationContext?: unknown;
+  /** Shown as a preview, not asked as a question (G-23). */
+  previewed?: boolean;
   /**
    * How the DRAFTING message arrived — text | voice | media | interactive.
    * Spec E.7's evidenceBasis is derived from this at confirmation time: a
@@ -373,6 +380,7 @@ export async function recordDraft(
       model: draft.model,
       identityLink: (draft.identityLink ?? null) as never,
       confirmationContext: (draft.confirmationContext ?? null) as never,
+      previewed: draft.previewed ?? false,
       /* G-23: a preview is confirmable for CONFIRMATION_TTL_SECONDS, the same
        * window as a HIGH_RISK confirmation. Set once, at the only INSERT: a
        * redelivered message hits the conflict below and keeps the window its
@@ -497,6 +505,7 @@ export async function pendingDraft(
       command: commandDrafts.command,
       identityLink: commandDrafts.identityLink,
       confirmationContext: commandDrafts.confirmationContext,
+      previewed: commandDrafts.previewed,
       messageKind: conversationMessages.kind,
     })
     .from(commandDrafts)
@@ -668,13 +677,20 @@ export async function latestDraft(
   tx: TenantDb,
   businessId: string,
   options: { asOf?: Date } = {},
-): Promise<{ id: string; state: string; command: unknown; expiresAt: Date } | null> {
+): Promise<{
+  id: string;
+  state: string;
+  command: unknown;
+  expiresAt: Date;
+  previewed: boolean;
+} | null> {
   const rows = await tx
     .select({
       id: commandDrafts.id,
       state: commandDrafts.state,
       command: commandDrafts.command,
       expiresAt: commandDrafts.expiresAt,
+      previewed: commandDrafts.previewed,
     })
     .from(commandDrafts)
     .where(and(eq(commandDrafts.businessId, businessId), seenBy(options.asOf)))

@@ -386,7 +386,8 @@ describe('the migration, run as it ships, against drafts written before it', () 
           ALTER TABLE command_drafts DROP CONSTRAINT command_drafts_state_check;
           ALTER TABLE command_drafts ADD CONSTRAINT command_drafts_state_check
             CHECK (state IN ('pending', 'superseded', 'confirmed', 'abandoned'));
-          ALTER TABLE command_drafts DROP COLUMN expires_at;`);
+          ALTER TABLE command_drafts DROP COLUMN expires_at;
+          ALTER TABLE command_drafts DROP COLUMN previewed;`);
         for (const [i, [state, createdAt]] of seeded.entries()) {
           await tx`
             INSERT INTO command_drafts
@@ -414,6 +415,11 @@ describe('the migration, run as it ships, against drafts written before it', () 
       { state: 'superseded', created: '2026-09-03 12:45:00', expires: '2026-09-03 12:50:00' },
       { state: 'abandoned', created: '2026-09-04 13:15:00', expires: '2026-09-04 13:20:00' },
     ]);
+
+    /* No old draft is claimed to have been a preview: that was never recorded. */
+    const flags = await owner.execute<{ previewed: boolean }>(sql`
+      SELECT previewed FROM command_drafts WHERE business_id = ${businessId}::uuid`);
+    expect([...flags].map((r) => r.previewed)).toEqual([false, false, false, false]);
 
     /* A preview left pending before this release cannot be confirmed by a
      * "yes" now, on the real clock. */

@@ -6,6 +6,7 @@
 import { sql } from 'drizzle-orm';
 import {
   bigint,
+  boolean,
   date,
   index,
   integer,
@@ -450,6 +451,13 @@ export const commandDrafts = pgTable(
     expiresAt: timestamp('expires_at', { withTimezone: true })
       .notNull()
       .default(sql`clock_timestamp() + interval '300 seconds'`),
+    /**
+     * Whether the merchant was SHOWN a preview a "yes" confirms (migration
+     * 0153, G-23), rather than a question stored with the same financial
+     * intent. Decides whether an expired draft is answered "that request has
+     * expired". False unless the preview was actually sent.
+     */
+    previewed: boolean('previewed').notNull().default(false),
   },
   (t) => [
     // One draft per message — a job that runs twice must not give the merchant

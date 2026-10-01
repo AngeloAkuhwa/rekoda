@@ -31,6 +31,13 @@
 -- second number. SQL cannot import the constant, so the 300 below is pinned
 -- to it by draft-expiry.integration.test.ts, which fails if they diverge.
 --
+-- `previewed` records whether the merchant was actually SHOWN a preview a
+-- "yes" confirms, as opposed to a question (a CG1 arithmetic question, "which
+-- invoice?") that is stored as a draft with the same financial intent. Only
+-- an expired preview is answered "that request has expired"; a lapsed
+-- question was never something to confirm. FALSE by default and for every
+-- existing row: never claim a preview that may not have been shown.
+--
 -- Nothing is deleted: an expired draft keeps its intent, its tokenised
 -- command and its confirmation_context, which are part of the conversation's
 -- history. Expiry is decided lazily, when the merchant next interacts; no
@@ -55,3 +62,5 @@ ALTER TABLE command_drafts ALTER COLUMN expires_at SET NOT NULL;
 -- net for any other writer, on the same clock as `created_at`.
 ALTER TABLE command_drafts
   ALTER COLUMN expires_at SET DEFAULT (clock_timestamp() + interval '300 seconds');
+
+ALTER TABLE command_drafts ADD COLUMN previewed boolean NOT NULL DEFAULT false;

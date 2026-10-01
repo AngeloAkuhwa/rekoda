@@ -8389,6 +8389,61 @@ describe('a preview has a time limit (G-23)', () => {
     expect((await footprint(business.id)).expenses).toBe(1);
   });
 
+  it('a lapsed question stored with a financial intent is never called an expired request', async () => {
+    const business = await seedMerchant();
+    const previewedOf = async () => {
+      const rows = await withBusiness(db, business.id, (tx) =>
+        tx.execute<{ intent: string; previewed: boolean }>(sql`
+          SELECT intent, previewed FROM command_drafts
+           WHERE business_id = ${business.id}::uuid ORDER BY insertion_seq`),
+      );
+      return [...rows];
+    };
+
+    /* A sale whose total disagrees with its items: a CG1 question, stored
+     * as a RecordSale draft, never a preview. */
+    await say('wamid.G23-cg1', { ...A_SALE, statedTotal: 350_000 }, 'sold Ada 3 wigs for 350k');
+    expect(stubSender.lastText).toContain('Tell me the right one');
+    /* A payment with no open invoice to place it on: a question too. */
+    await say(
+      'wamid.G23-noinv',
+      {
+        intent: 'RecordPayment',
+        customer: { kind: 'token', token: 'CUSTOMER_7K2' },
+        amount: 50_000,
+        relativeAmount: null,
+        documentRef: null,
+        paymentMethod: 'cash',
+      },
+      'Ada paid 50k',
+    );
+    /* And a real preview, for contrast. */
+    await say('wamid.G23-real', AN_EXPENSE, 'bought fuel 20k cash');
+    expect(await previewedOf()).toEqual([
+      { intent: 'RecordSale', previewed: false },
+      { intent: 'RecordPayment', previewed: false },
+      { intent: 'RecordExpense', previewed: true },
+    ]);
+
+    /* The expense lapses: its yes is told it expired. */
+    await lapse(business.id);
+    await plain('wamid.G23-real-yes', 'yes');
+    expect(stubSender.lastText).toBe(EXPIRED);
+
+    /* A business whose LAST thing was a question: never "expired". */
+    const second = await seedMerchant('+2348031234568');
+    stubTransport.replyWith({ ...A_SALE, statedTotal: 350_000 });
+    await post(messagePayload('2348031234568', 'wamid.G23-cg1b', 'sold Ada 3 wigs for 350k'));
+    await drain();
+    await lapse(second.id);
+    await post(messagePayload('2348031234568', 'wamid.G23-cg1b-yes', 'yes'));
+    await drain();
+    expect(stubSender.lastText).toBe(replies.nothingToConfirm().text);
+    await post(messagePayload('2348031234568', 'wamid.G23-cg1b-no', 'no'));
+    await drain();
+    expect(stubSender.lastText).not.toBe(replies.expiredNothingToCancel().text);
+  });
+
   it('a lapsed clarification was never a preview: a later yes or no is not told it expired', async () => {
     const business = await seedMerchant();
     await say(

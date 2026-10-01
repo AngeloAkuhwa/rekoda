@@ -950,7 +950,7 @@ async function deterministicReply(
      * about it, so nothing else is touched. A clarification or a question
      * that lapsed was never a preview, and is answered as before. */
     if (latest?.state === 'expired') {
-      const lapsed = expiredAnswer(latest.command, 'no');
+      const lapsed = expiredAnswer(latest.command, latest.previewed, 'no');
       if (lapsed) return lapsed;
     }
     const closedQuestion =
@@ -1389,27 +1389,20 @@ function identityLinkOf(value: unknown): { survivorId: string; orphanId: string 
 }
 
 /**
- * The previews a "yes" executes (G-23). Their expiry is worth a sentence; a
- * lapsed clarification or question was never something to confirm.
- */
-const PREVIEWED_INTENTS = new Set([
-  'RecordSale',
-  'RecordPayment',
-  'RecordExpense',
-  'RecordPurchase',
-  'RecordOrder',
-  'AdjustInventory',
-]);
-
-/**
- * What to say to a "yes" or a "no" whose preview expired, or null when the
- * expired draft was not a preview at all (answered as if nothing waited).
+ * What to say to a "yes" or a "no" whose draft expired (G-23), or null when
+ * it was never a preview (answered as if nothing waited).
+ *
+ * Decided by what the merchant was SHOWN, recorded on the draft, never
+ * inferred from its intent: a sale whose total disagreed, or a payment with
+ * no invoice to place it on, is stored with a financial intent but was only
+ * ever a question, and "that request has expired" would tell the merchant a
+ * confirmable request lapsed when they were never invited to confirm one.
  * An erasure ask is never "saved": it was not, and nothing was deleted.
  */
-function expiredAnswer(command: unknown, answer: 'yes' | 'no'): Reply | null {
+function expiredAnswer(command: unknown, previewed: boolean, answer: 'yes' | 'no'): Reply | null {
   const intent = (command as { intent?: string } | null)?.intent;
   if (intent === 'EraseData') return replies.erasureKept();
-  if (!intent || !PREVIEWED_INTENTS.has(intent)) return null;
+  if (!previewed) return null;
   return answer === 'yes' ? replies.draftExpired() : replies.expiredNothingToCancel();
 }
 
@@ -1491,7 +1484,7 @@ async function confirmPendingDraft(
     if (retrying && latest.expiresAt.getTime() > receivedAt.getTime()) {
       await refundFirstAttempt(tx, businessId, latest.command, usagePeriod(receivedAt));
     }
-    return expiredAnswer(latest.command, 'yes') ?? replies.nothingToConfirm();
+    return expiredAnswer(latest.command, latest.previewed, 'yes') ?? replies.nothingToConfirm();
   }
 
   const draft = await conversationsRepo.pendingDraft(tx, businessId, { asOf: receivedAt });
@@ -1609,7 +1602,7 @@ async function confirmPendingDraft(
     await refundReserved();
     /* The other "yes" won and is issuing the invoice; or the window closed. */
     return claim.outcome === 'expired'
-      ? (expiredAnswer(command, 'yes') ?? replies.nothingToConfirm())
+      ? (expiredAnswer(command, draft.previewed === true, 'yes') ?? replies.nothingToConfirm())
       : replies.alreadyConfirmed();
   }
   /**
@@ -2550,6 +2543,7 @@ async function interpretedReply(
     command: stored,
     model: deps.config.aiModelDefault,
     identityLink: answered.linkAsked ? link : null,
+    previewed: answered.previewed === true,
     confirmationContext: answered.confirmationContext ?? null,
   });
 
@@ -2609,22 +2603,27 @@ async function acknowledge(
   /** The answer was the G-61 funding-source question: the draft is kept for
    * the record but must not stay confirmable. */
   retireDraft?: boolean;
+  /** The answer was a PREVIEW a "yes" confirms, not a question (G-23). */
+  previewed?: boolean;
 }> {
   /**
    * The link question rides a PREVIEW and nothing else. A clarification, an
    * answered query and a CG1 arithmetic question are all the wrong moment:
    * none of them ends in the `yes` that would confirm it.
    */
-  const withLink = (preview: Reply): { reply: Reply; linkAsked: boolean } => {
-    if (!link) return { reply: preview, linkAsked: false };
+  const withLink = (preview: Reply): { reply: Reply; linkAsked: boolean; previewed: true } => {
+    if (!link) return { reply: preview, linkAsked: false, previewed: true };
     return {
       reply: replies.preview(
         `${preview.text}\n\n${replies.linkQuestion(link.survivorToken, link.orphanToken)}`,
       ),
       linkAsked: true,
+      previewed: true,
     };
   };
   const plain = (reply: Reply) => ({ reply, linkAsked: false });
+  /* A preview with no customer to ask about: still a preview (G-23). */
+  const shown = (preview: Reply) => ({ reply: preview, linkAsked: false, previewed: true });
 
   if (command.intent === 'Unclear') return plain(replies.clarification(command.clarification));
 
@@ -2738,7 +2737,7 @@ async function acknowledge(
     /* Stock has no customer, so a link proposal in the same message is about
      * somebody the merchant mentioned rather than about this entry. Asked
      * only where the `yes` is about a customer. */
-    return plain(
+    return shown(
       replies.preview(
         correcting
           ? `${replies.correctionTaken().text}\n\n${stockGate.preview}`
@@ -2777,7 +2776,7 @@ async function acknowledge(
 
   /* A sale names a customer; an expense and a purchase do not. Only the first
    * ends in a `yes` that is about the person the question asks about. */
-  const wrap = command.intent === 'RecordSale' ? withLink : plain;
+  const wrap = command.intent === 'RecordSale' ? withLink : shown;
   return wrap(
     replies.preview(
       correcting ? `${replies.correctionTaken().text}\n\n${gate.preview}` : gate.preview,
