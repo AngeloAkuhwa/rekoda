@@ -9,7 +9,7 @@
  * to obtain one; storing a raw message through it is not an oversight that
  * could happen, it is a value the caller would have to construct by hand.
  */
-import { and, desc, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, isNull, sql } from 'drizzle-orm';
 import {
   CONFIRMATION_TTL_SECONDS,
   sanitizeCommandForPersistence,
@@ -311,6 +311,8 @@ export interface DraftInput {
    * transient-field policy that `command` does.
    */
   confirmationContext?: ConfirmationContext | null;
+  /** The member whose message drafted this (0157), when known. */
+  requestedBy?: string | null;
   /**
    * The merchant was shown a preview a "yes" confirms, not a question
    * (G-23). Only an expired preview is answered "that request has expired".
@@ -347,6 +349,8 @@ export interface DraftRow {
   previewed?: boolean;
   /** When its confirmation window closes (G-23), where the read selects it. */
   expiresAt?: Date;
+  /** The member whose message drafted it (0157), where the read selects it. */
+  requestedBy?: string | null;
   /**
    * How the DRAFTING message arrived — text | voice | media | interactive.
    * Spec E.7's evidenceBasis is derived from this at confirmation time: a
@@ -383,6 +387,7 @@ export async function recordDraft(
       identityLink: (draft.identityLink ?? null) as never,
       confirmationContext: (draft.confirmationContext ?? null) as never,
       previewed: draft.previewed ?? false,
+      requestedBy: draft.requestedBy ?? null,
       /* G-23: a preview is confirmable for CONFIRMATION_TTL_SECONDS, the same
        * window as a HIGH_RISK confirmation. Set once, at the only INSERT: a
        * redelivered message hits the conflict below and keeps the window its
@@ -562,6 +567,7 @@ async function newestPendingDraft(
       confirmationContext: commandDrafts.confirmationContext,
       previewed: commandDrafts.previewed,
       expiresAt: commandDrafts.expiresAt,
+      requestedBy: commandDrafts.requestedBy,
       messageKind: conversationMessages.kind,
     })
     .from(commandDrafts)
@@ -869,6 +875,10 @@ async function newestDraft(
         eq(commandDrafts.businessId, businessId),
         readsFilter(options.reads),
         seenBy(options.asOf),
+        /* An undone rebuild (0156) never reached anybody: it is never the
+         * latest thing to answer, so a "yes" or a "no" after it finds the
+         * question it was rebuilt from again. */
+        isNull(commandDrafts.undoneRebuildOf),
       ),
     )
     .orderBy(desc(commandDrafts.insertionSeq))

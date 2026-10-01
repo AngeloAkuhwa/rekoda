@@ -634,6 +634,13 @@ describe('STOP and START are exact, on every path (G-24)', () => {
     'stop \u2013',
     'stop =)',
     'stop\n',
+    /* Empty lines around a STOP are not content: a missed STOP keeps
+     * messaging somebody, and the model cannot opt anyone out (G-80). */
+    '\nSTOP',
+    '\r\nstop',
+    'STOP\n\n',
+    '\n\n stop \n\n',
+    '\u2028unsubscribe',
     /* Punctuation-like pictographs read as punctuation: fine after a STOP. */
     'stop \u203C',
     'stop \u2049\uFE0F',
@@ -755,16 +762,17 @@ describe('STOP and START are exact, on every path (G-24)', () => {
     /* More than one line is a message with a STOP in it. */
     'stop\nstop',
     /* A LEADING line break is a first line that is empty (Codex review):
-     * refused before any trimming can hide it, for START and STOP alike. */
+     * refused for START before any trimming can hide it. */
     '\nSTART',
     '\vSTART!',
     '\r\nstart',
     ' \nstart',
     '\u2028start',
-    '\nSTOP',
-    /* Only ONE trailing line break is forgiven. */
+    /* Only ONE trailing line break is forgiven a START. */
     'start\n\n',
-    'stop\n\n',
+    /* A STOP with real content on another line is still a message. */
+    'stop\nI will pay',
+    '\nstop\nI will pay',
     'stop\n\n!',
     /* Punctuation-like pictographs are punctuation for START too. */
     'start \u2049\uFE0F',
@@ -983,6 +991,11 @@ describe('a questioned affirmation confirms nothing', () => {
     'na so?o',
     'yes?\u200B',
     'yes¿',
+    'yes‽',
+    'na so ⸮',
+    'yes :(',
+    'na so :-(',
+    'yes -_-',
   ])('%j is unsure, never affirm', (message) => {
     expect(intentOf(message)).toEqual({ kind: 'unsure' });
     expect(staysLocal(routeMessage(message))).toBe(true);

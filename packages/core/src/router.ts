@@ -440,6 +440,9 @@ const LINE_BREAKS = /[\n\r\v\f\u0085\u2028\u2029]/u;
 const HORIZONTAL_SPACE_AT_START = /^[^\S\n\r\v\f\u0085\u2028\u2029]+/u;
 const HORIZONTAL_SPACE_AT_END = /[^\S\n\r\v\f\u0085\u2028\u2029]+$/u;
 
+/** Any one line break, CRLF counted as one: what splits a message into lines. */
+const ANY_LINE_BREAK = /\r\n|[\n\r\v\f\u0085\u2028\u2029]/u;
+
 /** At most one line break may end a consent message: CRLF counts as one. */
 const ONE_TRAILING_LINE_BREAK = /(?:\r\n|[\n\r\v\f\u0085\u2028\u2029])$/u;
 
@@ -668,22 +671,41 @@ function consentKeyword(raw: string): 'stop' | 'start' | null {
    * on each side, well under this; anything longer is not consent, and is
    * refused before it is segmented. */
   if (BIDI_CONTROLS.test(raw)) return null;
-  /* The invisible format characters are not part of the message, and
-   * neither are surrounding SPACES nor ONE trailing line break (what a
-   * keyboard's send key can add): all go BEFORE the length gate, so
-   * trailing spaces never refuse a STOP. Any other line break is a second
-   * line, a LEADING one included (Codex review): "\nSTART" is a message
-   * whose first line is empty, not a START, and the line-break check runs
-   * on what is left BEFORE any trimming could hide it. A STOP after a blank
-   * line is refused by the same one-line rule, deliberately: the rule is
-   * one rule for both words, and such a STOP still reaches the model,
-   * which can answer it, rather than silently changing anybody's consent. */
-  const text = raw
-    .replace(INVISIBLE, '')
+  const visible = raw.replace(INVISIBLE, '');
+  /* The STRICT reading, the only one a START may pass: the invisible format
+   * characters, surrounding SPACES and ONE trailing line break (what a
+   * keyboard's send key can add) are not part of the message, and all go
+   * BEFORE the length gate. Any other line break is a second line, a
+   * LEADING one included (Codex review): "\nSTART" is a message whose
+   * first line is empty, and a false START re-subscribes somebody. */
+  const strict = visible
     .replace(HORIZONTAL_SPACE_AT_END, '')
     .replace(ONE_TRAILING_LINE_BREAK, '')
     .replace(HORIZONTAL_SPACE_AT_END, '')
     .replace(HORIZONTAL_SPACE_AT_START, '');
+  if (strict && !LINE_BREAKS.test(strict)) {
+    const heard = consentOnOneLine(strict);
+    if (heard) return heard;
+  }
+  /* The GENEROUS reading, for a STOP only: empty lines around it are not
+   * content ("\nSTOP", "\r\nstop", "STOP\n\n"), and a missed STOP keeps
+   * messaging a person who asked us not to, which the model cannot repair
+   * (it cannot opt anyone out, G-80). Exactly ONE line may carry anything;
+   * a STOP with real content on another line ("stop\nI will pay") is a
+   * message with the word in it, and is refused as before. */
+  const lines = visible
+    .split(ANY_LINE_BREAK)
+    .map((line) => line.replace(HORIZONTAL_SPACE_AT_START, '').replace(HORIZONTAL_SPACE_AT_END, ''))
+    .filter((line) => line !== '');
+  if (lines.length === 1 && consentOnOneLine(lines[0]!) === 'stop') return 'stop';
+  return null;
+}
+
+/**
+ * The consent keyword of ONE line (no line break left in it), or null:
+ * the grapheme reading described on `consentKeyword`.
+ */
+function consentOnOneLine(text: string): 'stop' | 'start' | null {
   if (text.length > MAX_CONSENT_CODE_UNITS) return null;
   if (!text || LINE_BREAKS.test(text)) return null;
 
@@ -1041,22 +1063,23 @@ export function periodAnswer(raw: string): AnsweredPeriod | null {
  * A question mark ANYWHERE in a short affirmation makes it a question (G-68
  * review): "yes?!", "na so ?!", "e correct?.", "yes ?)", "yes? 👍", "yes?? ok",
  * "na so?o", "yes¿". Plain, full-width and small "?", the inverted "¿", the
- * Arabic "؟", and the pictographs "❓", "❔", "⁉". Not "‼": a double
+ * Arabic "؟", the interrobang "‽", the reversed "⸮", and the pictographs
+ * "❓", "❔", "⁉". Not "‼": a double
  * exclamation is emphasis, so "yes‼️" still agrees. Affirmation phrases are
  * a few words long, so a question mark anywhere in one is never decoration.
  */
-const QUESTION_MARK = /[?\uFF1F\uFE56\u00BF\u061F\u2753\u2754\u2049]/u;
+const QUESTION_MARK = /[?\uFF1F\uFE56\u00BF\u061F\u203D\u2E2E\u2753\u2754\u2049]/u;
 
 /**
  * Faces that mean doubt, wherever they sit in the message: thinking face,
  * flushed face, face with monocle, confused face, face with raised eyebrow,
  * face with rolling eyes, grimacing face, face with diagonal mouth, and the
- * typed ":/" and ":-/". Kept small on purpose: each is read as "I am not
+ * typed ":/", ":-/", ":(", ":-(" and "-_-". Kept small on purpose: each is read as "I am not
  * sure", and none is ever sent to mean yes. A smile or a thumbs up still
  * affirms.
  */
 const DOUBT_FACES =
-  /[\u{1F914}\u{1F633}\u{1F9D0}\u{1F615}\u{1F928}\u{1F644}\u{1F62C}\u{1FAE4}]|:-?\//u;
+  /[\u{1F914}\u{1F633}\u{1F9D0}\u{1F615}\u{1F928}\u{1F644}\u{1F62C}\u{1FAE4}]|:-?[\/(]|-_-/u;
 
 /**
  * Does this short message read as a question or as doubt? Invisible format
@@ -1099,8 +1122,10 @@ export function answerIsUncertain(raw: string): boolean {
  * (G-68, Codex review)? "na so ❌", "e correct 👎", "oya 🚫", "yes ⛔" are
  * not agreement, and a growing list of negative emoji would always miss
  * one, so the rule is the other way round: an affirmation may carry ONLY
- * emoji that mean yes (the same closed list a START may carry: 👍 👌 💯 ✅
- * ✔ ☑ 🙏 🙂 😊 ☺ 😀 😃 😄 🎉 ❤, any skin tone or style) and the emphatic "‼".
+ * emoji that mean yes (`AFFIRMING_EMOJI`: 👍 👌 💯 ✅ ✔ ☑ 🙏 🙂 😊 ☺ 😀
+ * 😃 😄 🎉 ❤, any skin tone or style) and the emphatic "‼". Narrower than
+ * what a START may carry: a START also accepts a country flag, an
+ * affirmation does not.
  * Anything else, a laughing face, a flag or a keycap included, makes it
  * `unsure`: the merchant is simply asked for a plain yes, which costs one
  * message and never books a preview they were mocking or refusing.

@@ -933,6 +933,35 @@ describe('an undone funding rebuild (migration 0156)', () => {
   });
 });
 
+describe('who drafted a preview (migration 0157)', () => {
+  it('records the requesting member, and reads it back on the waiting preview', async () => {
+    const { businessId, ownerId } = await seedBusiness();
+    const delegateId = await addMember(businessId);
+    const draftFor = async (requestedBy: string | null) => {
+      const asked = await message(businessId);
+      return withBusiness(app, businessId, (tx) =>
+        conversationsRepo.recordDraft(tx, {
+          businessId,
+          conversationMessageId: asked,
+          intent: 'RecordPurchase',
+          command: { intent: 'RecordPurchase', amount: 180_000, paymentMethod: 'cash' },
+          model: null,
+          previewed: true,
+          requestedBy,
+        }),
+      );
+    };
+    await draftFor(ownerId);
+    const waitingOf = () =>
+      withBusiness(app, businessId, (tx) => conversationsRepo.pendingDraftToAnswer(tx, businessId));
+    expect((await waitingOf())?.requestedBy).toBe(ownerId);
+    await draftFor(delegateId);
+    expect((await waitingOf())?.requestedBy).toBe(delegateId);
+    await draftFor(null);
+    expect((await waitingOf())?.requestedBy).toBeNull();
+  });
+});
+
 describe('the two-ask erasure pair fails closed (G-68 review)', () => {
   it('a parked ask whose message cannot be found counts as broken, never intact', async () => {
     const { businessId } = await seedBusiness();

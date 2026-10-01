@@ -2526,7 +2526,7 @@ async function answerFundingSource(
   const retired = await conversationsRepo.retiredPurchaseDraft(tx, businessId, draftId);
   /* Closed since it was asked (a "no", from this member or another one), or
    * blocked by something newer: nothing to rebuild, and that is said. */
-  if (!retired) return closedQuestionReply(tx, businessId, message.receivedAt);
+  if (!retired) return closedQuestionReply(tx, businessId, message.receivedAt, message.from);
   const refused = await fundingGateRefusal(tx, businessId, message.from);
   if (refused) return refused;
 
@@ -2541,7 +2541,7 @@ async function answerFundingSource(
    * was closed. Two previews of one purchase would let two yeses book it
    * twice, which G-61 exists to prevent. */
   if (!(await conversationsRepo.closeRetiredDraft(tx, businessId, retired.id))) {
-    return closedQuestionReply(tx, businessId, message.receivedAt);
+    return closedQuestionReply(tx, businessId, message.receivedAt, message.from);
   }
   /* Nobody else's short answer can reach it now. */
   const holders = await continuationsRepo.retireContinuationsForDraft(tx, businessId, retired.id);
@@ -2558,6 +2558,7 @@ async function answerFundingSource(
     command: rebuilt,
     model: null,
     previewed: true,
+    requestedBy: await actorOf(tx, businessId, message.from),
   });
   return replies.preview(gate.preview);
 }
@@ -2697,18 +2698,27 @@ async function closedQuestionReply(
   tx: TenantDb,
   businessId: string,
   receivedAt: Date,
+  from: string,
 ): Promise<Reply> {
   /* "Waiting" only for a preview the next yes would actually reach: live
    * (its window not closed at this message), not behind a retired
    * question, and with no retired question as the latest thing to answer
-   * (a yes would re-ask that instead). Read-only. */
+   * (a yes would re-ask that instead). AND only a preview THIS member's own
+   * message drafted (0157, final-head review): another member's preview
+   * names an account this member did not choose, and pointing them at it
+   * invites a yes that books it. Their own preview is not restated: they
+   * were shown it, with its account, and the reply says to check it and
+   * offers "no". Read-only. */
   const latest = await conversationsRepo.latestDraftToAnswer(tx, businessId, { asOf: receivedAt });
   if (latest?.state === 'abandoned') return replies.fundingQuestionClosed();
   const waiting = await conversationsRepo.pendingDraftToAnswer(tx, businessId, {
     asOf: receivedAt,
   });
+  const member = await actorOf(tx, businessId, from);
   const reachable =
     waiting !== null &&
+    member !== null &&
+    waiting.requestedBy === member &&
     waiting.previewed === true &&
     !NOT_A_FINANCIAL_PREVIEW.has(waiting.intent) &&
     waiting.expiresAt !== undefined &&
@@ -2773,7 +2783,7 @@ async function continueConversation(
         asked.state !== 'abandoned' &&
         insideFundingWindow(asked.createdAt, message.receivedAt)
       ) {
-        return closedQuestionReply(tx, businessId, message.receivedAt);
+        return closedQuestionReply(tx, businessId, message.receivedAt, message.from);
       }
     }
   }
@@ -2819,8 +2829,8 @@ async function continueConversation(
             businessId,
             { ...retired, state: 'abandoned' },
             message,
-          )) ?? (await closedQuestionReply(tx, businessId, message.receivedAt)))
-        : closedQuestionReply(tx, businessId, message.receivedAt);
+          )) ?? (await closedQuestionReply(tx, businessId, message.receivedAt, message.from)))
+        : closedQuestionReply(tx, businessId, message.receivedAt, message.from);
     }
     /* The read-only gates run BEFORE the answer is claimed (Codex review):
      * a refusal leaves the question open, so the same "cash" works the
@@ -3351,6 +3361,7 @@ async function interpretedReply(
     identityLink: answered.linkAsked ? link : null,
     previewed: answered.previewed === true,
     confirmationContext: answered.confirmationContext ?? null,
+    requestedBy: actorId ?? null,
   });
 
   /* Build 6: a read Rekoda just answered, or the one question it asked

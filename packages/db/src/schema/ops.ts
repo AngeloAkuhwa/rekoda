@@ -476,6 +476,12 @@ export const commandDrafts = pgTable(
      * that question. Null on every other draft.
      */
     undoneRebuildOf: uuid('undone_rebuild_of'),
+    /**
+     * The member whose message drafted this row (migration 0157, G-68), when
+     * the sender is a member. "A preview is already waiting" is said only of
+     * a member's OWN preview. Null on older drafts.
+     */
+    requestedBy: uuid('requested_by').references(() => users.id),
   },
   (t) => [
     // One draft per message — a job that runs twice must not give the merchant

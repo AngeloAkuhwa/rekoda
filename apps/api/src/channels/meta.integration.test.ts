@@ -11111,9 +11111,11 @@ describe('G-68 final review 2: one-shot rebuild, strict erasure pair, answer win
       /* The delegate's short answer was retired by the owner's rebuild. */
       expect(await continuationStates(business.id)).toEqual(['consumed', 'superseded']);
       await reply('wamid.F2-d-cash', 'cash', DELEGATE);
-      /* The owner's rebuilt preview is waiting: pointed at it, never told to
-       * send the purchase again. */
-      expect(stubSender.lastText).toBe(replies.previewAlreadyWaiting().text);
+      /* The OWNER's rebuilt preview (from Bank) is waiting, but the delegate
+       * never saw it and asked for cash: never pointed at it as theirs to
+       * confirm (final-head review). Told the question is closed. */
+      expect(stubSender.lastText).toBe(replies.fundingQuestionClosed().text);
+      expect(stubSender.lastText).not.toBe(replies.previewAlreadyWaiting().text);
 
       await reply('wamid.F2-yes-1', 'yes', DELEGATE);
       await reply('wamid.F2-yes-2', 'yes');
@@ -11539,8 +11541,11 @@ describe('G-68 Codex review: erasure events, emoji, failed rebuild send, gates, 
     await reply('wamid.CX-f-cash', 'cash');
     /* Nothing the merchant saw: the rebuild is undone, the question restored. */
     expect(await purchaseStates(business.id)).toEqual(['abandoned', 'superseded']);
-    /* A yes now confirms nothing: the preview nobody saw is not confirmable. */
+    /* A yes now confirms nothing: the preview nobody saw is not confirmable.
+     * It finds the QUESTION again and re-asks it (the undone rebuild is never
+     * the latest thing to answer). */
     await reply('wamid.CX-f-yes-early', 'yes');
+    expect(stubSender.lastText).toContain(POS_QUESTION);
     expect(await count(business.id, 'expenses')).toBe(0);
     expect(await purchaseStates(business.id)).toEqual(['abandoned', 'superseded']);
 
@@ -11549,6 +11554,21 @@ describe('G-68 Codex review: erasure events, emoji, failed rebuild send, gates, 
     await reply('wamid.CX-f-yes', 'yes');
     await reply('wamid.CX-f-yes-2', 'yes');
     expect(await count(business.id, 'expenses')).toBe(1);
+  });
+
+  it('after an undone rebuild, "no" finds the question again and closes it', async () => {
+    const business = await seedMerchant();
+    await say('wamid.CX-fn-pos', POS_PURCHASE, 'I bought 10 cartons for 180k, paid by POS');
+    stubSender.failWith();
+    await reply('wamid.CX-fn-cash', 'cash');
+    expect(await purchaseStates(business.id)).toEqual(['abandoned', 'superseded']);
+    await reply('wamid.CX-fn-no', 'no');
+    expect(stubSender.lastText).toContain('Cancelled');
+    expect(await purchaseStates(business.id)).toEqual(['superseded', 'superseded']);
+    /* Closed for good: a later "cash" rebuilds nothing. */
+    await reply('wamid.CX-fn-cash-2', 'cash');
+    expect(stubSender.lastText).not.toContain('Paid in full by cash');
+    expect(await count(business.id, 'expenses')).toBe(0);
   });
 
   it('P2: a gate refusal does not use up the answer; after access returns, "cash" rebuilds', async () => {
