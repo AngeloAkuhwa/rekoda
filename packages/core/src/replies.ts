@@ -427,6 +427,26 @@ export function alreadyConfirmed(): Reply {
   return reply('Already saving that one 👍');
 }
 
+/**
+ * A "yes" to a preview whose confirmation window closed (G-23).
+ *
+ * Refused on purpose, for safety: what the merchant read a while ago is not
+ * what they are agreeing to now. Never "nothing waiting", because something
+ * was, and they need to know why they must send it again. No "failed", no
+ * "error": nothing went wrong.
+ */
+export function draftExpired(): Reply {
+  return reply(
+    'That request has expired, so I did not save anything. Send it again and ' +
+      'I will show you a fresh preview.',
+  );
+}
+
+/** A "no" to a preview that had already expired: nothing to cancel (G-23). */
+export function expiredNothingToCancel(): Reply {
+  return reply('That request had already expired, so nothing was saved.');
+}
+
 /** A "yes" with nothing outstanding to say yes to. */
 export function nothingToConfirm(): Reply {
   return reply(

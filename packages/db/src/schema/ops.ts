@@ -421,7 +421,11 @@ export const commandDrafts = pgTable(
      * every draft.
      */
     confirmationContext: jsonb('confirmation_context'),
-    /** pending | superseded | confirmed | abandoned */
+    /**
+     * pending | superseded | confirmed | abandoned | expired (migration 0153).
+     * `abandoned` is a retired purchase question (G-61), re-asked by a yes;
+     * `expired` is a preview whose confirmation window closed (G-23).
+     */
     state: text('state').notNull().default('pending'),
     /**
      * The ordering AUTHORITY for drafts (migration 0149). `pendingDraft`
@@ -436,6 +440,16 @@ export const commandDrafts = pgTable(
      * before it existed: `now()` here would be the transaction's start, which
      * is EARLIER than the `created_at` beside it. */
     updatedAt: insertedAt('updated_at'),
+    /**
+     * When the confirmation window closes (migration 0153, G-23): a draft is
+     * confirmable only while pending AND before this instant, and the claim
+     * itself carries that predicate. Set from CONFIRMATION_TTL_SECONDS by
+     * `recordDraft`; the column default is the same window, pinned to the
+     * constant by a test.
+     */
+    expiresAt: timestamp('expires_at', { withTimezone: true })
+      .notNull()
+      .default(sql`clock_timestamp() + interval '300 seconds'`),
   },
   (t) => [
     // One draft per message — a job that runs twice must not give the merchant

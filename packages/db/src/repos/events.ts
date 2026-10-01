@@ -131,13 +131,21 @@ export async function eventForBusiness(
   q: Queryable,
   id: string,
   businessId: string,
-): Promise<{ id: string; eventType: string; externalId: string; payload: unknown } | null> {
+): Promise<{
+  id: string;
+  eventType: string;
+  externalId: string;
+  payload: unknown;
+  /** When the webhook stored it: the moment the message reached Rekoda. */
+  receivedAt: Date;
+} | null> {
   const rows = await q
     .select({
       id: externalEvents.id,
       eventType: externalEvents.eventType,
       externalId: externalEvents.externalId,
       payload: externalEvents.payload,
+      receivedAt: externalEvents.createdAt,
     })
     .from(externalEvents)
     .where(and(eq(externalEvents.id, id), eq(externalEvents.businessId, businessId)))
