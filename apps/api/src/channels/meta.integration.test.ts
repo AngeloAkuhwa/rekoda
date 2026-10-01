@@ -9094,7 +9094,10 @@ describe('a short reply continues what Rekoda just asked (Build 6)', () => {
     expect(await footprint(business.id)).toMatchObject({ invoices: 0, postings: 0 });
   });
 
-  it('a live preview still confirms after a question and its answer in between', async () => {
+  const BEHIND = replies.previewBehindQuestion().text;
+  const THIS_MONTH = { ...HOW_MUCH_DID_I_SELL, period: 'month' };
+
+  it('a live preview behind a question and its answer takes two deliberate yeses', async () => {
     const business = await seedMerchant();
     await say('wamid.B6-live-sale', A_SALE, 'sold Ada 3 wigs for 300k');
     await say('wamid.B6-live-ask', HOW_MUCH_DID_I_SELL, 'How much did I sell?');
@@ -9102,9 +9105,73 @@ describe('a short reply continues what Rekoda just asked (Build 6)', () => {
     await reply('wamid.B6-live-answer', 'Last month');
     expect(modelCalls()).toBe(0);
 
-    await reply('wamid.B6-live-yes', 'yes');
+    /* The first yes is not agreement to the older preview. */
+    await reply('wamid.B6-live-yes1', 'yes');
+    expect(stubSender.lastText).toBe(BEHIND);
+    expect(await footprint(business.id)).toMatchObject({ invoices: 0 });
+
+    /* The second, deliberate yes confirms it through the ordinary claim. */
+    await reply('wamid.B6-live-yes2', 'yes');
     expect(await footprint(business.id)).toMatchObject({ invoices: 1 });
     expect((await draftStates(business.id))[0]).toBe('RecordSale:confirmed');
+  });
+
+  it('"correct" after reading a figure never saves the older preview', async () => {
+    const business = await seedMerchant();
+    await say('wamid.B6-ack-sale', A_SALE, 'sold Ada 3 wigs for 300k');
+    await say('wamid.B6-ack-ask', THIS_MONTH, 'How much did I sell this month?');
+    expect(stubSender.lastText).toContain('sales');
+
+    await reply('wamid.B6-ack-correct', 'correct');
+    expect(stubSender.lastText).toBe(BEHIND);
+    expect(await footprint(business.id)).toMatchObject({ invoices: 0, postings: 0 });
+    /* The preview is untouched and still waiting; the question is retired. */
+    expect(await draftStates(business.id)).toEqual(['RecordSale:pending', 'Query:superseded']);
+
+    await reply('wamid.B6-ack-yes', 'yes');
+    expect(await footprint(business.id)).toMatchObject({ invoices: 1 });
+    /* Exactly one: a further yes finds nothing. */
+    await reply('wamid.B6-ack-yes-again', 'yes');
+    expect(await footprint(business.id)).toMatchObject({ invoices: 1 });
+  });
+
+  it('a preview that expires after the pointer is reported expired, never saved', async () => {
+    const business = await seedMerchant();
+    await say('wamid.B6-exp-sale', A_SALE, 'sold Ada 3 wigs for 300k');
+    await say('wamid.B6-exp-ask', THIS_MONTH, 'How much did I sell this month?');
+    await reply('wamid.B6-exp-yes1', 'yes');
+    expect(stubSender.lastText).toBe(BEHIND);
+
+    await withBusiness(db, business.id, (tx) =>
+      tx.execute(sql`
+        UPDATE command_drafts SET expires_at = clock_timestamp() - interval '1 second'
+         WHERE business_id = ${business.id}::uuid AND intent = 'RecordSale'`),
+    );
+    await reply('wamid.B6-exp-yes2', 'yes');
+    expect(stubSender.lastText).toBe(replies.draftExpired().text);
+    expect(await footprint(business.id)).toMatchObject({ invoices: 0, postings: 0 });
+  });
+
+  it('a yes after a retired G-61 question and a question still re-asks it, executing nothing', async () => {
+    const business = await seedMerchant();
+    await say('wamid.B6-g61q-pos', POS_PURCHASE, 'I bought 10 cartons for 100k, paid by POS');
+    await say('wamid.B6-g61q-ask', THIS_MONTH, 'How much did I sell this month?');
+    await reply('wamid.B6-g61q-yes', 'yes');
+    expect(stubSender.lastText).toContain(
+      'did it come from your bank account or from physical cash?',
+    );
+    expect(await footprint(business.id)).toMatchObject({ expenses: 0, postings: 0 });
+  });
+
+  it('a named period whose words disagree with it is asked about, never guessed', async () => {
+    const business = await seedMerchant();
+    await seedTwoMonths(business.id);
+    await say(
+      'wamid.B6-disagree',
+      { ...HOW_MUCH_DID_I_SELL, period: 'month', periodText: 'last month' },
+      'How much did I sell last month?',
+    );
+    expect(stubSender.lastText).toBe(WHICH_PERIOD);
   });
 
   it('a window named but not countable here says what can be counted, and stays open', async () => {

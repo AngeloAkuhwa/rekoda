@@ -1036,8 +1036,11 @@ async function deterministicReply(
       /* G-23: a first ask whose window closed is not waiting any more. */
       await conversationsRepo.expireStaleDrafts(tx, businessId, { now: ctx.receivedAt });
       /* EVERY pending draft counts here, a question to the books included
-       * (`pendingDraft`, never `pendingDraftToAnswer`): a question asked
-       * between the two asks breaks the pair, and the data is kept. */
+       * (`pendingDraft`, never `pendingDraftToAnswer`): a model-answered
+       * question between the two asks records a draft, breaks the pair, and
+       * the data is kept. A message that records no draft does not break it,
+       * exactly as before Build 6: a deterministic command, or a resumed read
+       * ("last month") answered from continuation state. */
       const pending = await conversationsRepo.pendingDraft(tx, businessId, {
         asOf: ctx.receivedAt,
       });
@@ -1552,6 +1555,20 @@ async function confirmPendingDraft(
    * including a double-tapped yes after the replacement was saved. */
   if (await conversationsRepo.isBehindRetiredQuestion(tx, businessId, draft.id)) {
     return replies.nothingToConfirm();
+  }
+  /* Build 6: a question to the books asked SINCE this preview means the
+   * merchant was last looking at an answer, and "correct" may be about the
+   * figure. Never claimed from this yes: the question's draft is retired so
+   * it no longer stands in the way, the merchant is pointed back at the
+   * preview, and the next yes confirms it through the ordinary claim, if
+   * its window is still open. Nothing is metered before this point. */
+  if (
+    (await conversationsRepo.retireReadsAfter(tx, businessId, draft.id, { asOf: receivedAt })) > 0
+  ) {
+    if (retrying) {
+      await refundRecordedReservations(tx, businessId, eventId, usagePeriod(receivedAt));
+    }
+    return replies.previewBehindQuestion();
   }
 
   const command = draft.command as { intent?: string } & Record<string, unknown>;
@@ -2198,11 +2215,20 @@ async function answerQuery(
       /* The window the merchant named: one of the model's three, or their
        * own words (`custom`) when they are exactly a period core can draw.
        * Anything else is a question, never a guess. */
-      const period =
+      /* A named window whose words disagree with it ("month" but "last
+       * month") is not trusted either way: asked, never guessed. */
+      const named =
         command.period === 'today' || command.period === 'week' || command.period === 'month'
           ? command.period
+          : null;
+      const fromWords = command.periodText ? periodAnswer(command.periodText) : null;
+      const period =
+        named !== null
+          ? fromWords !== null && fromWords !== named
+            ? null
+            : named
           : command.period === 'custom'
-            ? periodAnswer(command.periodText ?? '')
+            ? fromWords
             : null;
       if (!period) {
         const subject = command.topic === 'sales_summary' ? 'sales' : 'spending';
@@ -2210,9 +2236,9 @@ async function answerQuery(
          * "in March") gets its own honest sentence, never the bare question
          * that reads as if they said nothing. Either way the question stays
          * open, so "last month" next resumes it. */
-        const named = command.period === 'custom' && (command.periodText ?? '').trim() !== '';
+        const uncountable = command.period === 'custom' && (command.periodText ?? '').trim() !== '';
         return {
-          reply: named ? replies.periodNotCountable(subject) : replies.whichPeriod(subject),
+          reply: uncountable ? replies.periodNotCountable(subject) : replies.whichPeriod(subject),
           continuation: { kind: 'clarification', expects: 'period', topic: command.topic },
         };
       }

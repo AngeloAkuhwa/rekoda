@@ -175,6 +175,7 @@ const ALL: Record<string, readonly replies.Reply[]> = {
   voiceTooLong: [replies.voiceTooLong(120), replies.voiceTooLong(90), replies.voiceTooLong(60)],
   voiceUnreadable: [replies.voiceUnreadable()],
   whichPeriod: [replies.whichPeriod('sales'), replies.whichPeriod('spending')],
+  previewBehindQuestion: [replies.previewBehindQuestion()],
   periodNotCountable: [replies.periodNotCountable('sales'), replies.periodNotCountable('spending')],
   salesAnswer: [
     replies.salesAnswer({
@@ -298,6 +299,7 @@ describe('every reply', () => {
     replies.previewAwaitingYes(),
     replies.expiredNothingToCancel(),
     replies.whichPeriod('sales'),
+    replies.previewBehindQuestion(),
     replies.periodNotCountable('spending'),
     replies.nothingToResend(),
     replies.dashboardUnavailable(),

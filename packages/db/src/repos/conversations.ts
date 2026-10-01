@@ -504,9 +504,14 @@ const seenBy = (asOf: Date | undefined) =>
  *    confirmed; and after an expired preview it hid the expiry behind a
  *    draft nobody could confirm.
  *  - `count`: everything else, exactly as before Build 6. In particular the
- *    two-ask erasure: ANY message between the two asks, a question
- *    included, breaks the pair and keeps the data. Erasure is irreversible,
- *    so it must never be narrowed by a rule written for a "yes".
+ *    two-ask erasure: any message that records a draft between the two
+ *    asks, a model-answered question included, breaks the pair and keeps
+ *    the data. Erasure is irreversible, so it must never be narrowed by a
+ *    rule written for a "yes".
+ *
+ * Skipping a read never lets a "yes" reach PAST it: a "yes" whose preview
+ * is older than a read the merchant asked since is answered by
+ * `retireReadsAfter` and a pointer back at the preview, never by a claim.
  */
 export type ReadDrafts = 'skip' | 'count';
 
@@ -729,7 +734,45 @@ export async function supersedeDraftsBefore(
 }
 
 /**
- * The newest draft in ANY state, by the database ordinal (G-61).
+ * Retire the read-only Query drafts asked AFTER a preview (Build 6).
+ *
+ * A "yes" whose newest confirmable draft is a preview older than a question
+ * the merchant asked since is not agreement to that preview: they were
+ * last looking at an answer, and "correct" may well be about the figure.
+ * Nothing is claimed; these Query drafts, which can never be confirmed, are
+ * superseded so they no longer stand between the merchant and the preview,
+ * and the merchant is pointed back at it. The NEXT "yes" confirms the
+ * preview through the ordinary claim, if it is still inside its window:
+ * two deliberate yeses, as before Build 6. Only pending Query drafts
+ * newer than `draftId` and seen by `asOf` move; the preview is untouched.
+ */
+export async function retireReadsAfter(
+  tx: TenantDb,
+  businessId: string,
+  draftId: string,
+  options: { asOf?: Date } = {},
+): Promise<number> {
+  const seen = options.asOf
+    ? sql`AND created_at <= ${options.asOf.toISOString()}::timestamptz`
+    : sql``;
+  const rows = await tx.execute<{ id: string }>(sql`
+    UPDATE command_drafts SET state = 'superseded', updated_at = clock_timestamp()
+     WHERE business_id = ${businessId}::uuid
+       AND state = 'pending'
+       AND intent = 'Query'
+       AND insertion_seq > (
+         SELECT d.insertion_seq FROM command_drafts d
+          WHERE d.id = ${draftId}::uuid AND d.business_id = ${businessId}::uuid)
+       ${seen}
+    RETURNING id`);
+  return [...rows].length;
+}
+
+/**
+ * The newest draft in ANY state, by the database ordinal (G-61), every
+ * intent counted: the pre-Build-6 rule. No production path reads it now
+ * (a "yes" and a "no" read `latestDraftToAnswer`); it stays as the
+ * counting counterpart the repository tests pin.
  *
  * A retired clarification is `abandoned`, so `pendingDraft` skips it; this
  * is how a "yes" sent straight after the question can tell that the thing

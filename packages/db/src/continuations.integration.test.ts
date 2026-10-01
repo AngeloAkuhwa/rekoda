@@ -530,6 +530,30 @@ describe('a question to the books, among the drafts', () => {
     });
   });
 
+  it('a question asked after a preview is retired, never the preview', async () => {
+    const { businessId } = await seedBusiness();
+    const { sale, question } = await draftsWithAQuestionLast(businessId);
+    const retire = () =>
+      withBusiness(app, businessId, (tx) =>
+        conversationsRepo.retireReadsAfter(tx, businessId, sale),
+      );
+    expect(await retire()).toBe(1);
+    expect(await retire()).toBe(0);
+    const states = await withBusiness(app, businessId, (tx) =>
+      tx.execute<{ id: string; state: string }>(sql`
+        SELECT id, state FROM command_drafts WHERE business_id = ${businessId}::uuid`),
+    );
+    const byId = new Map([...states].map((r) => [r.id, r.state]));
+    expect(byId.get(sale)).toBe('pending');
+    expect(byId.get(question)).toBe('superseded');
+    /* Nothing newer than the question: retiring after it moves nothing. */
+    expect(
+      await withBusiness(app, businessId, (tx) =>
+        conversationsRepo.retireReadsAfter(tx, businessId, question),
+      ),
+    ).toBe(0);
+  });
+
   it('the erasure ceremony, expiry and supersession still count it', async () => {
     const { businessId } = await seedBusiness();
     const { question } = await draftsWithAQuestionLast(businessId);

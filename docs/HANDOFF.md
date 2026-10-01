@@ -74,7 +74,12 @@ preview, never by executing the retired draft. Resumed reads are free (no
 reads; each re-opens the 600-second window. Retired rows persist (opaque
 tokens and enums only) until the business is deleted. A Query's draft is no
 longer what a "yes", "no" or correction is about (erasure, expiry and
-supersession still count it). For Build 7: a reply to "Which period?" that
+supersession still count it), but a "yes" never reaches past a read: after a
+question asked since the newest live preview, the first "yes" retires the
+question's draft and points back at the preview ("You still have a preview
+waiting from before your question..."), and the next "yes" confirms it. Two
+deliberate yeses, as on base; a single-yes confirmation past a read is an
+option the owner MAY choose later, not implemented. For Build 7: a reply to "Which period?" that
 names a window core cannot count ("last week", "yesterday", "in March")
 retires the question and goes to the model today; consider keeping the
 question open with `periodNotCountable` instead. After

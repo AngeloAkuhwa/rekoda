@@ -453,6 +453,20 @@ export function previewAwaitingYes(): Reply {
   return reply('I sent you a preview a moment ago. Check it, then reply *yes* to save it.');
 }
 
+/**
+ * A "yes" after the merchant asked a question since their preview (Build 6).
+ *
+ * They were last reading an answer, and "correct" may be about that figure,
+ * so the older preview is NOT saved by it. Pointed back at, so the next
+ * "yes" is a deliberate one.
+ */
+export function previewBehindQuestion(): Reply {
+  return reply(
+    'You still have a preview waiting from before your question. Check it, then reply ' +
+      '*yes* to save it.',
+  );
+}
+
 /** A "no" to a preview that had already expired: nothing to cancel (G-23). */
 export function expiredNothingToCancel(): Reply {
   return reply('That request had already expired, so nothing was saved.');
