@@ -31,12 +31,15 @@
 -- second number. SQL cannot import the constant, so the 300 below is pinned
 -- to it by draft-expiry.integration.test.ts, which fails if they diverge.
 --
--- `previewed` records whether the merchant was actually SHOWN a preview a
--- "yes" confirms, as opposed to a question (a CG1 arithmetic question, "which
--- invoice?") that is stored as a draft with the same financial intent. Only
--- an expired preview is answered "that request has expired"; a lapsed
--- question was never something to confirm. FALSE by default and for every
--- existing row: never claim a preview that may not have been shown.
+-- `previewed` records whether a preview a "yes" confirms was SENT to the
+-- merchant (accepted by WhatsApp), as opposed to a question (a CG1 arithmetic
+-- question, "which invoice?") that is stored as a draft with the same
+-- financial intent. Only an expired preview is answered "that request has
+-- expired"; a lapsed question was never something to confirm. FALSE by
+-- default and for every existing row: never claim a preview that may not have
+-- been sent. Acceptance is the strongest proof available today: a delivery
+-- that fails asynchronously after WhatsApp accepted it arrives as a status
+-- webhook nothing reads yet (G-20), and is not reflected here.
 --
 -- Nothing is deleted: an expired draft keeps its intent, its tokenised
 -- command and its confirmation_context, which are part of the conversation's

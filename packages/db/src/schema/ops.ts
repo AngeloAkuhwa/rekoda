@@ -461,10 +461,12 @@ export const commandDrafts = pgTable(
       .notNull()
       .default(sql`clock_timestamp() + interval '300 seconds'`),
     /**
-     * Whether the merchant was SHOWN a preview a "yes" confirms (migration
-     * 0153, G-23), rather than a question stored with the same financial
-     * intent. Decides whether an expired draft is answered "that request has
-     * expired". False unless the preview was actually sent.
+     * Whether a preview a "yes" confirms was SENT, accepted by WhatsApp
+     * (migration 0153, G-23), rather than a question stored with the same
+     * financial intent, or a preview whose send failed. Decides whether an
+     * expired draft is answered "that request has expired". An asynchronous
+     * delivery failure after acceptance is not reflected (status webhooks are
+     * unread, G-20).
      */
     previewed: boolean('previewed').notNull().default(false),
   },

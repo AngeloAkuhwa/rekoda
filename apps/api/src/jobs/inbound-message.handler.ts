@@ -386,8 +386,10 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
         // Only the model path can produce a reply that names a customer.
         ...(liveTokens ? { tokens: liveTokens } : {}),
       });
-      /* G-23: "previewed" means the merchant was SHOWN it. A preview whose
-       * send failed (swallowed so the draft survives) was not. */
+      /* G-23: "previewed" means WhatsApp accepted the preview for delivery.
+       * A preview whose send failed (swallowed so the draft survives) was
+       * not sent. A delivery that fails later, after acceptance, comes back
+       * as a status webhook nothing reads yet (G-20) and is not reflected. */
       if (!sent.delivered) {
         await conversationsRepo.markDraftUnseen(tx, businessId, message.id);
       }
