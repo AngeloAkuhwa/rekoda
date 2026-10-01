@@ -66,3 +66,34 @@ describe('this month', () => {
     expect(month.label).toBe('August');
   });
 });
+
+describe('last month', () => {
+  /* The whole previous calendar month (Build 6): the answer a merchant gives
+   * to "Which period?" most often that the three named periods could not. */
+  it('is the whole previous Lagos month', () => {
+    const last = resolvePeriod('last_month', new Date('2026-08-19T11:00:00Z'));
+    expect(lagosDate(last.from)).toBe('2026-07-01');
+    expect(lagosDate(last.to)).toBe('2026-07-31');
+    expect(last.label).toBe('July');
+  });
+
+  it('ends at the last instant before this month began', () => {
+    const last = resolvePeriod('last_month', new Date('2026-08-19T11:00:00Z'));
+    const thisMonth = resolvePeriod('month', new Date('2026-08-19T11:00:00Z'));
+    expect(thisMonth.from.getTime() - last.to.getTime()).toBe(1);
+  });
+
+  it('crosses the year in January, and names the year', () => {
+    const last = resolvePeriod('last_month', new Date('2026-01-10T11:00:00Z'));
+    expect(lagosDate(last.from)).toBe('2025-12-01');
+    expect(lagosDate(last.to)).toBe('2025-12-31');
+    expect(last.label).toBe('December 2025');
+  });
+
+  it('follows the Lagos month in the small hours of the first', () => {
+    // 23:30 UTC on 31 August is 00:30 on 1 September in Lagos.
+    const last = resolvePeriod('last_month', new Date('2026-08-31T23:30:00Z'));
+    expect(lagosDate(last.from)).toBe('2026-08-01');
+    expect(last.label).toBe('August');
+  });
+});

@@ -12,6 +12,7 @@
  * clarification, not a failure; a case it answers with a WRONG command is
  * the failure this whole layer exists to prevent.
  */
+import { periodAnswer } from '@rekoda/core';
 import type { Interpretation, Interpreter } from '../interpreter.service.js';
 import type { EvalCase, EvalCategory, EvalExpectation } from './dataset.js';
 
@@ -130,6 +131,17 @@ export function scoreCase(evalCase: EvalCase, interpretation: Interpretation): E
     if (field === 'customerToken') {
       const customer = command['customer'] as { token?: string } | null | undefined;
       if (customer?.token !== wanted) failed.push('customerToken');
+      continue;
+    }
+    if (field === 'periodText' && typeof wanted === 'string') {
+      /* Scored the way the runtime reads it, never more loosely: the words
+       * pass only if `periodAnswer` (what answerQuery calls) draws the same
+       * window from them as from the expected words. "Last month." passes;
+       * "last month's" does not, because at runtime it resolves to nothing
+       * and the merchant would be asked again. */
+      const said = command['periodText'];
+      const window = typeof said === 'string' ? periodAnswer(said) : null;
+      if (window === null || window !== periodAnswer(wanted)) failed.push('periodText');
       continue;
     }
     if (field === 'quantity' || field === 'unitPrice') {

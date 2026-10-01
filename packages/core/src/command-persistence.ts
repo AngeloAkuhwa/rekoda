@@ -41,6 +41,11 @@ const TRANSIENT_FIELDS: Readonly<Record<string, readonly string[]>> = {
    * this boundary guarantees the name itself cannot slip through even
    * if a future call site forgets the resolution step. */
   RecordPurchase: ['supplierMention'],
+  /* The merchant's own words for a window ("the month I sold to Ada"),
+   * copied by the model from text that may carry a name it has not
+   * tokenised yet (Build 6). The handler reads it once to draw the window;
+   * the stored question keeps the named `period` and never the words. */
+  Query: ['periodText'],
 };
 
 export function sanitizeCommandForPersistence(command: unknown): unknown {

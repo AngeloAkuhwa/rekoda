@@ -174,6 +174,9 @@ const ALL: Record<string, readonly replies.Reply[]> = {
   voiceUnavailable: [replies.voiceUnavailable()],
   voiceTooLong: [replies.voiceTooLong(120), replies.voiceTooLong(90), replies.voiceTooLong(60)],
   voiceUnreadable: [replies.voiceUnreadable()],
+  whichPeriod: [replies.whichPeriod('sales'), replies.whichPeriod('spending')],
+  previewBehindQuestion: [replies.previewBehindQuestion()],
+  periodNotCountable: [replies.periodNotCountable('sales'), replies.periodNotCountable('spending')],
   salesAnswer: [
     replies.salesAnswer({
       label: 'this month',
@@ -295,6 +298,9 @@ describe('every reply', () => {
     replies.draftExpired(),
     replies.previewAwaitingYes(),
     replies.expiredNothingToCancel(),
+    replies.whichPeriod('sales'),
+    replies.previewBehindQuestion(),
+    replies.periodNotCountable('spending'),
     replies.nothingToResend(),
     replies.dashboardUnavailable(),
     replies.paymentLinkUnavailable(),
@@ -748,5 +754,37 @@ describe('an expired preview (G-23)', () => {
     expect(text).toContain('already expired');
     expect(text).toContain('nothing was saved');
     expect(text).not.toMatch(/^Cancelled/);
+  });
+});
+
+describe('asking for, and naming, a window of trading (Build 6)', () => {
+  it('names what is being counted when it asks which period', () => {
+    expect(replies.whichPeriod('sales').text).toBe(
+      'Sales for which period? Reply *today*, *this week*, *this month* or *last month*.',
+    );
+    expect(replies.whichPeriod('spending').text).toMatch(/^Spending for which period\?/);
+  });
+
+  it('says which windows it can count when the one named is not one of them', () => {
+    const text = replies.periodNotCountable('sales').text;
+    expect(text).toBe(
+      'I can count sales for today, this week, this month or last month here. ' +
+        'Which one would you like?',
+    );
+    expect(text).not.toMatch(/[–—]|n't|'re|'ll/);
+  });
+
+  it.each([
+    ['today', 'any sales today.'],
+    ['the last 7 days', 'any sales in the last 7 days.'],
+    ['September', 'any sales in September.'],
+    ['December 2025', 'any sales in December 2025.'],
+  ])('reads an empty %s as a sentence', (label, phrase) => {
+    expect(replies.salesAnswer({ label, salesK: 0, invoices: 0, moneyInK: 0 }).text).toContain(
+      phrase,
+    );
+    expect(replies.expensesAnswer({ label, moneyOutK: 0, expenses: 0 }).text).toContain(
+      phrase.replace('sales', 'spending'),
+    );
   });
 });

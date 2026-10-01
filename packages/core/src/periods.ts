@@ -14,7 +14,12 @@
 const LAGOS_OFFSET_MS = 3_600_000;
 const DAY_MS = 86_400_000;
 
-export type PeriodName = 'today' | 'week' | 'month';
+/**
+ * `last_month` is the previous CALENDAR month, whole (Build 6): the answer to
+ * "Which period?" a merchant most often gives that the model's three named
+ * periods could not carry. Same Lagos boundaries as `month`.
+ */
+export type PeriodName = 'today' | 'week' | 'month' | 'last_month';
 
 export interface DateRange {
   /** Inclusive. */
@@ -53,6 +58,23 @@ export function resolvePeriod(name: PeriodName, now: Date): DateRange {
 
   const lagos = new Date(now.getTime() + LAGOS_OFFSET_MS);
   const firstOfMonth = Date.UTC(lagos.getUTCFullYear(), lagos.getUTCMonth(), 1) - LAGOS_OFFSET_MS;
+
+  if (name === 'last_month') {
+    /* Date.UTC rolls month -1 back into December of the year before. */
+    const previous = new Date(Date.UTC(lagos.getUTCFullYear(), lagos.getUTCMonth() - 1, 1));
+    const month = previous.toLocaleDateString('en-NG', { month: 'long', timeZone: 'UTC' });
+    return {
+      from: new Date(previous.getTime() - LAGOS_OFFSET_MS),
+      /* The last instant before this month began. */
+      to: new Date(firstOfMonth - 1),
+      /* The year only when it is not this one: "December 2025" in January. */
+      label:
+        previous.getUTCFullYear() === lagos.getUTCFullYear()
+          ? month
+          : `${month} ${previous.getUTCFullYear()}`,
+    };
+  }
+
   return {
     from: new Date(firstOfMonth),
     to: endOfToday,

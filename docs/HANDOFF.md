@@ -54,6 +54,47 @@ normally; a fresh sale answered "yes" after more than five minutes gets the
 expiry sentence and zero financial rows. G-68 and later builds are not
 started.
 
+**In review (1 Oct 2026, Build 6, conversational continuation state; CODE
+COMPLETE, staging acceptance pending):** branch
+`feat/conversation-continuation-state` off `main` at `f5fb1ce` (G-23, #258).
+"How much did I sell?" with no period is answered "Which period?", and a
+short "last month" resumes it from SQL with no model call; "what about this
+week" continues the read just answered. State is `conversation_continuations`
+(migration 0154): typed, scoped to the business AND the member who was asked,
+newest wins, one-shot clarifications claimed atomically, expiring after
+`CONTINUATION_TTL_SECONDS` (600, an implementation value for the owner to
+confirm, OD-14). It only ever resumes a read and never claims or revives a
+command draft (G-23, G-61 unchanged). Numbered-option state is representable; number
+routing, Pidgin answers and "send it as PDF" belong to later builds.
+Answering the G-61 funding-source question ("bank", "cash") is NOT
+representable yet: Build 7 must widen the `expects` CHECK in a new migration
+and answer it through a separate write path that shows a FRESH purchase
+preview, never by executing the retired draft. Resumed reads are free (no
+`AI_ACTIONS` unit) and not plan- or entitlement-gated, like the other free
+reads; each re-opens the 600-second window. Retired rows persist (opaque
+tokens and enums only) until the business is deleted. A Query's draft is no
+longer what a "yes", "no" or correction is about (erasure, expiry and
+supersession still count it), but a "yes" never reaches past a read: after a
+question asked since the newest live preview, each "yes" retires the newest
+such question's draft and points back at the preview ("There is still a
+preview waiting from before the last question..."), and the yes after the
+last question confirms it: exactly as many yeses as base took (one per
+question, then one). The pointer fires only for a delivered financial
+preview, and any other waiting draft gets base's answer.
+A resumed read records a read-only Query draft, the footprint base left, so
+it shields a preview and breaks an erasure pair like any question. A
+single-yes confirmation past a read is an option the owner MAY choose later,
+not implemented; whose reads interpose, and whose preview a member may
+confirm, is OD-15. For Build 7: a correct answer to a numbered-choice list
+currently retires the list as `superseded`, not `consumed`, because
+`resumedRead` returns null for a choice; Build 7 must consume it when it
+wires numbered choices. Also for Build 7: a reply to "Which period?" that
+names a window core cannot count ("last week", "yesterday", "in March")
+retires the question and goes to the model today; consider keeping the
+question open with `periodNotCountable` instead. After
+merge, on staging: ask "how much did I sell?", answer "last month", check the
+figure; a delegate's "last month" must not answer the owner's question.
+
 **G-77 (#254), for the record:** every public API sale is its own financial
 event (its `sourceId` is an opaque per-request id, never the application
 id), and the retry fingerprint is unchanged across releases.

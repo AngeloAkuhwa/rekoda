@@ -473,6 +473,73 @@ export function routeMessage(raw: string): Route {
 }
 
 /**
+ * The periods a short answer can name (Build 6), matched against the WHOLE
+ * message exactly as the phrase table above is.
+ *
+ * Not a date parser: a fixed vocabulary that names one of the windows
+ * `resolvePeriod` already draws, and nothing else. Deliberately absent are
+ * phrases with two defensible readings: "last week" (the previous calendar
+ * week, or the last seven days?) and "past month" (last month, or the last
+ * thirty days?). A message that is not exactly one of these is not an answer
+ * to "Which period?", and goes wherever it would have gone without the
+ * question. Broader language belongs to the routing build, not here.
+ */
+const PERIOD_ANSWERS: ReadonlyArray<readonly [readonly string[], AnsweredPeriod]> = [
+  [['today', 'today only', 'just today'], 'today'],
+  [
+    [
+      'this week',
+      'week',
+      'the week',
+      'last 7 days',
+      'the last 7 days',
+      'past 7 days',
+      'last seven days',
+      'the last seven days',
+    ],
+    'week',
+  ],
+  [['this month', 'month', 'the month', 'so far this month'], 'month'],
+  [['last month', 'previous month', 'the previous month'], 'last_month'],
+];
+
+/** A window a short answer may name; the `PeriodName`s `resolvePeriod` draws. */
+export type AnsweredPeriod = 'today' | 'week' | 'month' | 'last_month';
+
+/**
+ * Leading words that turn a period into an answer or a follow-up without
+ * changing which period it is: "for last month", "what about this week".
+ */
+const PERIOD_LEADS = ['what about', 'how about', 'and for', 'and', 'for', 'in'];
+
+/**
+ * Which period a message names, when the whole message is a period and
+ * nothing else; null otherwise (Build 6).
+ *
+ * Only ever consulted when Rekoda has asked "Which period?" or has just
+ * answered a question over a period: on its own a period means nothing, and
+ * the router above never classifies one. "I bought 10 cartons for 100k last
+ * month" is not a period, it is a purchase, and stays null here.
+ */
+export function periodAnswer(raw: string): AnsweredPeriod | null {
+  const normalised = normalise(raw);
+  if (!normalised) return null;
+  let text = stripFillers(normalised);
+  if (!text || text.length > MAX_COMMAND_CHARS) return null;
+  if (!survivedNormalisation(raw, text)) return null;
+  for (const lead of PERIOD_LEADS) {
+    if (text.startsWith(`${lead} `)) {
+      text = text.slice(lead.length + 1);
+      break;
+    }
+  }
+  for (const [phrases, period] of PERIOD_ANSWERS) {
+    if (phrases.includes(text)) return period;
+  }
+  return null;
+}
+
+/**
  * Whether a route means "nothing left this system".
  *
  * Useful to assert on in tests and at the call site, so the privacy claim in

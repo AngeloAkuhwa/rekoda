@@ -124,6 +124,15 @@ class OracleTransport implements ModelTransport {
           productMention: null,
           quantity: null,
         });
+      case 'Query':
+        return reply({
+          intent: 'Query',
+          topic: checks.topic ?? 'sales_summary',
+          customer: null,
+          period: checks.period ?? null,
+          periodText: checks.periodText ?? null,
+          format: 'chat',
+        });
       default:
         throw new Error(`oracle has no shape for ${evalCase.expect.intent}`);
     }

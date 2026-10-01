@@ -33,6 +33,8 @@ export const EVAL_CATEGORIES = [
   'correction',
   'adversarial_injection',
   'ambiguous_amount',
+  /** A question over a window: the window reported, never defaulted (Build 6). */
+  'query_period',
 ] as const;
 export type EvalCategory = (typeof EVAL_CATEGORIES)[number];
 
@@ -50,6 +52,11 @@ export type EvalExpectation =
         reportedPayment?: number;
         /** How a purchase was paid, only when the merchant said (G-61). */
         paymentMethod?: string;
+        /** A question's topic and the window the merchant NAMED (Build 6). */
+        topic?: string;
+        period?: string | null;
+        /** The merchant's own words for a custom window; matched loosely. */
+        periodText?: string | null;
       };
     }
   /** The honest question: Unclear, never a guessed command. */
@@ -80,6 +87,9 @@ const expense = (amount: number): EvalExpectation => ({
   checks: { amount },
 });
 const ask: EvalExpectation = { kind: 'clarification' };
+const query = (
+  checks: NonNullable<Extract<EvalExpectation, { kind: 'command' }>['checks']>,
+): EvalExpectation => ({ kind: 'command', intent: 'Query', checks });
 const purchase = (
   checks: NonNullable<Extract<EvalExpectation, { kind: 'command' }>['checks']>,
 ): EvalExpectation => ({ kind: 'command', intent: 'RecordPurchase', checks });
@@ -367,5 +377,30 @@ export const EVAL_CASES: readonly EvalCase[] = [
     source: 'typed',
     input: 'she paid half',
     expect: ask,
+  },
+
+  /* ── a question over a window: reported as named, never defaulted ──── */
+  {
+    id: 'query-1',
+    category: 'query_period',
+    source: 'typed',
+    /* No window named: null, so Rekoda asks "Sales for which period?". */
+    input: 'How much did I sell?',
+    expect: query({ topic: 'sales_summary', period: null, periodText: null }),
+  },
+  {
+    id: 'query-2',
+    category: 'query_period',
+    source: 'typed',
+    /* Not one of the three named windows: custom, in the merchant's words. */
+    input: 'How much did I sell last month?',
+    expect: query({ topic: 'sales_summary', period: 'custom', periodText: 'last month' }),
+  },
+  {
+    id: 'query-3',
+    category: 'query_period',
+    source: 'typed',
+    input: 'how much have I spent this week',
+    expect: query({ topic: 'expenses_summary', period: 'week' }),
   },
 ];

@@ -453,6 +453,21 @@ export function previewAwaitingYes(): Reply {
   return reply('I sent you a preview a moment ago. Check it, then reply *yes* to save it.');
 }
 
+/**
+ * A "yes" after a question was asked since the preview (Build 6), by this
+ * member or another, so the wording names neither.
+ *
+ * They were last reading an answer, and "correct" may be about that figure,
+ * so the older preview is NOT saved by it. Pointed back at, so the next
+ * "yes" is a deliberate one.
+ */
+export function previewBehindQuestion(): Reply {
+  return reply(
+    'There is still a preview waiting from before the last question. Check it, then ' +
+      'reply *yes* to save it.',
+  );
+}
+
 /** A "no" to a preview that had already expired: nothing to cancel (G-23). */
 export function expiredNothingToCancel(): Reply {
   return reply('That request had already expired, so nothing was saved.');
@@ -1022,6 +1037,52 @@ export function voiceUnreadable(): Reply {
 
 /* ── answering a question ────────────────────────────────────────────────── */
 
+/** What a window-of-trading question is about, as the merchant would say it. */
+export type PeriodSubject = 'sales' | 'spending';
+
+const SUBJECT_WORD: Readonly<Record<PeriodSubject, string>> = {
+  sales: 'Sales',
+  spending: 'Spending',
+};
+
+/**
+ * A question about a window of trading that named no window (Build 6).
+ *
+ * Asked rather than assumed: "how much did I sell?" has no single honest
+ * answer, and answering this month while the merchant meant last month is a
+ * wrong figure delivered with confidence. The question names what is being
+ * counted, so a merchant who asked two things knows which one this is. The
+ * listed answers are the exact ones the reply is understood by, and the
+ * period is asked by NAME, never as a numbered list, so a bare "2" is never
+ * read as a window.
+ */
+export function whichPeriod(subject: PeriodSubject): Reply {
+  return reply(
+    `${SUBJECT_WORD[subject]} for which period? Reply *today*, *this week*, *this month* ` +
+      'or *last month*.',
+  );
+}
+
+/**
+ * The merchant NAMED a window Rekoda cannot count here ("yesterday", "in
+ * March", "last week"), Build 6.
+ *
+ * Not the bare "Which period?", which would read as if they had said
+ * nothing: this says plainly which windows can be counted, and the question
+ * stays open so one of them, answered next, resumes it.
+ */
+export function periodNotCountable(subject: PeriodSubject): Reply {
+  return reply(
+    `I can count ${subject} for today, this week, this month or last month here. ` +
+      'Which one would you like?',
+  );
+}
+
+/** "today" stands alone; "in October", "in the last 7 days" take a preposition. */
+function inWindow(label: string): string {
+  return label === 'today' || label.startsWith('this ') ? label : `in ${label}`;
+}
+
 /**
  * What the books say about a window of trading.
  *
@@ -1041,7 +1102,7 @@ export function salesAnswer(input: {
 }): Reply {
   if (input.invoices === 0) {
     return reply(
-      `You have not recorded any sales ${input.label}. Tell me one the way you would ` +
+      `You have not recorded any sales ${inWindow(input.label)}. Tell me one the way you would ` +
         'tell a person, like "sold 2 bags to Ada for 40k".',
     );
   }
@@ -1058,7 +1119,9 @@ export function expensesAnswer(input: {
   expenses: number;
 }): Reply {
   if (input.expenses === 0) {
-    return reply(`You have not recorded any spending ${input.label}. Tell me one like "fuel 12k".`);
+    return reply(
+      `You have not recorded any spending ${inWindow(input.label)}. Tell me one like "fuel 12k".`,
+    );
   }
   return reply(
     `${input.label[0]!.toUpperCase()}${input.label.slice(1)}: ${formatKobo(input.moneyOutK)} ` +

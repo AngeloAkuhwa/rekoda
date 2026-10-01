@@ -492,10 +492,63 @@ export async function markOutboundSent(
 const seenBy = (asOf: Date | undefined) =>
   asOf ? sql`${commandDrafts.createdAt} <= ${asOf.toISOString()}::timestamptz` : undefined;
 
-export async function pendingDraft(
+/**
+ * Whether a read-only Query's draft counts (Build 6). Stated by every caller,
+ * never defaulted inside one function:
+ *
+ *  - `skip`: what a "yes", a "no" or a correction is ABOUT. A Query is
+ *    answered at once and its draft is kept only for the record; nothing
+ *    about it can be confirmed. Counted, a question asked between a preview
+ *    and its "yes" ("How much did I sell?", "Last month.") became the newest
+ *    pending draft, so the "yes" claimed the QUESTION and the preview never
+ *    confirmed; and after an expired preview it hid the expiry behind a
+ *    draft nobody could confirm.
+ *  - `count`: everything else, exactly as before Build 6. In particular the
+ *    two-ask erasure: any message that records a draft between the two
+ *    asks, a model-answered question included, breaks the pair and keeps
+ *    the data. Erasure is irreversible, so it must never be narrowed by a
+ *    rule written for a "yes".
+ *
+ * Skipping a read never lets a "yes" reach PAST it: a "yes" whose newest
+ * confirmable draft is older than a read asked since (`hasReadsAfter`) is
+ * answered by a pointer back at the preview (`retireNewestReadAfter`, one
+ * read per yes, as base took) when that draft is a delivered financial
+ * preview, and otherwise exactly as before Build 6, as a "yes" to the read;
+ * never by a claim of the older draft.
+ */
+export type ReadDrafts = 'skip' | 'count';
+
+const readsFilter = (reads: ReadDrafts) =>
+  reads === 'skip' ? sql`${commandDrafts.intent} <> 'Query'` : undefined;
+
+/**
+ * The newest pending draft, every intent counted, a Query included (the
+ * pre-Build-6 rule). The erasure ceremony reads this one.
+ */
+export function pendingDraft(
   tx: TenantDb,
   businessId: string,
   options: { asOf?: Date } = {},
+): Promise<DraftRow | null> {
+  return newestPendingDraft(tx, businessId, { ...options, reads: 'count' });
+}
+
+/**
+ * The newest pending draft a "yes", a "no" or a correction can be about:
+ * a read-only Query's draft is skipped (Build 6).
+ */
+export function pendingDraftToAnswer(
+  tx: TenantDb,
+  businessId: string,
+  options: { asOf?: Date } = {},
+): Promise<DraftRow | null> {
+  return newestPendingDraft(tx, businessId, { ...options, reads: 'skip' });
+}
+
+async function newestPendingDraft(
+  tx: TenantDb,
+  businessId: string,
+  options: { asOf?: Date | undefined; reads: ReadDrafts },
 ): Promise<DraftRow | null> {
   const rows = await tx
     .select({
@@ -517,6 +570,7 @@ export async function pendingDraft(
       and(
         eq(commandDrafts.businessId, businessId),
         eq(commandDrafts.state, 'pending'),
+        readsFilter(options.reads),
         seenBy(options.asOf),
       ),
     )
@@ -683,7 +737,80 @@ export async function supersedeDraftsBefore(
 }
 
 /**
- * The newest draft in ANY state, by the database ordinal (G-61).
+ * Whether a read-only Query draft, still pending and seen by `asOf`, was
+ * recorded AFTER `draftId` (Build 6): the merchant asked the books something
+ * since that draft, so a "yes" now is not plainly agreement to it. Changes
+ * nothing; `retireNewestReadAfter` is the write.
+ */
+export async function hasReadsAfter(
+  tx: TenantDb,
+  businessId: string,
+  draftId: string,
+  options: { asOf?: Date } = {},
+): Promise<boolean> {
+  const seen = options.asOf
+    ? sql`AND created_at <= ${options.asOf.toISOString()}::timestamptz`
+    : sql``;
+  const rows = await tx.execute<{ found: boolean }>(sql`
+    SELECT EXISTS (
+      SELECT 1 FROM command_drafts
+       WHERE business_id = ${businessId}::uuid
+         AND state = 'pending'
+         AND intent = 'Query'
+         AND insertion_seq > (
+           SELECT d.insertion_seq FROM command_drafts d
+            WHERE d.id = ${draftId}::uuid AND d.business_id = ${businessId}::uuid)
+         ${seen}) AS found`);
+  return [...rows][0]?.found === true;
+}
+
+/**
+ * Retire the NEWEST read-only Query draft asked after a preview (Build 6).
+ *
+ * A "yes" whose newest confirmable draft is a preview older than a question
+ * the merchant asked since is not agreement to that preview: they were
+ * last looking at an answer, and "correct" may well be about the figure.
+ * Nothing is claimed. Exactly ONE Query draft, the newest pending one newer
+ * than `draftId` and seen by `asOf`, is superseded, and the merchant is
+ * pointed back at the preview. That is the draft the same "yes" claimed
+ * before Build 6, so the number of yeses it takes to reach the preview is
+ * exactly base's: one per question asked since, then one that confirms it
+ * through the ordinary claim, if it is still inside its window. The
+ * preview is untouched. Returns how many moved (0 or 1).
+ */
+export async function retireNewestReadAfter(
+  tx: TenantDb,
+  businessId: string,
+  draftId: string,
+  options: { asOf?: Date } = {},
+): Promise<number> {
+  const seen = options.asOf
+    ? sql`AND created_at <= ${options.asOf.toISOString()}::timestamptz`
+    : sql``;
+  const rows = await tx.execute<{ id: string }>(sql`
+    UPDATE command_drafts SET state = 'superseded', updated_at = clock_timestamp()
+     WHERE id = (
+       SELECT id FROM command_drafts
+        WHERE business_id = ${businessId}::uuid
+          AND state = 'pending'
+          AND intent = 'Query'
+          AND insertion_seq > (
+            SELECT d.insertion_seq FROM command_drafts d
+             WHERE d.id = ${draftId}::uuid AND d.business_id = ${businessId}::uuid)
+          ${seen}
+        ORDER BY insertion_seq DESC
+        LIMIT 1)
+       AND business_id = ${businessId}::uuid
+       AND state = 'pending'
+    RETURNING id`);
+  return [...rows].length;
+}
+
+/**
+ * The newest draft in ANY state, by the database ordinal (G-61), every
+ * intent counted: the pre-Build-6 rule. No production path reads it now
+ * (a "yes" and a "no" read `latestDraftToAnswer`); it stays as the
+ * counting counterpart the repository tests pin.
  *
  * A retired clarification is `abandoned`, so `pendingDraft` skips it; this
  * is how a "yes" sent straight after the question can tell that the thing
@@ -691,17 +818,40 @@ export async function supersedeDraftsBefore(
  * same holds for a preview whose window closed (`expired`, G-23): it is
  * still the last thing the merchant was shown.
  */
-export async function latestDraft(
+export function latestDraft(
   tx: TenantDb,
   businessId: string,
   options: { asOf?: Date } = {},
-): Promise<{
+): Promise<LatestDraft | null> {
+  return newestDraft(tx, businessId, { ...options, reads: 'count' });
+}
+
+/**
+ * The newest draft in any state that a "yes" or a "no" can be about, which
+ * also decides whether an expired preview is what gets reported: a
+ * read-only Query's draft is skipped (Build 6).
+ */
+export function latestDraftToAnswer(
+  tx: TenantDb,
+  businessId: string,
+  options: { asOf?: Date } = {},
+): Promise<LatestDraft | null> {
+  return newestDraft(tx, businessId, { ...options, reads: 'skip' });
+}
+
+export interface LatestDraft {
   id: string;
   state: string;
   command: unknown;
   expiresAt: Date;
   previewed: boolean;
-} | null> {
+}
+
+async function newestDraft(
+  tx: TenantDb,
+  businessId: string,
+  options: { asOf?: Date | undefined; reads: ReadDrafts },
+): Promise<LatestDraft | null> {
   const rows = await tx
     .select({
       id: commandDrafts.id,
@@ -711,7 +861,13 @@ export async function latestDraft(
       previewed: commandDrafts.previewed,
     })
     .from(commandDrafts)
-    .where(and(eq(commandDrafts.businessId, businessId), seenBy(options.asOf)))
+    .where(
+      and(
+        eq(commandDrafts.businessId, businessId),
+        readsFilter(options.reads),
+        seenBy(options.asOf),
+      ),
+    )
     .orderBy(desc(commandDrafts.insertionSeq))
     .limit(1);
   return rows[0] ?? null;

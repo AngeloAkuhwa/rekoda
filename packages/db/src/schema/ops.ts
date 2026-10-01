@@ -18,7 +18,7 @@ import {
   uuid,
   primaryKey,
 } from 'drizzle-orm/pg-core';
-import { businesses } from './tenancy.js';
+import { businesses, users } from './tenancy.js';
 
 const id = () =>
   uuid('id')
@@ -475,6 +475,53 @@ export const commandDrafts = pgTable(
     // two previews of one sale.
     uniqueIndex('command_drafts_message_ux').on(t.conversationMessageId),
     index('command_drafts_business_state_ix').on(t.businessId, t.state),
+  ],
+);
+
+/**
+ * What a short reply may continue (migration 0154, Build 6): a question
+ * Rekoda asked one member, or the read it just answered them. Typed columns,
+ * never a transcript; a customer is a vault token and a document its number,
+ * both enforced by CHECK. Scoped to the MEMBER (`userId`) as well as the
+ * business, so one person's answer never lands on another person's question.
+ * Read through `parseContinuation` in core. Not the financial confirmation
+ * state: nothing here refers to a command draft.
+ */
+export const conversationContinuations = pgTable(
+  'conversation_continuations',
+  {
+    id: id(),
+    businessId: businessId(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id),
+    /** Composite FK to `conversation_messages (business_id, id)` in 0154. */
+    sourceMessageId: uuid('source_message_id').notNull(),
+    /** clarification | query */
+    kind: text('kind').notNull(),
+    /** period | choice, for a clarification; null for a query continuation. */
+    expects: text('expects'),
+    topic: text('topic'),
+    period: text('period'),
+    customerToken: text('customer_token'),
+    documentRef: text('document_ref'),
+    /** The exact lines of a numbered list shown; invoice numbers only. */
+    options: jsonb('options'),
+    /** open | consumed | superseded | expired; one-way out of open. */
+    state: text('state').notNull().default('open'),
+    insertionSeq: bigint('insertion_seq', { mode: 'number' }).notNull().generatedAlwaysAsIdentity(),
+    createdAt: insertedAt('created_at'),
+    updatedAt: insertedAt('updated_at'),
+    /** CONTINUATION_TTL_SECONDS after it opened; pinned to the constant by a test. */
+    expiresAt: timestamp('expires_at', { withTimezone: true })
+      .notNull()
+      .default(sql`clock_timestamp() + interval '600 seconds'`),
+  },
+  (t) => [
+    uniqueIndex('conversation_continuations_message_ux').on(t.sourceMessageId),
+    uniqueIndex('conversation_continuations_open_ux')
+      .on(t.businessId, t.userId)
+      .where(sql`state = 'open'`),
   ],
 );
 
