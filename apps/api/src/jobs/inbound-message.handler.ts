@@ -1444,6 +1444,29 @@ async function refundFirstAttempt(
   }
 }
 
+/**
+ * Whether a RETRY of this "yes" owes back what its first attempt metered
+ * (G-23): the draft the yes was sent for was still open when it arrived, and
+ * something else moved it after (a later message expired it, a correction or
+ * a retired question superseded it, another "yes" confirmed it), so this yes
+ * will execute nothing. Attempt 1 metered in its own committed transaction
+ * and a retry never meters again, so without this the unit is spent on
+ * nothing. Moved after arrival: superseded or cancelled BEFORE the yes came,
+ * the draft was never this yes's to meter for.
+ */
+function retryOwesRefund(
+  retrying: boolean,
+  latest: { state: string; expiresAt: Date; updatedAt: Date } | null,
+  receivedAt: Date,
+): boolean {
+  if (!retrying || !latest) return false;
+  if (!['expired', 'superseded', 'confirmed'].includes(latest.state)) return false;
+  return (
+    latest.expiresAt.getTime() > receivedAt.getTime() &&
+    latest.updatedAt.getTime() > receivedAt.getTime()
+  );
+}
+
 async function confirmPendingDraft(
   deps: InboundMessageDeps,
   tx: TenantDb,
@@ -1486,7 +1509,7 @@ async function confirmPendingDraft(
      * message that closed it: nothing executes, and whatever unit the first
      * attempt took for this request goes back. Erring towards the merchant,
      * as the retry rule above does. */
-    if (retrying && latest.expiresAt.getTime() > receivedAt.getTime()) {
+    if (retryOwesRefund(retrying, latest, receivedAt)) {
       await refundFirstAttempt(tx, businessId, latest.command, usagePeriod(receivedAt));
     }
     return expiredAnswer(latest.command, latest.previewed, 'yes') ?? replies.nothingToConfirm();
@@ -1499,6 +1522,11 @@ async function confirmPendingDraft(
      * retried and wrote it again after the merchant had already read it),
      * it is waiting: say so, and let the next yes confirm it. Never confirm
      * it from this one, which cannot be agreement to what it had not seen. */
+    /* A retry whose draft was superseded or confirmed while it waited
+     * executes nothing either: what its first attempt metered goes back. */
+    if (latest && retryOwesRefund(retrying, latest, receivedAt)) {
+      await refundFirstAttempt(tx, businessId, latest.command, usagePeriod(receivedAt));
+    }
     const since = await conversationsRepo.pendingDraft(tx, businessId);
     return since?.previewed ? replies.previewAwaitingYes() : replies.nothingToConfirm();
   }
@@ -1653,7 +1681,7 @@ async function confirmPendingDraft(
      * count produces nothing to send and must not cost the merchant one of
      * the documents they are allowed to generate. */
     await refundReserved();
-    return confirmStockChange(deps, tx, businessId, draft.id, command as never);
+    return confirmStockChange(deps, tx, businessId, draft.id, command as never, receivedAt);
   }
   if (command.intent === 'RecordOrder') {
     return confirmOrder(deps, tx, businessId, draft.id, command as never, refundReserved);
@@ -1884,6 +1912,15 @@ async function confirmStockChange(
   businessId: string,
   draftId: string,
   command: StructuredBusinessCommand & { intent: 'AdjustInventory' },
+  /**
+   * When the "yes" reached Rekoda (G-23). The write-off's HIGH_RISK
+   * confirmation is judged at the same instant as the draft that carries
+   * it: the confirmation is opened just after the draft, so a yes inside the
+   * draft's window is inside its window too. Judged at the wall clock, a
+   * queued or retried yes claimed the draft and was then refused here,
+   * leaving it confirmed with nothing applied.
+   */
+  receivedAt: Date,
 ): Promise<Reply> {
   const product = await stockRepo.findOrCreateProduct(tx, businessId, command.productMention);
   const gate = gateStockChange(command, product.onHand);
@@ -1912,7 +1949,7 @@ async function confirmStockChange(
   if (destructive || deps.config.commandAdjustInventory) {
     let confirmationId: string | null = null;
     if (destructive) {
-      const open = (await riskRepo.openConfirmationsFor(tx, businessId)).find(
+      const open = (await riskRepo.openConfirmationsFor(tx, businessId, receivedAt)).find(
         (c) => c.command === 'AdjustInventory' && c.subject === `draft:${draftId}`,
       );
       if (!open) return replies.confirmationLapsed('that stock change');
@@ -1927,6 +1964,7 @@ async function confirmStockChange(
         subject: `draft:${draftId}`,
         ...(destructive ? { context: { destructive: true } } : {}),
         confirmationId,
+        now: receivedAt,
         actor: 'system',
         ingress: 'CHAT',
         idempotencyKey: `draft:${draftId}`,

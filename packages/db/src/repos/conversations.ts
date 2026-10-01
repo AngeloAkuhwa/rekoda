@@ -701,6 +701,7 @@ export async function latestDraft(
   command: unknown;
   expiresAt: Date;
   previewed: boolean;
+  updatedAt: Date;
 } | null> {
   const rows = await tx
     .select({
@@ -709,6 +710,7 @@ export async function latestDraft(
       command: commandDrafts.command,
       expiresAt: commandDrafts.expiresAt,
       previewed: commandDrafts.previewed,
+      updatedAt: commandDrafts.updatedAt,
     })
     .from(commandDrafts)
     .where(and(eq(commandDrafts.businessId, businessId), seenBy(options.asOf)))

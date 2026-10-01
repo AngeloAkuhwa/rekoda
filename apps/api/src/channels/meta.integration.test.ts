@@ -8511,6 +8511,86 @@ describe('a preview has a time limit (G-23)', () => {
     expect((await footprint(business.id)).expenses).toBe(1);
   });
 
+  it('a write-off confirmed in time but run late applies, its HIGH_RISK confirmation judged at the same instant', async () => {
+    const business = await seedMerchant();
+    const adjust = (delta: number) => ({
+      intent: 'AdjustInventory',
+      productMention: 'bags of rice',
+      quantityDelta: delta,
+    });
+    await say('wamid.G23-wo1', adjust(20), 'add 20 bags of rice');
+    await plain('wamid.G23-wo1-yes', 'yes');
+    await say('wamid.G23-wo2', adjust(-15), '15 bags got water damage');
+    expect(stubSender.lastText).toContain('Removing 15 bags of rice');
+
+    /* The yes arrives inside both windows; by the time it runs, both have
+     * closed on the wall clock. */
+    await post(messagePayload('2348031234567', 'wamid.G23-wo2-yes', 'yes'));
+    await withBusiness(db, business.id, async (tx) => {
+      const [arrived] = [
+        ...(await tx.execute<{ at: string }>(sql`
+          SELECT (created_at + interval '1 millisecond')::text AS at FROM external_events
+           WHERE business_id = ${business.id}::uuid ORDER BY created_at DESC LIMIT 1`)),
+      ];
+      await tx.execute(sql`
+        UPDATE command_drafts SET expires_at = ${arrived!.at}::timestamptz
+         WHERE business_id = ${business.id}::uuid AND state = 'pending'`);
+      await tx.execute(sql`
+        UPDATE pending_confirmations SET expires_at = ${arrived!.at}::timestamptz
+         WHERE business_id = ${business.id}::uuid AND claimed_at IS NULL`);
+    });
+    await drain();
+
+    expect(stubSender.lastText).toContain('Removed 15 bags of rice');
+    const rice = await withBusiness(db, business.id, (tx) =>
+      stockRepo.productByName(tx, business.id, 'bags of rice'),
+    );
+    expect(rice?.onHand).toBe(5);
+    const claimed = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ claimed: boolean }>(sql`
+        SELECT claimed_at IS NOT NULL AS claimed FROM pending_confirmations
+         WHERE business_id = ${business.id}::uuid`),
+    );
+    expect([...claimed].map((r) => r.claimed)).toEqual([true]);
+  });
+
+  it('a retried yes whose draft a correction superseded while it waited gives the unit back', async () => {
+    const business = await seedMerchant();
+    await say('wamid.G23-sup1', A_SALE, 'sold Ada 3 wigs for 300k');
+
+    await withFirstInvoiceFailing(async (owner) => {
+      await post(messagePayload('2348031234567', 'wamid.G23-sup1-yes', 'yes'));
+      await buildRunner(workerDb, db, deps).runOnce();
+      expect((await used(business.id)).documents).toBe(1);
+      await holdRetries(owner, business.id);
+
+      /* The merchant corrects it before the retry runs. */
+      await say(
+        'wamid.G23-sup2',
+        {
+          ...A_SALE,
+          items: [{ name: 'wig', quantity: 4, unitPrice: 100_000 }],
+          statedTotal: 400_000,
+        },
+        'sorry, 4 wigs not 3',
+      );
+      expect(await states(business.id)).toEqual(['superseded', 'pending']);
+
+      await runRetriesNow(owner, business.id);
+      await drain();
+    });
+
+    /* Nothing issued for that yes, and the unit its first attempt took is back. */
+    expect((await footprint(business.id)).invoices).toBe(0);
+    expect((await used(business.id)).documents).toBe(0);
+    expect(stubSender.lastText).toBe(replies.previewAwaitingYes().text);
+
+    /* The corrected preview is confirmed by the next yes, charged once. */
+    await plain('wamid.G23-sup2-yes', 'yes');
+    expect((await footprint(business.id)).invoices).toBe(1);
+    expect((await used(business.id)).documents).toBe(1);
+  });
+
   it('a lapsed clarification was never a preview: a later yes or no is not told it expired', async () => {
     const business = await seedMerchant();
     await say(
