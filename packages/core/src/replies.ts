@@ -442,6 +442,17 @@ export function draftExpired(): Reply {
   );
 }
 
+/**
+ * A "yes" that reached Rekoda before the preview now waiting for it was
+ * written (G-23). It cannot be the merchant's agreement to that preview, so
+ * nothing is saved; but a preview IS waiting, so "nothing is waiting" would be
+ * false. Point at it instead. (A preview re-sent after its job was retried
+ * lands here too, and is confirmed by the next yes.)
+ */
+export function previewAwaitingYes(): Reply {
+  return reply('I sent you a preview a moment ago. Check it, then reply *yes* to save it.');
+}
+
 /** A "no" to a preview that had already expired: nothing to cancel (G-23). */
 export function expiredNothingToCancel(): Reply {
   return reply('That request had already expired, so nothing was saved.');

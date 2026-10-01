@@ -589,6 +589,24 @@ export async function claimDraft(
 }
 
 /**
+ * The preview this message produced never reached the merchant (G-23): the
+ * send failed and was swallowed so the draft could survive. Without this the
+ * draft would still say `previewed`, and a later "yes" after its window
+ * would be told an unseen request expired.
+ */
+export async function markDraftUnseen(
+  tx: TenantDb,
+  businessId: string,
+  conversationMessageId: string,
+): Promise<void> {
+  await tx.execute(sql`
+    UPDATE command_drafts SET previewed = false, updated_at = clock_timestamp()
+     WHERE business_id = ${businessId}::uuid
+       AND conversation_message_id = ${conversationMessageId}::uuid
+       AND previewed`);
+}
+
+/**
  * Close every confirmation window that has lapsed for this business (G-23).
  *
  * Lazy and interaction-time: called when the merchant next speaks (a yes, a

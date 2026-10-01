@@ -77,6 +77,7 @@ const ALL: Record<string, readonly replies.Reply[]> = {
   alreadyConfirmed: [replies.alreadyConfirmed()],
   nothingToConfirm: [replies.nothingToConfirm()],
   draftExpired: [replies.draftExpired()],
+  previewAwaitingYes: [replies.previewAwaitingYes()],
   expiredNothingToCancel: [replies.expiredNothingToCancel()],
   correctionTaken: [replies.correctionTaken()],
   issued: [
@@ -292,6 +293,7 @@ describe('every reply', () => {
     replies.allowanceExhausted(50),
     replies.nothingToConfirm(),
     replies.draftExpired(),
+    replies.previewAwaitingYes(),
     replies.expiredNothingToCancel(),
     replies.nothingToResend(),
     replies.dashboardUnavailable(),

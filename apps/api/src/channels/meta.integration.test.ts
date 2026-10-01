@@ -8381,7 +8381,8 @@ describe('a preview has a time limit (G-23)', () => {
     await post(messagePayload('2348031234567', 'wamid.G23-pre-yes', 'yes'));
     await drain();
 
-    expect(stubSender.lastText).toBe(replies.nothingToConfirm().text);
+    /* Never "nothing is waiting": a preview is. It just is not this yes's. */
+    expect(stubSender.lastText).toBe(replies.previewAwaitingYes().text);
     expect((await footprint(business.id)).expenses).toBe(0);
     /* The preview stands, for a yes sent after reading it. */
     expect(await states(business.id)).toEqual(['pending']);
@@ -8442,6 +8443,72 @@ describe('a preview has a time limit (G-23)', () => {
     await post(messagePayload('2348031234568', 'wamid.G23-cg1b-no', 'no'));
     await drain();
     expect(stubSender.lastText).not.toBe(replies.expiredNothingToCancel().text);
+  });
+
+  it('a preview whose send failed is not "previewed": its lapse is never called an expired request', async () => {
+    const business = await seedMerchant();
+    stubSender.failWith();
+    await say('wamid.G23-unsent', AN_EXPENSE, 'bought fuel 20k cash');
+    const flags = await withBusiness(db, business.id, (tx) =>
+      tx.execute<{ previewed: boolean }>(sql`
+        SELECT previewed FROM command_drafts WHERE business_id = ${business.id}::uuid`),
+    );
+    expect([...flags].map((r) => r.previewed)).toEqual([false]);
+
+    await lapse(business.id);
+    await plain('wamid.G23-unsent-yes', 'yes');
+    expect(stubSender.lastText).toBe(replies.nothingToConfirm().text);
+    expect((await footprint(business.id)).expenses).toBe(0);
+  });
+
+  it('a preview re-sent after its job rolled back is pointed at, never confirmed by the earlier yes', async () => {
+    const business = await seedMerchant();
+    const { db: ownerDb, close } = createDb(urls.owner, { max: 1 });
+    try {
+      /* The preview reaches the merchant, then a later statement in the same
+       * job fails (recording that it was sent): the draft rolls back. */
+      await ownerDb.execute(sql`CREATE SEQUENCE IF NOT EXISTS g23_sent_once`);
+      await ownerDb.execute(sql`
+        CREATE OR REPLACE FUNCTION g23_fail_sent_once() RETURNS trigger
+          SECURITY DEFINER AS $$
+        BEGIN
+          IF nextval('g23_sent_once') = 1 THEN RAISE EXCEPTION 'g23: after the send'; END IF;
+          RETURN NEW;
+        END $$ LANGUAGE plpgsql`);
+      await ownerDb.execute(sql`
+        CREATE TRIGGER g23_fail_sent_once BEFORE UPDATE ON conversation_messages
+          FOR EACH ROW WHEN (NEW.direction = 'outbound') EXECUTE FUNCTION g23_fail_sent_once()`);
+
+      stubTransport.replyWith(AN_EXPENSE);
+      await post(messagePayload('2348031234567', 'wamid.G23-rb', 'bought fuel 20k cash'));
+      await buildRunner(workerDb, db, deps).runOnce();
+      expect(stubSender.lastText).toContain('Expense: fuel for generator');
+      expect(await states(business.id)).toEqual([]);
+
+      /* The merchant read it and said yes; the preview's retry runs first
+       * and writes the draft again, after that yes had arrived. */
+      await post(messagePayload('2348031234567', 'wamid.G23-rb-yes', 'yes'));
+      await ownerDb.execute(sql`
+        UPDATE jobs SET run_at = now() - interval '1 hour'
+         WHERE business_id = ${business.id}::uuid AND state <> 'done' AND attempts > 0`);
+      await drain();
+    } finally {
+      await ownerDb.execute(
+        sql`DROP TRIGGER IF EXISTS g23_fail_sent_once ON conversation_messages`,
+      );
+      await ownerDb.execute(sql`DROP FUNCTION IF EXISTS g23_fail_sent_once()`);
+      await ownerDb.execute(sql`DROP SEQUENCE IF EXISTS g23_sent_once`);
+      await close();
+    }
+
+    /* Pointed at, not "nothing waiting", and nothing saved by that yes. */
+    expect(stubSender.lastText).toBe(replies.previewAwaitingYes().text);
+    expect((await footprint(business.id)).expenses).toBe(0);
+    expect(await states(business.id)).toEqual(['pending']);
+
+    /* The next yes confirms it, once. */
+    await plain('wamid.G23-rb-yes-2', 'yes');
+    expect((await footprint(business.id)).expenses).toBe(1);
   });
 
   it('a lapsed clarification was never a preview: a later yes or no is not told it expired', async () => {

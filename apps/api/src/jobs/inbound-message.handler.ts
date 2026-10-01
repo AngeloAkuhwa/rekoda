@@ -378,13 +378,18 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
           );
 
     if (answer) {
-      await deps.replySender.send(tx, {
+      const sent = await deps.replySender.send(tx, {
         businessId,
         to: inbound.from,
         reply: answer,
         // Only the model path can produce a reply that names a customer.
         ...(liveTokens ? { tokens: liveTokens } : {}),
       });
+      /* G-23: "previewed" means the merchant was SHOWN it. A preview whose
+       * send failed (swallowed so the draft survives) was not. */
+      if (!sent.delivered) {
+        await conversationsRepo.markDraftUnseen(tx, businessId, message.id);
+      }
     }
 
     await events.markProcessed(tx, eventId, null, businessId);
@@ -1488,7 +1493,15 @@ async function confirmPendingDraft(
   }
 
   const draft = await conversationsRepo.pendingDraft(tx, businessId, { asOf: receivedAt });
-  if (!draft) return replies.nothingToConfirm();
+  if (!draft) {
+    /* Nothing existed for this yes to agree to. If a preview has been
+     * written since (the yes was typed before it arrived, or its job was
+     * retried and wrote it again after the merchant had already read it),
+     * it is waiting: say so, and let the next yes confirm it. Never confirm
+     * it from this one, which cannot be agreement to what it had not seen. */
+    const since = await conversationsRepo.pendingDraft(tx, businessId);
+    return since?.previewed ? replies.previewAwaitingYes() : replies.nothingToConfirm();
+  }
   /* A preview from before a retired question is never confirmed by a yes,
    * including a double-tapped yes after the replacement was saved. */
   if (await conversationsRepo.isBehindRetiredQuestion(tx, businessId, draft.id)) {
