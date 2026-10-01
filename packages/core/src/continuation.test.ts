@@ -11,6 +11,7 @@ import {
   continuationAnswer,
   continuationColumns,
   isOneShot,
+  withinFundingWindow,
   parseContinuation,
   resumedRead,
   type ContinuationState,
@@ -284,5 +285,17 @@ describe('the funding-source question (G-68 Phase 2)', () => {
     expect(continuationAnswer(INVOICE_LIST, said('2'))).toMatchObject({ kind: 'choice' });
     expect(continuationAnswer(INVOICE_LIST, said('7'))).toBeNull();
     expect(continuationAnswer(INVOICE_LIST, said('bank'))).toBeNull();
+  });
+});
+
+describe('the funding answer window (Codex review)', () => {
+  const asked = new Date('2026-10-01T10:00:00Z');
+  it('is open from the ask up to, not including, 1800 seconds after it', () => {
+    expect(withinFundingWindow(asked, asked)).toBe(true);
+    expect(withinFundingWindow(asked, new Date(asked.getTime() + 1_799_999))).toBe(true);
+    expect(withinFundingWindow(asked, new Date(asked.getTime() + 1_800_000))).toBe(false);
+  });
+  it('a message OLDER than the question is outside it, never inside', () => {
+    expect(withinFundingWindow(asked, new Date(asked.getTime() - 1))).toBe(false);
   });
 });

@@ -280,11 +280,15 @@ export async function newestContinuation(
   tx: TenantDb,
   businessId: string,
   userId: string,
+  /** The instant the message reached Rekoda: rows written after it are not
+   * "newest" for it (a delayed or retried event never sees the future). */
+  options: { now?: Date } = {},
 ): Promise<ContinuationState | null> {
   const rows = await tx.execute<Row>(sql`
     SELECT id, kind, expects, topic, period, customer_token, document_ref, options, draft_id
       FROM conversation_continuations
      WHERE business_id = ${businessId}::uuid AND user_id = ${userId}::uuid
+       AND created_at <= ${clock(options.now)}
      ORDER BY insertion_seq DESC
      LIMIT 1`);
   const row = [...rows][0];

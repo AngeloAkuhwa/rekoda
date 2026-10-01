@@ -1060,7 +1060,33 @@ export function soundsDoubtful(raw: string): boolean {
  */
 function doubted(raw: string, intent: DeterministicIntent): DeterministicIntent {
   if (intent.kind !== 'affirm') return intent;
-  return soundsDoubtful(raw) ? { kind: 'unsure' } : intent;
+  return soundsDoubtful(raw) || carriesNonAffirmingEmoji(raw) ? { kind: 'unsure' } : intent;
+}
+
+/**
+ * Does an affirmation carry any emoji that is not on the positive list
+ * (G-68, Codex review)? "na so ❌", "e correct 👎", "oya 🚫", "yes ⛔" are
+ * not agreement, and a growing list of negative emoji would always miss
+ * one, so the rule is the other way round: an affirmation may carry ONLY
+ * emoji that mean yes (the same closed list a START may carry: 👍 👌 💯 ✅
+ * ✔ ☑ 🙏 🙂 😊 ☺ 😀 😃 😄 🎉 ❤, any skin tone or style) and the emphatic "‼".
+ * Anything else, a laughing face, a flag or a keycap included, makes it
+ * `unsure`: the merchant is simply asked for a plain yes, which costs one
+ * message and never books a preview they were mocking or refusing.
+ */
+function carriesNonAffirmingEmoji(raw: string): boolean {
+  segmenter ??= new Intl.Segmenter('en', { granularity: 'grapheme' });
+  for (const { segment } of segmenter.segment(raw)) {
+    const emoji =
+      /\p{Extended_Pictographic}/u.test(segment) ||
+      /\p{Regional_Indicator}/u.test(segment) ||
+      /\u20E3/u.test(segment);
+    if (!emoji) continue;
+    const core = segment.replace(/[\uFE0E\uFE0F\u{1F3FB}-\u{1F3FF}]/gu, '');
+    if (core === '\u203C') continue;
+    if (!AFFIRMING_EMOJI.has(core)) return true;
+  }
+  return false;
 }
 
 /**

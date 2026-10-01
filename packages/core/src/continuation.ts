@@ -66,6 +66,16 @@ export const CONTINUATION_TTL_SECONDS = 600;
  */
 export const FUNDING_ANSWER_WINDOW_SECONDS = 1800;
 
+/**
+ * Was a funding question asked within the answer window of this message
+ * (G-68)? A NEGATIVE age (a delayed or retried message older than the
+ * question it would answer) is outside it, never inside.
+ */
+export function withinFundingWindow(askedAt: Date, receivedAt: Date): boolean {
+  const age = receivedAt.getTime() - askedAt.getTime();
+  return age >= 0 && age < FUNDING_ANSWER_WINDOW_SECONDS * 1000;
+}
+
 /** The Query topics a continuation may carry (the command contract's list). */
 export const QUERY_TOPICS = [
   'debtors',

@@ -860,3 +860,32 @@ describe('the two-ask erasure pair fails closed (G-68 review)', () => {
     expect(n).toBeGreaterThan(0);
   });
 });
+
+describe('the newest continuation as of a message (Codex review)', () => {
+  it('a message never sees a continuation written after it arrived', async () => {
+    const { businessId, ownerId } = await seedBusiness();
+    await open(businessId, ownerId, PERIOD_QUESTION);
+    const rows = await withBusiness(app, businessId, (tx) =>
+      tx.execute<{ created_at: string }>(sql`
+        SELECT created_at FROM conversation_continuations WHERE business_id = ${businessId}::uuid`),
+    );
+    /* Millisecond precision in JS; the next row is opened well after. */
+    const firstAt = new Date(new Date([...rows][0]!.created_at).getTime() + 1);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await open(businessId, ownerId, {
+      kind: 'clarification',
+      expects: 'period',
+      topic: 'expenses_summary',
+    });
+    const asOfFirst = await withBusiness(app, businessId, (tx) =>
+      continuationsRepo.newestContinuation(tx, businessId, ownerId, { now: firstAt }),
+    );
+    expect(asOfFirst).toMatchObject({ topic: 'sales_summary' });
+    const before = await withBusiness(app, businessId, (tx) =>
+      continuationsRepo.newestContinuation(tx, businessId, ownerId, {
+        now: new Date(firstAt.getTime() - 60_000),
+      }),
+    );
+    expect(before).toBeNull();
+  });
+});

@@ -345,6 +345,8 @@ export interface DraftRow {
   confirmationContext?: unknown;
   /** Shown as a preview, not asked as a question (G-23). */
   previewed?: boolean;
+  /** When its confirmation window closes (G-23), where the read selects it. */
+  expiresAt?: Date;
   /**
    * How the DRAFTING message arrived — text | voice | media | interactive.
    * Spec E.7's evidenceBasis is derived from this at confirmation time: a
@@ -559,6 +561,7 @@ async function newestPendingDraft(
       identityLink: commandDrafts.identityLink,
       confirmationContext: commandDrafts.confirmationContext,
       previewed: commandDrafts.previewed,
+      expiresAt: commandDrafts.expiresAt,
       messageKind: conversationMessages.kind,
     })
     .from(commandDrafts)
@@ -935,8 +938,10 @@ export async function retiredPurchaseDraft(
         eq(commandDrafts.state, 'abandoned'),
         eq(commandDrafts.intent, 'RecordPurchase'),
         /* Defence in depth (G-68 review): a question with ANY newer draft
-         * other than a read (`Query`) or a model clarification (`Unclear`)
-         * is not answerable, whatever state that draft was left in: a
+         * other than a read (`Query`) or a model clarification (`Unclear`),
+         * still standing (not `superseded`: a rebuild undone because its
+         * preview never reached the merchant does not count), is not
+         * answerable: a
          * preview of the purchase sent again, another purchase, even a newer
          * CG1 question. This also blocks older questions behind a rebuilt
          * preview, which does not itself run `closeRetiredQuestionsBefore`. */
@@ -944,7 +949,8 @@ export async function retiredPurchaseDraft(
           SELECT 1 FROM command_drafts newer
            WHERE newer.business_id = ${businessId}::uuid
              AND newer.insertion_seq > ${commandDrafts.insertionSeq}
-             AND newer.intent NOT IN ('Query', 'Unclear'))`,
+             AND newer.intent NOT IN ('Query', 'Unclear')
+             AND newer.state <> 'superseded')`,
       ),
     )
     .limit(1);
@@ -1027,10 +1033,82 @@ export async function inboundSinceDraft(
      WHERE later.business_id = ${businessId}::uuid
        AND later.conversation_id = parked.conversation_id
        AND later.direction = 'inbound'
-       AND later.created_at > parked.created_at
+       AND later.created_at >= parked.created_at
        AND later.id <> parked.id
        AND later.id <> ${excludeMessageId}::uuid`);
   return [...rows][0]?.n ?? 0;
+}
+
+/**
+ * How many inbound MESSAGE EVENTS the business received AFTER the event of
+ * the message that parked a draft, not counting `currentEventId` (G-68,
+ * Codex review). The durable record of "anything said between the two
+ * erasure asks": an external event is stored at webhook ingest, BEFORE any
+ * processing, so a message whose job later failed (before its conversation
+ * row was written) still counts. A customer's message on the shop's own
+ * WhatsApp (its job is a `customer.message`) is a different conversation
+ * and does not count; an event whose job row cannot be found counts.
+ * Fails CLOSED: if the parked ask's event cannot be found, the pair is
+ * broken.
+ */
+export async function inboundEventsSinceDraft(
+  tx: TenantDb,
+  businessId: string,
+  draftId: string,
+  currentEventId: string,
+): Promise<number> {
+  const rows = await tx.execute<{ found: number; n: number }>(sql`
+    WITH parked AS (
+      SELECT e.id, e.created_at
+        FROM command_drafts d
+        JOIN conversation_messages m
+          ON m.id = d.conversation_message_id AND m.business_id = d.business_id
+        JOIN external_events e
+          ON e.provider = 'meta' AND e.external_id = m.provider_message_id
+         AND e.business_id = d.business_id
+       WHERE d.id = ${draftId}::uuid AND d.business_id = ${businessId}::uuid
+    )
+    SELECT (SELECT count(*)::int FROM parked) AS found,
+           (SELECT count(*)::int
+              FROM external_events later, parked
+             WHERE later.business_id = ${businessId}::uuid
+               AND later.event_type LIKE 'message.%'
+               AND later.created_at >= parked.created_at
+               AND later.id <> parked.id
+               AND later.id <> ${currentEventId}::uuid
+               AND NOT EXISTS (
+                 SELECT 1 FROM jobs j
+                  WHERE j.business_id = later.business_id
+                    AND j.kind = 'customer.message'
+                    AND j.singleton_key = later.id::text)) AS n`);
+  const row = [...rows][0];
+  if (!row || row.found === 0) return Number.MAX_SAFE_INTEGER;
+  return row.n;
+}
+
+/**
+ * Undo a funding-answer rebuild whose preview never reached the merchant
+ * (G-68, Codex review): the new draft is superseded so no yes can confirm a
+ * preview nobody saw, and the retired question is restored to `abandoned`
+ * so it can be answered again. Conditional on each draft's state, so it
+ * undoes only what this message did.
+ */
+export async function undoRebuild(
+  tx: TenantDb,
+  businessId: string,
+  rebuiltFromId: string,
+  messageId: string,
+): Promise<void> {
+  await tx.execute(sql`
+    UPDATE command_drafts SET state = 'superseded', updated_at = clock_timestamp()
+     WHERE business_id = ${businessId}::uuid
+       AND conversation_message_id = ${messageId}::uuid
+       AND state = 'pending'`);
+  await tx.execute(sql`
+    UPDATE command_drafts SET state = 'abandoned', updated_at = clock_timestamp()
+     WHERE business_id = ${businessId}::uuid
+       AND id = ${rebuiltFromId}::uuid
+       AND state = 'superseded'`);
 }
 
 /**

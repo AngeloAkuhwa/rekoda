@@ -1108,3 +1108,26 @@ describe('final-head review: marks, faces, run-together STOP (G-68, G-24)', () =
     expect(customerConsentIntent(m)).toBeNull();
   });
 });
+
+describe('an affirmation may carry only emoji that mean yes (Codex review)', () => {
+  it.each([
+    'na so ❌',
+    'e correct 👎',
+    'oya 🚫',
+    'yes ⛔',
+    'yes 🛑',
+    'yes 🙅🏾',
+    'na so ❎',
+    'yes ✖️',
+    'yes 😂',
+    'yes 🇳🇬',
+  ])('%j is unsure', (m) => {
+    expect(intentOf(m)).toEqual({ kind: 'unsure' });
+  });
+  it.each(['yes 👍', 'yes 👍🏾', 'na so 😊', 'e correct ✅', 'oya 🙏', 'yes ❤️', 'yes‼️'])(
+    '%j affirms',
+    (m) => {
+      expect(intentOf(m)).toEqual({ kind: 'affirm' });
+    },
+  );
+});

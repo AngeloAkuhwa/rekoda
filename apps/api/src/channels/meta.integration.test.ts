@@ -11395,3 +11395,209 @@ describe('G-68 final review 3: resend closes the question, window-long answer, m
     expect(facets).toHaveLength(1);
   });
 });
+
+/**
+ * Codex review of #259 (and a fresh final-head reviewer): durable erasure
+ * pairing, negating emoji, a rebuild nobody saw, gates before the claim, the
+ * newest continuation as of the message, and an honest "already waiting".
+ */
+describe('G-68 Codex review: erasure events, emoji, failed rebuild send, gates, waiting preview', () => {
+  const OWNER = '2348031234567';
+  const DELEGATE = '2348039990002';
+  const UNCLEAR = { intent: 'Unclear', clarification: 'What would you like me to do?' };
+  const A_SALE = {
+    intent: 'RecordSale',
+    customer: { kind: 'token', token: 'CUSTOMER_7K2' },
+    items: [{ name: 'wig', quantity: 3, unitPrice: 15_000 }],
+    statedTotal: 45_000,
+    reportedPayment: 0,
+    paymentMethod: 'transfer',
+    discount: null,
+    deliveryFee: null,
+    dueDescription: null,
+  };
+  const POS_PURCHASE = {
+    intent: 'RecordPurchase',
+    supplierMention: 'Emeka',
+    description: '10 cartons',
+    amount: 180_000,
+    reportedPayment: 180_000,
+    paymentMethod: 'pos',
+    productMention: 'cartons',
+    quantity: 10,
+  };
+  const POS_QUESTION = 'did it come from your bank account or from physical cash?';
+
+  async function seedMerchant(phone = `+${OWNER}`) {
+    const user = await identity.upsertUserByPhone(db, phone);
+    return identity.createBusinessWithOwner(db, {
+      name: 'Ada Fashion',
+      businessType: null,
+      ownerUserId: user.id,
+    });
+  }
+
+  async function addDelegate(businessId: string) {
+    const delegate = await identity.upsertUserByPhone(db, `+${DELEGATE}`);
+    await identity.addMembership(db, businessId, delegate.id, 'delegate');
+  }
+
+  async function drain() {
+    const runner = buildRunner(workerDb, db, deps);
+    let worked = await runner.runOnce();
+    while (worked) worked = await runner.runOnce();
+  }
+
+  async function say(wamid: string, command: Record<string, unknown>, text: string, from = OWNER) {
+    stubTransport.replyWith(command);
+    await post(messagePayload(from, wamid, text));
+    await drain();
+  }
+
+  async function reply(wamid: string, text: string, from = OWNER) {
+    stubTransport.replyWith(UNCLEAR);
+    await post(messagePayload(from, wamid, text));
+    await drain();
+  }
+
+  async function count(businessId: string, table: 'invoices' | 'expenses'): Promise<number> {
+    const rows = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ n: number }>(
+        sql`SELECT count(*)::int AS n FROM ${sql.raw(table)} WHERE business_id = ${businessId}::uuid`,
+      ),
+    );
+    return [...rows][0]!.n;
+  }
+
+  async function purchaseStates(businessId: string): Promise<string[]> {
+    const rows = await withBusiness(db, businessId, (tx) =>
+      tx.execute<{ state: string }>(sql`
+        SELECT state FROM command_drafts
+         WHERE business_id = ${businessId}::uuid AND intent = 'RecordPurchase'
+         ORDER BY insertion_seq`),
+    );
+    return [...rows].map((r) => r.state);
+  }
+
+  it('P1: a message whose processing FAILED between the erasure asks still breaks the pair', async () => {
+    const business = await seedMerchant();
+    const customer = await customersRepo.createCustomerWithIdentities(
+      db,
+      business.id,
+      'CUSTOMER_T9',
+      [{ facet: 'phone', ciphertext: 'sealed-phone', matchKey: 'mk-g68-fail' }],
+    );
+    await reply('wamid.CX-del1', 'delete my data');
+    /* The tokeniser fails before the message row is written: the job fails. */
+    const spy = vi
+      .spyOn(deps.gateway, 'tokenise')
+      .mockRejectedValueOnce(new Error('vault unavailable'));
+    try {
+      await reply('wamid.CX-between', 'Ada bought 3 wigs for 150k');
+    } finally {
+      spy.mockRestore();
+    }
+    await reply('wamid.CX-del2', 'delete my data');
+    expect(stubSender.lastText).toContain('Reply *DELETE MY DATA* again');
+    const facets = await withBusiness(db, business.id, (tx) =>
+      customersRepo.identityFacetsFor(tx, business.id, customer.id),
+    );
+    expect(facets).toHaveLength(1);
+  });
+
+  it.each([
+    'na so ❌',
+    'e correct 👎',
+    'oya 🚫',
+    'yes ⛔',
+    'yes 🛑',
+    'yes 🙅🏾',
+    'na so ❎',
+    'yes ✖️',
+    'yes 😂',
+  ])('P1: %j to a live preview writes nothing', async (text) => {
+    const business = await seedMerchant();
+    await say('wamid.CX-e-sale', A_SALE, 'sold Ada 3 wigs for 45k');
+    await reply('wamid.CX-e', text);
+    expect(stubSender.lastText).toBe(replies.plainYesNeeded().text);
+    expect(await count(business.id, 'invoices')).toBe(0);
+  });
+
+  it.each(['yes 👍', 'na so 😊', 'e correct ✅'])('%j still confirms', async (text) => {
+    const business = await seedMerchant();
+    await say('wamid.CX-p-sale', A_SALE, 'sold Ada 3 wigs for 45k');
+    await reply('wamid.CX-p', text);
+    expect(await count(business.id, 'invoices')).toBe(1);
+  });
+
+  it('P2: a rebuilt preview that was never delivered is undone, and "cash" again works once', async () => {
+    const business = await seedMerchant();
+    await say('wamid.CX-f-pos', POS_PURCHASE, 'I bought 10 cartons for 180k, paid by POS');
+    stubSender.failWith();
+    await reply('wamid.CX-f-cash', 'cash');
+    /* Nothing the merchant saw: the rebuild is undone, the question restored. */
+    expect(await purchaseStates(business.id)).toEqual(['abandoned', 'superseded']);
+    /* A yes now confirms nothing: the preview nobody saw is not confirmable. */
+    await reply('wamid.CX-f-yes-early', 'yes');
+    expect(await count(business.id, 'expenses')).toBe(0);
+    expect(await purchaseStates(business.id)).toEqual(['abandoned', 'superseded']);
+
+    await reply('wamid.CX-f-cash-2', 'cash');
+    expect(stubSender.lastText).toContain('Paid in full by cash');
+    await reply('wamid.CX-f-yes', 'yes');
+    await reply('wamid.CX-f-yes-2', 'yes');
+    expect(await count(business.id, 'expenses')).toBe(1);
+  });
+
+  it('P2: a gate refusal does not use up the answer; after access returns, "cash" rebuilds', async () => {
+    const business = await seedMerchant();
+    await say('wamid.CX-g-pos', POS_PURCHASE, 'I bought 10 cartons for 180k, paid by POS');
+    await billingRepo.setPlan(db, {
+      businessId: business.id,
+      plan: 'integrate',
+      expiresAt: null,
+      actor: 'operator:test',
+    });
+    await reply('wamid.CX-g-refused', 'cash');
+    expect(stubSender.lastText).toBe(replies.chatNotInPlan().text);
+    await billingRepo.setPlan(db, {
+      businessId: business.id,
+      plan: 'trial',
+      expiresAt: new Date(Date.now() + 7 * 86_400_000),
+      actor: 'operator:test',
+    });
+    await reply('wamid.CX-g-cash', 'cash');
+    expect(stubSender.lastText).toContain('Paid in full by cash');
+  });
+
+  it('an EXPIRED rebuilt preview is never reported as waiting', async () => {
+    const business = await seedMerchant();
+    await addDelegate(business.id);
+    await say('wamid.CX-x-pos', POS_PURCHASE, 'I bought 10 cartons for 180k, paid by POS');
+    await reply('wamid.CX-x-d-yes', 'yes', DELEGATE);
+    await reply('wamid.CX-x-bank', 'bank');
+    await withBusiness(db, business.id, (tx) =>
+      tx.execute(sql`
+        UPDATE command_drafts SET expires_at = clock_timestamp() - interval '1 second'
+         WHERE business_id = ${business.id}::uuid AND state = 'pending'`),
+    );
+    await reply('wamid.CX-x-cash', 'cash', DELEGATE);
+    expect(stubSender.lastText).toBe(replies.fundingQuestionClosed().text);
+  });
+
+  it('a preview a yes cannot reach (a newer retired question) is never reported as waiting', async () => {
+    const business = await seedMerchant();
+    await addDelegate(business.id);
+    await say('wamid.CX-u-sale', A_SALE, 'sold Ada 3 wigs for 45k');
+    await say('wamid.CX-u-r1', POS_PURCHASE, 'I bought 10 cartons for 180k, paid by POS', DELEGATE);
+    await say('wamid.CX-u-r2', POS_PURCHASE, 'I bought 10 cartons for 180k, paid by POS');
+    /* The owner's sale preview, pending again behind both retired questions. */
+    await withBusiness(db, business.id, (tx) =>
+      tx.execute(sql`
+        UPDATE command_drafts SET state = 'pending'
+         WHERE business_id = ${business.id}::uuid AND intent = 'RecordSale'`),
+    );
+    await reply('wamid.CX-u-cash', 'cash', DELEGATE);
+    expect(stubSender.lastText).toBe(replies.fundingQuestionClosed().text);
+  });
+});

@@ -28,6 +28,7 @@ import {
   continuationAnswer,
   isOneShot,
   FUNDING_ANSWER_WINDOW_SECONDS,
+  withinFundingWindow,
   uncountablePeriod,
   soundsDoubtful,
   fundingSourceAnswer,
@@ -389,7 +390,7 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
     const actorId = await actorOf(tx, businessId, inbound.from);
     /* Whether this message retired a question Rekoda had asked this member
      * (G-68): a "no" that drops nothing else must not say nothing waited. */
-    const outcome = { retiredQuestion: false };
+    const outcome: { retiredQuestion: boolean; rebuiltFrom?: string } = { retiredQuestion: false };
     const continued = actorId
       ? await continueConversation(tx, businessId, actorId, {
           text,
@@ -447,6 +448,27 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
          * on to. A member who never saw "Which period?" is not answering it
          * with a later "last month". */
         await continuationsRepo.retireContinuationOpenedBy(tx, businessId, message.id);
+        /* A funding-answer rebuild nobody saw is undone as if it never
+         * happened (Codex review): its new draft is superseded (never
+         * confirmable), the retired question is restored, and the sender's
+         * short answer re-opened inside its window, so "cash" again works. */
+        if (outcome.rebuiltFrom) {
+          await conversationsRepo.undoRebuild(tx, businessId, outcome.rebuiltFrom, message.id);
+          const asked = await conversationsRepo.draftStateOf(tx, businessId, outcome.rebuiltFrom);
+          if (actorId && asked?.state === 'abandoned') {
+            await continuationsRepo.openContinuation(tx, {
+              businessId,
+              userId: actorId,
+              sourceMessageId: message.id,
+              state: {
+                kind: 'clarification',
+                expects: 'funding_source',
+                draftId: outcome.rebuiltFrom,
+              },
+              expiresAt: fundingWindowEnd(asked.createdAt),
+            });
+          }
+        }
       }
     }
 
@@ -1103,11 +1125,21 @@ async function deterministicReply(
        * another member's answer to their own question), breaks it. The copy
        * says "anything else keeps it", and an irreversible erasure must not
        * depend on which messages happen to record a draft. */
+      /* Counted twice, both ways failing closed: the conversation rows
+       * written, AND the durable webhook events stored at ingest (Codex
+       * review), so a message whose processing failed before its row was
+       * written still breaks the pair. */
       const paired =
         pending &&
         pendingCommand?.intent === 'EraseData' &&
         (await conversationsRepo.inboundSinceDraft(tx, businessId, pending.id, ctx.messageId)) ===
-          0;
+          0 &&
+        (await conversationsRepo.inboundEventsSinceDraft(
+          tx,
+          businessId,
+          pending.id,
+          ctx.eventId,
+        )) === 0;
       const claim = paired
         ? await conversationsRepo.claimDraft(tx, pending.id, { now: ctx.receivedAt })
         : null;
@@ -2463,18 +2495,19 @@ async function answerFundingSource(
   businessId: string,
   draftId: string,
   source: FundingSource,
-  message: { messageId: string; from: string; receivedAt: Date },
+  message: {
+    messageId: string;
+    from: string;
+    receivedAt: Date;
+    outcome?: { retiredQuestion: boolean; rebuiltFrom?: string };
+  },
 ): Promise<Reply> {
   const retired = await conversationsRepo.retiredPurchaseDraft(tx, businessId, draftId);
   /* Closed since it was asked (a "no", from this member or another one), or
    * blocked by something newer: nothing to rebuild, and that is said. */
   if (!retired) return closedQuestionReply(tx, businessId, message.receivedAt);
-  if (!(await mayTransact(tx, businessId, message.from))) return replies.viewOnlyRole();
-  const plan = await usageRepo.planFor(tx, businessId);
-  if (plan === 'expired') return replies.trialEnded();
-  if (await entitlementsRepo.requireEntitlement(tx, businessId, 'REKODA_CHAT')) {
-    return replies.chatNotInPlan();
-  }
+  const refused = await fundingGateRefusal(tx, businessId, message.from);
+  if (refused) return refused;
 
   const stored = retired.command as Record<string, unknown>;
   const rebuilt = { ...stored, paymentMethod: source };
@@ -2491,6 +2524,8 @@ async function answerFundingSource(
   }
   /* Nobody else's short answer can reach it now. */
   await continuationsRepo.retireContinuationsForDraft(tx, businessId, retired.id);
+  /* Remembered, so a preview that never reaches the merchant is undone. */
+  if (message.outcome) message.outcome.rebuiltFrom = retired.id;
   await conversationsRepo.recordDraft(tx, {
     businessId,
     conversationMessageId: message.messageId,
@@ -2606,6 +2641,27 @@ async function reaskRetiredQuestion(
 }
 
 /**
+ * The read-only gates a rebuilt purchase walks, in order, or null when all
+ * pass: the role rule (only a member who may transact gets a draft to say
+ * yes to), a lapsed trial, and the Chat entitlement. One function so the
+ * refusals can be routed through a shared refusal later (Build 8) in one
+ * place; it reads only, so it can run before the answer is claimed.
+ */
+async function fundingGateRefusal(
+  tx: TenantDb,
+  businessId: string,
+  from: string,
+): Promise<Reply | null> {
+  if (!(await mayTransact(tx, businessId, from))) return replies.viewOnlyRole();
+  const plan = await usageRepo.planFor(tx, businessId);
+  if (plan === 'expired') return replies.trialEnded();
+  if (await entitlementsRepo.requireEntitlement(tx, businessId, 'REKODA_CHAT')) {
+    return replies.chatNotInPlan();
+  }
+  return null;
+}
+
+/**
  * What a funding answer that cannot rebuild anything is told (G-68 review),
  * true in every state: if a financial preview is already waiting (the
  * member's own rebuild or resend, or another member's), point at it and
@@ -2617,12 +2673,23 @@ async function closedQuestionReply(
   businessId: string,
   receivedAt: Date,
 ): Promise<Reply> {
+  /* "Waiting" only for a preview the next yes would actually reach: live
+   * (its window not closed at this message), not behind a retired
+   * question, and with no retired question as the latest thing to answer
+   * (a yes would re-ask that instead). Read-only. */
+  const latest = await conversationsRepo.latestDraftToAnswer(tx, businessId, { asOf: receivedAt });
+  if (latest?.state === 'abandoned') return replies.fundingQuestionClosed();
   const waiting = await conversationsRepo.pendingDraftToAnswer(tx, businessId, {
     asOf: receivedAt,
   });
-  return waiting?.previewed === true && !NOT_A_FINANCIAL_PREVIEW.has(waiting.intent)
-    ? replies.previewAlreadyWaiting()
-    : replies.fundingQuestionClosed();
+  const reachable =
+    waiting !== null &&
+    waiting.previewed === true &&
+    !NOT_A_FINANCIAL_PREVIEW.has(waiting.intent) &&
+    waiting.expiresAt !== undefined &&
+    waiting.expiresAt.getTime() > receivedAt.getTime() &&
+    !(await conversationsRepo.isBehindRetiredQuestion(tx, businessId, waiting.id));
+  return reachable ? replies.previewAlreadyWaiting() : replies.fundingQuestionClosed();
 }
 
 /** When a funding question's answer window closes (OD-19). */
@@ -2632,7 +2699,7 @@ function fundingWindowEnd(askedAt: Date): Date {
 
 /** Was the retired funding question asked within FUNDING_ANSWER_WINDOW_SECONDS? */
 function insideFundingWindow(askedAt: Date, receivedAt: Date): boolean {
-  return receivedAt.getTime() - askedAt.getTime() < FUNDING_ANSWER_WINDOW_SECONDS * 1000;
+  return withinFundingWindow(askedAt, receivedAt);
 }
 
 /**
@@ -2661,7 +2728,7 @@ async function continueConversation(
     messageId: string;
     receivedAt: Date;
     from: string;
-    outcome?: { retiredQuestion: boolean };
+    outcome?: { retiredQuestion: boolean; rebuiltFrom?: string };
   },
 ): Promise<Reply | null> {
   const now = { now: message.receivedAt };
@@ -2673,7 +2740,7 @@ async function continueConversation(
    * purchase being sent again), inside its window: told so, truthfully,
    * with no model call (G-68 review). Never a rebuild. */
   if (!open && message.route.route === 'model' && fundingSourceAnswer(message.text)) {
-    const newest = await continuationsRepo.newestContinuation(tx, businessId, actorId);
+    const newest = await continuationsRepo.newestContinuation(tx, businessId, actorId, now);
     if (newest?.kind === 'clarification' && newest.expects === 'funding_source') {
       const asked = await conversationsRepo.draftStateOf(tx, businessId, newest.draftId);
       if (
@@ -2729,6 +2796,11 @@ async function continueConversation(
           )) ?? (await closedQuestionReply(tx, businessId, message.receivedAt)))
         : closedQuestionReply(tx, businessId, message.receivedAt);
     }
+    /* The read-only gates run BEFORE the answer is claimed (Codex review):
+     * a refusal leaves the question open, so the same "cash" works the
+     * moment access is restored. */
+    const refused = await fundingGateRefusal(tx, businessId, message.from);
+    if (refused) return refused;
     const claimed = await continuationsRepo.consumeContinuation(
       tx,
       businessId,
