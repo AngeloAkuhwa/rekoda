@@ -98,18 +98,11 @@ export async function recordEvent(q: Queryable, event: IncomingEvent): Promise<R
 }
 
 /**
- * Mark an event handled. Errors are recorded, not thrown away.
- *
- * `businessId` is optional but callers holding a tenant pin should pass it.
- * It used to be the only thing standing between a stray id in a job payload
- * and another tenant's row; since 0130 the database refuses that as well.
- * Belt and braces on the one table where a mistake would be quietest, and the
- * predicate costs nothing.
- */
-/**
  * Record that this message's "yes" reserved a metered unit (G-23). Called in
  * the same transaction as the consume, so the record exists iff the unit was
- * taken.
+ * taken. Left in place when the attempt executes: the unit paid for what was
+ * issued, and only a retry of this same event ever reads it, which an event
+ * that committed never gets.
  */
 export async function noteReservedUnit(
   tx: TenantDb,
@@ -158,6 +151,15 @@ export async function takeReservedUnits(
   return [...rows][0]?.units ?? [];
 }
 
+/**
+ * Mark an event handled. Errors are recorded, not thrown away.
+ *
+ * `businessId` is optional but callers holding a tenant pin should pass it.
+ * It used to be the only thing standing between a stray id in a job payload
+ * and another tenant's row; since 0130 the database refuses that as well.
+ * Belt and braces on the one table where a mistake would be quietest, and the
+ * predicate costs nothing.
+ */
 export async function markProcessed(
   q: Queryable,
   id: string,

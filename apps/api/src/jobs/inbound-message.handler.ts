@@ -1480,9 +1480,8 @@ async function confirmPendingDraft(
    * which the merchant is not looking at. Nothing is metered or claimed. */
   if (latest?.state === 'expired') {
     /* A retry, its "yes" sent inside the window but overtaken by a later
-     * message that closed it: nothing executes, and whatever unit the first
-     * attempt took for this request goes back. Erring towards the merchant,
-     * as the retry rule above does. */
+     * message that closed it: nothing executes, and exactly the units an
+     * earlier attempt recorded for this message go back. */
     if (retrying) {
       await refundRecordedReservations(tx, businessId, eventId, usagePeriod(receivedAt));
     }
@@ -2637,7 +2636,8 @@ async function interpretedReply(
         context: { destructive: true },
       });
       /* The draft's window, exactly, on the database clock, never this
-       * host's (G-23): a yes inside one is inside the other. */
+       * host's (G-23): a yes inside one is inside the other. `asked.expiresAt`
+       * is the figure before this line; the row holds the draft's. */
       await riskRepo.alignConfirmationWithDraft(tx, businessId, asked.id, draft.id);
     }
   }
@@ -2863,24 +2863,6 @@ function consumeMessage(
 ): Promise<boolean> {
   return withBusiness(deps.db, businessId, (tx) =>
     usageRepo.consumeUnit(tx, businessId, period, 'AI_ACTIONS', allowance),
-  );
-}
-
-/** Put an order unit back. Same standalone transaction as taking one. */
-function refundOrder(deps: InboundMessageDeps, businessId: string, period: string): Promise<void> {
-  return withBusiness(deps.db, businessId, (tx) =>
-    usageRepo.refundUnit(tx, businessId, period, 'CATALOGUE_ORDERS'),
-  );
-}
-
-/** Put a document unit back. Same standalone transaction as taking one. */
-function refundDocument(
-  deps: InboundMessageDeps,
-  businessId: string,
-  period: string,
-): Promise<void> {
-  return withBusiness(deps.db, businessId, (tx) =>
-    usageRepo.refundUnit(tx, businessId, period, 'DOCUMENT_GENERATION'),
   );
 }
 
