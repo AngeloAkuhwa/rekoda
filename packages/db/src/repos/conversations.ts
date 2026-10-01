@@ -313,6 +313,8 @@ export interface DraftInput {
   confirmationContext?: ConfirmationContext | null;
   /** The member whose message drafted this (0157), when known. */
   requestedBy?: string | null;
+  /** The retired question a funding-answer rebuild was built from (0157). */
+  rebuiltFrom?: string | null;
   /**
    * The merchant was shown a preview a "yes" confirms, not a question
    * (G-23). Only an expired preview is answered "that request has expired".
@@ -388,6 +390,7 @@ export async function recordDraft(
       confirmationContext: (draft.confirmationContext ?? null) as never,
       previewed: draft.previewed ?? false,
       requestedBy: draft.requestedBy ?? null,
+      rebuiltFrom: draft.rebuiltFrom ?? null,
       /* G-23: a preview is confirmable for CONFIRMATION_TTL_SECONDS, the same
        * window as a HIGH_RISK confirmation. Set once, at the only INSERT: a
        * redelivered message hits the conflict below and keeps the window its
@@ -1095,6 +1098,32 @@ export async function inboundEventsSinceDraft(
   const row = [...rows][0];
   if (!row || row.found === 0) return Number.MAX_SAFE_INTEGER;
   return row.n;
+}
+
+/**
+ * Supersede every PENDING funding-answer rebuild recorded before this draft
+ * (G-68, final-head review), returning how many. Called when a new purchase
+ * preview is recorded: the purchase sent again is the purchase now, so the
+ * older rebuilt preview of it can never be confirmed alongside it and book
+ * the purchase twice. Conditional on `pending`, in the caller's transaction.
+ */
+export async function supersedeRebuildsBefore(
+  tx: TenantDb,
+  businessId: string,
+  draftId: string,
+): Promise<number> {
+  const rows = await tx.execute<{ id: string }>(sql`
+    UPDATE command_drafts r
+       SET state = 'superseded', updated_at = clock_timestamp()
+      FROM command_drafts current
+     WHERE current.id = ${draftId}::uuid
+       AND current.business_id = ${businessId}::uuid
+       AND r.business_id = ${businessId}::uuid
+       AND r.state = 'pending'
+       AND r.rebuilt_from IS NOT NULL
+       AND r.insertion_seq < current.insertion_seq
+    RETURNING r.id`);
+  return [...rows].length;
 }
 
 /**

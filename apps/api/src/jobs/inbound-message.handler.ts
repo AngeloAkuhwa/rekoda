@@ -2526,7 +2526,9 @@ async function answerFundingSource(
   const retired = await conversationsRepo.retiredPurchaseDraft(tx, businessId, draftId);
   /* Closed since it was asked (a "no", from this member or another one), or
    * blocked by something newer: nothing to rebuild, and that is said. */
-  if (!retired) return closedQuestionReply(tx, businessId, message.receivedAt, message.from);
+  if (!retired) {
+    return closedQuestionReply(tx, businessId, message.receivedAt, message.from, source);
+  }
   const refused = await fundingGateRefusal(tx, businessId, message.from);
   if (refused) return refused;
 
@@ -2541,7 +2543,7 @@ async function answerFundingSource(
    * was closed. Two previews of one purchase would let two yeses book it
    * twice, which G-61 exists to prevent. */
   if (!(await conversationsRepo.closeRetiredDraft(tx, businessId, retired.id))) {
-    return closedQuestionReply(tx, businessId, message.receivedAt, message.from);
+    return closedQuestionReply(tx, businessId, message.receivedAt, message.from, source);
   }
   /* Nobody else's short answer can reach it now. */
   const holders = await continuationsRepo.retireContinuationsForDraft(tx, businessId, retired.id);
@@ -2559,6 +2561,7 @@ async function answerFundingSource(
     model: null,
     previewed: true,
     requestedBy: await actorOf(tx, businessId, message.from),
+    rebuiltFrom: retired.id,
   });
   return replies.preview(gate.preview);
 }
@@ -2689,42 +2692,49 @@ async function fundingGateRefusal(
 
 /**
  * What a funding answer that cannot rebuild anything is told (G-68 review),
- * true in every state: if a financial preview is already waiting (the
- * member's own rebuild or resend, or another member's), point at it and
- * never invite a resend that would leave two previews to book twice;
- * otherwise say the question can no longer be answered.
+ * true in every state, and never inviting a resend while a live preview
+ * waits (two previews of one purchase could be booked twice):
+ *  - the member's OWN live preview is waiting: point at it, naming its
+ *    account when it differs from the one just named;
+ *  - another member's, or one Rekoda cannot attribute (requested_by null):
+ *    say so, inviting neither a yes nor a resend;
+ *  - nothing live is waiting: the question can no longer be answered.
  */
 async function closedQuestionReply(
   tx: TenantDb,
   businessId: string,
   receivedAt: Date,
   from: string,
+  /** The account the member just named, when the message named one. */
+  named?: FundingSource | null,
 ): Promise<Reply> {
   /* "Waiting" only for a preview the next yes would actually reach: live
    * (its window not closed at this message), not behind a retired
    * question, and with no retired question as the latest thing to answer
-   * (a yes would re-ask that instead). AND only a preview THIS member's own
-   * message drafted (0157, final-head review): another member's preview
-   * names an account this member did not choose, and pointing them at it
-   * invites a yes that books it. Their own preview is not restated: they
-   * were shown it, with its account, and the reply says to check it and
-   * offers "no". Read-only. */
+   * (a yes would re-ask that instead). Then WHOSE it is (0157, final-head
+   * review): another member's preview names an account this member did not
+   * choose, so it is never offered as theirs to confirm, and a resend is
+   * not invited either. Read-only. */
   const latest = await conversationsRepo.latestDraftToAnswer(tx, businessId, { asOf: receivedAt });
   if (latest?.state === 'abandoned') return replies.fundingQuestionClosed();
   const waiting = await conversationsRepo.pendingDraftToAnswer(tx, businessId, {
     asOf: receivedAt,
   });
-  const member = await actorOf(tx, businessId, from);
   const reachable =
     waiting !== null &&
-    member !== null &&
-    waiting.requestedBy === member &&
     waiting.previewed === true &&
     !NOT_A_FINANCIAL_PREVIEW.has(waiting.intent) &&
     waiting.expiresAt !== undefined &&
     waiting.expiresAt.getTime() > receivedAt.getTime() &&
     !(await conversationsRepo.isBehindRetiredQuestion(tx, businessId, waiting.id));
-  return reachable ? replies.previewAlreadyWaiting() : replies.fundingQuestionClosed();
+  if (!reachable) return replies.fundingQuestionClosed();
+  const member = await actorOf(tx, businessId, from);
+  if (member === null || waiting.requestedBy !== member) {
+    return replies.previewWaitingForAnotherMember();
+  }
+  const paid = (waiting.command as { paymentMethod?: unknown }).paymentMethod;
+  const differs = named && (paid === 'transfer' || paid === 'cash') && paid !== named;
+  return replies.previewAlreadyWaiting(differs ? paid : undefined);
 }
 
 /** When a funding question's answer window closes (OD-19). */
@@ -2783,7 +2793,13 @@ async function continueConversation(
         asked.state !== 'abandoned' &&
         insideFundingWindow(asked.createdAt, message.receivedAt)
       ) {
-        return closedQuestionReply(tx, businessId, message.receivedAt, message.from);
+        return closedQuestionReply(
+          tx,
+          businessId,
+          message.receivedAt,
+          message.from,
+          fundingSourceAnswer(message.text),
+        );
       }
     }
   }
@@ -3384,6 +3400,12 @@ async function interpretedReply(
    * retired, so nobody can rebuild it into a second preview of the same
    * purchase. */
   if (answered.previewed === true && draft.isNew) {
+    /* The purchase sent again is the purchase now (final-head review): an
+     * older rebuilt preview of a purchase question, still pending, is
+     * superseded with it, so no pair of yeses can book a purchase twice. */
+    if (command.intent === 'RecordPurchase') {
+      await conversationsRepo.supersedeRebuildsBefore(tx, businessId, draft.id);
+    }
     for (const closed of await conversationsRepo.closeRetiredQuestionsBefore(
       tx,
       businessId,

@@ -1074,12 +1074,12 @@ const QUESTION_MARK = /[?\uFF1F\uFE56\u00BF\u061F\u203D\u2E2E\u2753\u2754\u2049]
  * Faces that mean doubt, wherever they sit in the message: thinking face,
  * flushed face, face with monocle, confused face, face with raised eyebrow,
  * face with rolling eyes, grimacing face, face with diagonal mouth, and the
- * typed ":/", ":-/", ":(", ":-(" and "-_-". Kept small on purpose: each is read as "I am not
+ * typed ":/", ":-/", ":(", ":-(", "=(", "):" and "-_-". Kept small on purpose: each is read as "I am not
  * sure", and none is ever sent to mean yes. A smile or a thumbs up still
  * affirms.
  */
 const DOUBT_FACES =
-  /[\u{1F914}\u{1F633}\u{1F9D0}\u{1F615}\u{1F928}\u{1F644}\u{1F62C}\u{1FAE4}]|:-?[\/(]|-_-/u;
+  /[\u{1F914}\u{1F633}\u{1F9D0}\u{1F615}\u{1F928}\u{1F644}\u{1F62C}\u{1FAE4}]|:-?[\/(]|=\(|\):|-_-/u;
 
 /**
  * Does this short message read as a question or as doubt? Invisible format
@@ -1126,8 +1126,10 @@ export function answerIsUncertain(raw: string): boolean {
  * 😃 😄 🎉 ❤, any skin tone or style) and the emphatic "‼". Narrower than
  * what a START may carry: a START also accepts a country flag, an
  * affirmation does not.
- * Anything else, a laughing face, a flag or a keycap included, makes it
- * `unsure`: the merchant is simply asked for a plain yes, which costs one
+ * Anything else, a laughing face, a flag or a symbol keycap ("#️⃣", "*️⃣")
+ * included, makes it `unsure`. A DIGIT keycap never gets this far: "yes
+ * 1️⃣" keeps its digit through normalisation, is no affirmation phrase, and
+ * goes to the model as an ordinary message. Either way it confirms nothing: the merchant is simply asked for a plain yes, which costs one
  * message and never books a preview they were mocking or refusing.
  */
 function carriesNonAffirmingEmoji(raw: string): boolean {

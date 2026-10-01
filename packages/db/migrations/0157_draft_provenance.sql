@@ -1,4 +1,5 @@
--- WHICH member's message drafted a preview (G-68, final-head review).
+-- WHO drafted a preview, and WHAT a rebuilt preview was built from (G-68,
+-- final-head review).
 --
 -- The merchant thread is one per business, shared by every member, and a
 -- message row does not say who sent it (the provider payload is sealed). So
@@ -14,3 +15,15 @@
 -- or a sender who is not a member) is never claimed as theirs.
 
 ALTER TABLE command_drafts ADD COLUMN requested_by uuid REFERENCES users (id);
+
+-- WHICH retired question a funding-answer rebuild was built from. A short
+-- "bank" rebuilds the purchase as a pending preview; if the purchase is then
+-- sent again (by any member: the base way to answer the question), that NEW
+-- preview is the purchase now, and the older rebuilt preview is superseded
+-- in the same transaction, so two yeses can never book the purchase twice.
+-- Explicit, never inferred from states or from the model column.
+ALTER TABLE command_drafts ADD COLUMN rebuilt_from uuid;
+
+ALTER TABLE command_drafts
+  ADD CONSTRAINT command_drafts_rebuilt_from_business_fk
+  FOREIGN KEY (business_id, rebuilt_from) REFERENCES command_drafts (business_id, id);

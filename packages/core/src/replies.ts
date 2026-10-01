@@ -529,14 +529,37 @@ export function fundingQuestionClosed(): Reply {
 
 /**
  * A short funding answer, or any message that would rebuild a purchase,
- * while a preview is ALREADY waiting (G-68 review): the merchant is pointed
- * at that preview and never invited to send the purchase again, which would
- * leave two previews for two yeses to book.
+ * while the member's OWN preview is ALREADY waiting (G-68 review): the
+ * merchant is pointed at that preview and never invited to send the
+ * purchase again, which would leave two previews for two yeses to book.
+ * When the preview records a different account from the one just named,
+ * it names the preview's account, so a yes is never a surprise.
  */
-export function previewAlreadyWaiting(): Reply {
+export function previewAlreadyWaiting(paidBy?: 'transfer' | 'cash'): Reply {
+  if (paidBy) {
+    const account = paidBy === 'transfer' ? 'bank transfer' : 'cash';
+    return reply(
+      `Nothing was saved from this message. Your preview, paid by ${account}, is ` +
+        'already waiting: check it, then reply *yes* to save it or *no* to drop it.',
+    );
+  }
   return reply(
-    'Nothing was saved from this message. A preview is already waiting: check it, ' +
+    'Nothing was saved from this message. Your preview is already waiting: check it, ' +
       'then reply *yes* to save it or *no* to drop it.',
+  );
+}
+
+/**
+ * A short funding answer while ANOTHER member's preview is waiting, or
+ * one Rekoda cannot attribute (G-68, final-head review). It
+ * invites neither a yes (the member never saw that preview, and it names an
+ * account they did not choose) nor a resend (which would leave two previews
+ * of one purchase). The preview is for the member who asked for it.
+ */
+export function previewWaitingForAnotherMember(): Reply {
+  return reply(
+    'Nothing was saved from this message. A preview another member asked for is ' +
+      'already waiting. Check it with them before anyone sends the purchase again.',
   );
 }
 

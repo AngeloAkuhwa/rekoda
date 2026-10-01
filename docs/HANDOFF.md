@@ -69,7 +69,7 @@ answers resume "Which period?", an uncountable window keeps it open, a
 numbered list is consumed by a correct "2", and the G-61 funding question
 takes a short "bank" or "cash" (migration 0155, `expects = funding_source`;
 0156 marks an undone rebuild and allows one continuation per message per
-member; 0157 records which member drafted a preview)
+member; 0157 records which member drafted a preview and what a rebuild was built from)
 with a FRESH preview, never executing the retired draft. After merge, on
 staging: `na so` to a fresh preview records it; `no` with nothing waiting is
 answered; J17 including the padded `start`; a POS purchase answered "bank"
@@ -79,7 +79,9 @@ Review rounds since added: a questioned yes ("na so?") confirms nothing;
 the funding rebuild is one-shot (a resend closes the question too) and is
 taken only within 1800 seconds of the first ask (OD-19); the two-ask
 erasure breaks on ANY message between the asks (stricter than base for free
-English commands); the STOP decoration cap is OD-20.
+English commands); the STOP decoration cap is OD-20; whether more positive emoji should
+confirm is OD-21; the question-shaped STOP is OD-22 (both open, in
+`docs/REKODA_LAUNCH_READINESS.md`).
 
 **MERGED (1 Oct 2026, Build 6, conversational continuation state; #260 as
 `3612fcf`; staging acceptance pending):** was branch

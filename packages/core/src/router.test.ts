@@ -996,6 +996,9 @@ describe('a questioned affirmation confirms nothing', () => {
     'yes :(',
     'na so :-(',
     'yes -_-',
+    'yes =(',
+    'yes ):',
+    'yes #️⃣',
   ])('%j is unsure, never affirm', (message) => {
     expect(intentOf(message)).toEqual({ kind: 'unsure' });
     expect(staysLocal(routeMessage(message))).toBe(true);

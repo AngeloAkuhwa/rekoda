@@ -11113,9 +11113,9 @@ describe('G-68 final review 2: one-shot rebuild, strict erasure pair, answer win
       await reply('wamid.F2-d-cash', 'cash', DELEGATE);
       /* The OWNER's rebuilt preview (from Bank) is waiting, but the delegate
        * never saw it and asked for cash: never pointed at it as theirs to
-       * confirm (final-head review). Told the question is closed. */
-      expect(stubSender.lastText).toBe(replies.fundingQuestionClosed().text);
-      expect(stubSender.lastText).not.toBe(replies.previewAlreadyWaiting().text);
+       * confirm, and never invited to send the purchase again either
+       * (final-head review). */
+      expect(stubSender.lastText).toBe(replies.previewWaitingForAnotherMember().text);
 
       await reply('wamid.F2-yes-1', 'yes', DELEGATE);
       await reply('wamid.F2-yes-2', 'yes');
@@ -11130,8 +11130,44 @@ describe('G-68 final review 2: one-shot rebuild, strict erasure pair, answer win
       await reply('wamid.F2b-bank', 'bank');
       await reply('wamid.F2b-cash', 'cash');
       expect(stubSender.lastText).not.toContain('Please check this before I save it');
-      expect(stubSender.lastText).toBe(replies.previewAlreadyWaiting().text);
+      /* Their own preview records a different account: it is named. */
+      expect(stubSender.lastText).toBe(replies.previewAlreadyWaiting('transfer').text);
+      expect(stubSender.lastText).toContain('paid by bank transfer');
       expect(await purchaseStates(business.id)).toEqual(['superseded', 'pending']);
+    });
+  });
+
+  describe('F2c. another member’s waiting preview (final-head review)', () => {
+    it('owner "bank", delegate "cash", delegate sends the purchase again, two yeses: booked ONCE', async () => {
+      const business = await seedMerchant();
+      await addDelegate(business.id);
+      await say('wamid.F2c-pos', POS_PURCHASE, 'I bought 10 cartons for 180k, paid by POS');
+      await reply('wamid.F2c-d-yes', 'yes', DELEGATE);
+      await reply('wamid.F2c-o-bank', 'bank');
+      expect(stubSender.lastText).toContain('Paid in full by transfer');
+      await reply('wamid.F2c-d-cash', 'cash', DELEGATE);
+      expect(stubSender.lastText).toBe(replies.previewWaitingForAnotherMember().text);
+
+      /* Sent again anyway, paid in cash: the purchase now. The owner's older
+       * rebuilt preview is superseded with it, so it can never also book. */
+      await say(
+        'wamid.F2c-d-resend',
+        { ...POS_PURCHASE, paymentMethod: 'cash' },
+        'I bought 10 cartons for 180k, paid cash',
+        DELEGATE,
+      );
+      expect(stubSender.lastText).toContain('Paid in full by cash');
+      await reply('wamid.F2c-d-ok', 'yes', DELEGATE);
+      await reply('wamid.F2c-o-ok', 'yes');
+      expect(await written(business.id)).toMatchObject({ purchases: 1 });
+    });
+
+    it('the same member naming the same account again is pointed at their preview, unnamed', async () => {
+      await seedMerchant();
+      await say('wamid.F2c-s-pos', POS_PURCHASE, 'I bought 10 cartons for 180k, paid by POS');
+      await reply('wamid.F2c-s-bank', 'bank');
+      await reply('wamid.F2c-s-bank-2', 'bank');
+      expect(stubSender.lastText).toBe(replies.previewAlreadyWaiting().text);
     });
   });
 
