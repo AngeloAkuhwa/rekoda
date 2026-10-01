@@ -2196,8 +2196,14 @@ async function answerQuery(
             ? periodAnswer(command.periodText ?? '')
             : null;
       if (!period) {
+        const subject = command.topic === 'sales_summary' ? 'sales' : 'spending';
+        /* A window the merchant NAMED that core cannot draw ("yesterday",
+         * "in March") gets its own honest sentence, never the bare question
+         * that reads as if they said nothing. Either way the question stays
+         * open, so "last month" next resumes it. */
+        const named = command.period === 'custom' && (command.periodText ?? '').trim() !== '';
         return {
-          reply: replies.whichPeriod(),
+          reply: named ? replies.periodNotCountable(subject) : replies.whichPeriod(subject),
           continuation: { kind: 'clarification', expects: 'period', topic: command.topic },
         };
       }
@@ -2281,11 +2287,16 @@ async function answerPeriodQuery(
  * cannot be read or holds no membership; such a sender has no state.
  */
 async function actorOf(tx: TenantDb, businessId: string, from: string): Promise<string | null> {
+  let phone: string;
   try {
-    return (await identity.memberByPhone(tx, businessId, normalisePhone(from)))?.userId ?? null;
-  } catch {
-    return null;
+    phone = normalisePhone(from);
+  } catch (error) {
+    /* Only an unreadable number means "no member". A database failure is
+     * not a stranger: it must fail the job, not silently drop the state. */
+    if (error instanceof InvalidPhoneError) return null;
+    throw error;
   }
+  return (await identity.memberByPhone(tx, businessId, phone))?.userId ?? null;
 }
 
 /**

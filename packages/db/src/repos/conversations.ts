@@ -492,6 +492,20 @@ export async function markOutboundSent(
 const seenBy = (asOf: Date | undefined) =>
   asOf ? sql`${commandDrafts.createdAt} <= ${asOf.toISOString()}::timestamptz` : undefined;
 
+/**
+ * A question to the books is never what a "yes" is about (Build 6).
+ *
+ * A Query is answered at once and its draft is kept only for the record:
+ * nothing about it can be confirmed. Left in the running, a question asked
+ * between a preview and its "yes" ("How much did I sell?", "Last month.")
+ * became the newest pending draft, so the "yes" claimed the QUESTION and
+ * the preview the merchant was answering never confirmed; and after an
+ * expired preview it hid the expiry ("that request has expired") behind a
+ * draft nobody could confirm. The drafts a "yes" or a "no" can be about are
+ * therefore the writes and the questions about writes, never a read.
+ */
+const notARead = sql`${commandDrafts.intent} <> 'Query'`;
+
 export async function pendingDraft(
   tx: TenantDb,
   businessId: string,
@@ -517,6 +531,7 @@ export async function pendingDraft(
       and(
         eq(commandDrafts.businessId, businessId),
         eq(commandDrafts.state, 'pending'),
+        notARead,
         seenBy(options.asOf),
       ),
     )
@@ -711,7 +726,7 @@ export async function latestDraft(
       previewed: commandDrafts.previewed,
     })
     .from(commandDrafts)
-    .where(and(eq(commandDrafts.businessId, businessId), seenBy(options.asOf)))
+    .where(and(eq(commandDrafts.businessId, businessId), notARead, seenBy(options.asOf)))
     .orderBy(desc(commandDrafts.insertionSeq))
     .limit(1);
   return rows[0] ?? null;

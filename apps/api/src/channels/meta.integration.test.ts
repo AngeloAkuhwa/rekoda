@@ -8729,7 +8729,8 @@ describe('a preview has a time limit (G-23)', () => {
 describe('a short reply continues what Rekoda just asked (Build 6)', () => {
   const OWNER = '2348031234567';
   const DELEGATE = '2348039990002';
-  const WHICH_PERIOD = replies.whichPeriod().text;
+  const WHICH_PERIOD = replies.whichPeriod('sales').text;
+  const NOT_COUNTABLE = replies.periodNotCountable('sales').text;
   const STRAY = replies.strayNumber().text;
   const HOW_MUCH_DID_I_SELL = {
     intent: 'Query',
@@ -9020,7 +9021,7 @@ describe('a short reply continues what Rekoda just asked (Build 6)', () => {
 
     await say('wamid.B6-r-sell', HOW_MUCH_DID_I_SELL, 'How much did I sell?');
     await say('wamid.B6-r-spend', HOW_MUCH_DID_I_SPEND, 'How much did I spend?');
-    expect(stubSender.lastText).toBe(WHICH_PERIOD);
+    expect(stubSender.lastText).toBe(replies.whichPeriod('spending').text);
 
     await reply('wamid.B6-r-answer', 'this month');
     expect(stubSender.lastText).toContain('₦12,000 spent across one entry');
@@ -9068,7 +9069,7 @@ describe('a short reply continues what Rekoda just asked (Build 6)', () => {
     expect(stubSender.lastText).not.toContain('Saved');
   });
 
-  it('a G-23 expired preview stays expired through a question and its answer', async () => {
+  it('a G-23 expired preview stays expired through a question, its answer and a yes', async () => {
     const business = await seedMerchant();
     await say('wamid.B6-g23-sale', A_SALE, 'sold Ada 3 wigs for 300k');
     await withBusiness(db, business.id, (tx) =>
@@ -9079,9 +9080,79 @@ describe('a short reply continues what Rekoda just asked (Build 6)', () => {
 
     await say('wamid.B6-g23-ask', HOW_MUCH_DID_I_SELL, 'How much did I sell?');
     await reply('wamid.B6-g23-answer', 'last month');
+    expect(stubSender.lastText).toContain('sales');
+
+    /* The yes is about the expired preview, the last thing it could be
+     * about: never revived, never "saved", and the question in between is
+     * not something a yes confirms. */
+    await reply('wamid.B6-g23-yes', 'yes');
+    expect(stubSender.lastText).toBe(replies.draftExpired().text);
+    await reply('wamid.B6-g23-no', 'no');
+    expect(stubSender.lastText).toBe(replies.expiredNothingToCancel().text);
 
     expect((await draftStates(business.id))[0]).toBe('RecordSale:expired');
     expect(await footprint(business.id)).toMatchObject({ invoices: 0, postings: 0 });
+  });
+
+  it('a live preview still confirms after a question and its answer in between', async () => {
+    const business = await seedMerchant();
+    await say('wamid.B6-live-sale', A_SALE, 'sold Ada 3 wigs for 300k');
+    await say('wamid.B6-live-ask', HOW_MUCH_DID_I_SELL, 'How much did I sell?');
+    expect(stubSender.lastText).toBe(WHICH_PERIOD);
+    await reply('wamid.B6-live-answer', 'Last month');
+    expect(modelCalls()).toBe(0);
+
+    await reply('wamid.B6-live-yes', 'yes');
+    expect(await footprint(business.id)).toMatchObject({ invoices: 1 });
+    expect((await draftStates(business.id))[0]).toBe('RecordSale:confirmed');
+  });
+
+  it('a window named but not countable here says what can be counted, and stays open', async () => {
+    const business = await seedMerchant();
+    const { lastMonthLabel } = await seedTwoMonths(business.id);
+
+    await say(
+      'wamid.B6-y-ask',
+      { ...HOW_MUCH_DID_I_SELL, period: 'custom', periodText: 'yesterday' },
+      'how much did I sell yesterday',
+    );
+    expect(stubSender.lastText).toBe(NOT_COUNTABLE);
+    expect(stubSender.lastText).not.toBe(WHICH_PERIOD);
+
+    await reply('wamid.B6-y-answer', 'last month');
+    expect(stubSender.lastText).toContain(`${lastMonthLabel}: ₦150,000`);
+    expect(modelCalls()).toBe(0);
+  });
+
+  it('a custom window the merchant named in one message is answered at once', async () => {
+    const business = await seedMerchant();
+    const { lastMonthLabel } = await seedTwoMonths(business.id);
+
+    await say(
+      'wamid.B6-c-ask',
+      { ...HOW_MUCH_DID_I_SELL, period: 'custom', periodText: 'last month' },
+      'How much did I sell last month?',
+    );
+    expect(stubSender.lastText).toContain(`${lastMonthLabel}: ₦150,000`);
+    /* No question was asked; the read is what a follow-up continues. */
+    expect(
+      (await continuations(business.id)).map((c) => `${c.kind}:${c.period}:${c.state}`),
+    ).toEqual(['query:last_month:open']);
+  });
+
+  it('a G-61 retired question is still closed by "no" while a continuation is open', async () => {
+    const business = await seedMerchant();
+    await say('wamid.B6-g61no-pos', POS_PURCHASE, 'I bought 10 cartons for 100k, paid by POS');
+    await say('wamid.B6-g61no-ask', HOW_MUCH_DID_I_SELL, 'How much did I sell?');
+    expect(stubSender.lastText).toBe(WHICH_PERIOD);
+
+    await reply('wamid.B6-g61no-no', 'no');
+    expect(stubSender.lastText).toBe(replies.cancelled().text);
+    expect((await draftStates(business.id))[0]).toBe('RecordPurchase:superseded');
+    /* Closed for good: a later yes does not ask it again. */
+    await reply('wamid.B6-g61no-yes', 'yes');
+    expect(stubSender.lastText).not.toContain('did it come from your bank account');
+    expect(await footprint(business.id)).toMatchObject({ expenses: 0, postings: 0 });
   });
 
   it('a G-61 retired purchase question stays retired, and "bank" never records the purchase', async () => {

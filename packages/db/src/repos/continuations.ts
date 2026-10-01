@@ -47,11 +47,14 @@ export interface OpenContinuation {
 }
 
 /**
- * Retire every open row this member has, in one statement: past its window
- * it becomes `expired`, otherwise `superseded`. Returns how many moved.
+ * Retire every open row this member has that existed when their message
+ * arrived, in one statement: past its window it becomes `expired`,
+ * otherwise `superseded`. Returns how many moved.
  *
  * Called when the member says something that does not continue what was
- * open (the newest thing said wins), and before a new row opens.
+ * open (the newest thing said wins). `created_at <= now`, as on every read
+ * and claim: a message received before a question was written is not a
+ * reply to it, and must not close it.
  */
 export async function retireContinuations(
   tx: TenantDb,
@@ -59,36 +62,49 @@ export async function retireContinuations(
   userId: string,
   options: { now?: Date } = {},
 ): Promise<number> {
+  const now = clock(options.now);
   const rows = await tx.execute<{ id: string }>(sql`
     UPDATE conversation_continuations
-       SET state = CASE WHEN expires_at <= ${clock(options.now)} THEN 'expired' ELSE 'superseded' END,
+       SET state = CASE WHEN expires_at <= ${now} THEN 'expired' ELSE 'superseded' END,
            updated_at = clock_timestamp()
      WHERE business_id = ${businessId}::uuid
        AND user_id = ${userId}::uuid
        AND state = 'open'
+       AND created_at <= ${now}
     RETURNING id`);
   return [...rows].length;
 }
 
 /**
  * Open a continuation for this member, retiring whatever was open (newest
- * wins). One row per source message: a replayed message writes nothing new.
+ * wins). One row per source message: a replayed message changes nothing,
+ * and in particular does not retire the row it opened the first time.
  *
- * `ON CONFLICT DO NOTHING` covers both uniques: the message one (a replay)
- * and the one-open-per-member one (a concurrent opener that won the slot
- * between the retire and the insert; it is the newer, and it stands).
+ * The retire here has no `created_at` predicate on purpose: this is the
+ * newest question being written NOW, and every open row is older than it.
+ *
+ * `ON CONFLICT DO NOTHING` covers both uniques: the message one (a replay
+ * racing itself) and the one-open-per-member one. For the second, two
+ * concurrent openers for one member both retire, both insert; the second
+ * insert waits on the first's uncommitted row and, once that commits, does
+ * nothing: the FIRST to commit stands, and the loser returns null. The
+ * inbound handler serialises a business's messages, so this is a backstop.
  */
 export async function openContinuation(
   tx: TenantDb,
   input: OpenContinuationInput,
 ): Promise<{ id: string; isNew: boolean } | null> {
   const columns = continuationColumns(input.state);
-  await retireContinuations(
-    tx,
-    input.businessId,
-    input.userId,
-    input.now ? { now: input.now } : {},
-  );
+  const replayed = await rowForMessage(tx, input);
+  if (replayed) return { id: replayed, isNew: false };
+
+  await tx.execute(sql`
+    UPDATE conversation_continuations
+       SET state = CASE WHEN expires_at <= ${clock(input.now)} THEN 'expired' ELSE 'superseded' END,
+           updated_at = clock_timestamp()
+     WHERE business_id = ${input.businessId}::uuid
+       AND user_id = ${input.userId}::uuid
+       AND state = 'open'`);
   const inserted = await tx.execute<{ id: string }>(sql`
     INSERT INTO conversation_continuations
       (business_id, user_id, source_message_id, kind, expects, topic, period,
@@ -104,13 +120,21 @@ export async function openContinuation(
   const created = [...inserted][0];
   if (created) return { id: created.id, isNew: true };
 
+  const raced = await rowForMessage(tx, input);
+  return raced ? { id: raced, isNew: false } : null;
+}
+
+/** The row this member's message already opened, if it opened one. */
+async function rowForMessage(
+  tx: TenantDb,
+  input: Pick<OpenContinuationInput, 'businessId' | 'userId' | 'sourceMessageId'>,
+): Promise<string | null> {
   const existing = await tx.execute<{ id: string }>(sql`
     SELECT id FROM conversation_continuations
      WHERE business_id = ${input.businessId}::uuid
        AND user_id = ${input.userId}::uuid
        AND source_message_id = ${input.sourceMessageId}::uuid`);
-  const row = [...existing][0];
-  return row ? { id: row.id, isNew: false } : null;
+  return [...existing][0]?.id ?? null;
 }
 
 type Row = {

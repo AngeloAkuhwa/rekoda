@@ -95,6 +95,37 @@ describe('scoring one case', () => {
     ).toBe(true);
   });
 
+  it('scores a question by the window the merchant named, never a defaulted one (Build 6)', () => {
+    const unscoped: EvalCase = {
+      id: 'q',
+      category: 'query_period',
+      source: 'typed',
+      input: 'How much did I sell?',
+      expect: {
+        kind: 'command',
+        intent: 'Query',
+        checks: { topic: 'sales_summary', period: null, periodText: null },
+      },
+    };
+    const query = (period: string | null, periodText: string | null) =>
+      command({ intent: 'Query', topic: 'sales_summary', period, periodText });
+    expect(scoreCase(unscoped, query(null, null)).correct).toBe(true);
+    /* Filling in "this month" for a merchant who named nothing is wrong. */
+    expect(scoreCase(unscoped, query('month', null)).failedChecks).toEqual(['period']);
+
+    const lastMonth: EvalCase = {
+      ...unscoped,
+      expect: {
+        kind: 'command',
+        intent: 'Query',
+        checks: { topic: 'sales_summary', period: 'custom', periodText: 'last month' },
+      },
+    };
+    expect(scoreCase(lastMonth, query('custom', 'Last month')).correct).toBe(true);
+    expect(scoreCase(lastMonth, query('custom', 'March')).failedChecks).toEqual(['periodText']);
+    expect(scoreCase(lastMonth, query('custom', null)).failedChecks).toEqual(['periodText']);
+  });
+
   it('counts an abstention as safe on ambiguity and as a miss on a clean command', () => {
     const abstained: Interpretation = { outcome: 'refused', refusedBy: 'business' };
     expect(scoreCase(CASE_AMBIG, abstained).correct).toBe(true);

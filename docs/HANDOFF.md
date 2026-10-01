@@ -65,7 +65,15 @@ newest wins, one-shot clarifications claimed atomically, expiring after
 `CONTINUATION_TTL_SECONDS` (600, an implementation value for the owner to
 confirm, OD-14). It only ever resumes a read and never touches a command
 draft (G-23, G-61 unchanged). Numbered-option state is representable; number
-routing, Pidgin answers and "send it as PDF" belong to later builds. After
+routing, Pidgin answers and "send it as PDF" belong to later builds.
+Answering the G-61 funding-source question ("bank", "cash") is NOT
+representable yet: Build 7 must widen the `expects` CHECK in a new migration
+and answer it through a separate write path that shows a FRESH purchase
+preview, never by executing the retired draft. Resumed reads are free (no
+`AI_ACTIONS` unit) and not plan- or entitlement-gated, like the other free
+reads; each re-opens the 600-second window. Retired rows persist (opaque
+tokens and enums only) until the business is deleted. A Query's draft is no
+longer what a "yes" or "no" is about. After
 merge, on staging: ask "how much did I sell?", answer "last month", check the
 figure; a delegate's "last month" must not answer the owner's question.
 

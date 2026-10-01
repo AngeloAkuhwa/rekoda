@@ -26,7 +26,9 @@ import { migrate, requireUrls, truncateAll, type Urls } from './testing.js';
 
 let urls: Urls;
 let app: Db;
+let owner: Db;
 let closeApp: () => Promise<void>;
+let closeOwner: () => Promise<void>;
 
 beforeAll(async () => {
   urls = requireUrls();
@@ -34,10 +36,14 @@ beforeAll(async () => {
   const asApp = createDb(urls.app, { max: 10 });
   app = asApp.db;
   closeApp = asApp.close;
+  const asOwner = createDb(urls.owner, { max: 2 });
+  owner = asOwner.db;
+  closeOwner = asOwner.close;
 });
 
 afterAll(async () => {
   await closeApp();
+  await closeOwner();
 });
 
 beforeEach(async () => {
@@ -210,6 +216,19 @@ describe('expired is absent', () => {
     expect(await states(businessId)).toEqual(['expired']);
   });
 
+  it('a message received before a question was written does not retire it', async () => {
+    const { businessId, ownerId } = await seedBusiness();
+    await open(businessId, ownerId);
+    /* `created_at` is the real clock; this message arrived a minute before. */
+    const retired = await withBusiness(app, businessId, (tx) =>
+      continuationsRepo.retireContinuations(tx, businessId, ownerId, {
+        now: new Date(Date.now() - 60_000),
+      }),
+    );
+    expect(retired).toBe(0);
+    expect(await states(businessId)).toEqual(['open']);
+  });
+
   it('a reply cannot answer a question written after it was sent', async () => {
     const { businessId, ownerId } = await seedBusiness();
     await open(businessId, ownerId);
@@ -268,6 +287,9 @@ describe('the newest wins', () => {
     const again = await write();
     expect(first?.isNew).toBe(true);
     expect(again).toEqual({ id: first!.id, isNew: false });
+    /* The replay did not retire the row it opened the first time. */
+    expect(await states(businessId)).toEqual(['open']);
+    expect((await current(businessId, ownerId, at(1000)))?.id).toBe(first!.id);
   });
 });
 
@@ -290,6 +312,53 @@ describe('a clarification is answered once', () => {
     /* Consumed is final: never answered again, never open again. */
     expect(await current(businessId, ownerId, at(2000))).toBeNull();
     expect(await consume(businessId, ownerId, opened!.id, at(2000))).toBe(false);
+  });
+
+  it('a claim that waits on a committed claim gets false (forced interleaving)', async () => {
+    const { businessId, ownerId } = await seedBusiness();
+    const opened = await open(businessId, ownerId);
+    const second = createDb(urls.app, { max: 1 });
+    try {
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => (release = resolve));
+      let firstClaimed!: (won: boolean) => void;
+      const claimedInside = new Promise<boolean>((resolve) => (firstClaimed = resolve));
+
+      /* Claim 1 runs its UPDATE and keeps its transaction open. */
+      const first = withBusiness(app, businessId, async (tx) => {
+        const won = await continuationsRepo.consumeContinuation(
+          tx,
+          businessId,
+          ownerId,
+          opened!.id,
+          { now: at(1000) },
+        );
+        firstClaimed(won);
+        await held;
+        return won;
+      });
+      expect(await claimedInside).toBe(true);
+
+      /* Claim 2 starts while claim 1 is uncommitted: it must block on the row. */
+      const later = consume(businessId, ownerId, opened!.id, at(1000), second.db);
+      let blocked = false;
+      for (let i = 0; i < 100 && !blocked; i += 1) {
+        const rows = await owner.execute<{ n: number }>(sql`
+          SELECT count(*)::int AS n FROM pg_stat_activity
+           WHERE datname = current_database() AND wait_event_type = 'Lock'`);
+        blocked = ([...rows][0]?.n ?? 0) > 0;
+        if (!blocked) await new Promise((resolve) => setImmediate(resolve));
+      }
+      expect(blocked).toBe(true);
+
+      /* Claim 1 commits; claim 2 re-checks `state = 'open'` and loses. */
+      release();
+      expect(await first).toBe(true);
+      expect(await later).toBe(false);
+    } finally {
+      await second.close();
+    }
+    expect(await states(businessId)).toEqual(['consumed']);
   });
 
   it('many racing claims across many questions: one winner each', async () => {
@@ -380,6 +449,33 @@ describe('typed state, and durable', () => {
         }),
       ),
     ).rejects.toThrow(/vault token/);
+  });
+
+  it('cannot point at another tenant’s message, even as the owner outside RLS', async () => {
+    const a = await seedBusiness();
+    const b = await seedBusiness();
+    const theirMessage = await message(b.businessId);
+    /* The owner credential bypasses RLS, so only the composite key refuses. */
+    const refusal = await owner
+      .execute(
+        sql`
+        INSERT INTO conversation_continuations
+          (business_id, user_id, source_message_id, kind, expects, topic)
+        VALUES (${a.businessId}::uuid, ${a.ownerId}::uuid, ${theirMessage}::uuid,
+                'clarification', 'period', 'sales_summary')`,
+      )
+      .then(
+        () => null,
+        (error: Error & { cause?: unknown }) => error,
+      );
+    expect(String(refusal?.cause)).toContain('conversation_continuations_message_business_fk');
+    /* The same row naming its own tenant's message is accepted. */
+    const ours = await message(a.businessId);
+    await owner.execute(sql`
+      INSERT INTO conversation_continuations
+        (business_id, user_id, source_message_id, kind, expects, topic)
+      VALUES (${a.businessId}::uuid, ${a.ownerId}::uuid, ${ours}::uuid,
+              'clarification', 'period', 'sales_summary')`);
   });
 
   it('the application can retire a row but never delete one', async () => {

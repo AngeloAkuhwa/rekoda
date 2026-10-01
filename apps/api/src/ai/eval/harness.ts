@@ -132,6 +132,15 @@ export function scoreCase(evalCase: EvalCase, interpretation: Interpretation): E
       if (customer?.token !== wanted) failed.push('customerToken');
       continue;
     }
+    if (field === 'periodText' && typeof wanted === 'string') {
+      /* The merchant's words, so case and padding are not the point: "Last
+       * month" and "last month" are the same window. */
+      const said = command['periodText'];
+      if (typeof said !== 'string' || !said.toLowerCase().includes(wanted.toLowerCase())) {
+        failed.push('periodText');
+      }
+      continue;
+    }
     if (field === 'quantity' || field === 'unitPrice') {
       const items = (command['items'] as Array<Record<string, unknown>> | undefined) ?? [];
       if (!items.some((item) => item[field] === wanted)) failed.push(field);
