@@ -845,6 +845,94 @@ describe('the funding-source question (migration 0155)', () => {
   });
 });
 
+/**
+ * Migration 0156 (G-68, Codex review): the newest question wins, and the one
+ * newer draft that does not close an older question is the EXPLICITLY marked
+ * undone rebuild of that very question. One message may re-open the answer
+ * of several members.
+ */
+describe('an undone funding rebuild (migration 0156)', () => {
+  async function purchaseDraft(businessId: string, retire: boolean): Promise<string> {
+    const asked = await message(businessId);
+    return withBusiness(app, businessId, async (tx) => {
+      const draft = await conversationsRepo.recordDraft(tx, {
+        businessId,
+        conversationMessageId: asked,
+        intent: 'RecordPurchase',
+        command: { intent: 'RecordPurchase', amount: 180_000, paymentMethod: 'pos' },
+        model: null,
+      });
+      if (retire) await conversationsRepo.retireDraft(tx, businessId, draft.id);
+      return draft.id;
+    });
+  }
+  const answerable = (businessId: string, draftId: string) =>
+    withBusiness(app, businessId, (tx) =>
+      conversationsRepo.retiredPurchaseDraft(tx, businessId, draftId),
+    );
+  const setState = (draftId: string, state: string) =>
+    owner.execute(sql`UPDATE command_drafts SET state = ${state} WHERE id = ${draftId}::uuid`);
+
+  it('a newer purchase draft in ANY state closes an older question; only its own undone rebuild does not', async () => {
+    const { businessId } = await seedBusiness();
+    const q1 = await purchaseDraft(businessId, true);
+    expect((await answerable(businessId, q1))?.id).toBe(q1);
+    const newer = await purchaseDraft(businessId, false);
+    await setState(newer, 'superseded');
+    expect(await answerable(businessId, q1)).toBeNull();
+    /* Marked as the undone rebuild of q1: q1 answers again. */
+    await owner.execute(
+      sql`UPDATE command_drafts SET undone_rebuild_of = ${q1}::uuid WHERE id = ${newer}::uuid`,
+    );
+    expect((await answerable(businessId, q1))?.id).toBe(q1);
+  });
+
+  it('the database keeps the marker on a superseded draft, never on itself', async () => {
+    const { businessId } = await seedBusiness();
+    const q = await purchaseDraft(businessId, true);
+    const pending = await purchaseDraft(businessId, false);
+    const mark = (draftId: string, of: string) =>
+      owner
+        .execute(
+          sql`UPDATE command_drafts SET undone_rebuild_of = ${of}::uuid WHERE id = ${draftId}::uuid`,
+        )
+        .then(
+          () => 'accepted',
+          (error: Error & { cause?: unknown }) => String(error.cause ?? error.message),
+        );
+    expect(await mark(pending, q)).toContain('command_drafts_undone_rebuild_superseded_check');
+    await setState(pending, 'superseded');
+    expect(await mark(pending, pending)).toContain(
+      'command_drafts_undone_rebuild_superseded_check',
+    );
+    expect(await mark(pending, q)).toBe('accepted');
+  });
+
+  it('one message may open a continuation for each of two members, once each', async () => {
+    const { businessId, ownerId } = await seedBusiness();
+    const delegateId = await addMember(businessId);
+    const q = await purchaseDraft(businessId, true);
+    const source = await message(businessId);
+    const state: ContinuationState = {
+      kind: 'clarification',
+      expects: 'funding_source',
+      draftId: q,
+    };
+    const openFor = (userId: string) =>
+      withBusiness(app, businessId, (tx) =>
+        continuationsRepo.openContinuation(tx, {
+          businessId,
+          userId,
+          sourceMessageId: source,
+          state,
+        }),
+      );
+    expect((await openFor(ownerId))?.isNew).toBe(true);
+    expect((await openFor(delegateId))?.isNew).toBe(true);
+    expect((await openFor(delegateId))?.isNew).toBe(false);
+  });
+});
+
 describe('the two-ask erasure pair fails closed (G-68 review)', () => {
   it('a parked ask whose message cannot be found counts as broken, never intact', async () => {
     const { businessId } = await seedBusiness();

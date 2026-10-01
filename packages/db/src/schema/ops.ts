@@ -469,6 +469,13 @@ export const commandDrafts = pgTable(
      * unread, G-20).
      */
     previewed: boolean('previewed').notNull().default(false),
+    /**
+     * Set only on a funding-answer rebuild that was UNDONE because its
+     * preview never reached the merchant (migration 0156, G-68): the retired
+     * question it was rebuilt from. The one newer draft that does not close
+     * that question. Null on every other draft.
+     */
+    undoneRebuildOf: uuid('undone_rebuild_of'),
   },
   (t) => [
     // One draft per message — a job that runs twice must not give the merchant
@@ -520,7 +527,7 @@ export const conversationContinuations = pgTable(
       .default(sql`clock_timestamp() + interval '600 seconds'`),
   },
   (t) => [
-    uniqueIndex('conversation_continuations_message_ux').on(t.sourceMessageId),
+    uniqueIndex('conversation_continuations_message_ux').on(t.sourceMessageId, t.userId),
     uniqueIndex('conversation_continuations_open_ux')
       .on(t.businessId, t.userId)
       .where(sql`state = 'open'`),

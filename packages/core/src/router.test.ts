@@ -698,6 +698,9 @@ describe('STOP and START are exact, on every path (G-24)', () => {
     /* "…" is three full stops in one character. */
     'start\u2026',
     'start ...',
+    /* One trailing line break (a send key), CRLF included. */
+    'START\r\n',
+    'start \n',
   ];
   const NOT_CONSENT = [
     'stop by my shop tomorrow',
@@ -751,6 +754,17 @@ describe('STOP and START are exact, on every path (G-24)', () => {
     `${'*'.repeat(17)}stop`,
     /* More than one line is a message with a STOP in it. */
     'stop\nstop',
+    /* A LEADING line break is a first line that is empty (Codex review):
+     * refused before any trimming can hide it, for START and STOP alike. */
+    '\nSTART',
+    '\vSTART!',
+    '\r\nstart',
+    ' \nstart',
+    '\u2028start',
+    '\nSTOP',
+    /* Only ONE trailing line break is forgiven. */
+    'start\n\n',
+    'stop\n\n',
     'stop\n\n!',
     /* Punctuation-like pictographs are punctuation for START too. */
     'start \u2049\uFE0F',

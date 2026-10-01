@@ -253,21 +253,24 @@ export async function retireContinuationOpenedBy(
  * Retire every open continuation, for ANY member of this business, that
  * names this draft (G-68 review): a G-61 funding question is answered ONCE.
  * After the purchase is rebuilt from it, no other member's short answer may
- * rebuild it again. Returns how many moved.
+ * rebuild it again. Returns WHO held one, and until when, so a rebuild that
+ * is undone (its preview never reached anybody) can re-open exactly those
+ * members' answers inside their own windows (Codex review), and nobody
+ * else's.
  */
 export async function retireContinuationsForDraft(
   tx: TenantDb,
   businessId: string,
   draftId: string,
-): Promise<number> {
-  const rows = await tx.execute<{ id: string }>(sql`
+): Promise<{ userId: string; expiresAt: Date }[]> {
+  const rows = await tx.execute<{ user_id: string; expires_at: Date | string }>(sql`
     UPDATE conversation_continuations
        SET state = 'superseded', updated_at = clock_timestamp()
      WHERE business_id = ${businessId}::uuid
        AND draft_id = ${draftId}::uuid
        AND state = 'open'
-    RETURNING id`);
-  return [...rows].length;
+    RETURNING user_id, expires_at`);
+  return [...rows].map((r) => ({ userId: r.user_id, expiresAt: new Date(r.expires_at) }));
 }
 
 /**

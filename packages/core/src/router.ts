@@ -436,6 +436,13 @@ const BIDI_CONTROLS = /[\u202A-\u202E\u2066-\u2069]/u;
  */
 const LINE_BREAKS = /[\n\r\v\f\u0085\u2028\u2029]/u;
 
+/** Whitespace that is NOT a line break, at either end of a message. */
+const HORIZONTAL_SPACE_AT_START = /^[^\S\n\r\v\f\u0085\u2028\u2029]+/u;
+const HORIZONTAL_SPACE_AT_END = /[^\S\n\r\v\f\u0085\u2028\u2029]+$/u;
+
+/** At most one line break may end a consent message: CRLF counts as one. */
+const ONE_TRAILING_LINE_BREAK = /(?:\r\n|[\n\r\v\f\u0085\u2028\u2029])$/u;
+
 /**
  * The format characters that ARE invisible (zero-width spaces, the
  * left-to-right and right-to-left marks, the word joiner, the soft hyphen),
@@ -661,11 +668,22 @@ function consentKeyword(raw: string): 'stop' | 'start' | null {
    * on each side, well under this; anything longer is not consent, and is
    * refused before it is segmented. */
   if (BIDI_CONTROLS.test(raw)) return null;
-  /* Surrounding whitespace, a trailing line break included, is not part of
-   * the message, and neither are the invisible format characters: both go
-   * BEFORE the length gate, so trailing spaces never refuse a STOP. A line
-   * break anywhere else is a second line. */
-  const text = raw.replace(INVISIBLE, '').trim();
+  /* The invisible format characters are not part of the message, and
+   * neither are surrounding SPACES nor ONE trailing line break (what a
+   * keyboard's send key can add): all go BEFORE the length gate, so
+   * trailing spaces never refuse a STOP. Any other line break is a second
+   * line, a LEADING one included (Codex review): "\nSTART" is a message
+   * whose first line is empty, not a START, and the line-break check runs
+   * on what is left BEFORE any trimming could hide it. A STOP after a blank
+   * line is refused by the same one-line rule, deliberately: the rule is
+   * one rule for both words, and such a STOP still reaches the model,
+   * which can answer it, rather than silently changing anybody's consent. */
+  const text = raw
+    .replace(INVISIBLE, '')
+    .replace(HORIZONTAL_SPACE_AT_END, '')
+    .replace(ONE_TRAILING_LINE_BREAK, '')
+    .replace(HORIZONTAL_SPACE_AT_END, '')
+    .replace(HORIZONTAL_SPACE_AT_START, '');
   if (text.length > MAX_CONSENT_CODE_UNITS) return null;
   if (!text || LINE_BREAKS.test(text)) return null;
 
@@ -1060,7 +1078,20 @@ export function soundsDoubtful(raw: string): boolean {
  */
 function doubted(raw: string, intent: DeterministicIntent): DeterministicIntent {
   if (intent.kind !== 'affirm') return intent;
-  return soundsDoubtful(raw) || carriesNonAffirmingEmoji(raw) ? { kind: 'unsure' } : intent;
+  return answerIsUncertain(raw) ? { kind: 'unsure' } : intent;
+}
+
+/**
+ * Does a short ANSWER carry a conflicting meaning (G-68, Codex review)? One
+ * rule for every short answer that would act: a yes to a preview and a
+ * funding answer ("cash", "bank") alike. It does when it reads as a
+ * question or as doubt ("cash?", "yes 🤔"), or when it carries any emoji
+ * that is not on the positive list ("cash ❌", "bank 👎", "na so 🚫"). Such
+ * an answer is asked, not given: the merchant is asked again and nothing
+ * acts.
+ */
+export function answerIsUncertain(raw: string): boolean {
+  return soundsDoubtful(raw) || carriesNonAffirmingEmoji(raw);
 }
 
 /**

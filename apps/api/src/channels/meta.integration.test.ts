@@ -11600,4 +11600,61 @@ describe('G-68 Codex review: erasure events, emoji, failed rebuild send, gates, 
     await reply('wamid.CX-u-cash', 'cash', DELEGATE);
     expect(stubSender.lastText).toBe(replies.fundingQuestionClosed().text);
   });
+
+  /* Codex review, second round. */
+  it.each(['cash ❌', 'bank 👎', 'cash 🚫'])(
+    'P2: %j to the funding question rebuilds nothing and keeps it open',
+    async (text) => {
+      const business = await seedMerchant();
+      await say('wamid.CX2-e-pos', POS_PURCHASE, 'I bought 10 cartons for 180k, paid by POS');
+      await reply('wamid.CX2-e', text);
+      expect(stubSender.lastText).toContain(POS_QUESTION);
+      expect(await purchaseStates(business.id)).toEqual(['abandoned']);
+      /* Still open: a plain answer now rebuilds it. */
+      await reply('wamid.CX2-e-cash', 'cash');
+      expect(stubSender.lastText).toContain('Paid in full by cash');
+    },
+  );
+
+  it('P2: an undone rebuild re-opens EVERY member’s answer it retired; the other member’s "cash" rebuilds once', async () => {
+    const business = await seedMerchant();
+    await addDelegate(business.id);
+    await say('wamid.CX2-m-pos', POS_PURCHASE, 'I bought 10 cartons for 180k, paid by POS');
+    /* The delegate is asked too, and so holds the question as well. */
+    await reply('wamid.CX2-m-d-yes', 'yes', DELEGATE);
+    expect(stubSender.lastText).toContain(POS_QUESTION);
+    stubSender.failWith();
+    await reply('wamid.CX2-m-cash', 'cash');
+    expect(await purchaseStates(business.id)).toEqual(['abandoned', 'superseded']);
+
+    await reply('wamid.CX2-m-d-cash', 'cash', DELEGATE);
+    expect(stubSender.lastText).toContain('Paid in full by cash');
+    await reply('wamid.CX2-m-d-ok', 'yes', DELEGATE);
+    await reply('wamid.CX2-m-d-ok2', 'yes', DELEGATE);
+    expect(await count(business.id, 'expenses')).toBe(1);
+  });
+
+  it('P2: a newer question, answered and its preview cancelled, never revives an older one', async () => {
+    const business = await seedMerchant();
+    await addDelegate(business.id);
+    /* Q1, held by the delegate. */
+    await say(
+      'wamid.CX2-n-q1',
+      POS_PURCHASE,
+      'I bought 10 cartons for 180k, paid by POS',
+      DELEGATE,
+    );
+    /* Q2 from the owner, answered into a preview, then cancelled. */
+    await say('wamid.CX2-n-q2', POS_PURCHASE, 'I bought 10 cartons for 180k, paid by POS');
+    await reply('wamid.CX2-n-cash', 'cash');
+    expect(stubSender.lastText).toContain('Paid in full by cash');
+    await reply('wamid.CX2-n-no', 'no');
+
+    const before = await purchaseStates(business.id);
+    await reply('wamid.CX2-n-d-cash', 'cash', DELEGATE);
+    expect(stubSender.lastText).not.toContain('Paid in full by cash');
+    expect(await purchaseStates(business.id)).toEqual(before);
+    await reply('wamid.CX2-n-d-yes', 'yes', DELEGATE);
+    expect(await count(business.id, 'expenses')).toBe(0);
+  });
 });

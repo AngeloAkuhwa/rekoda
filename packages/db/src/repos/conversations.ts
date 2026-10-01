@@ -937,20 +937,21 @@ export async function retiredPurchaseDraft(
         eq(commandDrafts.id, draftId),
         eq(commandDrafts.state, 'abandoned'),
         eq(commandDrafts.intent, 'RecordPurchase'),
-        /* Defence in depth (G-68 review): a question with ANY newer draft
-         * other than a read (`Query`) or a model clarification (`Unclear`),
-         * still standing (not `superseded`: a rebuild undone because its
-         * preview never reached the merchant does not count), is not
-         * answerable: a
-         * preview of the purchase sent again, another purchase, even a newer
-         * CG1 question. This also blocks older questions behind a rebuilt
-         * preview, which does not itself run `closeRetiredQuestionsBefore`. */
+        /* Defence in depth (G-68 review; Codex review): a question with ANY
+         * newer draft other than a read (`Query`) or a model clarification
+         * (`Unclear`), IN ANY STATE, is not answerable: a preview of the
+         * purchase sent again, another purchase, a newer CG1 question, or a
+         * newer question's rebuilt preview since cancelled. The newest
+         * question wins. The ONE exception is told apart by an explicit
+         * marker, never by a combination of states: the undone rebuild of
+         * this very question (migration 0156), whose preview never reached
+         * anybody. */
         sql`NOT EXISTS (
           SELECT 1 FROM command_drafts newer
            WHERE newer.business_id = ${businessId}::uuid
              AND newer.insertion_seq > ${commandDrafts.insertionSeq}
              AND newer.intent NOT IN ('Query', 'Unclear')
-             AND newer.state <> 'superseded')`,
+             AND newer.undone_rebuild_of IS DISTINCT FROM ${commandDrafts.id})`,
       ),
     )
     .limit(1);
@@ -1099,8 +1100,12 @@ export async function undoRebuild(
   rebuiltFromId: string,
   messageId: string,
 ): Promise<void> {
+  /* Marked explicitly as the undone rebuild of THIS question (0156), the
+   * one newer draft that does not close it in `retiredPurchaseDraft`. */
   await tx.execute(sql`
-    UPDATE command_drafts SET state = 'superseded', updated_at = clock_timestamp()
+    UPDATE command_drafts
+       SET state = 'superseded', undone_rebuild_of = ${rebuiltFromId}::uuid,
+           updated_at = clock_timestamp()
      WHERE business_id = ${businessId}::uuid
        AND conversation_message_id = ${messageId}::uuid
        AND state = 'pending'`);

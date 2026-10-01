@@ -30,7 +30,7 @@ import {
   FUNDING_ANSWER_WINDOW_SECONDS,
   withinFundingWindow,
   uncountablePeriod,
-  soundsDoubtful,
+  answerIsUncertain,
   fundingSourceAnswer,
   type FundingSource,
   periodAnswer,
@@ -390,7 +390,7 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
     const actorId = await actorOf(tx, businessId, inbound.from);
     /* Whether this message retired a question Rekoda had asked this member
      * (G-68): a "no" that drops nothing else must not say nothing waited. */
-    const outcome: { retiredQuestion: boolean; rebuiltFrom?: string } = { retiredQuestion: false };
+    const outcome: RebuildOutcome = { retiredQuestion: false };
     const continued = actorId
       ? await continueConversation(tx, businessId, actorId, {
           text,
@@ -455,18 +455,28 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
         if (outcome.rebuiltFrom) {
           await conversationsRepo.undoRebuild(tx, businessId, outcome.rebuiltFrom, message.id);
           const asked = await conversationsRepo.draftStateOf(tx, businessId, outcome.rebuiltFrom);
-          if (actorId && asked?.state === 'abandoned') {
-            await continuationsRepo.openContinuation(tx, {
-              businessId,
-              userId: actorId,
-              sourceMessageId: message.id,
-              state: {
-                kind: 'clarification',
-                expects: 'funding_source',
-                draftId: outcome.rebuiltFrom,
-              },
-              expiresAt: fundingWindowEnd(asked.createdAt),
-            });
+          if (asked?.state === 'abandoned') {
+            /* The sender, and EVERY other member whose answer the rebuild
+             * retired (Codex review), each inside their own window; no
+             * member who never held one is given one. */
+            const reopen = new Map<string, Date>();
+            if (actorId) reopen.set(actorId, fundingWindowEnd(asked.createdAt));
+            for (const held of outcome.retiredHolders ?? []) {
+              if (!reopen.has(held.userId)) reopen.set(held.userId, held.expiresAt);
+            }
+            for (const [userId, expiresAt] of reopen) {
+              await continuationsRepo.openContinuation(tx, {
+                businessId,
+                userId,
+                sourceMessageId: message.id,
+                state: {
+                  kind: 'clarification',
+                  expects: 'funding_source',
+                  draftId: outcome.rebuiltFrom,
+                },
+                expiresAt,
+              });
+            }
           }
         }
       }
@@ -476,6 +486,17 @@ export function inboundMessageHandler(deps: InboundMessageDeps): JobHandler {
     log.debug(`answered an inbound message routed as ${route.route}`);
   };
 }
+
+/**
+ * What a reply did that a failed send must undo (G-68): whether it retired
+ * a question, and, for a funding-answer rebuild, the question it rebuilt and
+ * the members whose short answers that rebuild retired.
+ */
+type RebuildOutcome = {
+  retiredQuestion: boolean;
+  rebuiltFrom?: string;
+  retiredHolders?: { userId: string; expiresAt: Date }[];
+};
 
 /** A recording somebody made with the microphone button, not an attached file. */
 function isVoiceNote(inbound: { messageType: string; audioId: string | null }): boolean {
@@ -2499,7 +2520,7 @@ async function answerFundingSource(
     messageId: string;
     from: string;
     receivedAt: Date;
-    outcome?: { retiredQuestion: boolean; rebuiltFrom?: string };
+    outcome?: RebuildOutcome;
   },
 ): Promise<Reply> {
   const retired = await conversationsRepo.retiredPurchaseDraft(tx, businessId, draftId);
@@ -2523,9 +2544,13 @@ async function answerFundingSource(
     return closedQuestionReply(tx, businessId, message.receivedAt);
   }
   /* Nobody else's short answer can reach it now. */
-  await continuationsRepo.retireContinuationsForDraft(tx, businessId, retired.id);
-  /* Remembered, so a preview that never reaches the merchant is undone. */
-  if (message.outcome) message.outcome.rebuiltFrom = retired.id;
+  const holders = await continuationsRepo.retireContinuationsForDraft(tx, businessId, retired.id);
+  /* Remembered, so a preview that never reaches the merchant is undone,
+   * every member's answer this retired included. */
+  if (message.outcome) {
+    message.outcome.rebuiltFrom = retired.id;
+    message.outcome.retiredHolders = holders;
+  }
   await conversationsRepo.recordDraft(tx, {
     businessId,
     conversationMessageId: message.messageId,
@@ -2728,7 +2753,7 @@ async function continueConversation(
     messageId: string;
     receivedAt: Date;
     from: string;
-    outcome?: { retiredQuestion: boolean; rebuiltFrom?: string };
+    outcome?: RebuildOutcome;
   },
 ): Promise<Reply | null> {
   const now = { now: message.receivedAt };
@@ -2784,9 +2809,10 @@ async function continueConversation(
       await continuationsRepo.retireContinuations(tx, businessId, actorId, now);
       return null;
     }
-    /* "cash?", "bank 🤔": asked, not answered (G-68 review). The question
-     * stays open and is asked again; nothing is rebuilt. */
-    if (soundsDoubtful(message.text)) {
+    /* "cash?", "bank 🤔", "cash ❌", "bank 👎": asked or contradicted, not
+     * answered (G-68 review; Codex review: the same emoji rule as a yes).
+     * The question stays open and is asked again; nothing is rebuilt. */
+    if (answerIsUncertain(message.text)) {
       return retired
         ? ((await reaskRetiredQuestion(
             tx,
@@ -3367,6 +3393,19 @@ async function interpretedReply(
      * question becomes the conversation, so a preview left waiting from
      * before it is closed, not left pending and never confirmable. */
     if (draft.isNew) await conversationsRepo.supersedeDraftsBefore(tx, businessId, draft.id);
+    /* The newest question wins, business-wide (Codex review): a NEW
+     * purchase question closes every older one, and every member's short
+     * answer naming one is retired, in this transaction. Nobody can then
+     * rebuild an old purchase however the newer question ends. */
+    if (draft.isNew && command.intent === 'RecordPurchase') {
+      for (const closed of await conversationsRepo.closeRetiredQuestionsBefore(
+        tx,
+        businessId,
+        draft.id,
+      )) {
+        await continuationsRepo.retireContinuationsForDraft(tx, businessId, closed);
+      }
+    }
     await conversationsRepo.retireDraft(tx, businessId, draft.id);
     /* G-68 Phase 2: the question also takes a short answer ("bank",
      * "cash", "na cash") from the member who was asked, through a typed
