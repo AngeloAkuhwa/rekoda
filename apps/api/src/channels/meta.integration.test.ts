@@ -7021,11 +7021,13 @@ describe('stock arriving with a purchase', () => {
     expect(stubSender.lastText).toContain(
       'You paid ₦100,000 for this stock. Was that cash or transfer?',
     );
+    /* The newest question wins (G-68, Codex review): asking the second one
+     * closed the first, so ONE question is still open, the newest. */
     expect(await purchaseFootprint(business.id)).toMatchObject({
       purchases: 0,
       postings: 0,
       pending: 0,
-      retired: 2,
+      retired: 1,
     });
   });
 
