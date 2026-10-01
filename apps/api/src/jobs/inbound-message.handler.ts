@@ -1043,9 +1043,10 @@ async function deterministicReply(
     /* A bare "no" or "cancel" with nothing to refuse is answered, never met
      * with silence, and never told something was cancelled (G-68). */
     if (dropped > 0) return replies.cancelled();
-    /* The "no" closed a question Rekoda asked (which period, where the money
-     * came from) and nothing else: true to say so, untrue to say nothing
-     * was waiting (G-68). */
+    /* The "no" closed a question Rekoda asked ("Which period?", a numbered
+     * list) and nothing else: true to say so, untrue to say nothing was
+     * waiting (G-68). A "no" to the funding question closed its retired
+     * draft above, so it answers "Cancelled." as before. */
     if (ctx.retiredQuestion) return replies.questionLeft();
     return intent.kind === 'cancel' ? replies.nothingToCancel() : replies.nothingToDecline();
   }
@@ -2462,12 +2463,12 @@ async function answerFundingSource(
   businessId: string,
   draftId: string,
   source: FundingSource,
-  message: { messageId: string; from: string },
+  message: { messageId: string; from: string; receivedAt: Date },
 ): Promise<Reply> {
   const retired = await conversationsRepo.retiredPurchaseDraft(tx, businessId, draftId);
   /* Closed since it was asked (a "no", from this member or another one), or
-   * no longer a retired purchase: nothing to rebuild, and that is said. */
-  if (!retired) return replies.fundingQuestionClosed();
+   * blocked by something newer: nothing to rebuild, and that is said. */
+  if (!retired) return closedQuestionReply(tx, businessId, message.receivedAt);
   if (!(await mayTransact(tx, businessId, message.from))) return replies.viewOnlyRole();
   const plan = await usageRepo.planFor(tx, businessId);
   if (plan === 'expired') return replies.trialEnded();
@@ -2486,7 +2487,7 @@ async function answerFundingSource(
    * was closed. Two previews of one purchase would let two yeses book it
    * twice, which G-61 exists to prevent. */
   if (!(await conversationsRepo.closeRetiredDraft(tx, businessId, retired.id))) {
-    return replies.fundingQuestionClosed();
+    return closedQuestionReply(tx, businessId, message.receivedAt);
   }
   /* Nobody else's short answer can reach it now. */
   await continuationsRepo.retireContinuationsForDraft(tx, businessId, retired.id);
@@ -2604,6 +2605,26 @@ async function reaskRetiredQuestion(
   return replies.arithmeticQuestion(gate.question);
 }
 
+/**
+ * What a funding answer that cannot rebuild anything is told (G-68 review),
+ * true in every state: if a financial preview is already waiting (the
+ * member's own rebuild or resend, or another member's), point at it and
+ * never invite a resend that would leave two previews to book twice;
+ * otherwise say the question can no longer be answered.
+ */
+async function closedQuestionReply(
+  tx: TenantDb,
+  businessId: string,
+  receivedAt: Date,
+): Promise<Reply> {
+  const waiting = await conversationsRepo.pendingDraftToAnswer(tx, businessId, {
+    asOf: receivedAt,
+  });
+  return waiting?.previewed === true && !NOT_A_FINANCIAL_PREVIEW.has(waiting.intent)
+    ? replies.previewAlreadyWaiting()
+    : replies.fundingQuestionClosed();
+}
+
 /** When a funding question's answer window closes (OD-19). */
 function fundingWindowEnd(askedAt: Date): Date {
   return new Date(askedAt.getTime() + FUNDING_ANSWER_WINDOW_SECONDS * 1000);
@@ -2660,7 +2681,7 @@ async function continueConversation(
         asked.state !== 'abandoned' &&
         insideFundingWindow(asked.createdAt, message.receivedAt)
       ) {
-        return replies.fundingQuestionClosed();
+        return closedQuestionReply(tx, businessId, message.receivedAt);
       }
     }
   }
@@ -2705,8 +2726,8 @@ async function continueConversation(
             businessId,
             { ...retired, state: 'abandoned' },
             message,
-          )) ?? replies.fundingQuestionClosed())
-        : replies.fundingQuestionClosed();
+          )) ?? (await closedQuestionReply(tx, businessId, message.receivedAt)))
+        : closedQuestionReply(tx, businessId, message.receivedAt);
     }
     const claimed = await continuationsRepo.consumeContinuation(
       tx,

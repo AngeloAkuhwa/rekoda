@@ -11109,7 +11109,9 @@ describe('G-68 final review 2: one-shot rebuild, strict erasure pair, answer win
       /* The delegate's short answer was retired by the owner's rebuild. */
       expect(await continuationStates(business.id)).toEqual(['consumed', 'superseded']);
       await reply('wamid.F2-d-cash', 'cash', DELEGATE);
-      expect(stubSender.lastText).toBe(replies.fundingQuestionClosed().text);
+      /* The owner's rebuilt preview is waiting: pointed at it, never told to
+       * send the purchase again. */
+      expect(stubSender.lastText).toBe(replies.previewAlreadyWaiting().text);
 
       await reply('wamid.F2-yes-1', 'yes', DELEGATE);
       await reply('wamid.F2-yes-2', 'yes');
@@ -11124,6 +11126,7 @@ describe('G-68 final review 2: one-shot rebuild, strict erasure pair, answer win
       await reply('wamid.F2b-bank', 'bank');
       await reply('wamid.F2b-cash', 'cash');
       expect(stubSender.lastText).not.toContain('Please check this before I save it');
+      expect(stubSender.lastText).toBe(replies.previewAlreadyWaiting().text);
       expect(await purchaseStates(business.id)).toEqual(['superseded', 'pending']);
     });
   });

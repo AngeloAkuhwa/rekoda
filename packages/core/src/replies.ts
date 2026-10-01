@@ -506,9 +506,11 @@ export function plainYesNeeded(): Reply {
 }
 
 /**
- * A "no" or "cancel" that closed a question Rekoda had asked (which period,
- * where the money came from) and nothing else (G-68). Something WAS waiting,
- * so it is not "nothing is waiting"; and nothing was saved or cancelled.
+ * A "no" or "cancel" that closed a question Rekoda had asked ("Which
+ * period?", a numbered list) and nothing else (G-68). Something WAS waiting,
+ * so it is not "nothing is waiting"; and nothing was saved or cancelled. A
+ * "no" to the G-61 funding question is not this: it closes that question's
+ * retired draft and answers "Cancelled." as before.
  */
 export function questionLeft(): Reply {
   return reply('OK, I will leave that question. Nothing was saved.');
@@ -520,8 +522,21 @@ export function questionLeft(): Reply {
  */
 export function fundingQuestionClosed(): Reply {
   return reply(
-    'That question was already answered or closed, so nothing was saved from this ' +
+    'That question can no longer be answered, so nothing was saved from this ' +
       'message. Check your records before you send the purchase again.',
+  );
+}
+
+/**
+ * A short funding answer, or any message that would rebuild a purchase,
+ * while a preview is ALREADY waiting (G-68 review): the merchant is pointed
+ * at that preview and never invited to send the purchase again, which would
+ * leave two previews for two yeses to book.
+ */
+export function previewAlreadyWaiting(): Reply {
+  return reply(
+    'Nothing was saved from this message. A preview is already waiting: check it, ' +
+      'then reply *yes* to save it or *no* to drop it.',
   );
 }
 

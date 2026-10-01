@@ -85,6 +85,7 @@ const ALL: Record<string, readonly replies.Reply[]> = {
   plainYesNeeded: [replies.plainYesNeeded()],
   questionLeft: [replies.questionLeft()],
   fundingQuestionClosed: [replies.fundingQuestionClosed()],
+  previewAlreadyWaiting: [replies.previewAlreadyWaiting()],
   correctionTaken: [replies.correctionTaken()],
   issued: [
     replies.issued('INV-2026-000041', NAIRA_MILLIONS, NAIRA_MILLIONS),
@@ -313,6 +314,7 @@ describe('every reply', () => {
     replies.plainYesNeeded(),
     replies.questionLeft(),
     replies.fundingQuestionClosed(),
+    replies.previewAlreadyWaiting(),
     replies.nothingToResend(),
     replies.dashboardUnavailable(),
     replies.paymentLinkUnavailable(),
