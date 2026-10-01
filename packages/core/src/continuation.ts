@@ -71,6 +71,31 @@ export const FUNDING_ANSWER_WINDOW_SECONDS = 1800;
  * (G-68)? A NEGATIVE age (a delayed or retried message older than the
  * question it would answer) is outside it, never inside.
  */
+/**
+ * Is a new purchase EVIDENTLY the same purchase as a pending rebuilt preview
+ * (G-68, final-head review)? Only then may it replace that preview: a
+ * different purchase sent meanwhile ("5 bags of rice for 50k") must leave it
+ * waiting, as an ordinary preview would. The same total, and, when BOTH
+ * name a product and a quantity, the same product and quantity. Anything
+ * unreadable is not the same.
+ */
+export function isSamePurchase(a: unknown, b: unknown): boolean {
+  const x = a as Record<string, unknown> | null;
+  const y = b as Record<string, unknown> | null;
+  if (!x || !y || x['intent'] !== 'RecordPurchase' || y['intent'] !== 'RecordPurchase') {
+    return false;
+  }
+  if (typeof x['amount'] !== 'number' || x['amount'] !== y['amount']) return false;
+  const product = (c: Record<string, unknown>) =>
+    typeof c['productMention'] === 'string' && typeof c['quantity'] === 'number'
+      ? { name: c['productMention'].trim().toLowerCase(), quantity: c['quantity'] }
+      : null;
+  const px = product(x);
+  const py = product(y);
+  if (px && py) return px.name === py.name && px.quantity === py.quantity;
+  return true;
+}
+
 export function withinFundingWindow(askedAt: Date, receivedAt: Date): boolean {
   const age = receivedAt.getTime() - askedAt.getTime();
   return age >= 0 && age < FUNDING_ANSWER_WINDOW_SECONDS * 1000;

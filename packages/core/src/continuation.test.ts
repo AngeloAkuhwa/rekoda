@@ -12,6 +12,7 @@ import {
   continuationColumns,
   isOneShot,
   withinFundingWindow,
+  isSamePurchase,
   parseContinuation,
   resumedRead,
   type ContinuationState,
@@ -297,5 +298,29 @@ describe('the funding answer window (Codex review)', () => {
   });
   it('a message OLDER than the question is outside it, never inside', () => {
     expect(withinFundingWindow(asked, new Date(asked.getTime() - 1))).toBe(false);
+  });
+});
+
+describe('isSamePurchase (G-68, final-head review)', () => {
+  const pos = {
+    intent: 'RecordPurchase',
+    amount: 180_000,
+    paymentMethod: 'pos',
+    productMention: 'cartons',
+    quantity: 10,
+  };
+  it('the same total, product and quantity is the same purchase, whatever the account', () => {
+    expect(isSamePurchase(pos, { ...pos, paymentMethod: 'cash' })).toBe(true);
+    expect(isSamePurchase(pos, { ...pos, productMention: ' Cartons ' })).toBe(true);
+  });
+  it('the same total is enough when either names no product', () => {
+    expect(isSamePurchase(pos, { ...pos, productMention: null, quantity: null })).toBe(true);
+  });
+  it('a different total, product or quantity is a different purchase', () => {
+    expect(isSamePurchase(pos, { ...pos, amount: 50_000 })).toBe(false);
+    expect(isSamePurchase(pos, { ...pos, productMention: 'bags of rice' })).toBe(false);
+    expect(isSamePurchase(pos, { ...pos, quantity: 5 })).toBe(false);
+    expect(isSamePurchase(pos, { ...pos, intent: 'RecordExpense' })).toBe(false);
+    expect(isSamePurchase(null, pos)).toBe(false);
   });
 });

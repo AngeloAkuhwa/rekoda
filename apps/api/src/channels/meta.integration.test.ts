@@ -11132,7 +11132,7 @@ describe('G-68 final review 2: one-shot rebuild, strict erasure pair, answer win
       expect(stubSender.lastText).not.toContain('Please check this before I save it');
       /* Their own preview records a different account: it is named. */
       expect(stubSender.lastText).toBe(replies.previewAlreadyWaiting('transfer').text);
-      expect(stubSender.lastText).toContain('paid by bank transfer');
+      expect(stubSender.lastText).toContain('paid from your bank account');
       expect(await purchaseStates(business.id)).toEqual(['superseded', 'pending']);
     });
   });
@@ -11159,6 +11159,48 @@ describe('G-68 final review 2: one-shot rebuild, strict erasure pair, answer win
       expect(stubSender.lastText).toContain('Paid in full by cash');
       await reply('wamid.F2c-d-ok', 'yes', DELEGATE);
       await reply('wamid.F2c-o-ok', 'yes');
+      expect(await written(business.id)).toMatchObject({ purchases: 1 });
+    });
+
+    it('a DIFFERENT purchase sent meanwhile leaves the rebuilt preview waiting; two yeses book both', async () => {
+      const business = await seedMerchant();
+      await say('wamid.F2c-x-pos', POS_PURCHASE, 'I bought 10 cartons for 180k, paid by POS');
+      await reply('wamid.F2c-x-bank', 'bank');
+      expect(stubSender.lastText).toContain('Paid in full by transfer');
+      await say(
+        'wamid.F2c-x-rice',
+        {
+          ...POS_PURCHASE,
+          description: '5 bags of rice',
+          amount: 50_000,
+          reportedPayment: 50_000,
+          paymentMethod: 'cash',
+          productMention: 'bags of rice',
+          quantity: 5,
+        },
+        'bought 5 bags rice 50k cash',
+      );
+      expect(stubSender.lastText).not.toContain('was replaced');
+      expect(await purchaseStates(business.id)).toEqual(['superseded', 'pending', 'pending']);
+      await reply('wamid.F2c-x-yes-1', 'yes');
+      await reply('wamid.F2c-x-yes-2', 'yes');
+      expect(await written(business.id)).toMatchObject({ purchases: 2 });
+    });
+
+    it('the SAME purchase sent again replaces the rebuilt preview, and says so', async () => {
+      const business = await seedMerchant();
+      await say('wamid.F2c-r-pos', POS_PURCHASE, 'I bought 10 cartons for 180k, paid by POS');
+      await reply('wamid.F2c-r-bank', 'bank');
+      await say(
+        'wamid.F2c-r-resend',
+        { ...POS_PURCHASE, paymentMethod: 'cash' },
+        'I bought 10 cartons for 180k, paid cash',
+      );
+      expect(stubSender.lastText).toContain(
+        'Your earlier preview of this purchase was replaced by this one.',
+      );
+      await reply('wamid.F2c-r-yes-1', 'yes');
+      await reply('wamid.F2c-r-yes-2', 'yes');
       expect(await written(business.id)).toMatchObject({ purchases: 1 });
     });
 

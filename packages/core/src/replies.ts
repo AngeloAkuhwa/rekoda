@@ -412,6 +412,15 @@ export function preview(text: string): Reply {
   return reply(text.trim());
 }
 
+/**
+ * A purchase preview that REPLACED an earlier rebuilt preview of the same
+ * purchase (G-68, final-head review): said, so the merchant knows only this
+ * one is waiting and the earlier one cannot also be confirmed.
+ */
+export function earlierPreviewReplaced(shown: Reply): Reply {
+  return reply(`${shown.text}\n\nYour earlier preview of this purchase was replaced by this one.`);
+}
+
 /** CG1 — the one arithmetic question, verbatim from the gate. */
 export function arithmeticQuestion(text: string): Reply {
   return reply(text.trim());
@@ -537,9 +546,10 @@ export function fundingQuestionClosed(): Reply {
  */
 export function previewAlreadyWaiting(paidBy?: 'transfer' | 'cash'): Reply {
   if (paidBy) {
-    const account = paidBy === 'transfer' ? 'bank transfer' : 'cash';
+    /* The ACCOUNT, never a channel: a POS purchase is paid from the bank. */
+    const account = paidBy === 'transfer' ? 'from your bank account' : 'in cash';
     return reply(
-      `Nothing was saved from this message. Your preview, paid by ${account}, is ` +
+      `Nothing was saved from this message. Your preview, paid ${account}, is ` +
         'already waiting: check it, then reply *yes* to save it or *no* to drop it.',
     );
   }
@@ -558,8 +568,20 @@ export function previewAlreadyWaiting(paidBy?: 'transfer' | 'cash'): Reply {
  */
 export function previewWaitingForAnotherMember(): Reply {
   return reply(
-    'Nothing was saved from this message. A preview another member asked for is ' +
-      'already waiting. Check it with them before anyone sends the purchase again.',
+    'A preview another member asked for is already waiting, so nothing was saved ' +
+      'from this message. Ask them to reply *yes* or *no* to it.',
+  );
+}
+
+/**
+ * The same, when Rekoda cannot say whose the waiting preview is (it records
+ * no requester, or the sender is not a member): neutral, never "another
+ * member", and still inviting neither this member's yes nor a resend.
+ */
+export function previewWaitingUnattributed(): Reply {
+  return reply(
+    'A preview is already waiting, so nothing was saved from this message. ' +
+      'Whoever asked for it can reply *yes* or *no* to it.',
   );
 }
 

@@ -1269,6 +1269,12 @@ const FUNDING_ANSWERS: ReadonlyArray<readonly [readonly string[], FundingSource]
       'na cash',
       'na physical cash',
       'na my cash',
+      /* Reviewed (final-head): a stated payment in cash has no bank reading. */
+      'paid cash',
+      'paid in cash',
+      'i paid cash',
+      'i paid in cash',
+      'with cash',
     ],
     'cash',
   ],

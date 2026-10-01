@@ -1080,7 +1080,15 @@ describe('the length gate counts what is left after trimming (G-24 review)', () 
 });
 
 describe('Pidgin cash answers to the funding question (G-68 review)', () => {
-  it.each(['money for hand', 'na money for hand', 'na cash in hand'])('%j is cash', (text) => {
+  it.each([
+    'money for hand',
+    'na money for hand',
+    'na cash in hand',
+    'paid cash',
+    'I paid cash',
+    'paid in cash',
+    'with cash',
+  ])('%j is cash', (text) => {
     expect(fundingSourceAnswer(text)).toBe('cash');
   });
 

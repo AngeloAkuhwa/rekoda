@@ -1101,29 +1101,46 @@ export async function inboundEventsSinceDraft(
 }
 
 /**
- * Supersede every PENDING funding-answer rebuild recorded before this draft
- * (G-68, final-head review), returning how many. Called when a new purchase
- * preview is recorded: the purchase sent again is the purchase now, so the
- * older rebuilt preview of it can never be confirmed alongside it and book
- * the purchase twice. Conditional on `pending`, in the caller's transaction.
+ * Every PENDING funding-answer rebuild recorded before this draft, with its
+ * command (G-68, final-head review), read so the caller can supersede the
+ * ones a new purchase preview evidently replaces (`isSamePurchase`).
  */
-export async function supersedeRebuildsBefore(
+export async function pendingRebuildsBefore(
   tx: TenantDb,
   businessId: string,
   draftId: string,
-): Promise<number> {
-  const rows = await tx.execute<{ id: string }>(sql`
-    UPDATE command_drafts r
-       SET state = 'superseded', updated_at = clock_timestamp()
-      FROM command_drafts current
-     WHERE current.id = ${draftId}::uuid
-       AND current.business_id = ${businessId}::uuid
-       AND r.business_id = ${businessId}::uuid
+): Promise<{ id: string; command: unknown }[]> {
+  const rows = await tx.execute<{ id: string; command: unknown }>(sql`
+    SELECT r.id, r.command
+      FROM command_drafts r
+      JOIN command_drafts current
+        ON current.id = ${draftId}::uuid AND current.business_id = r.business_id
+     WHERE r.business_id = ${businessId}::uuid
        AND r.state = 'pending'
        AND r.rebuilt_from IS NOT NULL
        AND r.insertion_seq < current.insertion_seq
-    RETURNING r.id`);
-  return [...rows].length;
+     ORDER BY r.insertion_seq`);
+  return [...rows];
+}
+
+/**
+ * Supersede ONE pending funding-answer rebuild that a newer preview of the
+ * same purchase replaces (G-68): one purchase is never two confirmable
+ * previews, so two yeses cannot book it twice. Conditional on `pending`.
+ */
+export async function supersedeRebuild(
+  tx: TenantDb,
+  businessId: string,
+  draftId: string,
+): Promise<boolean> {
+  const rows = await tx.execute<{ id: string }>(sql`
+    UPDATE command_drafts SET state = 'superseded', updated_at = clock_timestamp()
+     WHERE business_id = ${businessId}::uuid
+       AND id = ${draftId}::uuid
+       AND state = 'pending'
+       AND rebuilt_from IS NOT NULL
+    RETURNING id`);
+  return [...rows].length === 1;
 }
 
 /**

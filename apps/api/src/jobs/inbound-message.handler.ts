@@ -29,6 +29,7 @@ import {
   isOneShot,
   FUNDING_ANSWER_WINDOW_SECONDS,
   withinFundingWindow,
+  isSamePurchase,
   uncountablePeriod,
   answerIsUncertain,
   fundingSourceAnswer,
@@ -2729,9 +2730,8 @@ async function closedQuestionReply(
     !(await conversationsRepo.isBehindRetiredQuestion(tx, businessId, waiting.id));
   if (!reachable) return replies.fundingQuestionClosed();
   const member = await actorOf(tx, businessId, from);
-  if (member === null || waiting.requestedBy !== member) {
-    return replies.previewWaitingForAnotherMember();
-  }
+  if (member === null || !waiting.requestedBy) return replies.previewWaitingUnattributed();
+  if (waiting.requestedBy !== member) return replies.previewWaitingForAnotherMember();
   const paid = (waiting.command as { paymentMethod?: unknown }).paymentMethod;
   const differs = named && (paid === 'transfer' || paid === 'cash') && paid !== named;
   return replies.previewAlreadyWaiting(differs ? paid : undefined);
@@ -3399,12 +3399,22 @@ async function interpretedReply(
    * closed in this transaction, and every member's short answer to it is
    * retired, so nobody can rebuild it into a second preview of the same
    * purchase. */
+  let replacedEarlier = false;
   if (answered.previewed === true && draft.isNew) {
     /* The purchase sent again is the purchase now (final-head review): an
-     * older rebuilt preview of a purchase question, still pending, is
-     * superseded with it, so no pair of yeses can book a purchase twice. */
+     * older rebuilt preview of the SAME purchase, still pending, is
+     * superseded with it, so no pair of yeses can book a purchase twice, and
+     * the merchant is told. A DIFFERENT purchase leaves it waiting, as an
+     * ordinary preview would. */
     if (command.intent === 'RecordPurchase') {
-      await conversationsRepo.supersedeRebuildsBefore(tx, businessId, draft.id);
+      for (const older of await conversationsRepo.pendingRebuildsBefore(tx, businessId, draft.id)) {
+        if (
+          isSamePurchase(older.command, command) &&
+          (await conversationsRepo.supersedeRebuild(tx, businessId, older.id))
+        ) {
+          replacedEarlier = true;
+        }
+      }
     }
     for (const closed of await conversationsRepo.closeRetiredQuestionsBefore(
       tx,
@@ -3482,7 +3492,7 @@ async function interpretedReply(
     }
   }
 
-  return answered.reply;
+  return replacedEarlier ? replies.earlierPreviewReplaced(answered.reply) : answered.reply;
 }
 
 /**
